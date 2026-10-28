@@ -206,14 +206,36 @@ fn recovery_mutation_arguments(status: &Value, action_prefix: &str) -> Result<Va
         .and_then(|runtime| runtime.get("id")).and_then(Value::as_str)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "FORGE_DESKTOP_RECOVERY_TARGET_RUNTIME_UNAVAILABLE".to_string())?;
-    Ok(json!({
+    let mut arguments = json!({
         "request_id": request_id(action_prefix),
         "expected_host": host,
         "expected_platform": platform,
         "expected_controller_home": controller_home,
         "expected_recovery_release": recovery_release,
         "expected_target_runtime": target_runtime
-    }))
+    });
+    if action_prefix == "restart-runtime" {
+        let target = identity.get("targetRuntime").and_then(Value::as_object)
+            .ok_or_else(|| "FORGE_DESKTOP_RECOVERY_TARGET_RUNTIME_UNAVAILABLE".to_string())?;
+        let active_release = target.get("activeReleaseId").and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "FORGE_DESKTOP_RECOVERY_ACTIVE_RELEASE_UNAVAILABLE".to_string())?;
+        let authority_revision = target.get("authorityRevision").and_then(Value::as_u64)
+            .filter(|value| *value >= 1)
+            .ok_or_else(|| "FORGE_DESKTOP_RECOVERY_AUTHORITY_REVISION_UNAVAILABLE".to_string())?;
+        arguments["expected_active_release_id"] = json!(active_release);
+        arguments["expected_authority_revision"] = json!(authority_revision);
+        if status.get("running").and_then(Value::as_bool) == Some(true)
+            && status.get("ready").and_then(Value::as_bool) == Some(true) {
+            let instance = status.get("snapshot").and_then(Value::as_object)
+                .and_then(|snapshot| snapshot.get("runtimeInstanceId")).and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| "FORGE_DESKTOP_RECOVERY_RUNTIME_INSTANCE_UNAVAILABLE".to_string())?;
+            arguments["expected_runtime_instance_id"] = json!(instance);
+            arguments["force_healthy_restart"] = json!(true);
+        }
+    }
+    Ok(arguments)
 }
 
 #[tauri::command]
@@ -543,5 +565,52 @@ mod tests {
         assert_eq!(arguments.get("expected_recovery_release").and_then(Value::as_str), Some("recovery-revision"));
         assert_eq!(arguments.get("expected_target_runtime").and_then(Value::as_str), Some("launchd:forge-runtime:release"));
         assert!(arguments.get("request_id").and_then(Value::as_str).is_some());
+    }
+
+    #[test]
+    fn restart_runtime_requires_and_transmits_the_exact_active_authority_fence() {
+        let status = json!({
+            "running": true,
+            "ready": true,
+            "snapshot": { "runtimeInstanceId": "runtime-current-12345678" },
+            "identity": {
+                "host": "machine.test",
+                "platform": "darwin",
+                "controllerHome": "controller-test-home",
+                "recovery": { "releaseRevision": "revision-recovery" },
+                "targetRuntime": {
+                    "id": "launchd:runtime:release-current",
+                    "activeReleaseId": "release-current",
+                    "authorityRevision": 990
+                }
+            }
+        });
+        let restart = recovery_mutation_arguments(&status, "restart-runtime").expect("fenced restart");
+        assert_eq!(restart["expected_active_release_id"], "release-current");
+        assert_eq!(restart["expected_authority_revision"], 990);
+        assert_eq!(restart["force_healthy_restart"], true);
+        assert_eq!(restart["expected_runtime_instance_id"], "runtime-current-12345678");
+        let mut stopped_status = status.clone();
+        stopped_status["running"] = json!(false);
+        stopped_status["ready"] = json!(false);
+        let start = recovery_mutation_arguments(&stopped_status, "restart-runtime").expect("start from stopped state");
+        assert!(start.get("force_healthy_restart").is_none());
+        assert!(start.get("expected_runtime_instance_id").is_none());
+        let recovery = recovery_mutation_arguments(&status, "recover-runtime").expect("recovery keeps old schema");
+        assert!(recovery.get("force_healthy_restart").is_none());
+        assert!(recovery.get("expected_authority_revision").is_none());
+        let missing = json!({
+            "identity": {
+                "host": "machine.test",
+                "platform": "darwin",
+                "controllerHome": "controller-test-home",
+                "recovery": { "releaseRevision": "revision-recovery" },
+                "targetRuntime": { "id": "launchd:runtime:release-current" }
+            }
+        });
+        assert_eq!(
+            recovery_mutation_arguments(&missing, "restart-runtime").unwrap_err(),
+            "FORGE_DESKTOP_RECOVERY_ACTIVE_RELEASE_UNAVAILABLE"
+        );
     }
 }

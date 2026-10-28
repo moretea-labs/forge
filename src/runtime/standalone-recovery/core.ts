@@ -1738,6 +1738,10 @@ async function ensureLaunchdServiceStarted(service: LaunchdService, runCommand: 
 export interface PrimaryRuntimeRecoveryDependencies {
   /** Explicit operator restart may recycle an already-healthy Runtime; watchdog/internal recovery keeps healthy no-op semantics. */
   forceHealthyRestart?: boolean;
+  requestId?: string;
+  expectedAuthorityRevision?: number;
+  expectedActiveReleaseId?: string;
+  expectedRuntimeInstanceId?: string;
   platform?: NodeJS.Platform;
   currentUid?: () => Promise<number | undefined>;
   runCommand?: CommandRunner;
@@ -2877,9 +2881,30 @@ export async function restartPrimaryRuntime(
   }
   const now = dependencies.now ?? Date.now;
   const wait = dependencies.sleep ?? sleep;
-  const locked = await withLock(config, { action: 'restart_primary_runtime' }, async () => {
+  const locked = await withLock(config, { action: 'restart_primary_runtime', requestId: dependencies.requestId }, async () => {
     const before = await verifyRecoveryPreflight(config, observeLocal, verifyLocal);
     if (before.ok && !forceHealthyRestart) return { ok: true, attempted: false, noOp: true, detail: 'Canonical Forge Runtime recovered before restart', serviceTarget: service.target, verify: before } satisfies PrimaryRuntimeRestartResult;
+    const authority = releaseAuthority(config);
+    if ((dependencies.expectedAuthorityRevision !== undefined && authority?.revision !== dependencies.expectedAuthorityRevision)
+      || (dependencies.expectedActiveReleaseId !== undefined && authority?.active.releaseId !== dependencies.expectedActiveReleaseId)) {
+      const detail = `RECOVERY_RUNTIME_RESTART_STALE_AUTHORITY: expected revision ${dependencies.expectedAuthorityRevision ?? 'unspecified'}, release ${dependencies.expectedActiveReleaseId ?? 'unspecified'}; observed ${authority?.revision ?? 'none'}, release ${authority?.active.releaseId ?? 'none'}`;
+      audit(config, 'primary_runtime_restart_stale_authority', {
+        requestId: dependencies.requestId,
+        expectedAuthorityRevision: dependencies.expectedAuthorityRevision,
+        expectedActiveReleaseId: dependencies.expectedActiveReleaseId,
+        observedAuthorityRevision: authority?.revision,
+        observedActiveReleaseId: authority?.active.releaseId,
+      });
+      return { ok: false, attempted: false, noOp: true, detail, serviceTarget: service.target, verify: before } satisfies PrimaryRuntimeRestartResult;
+    }
+    if (forceHealthyRestart && dependencies.expectedRuntimeInstanceId !== undefined) {
+      const observedInstance = observeRuntimeStatus(config.controllerHome).snapshot?.runtimeInstanceId;
+      if (observedInstance !== dependencies.expectedRuntimeInstanceId) {
+        const detail = `RECOVERY_RUNTIME_RESTART_STALE_INSTANCE: expected ${dependencies.expectedRuntimeInstanceId}, observed ${observedInstance ?? 'none'}`;
+        audit(config, 'primary_runtime_restart_stale_instance', { requestId: dependencies.requestId, expectedRuntimeInstanceId: dependencies.expectedRuntimeInstanceId, observedRuntimeInstanceId: observedInstance });
+        return { ok: false, attempted: false, noOp: true, detail, serviceTarget: service.target, verify: before } satisfies PrimaryRuntimeRestartResult;
+      }
+    }
     const runCommand = dependencies.runCommand ?? command;
     const runtimeRunning = dependencies.runtimeRunning ?? ((value: RecoveryConfig) => observeRuntimeStatus(value.controllerHome).running);
     const stopped = await stopPrimaryRuntimeForReleaseTransition({
@@ -2891,7 +2916,7 @@ export async function restartPrimaryRuntime(
       runtimeRunning,
     });
     if (!stopped.ok) {
-      audit(config, 'primary_runtime_restart_quiescence_failed', { serviceTarget: service.target, detail: stopped.detail });
+      audit(config, 'primary_runtime_restart_quiescence_failed', { requestId: dependencies.requestId, serviceTarget: service.target, detail: stopped.detail });
       return { ok: false, attempted: true, detail: stopped.detail, serviceTarget: service.target, verify: before } satisfies PrimaryRuntimeRestartResult;
     }
     const activeAuthority = releaseAuthority(config);
@@ -2918,15 +2943,15 @@ export async function restartPrimaryRuntime(
         },
       });
       if (rebound.ok) {
-        audit(config, 'primary_runtime_restart_succeeded', { serviceTarget: service.target, release: rebound.verify.releases.active?.revision, launchContractRebound: true });
+        audit(config, 'primary_runtime_restart_succeeded', { requestId: dependencies.requestId, serviceTarget: service.target, release: rebound.verify.releases.active?.revision, launchContractRebound: true });
         return { ok: true, attempted: true, detail: rebound.detail, serviceTarget: service.target, verify: rebound.verify } satisfies PrimaryRuntimeRestartResult;
       }
-      audit(config, 'primary_runtime_restart_unverified', { serviceTarget: service.target, reasonCodes: rebound.verify.runtime.reasonCodes, detail: rebound.detail, launchContractRebound: true });
+      audit(config, 'primary_runtime_restart_unverified', { requestId: dependencies.requestId, serviceTarget: service.target, reasonCodes: rebound.verify.runtime.reasonCodes, detail: rebound.detail, launchContractRebound: true });
       return { ok: false, attempted: true, detail: rebound.detail, serviceTarget: service.target, verify: rebound.verify } satisfies PrimaryRuntimeRestartResult;
     }
     const started = await ensurePrimaryRuntimeServiceStarted(service, runCommand, 'restart');
     if (!started.ok) {
-      audit(config, 'primary_runtime_restart_failed', { serviceTarget: service.target, detail: started.detail });
+      audit(config, 'primary_runtime_restart_failed', { requestId: dependencies.requestId, serviceTarget: service.target, detail: started.detail });
       return { ok: false, attempted: true, detail: started.detail, serviceTarget: service.target, verify: before } satisfies PrimaryRuntimeRestartResult;
     }
     const after = await verifyPrimaryRuntimeAfterStart({
@@ -2938,10 +2963,10 @@ export async function restartPrimaryRuntime(
       observeLocal,
     });
     if (after.ok) {
-      audit(config, 'primary_runtime_restart_succeeded', { serviceTarget: service.target, release: after.releases.active?.revision });
+      audit(config, 'primary_runtime_restart_succeeded', { requestId: dependencies.requestId, serviceTarget: service.target, release: after.releases.active?.revision });
       return { ok: true, attempted: true, detail: 'Canonical Forge Runtime restarted and passed whole-Runtime verification', serviceTarget: service.target, verify: after } satisfies PrimaryRuntimeRestartResult;
     }
-    audit(config, 'primary_runtime_restart_unverified', { serviceTarget: service.target, reasonCodes: after.runtime.reasonCodes });
+    audit(config, 'primary_runtime_restart_unverified', { requestId: dependencies.requestId, serviceTarget: service.target, reasonCodes: after.runtime.reasonCodes });
     return { ok: false, attempted: true, detail: 'Canonical Forge Runtime restarted but did not pass whole-Runtime verification before timeout', serviceTarget: service.target, verify: after } satisfies PrimaryRuntimeRestartResult;
   });
   if (!locked.acquired) return { ok: false, attempted: false, noOp: true, detail: recoveryBusyDetail(locked.owner), serviceTarget: service.target, verify: initial };
