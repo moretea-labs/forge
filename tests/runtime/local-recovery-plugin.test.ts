@@ -37,7 +37,7 @@ describe('local_recovery managed transport provider', () => {
       loadRecoveryConfig: () => ({ controllerHome: '/tmp/controller', primaryRuntimeSourceRoot: '/tmp', primaryRuntimeSourceRepositoryId: 'repo_fixture' }),
       getRepository: () => ({ repoId: 'repo_fixture', enabled: true, canonicalRoot: '/tmp' }),
       findRegisteredRepositoryByCheckoutRoot: () => ({ repoId: 'repo_fixture' }),
-      requestId: 'bootstrap-cutover-1',
+      requestId: 'prepare-release-session-1',
     });
     expect(result).toEqual({ ok: true, staged: { releaseId: 'candidate' } });
     expect(calls).toHaveLength(1);
