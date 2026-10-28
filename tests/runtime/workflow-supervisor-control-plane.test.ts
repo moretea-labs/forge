@@ -270,7 +270,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
       requestId: 'canonical-objective-recovery',
       reason: 'Verify prompt refresh after the canonical Work objective changes.',
     }).recoveryEffect;
-    expect(recovery.prompt).toContain('supervisor_task get');
+    expect(recovery.prompt).toContain('Current canonical objective v2.');
     expect(Array.from(recovery.prompt).length).toBeLessThanOrEqual(4_000);
     expect(recovery.prompt).not.toContain('Current canonical objective v1.');
     expect(recovery.prompt).not.toContain('Stale registration objective.');
@@ -314,14 +314,14 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
       createdAt: '2026-01-01T00:00:00.000Z',
     };
 
-    expect(hooks.canonicalObjectiveForTask?.(task)).toBe('Deliver the durable requirement outcome v1.');
+    expect(hooks.canonicalObjectiveForTask?.(task)).toBe('Requirement REQ-supervisor-outcome-authority：Supervisor outcome authority');
     expect(hooks.canonicalObjectiveForTask?.(task)).not.toBe('Inspect only file A and stop after one check.');
 
     reviseRequirementSemantic({ controllerHome: fx.controllerHome }, requirementId, {
       expectedRevision: 1,
       outcomeStatement: 'Deliver the durable requirement outcome v2.',
     });
-    expect(hooks.canonicalObjectiveForTask?.(task)).toBe('Deliver the durable requirement outcome v2.');
+    expect(hooks.canonicalObjectiveForTask?.(task)).toBe('Requirement REQ-supervisor-outcome-authority：Supervisor outcome authority');
   });
 
   test('revises an active task outcome in place and refreshes only an undispatched effect prompt', () => {
@@ -750,6 +750,16 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     const legacyPrompt = renderSupervisorPrompt({ ...base, objective: 'L'.repeat(7_950) }, 'fx_12345678', 'continuation');
     expect(Array.from(legacyPrompt).length).toBeLessThanOrEqual(4_000);
     expect(legacyPrompt).toContain('task_id:' + JSON.stringify(base.taskId));
+    const requirementPrompt = renderSupervisorPrompt({
+      ...base,
+      completionContract: { repo_id: 'repo-fixture', requirement_id: 'REQ-FIXTURE-1' },
+    }, 'fx_12345678', 'continuation', 'SENSITIVE_PREVIOUS_CHECKPOINT', undefined,
+    undefined, 'SENSITIVE_ADVISORY_CONTEXT');
+    expect(requirementPrompt).toContain('requirement_id:REQ-FIXTURE-1');
+    expect(requirementPrompt).toContain('repo_id:repo-fixture');
+    expect(requirementPrompt).not.toContain('SENSITIVE_PREVIOUS_CHECKPOINT');
+    expect(requirementPrompt).not.toContain('SENSITIVE_ADVISORY_CONTEXT');
+    expect(Array.from(requirementPrompt).length).toBeLessThanOrEqual(650);
 
     const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-objective-bound-'));
     roots.push(root);
@@ -898,9 +908,9 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     expect(completion.action).toBe('CONTINUE');
     expect(completion.successorEffect?.prompt).toContain('receipt review-42');
     expect(completion.successorEffect?.prompt).toContain('[UNVERIFIED STALE_HEAD]');
-    expect(completion.successorEffect?.prompt).toContain('NOT ACCEPTANCE');
+    expect(completion.successorEffect?.prompt).toContain('UNVERIFIED');
     expect(completion.successorEffect?.prompt).toContain('REVISE');
-    expect(completion.successorEffect?.prompt).toContain('SAME PR/branch');
+    expect(completion.successorEffect?.prompt).toContain('仅需要时读取最新 Requirement');
     expect(store.listPendingReviewNotices()).toHaveLength(0);
     const after = await control.observeAssistantTurn({
       taskId: task.taskId, conversationId: task.conversationId,

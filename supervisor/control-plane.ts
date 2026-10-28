@@ -913,22 +913,21 @@ export class WorkflowSupervisorControlPlane {
   /** Model CONTINUE and its causal successor commit in the same authority transaction. */
   private reserveContinuation(task: WorkflowSupervisorTask, completion: WorkflowSupervisorCompletion) {
     const nextId = stableEffectId(`completion:${completion.completionFingerprint}`);
-    const checkpoint = completion.proposal.checkpoint;
     const notices = this.store.listPendingReviewNotices(128).filter(({ notice }) => notice.taskId === task.taskId).slice(0, 4);
     const nextContext = notices.length
-      ? `WARNING: THE FOLLOWING REVIEW/CI NOTICES ARE UNVERIFIED SIGNALS, NOT ACCEPTANCE, GITHUB APPROVAL, OR MERGE/RELEASE AUTHORITY. The current HEAD MUST be rechecked with the GitHub provider:\n${notices.map(({ notice }) =>
-          `[UNVERIFIED${notice.reviewedHeadSha !== notice.currentHeadSha ? ' STALE_HEAD' : ''}] PR #${notice.prNumber} reviewed HEAD ${notice.reviewedHeadSha}, last-observed HEAD ${notice.currentHeadSha}, receipt ${notice.reviewId}, source ${notice.source}, reported outcome ${notice.outcome}`
-        ).join('\n')}\nIndependently verify the current PR HEAD, CI and fixed-candidate Review. Treat stale approvals as invalid; REVISE goes to the original Writer and SAME PR/branch. Never replay unknown Sends.\nPrevious completion: ${checkpoint}`
-      : checkpoint;
+      ? notices.map(({ notice }) =>
+          `PR#${notice.prNumber} receipt ${notice.reviewId} [UNVERIFIED${notice.reviewedHeadSha !== notice.currentHeadSha ? ' STALE_HEAD' : ''}] ${notice.outcome}`
+        ).join('; ')
+      : undefined;
     return this.store.commitCompletion(completion, {
       effectId: nextId,
       kind: 'continuation',
       ...(notices.length ? { reviewEventKeys: notices.map(({ eventKey }) => eventKey) } : {}),
-      prompt: this.renderPrompt(task, nextId, 'continuation', nextContext),
+      prompt: this.renderPrompt(task, nextId, 'continuation', undefined, undefined, nextContext),
       // Rebuild from the same durable goal in a new logical conversation after
       // a confirmed receipt cycle; never migrate an uncompleted mutation.
       ...(task.continuationPolicy.kind === 'standalone_supervisor'
-        ? { freshEnrollmentPrompt: this.renderPrompt(task, nextId, 'enrollment', nextContext) } : {}),
+        ? { freshEnrollmentPrompt: this.renderPrompt(task, nextId, 'enrollment', undefined, undefined, nextContext) } : {}),
     });
   }
 
@@ -962,15 +961,14 @@ export class WorkflowSupervisorControlPlane {
     task: WorkflowSupervisorTask,
     effectId: string,
     kind: WorkflowEffectKind,
-    checkpoint?: string,
+    _checkpoint?: string,
     correctionReason?: string,
     lowerLayerContext?: string,
   ): string {
     const canonicalObjective = this.hooks.canonicalObjectiveForTask?.(task)?.trim();
     const promptTask = canonicalObjective ? { ...task, objective: canonicalObjective } : task;
-    const cognition = this.hooks.advisoryCognitionForTask?.(promptTask);
-    const continuity = checkpoint ?? (kind === 'recovery' ? this.store.getLatestCompletion(task.taskId)?.proposal.checkpoint : undefined);
-    return renderSupervisorPrompt(promptTask, effectId, kind, continuity, correctionReason, lowerLayerContext, cognition);
+    // Historical checkpoints remain in the effect journal, never in the next prompt.
+    return renderSupervisorPrompt(promptTask, effectId, kind, undefined, correctionReason, lowerLayerContext);
   }
 
   private browserTaskActive(task: WorkflowSupervisorTask): boolean { return this.hooks.browserTaskActive?.(task) ?? true; }

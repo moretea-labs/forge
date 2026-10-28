@@ -5,55 +5,21 @@ import {
 } from '../../packages/kernel/controller/api/index';
 import { hasChatgptConversationIdentity, type ChatgptWorkConversationBinding } from './work-conversation-binding-store';
 
-/** ChatGPT-specific rendering of one provider-neutral Kernel ControllerRound. */
+/** ChatGPT continuation is a wake-up pointer, not another progress snapshot. */
 export function buildChatgptControllerRoundPrompt(
-  options: ControllerRoundRelayStoreOptions,
+  _options: ControllerRoundRelayStoreOptions,
   record: ControllerRoundRelayRecord,
   promptOptions: { exactOriginWork?: boolean } = {},
 ): string {
-  const snapshot = readControllerRoundContextSnapshot(options, record);
-  const requirementLine = snapshot.requirement
-    ? `Requirement ${snapshot.requirement.requirementId}：state=${snapshot.requirement.state}；outcome=${snapshot.requirement.outcomeStatement}`
-    : '当前未绑定 durable Requirement。';
-  const workLines = snapshot.works.length > 0
-    ? snapshot.works.map((work) => {
-      const summary = `- ${work.workId}：updated=${work.updatedAt}；objective=${work.objective}`;
-      if (work.workId !== snapshot.originWorkId || work.acceptanceCriteria.length === 0) return summary;
-      return [
-        summary,
-        '  origin Work acceptanceCriteria：',
-        ...work.acceptanceCriteria.map((criterion, index) => `  ${index + 1}. ${criterion}`),
-      ].join('\n');
-    }).join('\n')
-    : '- 未找到关联 Work 快照';
-  const originWork = snapshot.works.find((work) => work.workId === snapshot.originWorkId);
-  const terminalOriginGuidance = originWork?.state === 'completed'
-    ? `origin Work ${snapshot.originWorkId} 的持久状态已完成。不要重新打开它；重新读取 Requirement/Plan/Work 语义事实，由模型决定是否仍有新的明确工作。`
-    : undefined;
-  const handoffLines = snapshot.handoffs.length > 0
-    ? snapshot.handoffs.map((handoff) => `- ${handoff.id}：status=${handoff.status}；work=${handoff.workId ?? 'repo'}；${handoff.title}；reason=${handoff.reason}`).join('\n')
-    : '- 当前没有 active linked Handoff';
   return [
-    `继续 Forge ${snapshot.requirement ? `Requirement ${snapshot.requirement.requirementId}` : `Work ${snapshot.originWorkId}`}，repo=${snapshot.repoId}。`,
-    '下面快照来自本轮 claim-time durable state，用它直接恢复上下文。只有某个事实的新鲜度会实质改变下一次具体 domain action 时，才针对性重新读取；不要把本轮先消耗在重复读取 Requirement/Plan/Work/UserRequest 或 lifecycle bookkeeping 上。',
-    requirementLine,
-    `关联 Work 快照：\n${workLines}`,
-    'origin Work 的 objective 与 acceptanceCriteria 是需要显式检查的 durable semantic contract；语义结论只来自最新事实与模型判断。',
-    `Active Handoff 快照：\n${handoffLines}`,
-    ...(snapshot.assistantContext ? [snapshot.assistantContext] : []),
-    ...(snapshot.executionQualitySignals?.length ? [
-      `Execution quality evidence (advisory): ${JSON.stringify(snapshot.executionQualitySignals)}`,
-      'Review this evidence before repeating the same operation. Diagnose semantically; record whether an adjustment is justified. Do not infer a bug from edit counts, discard mandatory checks, widen authority or create another supervisor.',
-    ] : []),
+    `继续 Forge ${record.requirementId ? `Requirement ${record.requirementId}` : `Work ${record.originWorkId}`}，repo=${record.repoId}。`,
+    '目标：按关联 Requirement 的现有验收标准推进实际交付。',
+    '按需读取最新 Requirement/Plan/Work、Git/PR/CI 及执行证据；不要沿用历史进度摘要作为当前事实。',
     promptOptions.exactOriginWork
-      ? `只推进 origin Work ${snapshot.originWorkId} 的既定范围。若存在真实用户授权/判断 blocker，记录一个去重的 UserRequest；否则继续可执行工作。`
-      : `origin Work 是 ${snapshot.originWorkId}。不要假设下一步必须继续它；依据最新 semantic state 选择现有或新的明确 Work。`,
-    ...(terminalOriginGuidance ? [terminalOriginGuidance] : []),
-    'Provider/session binding、transport recovery、dedupe、retry 和 continuation bookkeeping 由 Forge 内部维护，不属于模型工作流，也不是 Requirement/Plan/Work 的第二套语义权威。',
-    '执行与验证直接使用当前 domain capability；只有 durable 语义实际变化时才更新 Requirement/Plan/Work。Forge 不替模型推断语义 next step。',
-    '如果 origin Work 尚未完成且没有真实 UserRequest/外部 blocker，本轮结束前必须完成至少一个直接推进 objective 的具体 domain action，例如源码修改、进程/检查、typed external effect，或对实现决策有实质作用的源码调查。仅汇报状态、重复读取 lifecycle、刷新进度或说明“下一步要做什么”不算推进。',
-    '仓库工程、安全、权限和资源 fence 始终有效。若真实外部条件或用户判断阻塞，记录精确 UserRequest/Handoff；不要为了机械续跑创建 sibling Work、PlanStep 或额外 lifecycle。',
-    'Presentation-only progress：持续较久或包含多轮工具调用时，在关键阶段用 1–2 句 user-visible 进度说明已确认结果、下一件事或真实 blocker。不要逐工具播报，不要输出 private reasoning / chain-of-thought。',
+      ? `只推进 origin Work ${record.originWorkId} 的既定范围；遇到真实用户判断阻塞再记录 UserRequest。`
+      : `origin Work=${record.originWorkId}，由模型按当前事实决定下一步。`,
+    '执行与验证直接调用现有能力；仅有实际进度才更新 Requirement，保留权限、Git CAS 和外部 effect 去重。',
+    '本轮完成实际行动并给出回执；只有真实阻塞才停止，不要只汇报计划。',
   ].join('\n');
 }
 

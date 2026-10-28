@@ -286,15 +286,18 @@ export function forgeWorkflowSupervisorLifecycleHooks(controllerHome: string): W
       // canonical Supervisor goal; a Work objective is lower-layer execution
       // context and must not become a permanent outer-turn instruction surface.
       if (requirementId) {
-        const outcome = readRequirement({ controllerHome }, requirementId)?.value.outcomeStatement?.trim();
-        if (outcome) return outcome;
+        const requirement = readRequirement({ controllerHome }, requirementId)?.value;
+        return `Requirement ${requirementId}：${requirement?.title ?? '继续完成该需求'}`;
       }
       const workId = workflowSupervisorOriginWorkId(task, repoId, controllerHome);
       if (!workId) return undefined;
       const work = getWorkContract({ controllerHome, repoId }, workId);
-      // Legacy / independent Work without Requirement authority keeps the
-      // existing fallback. Absence never manufactures a replacement Work.
-      return work?.objective;
+      if (work?.requirementId) {
+        const requirement = readRequirement({ controllerHome }, work.requirementId)?.value;
+        return `Requirement ${work.requirementId}：${requirement?.title ?? '继续完成该需求'}`;
+      }
+      // Historical standalone Work without a Requirement remains addressable.
+      return work ? `Work ${workId}：${work.objective.slice(0, 120)}` : undefined;
     },
     advisoryCognitionForTask: (task) => {
       const repoId = workflowSupervisorContractText(task, 'repo_id');
