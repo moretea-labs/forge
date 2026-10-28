@@ -324,6 +324,7 @@ async function resolveTarget(identity, createIfMissing, pinnedBinding, instanceI
     bootstrapTabs.delete(identity.bootstrapKey);
   }
   const tabs = await chatgptTabs();
+  let staleUnattestedConversationPin = false;
   if (identity?.namespace === 'chatgpt.conversation' && pinnedBinding?.providerId === PROVIDER_ID && pinnedBinding.tabId) {
     // Window moves preserve Chrome's profile-local tab id. A vanished id may
     // be recovered by exact conversation, but an existing tab at another URL
@@ -337,7 +338,17 @@ async function resolveTarget(identity, createIfMissing, pinnedBinding, instanceI
       if (core.parseConversation(pinned.url ?? '')?.conversationId !== identity.conversationId) {
         throw new Error('COMPUTER_CHATGPT_EXTENSION_PINNED_TAB_IDENTITY_CHANGED');
       }
-      return { tab: pinned, created: false, ownerToken: await requirePinnedOwner(pinned, pinnedBinding, identity) };
+      try {
+        return { tab: pinned, created: false, ownerToken: await requirePinnedOwner(pinned, pinnedBinding, identity) };
+      } catch (error) {
+        if (!createIfMissing || String(error?.message ?? error) !== 'COMPUTER_CHATGPT_EXTENSION_PINNED_OWNER_TOKEN_MISMATCH')
+          throw error;
+        // The old physical tab is NOT ours to observe, close or navigate.
+        // Ensure alone may create a NEW owned tab for this exact conversation
+        // and return its attested identity to the Controller's leased binder.
+        // Prepare/Dispatch still reject the stale owner token; no Send occurs.
+        staleUnattestedConversationPin = true;
+      }
     }
   }
   // An exact Conversation URL proves page identity, not ownership of the
@@ -345,7 +356,7 @@ async function resolveTarget(identity, createIfMissing, pinnedBinding, instanceI
   // Prepare and Dispatch cannot borrow an existing user's unbound tab.
   const trustedConversationPin = identity?.namespace === 'chatgpt.conversation'
     && pinnedBinding?.providerId === PROVIDER_ID && pinnedBinding.tabId && pinnedBinding.ownerToken;
-  const matches = identity?.namespace === 'chatgpt.conversation' && !trustedConversationPin
+  const matches = identity?.namespace === 'chatgpt.conversation' && (!trustedConversationPin || staleUnattestedConversationPin)
     ? [] : matchingTabs(tabs, identity, pinnedBinding);
   if (matches.length > 1) throw new Error('COMPUTER_CHATGPT_EXTENSION_EXACT_TARGET_AMBIGUOUS');
   if (matches.length === 1) {

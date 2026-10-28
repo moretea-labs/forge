@@ -931,6 +931,36 @@ test('F11 reused conversation tab id must also prove owner token before binding'
 
 // F11/P1: Pre-token legacy pinned bindings cannot borrow another task's
 // same-Project tab. Never upgrade URL or Tab ID alone into Send authority.
+test('F11 exact conversation owner mismatch can recover only through new attested Ensure tab, never replay Send', async () => {
+  const conversationId = '12345678-1234-1234-1234-123456789abc';
+  const url = `https://chatgpt.com/c/${conversationId}`;
+  // An Ensure test needs the exact page's hydrated read-only snapshot.
+  const f = bootstrapFixture([{ id: 708, windowId: 19, url }], { validEnsureSnapshot: true });
+  const identity = { namespace: 'chatgpt.conversation', conversationId, canonicalUrl: url };
+  const stalePin = { providerId: 'browser.chrome-extension', providerSessionId: 'profile-1',
+    tabId: '708', windowId: '19', ownerToken: 'old-unverifiable-token' };
+  expect((await f.observe(identity, stalePin, 'profile-1'))).toMatchObject({
+    kind: 'failed', code: 'COMPUTER_CHATGPT_EXTENSION_PINNED_OWNER_TOKEN_MISMATCH',
+  });
+  expect((await f.prepare(identity, stalePin, 'profile-1'))).toMatchObject({
+    kind: 'prepared', ready: false, reasonCode: 'COMPUTER_CHATGPT_EXTENSION_PINNED_OWNER_TOKEN_MISMATCH',
+  });
+  const recovered = await f.ensure(identity, stalePin, 'profile-1');
+  expect(recovered).toMatchObject({ kind: 'ensured' });
+  expect(f.tabs).toHaveLength(2);
+  expect(f.tabs[0]).toEqual({ id: 708, windowId: 19, url });
+  expect(f.tabs[1]?.id).not.toBe(708);
+  expect(f.tabs[1]?.url).toBe(url);
+  expect(f.dispatchSends).toBe(0);
+  // Even after creating a new owned observation tab, the *old* Controller pin
+  // cannot be used as a Send authority. Only a separate Controller CAS lease
+  // can replace the persisted physical attachment with the ensured result.
+  expect((await f.prepare(identity, stalePin, 'profile-1'))).toMatchObject({
+    kind: 'prepared', ready: false, reasonCode: 'COMPUTER_CHATGPT_EXTENSION_PINNED_OWNER_TOKEN_MISMATCH',
+  });
+  expect(f.dispatchSends).toBe(0);
+});
+
 test('F11 legacy pinned Chrome binding without owner token fails closed', async () => {
   const projectUrl = 'https://chatgpt.com/g/g-p-test/project';
   const f = bootstrapFixture([{ id: 707, windowId: 99, url: projectUrl }]);
