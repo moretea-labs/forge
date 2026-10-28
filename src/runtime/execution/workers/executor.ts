@@ -5,7 +5,6 @@ import { callMcpTool, type CallToolResult, type McpToolContext } from '../../../
 import { runtimePolicy, type MultiRepositoryMcpToolContext } from '../../../../adapters/mcp/multi-repository';
 import { callRuntimeTool } from '../../../../adapters/mcp/runtime-gateway/runtime-tools';
 import { ensureRepositoryRuntimeStorage } from '../../../cli/repositories/runtime-storage';
-import { evaluateReleaseGate } from '../../release/release-gate';
 import { dispatchLocalBridgeJob, getLocalBridgeJob } from '../../../cli/local-bridge/job-store';
 import type { LocalBridgeJob } from '../../../cli/local-bridge/types';
 import { settleScheduledExecution } from '../../../../packages/kernel/scheduler/api/index';
@@ -483,13 +482,6 @@ export async function executeExecutionJob(controllerHome: string, job: Execution
         jobId: job.jobId,
       });
       return { ok: true, result: materializePluginArtifacts(controllerHome, job, pluginResult), repoRoot };
-    }
-
-    if (job.type === 'release-gate') {
-      const gate = evaluateReleaseGate(controllerHome, repoRoot, job);
-      return gate.releaseReady
-        ? { ok: true, result: { releaseReady: true, gate }, repoRoot }
-        : { ok: false, error: { code: 'RELEASE_GATE_BLOCKED', message: 'Release gate has blockers.', retryable: false, details: { gate } }, repoRoot };
     }
 
     const allowedAgents = Array.isArray(job.payload.allowedAgents)

@@ -756,7 +756,6 @@ const required = [
   'src/runtime/workflow/schedules/work-continuation.ts',
   'scripts/smoke-runtime-recovery.ts',
   'scripts/smoke-schedule-engine.ts',
-  'src/runtime/release/release-gate.ts',
   'src/runtime/root/runtime.ts',
   'src/runtime/root/readiness.ts',
   'src/runtime/root/types.ts',
@@ -1978,7 +1977,6 @@ requireText('packages/kernel/scheduler/domain/schedule.ts', "'repository-event'"
 requireText('packages/kernel/scheduler/domain/schedule.ts', "'dependency-checkpoint'");
 requireText('packages/kernel/scheduler/infrastructure/schedule-store.ts', 'saveScheduleDecision');
 requireText('packages/kernel/scheduler/application/settlement.ts', 'backoffMinutes');
-requireText('src/runtime/release/release-gate.ts', 'releaseReady');
 requireText('adapters/mcp/transports/http-observation.ts', "'/ready'");
 requireText('adapters/mcp/transports/http-observation.ts', "'/repos/:repoId/health'");
 requireText('src/runtime/control-plane/governance/external-effects.ts', 'EXTERNAL_EFFECT_AUTHORIZATION_REQUIRED');
