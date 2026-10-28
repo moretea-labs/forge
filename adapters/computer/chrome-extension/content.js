@@ -10,7 +10,10 @@
   const COMPOSER = '#prompt-textarea, [data-testid="prompt-textarea"], [data-testid="composer-text-input"], textarea[name="prompt"], textarea[placeholder*="Message"], textarea[placeholder*="消息"], form [contenteditable="true"], div[role="textbox"][contenteditable="true"]';
   const SEND = 'button[data-testid="send-button"], button[aria-label*="Send"], button[aria-label*="发送"], button[data-testid*="send"]';
   const STOP = '[data-testid="stop-button"], [data-testid*="stop-button"], button[aria-label="Stop"], button[aria-label="Stop generating"], button[aria-label="停止"], button[aria-label="停止生成"]';
-  const TURN = '[data-testid^="conversation-turn-"]';
+  // Both provider layouts expose a structural turn boundary. The newer
+  // virtualized layout omits conversation-turn test ids; its state attribute
+  // identifies the container, not proof that a stream is live or finished.
+  const TURN = '[data-testid^="conversation-turn-"], [data-talvt-turn-state]';
   const PROVIDER_ACTIVITY_CHARS = 64 * 1024;
   const PROVIDER_FAILURE_CHARS = 250_000;
   const absoluteChatgptUrl = (href) => {

@@ -710,11 +710,12 @@ test('recovery never clicks Stop and requires an exact idle assistant or explici
   );
   expect(instrumented).not.toBe(source);
   const collection = <T,>(values: T[]) => Object.assign(values, { item: (index: number) => values[index] });
-  const run = (options: { lastRole?: 'user' | 'assistant'; mapped?: boolean; turnBusy?: boolean; messageBusy?: boolean; stopVisible?: boolean; failureVisible?: boolean; failureInsideMessage?: boolean; failureText?: string }) => {
+  const run = (options: { turnSelector?: 'conversation-turn' | 'data-talvt-turn-state'; lastRole?: 'user' | 'assistant'; mapped?: boolean; turnBusy?: boolean; messageBusy?: boolean; stopVisible?: boolean; failureVisible?: boolean; failureInsideMessage?: boolean; failureText?: string }) => {
+    const turnSelector = options.turnSelector ?? 'data-talvt-turn-state';
     const banner = {
       innerText: options.failureText ?? '连接已中断，正在等待完整答复',
       getClientRects: () => options.failureVisible === true ? [1] : [],
-      closest: (selector: string) => options.failureInsideMessage && selector.includes('conversation-turn') ? {} : null,
+      closest: (selector: string) => options.failureInsideMessage && selector.includes(turnSelector) ? {} : null,
     };
     const turn = {
       getClientRects: () => [1],
@@ -724,13 +725,13 @@ test('recovery never clicks Stop and requires an exact idle assistant or explici
     const message = {
       getClientRects: () => [1],
       getAttribute: (name: string) => name === 'data-message-author-role' ? options.lastRole ?? 'assistant' : '',
-      closest: (selector: string) => selector.includes('conversation-turn') && options.mapped !== false ? turn : null,
+      closest: (selector: string) => selector.includes(turnSelector) && options.mapped !== false ? turn : null,
       matches: (selector: string) => options.messageBusy === true && selector.includes('aria-busy'),
       querySelectorAll: (selector: string) => selector.includes('aria-busy') && options.messageBusy ? collection([{ getClientRects: () => [1] }]) : collection([] as unknown[]),
     };
     const main = {
       getClientRects: () => [1],
-      querySelectorAll: (selector: string) => selector.includes('conversation-turn') ? collection([turn])
+      querySelectorAll: (selector: string) => selector.includes(turnSelector) ? collection([turn])
         : selector.includes('data-message-author-role="user"') && selector.includes('data-message-author-role="assistant"') ? collection([message])
           : selector.includes('data-message-author-role="user"') ? collection(options.lastRole === 'user' ? [message] : [])
             : selector.includes('data-message-author-role="assistant"') ? collection(options.lastRole === 'user' ? [] : [message])
@@ -750,6 +751,7 @@ test('recovery never clicks Stop and requires an exact idle assistant or explici
     runInNewContext(instrumented, context);
     return (context as typeof context & { __recoverNoStopReadiness: () => { ready: boolean; reason?: string; capability?: string } }).__recoverNoStopReadiness();
   };
+  expect(run({ turnSelector: 'conversation-turn', lastRole: 'assistant' })).toMatchObject({ ready: true, capability: 'recover-no-stop-prewrite-v1' });
   expect(run({ lastRole: 'assistant' })).toMatchObject({ ready: true, capability: 'recover-no-stop-prewrite-v1' });
   expect(run({ lastRole: 'user' })).toMatchObject({ ready: false, reason: 'provider_recovery_turn_unknown' });
   expect(run({ lastRole: 'user', failureVisible: true })).toMatchObject({ ready: true, capability: 'recover-no-stop-prewrite-v1' });
