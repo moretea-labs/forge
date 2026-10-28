@@ -1,13 +1,15 @@
 import { afterEach, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
-import { backupControlPlaneDatabase, restoreControlPlaneDatabase } from '../../src/runtime/control-plane/persistence/sqlite-store';
-import { createRequirement, readRequirement, reviseRequirementSemantic, updateRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
+import { backupControlPlaneDatabase, restoreControlPlaneDatabase, withControlPlaneTransaction, writeControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
+import { createRequirement, normalizeLegacyRequirementAcceptance, readRequirement, reviseRequirementSemantic, updateRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { cancelWorkContract, createWorkContract, listWorkContracts, recordWorkCompletionReceipt, recordWorkEvidenceState, recordWorkImplementationReview, supersedeWorkContract, transitionWorkContractPhase, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { implementationReviewChangedPathDigest } from '../../packages/kernel/work/api/index';
 import { executionPlacement, scopeRef, semanticRecordMetadata } from '../../packages/kernel/identity/api/index';
 import { createPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { buildRequirementBoard } from '../../src/runtime/control-plane/facade/requirement-board';
+import { forgeWorkflowSupervisorValidators } from '../../supervisor/forge-validators';
+import type { WorkflowSupervisorTask, WorkflowSupervisorProposal } from '../../supervisor/types';
 
 const homes: string[] = [];
 afterEach(() => {
@@ -99,7 +101,7 @@ test('keeps superseded Work as durable history while removing it from the curren
   })).toThrow('WORK_SUPERSESSION_CYCLE');
 });
 
-test('rejects reopening a completed Requirement without an explicit replacement state', () => {
+test('rejects reopening a completed Requirement without an explicit replacement state', async () => {
   const home = mkdtempSync(join('/tmp', 'forge-requirement-'));
   homes.push(home);
   const options = { controllerHome: home };
@@ -124,6 +126,38 @@ test('rejects reopening a completed Requirement without an explicit replacement 
     mutate: (current) => ({ ...current, outcomeStatement: 'Legacy writer cannot rewrite terminal facts.' }),
   })).toThrow(/REQUIREMENT_TERMINAL_IMMUTABLE/);
   expect(() => updateRequirement(options, { requirementId: 'req-2', action: 'reopen', mutate: (current) => ({ ...current, state: 'active' }) })).toThrow(/REQUIREMENT_TERMINAL_IMMUTABLE/);
+
+  // Persist actual legacy row shapes, then exercise the startup conversion and
+  // the same terminal writer guards. No fixture-only acceptance writer survives.
+  const acceptance = { reviewer: 'mcp-bearer-client', rationale: 'Fixed candidate independently accepted', planIds: [], acceptedAt: '2026-09-22T06:17:53.399Z' };
+  for (const suffix of ['a', 'b', 'unproven']) {
+    const legacy = { ...completed, requirementId: `legacy-${suffix}`, acceptedEvidenceRefs: [], semanticAcceptance: suffix === 'unproven' ? { ...acceptance, reviewer: '' } : acceptance };
+    writeControlPlaneRecord(home, { namespace: 'requirement', scope: 'controller', key: legacy.requirementId, schemaVersion: 1, value: legacy });
+  }
+  const before = readRequirement(options, 'legacy-a')!;
+  const backup = join(home, 'before-normalization.sqlite');
+  backupControlPlaneDatabase(home, backup);
+  withControlPlaneTransaction(home, (database) => database.exec("CREATE TRIGGER fail_normalization BEFORE INSERT ON control_plane_audit WHEN NEW.action='requirement_legacy_acceptance_normalized_v1' AND NEW.record_key='legacy-b' BEGIN SELECT RAISE(ABORT, 'injected migration failure'); END"));
+  expect(() => normalizeLegacyRequirementAcceptance(options)).toThrow('injected migration failure');
+  expect(readRequirement(options, 'legacy-a')).toEqual(before);
+  withControlPlaneTransaction(home, (database) => database.exec('DROP TRIGGER fail_normalization'));
+  expect(normalizeLegacyRequirementAcceptance(options)).toBe(2);
+  const migrated = readRequirement(options, 'legacy-a')!;
+  expect(migrated.revision).toBe(before.revision);
+  expect(migrated.updatedAt).toBe(before.updatedAt);
+  expect(migrated.value).toMatchObject({ state: 'done', revision: completed.revision, semanticRevision: completed.semanticRevision, semanticAcceptance: acceptance });
+  expect(migrated.value.acceptedEvidenceRefs?.[0]).toMatch(/^requirement:legacy-a:legacy-acceptance:sha256:[a-f0-9]{64}$/);
+  expect(readRequirement(options, 'legacy-unproven')?.value.acceptedEvidenceRefs).toEqual([]);
+  expect(normalizeLegacyRequirementAcceptance(options)).toBe(0);
+  expect(readRequirement(options, 'legacy-a')).toEqual(migrated);
+  const task: WorkflowSupervisorTask = { taskId: 'legacy-validation', conversationId: 'legacy-conversation', conversationUrl: 'https://chatgpt.com/c/legacy-conversation', objective: 'Validate migrated completion', createdAt: acceptance.acceptedAt, continuationPolicy: {}, completionContract: { kind: 'model_semantic_completion', controller_home: home, requirement_id: 'legacy-a' }, userBlockerPolicy: {} };
+  const proposal: WorkflowSupervisorProposal = { action: 'DONE', sourceEffectId: 'legacy-effect', checkpoint: 'migration verified', reason: 'accepted evidence preserved', evidence: [] };
+  expect(await forgeWorkflowSupervisorValidators().completionContract(task, proposal)).toMatchObject({ valid: true, evidence: migrated.value.acceptedEvidenceRefs });
+  expect(await forgeWorkflowSupervisorValidators().completionContract({ ...task, completionContract: { ...task.completionContract, requirement_id: 'legacy-unproven' } }, proposal)).toMatchObject({ valid: false, reason: 'requirement_acceptance_evidence_missing' });
+  expect(() => reviseRequirementSemantic(options, 'legacy-a', { expectedRevision: completed.semanticRevision!, progressSummary: 'rewrite' })).toThrow(/TERMINAL_IMMUTABLE/);
+  expect(() => updateRequirement(options, { requirementId: 'legacy-a', action: 'rewrite', mutate: (value) => ({ ...value, acceptedEvidenceRefs: ['forged'] }) })).toThrow(/TERMINAL_IMMUTABLE/);
+  restoreControlPlaneDatabase(home, backup);
+  expect(readRequirement(options, 'legacy-a')).toEqual(before);
 });
 
 test('semantic Requirement CAS forbids cancelled-to-done terminal rewrite', () => {

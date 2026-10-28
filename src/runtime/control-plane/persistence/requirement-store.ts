@@ -1,4 +1,5 @@
 import {
+  listAllControlPlaneRecordsWithinTransaction,
   listControlPlaneRecords,
   listControlPlaneRecordsWithinTransaction,
   readControlPlaneRecord,
@@ -8,6 +9,7 @@ import {
   type ControlPlaneRecord,
   type SqliteDatabase,
 } from './sqlite-store';
+import { createHash } from 'node:crypto';
 import { REQUIREMENT_STATE_TRANSITIONS, type RequirementState } from '../../../../packages/kernel/goal/api/index';
 import type { ScopeRef } from '../../../../packages/kernel/identity/api/index';
 export { REQUIREMENT_STATES, type RequirementState } from '../../../../packages/kernel/goal/api/index';
@@ -94,6 +96,41 @@ const NAMESPACE = 'requirement';
 const REVISION_NAMESPACE = 'requirement_revision';
 const SCOPE = 'controller';
 const SCHEMA_VERSION = 1;
+
+/** Startup-only format conversion in the existing Requirement owner. The old
+ * acceptance remains immutable provenance, never a second completion authority.
+ * Recovery snapshots the complete database before activation; this transaction
+ * also rolls back every row and audit entry together on any failure.
+ */
+export function normalizeLegacyRequirementAcceptance(options: RequirementStoreOptions): number {
+  return withControlPlaneTransaction(options.controllerHome, (database) => {
+    let normalized = 0;
+    for (const record of listAllControlPlaneRecordsWithinTransaction<Requirement & { semanticAcceptance?: unknown }>(database, { namespace: NAMESPACE, scope: SCOPE })) {
+      const value = record.value;
+      if (value.state !== 'done' || (value.acceptedEvidenceRefs?.length ?? 0) > 0
+        || (value.remainingWork?.length ?? 0) > 0) continue;
+      const acceptance = value.semanticAcceptance;
+      if (!acceptance || typeof acceptance !== 'object' || Array.isArray(acceptance)) continue;
+      const legacy = acceptance as Record<string, unknown>;
+      if (typeof legacy.reviewer !== 'string' || !legacy.reviewer.trim()
+        || typeof legacy.rationale !== 'string' || !legacy.rationale.trim()
+        || typeof legacy.acceptedAt !== 'string' || !Number.isFinite(Date.parse(legacy.acceptedAt))
+        || !Array.isArray(legacy.planIds) || !legacy.planIds.every((planId) => typeof planId === 'string' && planId.trim())) continue;
+      const digest = createHash('sha256').update(JSON.stringify({ requirementId: value.requirementId, acceptance })).digest('hex');
+      const updated = { ...value, remainingWork: [], acceptedEvidenceRefs: [`requirement:${value.requirementId}:legacy-acceptance:sha256:${digest}`] };
+      // This is a representation upgrade, not a semantic revision. Keep both
+      // record and authored revision/timestamps, state, and original provenance.
+      const statement = database.prepare('UPDATE control_plane_records SET payload = ? WHERE namespace = ? AND scope = ? AND record_key = ? AND revision = ?');
+      try { statement.run(JSON.stringify(updated), NAMESPACE, SCOPE, record.key, record.revision); }
+      finally { statement.finalize?.(); }
+      const audit = database.prepare('INSERT INTO control_plane_audit(namespace,scope,record_key,action,revision,occurred_at) VALUES (?,?,?,?,?,?)');
+      try { audit.run(NAMESPACE, SCOPE, record.key, 'requirement_legacy_acceptance_normalized_v1', record.revision, nowIso(options)); }
+      finally { audit.finalize?.(); }
+      normalized++;
+    }
+    return normalized;
+  });
+}
 
 function nowIso(options: RequirementStoreOptions): string {
   return options.now?.() ?? new Date().toISOString();

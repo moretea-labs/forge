@@ -448,19 +448,28 @@
     return false;
   });
   let timer;
+  let contextInvalidated = false;
+  const observer = new MutationObserver(notify);
   function notify() {
+    if (contextInvalidated) return;
     clearTimeout(timer);
     timer = setTimeout(() => {
       const current = core.parseConversation(location.href);
-      chrome.runtime.sendMessage({
-        type: 'forge-computer-chatgpt-page',
-        ...(current ?? {}),
-        pageUrl: location.href,
-        // A final user role is a Send-admission fence, not live-generation evidence.
-        isGenerating: hasLiveGenerationSignal(),
-      }, () => void chrome.runtime.lastError);
+      try {
+        chrome.runtime.sendMessage({
+          type: 'forge-computer-chatgpt-page',
+          ...(current ?? {}),
+          pageUrl: location.href,
+          // A final user role is a Send-admission fence, not live-generation evidence.
+          isGenerating: hasLiveGenerationSignal(),
+        }, () => void chrome.runtime.lastError);
+      } catch (error) {
+        if (!String(error?.message ?? error).includes('Extension context invalidated')) throw error;
+        contextInvalidated = true;
+        observer.disconnect();
+      }
     }, 200);
   }
-  new MutationObserver(notify).observe(document.documentElement, { subtree: true, childList: true, characterData: true });
+  observer.observe(document.documentElement, { subtree: true, childList: true, characterData: true });
   notify();
 })();
