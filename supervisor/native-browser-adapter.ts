@@ -1164,11 +1164,17 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       this.noteTaskFailure(SUPERVISOR_PRE_SEND_BLOCKED, task, command.effectId); this.deps.onError(error); return;
     }
       if (!prepared.ready) {
-        // The exact recovery target still exposes its Stop control. That is a
-        // provider-turn observation, not an infrastructure preparation failure:
-        // preserve this one reserved recovery effect without spending a send
-        // generation or the bounded preflight-failure budget.
-        if (command.kind === 'recovery' && prepared.reasonCode === 'provider_recovery_stop_pending') return;
+        // Recovery readiness is a live provider observation, not a broken
+        // preflight. An incomplete/ambiguous role after stream interruption
+        // must remain read-only and retryable WITHOUT exhausting the durable
+        // preflight budget or requiring an operator to rearm the effect.
+        if (command.kind === 'recovery' && ['provider_recovery_stop_pending',
+          'provider_recovery_turn_unknown', 'provider_recovery_turn_live'].includes(prepared.reasonCode)) {
+          if (prepared.reasonCode !== 'provider_recovery_stop_pending') {
+            this.noteTaskFailure(prepared.reasonCode, task, command.effectId, false);
+          }
+          return;
+        }
         if (prepared.reasonCode === 'provider_busy') {
           // A live or uncompleted provider turn is a read-only wait condition.
           // No Send was attempted; do not exhaust the release-fenced repair

@@ -76,6 +76,56 @@ function activateRequirement(controllerHome: string, requirementId: string) {
 }
 
 describe('Goal authority convergence', () => {
+  test('Requirement independently owns progress and accepted evidence across sessions with revision CAS', () => {
+    const controllerHome = home();
+    const requirementId = 'REQ-WITHOUT-WORK';
+    createRequirement({ controllerHome }, {
+      requirementId,
+      title: 'Requirement-first delivery',
+      outcomeStatement: 'Deliver without creating a Work, Plan or claiming a conversation.',
+      acceptanceCriteria: ['reviewed source', 'live runtime evidence'],
+    });
+    const progress = reviseRequirementSemantic({ controllerHome }, requirementId, {
+      expectedRevision: 1,
+      progressSummary: 'Source change under review',
+      remainingWork: ['CI and fixed-HEAD review', 'Runtime activation'],
+      acceptedEvidenceRefs: ['git:abc123'],
+    });
+    expect(requirementSemanticView(progress)).toMatchObject({
+      revision: 2, state: 'open', progressSummary: 'Source change under review',
+      remainingWork: ['CI and fixed-HEAD review', 'Runtime activation'],
+      acceptedEvidenceRefs: ['git:abc123'],
+    });
+    expect(() => reviseRequirementSemantic({ controllerHome }, requirementId, {
+      expectedRevision: 1, acceptedEvidenceRefs: ['git:stale'],
+    })).toThrow('REQUIREMENT_REVISION_CONFLICT');
+    // A replacement controller reads the same Requirement record directly; no Work or session lineage exists.
+    const resumed = requirementSemanticView(readRequirement({ controllerHome }, requirementId)!.value);
+    expect(resumed.remainingWork).toEqual(['CI and fixed-HEAD review', 'Runtime activation']);
+    const done = reviseRequirementSemantic({ controllerHome }, requirementId, {
+      expectedRevision: resumed.revision, state: 'completed', progressSummary: 'Live acceptance recorded',
+      remainingWork: [], acceptedEvidenceRefs: ['git:abc123', 'review:accepted', 'runtime:live'],
+    });
+    expect(requirementSemanticView(done)).toMatchObject({
+      state: 'completed', remainingWork: [], acceptedEvidenceRefs: ['git:abc123', 'review:accepted', 'runtime:live'],
+    });
+    expect(listRequirementRevisionRecords({ controllerHome }, requirementId)).toMatchObject([
+      { revision: 2, progressSummary: 'Source change under review' },
+      { revision: 1, remainingWork: [] },
+    ]);
+    expect(() => reviseRequirementSemantic({ controllerHome }, requirementId, {
+      expectedRevision: requirementSemanticView(done).revision, state: 'cancelled',
+    })).toThrow('REQUIREMENT_SEMANTIC_TERMINAL_TRANSITION_FORBIDDEN');
+
+    const cancelledId = 'REQ-CANCELLED-TERMINAL';
+    createRequirement({ controllerHome }, { requirementId: cancelledId, title: cancelledId, outcomeStatement: 'Cancelled stays terminal.' });
+    const cancelled = reviseRequirementSemantic({ controllerHome }, cancelledId, { expectedRevision: 1, state: 'cancelled' });
+    expect(() => reviseRequirementSemantic({ controllerHome }, cancelledId, {
+      expectedRevision: requirementSemanticView(cancelled).revision, state: 'completed',
+      remainingWork: [], acceptedEvidenceRefs: ['review:accepted'],
+    })).toThrow('REQUIREMENT_SEMANTIC_TERMINAL_TRANSITION_FORBIDDEN');
+  });
+
   test('persists thin Requirement/Plan semantic revisions with fail-closed CAS', () => {
     const controllerHome = home();
     const repoId = 'repo-semantic-revision';
@@ -390,6 +440,8 @@ describe('Goal authority convergence', () => {
     const explicitlyCompleted = reviseRequirementSemantic({ controllerHome }, requirementId, {
       expectedRevision: currentRequirement.revision,
       state: 'completed',
+      remainingWork: [],
+      acceptedEvidenceRefs: ['review:work-evidence-independent'],
     });
     expect(requirementSemanticView(explicitlyCompleted).state).toBe('completed');
   });
@@ -399,10 +451,8 @@ describe('Goal authority convergence', () => {
     const repoId = 'repo-goal-terminal';
     const requirementId = 'REQ-GOAL-TERMINAL';
     activateRequirement(controllerHome, requirementId);
-    updateRequirement({ controllerHome }, {
-      requirementId,
-      action: 'test_semantic_done',
-      mutate: (current) => ({ ...current, state: 'done' }),
+    reviseRequirementSemantic({ controllerHome }, requirementId, {
+      expectedRevision: 1, state: 'completed', remainingWork: [], acceptedEvidenceRefs: ['review:terminal-plan-admission'],
     });
     expect(() => createPlanContract({ controllerHome, repoId }, {
       planId: 'PLAN-AFTER-GOAL-COMPLETE',

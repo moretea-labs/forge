@@ -115,17 +115,28 @@
     const semanticKey = String(lastMessage?.getAttribute?.('data-chatgpt-search-unit-key') || lastMessage?.getAttribute?.('data-content-search-unit-key') || '');
     const lastRole = role === 'assistant' || semanticKey.endsWith(':assistant') ? 'assistant'
       : role === 'user' || semanticKey.endsWith(':user') ? 'user' : undefined;
-    if (!currentTurn || !lastMessage || lastMessage.closest?.(TURN) !== currentTurn || lastRole !== 'assistant') {
+    if (!currentTurn || !lastMessage || lastMessage.closest?.(TURN) !== currentTurn) {
       return { ready: false, reason: 'provider_recovery_turn_unknown' };
     }
     const hasLiveSignal = (node) => Boolean(node && (
       node.matches?.('[data-is-streaming="true"], [aria-busy="true"]')
       || Array.from(node.querySelectorAll?.('[data-is-streaming="true"], [aria-busy="true"]') ?? []).some(visible)
     ));
-    if (hasLiveSignal(currentTurn) || hasLiveSignal(lastMessage)) {
+    // A global Stop control also fences an incomplete turn even if the
+    // provider has not attached an assistant-role message to the final TURN.
+    if (hasLiveGenerationSignal() || hasLiveSignal(currentTurn) || hasLiveSignal(lastMessage)) {
       return { ready: false, reason: 'provider_recovery_turn_live' };
     }
-    return { ready: true, capability: 'recover-no-stop-prewrite-v1' };
+    if (lastRole === 'assistant') return { ready: true, capability: 'recover-no-stop-prewrite-v1' };
+    // A known failed stream can leave the last visible role as user forever.
+    // Only a short, visible provider-owned status OUTSIDE every chat message
+    // proves that the turn terminated. Unmapped turns, arbitrary message text,
+    // and mere absence of Stop cannot authorize recovery.
+    const interrupted = providerFailureText().split('\n').some((text) =>
+      /^(?:连接已中断，正在等待完整答复|Connection interrupted, waiting for the full response|分析已暂停|Analysis paused)[。.!]?$/.test(text.trim()));
+    return lastRole === 'user' && interrupted
+      ? { ready: true, capability: 'recover-no-stop-prewrite-v1' }
+      : { ready: false, reason: 'provider_recovery_turn_unknown' };
   };
   /**
    * Live progress of the running provider turn. The last *committed* assistant
@@ -154,6 +165,7 @@
         return text.length <= 250 && (
           /(?:你已达到此对话的长度上限|此对话已达到长度上限|you(?:'ve| have) reached the (?:maximum length for this conversation|conversation length limit)|this conversation has reached its maximum length)/i.test(text)
           || /^(?:无法加载此 ChatGPT 对话|Unable to load this ChatGPT conversation|Unable to load this conversation)$/i.test(text)
+          || /^(?:连接已中断，正在等待完整答复|Connection interrupted, waiting for the full response|分析已暂停|Analysis paused)[。.!]?$/.test(text)
         );
       });
     return [...status, ...banners]
@@ -436,19 +448,33 @@
     return false;
   });
   let timer;
+  let contextInvalidated = false;
+  const observer = new MutationObserver(notify);
   function notify() {
+    if (contextInvalidated) return;
     clearTimeout(timer);
     timer = setTimeout(() => {
       const current = core.parseConversation(location.href);
-      chrome.runtime.sendMessage({
-        type: 'forge-computer-chatgpt-page',
-        ...(current ?? {}),
-        pageUrl: location.href,
-        // A final user role is a Send-admission fence, not live-generation evidence.
-        isGenerating: hasLiveGenerationSignal(),
-      }, () => void chrome.runtime.lastError);
+      try {
+        if (!chrome.runtime?.sendMessage) {
+          contextInvalidated = true;
+          observer.disconnect();
+          return;
+        }
+        chrome.runtime.sendMessage({
+          type: 'forge-computer-chatgpt-page',
+          ...(current ?? {}),
+          pageUrl: location.href,
+          // A final user role is a Send-admission fence, not live-generation evidence.
+          isGenerating: hasLiveGenerationSignal(),
+        }, () => void chrome.runtime.lastError);
+      } catch (error) {
+        if (!String(error?.message ?? error).includes('Extension context invalidated')) throw error;
+        contextInvalidated = true;
+        observer.disconnect();
+      }
     }, 200);
   }
-  new MutationObserver(notify).observe(document.documentElement, { subtree: true, childList: true, characterData: true });
+  observer.observe(document.documentElement, { subtree: true, childList: true, characterData: true });
   notify();
 })();

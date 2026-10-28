@@ -41,6 +41,8 @@ import { createHandoffItem, getHandoffItem } from '../../src/runtime/control-pla
 import { cancelWorkContract, createWorkContract, type WorkContract } from '../../packages/kernel/work/api/index';
 import { createPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { createRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
+import { forgeWorkflowSupervisorValidators } from '../../supervisor/forge-validators';
+import type { WorkflowSupervisorTask } from '../../supervisor/types';
 import { ensureForgeInstanceIdentity } from '../../packages/kernel/identity/api/index';
 import { recordCognitiveMemory, type CognitiveWriteAuthorityPort } from '../../packages/kernel/cognition/api/index';
 import { cognitionMemoryStore } from '../../src/runtime/control-plane/persistence/cognition-store';
@@ -242,11 +244,19 @@ describe('runtime source isolation', () => {
     expect((plan.data as { plan?: { planId?: string } })?.plan?.planId).toBe(planId);
     expect((work.data as { work?: { workId?: string } })?.work?.workId).toBe(workId);
 
+    // The public rh_work schema is frozen. Forward-compatible Requirement progress
+    // travels in the existing bounded semantic carrier; no extra MCP fields.
     const revisedRequirement = structured(await callRuntimeTool(unscoped, 'rh_work', {
-      operation: 'requirement_revise',
-      requirement_id: requirementId,
-      expected_revision: 1,
-      requirement_outcome: 'Revise Requirement directly by stable id without repository selection.',
+      operation: 'repair',
+      capability_id: `semantic.v1:${JSON.stringify({
+        operation: 'requirement_revise',
+        requirement_id: requirementId,
+        expected_revision: 1,
+        requirement_outcome: 'Revise Requirement directly by stable id without repository selection.',
+        requirement_progress_summary: 'Source under review',
+        requirement_remaining_work: ['Runtime acceptance'],
+        requirement_accepted_evidence_refs: ['git:reviewed'],
+      })}`,
     }));
     const revisedPlan = structured(await callRuntimeTool(unscoped, 'rh_work', {
       operation: 'plan_revise',
@@ -264,7 +274,53 @@ describe('runtime source isolation', () => {
     const revisedRequirementData = (revisedRequirement as unknown as { data?: { requirement?: Record<string, unknown> } }).data;
     const revisedPlanData = (revisedPlan as unknown as { data?: { plan?: Record<string, unknown> } }).data;
     const revisedWorkData = (revisedWork as unknown as { data?: { work?: Record<string, unknown> } }).data;
-    expect(revisedRequirementData?.requirement).toMatchObject({ requirementId, revision: 2 });
+    expect(revisedRequirementData?.requirement).toMatchObject({
+      requirementId, revision: 2, progressSummary: 'Source under review',
+      remainingWork: ['Runtime acceptance'], acceptedEvidenceRefs: ['git:reviewed'],
+    });
+    const resumedRequirement = structured(await callRuntimeTool(unscoped, 'rh_work', {
+      operation: 'requirement_get', requirement_id: requirementId,
+    }));
+    expect((resumedRequirement as unknown as { data?: { progress?: Record<string, unknown> } }).data?.progress).toEqual({
+      source: 'requirement', summary: 'Source under review',
+      remainingWork: ['Runtime acceptance'], acceptedEvidenceRefs: ['git:reviewed'],
+    });
+    const incompleteCompletion = await callRuntimeTool(unscoped, 'rh_work', {
+      operation: 'repair',
+      capability_id: `semantic.v1:${JSON.stringify({
+        operation: 'requirement_revise', requirement_id: requirementId, expected_revision: 2,
+        requirement_state: 'completed', requirement_remaining_work: ['Runtime acceptance'],
+      })}`,
+    });
+    expect(JSON.stringify(incompleteCompletion)).toContain('REQUIREMENT_SEMANTIC_ACCEPTANCE_EVIDENCE_REQUIRED');
+    const missingEvidenceCompletion = await callRuntimeTool(unscoped, 'rh_work', {
+      operation: 'repair',
+      capability_id: `semantic.v1:${JSON.stringify({
+        operation: 'requirement_revise', requirement_id: requirementId, expected_revision: 2,
+        requirement_state: 'completed', requirement_remaining_work: [], requirement_accepted_evidence_refs: [],
+      })}`,
+    });
+    expect(JSON.stringify(missingEvidenceCompletion)).toContain('REQUIREMENT_SEMANTIC_ACCEPTANCE_EVIDENCE_REQUIRED');
+    const acceptedRequirement = structured(await callRuntimeTool(unscoped, 'rh_work', {
+      operation: 'repair',
+      capability_id: `semantic.v1:${JSON.stringify({
+        operation: 'requirement_revise', requirement_id: requirementId, expected_revision: 2,
+        requirement_state: 'completed', requirement_progress_summary: 'Accepted through the public rh_work path',
+        requirement_remaining_work: [], requirement_accepted_evidence_refs: ['git:reviewed', 'review:accepted'],
+      })}`,
+    }));
+    expect((acceptedRequirement.data as { requirement?: Record<string, unknown> })?.requirement).toMatchObject({
+      requirementId, state: 'completed', remainingWork: [], acceptedEvidenceRefs: ['git:reviewed', 'review:accepted'],
+    });
+    const requirementTask = {
+      completionContract: {
+        kind: 'forge_requirement_done', controller_home: controllerHome,
+        repo_id: primary.repoId, requirement_id: requirementId,
+      },
+      userBlockerPolicy: {},
+    } as unknown as WorkflowSupervisorTask;
+    expect(await forgeWorkflowSupervisorValidators().completionContract!(requirementTask, { action: 'DONE' } as any))
+      .toMatchObject({ valid: true, reason: 'requirement_accepted_evidence_committed' });
     expect(revisedPlanData?.plan).toMatchObject({ planId, revision: 2 });
     expect(revisedWorkData?.work).toMatchObject({ workId, revision: 2 });
 

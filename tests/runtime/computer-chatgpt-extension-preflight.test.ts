@@ -701,7 +701,7 @@ test('real Chrome content script preserves all prompt spaces and newlines during
   expect(fullPageTextReads).toBe(1);
 });
 
-test('recovery never clicks Stop and requires an exact idle assistant turn before editor mutation', () => {
+test('recovery never clicks Stop and requires an exact idle assistant or explicit terminated-stream evidence', () => {
   const source = readFileSync(new URL('../../adapters/computer/chrome-extension/content.js', import.meta.url), 'utf8');
   expect(source).not.toContain('stop.click()');
   const instrumented = source.replace(
@@ -710,7 +710,12 @@ test('recovery never clicks Stop and requires an exact idle assistant turn befor
   );
   expect(instrumented).not.toBe(source);
   const collection = <T,>(values: T[]) => Object.assign(values, { item: (index: number) => values[index] });
-  const run = (options: { lastRole?: 'user' | 'assistant'; mapped?: boolean; turnBusy?: boolean; messageBusy?: boolean }) => {
+  const run = (options: { lastRole?: 'user' | 'assistant'; mapped?: boolean; turnBusy?: boolean; messageBusy?: boolean; stopVisible?: boolean; failureVisible?: boolean; failureInsideMessage?: boolean; failureText?: string }) => {
+    const banner = {
+      innerText: options.failureText ?? '连接已中断，正在等待完整答复',
+      getClientRects: () => options.failureVisible === true ? [1] : [],
+      closest: (selector: string) => options.failureInsideMessage && selector.includes('conversation-turn') ? {} : null,
+    };
     const turn = {
       getClientRects: () => [1],
       matches: (selector: string) => options.turnBusy === true && selector.includes('aria-busy'),
@@ -732,7 +737,9 @@ test('recovery never clicks Stop and requires an exact idle assistant turn befor
               : collection([] as unknown[]),
     };
     const context = {
-      document: { documentElement: {}, querySelectorAll: (selector: string) => selector === 'main' ? collection([main]) : collection([] as unknown[]) },
+      document: { documentElement: {}, querySelectorAll: (selector: string) => selector === 'main' ? collection([main])
+        : selector.includes('stop-button') ? collection(options.stopVisible ? [{ getClientRects: () => [1] }] : [])
+        : selector.includes('[role="alert"]') ? collection([banner]) : collection([] as unknown[]) },
       location: { href: 'https://chatgpt.com/c/12345678-1234-1234-1234-123456789abc' },
       URL, Date, Map, Promise,
       ForgeComputerChatgptCore: { normalizeText: (value: unknown) => String(value ?? '').trim(), parseConversation: () => null },
@@ -745,6 +752,12 @@ test('recovery never clicks Stop and requires an exact idle assistant turn befor
   };
   expect(run({ lastRole: 'assistant' })).toMatchObject({ ready: true, capability: 'recover-no-stop-prewrite-v1' });
   expect(run({ lastRole: 'user' })).toMatchObject({ ready: false, reason: 'provider_recovery_turn_unknown' });
+  expect(run({ lastRole: 'user', failureVisible: true })).toMatchObject({ ready: true, capability: 'recover-no-stop-prewrite-v1' });
+  expect(run({ lastRole: 'user', failureVisible: true, mapped: false })).toMatchObject({ ready: false, reason: 'provider_recovery_turn_unknown' });
+  expect(run({ lastRole: 'user', failureVisible: true, failureInsideMessage: true })).toMatchObject({ ready: false, reason: 'provider_recovery_turn_unknown' });
+  expect(run({ lastRole: 'user', failureVisible: true, failureText: 'This is ordinary conversation prose' })).toMatchObject({ ready: false, reason: 'provider_recovery_turn_unknown' });
+  expect(run({ lastRole: 'user', failureVisible: true, turnBusy: true })).toMatchObject({ ready: false, reason: 'provider_recovery_turn_live' });
+  expect(run({ lastRole: 'user', failureVisible: true, stopVisible: true })).toMatchObject({ ready: false, reason: 'provider_recovery_turn_live' });
   expect(run({ lastRole: 'assistant', mapped: false })).toMatchObject({ ready: false, reason: 'provider_recovery_turn_unknown' });
   expect(run({ lastRole: 'assistant', turnBusy: true })).toMatchObject({ ready: false, reason: 'provider_recovery_turn_live' });
   expect(run({ lastRole: 'assistant', messageBusy: true })).toMatchObject({ ready: false, reason: 'provider_recovery_turn_live' });
@@ -918,6 +931,36 @@ test('F11 reused conversation tab id must also prove owner token before binding'
 
 // F11/P1: Pre-token legacy pinned bindings cannot borrow another task's
 // same-Project tab. Never upgrade URL or Tab ID alone into Send authority.
+test('F11 exact conversation owner mismatch can recover only through new attested Ensure tab, never replay Send', async () => {
+  const conversationId = '12345678-1234-1234-1234-123456789abc';
+  const url = `https://chatgpt.com/c/${conversationId}`;
+  // An Ensure test needs the exact page's hydrated read-only snapshot.
+  const f = bootstrapFixture([{ id: 708, windowId: 19, url }], { validEnsureSnapshot: true });
+  const identity = { namespace: 'chatgpt.conversation', conversationId, canonicalUrl: url };
+  const stalePin = { providerId: 'browser.chrome-extension', providerSessionId: 'profile-1',
+    tabId: '708', windowId: '19', ownerToken: 'old-unverifiable-token' };
+  expect((await f.observe(identity, stalePin, 'profile-1'))).toMatchObject({
+    kind: 'failed', code: 'COMPUTER_CHATGPT_EXTENSION_PINNED_OWNER_TOKEN_MISMATCH',
+  });
+  expect((await f.prepare(identity, stalePin, 'profile-1'))).toMatchObject({
+    kind: 'prepared', ready: false, reasonCode: 'COMPUTER_CHATGPT_EXTENSION_PINNED_OWNER_TOKEN_MISMATCH',
+  });
+  const recovered = await f.ensure(identity, stalePin, 'profile-1');
+  expect(recovered).toMatchObject({ kind: 'ensured' });
+  expect(f.tabs).toHaveLength(2);
+  expect(f.tabs[0]).toEqual({ id: 708, windowId: 19, url });
+  expect(f.tabs[1]?.id).not.toBe(708);
+  expect(f.tabs[1]?.url).toBe(url);
+  expect(f.dispatchSends).toBe(0);
+  // Even after creating a new owned observation tab, the *old* Controller pin
+  // cannot be used as a Send authority. Only a separate Controller CAS lease
+  // can replace the persisted physical attachment with the ensured result.
+  expect((await f.prepare(identity, stalePin, 'profile-1'))).toMatchObject({
+    kind: 'prepared', ready: false, reasonCode: 'COMPUTER_CHATGPT_EXTENSION_PINNED_OWNER_TOKEN_MISMATCH',
+  });
+  expect(f.dispatchSends).toBe(0);
+});
+
 test('F11 legacy pinned Chrome binding without owner token fails closed', async () => {
   const projectUrl = 'https://chatgpt.com/g/g-p-test/project';
   const f = bootstrapFixture([{ id: 707, windowId: 99, url: projectUrl }]);
@@ -1005,11 +1048,82 @@ test('F11 conflicting bootstrap Provider cannot bypass cached map or execute Sen
   expect(await f.prepare(identity, incomplete)).toMatchObject({ ready: false,
     reasonCode: 'COMPUTER_CHATGPT_EXTENSION_PINNED_BINDING_INCOMPLETE' });
   await expect(f.resolve(identity, false)).rejects.toThrow('COMPUTER_CHATGPT_BOOTSTRAP_BINDING_REQUIRED');
+  // Ensure may reconstruct only this same task's owner-attested pin; that does
+  // not let a foreign provider or unpinned Prepare/Dispatch borrow the tab.
+  const sameTaskRecovered = await f.resolve(identity, true);
+  expect(sameTaskRecovered.tab.id).toBe(created.tab.id);
+  expect(sameTaskRecovered.ownerToken).toBe(created.ownerToken);
   expect(f.dispatchSends).toBe(0);
   expect(f.tabs).toHaveLength(1);
   const valid = { providerId: 'browser.chrome-extension', providerSessionId: 'test-provider',
     tabId: String(created.tab.id), windowId: '8', ownerToken: created.ownerToken };
   expect((await f.resolve(identity, false, valid, 'test-provider')).tab.id).toBe(created.tab.id);
+});
+
+// Regression: a completed bootstrap Send migrates its owned Project tab to a
+// conversation. A later continuation may bootstrap the SAME task again, but
+// the MV3 worker's old map must not permanently block an unspent enrollment.
+test('F11 stale bootstrap map after conversation migration permits a new attested Ensure, never tab reuse', async () => {
+  const projectUrl = 'https://chatgpt.com/g/g-p-test/project';
+  const identity = { namespace: 'chatgpt.bootstrap', bootstrapKey: 'supervisor:resumed', projectUrl };
+  const f = bootstrapFixture();
+  const first = await f.resolve(identity, true);
+  first.tab.url = projectUrl + '/c/12345678-1234-1234-1234-123456789abc';
+  await expect(f.resolve(identity, false)).rejects.toThrow('COMPUTER_CHATGPT_BOOTSTRAP_BINDING_REQUIRED');
+  const successor = await f.resolve(identity, true);
+  expect(successor.created).toBe(true);
+  expect(successor.tab.id).not.toBe(first.tab.id);
+  expect(successor.tab.url).toBe(projectUrl);
+  expect(successor.ownerToken).toBeTruthy();
+  expect(f.tabs).toHaveLength(2);
+  expect(first.tab.url).toContain('/c/12345678-');
+  expect(f.dispatchSends).toBe(0);
+});
+
+test('F11 lost Controller bootstrap-pin receipt is recovered only by owner-attested Ensure', async () => {
+  const projectUrl = 'https://chatgpt.com/g/g-p-test/project';
+  const identity = { namespace: 'chatgpt.bootstrap', bootstrapKey: 'supervisor:same', projectUrl };
+  const f = bootstrapFixture();
+  const first = await f.resolve(identity, true);
+  // Prepare/observe-style resolution without a Controller pin still fails.
+  await expect(f.resolve(identity, false)).rejects.toThrow('COMPUTER_CHATGPT_BOOTSTRAP_BINDING_REQUIRED');
+  // Re-running Ensure after the first response was lost returns the SAME
+  // owner-attested physical tab so Controller can persist its pin. No Send and
+  // no second tab are created.
+  const recovered = await f.resolve(identity, true);
+  expect(recovered).toMatchObject({ created: false, tab: { id: first.tab.id } });
+  expect(recovered.ownerToken).toBe(first.ownerToken);
+  expect(f.tabs).toHaveLength(1);
+  expect(f.dispatchSends).toBe(0);
+
+  // If the proven tab disappears, only a later Ensure may create a replacement.
+  f.tabs.splice(f.tabs.indexOf(first.tab), 1);
+  await expect(f.resolve(identity, false)).rejects.toThrow('COMPUTER_CHATGPT_BOOTSTRAP_BINDING_REQUIRED');
+  const next = await f.resolve(identity, true);
+  expect(next.created).toBe(true);
+  expect(next.tab.id).not.toBe(first.tab.id);
+  expect(f.tabs).toHaveLength(1);
+  expect(f.dispatchSends).toBe(0);
+});
+
+test('F11 stale-map recovery never adopts a different task sharing the same Project', async () => {
+  const projectUrl = 'https://chatgpt.com/g/g-p-test/project';
+  const f = bootstrapFixture();
+  const firstId = { namespace: 'chatgpt.bootstrap', bootstrapKey: 'supervisor:a', projectUrl };
+  const otherId = { namespace: 'chatgpt.bootstrap', bootstrapKey: 'supervisor:b', projectUrl };
+  const first = await f.resolve(firstId, true);
+  const other = await f.resolve(otherId, true);
+  first.tab.url = projectUrl + '/c/12345678-1234-1234-1234-123456789abc';
+  const successor = await f.resolve(firstId, true);
+  expect(successor.tab.id).not.toBe(first.tab.id);
+  expect(successor.tab.id).not.toBe(other.tab.id);
+  await expect(f.resolve(otherId, false)).rejects.toThrow('COMPUTER_CHATGPT_BOOTSTRAP_BINDING_REQUIRED');
+  const otherRecovered = await f.resolve(otherId, true);
+  expect(otherRecovered.tab.id).toBe(other.tab.id);
+  expect(otherRecovered.tab.id).not.toBe(successor.tab.id);
+  expect(otherRecovered.ownerToken).toBe(other.ownerToken);
+  expect(other.tab.url).toBe(projectUrl);
+  expect(f.dispatchSends).toBe(0);
 });
 
 // Sixth independent Review P1: marker discovery must not launder another

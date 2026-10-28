@@ -707,6 +707,7 @@ describe('Computer durable InteractionTarget authority', () => {
         browserProduct: 'chrome',
         windowId: 'window-pinned',
         tabId: 'tab-pinned',
+        ownerToken: 'owner-pinned',
       };
       const savedSurface = targetAuthority.createSurface(controllerHome, {
         stableIdentity: { surfaceType: 'browser-tab', ownership: 'provider_owned',
@@ -731,7 +732,7 @@ describe('Computer durable InteractionTarget authority', () => {
         command = extension.claim('provider-pinned');
         if (!command) await Bun.sleep(1);
       }
-      expect(command?.kind).toBe('observe');
+      expect(command?.kind).toBe('ensure');
       if (!command) throw new Error('pinned extension target did not receive observation');
       const persistence = createRuntimeComputerTargetPersistence();
       const before = persistence.read<ComputerInteractionTargetEntry>(
@@ -739,7 +740,7 @@ describe('Computer durable InteractionTarget authority', () => {
       );
       expect(before).toBeDefined();
       expect(extension.complete('provider-pinned', command.commandId, {
-        kind: 'observation',
+        kind: 'ensured',
         providerBinding: { ...bound, observedAt: '2026-10-09T05:02:00.000Z' },
         observation: { url: identity.canonicalUrl, title: 'Pinned', latestUserText: '',
           latestAssistantResponse: '', providerActivityText: '', providerFailureText: '',
@@ -753,7 +754,19 @@ describe('Computer durable InteractionTarget authority', () => {
       const after = persistence.read<ComputerInteractionTargetEntry>(
         controllerHome, 'computer_interaction_target', 'controller', savedSurface.targetId,
       );
-      expect(after?.revision).toBe(before?.revision);
+      // The first Ensure adds adapter metadata to this manually seeded row.
+      // Repeated attestation of the same physical owner must not rewrite it.
+      const again = extension.ensureExact(identity);
+      const againCommand = extension.claim('provider-pinned');
+      expect(againCommand?.kind).toBe('ensure');
+      if (!againCommand) throw new Error('missing repeated attestation');
+      extension.complete('provider-pinned', againCommand.commandId, {
+        kind: 'ensured', providerBinding: bound,
+        observation: { url: identity.canonicalUrl, title: 'Pinned', latestUserText: '', latestAssistantResponse: '',
+          providerActivityText: '', providerFailureText: '', composerText: '', isGenerating: false },
+      });
+      expect((await again).state).toBe('ready');
+      expect(persistence.read<ComputerInteractionTargetEntry>(controllerHome, 'computer_interaction_target', 'controller', savedSurface.targetId)?.revision).toBe(after?.revision);
       await extension.close();
     } finally {
       rmSync(controllerHome, { recursive: true, force: true });
@@ -970,7 +983,7 @@ describe('Computer durable InteractionTarget authority', () => {
       if (!command) throw new Error('exact read-only observation was not reserved');
       const binding = { providerId: 'browser.chrome-extension', providerSessionId: 'profile-a',
         browserProduct: 'chrome', windowId: 'new-window', tabId: 'new-tab',
-        observedAt: '2026-10-18T06:00:01.000Z' };
+        observedAt: '2026-10-18T06:00:01.000Z', ownerToken: 'attested-owner' };
       const observation = { url: identity.canonicalUrl, title: 'Original',
         latestUserText: 'already submitted', latestAssistantResponse: '', providerActivityText: '',
         providerFailureText: '', composerText: '', isGenerating: false };
@@ -1044,6 +1057,34 @@ describe('Computer durable InteractionTarget authority', () => {
       expect(targetAuthority.getSurface(home, record.targetId)?.providerBinding)
         .toMatchObject({ tabId: 'restored-tab' });
       expect(extension.claim('profile-a')).toBeUndefined();
+
+      // Real production entry: heartbeat still advertises the stale physical
+      // pin without its owner token. Ensure must reach the provider before any
+      // old-tab observation, and commit the new attestation through the lease.
+      const staleBinding = targetAuthority.getSurface(home, record.targetId)!.providerBinding!;
+      extension.heartbeat({ providerId: 'browser.chrome-extension', providerInstanceId: 'profile-a',
+        observedAt: '2026-10-18T06:02:00.000Z', conversations: [{ conversationId: identity.conversationId,
+          canonicalUrl: identity.canonicalUrl, providerBinding: { ...staleBinding, ownerToken: undefined } }] });
+      const replacement = extension.ensureExact(identity, { createIfMissing: true });
+      const ensure = extension.claim('profile-a');
+      expect(ensure?.kind).toBe('ensure');
+      if (!ensure) throw new Error('owner recovery must reach canonical Ensure');
+      expect(ensure.providerBinding?.ownerToken).toBe('attested-owner');
+      const replacementBinding = { ...binding, tabId: 'new-attested-tab', ownerToken: 'new-attested-owner' };
+      extension.complete('profile-a', ensure.commandId, { kind: 'ensured', providerBinding: replacementBinding, observation });
+      expect(await replacement).toMatchObject({ state: 'ready', target: { targetId: record.targetId } });
+      expect(targetAuthority.getSurface(home, record.targetId)?.providerBinding).toMatchObject(replacementBinding);
+      expect(extension.claim('profile-a')).toBeUndefined();
+
+      const racing = extension.ensureExact(identity, { createIfMissing: true });
+      const raceCommand = extension.claim('profile-a');
+      expect(raceCommand?.kind).toBe('ensure');
+      if (!raceCommand) throw new Error('missing concurrent Ensure');
+      const concurrent = { ...replacementBinding, tabId: 'concurrent-tab', ownerToken: 'concurrent-owner' };
+      await targetAuthority.withSurfaceLease(home, record.targetId, async (lease) => { lease.bind(concurrent); });
+      extension.complete('profile-a', raceCommand.commandId, { kind: 'ensured', providerBinding: replacementBinding, observation });
+      expect(await racing).toMatchObject({ state: 'unavailable', failure: { code: 'COMPUTER_CHATGPT_EXTENSION_PINNED_BINDING_CHANGED' } });
+      expect(targetAuthority.getSurface(home, record.targetId)?.providerBinding).toMatchObject(concurrent);
       await extension.close();
     } finally {
       rmSync(home, { recursive: true, force: true });
@@ -1151,6 +1192,7 @@ describe('Computer durable InteractionTarget authority', () => {
           browserProduct: 'chrome',
           windowId: 'window-shell',
           tabId: 'tab-shell',
+          ownerToken: 'owner-shell',
           observedAt: '2026-10-04T05:04:01.000Z',
         },
         observation: {

@@ -502,6 +502,101 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     expect(hooks.workProgressFingerprint?.(task)).toBeUndefined();
   });
 
+  test('Requirement-only standalone Supervisor progress stays rooted in Requirement semantic CAS', () => {
+    const fx = fixture();
+    const requirementId = 'REQ-STANDALONE-ROOT';
+    const conversationId = 'c3333333-4444-5555-6666-777777777777';
+    createRequirement({ controllerHome: fx.controllerHome }, {
+      requirementId,
+      title: 'Requirement-rooted continuation',
+      outcomeStatement: 'Continue from Requirement semantic evidence without Work ownership.',
+    });
+    const task = {
+      taskId: 'supervisor:standalone-requirement-root',
+      conversationId,
+      conversationUrl: `https://chatgpt.com/c/${conversationId}`,
+      objective: 'Requirement-rooted continuation',
+      completionContract: {
+        kind: 'model_semantic_completion', controller_home: fx.controllerHome,
+        repo_id: fx.repository.repoId, requirement_id: requirementId,
+      },
+      continuationPolicy: { kind: 'standalone_supervisor', repo_id: fx.repository.repoId },
+      userBlockerPolicy: { kind: 'model_semantic_user_blocker' },
+      createdAt: '2026-01-01T00:00:00.000Z',
+    };
+    const hooks = forgeWorkflowSupervisorLifecycleHooks(fx.controllerHome);
+    const initial = hooks.workProgressFingerprint?.(task);
+    expect(initial).toMatch(/^[0-9a-f]{64}$/);
+
+    const workId = 'work-incidental-requirement-root';
+    createWorkContract(fx.store, {
+      workId, repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId,
+      objective: 'Incidental lower-layer Work', acceptanceCriteria: [],
+      allowedPaths: [], forbiddenPaths: [], checks: [],
+      constraints: { workspaceMode: 'current' }, requestedBy: 'chatgpt', dispatchState: 'running',
+    });
+    bindChatgptWorkConversation(fx.store, { workId, conversationUrl: task.conversationUrl });
+    expect(hooks.workProgressFingerprint?.(task)).toBe(initial);
+
+    reviseRequirementSemantic({ controllerHome: fx.controllerHome }, requirementId, {
+      expectedRevision: 1,
+      progressSummary: 'Requirement semantic progress advanced.',
+      remainingWork: ['Runtime acceptance'],
+      acceptedEvidenceRefs: ['git:test'],
+    });
+    const advanced = hooks.workProgressFingerprint?.(task);
+    expect(advanced).toMatch(/^[0-9a-f]{64}$/);
+    expect(advanced).not.toBe(initial);
+    expect(hooks.browserTaskActive?.(task)).toBe(true);
+  });
+
+  test('Requirement-bound standalone Supervisor stops new sends at Requirement wait or terminal state', () => {
+    const fx = fixture();
+    const hooks = forgeWorkflowSupervisorLifecycleHooks(fx.controllerHome);
+    const makeTask = (requirementId: string) => ({
+      taskId: `supervisor:${requirementId}`,
+      conversationId: `conversation-${requirementId}`,
+      conversationUrl: `https://chatgpt.com/c/conversation-${requirementId}`,
+      objective: requirementId,
+      completionContract: {
+        kind: 'model_semantic_completion', controller_home: fx.controllerHome,
+        repo_id: fx.repository.repoId, requirement_id: requirementId,
+      },
+      continuationPolicy: { kind: 'standalone_supervisor', repo_id: fx.repository.repoId },
+      userBlockerPolicy: { kind: 'model_semantic_user_blocker' },
+      createdAt: '2026-01-01T00:00:00.000Z',
+    });
+
+    createRequirement({ controllerHome: fx.controllerHome }, {
+      requirementId: 'REQ-STANDALONE-WAITING', title: 'Waiting', outcomeStatement: 'Wait for explicit user input.',
+    });
+    const waitingTask = makeTask('REQ-STANDALONE-WAITING');
+    updateRequirement({ controllerHome: fx.controllerHome }, {
+      requirementId: 'REQ-STANDALONE-WAITING', action: 'wait_for_user',
+      mutate: (current) => ({ ...current, state: 'waiting_for_user' }),
+    });
+    expect(hooks.browserTaskActive?.(waitingTask)).toBe(false);
+
+    createRequirement({ controllerHome: fx.controllerHome }, {
+      requirementId: 'REQ-STANDALONE-CANCELLED', title: 'Cancelled', outcomeStatement: 'Stop new sends.',
+    });
+    const cancelledTask = makeTask('REQ-STANDALONE-CANCELLED');
+    expect(hooks.browserTaskActive?.(cancelledTask)).toBe(true);
+    reviseRequirementSemantic({ controllerHome: fx.controllerHome }, 'REQ-STANDALONE-CANCELLED', {
+      expectedRevision: 1, state: 'cancelled',
+    });
+    expect(hooks.browserTaskActive?.(cancelledTask)).toBe(false);
+
+    createRequirement({ controllerHome: fx.controllerHome }, {
+      requirementId: 'REQ-STANDALONE-DONE', title: 'Done', outcomeStatement: 'Stop after acceptance.',
+    });
+    const doneTask = makeTask('REQ-STANDALONE-DONE');
+    reviseRequirementSemantic({ controllerHome: fx.controllerHome }, 'REQ-STANDALONE-DONE', {
+      expectedRevision: 1, state: 'completed', remainingWork: [], acceptedEvidenceRefs: ['review:accepted'],
+    });
+    expect(hooks.browserTaskActive?.(doneTask)).toBe(false);
+  });
+
   test('derives standalone project scope from Supervisor-owned Controller Home', () => {
     const fx = fixture();
     const supervisorStore = new WorkflowSupervisorStore(join(fx.root, 'standalone-project-scope'));
@@ -2617,7 +2712,8 @@ test('Supervisor preparation rejection is durably release-fenced and never spend
   store.close();
 });
 
-test('recovery stop-pending is a live-turn observation, not a failed preparation', async () => {
+for (const transientReason of ['provider_recovery_stop_pending', 'provider_recovery_turn_unknown', 'provider_recovery_turn_live'] as const) {
+test(`recovery ${transientReason} is a live-turn observation, not a failed preparation`, async () => {
   const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-recovery-stop-pending-'));
   roots.push(root);
   const clock = { nowMs: Date.now() };
@@ -2675,7 +2771,7 @@ test('recovery stop-pending is a live-turn observation, not a failed preparation
       preparations++;
       return preparationReady
         ? { ready: true as const }
-        : { ready: false as const, reasonCode: 'provider_recovery_stop_pending' };
+        : { ready: false as const, reasonCode: transientReason };
     },
     dispatchPrompt: async (_page, prompt) => {
       sends++;
@@ -2704,7 +2800,7 @@ test('recovery stop-pending is a live-turn observation, not a failed preparation
 
   preparationReady = true;
   providerGenerating = false;
-  clock.nowMs += 2_000;
+  clock.nowMs += transientReason === 'provider_recovery_stop_pending' ? 2_000 : 31_000;
   await adapter.runOnce();
   expect(preparations).toBe(2);
   expect(sends).toBe(1);
@@ -2714,6 +2810,7 @@ test('recovery stop-pending is a live-turn observation, not a failed preparation
   await adapter.close();
   store.close();
 });
+}
 
 test('only a fresh typed Chrome no-stop proof refunds one generation; proofless failures remain unknown', () => {
   const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-typed-refund-'));
