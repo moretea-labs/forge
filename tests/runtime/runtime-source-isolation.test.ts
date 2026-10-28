@@ -242,14 +242,19 @@ describe('runtime source isolation', () => {
     expect((plan.data as { plan?: { planId?: string } })?.plan?.planId).toBe(planId);
     expect((work.data as { work?: { workId?: string } })?.work?.workId).toBe(workId);
 
+    // The public rh_work schema is frozen. Forward-compatible Requirement progress
+    // travels in the existing bounded semantic carrier; no extra MCP fields.
     const revisedRequirement = structured(await callRuntimeTool(unscoped, 'rh_work', {
-      operation: 'requirement_revise',
-      requirement_id: requirementId,
-      expected_revision: 1,
-      requirement_outcome: 'Revise Requirement directly by stable id without repository selection.',
-      requirement_progress_summary: 'Source under review',
-      requirement_remaining_work: ['Runtime acceptance'],
-      requirement_accepted_evidence_refs: ['git:reviewed'],
+      operation: 'repair',
+      capability_id: `semantic.v1:${JSON.stringify({
+        operation: 'requirement_revise',
+        requirement_id: requirementId,
+        expected_revision: 1,
+        requirement_outcome: 'Revise Requirement directly by stable id without repository selection.',
+        requirement_progress_summary: 'Source under review',
+        requirement_remaining_work: ['Runtime acceptance'],
+        requirement_accepted_evidence_refs: ['git:reviewed'],
+      })}`,
     }));
     const revisedPlan = structured(await callRuntimeTool(unscoped, 'rh_work', {
       operation: 'plan_revise',
