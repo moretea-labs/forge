@@ -109,11 +109,18 @@ export function workHandleRetainsCanonicalMutationOwnership(input: {
       .filter((value): value is string => Boolean(value)));
   if (recoverableProcessWorkIds.has(handle.workId)) return true;
 
-  // Historical WorkHandles may omit expectedHead. A clean physical checkout
-  // with no active Lease/Process can still be proven safe from the remaining
-  // recorded base revisions; absence of that optional field is not ownership.
+  // Baseline revisions cannot prove that an unknown source tip was absorbed.
+  // Missing expectedHead therefore fails closed unless a Work-specific archived
+  // revision independently proves that every preserved source tip is already
+  // contained by the exact canonical target HEAD.
+  const expectedHead = handle.expectedHead?.trim();
+  if (!expectedHead) {
+    const archiveRefs = archivedWorkRevisionRefs(target.root, handle.workId);
+    if (archiveRefs.length > 0 && archiveRefs.every((ref) => gitIsAncestor(target.root, ref, target.head!))) return false;
+    return true;
+  }
   const revisions = [...new Set([
-    handle.expectedHead,
+    expectedHead,
     handle.deliveryBaseCommit,
     handle.baseCommit,
   ].map((value) => value?.trim()).filter((value): value is string => Boolean(value)))];

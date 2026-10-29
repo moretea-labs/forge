@@ -23,6 +23,7 @@ import { callExecutionTool, selectDefaultWorkValidationChecks } from '../../adap
 import { ensureManagedWorkspace } from '../../src/runtime/execution/managed-workspace';
 import { cleanupControllerRuntimeState } from '../../src/runtime/control-plane/runtime-cleanup';
 import { cleanupWorkPreservationArtifacts } from '../../src/runtime/control-plane/cleanup-artifact-retention';
+import { workHandleRetainsCanonicalMutationOwnership } from '../../src/runtime/control-plane/execution/work-handle-authority';
 import { collectWorkLifecycleAttention } from '../../src/runtime/control-plane/execution/work-lifecycle-audit';
 import { readControlPlaneRecord, withControlPlaneTransaction, writeControlPlaneRecord, writeControlPlaneRecordWithinTransaction } from '../../src/runtime/control-plane/persistence/sqlite-store';
 
@@ -907,6 +908,41 @@ describe('terminal Work cleanup', () => {
     expect(result.receipt.complete).toBe(false);
     expect(result.receipt.blockers.join('\n')).toContain('GIT_COMMON_DIR_MISMATCH');
     expect(existsSync(fx.workspace.root!)).toBe(true);
+  });
+
+  test('missing expectedHead cannot release an unabsorbed source tip from baseline ancestry alone', () => {
+    const fx = fixture('missing-expected-head-unabsorbed-source');
+    const baseHead = git(fx.repositoryRoot, ['rev-parse', 'HEAD']);
+    writeFileSync(join(fx.repositoryRoot, 'unabsorbed-source.txt'), 'unique source not on target HEAD\n');
+    git(fx.repositoryRoot, ['add', 'unabsorbed-source.txt']);
+    git(fx.repositoryRoot, ['commit', '-m', 'feat: unabsorbed historical source']);
+    const uniqueSourceHead = git(fx.repositoryRoot, ['rev-parse', 'HEAD']);
+    git(fx.repositoryRoot, ['reset', '--hard', baseHead]);
+    git(fx.repositoryRoot, ['clean', '-fd']);
+
+    const handle: WorkHandleState = {
+      ...fx.handle,
+      checkoutId: fx.repository.activeCheckoutId,
+      worktreePath: fx.repositoryRoot,
+      managedWorktree: false,
+      branch: 'main',
+      expectedHead: undefined,
+      baseCommit: baseHead,
+      deliveryBaseCommit: baseHead,
+    };
+    expect(git(fx.repositoryRoot, ['rev-parse', 'HEAD'])).toBe(baseHead);
+    expect(uniqueSourceHead).not.toBe(baseHead);
+    expect(spawnSync('git', ['-C', fx.repositoryRoot, 'merge-base', '--is-ancestor', uniqueSourceHead, baseHead]).status).toBe(1);
+    expect(workHandleRetainsCanonicalMutationOwnership({
+      controllerHome: fx.controllerHome,
+      repositoryId: fx.repository.repoId,
+      handle,
+      target: {
+        checkoutId: fx.repository.activeCheckoutId, branch: 'main', head: baseHead,
+        root: fx.repositoryRoot, clean: true,
+        activeLeaseWorkIds: new Set(), recoverableProcessWorkIds: new Set(),
+      },
+    })).toBe(true);
   });
 
   test('retains dirty managed work in place instead of checkpointing or deleting it', async () => {

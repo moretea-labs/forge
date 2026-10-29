@@ -185,11 +185,15 @@ describe('repository command execution lifecycle', () => {
       controllerHome, repositoryId: repository.repoId, checkoutId: repository.activeCheckoutId, workId: 'work-new-owner',
     })).not.toThrow();
 
-    // A historical Handle can lack expectedHead after recovery. Its known base
-    // revisions still prove no unique physical source exists; missing WorkHandle
-    // metadata alone must not monopolize a clean checkout without a lease.
+    // Without expectedHead, baseline ancestry alone cannot prove the historical
+    // source tip was absorbed. Retain the physical fence until a Work-specific
+    // archive ref independently proves that exact source revision is contained.
     const absorbedHandle = readWorkHandle(controllerHome, repository.repoId, workId)!;
     writeWorkHandle(controllerHome, { ...absorbedHandle, expectedHead: undefined });
+    expect(() => assertCanonicalRepositoryMutationWorkHandleAvailable({
+      controllerHome, repositoryId: repository.repoId, checkoutId: repository.activeCheckoutId, workId: 'work-new-owner',
+    })).toThrow();
+    git(repository.canonicalRoot, ['branch', `archive/${workId}-20261029`, head]);
     expect(() => assertCanonicalRepositoryMutationWorkHandleAvailable({
       controllerHome, repositoryId: repository.repoId, checkoutId: repository.activeCheckoutId, workId: 'work-new-owner',
     })).not.toThrow();
