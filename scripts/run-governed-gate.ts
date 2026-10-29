@@ -21,6 +21,7 @@ export function stepsFor(gate: Gate): Step[] {
     { label: 'static architecture', command: 'bun', args: ['run', 'check:runtime-architecture'], timeoutMs: 5 * 60_000 },
     { label: 'module boundaries', command: 'node', args: ['scripts/check-module-boundaries.mjs'], timeoutMs: 2 * 60_000 },
     { label: 'repository hygiene', command: 'node', args: ['scripts/check-repository-hygiene.mjs'], timeoutMs: 2 * 60_000 },
+    { label: 'PR closing-reference intent', command: 'node', args: ['scripts/check-pr-closing-intent.mjs'], timeoutMs: 30_000 },
     { label: 'generated authority', command: 'node', args: ['scripts/sync-generated-authority.mjs', '--check'], timeoutMs: 2 * 60_000 },
     { label: 'source duplication', command: 'node', args: ['scripts/check-source-duplication.mjs'], timeoutMs: 2 * 60_000 },
     { label: 'test manifest', command: 'bun', args: ['run', 'check:test-governance'], timeoutMs: 5 * 60_000 },

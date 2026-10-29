@@ -9,6 +9,7 @@ import { parseCodexConversationJsonl } from '../../src/runtime/control-plane/lau
 import { RH_WORK_MODEL_OPERATIONS, isRhWorkAcceptedOperation } from '../../src/runtime/control-plane/facade/rh-work-operation-contract';
 import { runtimeToolDefinitions } from '../../adapters/mcp/runtime-gateway/runtime-tool-definitions';
 import { mcpServerInstructions } from '../../adapters/mcp/instructions';
+
 import { normalizeRhWorkInputWireMigration } from '../../adapters/mcp/runtime-gateway/work-input-wire-migration';
 import { CONTROLLER_LEARNING_SIGNAL_ENVELOPE_MAX_ITEMS } from '../../src/runtime/context/automatic-learning';
 import {
@@ -28,6 +29,22 @@ describe('handoff and facade contracts', () => {
     expect(guidance).toContain('Requirement remains open');
     expect(guidance).toContain('source-language search terms');
     expect(guidance).toContain('no fixed search quota');
+  });
+
+  test('flags negated issue-closing phrases before GitHub interprets them as automatic completion', () => {
+    const check = (body: string) => {
+      const result = Bun.spawnSync(['node', 'scripts/check-pr-closing-intent.mjs'], {
+        cwd: process.cwd(),
+        env: { ...process.env, GITHUB_EVENT_NAME: '', FORGE_PR_TITLE: '', FORGE_PR_BODY: body },
+      });
+      return { code: result.exitCode, stderr: new TextDecoder().decode(result.stderr) };
+    };
+    expect(check('Do not close #478 or mark Requirement DONE.').code).toBe(1);
+    expect(check('Must not resolve moretea-labs/forge#483.').code).toBe(1);
+    expect(check('Never fixes #313; issue remains open.').code).toBe(1);
+    expect(check('Keep Issue #478 OPEN pending independent review.').code).toBe(0);
+    expect(check('Refs #478; user outcome remains pending.').code).toBe(0);
+    expect(check('Fixes #42').code).toBe(0);
   });
 
   test('keeps the ChatGPT-facing facade small and stable', () => {
