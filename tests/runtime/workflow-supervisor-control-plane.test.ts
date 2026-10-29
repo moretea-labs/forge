@@ -277,6 +277,64 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     store.close();
   });
 
+  test('Requirement-owned continuation survives its terminal Work carrier and tracks Requirement CAS only', () => {
+    const fx = fixture();
+    const requirementId = 'REQ-work-carrier-terminal-does-not-stop-goal';
+    const workId = 'work-old-goal-carrier';
+    createRequirement({ controllerHome: fx.controllerHome }, {
+      requirementId, title: 'Deliver Requirement first',
+      outcomeStatement: 'Continue implementation after a lower Work ends',
+    });
+    createWorkContract(fx.store, {
+      workId, repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId,
+      requirementId, objective: 'Historical execution carrier only',
+      acceptanceCriteria: [], allowedPaths: [], forbiddenPaths: [], checks: [],
+      constraints: { workspaceMode: 'current' }, requestedBy: 'chatgpt', dispatchState: 'running',
+    });
+    const task = {
+      taskId: `forge:${fx.repository.repoId}:work:${workId}`,
+      conversationId: '56565656-7878-9090-abab-cdcdcdcdcdcd',
+      conversationUrl: 'https://chatgpt.com/c/56565656-7878-9090-abab-cdcdcdcdcdcd',
+      objective: 'Requirement-first continuation',
+      completionContract: {
+        controller_home: fx.controllerHome, repo_id: fx.repository.repoId,
+        requirement_id: requirementId, work_id: workId,
+      },
+      continuationPolicy: { kind: 'forge_goal_outer_turn' },
+      userBlockerPolicy: {},
+      createdAt: '2026-01-01T00:00:00.000Z',
+    };
+    const hooks = forgeWorkflowSupervisorLifecycleHooks(fx.controllerHome);
+    const first = hooks.workProgressFingerprint?.(task);
+    expect(first).toMatch(/^[a-f0-9]{64}$/);
+    reviseRequirementSemantic({ controllerHome: fx.controllerHome }, requirementId, {
+      expectedRevision: 1, progressSummary: 'Verified work continues under the Requirement',
+      remainingWork: ['Browser → ChatGPT live receipt still missing'],
+    });
+    const second = hooks.workProgressFingerprint?.(task);
+    expect(second).not.toBe(first);
+    reviseWorkSemanticContext(fx.store, workId, { expectedRevision: 1, state: 'completed' });
+    expect(hooks.workProgressFingerprint?.(task)).toBe(second);
+    expect(hooks.terminalWorkStopReasonForTask?.(task)).toBeUndefined();
+    expect(hooks.browserTaskActive?.(task)).toBe(true);
+
+    const unrelatedId = 'REQ-unrelated-legacy-carrier';
+    createRequirement({ controllerHome: fx.controllerHome }, {
+      requirementId: unrelatedId, title: 'Unrelated Goal',
+      outcomeStatement: 'Must not borrow another Work as authority',
+    });
+    const conflicting = { ...task, completionContract: { ...task.completionContract, requirement_id: unrelatedId } };
+    expect(hooks.terminalWorkStopReasonForTask?.(conflicting)).toContain('Exact active Work');
+    expect(hooks.browserTaskActive?.(conflicting)).toBe(false);
+    const oldWorkOnly = { ...task, completionContract: { ...task.completionContract, requirement_id: undefined } };
+    expect(hooks.terminalWorkStopReasonForTask?.(oldWorkOnly)).toContain('Exact active Work');
+
+    reviseRequirementSemantic({ controllerHome: fx.controllerHome }, requirementId, {
+      expectedRevision: 2, remainingWork: [], acceptedEvidenceRefs: ['review:accepted'], state: 'completed',
+    });
+    expect(hooks.browserTaskActive?.(task)).toBe(false);
+  });
+
   test('uses the Requirement outcome as canonical Supervisor goal instead of the Work execution objective', () => {
     const fx = fixture();
     const requirementId = 'REQ-supervisor-outcome-authority';
