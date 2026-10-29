@@ -176,19 +176,25 @@ function effectSuperseded(db: Database, effectId: string): boolean {
 }
 
 function appliedEffectAwaitingCompletionWithin(db: Database, taskId: string): boolean {
-  return Boolean(statement(db, `SELECT 1 AS ok FROM effects e
-    WHERE e.task_id = ?
-      AND EXISTS (SELECT 1 FROM events applied WHERE applied.effect_id = e.effect_id AND applied.kind = 'effect_applied')
-      AND NOT EXISTS (SELECT 1 FROM completions c WHERE c.task_id = e.task_id AND c.source_effect_id = e.effect_id)
-      -- Once the exact provider recovery actually commits a receipt, the
-      -- dispatched parent can no longer commit a competing completion.
-      -- Its causal observation is fulfilled by the completed recovery child.
-      -- Merely reserving/dispatching/applying a child never lifts this fence.
-      AND NOT EXISTS (SELECT 1 FROM effects child
-        JOIN completions receipt ON receipt.task_id = child.task_id AND receipt.source_effect_id = child.effect_id
-        WHERE child.task_id = e.task_id AND child.kind = 'recovery'
-          AND child.origin_key = 'provider-recovery:' || e.effect_id)
-    LIMIT 1`, (s) => s.get(taskId)));
+  // A verified receipt fulfills its own applied Effect and every exact ancestor
+  // on the provider-recovery chain. This is a causal closure over one Task;
+  // a reserved/dispatched/applied child without a receipt never settles a
+  // parent, and an unrelated applied sibling still blocks migration.
+  return Boolean(statement(db, `WITH RECURSIVE settled(effect_id) AS (
+      SELECT source_effect_id FROM completions WHERE task_id=?
+      UNION
+      SELECT parent.effect_id FROM effects child
+        JOIN settled ON settled.effect_id=child.effect_id
+        JOIN effects parent ON parent.task_id=child.task_id
+          AND child.origin_key='provider-recovery:' || parent.effect_id
+        WHERE child.task_id=? AND child.kind='recovery'
+    )
+    SELECT 1 AS ok FROM effects e
+    WHERE e.task_id=?
+      AND EXISTS (SELECT 1 FROM events applied
+        WHERE applied.effect_id=e.effect_id AND applied.kind='effect_applied')
+      AND NOT EXISTS (SELECT 1 FROM settled WHERE settled.effect_id=e.effect_id)
+    LIMIT 1`, (s) => s.get(taskId, taskId, taskId)));
 }
 
 function providerResumeExhaustedWithin(db: Database, effectId: string): boolean {
@@ -2102,17 +2108,23 @@ export class WorkflowSupervisorStore {
           // Count one failed provider *turn* only when its recovery has actually
           // completed, not one browser retry or repeated error observation.
           // Unsettled provider outcomes remain protected by the migration fence.
-          const recoveredFailedTurns = statement(db, `SELECT COUNT(DISTINCT failed.effect_id) AS total
-            FROM events failed WHERE failed.task_id=? AND failed.event_id>?
-              AND failed.kind='assistant_provider_failed' AND failed.effect_id IS NOT NULL
+          const recoveredFailedTurns = statement(db, `WITH RECURSIVE settled(effect_id) AS (
+              SELECT source_effect_id FROM completions WHERE task_id=?
+              UNION
+              SELECT parent.effect_id FROM effects child
+                JOIN settled ON settled.effect_id=child.effect_id
+                JOIN effects parent ON parent.task_id=child.task_id
+                  AND child.origin_key='provider-recovery:' || parent.effect_id
+                WHERE child.task_id=? AND child.kind='recovery'
+            )
+            SELECT COUNT(DISTINCT failed.effect_id) AS total
+            FROM events failed JOIN settled ON settled.effect_id=failed.effect_id
+            WHERE failed.task_id=? AND failed.event_id>?
+              AND failed.kind='assistant_provider_failed'
+              AND failed.effect_id IS NOT NULL
               AND NOT EXISTS (SELECT 1 FROM completions original
-                WHERE original.task_id=failed.task_id AND original.source_effect_id=failed.effect_id)
-              AND EXISTS (SELECT 1 FROM effects child
-                JOIN completions settled ON settled.task_id=child.task_id
-                  AND settled.source_effect_id=child.effect_id
-                WHERE child.task_id=failed.task_id
-                  AND child.origin_key='provider-recovery:' || failed.effect_id)`,
-            (s) => s.get(input.taskId, lastMigration?.id ?? 0)) as { total?: number };
+                WHERE original.task_id=failed.task_id AND original.source_effect_id=failed.effect_id)`,
+            (s) => s.get(input.taskId, input.taskId, input.taskId, lastMigration?.id ?? 0)) as { total?: number };
           const previousCompletion = statement(db, `SELECT MAX(event_id) AS id FROM events
             WHERE task_id=? AND kind='assistant_completion' AND event_id>?
               AND completion_fingerprint<>?`,

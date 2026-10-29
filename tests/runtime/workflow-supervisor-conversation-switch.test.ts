@@ -214,6 +214,62 @@ describe('Workflow Supervisor fresh conversation switch', () => {
   });
 
 
+  test('three distinct provider errors can rotate after the recovery chain is safely settled', async () => {
+    const fx = fixture();
+    const taskId = 'supervisor:three-provider-failures';
+    const conversationId = '88888888-aaaa-bbbb-cccc-666666666666';
+    const store = new WorkflowSupervisorStore(fx.controllerHome);
+    const control = new WorkflowSupervisorControlPlane(store);
+    control.registerTask({
+      taskId, conversationId, conversationUrl: 'https://chatgpt.com/c/' + conversationId,
+      objective: 'Retire one three-failure recovery chain without replay.',
+      completionContract: {}, continuationPolicy: { kind: 'standalone_supervisor' }, userBlockerPolicy: {},
+    });
+    let effect = control.reserveEnrollment(taskId);
+    const failedIds: string[] = [];
+    for (let n = 1; n <= 3; n += 1) {
+      expect(store.recordEffectDispatchStarted(effect.effectId, 1, 'burst-send-' + n)).toBe(true);
+      control.observeEffect({ effectId: effect.effectId, observationId: 'burst-applied-' + n, outcome: 'applied' });
+      failedIds.push(effect.effectId);
+      const observed = store.observeProviderTurn({
+        taskId, effectId: effect.effectId, generating: false,
+        assistantDigest: 'provider-stream-error-' + n,
+        providerFailureCode: 'CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE',
+        observedAtMs: Date.now(), graceMs: 1000,
+        recovery: { effectId: 'fx_provider-burst-recovery-' + n, prompt: 'Resume source-' + n },
+      });
+      if (n < 3) {
+        expect(observed.state).toBe('recovery_reserved');
+        effect = observed.recoveryEffect!;
+      } else {
+        expect(observed.state).toBe('exhausted');
+      }
+    }
+    // All failed effects were applied and remain unresolved. No migration is
+    // allowed before the separately authorized, final recovery completes.
+    expect(store.hasAppliedEffectAwaitingCompletion(taskId)).toBe(true);
+    expect(store.getTask(taskId)?.conversationId).toBe(conversationId);
+    const resumed = control.recoverTask({
+      taskId, sourceEffectId: effect.effectId,
+      requestId: 'operator-after-exhaustion', reason: 'Three explicit provider failures',
+      authorizedBy: 'user',
+    });
+    expect(resumed.action).toBe('recovery_reserved');
+    effect = resumed.recoveryEffect;
+    expect(store.recordEffectDispatchStarted(effect.effectId, 1, 'burst-final-send')).toBe(true);
+    control.observeEffect({ effectId: effect.effectId, observationId: 'burst-final-applied', outcome: 'applied' });
+    const result = await control.observeAssistantTurn({
+      taskId, conversationId,
+      responseText: 'Recovered and completed.\n'
+        + renderSupervisorReceipt(control.getTask(taskId)!, effect.effectId, 'CONTINUE'),
+    });
+    if (!('successorEffect' in result) || !result.successorEffect) throw new Error('MISSING_BURST_SUCCESSOR');
+    expect(result.successorEffect.kind).toBe('enrollment');
+    expect(store.getTask(taskId)?.conversationId).toBe('bootstrap:' + taskId);
+    expect(store.hasAppliedEffectAwaitingCompletion(taskId)).toBe(false);
+    store.close();
+  });
+
   test('confirmed provider failure with a completed recovery counts once toward normal rotation', async () => {
     const fx = fixture();
     const taskId = 'supervisor:provider-failure-budget-test';
