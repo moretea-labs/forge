@@ -51,7 +51,7 @@ const EXPECTED_PREFERRED_TOOL_NAME_FINGERPRINT = 'f22e635a213b45fa';
 // summaries; only descriptive metadata changes, with names and input types intact.
 // 2026-10-29: rh_work adds get_contract as a read-only canonical WorkContract path.
 // Recompute the exact schema fingerprint after this intentional public operation change.
-const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = '61f567710079d18f';
+const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = '3559c31e58a6bb7d';
 
 const policy = runtimePolicy(process.cwd(), {
   profile: 'controller',
