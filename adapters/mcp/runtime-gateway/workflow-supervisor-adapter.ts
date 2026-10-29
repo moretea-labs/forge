@@ -81,6 +81,28 @@ export async function callWorkflowSupervisorAdapter(
     return result({ task, effect, summary: `Standalone Supervisor task ${task.taskId} started with explicit Project binding before enrollment.` });
   }
 
+  if (operation === 'bootstrap_project_bind') {
+    const taskId = textArg(args, 'task_id');
+    const projectUrl = textArg(args, 'project_url');
+    const requestId = textArg(args, 'request_id');
+    const authorizedBy = textArg(args, 'authorized_by');
+    if (!taskId) throw new Error('WORKFLOW_SUPERVISOR_TASK_ID_REQUIRED');
+    if (!projectUrl) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_REQUIRED');
+    if (!requestId) throw new Error('WORKFLOW_SUPERVISOR_REQUEST_ID_REQUIRED');
+    if (!authorizedBy) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_AUTHORIZATION_REQUIRED');
+    const existingTask = await getWorkflowSupervisorTask(forgeHome, taskId);
+    if (!existingTask) throw new Error('WORKFLOW_SUPERVISOR_TASK_UNKNOWN');
+    const taskRepoId = typeof existingTask.completionContract.repo_id === 'string'
+      ? existingTask.completionContract.repo_id
+      : typeof existingTask.continuationPolicy.repo_id === 'string' ? existingTask.continuationPolicy.repo_id : undefined;
+    if (taskRepoId && repoId !== taskRepoId) throw new Error('WORKFLOW_SUPERVISOR_TASK_REPOSITORY_MISMATCH');
+    const bound = await bindWorkflowSupervisorBootstrapProject(forgeHome, {
+      taskId, projectUrl, requestId, authorizedBy,
+    });
+    return result({ ...bound, taskId, status: bound.deduplicated ? 'project_binding_confirmed' : 'project_bound',
+      summary: `Existing Supervisor bootstrap ${taskId} is bound to the exact authorized Project; no new task or effect was created.` });
+  }
+
   if (operation === 'review_watch_bind') {
     const taskId = textArg(args, 'task_id');
     const githubRepository = textArg(args, 'github_repository');

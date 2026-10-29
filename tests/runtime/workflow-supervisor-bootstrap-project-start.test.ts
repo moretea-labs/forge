@@ -67,6 +67,70 @@ describe('Supervisor bootstrap Project binding before enrollment', () => {
     expect(control.bootstrapProjectUrl(payload.task.taskId)).toBe(projectUrl);
     expect(control.bootstrapPoll(payload.task.taskId).command?.effectId).toBe(payload.effect.effectId);
     expect(store.effectDispatchBudget(payload.effect.effectId).generations).toBe(0);
+    const conversationId = '33333333-4444-5555-6666-777777777777';
+    store.bindBootstrapConversation(payload.task.taskId, conversationId, `https://chatgpt.com/c/${conversationId}`);
+    const retry = await callWorkflowSupervisorAdapter(context(root), 'supervisor_task', startArgs('start-bound-project', projectUrl));
+    expect(retry?.structuredContent).toMatchObject({
+      task: { taskId: payload.task.taskId, conversationId }, effect: { effectId: payload.effect.effectId },
+    });
+    expect(control.listTasks(false)).toHaveLength(1);
+    expect(store.effectDispatchBudget(payload.effect.effectId).generations).toBe(0);
+  });
+
+  test('an existing bootstrap can be bound through the public operation without replaying its effect', async () => {
+    const competingProjectId = 'g-p-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const { root, store, control } = await fixture(true, true, competingProjectId);
+    const task = control.registerTask({
+      taskId: 'supervisor:legacy-project-bind', conversationId: 'bootstrap:supervisor:legacy-project-bind',
+      conversationUrl: 'https://chatgpt.com/', objective: 'Bind an existing independent Reviewer without creating another task.',
+      completionContract: { kind: 'model_semantic_completion', controller_home: root, repo_id: repoId },
+      continuationPolicy: { kind: 'standalone_supervisor', bootstrap: true, repo_id: repoId },
+      userBlockerPolicy: { kind: 'model_semantic_user_blocker' },
+    });
+    const effect = control.reserveEnrollment(task.taskId);
+    expect(control.bootstrapPoll(task.taskId).command?.effectId).toBe(effect.effectId);
+    expect(JSON.stringify(runtimeToolDefinitions.find((tool) => tool.name === 'supervisor_task')?.inputSchema))
+      .toContain('bootstrap_project_bind');
+
+    const bindArgs = {
+      operation: 'bootstrap_project_bind', repo_id: repoId, task_id: task.taskId,
+      project_url: projectUrl, request_id: 'bind-existing-reviewer',
+      authorized_by: 'user-authorized #483 Project binding',
+    };
+    await expect(callWorkflowSupervisorAdapter(context(root), 'supervisor_task', bindArgs))
+      .rejects.toThrow('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_NOT_DISCOVERED');
+    expect(control.getTask(task.taskId)?.continuationPolicy.project_binding_required).toBe(true);
+    expect(() => control.registerTask({
+      taskId: task.taskId, conversationId: task.conversationId, conversationUrl: task.conversationUrl,
+      objective: task.objective, completionContract: task.completionContract,
+      continuationPolicy: { kind: 'standalone_supervisor', bootstrap: true, repo_id: repoId },
+      userBlockerPolicy: task.userBlockerPolicy,
+    })).toThrow('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_REQUIRED');
+    expect(control.bootstrapPoll(task.taskId).command).toBeFalsy();
+    expect(() => store.recordEffectDispatchStarted(effect.effectId, 1, 'stale-poll-after-failed-bind'))
+      .toThrow('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_REQUIRED');
+    expect(store.getEffectByOriginKey(`enrollment:${task.taskId}`)?.effectId).toBe(effect.effectId);
+
+    control.recordBrowserDiscovery('chrome', [{
+      conversationId: '22222222-3333-4444-5555-666666666666',
+      canonicalUrl: `https://chatgpt.com/g/${projectId}-forge/c/22222222-3333-4444-5555-666666666666`,
+      projectTitle: 'Forge', projectUrl,
+    }]);
+    const bound = await callWorkflowSupervisorAdapter(context(root), 'supervisor_task', bindArgs);
+    expect(bound?.isError).not.toBe(true);
+    expect(bound?.structuredContent).toMatchObject({ taskId: task.taskId, projectUrl, deduplicated: false, status: 'project_bound' });
+    expect(control.bootstrapProjectUrl(task.taskId)).toBe(projectUrl);
+    expect(control.bootstrapPoll(task.taskId).command?.effectId).toBe(effect.effectId);
+    expect(store.getEffectByOriginKey(`enrollment:${task.taskId}`)?.effectId).toBe(effect.effectId);
+    const conversationId = '33333333-4444-5555-6666-777777777777';
+    store.bindBootstrapConversation(task.taskId, conversationId, `https://chatgpt.com/c/${conversationId}`);
+    const retry = await callWorkflowSupervisorAdapter(context(root), 'supervisor_task', bindArgs);
+    expect(retry?.structuredContent).toMatchObject({ taskId: task.taskId, projectUrl, deduplicated: true });
+    await expect(callWorkflowSupervisorAdapter(context(root), 'supervisor_task', {
+      ...bindArgs, project_url: `https://chatgpt.com/g/${competingProjectId}/project`,
+    })).rejects.toThrow('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_BINDING_CONFLICT');
+    expect(store.getTask(task.taskId)?.conversationId).toBe(conversationId);
+    expect(store.getEffectByOriginKey(`enrollment:${task.taskId}`)?.effectId).toBe(effect.effectId);
   });
 
   test('first Project binding is rejected after any provider dispatch has begun', async () => {

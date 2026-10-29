@@ -464,7 +464,6 @@ export class WorkflowSupervisorControlPlane {
    * from the standalone task's objective or nearby browser tabs. */
   bindBootstrapProject(input: { taskId: string; projectUrl: string; requestId: string; authorizedBy: string }) {
     const task = this.requireTask(input.taskId);
-    requireNonTerminalTask(this.store, task.taskId);
     let parsed: URL;
     try { parsed = new URL(input.projectUrl); }
     catch { throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_URL_INVALID'); }
@@ -472,6 +471,15 @@ export class WorkflowSupervisorControlPlane {
     if (parsed.origin !== 'https://chatgpt.com' || !match || parsed.search || parsed.hash
       || parsed.username || parsed.password) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_URL_INVALID');
     const canonical = `https://chatgpt.com/g/${match[1]!.toLocaleLowerCase()}/project`;
+    // A durable binding receipt remains authoritative after enrollment changes
+    // the conversation or discovery observations change. This path cannot send.
+    if (this.store.boundBootstrapProjectUrl(task.taskId)) {
+      return this.store.bindBootstrapProject({ ...input, projectUrl: canonical });
+    }
+    requireNonTerminalTask(this.store, task.taskId);
+    // Fence legacy bootstrap tasks before validating discovery so a failed bind
+    // cannot later fall back to an inferred Project or race a stale poll command.
+    this.store.requireBootstrapProjectBinding(task.taskId);
     if (!this.store.discoverySnapshot().conversations.some((conversation) => {
       try {
         const value = new URL(conversation.projectUrl ?? '');
