@@ -917,7 +917,8 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
       createdAt: '2026-01-01T00:00:00.000Z',
     };
     const correction = 'C'.repeat(180);
-    const reviewNotice = `[UNVERIFIED STALE_HEAD] pr=500 reviewed=${'a'.repeat(40)} current=${'b'.repeat(40)} src=independent_reviewer outcome=REVISE receipt=review-stale NO_MERGE_AUTHORITY`;
+    const reviewId = 'review-' + 'r'.repeat(121);
+    const reviewNotice = `[UNVERIFIED STALE_HEAD] pr=1000000 reviewed=${'a'.repeat(40)} current=${'b'.repeat(40)} src=independent_reviewer outcome=REVISE receipt=${reviewId} NO_MERGE_AUTHORITY`;
     const prompt = renderSupervisorPrompt(
       task, 'fx_12345678', 'continuation', undefined, correction, reviewNotice,
     );
@@ -928,12 +929,12 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     expect(prompt).toContain('需时 supervisor_task get');
     expect(prompt).toContain('receipt:' + supervisorReceiptChallenge(task, 'fx_12345678'));
     expect(prompt).not.toContain('目标摘录：');
-    expect(prompt).toContain('pr=500');
+    expect(prompt).toContain('pr=1000000');
     expect(prompt).toContain('reviewed=' + 'a'.repeat(40));
     expect(prompt).toContain('current=' + 'b'.repeat(40));
     expect(prompt).toContain('src=independent_reviewer');
     expect(prompt).toContain('outcome=REVISE');
-    expect(prompt).toContain('receipt=review-stale');
+    expect(prompt).toContain('receipt=' + reviewId);
     expect(prompt).toContain('NO_MERGE_AUTHORITY');
     expect(prompt).not.toContain(correction);
     expect(prompt).toContain('末行：字母 空格 receipt 值');
@@ -1102,7 +1103,9 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     // Stale findings remain useful for REVISE, but never authorize the new HEAD.
     expect(control.observeReviewNotice({ ...notice, currentHeadSha: 'b'.repeat(40) }))
       .toMatchObject({ deduplicated: true, deferred: true });
-    expect(control.observeReviewNotice({ ...notice, reviewId: 'review-stale', currentHeadSha: 'b'.repeat(40) }))
+    const longReviewId = 'review-505-f2793e65f0b61f1b5adf845e0368ad1a7386a856-' + 'r'.repeat(76);
+    expect(longReviewId).toHaveLength(128);
+    expect(control.observeReviewNotice({ ...notice, reviewId: longReviewId, currentHeadSha: 'b'.repeat(40) }))
       .toMatchObject({ deduplicated: false, deferred: true });
     expect(control.observeReviewNotice({ ...notice, prNumber: 501, reviewId: 'review-third', reviewedHeadSha: 'c'.repeat(40), currentHeadSha: 'c'.repeat(40) }))
       .toMatchObject({ deduplicated: false, deferred: true });
@@ -1116,7 +1119,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     });
     expect(completion.action).toBe('CONTINUE');
     expect(Array.from(completion.successorEffect?.prompt || '').length).toBeLessThanOrEqual(650);
-    expect(completion.successorEffect?.prompt).toContain('receipt=review-stale');
+    expect(completion.successorEffect?.prompt).toContain('receipt=' + longReviewId);
     expect(completion.successorEffect?.prompt).toContain('pr=500');
     expect(completion.successorEffect?.prompt).toContain('[UNVERIFIED STALE_HEAD]');
     expect(completion.successorEffect?.prompt).toContain('reviewed=' + 'a'.repeat(40));
