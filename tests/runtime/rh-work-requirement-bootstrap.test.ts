@@ -11,6 +11,7 @@ import { createWorkContract, getWorkContract } from '../../src/runtime/control-p
 import { getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { readRequirement, updateRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { ensureForgeInstanceIdentity, readForgeInstanceIdentity } from '../../packages/kernel/identity/api/index';
+import { forgeWorkflowSupervisorLifecycleHooks } from '../../src/runtime/root/workflow-supervisor-composition';
 import { recordCognitiveMemory, type CognitiveWriteAuthorityPort } from '../../packages/kernel/cognition/api/index';
 import { cognitionMemoryStore } from '../../src/runtime/control-plane/persistence/cognition-store';
 import {
@@ -86,6 +87,19 @@ describe('rh_work Requirement bootstrap', () => {
       requestedBy: 'chatgpt', dispatchState: 'running',
     });
     const before = getWorkContract({ controllerHome, repoId: repository.repoId }, workId)!;
+    const continuationPointer = forgeWorkflowSupervisorLifecycleHooks(controllerHome).canonicalObjectiveForTask?.({
+      taskId: 'supervisor:historical-work-contract-pointer',
+      conversationId: '11111111-2222-3333-4444-555555555555',
+      conversationUrl: 'https://chatgpt.com/c/11111111-2222-3333-4444-555555555555',
+      objective: 'Historical standalone Work continuation.',
+      completionContract: { controller_home: controllerHome, repo_id: repository.repoId, work_id: workId },
+      continuationPolicy: { kind: 'forge_goal_outer_turn' },
+      userBlockerPolicy: { kind: 'model_semantic_user_blocker' },
+      createdAt: '2026-01-01T00:00:00.000Z',
+    });
+    expect(continuationPointer).toContain(`Work ${workId}`);
+    expect(continuationPointer).toContain('rh_work get_contract');
+
     const response = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_work', {
       operation: 'get_contract', repo_id: repository.repoId, work_id: workId,
     }));

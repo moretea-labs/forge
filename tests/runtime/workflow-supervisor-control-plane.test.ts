@@ -348,6 +348,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     };
     const pointer = forgeWorkflowSupervisorLifecycleHooks(fx.controllerHome).canonicalObjectiveForTask?.(task);
     expect(pointer).toContain('Work ' + workId);
+    expect(pointer).toContain('rh_work get_contract');
     expect(pointer).toContain('读取完整 Work 目标');
     expect(pointer).not.toContain('SAFETY_CONSTRAINT_MUST_CHECK_FULL_WORK');
     expect(pointer?.length).toBeLessThan(160);
@@ -816,7 +817,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
       createdAt: '2026-01-01T00:00:00.000Z',
     };
     const correction = 'C'.repeat(180);
-    const reviewNotice = `[UNVERIFIED STALE_HEAD] reviewed=${'a'.repeat(12)} current=${'b'.repeat(12)} src=independent_reviewer outcome=REVISE receipt=review-stale NOT APPROVAL/MERGE AUTHORITY`;
+    const reviewNotice = `[UNVERIFIED STALE_HEAD] pr=500 reviewed=${'a'.repeat(12)} current=${'b'.repeat(12)} src=independent_reviewer outcome=REVISE receipt=review-stale NOT APPROVAL/MERGE AUTHORITY`;
     const prompt = renderSupervisorPrompt(
       task, 'fx_12345678', 'continuation', undefined, correction, reviewNotice,
     );
@@ -827,6 +828,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     expect(prompt).toContain('需时 supervisor_task get');
     expect(prompt).toContain('receipt:' + supervisorReceiptChallenge(task, 'fx_12345678'));
     expect(prompt).not.toContain('目标摘录：');
+    expect(prompt).toContain('pr=500');
     expect(prompt).toContain('reviewed=' + 'a'.repeat(12));
     expect(prompt).toContain('current=' + 'b'.repeat(12));
     expect(prompt).toContain('src=independent_reviewer');
@@ -1002,9 +1004,9 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
       .toMatchObject({ deduplicated: true, deferred: true });
     expect(control.observeReviewNotice({ ...notice, reviewId: 'review-stale', currentHeadSha: 'b'.repeat(40) }))
       .toMatchObject({ deduplicated: false, deferred: true });
-    expect(control.observeReviewNotice({ ...notice, reviewId: 'review-third', reviewedHeadSha: 'c'.repeat(40), currentHeadSha: 'c'.repeat(40) }))
+    expect(control.observeReviewNotice({ ...notice, prNumber: 501, reviewId: 'review-third', reviewedHeadSha: 'c'.repeat(40), currentHeadSha: 'c'.repeat(40) }))
       .toMatchObject({ deduplicated: false, deferred: true });
-    expect(control.observeReviewNotice({ ...notice, reviewId: 'review-fourth', reviewedHeadSha: 'd'.repeat(40), currentHeadSha: 'd'.repeat(40) }))
+    expect(control.observeReviewNotice({ ...notice, prNumber: 502, reviewId: 'review-fourth', reviewedHeadSha: 'd'.repeat(40), currentHeadSha: 'd'.repeat(40) }))
       .toMatchObject({ deduplicated: false, deferred: true });
     expect(() => control.observeReviewNotice({ ...notice, repoId: 'repo-foreign' })).toThrow('WORKFLOW_SUPERVISOR_REVIEW_REPOSITORY_MISMATCH');
     expect(control.taskStall(task.taskId).state).not.toBe('deliverable');
@@ -1015,6 +1017,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     expect(completion.action).toBe('CONTINUE');
     expect(Array.from(completion.successorEffect?.prompt || '').length).toBeLessThanOrEqual(650);
     expect(completion.successorEffect?.prompt).toContain('receipt=review-stale');
+    expect(completion.successorEffect?.prompt).toContain('pr=500');
     expect(completion.successorEffect?.prompt).toContain('[UNVERIFIED STALE_HEAD]');
     expect(completion.successorEffect?.prompt).toContain('reviewed=' + 'a'.repeat(12));
     expect(completion.successorEffect?.prompt).toContain('current=' + 'b'.repeat(12));
@@ -1031,15 +1034,35 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
       responseText: renderSupervisorReceipt(task, completion.successorEffect!.effectId, 'CONTINUE'),
     });
     expect(next.successorEffect?.prompt).toContain('receipt=review-42');
+    expect(next.successorEffect?.prompt).toContain('pr=500');
     expect(next.successorEffect?.prompt).not.toContain('STALE_HEAD');
     expect(store.listPendingReviewNotices()).toHaveLength(2);
+
+    control.observeEffect({ effectId: next.successorEffect!.effectId, observationId: 'review-third-notice-applied', outcome: 'applied' });
+    const third = await control.observeAssistantTurn({
+      taskId: task.taskId, conversationId: task.conversationId,
+      responseText: renderSupervisorReceipt(task, next.successorEffect!.effectId, 'CONTINUE'),
+    });
+    expect(third.successorEffect?.prompt).toContain('receipt=review-third');
+    expect(third.successorEffect?.prompt).toContain('pr=501');
+    expect(store.listPendingReviewNotices()).toHaveLength(1);
+
+    control.observeEffect({ effectId: third.successorEffect!.effectId, observationId: 'review-fourth-notice-applied', outcome: 'applied' });
+    const fourth = await control.observeAssistantTurn({
+      taskId: task.taskId, conversationId: task.conversationId,
+      responseText: renderSupervisorReceipt(task, third.successorEffect!.effectId, 'CONTINUE'),
+    });
+    expect(fourth.successorEffect?.prompt).toContain('receipt=review-fourth');
+    expect(fourth.successorEffect?.prompt).toContain('pr=502');
+    expect(store.listPendingReviewNotices()).toHaveLength(0);
+
     const after = await control.observeAssistantTurn({
       taskId: task.taskId, conversationId: task.conversationId,
       responseText: renderSupervisorReceipt(task, source.effectId, 'CONTINUE'),
     });
     expect(after.successorEffect?.effectId).toBe(completion.successorEffect?.effectId);
     expect(after.deduplicated).toBe(true);
-    expect(control.taskStall(task.taskId)).toMatchObject({ state: 'deliverable', effectId: next.successorEffect?.effectId });
+    expect(control.taskStall(task.taskId)).toMatchObject({ state: 'deliverable', effectId: fourth.successorEffect?.effectId });
     store.close();
   });
 

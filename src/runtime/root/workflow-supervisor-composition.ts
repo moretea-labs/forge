@@ -297,7 +297,7 @@ export function forgeWorkflowSupervisorLifecycleHooks(controllerHome: string): W
         return `Requirement ${work.requirementId}：${requirement?.title ?? '继续完成该需求'}`;
       }
       // Historical standalone Work without a Requirement remains addressable.
-      return work ? `Work ${workId}：请用 rh_work get 读取完整 Work 目标、验收条件及安全约束；此处仅为续跑指针` : undefined;
+      return work ? `Work ${workId}：请用 rh_work get_contract 读取完整 Work 目标、验收条件及安全约束；此处仅为续跑指针` : undefined;
     },
     advisoryCognitionForTask: (task) => {
       const repoId = workflowSupervisorContractText(task, 'repo_id');
