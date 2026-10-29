@@ -518,6 +518,39 @@ test('retains separate explicit code symbols in sync and async discovery beyond 
   expect(asyncPack.search.scannedFiles).toBeLessThan(30);
 });
 
+
+test('prioritizes implementation sources when explicit code hints accompany a migration goal', () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-context-source-first-'));
+  roots.push(root);
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: root });
+  execFileSync('git', ['config', 'user.email', 'context@example.test'], { cwd: root });
+  execFileSync('git', ['config', 'user.name', 'Context Test'], { cwd: root });
+  mkdirSync(join(root, 'docs'), { recursive: true });
+  mkdirSync(join(root, 'src'), { recursive: true });
+  for (let index = 0; index < 10; index += 1) {
+    writeFileSync(join(root, 'docs', 'a-summary-' + index + '.md'),
+      Array.from({ length: 12 }, () => 'requirement scheduler migration background work').join('\\n') + '\\n');
+  }
+  writeFileSync(join(root, 'src', 'z-owner.ts'), 'export const requirementScheduler = true;\\n');
+  execFileSync('git', ['add', '.'], { cwd: root });
+  execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: root });
+  const options = {
+    description: '迁移需求权威并查找自动调度调用者',
+    searchTerms: ['requirement', 'scheduler'],
+    retrievalMode: 'plan',
+    structuralContext: 'off',
+    maxFiles: 4,
+    maxSnippets: 8,
+  } satisfies ControllerContextPackOptions;
+  const pack = buildControllerContextPack(root, getMcpPolicy('controller'), options);
+  expect(pack.files.map(file => file.path)).toContain('src/z-owner.ts');
+
+  const docsPack = buildControllerContextPack(root, getMcpPolicy('controller'), {
+    ...options, description: 'Read documentation explaining requirement scheduler migration',
+  });
+  expect(docsPack.files.some(file => file.path.startsWith('docs/'))).toBe(true);
+});
+
 test('ranks the full natural-language discovery result before applying the bounded candidate budget', () => {
   const root = mkdtempSync(join(tmpdir(), 'forge-context-discovery-ranking-'));
   roots.push(root);
