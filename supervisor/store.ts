@@ -885,9 +885,14 @@ export class WorkflowSupervisorStore {
         if (parsedObject(prior.payload_json).project_url !== input.projectUrl) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_BINDING_CONFLICT');
         return { projectUrl: input.projectUrl, deduplicated: true };
       }
-      const pending = oldestUnappliedEffect(db, input.taskId);
-      if (!pending || effectDispatchLedger(db, pending.effectId).generations !== 0
-        || appliedEffectAwaitingCompletionWithin(db, input.taskId)) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_BINDING_OUTCOME_UNRESOLVED');
+      const effects = statement(db, 'SELECT effect_id FROM effects WHERE task_id = ?', (s) => s.all(input.taskId)) as Array<{ effect_id?: string }>;
+      const dispatchStarted = effects.some((effect) => {
+        const effectId = boundedText(effect.effect_id);
+        return Boolean(effectId && effectDispatchLedger(db, effectId).generations > 0);
+      });
+      if (dispatchStarted || appliedEffectAwaitingCompletionWithin(db, input.taskId)) {
+        throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_BINDING_OUTCOME_UNRESOLVED');
+      }
       statement(db, 'INSERT INTO events(task_id,event_key,kind,payload_json,occurred_at) VALUES (?,?,?,?,?)', (s) => s.run(
         input.taskId, `bootstrap-project-bound:${input.taskId}`, 'bootstrap_project_bound',
         json({ project_url: input.projectUrl, request_id: input.requestId, authorized_by: input.authorizedBy }), now()));

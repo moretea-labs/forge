@@ -3,6 +3,7 @@ import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contra
 import {
   getWorkflowSupervisorContinuationProof,
   getWorkflowSupervisorTask,
+  bindWorkflowSupervisorBootstrapProject,
   bindWorkflowSupervisorReviewWatch,
   observeWorkflowSupervisorReviewNotice,
   getWorkflowSupervisorTaskStall,
@@ -47,8 +48,12 @@ export async function callWorkflowSupervisorAdapter(
     if (!requestId) throw new Error('WORKFLOW_SUPERVISOR_REQUEST_ID_REQUIRED');
     const workId = textArg(args, 'work_id');
     const requirementId = textArg(args, 'requirement_id');
+    const projectUrl = textArg(args, 'project_url');
+    const authorizedBy = textArg(args, 'authorized_by');
     if (workId && requirementId) throw new Error('WORKFLOW_SUPERVISOR_SEMANTIC_BINDING_AMBIGUOUS');
     if ((workId || requirementId) && !repoId) throw new Error('WORKFLOW_SUPERVISOR_SEMANTIC_BINDING_REPO_REQUIRED');
+    if (repoId && !projectUrl) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_REQUIRED');
+    if (projectUrl && !authorizedBy) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_AUTHORIZATION_REQUIRED');
     const id = standaloneTaskId(repoId, requestId);
     const task = await registerWorkflowSupervisorTask(forgeHome, {
       taskId: id,
@@ -64,8 +69,16 @@ export async function callWorkflowSupervisorAdapter(
       continuationPolicy: { kind: 'standalone_supervisor', bootstrap: true, ...(repoId ? { repo_id: repoId } : {}) },
       userBlockerPolicy: { kind: 'model_semantic_user_blocker' },
     });
+    // A repo-scoped bootstrap must be bound to its exact observed Project before
+    // the first enrollment effect exists. Binding failure leaves no sendable effect.
+    if (projectUrl) await bindWorkflowSupervisorBootstrapProject(forgeHome, {
+      taskId: task.taskId,
+      projectUrl,
+      requestId: `${id}:project-bind`,
+      authorizedBy,
+    });
     const effect = await reserveWorkflowSupervisorEnrollment(forgeHome, task.taskId);
-    return result({ task, effect, summary: `Standalone Supervisor task ${task.taskId} started.` });
+    return result({ task, effect, summary: `Standalone Supervisor task ${task.taskId} started with explicit Project binding before enrollment.` });
   }
 
   if (operation === 'review_watch_bind') {

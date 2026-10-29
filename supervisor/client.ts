@@ -56,6 +56,17 @@ export async function getWorkflowSupervisorCurrentConversation(forgeHome: string
   return result.conversation;
 }
 
+export async function bindWorkflowSupervisorBootstrapProject(forgeHome: string, input: {
+  taskId: string; projectUrl: string; requestId: string; authorizedBy: string;
+}): Promise<{ projectUrl: string; deduplicated: boolean }> {
+  return await rpc(forgeHome, 'task_bind_bootstrap_project', {
+    task_id: input.taskId,
+    project_url: input.projectUrl,
+    request_id: input.requestId,
+    authorized_by: input.authorizedBy,
+  }, SUPERVISOR_RPC_MUTATION_TIMEOUT_MS);
+}
+
 export async function getWorkflowSupervisorTask(forgeHome: string, taskId: string): Promise<WorkflowSupervisorTask | undefined> {
   const task = await rpc<WorkflowSupervisorTask | null>(forgeHome, 'task_get', { task_id: taskId });
   return task ?? undefined;
