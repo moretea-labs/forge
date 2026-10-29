@@ -51,7 +51,7 @@ const EXPECTED_PREFERRED_TOOL_NAME_FINGERPRINT = 'f22e635a213b45fa';
 // summaries; only descriptive metadata changes, with names and input types intact.
 // 2026-10-29: #483 A02 intentionally exposes Requirement progress CAS fields on rh_work.
 // Schema snapshots must refresh; do not relax the frozen-contract assertion.
-const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = '61f567710079d18f';
+const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = 'dcd39c588ac00ce1';
 
 const policy = runtimePolicy(process.cwd(), {
   profile: 'controller',
