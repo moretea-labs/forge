@@ -1,3 +1,4 @@
+import { assertRuntimeSwitchNotFrozen } from '../root/runtime-switch-freeze';
 import { measureRuntimePerformance, type RuntimePerformanceDependencies, type RuntimePerformanceEvidence, type RuntimePerformanceIdentity } from './performance';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'crypto';
 import { spawn, spawnSync } from 'child_process';
@@ -641,6 +642,7 @@ async function withLock<T>(
   intent: RecoveryLockIntent,
   action: (lock: RecoveryLock) => Promise<T>,
 ): Promise<RecoveryLockAttempt<T>> {
+  assertRuntimeSwitchNotFrozen(config.controllerHome, intent.action);
   // Installer, certification and Recovery actions share one physical lock writer.
   // Core supplies only action attribution, audit and scoped handle release.
   let attempt: ReturnType<typeof acquireRecoveryOperationLock>;

@@ -1,3 +1,4 @@
+import { assertRuntimeSwitchNotFrozen } from './runtime-switch-freeze';
 import { writeAtomicTextFile } from '../shared/atomic-text-file';
 import { randomUUID } from 'crypto';
 import { existsSync, readFileSync, rmSync } from 'fs';
@@ -395,6 +396,7 @@ export async function activateScheduledPackageRuntimeService(
   request: PackageRuntimeActivationRequest,
   dependencies: PackageRuntimeActivationDependencies = {},
 ): Promise<PackageRuntimeActivationReceipt> {
+  assertRuntimeSwitchNotFrozen(request.controllerHome, 'activate_runtime_release');
   const installDarwinService = dependencies.installDarwinService ?? installForgeRuntimeService;
   const ensureConnectorService = dependencies.ensureConnectorService ?? ensurePackageConnectorService;
   const wait = dependencies.waitForInstallerExit ?? waitForInstallerExit;
@@ -453,6 +455,7 @@ export async function installPackageRuntimeService(
   dependencies: PackageRuntimeServiceDependencies = {},
 ): Promise<PackageRuntimeServiceInstallResult> {
   const controllerHome = resolveControllerHome(options.controllerHome);
+  assertRuntimeSwitchNotFrozen(controllerHome, 'activate_runtime_release');
   const servicePaths = forgeRuntimeServicePaths(controllerHome);
   const priorAuthority = readRuntimeReleaseAuthority(controllerHome);
   const priorConfigBytes = existsSync(servicePaths.configPath) ? readFileSync(servicePaths.configPath, 'utf8') : undefined;

@@ -1,3 +1,4 @@
+import { assertRuntimeSwitchNotFrozen } from './runtime-switch-freeze';
 import { createHash, randomUUID } from 'crypto';
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'fs';
 import { dirname, join, resolve } from 'path';
@@ -469,6 +470,7 @@ export function publishRuntimeRelease(
   preparedDatabaseBackup?: PreparedRuntimeReleaseDatabaseBackup,
 ): RuntimeReleaseAuthority {
   if (!operationId.trim()) throw new Error('RUNTIME_RELEASE_OPERATION_ID_REQUIRED');
+  assertRuntimeSwitchNotFrozen(controllerHome, 'activate_runtime_release');
   const candidate = manifestRecord(controllerHome, manifestPath);
   const current = mutableRuntimeReleaseAuthority(controllerHome);
   if (!current) {
@@ -568,6 +570,7 @@ export function rollbackRuntimeReleaseWithResult(
   dependencies: RuntimeReleaseStoreDependencies = DEFAULT_DEPENDENCIES,
 ): RuntimeReleaseRollbackResult {
   if (!operationId.trim()) throw new Error('RUNTIME_RELEASE_OPERATION_ID_REQUIRED');
+  assertRuntimeSwitchNotFrozen(controllerHome, 'rollback_previous');
   const current = mutableRuntimeReleaseAuthority(controllerHome);
   const target = current?.previous;
   if (!current || !target?.databaseBackup) throw new Error('RUNTIME_PREVIOUS_RELEASE_UNAVAILABLE');
