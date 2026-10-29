@@ -112,7 +112,7 @@ function nestedGitStatus(root: string, deadline: number): Pick<RepositoryGitStat
     if (result.error || result.status !== 0) throw new Error(`WORK_VALIDATION_NESTED_GIT_UNAVAILABLE: ${root}`);
     return result.stdout;
   };
-  const topLevel = read(['rev-parse', '--show-toplevel'])!.trim();
+  const topLevel = read(['rev-parse', '--show-toplevel'])!.replace(/\r?\n$/, '');
   if (realpathSync(topLevel) !== realpathSync(root)) throw new Error(`WORK_VALIDATION_PATH_TYPE_UNSUPPORTED: ${root}`);
   const head = read(['rev-parse', '--verify', '--quiet', 'HEAD'], true)?.trim() ?? null;
   const porcelain = read(['status', '--porcelain=v1', '--branch', '--untracked-files=all', '--', '.', ':(exclude).ai/harness/**'])!;

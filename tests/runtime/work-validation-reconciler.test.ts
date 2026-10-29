@@ -552,11 +552,11 @@ describe('workspace-bound validation identity', () => {
     writeFileSync(join(owner, 'value.txt'), 'initial\n');
     git(owner, ['add', 'value.txt']);
     git(owner, ['-c', 'user.name=Validation test', '-c', 'user.email=validation@example.invalid', 'commit', '-m', 'initial']);
-    const linked = join(parent, 'linked');
+    const linked = join(parent, 'linked source ');
     git(owner, ['worktree', 'add', '--detach', linked]);
     const indexPath = git(linked, ['rev-parse', '--git-path', 'index']);
     const index = readFileSync(indexPath);
-    const status = workspaceStatus('linked/', '?? linked/');
+    const status = workspaceStatus('linked source /', '?? "linked source /"');
     const first = workspaceValidationFingerprint(parent, status);
     writeFileSync(join(linked, 'value.txt'), 'modified\n');
     expect(workspaceValidationFingerprint(parent, status)).not.toBe(first);
