@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { createHash } from 'crypto';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
@@ -20,7 +21,8 @@ import { processLogDir } from '../../src/runtime/execution/process-runtime';
 import { createProcessRecord } from '../../src/runtime/execution/process-runtime/store';
 import type { ManagedProcessRecord } from '../../src/runtime/execution/process-runtime/types';
 import { callExecutionTool, selectDefaultWorkValidationChecks } from '../../adapters/mcp/runtime-gateway/execution-tools';
-import { ensureManagedWorkspace } from '../../src/runtime/execution/managed-workspace';
+import { ensureManagedWorkspace, managedWorkspaceOwnedResourceId } from '../../src/runtime/execution/managed-workspace';
+import { getOwnedResource } from '../../packages/kernel/identity/api/index';
 import { cleanupControllerRuntimeState } from '../../src/runtime/control-plane/runtime-cleanup';
 import { cleanupWorkPreservationArtifacts } from '../../src/runtime/control-plane/cleanup-artifact-retention';
 import { workHandleRetainsCanonicalMutationOwnership } from '../../src/runtime/control-plane/execution/work-handle-authority';
@@ -792,6 +794,44 @@ describe('terminal Work cleanup', () => {
     expect(repeated.receipt.receiptId).toBe(first.receipt.receiptId);
     expect(repeated.receipt.complete).toBe(true);
     expect(worktreeCount(fx.repositoryRoot)).toBe(1);
+  });
+
+  test('preserves a terminal managed worktree when historical volume identity cannot be proved', async () => {
+    if (process.platform !== 'darwin') return;
+    const fx = fixture('mac-remount-cleanup');
+    const path = fx.workspace.root!;
+    const id = managedWorkspaceOwnedResourceId(fx.repository.repoId, fx.workspace.checkoutId!);
+    const owned = getOwnedResource(fx.controllerHome, id)!;
+    const canonicalPath = realpathSync(path);
+    const stat = lstatSync(canonicalPath);
+    const major = Math.floor(stat.dev / 0x1000000) * 0x1000000;
+    const oldDev = major + ((stat.dev - major + 3) % 256);
+    const originalFingerprint = createHash('sha256').update([
+      owned.ownerForgeInstanceId,
+      'filesystem_path',
+      canonicalPath,
+      String(oldDev),
+      String(stat.ino),
+      'directory',
+    ].join('\0')).digest('hex');
+    const resourceFile = join(fx.controllerHome, 'owned-resources',
+      id.replace(/[^a-zA-Z0-9._-]/g, '_') + '.json');
+    const original = { ...owned, identityFingerprint: originalFingerprint };
+    writeFileSync(resourceFile, JSON.stringify(original));
+
+    // This is an actual Git worktree replay, not a call to the identity helper.
+    expect(() => ensureManagedWorkspace(fx.controllerHome, fx.repository, {
+      requestId: 'terminal-cleanup-mac-remount-cleanup',
+      title: 'Terminal Cleanup mac-remount-cleanup',
+      branchName: fx.branch,
+    })).toThrow('OWNED_RESOURCE_IDENTITY_CONFLICT');
+    expect(getOwnedResource(fx.controllerHome, id)).toEqual(original);
+
+    const result = await cleanup(fx);
+    expect(result.receipt.complete).toBe(false);
+    expect(existsSync(path)).toBe(true);
+    expect(branchExists(fx.repositoryRoot, fx.branch)).toBe(true);
+    expect(getOwnedResource(fx.controllerHome, id)).toEqual(original);
   });
 
   test('reconciles a legacy cleaned handle with an incomplete receipt without regressing lifecycle', async () => {

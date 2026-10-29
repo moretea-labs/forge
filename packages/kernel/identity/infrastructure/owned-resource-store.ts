@@ -122,10 +122,12 @@ export function assertOwnedResourceCleanupTarget(
   if (expectedLocator.kind !== resource.locator.kind || expectedLocator.value.trim() !== resource.locator.value) {
     throw new Error(`OWNED_RESOURCE_LOCATOR_MISMATCH: ${input.resourceId}`);
   }
-  const observedFingerprint = input.identityFingerprint?.trim()
-    || (resource.locator.kind === 'filesystem_path'
+  if (input.identityFingerprint?.trim() && input.identityFingerprint.trim() !== resource.identityFingerprint) {
+    throw new Error(`OWNED_RESOURCE_IDENTITY_FINGERPRINT_MISMATCH: ${input.resourceId}`);
+  }
+  const observedFingerprint = (resource.locator.kind === 'filesystem_path'
       ? ownedFilesystemIdentityFingerprint(currentInstance, resource.locator.value)
-      : ownedResourceLocatorFingerprint(currentInstance, expectedLocator));
+      : input.identityFingerprint?.trim() || ownedResourceLocatorFingerprint(currentInstance, expectedLocator));
   if (observedFingerprint !== resource.identityFingerprint) {
     throw new Error(`OWNED_RESOURCE_IDENTITY_FINGERPRINT_MISMATCH: ${input.resourceId}`);
   }
@@ -149,7 +151,14 @@ export function recordOwnedResource(controllerHome: string, input: RecordOwnedRe
       && existing.ownerForgeInstanceId === ownerForgeInstanceId
       && existing.locator?.kind === locator.kind
       && existing.locator?.value === locator.value;
-    const sameIdentity = sameLocator && existing.identityFingerprint === identityFingerprint;
+    const sameBinding = sameLocator
+      && existing.targetRef === input.targetRef
+      && existing.provenance.creator === input.creator
+      && existing.provenance.repoId === input.repoId
+      && existing.provenance.associatedWorkId === input.associatedWorkId
+      && existing.provenance.associatedRequirementId === input.associatedRequirementId;
+    if (!sameBinding) throw new Error(`OWNED_RESOURCE_IDENTITY_CONFLICT: ${resourceId}`);
+    const sameIdentity = sameBinding && existing.identityFingerprint === identityFingerprint;
     const legacyWeakFilesystemFingerprint = sameLocator
       && locator.kind === 'filesystem_path'
       && existing.identityFingerprint === ownedResourceLocatorFingerprint(ownerForgeInstanceId, locator)
@@ -167,6 +176,12 @@ export function recordOwnedResource(controllerHome: string, input: RecordOwnedRe
       throw new Error(`OWNED_RESOURCE_CLEANUP_AUTHORITY_ESCALATION_FORBIDDEN: ${resourceId}`);
     }
     if (existing.status === 'released') throw new Error(`OWNED_RESOURCE_REUSE_REQUIRES_NEW_ID: ${resourceId}`);
+    // Replay preserves the original provenance and witness, without deriving a
+    // new identity from a different device. Only authority downgrade may change it.
+    if (cleanupCapable === existing.cleanupCapable) return existing;
+    const downgraded: OwnedResource = { ...existing, cleanupCapable, updatedAt: now };
+    writeResourceFile(controllerHome, downgraded);
+    return downgraded;
   }
   const resource: OwnedResource = {
     schemaVersion: 1,
