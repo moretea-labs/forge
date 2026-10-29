@@ -43,12 +43,12 @@ export interface CanonicalMutationTargetEvidence {
 
 /**
  * Decide whether one WorkHandle still owns the physical mutation surface of a
- * canonical checkout. Semantic Work may remain open after its repository delta
- * has already been absorbed; semantic openness alone is not a checkout mutex.
+ * canonical checkout. Semantic Work state is not physical ownership evidence
+ * in either direction.
  *
- * Semantic openness and the WorkHandle `prepared` state do not by themselves
- * own a physical mutation surface. Only distinct source revisions, active
- * leases/processes, or ambiguous physical checkout evidence retain ownership.
+ * Only uncontained source revisions, active leases/processes, or ambiguous
+ * physical checkout evidence retain canonical mutation ownership. An unknown
+ * expected source HEAD fails closed even after semantic Work becomes terminal.
  */
 export function workHandleRetainsCanonicalMutationOwnership(input: {
   controllerHome: string;
@@ -59,16 +59,11 @@ export function workHandleRetainsCanonicalMutationOwnership(input: {
   const { handle, target } = input;
   if (handle.checkoutId !== target.checkoutId || handle.managedWorktree) return false;
 
-  let contract: ReturnType<typeof getWorkContract>;
-  try {
-    contract = getWorkContract(
-      { controllerHome: input.controllerHome, repoId: input.repositoryId },
-      handle.workContractId ?? handle.workId,
-    );
-  } catch {
-    return true;
-  }
-  if (contract && semanticWorkState(contract) !== 'open') return false;
+  // An unknown source tip cannot be released merely because the semantic Work
+  // is terminal. Require the exact expected HEAD before considering semantic
+  // terminality or baseline ancestry as evidence of absorbed source state.
+  const expectedHead = handle.expectedHead?.trim();
+  if (!expectedHead) return true;
 
   let sameCheckout: boolean;
   try {
@@ -94,11 +89,7 @@ export function workHandleRetainsCanonicalMutationOwnership(input: {
       .filter((value): value is string => Boolean(value)));
   if (recoverableProcessWorkIds.has(handle.workId)) return true;
 
-  // Baseline revisions and a Work-specific ref name cannot prove an unknown
-  // source tip was absorbed. Without the exact expected source HEAD, keep the
-  // canonical mutation fence; only recorded revisions can release it.
-  const expectedHead = handle.expectedHead?.trim();
-  if (!expectedHead) return true;
+  // Baseline revisions supplement but never replace the exact source HEAD.
   const revisions = [...new Set([
     expectedHead,
     handle.deliveryBaseCommit,

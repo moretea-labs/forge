@@ -910,8 +910,20 @@ describe('terminal Work cleanup', () => {
     expect(existsSync(fx.workspace.root!)).toBe(true);
   });
 
-  test('missing expectedHead cannot release an unabsorbed source tip from baseline ancestry alone', () => {
+  test('missing expectedHead cannot release an unabsorbed source tip after semantic Work terminality', () => {
     const fx = fixture('missing-expected-head-unabsorbed-source');
+    createCancelledWork({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
+      workId: fx.handle.workId,
+      repoId: fx.repository.repoId,
+      objective: 'Cancelled Work still has an unknown canonical source tip.',
+      acceptanceCriteria: [],
+      constraints: {},
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      requestedBy: 'chatgpt',
+      phase: 'cleanup',
+    });
     const baseHead = git(fx.repositoryRoot, ['rev-parse', 'HEAD']);
     writeFileSync(join(fx.repositoryRoot, 'unabsorbed-source.txt'), 'unique source not on target HEAD\n');
     git(fx.repositoryRoot, ['add', 'unabsorbed-source.txt']);
@@ -940,6 +952,18 @@ describe('terminal Work cleanup', () => {
       controllerHome: fx.controllerHome,
       repositoryId: fx.repository.repoId,
       handle,
+      target: {
+        checkoutId: fx.repository.activeCheckoutId, branch: 'main', head: baseHead,
+        root: fx.repositoryRoot, clean: true,
+        activeLeaseWorkIds: new Set(), recoverableProcessWorkIds: new Set(),
+      },
+    })).toBe(true);
+    // Even when an exact source HEAD is available, terminal semantic state is
+    // not proof that the source commit reached the canonical target.
+    expect(workHandleRetainsCanonicalMutationOwnership({
+      controllerHome: fx.controllerHome,
+      repositoryId: fx.repository.repoId,
+      handle: { ...handle, expectedHead: uniqueSourceHead },
       target: {
         checkoutId: fx.repository.activeCheckoutId, branch: 'main', head: baseHead,
         root: fx.repositoryRoot, clean: true,
