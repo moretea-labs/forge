@@ -1038,6 +1038,14 @@ export class WorkflowSupervisorStore {
             WHERE c.task_id = e.task_id AND c.source_effect_id = e.effect_id
           )
       )
+      AND NOT (
+        COALESCE(json_extract(t.continuation_policy_json, '$.project_binding_required'), 0) = 1
+        AND NOT EXISTS (
+          SELECT 1 FROM events binding
+          WHERE binding.task_id = t.task_id
+            AND binding.kind = 'bootstrap_project_bound'
+        )
+      )
       ORDER BY t.created_at, t.task_id
       LIMIT ?`, (s) => s.all(boundedLimit))
       .map((row) => taskFromRow(row as Record<string, unknown>)));

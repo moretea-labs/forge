@@ -49,6 +49,10 @@ function projectMatchesScope(conversation: WorkflowSupervisorDiscoveredConversat
   return names.some((name) => boundedProjectIdentityMatch(name, projectSlug));
 }
 
+function explicitBootstrapProjectBindingReady(task: WorkflowSupervisorTask, store: WorkflowSupervisorStore): boolean {
+  return task.continuationPolicy.project_binding_required !== true || Boolean(store.boundBootstrapProjectUrl(task.taskId));
+}
+
 function effectId(): string { return `fx_${randomUUID().replaceAll('-', '')}`; }
 function stableEffectId(originKey: string): string {
   return validateEffectId(`fx_${sha256(originKey).slice(0, 32)}`);
@@ -236,6 +240,9 @@ export class WorkflowSupervisorControlPlane {
     // could never be delivered, so the ControllerRound waited forever instead of
     // surfacing the operator/provider decision that terminal state represents.
     requireNonTerminalTask(this.store, task.taskId);
+    if (!explicitBootstrapProjectBindingReady(task, this.store)) {
+      throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_REQUIRED');
+    }
     const originKey = `enrollment:${taskId}`;
     // Supervisor owns the outer-turn effect identity. A lower ControllerRound may
     // rotate when the semantic Work carrier changes, but the Requirement + exact
@@ -477,6 +484,9 @@ export class WorkflowSupervisorControlPlane {
   bootstrapProjectUrl(taskId: string): string {
     const task = this.requireTask(taskId);
     const explicitlyBound = this.store.boundBootstrapProjectUrl(taskId);
+    if (task.continuationPolicy.project_binding_required === true && !explicitlyBound) {
+      throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_REQUIRED');
+    }
     if (explicitlyBound) return explicitlyBound;
     const scope = this.hooks.projectScopeForTask?.(task);
     const title = scope?.title.trim();
@@ -586,6 +596,9 @@ export class WorkflowSupervisorControlPlane {
     if (!task.conversationId.startsWith('bootstrap:')) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_NOT_PENDING');
     const terminal = this.store.terminalAction(task.taskId);
     if (terminal === 'STOPPED') return { authorized: true, task: browserTask(task), terminal };
+    if (!terminal && !explicitBootstrapProjectBindingReady(task, this.store)) {
+      return { authorized: true, task: browserTask(task) };
+    }
     // While identity is still bootstrap, reconcile the latest applied leaf
     // before dispatching any successor. An unstarted recovery child must not
     // send from a Project/new-composer surface while the source conversation

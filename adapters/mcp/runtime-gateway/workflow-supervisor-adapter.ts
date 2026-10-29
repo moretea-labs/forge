@@ -66,7 +66,7 @@ export async function callWorkflowSupervisorAdapter(
         ...(workId ? { work_id: workId } : {}),
         ...(requirementId ? { requirement_id: requirementId } : {}),
       },
-      continuationPolicy: { kind: 'standalone_supervisor', bootstrap: true, ...(repoId ? { repo_id: repoId } : {}) },
+      continuationPolicy: { kind: 'standalone_supervisor', bootstrap: true, project_binding_required: true, ...(repoId ? { repo_id: repoId } : {}) },
       userBlockerPolicy: { kind: 'model_semantic_user_blocker' },
     });
     // A repo-scoped bootstrap must be bound to its exact observed Project before

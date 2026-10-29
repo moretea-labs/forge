@@ -18,16 +18,18 @@ const projectId = 'g-p-6a922010db348191a84d1a5306c083e8';
 const projectUrl = `https://chatgpt.com/g/${projectId}/project`;
 const repoId = 'repo-bootstrap-project-test';
 
-async function fixture(discoverProject: boolean) {
+async function fixture(discoverProject: boolean, scopeForTask = false, discoveredProjectId = projectId) {
   const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-bootstrap-project-start-'));
   roots.push(root);
   const store = new WorkflowSupervisorStore(root);
   stores.push(store);
-  const control = new WorkflowSupervisorControlPlane(store);
+  const control = new WorkflowSupervisorControlPlane(store, {}, scopeForTask
+    ? { projectScopeForTask: () => ({ title: 'Forge', repoId }) }
+    : {});
   if (discoverProject) control.recordBrowserDiscovery('chrome', [{
     conversationId: '11111111-2222-3333-4444-555555555555',
-    canonicalUrl: `https://chatgpt.com/g/${projectId}-forge/c/11111111-2222-3333-4444-555555555555`,
-    projectTitle: 'Forge', projectUrl,
+    canonicalUrl: `https://chatgpt.com/g/${discoveredProjectId}-forge/c/11111111-2222-3333-4444-555555555555`,
+    projectTitle: 'Forge', projectUrl: `https://chatgpt.com/g/${discoveredProjectId}-forge/project`,
   }]);
   const server = createWorkflowSupervisorServer({ controlPlane: control, socketPath: workflowSupervisorSocketPath(root) });
   servers.push(server);
@@ -94,12 +96,46 @@ describe('Supervisor bootstrap Project binding before enrollment', () => {
     expect(control.listTasks(false)).toHaveLength(0);
   });
 
-  test('an undiscovered Project fails closed before enrollment effect reservation', async () => {
-    const { root, control } = await fixture(false);
+  test('an undiscovered explicit Project cannot be replaced by a scope-matching Project during recovery', async () => {
+    const competingProjectId = 'g-p-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const { root, store, control } = await fixture(true, true, competingProjectId);
     await expect(callWorkflowSupervisorAdapter(context(root), 'supervisor_task', startArgs('undiscovered-project', projectUrl)))
       .rejects.toThrow('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_NOT_DISCOVERED');
     const task = control.listTasks(false).find((candidate) => candidate.objective.includes('fixed-HEAD independent #483 review'));
     expect(task).toBeDefined();
+    expect(task!.continuationPolicy.project_binding_required).toBe(true);
+
+    // The start failure leaves a task record, but it must not create an effect
+    // later when the actual Runtime recovery scanner reconciles inert tasks.
+    expect(store.listTasksWithoutCausalObligation()).toEqual([]);
+    await control.reconcileCommittedContinuations();
+    expect(store.getEffectByOriginKey(`enrollment:${task!.taskId}`)).toBeUndefined();
     expect(control.bootstrapPoll(task!.taskId).command).toBeFalsy();
+    expect(() => control.bootstrapProjectUrl(task!.taskId)).toThrow('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_REQUIRED');
+  });
+
+  test('a crash between task registration and Project binding stays inert and recovers after exact binding', async () => {
+    const { root, store, control } = await fixture(true, true);
+    const task = control.registerTask({
+      taskId: 'supervisor:crash-before-project-bind', conversationId: 'bootstrap:supervisor:crash-before-project-bind',
+      conversationUrl: 'https://chatgpt.com/', objective: 'Crash between registration and explicit Project binding.',
+      completionContract: { kind: 'model_semantic_completion', controller_home: root, repo_id: repoId },
+      continuationPolicy: { kind: 'standalone_supervisor', bootstrap: true, project_binding_required: true, repo_id: repoId },
+      userBlockerPolicy: { kind: 'model_semantic_user_blocker' },
+    });
+
+    expect(() => control.reserveEnrollment(task.taskId)).toThrow('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_REQUIRED');
+    expect(store.listTasksWithoutCausalObligation()).toEqual([]);
+    await control.reconcileCommittedContinuations();
+    expect(store.getEffectByOriginKey(`enrollment:${task.taskId}`)).toBeUndefined();
+    expect(control.bootstrapPoll(task.taskId).command).toBeFalsy();
+
+    control.bindBootstrapProject({ taskId: task.taskId, projectUrl, requestId: 'bind-after-recovery', authorizedBy: 'user-authorized #483 Project binding' });
+    expect(store.listTasksWithoutCausalObligation().map((candidate) => candidate.taskId)).toContain(task.taskId);
+    await control.reconcileCommittedContinuations();
+    const effect = store.getEffectByOriginKey(`enrollment:${task.taskId}`);
+    expect(effect).toBeDefined();
+    expect(control.bootstrapProjectUrl(task.taskId)).toBe(projectUrl);
+    expect(control.bootstrapPoll(task.taskId).command?.effectId).toBe(effect!.effectId);
   });
 });
