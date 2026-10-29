@@ -1398,6 +1398,42 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, historical.workId)).toBeUndefined();
   });
 
+  test('historical Work session does not block Workbench read/search or ordinary focused checks', async () => {
+    const fx = fixture(); roots.push(fx.root);
+    const caller = { sessionId: 'check-session', principalId: 'check-principal', controllerInstanceId: 'check-instance' };
+    startExecutionSession(fx.controllerHome, caller);
+    const historical = createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
+      workId: 'work-old-check-carrier', repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId, objective: 'Unrelated historical work',
+      workKind: 'investigation', acceptanceCriteria: [], allowedPaths: [],
+      forbiddenPaths: [], checks: [], constraints: {}, requestedBy: 'chatgpt',
+    });
+    updateExecutionSession(fx.controllerHome, caller, {
+      activeWorkId: historical.workId, activeRepositoryId: fx.repository.repoId,
+      activeCheckoutId: fx.repository.activeCheckoutId,
+    });
+    const workbench = await callRepositoryTool(fx.controllerHome, 'repository_workbench', {
+      repo_id: fx.repository.repoId,
+      operation: 'batch_execute',
+      payload: { steps: [
+        { kind: 'git_status', input: {} },
+        { kind: 'search', input: { query: 'export' } },
+        { kind: 'read_file', input: { path: 'src/lib.ts' } },
+      ] },
+    }, caller);
+    expect(workbench?.isError).not.toBe(true);
+    expect(workbench?.structuredContent).toMatchObject({ ok: true, mode: 'fast' });
+    const check = await executeGatewayRoutedOperation(fx.ctx, 'run_check', {
+      repo_id: fx.repository.repoId, check_id: 'type-focused',
+      request_id: 'work-free-focused-check',
+    }, { path: 'fast', reasons: ['run_check_process_runtime'] });
+    expect(check?.isError).not.toBe(true);
+    expect(check?.structuredContent).toMatchObject({ accepted: true });
+    expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, historical.workId)).toBeUndefined();
+    expect(readExecutionSession(fx.controllerHome, caller)?.activeWorkId).toBe(historical.workId);
+    expect(git(fx.repoRoot, ['status', '--porcelain', '--', 'src/lib.ts'])).toBe('');
+  });
+
   test('readonly commands with Work context never acquire mutation admission on a dirty owned checkout', async () => {
     const fx = fixture(); roots.push(fx.root);
     const caller = { sessionId: 'read-session', principalId: 'read-principal', controllerInstanceId: 'read-instance' };
