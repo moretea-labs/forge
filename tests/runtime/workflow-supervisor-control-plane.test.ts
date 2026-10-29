@@ -3709,7 +3709,10 @@ test('provider silence reports absolute unresolved-effect age when assistant dig
   expect(report.effectElapsedMs).toBeLessThanOrEqual(31 * 60_000 + 1_000);
   expect(report.elapsedMs).toBe(60_000);
   expect(report.recoveryReviewAt).toBe(new Date(appliedAtMs + WORKFLOW_SUPERVISOR_PROVIDER_IDLE_GRACE_MS).toISOString());
-  expect(report).toMatchObject({ progress: 'no_visible_output', resendAuthorized: false });
+  // Changing digests reset only the observed interval; they prove neither
+  // meaningful progress nor the absence of visible output.
+  expect(report).not.toHaveProperty('progress');
+  expect(report.resendAuthorized).toBe(false);
   expect(store.getLatestCompletion(taskId)).toBeUndefined();
   expect(store.effectApplied(effect.effectId)).toBe(true);
   store.close();

@@ -1554,10 +1554,10 @@ export class WorkflowSupervisorStore {
   }
   providerResumeExhausted(effectId: string): boolean { return this.read((db) => Boolean(statement(db, "SELECT 1 AS ok FROM events WHERE effect_id = ? AND kind = 'assistant_recovery_exhausted' LIMIT 1", (s) => s.get(effectId)))); }
   /**
-   * Read-only elapsed silence for one applied effect, derived from the exact
-   * provider-state event the observation loop already journals. It adds no
-   * durable state, no second threshold and no resend authorization: it only
-   * stops the caller from reporting "still running" as if output were arriving.
+   * Read-only timing projection for one applied effect, derived from the exact
+   * provider-state event the observation loop already journals. Digest changes
+   * may reset the observed interval but are not meaningful-progress evidence;
+   * this projection makes no progress/completion claim and never authorizes resend.
    */
   providerSilence(effectId: string, nowMs = this.clockMs()): WorkflowSupervisorSilentTurn | undefined {
     return this.read((db) => {
@@ -1581,7 +1581,6 @@ export class WorkflowSupervisorStore {
         elapsedMs: Math.max(0, nowMs - observedSinceMs),
         recoveryGraceMs: WORKFLOW_SUPERVISOR_PROVIDER_IDLE_GRACE_MS,
         recoveryReviewAt: new Date(effectAppliedAtMs + WORKFLOW_SUPERVISOR_PROVIDER_IDLE_GRACE_MS).toISOString(),
-        progress: 'no_visible_output',
         resendAuthorized: false,
       };
     });

@@ -174,14 +174,13 @@ export interface WorkflowSupervisorSilentTurn {
   effectAppliedAt: string;
   /** Absolute unresolved-effect age; assistant digest changes never reset it. */
   effectElapsedMs: number;
-  /** Start of the current unchanged provider-state/output-digest interval. */
+  /** Start of the current unchanged provider-state/output-digest interval; not a progress timestamp. */
   observedSince: string;
   /** Duration of the current unchanged provider-state/output-digest interval. */
   elapsedMs: number;
   /** The existing bounded review threshold, anchored to effect application. */
   recoveryGraceMs: number;
   recoveryReviewAt: string;
-  progress: 'no_visible_output';
   /** Silence alone never authorizes replaying an already-applied Send. */
   resendAuthorized: false;
 }
