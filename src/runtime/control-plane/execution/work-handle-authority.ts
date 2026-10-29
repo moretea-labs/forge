@@ -95,8 +95,7 @@ export function workHandleRetainsCanonicalMutationOwnership(input: {
     || !target.branch
     || handle.branch !== target.branch
     || !target.clean
-    || !target.head
-    || !handle.expectedHead?.trim()) {
+    || !target.head) {
     return true;
   }
 
@@ -110,6 +109,9 @@ export function workHandleRetainsCanonicalMutationOwnership(input: {
       .filter((value): value is string => Boolean(value)));
   if (recoverableProcessWorkIds.has(handle.workId)) return true;
 
+  // Historical WorkHandles may omit expectedHead. A clean physical checkout
+  // with no active Lease/Process can still be proven safe from the remaining
+  // recorded base revisions; absence of that optional field is not ownership.
   const revisions = [...new Set([
     handle.expectedHead,
     handle.deliveryBaseCommit,

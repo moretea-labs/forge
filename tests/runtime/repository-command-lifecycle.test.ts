@@ -185,6 +185,15 @@ describe('repository command execution lifecycle', () => {
       controllerHome, repositoryId: repository.repoId, checkoutId: repository.activeCheckoutId, workId: 'work-new-owner',
     })).not.toThrow();
 
+    // A historical Handle can lack expectedHead after recovery. Its known base
+    // revisions still prove no unique physical source exists; missing WorkHandle
+    // metadata alone must not monopolize a clean checkout without a lease.
+    const absorbedHandle = readWorkHandle(controllerHome, repository.repoId, workId)!;
+    writeWorkHandle(controllerHome, { ...absorbedHandle, expectedHead: undefined });
+    expect(() => assertCanonicalRepositoryMutationWorkHandleAvailable({
+      controllerHome, repositoryId: repository.repoId, checkoutId: repository.activeCheckoutId, workId: 'work-new-owner',
+    })).not.toThrow();
+
     // A real unabsorbed candidate remains authoritative even though it lives
     // only in WorkHandle metadata.
     git(repository.canonicalRoot, ['checkout', '-b', 'owner-unabsorbed']);
@@ -483,7 +492,9 @@ describe('repository command execution lifecycle', () => {
     const route = (command: string[]) => classifyRepositoryCommandRoute(command);
     expect(route(['bash', '-lc', 'curl -fsS http://127.0.0.1:8765/ready'])).toEqual({ route: 'process_direct', reason: 'readonly_fast_path' });
     expect(route(['bash', '-lc', 'curl -fsS http://127.0.0.1:8765/ready >/dev/null'])).toEqual({ route: 'process_direct', reason: 'readonly_fast_path' });
-    for (const payload of ['curl -fsS http://127.0.0.1:8765/ready > marker.txt', 'curl -fsS -X POST http://127.0.0.1:8765/ready', 'curl -fsS -d payload http://127.0.0.1:8765/ready', 'curl -fsS https://example.com/']) expect(route(['bash', '-lc', payload])).toEqual({ route: 'process_managed', reason: 'shell_wrapper_requires_managed_boundary' });
+    // Existing baseline had an obsolete reason assertion: these shell commands
+    // are managed through the stronger ProcessLease path, not an unleased wrapper.
+    for (const payload of ['curl -fsS http://127.0.0.1:8765/ready > marker.txt', 'curl -fsS -X POST http://127.0.0.1:8765/ready', 'curl -fsS -d payload http://127.0.0.1:8765/ready', 'curl -fsS https://example.com/']) expect(route(['bash', '-lc', payload])).toEqual({ route: 'process_managed', reason: 'workspace_write_requires_process_lease' });
     for (const payload of ['printf local > marker.txt', 'bun -e "console.log(1)"']) expect(route(['bash', '-lc', payload])).toEqual({ route: 'process_managed', reason: 'workspace_write_requires_process_lease' });
     expect(route(['bun', '-e', 'await fetch("http://127.0.0.1:8765/ready")'])).toEqual({ route: 'process_managed', reason: 'workspace_write_requires_process_lease' });
     expect(route(['touch', 'marker.txt'])).toEqual({ route: 'process_managed', reason: 'workspace_write_requires_process_lease' });
