@@ -2099,20 +2099,38 @@ export class WorkflowSupervisorStore {
             JOIN completions c ON c.completion_fingerprint=e.completion_fingerprint
             WHERE e.task_id=? AND e.kind='assistant_completion' AND e.event_id>? AND c.action='CONTINUE'`,
             (s) => s.get(input.taskId, lastMigration?.id ?? 0)) as { total?: number };
-          // One durable completion ledger owns proactive rotation. Count real
-          // completed turns instead of estimating a conversation's token size;
-          // verified exact-target load failures advance the rotation cadence.
-          const unavailableReads = statement(db, `SELECT COUNT(*) AS total FROM events
-            WHERE task_id=? AND kind='browser_delivery_attempt_failed' AND event_id>?
-              AND json_extract(payload_json,'$.conversation_id')=?
-              AND json_extract(payload_json,'$.code')='COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE'
-              AND json_extract(payload_json,'$.verified_empty_shell')=1`,
-            (s) => s.get(input.taskId, lastMigration?.id ?? 0, currentTask.conversationId)) as { total?: number };
-          const receiptLimit = (unavailableReads.total ?? 0) >= 2 ? 6 : 10;
+          // Count one failed provider *turn* only when its recovery has actually
+          // completed, not one browser retry or repeated error observation.
+          // Unsettled provider outcomes remain protected by the migration fence.
+          const recoveredFailedTurns = statement(db, `SELECT COUNT(DISTINCT failed.effect_id) AS total
+            FROM events failed WHERE failed.task_id=? AND failed.event_id>?
+              AND failed.kind='assistant_provider_failed' AND failed.effect_id IS NOT NULL
+              AND NOT EXISTS (SELECT 1 FROM completions original
+                WHERE original.task_id=failed.task_id AND original.source_effect_id=failed.effect_id)
+              AND EXISTS (SELECT 1 FROM effects child
+                JOIN completions settled ON settled.task_id=child.task_id
+                  AND settled.source_effect_id=child.effect_id
+                WHERE child.task_id=failed.task_id
+                  AND child.origin_key='provider-recovery:' || failed.effect_id)`,
+            (s) => s.get(input.taskId, lastMigration?.id ?? 0)) as { total?: number };
+          const previousCompletion = statement(db, `SELECT MAX(event_id) AS id FROM events
+            WHERE task_id=? AND kind='assistant_completion' AND event_id>?
+              AND completion_fingerprint<>?`,
+            (s) => s.get(input.taskId, lastMigration?.id ?? 0, input.completionFingerprint)) as { id?: number };
+          const failuresSincePreviousCompletion = statement(db, `SELECT COUNT(DISTINCT effect_id) AS total
+            FROM events WHERE task_id=? AND kind='assistant_provider_failed'
+              AND event_id>? AND event_id<(SELECT event_id FROM events WHERE event_key=? LIMIT 1)
+              AND effect_id IS NOT NULL`,
+            (s) => s.get(input.taskId, Math.max(lastMigration?.id ?? 0, previousCompletion?.id ?? 0),
+              `completion:${input.completionFingerprint}`)) as { total?: number };
+          const completedOrFailedTurns = (completedSinceMigration.total ?? 0) + (recoveredFailedTurns.total ?? 0);
+          // An explicit three-turn failure burst accelerates rotation at a
+          // safe completion boundary only; unknown/applied siblings still veto.
+          const failureBurst = (failuresSincePreviousCompletion.total ?? 0) >= 3;
           const rotate = successor.freshEnrollmentPrompt !== undefined
             && currentTask.continuationPolicy.kind === 'standalone_supervisor'
             && !currentTask.conversationId.startsWith('bootstrap:')
-            && (completedSinceMigration.total ?? 0) >= receiptLimit
+            && (completedOrFailedTurns >= 10 || failureBurst)
             // The source completion cannot retire any other still-unapplied
             // command: a started send may have reached the provider, and even
             // an unstarted effect still owns an undispatched continuation.
@@ -2144,7 +2162,7 @@ export class WorkflowSupervisorStore {
               json({ from_conversation_id: sourceConversationId, to_conversation_id: bootstrapConversationId,
                 to_conversation_url: 'https://chatgpt.com/', fresh_conversation: true,
                 replacement_effect_id: successorEffect!.effectId, request_id: `automatic-receipt:${input.completionFingerprint}`,
-                authorized_by: 'user-configured-standalone-rotation', reason: `confirmed_continue_receipts:${receiptLimit}` }), now()));
+                authorized_by: 'user-configured-standalone-rotation', reason: failureBurst ? 'confirmed_provider_failure_burst:3' : `confirmed_success_and_recovered_failures:${completedOrFailedTurns}` }), now()));
           }
         }
       }

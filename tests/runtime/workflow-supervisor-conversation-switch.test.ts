@@ -214,7 +214,49 @@ describe('Workflow Supervisor fresh conversation switch', () => {
   });
 
 
-  test('earlier confirmed receipt rotation derives from durable exact-target load failures', async () => {
+  test('confirmed provider failure with a completed recovery counts once toward normal rotation', async () => {
+    const fx = fixture();
+    const taskId = 'supervisor:provider-failure-budget-test';
+    const conversationId = '99999999-aaaa-bbbb-cccc-777777777777';
+    const store = new WorkflowSupervisorStore(fx.controllerHome);
+    const control = new WorkflowSupervisorControlPlane(store);
+    control.registerTask({
+      taskId, conversationId, conversationUrl: 'https://chatgpt.com/c/' + conversationId,
+      objective: 'Preserve a failed provider turn across recovery.',
+      completionContract: {}, continuationPolicy: { kind: 'standalone_supervisor' }, userBlockerPolicy: {},
+    });
+    const original = control.reserveEnrollment(taskId);
+    expect(store.recordEffectDispatchStarted(original.effectId, 1, 'failed-dispatch')).toBe(true);
+    control.observeEffect({ effectId: original.effectId, observationId: 'failed-applied', outcome: 'applied' });
+    const failure = {
+      taskId, effectId: original.effectId, generating: false, assistantDigest: 'explicit-failure',
+      providerFailureCode: 'CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE',
+      observedAtMs: Date.now(), graceMs: 1000,
+      recovery: { effectId: 'fx_recovered_failure_counted_once', prompt: 'Recover the task.' },
+    };
+    const observed = store.observeProviderTurn(failure);
+    expect(observed.state).toBe('recovery_reserved');
+    // Repeated observations of the same failure are not new failed turns.
+    expect(store.observeProviderTurn(failure).state).toBe('recovery_reserved');
+    expect(store.hasAppliedEffectAwaitingCompletion(taskId)).toBe(true);
+    expect(store.getTask(taskId)?.conversationId).toBe(conversationId);
+    let effect = observed.recoveryEffect!;
+    for (let n = 1; n <= 9; n += 1) {
+      expect(store.recordEffectDispatchStarted(effect.effectId, 1, 'recovered-round-' + n)).toBe(true);
+      control.observeEffect({ effectId: effect.effectId, observationId: 'recovered-applied-' + n, outcome: 'applied' });
+      const result = await control.observeAssistantTurn({
+        taskId, conversationId,
+        responseText: 'Useful progress.\n' + renderSupervisorReceipt(control.getTask(taskId)!, effect.effectId, 'CONTINUE'),
+      });
+      if (!('successorEffect' in result) || !result.successorEffect) throw new Error('MISSING_RECOVERED_SUCCESSOR');
+      effect = result.successorEffect;
+      expect(effect.kind).toBe(n === 9 ? 'enrollment' : 'continuation');
+    }
+    expect(store.getTask(taskId)?.conversationId).toBe('bootstrap:' + taskId);
+    store.close();
+  });
+
+  test('repeated browser target errors do not shorten rotation without distinct failed turns', async () => {
     const fx = fixture();
     const conversationId = '75757575-aaaa-bbbb-cccc-878787878787';
     const taskId = 'supervisor:degraded-receipt-rotation';
@@ -228,7 +270,7 @@ describe('Workflow Supervisor fresh conversation switch', () => {
     store.recordBrowserDeliveryAttemptFailure({ taskId, conversationId, code: 'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE', verifiedEmptyShell: true });
     store.recordBrowserDeliveryAttemptFailure({ taskId, conversationId, code: 'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE', verifiedEmptyShell: true });
     let effect = control.reserveEnrollment(taskId);
-    for (let n = 1; n <= 6; n += 1) {
+    for (let n = 1; n <= 10; n += 1) {
       expect(store.recordEffectDispatchStarted(effect.effectId, 1, `degraded-round-${n}`)).toBe(true);
       control.observeEffect({ effectId: effect.effectId, observationId: `degraded-applied-${n}`, outcome: 'applied' });
       const result = await control.observeAssistantTurn({
@@ -237,7 +279,7 @@ describe('Workflow Supervisor fresh conversation switch', () => {
       });
       if (!('successorEffect' in result) || !result.successorEffect) throw new Error('DEGRADED_SUCCESSOR_MISSING');
       effect = result.successorEffect;
-      expect(effect.kind).toBe(n === 6 ? 'enrollment' : 'continuation');
+      expect(effect.kind).toBe(n === 10 ? 'enrollment' : 'continuation');
     }
     expect(store.getTask(taskId)?.conversationId).toBe(`bootstrap:${taskId}`);
     expect(store.latestEffectDispatch(effect.effectId)?.generation ?? 0).toBe(0);
