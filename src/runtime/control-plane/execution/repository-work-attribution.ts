@@ -1,4 +1,3 @@
-import { readExecutionSession } from './session-store';
 import { getWorkContract, semanticWorkState } from '../../../../packages/kernel/work/api/index';
 
 export interface RepositoryWorkAttributionCaller {
@@ -29,27 +28,6 @@ export function resolveExplicitClaimedRepositoryWork(
   return work;
 }
 
-export function assertNoBoundExecutionSessionMutation(
-  controllerHome: string,
-  target: RepositoryWorkAttributionTarget,
-  caller?: RepositoryWorkAttributionCaller,
-): void {
-  if (!caller?.principalId?.trim() || !caller.sessionId?.trim()) return;
-  const executionSession = readExecutionSession(controllerHome, {
-    sessionId: caller.sessionId,
-    principalId: caller.principalId,
-    controllerInstanceId: caller.controllerInstanceId,
-  });
-  const workId = executionSession?.activeWorkId?.trim();
-  if (!workId || executionSession?.activeRepositoryId !== target.repoId) return;
-  const work = getWorkContract({ controllerHome, repoId: target.repoId }, workId);
-  if (!work) throw new Error(`WORK_ATTRIBUTION_INVALID: ${workId}`);
-  if (semanticWorkState(work) !== 'open') {
-    throw new Error(`WORK_ATTRIBUTION_TERMINAL: ${work.workId}:${work.semanticState}`);
-  }
-  throw new Error(`WORK_ATTRIBUTION_REQUIRED: ${work.workId}; active execution session mutations must pass work_id explicitly`);
-}
-
 export function resolveClaimedRepositoryWorkId(
   controllerHome: string,
   target: RepositoryWorkAttributionTarget,
@@ -61,23 +39,8 @@ export function resolveClaimedRepositoryWorkId(
     const work = resolveExplicitClaimedRepositoryWork(controllerHome, target, caller, requestedWorkId);
     return work?.workId;
   }
-  if (!caller?.principalId?.trim()) return undefined;
-  if (caller.sessionId?.trim()) {
-    const executionSession = readExecutionSession(controllerHome, {
-      sessionId: caller.sessionId,
-      principalId: caller.principalId,
-      controllerInstanceId: caller.controllerInstanceId,
-    });
-    const workId = executionSession?.activeWorkId?.trim();
-    if (workId
-      && executionSession?.activeRepositoryId === target.repoId
-      && (!executionSession.activeCheckoutId || executionSession.activeCheckoutId === target.activeCheckoutId)) {
-      const work = getWorkContract({ controllerHome, repoId: target.repoId }, workId);
-      if (work && semanticWorkState(work) !== 'open') {
-        throw new Error(`WORK_ATTRIBUTION_TERMINAL: ${work.workId}:${work.semanticState}`);
-      }
-      if (work) return workId;
-    }
-  }
+  // A previously bound execution session is *not* an implicit mutation
+  // authority. Only an explicit work_id opts into Work-attributed execution;
+  // Git/Process/Lease and checkout safety remain enforced by their owners.
   return undefined;
 }

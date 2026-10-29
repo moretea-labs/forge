@@ -277,6 +277,64 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     store.close();
   });
 
+  test('Requirement-owned continuation survives its terminal Work carrier and tracks Requirement CAS only', () => {
+    const fx = fixture();
+    const requirementId = 'REQ-work-carrier-terminal-does-not-stop-goal';
+    const workId = 'work-old-goal-carrier';
+    createRequirement({ controllerHome: fx.controllerHome }, {
+      requirementId, title: 'Deliver Requirement first',
+      outcomeStatement: 'Continue implementation after a lower Work ends',
+    });
+    createWorkContract(fx.store, {
+      workId, repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId,
+      requirementId, objective: 'Historical execution carrier only',
+      acceptanceCriteria: [], allowedPaths: [], forbiddenPaths: [], checks: [],
+      constraints: { workspaceMode: 'current' }, requestedBy: 'chatgpt', dispatchState: 'running',
+    });
+    const task = {
+      taskId: `forge:${fx.repository.repoId}:work:${workId}`,
+      conversationId: '56565656-7878-9090-abab-cdcdcdcdcdcd',
+      conversationUrl: 'https://chatgpt.com/c/56565656-7878-9090-abab-cdcdcdcdcdcd',
+      objective: 'Requirement-first continuation',
+      completionContract: {
+        controller_home: fx.controllerHome, repo_id: fx.repository.repoId,
+        requirement_id: requirementId, work_id: workId,
+      },
+      continuationPolicy: { kind: 'forge_goal_outer_turn' },
+      userBlockerPolicy: {},
+      createdAt: '2026-01-01T00:00:00.000Z',
+    };
+    const hooks = forgeWorkflowSupervisorLifecycleHooks(fx.controllerHome);
+    const first = hooks.workProgressFingerprint?.(task);
+    expect(first).toMatch(/^[a-f0-9]{64}$/);
+    reviseRequirementSemantic({ controllerHome: fx.controllerHome }, requirementId, {
+      expectedRevision: 1, progressSummary: 'Verified work continues under the Requirement',
+      remainingWork: ['Browser → ChatGPT live receipt still missing'],
+    });
+    const second = hooks.workProgressFingerprint?.(task);
+    expect(second).not.toBe(first);
+    reviseWorkSemanticContext(fx.store, workId, { expectedRevision: 1, state: 'completed' });
+    expect(hooks.workProgressFingerprint?.(task)).toBe(second);
+    expect(hooks.terminalWorkStopReasonForTask?.(task)).toBeUndefined();
+    expect(hooks.browserTaskActive?.(task)).toBe(true);
+
+    const unrelatedId = 'REQ-unrelated-legacy-carrier';
+    createRequirement({ controllerHome: fx.controllerHome }, {
+      requirementId: unrelatedId, title: 'Unrelated Goal',
+      outcomeStatement: 'Must not borrow another Work as authority',
+    });
+    const conflicting = { ...task, completionContract: { ...task.completionContract, requirement_id: unrelatedId } };
+    expect(hooks.terminalWorkStopReasonForTask?.(conflicting)).toContain('Exact active Work');
+    expect(hooks.browserTaskActive?.(conflicting)).toBe(false);
+    const oldWorkOnly = { ...task, completionContract: { ...task.completionContract, requirement_id: undefined } };
+    expect(hooks.terminalWorkStopReasonForTask?.(oldWorkOnly)).toContain('Exact active Work');
+
+    reviseRequirementSemantic({ controllerHome: fx.controllerHome }, requirementId, {
+      expectedRevision: 2, remainingWork: [], acceptedEvidenceRefs: ['review:accepted'], state: 'completed',
+    });
+    expect(hooks.browserTaskActive?.(task)).toBe(false);
+  });
+
   test('uses the Requirement outcome as canonical Supervisor goal instead of the Work execution objective', () => {
     const fx = fixture();
     const requirementId = 'REQ-supervisor-outcome-authority';
@@ -627,6 +685,48 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     expect(hooks.browserTaskActive?.(doneTask)).toBe(false);
   });
 
+  test('Requirement-bound standalone Supervisor rejects missing or mismatched Work carriers before send', () => {
+    const fx = fixture();
+    const hooks = forgeWorkflowSupervisorLifecycleHooks(fx.controllerHome);
+    const requirementId = 'REQ-STANDALONE-WORK-CARRIER';
+    const otherRequirementId = 'REQ-STANDALONE-OTHER-CARRIER';
+    createRequirement({ controllerHome: fx.controllerHome }, {
+      requirementId, title: 'Standalone Work carrier', outcomeStatement: 'Keep Requirement as the sole progress authority.',
+    });
+    createRequirement({ controllerHome: fx.controllerHome }, {
+      requirementId: otherRequirementId, title: 'Other Requirement', outcomeStatement: 'Must not be borrowed as a carrier.',
+    });
+    const createCarrier = (workId: string, carrierRequirementId: string) => createWorkContract(fx.store, {
+      workId, repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId,
+      requirementId: carrierRequirementId, objective: 'Mechanical execution context only.',
+      acceptanceCriteria: ['Must not replace Requirement progress authority'],
+      allowedPaths: [], forbiddenPaths: [], checks: [], constraints: { workspaceMode: 'current' },
+      requestedBy: 'chatgpt', dispatchState: 'running',
+    });
+    createCarrier('work-standalone-matching-carrier', requirementId);
+    createCarrier('work-standalone-other-carrier', otherRequirementId);
+    const makeTask = (workId: string) => ({
+      taskId: `supervisor:${workId}`, conversationId: `conversation-${workId}`,
+      conversationUrl: `https://chatgpt.com/c/${workId}`, objective: 'Requirement-bound standalone task.',
+      completionContract: {
+        kind: 'model_semantic_completion', controller_home: fx.controllerHome,
+        repo_id: fx.repository.repoId, requirement_id: requirementId, work_id: workId,
+      },
+      continuationPolicy: { kind: 'standalone_supervisor', repo_id: fx.repository.repoId },
+      userBlockerPolicy: { kind: 'model_semantic_user_blocker' }, createdAt: '2026-01-01T00:00:00.000Z',
+    });
+
+    const matching = makeTask('work-standalone-matching-carrier');
+    const mismatched = makeTask('work-standalone-other-carrier');
+    const missing = makeTask('work-standalone-missing-carrier');
+    expect(hooks.browserTaskActive?.(matching)).toBe(true);
+    expect(hooks.workProgressFingerprint?.(matching)).toMatch(/^[a-f0-9]{64}$/);
+    expect(hooks.browserTaskActive?.(mismatched)).toBe(false);
+    expect(hooks.workProgressFingerprint?.(mismatched)).toBeUndefined();
+    expect(hooks.browserTaskActive?.(missing)).toBe(false);
+    expect(hooks.workProgressFingerprint?.(missing)).toBeUndefined();
+  });
+
   test('derives standalone project scope from Supervisor-owned Controller Home', () => {
     const fx = fixture();
     const supervisorStore = new WorkflowSupervisorStore(join(fx.root, 'standalone-project-scope'));
@@ -817,7 +917,8 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
       createdAt: '2026-01-01T00:00:00.000Z',
     };
     const correction = 'C'.repeat(180);
-    const reviewNotice = `[UNVERIFIED STALE_HEAD] pr=500 reviewed=${'a'.repeat(12)} current=${'b'.repeat(12)} src=independent_reviewer outcome=REVISE receipt=review-stale NOT APPROVAL/MERGE AUTHORITY`;
+    const reviewId = 'review-' + 'r'.repeat(121);
+    const reviewNotice = `[UNVERIFIED STALE_HEAD] pr=1000000 reviewed=${'a'.repeat(40)} current=${'b'.repeat(40)} src=independent_reviewer outcome=REVISE receipt=${reviewId} NO_MERGE_AUTHORITY`;
     const prompt = renderSupervisorPrompt(
       task, 'fx_12345678', 'continuation', undefined, correction, reviewNotice,
     );
@@ -828,13 +929,13 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     expect(prompt).toContain('需时 supervisor_task get');
     expect(prompt).toContain('receipt:' + supervisorReceiptChallenge(task, 'fx_12345678'));
     expect(prompt).not.toContain('目标摘录：');
-    expect(prompt).toContain('pr=500');
-    expect(prompt).toContain('reviewed=' + 'a'.repeat(12));
-    expect(prompt).toContain('current=' + 'b'.repeat(12));
+    expect(prompt).toContain('pr=1000000');
+    expect(prompt).toContain('reviewed=' + 'a'.repeat(40));
+    expect(prompt).toContain('current=' + 'b'.repeat(40));
     expect(prompt).toContain('src=independent_reviewer');
     expect(prompt).toContain('outcome=REVISE');
-    expect(prompt).toContain('receipt=review-stale');
-    expect(prompt).toContain('NOT APPROVAL/MERGE AUTHORITY');
+    expect(prompt).toContain('receipt=' + reviewId);
+    expect(prompt).toContain('NO_MERGE_AUTHORITY');
     expect(prompt).not.toContain(correction);
     expect(prompt).toContain('末行：字母 空格 receipt 值');
   });
@@ -1002,7 +1103,9 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     // Stale findings remain useful for REVISE, but never authorize the new HEAD.
     expect(control.observeReviewNotice({ ...notice, currentHeadSha: 'b'.repeat(40) }))
       .toMatchObject({ deduplicated: true, deferred: true });
-    expect(control.observeReviewNotice({ ...notice, reviewId: 'review-stale', currentHeadSha: 'b'.repeat(40) }))
+    const longReviewId = 'review-505-f2793e65f0b61f1b5adf845e0368ad1a7386a856-' + 'r'.repeat(76);
+    expect(longReviewId).toHaveLength(128);
+    expect(control.observeReviewNotice({ ...notice, reviewId: longReviewId, currentHeadSha: 'b'.repeat(40) }))
       .toMatchObject({ deduplicated: false, deferred: true });
     expect(control.observeReviewNotice({ ...notice, prNumber: 501, reviewId: 'review-third', reviewedHeadSha: 'c'.repeat(40), currentHeadSha: 'c'.repeat(40) }))
       .toMatchObject({ deduplicated: false, deferred: true });
@@ -1016,13 +1119,13 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     });
     expect(completion.action).toBe('CONTINUE');
     expect(Array.from(completion.successorEffect?.prompt || '').length).toBeLessThanOrEqual(650);
-    expect(completion.successorEffect?.prompt).toContain('receipt=review-stale');
+    expect(completion.successorEffect?.prompt).toContain('receipt=' + longReviewId);
     expect(completion.successorEffect?.prompt).toContain('pr=500');
     expect(completion.successorEffect?.prompt).toContain('[UNVERIFIED STALE_HEAD]');
-    expect(completion.successorEffect?.prompt).toContain('reviewed=' + 'a'.repeat(12));
-    expect(completion.successorEffect?.prompt).toContain('current=' + 'b'.repeat(12));
+    expect(completion.successorEffect?.prompt).toContain('reviewed=' + 'a'.repeat(40));
+    expect(completion.successorEffect?.prompt).toContain('current=' + 'b'.repeat(40));
     expect(completion.successorEffect?.prompt).toContain('src=independent_reviewer');
-    expect(completion.successorEffect?.prompt).toContain('NOT APPROVAL/MERGE AUTHORITY');
+    expect(completion.successorEffect?.prompt).toContain('NO_MERGE_AUTHORITY');
     expect(completion.successorEffect?.prompt).toContain('UNVERIFIED');
     expect(completion.successorEffect?.prompt).toContain('REVISE');
     expect(completion.successorEffect?.prompt).toContain('按需读 Requirement/源码/PR/CI');
@@ -4016,6 +4119,35 @@ test('public supervisor_task revise binds the existing task through canonical RP
     await new Promise<void>((resolve) => server.close(() => resolve()));
     store.close();
   }
+});
+
+test('task-scoped review notices are not starved behind the global pending-notice limit', () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-review-notice-queue-scope-'));
+  roots.push(root);
+  const store = new WorkflowSupervisorStore(root);
+  const control = new WorkflowSupervisorControlPlane(store);
+  const repoId = 'repo-review-notice-queue';
+  const createNoticeTask = (index: number) => {
+    const taskId = `review-queue-task-${index}`;
+    const conversationId = `${String(index).padStart(8, '0')}-1111-2222-3333-444444444444`;
+    const task = control.registerTask({
+      taskId, conversationId, conversationUrl: `https://chatgpt.com/c/${conversationId}`,
+      objective: 'Keep this review notification pending until the original task consumes it.',
+      completionContract: { repo_id: repoId }, continuationPolicy: { kind: 'standalone_supervisor' }, userBlockerPolicy: {},
+    });
+    control.observeReviewNotice({
+      taskId: task.taskId, repoId, prNumber: index + 1,
+      reviewedHeadSha: 'a'.repeat(40), currentHeadSha: 'a'.repeat(40),
+      reviewId: `review-queue-${index}`, source: 'github_review', outcome: 'REVISE',
+    });
+    return task;
+  };
+  for (let index = 0; index < 128; index += 1) createNoticeTask(index);
+  const target = createNoticeTask(128);
+
+  expect(store.listPendingReviewNotices(128).map(({ notice }) => notice.taskId)).not.toContain(target.taskId);
+  expect(store.listPendingReviewNotices(128, target.taskId).map(({ notice }) => notice.taskId)).toEqual([target.taskId]);
+  store.close();
 });
 
 test('public supervisor_task review_notice persists through the real local RPC and only the original CONTINUE sends', async () => {

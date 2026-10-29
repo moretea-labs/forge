@@ -228,7 +228,7 @@ export function renderSupervisorPrompt(
     ? '用 supervisor_task get 取目标。'
     : '继续；需时 supervisor_task get；按需读 Requirement/源码/PR/CI。';
   const outcome = scheduled ? '当日完 W、未完 C、需用户 U' : '未完 C、交付 D、需用户 U';
-  const receiptInstruction = `${instruction} 仅确需跨轮时 C；${outcome}。末行：字母 空格 receipt 值。`;
+  const receiptInstruction = `${instruction} ${outcome}。末行：字母 空格 receipt 值。`;
   const max = kind === 'enrollment' ? MAX_SUPERVISOR_PROMPT_CHARS : MAX_SUPERVISOR_CONTINUATION_PROMPT_CHARS;
   const length = (value: string): number => Array.from(value).length;
   // A required Review event outranks optional excerpts and semantic IDs; task_id
@@ -241,7 +241,6 @@ export function renderSupervisorPrompt(
   const normalizedContext = lowerLayerContext?.trim().replace(/\s+/g, ' ');
   const contextPrefix = '待核验事件：';
   const contextCost = normalizedContext ? 1 + length(contextPrefix) + length(normalizedContext) : 0;
-  if (normalizedContext && length(normalizedContext) > 230) throw new Error('WORKFLOW_SUPERVISOR_PROMPT_TOO_LARGE');
   const goalCapacity = capacity - contextCost;
   if (includeGoalExcerpt && goalCapacity < minimumGoalChars) throw new Error('WORKFLOW_SUPERVISOR_PROMPT_TOO_LARGE');
   const goalChars = includeGoalExcerpt
@@ -255,9 +254,11 @@ export function renderSupervisorPrompt(
   const events: string[] = [];
   let remaining = max - length(promptBase);
   // Review notice fields are mandatory and precede optional correction text.
+  // Use the remaining whole-prompt budget: valid receipts can be 128 characters,
+  // in addition to both exact SHAs. A second fixed event cap rejects valid input.
   // If the complete notice cannot fit, do not emit a partial notice or consume its event key.
   for (const [prefix, raw, bound, required] of [
-    [contextPrefix, normalizedContext, 230, true],
+    [contextPrefix, normalizedContext, max, true],
     ['纠正原因：', correctionReason, 90, false],
   ] as const) {
     if (!raw?.trim()) continue;

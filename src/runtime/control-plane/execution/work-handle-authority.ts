@@ -43,12 +43,12 @@ export interface CanonicalMutationTargetEvidence {
 
 /**
  * Decide whether one WorkHandle still owns the physical mutation surface of a
- * canonical checkout. Semantic Work may remain open after its repository delta
- * has already been absorbed; semantic openness alone is not a checkout mutex.
+ * canonical checkout. Semantic Work state is not physical ownership evidence
+ * in either direction.
  *
- * Semantic openness and the WorkHandle `prepared` state do not by themselves
- * own a physical mutation surface. Only distinct source revisions, active
- * leases/processes, or ambiguous physical checkout evidence retain ownership.
+ * Only uncontained source revisions, active leases/processes, or ambiguous
+ * physical checkout evidence retain canonical mutation ownership. An unknown
+ * expected source HEAD fails closed even after semantic Work becomes terminal.
  */
 export function workHandleRetainsCanonicalMutationOwnership(input: {
   controllerHome: string;
@@ -59,16 +59,11 @@ export function workHandleRetainsCanonicalMutationOwnership(input: {
   const { handle, target } = input;
   if (handle.checkoutId !== target.checkoutId || handle.managedWorktree) return false;
 
-  let contract: ReturnType<typeof getWorkContract>;
-  try {
-    contract = getWorkContract(
-      { controllerHome: input.controllerHome, repoId: input.repositoryId },
-      handle.workContractId ?? handle.workId,
-    );
-  } catch {
-    return true;
-  }
-  if (contract && semanticWorkState(contract) !== 'open') return false;
+  // An unknown source tip cannot be released merely because the semantic Work
+  // is terminal. Require the exact expected HEAD before considering semantic
+  // terminality or baseline ancestry as evidence of absorbed source state.
+  const expectedHead = handle.expectedHead?.trim();
+  if (!expectedHead) return true;
 
   let sameCheckout: boolean;
   try {
@@ -80,8 +75,7 @@ export function workHandleRetainsCanonicalMutationOwnership(input: {
     || !target.branch
     || handle.branch !== target.branch
     || !target.clean
-    || !target.head
-    || !handle.expectedHead?.trim()) {
+    || !target.head) {
     return true;
   }
 
@@ -95,8 +89,9 @@ export function workHandleRetainsCanonicalMutationOwnership(input: {
       .filter((value): value is string => Boolean(value)));
   if (recoverableProcessWorkIds.has(handle.workId)) return true;
 
+  // Baseline revisions supplement but never replace the exact source HEAD.
   const revisions = [...new Set([
-    handle.expectedHead,
+    expectedHead,
     handle.deliveryBaseCommit,
     handle.baseCommit,
   ].map((value) => value?.trim()).filter((value): value is string => Boolean(value)))];
@@ -105,9 +100,8 @@ export function workHandleRetainsCanonicalMutationOwnership(input: {
   const uncontainedRevisions = revisions.filter((revision) => !gitIsAncestor(target.root, revision, target.head!));
   if (uncontainedRevisions.length === 0) return false;
 
-  // An archive ref that merely contains a source revision does not prove that
-  // the canonical target contains it. Keep the fence while any recorded source
-  // revision is outside the exact target HEAD, even if the WorkContract is gone.
+  // Keep the fence while any recorded source revision is outside the exact
+  // canonical target HEAD, even if the WorkContract is gone.
   return true;
 }
 
