@@ -1382,6 +1382,18 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect(committed?.isError).not.toBe(true);
     expect(git(fx.repoRoot, ['rev-parse', 'HEAD'])).not.toBe(beforeHead);
     expect(git(fx.repoRoot, ['status', '--porcelain', '--', 'src/lib.ts'])).toBe('');
+    const launched = await callRepositoryTool(fx.controllerHome, 'execute_command', {
+      repo_id: fx.repository.repoId,
+      command: ['touch', 'unattributed-command.txt'],
+      apply_mode: 'async', request_id: 'session-unattributed-command-write',
+      timeout_ms: 10_000,
+    }, caller);
+    expect(launched?.isError).not.toBe(true);
+    const processId = String((launched?.structuredContent as { processId?: string }).processId ?? '');
+    expect(processId).toBeTruthy();
+    const settled = await waitRepositoryCommandProcess(fx.controllerHome, fx.repository.repoId, processId, { timeoutMs: 10_000 });
+    expect(settled).toMatchObject({ completed: true, ok: true });
+    expect(existsSync(join(fx.repoRoot, 'unattributed-command.txt'))).toBe(true);
     expect(readExecutionSession(fx.controllerHome, caller)?.activeWorkId).toBe(historical.workId);
     expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, historical.workId)).toBeUndefined();
   });
