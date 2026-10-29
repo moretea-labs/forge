@@ -1514,7 +1514,7 @@ describe('owned worktree identity across macOS remounts', () => {
       .toThrow('OWNED_RESOURCE_IDENTITY_FINGERPRINT_MISMATCH');
   });
 
-  it('accepts an exact old-device witness but rejects changed inode or recreated directory', () => {
+  it('rejects historical device witnesses without volume proof and preserves their records', () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-remount-identity-'));
     temporaryRoots.push(root);
     const controllerHome = join(root, 'controller');
@@ -1557,33 +1557,15 @@ describe('owned worktree identity across macOS remounts', () => {
       creator: 'forge:managed-workspace',
       retentionIntent: 'temporary',
     });
-    if (process.platform === 'darwin') {
-      const restored = replay();
-      expect(restored.identityFingerprint).toBe(fingerprint(priorDevice, stat.ino));
-      expect(restored.provenance.createdAt).toBe(resource.provenance.createdAt);
-      expect(readFileSync(resourceFile, 'utf8')).toBe(originalWitnessBytes);
-      expect(() => recordOwnedResource(controllerHome, {
-        resourceId: resource.resourceId,
-        kind: 'worktree',
-        targetRef: worktree,
-        creator: 'forge:managed-workspace',
-        associatedWorkId: 'different-work-owner',
-        retentionIntent: 'temporary',
-      })).toThrow('OWNED_RESOURCE_IDENTITY_CONFLICT');
-    } else {
-      expect(replay).toThrow('OWNED_RESOURCE_IDENTITY_CONFLICT');
-    }
+    expect(replay).toThrow('OWNED_RESOURCE_IDENTITY_CONFLICT');
+    expect(readFileSync(resourceFile, 'utf8')).toBe(originalWitnessBytes);
     const cleanupTarget = {
       resourceId: resource.resourceId,
       kind: 'worktree' as const,
       targetRef: worktree,
     };
-    if (process.platform === 'darwin') {
-      expect(() => assertOwnedResourceCleanupTarget(controllerHome, cleanupTarget)).not.toThrow();
-    } else {
-      expect(() => assertOwnedResourceCleanupTarget(controllerHome, cleanupTarget))
-        .toThrow('OWNED_RESOURCE_IDENTITY_FINGERPRINT_MISMATCH');
-    }
+    expect(() => assertOwnedResourceCleanupTarget(controllerHome, cleanupTarget))
+      .toThrow('OWNED_RESOURCE_IDENTITY_FINGERPRINT_MISMATCH');
 
     // An old device number cannot disguise a different inode.
     writeWitness(fingerprint(priorDevice, stat.ino + 1));
@@ -1595,7 +1577,7 @@ describe('owned worktree identity across macOS remounts', () => {
       // An old witness is not authority to revive a released resource.
       writeFileSync(resourceFile, JSON.stringify({
         ...resource,
-        identityFingerprint: fingerprint(priorDevice, stat.ino),
+        identityFingerprint: resource.identityFingerprint,
         status: 'released',
       }));
       expect(replay).toThrow('OWNED_RESOURCE_REUSE_REQUIRES_NEW_ID');
@@ -1603,7 +1585,7 @@ describe('owned worktree identity across macOS remounts', () => {
       // Resuming an adopted/non-cleanup-capable resource cannot grant deletion authority.
       writeFileSync(resourceFile, JSON.stringify({
         ...resource,
-        identityFingerprint: fingerprint(priorDevice, stat.ino),
+        identityFingerprint: resource.identityFingerprint,
         cleanupCapable: false,
       }));
       expect(replay).toThrow('OWNED_RESOURCE_CLEANUP_AUTHORITY_ESCALATION_FORBIDDEN');

@@ -214,9 +214,7 @@ describe('Git executable and managed workspace guards', () => {
         branchName: 'work/git-runtime-workspace',
       });
 
-      const resumed = resume();
-      expect(resumed.root).toBe(workspaceRoot);
-      expect(resumed.checkoutId).toBe(workspaceCheckoutId);
+      expect(resume).toThrow('OWNED_RESOURCE_IDENTITY_CONFLICT');
       expect(readFileSync(resourcePath, 'utf8')).toBe(originalBytes);
       expect(getOwnedResource(controllerHome, resourceId)?.provenance.createdAt).toBe(owned.provenance.createdAt);
 

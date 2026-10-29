@@ -795,7 +795,7 @@ describe('terminal Work cleanup', () => {
     expect(worktreeCount(fx.repositoryRoot)).toBe(1);
   });
 
-  test('replays and safely cleans a terminal managed worktree after macOS device renumbering', async () => {
+  test('preserves a terminal managed worktree when historical volume identity cannot be proved', async () => {
     if (process.platform !== 'darwin') return;
     const fx = fixture('mac-remount-cleanup');
     const path = fx.workspace.root!;
@@ -819,21 +819,18 @@ describe('terminal Work cleanup', () => {
     writeFileSync(resourceFile, JSON.stringify(original));
 
     // This is an actual Git worktree replay, not a call to the identity helper.
-    const resumed = ensureManagedWorkspace(fx.controllerHome, fx.repository, {
+    expect(() => ensureManagedWorkspace(fx.controllerHome, fx.repository, {
       requestId: 'terminal-cleanup-mac-remount-cleanup',
       title: 'Terminal Cleanup mac-remount-cleanup',
       branchName: fx.branch,
-    });
-    expect(resumed.root).toBe(path);
+    })).toThrow('OWNED_RESOURCE_IDENTITY_CONFLICT');
     expect(getOwnedResource(fx.controllerHome, id)).toEqual(original);
 
     const result = await cleanup(fx);
-    expect(result.receipt.complete).toBe(true);
-    expect(result.receipt.worktree.status).toBe('removed');
-    expect(result.receipt.branchCleanup.status).toBe('deleted');
-    expect(existsSync(path)).toBe(false);
-    expect(branchExists(fx.repositoryRoot, fx.branch)).toBe(false);
-    expect(worktreeCount(fx.repositoryRoot)).toBe(1);
+    expect(result.receipt.complete).toBe(false);
+    expect(existsSync(path)).toBe(true);
+    expect(branchExists(fx.repositoryRoot, fx.branch)).toBe(true);
+    expect(getOwnedResource(fx.controllerHome, id)).toEqual(original);
   });
 
   test('reconciles a legacy cleaned handle with an incomplete receipt without regressing lifecycle', async () => {
