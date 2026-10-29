@@ -897,7 +897,7 @@ describe('repository.git Work delivery', () => {
     expect(git(fx.repoRoot, ['rev-parse', 'HEAD'])).toBe(sourceHead);
   });
 
-  test('releases a missing-contract canonical handle when its unique revision is preserved by its archive branch', async () => {
+  test('keeps a missing-contract canonical handle fenced when its unique revision exists only on an archive branch', async () => {
     const fx = fixture();
     roots.push(fx.root);
     const started = await callExecutionTool(fx.ctx, 'session_start', {});
@@ -955,9 +955,11 @@ describe('repository.git Work delivery', () => {
     writeWorkHandle(fx.controllerHome, orphanHandle);
     expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, orphanId)).toBeUndefined();
     const target = { checkoutId: fx.repository.activeCheckoutId, branch: 'main', head: targetHead, root: fx.repository.canonicalRoot, clean: true };
+    // The archive ref preserves the source, but the exact canonical target
+    // does not contain it. Archive existence alone is not delivery evidence.
     expect(workHandleRetainsCanonicalMutationOwnership({
       controllerHome: fx.controllerHome, repositoryId: fx.repository.repoId, handle: orphanHandle, target,
-    })).toBe(false);
+    })).toBe(true);
 
     git(fx.repoRoot, ['branch', '-D', archiveBranch]);
     expect(workHandleRetainsCanonicalMutationOwnership({
@@ -1343,6 +1345,97 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect(classification.decision?.mode).toBe('fast');
   });
 
+  test('ordinary safe patch is Work-free despite a historical active execution session', async () => {
+    const fx = fixture(); roots.push(fx.root);
+    const caller = { sessionId: 'historic-session', principalId: 'historic-principal', controllerInstanceId: 'historic-instance' };
+    startExecutionSession(fx.controllerHome, caller);
+    const store = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId };
+    const historical = createWorkContract(store, {
+      workId: 'work-session-context-not-mutation-owner', repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      workKind: 'investigation', objective: 'Historical optional semantic context.',
+      acceptanceCriteria: [], allowedPaths: ['**'], forbiddenPaths: [], checks: [],
+      constraints: {}, requestedBy: 'chatgpt',
+    });
+    updateExecutionSession(fx.controllerHome, caller, {
+      activeWorkId: historical.workId, activeRepositoryId: fx.repository.repoId,
+      activeCheckoutId: fx.repository.activeCheckoutId,
+    });
+
+    const response = await callRepositoryTool(fx.controllerHome, 'repository_safe_patch_apply', {
+      repo_id: fx.repository.repoId,
+      purpose: 'Requirement-first edit unrelated to a historical Work',
+      operations: [{
+        type: 'replace', path: 'src/lib.ts',
+        replacements: [{ old_text: 'export const n = 1;', new_text: 'export const n = 3;' }],
+      }],
+    }, caller);
+    expect(response?.isError).not.toBe(true);
+    const payload = response?.structuredContent as { status?: string; session?: { workId?: string } };
+    expect(payload.status).toBe('applied');
+    expect(payload.session?.workId).toBeUndefined();
+    expect(readFileSync(join(fx.repoRoot, 'src/lib.ts'), 'utf8')).toBe('export const n = 3;\n');
+    const beforeHead = git(fx.repoRoot, ['rev-parse', 'HEAD']);
+    const committed = await callRepositoryTool(fx.controllerHome, 'repository_git_commit', {
+      repo_id: fx.repository.repoId,
+      message: 'test: commit without Work ownership',
+      paths: ['src/lib.ts'],
+    }, caller);
+    expect(committed?.isError).not.toBe(true);
+    expect(git(fx.repoRoot, ['rev-parse', 'HEAD'])).not.toBe(beforeHead);
+    expect(git(fx.repoRoot, ['status', '--porcelain', '--', 'src/lib.ts'])).toBe('');
+    const launched = await callRepositoryTool(fx.controllerHome, 'execute_command', {
+      repo_id: fx.repository.repoId,
+      command: ['touch', 'unattributed-command.txt'],
+      apply_mode: 'async', request_id: 'session-unattributed-command-write',
+      timeout_ms: 10_000,
+    }, caller);
+    expect(launched?.isError).not.toBe(true);
+    const processId = String((launched?.structuredContent as { processId?: string }).processId ?? '');
+    expect(processId).toBeTruthy();
+    const settled = await waitRepositoryCommandProcess(fx.controllerHome, fx.repository.repoId, processId, { timeoutMs: 10_000 });
+    expect(settled).toMatchObject({ completed: true, ok: true });
+    expect(existsSync(join(fx.repoRoot, 'unattributed-command.txt'))).toBe(true);
+    expect(readExecutionSession(fx.controllerHome, caller)?.activeWorkId).toBe(historical.workId);
+    expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, historical.workId)).toBeUndefined();
+  });
+
+  test('historical Work session does not block Workbench read/search or ordinary focused checks', async () => {
+    const fx = fixture(); roots.push(fx.root);
+    const caller = { sessionId: 'check-session', principalId: 'check-principal', controllerInstanceId: 'check-instance' };
+    startExecutionSession(fx.controllerHome, caller);
+    const historical = createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
+      workId: 'work-old-check-carrier', repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId, objective: 'Unrelated historical work',
+      workKind: 'investigation', acceptanceCriteria: [], allowedPaths: [],
+      forbiddenPaths: [], checks: [], constraints: {}, requestedBy: 'chatgpt',
+    });
+    updateExecutionSession(fx.controllerHome, caller, {
+      activeWorkId: historical.workId, activeRepositoryId: fx.repository.repoId,
+      activeCheckoutId: fx.repository.activeCheckoutId,
+    });
+    const workbench = await callRepositoryTool(fx.controllerHome, 'repository_workbench', {
+      repo_id: fx.repository.repoId,
+      operation: 'batch_execute',
+      payload: { steps: [
+        { kind: 'git_status', input: {} },
+        { kind: 'search', input: { query: 'export' } },
+        { kind: 'read_file', input: { path: 'src/lib.ts' } },
+      ] },
+    }, caller);
+    expect(workbench?.isError).not.toBe(true);
+    expect(workbench?.structuredContent).toMatchObject({ ok: true, mode: 'fast' });
+    const check = await executeGatewayRoutedOperation(fx.ctx, 'run_check', {
+      repo_id: fx.repository.repoId, check_id: 'type-focused',
+      request_id: 'work-free-focused-check',
+    }, { path: 'fast', reasons: ['run_check_process_runtime'] });
+    expect(check?.isError).not.toBe(true);
+    expect(check?.structuredContent).toMatchObject({ accepted: true });
+    expect(readWorkHandle(fx.controllerHome, fx.repository.repoId, historical.workId)).toBeUndefined();
+    expect(readExecutionSession(fx.controllerHome, caller)?.activeWorkId).toBe(historical.workId);
+    expect(git(fx.repoRoot, ['status', '--porcelain', '--', 'src/lib.ts'])).toBe('');
+  });
+
   test('readonly commands with Work context never acquire mutation admission on a dirty owned checkout', async () => {
     const fx = fixture(); roots.push(fx.root);
     const caller = { sessionId: 'read-session', principalId: 'read-principal', controllerInstanceId: 'read-instance' };
@@ -1392,7 +1485,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     const unclaimedWrite = await callRepositoryTool(fx.controllerHome, 'execute_command', {
       repo_id: fx.repository.repoId, command: ['touch', 'forbidden.txt'], request_id: 'unclaimed-write',
     }, caller);
-    expect(JSON.stringify(unclaimedWrite)).toContain('WORK_ATTRIBUTION_REQUIRED');
+    expect(JSON.stringify(unclaimedWrite)).toContain('WORK_CANONICAL_MUTATION_OWNED');
     const claimedWrite = await callRepositoryTool(fx.controllerHome, 'execute_command', {
       repo_id: fx.repository.repoId, command: ['touch', 'forbidden.txt'], work_id: work.workId, request_id: 'claimed-write',
     }, caller);

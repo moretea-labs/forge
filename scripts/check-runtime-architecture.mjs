@@ -1390,13 +1390,20 @@ requireText('supervisor/entry.ts', "argument('--controller-home')");
 forbid('supervisor/entry.ts', /FORGE_HOME|--forge-home/, 'Workflow Supervisor foreground entry must use the canonical Controller Home authority rather than a second Forge-home root');
 requireText('supervisor/control-plane.ts', 'await this.validateTerminalProposal(task, parsed.proposal)');
 requireText('supervisor/protocol.ts', 'SUPERVISOR_BLOCK_END');
-requireText('supervisor/protocol.ts', String.raw`const objective = task.objective.trim().replace(/\s+/g, ' ');`);
-requireText('supervisor/protocol.ts', "const prefix = '目标摘录：';");
+requireText('supervisor/protocol.ts', "const objective = validateSupervisorObjective(task.objective).trim()");
+requireText('supervisor/protocol.ts', "'目标摘录：' + excerpt");
 requireText('supervisor/protocol.ts', 'supervisor_task get');
 requireText('supervisor/protocol.ts', 'MAX_SUPERVISOR_CONTINUATION_PROMPT_CHARS');
-requireText('supervisor/protocol.ts', "const chars = Array.from(objective);");
-requireText('supervisor/protocol.ts', "const excerpt = chars.slice(0, Math.min(240, available)).join('');");
+requireText('supervisor/protocol.ts', "const goal = Array.from(objective);");
+requireText('supervisor/protocol.ts', "const excerpt = goal.slice(0, goalChars).join('');");
+requireText('supervisor/protocol.ts', 'const includeGoalExcerpt = !lowerLayerContext?.trim();');
+requireText('supervisor/protocol.ts', 'const minimumGoalChars = includeGoalExcerpt ? Math.min(24, goal.length) : 0;');
+requireText('supervisor/protocol.ts', "if (capacity < minimumGoalChars || (includeGoalExcerpt && goal.length === 0)) throw new Error('WORKFLOW_SUPERVISOR_PROMPT_TOO_LARGE');");
+requireText('supervisor/protocol.ts', "if (includeGoalExcerpt && goalChars + length(tail) > goalCapacity) throw new Error('WORKFLOW_SUPERVISOR_PROMPT_TOO_LARGE');");
+requireText('supervisor/protocol.ts', "if (required && (length(normalized) > bound || length(normalized) > available)) {");
 requireText('supervisor/protocol.ts', "if (length(prompt) > max) throw new Error('WORKFLOW_SUPERVISOR_PROMPT_TOO_LARGE');");
+forbid('supervisor/protocol.ts', /上轮进展（参考，执行前核对事实）|\['上轮进展'/, 'Supervisor prompt must not embed prior-turn progress');
+forbid('adapters/chatgpt/controller-round-host.ts', /readControllerRoundContextSnapshot\s*\(/, 'ChatGPT continuation prompt must not load full semantic snapshots');
 requireText('supervisor/protocol.ts', 'MAX_SUPERVISOR_PROMPT_CHARS');
 forbid('supervisor/protocol.ts', /objective:\s*task\.objective\.slice\(/, 'Supervisor must reject oversized objectives, never silently truncate them in rendered effects');
 requireText('supervisor/store.ts', 'validateSupervisorObjective(input.objective)');
@@ -2201,7 +2208,9 @@ for (const path of [...sourceFiles('src'), ...sourceFiles('adapters')]) {
 // observations, never a completion gate.
 requireText('packages/kernel/work/domain/types.ts', "export const SEMANTIC_WORK_STATES = ['open', 'completed', 'cancelled'] as const;");
 requireText('packages/kernel/work/domain/types.ts', 'export type SemanticWorkState = (typeof SEMANTIC_WORK_STATES)[number];');
-requireText('adapters/mcp/runtime-gateway/work-semantic-operations.ts', "const RH_WORK_SEMANTIC_OPERATIONS = new Set(['start', 'get', 'revise', 'complete']);");
+requireText('adapters/mcp/runtime-gateway/work-semantic-operations.ts', "const RH_WORK_SEMANTIC_OPERATIONS = new Set(['start', 'get', 'get_contract', 'revise', 'complete']);");
+requireText('adapters/mcp/runtime-gateway/work-semantic-operations.ts', "if (operation === 'get_contract') {");
+requireText('adapters/mcp/runtime-gateway/work-adapter.ts', "operation === 'get_contract'");
 for (const path of [
   'packages/kernel/work/domain/state-machine.ts',
   'src/runtime/control-plane/execution/work-evidence-policy.ts',

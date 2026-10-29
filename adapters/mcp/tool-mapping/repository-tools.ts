@@ -3,7 +3,7 @@ import { bootstrapLocalProject, diagnoseLatestLocalProjectSource } from '../../.
 import { resolveEphemeralWorkspaceTarget } from '../../../src/cli/repositories/ephemeral-workspace';
 import { commandExecutionScopeKey, type RepositoryCommandScopeTarget } from '../../../src/cli/repositories/command-scope';
 import { executionIdentityForWork, type ResolvedExecutionIdentity } from '../../../src/runtime/control-plane/execution/execution-identity';
-import { assertNoBoundExecutionSessionMutation, resolveClaimedRepositoryWorkId, resolveExplicitClaimedRepositoryWork, type RepositoryWorkAttributionCaller } from '../../../src/runtime/control-plane/execution/repository-work-attribution';
+import { resolveClaimedRepositoryWorkId, resolveExplicitClaimedRepositoryWork, type RepositoryWorkAttributionCaller } from '../../../src/runtime/control-plane/execution/repository-work-attribution';
 import { getWorkContract, semanticWorkState, type WorkContract } from '../../../packages/kernel/work/api';
 import { assertCanonicalRepositoryMutationWorkHandleAvailable, ensureRepositoryMutationWorkHandle, markRepositoryMutationStarted } from '../../../src/runtime/control-plane/execution/work-handle-authority';
 import { readWorkHandle } from '../../../src/runtime/control-plane/execution/work-handle-store';
@@ -326,7 +326,8 @@ function safePatchEditBinding(
       ? claimedSessionEditBinding(controllerHome, repository, caller, existingWorkId)
       : undefined;
   }
-  assertNoBoundExecutionSessionMutation(controllerHome, repository, caller);
+  // Work attribution is opt-in. A historical session binding never vetoes
+  // ordinary Direct Edit, whose physical checkout/lease gate runs separately.
   return undefined;
 }
 
@@ -1095,12 +1096,10 @@ export async function callRepositoryTool(
           ? { repoId: commandScopeKey, checkoutId: commandTarget.activeCheckoutId }
           : { scopeId: commandScopeKey };
         const explicitWorkId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
-        // Repository-semantic checks apply only when a repository target exists;
-        // an arbitrary workspace has no bound session, default branch, or Work.
+        // Work context is optional. Repository mutation safety is decided by
+        // Git/Process/Lease and physical-checkout fences, never by an old
+        // session's activeWorkId.
         const mutationClassification = classifyRepositoryCommand(args.command as string | string[], commandTarget.defaultBranch);
-        if (repository && !explicitWorkId && mutationClassification.risk !== 'readonly') {
-          assertNoBoundExecutionSessionMutation(controllerHome, repository, caller);
-        }
         // Git integration is a capability with its own repository, scope and
         // concurrency checks.  A Work's semantic completion and any optional
         // verification/review evidence never admit or deny this operation.
