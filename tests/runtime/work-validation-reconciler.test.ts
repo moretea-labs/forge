@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { splitRepositoryGitStatus } from '../../src/cli/repositories/structured-git';
 import { readControlPlaneRecord, withControlPlaneTransaction, writeControlPlaneRecordWithinTransaction } from '../../src/runtime/control-plane/persistence/sqlite-store';
 import { createWorkContract, getWorkContract, recordWorkEvidenceState } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { writeWorkHandle, type WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
@@ -500,6 +501,89 @@ function workspaceStatus(path: string, porcelain = ` M ${path}`) {
 }
 
 describe('workspace-bound validation identity', () => {
+  test('fingerprints nested Git source without modifying its index and detects same-shape edits', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-validation-nested-git-'));
+    roots.push(root);
+    const nested = join(root, 'nested');
+    mkdirSync(nested);
+    const git = (cwd: string, args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+    for (const cwd of [root, nested]) {
+      git(cwd, ['init', '-b', 'main']);
+      writeFileSync(join(cwd, 'value.txt'), 'initial\n');
+      git(cwd, ['add', 'value.txt']);
+      git(cwd, ['-c', 'user.name=Validation test', '-c', 'user.email=validation@example.invalid', 'commit', '-m', 'initial']);
+    }
+    writeFileSync(join(nested, 'value.txt'), 'dirty one\n');
+    const status = () => {
+      const porcelain = git(root, ['status', '--porcelain=v1', '--branch', '--untracked-files=all']);
+      return { head: git(root, ['rev-parse', 'HEAD']), branch: 'main', porcelain, ...splitRepositoryGitStatus(porcelain) };
+    };
+    const outer = status();
+    expect(outer.untracked).toContain('nested/');
+    const index = readFileSync(join(nested, '.git', 'index'));
+    const head = git(nested, ['rev-parse', 'HEAD']);
+    const first = workspaceValidationFingerprint(root, outer);
+    expect(workspaceValidationFingerprint(root, status())).toBe(first);
+    writeFileSync(join(nested, 'value.txt'), 'dirty two\n');
+    expect(status().porcelain).toBe(outer.porcelain);
+    const second = workspaceValidationFingerprint(root, status());
+    expect(second).not.toBe(first);
+    expect(readFileSync(join(nested, '.git', 'index'))).toEqual(index);
+    expect(git(nested, ['rev-parse', 'HEAD'])).toBe(head);
+    writeFileSync(join(nested, 'untracked.txt'), 'new source\n');
+    const third = workspaceValidationFingerprint(root, status());
+    expect(third).not.toBe(second);
+    writeFileSync(join(nested, 'untracked.txt'), 'changed source\n');
+    const fourth = workspaceValidationFingerprint(root, status());
+    expect(fourth).not.toBe(third);
+    git(nested, ['-c', 'user.name=Validation test', '-c', 'user.email=validation@example.invalid', 'commit', '--allow-empty', '-m', 'advance source identity']);
+    expect(workspaceValidationFingerprint(root, status())).not.toBe(fourth);
+  });
+
+  test('fingerprints a linked worktree with external Git metadata without changing its index', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-validation-linked-git-'));
+    roots.push(root);
+    const owner = join(root, 'owner');
+    const parent = join(root, 'parent');
+    mkdirSync(owner);
+    mkdirSync(parent);
+    const git = (cwd: string, args: string[]) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+    git(owner, ['init', '-b', 'main']);
+    writeFileSync(join(owner, 'value.txt'), 'initial\n');
+    git(owner, ['add', 'value.txt']);
+    git(owner, ['-c', 'user.name=Validation test', '-c', 'user.email=validation@example.invalid', 'commit', '-m', 'initial']);
+    const linked = join(parent, 'linked');
+    git(owner, ['worktree', 'add', '--detach', linked]);
+    const indexPath = git(linked, ['rev-parse', '--git-path', 'index']);
+    const index = readFileSync(indexPath);
+    const status = workspaceStatus('linked/', '?? linked/');
+    const first = workspaceValidationFingerprint(parent, status);
+    writeFileSync(join(linked, 'value.txt'), 'modified\n');
+    expect(workspaceValidationFingerprint(parent, status)).not.toBe(first);
+    expect(readFileSync(indexPath)).toEqual(index);
+    writeFileSync(join(linked, 'value.txt'), 'initial\n');
+    git(owner, ['worktree', 'remove', linked]);
+  });
+
+  test('rejects ordinary directory inputs and applies one path budget across nested repositories', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-validation-nested-budget-'));
+    roots.push(root);
+    execFileSync('git', ['init', '-b', 'main'], { cwd: root, stdio: 'pipe' });
+    const ordinary = join(root, 'ordinary');
+    mkdirSync(ordinary);
+    // Git would otherwise discover the parent; it is not this directory's source identity.
+    expect(() => workspaceValidationFingerprint(root, workspaceStatus('ordinary/', '?? ordinary/'))).toThrow('WORK_VALIDATION_PATH_TYPE_UNSUPPORTED');
+    for (const name of ['first', 'second']) {
+      const nested = join(root, name);
+      mkdirSync(nested);
+      execFileSync('git', ['init', '-b', 'main'], { cwd: nested, stdio: 'pipe' });
+      for (let index = 0; index < 130; index += 1) writeFileSync(join(nested, `input-${index}.txt`), 'source\n');
+    }
+    expect(() => workspaceValidationFingerprint(root, {
+      ...workspaceStatus('first/'), unstaged: [], untracked: ['first/', 'second/'], porcelain: '?? first/\n?? second/\n',
+    })).toThrow('WORK_VALIDATION_TOO_MANY_PATHS');
+  });
+
   test('changes when file content changes without a HEAD or status-shape change', () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-verification-evidence-'));
     roots.push(root);

@@ -1,12 +1,14 @@
 import { createHash } from 'crypto';
-import { existsSync, lstatSync, readFileSync, readlinkSync } from 'fs';
+import { spawnSync } from 'child_process';
+import { existsSync, lstatSync, readFileSync, readlinkSync, realpathSync } from 'fs';
 import { isAbsolute, relative, resolve } from 'path';
-import type { RepositoryGitStatusSnapshot } from '../../../cli/repositories/structured-git';
+import { splitRepositoryGitStatus, type RepositoryGitStatusSnapshot } from '../../../cli/repositories/structured-git';
 import type { VerificationRecord } from '../facade/types';
 
 const MAX_VALIDATION_PATHS = 256;
 const MAX_VALIDATION_FILE_BYTES = 32 * 1024 * 1024;
 const MAX_VALIDATION_TOTAL_BYTES = 64 * 1024 * 1024;
+const MAX_NESTED_GIT_READ_MS = 5_000;
 const OUTPUT_TRUNCATION_MARKER = '[output truncated after ';
 
 export interface VerificationEvidenceIdentity {
@@ -90,16 +92,49 @@ export function workspaceValidationFingerprint(
   root: string,
   status: Pick<RepositoryGitStatusSnapshot, 'head' | 'branch' | 'porcelain' | 'staged' | 'unstaged' | 'untracked'>,
 ): string {
+  return fingerprintWorkspace(root, status, { paths: 0, bytes: 0, gitDeadline: performance.now() + MAX_NESTED_GIT_READ_MS });
+}
+
+/** Git exposes embedded repositories as atomic directories, not ordinary files. */
+function nestedGitStatus(root: string, deadline: number): Pick<RepositoryGitStatusSnapshot, 'head' | 'branch' | 'porcelain' | 'staged' | 'unstaged' | 'untracked'> {
+  // Never inherit a caller's alternate Git directory/index or invoke fsmonitor.
+  // Optional locks are disabled so observing a nested checkout cannot refresh its index.
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
+  const read = (args: string[], missingHead = false): string | null => {
+    const remainingMs = Math.floor(deadline - performance.now());
+    if (remainingMs <= 0) throw new Error('WORK_VALIDATION_NESTED_GIT_TIMEOUT');
+    const result = spawnSync('git', ['--no-optional-locks', '-c', 'core.fsmonitor=false', '-C', root, ...args], {
+      encoding: 'utf8', timeout: remainingMs, maxBuffer: 512 * 1024,
+      env: { ...env, GIT_CONFIG_NOSYSTEM: '1', GIT_TERMINAL_PROMPT: '0' },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    if (missingHead && !result.error && result.status === 1 && !result.stderr.trim()) return null;
+    if (result.error || result.status !== 0) throw new Error(`WORK_VALIDATION_NESTED_GIT_UNAVAILABLE: ${root}`);
+    return result.stdout;
+  };
+  const topLevel = read(['rev-parse', '--show-toplevel'])!.trim();
+  if (realpathSync(topLevel) !== realpathSync(root)) throw new Error(`WORK_VALIDATION_PATH_TYPE_UNSUPPORTED: ${root}`);
+  const head = read(['rev-parse', '--verify', '--quiet', 'HEAD'], true)?.trim() ?? null;
+  const porcelain = read(['status', '--porcelain=v1', '--branch', '--untracked-files=all', '--', '.', ':(exclude).ai/harness/**'])!;
+  // The branch header remains in porcelain, including detached/unborn identity.
+  return { head, branch: null, porcelain, ...splitRepositoryGitStatus(porcelain) };
+}
+
+function fingerprintWorkspace(
+  root: string,
+  status: Pick<RepositoryGitStatusSnapshot, 'head' | 'branch' | 'porcelain' | 'staged' | 'unstaged' | 'untracked'>,
+  budget: { paths: number; bytes: number; gitDeadline: number },
+): string {
   const canonicalRoot = resolve(root);
   if (status.porcelain.includes(OUTPUT_TRUNCATION_MARKER)) {
     throw new Error('WORK_VALIDATION_STATUS_TRUNCATED: exact changed-path identity is unavailable');
   }
   const changedPaths = [...new Set([...status.staged, ...status.unstaged, ...status.untracked].map(statusPath))].sort();
-  if (changedPaths.length > MAX_VALIDATION_PATHS) {
-    throw new Error(`WORK_VALIDATION_TOO_MANY_PATHS: ${changedPaths.length} exceeds ${MAX_VALIDATION_PATHS}`);
+  budget.paths += changedPaths.length;
+  if (budget.paths > MAX_VALIDATION_PATHS) {
+    throw new Error(`WORK_VALIDATION_TOO_MANY_PATHS: ${budget.paths} exceeds ${MAX_VALIDATION_PATHS}`);
   }
   const hash = createHash('sha256');
-  let totalBytes = 0;
   hash.update(JSON.stringify({
     head: status.head,
     branch: status.branch,
@@ -119,6 +154,11 @@ export function workspaceValidationFingerprint(
       continue;
     }
     const stat = lstatSync(absolutePath);
+    if (stat.isDirectory()) {
+      const nested = nestedGitStatus(absolutePath, budget.gitDeadline);
+      hash.update(`git-directory:${stat.mode}:${fingerprintWorkspace(absolutePath, nested, budget)}`);
+      continue;
+    }
     hash.update(`mode:${stat.mode};size:${stat.size};`);
     if (stat.isSymbolicLink()) {
       hash.update(`symlink:${readlinkSync(absolutePath)}`);
@@ -130,8 +170,8 @@ export function workspaceValidationFingerprint(
     if (stat.size > MAX_VALIDATION_FILE_BYTES) {
       throw new Error(`WORK_VALIDATION_FILE_TOO_LARGE: ${path} exceeds ${MAX_VALIDATION_FILE_BYTES} bytes`);
     }
-    totalBytes += stat.size;
-    if (totalBytes > MAX_VALIDATION_TOTAL_BYTES) {
+    budget.bytes += stat.size;
+    if (budget.bytes > MAX_VALIDATION_TOTAL_BYTES) {
       throw new Error(`WORK_VALIDATION_WORKSPACE_TOO_LARGE: changed files exceed ${MAX_VALIDATION_TOTAL_BYTES} bytes`);
     }
     hash.update(readFileSync(absolutePath));
