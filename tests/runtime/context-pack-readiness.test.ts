@@ -519,7 +519,7 @@ test('retains separate explicit code symbols in sync and async discovery beyond 
 });
 
 
-test('prioritizes implementation sources when explicit code hints accompany a migration goal', () => {
+test('prioritizes implementation sources when explicit code hints accompany a migration goal', async () => {
   const root = mkdtempSync(join(tmpdir(), 'forge-context-source-first-'));
   roots.push(root);
   execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: root });
@@ -544,8 +544,14 @@ test('prioritizes implementation sources when explicit code hints accompany a mi
   } satisfies ControllerContextPackOptions;
   const pack = buildControllerContextPack(root, getMcpPolicy('controller'), options);
   expect(pack.files.map(file => file.path)).toContain('src/z-owner.ts');
+  const asyncPack = await buildControllerContextPackAsync(root, getMcpPolicy('controller'), {
+    ...options, session: { sessionId: root, repoId: 'source-first', checkoutId: root },
+  });
+  expect(asyncPack.timingsMs.parallelFirstPass).toBe(true);
+  expect(asyncPack.files.map(file => file.path)).toEqual(pack.files.map(file => file.path));
 
-  for (const intent of ['documentation', 'Documentation', 'Docs', 'README', 'Tutorial', 'Guide']) {
+
+  for (const intent of ['documentation', 'Documentation', 'Docs', 'README', 'Tutorial', 'Guide', '文档', '源码文档 Guide']) {
     const docsPack = buildControllerContextPack(root, getMcpPolicy('controller'), {
       ...options, description: `Read ${intent} explaining requirement scheduler migration`,
     });

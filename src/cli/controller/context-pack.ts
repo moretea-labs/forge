@@ -106,6 +106,21 @@ function contextPathPriority(path: string, reasons: string[]): number {
 
 
 
+function lexicalDiscoveryExclusions(
+  options: ControllerContextPackOptions,
+  knownPaths: string[],
+  includeGlobs: string[],
+  excludeGlobs: string[],
+): string[] {
+  const sourceFirstDiscovery = (options.searchTerms?.length ?? 0) > 0
+    && includeGlobs.length === 0
+    && !knownPaths.some(path => /(^|\/)docs?\//i.test(path))
+    && !/\b(?:documentation|docs?|readme|tutorial|guide|design decision|architecture notes)\b|文档|教程|手册/i.test(options.description ?? '');
+  return sourceFirstDiscovery
+    ? cleanList([...excludeGlobs, 'docs/**', 'references/**', 'tasks/**'])
+    : excludeGlobs;
+}
+
 export function buildControllerContextPack(
   repoRoot: string,
   policy: McpPolicy,
@@ -141,17 +156,7 @@ export function buildControllerContextPack(
   // investigation already discovered the complete semantic scope. Only an
   // explicit retrieval include narrows discovery.
   const searchIncludeGlobs = includeGlobs;
-  // Explicit model-selected code terms should not let repetitive prose docs
-  // exhaust the bounded lexical discovery window before source owners appear.
-  // The model can perform a separate documentation-oriented query afterwards.
-  // Respect caller include globs and explicit documentation intent.
-  const sourceFirstDiscovery = (options.searchTerms?.length ?? 0) > 0
-    && searchIncludeGlobs.length === 0
-    && !knownPaths.some(path => /(^|\/)docs?\//i.test(path))
-    && !/\b(?:documentation|docs?|readme|tutorial|guide|design decision|architecture notes)\b|文档|教程|手册/i.test(options.description ?? '');
-  const lexicalExcludeGlobs = sourceFirstDiscovery
-    ? cleanList([...excludeGlobs, 'docs/**', 'references/**', 'tasks/**'])
-    : excludeGlobs;
+  const lexicalExcludeGlobs = lexicalDiscoveryExclusions(options, knownPaths, searchIncludeGlobs, excludeGlobs);
   const taskChecks = cleanList(compactTask?.checks);
   const goalParts = [
     options.description,
@@ -1209,6 +1214,7 @@ export async function buildControllerContextPackAsync(
   const explicitKnownPaths = knownPaths.filter((path) => !looksLikeGlob(path));
   const includeGlobs = cleanList([...(options.includeGlobs ?? []), ...knownGlobs]);
   const excludeGlobs = cleanList([...DEFAULT_SEARCH_EXCLUDE_GLOBS, ...(options.excludeGlobs ?? [])]);
+  const lexicalExcludeGlobs = lexicalDiscoveryExclusions(options, knownPaths, includeGlobs, excludeGlobs);
   const requiredSearchQueries = explicitCodeQueries(options.searchTerms);
   const terms = cleanList([...requiredSearchQueries, ...(options.searchTerms ?? []), ...(options.searchTerms ?? []).flatMap(textTokens), ...textTokens(options.description ?? '')]).slice(0, 14);
   const impactDomains = cleanList(options.impactDomains)
@@ -1261,7 +1267,7 @@ export async function buildControllerContextPackAsync(
           queries: searchQueries,
           files: scopedExactKnownFileSearch ? exactKnownFiles : undefined,
           includeGlobs: scopedExactKnownFileSearch ? undefined : includeGlobs,
-          excludeGlobs,
+          excludeGlobs: lexicalExcludeGlobs,
           maxResultsPerQuery: Math.max(maxFiles * 4, 12),
           maxFiles: scopedExactKnownFileSearch ? exactKnownFiles.length : MAX_TOTAL_SEARCHED_FILES,
           caseSensitive: false,
