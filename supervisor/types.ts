@@ -170,13 +170,10 @@ export interface WorkflowSupervisorPreflightComposerObservation {
 export interface WorkflowSupervisorSilentTurn {
   effectId: string;
   providerState: 'generating' | 'idle';
-  /** First durable applied receipt for this effect; independent of output changes. */
-  effectAppliedAt: string;
-  effectElapsedMs: number;
   /** First observation of the exact unchanged provider output. */
   observedSince: string;
   elapsedMs: number;
-  /** Review age only; recovery still requires the existing provider/receipt proof. */
+  /** The existing bounded idle-recovery clock, not a second threshold. */
   recoveryGraceMs: number;
   recoveryReviewAt: string;
   progress: 'no_visible_output';

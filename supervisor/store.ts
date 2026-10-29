@@ -1561,20 +1561,13 @@ export class WorkflowSupervisorStore {
       if (!latest || (latest.kind !== 'assistant_provider_generating' && latest.kind !== 'assistant_provider_idle')) return undefined;
       const observedSinceMs = Date.parse(String(latest.occurred_at ?? ''));
       if (!Number.isFinite(observedSinceMs)) return undefined;
-      const applied = statement(db, `SELECT occurred_at FROM events
-        WHERE effect_id = ? AND kind = 'effect_applied'
-        ORDER BY event_id ASC LIMIT 1`, (s) => s.get(effectId)) as { occurred_at?: string } | undefined;
-      const appliedAtMs = Date.parse(String(applied?.occurred_at ?? ''));
-      if (!Number.isFinite(appliedAtMs)) return undefined;
       return {
         effectId,
         providerState: latest.kind === 'assistant_provider_generating' ? 'generating' : 'idle',
-        effectAppliedAt: new Date(appliedAtMs).toISOString(),
-        effectElapsedMs: Math.max(0, nowMs - appliedAtMs),
         observedSince: new Date(observedSinceMs).toISOString(),
         elapsedMs: Math.max(0, nowMs - observedSinceMs),
         recoveryGraceMs: WORKFLOW_SUPERVISOR_PROVIDER_IDLE_GRACE_MS,
-        recoveryReviewAt: new Date(appliedAtMs + WORKFLOW_SUPERVISOR_PROVIDER_IDLE_GRACE_MS).toISOString(),
+        recoveryReviewAt: new Date(observedSinceMs + WORKFLOW_SUPERVISOR_PROVIDER_IDLE_GRACE_MS).toISOString(),
         progress: 'no_visible_output',
         resendAuthorized: false,
       };

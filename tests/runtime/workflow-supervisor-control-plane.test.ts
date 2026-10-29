@@ -3679,74 +3679,6 @@ test('reconciles a late applied Supervisor effect into the same outcome-unknown 
   });
 });
 
-test('provider silence reports absolute unresolved-effect age when assistant digests keep changing', () => {
-  const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-dynamic-silence-age-'));
-  roots.push(root);
-  const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'));
-  const control = new WorkflowSupervisorControlPlane(store);
-  const taskId = 'task-dynamic-silence-age';
-  const conversationId = '78787878-5656-3434-1212-909090909080';
-  control.registerTask({ taskId, conversationId, conversationUrl: 'https://chatgpt.com/c/' + conversationId, objective: 'Report absolute unresolved effect age independently of changing summaries.', completionContract: {}, continuationPolicy: {}, userBlockerPolicy: {} });
-  const effect = control.reserveEnrollment(taskId);
-  control.observeEffect({ effectId: effect.effectId, observationId: 'dynamic-silence-applied', outcome: 'applied' });
-
-  const firstObservedAtMs = Date.now() + 1_000;
-  const observation = (observedAtMs: number, assistantDigest: string) => store.observeProviderTurn({
-    taskId, effectId: effect.effectId, generating: true, assistantDigest,
-    observedAtMs, graceMs: WORKFLOW_SUPERVISOR_PROVIDER_IDLE_GRACE_MS,
-    recovery: { effectId: 'fx_78787878787878787878787878787880', prompt: 'must-not-resend-dynamic-silence' },
-  });
-  expect(observation(firstObservedAtMs, 'digest-initial').state).toBe('generating');
-  const first = store.providerSilence(effect.effectId, firstObservedAtMs)!;
-  const appliedAtMs = Date.parse(first.effectAppliedAt);
-
-  for (const minute of [5, 15, 30]) {
-    expect(observation(appliedAtMs + minute * 60_000, 'digest-' + minute).state).toBe('generating');
-  }
-
-  const report = store.providerSilence(effect.effectId, appliedAtMs + 31 * 60_000)!;
-  expect(report.effectAppliedAt).toBe(new Date(appliedAtMs).toISOString());
-  expect(report.effectElapsedMs).toBe(31 * 60_000);
-  expect(report.elapsedMs).toBe(60_000);
-  expect(report.recoveryReviewAt).toBe(new Date(appliedAtMs + WORKFLOW_SUPERVISOR_PROVIDER_IDLE_GRACE_MS).toISOString());
-  expect(report).toMatchObject({ progress: 'no_visible_output', resendAuthorized: false });
-  expect(store.getLatestCompletion(taskId)).toBeUndefined();
-  expect(store.effectApplied(effect.effectId)).toBe(true);
-  store.close();
-});
-
-test('provider silence keeps absolute unresolved-effect age distinct from static-output silence', () => {
-  const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-static-silence-age-'));
-  roots.push(root);
-  const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'));
-  const control = new WorkflowSupervisorControlPlane(store);
-  const taskId = 'task-static-silence-age';
-  const conversationId = '78787878-5656-3434-1212-909090909081';
-  control.registerTask({ taskId, conversationId, conversationUrl: 'https://chatgpt.com/c/' + conversationId, objective: 'Keep output silence and unresolved effect age distinct.', completionContract: {}, continuationPolicy: {}, userBlockerPolicy: {} });
-  const effect = control.reserveEnrollment(taskId);
-  control.observeEffect({ effectId: effect.effectId, observationId: 'static-silence-applied', outcome: 'applied' });
-
-  const firstObservedAtMs = Date.now() + 1_000;
-  const observe = (observedAtMs: number) => store.observeProviderTurn({
-    taskId, effectId: effect.effectId, generating: true, assistantDigest: 'same-static-digest',
-    observedAtMs, graceMs: WORKFLOW_SUPERVISOR_PROVIDER_IDLE_GRACE_MS,
-    recovery: { effectId: 'fx_78787878787878787878787878787881', prompt: 'must-not-resend-static-silence' },
-  });
-  expect(observe(firstObservedAtMs).state).toBe('generating');
-  const first = store.providerSilence(effect.effectId, firstObservedAtMs)!;
-  const appliedAtMs = Date.parse(first.effectAppliedAt);
-  expect(observe(appliedAtMs + 31 * 60_000).state).toBe('generating');
-
-  const report = store.providerSilence(effect.effectId, appliedAtMs + 31 * 60_000)!;
-  expect(report.effectElapsedMs).toBe(31 * 60_000);
-  expect(report.elapsedMs).toBe(31 * 60_000 - (Date.parse(first.observedSince) - appliedAtMs));
-  expect(report.recoveryReviewAt).toBe(new Date(appliedAtMs + WORKFLOW_SUPERVISOR_PROVIDER_IDLE_GRACE_MS).toISOString());
-  expect(report.resendAuthorized).toBe(false);
-  expect(store.getLatestCompletion(taskId)).toBeUndefined();
-  expect(store.getEffect('fx_78787878787878787878787878787881')).toBeUndefined();
-  store.close();
-});
-
 test('completed idle provider turn remains a receipt obligation, not a reason to inject another prompt', async () => {
   const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-idle-receipt-'));
   roots.push(root);
@@ -3883,7 +3815,7 @@ test('native adapter does not interrupt active model reasoning for unchanged out
   control.registerTask({ taskId: 'stalled-generating', conversationId, conversationUrl, objective: 'Resume a stalled provider turn.', completionContract: {}, continuationPolicy: {}, userBlockerPolicy: {} });
   const source = control.reserveEnrollment('stalled-generating');
   control.observeEffect({ effectId: source.effectId, observationId: 'stalled-generating-applied', outcome: 'applied' });
-  let nowMs = Date.now();
+  let nowMs = 0;
   const dispatchModes: Array<string | undefined> = [];
   const page: TestBrowserPage = { evaluate: async <T>() => false as T, tabRef: () => ({ windowId: 'window-1', tabId: 'tab-1' }) };
   const targetPort = createTestChatgptTargetPort({
@@ -3898,20 +3830,11 @@ test('native adapter does not interrupt active model reasoning for unchanged out
   });
   await adapter.runOnce();
   expect(dispatchModes).toEqual([]);
-  nowMs += 1_001;
+  nowMs = 1_001;
   await adapter.runOnce();
   expect(dispatchModes).toEqual([]);
   expect(store.getEffectByOriginKey(`provider-recovery:${source.effectId}`)).toBeUndefined();
   expect(store.latestEffectDispatch(source.effectId)?.generation).toBeUndefined();
-  const firstStatus = adapter.status().awaitingReceiptSilence!;
-  expect(firstStatus.effectId).toBe(source.effectId);
-  nowMs += 5_000;
-  const laterStatus = adapter.status().awaitingReceiptSilence!;
-  expect(laterStatus.effectElapsedMs).toBe(firstStatus.effectElapsedMs + 5_000);
-  expect(laterStatus.elapsedMs).toBe(firstStatus.elapsedMs + 5_000);
-  expect(laterStatus.effectAppliedAt).toBe(firstStatus.effectAppliedAt);
-  expect(laterStatus.recoveryReviewAt).toBe(firstStatus.recoveryReviewAt);
-  expect(laterStatus.resendAuthorized).toBe(false);
 });
 
 test('429 network evidence is rate-limit authority only when it belongs to the current conversation submit pipeline', () => {

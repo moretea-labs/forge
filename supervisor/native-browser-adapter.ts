@@ -548,7 +548,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       // Silence is reported from the same existing provider-state evidence the
       // tick already read. It never adds a target, a send or a durable state.
       const silentTurn = 'silentTurn' in stall ? stall.silentTurn : undefined;
-      if (silentTurn && (!oldestSilence || silentTurn.effectElapsedMs > oldestSilence.effectElapsedMs)) {
+      if (silentTurn && (!oldestSilence || silentTurn.elapsedMs > oldestSilence.elapsedMs)) {
         oldestSilence = { taskId: task.taskId, ...silentTurn };
       }
       if (stall.state === 'retryable' || stall.state === 'provider_resume_exhausted') {
@@ -610,14 +610,11 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       ? { code: dueTaskFailure.code, observedAtMs: dueTaskFailure.observedAtMs, taskId: dueCommand!.taskId, ...(dueTaskFailure.effectId ? { effectId: dueTaskFailure.effectId } : {}) }
       : this.lastFailure;
     const stalled = Boolean(this.inflight && this.lastTickStartedAtMs !== undefined && nowMs - this.lastTickStartedAtMs > MAX_TRANSPORT_BACKOFF_MS + 10_000);
-    // Recompute both ages from their recorded instants so reads between ticks
-    // keep unresolved-effect age separate from unchanged-output silence.
+    // Elapsed is recomputed from the recorded observation instant so a read
+    // between ticks cannot report a stale "still working" duration.
     const silenceSinceMs = this.projectedSilence ? Date.parse(this.projectedSilence.observedSince) : Number.NaN;
-    const appliedAtMs = this.projectedSilence ? Date.parse(this.projectedSilence.effectAppliedAt) : Number.NaN;
-    const silence = this.projectedSilence && Number.isFinite(silenceSinceMs) && Number.isFinite(appliedAtMs)
-      ? { ...this.projectedSilence,
-        elapsedMs: Math.max(0, nowMs - silenceSinceMs),
-        effectElapsedMs: Math.max(0, nowMs - appliedAtMs) }
+    const silence = this.projectedSilence && Number.isFinite(silenceSinceMs)
+      ? { ...this.projectedSilence, elapsedMs: Math.max(0, nowMs - silenceSinceMs) }
       : undefined;
     return {
       enabled: true, running: Boolean(this.timer) && !this.closed, observedAt: new Date(nowMs).toISOString(),
