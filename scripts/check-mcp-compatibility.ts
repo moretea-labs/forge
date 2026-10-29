@@ -49,9 +49,10 @@ const EXPECTED_PREFERRED_TOOL_NAME_FINGERPRINT = 'f22e635a213b45fa';
 // 2026-10-21: rh_context documents bounded flat semantic navigation locations.
 // 2026-10-27: rh_context describes conversation-context reuse and compact search
 // summaries; only descriptive metadata changes, with names and input types intact.
-// 2026-10-29: rh_work adds get_contract as a read-only canonical WorkContract path.
-// Recompute the exact schema fingerprint after this intentional public operation change.
-const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = '3559c31e58a6bb7d';
+// 2026-10-29: compose the read-only rh_work get_contract operation with
+// #483 A02 typed Requirement progress CAS fields. Refresh the exact combined
+// schema fingerprint without relaxing the frozen public-contract assertion.
+const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = '6ed619e093dbeeae';
 
 const policy = runtimePolicy(process.cwd(), {
   profile: 'controller',

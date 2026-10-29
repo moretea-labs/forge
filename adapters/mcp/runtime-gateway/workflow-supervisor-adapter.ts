@@ -3,6 +3,7 @@ import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contra
 import {
   getWorkflowSupervisorContinuationProof,
   getWorkflowSupervisorTask,
+  bindWorkflowSupervisorBootstrapProject,
   bindWorkflowSupervisorReviewWatch,
   observeWorkflowSupervisorReviewNotice,
   getWorkflowSupervisorTaskStall,
@@ -17,6 +18,7 @@ import {
 } from '../../../supervisor/client';
 import { resolveWorkflowSupervisorForgeHome } from '../../../supervisor/paths';
 import { workflowSupervisorCompletionContractSha256 } from '../../../supervisor/store';
+import type { WorkflowSupervisorReviewNotice } from '../../../supervisor/types';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 import { result } from './result-adapter';
 
@@ -46,8 +48,12 @@ export async function callWorkflowSupervisorAdapter(
     if (!requestId) throw new Error('WORKFLOW_SUPERVISOR_REQUEST_ID_REQUIRED');
     const workId = textArg(args, 'work_id');
     const requirementId = textArg(args, 'requirement_id');
+    const projectUrl = textArg(args, 'project_url');
+    const authorizedBy = textArg(args, 'authorized_by');
     if (workId && requirementId) throw new Error('WORKFLOW_SUPERVISOR_SEMANTIC_BINDING_AMBIGUOUS');
     if ((workId || requirementId) && !repoId) throw new Error('WORKFLOW_SUPERVISOR_SEMANTIC_BINDING_REPO_REQUIRED');
+    if (!projectUrl) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_REQUIRED');
+    if (!authorizedBy) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_AUTHORIZATION_REQUIRED');
     const id = standaloneTaskId(repoId, requestId);
     const task = await registerWorkflowSupervisorTask(forgeHome, {
       taskId: id,
@@ -60,11 +66,41 @@ export async function callWorkflowSupervisorAdapter(
         ...(workId ? { work_id: workId } : {}),
         ...(requirementId ? { requirement_id: requirementId } : {}),
       },
-      continuationPolicy: { kind: 'standalone_supervisor', bootstrap: true, ...(repoId ? { repo_id: repoId } : {}) },
+      continuationPolicy: { kind: 'standalone_supervisor', bootstrap: true, project_binding_required: true, ...(repoId ? { repo_id: repoId } : {}) },
       userBlockerPolicy: { kind: 'model_semantic_user_blocker' },
     });
+    // A repo-scoped bootstrap must be bound to its exact observed Project before
+    // the first enrollment effect exists. Binding failure leaves no sendable effect.
+    await bindWorkflowSupervisorBootstrapProject(forgeHome, {
+      taskId: task.taskId,
+      projectUrl,
+      requestId: `${id}:project-bind`,
+      authorizedBy,
+    });
     const effect = await reserveWorkflowSupervisorEnrollment(forgeHome, task.taskId);
-    return result({ task, effect, summary: `Standalone Supervisor task ${task.taskId} started.` });
+    return result({ task, effect, summary: `Standalone Supervisor task ${task.taskId} started with explicit Project binding before enrollment.` });
+  }
+
+  if (operation === 'bootstrap_project_bind') {
+    const taskId = textArg(args, 'task_id');
+    const projectUrl = textArg(args, 'project_url');
+    const requestId = textArg(args, 'request_id');
+    const authorizedBy = textArg(args, 'authorized_by');
+    if (!taskId) throw new Error('WORKFLOW_SUPERVISOR_TASK_ID_REQUIRED');
+    if (!projectUrl) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_REQUIRED');
+    if (!requestId) throw new Error('WORKFLOW_SUPERVISOR_REQUEST_ID_REQUIRED');
+    if (!authorizedBy) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_AUTHORIZATION_REQUIRED');
+    const existingTask = await getWorkflowSupervisorTask(forgeHome, taskId);
+    if (!existingTask) throw new Error('WORKFLOW_SUPERVISOR_TASK_UNKNOWN');
+    const taskRepoId = typeof existingTask.completionContract.repo_id === 'string'
+      ? existingTask.completionContract.repo_id
+      : typeof existingTask.continuationPolicy.repo_id === 'string' ? existingTask.continuationPolicy.repo_id : undefined;
+    if (taskRepoId && repoId !== taskRepoId) throw new Error('WORKFLOW_SUPERVISOR_TASK_REPOSITORY_MISMATCH');
+    const bound = await bindWorkflowSupervisorBootstrapProject(forgeHome, {
+      taskId, projectUrl, requestId, authorizedBy,
+    });
+    return result({ ...bound, taskId, status: bound.deduplicated ? 'project_binding_confirmed' : 'project_bound',
+      summary: `Existing Supervisor bootstrap ${taskId} is bound to the exact authorized Project; no new task or effect was created.` });
   }
 
   if (operation === 'review_watch_bind') {
@@ -93,7 +129,7 @@ export async function callWorkflowSupervisorAdapter(
       currentHeadSha: textArg(args, 'current_head_sha'),
       reviewId: textArg(args, 'review_id'),
       source: textArg(args, 'review_source') as 'github_review' | 'github_ci' | 'independent_reviewer',
-      outcome: textArg(args, 'review_outcome') as 'ACCEPT' | 'REVISE' | 'BLOCK' | 'CI_FAILED' | 'CI_PASSED',
+      outcome: textArg(args, 'review_outcome') as WorkflowSupervisorReviewNotice['outcome'],
     });
     return result({ ...receipt, taskId, status: 'recorded_for_original_writer',
       summary: `Review/CI notification is journaled for original Supervisor ${taskId}; no approval/merge authority or extra Send was granted.` });

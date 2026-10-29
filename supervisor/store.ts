@@ -521,6 +521,11 @@ export class WorkflowSupervisorStore {
         return existing;
       }
       const task = taskFromRow(row);
+      if (task.continuationPolicy.project_binding_required === true
+        && input.continuationPolicy.project_binding_required !== true
+        && !statement(db, "SELECT 1 FROM events WHERE task_id=? AND kind='bootstrap_project_bound' LIMIT 1", (s) => s.get(input.taskId))) {
+        throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_REQUIRED');
+      }
       const taskRepo = typeof task.completionContract.repo_id === 'string' ? task.completionContract.repo_id : task.continuationPolicy.repo_id;
       const inputRepo = typeof input.completionContract.repo_id === 'string' ? input.completionContract.repo_id : input.continuationPolicy.repo_id;
       const { checkout_id: incomingCheckout, ...incomingCompletion } = input.completionContract;
@@ -533,6 +538,16 @@ export class WorkflowSupervisorStore {
         && json(selectedCompletion) === json(incomingCompletion)
         && json(task.continuationPolicy) === json(input.continuationPolicy)
         && json(task.userBlockerPolicy) === json(input.userBlockerPolicy);
+      // Retry the original standalone registration after its bootstrap has
+      // acquired a real conversation. Reconcile immutable inputs without
+      // restoring the bootstrap conversation or reserving another effect.
+      if (input.conversationId === `bootstrap:${task.taskId}` && input.conversationUrl === 'https://chatgpt.com/'
+        && task.continuationPolicy.kind === 'standalone_supervisor'
+        && task.objective === input.objective && json(selectedCompletion) === json(incomingCompletion)
+        && (incomingCheckout === undefined || incomingCheckout === selectedCheckout)
+        && json(task.continuationPolicy) === json(input.continuationPolicy)
+        && json(task.userBlockerPolicy) === json(input.userBlockerPolicy)
+        && statement(db, "SELECT 1 FROM events WHERE task_id=? AND kind='bootstrap_project_bound' LIMIT 1", (s) => s.get(task.taskId))) return task;
       // A retry of the original registration cannot erase the selected hint.
       if (sameExecutionContextOwner && selectedCheckout !== undefined && incomingCheckout === undefined) return task;
       const initialCheckoutContext = sameExecutionContextOwner && selectedCheckout === undefined
@@ -868,6 +883,34 @@ export class WorkflowSupervisorStore {
       return { effect, deduplicated: false };
     });
   }
+  /** Monotonically require an exact Project binding before a legacy bootstrap can send. */
+  requireBootstrapProjectBinding(taskId: string): void {
+    this.transaction((db) => {
+      const row = statement(db, 'SELECT * FROM tasks WHERE task_id = ?', (s) => s.get(taskId)) as Record<string, unknown> | undefined;
+      if (!row) throw new Error('WORKFLOW_SUPERVISOR_TASK_UNKNOWN');
+      const task = taskFromRow(row);
+      if (task.continuationPolicy.kind !== 'standalone_supervisor'
+        || task.conversationId !== `bootstrap:${task.taskId}`) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_BINDING_NOT_PENDING');
+      if (statement(db, "SELECT 1 FROM events WHERE task_id=? AND kind IN ('terminal_done','terminal_needs_user','terminal_stopped') LIMIT 1", (s) => s.get(taskId))) {
+        throw new Error('WORKFLOW_SUPERVISOR_TASK_TERMINAL');
+      }
+      const prior = statement(db, "SELECT 1 FROM events WHERE task_id=? AND kind='bootstrap_project_bound' LIMIT 1", (s) => s.get(taskId));
+      if (!prior) {
+        const effects = statement(db, 'SELECT effect_id FROM effects WHERE task_id = ?', (s) => s.all(taskId)) as Array<{ effect_id?: string }>;
+        const dispatchStarted = effects.some((effect) => {
+          const effectId = boundedText(effect.effect_id);
+          return Boolean(effectId && effectDispatchLedger(db, effectId).generations > 0);
+        });
+        if (dispatchStarted || appliedEffectAwaitingCompletionWithin(db, taskId)) {
+          throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_BINDING_OUTCOME_UNRESOLVED');
+        }
+      }
+      if (task.continuationPolicy.project_binding_required === true) return;
+      statement(db, 'UPDATE tasks SET continuation_policy_json = ? WHERE task_id = ?', (s) => s.run(
+        json({ ...task.continuationPolicy, project_binding_required: true }), taskId,
+      ));
+    });
+  }
   /** One explicit operator-selected ChatGPT Project for an unbound standalone
    * bootstrap. This is task-local provenance, not a new Work/repository owner.
    * Never change a Project after a provider Send might have occurred. */
@@ -877,17 +920,22 @@ export class WorkflowSupervisorStore {
       const row = statement(db, 'SELECT * FROM tasks WHERE task_id = ?', (s) => s.get(input.taskId)) as Record<string, unknown> | undefined;
       if (!row) throw new Error('WORKFLOW_SUPERVISOR_TASK_UNKNOWN');
       const task = taskFromRow(row);
-      if (task.continuationPolicy.kind !== 'standalone_supervisor'
-        || task.conversationId !== `bootstrap:${task.taskId}`) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_BINDING_NOT_PENDING');
-      if (statement(db, "SELECT 1 FROM events WHERE task_id=? AND kind IN ('terminal_done','terminal_needs_user','terminal_stopped') LIMIT 1", (s) => s.get(input.taskId))) throw new Error('WORKFLOW_SUPERVISOR_TASK_TERMINAL');
       const prior = statement(db, "SELECT payload_json FROM events WHERE task_id=? AND kind='bootstrap_project_bound' ORDER BY event_id LIMIT 1", (s) => s.get(input.taskId)) as { payload_json?: string } | undefined;
       if (prior) {
         if (parsedObject(prior.payload_json).project_url !== input.projectUrl) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_BINDING_CONFLICT');
         return { projectUrl: input.projectUrl, deduplicated: true };
       }
-      const pending = oldestUnappliedEffect(db, input.taskId);
-      if (!pending || effectDispatchLedger(db, pending.effectId).generations !== 0
-        || appliedEffectAwaitingCompletionWithin(db, input.taskId)) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_BINDING_OUTCOME_UNRESOLVED');
+      if (task.continuationPolicy.kind !== 'standalone_supervisor'
+        || task.conversationId !== `bootstrap:${task.taskId}`) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_BINDING_NOT_PENDING');
+      if (statement(db, "SELECT 1 FROM events WHERE task_id=? AND kind IN ('terminal_done','terminal_needs_user','terminal_stopped') LIMIT 1", (s) => s.get(input.taskId))) throw new Error('WORKFLOW_SUPERVISOR_TASK_TERMINAL');
+      const effects = statement(db, 'SELECT effect_id FROM effects WHERE task_id = ?', (s) => s.all(input.taskId)) as Array<{ effect_id?: string }>;
+      const dispatchStarted = effects.some((effect) => {
+        const effectId = boundedText(effect.effect_id);
+        return Boolean(effectId && effectDispatchLedger(db, effectId).generations > 0);
+      });
+      if (dispatchStarted || appliedEffectAwaitingCompletionWithin(db, input.taskId)) {
+        throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_BINDING_OUTCOME_UNRESOLVED');
+      }
       statement(db, 'INSERT INTO events(task_id,event_key,kind,payload_json,occurred_at) VALUES (?,?,?,?,?)', (s) => s.run(
         input.taskId, `bootstrap-project-bound:${input.taskId}`, 'bootstrap_project_bound',
         json({ project_url: input.projectUrl, request_id: input.requestId, authorized_by: input.authorizedBy }), now()));
@@ -1035,6 +1083,14 @@ export class WorkflowSupervisorStore {
             SELECT 1 FROM completions c
             WHERE c.task_id = e.task_id AND c.source_effect_id = e.effect_id
           )
+      )
+      AND NOT (
+        COALESCE(json_extract(t.continuation_policy_json, '$.project_binding_required'), 0) = 1
+        AND NOT EXISTS (
+          SELECT 1 FROM events binding
+          WHERE binding.task_id = t.task_id
+            AND binding.kind = 'bootstrap_project_bound'
+        )
       )
       ORDER BY t.created_at, t.task_id
       LIMIT ?`, (s) => s.all(boundedLimit))
@@ -1878,6 +1934,12 @@ export class WorkflowSupervisorStore {
     return this.transaction((db) => {
       const effect = statement(db, 'SELECT task_id FROM effects WHERE effect_id = ?', (s) => s.get(effectId)) as { task_id?: string } | undefined;
       if (!effect?.task_id) throw new Error('WORKFLOW_SUPERVISOR_EFFECT_UNKNOWN');
+      const taskRow = statement(db, 'SELECT continuation_policy_json FROM tasks WHERE task_id = ?', (s) => s.get(effect.task_id)) as { continuation_policy_json?: string } | undefined;
+      if (!taskRow) throw new Error('WORKFLOW_SUPERVISOR_TASK_UNKNOWN');
+      if (parsedObject(taskRow.continuation_policy_json).project_binding_required === true
+        && !statement(db, "SELECT 1 FROM events WHERE task_id=? AND kind='bootstrap_project_bound' LIMIT 1", (s) => s.get(effect.task_id))) {
+        throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_REQUIRED');
+      }
       // Completion and recovery Send compete in this same Store transaction.
       // A command obtained before a late completion cannot revive its recovery.
       if (statement(db, `SELECT 1 FROM effects e JOIN completions c

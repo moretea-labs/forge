@@ -49,6 +49,10 @@ function projectMatchesScope(conversation: WorkflowSupervisorDiscoveredConversat
   return names.some((name) => boundedProjectIdentityMatch(name, projectSlug));
 }
 
+function explicitBootstrapProjectBindingReady(task: WorkflowSupervisorTask, store: WorkflowSupervisorStore): boolean {
+  return task.continuationPolicy.project_binding_required !== true || Boolean(store.boundBootstrapProjectUrl(task.taskId));
+}
+
 function effectId(): string { return `fx_${randomUUID().replaceAll('-', '')}`; }
 function stableEffectId(originKey: string): string {
   return validateEffectId(`fx_${sha256(originKey).slice(0, 32)}`);
@@ -236,6 +240,9 @@ export class WorkflowSupervisorControlPlane {
     // could never be delivered, so the ControllerRound waited forever instead of
     // surfacing the operator/provider decision that terminal state represents.
     requireNonTerminalTask(this.store, task.taskId);
+    if (!explicitBootstrapProjectBindingReady(task, this.store)) {
+      throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_REQUIRED');
+    }
     const originKey = `enrollment:${taskId}`;
     // Supervisor owns the outer-turn effect identity. A lower ControllerRound may
     // rotate when the semantic Work carrier changes, but the Requirement + exact
@@ -390,7 +397,7 @@ export class WorkflowSupervisorControlPlane {
     // see. Deliver as explicitly unverified context; never as merge approval.
     if (!/^[a-zA-Z0-9_.:-]{1,128}$/.test(notice.reviewId)) throw new Error('WORKFLOW_SUPERVISOR_REVIEW_ID_INVALID');
     if (!['github_review','github_ci','independent_reviewer'].includes(notice.source)
-      || !['ACCEPT','REVISE','BLOCK','CI_FAILED','CI_PASSED'].includes(notice.outcome)) throw new Error('WORKFLOW_SUPERVISOR_REVIEW_OUTCOME_INVALID');
+      || !['ACCEPT','REVISE','BLOCK','COMMENTED','CI_FAILED','CI_PASSED'].includes(notice.outcome)) throw new Error('WORKFLOW_SUPERVISOR_REVIEW_OUTCOME_INVALID');
     if ((notice.source === 'github_ci') !== notice.outcome.startsWith('CI_')) throw new Error('WORKFLOW_SUPERVISOR_REVIEW_SOURCE_MISMATCH');
     const normalized: WorkflowSupervisorReviewNotice = {
       ...notice, reviewedHeadSha: notice.reviewedHeadSha.toLowerCase(), currentHeadSha: notice.currentHeadSha.toLowerCase(),
@@ -457,7 +464,6 @@ export class WorkflowSupervisorControlPlane {
    * from the standalone task's objective or nearby browser tabs. */
   bindBootstrapProject(input: { taskId: string; projectUrl: string; requestId: string; authorizedBy: string }) {
     const task = this.requireTask(input.taskId);
-    requireNonTerminalTask(this.store, task.taskId);
     let parsed: URL;
     try { parsed = new URL(input.projectUrl); }
     catch { throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_URL_INVALID'); }
@@ -465,6 +471,15 @@ export class WorkflowSupervisorControlPlane {
     if (parsed.origin !== 'https://chatgpt.com' || !match || parsed.search || parsed.hash
       || parsed.username || parsed.password) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_URL_INVALID');
     const canonical = `https://chatgpt.com/g/${match[1]!.toLocaleLowerCase()}/project`;
+    // A durable binding receipt remains authoritative after enrollment changes
+    // the conversation or discovery observations change. This path cannot send.
+    if (this.store.boundBootstrapProjectUrl(task.taskId)) {
+      return this.store.bindBootstrapProject({ ...input, projectUrl: canonical });
+    }
+    requireNonTerminalTask(this.store, task.taskId);
+    // Fence legacy bootstrap tasks before validating discovery so a failed bind
+    // cannot later fall back to an inferred Project or race a stale poll command.
+    this.store.requireBootstrapProjectBinding(task.taskId);
     if (!this.store.discoverySnapshot().conversations.some((conversation) => {
       try {
         const value = new URL(conversation.projectUrl ?? '');
@@ -477,6 +492,9 @@ export class WorkflowSupervisorControlPlane {
   bootstrapProjectUrl(taskId: string): string {
     const task = this.requireTask(taskId);
     const explicitlyBound = this.store.boundBootstrapProjectUrl(taskId);
+    if (task.continuationPolicy.project_binding_required === true && !explicitlyBound) {
+      throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_REQUIRED');
+    }
     if (explicitlyBound) return explicitlyBound;
     const scope = this.hooks.projectScopeForTask?.(task);
     const title = scope?.title.trim();
@@ -586,6 +604,9 @@ export class WorkflowSupervisorControlPlane {
     if (!task.conversationId.startsWith('bootstrap:')) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_NOT_PENDING');
     const terminal = this.store.terminalAction(task.taskId);
     if (terminal === 'STOPPED') return { authorized: true, task: browserTask(task), terminal };
+    if (!terminal && !explicitBootstrapProjectBindingReady(task, this.store)) {
+      return { authorized: true, task: browserTask(task) };
+    }
     // While identity is still bootstrap, reconcile the latest applied leaf
     // before dispatching any successor. An unstarted recovery child must not
     // send from a Project/new-composer surface while the source conversation

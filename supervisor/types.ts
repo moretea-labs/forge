@@ -70,7 +70,7 @@ export interface WorkflowSupervisorReviewNotice {
   currentHeadSha: string;
   reviewId: string;
   source: 'github_review' | 'github_ci' | 'independent_reviewer';
-  outcome: 'ACCEPT' | 'REVISE' | 'BLOCK' | 'CI_FAILED' | 'CI_PASSED';
+  outcome: 'ACCEPT' | 'REVISE' | 'BLOCK' | 'COMMENTED' | 'CI_FAILED' | 'CI_PASSED';
 }
 
 export interface WorkflowSupervisorTask extends WorkflowSupervisorTaskInput {
