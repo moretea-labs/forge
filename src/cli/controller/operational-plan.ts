@@ -19,7 +19,7 @@ export interface ControllerOperationalPlan {
   };
   validationStrategy: {
     source: "declared-check-projection";
-    policy: "minimal" | "task-targeted" | "release-gate";
+    policy: "minimal" | "task-targeted";
     checks: string[];
     reason: string;
   };

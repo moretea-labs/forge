@@ -43,11 +43,19 @@ function rejectNativePending(error) {
   for (const pending of pendingNative.values()) { clearTimeout(pending.timer); pending.reject(error); }
   pendingNative.clear();
 }
+function invalidateNativePort(port, error) {
+  if (nativePort !== port) return;
+  nativePort = undefined;
+  rejectNativePending(error);
+  try { port.disconnect(); } catch { /* already disconnected */ }
+  setTimeout(() => { void providerTick().catch(() => undefined); }, 500);
+}
 function ensureNativePort() {
   if (nativePort) return nativePort;
   const port = chrome.runtime.connectNative(NATIVE_HOST);
   nativePort = port;
   port.onMessage.addListener((response) => {
+    if (nativePort !== port) return;
     const pending = pendingNative.get(response?.id);
     if (!pending) return;
     pendingNative.delete(response.id);
@@ -56,23 +64,25 @@ function ensureNativePort() {
     else pending.reject(new Error(response?.error?.message ?? 'COMPUTER_CHATGPT_NATIVE_RPC_FAILED'));
   });
   port.onDisconnect.addListener(() => {
-    if (nativePort !== port) return;
-    nativePort = undefined;
-    rejectNativePending(new Error(chrome.runtime.lastError?.message ?? 'COMPUTER_CHATGPT_NATIVE_PORT_DISCONNECTED'));
-    setTimeout(() => { void providerTick().catch(() => undefined); }, 500);
+    invalidateNativePort(port, new Error(chrome.runtime.lastError?.message ?? 'COMPUTER_CHATGPT_NATIVE_PORT_DISCONNECTED'));
   });
   return port;
 }
 function nativeRpc(method, params = {}) {
   return new Promise((resolve, reject) => {
     const id = randomId();
+    let port;
     const timer = setTimeout(() => {
-      pendingNative.delete(id);
-      reject(new Error(`COMPUTER_CHATGPT_NATIVE_RPC_TIMEOUT:${method}`));
+      const error = new Error(`COMPUTER_CHATGPT_NATIVE_RPC_TIMEOUT:${method}`);
+      if (port && nativePort === port) invalidateNativePort(port, error);
+      else { pendingNative.delete(id); reject(error); }
     }, RPC_TIMEOUT_MS);
     pendingNative.set(id, { resolve, reject, timer });
-    try { ensureNativePort().postMessage({ id, method, params }); }
-    catch (error) { clearTimeout(timer); pendingNative.delete(id); reject(error); }
+    try { port = ensureNativePort(); port.postMessage({ id, method, params }); }
+    catch (error) {
+      if (port && nativePort === port) invalidateNativePort(port, error);
+      else { clearTimeout(timer); pendingNative.delete(id); reject(error); }
+    }
   });
 }
 function tabMessage(tabId, message) {
@@ -295,10 +305,36 @@ async function resolveTarget(identity, createIfMissing, pinnedBinding, instanceI
       || pinnedBinding.providerSessionId !== instanceId)
       throw new Error('COMPUTER_CHATGPT_EXTENSION_PROVIDER_SESSION_MISMATCH');
   } else if (identity?.namespace === 'chatgpt.bootstrap' && bootstrapTabs.has(identity.bootstrapKey)) {
-    // A same-worker map is not itself a Controller owner authorization.
-    throw new Error('COMPUTER_CHATGPT_BOOTSTRAP_BINDING_REQUIRED');
+    // A same-worker map never authorizes Prepare/Dispatch or URL-only adoption.
+    // Ensure may only reconstruct a Controller pin when this exact task's
+    // mapped physical tab is still on the bootstrap Project AND the same
+    // browser session proves the owner token written when that tab was created.
+    // This closes the crash/lost-receipt window after tabCreate but before the
+    // Controller persisted providerBinding, without creating or sending again.
+    if (!createIfMissing) throw new Error('COMPUTER_CHATGPT_BOOTSTRAP_BINDING_REQUIRED');
+    const mappedId = bootstrapTabs.get(identity.bootstrapKey);
+    const currentTabs = await chatgptTabs();
+    const mapped = currentTabs.find((tab) => tab.id === mappedId);
+    if (mapped && receiverMatchesIdentity(mapped, identity)) {
+      let ownerToken;
+      try {
+        const stored = await chrome.storage.session.get(ownedTabKey(mapped.id));
+        ownerToken = stored[ownedTabKey(mapped.id)];
+      } catch { /* absence is not ownership proof */ }
+      if (typeof ownerToken !== 'string' || !ownerToken)
+        throw new Error('COMPUTER_CHATGPT_BOOTSTRAP_BINDING_REQUIRED');
+      return { tab: mapped, created: false, ownerToken };
+    }
+    // After a completed bootstrap migration the pinned tab can be a /c/...
+    // conversation (or have closed), while this MV3 worker still remembers
+    // its old bootstrap id. The Controller no longer owns a bootstrap pin.
+    // Retire ONLY this stale in-worker hint; never close/adopt/navigate its
+    // former tab. A fresh Ensure must still create and attest its own tab
+    // before the Controller can bind it and authorize any Send.
+    bootstrapTabs.delete(identity.bootstrapKey);
   }
   const tabs = await chatgptTabs();
+  let staleUnattestedConversationPin = false;
   if (identity?.namespace === 'chatgpt.conversation' && pinnedBinding?.providerId === PROVIDER_ID && pinnedBinding.tabId) {
     // Window moves preserve Chrome's profile-local tab id. A vanished id may
     // be recovered by exact conversation, but an existing tab at another URL
@@ -312,7 +348,17 @@ async function resolveTarget(identity, createIfMissing, pinnedBinding, instanceI
       if (core.parseConversation(pinned.url ?? '')?.conversationId !== identity.conversationId) {
         throw new Error('COMPUTER_CHATGPT_EXTENSION_PINNED_TAB_IDENTITY_CHANGED');
       }
-      return { tab: pinned, created: false, ownerToken: await requirePinnedOwner(pinned, pinnedBinding, identity) };
+      try {
+        return { tab: pinned, created: false, ownerToken: await requirePinnedOwner(pinned, pinnedBinding, identity) };
+      } catch (error) {
+        if (!createIfMissing || String(error?.message ?? error) !== 'COMPUTER_CHATGPT_EXTENSION_PINNED_OWNER_TOKEN_MISMATCH')
+          throw error;
+        // The old physical tab is NOT ours to observe, close or navigate.
+        // Ensure alone may create a NEW owned tab for this exact conversation
+        // and return its attested identity to the Controller's leased binder.
+        // Prepare/Dispatch still reject the stale owner token; no Send occurs.
+        staleUnattestedConversationPin = true;
+      }
     }
   }
   // An exact Conversation URL proves page identity, not ownership of the
@@ -320,7 +366,7 @@ async function resolveTarget(identity, createIfMissing, pinnedBinding, instanceI
   // Prepare and Dispatch cannot borrow an existing user's unbound tab.
   const trustedConversationPin = identity?.namespace === 'chatgpt.conversation'
     && pinnedBinding?.providerId === PROVIDER_ID && pinnedBinding.tabId && pinnedBinding.ownerToken;
-  const matches = identity?.namespace === 'chatgpt.conversation' && !trustedConversationPin
+  const matches = identity?.namespace === 'chatgpt.conversation' && (!trustedConversationPin || staleUnattestedConversationPin)
     ? [] : matchingTabs(tabs, identity, pinnedBinding);
   if (matches.length > 1) throw new Error('COMPUTER_CHATGPT_EXTENSION_EXACT_TARGET_AMBIGUOUS');
   if (matches.length === 1) {
@@ -561,14 +607,17 @@ async function executeFindMarker(command, instanceId) {
     && pinnedBinding.providerSessionId === instanceId
     && pinnedBinding.tabId && pinnedBinding.windowId) {
     try { pinnedTarget = await resolveTarget(command.identity, false, pinnedBinding, instanceId); }
-    catch { /* Invalid pin never permits repair or other-tab adoption. */ }
+    catch (error) { return { kind: 'failed', code: targetResolutionReasonCode(error), retryable: false }; }
   }
+  // A malformed command with a pin but no bootstrap identity must not fall
+  // through to discovery of unrelated tabs.
+  if (pinnedBinding && !pinnedTarget)
+    return { kind: 'failed', code: 'COMPUTER_CHATGPT_BOOTSTRAP_PINNED_TAB_MISSING', retryable: false };
   const tabs = await chatgptTabs();
   const pinnedTabId = pinnedTarget ? String(pinnedTarget.tab.id) : undefined;
-  // Only the exact pinned physical tab can receive receiver restoration.
-  const orderedTabs = pinnedTarget
-    ? [pinnedTarget.tab, ...tabs.filter((tab) => String(tab.id) !== pinnedTabId)]
-    : tabs;
+  // A persisted pin is the only acceptable result for this bootstrap. Do not
+  // let unrelated tabs exhaust the broker timeout after that result is found.
+  const orderedTabs = pinnedBinding ? (pinnedTarget ? [pinnedTarget.tab] : []) : tabs;
   for (const tab of orderedTabs) {
     if (!tab.id) continue;
     const pinned = Boolean(pinnedTarget && String(tab.id) === pinnedTabId);

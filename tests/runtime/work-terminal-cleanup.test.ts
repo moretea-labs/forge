@@ -1098,6 +1098,19 @@ describe('terminal Work cleanup', () => {
     });
     expect(optionalPolicy.worktreePolicy.required).toBe(false);
     const mainHead = git(fx.repositoryRoot, ['rev-parse', 'HEAD']);
+    // A prior deterministic rebind workspace was reused by an independent
+    // branch. Preserve its physical contents while recovering the original Work.
+    const conflictingWorkspace = ensureManagedWorkspace(fx.controllerHome, fx.repository, {
+      requestId: `work-rebind-${sourceId}`,
+      title: 'Restore one accidentally cleaned but still-open semantic Work without replaying effects.',
+      associatedWorkId: sourceId,
+      baseRef: mainHead,
+      prepareDependencies: false,
+    });
+    const collidingPath = conflictingWorkspace.root!;
+    git(collidingPath, ['switch', '-c', 'work/retrieval-lab-owns-colliding-workspace']);
+    writeFileSync(join(collidingPath, 'other-owner.txt'), 'preserve unrelated owner bytes\n');
+    const otherOwnerBefore = git(collidingPath, ['status', '--porcelain']);
     const request = {
       session_id: sessionId,
       repo_id: fx.repository.repoId,
@@ -1125,6 +1138,10 @@ describe('terminal Work cleanup', () => {
     expect(recovery.adoptedSuccessor.previousHead).toBe(sourceHead);
     expect(recovery.work.workContractId).toBe(sourceId);
     expect(recovery.work.checkoutId).not.toBe(source.checkoutId);
+    expect(recovery.work.checkoutId).not.toBe(conflictingWorkspace.checkoutId);
+    expect(git(collidingPath, ['branch', '--show-current'])).toBe('work/retrieval-lab-owns-colliding-workspace');
+    expect(git(collidingPath, ['status', '--porcelain'])).toBe(otherOwnerBefore);
+    expect(readFileSync(join(collidingPath, 'other-owner.txt'), 'utf8')).toBe('preserve unrelated owner bytes\n');
     expect(recovery.work.expectedHead).toBe(mainHead);
 
     // Semantic sourceId resolves to live physical recovery.work.workId using current checkout

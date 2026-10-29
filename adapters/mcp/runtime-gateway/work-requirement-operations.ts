@@ -1,4 +1,3 @@
-import { buildGoalProgress } from '../../../src/runtime/control-plane/facade/requirement-board';
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 import { admitRequirement, promoteRequirementCandidate } from '../../../src/runtime/control-plane/facade/requirement-authority';
@@ -38,7 +37,12 @@ export async function callRhWorkRequirementOperation(
       summary: `Requirement ${semantic.requirementId} retrieved at semantic revision ${semantic.revision}.`,
       data: {
         requirement: semantic,
-        progress: buildGoalProgress(ctx.controllerHome, { requirementId }, args.detail_level === 'detail' ? 'detail' : 'summary'),
+        progress: {
+          source: 'requirement',
+          summary: semantic.progressSummary,
+          remainingWork: semantic.remainingWork,
+          acceptedEvidenceRefs: semantic.acceptedEvidenceRefs,
+        },
       },
       detailLevel: args.detail_level === 'detail' ? 'detail' : 'summary',
     }) as unknown as Record<string, unknown>);
@@ -54,6 +58,9 @@ export async function callRhWorkRequirementOperation(
         ...(typeof args.requirement_outcome === 'string' ? { outcomeStatement: args.requirement_outcome } : {}),
         ...(Array.isArray(args.requirement_acceptance_criteria) ? { acceptanceCriteria: args.requirement_acceptance_criteria.map(String) } : {}),
         ...(Array.isArray(args.requirement_delivery_references) ? { requiredDeliveryReferences: args.requirement_delivery_references.map(String) } : {}),
+        ...(typeof args.requirement_progress_summary === 'string' ? { progressSummary: args.requirement_progress_summary } : {}),
+        ...(Array.isArray(args.requirement_remaining_work) ? { remainingWork: args.requirement_remaining_work.map(String) } : {}),
+        ...(Array.isArray(args.requirement_accepted_evidence_refs) ? { acceptedEvidenceRefs: args.requirement_accepted_evidence_refs.map(String) } : {}),
         ...(args.requirement_state === 'open' || args.requirement_state === 'completed' || args.requirement_state === 'cancelled' ? { state: args.requirement_state } : {}),
       });
       const semantic = requirementSemanticView(revised);

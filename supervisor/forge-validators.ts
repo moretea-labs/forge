@@ -85,11 +85,20 @@ function validateWorkCompletion(task: WorkflowSupervisorTask): WorkflowContractV
 function validateRequirementCompletion(task: WorkflowSupervisorTask, proposal: WorkflowSupervisorProposal): WorkflowContractValidation {
   const requirement = requirementFor(task, proposal);
   if (!requirement) return unsupported('requirement_not_found');
-  if (requirement.state !== 'done' || !requirement.semanticAcceptance) {
+  if (requirement.state !== 'done') {
     return { valid: false, reason: 'requirement_not_semantically_done:' + requirement.state, evidence: requirement.auditRefs.slice(-8) };
   }
-  return boundWorkLineage(task, requirement.requirementId)
-    ?? { valid: true, reason: 'requirement_semantic_acceptance_committed', evidence: requirement.auditRefs.slice(-8) };
+  const remainingWork = requirement.remainingWork ?? [];
+  if (remainingWork.length > 0) {
+    return { valid: false, reason: 'requirement_remaining_work_not_empty', evidence: remainingWork.slice(0, 8) };
+  }
+  const acceptedEvidenceRefs = requirement.acceptedEvidenceRefs ?? [];
+  if (acceptedEvidenceRefs.length === 0) {
+    return { valid: false, reason: 'requirement_acceptance_evidence_missing', evidence: requirement.auditRefs.slice(-8) };
+  }
+  // Requirement is the sole semantic completion authority. Work lineage is
+  // execution history, not a hidden completion prerequisite for a Goal.
+  return { valid: true, reason: 'requirement_accepted_evidence_committed', evidence: acceptedEvidenceRefs.slice(-8) };
 }
 
 /**

@@ -3,9 +3,9 @@ export type RequirementState = (typeof REQUIREMENT_STATES)[number];
 
 export const REQUIREMENT_STATE_TRANSITIONS: Readonly<Record<RequirementState, readonly RequirementState[]>> = {
   planned: ['planned', 'active', 'waiting_for_user', 'cancelled'],
-  active: ['active', 'waiting_for_user', 'done', 'cancelled'],
-  waiting_for_user: ['waiting_for_user', 'planned', 'active', 'done', 'cancelled'],
-  done: ['done', 'cancelled'],
+  active: ['active', 'waiting_for_user', 'cancelled'],
+  waiting_for_user: ['waiting_for_user', 'planned', 'active', 'cancelled'],
+  done: ['done'],
   cancelled: ['cancelled'],
 };
 

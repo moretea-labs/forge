@@ -40,7 +40,6 @@ export interface RuntimeReleaseProgressResult {
  */
 export interface RuntimeReleaseProvider<C extends RuntimeReleaseContext = RuntimeReleaseContext> {
   prepare(config: C, requestId?: string): Promise<RuntimeReleaseProgressResult>;
-  verifyStatic(config: C, sessionId: string, requestId?: string): Promise<RuntimeReleaseProgressResult>;
   verifyCandidate(config: C, sessionId: string, requestId?: string): Promise<RuntimeReleaseProgressResult>;
   cutover(config: C, sessionId: string, requestId?: string): Promise<RuntimeReleaseProgressResult>;
   promoteKnownGood(config: C, sessionId: string, requestId?: string): Promise<RuntimeReleaseProgressResult>;
@@ -48,7 +47,6 @@ export interface RuntimeReleaseProvider<C extends RuntimeReleaseContext = Runtim
 
 export type RuntimeReleaseCoordinatorAction =
   | 'prepare'
-  | 'verify_static'
   | 'verify_candidate'
   | 'mark_cutover_eligible'
   | 'cutover'
@@ -179,7 +177,7 @@ function coordinatorSession(active: ReleaseSession[]): ReleaseSession | undefine
 function runtimeReleaseActionForSession(session: ReleaseSession): RuntimeReleaseCoordinatorAction {
   switch (session.phase) {
     case 'source_frozen': return 'prepare';
-    case 'built': return 'verify_static';
+    case 'built':
     case 'static_verified':
     case 'candidate_booted': return 'verify_candidate';
     case 'candidate_verified': return 'mark_cutover_eligible';
@@ -259,7 +257,7 @@ export function decideConfiguredRuntimeReleaseReconciliation(
   // from a HEAD comparison alone. The configured source participates in a
   // release only through the explicit model-reviewed ReleaseSession
   // primitives (release-session-prepare/advance/cutover, or
-  // stage-and-activate-runtime-release).
+  // explicit-release-session-preparation).
   return { required: false, reason: 'source_mismatch' };
 }
 
@@ -283,8 +281,6 @@ export async function advanceConfiguredRuntimeReleaseStep<C extends RuntimeRelea
   switch (decision.action) {
     case 'prepare':
       return provider.prepare(config, request);
-    case 'verify_static':
-      return provider.verifyStatic(config, decision.session!.sessionId, request);
     case 'verify_candidate':
       return provider.verifyCandidate(config, decision.session!.sessionId, request);
     case 'mark_cutover_eligible': {

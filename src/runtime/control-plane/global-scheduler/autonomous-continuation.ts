@@ -79,7 +79,11 @@ export async function runSchedulerAutonomousContinuationReconciliation(input: {
   maxContinuations?: number;
   dependencies?: SchedulerAutonomousContinuationDependencies;
 }): Promise<SchedulerAutonomousContinuationResult> {
-  const maxContinuations = Math.max(1, Math.min(Math.trunc(input.maxContinuations ?? DEFAULT_MAX_CONTINUATIONS), 8));
+  const requestedLimit = input.maxContinuations ?? DEFAULT_MAX_CONTINUATIONS;
+  // Non-finite budgets must not disable the bounded continuation scan.
+  const maxContinuations = Number.isFinite(requestedLimit)
+    ? Math.max(1, Math.min(Math.trunc(requestedLimit), 8))
+    : DEFAULT_MAX_CONTINUATIONS;
   const hasActiveExecution = input.dependencies?.hasActiveExecution ?? workHasActiveExecution;
   const authorizeWake = input.dependencies?.authorizeWake ?? assertAutomatedOperationAllowed;
 

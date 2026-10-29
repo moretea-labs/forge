@@ -756,7 +756,6 @@ const required = [
   'src/runtime/workflow/schedules/work-continuation.ts',
   'scripts/smoke-runtime-recovery.ts',
   'scripts/smoke-schedule-engine.ts',
-  'src/runtime/release/release-gate.ts',
   'src/runtime/root/runtime.ts',
   'src/runtime/root/readiness.ts',
   'src/runtime/root/types.ts',
@@ -1221,8 +1220,11 @@ requireText('adapters/mcp/runtime-gateway/workflow-supervisor-adapter.ts', 'WORK
 requireText('adapters/mcp/runtime-gateway/workflow-supervisor-adapter.ts', "...(workId ? { work_id: workId } : {})");
 requireText('adapters/mcp/runtime-gateway/workflow-supervisor-adapter.ts', "...(requirementId ? { requirement_id: requirementId } : {})");
 requireText('supervisor/forge-validators.ts', "requirement.state === 'waiting_for_user'");
-requireText('supervisor/native-browser-adapter.ts', "command.kind === 'recovery' && prepared.reasonCode === 'provider_recovery_stop_pending'");
-requireText('supervisor/native-browser-adapter.ts', 'provider-turn observation, not an infrastructure preparation failure');
+// Recovery's three typed live/unknown provider states are read-only
+// observations; none may become a sticky preflight failure or spend Send.
+requireText('supervisor/native-browser-adapter.ts', "command.kind === 'recovery' && ['provider_recovery_stop_pending',");
+requireText('supervisor/native-browser-adapter.ts', "'provider_recovery_turn_unknown', 'provider_recovery_turn_live'].includes(prepared.reasonCode)");
+requireText('supervisor/native-browser-adapter.ts', 'this.noteTaskFailure(prepared.reasonCode, task, command.effectId, false)');
 // A single Store-owned typed proof validator and refund writer replace the
 // legacy generic pre_send_rejection/no-click string authority. Keep these
 // guards pointed at the actual safety boundary, not obsolete implementation text.
@@ -1978,7 +1980,6 @@ requireText('packages/kernel/scheduler/domain/schedule.ts', "'repository-event'"
 requireText('packages/kernel/scheduler/domain/schedule.ts', "'dependency-checkpoint'");
 requireText('packages/kernel/scheduler/infrastructure/schedule-store.ts', 'saveScheduleDecision');
 requireText('packages/kernel/scheduler/application/settlement.ts', 'backoffMinutes');
-requireText('src/runtime/release/release-gate.ts', 'releaseReady');
 requireText('adapters/mcp/transports/http-observation.ts', "'/ready'");
 requireText('adapters/mcp/transports/http-observation.ts', "'/repos/:repoId/health'");
 requireText('src/runtime/control-plane/governance/external-effects.ts', 'EXTERNAL_EFFECT_AUTHORIZATION_REQUIRED');

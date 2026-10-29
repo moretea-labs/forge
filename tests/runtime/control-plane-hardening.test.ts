@@ -123,14 +123,24 @@ describe('bounded Work candidate extension authority', () => {
 describe('repository command managed-worktree authority', () => {
 
 
-  test('requires rh_work ownership for temporary git worktree creation while preserving read-only worktree inspection', () => {
-    expect(() => assertRepositoryCommandInputAllowed(['git', 'worktree', 'add', '/tmp/forge-repair', '-b', 'fix/repair'])).toThrow(
-      /MANAGED_WORKSPACE_REQUIRED:.*use rh_work.*terminal cleanup authority/,
-    );
-    expect(() => assertRepositoryCommandInputAllowed('git worktree add /tmp/forge-repair -b fix/repair')).toThrow(
-      /MANAGED_WORKSPACE_REQUIRED:.*use rh_work.*terminal cleanup authority/,
-    );
-    expect(() => assertRepositoryCommandInputAllowed(['git', 'worktree', 'list', '--porcelain'])).not.toThrow();
+  test('normal Git worktree creation has no Work prerequisite but keeps repository path policy', () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'forge-requirement-git-')));
+    try {
+      const inside = join(root, '_ref', 'parallel');
+      const outside = join(tmpdir(), 'forge-ungranted-external-worktree');
+      const command = ['git', 'worktree', 'add', '-b', 'feat/parallel', inside, 'HEAD'];
+      expect(() => assertRepositoryCommandInputAllowed(command)).not.toThrow();
+      expect(() => assertCommandPathOperandsStayInRepository(
+        assertRepositoryCommandInputAllowed(command), root, root,
+      )).not.toThrow();
+      expect(() => assertRepositoryCommandInputAllowed('git worktree add -b feat/parallel _ref/parallel HEAD')).not.toThrow();
+      expect(() => assertCommandPathOperandsStayInRepository(
+        assertRepositoryCommandInputAllowed(['git', 'worktree', 'add', outside]), root, root,
+      )).toThrow('COMMAND_SCOPE_DENIED');
+      expect(() => assertRepositoryCommandInputAllowed(['git', 'worktree', 'list', '--porcelain'])).not.toThrow();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

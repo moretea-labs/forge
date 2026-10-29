@@ -2,7 +2,7 @@ import { afterEach, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createRequirement, updateRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
+import { createRequirement, reviseRequirementSemantic, updateRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { createWorkContract, reviseWorkSemanticContext } from '../../packages/kernel/work/api/index';
 import { callWorkflowSupervisorAdapter } from '../../adapters/mcp/runtime-gateway/workflow-supervisor-adapter';
 import { runtimeToolDefinitions } from '../../adapters/mcp/runtime-gateway/runtime-tool-definitions';
@@ -26,10 +26,9 @@ function accepted(controllerHome: string, requirementId: string) {
     requirementId, title: requirementId, outcomeStatement: 'Delivery after linked Work evidence',
   });
   updateRequirement({ controllerHome }, { requirementId, action: 'activate', mutate: r => ({ ...r, state: 'active' }) });
-  updateRequirement({ controllerHome }, { requirementId, action: 'accepted', mutate: r => ({
-    ...r, state: 'done',
-    semanticAcceptance: { reviewer: 'test', rationale: 'reviewed', planIds: [], acceptedAt: new Date().toISOString() },
-  }) });
+  reviseRequirementSemantic({ controllerHome }, requirementId, {
+    expectedRevision: 1, state: 'completed', remainingWork: [], acceptedEvidenceRefs: ['review:accepted'],
+  });
 }
 function task(controllerHome: string, repoId: string, kind: string, requirementId?: string, workId?: string) {
   return { completionContract: { kind, controller_home: controllerHome, repo_id: repoId,
@@ -48,7 +47,7 @@ test('a cancelled Work is never evidence for forge_work_done', async () => {
     .toMatchObject({ valid: false, reason: 'work_not_completed' });
 });
 
-test('Requirement DONE must include a later open predecessor successor, not only the accepted origin', async () => {
+test('Requirement DONE follows committed acceptance independently of open successor Work', async () => {
   const controllerHome = home(), repoId = 'repo-predecessor', requirementId = 'REQ-predecessor';
   accepted(controllerHome, requirementId);
   work(controllerHome, repoId, 'origin', { requirementId });
@@ -56,13 +55,13 @@ test('Requirement DONE must include a later open predecessor successor, not only
   reviseWorkSemanticContext({ controllerHome, repoId }, 'origin', { expectedRevision: 1, state: 'completed' });
   const goal = task(controllerHome, repoId, 'forge_requirement_done', requirementId);
   expect(await validate(goal, proposal))
-    .toMatchObject({ valid: false, reason: 'bound_work_lineage_not_terminal', evidence: ['next'] });
+    .toMatchObject({ valid: true, reason: 'requirement_accepted_evidence_committed' });
   reviseWorkSemanticContext({ controllerHome, repoId }, 'next', { expectedRevision: 1, state: 'completed' });
   expect(await validate(goal, proposal))
-    .toMatchObject({ valid: true, reason: 'requirement_semantic_acceptance_committed' });
+    .toMatchObject({ valid: true, reason: 'requirement_accepted_evidence_committed' });
 });
 
-test('Requirement DONE must follow explicitly superseding primary Work without pulling unrelated Work', async () => {
+test('Requirement DONE ignores superseding Work lineage after semantic acceptance', async () => {
   const controllerHome = home(), repoId = 'repo-supersedes', requirementId = 'REQ-supersedes';
   accepted(controllerHome, requirementId);
   work(controllerHome, repoId, 'original', { requirementId });
@@ -71,10 +70,10 @@ test('Requirement DONE must follow explicitly superseding primary Work without p
   reviseWorkSemanticContext({ controllerHome, repoId }, 'original', { expectedRevision: 1, state: 'completed' });
   const goal = task(controllerHome, repoId, 'forge_dynamic_requirement_done', requirementId);
   expect(await validate(goal, proposal))
-    .toMatchObject({ valid: false, reason: 'bound_work_lineage_not_terminal', evidence: ['replacement'] });
+    .toMatchObject({ valid: true, reason: 'requirement_accepted_evidence_committed' });
   reviseWorkSemanticContext({ controllerHome, repoId }, 'replacement', { expectedRevision: 1, state: 'completed' });
   expect(await validate(goal, proposal))
-    .toMatchObject({ valid: true, reason: 'requirement_semantic_acceptance_committed' });
+    .toMatchObject({ valid: true, reason: 'requirement_accepted_evidence_committed' });
 });
 
 test('completed parent is insufficient while execution child is still open', async () => {
@@ -119,17 +118,15 @@ test('model_semantic_completion requires committed Requirement acceptance and re
   expect(await validate(task(controllerHome, repoId, 'model_semantic_completion', 'REQ-missing'), proposal))
     .toMatchObject({ valid: false, reason: 'requirement_not_found' });
 
-  updateRequirement({ controllerHome }, { requirementId, action: 'accepted', mutate: (r) => ({
-    ...r, state: 'done', semanticAcceptance: { reviewer: 'test', rationale: 'accepted', planIds: [], acceptedAt: new Date().toISOString() },
-  }) });
+  reviseRequirementSemantic({ controllerHome }, requirementId, {
+    expectedRevision: 1, state: 'completed', remainingWork: [], acceptedEvidenceRefs: ['review:accepted'],
+  });
   work(controllerHome, repoId, 'parent', { requirementId });
   work(controllerHome, repoId, 'child', { parentWorkId: 'parent' });
   reviseWorkSemanticContext({ controllerHome, repoId }, 'parent', { expectedRevision: 1, state: 'completed' });
-  expect(await validate(bound, proposal)).toMatchObject({
-    valid: false, reason: 'bound_work_lineage_not_terminal', evidence: ['child'],
-  });
+  expect(await validate(bound, proposal)).toMatchObject({ valid: true, reason: 'requirement_accepted_evidence_committed' });
   reviseWorkSemanticContext({ controllerHome, repoId }, 'child', { expectedRevision: 1, state: 'completed' });
-  expect(await validate(bound, proposal)).toMatchObject({ valid: true, reason: 'requirement_semantic_acceptance_committed' });
+  expect(await validate(bound, proposal)).toMatchObject({ valid: true, reason: 'requirement_accepted_evidence_committed' });
   expect(await validate(task(controllerHome, repoId, 'model_semantic_completion', requirementId, 'parent'), proposal))
     .toMatchObject({ valid: false, reason: 'semantic_completion_binding_ambiguous' });
 });

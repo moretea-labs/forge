@@ -1,5 +1,4 @@
-import { assertRuntimePerformanceEvidence, measureRuntimePerformance, samePerformanceIdentity, type RuntimePerformanceDependencies, type RuntimePerformanceEvidence, type RuntimePerformanceIdentity } from './performance';
-import { runBoundedChild } from '../shared/bounded-child-supervisor';
+import { measureRuntimePerformance, type RuntimePerformanceDependencies, type RuntimePerformanceEvidence, type RuntimePerformanceIdentity } from './performance';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'crypto';
 import { spawn, spawnSync } from 'child_process';
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'fs';
@@ -74,8 +73,6 @@ import { createRecoveryHttpTransport, type RecoveryHttpTransport } from './http-
 import { observeRecoveryWatchdogHealth } from './watchdog-heartbeat';
 import { RECOVERY_DAEMON_LABEL } from './service-labels';
 import { resolveWorkflowSupervisorForgeHome, workflowSupervisorSocketPath } from '../../../supervisor/paths';
-import { getWorkflowSupervisorContinuationProof } from '../../../supervisor/client';
-import type { WorkflowSupervisorContinuationProof } from '../../../supervisor/types';
 import { reconcileStoppedWorkflowSupervisorSocket } from '../../../supervisor/server';
 import {
   migrateStoppedRepoLocalControllerHomeStorage,
@@ -95,7 +92,6 @@ import {
   recordReleaseSessionTransaction,
   releaseSessionCandidateIsRetired,
   releaseSessionAcceptanceTimedOut,
-  releaseSessionContinuationProofTimely,
   releaseSessionIsSoakingPredecessorOfStable,
   releaseSessionIsSoakingSupersededByStableAuthority,
   releaseSessionIsSoakingSupersededByFailedCutoverCompensation,
@@ -1080,48 +1076,44 @@ function estimateReleaseSessionCandidateBytes(config: RecoveryConfig, manifestPa
   return { requiredBytes: measuredBytes, reserveBytes: measuredBytes };
 }
 
-/** Explicitly records evidence only after the full independent verification passed. */
-function persistVerifiedKnownGood(config: RecoveryConfig, verified: VerifyResult, performance: RuntimePerformanceEvidence): ReleaseEvidence {
+/** Persist recoverability only after strict whole-Runtime mechanical verification. */
+function persistVerifiedKnownGood(config: RecoveryConfig, verified: VerifyResult): ReleaseEvidence {
   const authority = releaseAuthority(config);
-    const active = verified.releases.active;
-    if (
-      !verified.ok
-      || !authority
-      || !active
-      || authority.active.releaseId !== active.revision
-      || authority.active.artifactIdentity !== active.artifactIdentity
-      || authority.active.manifestSha256 !== active.manifestSha256
-      || authority.active.workerProtocolVersion !== active.workerProtocolVersion
-    ) {
-      throw new Error('RECOVERY_KNOWN_GOOD_ATTESTATION_REQUIRES_FULL_VERIFY_AND_RELEASE_AUTHORITY');
-    }
-    assertRuntimePerformanceEvidence(performance, runtimePerformanceIdentity(config));
-    const attested: ReleaseEvidence = {
-      ...active,
-      performance,
-      controllerHome: resolve(config.controllerHome),
-      releaseAuthorityRevision: authority.revision,
-      releaseFencingTokenSha256: createHash('sha256').update(authority.fencingToken).digest('hex'),
-      attestedAt: new Date().toISOString(),
-      recoveryBundle: createKnownGoodRecoveryBundle(config),
-    };
-    const store = knownGood(config);
-    const previous = authority.previous ? releaseEvidence(config.controllerHome, authority.previous, authority) : undefined;
-    const releases = [
-      attested,
-      ...(previous ? store.releases.filter((entry) => sameReleaseIdentity(entry, previous)) : []),
-    ];
-    writeJson(statePath(config), { schemaVersion: 2, releases, updatedAt: new Date().toISOString() } satisfies KnownGoodStore);
-    // State is durable before cleanup. A crash between these lines leaves an
-    // orphaned bundle, which this same owner removes on the next attestation;
-    // it never invalidates a published recovery point.
-    pruneRetiredKnownGoodRecoveryBundles(config, releases);
-    audit(config, 'known_good_attested', {
-      revision: active.revision,
-      artifactIdentity: active.artifactIdentity,
-      manifestSha256: active.manifestSha256,
-      releaseAuthorityRevision: authority.revision,
-    });
+  const active = verified.releases.active;
+  if (
+    !verified.ok
+    || !authority
+    || !active
+    || authority.active.releaseId !== active.revision
+    || authority.active.artifactIdentity !== active.artifactIdentity
+    || authority.active.manifestSha256 !== active.manifestSha256
+    || authority.active.workerProtocolVersion !== active.workerProtocolVersion
+    || !liveRuntimeOwnsRelease(config, active)
+  ) {
+    throw new Error('RECOVERY_KNOWN_GOOD_ATTESTATION_REQUIRES_FULL_VERIFY_AND_RELEASE_AUTHORITY');
+  }
+  const attested: ReleaseEvidence = {
+    ...active,
+    controllerHome: resolve(config.controllerHome),
+    releaseAuthorityRevision: authority.revision,
+    releaseFencingTokenSha256: createHash('sha256').update(authority.fencingToken).digest('hex'),
+    attestedAt: new Date().toISOString(),
+    recoveryBundle: createKnownGoodRecoveryBundle(config),
+  };
+  const store = knownGood(config);
+  const previous = authority.previous ? releaseEvidence(config.controllerHome, authority.previous, authority) : undefined;
+  const releases = [
+    attested,
+    ...(previous ? store.releases.filter((entry) => sameReleaseIdentity(entry, previous)) : []),
+  ];
+  writeJson(statePath(config), { schemaVersion: 2, releases, updatedAt: new Date().toISOString() } satisfies KnownGoodStore);
+  pruneRetiredKnownGoodRecoveryBundles(config, releases);
+  audit(config, 'known_good_attested', {
+    revision: active.revision,
+    artifactIdentity: active.artifactIdentity,
+    manifestSha256: active.manifestSha256,
+    releaseAuthorityRevision: authority.revision,
+  });
   return attested;
 }
 
@@ -1135,12 +1127,13 @@ function runtimePerformanceIdentity(config: RecoveryConfig): RuntimePerformanceI
     throw new Error('RECOVERY_PERFORMANCE_UNKNOWN: coherent live Runtime required');
   }
   return {
-    releaseId: authority.active.releaseId, authorityRevision: authority.revision,
-    pid: snapshot.pid, runtimeInstanceId: snapshot.runtimeInstanceId, startedAt: snapshot.startedAt,
+    releaseId: authority.active.releaseId,
+    authorityRevision: authority.revision,
+    pid: snapshot.pid,
+    runtimeInstanceId: snapshot.runtimeInstanceId,
+    startedAt: snapshot.startedAt,
   };
 }
-
-export const RECOVERY_INTERNAL_PERFORMANCE_COMMAND = '__measure-runtime-performance';
 
 export async function measureConfiguredRuntimePerformance(
   config: RecoveryConfig,
@@ -1149,108 +1142,19 @@ export async function measureConfiguredRuntimePerformance(
   return await measureRuntimePerformance(() => runtimePerformanceIdentity(config), dependencies);
 }
 
-function hasRuntimePerformanceTestSeam(dependencies: RuntimePerformanceDependencies): boolean {
-  return dependencies.readCpu !== undefined
-    || dependencies.monotonicNow !== undefined
-    || dependencies.wallNow !== undefined
-    || dependencies.sleep !== undefined;
-}
+export const RECOVERY_INTERNAL_PERFORMANCE_COMMAND = '__measure-runtime-performance';
 
-async function measureRuntimePerformanceIsolated(
-  config: RecoveryConfig,
-  expectedIdentity: RuntimePerformanceIdentity,
-): Promise<RuntimePerformanceEvidence> {
-  const recoveryBefore = readCurrentRecoveryRelease(config.controllerHome);
-  if (!recoveryBefore) throw new Error('RECOVERY_PERFORMANCE_UNKNOWN: current immutable Recovery release unavailable');
-  const executable = join(recoveryBefore.releasePath, 'forge-recovery');
-  if (!existsSync(executable)) throw new Error('RECOVERY_PERFORMANCE_UNKNOWN: immutable Recovery sampler executable unavailable');
-
-  const result = await runBoundedChild(
-    executable,
-    [RECOVERY_INTERNAL_PERFORMANCE_COMMAND, '--controller-home', config.controllerHome],
-    {
-      timeoutMs: 100_000,
-      maxOutputBytes: 32 * 1024,
-      forwardSignals: false,
-      env: runtimeAuthorityFreeEnvironment(process.env),
-    },
-  );
-  if (result.status !== 0 || result.failureCode || result.timedOut) {
-    const detail = result.failureCode ?? result.error ?? (result.stderr.trim() || `exit=${result.status}`);
-    throw new Error(`RECOVERY_PERFORMANCE_UNKNOWN: isolated sampler failed (${detail.slice(0, 240)})`);
+async function attestVerifiedKnownGood(config: RecoveryConfig, verified: VerifyResult): Promise<ReleaseEvidence> {
+  if (!verified.ok || !verified.releases.active || !liveRuntimeOwnsRelease(config, verified.releases.active)) {
+    throw new Error('RECOVERY_KNOWN_GOOD_ATTESTATION_REQUIRES_FULL_VERIFY_AND_RELEASE_AUTHORITY');
   }
-
-  let envelope: unknown;
-  try {
-    envelope = JSON.parse(result.stdout);
-  } catch {
-    throw new Error('RECOVERY_PERFORMANCE_UNKNOWN: isolated sampler returned malformed evidence');
-  }
-  if (!envelope || typeof envelope !== 'object' || Array.isArray(envelope)) {
-    throw new Error('RECOVERY_PERFORMANCE_UNKNOWN: isolated sampler returned invalid evidence envelope');
-  }
-  const parsed = envelope as { schemaVersion?: unknown; ok?: unknown; evidence?: unknown; error?: unknown };
-  if (parsed.schemaVersion !== 1 || typeof parsed.ok !== 'boolean') {
-    throw new Error('RECOVERY_PERFORMANCE_UNKNOWN: isolated sampler returned invalid evidence envelope');
-  }
-  if (!parsed.ok) {
-    const detail = typeof parsed.error === 'string' ? parsed.error : '';
-    if (/^RECOVERY_PERFORMANCE_(?:UNKNOWN|REJECTED):/.test(detail)) throw new Error(detail);
-    throw new Error('RECOVERY_PERFORMANCE_UNKNOWN: isolated sampler returned an unclassified failure');
-  }
-  if (!parsed.evidence || typeof parsed.evidence !== 'object' || Array.isArray(parsed.evidence)) {
-    throw new Error('RECOVERY_PERFORMANCE_UNKNOWN: isolated sampler omitted performance evidence');
-  }
-  const performance = parsed.evidence as RuntimePerformanceEvidence;
-  assertRuntimePerformanceEvidence(performance, expectedIdentity);
-
-  const recoveryAfter = readCurrentRecoveryRelease(config.controllerHome);
-  if (!recoveryAfter
-    || recoveryAfter.releaseRevision !== recoveryBefore.releaseRevision
-    || recoveryAfter.manifestSha256 !== recoveryBefore.manifestSha256) {
-    throw new Error('RECOVERY_PERFORMANCE_UNKNOWN: Recovery release changed during performance observation');
-  }
-  if (!samePerformanceIdentity(expectedIdentity, runtimePerformanceIdentity(config))) {
-    throw new Error('RECOVERY_PERFORMANCE_UNKNOWN: Runtime or release authority changed after performance observation');
-  }
-  return performance;
-}
-
-export async function attestKnownGood(
-  config: RecoveryConfig,
-  dependencies: RuntimePerformanceDependencies = {},
-): Promise<ReleaseEvidence> {
-  const initialIdentity = runtimePerformanceIdentity(config);
-  const before = await verifyStableRuntime(config);
-  if (!before.ok) throw new Error('RECOVERY_KNOWN_GOOD_ATTESTATION_REQUIRES_FULL_VERIFY_AND_RELEASE_AUTHORITY');
-  const verifiedIdentity = runtimePerformanceIdentity(config);
-  if (!samePerformanceIdentity(initialIdentity, verifiedIdentity)
-    || before.releases.active?.revision !== verifiedIdentity.releaseId) {
-    throw new Error('RECOVERY_PERFORMANCE_UNKNOWN: Runtime or release authority changed during functional verification');
-  }
-
-  // Production observation executes in one short-lived child of the exact
-  // immutable Recovery release so Gateway/watchdog work in the persistent
-  // daemon cannot stretch the sampler's monotonic windows. Explicit dependency
-  // hooks remain the in-process test seam only. Both paths stay read-only and
-  // outside the Recovery mutation lock; exact Runtime identity remains fenced.
-  const performance = hasRuntimePerformanceTestSeam(dependencies)
-    ? await measureRuntimePerformance(() => {
-        const current = runtimePerformanceIdentity(config);
-        if (!samePerformanceIdentity(verifiedIdentity, current)) {
-          throw new Error('RECOVERY_PERFORMANCE_UNKNOWN: Runtime or release authority changed after functional verification');
-        }
-        return current;
-      }, dependencies)
-    : await measureRuntimePerformanceIsolated(config, verifiedIdentity);
-
-  const locked = await withLock(config, { action: 'attest_known_good' }, async () => {
-    const verified = await verifyStableRuntime(config);
-    if (!verified.ok) throw new Error('RECOVERY_KNOWN_GOOD_ATTESTATION_REQUIRES_FULL_VERIFY_AND_RELEASE_AUTHORITY');
-    return persistVerifiedKnownGood(config, verified, performance);
-  });
+  const locked = await withLock(config, { action: 'attest_known_good' }, async () => persistVerifiedKnownGood(config, verified));
   if (!locked.acquired) throw new Error(recoveryBusyDetail(locked.owner));
   return locked.value;
+}
+
+export async function attestKnownGood(config: RecoveryConfig): Promise<ReleaseEvidence> {
+  return attestVerifiedKnownGood(config, await verifyStableRuntime(config));
 }
 
 function quarantine(config: RecoveryConfig, release: ReleaseEvidence | undefined, reason: string): void {
@@ -1834,6 +1738,10 @@ async function ensureLaunchdServiceStarted(service: LaunchdService, runCommand: 
 export interface PrimaryRuntimeRecoveryDependencies {
   /** Explicit operator restart may recycle an already-healthy Runtime; watchdog/internal recovery keeps healthy no-op semantics. */
   forceHealthyRestart?: boolean;
+  requestId?: string;
+  expectedAuthorityRevision?: number;
+  expectedActiveReleaseId?: string;
+  expectedRuntimeInstanceId?: string;
   platform?: NodeJS.Platform;
   currentUid?: () => Promise<number | undefined>;
   runCommand?: CommandRunner;
@@ -1848,14 +1756,9 @@ export interface PrimaryRuntimeRecoveryDependencies {
   sleep?: (ms: number) => Promise<void>;
 }
 
-export interface RuntimeReleaseKnownGoodDependencies extends RuntimePerformanceDependencies {
-  /** Test/host seam for the existing whole-Runtime rollback transaction. */
+export interface RuntimeReleaseKnownGoodDependencies {
   rollback?: PrimaryRuntimeRecoveryDependencies;
-  /** Exact active-release live continuation proof; production defaults to the Supervisor single-writer ledger. */
-  continuationProof?: (
-    forgeHome: string,
-    input: { repoId?: string; activeReleaseId: string; notBefore: string },
-  ) => Promise<WorkflowSupervisorContinuationProof | undefined>;
+  wallNow?: () => number;
 }
 
 export interface RuntimeReleaseActivationGuard {
@@ -1871,7 +1774,8 @@ export interface RuntimeReleaseActivationGuard {
   expectedAuthorityRevision?: number | null;
   /** Active release observed when the caller decided to activate; null means the caller observed no active release. */
   expectedActiveReleaseId?: string | null;
-  /** Fresh portable source candidates may activate only after this exact Recovery ReleaseSession becomes cutover-eligible. */
+  expectedSourceRevision?: string;
+  /** Explicit incompatible-migration path may bind activation to one isolated Recovery ReleaseSession. */
   releaseSessionId?: string;
 }
 
@@ -2977,9 +2881,30 @@ export async function restartPrimaryRuntime(
   }
   const now = dependencies.now ?? Date.now;
   const wait = dependencies.sleep ?? sleep;
-  const locked = await withLock(config, { action: 'restart_primary_runtime' }, async () => {
+  const locked = await withLock(config, { action: 'restart_primary_runtime', requestId: dependencies.requestId }, async () => {
     const before = await verifyRecoveryPreflight(config, observeLocal, verifyLocal);
     if (before.ok && !forceHealthyRestart) return { ok: true, attempted: false, noOp: true, detail: 'Canonical Forge Runtime recovered before restart', serviceTarget: service.target, verify: before } satisfies PrimaryRuntimeRestartResult;
+    const authority = releaseAuthority(config);
+    if ((dependencies.expectedAuthorityRevision !== undefined && authority?.revision !== dependencies.expectedAuthorityRevision)
+      || (dependencies.expectedActiveReleaseId !== undefined && authority?.active.releaseId !== dependencies.expectedActiveReleaseId)) {
+      const detail = `RECOVERY_RUNTIME_RESTART_STALE_AUTHORITY: expected revision ${dependencies.expectedAuthorityRevision ?? 'unspecified'}, release ${dependencies.expectedActiveReleaseId ?? 'unspecified'}; observed ${authority?.revision ?? 'none'}, release ${authority?.active.releaseId ?? 'none'}`;
+      audit(config, 'primary_runtime_restart_stale_authority', {
+        requestId: dependencies.requestId,
+        expectedAuthorityRevision: dependencies.expectedAuthorityRevision,
+        expectedActiveReleaseId: dependencies.expectedActiveReleaseId,
+        observedAuthorityRevision: authority?.revision,
+        observedActiveReleaseId: authority?.active.releaseId,
+      });
+      return { ok: false, attempted: false, noOp: true, detail, serviceTarget: service.target, verify: before } satisfies PrimaryRuntimeRestartResult;
+    }
+    if (forceHealthyRestart && dependencies.expectedRuntimeInstanceId !== undefined) {
+      const observedInstance = observeRuntimeStatus(config.controllerHome).snapshot?.runtimeInstanceId;
+      if (observedInstance !== dependencies.expectedRuntimeInstanceId) {
+        const detail = `RECOVERY_RUNTIME_RESTART_STALE_INSTANCE: expected ${dependencies.expectedRuntimeInstanceId}, observed ${observedInstance ?? 'none'}`;
+        audit(config, 'primary_runtime_restart_stale_instance', { requestId: dependencies.requestId, expectedRuntimeInstanceId: dependencies.expectedRuntimeInstanceId, observedRuntimeInstanceId: observedInstance });
+        return { ok: false, attempted: false, noOp: true, detail, serviceTarget: service.target, verify: before } satisfies PrimaryRuntimeRestartResult;
+      }
+    }
     const runCommand = dependencies.runCommand ?? command;
     const runtimeRunning = dependencies.runtimeRunning ?? ((value: RecoveryConfig) => observeRuntimeStatus(value.controllerHome).running);
     const stopped = await stopPrimaryRuntimeForReleaseTransition({
@@ -2991,7 +2916,7 @@ export async function restartPrimaryRuntime(
       runtimeRunning,
     });
     if (!stopped.ok) {
-      audit(config, 'primary_runtime_restart_quiescence_failed', { serviceTarget: service.target, detail: stopped.detail });
+      audit(config, 'primary_runtime_restart_quiescence_failed', { requestId: dependencies.requestId, serviceTarget: service.target, detail: stopped.detail });
       return { ok: false, attempted: true, detail: stopped.detail, serviceTarget: service.target, verify: before } satisfies PrimaryRuntimeRestartResult;
     }
     const activeAuthority = releaseAuthority(config);
@@ -3018,15 +2943,15 @@ export async function restartPrimaryRuntime(
         },
       });
       if (rebound.ok) {
-        audit(config, 'primary_runtime_restart_succeeded', { serviceTarget: service.target, release: rebound.verify.releases.active?.revision, launchContractRebound: true });
+        audit(config, 'primary_runtime_restart_succeeded', { requestId: dependencies.requestId, serviceTarget: service.target, release: rebound.verify.releases.active?.revision, launchContractRebound: true });
         return { ok: true, attempted: true, detail: rebound.detail, serviceTarget: service.target, verify: rebound.verify } satisfies PrimaryRuntimeRestartResult;
       }
-      audit(config, 'primary_runtime_restart_unverified', { serviceTarget: service.target, reasonCodes: rebound.verify.runtime.reasonCodes, detail: rebound.detail, launchContractRebound: true });
+      audit(config, 'primary_runtime_restart_unverified', { requestId: dependencies.requestId, serviceTarget: service.target, reasonCodes: rebound.verify.runtime.reasonCodes, detail: rebound.detail, launchContractRebound: true });
       return { ok: false, attempted: true, detail: rebound.detail, serviceTarget: service.target, verify: rebound.verify } satisfies PrimaryRuntimeRestartResult;
     }
     const started = await ensurePrimaryRuntimeServiceStarted(service, runCommand, 'restart');
     if (!started.ok) {
-      audit(config, 'primary_runtime_restart_failed', { serviceTarget: service.target, detail: started.detail });
+      audit(config, 'primary_runtime_restart_failed', { requestId: dependencies.requestId, serviceTarget: service.target, detail: started.detail });
       return { ok: false, attempted: true, detail: started.detail, serviceTarget: service.target, verify: before } satisfies PrimaryRuntimeRestartResult;
     }
     const after = await verifyPrimaryRuntimeAfterStart({
@@ -3038,10 +2963,10 @@ export async function restartPrimaryRuntime(
       observeLocal,
     });
     if (after.ok) {
-      audit(config, 'primary_runtime_restart_succeeded', { serviceTarget: service.target, release: after.releases.active?.revision });
+      audit(config, 'primary_runtime_restart_succeeded', { requestId: dependencies.requestId, serviceTarget: service.target, release: after.releases.active?.revision });
       return { ok: true, attempted: true, detail: 'Canonical Forge Runtime restarted and passed whole-Runtime verification', serviceTarget: service.target, verify: after } satisfies PrimaryRuntimeRestartResult;
     }
-    audit(config, 'primary_runtime_restart_unverified', { serviceTarget: service.target, reasonCodes: after.runtime.reasonCodes });
+    audit(config, 'primary_runtime_restart_unverified', { requestId: dependencies.requestId, serviceTarget: service.target, reasonCodes: after.runtime.reasonCodes });
     return { ok: false, attempted: true, detail: 'Canonical Forge Runtime restarted but did not pass whole-Runtime verification before timeout', serviceTarget: service.target, verify: after } satisfies PrimaryRuntimeRestartResult;
   });
   if (!locked.acquired) return { ok: false, attempted: false, noOp: true, detail: recoveryBusyDetail(locked.owner), serviceTarget: service.target, verify: initial };
@@ -3213,8 +3138,16 @@ function validateRuntimeReleaseCandidate(
   const resolvedManifestPath = resolve(manifestPath);
   const manifest = loadRuntimeReleaseManifest(resolvedManifestPath, config.controllerHome);
   const releaseRoot = dirname(resolvedManifestPath);
-  if (basename(releaseRoot) !== manifest.releaseId) {
-    throw new Error('RUNTIME_RELEASE_CANDIDATE_ID_MISMATCH: manifest releaseId must match the immutable release directory');
+  const releasesRoot = resolve(config.controllerHome, 'runtime', 'releases');
+  if (basename(resolvedManifestPath) !== 'manifest.json'
+    || basename(releaseRoot) !== manifest.releaseId
+    || !existsSync(releasesRoot)
+    || dirname(realpathSync(releaseRoot)) !== realpathSync(releasesRoot)) {
+    throw new Error('RUNTIME_RELEASE_CANDIDATE_PATH_INVALID: manifest must be the canonical immutable release under this Controller Home');
+  }
+  const expectedRepositoryId = config.primaryRuntimeSourceRepositoryId?.trim();
+  if (manifest.deploymentScope === 'portable' && expectedRepositoryId && manifest.sourceRepositoryId !== expectedRepositoryId) {
+    throw new Error(`RUNTIME_RELEASE_SOURCE_REPOSITORY_MISMATCH: expected ${expectedRepositoryId}, got ${manifest.sourceRepositoryId ?? 'missing'}`);
   }
   const executable = join(releaseRoot, manifest.entrypoint);
   if (!existsSync(executable)) throw new Error(`RUNTIME_RELEASE_CANDIDATE_ENTRYPOINT_MISSING: ${executable}`);
@@ -3248,16 +3181,28 @@ async function activateRuntimeReleaseInternal(
     audit(config, 'runtime_release_activation_candidate_invalid', { detail, ...(guard.requestId ? { requestId: guard.requestId } : {}) });
     return { ok: false, attempted: false, noOp: true, detail };
   }
-  if (candidate.manifest.deploymentScope === 'portable' && !guard.requiredPinnedReleaseRevision) {
-    const releaseSessionId = guard.releaseSessionId?.trim();
-    if (!releaseSessionId) {
-      const detail = 'RELEASE_SESSION_CUTOVER_REQUIRED: portable Runtime candidates cannot activate outside an exact ReleaseSession';
-      audit(config, 'runtime_release_activation_release_session_required', {
-        candidateRevision: candidate.manifest.releaseId,
-        ...(guard.requestId ? { requestId: guard.requestId } : {}),
-      });
-      return { ok: false, attempted: false, noOp: true, detail };
+  const expectedSourceRevision = guard.expectedSourceRevision?.trim();
+  if (candidate.manifest.deploymentScope === 'portable'
+    && !guard.requiredPinnedReleaseRevision
+    && !guard.releaseSessionId?.trim()
+    && !expectedSourceRevision) {
+    return { ok: false, attempted: false, noOp: true, detail: 'RUNTIME_RELEASE_EXPECTED_SOURCE_REVISION_REQUIRED' };
+  }
+  if (expectedSourceRevision) {
+    if (!/^[a-f0-9]{40}$/i.test(expectedSourceRevision)) {
+      return { ok: false, attempted: false, noOp: true, detail: 'RUNTIME_RELEASE_EXPECTED_SOURCE_REVISION_INVALID' };
     }
+    if (candidate.manifest.sourceCommit !== expectedSourceRevision) {
+      return {
+        ok: false,
+        attempted: false,
+        noOp: true,
+        detail: `RUNTIME_RELEASE_SOURCE_REVISION_MISMATCH: expected ${expectedSourceRevision}, got ${candidate.manifest.sourceCommit}`,
+      };
+    }
+  }
+  if (candidate.manifest.deploymentScope === 'portable' && !guard.requiredPinnedReleaseRevision && guard.releaseSessionId?.trim()) {
+    const releaseSessionId = guard.releaseSessionId.trim();
     let session: ReleaseSession | undefined;
     try {
       session = readReleaseSession(config.controllerHome, releaseSessionId);
@@ -3921,6 +3866,87 @@ export function legacyStableContextPackUpgradeBaseline(verification: VerifyResul
       name === 'runtime_execution_surface' || probe.ok === true);
 }
 
+export interface ConfiguredRuntimeStageResult {
+  ok: boolean;
+  attempted: boolean;
+  noOp?: boolean;
+  detail: string;
+  release?: {
+    releaseId: string;
+    releasePath: string;
+    manifestPath: string;
+    artifactIdentity: string;
+    manifestSha256: string;
+    treeSha256: string;
+    sourceCommit: string;
+    sourceRepositoryId: string;
+  };
+}
+
+export function stageConfiguredRuntimeRelease(
+  config: RecoveryConfig,
+  expectedSourceRevision: string,
+  dependencies: Pick<ConfiguredRuntimeActivationDependencies, 'stage'> = {},
+  requestId?: string,
+): ConfiguredRuntimeStageResult {
+  const sourceRoot = config.primaryRuntimeSourceRoot?.trim();
+  if (!sourceRoot) return { ok: false, attempted: false, noOp: true, detail: 'primary Runtime source root is not configured in standalone Recovery' };
+  const sourceRepositoryId = config.primaryRuntimeSourceRepositoryId?.trim();
+  if (!sourceRepositoryId) return { ok: false, attempted: false, noOp: true, detail: 'primary Runtime source repository id is not configured in standalone Recovery' };
+  const sourceRevision = expectedSourceRevision.trim();
+  if (!/^[a-f0-9]{40}$/i.test(sourceRevision)) {
+    return { ok: false, attempted: false, noOp: true, detail: 'RUNTIME_RELEASE_EXPECTED_SOURCE_REVISION_INVALID' };
+  }
+  try {
+    const staged = withRuntimeReleaseSourceSnapshot({ sourceRoot, sourceRevision }, frozenSourceRoot =>
+      (dependencies.stage ?? stageRuntimeReleaseFromCandidateSource)({
+        controllerHome: config.controllerHome,
+        sourceRoot: frozenSourceRoot,
+        dependencyRoot: sourceRoot,
+        sourceRepositoryId,
+      }));
+    assertRuntimeReleaseFiles(staged);
+    assertRuntimeReleaseExecutionCanaries(staged.manifestPath, config.controllerHome);
+    if (staged.sourceCommit !== sourceRevision || staged.sourceRepositoryId !== sourceRepositoryId) {
+      throw new Error('RUNTIME_RELEASE_STAGED_SOURCE_IDENTITY_MISMATCH');
+    }
+    const release = {
+      releaseId: staged.releaseId,
+      releasePath: staged.releasePath,
+      manifestPath: staged.manifestPath,
+      artifactIdentity: staged.artifactIdentity,
+      manifestSha256: staged.manifestSha256,
+      treeSha256: runtimeReleaseTreeSha256(staged.releasePath),
+      sourceCommit: staged.sourceCommit,
+      sourceRepositoryId,
+    };
+    audit(config, 'runtime_release_staged', {
+      ...(requestId?.trim() ? { requestId: requestId.trim() } : {}),
+      releaseId: release.releaseId,
+      sourceCommit: release.sourceCommit,
+      sourceRepositoryId,
+      artifactIdentity: release.artifactIdentity,
+      manifestSha256: release.manifestSha256,
+      treeSha256: release.treeSha256,
+    });
+    return {
+      ok: true,
+      attempted: true,
+      detail: `staged exact accepted Runtime source ${sourceRevision} as immutable release ${release.releaseId}; live Runtime authority is unchanged`,
+      release,
+    };
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    audit(config, 'runtime_release_stage_failed', {
+      ...(requestId?.trim() ? { requestId: requestId.trim() } : {}),
+      sourceCommit: sourceRevision,
+      sourceRepositoryId,
+      detail: detail.slice(0, 500),
+    });
+    return { ok: false, attempted: true, detail };
+  }
+}
+
 export async function prepareConfiguredRuntimeReleaseSession(
   config: RecoveryConfig,
   dependencies: Pick<ConfiguredRuntimeActivationDependencies, 'stage'> = {},
@@ -4220,126 +4246,6 @@ export async function prepareConfiguredRuntimeReleaseSession(
   if (!locked.acquired) {
     return { ok: false, attempted: false, noOp: true, detail: recoveryBusyDetail(locked.owner) };
   }
-  return locked.value;
-}
-
-
-const RELEASE_SESSION_STATIC_GATES = [
-  { id: 'type', args: ['run', 'check:type'], timeoutMs: 10 * 60_000 },
-  { id: 'runtime_architecture', args: ['run', 'check:runtime-architecture'], timeoutMs: 5 * 60_000 },
-  { id: 'architecture_sync', args: ['run', 'check:architecture-sync'], timeoutMs: 5 * 60_000 },
-  { id: 'bootstrap', args: ['run', 'check:bootstrap-files'], timeoutMs: 5 * 60_000 },
-] as const;
-
-export async function verifyConfiguredRuntimeReleaseSessionStaticGates(
-  config: RecoveryConfig,
-  sessionId: string,
-  requestId?: string,
-): Promise<ConfiguredRuntimeActivationResult> {
-  const sourceRoot = config.primaryRuntimeSourceRoot?.trim();
-  if (!sourceRoot) return { ok: false, attempted: false, noOp: true, detail: 'primary Runtime source root is not configured in standalone Recovery' };
-  const locked = await withLock(config, {
-    action: 'release_session_static_verify',
-    ...(requestId?.trim() ? { requestId: requestId.trim() } : {}),
-  }, async () => {
-    let session = readReleaseSession(config.controllerHome, sessionId);
-    if (!session) return { ok: false as const, attempted: false, noOp: true, detail: 'RELEASE_SESSION_MISSING' };
-    if (session.phase !== 'built') {
-      return { ok: false as const, attempted: false, noOp: true, detail: `RELEASE_SESSION_STATIC_VERIFY_REQUIRES_BUILT: ${session.phase}`, releaseSession: session };
-    }
-    const candidate = session.candidateRelease;
-    if (!candidate) return { ok: false as const, attempted: false, noOp: true, detail: 'RELEASE_SESSION_CANDIDATE_RELEASE_REQUIRED', releaseSession: session };
-    const frozenSourceRevision = session.sourceRevision;
-    const stableRelease = session.stableRelease;
-    try {
-      assertStableReleaseSessionIdentityCurrent(config, stableRelease);
-      const manifest = loadRuntimeReleaseManifest(candidate.manifestPath, session.candidate.controllerHome);
-      if (
-        manifest.deploymentScope !== 'portable'
-        || manifest.releaseId !== candidate.releaseId
-        || manifest.artifactIdentity !== candidate.artifactIdentity
-        || createHash('sha256').update(readFileSync(candidate.manifestPath)).digest('hex') !== candidate.manifestSha256
-        || runtimeReleaseTreeSha256(dirname(candidate.manifestPath)) !== candidate.treeSha256
-      ) throw new Error('RELEASE_SESSION_CANDIDATE_IDENTITY_MISMATCH');
-
-      const receipts = withRuntimeReleaseSourceSnapshot({
-        sourceRoot,
-        sourceRevision: frozenSourceRevision,
-      }, frozenSourceRoot => {
-        const gateReceipts: Array<{ id: string; kind: 'static_gate'; summary: string }> = [];
-        for (const gate of RELEASE_SESSION_STATIC_GATES) {
-          assertStableReleaseSessionIdentityCurrent(config, stableRelease);
-          const startedAt = Date.now();
-          const bunExecutable = resolveBunExecutable();
-          const boundedRunner = join(frozenSourceRoot, 'scripts', 'run-bounded-command.mjs');
-          const result = spawnSync(bunExecutable, [
-            boundedRunner,
-            '--timeout-ms', String(gate.timeoutMs),
-            '--',
-            bunExecutable,
-            ...gate.args,
-          ], {
-            cwd: frozenSourceRoot,
-            env: { ...runtimeAuthorityFreeEnvironment(process.env), PATH: recoveryCommandPath() },
-            encoding: 'utf8',
-            // The inner bounded runner owns the command process group and gets a
-            // brief escalation window to terminate descendants before this
-            // outer Recovery watchdog is allowed to intervene.
-            timeout: gate.timeoutMs + 15_000,
-            maxBuffer: 8 * 1024 * 1024,
-          });
-          const durationMs = Date.now() - startedAt;
-          if (result.error || result.status !== 0) {
-            const detail = result.error instanceof Error
-              ? result.error.message
-              : (result.stderr || result.stdout || `exit ${result.status ?? 'unknown'}`).trim().slice(-2000);
-            throw new Error(`RELEASE_SESSION_STATIC_GATE_FAILED:${gate.id}: ${detail}`);
-          }
-          gateReceipts.push({
-            id: gate.id,
-            kind: 'static_gate',
-            summary: `${gate.id} passed on frozen source ${frozenSourceRevision} in ${durationMs}ms`,
-          });
-        }
-        return gateReceipts;
-      });
-      assertStableReleaseSessionIdentityCurrent(config, session.stableRelease);
-      session = advanceReleaseSession({
-        controllerHome: config.controllerHome,
-        sessionId,
-        expectedRevision: session.revision,
-        phase: 'static_verified',
-        receipts,
-      });
-      audit(config, 'release_session_static_verified', {
-        sessionId,
-        sourceRevision: session.sourceRevision,
-        candidateReleaseId: candidate.releaseId,
-        gates: RELEASE_SESSION_STATIC_GATES.map((gate) => gate.id),
-      });
-      return {
-        ok: true as const,
-        attempted: true,
-        detail: 'ReleaseSession static gates passed on the frozen source revision; Stable A remained unchanged',
-        releaseSession: session,
-      };
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      try {
-        session = advanceReleaseSession({
-          controllerHome: config.controllerHome,
-          sessionId,
-          expectedRevision: session.revision,
-          phase: 'failed',
-          receipts: [{ id: 'static_failed', kind: 'static_gate', summary: detail.slice(0, 500) }],
-        });
-      } catch { /* preserve the original static verification failure */ }
-      cleanupRetiredCandidateLane(config, session);
-      audit(config, 'release_session_static_failed', { sessionId, detail });
-      return { ok: false as const, attempted: true, detail, releaseSession: session };
-    }
-  });
-  if (!locked.acquired) return { ok: false, attempted: false, noOp: true, detail: recoveryBusyDetail(locked.owner) };
   return locked.value;
 }
 
@@ -4649,8 +4555,8 @@ export async function bootAndVerifyConfiguredRuntimeReleaseSessionCandidate(
         releaseSession: session,
       };
     }
-    if (session.phase !== 'static_verified') {
-      return { ok: false as const, attempted: false, noOp: true, detail: `RELEASE_SESSION_CANDIDATE_BOOT_REQUIRES_STATIC_VERIFIED: ${session.phase}`, releaseSession: session };
+    if (session.phase !== 'built' && session.phase !== 'static_verified') {
+      return { ok: false as const, attempted: false, noOp: true, detail: `RELEASE_SESSION_CANDIDATE_BOOT_REQUIRES_BUILT_ARTIFACT: ${session.phase}`, releaseSession: session };
     }
     const candidateRelease = session.candidateRelease;
     if (!candidateRelease) return { ok: false as const, attempted: false, noOp: true, detail: 'RELEASE_SESSION_CANDIDATE_RELEASE_REQUIRED', releaseSession: session };
@@ -4658,9 +4564,14 @@ export async function bootAndVerifyConfiguredRuntimeReleaseSessionCandidate(
     const candidateConfig = candidateRecoveryConfig(session);
     try {
       assertStableReleaseSessionIdentityCurrent(config, session.stableRelease);
-      if (runtimeReleaseTreeSha256(dirname(candidateRelease.manifestPath)) !== candidateRelease.treeSha256) {
-        throw new Error('RELEASE_SESSION_CANDIDATE_TREE_CHANGED');
-      }
+      const manifest = loadRuntimeReleaseManifest(candidateRelease.manifestPath, session.candidate.controllerHome);
+      if (
+        manifest.deploymentScope !== 'portable'
+        || manifest.releaseId !== candidateRelease.releaseId
+        || manifest.artifactIdentity !== candidateRelease.artifactIdentity
+        || createHash('sha256').update(readFileSync(candidateRelease.manifestPath)).digest('hex') !== candidateRelease.manifestSha256
+        || runtimeReleaseTreeSha256(dirname(candidateRelease.manifestPath)) !== candidateRelease.treeSha256
+      ) throw new Error('RELEASE_SESSION_CANDIDATE_IDENTITY_MISMATCH');
       await installReleaseSessionCandidateService(session, runCommand);
 
       let initialVerify = await verifyPrimaryRuntimeAfterStart({
@@ -6034,7 +5945,6 @@ export async function promoteConfiguredRuntimeReleaseSessionKnownGood(
   if (timedSuccessorReconciliation) return timedSuccessorReconciliation;
 
   let attested: ReleaseEvidence;
-  let continuationProof: WorkflowSupervisorContinuationProof;
   try {
     const active = activeAuthorityRelease(config);
     if (
@@ -6043,7 +5953,6 @@ export async function promoteConfiguredRuntimeReleaseSessionKnownGood(
       || active.artifactIdentity !== candidateRelease.artifactIdentity
       || active.manifestSha256 !== candidateRelease.manifestSha256
     ) throw new Error('RELEASE_SESSION_SOAK_RUNTIME_IDENTITY_MISMATCH');
-
     const activeAuthority = readRuntimeReleaseAuthority(config.controllerHome);
     if (
       !activeAuthority
@@ -6051,44 +5960,15 @@ export async function promoteConfiguredRuntimeReleaseSessionKnownGood(
       || activeAuthority.active.artifactIdentity !== candidateRelease.artifactIdentity
       || activeAuthority.active.manifestSha256 !== candidateRelease.manifestSha256
     ) throw new Error('RELEASE_SESSION_SOAK_RUNTIME_IDENTITY_MISMATCH');
-    try {
-      const proof = await (dependencies.continuationProof ?? getWorkflowSupervisorContinuationProof)(
-        resolveWorkflowSupervisorForgeHome(config.controllerHome),
-        {
-          ...(candidateRelease.sourceRepositoryId ? { repoId: candidateRelease.sourceRepositoryId } : {}),
-          activeReleaseId: candidateRelease.releaseId,
-          notBefore: activeAuthority.committedAt,
-        },
-      );
-      if (!proof) throw new Error('RELEASE_SESSION_AUTONOMOUS_CONTINUATION_PROOF_MISSING');
-      continuationProof = proof;
-      if (!releaseSessionContinuationProofTimely(initial, proof.lastCommittedAt, dependencies.wallNow?.() ?? Date.now()))
-        throw new Error('RELEASE_SESSION_ACCEPTANCE_PROOF_INVALID');
-    } catch (error) {
-      if (error instanceof Error && (error.message === 'RELEASE_SESSION_AUTONOMOUS_CONTINUATION_PROOF_MISSING' || error.message === 'RELEASE_SESSION_ACCEPTANCE_PROOF_INVALID')) throw error;
-      throw new Error(`RELEASE_SESSION_AUTONOMOUS_CONTINUATION_PROOF_UNAVAILABLE: ${error instanceof Error ? error.message : String(error)}`);
-    }
-
-    // Only the exact ReleaseSession promoter may reconcile a provisional
-    // attestation; all external KnownGood recovery consumers stay fenced.
     const existingAttestation = matchingKnownGood(config, active, true);
     if (existingAttestation) {
-      // A known-good attestation is durable release authority, not a transient
-      // observation. Crash/retry reconciliation must reuse it instead of
-      // replaying performance observation and public MCP probes. The live
-      // Runtime still has to own the exact same release and remain locally
-      // live/ready/non-stale before the ReleaseSession can terminalize.
-      if (!liveRuntimeOwnsRelease(config, existingAttestation)) {
-        throw new Error('RELEASE_SESSION_ATTESTED_RUNTIME_NOT_CURRENT');
-      }
+      if (!liveRuntimeOwnsRelease(config, existingAttestation)) throw new Error('RELEASE_SESSION_ATTESTED_RUNTIME_NOT_CURRENT');
       attested = existingAttestation;
     } else {
       const before = await verifyStableRuntime(config);
       if (!before.ok) throw new Error('RELEASE_SESSION_SOAK_RUNTIME_VERIFY_FAILED');
-      if (!sameReleaseEvidenceIdentity(before.releases.active, active)) {
-        throw new Error('RELEASE_SESSION_SOAK_RUNTIME_IDENTITY_MISMATCH');
-      }
-      attested = await attestKnownGood(config, dependencies);
+      if (!sameReleaseEvidenceIdentity(before.releases.active, active)) throw new Error('RELEASE_SESSION_SOAK_RUNTIME_IDENTITY_MISMATCH');
+      attested = await attestVerifiedKnownGood(config, before);
     }
     if (
       attested.revision !== candidateRelease.releaseId
@@ -6100,39 +5980,6 @@ export async function promoteConfiguredRuntimeReleaseSessionKnownGood(
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     audit(config, 'release_session_known_good_failed', { sessionId, detail });
-
-    // Missing proof remains an open acceptance obligation. Only a measured
-    // Runtime failure (not elapsed wall-clock time) authorizes rollback.
-    // A hard runaway-CPU rejection is terminal acceptance evidence, not a
-    // transient observation failure. Keeping Candidate B live in `soaking`
-    // caused the automatic release driver to launch another full 60-second
-    // sampler on every reconciliation cycle. Restore the exact frozen Stable A
-    // through the existing ReleaseSession rollback transaction instead. The
-    // coordinator will then treat this source revision as already attempted and
-    // will not autonomously replay it until source authority changes.
-    if (/^RECOVERY_PERFORMANCE_REJECTED:/.test(detail)) {
-      const rollback = await rollbackConfiguredRuntimeReleaseSession(
-        config,
-        sessionId,
-        dependencies.rollback ?? {},
-        requestId?.trim() ? `${requestId.trim()}:performance-rejected` : undefined,
-      );
-      audit(config, 'release_session_known_good_performance_rejected', {
-        sessionId,
-        detail,
-        rollbackOk: rollback.ok,
-        rollbackDetail: rollback.detail,
-      });
-      return {
-        ok: false,
-        attempted: true,
-        detail: rollback.ok
-          ? `${detail}; Candidate B was rejected by the runaway-CPU gate and exact Stable A restored`
-          : `${detail}; automatic Stable A rollback failed: ${rollback.detail}`,
-        releaseSession: rollback.releaseSession ?? readReleaseSession(config.controllerHome, sessionId) ?? initial,
-      };
-    }
-
     return { ok: false, attempted: true, detail, releaseSession: readReleaseSession(config.controllerHome, sessionId) ?? initial };
   }
 
@@ -6145,14 +5992,6 @@ export async function promoteConfiguredRuntimeReleaseSessionKnownGood(
     if (session.phase !== 'soaking') {
       return { ok: false as const, attempted: true, detail: `RELEASE_SESSION_CHANGED_DURING_KNOWN_GOOD_ATTESTATION: ${session.phase}`, releaseSession: session };
     }
-    // The expensive independent verification and performance observation are
-    // already embodied by `attested`. Re-running the full network probe suite
-    // here created a split-brain transaction: the durable recovery bundle could
-    // be published successfully, then one transient Gateway/MCP timeout left the
-    // ReleaseSession permanently soaking. Under the mutation lock, only fence
-    // the identity that could invalidate that attestation.
-    if (!releaseSessionContinuationProofTimely(session, continuationProof.lastCommittedAt, dependencies.wallNow?.() ?? Date.now()))
-      return { ok: false as const, attempted: true, detail: 'RELEASE_SESSION_ACCEPTANCE_PROOF_INVALID', releaseSession: session };
     if (!liveRuntimeOwnsRelease(config, attested)) {
       return { ok: false as const, attempted: true, detail: 'RELEASE_SESSION_RUNTIME_CHANGED_AFTER_KNOWN_GOOD_ATTESTATION', releaseSession: session };
     }
@@ -6171,18 +6010,11 @@ export async function promoteConfiguredRuntimeReleaseSessionKnownGood(
       sessionId,
       expectedRevision: session.revision,
       phase: 'known_good',
-      receipts: [
-        {
-          id: 'supervisor_continuation_proof',
-          kind: 'soak',
-          summary: `Supervisor task ${continuationProof.taskId} proved ${continuationProof.actions.join(' -> ')} on active release ${continuationProof.activeReleaseId} across Runtime instances ${continuationProof.runtimeInstanceIds.join(',')}`,
-        },
-        {
-          id: 'known_good',
-          kind: 'known_good',
-          summary: `release ${attested.revision} passed soak/performance observation and owns recoverable bundle ${attested.recoveryBundle!.attestationId}`,
-        },
-      ],
+      receipts: [{
+        id: 'known_good',
+        kind: 'known_good',
+        summary: `release ${attested.revision} passed strict whole-Runtime verification and owns recoverable bundle ${attested.recoveryBundle!.attestationId}`,
+      }],
     });
     audit(config, 'release_session_known_good', {
       sessionId,
@@ -6194,29 +6026,17 @@ export async function promoteConfiguredRuntimeReleaseSessionKnownGood(
     return {
       ok: true as const,
       attempted: true,
-      detail: 'ReleaseSession became known-good only after full Runtime verification, performance observation, and recoverable release+SQLite+service bundle attestation',
+      detail: 'ReleaseSession became known-good after strict whole-Runtime verification and recoverable release+SQLite+service bundle attestation',
       releaseSession: session,
     };
   });
   if (!locked.acquired) return { ok: false, attempted: false, noOp: true, detail: recoveryBusyDetail(locked.owner), releaseSession: initial };
-  // An invalid causal proof cannot promote known-good, but cannot authorize a
-  // time-based rollback of a healthy active Runtime either.
   return locked.value;
 }
 
 export interface ConfiguredRuntimeActivationDependencies {
   stage?: typeof stageRuntimeReleaseFromCandidateSource;
   activate?: (config: RecoveryConfig, manifestPath: string, guard: RuntimeReleaseActivationGuard) => Promise<RuntimeReleaseActivationResult>;
-}
-
-export async function stageAndActivateConfiguredRuntimeRelease(
-  config: RecoveryConfig,
-  dependencies: ConfiguredRuntimeActivationDependencies = {},
-  requestId?: string,
-): Promise<ConfiguredRuntimeActivationResult> {
-  // Frozen-client compatibility alias. It deliberately stops at Candidate B
-  // build/session preparation. Activation is a separate ReleaseSession phase.
-  return prepareConfiguredRuntimeReleaseSession(config, dependencies, requestId);
 }
 
 function tunnelLaunchdService(configured: RecoveryTunnelServiceConfig | undefined, uid: number): LaunchdService | undefined {

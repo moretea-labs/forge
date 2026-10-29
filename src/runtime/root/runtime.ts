@@ -23,6 +23,7 @@ import { RuntimeReadinessState } from './readiness';
 import { loadRuntimeReleaseManifest, requireCompleteCompiledRuntimeReleaseManifest } from './release-manifest';
 import { ensureActiveRuntimeRelease, readRuntimeReleaseAuthority, type RuntimeReleaseAuthority } from './release-store';
 import { migrateReleaseDurableState } from '../release/release-state-migration';
+import { normalizeLegacyRequirementAcceptance } from '../control-plane/persistence/requirement-store';
 import { bindRuntimeWriteClaim, clearRuntimeWriteClaim } from './write-fence';
 import { startInProcessScheduler, type RuntimeSchedulerHandle } from './scheduler';
 import { startConfiguredRuntimeLocalBridge, type RuntimeLocalBridgeHandle } from './local-bridge';
@@ -497,6 +498,7 @@ export class CanonicalForgeRuntime {
         this.dependencies.inspectDatabase,
       );
       this.controller.initialize();
+      normalizeLegacyRequirementAcceptance({ controllerHome: this.config.controllerHome });
       // The Canonical Runtime is the only process that keeps a control-plane
       // reader alive across operations. Writers remain short-lived WAL/CAS
       // transactions, while CLI/tests/workers keep their existing close-on-read

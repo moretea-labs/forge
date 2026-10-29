@@ -49,7 +49,7 @@ const EXPECTED_PREFERRED_TOOL_NAME_FINGERPRINT = 'f22e635a213b45fa';
 // 2026-10-21: rh_context documents bounded flat semantic navigation locations.
 // 2026-10-27: rh_context describes conversation-context reuse and compact search
 // summaries; only descriptive metadata changes, with names and input types intact.
-const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = 'a049a6ca7ec1462d';
+const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = '61f567710079d18f';
 
 const policy = runtimePolicy(process.cwd(), {
   profile: 'controller',
