@@ -3679,6 +3679,75 @@ test('reconciles a late applied Supervisor effect into the same outcome-unknown 
   });
 });
 
+test('provider silence reports absolute unresolved-effect age when assistant digests keep changing', () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-dynamic-silence-age-'));
+  roots.push(root);
+  const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'));
+  const control = new WorkflowSupervisorControlPlane(store);
+  const taskId = 'task-dynamic-silence-age';
+  const conversationId = '78787878-5656-3434-1212-909090909080';
+  control.registerTask({ taskId, conversationId, conversationUrl: 'https://chatgpt.com/c/' + conversationId, objective: 'Report absolute unresolved effect age independently of changing summaries.', completionContract: {}, continuationPolicy: {}, userBlockerPolicy: {} });
+  const effect = control.reserveEnrollment(taskId);
+  control.observeEffect({ effectId: effect.effectId, observationId: 'dynamic-silence-applied', outcome: 'applied' });
+
+  const observationBaseMs = Date.now();
+  const observation = (observedAtMs: number, assistantDigest: string) => store.observeProviderTurn({
+    taskId, effectId: effect.effectId, generating: true, assistantDigest,
+    observedAtMs, graceMs: WORKFLOW_SUPERVISOR_PROVIDER_IDLE_GRACE_MS,
+    recovery: { effectId: 'fx_78787878787878787878787878787880', prompt: 'must-not-resend-dynamic-silence' },
+  });
+  expect(observation(observationBaseMs + 1_000, 'digest-initial').state).toBe('generating');
+
+  for (const minute of [5, 15, 30]) {
+    expect(observation(observationBaseMs + minute * 60_000, 'digest-' + minute).state).toBe('generating');
+  }
+
+  const report = store.providerSilence(effect.effectId, observationBaseMs + 31 * 60_000)!;
+  const appliedAtMs = Date.parse(report.effectAppliedAt);
+  expect(Number.isFinite(appliedAtMs)).toBe(true);
+  expect(report.effectElapsedMs).toBeGreaterThanOrEqual(31 * 60_000);
+  expect(report.effectElapsedMs).toBeLessThanOrEqual(31 * 60_000 + 1_000);
+  expect(report.elapsedMs).toBe(60_000);
+  expect(report.recoveryReviewAt).toBe(new Date(appliedAtMs + WORKFLOW_SUPERVISOR_PROVIDER_IDLE_GRACE_MS).toISOString());
+  expect(report).toMatchObject({ progress: 'no_visible_output', resendAuthorized: false });
+  expect(store.getLatestCompletion(taskId)).toBeUndefined();
+  expect(store.effectApplied(effect.effectId)).toBe(true);
+  store.close();
+});
+
+test('provider silence keeps absolute unresolved-effect age distinct from static-output silence', () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-static-silence-age-'));
+  roots.push(root);
+  const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'));
+  const control = new WorkflowSupervisorControlPlane(store);
+  const taskId = 'task-static-silence-age';
+  const conversationId = '78787878-5656-3434-1212-909090909081';
+  control.registerTask({ taskId, conversationId, conversationUrl: 'https://chatgpt.com/c/' + conversationId, objective: 'Keep output silence and unresolved effect age distinct.', completionContract: {}, continuationPolicy: {}, userBlockerPolicy: {} });
+  const effect = control.reserveEnrollment(taskId);
+  control.observeEffect({ effectId: effect.effectId, observationId: 'static-silence-applied', outcome: 'applied' });
+
+  const observationBaseMs = Date.now();
+  const observe = (observedAtMs: number) => store.observeProviderTurn({
+    taskId, effectId: effect.effectId, generating: true, assistantDigest: 'same-static-digest',
+    observedAtMs, graceMs: WORKFLOW_SUPERVISOR_PROVIDER_IDLE_GRACE_MS,
+    recovery: { effectId: 'fx_78787878787878787878787878787881', prompt: 'must-not-resend-static-silence' },
+  });
+  expect(observe(observationBaseMs + 1_000).state).toBe('generating');
+  expect(observe(observationBaseMs + 31 * 60_000).state).toBe('generating');
+
+  const report = store.providerSilence(effect.effectId, observationBaseMs + 31 * 60_000)!;
+  const appliedAtMs = Date.parse(report.effectAppliedAt);
+  expect(Number.isFinite(appliedAtMs)).toBe(true);
+  expect(report.effectElapsedMs).toBeGreaterThanOrEqual(31 * 60_000);
+  expect(report.effectElapsedMs).toBeLessThanOrEqual(31 * 60_000 + 1_000);
+  expect(report.elapsedMs).toBe(31 * 60_000 - 1_000);
+  expect(report.recoveryReviewAt).toBe(new Date(appliedAtMs + WORKFLOW_SUPERVISOR_PROVIDER_IDLE_GRACE_MS).toISOString());
+  expect(report.resendAuthorized).toBe(false);
+  expect(store.getLatestCompletion(taskId)).toBeUndefined();
+  expect(store.getEffect('fx_78787878787878787878787878787881')).toBeUndefined();
+  store.close();
+});
+
 test('completed idle provider turn remains a receipt obligation, not a reason to inject another prompt', async () => {
   const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-idle-receipt-'));
   roots.push(root);

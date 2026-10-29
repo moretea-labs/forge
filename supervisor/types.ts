@@ -170,10 +170,15 @@ export interface WorkflowSupervisorPreflightComposerObservation {
 export interface WorkflowSupervisorSilentTurn {
   effectId: string;
   providerState: 'generating' | 'idle';
-  /** First observation of the exact unchanged provider output. */
+  /** Timestamp of the first durable applied event for this exact effect. */
+  effectAppliedAt: string;
+  /** Absolute unresolved-effect age; assistant digest changes never reset it. */
+  effectElapsedMs: number;
+  /** Start of the current unchanged provider-state/output-digest interval. */
   observedSince: string;
+  /** Duration of the current unchanged provider-state/output-digest interval. */
   elapsedMs: number;
-  /** The existing bounded idle-recovery clock, not a second threshold. */
+  /** The existing bounded review threshold, anchored to effect application. */
   recoveryGraceMs: number;
   recoveryReviewAt: string;
   progress: 'no_visible_output';

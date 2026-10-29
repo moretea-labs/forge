@@ -1561,19 +1561,26 @@ export class WorkflowSupervisorStore {
    */
   providerSilence(effectId: string, nowMs = this.clockMs()): WorkflowSupervisorSilentTurn | undefined {
     return this.read((db) => {
+      const applied = statement(db, `SELECT occurred_at FROM events
+        WHERE effect_id = ? AND kind = 'effect_applied'
+        ORDER BY event_id ASC LIMIT 1`, (s) => s.get(effectId)) as { occurred_at?: string } | undefined;
       const latest = statement(db, `SELECT kind, occurred_at FROM events
         WHERE effect_id = ? AND kind IN ('assistant_provider_generating','assistant_provider_idle')
         ORDER BY event_id DESC LIMIT 1`, (s) => s.get(effectId)) as { kind?: string; occurred_at?: string } | undefined;
-      if (!latest || (latest.kind !== 'assistant_provider_generating' && latest.kind !== 'assistant_provider_idle')) return undefined;
+      if (!applied?.occurred_at || !latest
+        || (latest.kind !== 'assistant_provider_generating' && latest.kind !== 'assistant_provider_idle')) return undefined;
+      const effectAppliedAtMs = Date.parse(String(applied.occurred_at));
       const observedSinceMs = Date.parse(String(latest.occurred_at ?? ''));
-      if (!Number.isFinite(observedSinceMs)) return undefined;
+      if (!Number.isFinite(effectAppliedAtMs) || !Number.isFinite(observedSinceMs)) return undefined;
       return {
         effectId,
         providerState: latest.kind === 'assistant_provider_generating' ? 'generating' : 'idle',
+        effectAppliedAt: new Date(effectAppliedAtMs).toISOString(),
+        effectElapsedMs: Math.max(0, nowMs - effectAppliedAtMs),
         observedSince: new Date(observedSinceMs).toISOString(),
         elapsedMs: Math.max(0, nowMs - observedSinceMs),
         recoveryGraceMs: WORKFLOW_SUPERVISOR_PROVIDER_IDLE_GRACE_MS,
-        recoveryReviewAt: new Date(observedSinceMs + WORKFLOW_SUPERVISOR_PROVIDER_IDLE_GRACE_MS).toISOString(),
+        recoveryReviewAt: new Date(effectAppliedAtMs + WORKFLOW_SUPERVISOR_PROVIDER_IDLE_GRACE_MS).toISOString(),
         progress: 'no_visible_output',
         resendAuthorized: false,
       };

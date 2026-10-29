@@ -613,8 +613,13 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     // Elapsed is recomputed from the recorded observation instant so a read
     // between ticks cannot report a stale "still working" duration.
     const silenceSinceMs = this.projectedSilence ? Date.parse(this.projectedSilence.observedSince) : Number.NaN;
-    const silence = this.projectedSilence && Number.isFinite(silenceSinceMs)
-      ? { ...this.projectedSilence, elapsedMs: Math.max(0, nowMs - silenceSinceMs) }
+    const effectAppliedAtMs = this.projectedSilence ? Date.parse(this.projectedSilence.effectAppliedAt) : Number.NaN;
+    const silence = this.projectedSilence && Number.isFinite(silenceSinceMs) && Number.isFinite(effectAppliedAtMs)
+      ? {
+        ...this.projectedSilence,
+        elapsedMs: Math.max(0, nowMs - silenceSinceMs),
+        effectElapsedMs: Math.max(0, nowMs - effectAppliedAtMs),
+      }
       : undefined;
     return {
       enabled: true, running: Boolean(this.timer) && !this.closed, observedAt: new Date(nowMs).toISOString(),
