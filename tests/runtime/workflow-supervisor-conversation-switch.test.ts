@@ -270,6 +270,54 @@ describe('Workflow Supervisor fresh conversation switch', () => {
     store.close();
   });
 
+  test('a late valid source receipt cancels its prior failure for early rotation', async () => {
+    const fx = fixture();
+    const taskId = 'supervisor:late-success-excludes-failed-turn';
+    const conversationId = '78787878-aaaa-bbbb-cccc-565656565656';
+    const store = new WorkflowSupervisorStore(fx.controllerHome);
+    const control = new WorkflowSupervisorControlPlane(store);
+    control.registerTask({
+      taskId, conversationId, conversationUrl: 'https://chatgpt.com/c/' + conversationId,
+      objective: 'Late source completion must not count as a failed turn.',
+      completionContract: {}, continuationPolicy: { kind: 'standalone_supervisor' }, userBlockerPolicy: {},
+    });
+    let effect = control.reserveEnrollment(taskId);
+    for (let n = 1; n <= 3; n += 1) {
+      expect(store.recordEffectDispatchStarted(effect.effectId, 1, 'late-source-send-' + n)).toBe(true);
+      control.observeEffect({ effectId: effect.effectId, observationId: 'late-source-applied-' + n, outcome: 'applied' });
+      const observed = store.observeProviderTurn({
+        taskId, effectId: effect.effectId, generating: false,
+        assistantDigest: 'provider-stream-error-late-' + n,
+        providerFailureCode: 'CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE',
+        observedAtMs: Date.now(), graceMs: 1000,
+        recovery: { effectId: 'fx_late_source_recovery_' + n, prompt: 'Recover source-' + n },
+      });
+      if (n < 3) {
+        expect(observed.state).toBe('recovery_reserved');
+        effect = observed.recoveryEffect!;
+      } else {
+        expect(observed.state).toBe('exhausted');
+      }
+    }
+    const reserved = control.recoverTask({
+      taskId, sourceEffectId: effect.effectId,
+      requestId: 'late-source-operator-recovery', reason: 'Bounded recovery after exhausted provider error',
+      authorizedBy: 'user',
+    });
+    expect(reserved.action).toBe('recovery_reserved');
+    // The operator recovery is reserved, but no delivery was started. A late
+    // exact source receipt can still win; that effect is then successful.
+    const completion = await control.observeAssistantTurn({
+      taskId, conversationId,
+      responseText: 'Original turn completed after failed observation.\n'
+        + renderSupervisorReceipt(control.getTask(taskId)!, effect.effectId, 'CONTINUE'),
+    });
+    if (!('successorEffect' in completion) || !completion.successorEffect) throw new Error('LATE_SOURCE_SUCCESSOR_MISSING');
+    expect(completion.successorEffect.kind).toBe('continuation');
+    expect(store.getTask(taskId)?.conversationId).toBe(conversationId);
+    store.close();
+  });
+
   test('confirmed provider failure with a completed recovery counts once toward normal rotation', async () => {
     const fx = fixture();
     const taskId = 'supervisor:provider-failure-budget-test';
@@ -364,7 +412,7 @@ describe('Workflow Supervisor fresh conversation switch', () => {
     }
     expect(store.getTask(unverifiedTaskId)?.conversationId).toBe('bootstrap:' + unverifiedTaskId);
 
-    // The sixth receipt cannot retire an unrelated applied, unanswered turn.
+    // The tenth receipt cannot retire an unrelated applied, unanswered turn.
     const siblingTaskId = 'supervisor:receipt-cadence-unanswered-sibling';
     const siblingConversation = 'abababab-aaaa-bbbb-cccc-cdcdcdcdcdcd';
     control.registerTask({
@@ -378,10 +426,10 @@ describe('Workflow Supervisor fresh conversation switch', () => {
       code: 'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE', verifiedEmptyShell: true,
     });
     let siblingSource = control.reserveEnrollment(siblingTaskId);
-    for (let n = 1; n <= 6; n += 1) {
+    for (let n = 1; n <= 10; n += 1) {
       // Preserve the real source as the latest applied turn for causal receipt
       // matching; the extra applied sibling still remains unanswered.
-      if (n === 6) {
+      if (n === 10) {
         const outstanding = store.reserveEffect({
           taskId: siblingTaskId, effectId: 'fx_applied_unanswered_sibling_source',
           kind: 'continuation', originKey: 'test:unanswered-sibling-source',
@@ -402,6 +450,7 @@ describe('Workflow Supervisor fresh conversation switch', () => {
       expect(store.getTask(siblingTaskId)?.conversationId).toBe(siblingConversation);
     }
     expect(store.hasAppliedEffectAwaitingCompletion(siblingTaskId)).toBe(true);
+    expect(store.latestEffectDispatch('fx_applied_unanswered_sibling_source')?.generation).toBe(1);
 
     // The same auto-rotation path must not abandon an unresolved send.
     // Unlike an applied sibling, this one has a dispatched generation with
@@ -419,8 +468,8 @@ describe('Workflow Supervisor fresh conversation switch', () => {
       code: 'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE', verifiedEmptyShell: true,
     });
     let current = control.reserveEnrollment(unknownTaskId);
-    for (let n = 1; n <= 6; n += 1) {
-      if (n === 6) {
+    for (let n = 1; n <= 10; n += 1) {
+      if (n === 10) {
         const unknown = store.reserveEffect({
           taskId: unknownTaskId, effectId: 'fx_undetermined_sibling_send',
           kind: 'continuation', originKey: 'test:undetermined-sibling-send',
@@ -443,6 +492,7 @@ describe('Workflow Supervisor fresh conversation switch', () => {
       expect(store.getTask(unknownTaskId)?.conversationId).toBe(unknownConversation);
     }
     expect(store.currentUnappliedEffect(unknownTaskId)?.effectId).toBe('fx_undetermined_sibling_send');
+    expect(store.latestEffectDispatch('fx_undetermined_sibling_send')?.generation).toBe(1);
     // Unknown delivery remains the queue owner; a fresh receipt successor
     // cannot become sendable when both effects share a millisecond timestamp.
     expect(store.nextBrowserEffect(unknownTaskId)?.mode).not.toBe('send');

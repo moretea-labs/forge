@@ -2129,11 +2129,26 @@ export class WorkflowSupervisorStore {
             WHERE task_id=? AND kind='assistant_completion' AND event_id>?
               AND completion_fingerprint<>?`,
             (s) => s.get(input.taskId, lastMigration?.id ?? 0, input.completionFingerprint)) as { id?: number };
-          const failuresSincePreviousCompletion = statement(db, `SELECT COUNT(DISTINCT effect_id) AS total
-            FROM events WHERE task_id=? AND kind='assistant_provider_failed'
-              AND event_id>? AND event_id<(SELECT event_id FROM events WHERE event_key=? LIMIT 1)
-              AND effect_id IS NOT NULL`,
-            (s) => s.get(input.taskId, Math.max(lastMigration?.id ?? 0, previousCompletion?.id ?? 0),
+          const failuresSincePreviousCompletion = statement(db, `WITH RECURSIVE settled(effect_id) AS (
+              SELECT source_effect_id FROM completions WHERE task_id=?
+              UNION
+              SELECT parent.effect_id FROM effects child
+                JOIN settled ON settled.effect_id=child.effect_id
+                JOIN effects parent ON parent.task_id=child.task_id
+                  AND child.origin_key='provider-recovery:' || parent.effect_id
+                WHERE child.task_id=? AND child.kind='recovery'
+            )
+            SELECT COUNT(DISTINCT failed.effect_id) AS total
+            FROM events failed JOIN settled ON settled.effect_id=failed.effect_id
+            WHERE failed.task_id=? AND failed.kind='assistant_provider_failed'
+              AND failed.event_id>? AND failed.event_id<(SELECT event_id FROM events WHERE event_key=? LIMIT 1)
+              AND failed.effect_id IS NOT NULL
+              -- A late valid receipt for the failed source turns that source
+              -- into a successful turn. Never count it as both outcomes.
+              AND NOT EXISTS (SELECT 1 FROM completions original
+                WHERE original.task_id=failed.task_id AND original.source_effect_id=failed.effect_id)`,
+            (s) => s.get(input.taskId, input.taskId, input.taskId,
+              Math.max(lastMigration?.id ?? 0, previousCompletion?.id ?? 0),
               `completion:${input.completionFingerprint}`)) as { total?: number };
           const completedOrFailedTurns = (completedSinceMigration.total ?? 0) + (recoveredFailedTurns.total ?? 0);
           // An explicit three-turn failure burst accelerates rotation at a
