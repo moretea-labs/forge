@@ -3921,13 +3921,20 @@ test('public supervisor_task review_notice persists through the real local RPC a
       .toMatchObject({ deferred: true, deduplicated: false, taskId: task.taskId });
     expect((await callWorkflowSupervisorAdapter(ctx, 'supervisor_task', args))?.structuredContent)
       .toMatchObject({ deferred: true, deduplicated: true, taskId: task.taskId });
-    expect(store.listPendingReviewNotices()).toHaveLength(1);
+    const commentedArgs = { ...args, review_id: 'review-rpc-commented', review_source: 'github_review', review_outcome: 'COMMENTED' };
+    expect((await callWorkflowSupervisorAdapter(ctx, 'supervisor_task', commentedArgs))?.structuredContent)
+      .toMatchObject({ deferred: true, deduplicated: false, taskId: task.taskId });
+    expect((await callWorkflowSupervisorAdapter(ctx, 'supervisor_task', commentedArgs))?.structuredContent)
+      .toMatchObject({ deferred: true, deduplicated: true, taskId: task.taskId });
+    expect(store.listPendingReviewNotices()).toHaveLength(2);
     control.observeEffect({ effectId: enrollment.effectId, observationId: 'review-rpc-applied', outcome: 'applied' });
     const committed = await control.observeAssistantTurn({
       taskId: task.taskId, conversationId: task.conversationId,
       responseText: renderSupervisorReceipt(task, enrollment.effectId, 'CONTINUE'),
     });
     expect(committed.successorEffect?.prompt).toContain('[UNVERIFIED STALE_HEAD]');
+    expect(committed.successorEffect?.prompt).toContain('receipt review-rpc-commented');
+    expect(committed.successorEffect?.prompt).toContain('reported outcome COMMENTED');
     expect(store.listPendingReviewNotices()).toHaveLength(0);
     expect(control.taskStall(task.taskId)).toMatchObject({
       state: 'deliverable', effectId: committed.successorEffect?.effectId,

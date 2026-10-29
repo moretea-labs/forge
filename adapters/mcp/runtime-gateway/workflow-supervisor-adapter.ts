@@ -17,6 +17,7 @@ import {
 } from '../../../supervisor/client';
 import { resolveWorkflowSupervisorForgeHome } from '../../../supervisor/paths';
 import { workflowSupervisorCompletionContractSha256 } from '../../../supervisor/store';
+import type { WorkflowSupervisorReviewNotice } from '../../../supervisor/types';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 import { result } from './result-adapter';
 
@@ -93,7 +94,7 @@ export async function callWorkflowSupervisorAdapter(
       currentHeadSha: textArg(args, 'current_head_sha'),
       reviewId: textArg(args, 'review_id'),
       source: textArg(args, 'review_source') as 'github_review' | 'github_ci' | 'independent_reviewer',
-      outcome: textArg(args, 'review_outcome') as 'ACCEPT' | 'REVISE' | 'BLOCK' | 'CI_FAILED' | 'CI_PASSED',
+      outcome: textArg(args, 'review_outcome') as WorkflowSupervisorReviewNotice['outcome'],
     });
     return result({ ...receipt, taskId, status: 'recorded_for_original_writer',
       summary: `Review/CI notification is journaled for original Supervisor ${taskId}; no approval/merge authority or extra Send was granted.` });
