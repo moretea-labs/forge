@@ -35,6 +35,19 @@ const RH_CONTEXT_RECENT_ACTIVITY_WINDOW_MS = 24 * 60 * 60 * 1_000;
 const RH_CONTEXT_AUTOMATIC_RECALL_LIMIT = 4;
 const RH_CONTEXT_SEMANTIC_EVIDENCE_LIMIT = 64;
 
+/** Select only retrievable bounded-search omissions; removed index entries must not be suggested. */
+export function selectProgressiveSourcePaths(
+  omitted: readonly { path: string; reason: string }[],
+  materializedPaths: readonly string[],
+): string[] {
+  const alreadyRead = new Set(materializedPaths);
+  return Array.from(new Set(omitted
+    .filter(entry => entry.reason === 'max_files' || entry.reason === 'max_snippets')
+    .map(entry => entry.path)))
+    .filter(path => !alreadyRead.has(path))
+    .slice(0, 3);
+}
+
 function timestampIsRecent(value: string | undefined, cutoffMs: number): boolean {
   if (!value) return false;
   const timestamp = Date.parse(value);
@@ -742,11 +755,12 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
       // Surface an exact, optional next read when bounded discovery found more
       // source candidates than could be materialized. This is evidence, not an
       // admission gate, semantic completeness claim, or automatic search loop.
-      const omittedSourcePaths = Array.from(new Set(pack.omitted.map((entry) => entry.path)))
-        .filter((path) => !pack.files.some((file) => file.path === path))
-        .slice(0, 3);
+      // No persistent seen-path cursor: each suggestion is advisory and the model
+      // chooses whether to follow it using current goal/evidence, not a fixed quota.
+      const retrievableOmissions = pack.omitted.filter(entry => entry.reason === 'max_files' || entry.reason === 'max_snippets');
+      const omittedSourcePaths = selectProgressiveSourcePaths(pack.omitted, pack.files.map(file => file.path));
       const progressiveSourceAction = omittedSourcePaths.length > 0 ? [{
-        label: 'Inspect omitted source candidates before deciding whether they affect the goal',
+        label: `Inspect ${omittedSourcePaths.length} of ${retrievableOmissions.length} omitted source candidates and decide whether they affect the goal`,
         tool: 'rh_context' as const,
         operation: 'search',
         payload: {
@@ -763,6 +777,16 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
         risk: 'readonly' as const,
         confidence: 'medium' as const,
       }] : [];
+      // Source-language interpretation belongs to the model, not the lexical
+      // retriever. Don't invent translations or silently broaden a user query.
+      // Warn only when a non-English cold start returned no implementation owner.
+      const nonEnglishColdStart = /\p{Script=Han}/u.test(retrievalQuery)
+        && codeSearchTerms.length === 0
+        && list(args.known_paths).length === 0
+        && !pack.files.some(file => /\.(?:ts|tsx|js|jsx|swift|py|rs|go|java|kt|c|cc|cpp|h|hpp|cs|rb)$/i.test(file.path));
+      if (nonEnglishColdStart) {
+        warnings.push('No implementation source found from the non-English query alone. The model should supply source-language code concepts using search_terms (or use targeted rg) and retry; do not infer that only documentation is affected.');
+      }
       if (readiness.status !== 'ready' && omittedSourcePaths.length === 0) {
         warnings.push('Search evidence is incomplete; assess unresolved reason codes and use targeted source reads or symbol navigation only if the gaps affect the goal.');
       }
