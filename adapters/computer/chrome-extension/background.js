@@ -6,6 +6,8 @@ const PROVIDER_ID = 'browser.chrome-extension';
 const PROVIDER_TICK_MS = 750;
 const DISCOVERY_MIN_INTERVAL_MS = 2_000;
 const RPC_TIMEOUT_MS = 30_000;
+const HEARTBEAT_RPC_TIMEOUT_MS = 6_000;
+const HEARTBEAT_TABS_QUERY_TIMEOUT_MS = 5_000;
 // The broker budgets 12 seconds for a claimed command; a hung content
 // callback must settle earlier without claiming a Send never happened.
 const TAB_MESSAGE_TIMEOUT_MS = 7_000;
@@ -72,11 +74,18 @@ function nativeRpc(method, params = {}) {
   return new Promise((resolve, reject) => {
     const id = randomId();
     let port;
+    const timeoutMs = method === 'computer_extension_heartbeat' ? HEARTBEAT_RPC_TIMEOUT_MS : RPC_TIMEOUT_MS;
     const timer = setTimeout(() => {
-      const error = new Error(`COMPUTER_CHATGPT_NATIVE_RPC_TIMEOUT:${method}`);
-      if (port && nativePort === port) invalidateNativePort(port, error);
-      else { pendingNative.delete(id); reject(error); }
-    }, RPC_TIMEOUT_MS);
+      const pending = pendingNative.get(id);
+      if (!pending) return;
+      pendingNative.delete(id);
+      pending.reject(new Error(`COMPUTER_CHATGPT_NATIVE_RPC_TIMEOUT:${method}`));
+      // One slow request must not cancel a concurrent command/receipt RPC.
+      // Retire the shared port only when this was its final pending request.
+      if (port && nativePort === port && pendingNative.size === 0) {
+        invalidateNativePort(port, new Error(`COMPUTER_CHATGPT_NATIVE_RPC_TIMEOUT:${method}`));
+      }
+    }, timeoutMs);
     pendingNative.set(id, { resolve, reject, timer });
     try { port = ensureNativePort(); port.postMessage({ id, method, params }); }
     catch (error) {
@@ -127,7 +136,16 @@ function tabReload(tabId) { return new Promise((resolve, reject) => chrome.tabs.
   const error = chrome.runtime.lastError;
   if (error) reject(new Error(error.message)); else resolve();
 })); }
-async function chatgptTabs() { return await chrome.tabs.query({ url: 'https://chatgpt.com/*' }); }
+function boundedTabsQuery(query) {
+  let timer;
+  return Promise.race([
+    Promise.resolve().then(() => chrome.tabs.query(query)),
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error('COMPUTER_CHATGPT_EXTENSION_TABS_QUERY_TIMEOUT')), HEARTBEAT_TABS_QUERY_TIMEOUT_MS);
+    }),
+  ]).finally(() => { if (timer !== undefined) clearTimeout(timer); });
+}
+async function chatgptTabs() { return await boundedTabsQuery({ url: 'https://chatgpt.com/*' }); }
 // Controller binding owns the durable source identity. This browser-session
 // attestation proves that the exact physical tab was created by this extension;
 // browser restarts invalidate it rather than permitting tab-id reuse to close
@@ -692,8 +710,10 @@ async function executeCommand(command, instanceId) {
   return { kind: 'failed', code: 'COMPUTER_CHATGPT_EXTENSION_COMMAND_UNKNOWN', retryable: false, failoverSafe: true };
 }
 async function publishHeartbeat(instanceId) {
-  const tabs = await chatgptTabs();
-  const [current] = await chrome.tabs.query({ active: true, lastFocusedWindow: true, url: 'https://chatgpt.com/*' });
+  const [tabs, [current]] = await Promise.all([
+    chatgptTabs(),
+    boundedTabsQuery({ active: true, lastFocusedWindow: true, url: 'https://chatgpt.com/*' }),
+  ]);
   const conversations = [];
   for (const tab of tabs) {
     const identity = core.parseConversation(tab.url ?? '');
@@ -738,7 +758,7 @@ async function discoveryScan(tabId, projectTitles) {
 }
 async function refreshDiscovery() {
   const tabs = await chatgptTabs();
-  const [current] = await chrome.tabs.query({ active: true, lastFocusedWindow: true, url: 'https://chatgpt.com/*' });
+  const [current] = await boundedTabsQuery({ active: true, lastFocusedWindow: true, url: 'https://chatgpt.com/*' });
   const scopeResult = await nativeRpc('browser_project_scopes').catch(() => ({ projects: [] }));
   const projectScopes = Array.isArray(scopeResult?.projects) ? scopeResult.projects.filter((entry) => typeof entry?.title === 'string' && entry.title.trim()) : [];
   const projectTitles = [...new Set(projectScopes.map((entry) => entry.title.trim()))];

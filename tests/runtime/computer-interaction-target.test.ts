@@ -510,6 +510,32 @@ describe('Computer durable InteractionTarget authority', () => {
     }
   });
 
+  test('late out-of-order heartbeat cannot replace newer inventory or extend provider freshness', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'forge-extension-heartbeat-order-'));
+    let nowMs = Date.parse('2026-10-30T00:00:00.000Z');
+    const extension = new ChromeExtensionChatgptConversationTargetPort(home, targetAuthority, () => nowMs);
+    const conversation = (id: string) => ({ conversationId: id, canonicalUrl: `https://chatgpt.com/c/${id}` });
+    try {
+      extension.heartbeat({ providerId: 'browser.chrome-extension', providerInstanceId: 'profile-one',
+        observedAt: new Date(nowMs).toISOString(), conversations: [conversation('older-inventory')] });
+      nowMs += 5_000;
+      extension.heartbeat({ providerId: 'browser.chrome-extension', providerInstanceId: 'profile-one',
+        observedAt: new Date(nowMs).toISOString(), conversations: [conversation('newer-inventory')] });
+      nowMs += 1_000;
+      extension.heartbeat({ providerId: 'browser.chrome-extension', providerInstanceId: 'profile-one',
+        observedAt: new Date(Date.parse('2026-10-30T00:00:02.000Z')).toISOString(),
+        conversations: [conversation('late-older-inventory')] });
+      expect((await extension.inventory()).conversations.map(entry => entry.conversationId)).toEqual(['newer-inventory']);
+      // The late stale heartbeat must not refresh the 15s TTL.
+      nowMs = Date.parse('2026-10-30T00:00:20.001Z');
+      expect(await extension.inventory()).toMatchObject({ conversations: [], complete: false,
+        unavailableProviders: ['browser.chrome-extension'] });
+    } finally {
+      await extension.close();
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   test('keeps extension provider ownership scoped to the exact browser instance through bootstrap promotion and dispatch', async () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-computer-bootstrap-promotion-'));
     try {

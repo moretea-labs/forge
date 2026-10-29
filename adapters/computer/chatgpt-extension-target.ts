@@ -138,6 +138,16 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
     if (input.providerId !== PROVIDER_ID) throw new Error('COMPUTER_CHATGPT_EXTENSION_PROVIDER_ID_INVALID');
     const instanceId = providerInstanceId(input.providerInstanceId);
     if (!instanceId) throw new Error('COMPUTER_CHATGPT_EXTENSION_PROVIDER_INSTANCE_REQUIRED');
+    const receivedAtMs = this.nowMs();
+    const inputObservedAtMs = typeof input.observedAt === 'string' ? Date.parse(input.observedAt) : Number.NaN;
+    const observedAt = Number.isFinite(inputObservedAtMs)
+      ? new Date(inputObservedAtMs).toISOString()
+      : new Date(receivedAtMs).toISOString();
+    const previous = this.providerStates.get(instanceId);
+    const previousObservedAtMs = previous ? Date.parse(previous.heartbeat.observedAt) : Number.NaN;
+    // A timed-out older socket request can arrive after a newer heartbeat.
+    // Never let that late arrival replace newer inventory or refresh freshness.
+    if (Number.isFinite(previousObservedAtMs) && Date.parse(observedAt) < previousObservedAtMs) return;
     const conversations = Array.isArray(input.conversations)
       ? input.conversations.flatMap((entry) => {
           if (!entry || typeof entry.conversationId !== 'string' || !entry.conversationId.trim() || typeof entry.canonicalUrl !== 'string' || !entry.canonicalUrl.trim()) return [];
@@ -154,11 +164,11 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
         })
       : [];
     this.providerStates.set(instanceId, {
-      receivedAtMs: this.nowMs(),
+      receivedAtMs,
       heartbeat: {
         providerId: PROVIDER_ID,
         providerInstanceId: instanceId,
-        observedAt: typeof input.observedAt === 'string' && input.observedAt ? input.observedAt : new Date(this.nowMs()).toISOString(),
+        observedAt,
         conversations,
       },
     });
