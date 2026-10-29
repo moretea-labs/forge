@@ -84,10 +84,13 @@ describe('Supervisor bootstrap Project binding before enrollment', () => {
     })).toThrow('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_BINDING_OUTCOME_UNRESOLVED');
   });
 
-  test('repo-scoped start without project_url is rejected before task/effect creation', async () => {
+  test('start without project_url is rejected before task/effect creation, even without repository provenance', async () => {
     const { root, control } = await fixture(true);
     await expect(callWorkflowSupervisorAdapter(context(root), 'supervisor_task', startArgs('missing-project-url')))
       .rejects.toThrow('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_REQUIRED');
+    await expect(callWorkflowSupervisorAdapter({ controllerHome: root } as never, 'supervisor_task', {
+      operation: 'start', request_id: 'unbound-missing-project-url', objective: 'Unbound standalone task must still have an exact Project.',
+    })).rejects.toThrow('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_REQUIRED');
     expect(control.listTasks(false)).toHaveLength(0);
   });
 

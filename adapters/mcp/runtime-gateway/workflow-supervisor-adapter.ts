@@ -52,8 +52,8 @@ export async function callWorkflowSupervisorAdapter(
     const authorizedBy = textArg(args, 'authorized_by');
     if (workId && requirementId) throw new Error('WORKFLOW_SUPERVISOR_SEMANTIC_BINDING_AMBIGUOUS');
     if ((workId || requirementId) && !repoId) throw new Error('WORKFLOW_SUPERVISOR_SEMANTIC_BINDING_REPO_REQUIRED');
-    if (repoId && !projectUrl) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_REQUIRED');
-    if (projectUrl && !authorizedBy) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_AUTHORIZATION_REQUIRED');
+    if (!projectUrl) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_REQUIRED');
+    if (!authorizedBy) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_AUTHORIZATION_REQUIRED');
     const id = standaloneTaskId(repoId, requestId);
     const task = await registerWorkflowSupervisorTask(forgeHome, {
       taskId: id,
@@ -71,7 +71,7 @@ export async function callWorkflowSupervisorAdapter(
     });
     // A repo-scoped bootstrap must be bound to its exact observed Project before
     // the first enrollment effect exists. Binding failure leaves no sendable effect.
-    if (projectUrl) await bindWorkflowSupervisorBootstrapProject(forgeHome, {
+    await bindWorkflowSupervisorBootstrapProject(forgeHome, {
       taskId: task.taskId,
       projectUrl,
       requestId: `${id}:project-bind`,
