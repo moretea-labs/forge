@@ -218,41 +218,61 @@ export function renderSupervisorPrompt(
     renderEffectMarker(effectId),
     'task_id:' + JSON.stringify(task.taskId),
     'receipt:' + challenge,
-    ...(repoId ? ['repo_id:' + repoId] : []),
-    ...(requirementId ? ['requirement_id:' + requirementId] : workId ? ['work_id:' + workId] : []),
+    ...(kind !== 'enrollment' && !lowerLayerContext?.trim() && repoId && !requirementId && !workId ? ['repo_id:' + repoId] : []),
+    ...(kind !== 'enrollment' && !lowerLayerContext?.trim() && requirementId ? ['requirement_id:' + requirementId]
+      : kind !== 'enrollment' && !lowerLayerContext?.trim() && workId ? ['work_id:' + workId] : []),
   ];
   const objective = validateSupervisorObjective(task.objective).trim().replace(/\s+/g, ' ');
   const goal = Array.from(objective);
   const instruction = kind === 'enrollment'
-    ? '用 Forge supervisor_task get 按需获取任务及关联 Requirement 最新事实；据此推进目标。'
-    : '继续推进目标。仅需要时读取最新 Requirement、源码、Git/PR/CI；不要复述上轮摘要。';
+    ? '用 supervisor_task get 取目标。'
+    : '继续；需时 supervisor_task get；按需读 Requirement/源码/PR/CI。';
   const outcome = scheduled ? '当日完 W、未完 C、需用户 U' : '未完 C、交付 D、需用户 U';
   const receiptInstruction = `${instruction} 仅确需跨轮时 C；${outcome}。末行：字母 空格 receipt 值。`;
   const max = kind === 'enrollment' ? MAX_SUPERVISOR_PROMPT_CHARS : MAX_SUPERVISOR_CONTINUATION_PROMPT_CHARS;
   const length = (value: string): number => Array.from(value).length;
-  const base = [...header, '目标摘录：', receiptInstruction].join('\n');
+  // A required Review event outranks optional excerpts and semantic IDs; task_id
+  // remains the durable pointer to retrieve the complete contract.
+  const includeGoalExcerpt = !lowerLayerContext?.trim();
+  const base = [...header, ...(includeGoalExcerpt ? ['目标摘录：'] : []), receiptInstruction].join('\n');
   const capacity = max - length(base);
-  // Identity, causal receipt, a recognizable goal pointer and response contract
-  // are mandatory; optional events must not veto a valid continuation.
-  const minimumGoalChars = Math.min(24, goal.length);
-  if (capacity < minimumGoalChars || goal.length === 0) throw new Error('WORKFLOW_SUPERVISOR_PROMPT_TOO_LARGE');
-  const goalChars = Math.min(120, goal.length, Math.max(minimumGoalChars, Math.floor(capacity / 2)));
+  const minimumGoalChars = includeGoalExcerpt ? Math.min(24, goal.length) : 0;
+  if (capacity < minimumGoalChars || (includeGoalExcerpt && goal.length === 0)) throw new Error('WORKFLOW_SUPERVISOR_PROMPT_TOO_LARGE');
+  const normalizedContext = lowerLayerContext?.trim().replace(/\s+/g, ' ');
+  const contextPrefix = '待核验事件：';
+  const contextCost = normalizedContext ? 1 + length(contextPrefix) + length(normalizedContext) : 0;
+  if (normalizedContext && length(normalizedContext) > 230) throw new Error('WORKFLOW_SUPERVISOR_PROMPT_TOO_LARGE');
+  const goalCapacity = capacity - contextCost;
+  if (includeGoalExcerpt && goalCapacity < minimumGoalChars) throw new Error('WORKFLOW_SUPERVISOR_PROMPT_TOO_LARGE');
+  const goalChars = includeGoalExcerpt
+    ? Math.min(120, goal.length, Math.max(minimumGoalChars, Math.floor((goalCapacity - 1) / 2)))
+    : 0;
   const excerpt = goal.slice(0, goalChars).join('');
-  const tail = goalChars < goal.length && goalChars < capacity ? '…' : '';
+  const tail = includeGoalExcerpt && goalChars < goal.length ? '…' : '';
+  if (includeGoalExcerpt && goalChars + length(tail) > goalCapacity) throw new Error('WORKFLOW_SUPERVISOR_PROMPT_TOO_LARGE');
+  const goalLine = includeGoalExcerpt ? '目标摘录：' + excerpt + tail : undefined;
+  const promptBase = [...header, ...(goalLine ? [goalLine] : []), receiptInstruction].join('\n');
   const events: string[] = [];
-  let remaining = max - length([...header, '目标摘录：' + excerpt + tail, receiptInstruction].join('\n'));
-  // Current bounded events only; full notices/checkpoints stay in the journal.
-  for (const [prefix, raw, bound] of [
-    ['纠正原因：', correctionReason, 90],
-    ['待核验事件：', lowerLayerContext, 230],
+  let remaining = max - length(promptBase);
+  // Review notice fields are mandatory and precede optional correction text.
+  // If the complete notice cannot fit, do not emit a partial notice or consume its event key.
+  for (const [prefix, raw, bound, required] of [
+    [contextPrefix, normalizedContext, 230, true],
+    ['纠正原因：', correctionReason, 90, false],
   ] as const) {
+    if (!raw?.trim()) continue;
+    const normalized = raw.trim().replace(/\s+/g, ' ');
     const available = remaining - 1 - length(prefix);
-    if (!raw?.trim() || available < 1) continue;
-    const value = Array.from(raw.trim().replace(/\s+/g, ' ')).slice(0, Math.min(bound, available)).join('');
+    if (required && (length(normalized) > bound || length(normalized) > available)) {
+      throw new Error('WORKFLOW_SUPERVISOR_PROMPT_TOO_LARGE');
+    }
+    if (!required && available < 1) continue;
+    const value = Array.from(normalized).slice(0, Math.min(bound, available)).join('');
+    if (required && value !== normalized) throw new Error('WORKFLOW_SUPERVISOR_PROMPT_TOO_LARGE');
     events.push(prefix + value);
     remaining -= 1 + length(prefix + value);
   }
-  const prompt = [...header, '目标摘录：' + excerpt + tail, ...events, receiptInstruction].join('\n');
+  const prompt = [...header, ...(goalLine ? [goalLine] : []), ...events, receiptInstruction].join('\n');
   if (length(prompt) > max) throw new Error('WORKFLOW_SUPERVISOR_PROMPT_TOO_LARGE');
   return prompt;
 }

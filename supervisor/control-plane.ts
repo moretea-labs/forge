@@ -919,7 +919,7 @@ export class WorkflowSupervisorControlPlane {
     const selected = notices.find(({ notice }) => notice.reviewedHeadSha !== notice.currentHeadSha) ?? notices[0];
     const review = selected?.notice;
     const nextContext = review
-      ? `[UNVERIFIED${review.reviewedHeadSha !== review.currentHeadSha ? ' STALE_HEAD' : ''}] PR#${review.prNumber} reviewed=${review.reviewedHeadSha.slice(0, 12)} current=${review.currentHeadSha.slice(0, 12)} source=${review.source} outcome=${review.outcome}; receipt ${review.reviewId}; NOT APPROVAL/MERGE AUTHORITY; verify current HEAD/CI/Review; REVISE original Writer SAME PR`
+      ? `[UNVERIFIED${review.reviewedHeadSha !== review.currentHeadSha ? ' STALE_HEAD' : ''}] reviewed=${review.reviewedHeadSha.slice(0, 12)} current=${review.currentHeadSha.slice(0, 12)} src=${review.source} outcome=${review.outcome} receipt=${review.reviewId} NOT APPROVAL/MERGE AUTHORITY`
       : undefined;
     return this.store.commitCompletion(completion, {
       effectId: nextId,
