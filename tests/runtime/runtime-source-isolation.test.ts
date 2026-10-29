@@ -8,7 +8,7 @@ import type { MultiRepositoryMcpToolContext } from '../../adapters/mcp/multi-rep
 import { ensureControllerHome, repositoryControllerRoot } from '../../src/effects/controller-home';
 import { addRepositoryCheckout, registerRepository } from '../../src/cli/repositories/registry';
 import { callRuntimeTool } from '../../adapters/mcp/runtime-gateway/runtime-tools';
-import { callContextAdapter } from '../../adapters/mcp/runtime-gateway/context-adapter';
+import { callContextAdapter, selectProgressiveSourcePaths } from '../../adapters/mcp/runtime-gateway/context-adapter';
 import { primaryWorkRuntimeActivity } from '../../adapters/mcp/runtime-gateway/status-inbox-adapter';
 import { recordGatewayLatency } from '../../src/runtime/observability/gateway-contention-metrics';
 import { mintEngineeringAdmissionEvidence } from '../../adapters/mcp/runtime-gateway/engineering-preconditions';
@@ -1479,12 +1479,83 @@ printf '{"ok":true}\\n'
     expect(source?.content).toContain('END_OF_SOURCE_EVIDENCE');
   });
 
+  test('rh_context offers exact bounded follow-up when related source candidates were omitted', async () => {
+    const business = tempRoot('forge-context-progressive-candidates-');
+    const controllerHome = tempRoot('forge-home-context-progressive-candidates-');
+    initGitRepo(business, 'context-progressive-candidates');
+    writeFileSync(join(business, 'src', 'owner.ts'), 'export function progressiveOwner() { return true; }\n');
+    writeFileSync(join(business, 'src', 'consumer.ts'), "import { progressiveOwner } from './owner';\nexport const result = progressiveOwner();\n");
+    const repository = registerRepository({ path: business, controllerHome, displayName: 'Context Progressive Candidates' });
+    const payload = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_context', {
+      repo_id: repository.repoId, operation: 'search', query: 'Inspect progressiveOwner references',
+      search_terms: ['progressiveOwner'], retrieval_mode: 'plan', structural_context: 'off',
+      max_files: 1, max_snippets: 2, detail_level: 'detail', include_learning_recall: false,
+    }));
+    const data = payload.data as { readiness?: { retrieval?: { omittedCandidateCount?: number } } };
+    expect(data.readiness?.retrieval?.omittedCandidateCount).toBeGreaterThan(0);
+    expect(payload.suggestedNextActions).toContainEqual(expect.objectContaining({
+      tool: 'rh_context', operation: 'search', risk: 'readonly',
+      payload: expect.objectContaining({
+        known_paths: expect.arrayContaining(['src/consumer.ts']),
+        include_learning_recall: false,
+      }),
+    }));
+    const action = (payload.suggestedNextActions as Array<{ payload: Record<string, unknown> }>)[0]!;
+    const followed = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_context', {
+      ...action.payload, operation: 'search',
+    }));
+    expect((followed.data as { files: Array<{ path: string }> }).files.map(file => file.path))
+      .toContain('src/consumer.ts');
+    expect((followed.suggestedNextActions as Array<{ payload?: { known_paths?: string[] } }> ?? [])
+      .every(entry => !entry.payload?.known_paths?.includes('src/consumer.ts'))).toBe(true);
+  });
+
+  test('rh_context warns about Chinese-only cold-start and finds English owners after model-selected hints', async () => {
+    const business = tempRoot('forge-context-source-language-');
+    const controllerHome = tempRoot('forge-home-context-source-language-');
+    initGitRepo(business, 'source-language-discovery');
+    mkdirSync(join(business, 'docs'), { recursive: true });
+    writeFileSync(join(business, 'docs', 'first-task.zh-CN.md'), '工作归属应该退役，自动推进需要由需求驱动。\n');
+    writeFileSync(join(business, 'src', 'authority.ts'), 'export function requirementAuthority() { return true; }\n');
+    writeFileSync(join(business, 'src', 'scheduler.ts'), "import { requirementAuthority } from './authority';\nexport function schedulerContinue() { return requirementAuthority(); }\n");
+    git(business, 'add', '.');
+    git(business, 'commit', '-qm', 'discovery fixture');
+    const repository = registerRepository({ path: business, controllerHome, displayName: 'Source Language Discovery' });
+    const context = mcpContext(controllerHome, repository);
+    const query = '工作归属应该退役，自动推进需要由需求驱动。';
+    const cold = structured(await callRuntimeTool(context, 'rh_context', {
+      repo_id: repository.repoId, operation: 'search', query, retrieval_mode: 'plan',
+      structural_context: 'off', max_files: 4, max_snippets: 8, include_learning_recall: false,
+    }));
+    expect((cold.data as { files: Array<{ path: string }> }).files.some(file => file.path.startsWith('src/'))).toBe(false);
+    expect((cold.warnings as string[] | undefined)?.some(warning => warning.includes('search_terms'))).toBe(true);
+    const grounded = structured(await callRuntimeTool(context, 'rh_context', {
+      repo_id: repository.repoId, operation: 'search', query,
+      search_terms: ['requirement', 'scheduler'], retrieval_mode: 'plan',
+      structural_context: 'off', max_files: 4, max_snippets: 8, include_learning_recall: false,
+    }));
+    expect((grounded.data as { files: Array<{ path: string }> }).files.map(file => file.path))
+      .toEqual(expect.arrayContaining(['src/authority.ts', 'src/scheduler.ts']));
+  });
+
+  test('omitted source follow-up excludes stale index entries and already materialized files', () => {
+    const selected = selectProgressiveSourcePaths([
+      { path: 'src/removed.ts', reason: 'structural provider reports file removed since index' },
+      { path: 'src/owner.ts', reason: 'max_files' },
+      { path: 'src/owner.ts', reason: 'max_snippets' },
+      { path: 'src/already.ts', reason: 'max_files' },
+      { path: 'src/next.ts', reason: 'max_files' },
+    ], ['src/already.ts']);
+    expect(selected).toEqual(['src/owner.ts', 'src/next.ts']);
+  });
+
   test('rh_context runtime-issued closure round-trips into engineering preconditions without depth corruption', async () => {
     const business = tempRoot('forge-context-roundtrip-facade-');
     const controllerHome = tempRoot('forge-home-context-roundtrip-facade-');
     initGitRepo(business, 'context-roundtrip-facade');
+    writeFileSync(join(business, 'src', 'index.ts'), 'export const ENTRY_MARKER = true;\n');
     writeProjectEngineeringContract(business);
-    git(business, 'add', '.forge/project-engineering.json');
+    git(business, 'add', '.forge/project-engineering.json', 'src/index.ts');
     git(business, 'commit', '-m', 'add engineering contract');
     const sourceRevision = git(business, 'rev-parse', 'HEAD');
     const repository = registerRepository({ path: business, controllerHome, displayName: 'Context Roundtrip Facade' });
