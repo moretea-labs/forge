@@ -1490,6 +1490,30 @@ describe('sandbox patch handoff artifact', () => {
 });
 
 describe('owned worktree identity across macOS remounts', () => {
+  it('pins replay provenance and verifies disk identity despite a supplied fingerprint', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-resource-replay-'));
+    temporaryRoots.push(root);
+    const controllerHome = join(root, 'controller');
+    const worktree = join(root, 'worktree');
+    mkdirSync(worktree);
+    const input = { resourceId: 'pinned-replay', kind: 'worktree' as const, targetRef: worktree,
+      creator: 'forge:managed-workspace', repoId: 'repo-original', associatedWorkId: 'work-original' };
+    const original = recordOwnedResource(controllerHome, input);
+    expect(recordOwnedResource(controllerHome, input)).toEqual(original);
+    for (const change of [{ creator: 'other' }, { repoId: 'other' }, { associatedWorkId: 'other' }, { associatedRequirementId: 'other' }]) {
+      expect(() => recordOwnedResource(controllerHome, { ...input, ...change })).toThrow('OWNED_RESOURCE_IDENTITY_CONFLICT');
+      expect(getOwnedResource(controllerHome, original.resourceId)).toEqual(original);
+    }
+    const target = { resourceId: original.resourceId, kind: 'worktree' as const, targetRef: worktree };
+    expect(() => assertOwnedResourceCleanupTarget(controllerHome, { ...target, identityFingerprint: 'wrong' }))
+      .toThrow('OWNED_RESOURCE_IDENTITY_FINGERPRINT_MISMATCH');
+    // A caller's copy of the stored witness must not bypass a fresh disk check.
+    rmSync(worktree, { recursive: true });
+    writeFileSync(worktree, 'replacement file');
+    expect(() => assertOwnedResourceCleanupTarget(controllerHome, { ...target, identityFingerprint: original.identityFingerprint }))
+      .toThrow('OWNED_RESOURCE_IDENTITY_FINGERPRINT_MISMATCH');
+  });
+
   it('accepts an exact old-device witness but rejects changed inode or recreated directory', () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-remount-identity-'));
     temporaryRoots.push(root);

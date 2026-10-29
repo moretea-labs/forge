@@ -156,10 +156,12 @@ export function assertOwnedResourceCleanupTarget(
   if (expectedLocator.kind !== resource.locator.kind || expectedLocator.value.trim() !== resource.locator.value) {
     throw new Error(`OWNED_RESOURCE_LOCATOR_MISMATCH: ${input.resourceId}`);
   }
-  const observedFingerprint = input.identityFingerprint?.trim()
-    || (resource.locator.kind === 'filesystem_path'
+  if (input.identityFingerprint?.trim() && input.identityFingerprint.trim() !== resource.identityFingerprint) {
+    throw new Error(`OWNED_RESOURCE_IDENTITY_FINGERPRINT_MISMATCH: ${input.resourceId}`);
+  }
+  const observedFingerprint = (resource.locator.kind === 'filesystem_path'
       ? ownedFilesystemIdentityFingerprint(currentInstance, resource.locator.value)
-      : ownedResourceLocatorFingerprint(currentInstance, expectedLocator));
+      : input.identityFingerprint?.trim() || ownedResourceLocatorFingerprint(currentInstance, expectedLocator));
   if (observedFingerprint !== resource.identityFingerprint
     && !matchesMacOSRemountedWorktree(resource)) {
     throw new Error(`OWNED_RESOURCE_IDENTITY_FINGERPRINT_MISMATCH: ${input.resourceId}`);
@@ -184,11 +186,14 @@ export function recordOwnedResource(controllerHome: string, input: RecordOwnedRe
       && existing.ownerForgeInstanceId === ownerForgeInstanceId
       && existing.locator?.kind === locator.kind
       && existing.locator?.value === locator.value;
-    const remountedIdentity = sameLocator
+    const sameBinding = sameLocator
       && existing.targetRef === input.targetRef
       && existing.provenance.creator === input.creator
       && existing.provenance.repoId === input.repoId
       && existing.provenance.associatedWorkId === input.associatedWorkId
+      && existing.provenance.associatedRequirementId === input.associatedRequirementId;
+    if (!sameBinding) throw new Error(`OWNED_RESOURCE_IDENTITY_CONFLICT: ${resourceId}`);
+    const remountedIdentity = sameBinding
       && existing.identityFingerprint !== identityFingerprint
       && !input.identityFingerprint?.trim()
       && matchesMacOSRemountedWorktree(existing);
@@ -210,12 +215,12 @@ export function recordOwnedResource(controllerHome: string, input: RecordOwnedRe
       throw new Error(`OWNED_RESOURCE_CLEANUP_AUTHORITY_ESCALATION_FORBIDDEN: ${resourceId}`);
     }
     if (existing.status === 'released') throw new Error(`OWNED_RESOURCE_REUSE_REQUIRES_NEW_ID: ${resourceId}`);
-    if (remountedIdentity) {
-      // The recorded inode witness survived a macOS volume renumbering.
-      // Reuse its original provenance and fingerprint; never reissue deletion
-      // authority by blessing the current device number as a new identity.
-      return existing;
-    }
+    // Replay preserves the original provenance and witness, including after
+    // remount. Only an explicit authority downgrade may change this record.
+    if (cleanupCapable === existing.cleanupCapable) return existing;
+    const downgraded: OwnedResource = { ...existing, cleanupCapable, updatedAt: now };
+    writeResourceFile(controllerHome, downgraded);
+    return downgraded;
   }
   const resource: OwnedResource = {
     schemaVersion: 1,
