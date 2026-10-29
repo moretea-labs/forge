@@ -817,12 +817,12 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     // strands the task.
     if (chatgptProviderBackpressureRemainingMs(this.deps.providerScopeKey, this.deps.nowMs()) > 0
       && !this.conversations.some((conversation) => conversation.conversation_id === task.conversationId)) return;
-    // Prefer the exact pinned tab. When it is truly absent, a recorded exact
-    // conversation URL may be reopened for READ-ONLY applied-turn observation;
-    // this does not authorize another Send or spend a dispatch generation.
-    // An unknown effect remains unknown until its own marker is verified.
+    // The conversation ID is the durable target. Opening a new owned tab for
+    // that exact URL is read-only transport recovery for Send and reconciliation;
+    // it never sends or changes the Supervisor Effect. Unknown effects remain
+    // unknown until their own marker is verified.
     const ensured = await this.deps.targetPort.ensureExact(identityForTask(task), {
-      createIfMissing: poll.command?.mode === 'send'
+      createIfMissing: poll.command !== undefined
         || this.control.store.hasAppliedEffectAwaitingCompletion(task.taskId),
     });
     if (ensured.state !== 'ready') {
