@@ -138,7 +138,14 @@ export interface WorkflowSupervisorConsumerStatus {
     effectId?: string;
   };
   /** Oldest applied turn whose visible provider output has stopped changing. */
-  awaitingReceiptSilence?: WorkflowSupervisorSilentTurn & { taskId: string };
+  awaitingReceiptSilence?: WorkflowSupervisorSilentTurn & {
+    taskId: string;
+    /** Latest committed Task receipt, not completion of the currently unresolved Effect. */
+    lastCommittedCompletion: Pick<WorkflowSupervisorCompletion, 'sourceEffectId' | 'completionFingerprint' | 'committedAt'> | null;
+  };
+  /** Latest successful exact-effect page observation in this adapter instance.
+   * Absent after restart or settlement; never completion or meaningful-progress proof. */
+  lastProviderObservation?: { taskId: string; effectId: string; conversationId: string; observedAt: string };
 }
 
 export interface WorkflowContractValidation {

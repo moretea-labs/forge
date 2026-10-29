@@ -3909,6 +3909,108 @@ test('native adapter does not interrupt active model reasoning for unchanged out
   expect(store.latestEffectDispatch(source.effectId)?.generation).toBeUndefined();
 });
 
+test('native diagnostic freshness advances only after a successful exact-effect observation', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-observation-freshness-'));
+  roots.push(root);
+  const store = new WorkflowSupervisorStore(join(root, 'supervisor-home'));
+  const control = new WorkflowSupervisorControlPlane(store);
+  const taskId = 'observation-freshness';
+  const conversationId = '45454545-5656-7878-9090-121212121213';
+  const conversationUrl = `https://chatgpt.com/c/${conversationId}`;
+  control.registerTask({ taskId, conversationId, conversationUrl, objective: 'Report successful observation without inferring progress.', completionContract: {}, continuationPolicy: {}, userBlockerPolicy: {} });
+  const source = control.reserveEnrollment(taskId);
+  control.observeEffect({ effectId: source.effectId, observationId: 'freshness-source-applied', outcome: 'applied' });
+  let nowMs = Date.now();
+  let unavailable = false;
+  let wrongConversation = false;
+  let observedUserText = source.prompt;
+  let snapshotCalls = 0;
+  const errors: unknown[] = [];
+  const page: TestBrowserPage = { evaluate: async <T>() => false as T, tabRef: () => ({ windowId: 'window-1', tabId: 'tab-1' }) };
+  const targetPort = createTestChatgptTargetPort({
+    listTabs: async () => ({ entries: [{ windowId: 'window-1', tabId: 'tab-1', url: conversationUrl, title: 'freshness', active: true }], unavailableProducts: [] }),
+    reattach: async () => page, create: async () => page, close: async () => undefined,
+    snapshot: async () => {
+      snapshotCalls += 1;
+      if (unavailable) throw new Error('OBSERVATION_UNAVAILABLE');
+      return { url: wrongConversation ? 'https://chatgpt.com/c/11111111-2222-3333-4444-555555555555' : conversationUrl,
+        title: 'freshness', latestUserText: observedUserText, latestAssistantResponse: '', providerActivityText: '',
+        providerFailureText: '', latestTurnRole: 'assistant', isGenerating: true };
+    },
+    dispatchPrompt: async () => { throw new Error('diagnostic must not send'); },
+  });
+  const deps = { targetPort, nowMs: () => nowMs, providerIdleGraceMs: 1_000, providerScopeKey: join(root, 'provider-scope'), sleep: async () => undefined,
+    setInterval: () => 0 as unknown as ReturnType<typeof setInterval>, clearInterval: () => undefined, onError: (error: unknown) => { errors.push(error); } };
+  const adapter = new WorkflowSupervisorNativeBrowserAdapter(control, new WorkflowSupervisorEphemeralDiscovery(), deps);
+  expect(adapter.status().lastProviderObservation).toBeUndefined();
+  await adapter.runOnce();
+  expect(adapter.status().lastProviderObservation).toEqual({ taskId, effectId: source.effectId, conversationId, observedAt: new Date(nowMs).toISOString() });
+  const initialSilence = store.providerSilence(source.effectId, nowMs)!;
+  nowMs += 60_000;
+  await adapter.runOnce();
+  expect(adapter.status().lastProviderObservation?.observedAt).toBe(new Date(nowMs).toISOString());
+  expect(store.providerSilence(source.effectId, nowMs)?.observedSince).toBe(initialSilence.observedSince);
+  expect(adapter.status().awaitingReceiptSilence?.lastCommittedCompletion).toBeNull();
+  const lastSuccessful = adapter.status().lastProviderObservation;
+  unavailable = true;
+  nowMs += 60_000;
+  const beforeFailure = snapshotCalls;
+  await adapter.runOnce();
+  expect(snapshotCalls).toBeGreaterThan(beforeFailure);
+  expect(errors.length).toBeGreaterThan(0);
+  expect(adapter.status().lastProviderObservation).toEqual(lastSuccessful);
+  unavailable = false;
+  wrongConversation = true;
+  nowMs += 60_000;
+  const beforeWrongConversation = snapshotCalls;
+  await adapter.runOnce();
+  expect(snapshotCalls).toBeGreaterThan(beforeWrongConversation);
+  expect(adapter.status().lastProviderObservation).toEqual(lastSuccessful);
+  const restarted = new WorkflowSupervisorNativeBrowserAdapter(control, new WorkflowSupervisorEphemeralDiscovery(), deps);
+  expect(restarted.status().lastProviderObservation).toBeUndefined();
+  const completed = await control.observeAssistantTurn({ taskId, conversationId,
+    responseText: renderSupervisorReceipt(control.getTask(taskId)!, source.effectId, 'CONTINUE') });
+  expect(completed.action).toBe('CONTINUE');
+  expect(adapter.status().lastProviderObservation).toBeUndefined();
+  expect(adapter.status().awaitingReceiptSilence).toBeUndefined();
+  if (!('successorEffect' in completed) || !completed.successorEffect) throw new Error('FRESHNESS_SUCCESSOR_MISSING');
+  const successor = completed.successorEffect;
+  control.observeEffect({ effectId: successor.effectId, observationId: 'freshness-successor-applied', outcome: 'applied' });
+  wrongConversation = false;
+  nowMs += 60_000;
+  const beforeStaleMarker = snapshotCalls;
+  await adapter.runOnce();
+  expect(snapshotCalls).toBeGreaterThan(beforeStaleMarker);
+  expect(adapter.status().lastProviderObservation).toBeUndefined();
+  observedUserText = successor.prompt;
+  nowMs += 60_000;
+  await adapter.runOnce();
+  expect(adapter.status().lastProviderObservation).toEqual({ taskId, effectId: successor.effectId, conversationId, observedAt: new Date(nowMs).toISOString() });
+  const receipt = store.getLatestCompletion(taskId)!;
+  expect(adapter.status().awaitingReceiptSilence?.lastCommittedCompletion).toEqual({
+    sourceEffectId: source.effectId, completionFingerprint: receipt.completionFingerprint, committedAt: receipt.committedAt,
+  });
+  const reopenedStore = new WorkflowSupervisorStore(join(root, 'supervisor-home'));
+  const afterRestart = new WorkflowSupervisorNativeBrowserAdapter(new WorkflowSupervisorControlPlane(reopenedStore), new WorkflowSupervisorEphemeralDiscovery(), deps);
+  unavailable = true;
+  nowMs += 60_000;
+  await afterRestart.runOnce();
+  expect(afterRestart.status().lastProviderObservation).toBeUndefined();
+  expect(afterRestart.status().awaitingReceiptSilence?.lastCommittedCompletion).toEqual({
+    sourceEffectId: source.effectId, completionFingerprint: receipt.completionFingerprint, committedAt: receipt.committedAt,
+  });
+  await afterRestart.close();
+  reopenedStore.close();
+  control.stopTask(taskId, 'Diagnostic fixture complete');
+  expect(adapter.status().lastProviderObservation).toBeUndefined();
+  expect(adapter.status().awaitingReceiptSilence).toBeUndefined();
+  expect(store.getEffectByOriginKey(`provider-recovery:${source.effectId}`)).toBeUndefined();
+  expect(store.latestEffectDispatch(source.effectId)).toBeUndefined();
+  await adapter.close();
+  await restarted.close();
+  store.close();
+});
+
 test('429 network evidence is rate-limit authority only when it belongs to the current conversation submit pipeline', () => {
   expect(chatgptFailedRequestIsCausalRateLimit({ method: 'GET', status: 429, url: 'https://chatgpt.com/backend-api/conversations?conversation_origin=tpp' })).toBe(false);
   expect(chatgptFailedRequestIsCausalRateLimit({ method: 'POST', status: 429, url: 'https://chatgpt.com/backend-api/conversation' })).toBe(true);

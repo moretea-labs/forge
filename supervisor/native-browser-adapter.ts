@@ -367,6 +367,8 @@ export class WorkflowSupervisorNativeBrowserAdapter {
   private readonly awaitingReceiptObservedAtMs = new Map<string, number>();
   /** Derived from the tick's taskStall passes; the store remains the silence authority. */
   private projectedSilence?: WorkflowSupervisorSilentTurn & { taskId: string };
+  /** One ephemeral diagnostic receipt, never scheduling or replay authority. */
+  private lastProviderObservation?: WorkflowSupervisorConsumerStatus['lastProviderObservation'];
   /** Rebuildable idle-grace projection; Supervisor effects remain the sole authority. */
   private readonly idleResourceSinceMs = new Map<string, number>();
 
@@ -604,6 +606,19 @@ export class WorkflowSupervisorNativeBrowserAdapter {
 
   status(): WorkflowSupervisorConsumerStatus {
     const nowMs = this.deps.nowMs();
+    const observation = this.lastProviderObservation;
+    const observationTask = observation ? this.control.getTask(observation.taskId) : undefined;
+    const observationStall = observationTask && observationTask.conversationId === observation?.conversationId
+      ? this.control.taskStall(observationTask.taskId) : undefined;
+    const lastProviderObservation = observation && observationStall && 'effectId' in observationStall
+      && observationStall.effectId === observation.effectId ? observation : undefined;
+    const projected = this.projectedSilence;
+    const silenceTask = projected ? this.control.getTask(projected.taskId) : undefined;
+    const silenceStall = silenceTask
+      ? (silenceTask.taskId === observationTask?.taskId ? observationStall : this.control.taskStall(silenceTask.taskId))
+      : undefined;
+    const currentSilence = projected && silenceStall && 'effectId' in silenceStall
+      && silenceStall.effectId === projected.effectId ? projected : undefined;
     const dueCommand = this.dueCommand(nowMs);
     const dueTaskFailure = dueCommand ? this.taskTransportFailures.get(dueCommand.taskId) : undefined;
     const projectedFailure = dueTaskFailure
@@ -612,15 +627,23 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     const stalled = Boolean(this.inflight && this.lastTickStartedAtMs !== undefined && nowMs - this.lastTickStartedAtMs > MAX_TRANSPORT_BACKOFF_MS + 10_000);
     // Elapsed is recomputed from the recorded observation instant so a read
     // between ticks cannot report a stale "still working" duration.
-    const silenceSinceMs = this.projectedSilence ? Date.parse(this.projectedSilence.observedSince) : Number.NaN;
-    const effectAppliedAtMs = this.projectedSilence ? Date.parse(this.projectedSilence.effectAppliedAt) : Number.NaN;
-    const silence = this.projectedSilence && Number.isFinite(silenceSinceMs) && Number.isFinite(effectAppliedAtMs)
+    const silenceSinceMs = currentSilence ? Date.parse(currentSilence.observedSince) : Number.NaN;
+    const effectAppliedAtMs = currentSilence ? Date.parse(currentSilence.effectAppliedAt) : Number.NaN;
+    const silence = currentSilence && Number.isFinite(silenceSinceMs) && Number.isFinite(effectAppliedAtMs)
       ? {
-        ...this.projectedSilence,
+        ...currentSilence,
         elapsedMs: Math.max(0, nowMs - silenceSinceMs),
         effectElapsedMs: Math.max(0, nowMs - effectAppliedAtMs),
       }
       : undefined;
+    const lastCompletion = silence ? this.control.store.getLatestCompletion(silence.taskId) : undefined;
+    const awaitingReceiptSilence = silence ? { ...silence,
+      lastCommittedCompletion: lastCompletion ? {
+        sourceEffectId: lastCompletion.sourceEffectId,
+        completionFingerprint: lastCompletion.completionFingerprint,
+        committedAt: lastCompletion.committedAt,
+      } : null,
+    } : undefined;
     return {
       enabled: true, running: Boolean(this.timer) && !this.closed, observedAt: new Date(nowMs).toISOString(),
       ...(isoTime(this.lastTickStartedAtMs) ? { lastTickStartedAt: isoTime(this.lastTickStartedAtMs) } : {}),
@@ -630,7 +653,8 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       transportFailureStreak: this.transportFailureStreak,
       providerBackpressureMs: chatgptProviderBackpressureRemainingMs(this.deps.providerScopeKey, nowMs), stalled,
       ...(dueCommand ? { dueCommand } : {}),
-      ...(silence ? { awaitingReceiptSilence: silence } : {}),
+      ...(awaitingReceiptSilence ? { awaitingReceiptSilence } : {}),
+      ...(lastProviderObservation ? { lastProviderObservation } : {}),
       ...(projectedFailure ? { lastFailure: { code: projectedFailure.code, observedAt: new Date(projectedFailure.observedAtMs).toISOString(),
         ...(projectedFailure.taskId ? { taskId: projectedFailure.taskId } : {}), ...(projectedFailure.effectId ? { effectId: projectedFailure.effectId } : {}) } } : {}),
     };
@@ -664,6 +688,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     await this.inflight?.catch(() => undefined);
     await this.deps.targetPort.close().catch(() => undefined);
     this.observedAssistant.clear(); this.providerFailureSeen.clear(); this.providerFailureAwaitingClear.clear(); this.freshSendCheckedAt.clear(); this.taskTransportFailures.clear(); this.projectedTaskStalls.clear(); this.awaitingReceiptObservedAtMs.clear(); this.idleResourceSinceMs.clear();
+    this.lastProviderObservation = undefined;
   }
 
   async runOnce(): Promise<void> {
@@ -851,6 +876,11 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     if (!this.taskConversationContentAvailable(task, snapshot)) {
       this.observeVerifiedEmptyShell(task, poll.command?.effectId ?? (stall.state === 'spaced' ? stall.effectId : undefined), poll.command, snapshot);
       return;
+    }
+    const observedSource = this.control.store.latestAppliedLeafEffectWithoutCompletion(task.taskId);
+    if (observedSource && targetMarkerPresent(snapshot.latestUserText, observedSource.effectId)) {
+      this.lastProviderObservation = { taskId: task.taskId, effectId: observedSource.effectId,
+        conversationId: task.conversationId, observedAt: new Date(this.deps.nowMs()).toISOString() };
     }
     // Do not clear a pre-send failure merely because a conversation loaded:
     // only a successful provider preparation proves the obstacle is gone.
