@@ -76,11 +76,13 @@ describe('rh_work Requirement bootstrap', () => {
     const schema = runtimeToolDefinitions.find((definition) => definition.name === 'rh_work')?.inputSchema;
     expect(schema).toBeDefined();
     const properties = schema?.properties as Record<string, unknown>;
-    for (const field of [
-      'requirement_progress_summary',
-      'requirement_remaining_work',
-      'requirement_accepted_evidence_refs',
-    ]) expect(properties[field]).toBeDefined();
+    expect(properties.requirement_progress_summary).toMatchObject({ type: 'string', maxLength: 2_000 });
+    expect(properties.requirement_remaining_work).toMatchObject({
+      type: 'array', maxItems: 50, items: { type: 'string', maxLength: 500 },
+    });
+    expect(properties.requirement_accepted_evidence_refs).toMatchObject({
+      type: 'array', maxItems: 100, items: { type: 'string', maxLength: 512 },
+    });
 
     const repoRoot = tempRoot('forge-typed-requirement-progress-repo-');
     const controllerHome = tempRoot('forge-typed-requirement-progress-home-');

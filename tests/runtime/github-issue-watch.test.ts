@@ -4,6 +4,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import {
   classifyGithubIssueWatchObservation,
+  classifyGithubReviewNotices,
   resolveGithubIssueWatchExecutable,
   type GithubIssueWatchIssue,
   type GithubIssueWatchState,
@@ -73,6 +74,28 @@ describe('github issue watch', () => {
     ], undefined, { since: '2026-08-17T10:00:00Z' });
     expect(observed.shouldWake).toBe(true);
     expect(observed.changedOpenIssues.map((entry) => entry.number)).toEqual([12]);
+  });
+
+  test('COMMENTED review creates an informational notice but never a verdict', () => {
+    const notices = classifyGithubReviewNotices([
+      { id: 42, state: 'COMMENTED', commit_id: 'a'.repeat(40) },
+      { id: 43, state: 'PENDING', commit_id: 'a'.repeat(40) },
+    ], [
+      { id: 90, status: 'completed', conclusion: 'success', head_sha: 'a'.repeat(40) },
+    ], 'b'.repeat(40));
+
+    expect(notices).toEqual([
+      {
+        reviewedHeadSha: 'a'.repeat(40), currentHeadSha: 'b'.repeat(40),
+        reviewId: 'github-review:42', source: 'github_review', outcome: 'COMMENTED',
+      },
+      {
+        reviewedHeadSha: 'a'.repeat(40), currentHeadSha: 'b'.repeat(40),
+        reviewId: 'github-check:90', source: 'github_ci', outcome: 'CI_PASSED',
+      },
+    ]);
+    expect(notices[0].outcome).not.toBe('ACCEPT');
+    expect(notices[0].outcome).not.toBe('REVISE');
   });
 
   test('unchanged state is deduplicated while reopen and updated open issues retrigger', () => {

@@ -883,6 +883,10 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     const source = control.reserveEnrollment(task.taskId);
     control.observeEffect({ effectId: source.effectId, observationId: 'review-source-applied', outcome: 'applied' });
     expect(control.observeReviewNotice(notice)).toMatchObject({ deduplicated: false, deferred: true });
+    const commentNotice = {
+      ...notice, reviewId: 'review-commented', source: 'github_review' as const, outcome: 'COMMENTED' as const,
+    };
+    expect(control.observeReviewNotice(commentNotice)).toMatchObject({ deduplicated: false, deferred: true });
     expect(control.observeReviewNotice(notice)).toMatchObject({ deduplicated: true, deferred: true });
     // Stale findings remain useful for REVISE, but never authorize the new HEAD.
     expect(control.observeReviewNotice({ ...notice, currentHeadSha: 'b'.repeat(40) }))
@@ -897,6 +901,8 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     });
     expect(completion.action).toBe('CONTINUE');
     expect(completion.successorEffect?.prompt).toContain('receipt review-42');
+    expect(completion.successorEffect?.prompt).toContain('receipt review-commented');
+    expect(completion.successorEffect?.prompt).toContain('reported outcome COMMENTED');
     expect(completion.successorEffect?.prompt).toContain('[UNVERIFIED STALE_HEAD]');
     expect(completion.successorEffect?.prompt).toContain('NOT ACCEPTANCE');
     expect(completion.successorEffect?.prompt).toContain('REVISE');
@@ -3910,6 +3916,7 @@ test('public supervisor_task review_notice persists through the real local RPC a
     };
     const definition = runtimeToolDefinitions.find((entry) => entry.name === 'supervisor_task');
     expect(JSON.stringify(definition?.inputSchema)).toContain('review_notice');
+    expect(JSON.stringify(definition?.inputSchema)).toContain('COMMENTED');
     expect((await callWorkflowSupervisorAdapter(ctx, 'supervisor_task', args))?.structuredContent)
       .toMatchObject({ deferred: true, deduplicated: false, taskId: task.taskId });
     expect((await callWorkflowSupervisorAdapter(ctx, 'supervisor_task', args))?.structuredContent)

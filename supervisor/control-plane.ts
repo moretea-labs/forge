@@ -390,7 +390,7 @@ export class WorkflowSupervisorControlPlane {
     // see. Deliver as explicitly unverified context; never as merge approval.
     if (!/^[a-zA-Z0-9_.:-]{1,128}$/.test(notice.reviewId)) throw new Error('WORKFLOW_SUPERVISOR_REVIEW_ID_INVALID');
     if (!['github_review','github_ci','independent_reviewer'].includes(notice.source)
-      || !['ACCEPT','REVISE','BLOCK','CI_FAILED','CI_PASSED'].includes(notice.outcome)) throw new Error('WORKFLOW_SUPERVISOR_REVIEW_OUTCOME_INVALID');
+      || !['ACCEPT','REVISE','BLOCK','COMMENTED','CI_FAILED','CI_PASSED'].includes(notice.outcome)) throw new Error('WORKFLOW_SUPERVISOR_REVIEW_OUTCOME_INVALID');
     if ((notice.source === 'github_ci') !== notice.outcome.startsWith('CI_')) throw new Error('WORKFLOW_SUPERVISOR_REVIEW_SOURCE_MISMATCH');
     const normalized: WorkflowSupervisorReviewNotice = {
       ...notice, reviewedHeadSha: notice.reviewedHeadSha.toLowerCase(), currentHeadSha: notice.currentHeadSha.toLowerCase(),
