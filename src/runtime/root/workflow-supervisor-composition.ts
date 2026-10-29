@@ -235,6 +235,10 @@ function createForgeWorkflowSupervisorBrowserTaskActive(controllerHome: string):
     if (task.continuationPolicy.kind === 'standalone_supervisor') {
       if (!requirementId) return true;
       if (taskControllerHome && taskControllerHome !== controllerHome) return false;
+      const repoId = workflowSupervisorContractText(task, 'repo_id');
+      const declaredWorkId = workflowSupervisorContractText(task, 'work_id');
+      if (declaredWorkId && (!repoId
+        || getWorkContract({ controllerHome, repoId }, declaredWorkId)?.requirementId !== requirementId)) return false;
       const requirement = readRequirement({ controllerHome }, requirementId)?.value;
       return Boolean(requirement && !['waiting_for_user', 'done', 'cancelled'].includes(requirement.state));
     }

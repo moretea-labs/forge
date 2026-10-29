@@ -655,6 +655,48 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     expect(hooks.browserTaskActive?.(doneTask)).toBe(false);
   });
 
+  test('Requirement-bound standalone Supervisor rejects missing or mismatched Work carriers before send', () => {
+    const fx = fixture();
+    const hooks = forgeWorkflowSupervisorLifecycleHooks(fx.controllerHome);
+    const requirementId = 'REQ-STANDALONE-WORK-CARRIER';
+    const otherRequirementId = 'REQ-STANDALONE-OTHER-CARRIER';
+    createRequirement({ controllerHome: fx.controllerHome }, {
+      requirementId, title: 'Standalone Work carrier', outcomeStatement: 'Keep Requirement as the sole progress authority.',
+    });
+    createRequirement({ controllerHome: fx.controllerHome }, {
+      requirementId: otherRequirementId, title: 'Other Requirement', outcomeStatement: 'Must not be borrowed as a carrier.',
+    });
+    const createCarrier = (workId: string, carrierRequirementId: string) => createWorkContract(fx.store, {
+      workId, repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId,
+      requirementId: carrierRequirementId, objective: 'Mechanical execution context only.',
+      acceptanceCriteria: ['Must not replace Requirement progress authority'],
+      allowedPaths: [], forbiddenPaths: [], checks: [], constraints: { workspaceMode: 'current' },
+      requestedBy: 'chatgpt', dispatchState: 'running',
+    });
+    createCarrier('work-standalone-matching-carrier', requirementId);
+    createCarrier('work-standalone-other-carrier', otherRequirementId);
+    const makeTask = (workId: string) => ({
+      taskId: `supervisor:${workId}`, conversationId: `conversation-${workId}`,
+      conversationUrl: `https://chatgpt.com/c/${workId}`, objective: 'Requirement-bound standalone task.',
+      completionContract: {
+        kind: 'model_semantic_completion', controller_home: fx.controllerHome,
+        repo_id: fx.repository.repoId, requirement_id: requirementId, work_id: workId,
+      },
+      continuationPolicy: { kind: 'standalone_supervisor', repo_id: fx.repository.repoId },
+      userBlockerPolicy: { kind: 'model_semantic_user_blocker' }, createdAt: '2026-01-01T00:00:00.000Z',
+    });
+
+    const matching = makeTask('work-standalone-matching-carrier');
+    const mismatched = makeTask('work-standalone-other-carrier');
+    const missing = makeTask('work-standalone-missing-carrier');
+    expect(hooks.browserTaskActive?.(matching)).toBe(true);
+    expect(hooks.workProgressFingerprint?.(matching)).toMatch(/^[a-f0-9]{64}$/);
+    expect(hooks.browserTaskActive?.(mismatched)).toBe(false);
+    expect(hooks.workProgressFingerprint?.(mismatched)).toBeUndefined();
+    expect(hooks.browserTaskActive?.(missing)).toBe(false);
+    expect(hooks.workProgressFingerprint?.(missing)).toBeUndefined();
+  });
+
   test('derives standalone project scope from Supervisor-owned Controller Home', () => {
     const fx = fixture();
     const supervisorStore = new WorkflowSupervisorStore(join(fx.root, 'standalone-project-scope'));
