@@ -114,7 +114,7 @@ function lexicalDiscoveryExclusions(
 ): string[] {
   const sourceFirstDiscovery = (options.searchTerms?.length ?? 0) > 0
     && includeGlobs.length === 0
-    && !knownPaths.some(path => /(^|\/)docs?\//i.test(path))
+    && !knownPaths.some(path => /(^|\/)(?:docs?|references|tasks)(?:\/|$)/i.test(path))
     && !/\b(?:documentation|docs?|readme|tutorial|guide|design decision|architecture notes)\b|文档|教程|手册/i.test(options.description ?? '');
   return sourceFirstDiscovery
     ? cleanList([...excludeGlobs, 'docs/**', 'references/**', 'tasks/**'])

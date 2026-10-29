@@ -584,3 +584,29 @@ test('ranks the full natural-language discovery result before applying the bound
   expect(pack.files.map((file) => file.path)).toContain('src/z-release-rejection.ts');
   expect(pack.files[0]?.path).toBe('src/z-release-rejection.ts');
 });
+
+test('preserves late lexical hits in explicitly selected documentation roots', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-context-known-docs-'));
+  roots.push(root);
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: root });
+  execFileSync('git', ['config', 'user.email', 'context@example.test'], { cwd: root });
+  execFileSync('git', ['config', 'user.name', 'Context Test'], { cwd: root });
+  for (const directory of ['docs', 'references', 'tasks']) {
+    mkdirSync(join(root, directory));
+    writeFileSync(join(root, directory, 'migration.md'), `${'Unrelated background.\n'.repeat(1500)}migrationNeedle target evidence\n`);
+  }
+  execFileSync('git', ['add', '.'], { cwd: root });
+  execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: root });
+  for (const knownPath of ['docs', 'references/migration.md', 'tasks/migration.md']) {
+    const options = {
+      description: 'Inspect migrationNeedle', searchTerms: ['migrationNeedle'], knownPaths: [knownPath],
+      structuralContext: 'off', maxFiles: 1, maxSnippets: 2, maxCharsPerSnippet: 500,
+    } satisfies ControllerContextPackOptions;
+    const sync = buildControllerContextPack(root, getMcpPolicy('controller'), options);
+    expect(sync.files.some(file => file.hitLines.includes(1501))).toBe(true);
+    const asyncPack = await buildControllerContextPackAsync(root, getMcpPolicy('controller'), {
+      ...options, session: { sessionId: `${root}-${knownPath}`, repoId: 'known-docs', checkoutId: root },
+    });
+    expect(asyncPack.files.some(file => file.hitLines.includes(1501))).toBe(true);
+  }
+});
