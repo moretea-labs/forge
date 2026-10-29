@@ -913,13 +913,13 @@ export class WorkflowSupervisorControlPlane {
   /** Model CONTINUE and its causal successor commit in the same authority transaction. */
   private reserveContinuation(task: WorkflowSupervisorTask, completion: WorkflowSupervisorCompletion) {
     const nextId = stableEffectId(`completion:${completion.completionFingerprint}`);
-    const notices = this.store.listPendingReviewNotices(128).filter(({ notice }) => notice.taskId === task.taskId);
+    const notices = this.store.listPendingReviewNotices(128, task.taskId);
     // Deliver one exact notice per continuation. A prioritized stale-head notice
     // must keep its own receipt; all other notices stay pending for a later wake.
     const selected = notices.find(({ notice }) => notice.reviewedHeadSha !== notice.currentHeadSha) ?? notices[0];
     const review = selected?.notice;
     const nextContext = review
-      ? `[UNVERIFIED${review.reviewedHeadSha !== review.currentHeadSha ? ' STALE_HEAD' : ''}] pr=${review.prNumber} reviewed=${review.reviewedHeadSha.slice(0, 12)} current=${review.currentHeadSha.slice(0, 12)} src=${review.source} outcome=${review.outcome} receipt=${review.reviewId} NOT APPROVAL/MERGE AUTHORITY`
+      ? `[UNVERIFIED${review.reviewedHeadSha !== review.currentHeadSha ? ' STALE_HEAD' : ''}] pr=${review.prNumber} reviewed=${review.reviewedHeadSha} current=${review.currentHeadSha} src=${review.source} outcome=${review.outcome} receipt=${review.reviewId} NO_MERGE_AUTHORITY`
       : undefined;
     return this.store.commitCompletion(completion, {
       effectId: nextId,
@@ -929,7 +929,7 @@ export class WorkflowSupervisorControlPlane {
       // Rebuild from the same durable goal in a new logical conversation after
       // a confirmed receipt cycle; never migrate an uncompleted mutation.
       ...(task.continuationPolicy.kind === 'standalone_supervisor'
-        ? { freshEnrollmentPrompt: this.renderPrompt(task, nextId, 'enrollment', undefined, undefined, nextContext) } : {}),
+        ? { freshEnrollmentPrompt: this.renderPrompt(task, nextId, 'continuation', undefined, undefined, nextContext) } : {}),
     });
   }
 

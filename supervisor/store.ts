@@ -993,12 +993,15 @@ export class WorkflowSupervisorStore {
     });
   }
 
-  listPendingReviewNotices(limit = 32): Array<{ eventKey: string; notice: WorkflowSupervisorReviewNotice }> {
+  listPendingReviewNotices(limit = 32, taskId?: string): Array<{ eventKey: string; notice: WorkflowSupervisorReviewNotice }> {
+    const boundedLimit = Math.max(1, Math.min(Math.trunc(limit), 128));
+    const scopedTaskId = taskId?.trim() || null;
     return this.read((db) => statement(db, `SELECT e.event_key,e.payload_json FROM events e
       WHERE e.kind='review_notice_observed'
+      AND (? IS NULL OR e.task_id = ?)
       AND NOT EXISTS (SELECT 1 FROM events used WHERE used.event_key='review-wake:' || e.event_key)
       AND NOT EXISTS (SELECT 1 FROM events terminal WHERE terminal.task_id=e.task_id AND terminal.kind IN ('terminal_done','terminal_needs_user','terminal_stopped'))
-      ORDER BY e.event_id LIMIT ?`, (s) => s.all(Math.max(1, Math.min(Math.trunc(limit), 128))))
+      ORDER BY e.event_id LIMIT ?`, (s) => s.all(scopedTaskId, scopedTaskId, boundedLimit))
       .map((record) => {
         const row = record as { event_key: string; payload_json: string };
         return { eventKey: row.event_key, notice: JSON.parse(row.payload_json) as WorkflowSupervisorReviewNotice };

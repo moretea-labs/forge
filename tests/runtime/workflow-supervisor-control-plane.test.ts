@@ -917,7 +917,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
       createdAt: '2026-01-01T00:00:00.000Z',
     };
     const correction = 'C'.repeat(180);
-    const reviewNotice = `[UNVERIFIED STALE_HEAD] pr=500 reviewed=${'a'.repeat(12)} current=${'b'.repeat(12)} src=independent_reviewer outcome=REVISE receipt=review-stale NOT APPROVAL/MERGE AUTHORITY`;
+    const reviewNotice = `[UNVERIFIED STALE_HEAD] pr=500 reviewed=${'a'.repeat(40)} current=${'b'.repeat(40)} src=independent_reviewer outcome=REVISE receipt=review-stale NO_MERGE_AUTHORITY`;
     const prompt = renderSupervisorPrompt(
       task, 'fx_12345678', 'continuation', undefined, correction, reviewNotice,
     );
@@ -929,12 +929,12 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     expect(prompt).toContain('receipt:' + supervisorReceiptChallenge(task, 'fx_12345678'));
     expect(prompt).not.toContain('目标摘录：');
     expect(prompt).toContain('pr=500');
-    expect(prompt).toContain('reviewed=' + 'a'.repeat(12));
-    expect(prompt).toContain('current=' + 'b'.repeat(12));
+    expect(prompt).toContain('reviewed=' + 'a'.repeat(40));
+    expect(prompt).toContain('current=' + 'b'.repeat(40));
     expect(prompt).toContain('src=independent_reviewer');
     expect(prompt).toContain('outcome=REVISE');
     expect(prompt).toContain('receipt=review-stale');
-    expect(prompt).toContain('NOT APPROVAL/MERGE AUTHORITY');
+    expect(prompt).toContain('NO_MERGE_AUTHORITY');
     expect(prompt).not.toContain(correction);
     expect(prompt).toContain('末行：字母 空格 receipt 值');
   });
@@ -1119,10 +1119,10 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     expect(completion.successorEffect?.prompt).toContain('receipt=review-stale');
     expect(completion.successorEffect?.prompt).toContain('pr=500');
     expect(completion.successorEffect?.prompt).toContain('[UNVERIFIED STALE_HEAD]');
-    expect(completion.successorEffect?.prompt).toContain('reviewed=' + 'a'.repeat(12));
-    expect(completion.successorEffect?.prompt).toContain('current=' + 'b'.repeat(12));
+    expect(completion.successorEffect?.prompt).toContain('reviewed=' + 'a'.repeat(40));
+    expect(completion.successorEffect?.prompt).toContain('current=' + 'b'.repeat(40));
     expect(completion.successorEffect?.prompt).toContain('src=independent_reviewer');
-    expect(completion.successorEffect?.prompt).toContain('NOT APPROVAL/MERGE AUTHORITY');
+    expect(completion.successorEffect?.prompt).toContain('NO_MERGE_AUTHORITY');
     expect(completion.successorEffect?.prompt).toContain('UNVERIFIED');
     expect(completion.successorEffect?.prompt).toContain('REVISE');
     expect(completion.successorEffect?.prompt).toContain('按需读 Requirement/源码/PR/CI');
@@ -4116,6 +4116,35 @@ test('public supervisor_task revise binds the existing task through canonical RP
     await new Promise<void>((resolve) => server.close(() => resolve()));
     store.close();
   }
+});
+
+test('task-scoped review notices are not starved behind the global pending-notice limit', () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-review-notice-queue-scope-'));
+  roots.push(root);
+  const store = new WorkflowSupervisorStore(root);
+  const control = new WorkflowSupervisorControlPlane(store);
+  const repoId = 'repo-review-notice-queue';
+  const createNoticeTask = (index: number) => {
+    const taskId = `review-queue-task-${index}`;
+    const conversationId = `${String(index).padStart(8, '0')}-1111-2222-3333-444444444444`;
+    const task = control.registerTask({
+      taskId, conversationId, conversationUrl: `https://chatgpt.com/c/${conversationId}`,
+      objective: 'Keep this review notification pending until the original task consumes it.',
+      completionContract: { repo_id: repoId }, continuationPolicy: { kind: 'standalone_supervisor' }, userBlockerPolicy: {},
+    });
+    control.observeReviewNotice({
+      taskId: task.taskId, repoId, prNumber: index + 1,
+      reviewedHeadSha: 'a'.repeat(40), currentHeadSha: 'a'.repeat(40),
+      reviewId: `review-queue-${index}`, source: 'github_review', outcome: 'REVISE',
+    });
+    return task;
+  };
+  for (let index = 0; index < 128; index += 1) createNoticeTask(index);
+  const target = createNoticeTask(128);
+
+  expect(store.listPendingReviewNotices(128).map(({ notice }) => notice.taskId)).not.toContain(target.taskId);
+  expect(store.listPendingReviewNotices(128, target.taskId).map(({ notice }) => notice.taskId)).toEqual([target.taskId]);
+  store.close();
 });
 
 test('public supervisor_task review_notice persists through the real local RPC and only the original CONTINUE sends', async () => {
