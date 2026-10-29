@@ -71,6 +71,34 @@ function structured(result: Awaited<ReturnType<typeof callRuntimeTool>>): Record
 }
 
 describe('rh_work Requirement bootstrap', () => {
+  test('get_contract exposes the complete canonical WorkContract read-only, separate from the thin semantic view', async () => {
+    const repoRoot = tempRoot('forge-work-full-contract-read-repo-');
+    const controllerHome = tempRoot('forge-work-full-contract-read-home-');
+    initRepo(repoRoot);
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'work-full-contract-read' });
+    const workId = 'WORK-FULL-CONTRACT-READ';
+    createWorkContract({ controllerHome, repoId: repository.repoId }, {
+      workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId,
+      objective: 'Read the exact canonical Work acceptance and safety contract before disposition.',
+      acceptanceCriteria: ['External evaluation boundary must use wait rather than goal_complete.'],
+      checks: ['bun test tests/runtime/control-plane-hardening.test.ts'],
+      constraints: { workspaceMode: 'current' },
+      requestedBy: 'chatgpt', dispatchState: 'running',
+    });
+    const before = getWorkContract({ controllerHome, repoId: repository.repoId }, workId)!;
+    const response = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_work', {
+      operation: 'get_contract', repo_id: repository.repoId, work_id: workId,
+    }));
+    expect(response.data.workContract).toEqual(before);
+    expect(response.data.workContract).toMatchObject({
+      workId, acceptanceCriteria: before.acceptanceCriteria, constraints: before.constraints, checks: before.checks,
+      worktreePolicy: before.worktreePolicy, approvalPolicy: before.approvalPolicy, recoveryPolicy: before.recoveryPolicy,
+    });
+    expect(response.data.workContract).not.toHaveProperty('allowedPaths');
+    expect(response.data.workContract).not.toHaveProperty('forbiddenPaths');
+    expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)).toEqual(before);
+    expect(response.data).not.toHaveProperty('work');
+  });
   test('automatically onboards Project/Workspace identity during normal Work start admission', async () => {
     const repoRoot = tempRoot('forge-work-project-onboarding-repo-');
     const controllerHome = tempRoot('forge-work-project-onboarding-home-');

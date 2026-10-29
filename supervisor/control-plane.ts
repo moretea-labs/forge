@@ -913,18 +913,18 @@ export class WorkflowSupervisorControlPlane {
   /** Model CONTINUE and its causal successor commit in the same authority transaction. */
   private reserveContinuation(task: WorkflowSupervisorTask, completion: WorkflowSupervisorCompletion) {
     const nextId = stableEffectId(`completion:${completion.completionFingerprint}`);
-    const notices = this.store.listPendingReviewNotices(128).filter(({ notice }) => notice.taskId === task.taskId).slice(0, 4);
-    // Prefer a stale-head signal when several notices are pending. The full
-    // notice set remains queryable in Supervisor Journal, never in the prompt.
-    const prioritized = notices.find(({ notice }) => notice.reviewedHeadSha !== notice.currentHeadSha) ?? notices[0];
-    const review = prioritized?.notice;
+    const notices = this.store.listPendingReviewNotices(128).filter(({ notice }) => notice.taskId === task.taskId);
+    // Deliver one exact notice per continuation. A prioritized stale-head notice
+    // must keep its own receipt; all other notices stay pending for a later wake.
+    const selected = notices.find(({ notice }) => notice.reviewedHeadSha !== notice.currentHeadSha) ?? notices[0];
+    const review = selected?.notice;
     const nextContext = review
-      ? `[UNVERIFIED${review.reviewedHeadSha !== review.currentHeadSha ? ' STALE_HEAD' : ''}] PR#${review.prNumber} reviewed=${review.reviewedHeadSha.slice(0, 12)} current=${review.currentHeadSha.slice(0, 12)} source=${review.source} outcome=${review.outcome}; receipt ${notices[0].notice.reviewId}; ${notices.length} notices; NOT APPROVAL/MERGE AUTHORITY; verify current HEAD/CI/Review; REVISE original Writer SAME PR`
+      ? `[UNVERIFIED${review.reviewedHeadSha !== review.currentHeadSha ? ' STALE_HEAD' : ''}] PR#${review.prNumber} reviewed=${review.reviewedHeadSha.slice(0, 12)} current=${review.currentHeadSha.slice(0, 12)} source=${review.source} outcome=${review.outcome}; receipt ${review.reviewId}; NOT APPROVAL/MERGE AUTHORITY; verify current HEAD/CI/Review; REVISE original Writer SAME PR`
       : undefined;
     return this.store.commitCompletion(completion, {
       effectId: nextId,
       kind: 'continuation',
-      ...(notices.length ? { reviewEventKeys: notices.map(({ eventKey }) => eventKey) } : {}),
+      ...(selected ? { reviewEventKeys: [selected.eventKey] } : {}),
       prompt: this.renderPrompt(task, nextId, 'continuation', undefined, undefined, nextContext),
       // Rebuild from the same durable goal in a new logical conversation after
       // a confirmed receipt cycle; never migrate an uncompleted mutation.

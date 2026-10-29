@@ -14,7 +14,9 @@ export function buildChatgptControllerRoundPrompt(
   return [
     `继续 Forge ${record.requirementId ? `Requirement ${record.requirementId}` : `Work ${record.originWorkId}`}，repo=${record.repoId}。`,
     '目标：按关联 Requirement 的现有验收标准推进实际交付。',
-    '按需读取最新 Requirement/Plan/Work、Git/PR/CI 及执行证据；不要沿用历史进度摘要作为当前事实。',
+    '提交 disposition 前，用 rh_work get_contract 读取完整 WorkContract（验收、约束、检查、工作区/审批/恢复策略）。',
+    '验收/安全约束未满足或未核验时必须 wait；外部评估边界也必须 wait，禁止 goal_complete。',
+    '按需读取最新 Requirement/Plan、Git/PR/CI 及执行证据；不要沿用历史进度摘要作为当前事实。',
     promptOptions.exactOriginWork
       ? `只推进 origin Work ${record.originWorkId} 的既定范围；遇到真实用户判断阻塞再记录 UserRequest。`
       : `origin Work=${record.originWorkId}，由模型按当前事实决定下一步。`,

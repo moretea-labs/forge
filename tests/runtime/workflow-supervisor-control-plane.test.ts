@@ -830,6 +830,20 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     expect(prompt).not.toContain('SENSITIVE_PREVIOUS_CHECKPOINT');
   });
 
+  test('fails closed when the mandatory goal pointer cannot fit in the continuation budget', () => {
+    const task = {
+      taskId: 'task-' + 't'.repeat(520),
+      conversationId: '11111111-2222-3333-4444-555555555555',
+      conversationUrl: 'https://chatgpt.com/c/11111111-2222-3333-4444-555555555555',
+      objective: 'Preserve the complete objective instead of sending an unreadable fragment.',
+      completionContract: { repo_id: 'repo-' + 'r'.repeat(90), requirement_id: 'REQ-' + 'q'.repeat(90) },
+      continuationPolicy: { kind: 'standalone_supervisor' }, userBlockerPolicy: {},
+      createdAt: '2026-01-01T00:00:00.000Z',
+    };
+    expect(() => renderSupervisorPrompt(task, 'fx_12345678', 'continuation'))
+      .toThrow('WORKFLOW_SUPERVISOR_PROMPT_TOO_LARGE');
+  });
+
   test('pins the exact assistant action enum and validates compact causal receipts while retaining legacy reads', () => {
     const task = {
       taskId: 'task-supervisor-action-contract',
@@ -965,7 +979,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
       responseText: renderSupervisorReceipt(task, source.effectId, 'CONTINUE'),
     });
     expect(completion.action).toBe('CONTINUE');
-    expect(completion.successorEffect?.prompt).toContain('receipt review-42');
+    expect(completion.successorEffect?.prompt).toContain('receipt review-stale');
     expect(completion.successorEffect?.prompt).toContain('[UNVERIFIED STALE_HEAD]');
     expect(completion.successorEffect?.prompt).toContain('reviewed=' + 'a'.repeat(12));
     expect(completion.successorEffect?.prompt).toContain('current=' + 'b'.repeat(12));
@@ -974,6 +988,15 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     expect(completion.successorEffect?.prompt).toContain('UNVERIFIED');
     expect(completion.successorEffect?.prompt).toContain('REVISE');
     expect(completion.successorEffect?.prompt).toContain('仅需要时读取最新 Requirement');
+    expect(store.listPendingReviewNotices()).toHaveLength(1);
+    expect(store.listPendingReviewNotices()[0].notice.reviewId).toBe('review-42');
+    control.observeEffect({ effectId: completion.successorEffect!.effectId, observationId: 'review-first-notice-applied', outcome: 'applied' });
+    const next = await control.observeAssistantTurn({
+      taskId: task.taskId, conversationId: task.conversationId,
+      responseText: renderSupervisorReceipt(task, completion.successorEffect!.effectId, 'CONTINUE'),
+    });
+    expect(next.successorEffect?.prompt).toContain('receipt review-42');
+    expect(next.successorEffect?.prompt).not.toContain('STALE_HEAD');
     expect(store.listPendingReviewNotices()).toHaveLength(0);
     const after = await control.observeAssistantTurn({
       taskId: task.taskId, conversationId: task.conversationId,
@@ -981,7 +1004,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     });
     expect(after.successorEffect?.effectId).toBe(completion.successorEffect?.effectId);
     expect(after.deduplicated).toBe(true);
-    expect(control.taskStall(task.taskId)).toMatchObject({ state: 'deliverable', effectId: completion.successorEffect?.effectId });
+    expect(control.taskStall(task.taskId)).toMatchObject({ state: 'deliverable', effectId: next.successorEffect?.effectId });
     store.close();
   });
 

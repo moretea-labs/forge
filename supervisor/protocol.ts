@@ -232,10 +232,11 @@ export function renderSupervisorPrompt(
   const length = (value: string): number => Array.from(value).length;
   const base = [...header, '目标摘录：', receiptInstruction].join('\n');
   const capacity = max - length(base);
-  // Identity, causal receipt, a nonempty goal pointer and response contract
+  // Identity, causal receipt, a recognizable goal pointer and response contract
   // are mandatory; optional events must not veto a valid continuation.
-  if (capacity < 1 || goal.length === 0) throw new Error('WORKFLOW_SUPERVISOR_PROMPT_TOO_LARGE');
-  const goalChars = Math.min(120, goal.length, Math.max(1, Math.floor(capacity / 2)));
+  const minimumGoalChars = Math.min(24, goal.length);
+  if (capacity < minimumGoalChars || goal.length === 0) throw new Error('WORKFLOW_SUPERVISOR_PROMPT_TOO_LARGE');
+  const goalChars = Math.min(120, goal.length, Math.max(minimumGoalChars, Math.floor(capacity / 2)));
   const excerpt = goal.slice(0, goalChars).join('');
   const tail = goalChars < goal.length && goalChars < capacity ? '…' : '';
   const events: string[] = [];
