@@ -270,7 +270,7 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
       requestId: 'canonical-objective-recovery',
       reason: 'Verify prompt refresh after the canonical Work objective changes.',
     }).recoveryEffect;
-    expect(recovery.prompt).toContain('supervisor_task get');
+    expect(recovery.prompt).toContain('Current canonical objective v2.');
     expect(Array.from(recovery.prompt).length).toBeLessThanOrEqual(4_000);
     expect(recovery.prompt).not.toContain('Current canonical objective v1.');
     expect(recovery.prompt).not.toContain('Stale registration objective.');
@@ -314,14 +314,44 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
       createdAt: '2026-01-01T00:00:00.000Z',
     };
 
-    expect(hooks.canonicalObjectiveForTask?.(task)).toBe('Deliver the durable requirement outcome v1.');
+    expect(hooks.canonicalObjectiveForTask?.(task)).toBe('Requirement REQ-supervisor-outcome-authority：Supervisor outcome authority');
     expect(hooks.canonicalObjectiveForTask?.(task)).not.toBe('Inspect only file A and stop after one check.');
 
     reviseRequirementSemantic({ controllerHome: fx.controllerHome }, requirementId, {
       expectedRevision: 1,
       outcomeStatement: 'Deliver the durable requirement outcome v2.',
     });
-    expect(hooks.canonicalObjectiveForTask?.(task)).toBe('Deliver the durable requirement outcome v2.');
+    expect(hooks.canonicalObjectiveForTask?.(task)).toBe('Requirement REQ-supervisor-outcome-authority：Supervisor outcome authority');
+  });
+
+  test('keeps a historical Work-only short goal as a pointer to its full safety contract', () => {
+    const fx = fixture();
+    const workId = 'work-supervisor-historical-goal-pointer';
+    const objective = 'Review established code and do not make any destructive change. ' +
+      'SAFETY_CONSTRAINT_MUST_CHECK_FULL_WORK'.repeat(8);
+    createWorkContract(fx.store, {
+      workId, repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId,
+      objective, acceptanceCriteria: ['Preserve original full safety contract'],
+      allowedPaths: [], forbiddenPaths: [], checks: [],
+      constraints: { workspaceMode: 'current' },
+      requestedBy: 'chatgpt', dispatchState: 'running',
+    });
+    const task = {
+      taskId: 'historical-work-short-goal',
+      conversationId: '77777777-8888-9999-aaaa-bbbbbbbbbbbb',
+      conversationUrl: 'https://chatgpt.com/c/77777777-8888-9999-aaaa-bbbbbbbbbbbb',
+      objective: 'Old snapshot text',
+      completionContract: { controller_home: fx.controllerHome, repo_id: fx.repository.repoId, work_id: workId },
+      continuationPolicy: { kind: 'forge_goal_outer_turn' },
+      userBlockerPolicy: {},
+      createdAt: '2026-01-01T00:00:00.000Z',
+    };
+    const pointer = forgeWorkflowSupervisorLifecycleHooks(fx.controllerHome).canonicalObjectiveForTask?.(task);
+    expect(pointer).toContain('Work ' + workId);
+    expect(pointer).toContain('rh_work get_contract');
+    expect(pointer).toContain('读取完整 Work 目标');
+    expect(pointer).not.toContain('SAFETY_CONSTRAINT_MUST_CHECK_FULL_WORK');
+    expect(pointer?.length).toBeLessThan(160);
   });
 
   test('revises an active task outcome in place and refreshes only an undispatched effect prompt', () => {
@@ -750,6 +780,17 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     const legacyPrompt = renderSupervisorPrompt({ ...base, objective: 'L'.repeat(7_950) }, 'fx_12345678', 'continuation');
     expect(Array.from(legacyPrompt).length).toBeLessThanOrEqual(4_000);
     expect(legacyPrompt).toContain('task_id:' + JSON.stringify(base.taskId));
+    const requirementPrompt = renderSupervisorPrompt({
+      ...base,
+      completionContract: { repo_id: 'repo-fixture', requirement_id: 'REQ-FIXTURE-1' },
+    }, 'fx_12345678', 'continuation', 'SENSITIVE_PREVIOUS_CHECKPOINT', undefined,
+    undefined, 'SENSITIVE_ADVISORY_CONTEXT');
+    expect(requirementPrompt).toContain('requirement_id:REQ-FIXTURE-1');
+    expect(requirementPrompt).not.toContain('repo_id:repo-fixture');
+    expect(requirementPrompt).toContain('需时 supervisor_task get');
+    expect(requirementPrompt).not.toContain('SENSITIVE_PREVIOUS_CHECKPOINT');
+    expect(requirementPrompt).not.toContain('SENSITIVE_ADVISORY_CONTEXT');
+    expect(Array.from(requirementPrompt).length).toBeLessThanOrEqual(650);
 
     const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-objective-bound-'));
     roots.push(root);
@@ -759,6 +800,78 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     expect(store.getTask(base.taskId)).toBeUndefined();
     expect(store.registerTask(base).objective).toBe(base.objective);
     store.close();
+  });
+
+  test('keeps a complete review notice ahead of optional correction text under long identity pressure', () => {
+    const task = {
+      taskId: 'task-' + 't'.repeat(125),
+      conversationId: '11111111-2222-3333-4444-555555555555',
+      conversationUrl: 'https://chatgpt.com/c/11111111-2222-3333-4444-555555555555',
+      objective: 'Continue verified delivery and preserve all existing constraints. '.repeat(100),
+      completionContract: {
+        repo_id: 'repo-' + 'r'.repeat(110),
+        requirement_id: 'REQ-' + 'q'.repeat(110),
+      },
+      continuationPolicy: { kind: 'standalone_supervisor' },
+      userBlockerPolicy: {},
+      createdAt: '2026-01-01T00:00:00.000Z',
+    };
+    const correction = 'C'.repeat(180);
+    const reviewNotice = `[UNVERIFIED STALE_HEAD] pr=500 reviewed=${'a'.repeat(12)} current=${'b'.repeat(12)} src=independent_reviewer outcome=REVISE receipt=review-stale NOT APPROVAL/MERGE AUTHORITY`;
+    const prompt = renderSupervisorPrompt(
+      task, 'fx_12345678', 'continuation', undefined, correction, reviewNotice,
+    );
+    expect(Array.from(prompt).length).toBeLessThanOrEqual(650);
+    expect(prompt).toContain('task_id:' + JSON.stringify(task.taskId));
+    expect(prompt).not.toContain('requirement_id:' + task.completionContract.requirement_id);
+    expect(prompt).not.toContain('repo_id:' + task.completionContract.repo_id);
+    expect(prompt).toContain('需时 supervisor_task get');
+    expect(prompt).toContain('receipt:' + supervisorReceiptChallenge(task, 'fx_12345678'));
+    expect(prompt).not.toContain('目标摘录：');
+    expect(prompt).toContain('pr=500');
+    expect(prompt).toContain('reviewed=' + 'a'.repeat(12));
+    expect(prompt).toContain('current=' + 'b'.repeat(12));
+    expect(prompt).toContain('src=independent_reviewer');
+    expect(prompt).toContain('outcome=REVISE');
+    expect(prompt).toContain('receipt=review-stale');
+    expect(prompt).toContain('NOT APPROVAL/MERGE AUTHORITY');
+    expect(prompt).not.toContain(correction);
+    expect(prompt).toContain('末行：字母 空格 receipt 值');
+  });
+
+  test('fails closed when the mandatory goal pointer cannot fit in the continuation budget', () => {
+    const task = {
+      taskId: 'task-' + 't'.repeat(520),
+      conversationId: '11111111-2222-3333-4444-555555555555',
+      conversationUrl: 'https://chatgpt.com/c/11111111-2222-3333-4444-555555555555',
+      objective: 'Preserve the complete objective instead of sending an unreadable fragment.',
+      completionContract: { repo_id: 'repo-' + 'r'.repeat(90), requirement_id: 'REQ-' + 'q'.repeat(90) },
+      continuationPolicy: { kind: 'standalone_supervisor' }, userBlockerPolicy: {},
+      createdAt: '2026-01-01T00:00:00.000Z',
+    };
+    expect(() => renderSupervisorPrompt(task, 'fx_12345678', 'continuation'))
+      .toThrow('WORKFLOW_SUPERVISOR_PROMPT_TOO_LARGE');
+  });
+
+  test('reserves an ellipsis at the exact 24-character goal-pointer boundary', () => {
+    const base = {
+      taskId: 'task-boundary',
+      conversationId: '11111111-2222-3333-4444-555555555555',
+      conversationUrl: 'https://chatgpt.com/c/11111111-2222-3333-4444-555555555555',
+      objective: 'x', completionContract: {}, continuationPolicy: {}, userBlockerPolicy: {},
+      createdAt: '2026-01-01T00:00:00.000Z',
+    };
+    let boundaryTask: typeof base | undefined;
+    for (let suffixLength = 0; suffixLength < 700; suffixLength += 1) {
+      const candidate = { ...base, taskId: 'task-' + 't'.repeat(suffixLength) };
+      try {
+        const prompt = renderSupervisorPrompt(candidate, 'fx_12345678', 'continuation');
+        if (Array.from(prompt).length === 627) { boundaryTask = candidate; break; }
+      } catch { /* longer identities intentionally exhaust the prompt budget */ }
+    }
+    if (!boundaryTask) throw new Error('Unable to construct exact 24-character prompt budget fixture');
+    expect(() => renderSupervisorPrompt({ ...boundaryTask, objective: 'G'.repeat(100) }, 'fx_12345678', 'continuation'))
+      .toThrow('WORKFLOW_SUPERVISOR_PROMPT_TOO_LARGE');
   });
 
   test('pins the exact assistant action enum and validates compact causal receipts while retaining legacy reads', () => {
@@ -866,17 +979,19 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
     roots.push(root);
     const store = new WorkflowSupervisorStore(root);
     const control = new WorkflowSupervisorControlPlane(store);
+    const repoId = 'repo-' + 'r'.repeat(110);
+    const requirementId = 'REQ-' + 'q'.repeat(110);
     const task = control.registerTask({
-      taskId: 'task-review-original-writer',
+      taskId: 'task-' + 't'.repeat(125),
       conversationId: '90909090-1111-2222-3333-444444444444',
       conversationUrl: 'https://chatgpt.com/c/90909090-1111-2222-3333-444444444444',
-      objective: 'Deliver and review the original PR without a replacement writer.',
-      completionContract: { repo_id: 'repo-original' },
+      objective: 'Continue verified delivery and preserve all existing constraints. '.repeat(100),
+      completionContract: { repo_id: repoId, requirement_id: requirementId },
       continuationPolicy: { kind: 'standalone_supervisor' },
       userBlockerPolicy: {},
     });
     const notice = {
-      taskId: task.taskId, repoId: 'repo-original', prNumber: 446,
+      taskId: task.taskId, repoId, prNumber: 500,
       reviewedHeadSha: 'a'.repeat(40), currentHeadSha: 'a'.repeat(40),
       reviewId: 'review-42', source: 'independent_reviewer' as const, outcome: 'REVISE' as const,
     };
@@ -889,6 +1004,10 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
       .toMatchObject({ deduplicated: true, deferred: true });
     expect(control.observeReviewNotice({ ...notice, reviewId: 'review-stale', currentHeadSha: 'b'.repeat(40) }))
       .toMatchObject({ deduplicated: false, deferred: true });
+    expect(control.observeReviewNotice({ ...notice, prNumber: 501, reviewId: 'review-third', reviewedHeadSha: 'c'.repeat(40), currentHeadSha: 'c'.repeat(40) }))
+      .toMatchObject({ deduplicated: false, deferred: true });
+    expect(control.observeReviewNotice({ ...notice, prNumber: 502, reviewId: 'review-fourth', reviewedHeadSha: 'd'.repeat(40), currentHeadSha: 'd'.repeat(40) }))
+      .toMatchObject({ deduplicated: false, deferred: true });
     expect(() => control.observeReviewNotice({ ...notice, repoId: 'repo-foreign' })).toThrow('WORKFLOW_SUPERVISOR_REVIEW_REPOSITORY_MISMATCH');
     expect(control.taskStall(task.taskId).state).not.toBe('deliverable');
     const completion = await control.observeAssistantTurn({
@@ -896,19 +1015,54 @@ describe('Workflow Supervisor canonical lifecycle projection', () => {
       responseText: renderSupervisorReceipt(task, source.effectId, 'CONTINUE'),
     });
     expect(completion.action).toBe('CONTINUE');
-    expect(completion.successorEffect?.prompt).toContain('receipt review-42');
+    expect(Array.from(completion.successorEffect?.prompt || '').length).toBeLessThanOrEqual(650);
+    expect(completion.successorEffect?.prompt).toContain('receipt=review-stale');
+    expect(completion.successorEffect?.prompt).toContain('pr=500');
     expect(completion.successorEffect?.prompt).toContain('[UNVERIFIED STALE_HEAD]');
-    expect(completion.successorEffect?.prompt).toContain('NOT ACCEPTANCE');
+    expect(completion.successorEffect?.prompt).toContain('reviewed=' + 'a'.repeat(12));
+    expect(completion.successorEffect?.prompt).toContain('current=' + 'b'.repeat(12));
+    expect(completion.successorEffect?.prompt).toContain('src=independent_reviewer');
+    expect(completion.successorEffect?.prompt).toContain('NOT APPROVAL/MERGE AUTHORITY');
+    expect(completion.successorEffect?.prompt).toContain('UNVERIFIED');
     expect(completion.successorEffect?.prompt).toContain('REVISE');
-    expect(completion.successorEffect?.prompt).toContain('SAME PR/branch');
+    expect(completion.successorEffect?.prompt).toContain('按需读 Requirement/源码/PR/CI');
+    expect(store.listPendingReviewNotices()).toHaveLength(3);
+    expect(store.listPendingReviewNotices().map(({ notice: pending }) => pending.reviewId)).toEqual(expect.arrayContaining(['review-42', 'review-third', 'review-fourth']));
+    control.observeEffect({ effectId: completion.successorEffect!.effectId, observationId: 'review-first-notice-applied', outcome: 'applied' });
+    const next = await control.observeAssistantTurn({
+      taskId: task.taskId, conversationId: task.conversationId,
+      responseText: renderSupervisorReceipt(task, completion.successorEffect!.effectId, 'CONTINUE'),
+    });
+    expect(next.successorEffect?.prompt).toContain('receipt=review-42');
+    expect(next.successorEffect?.prompt).toContain('pr=500');
+    expect(next.successorEffect?.prompt).not.toContain('STALE_HEAD');
+    expect(store.listPendingReviewNotices()).toHaveLength(2);
+
+    control.observeEffect({ effectId: next.successorEffect!.effectId, observationId: 'review-third-notice-applied', outcome: 'applied' });
+    const third = await control.observeAssistantTurn({
+      taskId: task.taskId, conversationId: task.conversationId,
+      responseText: renderSupervisorReceipt(task, next.successorEffect!.effectId, 'CONTINUE'),
+    });
+    expect(third.successorEffect?.prompt).toContain('receipt=review-third');
+    expect(third.successorEffect?.prompt).toContain('pr=501');
+    expect(store.listPendingReviewNotices()).toHaveLength(1);
+
+    control.observeEffect({ effectId: third.successorEffect!.effectId, observationId: 'review-fourth-notice-applied', outcome: 'applied' });
+    const fourth = await control.observeAssistantTurn({
+      taskId: task.taskId, conversationId: task.conversationId,
+      responseText: renderSupervisorReceipt(task, third.successorEffect!.effectId, 'CONTINUE'),
+    });
+    expect(fourth.successorEffect?.prompt).toContain('receipt=review-fourth');
+    expect(fourth.successorEffect?.prompt).toContain('pr=502');
     expect(store.listPendingReviewNotices()).toHaveLength(0);
+
     const after = await control.observeAssistantTurn({
       taskId: task.taskId, conversationId: task.conversationId,
       responseText: renderSupervisorReceipt(task, source.effectId, 'CONTINUE'),
     });
     expect(after.successorEffect?.effectId).toBe(completion.successorEffect?.effectId);
     expect(after.deduplicated).toBe(true);
-    expect(control.taskStall(task.taskId)).toMatchObject({ state: 'deliverable', effectId: completion.successorEffect?.effectId });
+    expect(control.taskStall(task.taskId)).toMatchObject({ state: 'deliverable', effectId: fourth.successorEffect?.effectId });
     store.close();
   });
 

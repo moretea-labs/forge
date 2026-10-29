@@ -172,7 +172,7 @@ async function callRepositoryBoundStart(
 }
 
 function semanticStableSpec(operation: string) {
-  if (operation === 'get' || operation === 'revise' || operation === 'complete') {
+  if (operation === 'get' || operation === 'get_contract' || operation === 'revise' || operation === 'complete') {
     return { namespace: 'work_contract', idField: 'work_id', kind: 'work' as const };
   }
   if (operation === 'plan_get' || operation === 'plan_revise') {

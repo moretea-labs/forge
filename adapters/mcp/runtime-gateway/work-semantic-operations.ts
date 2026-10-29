@@ -53,7 +53,7 @@ async function stopTerminalWorkSupervisor(
   }
 }
 
-const RH_WORK_SEMANTIC_OPERATIONS = new Set(['start', 'get', 'revise', 'complete']);
+const RH_WORK_SEMANTIC_OPERATIONS = new Set(['start', 'get', 'get_contract', 'revise', 'complete']);
 
 type WorkSemanticFacadeData = Record<string, unknown> & {
   work?: ReturnType<typeof workSemanticView>;
@@ -222,11 +222,17 @@ export async function callRhWorkSemanticOperation(
       }) as unknown as Record<string, unknown>, true);
     }
   }
-  if (operation === 'get') {
+  if (operation === 'get' || operation === 'get_contract') {
     const work = workId ? getWorkContract(store, workId) : undefined;
     if (!work) return result(buildWorkSemanticFacadeResult({
       status: 'not_found', summary: `Work ${workId || '(missing)'} not found.`, data: { workId },
     }) as unknown as Record<string, unknown>, true);
+    if (operation === 'get_contract') {
+      return result(buildFacadeResult({
+        summary: `Full canonical WorkContract ${work.workId} retrieved read-only.`,
+        data: { workContract: work },
+      }) as unknown as Record<string, unknown>);
+    }
     const semantic = workSemanticView(work);
     const detail = args.detail_level === 'detail';
     return result(buildWorkSemanticFacadeResult({

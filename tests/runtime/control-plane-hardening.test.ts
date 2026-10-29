@@ -1031,10 +1031,14 @@ describe('scheduled external Controller wake', () => {
     const scheduledPrompt = buildChatgptControllerRoundPrompt(store, opened, { exactOriginWork: true });
 
     expect(scheduledPrompt).toContain(`只推进 origin Work ${workId} 的既定范围`);
-    expect(scheduledPrompt).toContain('ROUND4_EXPLICITLY_WAITS_AFTER_EXTERNAL_EVALUATOR_BOUNDARY');
-    expect(scheduledPrompt).toContain('ROUND4_TERMINAL_OBLIGATION: when the external evaluator boundary is reached, use wait rather than goal_complete.');
-    expect(scheduledPrompt).toContain('不要把本轮先消耗在重复读取 Requirement/Plan/Work/UserRequest');
-    expect(scheduledPrompt).toContain('仅汇报状态、重复读取 lifecycle、刷新进度');
+    expect(scheduledPrompt).not.toContain('ROUND4_EXPLICITLY_WAITS_AFTER_EXTERNAL_EVALUATOR_BOUNDARY');
+    expect(scheduledPrompt).not.toContain('ROUND4_TERMINAL_OBLIGATION');
+    expect(scheduledPrompt).toContain('rh_work get_contract');
+    expect(scheduledPrompt).toContain('完整 WorkContract（验收、约束、检查、工作区/审批/恢复策略）');
+    expect(scheduledPrompt).toContain('外部评估边界也必须 wait，禁止 goal_complete');
+    expect(scheduledPrompt).toContain('按需读取最新 Requirement/Plan');
+    expect(scheduledPrompt).toContain('本轮完成实际行动');
+    expect(Array.from(scheduledPrompt).length).toBeLessThan(500);
     expect(scheduledPrompt).not.toContain('先重新读取最新 Forge Requirement/Plan/Work/UserRequest');
     const dispatched = finishControllerRoundRelayDispatch(store, {
       workId,
