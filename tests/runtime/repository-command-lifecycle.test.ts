@@ -185,18 +185,14 @@ describe('repository command execution lifecycle', () => {
       controllerHome, repositoryId: repository.repoId, checkoutId: repository.activeCheckoutId, workId: 'work-new-owner',
     })).not.toThrow();
 
-    // Without expectedHead, baseline ancestry alone cannot prove the historical
-    // source tip was absorbed. Retain the physical fence until a Work-specific
-    // archive ref independently proves that exact source revision is contained.
+    // Without expectedHead, baseline ancestry and a same-name archive ref cannot
+    // prove the historical source tip was absorbed. Retain the physical fence.
     const absorbedHandle = readWorkHandle(controllerHome, repository.repoId, workId)!;
     writeWorkHandle(controllerHome, { ...absorbedHandle, expectedHead: undefined });
-    expect(() => assertCanonicalRepositoryMutationWorkHandleAvailable({
-      controllerHome, repositoryId: repository.repoId, checkoutId: repository.activeCheckoutId, workId: 'work-new-owner',
-    })).toThrow();
     git(repository.canonicalRoot, ['branch', `archive/${workId}-20261029`, head]);
     expect(() => assertCanonicalRepositoryMutationWorkHandleAvailable({
       controllerHome, repositoryId: repository.repoId, checkoutId: repository.activeCheckoutId, workId: 'work-new-owner',
-    })).not.toThrow();
+    })).toThrow('WORK_CANONICAL_MUTATION_OWNED');
 
     // A real unabsorbed candidate remains authoritative even though it lives
     // only in WorkHandle metadata.

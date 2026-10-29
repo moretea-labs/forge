@@ -919,6 +919,9 @@ describe('terminal Work cleanup', () => {
     const uniqueSourceHead = git(fx.repositoryRoot, ['rev-parse', 'HEAD']);
     git(fx.repositoryRoot, ['reset', '--hard', baseHead]);
     git(fx.repositoryRoot, ['clean', '-fd']);
+    // A stale archive ref pointing at the baseline is not proof that the unique
+    // source commit was preserved or absorbed.
+    git(fx.repositoryRoot, ['branch', `archive/${fx.handle.workId}-20261029`, baseHead]);
 
     const handle: WorkHandleState = {
       ...fx.handle,

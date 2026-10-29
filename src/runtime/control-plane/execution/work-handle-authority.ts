@@ -94,16 +94,11 @@ export function workHandleRetainsCanonicalMutationOwnership(input: {
       .filter((value): value is string => Boolean(value)));
   if (recoverableProcessWorkIds.has(handle.workId)) return true;
 
-  // Baseline revisions cannot prove that an unknown source tip was absorbed.
-  // Missing expectedHead therefore fails closed unless a Work-specific archived
-  // revision independently proves that every preserved source tip is already
-  // contained by the exact canonical target HEAD.
+  // Baseline revisions and a Work-specific ref name cannot prove an unknown
+  // source tip was absorbed. Without the exact expected source HEAD, keep the
+  // canonical mutation fence; only recorded revisions can release it.
   const expectedHead = handle.expectedHead?.trim();
-  if (!expectedHead) {
-    const archiveRefs = archivedWorkRevisionRefs(target.root, handle.workId);
-    if (archiveRefs.length > 0 && archiveRefs.every((ref) => gitIsAncestor(target.root, ref, target.head!))) return false;
-    return true;
-  }
+  if (!expectedHead) return true;
   const revisions = [...new Set([
     expectedHead,
     handle.deliveryBaseCommit,
@@ -114,9 +109,8 @@ export function workHandleRetainsCanonicalMutationOwnership(input: {
   const uncontainedRevisions = revisions.filter((revision) => !gitIsAncestor(target.root, revision, target.head!));
   if (uncontainedRevisions.length === 0) return false;
 
-  // An archive ref that merely contains a source revision does not prove that
-  // the canonical target contains it. Keep the fence while any recorded source
-  // revision is outside the exact target HEAD, even if the WorkContract is gone.
+  // Keep the fence while any recorded source revision is outside the exact
+  // canonical target HEAD, even if the WorkContract is gone.
   return true;
 }
 
