@@ -230,7 +230,7 @@ function bootstrapFixture(initialTabs: Array<{ id: number; windowId: number; url
     get snapshotReads() { return snapshotReads; },
     get tabQueries() { return tabQueries; },
     ensure: (identity: object, pinned: object, instanceId: string) => (context as typeof context & {
-      __testEnsure: (cmd: object, instanceId: string) => Promise<{ kind: string; code?: string }>;
+      __testEnsure: (cmd: object, instanceId: string) => Promise<{ kind: string; code?: string; providerBinding?: Record<string, unknown> }>;
     }).__testEnsure({ kind: 'ensure', identity, providerBinding: pinned }, instanceId),
     observe: (identity: object, pinned: object, instanceId: string) => (context as typeof context & {
       __testObserve: (cmd: object, instanceId: string) => Promise<{ kind: string; code?: string }>;
@@ -959,6 +959,36 @@ test('F11 exact conversation owner mismatch can recover only through new atteste
   // can replace the persisted physical attachment with the ensured result.
   expect((await f.prepare(identity, stalePin, 'profile-1'))).toMatchObject({
     kind: 'prepared', ready: false, reasonCode: 'COMPUTER_CHATGPT_EXTENSION_PINNED_OWNER_TOKEN_MISMATCH',
+  });
+  expect(f.dispatchSends).toBe(0);
+});
+
+test('F11 reused conversation tab id at another URL is left untouched while Ensure creates a new attested exact target', async () => {
+  const otherConversationId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+  const otherConversationUrl = `https://chatgpt.com/c/${otherConversationId}`;
+  const f = bootstrapFixture([{ id: 708, windowId: 19, url: otherConversationUrl }], { validEnsureSnapshot: true });
+  const pin = { providerId: 'browser.chrome-extension', providerSessionId: 'profile-1',
+    tabId: '708', windowId: '19', ownerToken: 'original-physical-tab' };
+  f.attestOwner(708, 'original-physical-tab');
+
+  const ensured = await f.ensure(identity, pin, 'profile-1');
+  expect(ensured).toMatchObject({ kind: 'ensured', providerBinding: {
+    providerId: 'browser.chrome-extension', providerSessionId: 'profile-1', windowId: '8',
+  } });
+  expect(ensured.providerBinding?.tabId).not.toBe('708');
+  expect(ensured.providerBinding?.ownerToken).toEqual(expect.any(String));
+  expect(f.tabs).toHaveLength(2);
+  expect(f.tabs[0]).toEqual({ id: 708, windowId: 19, url: otherConversationUrl });
+  expect(f.tabs[1]).toMatchObject({ url, windowId: 8 });
+  expect(f.snapshotReads).toBe(1);
+  expect(f.dispatchSends).toBe(0);
+
+  // The stale physical pin remains unusable for either Prepare or Dispatch.
+  expect(await f.prepare(identity, pin, 'profile-1')).toMatchObject({
+    ready: false, reasonCode: 'COMPUTER_CHATGPT_EXTENSION_PINNED_TAB_IDENTITY_CHANGED',
+  });
+  expect(await f.dispatch(identity, pin, 'profile-1')).toMatchObject({
+    mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_EXTENSION_PINNED_TAB_IDENTITY_CHANGED',
   });
   expect(f.dispatchSends).toBe(0);
 });

@@ -338,7 +338,7 @@ async function resolveTarget(identity, createIfMissing, pinnedBinding, instanceI
   if (identity?.namespace === 'chatgpt.conversation' && pinnedBinding?.providerId === PROVIDER_ID && pinnedBinding.tabId) {
     // Window moves preserve Chrome's profile-local tab id. A vanished id may
     // be recovered by exact conversation, but an existing tab at another URL
-    // is identity drift and must never be silently replaced.
+    // is not ours to reuse or alter; Ensure may create a separate owned tab.
     let pinned;
     try { pinned = await tabGet(Number(pinnedBinding.tabId)); }
     catch (error) {
@@ -346,18 +346,21 @@ async function resolveTarget(identity, createIfMissing, pinnedBinding, instanceI
     }
     if (pinned) {
       if (core.parseConversation(pinned.url ?? '')?.conversationId !== identity.conversationId) {
-        throw new Error('COMPUTER_CHATGPT_EXTENSION_PINNED_TAB_IDENTITY_CHANGED');
-      }
-      try {
-        return { tab: pinned, created: false, ownerToken: await requirePinnedOwner(pinned, pinnedBinding, identity) };
-      } catch (error) {
-        if (!createIfMissing || String(error?.message ?? error) !== 'COMPUTER_CHATGPT_EXTENSION_PINNED_OWNER_TOKEN_MISMATCH')
-          throw error;
-        // The old physical tab is NOT ours to observe, close or navigate.
-        // Ensure alone may create a NEW owned tab for this exact conversation
-        // and return its attested identity to the Controller's leased binder.
-        // Prepare/Dispatch still reject the stale owner token; no Send occurs.
+        if (!createIfMissing) throw new Error('COMPUTER_CHATGPT_EXTENSION_PINNED_TAB_IDENTITY_CHANGED');
         staleUnattestedConversationPin = true;
+      }
+      if (!staleUnattestedConversationPin) {
+        try {
+          return { tab: pinned, created: false, ownerToken: await requirePinnedOwner(pinned, pinnedBinding, identity) };
+        } catch (error) {
+          if (!createIfMissing || String(error?.message ?? error) !== 'COMPUTER_CHATGPT_EXTENSION_PINNED_OWNER_TOKEN_MISMATCH')
+            throw error;
+          // The old physical tab is NOT ours to observe, close or navigate.
+          // Ensure alone may create a NEW owned tab for this exact conversation
+          // and return its attested identity to the Controller's leased binder.
+          // Prepare/Dispatch still reject the stale owner token; no Send occurs.
+          staleUnattestedConversationPin = true;
+        }
       }
     }
   }
