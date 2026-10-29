@@ -9,7 +9,7 @@ import { pathToFileURL } from 'node:url';
  * not decide whether a positive closing reference is authorized.
  */
 export function findNegatedClosingReferences(text) {
-  const pattern = /\b(?:do\s+not|does\s+not|must\s+not|should\s+not|never|not|don't)\s+(?:automatically\s+)?(?:close(?:s|d)?|fix(?:es|ed)?|resolv(?:e|es|ed))\s+((?:[\w.-]+\/[\w.-]+)?#\d+|https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/issues\/\d+)/gi;
+  const pattern = /\b(?:do\s+not|does\s+not|must\s+not|should\s+not|never|don't)\s+(?:automatically\s+)?(?:close(?:s|d)?|fix(?:es|ed)?|resolv(?:e|es|ed))\s+((?:[\w.-]+\/[\w.-]+)?#\d+|https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/issues\/\d+)/gi;
   return Array.from(new Set(Array.from(text.matchAll(pattern), match => match[1])));
 }
 
