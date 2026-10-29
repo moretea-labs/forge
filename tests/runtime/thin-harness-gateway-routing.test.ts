@@ -897,7 +897,7 @@ describe('repository.git Work delivery', () => {
     expect(git(fx.repoRoot, ['rev-parse', 'HEAD'])).toBe(sourceHead);
   });
 
-  test('releases a missing-contract canonical handle when its unique revision is preserved by its archive branch', async () => {
+  test('keeps a missing-contract canonical handle fenced when its unique revision exists only on an archive branch', async () => {
     const fx = fixture();
     roots.push(fx.root);
     const started = await callExecutionTool(fx.ctx, 'session_start', {});
@@ -955,9 +955,11 @@ describe('repository.git Work delivery', () => {
     writeWorkHandle(fx.controllerHome, orphanHandle);
     expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, orphanId)).toBeUndefined();
     const target = { checkoutId: fx.repository.activeCheckoutId, branch: 'main', head: targetHead, root: fx.repository.canonicalRoot, clean: true };
+    // The archive ref preserves the source, but the exact canonical target
+    // does not contain it. Archive existence alone is not delivery evidence.
     expect(workHandleRetainsCanonicalMutationOwnership({
       controllerHome: fx.controllerHome, repositoryId: fx.repository.repoId, handle: orphanHandle, target,
-    })).toBe(false);
+    })).toBe(true);
 
     git(fx.repoRoot, ['branch', '-D', archiveBranch]);
     expect(workHandleRetainsCanonicalMutationOwnership({

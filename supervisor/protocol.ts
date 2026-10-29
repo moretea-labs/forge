@@ -27,7 +27,7 @@ const EFFECT_ID = /^(?:fx|crpe)_[a-zA-Z0-9_-]{8,120}$/;
 const MAX_RESPONSE = 512 * 1024;
 export const MAX_SUPERVISOR_OBJECTIVE_CHARS = 8_000;
 export const MAX_SUPERVISOR_PROMPT_CHARS = 500;
-export const MAX_SUPERVISOR_CONTINUATION_PROMPT_CHARS = 4_000;
+export const MAX_SUPERVISOR_CONTINUATION_PROMPT_CHARS = 650;
 
 /** A goal cannot be silently shortened between durable Task and sent effect. */
 export function validateSupervisorObjective(value: string): string {
@@ -201,69 +201,78 @@ export function renderSupervisorPrompt(
   task: WorkflowSupervisorTask,
   effectId: string,
   kind: WorkflowEffectKind,
-  checkpoint?: string,
+  _checkpoint?: string,
   correctionReason?: string,
   lowerLayerContext?: string,
-  advisoryCognition?: string,
+  _advisoryCognition?: string,
 ): string {
   const challenge = supervisorReceiptChallenge(task, effectId);
   const scheduled = typeof task.continuationPolicy.scheduled_wake_schedule_id === 'string';
-  // Stable machine identity stays at the top; the assistant-facing message is
-  // ordinary language. The Task journal, not the prompt, owns the full goal.
+  const requirementId = typeof task.completionContract.requirement_id === 'string'
+    ? task.completionContract.requirement_id.trim() : '';
+  const workId = typeof task.completionContract.work_id === 'string'
+    ? task.completionContract.work_id.trim() : '';
+  const repoId = typeof task.completionContract.repo_id === 'string'
+    ? task.completionContract.repo_id.trim() : '';
   const header = [
     renderEffectMarker(effectId),
     'task_id:' + JSON.stringify(task.taskId),
     'receipt:' + challenge,
+    ...(kind !== 'enrollment' && !lowerLayerContext?.trim() && repoId && !requirementId && !workId ? ['repo_id:' + repoId] : []),
+    ...(kind !== 'enrollment' && !lowerLayerContext?.trim() && requirementId ? ['requirement_id:' + requirementId]
+      : kind !== 'enrollment' && !lowerLayerContext?.trim() && workId ? ['work_id:' + workId] : []),
   ];
+  const objective = validateSupervisorObjective(task.objective).trim().replace(/\s+/g, ' ');
+  const goal = Array.from(objective);
+  const instruction = kind === 'enrollment'
+    ? '用 supervisor_task get 取目标。'
+    : '继续；需时 supervisor_task get；按需读 Requirement/源码/PR/CI。';
   const outcome = scheduled ? '当日完 W、未完 C、需用户 U' : '未完 C、交付 D、需用户 U';
-  const continuation = kind !== 'enrollment';
-  const instruction = continuation
-    ? `forge ${kind === 'recovery' ? '恢复' : kind === 'correction' ? '纠正' : '继续'}。沿当前目标连续完成读取、修改、验证和统一交付；仅上下文缺失或目标变更时 supervisor_task get。仅确需跨轮时 C，并简述已做、证据及下一步；${outcome}，末行字母+空格+回执码。`
-    : `用 Forge supervisor_task get 读取完整 Task 及关联 Requirement/Work 的最新目标、进度，连续执行修改、验证与统一交付；仅确需跨轮时 C，并简述已做、证据及下一步；${outcome}。末行：字母 空格 receipt 值。`;
+  const receiptInstruction = `${instruction} 仅确需跨轮时 C；${outcome}。末行：字母 空格 receipt 值。`;
+  const max = kind === 'enrollment' ? MAX_SUPERVISOR_PROMPT_CHARS : MAX_SUPERVISOR_CONTINUATION_PROMPT_CHARS;
   const length = (value: string): number => Array.from(value).length;
-  if (continuation) {
-    const goal = Array.from(validateSupervisorObjective(task.objective).trim().replace(/\s+/g, ' '));
-    header.push('目标摘录：' + goal.slice(0, 240).join('') + (goal.length > 240 ? '…' : ''));
-  }
-  const base = [...header, instruction].join('\n');
-  const max = continuation || checkpoint || correctionReason || lowerLayerContext || advisoryCognition
-    ? MAX_SUPERVISOR_CONTINUATION_PROMPT_CHARS : MAX_SUPERVISOR_PROMPT_CHARS;
-  if (length(base) > max) throw new Error('WORKFLOW_SUPERVISOR_PROMPT_TOO_LARGE');
-  // Advisory excerpts reuse the existing completion/effect journal. They never
-  // authorize a mutation or replace live Work, resource, or Git evidence.
-  const context: string[] = [];
-  for (const [label, value, limit] of [
-    ['纠正原因', correctionReason, 700],
-    ['上轮进展（参考，执行前核对事实）', checkpoint && !/^(?:receipt|automation):/.test(checkpoint) ? checkpoint : undefined, 2_000],
-    ['执行上下文（参考）', lowerLayerContext, 600],
-    ['建议（参考）', advisoryCognition, 300],
+  // A required Review event outranks optional excerpts and semantic IDs; task_id
+  // remains the durable pointer to retrieve the complete contract.
+  const includeGoalExcerpt = !lowerLayerContext?.trim();
+  const base = [...header, ...(includeGoalExcerpt ? ['目标摘录：'] : []), receiptInstruction].join('\n');
+  const capacity = max - length(base);
+  const minimumGoalChars = includeGoalExcerpt ? Math.min(24, goal.length) : 0;
+  if (capacity < minimumGoalChars || (includeGoalExcerpt && goal.length === 0)) throw new Error('WORKFLOW_SUPERVISOR_PROMPT_TOO_LARGE');
+  const normalizedContext = lowerLayerContext?.trim().replace(/\s+/g, ' ');
+  const contextPrefix = '待核验事件：';
+  const contextCost = normalizedContext ? 1 + length(contextPrefix) + length(normalizedContext) : 0;
+  if (normalizedContext && length(normalizedContext) > 230) throw new Error('WORKFLOW_SUPERVISOR_PROMPT_TOO_LARGE');
+  const goalCapacity = capacity - contextCost;
+  if (includeGoalExcerpt && goalCapacity < minimumGoalChars) throw new Error('WORKFLOW_SUPERVISOR_PROMPT_TOO_LARGE');
+  const goalChars = includeGoalExcerpt
+    ? Math.min(120, goal.length, Math.max(minimumGoalChars, Math.floor((goalCapacity - 1) / 2)))
+    : 0;
+  const excerpt = goal.slice(0, goalChars).join('');
+  const tail = includeGoalExcerpt && goalChars < goal.length ? '…' : '';
+  if (includeGoalExcerpt && goalChars + length(tail) > goalCapacity) throw new Error('WORKFLOW_SUPERVISOR_PROMPT_TOO_LARGE');
+  const goalLine = includeGoalExcerpt ? '目标摘录：' + excerpt + tail : undefined;
+  const promptBase = [...header, ...(goalLine ? [goalLine] : []), receiptInstruction].join('\n');
+  const events: string[] = [];
+  let remaining = max - length(promptBase);
+  // Review notice fields are mandatory and precede optional correction text.
+  // If the complete notice cannot fit, do not emit a partial notice or consume its event key.
+  for (const [prefix, raw, bound, required] of [
+    [contextPrefix, normalizedContext, 230, true],
+    ['纠正原因：', correctionReason, 90, false],
   ] as const) {
-    if (!value?.trim()) continue;
-    const available = max - length(base) - length(context.join('\n')) - length(label) - 4 - (continuation ? 0 : 243);
-    if (available < 2) break;
-    // Reference excerpts are prose, not source payloads. Browser-rendered tables
-    // contribute tabs/blank cells that ProseMirror cannot round-trip exactly.
-    // Normalize before freezing the new effect; keep its identity and the
-    // provider's exact pre-send comparison unchanged.
-    const excerpt = value.trim().replace(/\s+/g, ' ');
-    const chars = Array.from(excerpt);
-    const budget = Math.min(limit, available);
-    context.push(label + '：' + (chars.length > budget ? chars.slice(0, budget - 1).join('') + '…' : excerpt));
+    if (!raw?.trim()) continue;
+    const normalized = raw.trim().replace(/\s+/g, ' ');
+    const available = remaining - 1 - length(prefix);
+    if (required && (length(normalized) > bound || length(normalized) > available)) {
+      throw new Error('WORKFLOW_SUPERVISOR_PROMPT_TOO_LARGE');
+    }
+    if (!required && available < 1) continue;
+    const value = Array.from(normalized).slice(0, Math.min(bound, available)).join('');
+    if (required && value !== normalized) throw new Error('WORKFLOW_SUPERVISOR_PROMPT_TOO_LARGE');
+    events.push(prefix + value);
+    remaining -= 1 + length(prefix + value);
   }
-  if (continuation) return [...header, ...context, instruction].join('\n');
-
-  // An enrollment may start in an entirely new ChatGPT conversation. Never
-  // remove the goal outright to fit a transport budget: show a clearly marked
-  // excerpt and explicitly tell the model to fetch the complete durable Task.
-  const objective = task.objective.trim().replace(/\s+/g, ' ');
-  if (!objective) throw new Error('WORKFLOW_SUPERVISOR_OBJECTIVE_REQUIRED');
-  const prefix = '目标摘录：';
-  const available = max - length(base) - length(context.join('\n')) - context.length - length(prefix) - 2;
-  if (available < 1) throw new Error('WORKFLOW_SUPERVISOR_PROMPT_TOO_LARGE');
-  const chars = Array.from(objective);
-  const excerpt = chars.slice(0, Math.min(240, available)).join('');
-  const preview = prefix + excerpt + (chars.length > length(excerpt) ? '…' : '');
-  const prompt = [...header, preview, ...context, instruction].join('\n');
+  const prompt = [...header, ...(goalLine ? [goalLine] : []), ...events, receiptInstruction].join('\n');
   if (length(prompt) > max) throw new Error('WORKFLOW_SUPERVISOR_PROMPT_TOO_LARGE');
   return prompt;
 }
