@@ -8,6 +8,7 @@ import { buildClaudeControllerInvocation, buildCodexControllerInvocation, buildS
 import { parseCodexConversationJsonl } from '../../src/runtime/control-plane/launcher/local-conversation-controller';
 import { RH_WORK_MODEL_OPERATIONS, isRhWorkAcceptedOperation } from '../../src/runtime/control-plane/facade/rh-work-operation-contract';
 import { runtimeToolDefinitions } from '../../adapters/mcp/runtime-gateway/runtime-tool-definitions';
+import { mcpServerInstructions } from '../../adapters/mcp/instructions';
 import { normalizeRhWorkInputWireMigration } from '../../adapters/mcp/runtime-gateway/work-input-wire-migration';
 import { CONTROLLER_LEARNING_SIGNAL_ENVELOPE_MAX_ITEMS } from '../../src/runtime/context/automatic-learning';
 import {
@@ -19,6 +20,16 @@ import {
 } from '../../src/runtime/control-plane/facade/types';
 
 describe('handoff and facade contracts', () => {
+  test('Controller MCP instructions require progressive cross-entry discovery and independent requirement close review', () => {
+    const guidance = mcpServerInstructions('controller');
+    expect(guidance).toContain('Progressive source discovery');
+    expect(guidance).toContain('unmodified entry points');
+    expect(guidance).toContain('independent acceptance review');
+    expect(guidance).toContain('Requirement remains open');
+    expect(guidance).toContain('source-language search terms');
+    expect(guidance).toContain('no fixed search quota');
+  });
+
   test('keeps the ChatGPT-facing facade small and stable', () => {
     expect(FACADE_TOOLS).toEqual(['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work', 'capability_execute']);
   });
