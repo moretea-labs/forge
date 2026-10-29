@@ -148,7 +148,7 @@ export function buildControllerContextPack(
   const sourceFirstDiscovery = (options.searchTerms?.length ?? 0) > 0
     && searchIncludeGlobs.length === 0
     && !knownPaths.some(path => /(^|\/)docs?\//i.test(path))
-    && !/\b(?:documentation|docs?|readme|tutorial|guide|design decision|architecture notes)\b|文档|教程|手册/.test(options.description ?? '');
+    && !/\b(?:documentation|docs?|readme|tutorial|guide|design decision|architecture notes)\b|文档|教程|手册/i.test(options.description ?? '');
   const lexicalExcludeGlobs = sourceFirstDiscovery
     ? cleanList([...excludeGlobs, 'docs/**', 'references/**', 'tasks/**'])
     : excludeGlobs;

@@ -545,10 +545,12 @@ test('prioritizes implementation sources when explicit code hints accompany a mi
   const pack = buildControllerContextPack(root, getMcpPolicy('controller'), options);
   expect(pack.files.map(file => file.path)).toContain('src/z-owner.ts');
 
-  const docsPack = buildControllerContextPack(root, getMcpPolicy('controller'), {
-    ...options, description: 'Read documentation explaining requirement scheduler migration',
-  });
-  expect(docsPack.files.some(file => file.path.startsWith('docs/'))).toBe(true);
+  for (const intent of ['documentation', 'Documentation', 'Docs', 'README', 'Tutorial', 'Guide']) {
+    const docsPack = buildControllerContextPack(root, getMcpPolicy('controller'), {
+      ...options, description: `Read ${intent} explaining requirement scheduler migration`,
+    });
+    expect(docsPack.files.some(file => file.path.startsWith('docs/'))).toBe(true);
+  }
 });
 
 test('ranks the full natural-language discovery result before applying the bounded candidate budget', () => {
