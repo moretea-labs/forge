@@ -122,7 +122,7 @@ export interface WorkflowSupervisorConsumerStatus {
   transportFailureStreak: number;
   providerBackpressureMs: number;
   stalled: boolean;
-  dueCommand?: {
+  dueCommands?: Array<{
     taskId: string;
     conversationId: string;
     effectId: string;
@@ -130,22 +130,29 @@ export interface WorkflowSupervisorConsumerStatus {
     kind: WorkflowEffectKind;
     createdAt?: string;
     ageMs?: number;
-  };
+  }>;
+  taskFailures?: Array<{
+    taskId: string;
+    code: string;
+    observedAt: string;
+    effectId?: string;
+  }>;
   lastFailure?: {
     code: string;
     observedAt: string;
     taskId?: string;
     effectId?: string;
   };
-  /** Oldest applied turn whose visible provider output has stopped changing. */
-  awaitingReceiptSilence?: WorkflowSupervisorSilentTurn & {
+  /** Per-task applied turns whose visible provider output has stopped changing. */
+  awaitingReceiptSilences?: Array<WorkflowSupervisorSilentTurn & {
     taskId: string;
+    conversationId: string;
     /** Latest committed Task receipt, not completion of the currently unresolved Effect. */
     lastCommittedCompletion: Pick<WorkflowSupervisorCompletion, 'sourceEffectId' | 'completionFingerprint' | 'committedAt'> | null;
-  };
-  /** Latest successful exact-effect page observation in this adapter instance.
+  }>;
+  /** Latest successful exact-effect page observation per task in this adapter instance.
    * Absent after restart or settlement; never completion or meaningful-progress proof. */
-  lastProviderObservation?: { taskId: string; effectId: string; conversationId: string; observedAt: string };
+  lastProviderObservations?: Array<{ taskId: string; effectId: string; conversationId: string; observedAt: string }>;
 }
 
 export interface WorkflowContractValidation {

@@ -3203,13 +3203,15 @@ test('native consumer status exposes and clears a pre-dispatch due-effect transp
     running: false,
     transportFailureStreak: 1,
     stalled: false,
-    dueCommand: {
+    dueCommands: [{
       taskId,
       conversationId,
       effectId: effect.effectId,
       mode: 'send',
       kind: 'enrollment',
-    },
+    }],
+    taskFailures: [{ taskId, effectId: effect.effectId, code: 'WORKFLOW_SUPERVISOR_NATIVE_INVENTORY_INCOMPLETE',
+      observedAt: expect.any(String) }],
     lastFailure: {
       code: 'WORKFLOW_SUPERVISOR_NATIVE_INVENTORY_INCOMPLETE',
       taskId,
@@ -3942,37 +3944,39 @@ test('native diagnostic freshness advances only after a successful exact-effect 
   const deps = { targetPort, nowMs: () => nowMs, providerIdleGraceMs: 1_000, providerScopeKey: join(root, 'provider-scope'), sleep: async () => undefined,
     setInterval: () => 0 as unknown as ReturnType<typeof setInterval>, clearInterval: () => undefined, onError: (error: unknown) => { errors.push(error); } };
   const adapter = new WorkflowSupervisorNativeBrowserAdapter(control, new WorkflowSupervisorEphemeralDiscovery(), deps);
-  expect(adapter.status().lastProviderObservation).toBeUndefined();
+  const providerObservation = () => adapter.status().lastProviderObservations?.find((entry) => entry.taskId === taskId);
+  const receiptSilence = () => adapter.status().awaitingReceiptSilences?.find((entry) => entry.taskId === taskId);
+  expect(providerObservation()).toBeUndefined();
   await adapter.runOnce();
-  expect(adapter.status().lastProviderObservation).toEqual({ taskId, effectId: source.effectId, conversationId, observedAt: new Date(nowMs).toISOString() });
+  expect(providerObservation()).toEqual({ taskId, effectId: source.effectId, conversationId, observedAt: new Date(nowMs).toISOString() });
   const initialSilence = store.providerSilence(source.effectId, nowMs)!;
   nowMs += 60_000;
   await adapter.runOnce();
-  expect(adapter.status().lastProviderObservation?.observedAt).toBe(new Date(nowMs).toISOString());
+  expect(providerObservation()?.observedAt).toBe(new Date(nowMs).toISOString());
   expect(store.providerSilence(source.effectId, nowMs)?.observedSince).toBe(initialSilence.observedSince);
-  expect(adapter.status().awaitingReceiptSilence?.lastCommittedCompletion).toBeNull();
-  const lastSuccessful = adapter.status().lastProviderObservation;
+  expect(receiptSilence()?.lastCommittedCompletion).toBeNull();
+  const lastSuccessful = providerObservation();
   unavailable = true;
   nowMs += 60_000;
   const beforeFailure = snapshotCalls;
   await adapter.runOnce();
   expect(snapshotCalls).toBeGreaterThan(beforeFailure);
   expect(errors.length).toBeGreaterThan(0);
-  expect(adapter.status().lastProviderObservation).toEqual(lastSuccessful);
+  expect(providerObservation()).toEqual(lastSuccessful);
   unavailable = false;
   wrongConversation = true;
   nowMs += 60_000;
   const beforeWrongConversation = snapshotCalls;
   await adapter.runOnce();
   expect(snapshotCalls).toBeGreaterThan(beforeWrongConversation);
-  expect(adapter.status().lastProviderObservation).toEqual(lastSuccessful);
+  expect(providerObservation()).toEqual(lastSuccessful);
   const restarted = new WorkflowSupervisorNativeBrowserAdapter(control, new WorkflowSupervisorEphemeralDiscovery(), deps);
-  expect(restarted.status().lastProviderObservation).toBeUndefined();
+  expect(restarted.status().lastProviderObservations?.find((entry) => entry.taskId === taskId)).toBeUndefined();
   const completed = await control.observeAssistantTurn({ taskId, conversationId,
     responseText: renderSupervisorReceipt(control.getTask(taskId)!, source.effectId, 'CONTINUE') });
   expect(completed.action).toBe('CONTINUE');
-  expect(adapter.status().lastProviderObservation).toBeUndefined();
-  expect(adapter.status().awaitingReceiptSilence).toBeUndefined();
+  expect(providerObservation()).toBeUndefined();
+  expect(receiptSilence()).toBeUndefined();
   if (!('successorEffect' in completed) || !completed.successorEffect) throw new Error('FRESHNESS_SUCCESSOR_MISSING');
   const successor = completed.successorEffect;
   control.observeEffect({ effectId: successor.effectId, observationId: 'freshness-successor-applied', outcome: 'applied' });
@@ -3981,13 +3985,13 @@ test('native diagnostic freshness advances only after a successful exact-effect 
   const beforeStaleMarker = snapshotCalls;
   await adapter.runOnce();
   expect(snapshotCalls).toBeGreaterThan(beforeStaleMarker);
-  expect(adapter.status().lastProviderObservation).toBeUndefined();
+  expect(providerObservation()).toBeUndefined();
   observedUserText = successor.prompt;
   nowMs += 60_000;
   await adapter.runOnce();
-  expect(adapter.status().lastProviderObservation).toEqual({ taskId, effectId: successor.effectId, conversationId, observedAt: new Date(nowMs).toISOString() });
+  expect(providerObservation()).toEqual({ taskId, effectId: successor.effectId, conversationId, observedAt: new Date(nowMs).toISOString() });
   const receipt = store.getLatestCompletion(taskId)!;
-  expect(adapter.status().awaitingReceiptSilence?.lastCommittedCompletion).toEqual({
+  expect(receiptSilence()?.lastCommittedCompletion).toEqual({
     sourceEffectId: source.effectId, completionFingerprint: receipt.completionFingerprint, committedAt: receipt.committedAt,
   });
   const reopenedStore = new WorkflowSupervisorStore(join(root, 'supervisor-home'));
@@ -3995,15 +3999,15 @@ test('native diagnostic freshness advances only after a successful exact-effect 
   unavailable = true;
   nowMs += 60_000;
   await afterRestart.runOnce();
-  expect(afterRestart.status().lastProviderObservation).toBeUndefined();
-  expect(afterRestart.status().awaitingReceiptSilence?.lastCommittedCompletion).toEqual({
+  expect(afterRestart.status().lastProviderObservations?.find((entry) => entry.taskId === taskId)).toBeUndefined();
+  expect(afterRestart.status().awaitingReceiptSilences?.find((entry) => entry.taskId === taskId)?.lastCommittedCompletion).toEqual({
     sourceEffectId: source.effectId, completionFingerprint: receipt.completionFingerprint, committedAt: receipt.committedAt,
   });
   await afterRestart.close();
   reopenedStore.close();
   control.stopTask(taskId, 'Diagnostic fixture complete');
-  expect(adapter.status().lastProviderObservation).toBeUndefined();
-  expect(adapter.status().awaitingReceiptSilence).toBeUndefined();
+  expect(providerObservation()).toBeUndefined();
+  expect(receiptSilence()).toBeUndefined();
   expect(store.getEffectByOriginKey(`provider-recovery:${source.effectId}`)).toBeUndefined();
   expect(store.latestEffectDispatch(source.effectId)).toBeUndefined();
   await adapter.close();
