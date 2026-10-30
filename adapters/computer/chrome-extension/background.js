@@ -174,7 +174,13 @@ function boundedTabsQuery(query, deadlineAt = Date.now() + TABS_QUERY_TIMEOUT_MS
   return Promise.race([
     operation,
     new Promise((_, reject) => {
-      timer = setTimeout(() => reject(new Error('COMPUTER_CHATGPT_EXTENSION_TABS_QUERY_TIMEOUT')), timeoutMs);
+      timer = setTimeout(() => {
+        // A read-only query that missed its deadline must not poison later
+        // retries: retire this entry (identity-guarded) so the next bounded
+        // call starts a fresh underlying query instead of reusing a hang.
+        if (tabsQueryInFlight.get(queryKey) === operation) tabsQueryInFlight.delete(queryKey);
+        reject(new Error('COMPUTER_CHATGPT_EXTENSION_TABS_QUERY_TIMEOUT'));
+      }, timeoutMs);
     }),
   ]).finally(() => { if (timer !== undefined) clearTimeout(timer); });
 }

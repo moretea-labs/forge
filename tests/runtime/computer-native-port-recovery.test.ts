@@ -88,7 +88,7 @@ test('heartbeat RPC has a sub-TTL deadline and cannot cancel an independent comp
   expect(ports).toHaveLength(1);
 });
 
-test('Chrome tabs query deadline bounds waiters and single-flights an unresolved underlying query', async () => {
+test('Chrome tabs query deadline bounds waiters and retires a hung query for later bounded retry', async () => {
   const source = readFileSync('adapters/computer/chrome-extension/background.js', 'utf8');
   const code = source.slice(source.indexOf('function boundedTabsQuery('), source.indexOf('// Controller binding owns the durable source identity.'));
   const timers = new Map<number, { callback: () => void; delay: number }>();
@@ -106,26 +106,33 @@ test('Chrome tabs query deadline bounds waiters and single-flights an unresolved
     clearTimeout(id: number) { timers.delete(id); },
   };
   const chatgptTabs = runInNewContext(code + '\nchatgptTabs', context) as () => Promise<unknown[]>;
+
+  // Two waiters inside one deadline still share a single underlying query.
   const first = chatgptTabs().catch((error: Error) => error.message);
+  const concurrent = chatgptTabs().catch((error: Error) => error.message);
   await Promise.resolve();
   expect(queryCalls).toBe(1);
-  expect([...timers.values()].map(timer => timer.delay)).toEqual([5_000]);
+  expect([...timers.values()].map(timer => timer.delay)).toEqual([5_000, 5_000]);
   timers.get(1)?.callback();
   expect(await first).toBe('COMPUTER_CHATGPT_EXTENSION_TABS_QUERY_TIMEOUT');
-
-  const second = chatgptTabs().catch((error: Error) => error.message);
-  await Promise.resolve();
-  expect(queryCalls).toBe(1);
-  expect([...timers.values()].map(timer => timer.delay)).toEqual([5_000]);
   timers.get(2)?.callback();
-  expect(await second).toBe('COMPUTER_CHATGPT_EXTENSION_TABS_QUERY_TIMEOUT');
-  expect(queryCalls).toBe(1);
+  expect(await concurrent).toBe('COMPUTER_CHATGPT_EXTENSION_TABS_QUERY_TIMEOUT');
 
+  // The first underlying query never settles; the timed-out entry is retired
+  // so a later bounded retry starts a fresh underlying query and succeeds.
+  const retried = chatgptTabs();
+  await Promise.resolve();
+  expect(queryCalls).toBe(2);
+  expect(await retried).toEqual([]);
+  expect(context.tabsQueryInFlight.size).toBe(0);
+
+  // A late settlement of the hung query must not delete a newer entry.
   resolveFirstQuery?.([]);
   await Promise.resolve();
   await Promise.resolve();
+  expect(context.tabsQueryInFlight.size).toBe(0);
   expect(await chatgptTabs()).toEqual([]);
-  expect(queryCalls).toBe(2);
+  expect(queryCalls).toBe(3);
 });
 
 test('provider identity storage timeout releases its cache and retries with the same candidate', async () => {
