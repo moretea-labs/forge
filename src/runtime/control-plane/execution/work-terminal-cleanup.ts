@@ -144,7 +144,29 @@ function persist(
   receipt: WorkCleanupReceipt,
 ): WorkHandleState {
   receipt.updatedAt = nowIso();
+  // A permanently blocked terminal Work is retried by the scheduler, but a
+  // retry that observes the same durable facts must not rewrite the handle or
+  // append audit history. Only updatedAt is allowed to differ. This keeps the
+  // retry path safe while stopping the per-tick work_handle_write churn.
+  if (handle.cleanupReceipt
+    && stableCleanupReceiptJson(handle.cleanupReceipt) === stableCleanupReceiptJson(receipt)) {
+    return handle;
+  }
   return writeWorkHandle(controllerHome, { ...handle, cleanupReceipt: receipt });
+}
+
+function stableCleanupReceiptJson(receipt: WorkCleanupReceipt): string {
+  const { updatedAt: _updatedAt, ...durable } = receipt;
+  return JSON.stringify(stableJsonValue(durable));
+}
+
+function stableJsonValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stableJsonValue);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+    .filter(([, entry]) => entry !== undefined)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, entry]) => [key, stableJsonValue(entry)]));
 }
 
 function addBlocker(receipt: WorkCleanupReceipt, reason: string): void {
