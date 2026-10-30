@@ -1344,7 +1344,13 @@ export function cleanupControllerRuntimeState(
   const removedEditSessionPaths = editSessionHistory.removedPaths.sort();
   const removedRepositoryNamespacePaths = repositoryNamespaceRetention.removedPaths.sort();
   let sqliteMaintenance: ControlPlaneDatabaseMaintenanceReport | undefined;
-  if (!periodic || removalPhases.includes('releases')) try {
+  const orphanAuditRetention = ORPHAN_AUDIT_RETENTION_ENABLED ? {
+    olderThanMs: ORPHAN_AUDIT_RETENTION_MS,
+    maxRows: ORPHAN_AUDIT_MAX_ROWS_PER_PASS,
+    scanWindow: ORPHAN_AUDIT_SCAN_WINDOW,
+  } : undefined;
+  const fullSqliteMaintenance = !periodic || removalPhases.includes('releases');
+  if (fullSqliteMaintenance) try {
     sqliteMaintenance = maintainControlPlaneDatabase(home, {
       minimumReclaimableBytes: options.sqliteVacuumMinReclaimableBytes,
       minimumReclaimableRatio: options.sqliteVacuumMinReclaimableRatio,
@@ -1353,13 +1359,7 @@ export function cleanupControllerRuntimeState(
       // the Runtime. Free pages are reused in place. Physical compaction is an
       // explicit offline operation, never part of the live periodic tick.
       allowVacuum: false,
-      ...(ORPHAN_AUDIT_RETENTION_ENABLED ? {
-        pruneOrphanedAudit: {
-          olderThanMs: ORPHAN_AUDIT_RETENTION_MS,
-          maxRows: ORPHAN_AUDIT_MAX_ROWS_PER_PASS,
-          scanWindow: ORPHAN_AUDIT_SCAN_WINDOW,
-        },
-      } : {}),
+      ...(orphanAuditRetention ? { pruneOrphanedAudit: orphanAuditRetention } : {}),
       ...(CURRENT_AUDIT_RETENTION_ENABLED ? {
         pruneRebuildableRecordAudit: {
           olderThanMs: CURRENT_AUDIT_RETENTION_MS,
@@ -1373,6 +1373,19 @@ export function cleanupControllerRuntimeState(
     }
   } catch (error) {
     errors.push(errorText('SQLite maintenance', error));
+  } else if (orphanAuditRetention) try {
+    // Orphan retention is cursor-bounded and deletes in 500-row transactions;
+    // run it on every periodic tick instead of one phase per seven ticks. The
+    // full maintenance path above still owns vacuum/current-record retention.
+    sqliteMaintenance = maintainControlPlaneDatabase(home, {
+      allowVacuum: false,
+      pruneOrphanedAudit: orphanAuditRetention,
+    });
+    if (sqliteMaintenance.skippedReason === 'database_busy') {
+      skippedByReason.sqlite_maintenance_busy = (skippedByReason.sqlite_maintenance_busy ?? 0) + 1;
+    }
+  } catch (error) {
+    errors.push(errorText('SQLite orphan retention', error));
   }
   const inspectedPaths = referenceBudget.inspected + worktreeBudget.inspected + dependencyBudget.inspected + tempBudget.inspected + schedulerBudget.inspected + editSessionBudget.inspected + artifactRetention.inspected + repositoryNamespaceRetention.inspected + releaseRetention.inspected + releaseSessionCandidates.inspected;
   const budgetExhausted = referenceBudget.exhausted || worktreeBudget.exhausted || dependencyBudget.exhausted || tempBudget.exhausted || schedulerBudget.exhausted || editSessionBudget.exhausted || removalBudget.exhausted || releaseSessionCandidates.truncated;
