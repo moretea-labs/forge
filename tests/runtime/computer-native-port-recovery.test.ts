@@ -118,13 +118,23 @@ test('provider identity storage timeout releases its cache and retries with the 
   let timerId = 0;
   let randomIdCalls = 0;
   let allowSet = false;
+  let resolveFirstGet: ((value: Record<string, string>) => void) | undefined;
+  let resolveGetStarted: (() => void) | undefined;
+  let resolveWriteStarted: (() => void) | undefined;
   let resolveFirstSet: (() => void) | undefined;
+  const getStarted = new Promise<void>((resolve) => { resolveGetStarted = resolve; });
+  const writeStarted = new Promise<void>((resolve) => { resolveWriteStarted = resolve; });
   const writes: Array<Record<string, string>> = [];
   const chrome = { storage: { local: {
-    get: async () => ({}),
+    get: () => {
+      if (allowSet) return Promise.resolve({});
+      resolveGetStarted?.();
+      return new Promise<Record<string, string>>((resolve) => { resolveFirstGet = resolve; });
+    },
     set: (value: Record<string, string>) => {
       writes.push(value);
       if (allowSet) return Promise.resolve();
+      resolveWriteStarted?.();
       return new Promise<void>((resolve) => { resolveFirstSet = resolve; });
     },
   } } };
@@ -139,8 +149,9 @@ test('provider identity storage timeout releases its cache and retries with the 
   };
   const providerInstanceId = runInNewContext(code + '\nproviderInstanceId', context) as (deadlineAt: number) => Promise<string>;
   const first = providerInstanceId(Date.now() + 10_000).catch((error: Error) => error.message);
-  await Promise.resolve();
-  await Promise.resolve();
+  await getStarted;
+  resolveFirstGet?.({});
+  await writeStarted;
   expect(writes).toEqual([{ forgeComputerProviderInstanceId: 'profile-1' }]);
   expect([...timers.values()].map(timer => timer.delay)).toEqual([10_000]);
   [...timers.values()][0]!.callback();
