@@ -23,6 +23,7 @@ import { parseCanonicalChatgptConversationIdentity } from '../../packages/plugin
 
 const PROVIDER_ID = 'browser.chrome-extension';
 const HEARTBEAT_FRESH_MS = 15_000;
+// Bound both queue wait and claimed execution; claim re-arms the same single timer.
 const COMMAND_TIMEOUT_MS = 12_000;
 
 type ProviderState = {
@@ -132,6 +133,7 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
     private readonly controllerHome: string,
     private readonly authority: ComputerInteractionTargetAuthorityPort,
     private readonly nowMs: () => number = () => Date.now(),
+    private readonly timerApi: { setTimeout: typeof setTimeout; clearTimeout: typeof clearTimeout } = { setTimeout, clearTimeout },
   ) {}
 
   heartbeat(input: ComputerChatgptExtensionHeartbeat): void {
@@ -183,6 +185,14 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
       const entry = this.pending.get(id);
       if (!entry || entry.providerInstanceId !== instanceId || entry.claimed) continue;
       entry.claimed = true;
+      this.timerApi.clearTimeout(entry.timer);
+      entry.timer = this.timerApi.setTimeout(() => {
+        const current = this.pending.get(id);
+        if (!current) return;
+        this.pending.delete(id);
+        current.resolve({ claimed: current.claimed });
+      }, COMMAND_TIMEOUT_MS);
+      entry.timer.unref?.();
       return structuredClone(entry.command);
     }
     if (queue?.length === 0) this.queues.delete(instanceId);
@@ -193,7 +203,7 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
     const instanceId = providerInstanceId(rawProviderInstanceId);
     const entry = this.pending.get(commandId);
     if (!instanceId || !entry || entry.providerInstanceId !== instanceId || !entry.claimed) return false;
-    clearTimeout(entry.timer);
+    this.timerApi.clearTimeout(entry.timer);
     this.pending.delete(commandId);
     entry.resolve({ claimed: true, result: structuredClone(result) });
     return true;
@@ -241,7 +251,7 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
   private async submit(providerInstanceId: string, command: ComputerChatgptExtensionCommandInput): Promise<{ claimed: boolean; result?: ComputerChatgptExtensionCommandResult }> {
     const commandId = `computer-extension-${randomUUID()}`;
     return await new Promise((resolve) => {
-      const timer = setTimeout(() => {
+      const timer = this.timerApi.setTimeout(() => {
         const current = this.pending.get(commandId);
         if (!current) return;
         this.pending.delete(commandId);
@@ -799,7 +809,7 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
 
   async close(): Promise<void> {
     for (const entry of this.pending.values()) {
-      clearTimeout(entry.timer);
+      this.timerApi.clearTimeout(entry.timer);
       entry.resolve({ claimed: entry.claimed, result: entry.command.kind === 'dispatch' && entry.claimed
         ? { kind: 'dispatch', mutation: 'attempted' }
         : { kind: 'failed', code: 'COMPUTER_CHATGPT_EXTENSION_RUNTIME_CLOSED', retryable: true } });

@@ -510,6 +510,47 @@ describe('Computer durable InteractionTarget authority', () => {
     }
   });
 
+  test('Broker command timeout restarts after claim so heartbeat wait cannot consume dispatch budget', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'forge-extension-command-phase-timeout-'));
+    let nowMs = Date.parse('2026-10-30T00:00:00.000Z');
+    let timerId = 0;
+    const timers = new Map<number, { callback: () => void; delay: number }>();
+    const timerApi = {
+      setTimeout: ((callback: () => void, delay = 0) => {
+        const handle = { id: ++timerId, unref: () => undefined };
+        timers.set(handle.id, { callback: () => { timers.delete(handle.id); callback(); }, delay });
+        return handle as unknown as ReturnType<typeof setTimeout>;
+      }) as typeof setTimeout,
+      clearTimeout: ((handle: ReturnType<typeof setTimeout>) => {
+        timers.delete((handle as unknown as { id: number }).id);
+      }) as typeof clearTimeout,
+    };
+    const extension = new ChromeExtensionChatgptConversationTargetPort(home, targetAuthority, () => nowMs, timerApi);
+    const identity = { namespace: 'chatgpt.conversation' as const,
+      conversationId: '56565656-6767-8989-9090-121212121214',
+      canonicalUrl: 'https://chatgpt.com/c/56565656-6767-8989-9090-121212121214' };
+    try {
+      extension.heartbeat({ providerId: 'browser.chrome-extension', providerInstanceId: 'profile-one',
+        observedAt: new Date(nowMs).toISOString(), conversations: [] });
+      const pending = extension.ensureExact(identity, { createIfMissing: true });
+      expect([...timers.values()].map(timer => timer.delay)).toEqual([12_000]);
+      nowMs += 11_000;
+      const claimed = extension.claim('profile-one');
+      expect(claimed?.kind).toBe('ensure');
+      expect(timers.size).toBe(1);
+      expect([...timers.values()].map(timer => timer.delay)).toEqual([12_000]);
+      // The original queue deadline was cleared; the claimed command owns a fresh 12s execution fence.
+      [...timers.values()][0]!.callback();
+      expect(await pending).toMatchObject({ state: 'unavailable', failure: {
+        code: 'COMPUTER_CHATGPT_EXTENSION_TARGET_OPEN_OUTCOME_UNKNOWN', failoverSafe: false,
+      } });
+      expect(timers.size).toBe(0);
+    } finally {
+      await extension.close();
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   test('late out-of-order heartbeat cannot replace newer inventory or extend provider freshness', async () => {
     const home = mkdtempSync(join(tmpdir(), 'forge-extension-heartbeat-order-'));
     let nowMs = Date.parse('2026-10-30T00:00:00.000Z');

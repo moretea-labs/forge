@@ -6,8 +6,9 @@ const PROVIDER_ID = 'browser.chrome-extension';
 const PROVIDER_TICK_MS = 750;
 const DISCOVERY_MIN_INTERVAL_MS = 2_000;
 const RPC_TIMEOUT_MS = 30_000;
+const HEARTBEAT_DEADLINE_MS = 10_000;
 const HEARTBEAT_RPC_TIMEOUT_MS = 6_000;
-const HEARTBEAT_TABS_QUERY_TIMEOUT_MS = 5_000;
+const TABS_QUERY_TIMEOUT_MS = 5_000;
 // The broker budgets 12 seconds for a claimed command; a hung content
 // callback must settle earlier without claiming a Send never happened.
 const TAB_MESSAGE_TIMEOUT_MS = 7_000;
@@ -18,17 +19,36 @@ const UNREADABLE_CHAT_GRACE_MS = 60_000;
 const UNREADABLE_CHAT_RELOAD_INTERVAL_MS = 5 * 60_000;
 const randomId = () => globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 let providerInstancePromise;
-function providerInstanceId() {
+let providerInstanceCandidate;
+function withDeadline(promise, deadlineAt, code) {
+  const remainingMs = deadlineAt - Date.now();
+  if (remainingMs <= 0) return Promise.reject(new Error(code));
+  let timer;
+  return Promise.race([
+    Promise.resolve(promise),
+    new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(code)), remainingMs); }),
+  ]).finally(() => { if (timer !== undefined) clearTimeout(timer); });
+}
+function providerInstanceId(deadlineAt = Date.now() + HEARTBEAT_DEADLINE_MS) {
   // Profile-local storage survives worker and browser restarts. It identifies
   // this Chrome profile, never a task or an outbound effect.
   // A fresh worker UUID would invalidate every Controller-pinned tab.
-  providerInstancePromise ??= (async () => {
-    const saved = await chrome.storage.local.get('forgeComputerProviderInstanceId');
-    if (typeof saved.forgeComputerProviderInstanceId === 'string' && saved.forgeComputerProviderInstanceId) return saved.forgeComputerProviderInstanceId;
-    const instanceId = randomId();
-    await chrome.storage.local.set({ forgeComputerProviderInstanceId: instanceId });
-    return instanceId;
-  })().catch((error) => { providerInstancePromise = undefined; throw error; });
+  if (!providerInstancePromise) {
+    const operation = (async () => {
+      const saved = await chrome.storage.local.get('forgeComputerProviderInstanceId');
+      if (typeof saved.forgeComputerProviderInstanceId === 'string' && saved.forgeComputerProviderInstanceId) return saved.forgeComputerProviderInstanceId;
+      // Reuse the same candidate if a timed-out storage write completes late.
+      providerInstanceCandidate ??= randomId();
+      await chrome.storage.local.set({ forgeComputerProviderInstanceId: providerInstanceCandidate });
+      return providerInstanceCandidate;
+    })();
+    let attempt;
+    attempt = withDeadline(operation, deadlineAt, 'COMPUTER_CHATGPT_EXTENSION_PROVIDER_ID_TIMEOUT').catch((error) => {
+      if (providerInstancePromise === attempt) providerInstancePromise = undefined;
+      throw error;
+    });
+    providerInstancePromise = attempt;
+  }
   return providerInstancePromise;
 }
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -70,11 +90,11 @@ function ensureNativePort() {
   });
   return port;
 }
-function nativeRpc(method, params = {}) {
+function nativeRpc(method, params = {}, timeoutOverrideMs) {
   return new Promise((resolve, reject) => {
     const id = randomId();
     let port;
-    const timeoutMs = method === 'computer_extension_heartbeat' ? HEARTBEAT_RPC_TIMEOUT_MS : RPC_TIMEOUT_MS;
+    const timeoutMs = timeoutOverrideMs ?? (method === 'computer_extension_heartbeat' ? HEARTBEAT_RPC_TIMEOUT_MS : RPC_TIMEOUT_MS);
     const timer = setTimeout(() => {
       const pending = pendingNative.get(id);
       if (!pending) return;
@@ -136,16 +156,18 @@ function tabReload(tabId) { return new Promise((resolve, reject) => chrome.tabs.
   const error = chrome.runtime.lastError;
   if (error) reject(new Error(error.message)); else resolve();
 })); }
-function boundedTabsQuery(query) {
+function boundedTabsQuery(query, deadlineAt = Date.now() + TABS_QUERY_TIMEOUT_MS) {
+  const timeoutMs = Math.min(TABS_QUERY_TIMEOUT_MS, deadlineAt - Date.now());
+  if (timeoutMs <= 0) return Promise.reject(new Error('COMPUTER_CHATGPT_EXTENSION_TABS_QUERY_TIMEOUT'));
   let timer;
   return Promise.race([
     Promise.resolve().then(() => chrome.tabs.query(query)),
     new Promise((_, reject) => {
-      timer = setTimeout(() => reject(new Error('COMPUTER_CHATGPT_EXTENSION_TABS_QUERY_TIMEOUT')), HEARTBEAT_TABS_QUERY_TIMEOUT_MS);
+      timer = setTimeout(() => reject(new Error('COMPUTER_CHATGPT_EXTENSION_TABS_QUERY_TIMEOUT')), timeoutMs);
     }),
   ]).finally(() => { if (timer !== undefined) clearTimeout(timer); });
 }
-async function chatgptTabs() { return await boundedTabsQuery({ url: 'https://chatgpt.com/*' }); }
+async function chatgptTabs(deadlineAt) { return await boundedTabsQuery({ url: 'https://chatgpt.com/*' }, deadlineAt); }
 // Controller binding owns the durable source identity. This browser-session
 // attestation proves that the exact physical tab was created by this extension;
 // browser restarts invalidate it rather than permitting tab-id reuse to close
@@ -709,10 +731,12 @@ async function executeCommand(command, instanceId) {
   if (command.kind === 'close') return await executeClose(command, instanceId);
   return { kind: 'failed', code: 'COMPUTER_CHATGPT_EXTENSION_COMMAND_UNKNOWN', retryable: false, failoverSafe: true };
 }
-async function publishHeartbeat(instanceId) {
+async function publishHeartbeat() {
+  const deadlineAt = Date.now() + HEARTBEAT_DEADLINE_MS;
+  const instanceId = await providerInstanceId(deadlineAt);
   const [tabs, [current]] = await Promise.all([
-    chatgptTabs(),
-    boundedTabsQuery({ active: true, lastFocusedWindow: true, url: 'https://chatgpt.com/*' }),
+    chatgptTabs(deadlineAt),
+    boundedTabsQuery({ active: true, lastFocusedWindow: true, url: 'https://chatgpt.com/*' }, deadlineAt),
   ]);
   const conversations = [];
   for (const tab of tabs) {
@@ -726,12 +750,15 @@ async function publishHeartbeat(instanceId) {
       providerBinding: binding(tab, instanceId),
     });
   }
-  await nativeRpc('computer_extension_heartbeat', { providerId: PROVIDER_ID, providerInstanceId: instanceId, observedAt: new Date().toISOString(), conversations });
+  const remainingMs = deadlineAt - Date.now();
+  if (remainingMs <= 0) throw new Error('COMPUTER_CHATGPT_EXTENSION_HEARTBEAT_DEADLINE_EXCEEDED');
+  await nativeRpc('computer_extension_heartbeat', { providerId: PROVIDER_ID, providerInstanceId: instanceId, observedAt: new Date().toISOString(), conversations }, Math.min(HEARTBEAT_RPC_TIMEOUT_MS, remainingMs));
+  return instanceId;
 }
 let providerTickInFlight;
 let providerHeartbeatInFlight;
 function heartbeatTick() {
-  providerHeartbeatInFlight ??= providerInstanceId().then(publishHeartbeat)
+  providerHeartbeatInFlight ??= publishHeartbeat()
     .finally(() => { providerHeartbeatInFlight = undefined; });
   return providerHeartbeatInFlight;
 }
@@ -740,15 +767,19 @@ async function providerTick() {
   // suppress profile heartbeat when a page/Chrome callback is slow or hangs.
   if (providerTickInFlight) { await heartbeatTick(); return; }
   providerTickInFlight = (async () => {
-    const instanceId = await providerInstanceId();
-    await heartbeatTick();
+    const instanceId = await heartbeatTick();
     // One command per tick keeps heartbeats and other tasks fair. The broker
     // remains the only authority for a claimed Send and its unknown outcome.
     const claim = await nativeRpc('computer_extension_claim', { provider_instance_id: instanceId });
     const command = claim?.command;
     if (!command) return;
     const result = await executeCommand(command, instanceId);
-    await nativeRpc('computer_extension_complete', { provider_instance_id: instanceId, command_id: command.commandId, result });
+    const completion = await nativeRpc('computer_extension_complete', { provider_instance_id: instanceId, command_id: command.commandId, result });
+    if (completion?.recorded !== true) {
+      console.warn('COMPUTER_CHATGPT_EXTENSION_COMMAND_COMPLETION_NOT_RECORDED', {
+        commandId: command.commandId, kind: command.kind, conversationId: command.identity?.conversationId,
+      });
+    }
   })().finally(() => { providerTickInFlight = undefined; });
   return await providerTickInFlight;
 }
