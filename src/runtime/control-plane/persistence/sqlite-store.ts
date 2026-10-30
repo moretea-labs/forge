@@ -95,6 +95,8 @@ export function sha256ControlPlaneDatabaseFile(path: string): string {
 export const CONTROL_PLANE_SQLITE_MAINTENANCE_POLICY_VERSION = 'control-plane-sqlite-maintenance-v1' as const;
 export const DEFAULT_CONTROL_PLANE_SQLITE_VACUUM_MIN_RECLAIMABLE_BYTES = 64 * 1024 * 1024;
 export const DEFAULT_CONTROL_PLANE_SQLITE_VACUUM_MIN_RECLAIMABLE_RATIO = 0.20;
+/** Keep each retention write transaction far below the Runtime scheduler's 5s busy timeout. */
+const AUDIT_RETENTION_CHUNK_ROWS = 500;
 /** Rebuildable projection namespaces whose deleted-record history is not semantic evidence. */
 export const REBUILDABLE_AUDIT_NAMESPACES = [
   'computer_interaction_target_index',
@@ -1107,42 +1109,46 @@ function pruneOrphanedAuditRows(
   const scanEnd = Math.min(maxEventId, cursor + scanWindow);
   if (scanEnd <= cursor) return 0;
   let deleted = 0;
-  database.exec('BEGIN IMMEDIATE');
-  try {
-    const rows = withSqliteStatement(database, `
-        SELECT audit.event_id, audit.namespace, audit.scope, audit.record_key
-        FROM control_plane_audit audit
-        WHERE audit.event_id > ? AND audit.event_id <= ?
-          AND audit.namespace IN (${placeholders})
-          AND audit.occurred_at < ?
-          AND NOT EXISTS (
-            SELECT 1 FROM control_plane_records record
-            WHERE record.namespace = audit.namespace
-              AND record.scope = audit.scope
-              AND record.record_key = audit.record_key
-          )
-          AND audit.revision < (
-            SELECT MAX(latest.revision)
-            FROM control_plane_audit latest
-            WHERE latest.namespace = audit.namespace
-              AND latest.scope = audit.scope
-              AND latest.record_key = audit.record_key
-          )
-        ORDER BY audit.event_id ASC
-        LIMIT ?
-      `, (statement) => statement.all(cursor, scanEnd, ...namespaces, cutoff, maxRows)) as Array<{
-        event_id: number; namespace: string; scope: string; record_key: string;
-      }>;
-    if (rows.length > 0) {
-      const ids = rows.map((row) => row.event_id);
-      const idPlaceholders = ids.map(() => '?').join(',');
+  const rows = withSqliteStatement(database, `
+      SELECT audit.event_id, audit.namespace, audit.scope, audit.record_key
+      FROM control_plane_audit audit
+      WHERE audit.event_id > ? AND audit.event_id <= ?
+        AND audit.namespace IN (${placeholders})
+        AND audit.occurred_at < ?
+        AND NOT EXISTS (
+          SELECT 1 FROM control_plane_records record
+          WHERE record.namespace = audit.namespace
+            AND record.scope = audit.scope
+            AND record.record_key = audit.record_key
+        )
+        AND audit.revision < (
+          SELECT MAX(latest.revision)
+          FROM control_plane_audit latest
+          WHERE latest.namespace = audit.namespace
+            AND latest.scope = audit.scope
+            AND latest.record_key = audit.record_key
+        )
+      ORDER BY audit.event_id ASC
+      LIMIT ?
+    `, (statement) => statement.all(cursor, scanEnd, ...namespaces, cutoff, maxRows)) as Array<{
+      event_id: number; namespace: string; scope: string; record_key: string;
+    }>;
+  // Keep each write transaction far below the scheduler's 5s busy budget. A
+  // 10k-row delete + floor update in one transaction was observed to stall the
+  // live scheduler; the cursor makes a re-scan after a crash harmless.
+  for (let offset = 0; offset < rows.length; offset += AUDIT_RETENTION_CHUNK_ROWS) {
+    const chunk = rows.slice(offset, offset + AUDIT_RETENTION_CHUNK_ROWS);
+    const ids = chunk.map((row) => row.event_id);
+    const idPlaceholders = ids.map(() => '?').join(',');
+    database.exec('BEGIN IMMEDIATE');
+    try {
       withSqliteStatement(database, `DELETE FROM control_plane_audit WHERE event_id IN (${idPlaceholders})`,
         (statement) => statement.run(...ids));
-      deleted = Number(withSqliteStatement(database, 'SELECT changes() AS count', (statement) => scalar(statement.get())) ?? 0);
-      if (deleted > 0) {
+      const chunkDeleted = Number(withSqliteStatement(database, 'SELECT changes() AS count', (statement) => scalar(statement.get())) ?? 0);
+      if (chunkDeleted > 0) {
         ensureAuditFloorTable(database);
         const keys = new Map<string, { namespace: string; scope: string; record_key: string }>();
-        for (const row of rows) keys.set(`${row.namespace}\0${row.scope}\0${row.record_key}`, row);
+        for (const row of chunk) keys.set(`${row.namespace}\0${row.scope}\0${row.record_key}`, row);
         for (const key of keys.values()) {
           const minimumRetained = Number(withSqliteStatement(database, `
               SELECT MIN(revision) AS revision FROM control_plane_audit
@@ -1152,10 +1158,18 @@ function pruneOrphanedAuditRows(
             writeAuditFloor(database, key.namespace, key.scope, key.record_key, minimumRetained);
           }
         }
+        deleted += chunkDeleted;
       }
+      database.exec('COMMIT');
+    } catch (error) {
+      try { database.exec('ROLLBACK'); } catch { /* preserve the original error */ }
+      throw error;
     }
-    const nextCursor = rows.length >= maxRows ? rows[rows.length - 1]!.event_id : scanEnd;
-    const wrappedCursor = nextCursor >= maxEventId ? 0 : nextCursor;
+  }
+  const nextCursor = rows.length >= maxRows ? rows[rows.length - 1]!.event_id : scanEnd;
+  const wrappedCursor = nextCursor >= maxEventId ? 0 : nextCursor;
+  database.exec('BEGIN IMMEDIATE');
+  try {
     withSqliteStatement(database, `
         INSERT INTO ${AUDIT_CURSOR_TABLE} (name, last_event_id, updated_at)
         VALUES ('orphan', ?, ?)
