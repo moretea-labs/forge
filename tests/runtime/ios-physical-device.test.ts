@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { spawnSync } from 'child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { deflateSync } from 'zlib';
@@ -19,8 +19,9 @@ import {
 import { AssistantPluginError } from '../../src/runtime/plugins/errors';
 import { readInteractionSession, writeInteractionSession } from '../../src/runtime/plugins/interaction-session';
 import { registerRepository } from '../../src/cli/repositories/registry';
-import { submitAssistantPluginAction, getAssistantPluginManifest } from '../../src/runtime/plugins/store';
+import { submitAssistantPluginAction, getAssistantPluginManifest, readPluginActionReceiptForRequest } from '../../src/runtime/plugins/store';
 import { computerPluginAdapter } from '../../src/runtime/plugins/computer-registration';
+import { executeAssistantPluginActionApplication } from '../../src/runtime/plugins/action-application';
 import { executeIosPluginAction } from '../../src/runtime/plugins/ios-adapter';
 import { listPluginCapabilityAuthorizations } from '../../src/runtime/plugins/capability-authorization-grants';
 import { acquireControllerLock, readControllerLock, releaseControllerLock, renewControllerLock } from '../../src/cli/repositories/locks';
@@ -487,10 +488,30 @@ describe('CoreDevice-first physical iPhone provider', () => {
       args: { device: 'greyson', bundle_id: 'com.xingin.discover' }, origin: { surface: 'mcp', actor: 'principal:test-user' },
     })).rejects.toThrow('PLUGIN_ACTION_NOT_FOUND');
 
-    const openedSubmission = await submitAssistantPluginAction(value.controllerHome, repository, {
+    // Unrelated broken Controller config must not block the repository phone path.
+    const peer = fixture();
+    spawnSync('git', ['init', '-b', 'main'], { cwd: peer.repoRoot, stdio: 'ignore' });
+    registerRepository({ path: peer.repoRoot, controllerHome: value.controllerHome });
+    const configRoot = join(value.controllerHome, 'system', 'plugins', 'config');
+    mkdirSync(configRoot, { recursive: true });
+    const brokenGmail = join(configRoot, 'gmail.json');
+    writeFileSync(brokenGmail, '{invalid');
+    expect(() => getAssistantPluginManifest(value.controllerHome, repository, 'gmail'))
+      .toThrow('PLUGIN_CONFIG_AUTHORITY_INVALID');
+    const openRequest = {
       pluginId: 'computer', actionId: 'physical_device_open', requestId: 'physical-open-grant',
-      args: { device: 'greyson', bundle_id: 'com.xingin.discover' }, origin: { surface: 'mcp', actor: 'principal:test-user' },
+      args: { device: 'greyson', bundle_id: 'com.xingin.discover' },
+      origin: { surface: 'mcp' as const, actor: 'principal:test-user' },
+    };
+    const application = await executeAssistantPluginActionApplication({
+      controllerHome: value.controllerHome, scope: { kind: 'repository', repository }, request: openRequest,
     });
+    if (application.kind !== 'submitted') throw new Error(`Unexpected phone path: ${application.kind}`);
+    const openedSubmission = application.submitted;
+    await expect(executeAssistantPluginActionApplication({
+      controllerHome: value.controllerHome, scope: { kind: 'repository', repository },
+      request: { ...openRequest, requestId: 'phone-invalid-work-preflight', workId: 'work-phone-missing' },
+    })).rejects.toThrow('WORK_PLUGIN_ATTRIBUTION_NOT_FOUND');
     expect(openedSubmission.authorization).toMatchObject({ source: 'host_permission_model', reusable: true, established: true, capabilityId: 'ios-physical-device' });
     const opened = openedSubmission.result?.result as Record<string, unknown>;
     const interactionId = String((opened.interaction as Record<string, unknown>).interactionId);
@@ -531,6 +552,20 @@ describe('CoreDevice-first physical iPhone provider', () => {
     expect(statSync(join(String(artifact.path), '..')).mode & 0o777).toBe(0o700);
     expect(commands.some((argv) => argv.includes('xcodebuild'))).toBe(false);
     expect(commands.some((argv) => argv.includes('prepare'))).toBe(false);
+
+    // A later unrelated migration preserves phone receipts/grants and replay never launches again.
+    rmSync(brokenGmail);
+    expect(readPluginActionReceiptForRequest(value.controllerHome, openRequest.requestId))
+      .toMatchObject({ scopeKey: repository.repoId, repoId: repository.repoId, pluginId: 'computer', actionId: 'physical_device_open' });
+    expect(listPluginCapabilityAuthorizations(value.controllerHome)[0]?.repoId).toBe(repository.repoId);
+    const launchesBeforeReplay = commands.filter((argv) => argv.join(' ').includes('device process launch')).length;
+    const replay = await executeAssistantPluginActionApplication({
+      controllerHome: value.controllerHome, scope: { kind: 'repository', repository }, request: openRequest,
+    });
+    if (replay.kind !== 'submitted') throw new Error(`Unexpected phone replay path: ${replay.kind}`);
+    expect(replay.submitted.deduplicated).toBe(true);
+    expect(replay.submitted.receipt.receiptId).toBe(openedSubmission.receipt.receiptId);
+    expect(commands.filter((argv) => argv.join(' ').includes('device process launch'))).toHaveLength(launchesBeforeReplay);
 
     const originalSession = readInteractionSession(value.repoRoot, 'ios-device', interactionId)!;
     writeInteractionSession(value.repoRoot, { ...originalSession, targetId: 'CORE-DEVICE-2' });

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { createHash } from 'crypto';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
@@ -20,10 +21,13 @@ import { processLogDir } from '../../src/runtime/execution/process-runtime';
 import { createProcessRecord } from '../../src/runtime/execution/process-runtime/store';
 import type { ManagedProcessRecord } from '../../src/runtime/execution/process-runtime/types';
 import { callExecutionTool, selectDefaultWorkValidationChecks } from '../../adapters/mcp/runtime-gateway/execution-tools';
-import { ensureManagedWorkspace } from '../../src/runtime/execution/managed-workspace';
+import { ensureManagedWorkspace, managedWorkspaceOwnedResourceId } from '../../src/runtime/execution/managed-workspace';
+import { getOwnedResource } from '../../packages/kernel/identity/api/index';
 import { cleanupControllerRuntimeState } from '../../src/runtime/control-plane/runtime-cleanup';
+import { cleanupWorkPreservationArtifacts } from '../../src/runtime/control-plane/cleanup-artifact-retention';
+import { workHandleRetainsCanonicalMutationOwnership } from '../../src/runtime/control-plane/execution/work-handle-authority';
 import { collectWorkLifecycleAttention } from '../../src/runtime/control-plane/execution/work-lifecycle-audit';
-import { readControlPlaneRecord, writeControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
+import { readControlPlaneRecord, withControlPlaneTransaction, writeControlPlaneRecord, writeControlPlaneRecordWithinTransaction } from '../../src/runtime/control-plane/persistence/sqlite-store';
 
 const roots: string[] = [];
 
@@ -792,6 +796,44 @@ describe('terminal Work cleanup', () => {
     expect(worktreeCount(fx.repositoryRoot)).toBe(1);
   });
 
+  test('preserves a terminal managed worktree when historical volume identity cannot be proved', async () => {
+    if (process.platform !== 'darwin') return;
+    const fx = fixture('mac-remount-cleanup');
+    const path = fx.workspace.root!;
+    const id = managedWorkspaceOwnedResourceId(fx.repository.repoId, fx.workspace.checkoutId!);
+    const owned = getOwnedResource(fx.controllerHome, id)!;
+    const canonicalPath = realpathSync(path);
+    const stat = lstatSync(canonicalPath);
+    const major = Math.floor(stat.dev / 0x1000000) * 0x1000000;
+    const oldDev = major + ((stat.dev - major + 3) % 256);
+    const originalFingerprint = createHash('sha256').update([
+      owned.ownerForgeInstanceId,
+      'filesystem_path',
+      canonicalPath,
+      String(oldDev),
+      String(stat.ino),
+      'directory',
+    ].join('\0')).digest('hex');
+    const resourceFile = join(fx.controllerHome, 'owned-resources',
+      id.replace(/[^a-zA-Z0-9._-]/g, '_') + '.json');
+    const original = { ...owned, identityFingerprint: originalFingerprint };
+    writeFileSync(resourceFile, JSON.stringify(original));
+
+    // This is an actual Git worktree replay, not a call to the identity helper.
+    expect(() => ensureManagedWorkspace(fx.controllerHome, fx.repository, {
+      requestId: 'terminal-cleanup-mac-remount-cleanup',
+      title: 'Terminal Cleanup mac-remount-cleanup',
+      branchName: fx.branch,
+    })).toThrow('OWNED_RESOURCE_IDENTITY_CONFLICT');
+    expect(getOwnedResource(fx.controllerHome, id)).toEqual(original);
+
+    const result = await cleanup(fx);
+    expect(result.receipt.complete).toBe(false);
+    expect(existsSync(path)).toBe(true);
+    expect(branchExists(fx.repositoryRoot, fx.branch)).toBe(true);
+    expect(getOwnedResource(fx.controllerHome, id)).toEqual(original);
+  });
+
   test('reconciles a legacy cleaned handle with an incomplete receipt without regressing lifecycle', async () => {
     const fx = fixture('legacy-cleaned-receipt');
     const first = await cleanup(fx);
@@ -908,6 +950,68 @@ describe('terminal Work cleanup', () => {
     expect(existsSync(fx.workspace.root!)).toBe(true);
   });
 
+  test('missing expectedHead cannot release an unabsorbed source tip after semantic Work terminality', () => {
+    const fx = fixture('missing-expected-head-unabsorbed-source');
+    createCancelledWork({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
+      workId: fx.handle.workId,
+      repoId: fx.repository.repoId,
+      objective: 'Cancelled Work still has an unknown canonical source tip.',
+      acceptanceCriteria: [],
+      constraints: {},
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      requestedBy: 'chatgpt',
+      phase: 'cleanup',
+    });
+    const baseHead = git(fx.repositoryRoot, ['rev-parse', 'HEAD']);
+    writeFileSync(join(fx.repositoryRoot, 'unabsorbed-source.txt'), 'unique source not on target HEAD\n');
+    git(fx.repositoryRoot, ['add', 'unabsorbed-source.txt']);
+    git(fx.repositoryRoot, ['commit', '-m', 'feat: unabsorbed historical source']);
+    const uniqueSourceHead = git(fx.repositoryRoot, ['rev-parse', 'HEAD']);
+    git(fx.repositoryRoot, ['reset', '--hard', baseHead]);
+    git(fx.repositoryRoot, ['clean', '-fd']);
+    // A stale archive ref pointing at the baseline is not proof that the unique
+    // source commit was preserved or absorbed.
+    git(fx.repositoryRoot, ['branch', `archive/${fx.handle.workId}-20261029`, baseHead]);
+
+    const handle: WorkHandleState = {
+      ...fx.handle,
+      checkoutId: fx.repository.activeCheckoutId,
+      worktreePath: fx.repositoryRoot,
+      managedWorktree: false,
+      branch: 'main',
+      expectedHead: undefined,
+      baseCommit: baseHead,
+      deliveryBaseCommit: baseHead,
+    };
+    expect(git(fx.repositoryRoot, ['rev-parse', 'HEAD'])).toBe(baseHead);
+    expect(uniqueSourceHead).not.toBe(baseHead);
+    expect(spawnSync('git', ['-C', fx.repositoryRoot, 'merge-base', '--is-ancestor', uniqueSourceHead, baseHead]).status).toBe(1);
+    expect(workHandleRetainsCanonicalMutationOwnership({
+      controllerHome: fx.controllerHome,
+      repositoryId: fx.repository.repoId,
+      handle,
+      target: {
+        checkoutId: fx.repository.activeCheckoutId, branch: 'main', head: baseHead,
+        root: fx.repositoryRoot, clean: true,
+        activeLeaseWorkIds: new Set(), recoverableProcessWorkIds: new Set(),
+      },
+    })).toBe(true);
+    // Even when an exact source HEAD is available, terminal semantic state is
+    // not proof that the source commit reached the canonical target.
+    expect(workHandleRetainsCanonicalMutationOwnership({
+      controllerHome: fx.controllerHome,
+      repositoryId: fx.repository.repoId,
+      handle: { ...handle, expectedHead: uniqueSourceHead },
+      target: {
+        checkoutId: fx.repository.activeCheckoutId, branch: 'main', head: baseHead,
+        root: fx.repositoryRoot, clean: true,
+        activeLeaseWorkIds: new Set(), recoverableProcessWorkIds: new Set(),
+      },
+    })).toBe(true);
+  });
+
   test('retains dirty managed work in place instead of checkpointing or deleting it', async () => {
     const fx = fixture('dirty');
     writeFileSync(join(fx.workspace.root!, 'dirty.txt'), 'preserve me\n');
@@ -972,6 +1076,10 @@ describe('terminal Work cleanup', () => {
 
   test('legacy cleaned zero-delta Work rebinds through the existing WorkContract without replaying cleanup', async () => {
     const fx = fixture('legacy-cleaned-rebind');
+    // Managed placement fetches the real integration ref from a local origin.
+    const originRoot = join(fx.root, 'origin.git');
+    git(fx.root, ['clone', '--bare', fx.repositoryRoot, originRoot]);
+    git(fx.repositoryRoot, ['remote', 'add', 'origin', originRoot]);
     const ctx = createMcpToolContext({
       controllerHome: fx.controllerHome,
       profile: 'controller',
@@ -1053,6 +1161,19 @@ describe('terminal Work cleanup', () => {
     });
     expect(optionalPolicy.worktreePolicy.required).toBe(false);
     const mainHead = git(fx.repositoryRoot, ['rev-parse', 'HEAD']);
+    // A prior deterministic rebind workspace was reused by an independent
+    // branch. Preserve its physical contents while recovering the original Work.
+    const conflictingWorkspace = ensureManagedWorkspace(fx.controllerHome, fx.repository, {
+      requestId: `work-rebind-${sourceId}`,
+      title: 'Restore one accidentally cleaned but still-open semantic Work without replaying effects.',
+      associatedWorkId: sourceId,
+      baseRef: mainHead,
+      prepareDependencies: false,
+    });
+    const collidingPath = conflictingWorkspace.root!;
+    git(collidingPath, ['switch', '-c', 'work/retrieval-lab-owns-colliding-workspace']);
+    writeFileSync(join(collidingPath, 'other-owner.txt'), 'preserve unrelated owner bytes\n');
+    const otherOwnerBefore = git(collidingPath, ['status', '--porcelain']);
     const request = {
       session_id: sessionId,
       repo_id: fx.repository.repoId,
@@ -1080,7 +1201,38 @@ describe('terminal Work cleanup', () => {
     expect(recovery.adoptedSuccessor.previousHead).toBe(sourceHead);
     expect(recovery.work.workContractId).toBe(sourceId);
     expect(recovery.work.checkoutId).not.toBe(source.checkoutId);
+    expect(recovery.work.checkoutId).not.toBe(conflictingWorkspace.checkoutId);
+    expect(git(collidingPath, ['branch', '--show-current'])).toBe('work/retrieval-lab-owns-colliding-workspace');
+    expect(git(collidingPath, ['status', '--porcelain'])).toBe(otherOwnerBefore);
+    expect(readFileSync(join(collidingPath, 'other-owner.txt'), 'utf8')).toBe('preserve unrelated owner bytes\n');
     expect(recovery.work.expectedHead).toBe(mainHead);
+
+    // Semantic sourceId resolves to live physical recovery.work.workId using current checkout
+    const { ensureRepositoryWorkHandle } = await import('../../src/runtime/control-plane/execution/work-handle-authority');
+    const resolvedHandle = ensureRepositoryWorkHandle({
+      controllerHome: fx.controllerHome,
+      repository: fx.repository,
+      workId: sourceId,
+      identity: { sessionId: 'test-session', principalId: 'test-principal' },
+    });
+    expect(resolvedHandle?.workId).toBe(recovery.work.workId);
+    expect(resolvedHandle?.workContractId).toBe(sourceId);
+    expect(resolvedHandle?.checkoutId).toBe(recovery.work.checkoutId);
+
+    // Wrong old checkout throws mismatch
+    expect(() => ensureRepositoryWorkHandle({
+      controllerHome: fx.controllerHome,
+      repository: fx.repository,
+      workId: sourceId,
+      identity: { sessionId: 'test-session', principalId: 'test-principal' },
+      checkoutId: source.checkoutId,
+    })).toThrow('WORK_HANDLE_PLACEMENT_CHECKOUT_MISMATCH');
+
+    // Existing later historical work_inspect still returns cleaned original
+    const cleanedOriginal = readWorkHandle(fx.controllerHome, fx.repository.repoId, sourceId);
+    expect(cleanedOriginal?.state).toBe('cleaned');
+    expect(cleanedOriginal?.checkoutId).toBe(source.checkoutId);
+
     const recoveredContract = getWorkContract(workStore, sourceId)!;
     expect(recoveredContract).toMatchObject({
       semanticState: 'open',
@@ -1130,6 +1282,42 @@ describe('terminal Work cleanup', () => {
     expect(retired?.structuredContent).toMatchObject({
       work: { workId: sourceId, state: 'cleaned' }, readiness: { valid: false },
     });
+
+    // Same-checkout recovery cannot resurrect a cleaned historical identity.
+    // Reuse this fixture rather than adding a separate placeholder test.
+    writeWorkHandle(fx.controllerHome, {
+      ...readWorkHandle(fx.controllerHome, fx.repository.repoId, sourceId)!,
+      checkoutId: recovery.work.checkoutId,
+    });
+    expect(ensureRepositoryWorkHandle({
+      controllerHome: fx.controllerHome, repository: fx.repository, workId: sourceId,
+      identity: { sessionId: 'test-session', principalId: 'test-principal' },
+    })?.workId).toBe(recovery.work.workId);
+
+    // Two live physical Handles on the same checkout cannot silently prefer
+    // the direct historical ID, even if its state is no longer terminal.
+    writeWorkHandle(fx.controllerHome, {
+      ...readWorkHandle(fx.controllerHome, fx.repository.repoId, sourceId)!,
+      state: 'editing',
+    });
+    expect(() => ensureRepositoryWorkHandle({
+      controllerHome: fx.controllerHome, repository: fx.repository, workId: sourceId,
+      identity: { sessionId: 'test-session', principalId: 'test-principal' },
+    })).toThrow('WORK_HANDLE_AMBIGUOUS');
+    writeWorkHandle(fx.controllerHome, {
+      ...readWorkHandle(fx.controllerHome, fx.repository.repoId, sourceId)!,
+      state: 'cleaned',
+    });
+
+    // Without an active successor, a terminal direct Handle fails closed.
+    writeWorkHandle(fx.controllerHome, {
+      ...readWorkHandle(fx.controllerHome, fx.repository.repoId, recovery.work.workId)!,
+      state: 'failed',
+    });
+    expect(() => ensureRepositoryWorkHandle({
+      controllerHome: fx.controllerHome, repository: fx.repository, workId: sourceId,
+      identity: { sessionId: 'test-session', principalId: 'test-principal' },
+    })).toThrow('WORK_HANDLE_NOT_ACTIVE');
   });
 
   test('does not create a bundle for ancestry-only unique commits with no source delta', async () => {
@@ -1234,6 +1422,32 @@ describe('terminal Work cleanup', () => {
     expect(existsSync(bundlePath)).toBe(true);
     expect(report.removedCleanupArtifactPaths).not.toContain(bundlePath);
     expect(report.cycle.skippedByReason.cleanup_artifact_containment_remote_revision_unavailable).toBeGreaterThan(0);
+
+    // The directory must not become an orphan merely because its real Handle
+    // falls beyond the oldest-first 5,000-row listing boundary.
+    withControlPlaneTransaction(fx.controllerHome, (database) => {
+      for (let index = 0; index < 5_000; index += 1) {
+        const workId = `retention-scan-filler-${String(index).padStart(5, '0')}`;
+        const { recordRevision: _revision, ...filler } = fx.handle;
+        writeControlPlaneRecordWithinTransaction(database, {
+          namespace: 'execution_work_handle', scope: fx.repository.repoId,
+          key: workId, schemaVersion: 1,
+          value: { ...filler, workId, state: 'cleaned', cleanupReceipt: undefined },
+          action: 'retention_test_inventory',
+        });
+      }
+    });
+    const recorded = readWorkHandle(fx.controllerHome, fx.repository.repoId, fx.handle.workId)!;
+    writeWorkHandle(fx.controllerHome, {
+      ...recorded, cleanupReceipt: { ...recorded.cleanupReceipt!, complete: false },
+    });
+    const boundedReport = cleanupWorkPreservationArtifacts(fx.controllerHome, {
+      repositoryIds: [fx.repository.repoId], graceMs: 0,
+      maxEntries: 1_000, maxRemovals: 50,
+    });
+    expect(existsSync(bundlePath)).toBe(true);
+    expect(boundedReport.skippedByReason.physical_bundle_incomplete_handle).toBeGreaterThan(0);
+    expect(boundedReport.removedPaths).not.toContain(expect.stringContaining(`${fx.handle.workId}/branch.bundle`));
   });
 
   test('periodic cleanup retains an unreferenced physical bundle when remote source containment is unproven', async () => {

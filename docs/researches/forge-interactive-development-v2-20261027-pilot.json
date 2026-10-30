@@ -1,0 +1,990 @@
+{
+  "schemaVersion": 1,
+  "experiment": "fault-injected real Forge source; deterministic replay pilot, not final model A/B acceptance",
+  "sourceRevision": "fb75fbbb7e3d2db99b4bbdb9ac64e8032becb575",
+  "sourceRoot": "/var/folders/6p/24gf5r6n1xlc7s27lnh839lc0000gn/T/forge-source-task-baseline-5jhvuht5",
+  "modelConfig": "Same current controller conversation; no fresh model sessions; exact model id/reasoning/tokens unavailable; CLI defaults were inspected but were NOT used",
+  "limitations": [
+    "one sample per case per mode",
+    "grouped runs follow separate runs; warm caches and variable transport",
+    "known seeded fixes; not blind model discovery",
+    "timing excludes harness/task preparation and final human-facing delivery/independent review",
+    "local source mutations only; external-effect and concurrent-writer guarantees not exercised"
+  ],
+  "runs": [
+    {
+      "case": "small-bug",
+      "mode": "separate",
+      "calls": 5,
+      "firstWriteMs": 29476,
+      "throughDiffReturnMs": 45732,
+      "roundTripMs": 34082,
+      "serverMs": 6323.47,
+      "stepExecutionMs": 347.966,
+      "unattributedOutsideCallsMs": 11650,
+      "failureResultToWriteMs": 9304,
+      "candidateSha256": {
+        "src/cli/editing/edit-operation-contract.ts": "82d589cab19d077319a64b4c33fdb7a17d785dd4c0ab20df063662dba4d17a36"
+      },
+      "passed": true
+    },
+    {
+      "case": "small-bug",
+      "mode": "grouped",
+      "calls": 2,
+      "firstWriteMs": 3575,
+      "throughDiffReturnMs": 4657,
+      "roundTripMs": 4657,
+      "serverMs": 599.37,
+      "stepExecutionMs": 281.112,
+      "unattributedOutsideCallsMs": 0,
+      "failureResultToWriteMs": 1393,
+      "candidateSha256": {
+        "src/cli/editing/edit-operation-contract.ts": "82d589cab19d077319a64b4c33fdb7a17d785dd4c0ab20df063662dba4d17a36"
+      },
+      "passed": true
+    },
+    {
+      "case": "multi-file",
+      "mode": "separate",
+      "calls": 5,
+      "firstWriteMs": 14255,
+      "throughDiffReturnMs": 21204,
+      "roundTripMs": 13851,
+      "serverMs": 1475.18,
+      "stepExecutionMs": 869.97,
+      "unattributedOutsideCallsMs": 7353,
+      "failureResultToWriteMs": 8435,
+      "candidateSha256": {
+        "src/cli/editing/edit-operation-contract.ts": "82d589cab19d077319a64b4c33fdb7a17d785dd4c0ab20df063662dba4d17a36",
+        "src/cli/editing/edit-session.ts": "08c260413bb4dc91814a5b347ac710386d67c41590f7b267c3d04220eac556b9"
+      },
+      "passed": true
+    },
+    {
+      "case": "multi-file",
+      "mode": "grouped",
+      "calls": 2,
+      "firstWriteMs": 3029,
+      "throughDiffReturnMs": 4696,
+      "roundTripMs": 4696,
+      "serverMs": 733.07,
+      "stepExecutionMs": 501.364,
+      "unattributedOutsideCallsMs": 0,
+      "failureResultToWriteMs": 1262,
+      "candidateSha256": {
+        "src/cli/editing/edit-operation-contract.ts": "82d589cab19d077319a64b4c33fdb7a17d785dd4c0ab20df063662dba4d17a36",
+        "src/cli/editing/edit-session.ts": "08c260413bb4dc91814a5b347ac710386d67c41590f7b267c3d04220eac556b9"
+      },
+      "passed": true
+    },
+    {
+      "case": "failed-check",
+      "mode": "separate",
+      "calls": 5,
+      "firstWriteMs": 13190,
+      "throughDiffReturnMs": 17407,
+      "roundTripMs": 13836,
+      "serverMs": 343.41,
+      "stepExecutionMs": 121.047,
+      "unattributedOutsideCallsMs": 3571,
+      "failureResultToWriteMs": 9571,
+      "candidateSha256": {
+        "src/runtime/execution/process-runtime/check-scheduling.ts": "b685034b4a181b21682c8a9cbb08a293343638f6174297de955f7a01d9b10ef4"
+      },
+      "passed": true
+    },
+    {
+      "case": "failed-check",
+      "mode": "grouped",
+      "calls": 2,
+      "firstWriteMs": 2562,
+      "throughDiffReturnMs": 3681,
+      "roundTripMs": 3680,
+      "serverMs": 594.15,
+      "stepExecutionMs": 296.642,
+      "unattributedOutsideCallsMs": 1,
+      "failureResultToWriteMs": 869,
+      "candidateSha256": {
+        "src/runtime/execution/process-runtime/check-scheduling.ts": "b685034b4a181b21682c8a9cbb08a293343638f6174297de955f7a01d9b10ef4"
+      },
+      "passed": true
+    }
+  ],
+  "calls": [
+    {
+      "case": "small-bug",
+      "stage": "inspect",
+      "sentAt": 1793093467421,
+      "receivedAt": 1793093475756,
+      "response": {
+        "error": {
+          "code": "COMMAND_SCOPE_DENIED",
+          "message": "COMMAND_SCOPE_DENIED: external writes are not allowed from repository commands: /var/folders/6p/24gf5r6n1xlc7s27lnh839lc0000gn/T/forge-source-task-baseline-5jhvuht5/step.py"
+        },
+        "responseMeta": {
+          "traceId": "4d222a54-569b-4645-8620-098ee3533030",
+          "requestId": "mcp-call:ad5d630a-7448-4379-9a0d-bc155e7c0d49",
+          "serverStartedAt": "2026-10-27T09:31:14.424Z",
+          "serverDurationMs": 490.72
+        },
+        "error_code": "INVALID_ARGUMENT"
+      }
+    },
+    {
+      "case": "small-bug",
+      "stage": "inspect",
+      "sentAt": 1793093484145,
+      "receivedAt": 1793093494198,
+      "response": {
+        "ok": true,
+        "accepted": true,
+        "mode": "process_direct",
+        "path": "process_direct",
+        "route": "process_direct",
+        "reason": "ephemeral_workspace_bounded_direct",
+        "workspace": {
+          "workspaceId": "workspace_49526ad189038d32cf69afc3",
+          "root": "/private/var/folders/6p/24gf5r6n1xlc7s27lnh839lc0000gn/T/forge-source-task-baseline-5jhvuht5",
+          "registered": false
+        },
+        "exitCode": 0,
+        "stdout": "src/cli/editing/edit-operation-contract.ts\n8:   'append',\n86:   if (type === 'prepend' || type === 'append') return { type: 'append', path, expectedSha256, content: String(entry.content ?? '') };\nBENCH_STEP {\"case\": \"small-bug\", \"stage\": \"inspect\", \"startedAt\": \"2026-10-27T09:31:31.887609+00:00\", \"startedNs\": 1793093491887580000, \"exitCode\": 0, \"finishedNs\": 1793093491888492000, \"durationMs\": 0.912}\n",
+        "stderr": "",
+        "status": "succeeded",
+        "authorization": {
+          "decision": "allow",
+          "source": "policy",
+          "reason": "Normal scoped operations follow the host AI permission model; Forge only gates catastrophic effects."
+        },
+        "responseMeta": {
+          "traceId": "fbac6ce5-2934-4a82-b7de-ff67688efc78",
+          "requestId": "mcp-call:065c796f-d7a8-4923-8163-eb1cd8562f55",
+          "serverStartedAt": "2026-10-27T09:31:30.311Z",
+          "serverDurationMs": 1818.65
+        }
+      }
+    },
+    {
+      "case": "small-bug",
+      "stage": "check-before",
+      "sentAt": 1793093500091,
+      "receivedAt": 1793093504317,
+      "response": {
+        "ok": false,
+        "accepted": true,
+        "mode": "process_direct",
+        "path": "process_direct",
+        "route": "process_direct",
+        "reason": "ephemeral_workspace_bounded_direct",
+        "workspace": {
+          "workspaceId": "workspace_49526ad189038d32cf69afc3",
+          "root": "/private/var/folders/6p/24gf5r6n1xlc7s27lnh839lc0000gn/T/forge-source-task-baseline-5jhvuht5",
+          "registered": false
+        },
+        "exitCode": 1,
+        "stdout": " 5 | import { spawnSync } from 'node:child_process';\n 6 | const repo = process.cwd();\n 7 | const contract = await import(join(repo, 'src/cli/editing/edit-operation-contract.ts'));\n 8 | if (process.argv[2] === 'small-bug') {\n 9 |   for (const type of ['prepend', 'append']) {\n10 |     assert.equal(contract.normalizeEditOperation({ type, path: 'file.txt', content: 'x', expected_sha256: 'sha' }).type, type);\n                ^\nAssertionError: Expected values to be strictly equal:\n+ actual - expected\n\n+ 'append'\n- 'prepend'\n\n generatedMessage: true,\n     actual: \"append\",\n   expected: \"prepend\",\n   operator: \"strictEqual\",\n       code: \"ERR_ASSERTION\"\n\n      at /private/var/folders/6p/24gf5r6n1xlc7s27lnh839lc0000gn/T/forge-source-task-baseline-5jhvuht5/verify.ts:10:12\n\nBun v1.3.14 (macOS arm64)\n\nBENCH_STEP {\"case\": \"small-bug\", \"stage\": \"check\", \"startedAt\": \"2026-10-27T09:31:43.194924+00:00\", \"startedNs\": 1793093503194915000, \"command\": [\"/Users/greyson/.bun/bin/bun\", \"/var/folders/6p/24gf5r6n1xlc7s27lnh839lc0000gn/T/forge-source-task-baseline-5jhvuht5/verify.ts\", \"small-bug\"], \"exitCode\": 1, \"finishedNs\": 1793093503271748000, \"durationMs\": 76.833}\n",
+        "stderr": "",
+        "error": {
+          "code": "PROCESS_COMMAND_FAILED",
+          "message": "process_direct command failed",
+          "retryable": false,
+          "exitCode": 1
+        },
+        "status": "failed",
+        "authorization": {
+          "decision": "allow",
+          "source": "policy",
+          "reason": "Normal scoped operations follow the host AI permission model; Forge only gates catastrophic effects."
+        },
+        "responseMeta": {
+          "traceId": "beabd1f5-a991-4545-ac78-3e3ae131fe6c",
+          "requestId": "mcp-call:ceae75b1-959f-45b8-ad01-15ab7fdc43b5",
+          "serverStartedAt": "2026-10-27T09:31:42.536Z",
+          "serverDurationMs": 774.62
+        },
+        "error_code": "INVALID_ARGUMENT"
+      }
+    },
+    {
+      "case": "small-bug",
+      "stage": "apply",
+      "sentAt": 1793093510074,
+      "receivedAt": 1793093515819,
+      "response": {
+        "ok": true,
+        "accepted": true,
+        "mode": "process_direct",
+        "path": "process_direct",
+        "route": "process_direct",
+        "reason": "ephemeral_workspace_bounded_direct",
+        "workspace": {
+          "workspaceId": "workspace_49526ad189038d32cf69afc3",
+          "root": "/private/var/folders/6p/24gf5r6n1xlc7s27lnh839lc0000gn/T/forge-source-task-baseline-5jhvuht5",
+          "registered": false
+        },
+        "exitCode": 0,
+        "stdout": "Applied 1 source repairs\nBENCH_STEP {\"case\": \"small-bug\", \"stage\": \"apply\", \"startedAt\": \"2026-10-27T09:31:53.620038+00:00\", \"startedNs\": 1793093513620033000, \"writes\": [{\"path\": \"src/cli/editing/edit-operation-contract.ts\", \"atNs\": 1793093513621175000, \"sha256\": \"82d589cab19d077319a64b4c33fdb7a17d785dd4c0ab20df063662dba4d17a36\"}], \"exitCode\": 0, \"finishedNs\": 1793093513621284000, \"durationMs\": 1.251}\n",
+        "stderr": "",
+        "status": "succeeded",
+        "authorization": {
+          "decision": "allow",
+          "source": "policy",
+          "reason": "Normal scoped operations follow the host AI permission model; Forge only gates catastrophic effects."
+        },
+        "responseMeta": {
+          "traceId": "a0b78586-cd90-4c1a-aaf6-780e8c3de231",
+          "requestId": "mcp-call:0c262d55-0e35-4631-b8d9-a2cc72f8e320",
+          "serverStartedAt": "2026-10-27T09:31:53.203Z",
+          "serverDurationMs": 579.52
+        }
+      }
+    },
+    {
+      "case": "small-bug",
+      "stage": "check",
+      "sentAt": 1793093515819,
+      "receivedAt": 1793093521726,
+      "response": {
+        "ok": true,
+        "accepted": true,
+        "mode": "process_direct",
+        "path": "process_direct",
+        "route": "process_direct",
+        "reason": "ephemeral_workspace_bounded_direct",
+        "workspace": {
+          "workspaceId": "workspace_49526ad189038d32cf69afc3",
+          "root": "/private/var/folders/6p/24gf5r6n1xlc7s27lnh839lc0000gn/T/forge-source-task-baseline-5jhvuht5",
+          "registered": false
+        },
+        "exitCode": 0,
+        "stdout": "ACCEPT: real source behavior assertions passed\n\nBENCH_STEP {\"case\": \"small-bug\", \"stage\": \"check\", \"startedAt\": \"2026-10-27T09:31:59.145193+00:00\", \"startedNs\": 1793093519145189000, \"command\": [\"/Users/greyson/.bun/bin/bun\", \"/var/folders/6p/24gf5r6n1xlc7s27lnh839lc0000gn/T/forge-source-task-baseline-5jhvuht5/verify.ts\", \"small-bug\"], \"exitCode\": 0, \"finishedNs\": 1793093519230543000, \"durationMs\": 85.354}\n",
+        "stderr": "",
+        "status": "succeeded",
+        "authorization": {
+          "decision": "allow",
+          "source": "policy",
+          "reason": "Normal scoped operations follow the host AI permission model; Forge only gates catastrophic effects."
+        },
+        "responseMeta": {
+          "traceId": "af3e70d7-f8ac-48b1-ad61-3004597e8fa9",
+          "requestId": "mcp-call:992eefd9-64ff-4317-89a6-497da1750ca0",
+          "serverStartedAt": "2026-10-27T09:31:58.579Z",
+          "serverDurationMs": 1062
+        }
+      }
+    },
+    {
+      "case": "small-bug",
+      "stage": "review",
+      "sentAt": 1793093521726,
+      "receivedAt": 1793093529877,
+      "response": {
+        "ok": true,
+        "accepted": true,
+        "mode": "process_direct",
+        "path": "process_direct",
+        "route": "process_direct",
+        "reason": "ephemeral_workspace_bounded_direct",
+        "workspace": {
+          "workspaceId": "workspace_49526ad189038d32cf69afc3",
+          "root": "/private/var/folders/6p/24gf5r6n1xlc7s27lnh839lc0000gn/T/forge-source-task-baseline-5jhvuht5",
+          "registered": false
+        },
+        "exitCode": 0,
+        "stdout": "diff --git a/src/cli/editing/edit-operation-contract.ts b/src/cli/editing/edit-operation-contract.ts\nindex 47f919c..7c45e82 100644\n--- a/src/cli/editing/edit-operation-contract.ts\n+++ b/src/cli/editing/edit-operation-contract.ts\n@@ -83,7 +83,7 @@ export function normalizeEditOperation(entry: Record<string, unknown>): EditOper\n       occurrence: typeof entry.occurrence === 'number' ? Math.trunc(entry.occurrence) : undefined,\n     };\n   }\n-  if (type === 'prepend' || type === 'append') return { type: 'append', path, expectedSha256, content: String(entry.content ?? '') };\n+  if (type === 'prepend' || type === 'append') return { type, path, expectedSha256, content: String(entry.content ?? '') };\n   throw new Error(`invalid edit operation type: ${type}`);\n }\n \n\nBENCH_STEP {\"case\": \"small-bug\", \"stage\": \"review\", \"startedAt\": \"2026-10-27T09:32:05.024792+00:00\", \"startedNs\": 1793093525024786000, \"candidateSha256\": {\"src/cli/editing/edit-operation-contract.ts\": \"82d589cab19d077319a64b4c33fdb7a17d785dd4c0ab20df063662dba4d17a36\"}, \"exitCode\": 0, \"finishedNs\": 1793093525208402000, \"durationMs\": 183.616}\n",
+        "stderr": "",
+        "status": "succeeded",
+        "authorization": {
+          "decision": "allow",
+          "source": "policy",
+          "reason": "Normal scoped operations follow the host AI permission model; Forge only gates catastrophic effects."
+        },
+        "responseMeta": {
+          "traceId": "630ed6f1-a5d6-40f0-8a71-bc421cf7dec6",
+          "requestId": "mcp-call:e76222c8-3e05-4eef-ae37-485cfd6eb318",
+          "serverStartedAt": "2026-10-27T09:32:04.425Z",
+          "serverDurationMs": 2088.68
+        }
+      }
+    },
+    {
+      "case": "multi-file",
+      "stage": "inspect",
+      "sentAt": 1793093543623,
+      "receivedAt": 1793093548262,
+      "response": {
+        "ok": true,
+        "accepted": true,
+        "mode": "process_direct",
+        "path": "process_direct",
+        "route": "process_direct",
+        "reason": "ephemeral_workspace_bounded_direct",
+        "workspace": {
+          "workspaceId": "workspace_49526ad189038d32cf69afc3",
+          "root": "/private/var/folders/6p/24gf5r6n1xlc7s27lnh839lc0000gn/T/forge-source-task-baseline-5jhvuht5",
+          "registered": false
+        },
+        "exitCode": 0,
+        "stdout": "src/cli/editing/edit-operation-contract.ts\n85:   if (type === 'prepend' || type === 'append') return { type, path, expectedSha256, content: String(entry.content ?? '') };\nsrc/cli/editing/edit-session.ts\n1178:   if (operation.type === 'prepend') return `${operation.content}${before}`;\n1179:   if (operation.type === 'append') return `${operation.content}${before}`;\nBENCH_STEP {\"case\": \"multi-file\", \"stage\": \"inspect\", \"startedAt\": \"2026-10-27T09:32:26.445993+00:00\", \"startedNs\": 1793093546445987000, \"exitCode\": 0, \"finishedNs\": 1793093546449275000, \"durationMs\": 3.288}\n",
+        "stderr": "",
+        "status": "succeeded",
+        "authorization": {
+          "decision": "allow",
+          "source": "policy",
+          "reason": "Normal scoped operations follow the host AI permission model; Forge only gates catastrophic effects."
+        },
+        "responseMeta": {
+          "traceId": "1add6e03-0cef-491b-a3c1-3d2b9bb0e6f7",
+          "requestId": "mcp-call:8073ae4b-1c84-437a-ae55-ef9cbfd959e9",
+          "serverStartedAt": "2026-10-27T09:32:26.324Z",
+          "serverDurationMs": 134.63
+        }
+      }
+    },
+    {
+      "case": "multi-file",
+      "stage": "check-before",
+      "sentAt": 1793093548262,
+      "receivedAt": 1793093549443,
+      "response": {
+        "ok": false,
+        "accepted": true,
+        "mode": "process_direct",
+        "path": "process_direct",
+        "route": "process_direct",
+        "reason": "ephemeral_workspace_bounded_direct",
+        "workspace": {
+          "workspaceId": "workspace_49526ad189038d32cf69afc3",
+          "root": "/private/var/folders/6p/24gf5r6n1xlc7s27lnh839lc0000gn/T/forge-source-task-baseline-5jhvuht5",
+          "registered": false
+        },
+        "exitCode": 1,
+        "stdout": " 8 | if (process.argv[2] === 'small-bug') {\n 9 |   for (const type of ['prepend', 'append']) {\n10 |     assert.equal(contract.normalizeEditOperation({ type, path: 'file.txt', content: 'x', expected_sha256: 'sha' }).type, type);\n11 |   }\n12 | } else {\n13 |   assert.ok(contract.EDIT_OPERATION_TYPES.includes('append'), 'public operation schema must advertise append');\n              ^\nAssertionError: public operation schema must advertise append\n generatedMessage: false,\n     actual: false,\n   expected: true,\n   operator: \"==\",\n       code: \"ERR_ASSERTION\"\n\n      at /private/var/folders/6p/24gf5r6n1xlc7s27lnh839lc0000gn/T/forge-source-task-baseline-5jhvuht5/verify.ts:13:10\n\nBun v1.3.14 (macOS arm64)\n\nBENCH_STEP {\"case\": \"multi-file\", \"stage\": \"check\", \"startedAt\": \"2026-10-27T09:32:28.926980+00:00\", \"startedNs\": 1793093548926976000, \"command\": [\"/Users/greyson/.bun/bin/bun\", \"/var/folders/6p/24gf5r6n1xlc7s27lnh839lc0000gn/T/forge-source-task-baseline-5jhvuht5/verify.ts\", \"multi-file\"], \"exitCode\": 1, \"finishedNs\": 1793093548997862000, \"durationMs\": 70.886}\n",
+        "stderr": "",
+        "error": {
+          "code": "PROCESS_COMMAND_FAILED",
+          "message": "process_direct command failed",
+          "retryable": false,
+          "exitCode": 1
+        },
+        "status": "failed",
+        "authorization": {
+          "decision": "allow",
+          "source": "policy",
+          "reason": "Normal scoped operations follow the host AI permission model; Forge only gates catastrophic effects."
+        },
+        "responseMeta": {
+          "traceId": "c19e7ea6-e451-49ee-be64-050306a2a119",
+          "requestId": "mcp-call:bffd6fbf-f91b-4586-bb7c-4c4203fd0093",
+          "serverStartedAt": "2026-10-27T09:32:28.804Z",
+          "serverDurationMs": 206.98
+        },
+        "error_code": "INVALID_ARGUMENT"
+      }
+    },
+    {
+      "case": "multi-file",
+      "stage": "apply",
+      "sentAt": 1793093556796,
+      "receivedAt": 1793093559314,
+      "response": {
+        "ok": true,
+        "accepted": true,
+        "mode": "process_direct",
+        "path": "process_direct",
+        "route": "process_direct",
+        "reason": "ephemeral_workspace_bounded_direct",
+        "workspace": {
+          "workspaceId": "workspace_49526ad189038d32cf69afc3",
+          "root": "/private/var/folders/6p/24gf5r6n1xlc7s27lnh839lc0000gn/T/forge-source-task-baseline-5jhvuht5",
+          "registered": false
+        },
+        "exitCode": 0,
+        "stdout": "Applied 2 source repairs\nBENCH_STEP {\"case\": \"multi-file\", \"stage\": \"apply\", \"startedAt\": \"2026-10-27T09:32:37.876648+00:00\", \"startedNs\": 1793093557876641000, \"writes\": [{\"path\": \"src/cli/editing/edit-operation-contract.ts\", \"atNs\": 1793093557878410000, \"sha256\": \"82d589cab19d077319a64b4c33fdb7a17d785dd4c0ab20df063662dba4d17a36\"}, {\"path\": \"src/cli/editing/edit-session.ts\", \"atNs\": 1793093557879293000, \"sha256\": \"08c260413bb4dc91814a5b347ac710386d67c41590f7b267c3d04220eac556b9\"}], \"exitCode\": 0, \"finishedNs\": 1793093557879478000, \"durationMs\": 2.837}\n",
+        "stderr": "",
+        "status": "succeeded",
+        "authorization": {
+          "decision": "allow",
+          "source": "policy",
+          "reason": "Normal scoped operations follow the host AI permission model; Forge only gates catastrophic effects."
+        },
+        "responseMeta": {
+          "traceId": "07cb141e-22cb-4ab4-b6c9-6d66b91d833d",
+          "requestId": "mcp-call:8cf8c8c8-4fb3-402b-9a28-b650e32d6d17",
+          "serverStartedAt": "2026-10-27T09:32:37.768Z",
+          "serverDurationMs": 124.17
+        }
+      }
+    },
+    {
+      "case": "multi-file",
+      "stage": "check",
+      "sentAt": 1793093559314,
+      "receivedAt": 1793093562470,
+      "response": {
+        "ok": true,
+        "accepted": true,
+        "mode": "process_direct",
+        "path": "process_direct",
+        "route": "process_direct",
+        "reason": "ephemeral_workspace_bounded_direct",
+        "workspace": {
+          "workspaceId": "workspace_49526ad189038d32cf69afc3",
+          "root": "/private/var/folders/6p/24gf5r6n1xlc7s27lnh839lc0000gn/T/forge-source-task-baseline-5jhvuht5",
+          "registered": false
+        },
+        "exitCode": 0,
+        "stdout": "ACCEPT: real source behavior assertions passed\n\nBENCH_STEP {\"case\": \"multi-file\", \"stage\": \"check\", \"startedAt\": \"2026-10-27T09:32:40.467742+00:00\", \"startedNs\": 1793093560467738000, \"command\": [\"/Users/greyson/.bun/bin/bun\", \"/var/folders/6p/24gf5r6n1xlc7s27lnh839lc0000gn/T/forge-source-task-baseline-5jhvuht5/verify.ts\", \"multi-file\"], \"exitCode\": 0, \"finishedNs\": 1793093561184270000, \"durationMs\": 716.532}\n",
+        "stderr": "",
+        "status": "succeeded",
+        "authorization": {
+          "decision": "allow",
+          "source": "policy",
+          "reason": "Normal scoped operations follow the host AI permission model; Forge only gates catastrophic effects."
+        },
+        "responseMeta": {
+          "traceId": "d692b8ed-d3e1-4e0f-b1b6-c8be18319329",
+          "requestId": "mcp-call:f19ca5d3-5e90-49dd-a31d-d8123ba4f995",
+          "serverStartedAt": "2026-10-27T09:32:40.382Z",
+          "serverDurationMs": 811.41
+        }
+      }
+    },
+    {
+      "case": "multi-file",
+      "stage": "review",
+      "sentAt": 1793093562470,
+      "receivedAt": 1793093564827,
+      "response": {
+        "ok": true,
+        "accepted": true,
+        "mode": "process_direct",
+        "path": "process_direct",
+        "route": "process_direct",
+        "reason": "ephemeral_workspace_bounded_direct",
+        "workspace": {
+          "workspaceId": "workspace_49526ad189038d32cf69afc3",
+          "root": "/private/var/folders/6p/24gf5r6n1xlc7s27lnh839lc0000gn/T/forge-source-task-baseline-5jhvuht5",
+          "registered": false
+        },
+        "exitCode": 0,
+        "stdout": "diff --git a/src/cli/editing/edit-operation-contract.ts b/src/cli/editing/edit-operation-contract.ts\nindex c5ce0ac..7c45e82 100644\n--- a/src/cli/editing/edit-operation-contract.ts\n+++ b/src/cli/editing/edit-operation-contract.ts\n@@ -5,6 +5,7 @@ export const EDIT_OPERATION_TYPES = [\n   'insert_before',\n   'insert_after',\n   'prepend',\n+  'append',\n   'delete',\n ] as const;\n \ndiff --git a/src/cli/editing/edit-session.ts b/src/cli/editing/edit-session.ts\nindex 7512a66..dc75df1 100644\n--- a/src/cli/editing/edit-session.ts\n+++ b/src/cli/editing/edit-session.ts\n@@ -1176,7 +1176,7 @@ function applyTextOperation(operation: Exclude<EditOperation, { type: 'create' |\n     return after;\n   }\n   if (operation.type === 'prepend') return `${operation.content}${before}`;\n-  if (operation.type === 'append') return `${operation.content}${before}`;\n+  if (operation.type === 'append') return `${before}${operation.content}`;\n   if (!(\"anchor\" in operation) || !operation.anchor) throw new Error(`anchor is empty for ${path}`);\n   const occurrence = Math.max(1, Math.trunc(operation.occurrence ?? 1));\n   const index = findOccurrence(before, operation.anchor, occurrence);\n\nBENCH_STEP {\"case\": \"multi-file\", \"stage\": \"review\", \"startedAt\": \"2026-10-27T09:32:43.433627+00:00\", \"startedNs\": 1793093563433623000, \"candidateSha256\": {\"src/cli/editing/edit-operation-contract.ts\": \"82d589cab19d077319a64b4c33fdb7a17d785dd4c0ab20df063662dba4d17a36\", \"src/cli/editing/edit-session.ts\": \"08c260413bb4dc91814a5b347ac710386d67c41590f7b267c3d04220eac556b9\"}, \"exitCode\": 0, \"finishedNs\": 1793093563510050000, \"durationMs\": 76.427}\n",
+        "stderr": "",
+        "status": "succeeded",
+        "authorization": {
+          "decision": "allow",
+          "source": "policy",
+          "reason": "Normal scoped operations follow the host AI permission model; Forge only gates catastrophic effects."
+        },
+        "responseMeta": {
+          "traceId": "8f1bdc46-6a95-4c07-9c79-1171d628236d",
+          "requestId": "mcp-call:02704084-b814-4c17-85b9-11bd86d84771",
+          "serverStartedAt": "2026-10-27T09:32:43.361Z",
+          "serverDurationMs": 197.99
+        }
+      }
+    },
+    {
+      "case": "failed-check",
+      "stage": "check-before",
+      "sentAt": 1793093569946,
+      "receivedAt": 1793093573565,
+      "response": {
+        "ok": false,
+        "accepted": true,
+        "mode": "process_direct",
+        "path": "process_direct",
+        "route": "process_direct",
+        "reason": "ephemeral_workspace_bounded_direct",
+        "workspace": {
+          "workspaceId": "workspace_49526ad189038d32cf69afc3",
+          "root": "/private/var/folders/6p/24gf5r6n1xlc7s27lnh839lc0000gn/T/forge-source-task-baseline-5jhvuht5",
+          "registered": false
+        },
+        "exitCode": 1,
+        "stdout": "bun test v1.3.14 (0d9b296a)\n\ntests/runtime/check-scheduling.test.ts:\n27 |       requestedCheckIds: ['package:check:type', 'package:check:mcp-compatibility'],\n28 |       repoId: 'repo-test',\n29 |       checkoutId: 'checkout-test',\n30 |     });\n31 | \n32 |     expect(schedule.waves.map((wave) => wave.checkIds)).toEqual([\n                                                             ^\nerror: expect(received).toEqual(expected)\n\n  [\n    [\n      \"package:check:type\",\n-   ],\n-   [\n      \"package:check:mcp-compatibility\",\n    ],\n  ]\n\n- Expected  - 2\n+ Received  + 0\n\n      at <anonymous> (/private/var/folders/6p/24gf5r6n1xlc7s27lnh839lc0000gn/T/forge-source-task-baseline-5jhvuht5/failed-check/tests/runtime/check-scheduling.test.ts:32:57)\n(fail) check execution scheduling > serializes static checks that both write the repository build cache [3.12ms]\n51 |       requestedCheckIds: ['package:test', 'package:check:type'],\n52 |       repoId: 'repo-test',\n53 |       checkoutId: 'checkout-test',\n54 |     });\n55 | \n56 |     expect(schedule.waves.map((wave) => wave.checkIds)).toEqual([\n                                                             ^\nerror: expect(received).toEqual(expected)\n\n  [\n    [\n      \"package:test\",\n-   ],\n-   [\n      \"package:check:type\",\n    ],\n  ]\n\n- Expected  - 2\n+ Received  + 0\n\n      at <anonymous> (/private/var/folders/6p/24gf5r6n1xlc7s27lnh839lc0000gn/T/forge-source-task-baseline-5jhvuht5/failed-check/tests/runtime/check-scheduling.test.ts:56:57)\n(fail) check execution scheduling > keeps heavy-check exclusivity additive to real workspace and build-cache claims [1.00ms]\n81 |         requestedCheckIds: ['package:check:type', 'package:check:typescript-navigation'],\n82 |         repoId: 'repo-test',\n83 |         checkoutId: 'checkout-test',\n84 |       });\n85 | \n86 |       expect(schedule.waves).toEqual([\n                                  ^\nerror: expect(received).toEqual(expected)\n\n  [\n    {\n      \"checkIds\": [\n        \"package:check:type\",\n-     ],\n-     \"parallelSafe\": false,\n-     \"wave\": 1,\n-   },\n-   {\n-     \"checkIds\": [\n        \"package:check:typescript-navigation\",\n      ],\n-     \"parallelSafe\": false,\n-     \"wave\": 2,\n+     \"parallelSafe\": true,\n+     \"wave\": 1,\n    },\n  ]\n\n- Expected  - 8\n+ Received  + 2\n\n      at <anonymous> (/private/var/folders/6p/24gf5r6n1xlc7s27lnh839lc0000gn/T/forge-source-task-baseline-5jhvuht5/failed-check/tests/runtime/check-scheduling.test.ts:86:30)\n(fail) check execution scheduling > serializes compiler-intensive TypeScript latency gates even when both are source-read-only [1.91ms]\n(pass) check execution scheduling > schedules the canonical s3 verification gates in one wave from concrete effects [0.60ms]\n(pass) check execution scheduling > declares governed task/main gates as source-read-only while release remains conservative [0.64ms]\n(pass) check execution scheduling > places disjoint explicitly read-only path checks in one parallel-safe wave [0.15ms]\n\n 3 pass\n 3 fail\n 12 expect() calls\nRan 6 tests across 1 file. [35.00ms]\n\nBENCH_STEP {\"case\": \"failed-check\", \"stage\": \"check\", \"startedAt\": \"2026-10-27T09:32:53.042212+00:00\", \"startedNs\": 1793093573042210000, \"command\": [\"/Users/greyson/.bun/bin/bun\", \"test\", \"tests/runtime/check-scheduling.test.ts\"], \"exitCode\": 1, \"finishedNs\": 1793093573084262000, \"durationMs\": 42.052}\n",
+        "stderr": "",
+        "error": {
+          "code": "PROCESS_COMMAND_FAILED",
+          "message": "process_direct command failed",
+          "retryable": false,
+          "exitCode": 1
+        },
+        "status": "failed",
+        "authorization": {
+          "decision": "allow",
+          "source": "policy",
+          "reason": "Normal scoped operations follow the host AI permission model; Forge only gates catastrophic effects."
+        },
+        "responseMeta": {
+          "traceId": "88f90a12-ac5b-4d08-a021-c65f6e46bd3f",
+          "requestId": "mcp-call:30d1ec30-7a52-42c7-b3ac-69f189c331ee",
+          "serverStartedAt": "2026-10-27T09:32:53.008Z",
+          "serverDurationMs": 79.7
+        },
+        "error_code": "INVALID_ARGUMENT"
+      }
+    },
+    {
+      "case": "failed-check",
+      "stage": "inspect",
+      "sentAt": 1793093573566,
+      "receivedAt": 1793093575263,
+      "response": {
+        "ok": true,
+        "accepted": true,
+        "mode": "process_direct",
+        "path": "process_direct",
+        "route": "process_direct",
+        "reason": "ephemeral_workspace_bounded_direct",
+        "workspace": {
+          "workspaceId": "workspace_49526ad189038d32cf69afc3",
+          "root": "/private/var/folders/6p/24gf5r6n1xlc7s27lnh839lc0000gn/T/forge-source-task-baseline-5jhvuht5",
+          "registered": false
+        },
+        "exitCode": 0,
+        "stdout": "src/runtime/execution/process-runtime/check-scheduling.ts\n83:     const compatible = waves.find((wave) => wave.every((other) => conflictingResources(entry, other).length >= 0));\nBENCH_STEP {\"case\": \"failed-check\", \"stage\": \"inspect\", \"startedAt\": \"2026-10-27T09:32:54.543229+00:00\", \"startedNs\": 1793093574543227000, \"exitCode\": 0, \"finishedNs\": 1793093574543491000, \"durationMs\": 0.264}\n",
+        "stderr": "",
+        "status": "succeeded",
+        "authorization": {
+          "decision": "allow",
+          "source": "policy",
+          "reason": "Normal scoped operations follow the host AI permission model; Forge only gates catastrophic effects."
+        },
+        "responseMeta": {
+          "traceId": "5ece1803-ada9-41e1-b5cc-4916629bd7ee",
+          "requestId": "mcp-call:3efb2356-1112-4158-b8f0-6373830fc786",
+          "serverStartedAt": "2026-10-27T09:32:54.507Z",
+          "serverDurationMs": 39.07
+        }
+      }
+    },
+    {
+      "case": "failed-check",
+      "stage": "apply",
+      "sentAt": 1793093578833,
+      "receivedAt": 1793093584048,
+      "response": {
+        "ok": true,
+        "accepted": true,
+        "mode": "process_direct",
+        "path": "process_direct",
+        "route": "process_direct",
+        "reason": "ephemeral_workspace_bounded_direct",
+        "workspace": {
+          "workspaceId": "workspace_49526ad189038d32cf69afc3",
+          "root": "/private/var/folders/6p/24gf5r6n1xlc7s27lnh839lc0000gn/T/forge-source-task-baseline-5jhvuht5",
+          "registered": false
+        },
+        "exitCode": 0,
+        "stdout": "Applied 1 source repairs\nBENCH_STEP {\"case\": \"failed-check\", \"stage\": \"apply\", \"startedAt\": \"2026-10-27T09:33:03.135106+00:00\", \"startedNs\": 1793093583135103000, \"writes\": [{\"path\": \"src/runtime/execution/process-runtime/check-scheduling.ts\", \"atNs\": 1793093583135642000, \"sha256\": \"b685034b4a181b21682c8a9cbb08a293343638f6174297de955f7a01d9b10ef4\"}], \"exitCode\": 0, \"finishedNs\": 1793093583135690000, \"durationMs\": 0.587}\n",
+        "stderr": "",
+        "status": "succeeded",
+        "authorization": {
+          "decision": "allow",
+          "source": "policy",
+          "reason": "Normal scoped operations follow the host AI permission model; Forge only gates catastrophic effects."
+        },
+        "responseMeta": {
+          "traceId": "34b0a177-523f-45df-8dc8-2f8401e62d35",
+          "requestId": "mcp-call:6fba47ac-990a-4d36-a1f1-e3b61eb201bf",
+          "serverStartedAt": "2026-10-27T09:33:03.084Z",
+          "serverDurationMs": 56.14
+        }
+      }
+    },
+    {
+      "case": "failed-check",
+      "stage": "check",
+      "sentAt": 1793093584048,
+      "receivedAt": 1793093585930,
+      "response": {
+        "ok": true,
+        "accepted": true,
+        "mode": "process_direct",
+        "path": "process_direct",
+        "route": "process_direct",
+        "reason": "ephemeral_workspace_bounded_direct",
+        "workspace": {
+          "workspaceId": "workspace_49526ad189038d32cf69afc3",
+          "root": "/private/var/folders/6p/24gf5r6n1xlc7s27lnh839lc0000gn/T/forge-source-task-baseline-5jhvuht5",
+          "registered": false
+        },
+        "exitCode": 0,
+        "stdout": "bun test v1.3.14 (0d9b296a)\n\ntests/runtime/check-scheduling.test.ts:\n(pass) check execution scheduling > serializes static checks that both write the repository build cache [1.75ms]\n(pass) check execution scheduling > keeps heavy-check exclusivity additive to real workspace and build-cache claims [1.21ms]\n(pass) check execution scheduling > serializes compiler-intensive TypeScript latency gates even when both are source-read-only [1.38ms]\n(pass) check execution scheduling > schedules the canonical s3 verification gates in one wave from concrete effects [0.49ms]\n(pass) check execution scheduling > declares governed task/main gates as source-read-only while release remains conservative [0.35ms]\n(pass) check execution scheduling > places disjoint explicitly read-only path checks in one parallel-safe wave [0.18ms]\n\n 6 pass\n 0 fail\n 20 expect() calls\nRan 6 tests across 1 file. [33.00ms]\n\nBENCH_STEP {\"case\": \"failed-check\", \"stage\": \"check\", \"startedAt\": \"2026-10-27T09:33:04.923522+00:00\", \"startedNs\": 1793093584923520000, \"command\": [\"/Users/greyson/.bun/bin/bun\", \"test\", \"tests/runtime/check-scheduling.test.ts\"], \"exitCode\": 0, \"finishedNs\": 1793093584964020000, \"durationMs\": 40.5}\n",
+        "stderr": "",
+        "status": "succeeded",
+        "authorization": {
+          "decision": "allow",
+          "source": "policy",
+          "reason": "Normal scoped operations follow the host AI permission model; Forge only gates catastrophic effects."
+        },
+        "responseMeta": {
+          "traceId": "49faee82-b186-4156-bd84-4eb9518c5349",
+          "requestId": "mcp-call:914d981d-5824-4077-b283-f47096422f50",
+          "serverStartedAt": "2026-10-27T09:33:04.881Z",
+          "serverDurationMs": 87.32
+        }
+      }
+    },
+    {
+      "case": "failed-check",
+      "stage": "review",
+      "sentAt": 1793093585930,
+      "receivedAt": 1793093587353,
+      "response": {
+        "ok": true,
+        "accepted": true,
+        "mode": "process_direct",
+        "path": "process_direct",
+        "route": "process_direct",
+        "reason": "ephemeral_workspace_bounded_direct",
+        "workspace": {
+          "workspaceId": "workspace_49526ad189038d32cf69afc3",
+          "root": "/private/var/folders/6p/24gf5r6n1xlc7s27lnh839lc0000gn/T/forge-source-task-baseline-5jhvuht5",
+          "registered": false
+        },
+        "exitCode": 0,
+        "stdout": "diff --git a/src/runtime/execution/process-runtime/check-scheduling.ts b/src/runtime/execution/process-runtime/check-scheduling.ts\nindex e58afbe..a9c76e7 100644\n--- a/src/runtime/execution/process-runtime/check-scheduling.ts\n+++ b/src/runtime/execution/process-runtime/check-scheduling.ts\n@@ -80,7 +80,7 @@ export function buildCheckExecutionSchedule(input: {\n \n   const waves: ScheduledCheck[][] = [];\n   for (const entry of scheduled) {\n-    const compatible = waves.find((wave) => wave.every((other) => conflictingResources(entry, other).length >= 0));\n+    const compatible = waves.find((wave) => wave.every((other) => conflictingResources(entry, other).length === 0));\n     if (compatible) compatible.push(entry);\n     else waves.push([entry]);\n   }\n\nBENCH_STEP {\"case\": \"failed-check\", \"stage\": \"review\", \"startedAt\": \"2026-10-27T09:33:06.503480+00:00\", \"startedNs\": 1793093586503478000, \"candidateSha256\": {\"src/runtime/execution/process-runtime/check-scheduling.ts\": \"b685034b4a181b21682c8a9cbb08a293343638f6174297de955f7a01d9b10ef4\"}, \"exitCode\": 0, \"finishedNs\": 1793093586541122000, \"durationMs\": 37.644}\n",
+        "stderr": "",
+        "status": "succeeded",
+        "authorization": {
+          "decision": "allow",
+          "source": "policy",
+          "reason": "Normal scoped operations follow the host AI permission model; Forge only gates catastrophic effects."
+        },
+        "responseMeta": {
+          "traceId": "a88f7b7c-132f-4ff6-805e-5c5a5aff3423",
+          "requestId": "mcp-call:5a53cb2f-ee84-4538-9078-78e8b1152523",
+          "serverStartedAt": "2026-10-27T09:33:06.464Z",
+          "serverDurationMs": 81.18
+        }
+      }
+    },
+    {
+      "case": "small-bug-grouped",
+      "stage": "investigate",
+      "sentAt": 1793093629829,
+      "receivedAt": 1793093632011,
+      "response": {
+        "ok": false,
+        "accepted": true,
+        "mode": "process_direct",
+        "path": "process_direct",
+        "route": "process_direct",
+        "reason": "ephemeral_workspace_bounded_direct",
+        "workspace": {
+          "workspaceId": "workspace_49526ad189038d32cf69afc3",
+          "root": "/private/var/folders/6p/24gf5r6n1xlc7s27lnh839lc0000gn/T/forge-source-task-baseline-5jhvuht5",
+          "registered": false
+        },
+        "exitCode": 1,
+        "stdout": "src/cli/editing/edit-operation-contract.ts\n8:   'append',\n86:   if (type === 'prepend' || type === 'append') return { type: 'append', path, expectedSha256, content: String(entry.content ?? '') };\nBENCH_STEP {\"case\": \"small-bug-grouped\", \"stage\": \"inspect\", \"startedAt\": \"2026-10-27T09:33:51.516496+00:00\", \"startedNs\": 1793093631516494000, \"exitCode\": 0, \"finishedNs\": 1793093631516728000, \"durationMs\": 0.234}\n 5 | import { spawnSync } from 'node:child_process';\n 6 | const repo = process.cwd();\n 7 | const contract = await import(join(repo, 'src/cli/editing/edit-operation-contract.ts'));\n 8 | if (process.argv[2] === 'small-bug') {\n 9 |   for (const type of ['prepend', 'append']) {\n10 |     assert.equal(contract.normalizeEditOperation({ type, path: 'file.txt', content: 'x', expected_sha256: 'sha' }).type, type);\n                ^\nAssertionError: Expected values to be strictly equal:\n+ actual - expected\n\n+ 'append'\n- 'prepend'\n\n generatedMessage: true,\n     actual: \"append\",\n   expected: \"prepend\",\n   operator: \"strictEqual\",\n       code: \"ERR_ASSERTION\"\n\n      at /private/var/folders/6p/24gf5r6n1xlc7s27lnh839lc0000gn/T/forge-source-task-baseline-5jhvuht5/verify.ts:10:12\n\nBun v1.3.14 (macOS arm64)\n\nBENCH_STEP {\"case\": \"small-bug-grouped\", \"stage\": \"check\", \"startedAt\": \"2026-10-27T09:33:51.544159+00:00\", \"startedNs\": 1793093631544157000, \"command\": [\"/Users/greyson/.bun/bin/bun\", \"/var/folders/6p/24gf5r6n1xlc7s27lnh839lc0000gn/T/forge-source-task-baseline-5jhvuht5/verify.ts\", \"small-bug\"], \"exitCode\": 1, \"finishedNs\": 1793093631568408000, \"durationMs\": 24.251}\n",
+        "stderr": "",
+        "error": {
+          "code": "PROCESS_COMMAND_FAILED",
+          "message": "process_direct command failed",
+          "retryable": false,
+          "exitCode": 1
+        },
+        "status": "failed",
+        "authorization": {
+          "decision": "allow",
+          "source": "policy",
+          "reason": "Normal scoped operations follow the host AI permission model; Forge only gates catastrophic effects."
+        },
+        "responseMeta": {
+          "traceId": "8c37f7a2-132a-46a6-91bf-8069d8d3609c",
+          "requestId": "mcp-call:ce1ca9c5-e1d9-4603-8ec6-a2b521ec565e",
+          "serverStartedAt": "2026-10-27T09:33:51.429Z",
+          "serverDurationMs": 182.77
+        },
+        "error_code": "INVALID_ARGUMENT"
+      }
+    },
+    {
+      "case": "small-bug-grouped",
+      "stage": "repair",
+      "sentAt": 1793093632011,
+      "receivedAt": 1793093634486,
+      "response": {
+        "ok": true,
+        "accepted": true,
+        "mode": "process_direct",
+        "path": "process_direct",
+        "route": "process_direct",
+        "reason": "ephemeral_workspace_bounded_direct",
+        "workspace": {
+          "workspaceId": "workspace_49526ad189038d32cf69afc3",
+          "root": "/private/var/folders/6p/24gf5r6n1xlc7s27lnh839lc0000gn/T/forge-source-task-baseline-5jhvuht5",
+          "registered": false
+        },
+        "exitCode": 0,
+        "stdout": "Applied 1 source repairs\nBENCH_STEP {\"case\": \"small-bug-grouped\", \"stage\": \"apply\", \"startedAt\": \"2026-10-27T09:33:53.403142+00:00\", \"startedNs\": 1793093633403140000, \"writes\": [{\"path\": \"src/cli/editing/edit-operation-contract.ts\", \"atNs\": 1793093633403581000, \"sha256\": \"82d589cab19d077319a64b4c33fdb7a17d785dd4c0ab20df063662dba4d17a36\"}], \"exitCode\": 0, \"finishedNs\": 1793093633403818000, \"durationMs\": 0.678}\nACCEPT: real source behavior assertions passed\n\nBENCH_STEP {\"case\": \"small-bug-grouped\", \"stage\": \"check\", \"startedAt\": \"2026-10-27T09:33:53.428786+00:00\", \"startedNs\": 1793093633428784000, \"command\": [\"/Users/greyson/.bun/bin/bun\", \"/var/folders/6p/24gf5r6n1xlc7s27lnh839lc0000gn/T/forge-source-task-baseline-5jhvuht5/verify.ts\", \"small-bug\"], \"exitCode\": 0, \"finishedNs\": 1793093633450332000, \"durationMs\": 21.548}\ndiff --git a/src/cli/editing/edit-operation-contract.ts b/src/cli/editing/edit-operation-contract.ts\nindex 47f919c..7c45e82 100644\n--- a/src/cli/editing/edit-operation-contract.ts\n+++ b/src/cli/editing/edit-operation-contract.ts\n@@ -83,7 +83,7 @@ export function normalizeEditOperation(entry: Record<string, unknown>): EditOper\n       occurrence: typeof entry.occurrence === 'number' ? Math.trunc(entry.occurrence) : undefined,\n     };\n   }\n-  if (type === 'prepend' || type === 'append') return { type: 'append', path, expectedSha256, content: String(entry.content ?? '') };\n+  if (type === 'prepend' || type === 'append') return { type, path, expectedSha256, content: String(entry.content ?? '') };\n   throw new Error(`invalid edit operation type: ${type}`);\n }\n \n\nBENCH_STEP {\"case\": \"small-bug-grouped\", \"stage\": \"review\", \"startedAt\": \"2026-10-27T09:33:53.476569+00:00\", \"startedNs\": 1793093633476567000, \"candidateSha256\": {\"src/cli/editing/edit-operation-contract.ts\": \"82d589cab19d077319a64b4c33fdb7a17d785dd4c0ab20df063662dba4d17a36\"}, \"exitCode\": 0, \"finishedNs\": 1793093633710968000, \"durationMs\": 234.401}\n",
+        "stderr": "",
+        "status": "succeeded",
+        "authorization": {
+          "decision": "allow",
+          "source": "policy",
+          "reason": "Normal scoped operations follow the host AI permission model; Forge only gates catastrophic effects."
+        },
+        "responseMeta": {
+          "traceId": "d720ec8a-b548-4622-be2e-a06b469b2b5b",
+          "requestId": "mcp-call:6e93704b-36b1-41a6-858c-9083632111ef",
+          "serverStartedAt": "2026-10-27T09:33:53.300Z",
+          "serverDurationMs": 416.6
+        }
+      }
+    },
+    {
+      "case": "multi-file-grouped",
+      "stage": "investigate",
+      "sentAt": 1793093636975,
+      "receivedAt": 1793093638742,
+      "response": {
+        "ok": false,
+        "accepted": true,
+        "mode": "process_direct",
+        "path": "process_direct",
+        "route": "process_direct",
+        "reason": "ephemeral_workspace_bounded_direct",
+        "workspace": {
+          "workspaceId": "workspace_49526ad189038d32cf69afc3",
+          "root": "/private/var/folders/6p/24gf5r6n1xlc7s27lnh839lc0000gn/T/forge-source-task-baseline-5jhvuht5",
+          "registered": false
+        },
+        "exitCode": 1,
+        "stdout": "src/cli/editing/edit-operation-contract.ts\n85:   if (type === 'prepend' || type === 'append') return { type, path, expectedSha256, content: String(entry.content ?? '') };\nsrc/cli/editing/edit-session.ts\n1178:   if (operation.type === 'prepend') return `${operation.content}${before}`;\n1179:   if (operation.type === 'append') return `${operation.content}${before}`;\nBENCH_STEP {\"case\": \"multi-file-grouped\", \"stage\": \"inspect\", \"startedAt\": \"2026-10-27T09:33:58.008213+00:00\", \"startedNs\": 1793093638008211000, \"exitCode\": 0, \"finishedNs\": 1793093638009291000, \"durationMs\": 1.08}\n 8 | if (process.argv[2] === 'small-bug') {\n 9 |   for (const type of ['prepend', 'append']) {\n10 |     assert.equal(contract.normalizeEditOperation({ type, path: 'file.txt', content: 'x', expected_sha256: 'sha' }).type, type);\n11 |   }\n12 | } else {\n13 |   assert.ok(contract.EDIT_OPERATION_TYPES.includes('append'), 'public operation schema must advertise append');\n              ^\nAssertionError: public operation schema must advertise append\n generatedMessage: false,\n     actual: false,\n   expected: true,\n   operator: \"==\",\n       code: \"ERR_ASSERTION\"\n\n      at /private/var/folders/6p/24gf5r6n1xlc7s27lnh839lc0000gn/T/forge-source-task-baseline-5jhvuht5/verify.ts:13:10\n\nBun v1.3.14 (macOS arm64)\n\nBENCH_STEP {\"case\": \"multi-file-grouped\", \"stage\": \"check\", \"startedAt\": \"2026-10-27T09:33:58.041964+00:00\", \"startedNs\": 1793093638041961000, \"command\": [\"/Users/greyson/.bun/bin/bun\", \"/var/folders/6p/24gf5r6n1xlc7s27lnh839lc0000gn/T/forge-source-task-baseline-5jhvuht5/verify.ts\", \"multi-file\"], \"exitCode\": 1, \"finishedNs\": 1793093638072965000, \"durationMs\": 31.004}\n",
+        "stderr": "",
+        "error": {
+          "code": "PROCESS_COMMAND_FAILED",
+          "message": "process_direct command failed",
+          "retryable": false,
+          "exitCode": 1
+        },
+        "status": "failed",
+        "authorization": {
+          "decision": "allow",
+          "source": "policy",
+          "reason": "Normal scoped operations follow the host AI permission model; Forge only gates catastrophic effects."
+        },
+        "responseMeta": {
+          "traceId": "3ded0466-7ada-4e1c-aa93-e5e31bb138d1",
+          "requestId": "mcp-call:b5a62dd6-9431-44b3-bcf5-0633997fa539",
+          "serverStartedAt": "2026-10-27T09:33:57.947Z",
+          "serverDurationMs": 132
+        },
+        "error_code": "INVALID_ARGUMENT"
+      }
+    },
+    {
+      "case": "multi-file-grouped",
+      "stage": "repair",
+      "sentAt": 1793093638742,
+      "receivedAt": 1793093641671,
+      "response": {
+        "ok": true,
+        "accepted": true,
+        "mode": "process_direct",
+        "path": "process_direct",
+        "route": "process_direct",
+        "reason": "ephemeral_workspace_bounded_direct",
+        "workspace": {
+          "workspaceId": "workspace_49526ad189038d32cf69afc3",
+          "root": "/private/var/folders/6p/24gf5r6n1xlc7s27lnh839lc0000gn/T/forge-source-task-baseline-5jhvuht5",
+          "registered": false
+        },
+        "exitCode": 0,
+        "stdout": "Applied 2 source repairs\nBENCH_STEP {\"case\": \"multi-file-grouped\", \"stage\": \"apply\", \"startedAt\": \"2026-10-27T09:34:00.003816+00:00\", \"startedNs\": 1793093640003815000, \"writes\": [{\"path\": \"src/cli/editing/edit-operation-contract.ts\", \"atNs\": 1793093640004276000, \"sha256\": \"82d589cab19d077319a64b4c33fdb7a17d785dd4c0ab20df063662dba4d17a36\"}, {\"path\": \"src/cli/editing/edit-session.ts\", \"atNs\": 1793093640004671000, \"sha256\": \"08c260413bb4dc91814a5b347ac710386d67c41590f7b267c3d04220eac556b9\"}], \"exitCode\": 0, \"finishedNs\": 1793093640004744000, \"durationMs\": 0.929}\nACCEPT: real source behavior assertions passed\n\nBENCH_STEP {\"case\": \"multi-file-grouped\", \"stage\": \"check\", \"startedAt\": \"2026-10-27T09:34:00.031516+00:00\", \"startedNs\": 1793093640031514000, \"command\": [\"/Users/greyson/.bun/bin/bun\", \"/var/folders/6p/24gf5r6n1xlc7s27lnh839lc0000gn/T/forge-source-task-baseline-5jhvuht5/verify.ts\", \"multi-file\"], \"exitCode\": 0, \"finishedNs\": 1793093640268280000, \"durationMs\": 236.766}\ndiff --git a/src/cli/editing/edit-operation-contract.ts b/src/cli/editing/edit-operation-contract.ts\nindex c5ce0ac..7c45e82 100644\n--- a/src/cli/editing/edit-operation-contract.ts\n+++ b/src/cli/editing/edit-operation-contract.ts\n@@ -5,6 +5,7 @@ export const EDIT_OPERATION_TYPES = [\n   'insert_before',\n   'insert_after',\n   'prepend',\n+  'append',\n   'delete',\n ] as const;\n \ndiff --git a/src/cli/editing/edit-session.ts b/src/cli/editing/edit-session.ts\nindex 7512a66..dc75df1 100644\n--- a/src/cli/editing/edit-session.ts\n+++ b/src/cli/editing/edit-session.ts\n@@ -1176,7 +1176,7 @@ function applyTextOperation(operation: Exclude<EditOperation, { type: 'create' |\n     return after;\n   }\n   if (operation.type === 'prepend') return `${operation.content}${before}`;\n-  if (operation.type === 'append') return `${operation.content}${before}`;\n+  if (operation.type === 'append') return `${before}${operation.content}`;\n   if (!(\"anchor\" in operation) || !operation.anchor) throw new Error(`anchor is empty for ${path}`);\n   const occurrence = Math.max(1, Math.trunc(operation.occurrence ?? 1));\n   const index = findOccurrence(before, operation.anchor, occurrence);\n\nBENCH_STEP {\"case\": \"multi-file-grouped\", \"stage\": \"review\", \"startedAt\": \"2026-10-27T09:34:00.292720+00:00\", \"startedNs\": 1793093640292718000, \"candidateSha256\": {\"src/cli/editing/edit-operation-contract.ts\": \"82d589cab19d077319a64b4c33fdb7a17d785dd4c0ab20df063662dba4d17a36\", \"src/cli/editing/edit-session.ts\": \"08c260413bb4dc91814a5b347ac710386d67c41590f7b267c3d04220eac556b9\"}, \"exitCode\": 0, \"finishedNs\": 1793093640524303000, \"durationMs\": 231.585}\n",
+        "stderr": "",
+        "status": "succeeded",
+        "authorization": {
+          "decision": "allow",
+          "source": "policy",
+          "reason": "Normal scoped operations follow the host AI permission model; Forge only gates catastrophic effects."
+        },
+        "responseMeta": {
+          "traceId": "c545cce6-45cb-4648-afe6-4ec6d78936bc",
+          "requestId": "mcp-call:c99a0979-df7b-4763-ab61-98c9136f9c35",
+          "serverStartedAt": "2026-10-27T09:33:59.929Z",
+          "serverDurationMs": 601.07
+        }
+      }
+    },
+    {
+      "case": "failed-check-grouped",
+      "stage": "investigate",
+      "sentAt": 1793093644378,
+      "receivedAt": 1793093646071,
+      "response": {
+        "ok": false,
+        "accepted": true,
+        "mode": "process_direct",
+        "path": "process_direct",
+        "route": "process_direct",
+        "reason": "ephemeral_workspace_bounded_direct",
+        "workspace": {
+          "workspaceId": "workspace_49526ad189038d32cf69afc3",
+          "root": "/private/var/folders/6p/24gf5r6n1xlc7s27lnh839lc0000gn/T/forge-source-task-baseline-5jhvuht5",
+          "registered": false
+        },
+        "exitCode": 1,
+        "stdout": "bun test v1.3.14 (0d9b296a)\n\ntests/runtime/check-scheduling.test.ts:\n27 |       requestedCheckIds: ['package:check:type', 'package:check:mcp-compatibility'],\n28 |       repoId: 'repo-test',\n29 |       checkoutId: 'checkout-test',\n30 |     });\n31 | \n32 |     expect(schedule.waves.map((wave) => wave.checkIds)).toEqual([\n                                                             ^\nerror: expect(received).toEqual(expected)\n\n  [\n    [\n      \"package:check:type\",\n-   ],\n-   [\n      \"package:check:mcp-compatibility\",\n    ],\n  ]\n\n- Expected  - 2\n+ Received  + 0\n\n      at <anonymous> (/private/var/folders/6p/24gf5r6n1xlc7s27lnh839lc0000gn/T/forge-source-task-baseline-5jhvuht5/failed-check-grouped/tests/runtime/check-scheduling.test.ts:32:57)\n(fail) check execution scheduling > serializes static checks that both write the repository build cache [0.72ms]\n51 |       requestedCheckIds: ['package:test', 'package:check:type'],\n52 |       repoId: 'repo-test',\n53 |       checkoutId: 'checkout-test',\n54 |     });\n55 | \n56 |     expect(schedule.waves.map((wave) => wave.checkIds)).toEqual([\n                                                             ^\nerror: expect(received).toEqual(expected)\n\n  [\n    [\n      \"package:test\",\n-   ],\n-   [\n      \"package:check:type\",\n    ],\n  ]\n\n- Expected  - 2\n+ Received  + 0\n\n      at <anonymous> (/private/var/folders/6p/24gf5r6n1xlc7s27lnh839lc0000gn/T/forge-source-task-baseline-5jhvuht5/failed-check-grouped/tests/runtime/check-scheduling.test.ts:56:57)\n(fail) check execution scheduling > keeps heavy-check exclusivity additive to real workspace and build-cache claims [0.89ms]\n81 |         requestedCheckIds: ['package:check:type', 'package:check:typescript-navigation'],\n82 |         repoId: 'repo-test',\n83 |         checkoutId: 'checkout-test',\n84 |       });\n85 | \n86 |       expect(schedule.waves).toEqual([\n                                  ^\nerror: expect(received).toEqual(expected)\n\n  [\n    {\n      \"checkIds\": [\n        \"package:check:type\",\n-     ],\n-     \"parallelSafe\": false,\n-     \"wave\": 1,\n-   },\n-   {\n-     \"checkIds\": [\n        \"package:check:typescript-navigation\",\n      ],\n-     \"parallelSafe\": false,\n-     \"wave\": 2,\n+     \"parallelSafe\": true,\n+     \"wave\": 1,\n    },\n  ]\n\n- Expected  - 8\n+ Received  + 2\n\n      at <anonymous> (/private/var/folders/6p/24gf5r6n1xlc7s27lnh839lc0000gn/T/forge-source-task-baseline-5jhvuht5/failed-check-grouped/tests/runtime/check-scheduling.test.ts:86:30)\n(fail) check execution scheduling > serializes compiler-intensive TypeScript latency gates even when both are source-read-only [1.39ms]\n(pass) check execution scheduling > schedules the canonical s3 verification gates in one wave from concrete effects [0.46ms]\n(pass) check execution scheduling > declares governed task/main gates as source-read-only while release remains conservative [0.33ms]\n(pass) check execution scheduling > places disjoint explicitly read-only path checks in one parallel-safe wave [0.16ms]\n\n 3 pass\n 3 fail\n 12 expect() calls\nRan 6 tests across 1 file. [25.00ms]\n\nBENCH_STEP {\"case\": \"failed-check-grouped\", \"stage\": \"check\", \"startedAt\": \"2026-10-27T09:34:05.437218+00:00\", \"startedNs\": 1793093645437216000, \"command\": [\"/Users/greyson/.bun/bin/bun\", \"test\", \"tests/runtime/check-scheduling.test.ts\"], \"exitCode\": 1, \"finishedNs\": 1793093645468822000, \"durationMs\": 31.606}\nsrc/runtime/execution/process-runtime/check-scheduling.ts\n83:     const compatible = waves.find((wave) => wave.every((other) => conflictingResources(entry, other).length >= 0));\nBENCH_STEP {\"case\": \"failed-check-grouped\", \"stage\": \"inspect\", \"startedAt\": \"2026-10-27T09:34:05.495510+00:00\", \"startedNs\": 1793093645495508000, \"exitCode\": 0, \"finishedNs\": 1793093645495756000, \"durationMs\": 0.248}\n",
+        "stderr": "",
+        "error": {
+          "code": "PROCESS_COMMAND_FAILED",
+          "message": "process_direct command failed",
+          "retryable": false,
+          "exitCode": 1
+        },
+        "status": "failed",
+        "authorization": {
+          "decision": "allow",
+          "source": "policy",
+          "reason": "Normal scoped operations follow the host AI permission model; Forge only gates catastrophic effects."
+        },
+        "responseMeta": {
+          "traceId": "3b062512-9785-4dbe-99b6-79826f704622",
+          "requestId": "mcp-call:63c03685-1a66-441b-a8ad-6ba34860faf8",
+          "serverStartedAt": "2026-10-27T09:34:05.332Z",
+          "serverDurationMs": 171.41
+        },
+        "error_code": "INVALID_ARGUMENT"
+      }
+    },
+    {
+      "case": "failed-check-grouped",
+      "stage": "repair",
+      "sentAt": 1793093646072,
+      "receivedAt": 1793093648059,
+      "response": {
+        "ok": true,
+        "accepted": true,
+        "mode": "process_direct",
+        "path": "process_direct",
+        "route": "process_direct",
+        "reason": "ephemeral_workspace_bounded_direct",
+        "workspace": {
+          "workspaceId": "workspace_49526ad189038d32cf69afc3",
+          "root": "/private/var/folders/6p/24gf5r6n1xlc7s27lnh839lc0000gn/T/forge-source-task-baseline-5jhvuht5",
+          "registered": false
+        },
+        "exitCode": 0,
+        "stdout": "Applied 1 source repairs\nBENCH_STEP {\"case\": \"failed-check-grouped\", \"stage\": \"apply\", \"startedAt\": \"2026-10-27T09:34:06.939405+00:00\", \"startedNs\": 1793093646939404000, \"writes\": [{\"path\": \"src/runtime/execution/process-runtime/check-scheduling.ts\", \"atNs\": 1793093646939834000, \"sha256\": \"b685034b4a181b21682c8a9cbb08a293343638f6174297de955f7a01d9b10ef4\"}], \"exitCode\": 0, \"finishedNs\": 1793093646939869000, \"durationMs\": 0.465}\nbun test v1.3.14 (0d9b296a)\n\ntests/runtime/check-scheduling.test.ts:\n(pass) check execution scheduling > serializes static checks that both write the repository build cache [0.70ms]\n(pass) check execution scheduling > keeps heavy-check exclusivity additive to real workspace and build-cache claims [0.92ms]\n(pass) check execution scheduling > serializes compiler-intensive TypeScript latency gates even when both are source-read-only [1.13ms]\n(pass) check execution scheduling > schedules the canonical s3 verification gates in one wave from concrete effects [0.39ms]\n(pass) check execution scheduling > declares governed task/main gates as source-read-only while release remains conservative [0.29ms]\n(pass) check execution scheduling > places disjoint explicitly read-only path checks in one parallel-safe wave [0.13ms]\n\n 6 pass\n 0 fail\n 20 expect() calls\nRan 6 tests across 1 file. [26.00ms]\n\nBENCH_STEP {\"case\": \"failed-check-grouped\", \"stage\": \"check\", \"startedAt\": \"2026-10-27T09:34:06.964673+00:00\", \"startedNs\": 1793093646964671000, \"command\": [\"/Users/greyson/.bun/bin/bun\", \"test\", \"tests/runtime/check-scheduling.test.ts\"], \"exitCode\": 0, \"finishedNs\": 1793093646996569000, \"durationMs\": 31.898}\ndiff --git a/src/runtime/execution/process-runtime/check-scheduling.ts b/src/runtime/execution/process-runtime/check-scheduling.ts\nindex e58afbe..a9c76e7 100644\n--- a/src/runtime/execution/process-runtime/check-scheduling.ts\n+++ b/src/runtime/execution/process-runtime/check-scheduling.ts\n@@ -80,7 +80,7 @@ export function buildCheckExecutionSchedule(input: {\n \n   const waves: ScheduledCheck[][] = [];\n   for (const entry of scheduled) {\n-    const compatible = waves.find((wave) => wave.every((other) => conflictingResources(entry, other).length >= 0));\n+    const compatible = waves.find((wave) => wave.every((other) => conflictingResources(entry, other).length === 0));\n     if (compatible) compatible.push(entry);\n     else waves.push([entry]);\n   }\n\nBENCH_STEP {\"case\": \"failed-check-grouped\", \"stage\": \"review\", \"startedAt\": \"2026-10-27T09:34:07.023150+00:00\", \"startedNs\": 1793093647023146000, \"candidateSha256\": {\"src/runtime/execution/process-runtime/check-scheduling.ts\": \"b685034b4a181b21682c8a9cbb08a293343638f6174297de955f7a01d9b10ef4\"}, \"exitCode\": 0, \"finishedNs\": 1793093647255571000, \"durationMs\": 232.425}\n",
+        "stderr": "",
+        "status": "succeeded",
+        "authorization": {
+          "decision": "allow",
+          "source": "policy",
+          "reason": "Normal scoped operations follow the host AI permission model; Forge only gates catastrophic effects."
+        },
+        "responseMeta": {
+          "traceId": "b7abed25-fbe9-4879-a216-ef255a0a979f",
+          "requestId": "mcp-call:6c26d69c-6f6d-43f0-b2a0-5bd74121a99e",
+          "serverStartedAt": "2026-10-27T09:34:06.839Z",
+          "serverDurationMs": 422.74
+        }
+      }
+    }
+  ],
+  "manifest": {
+    "schemaVersion": 1,
+    "sourceRevision": "fb75fbbb7e3d2db99b4bbdb9ac64e8032becb575",
+    "kind": "fault-injected-real-source-pilot",
+    "model": "current controller session; model timing unavailable",
+    "cases": {
+      "small-bug": {
+        "root": "/var/folders/6p/24gf5r6n1xlc7s27lnh839lc0000gn/T/forge-source-task-baseline-5jhvuht5/small-bug",
+        "allowedPaths": [
+          "src/cli/editing/edit-operation-contract.ts"
+        ],
+        "startSha256": {
+          "src/cli/editing/edit-operation-contract.ts": "92149fc756c1245dd3ed32474553d595ce3ce555c6e6d3622e067e36a2dfa285"
+        }
+      },
+      "multi-file": {
+        "root": "/var/folders/6p/24gf5r6n1xlc7s27lnh839lc0000gn/T/forge-source-task-baseline-5jhvuht5/multi-file",
+        "allowedPaths": [
+          "src/cli/editing/edit-operation-contract.ts",
+          "src/cli/editing/edit-session.ts"
+        ],
+        "startSha256": {
+          "src/cli/editing/edit-operation-contract.ts": "5334ccbee3ea32b470e94d9d57a9f5f4bfc4b7bcc9179c5798b2bdbabb36c6d5",
+          "src/cli/editing/edit-session.ts": "181d25282bc6c23989725156d0f729037fa51243948e9b307f2025216bb66c22"
+        }
+      },
+      "failed-check": {
+        "root": "/var/folders/6p/24gf5r6n1xlc7s27lnh839lc0000gn/T/forge-source-task-baseline-5jhvuht5/failed-check",
+        "allowedPaths": [
+          "src/runtime/execution/process-runtime/check-scheduling.ts"
+        ],
+        "startSha256": {
+          "src/runtime/execution/process-runtime/check-scheduling.ts": "de39c6ad907f3809996124f7eadcfea88db801be466d4fba843c56d15651eb7f"
+        }
+      },
+      "small-bug-grouped": {
+        "root": "/var/folders/6p/24gf5r6n1xlc7s27lnh839lc0000gn/T/forge-source-task-baseline-5jhvuht5/small-bug-grouped",
+        "allowedPaths": [
+          "src/cli/editing/edit-operation-contract.ts"
+        ],
+        "startSha256": {
+          "src/cli/editing/edit-operation-contract.ts": "92149fc756c1245dd3ed32474553d595ce3ce555c6e6d3622e067e36a2dfa285"
+        }
+      },
+      "multi-file-grouped": {
+        "root": "/var/folders/6p/24gf5r6n1xlc7s27lnh839lc0000gn/T/forge-source-task-baseline-5jhvuht5/multi-file-grouped",
+        "allowedPaths": [
+          "src/cli/editing/edit-operation-contract.ts",
+          "src/cli/editing/edit-session.ts"
+        ],
+        "startSha256": {
+          "src/cli/editing/edit-operation-contract.ts": "5334ccbee3ea32b470e94d9d57a9f5f4bfc4b7bcc9179c5798b2bdbabb36c6d5",
+          "src/cli/editing/edit-session.ts": "181d25282bc6c23989725156d0f729037fa51243948e9b307f2025216bb66c22"
+        }
+      },
+      "failed-check-grouped": {
+        "root": "/var/folders/6p/24gf5r6n1xlc7s27lnh839lc0000gn/T/forge-source-task-baseline-5jhvuht5/failed-check-grouped",
+        "allowedPaths": [
+          "src/runtime/execution/process-runtime/check-scheduling.ts"
+        ],
+        "startSha256": {
+          "src/runtime/execution/process-runtime/check-scheduling.ts": "de39c6ad907f3809996124f7eadcfea88db801be466d4fba843c56d15651eb7f"
+        }
+      }
+    }
+  },
+  "harness": {
+    "step.py": "import sys,json,pathlib,time,subprocess,os,hashlib,datetime\nbase=pathlib.Path(__file__).parent\ncase,stage=sys.argv[1:3]\nmanifest=json.loads((base/'manifest.json').read_text());cfg=manifest['cases'][case];repo=pathlib.Path(cfg['root'])\nstart=time.time_ns();record={'case':case,'stage':stage,'startedAt':datetime.datetime.now(datetime.timezone.utc).isoformat(),'startedNs':start}\ncode=0\ntry:\n if stage=='inspect':\n  for path in cfg['allowedPaths']:\n   lines=(repo/path).read_text().splitlines();print(path)\n   for i,line in enumerate(lines):\n    if any(x in line for x in [\"type === 'prepend'\", \"operation.type === 'append'\", \"'append',\",'const compatible =','length >= 0']):print(str(i+1)+': '+line)\n elif stage=='check':\n  env=dict(os.environ,FORGE_CONTROLLER_HOME=str(base/('controller-'+case)),BENCH_ROOT=str(base))\n  cmd=['/Users/greyson/.bun/bin/bun',str(base/'verify.ts'),case.replace('-grouped','')] if not case.startswith('failed-check') else ['/Users/greyson/.bun/bin/bun','test','tests/runtime/check-scheduling.test.ts']\n  result=subprocess.run(cmd,cwd=repo,env=env,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,timeout=40);code=result.returncode;print(result.stdout[-10000:]);record['command']=cmd\n elif stage=='apply':\n  patch=json.loads((base/(case.replace('-grouped','')+'-patch.json')).read_text())\n  for op in patch:\n   assert op['path'] in cfg['allowedPaths'];f=repo/op['path'];data=f.read_text();assert data.count(op['old'])==1;f.write_text(data.replace(op['old'],op['new']));record.setdefault('writes',[]).append({'path':op['path'],'atNs':time.time_ns(),'sha256':hashlib.sha256(f.read_bytes()).hexdigest()})\n  print('Applied',len(patch),'source repairs')\n elif stage=='review':\n  result=subprocess.run(['git','diff','--check'],cwd=repo,capture_output=True,text=True);assert result.returncode==0,result.stdout\n  diff=subprocess.check_output(['git','diff','--no-ext-diff'],cwd=repo,text=True);(base/(case+'-candidate.diff')).write_text(diff);print(diff)\n  changed=subprocess.check_output(['git','diff','--name-only'],cwd=repo,text=True).splitlines();assert set(changed)==set(cfg['allowedPaths']);record['candidateSha256']={path:hashlib.sha256((repo/path).read_bytes()).hexdigest() for path in changed}\n else:raise ValueError(stage)\nexcept Exception as e:\n code=2;print(type(e).__name__+': '+str(e));record['error']=str(e)\nrecord['exitCode']=code;record['finishedNs']=time.time_ns();record['durationMs']=round((record['finishedNs']-start)/1e6,3)\nwith (base/'steps.jsonl').open('a') as f:f.write(json.dumps(record)+'\\n')\nprint('BENCH_STEP',json.dumps(record));sys.exit(code)\n",
+    "group.py": "import sys,subprocess,pathlib\nroot=pathlib.Path(__file__).parent\ncase,phase=sys.argv[1:3]\nif phase=='investigate':\n stages=['check','inspect'] if case.startswith('failed-check') else ['inspect','check']\n failed=0\n for stage in stages:\n  result=subprocess.run([sys.executable,str(root/'step.py'),case,stage]);failed=failed or result.returncode\n sys.exit(failed)\nfor stage in ['apply','check','review']:\n result=subprocess.run([sys.executable,str(root/'step.py'),case,stage])\n if result.returncode:sys.exit(result.returncode)\n",
+    "verify.ts": "import assert from 'node:assert/strict';\nimport { mkdtempSync, writeFileSync, readFileSync } from 'node:fs';\nimport { join } from 'node:path';\nimport { createHash } from 'node:crypto';\nimport { spawnSync } from 'node:child_process';\nconst repo = process.cwd();\nconst contract = await import(join(repo, 'src/cli/editing/edit-operation-contract.ts'));\nif (process.argv[2] === 'small-bug') {\n  for (const type of ['prepend', 'append']) {\n    assert.equal(contract.normalizeEditOperation({ type, path: 'file.txt', content: 'x', expected_sha256: 'sha' }).type, type);\n  }\n} else {\n  assert.ok(contract.EDIT_OPERATION_TYPES.includes('append'), 'public operation schema must advertise append');\n  const editing = await import(join(repo, 'src/cli/editing/edit-session.ts'));\n  const { getMcpPolicy } = await import(join(repo, 'adapters/mcp/policy.ts'));\n  const { registerRepository } = await import(join(repo, 'src/cli/repositories/registry.ts'));\n  const { ensureRepositoryRuntimeStorageBinding } = await import(join(repo, 'src/cli/repositories/runtime-storage.ts'));\n  const fixture = mkdtempSync(join(process.env.BENCH_ROOT!, 'edit-fixture-'));\n  for (const args of [['init', '-q', '-b', 'main'], ['config', 'user.name', 'Benchmark'], ['config', 'user.email', 'benchmark@example.test']]) {\n    assert.equal(spawnSync('git', args, {cwd: fixture}).status, 0);\n  }\n  writeFileSync(join(fixture, 'file.txt'), 'before');\n  assert.equal(spawnSync('git', ['add', '.'], {cwd: fixture}).status, 0);\n  assert.equal(spawnSync('git', ['commit', '-qm', 'fixture'], {cwd: fixture}).status, 0);\n  const repository = registerRepository({ path: fixture, controllerHome: process.env.FORGE_CONTROLLER_HOME!, displayName: 'isolated-append-behavior-check' });\n  ensureRepositoryRuntimeStorageBinding(repository, 'edit-sessions', process.env.FORGE_CONTROLLER_HOME!);\n  const binding = {repoId: repository.repoId, checkoutId: repository.activeCheckoutId};\n  const session = editing.beginEditSession(fixture, {purpose: 'append acceptance', allowedPaths: ['file.txt'], binding});\n  const op = contract.normalizeEditOperation({type: 'append', path: 'file.txt', content: '-after', expected_sha256: createHash('sha256').update('before').digest('hex')});\n  const updated = editing.applyEditOperations(fixture, getMcpPolicy('controller', {repoRoot: fixture}), session.sessionId, [op], {binding, expectedRevision: 0});\n  assert.equal(readFileSync(join(fixture, 'file.txt'), 'utf8'), 'before-after');\n  assert.equal(updated.currentRevision, 1);\n  editing.finalizeEditSession(fixture, session.sessionId, {reviewer: 'benchmark behavior checker'});\n}\nconsole.log('ACCEPT: real source behavior assertions passed');\n"
+  },
+  "repairs": {
+    "small-bug": [
+      {
+        "path": "src/cli/editing/edit-operation-contract.ts",
+        "old": "if (type === 'prepend' || type === 'append') return { type: 'append', path, expectedSha256, content: String(entry.content ?? '') };",
+        "new": "if (type === 'prepend' || type === 'append') return { type, path, expectedSha256, content: String(entry.content ?? '') };"
+      }
+    ],
+    "multi-file": [
+      {
+        "path": "src/cli/editing/edit-operation-contract.ts",
+        "old": "  'prepend',\n  'delete',",
+        "new": "  'prepend',\n  'append',\n  'delete',"
+      },
+      {
+        "path": "src/cli/editing/edit-session.ts",
+        "old": "if (operation.type === 'append') return `${operation.content}${before}`;",
+        "new": "if (operation.type === 'append') return `${before}${operation.content}`;"
+      }
+    ],
+    "failed-check": [
+      {
+        "path": "src/runtime/execution/process-runtime/check-scheduling.ts",
+        "old": "conflictingResources(entry, other).length >= 0",
+        "new": "conflictingResources(entry, other).length === 0"
+      }
+    ]
+  }
+}

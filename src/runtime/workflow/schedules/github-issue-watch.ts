@@ -156,3 +156,104 @@ export async function executeScheduledGithubIssueWatch(input: {
     throw new Error(`SCHEDULE_GITHUB_ISSUE_WATCH_FAILED: ${message}`);
   }
 }
+
+
+/**
+ * A read-only, exactly scoped GitHub PR observation. The original Supervisor
+ * remains the only event and provider-Send writer; this function never acts on
+ * reviews, Work, Git branches, or the provider.
+ */
+export interface GithubReviewWatchObservation {
+  open: boolean;
+  headSha: string;
+  notices: Array<{
+    reviewedHeadSha: string;
+    currentHeadSha: string;
+    reviewId: string;
+    source: 'github_review' | 'github_ci';
+    outcome: 'ACCEPT' | 'REVISE' | 'BLOCK' | 'COMMENTED' | 'CI_FAILED' | 'CI_PASSED';
+  }>;
+}
+
+function exactGithubRepositoryFromRemote(remote: string): string | undefined {
+  const match = /^(?:https:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+?)(?:\.git)?\/?$/.exec(remote.trim());
+  return match?.[1];
+}
+
+export function classifyGithubReviewNotices(
+  reviews: readonly unknown[],
+  checks: readonly unknown[],
+  currentHeadSha: string,
+): GithubReviewWatchObservation['notices'] {
+  const notices: GithubReviewWatchObservation['notices'] = [];
+  for (const value of reviews) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+    const review = value as Record<string, unknown>;
+    const id = review.id;
+    const commitId = review.commit_id;
+    if (typeof id !== 'number' || !Number.isSafeInteger(id)
+      || typeof commitId !== 'string' || !/^[0-9a-f]{40}$/i.test(commitId)) continue;
+    const outcome = review.state === 'APPROVED' ? 'ACCEPT'
+      : review.state === 'CHANGES_REQUESTED' ? 'REVISE'
+      : review.state === 'DISMISSED' ? 'BLOCK'
+      // COMMENTED is a wake-up signal only; it is never approval or a verdict.
+      : review.state === 'COMMENTED' ? 'COMMENTED'
+      : undefined;
+    if (outcome) notices.push({
+      reviewedHeadSha: commitId.toLowerCase(), currentHeadSha: currentHeadSha.toLowerCase(),
+      reviewId: 'github-review:' + id, source: 'github_review', outcome,
+    });
+  }
+  for (const value of checks) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+    const check = value as Record<string, unknown>;
+    const id = check.id;
+    const headSha = check.head_sha;
+    if (check.status !== 'completed' || typeof id !== 'number' || !Number.isSafeInteger(id)
+      || typeof headSha !== 'string' || !/^[0-9a-f]{40}$/i.test(headSha)) continue;
+    const outcome = check.conclusion === 'success' ? 'CI_PASSED'
+      : ['failure', 'timed_out', 'cancelled', 'startup_failure', 'action_required'].includes(String(check.conclusion))
+        ? 'CI_FAILED' : undefined;
+    if (outcome) notices.push({
+      reviewedHeadSha: headSha.toLowerCase(), currentHeadSha: currentHeadSha.toLowerCase(),
+      reviewId: 'github-check:' + id, source: 'github_ci', outcome,
+    });
+  }
+  return notices;
+}
+
+export async function observeGithubReviewWatch(input: {
+  repoRoot: string; githubRepository: string; prNumber: number;
+}): Promise<GithubReviewWatchObservation> {
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(input.githubRepository)
+    || !Number.isInteger(input.prNumber) || input.prNumber < 1 || input.prNumber > 1_000_000) {
+    throw new Error('WORKFLOW_SUPERVISOR_GITHUB_REVIEW_TARGET_INVALID');
+  }
+  const remote = await execFileAsync('git', ['remote', 'get-url', 'origin'], {
+    cwd: input.repoRoot, encoding: 'utf8', timeout: 5_000,
+  });
+  if (exactGithubRepositoryFromRemote(remote.stdout)?.toLowerCase() !== input.githubRepository.toLowerCase()) {
+    throw new Error('WORKFLOW_SUPERVISOR_GITHUB_REVIEW_REMOTE_MISMATCH');
+  }
+  const gh = resolveGithubIssueWatchExecutable({});
+  const read = async (path: string): Promise<any> => {
+    const result = await execFileAsync(gh, ['api', '-H', 'Accept: application/vnd.github+json', path], {
+      cwd: input.repoRoot, encoding: 'utf8', timeout: 12_000, maxBuffer: 2 * 1024 * 1024,
+    });
+    return JSON.parse(String(result.stdout));
+  };
+  const base = 'repos/' + input.githubRepository;
+  const pull = await read(base + '/pulls/' + input.prNumber);
+  const currentHeadSha = pull?.head?.sha;
+  if (typeof currentHeadSha !== 'string' || !/^[0-9a-f]{40}$/i.test(currentHeadSha)) {
+    throw new Error('WORKFLOW_SUPERVISOR_GITHUB_REVIEW_HEAD_UNVERIFIED');
+  }
+  if (pull.state !== 'open') return { open: false, headSha: currentHeadSha, notices: [] };
+  const reviews = await read(base + '/pulls/' + input.prNumber + '/reviews?per_page=100');
+  const checks = await read(base + '/commits/' + currentHeadSha + '/check-runs?per_page=100');
+  if (!Array.isArray(reviews) || !Array.isArray(checks?.check_runs)) {
+    throw new Error('WORKFLOW_SUPERVISOR_GITHUB_REVIEW_RESPONSE_INVALID');
+  }
+  const notices = classifyGithubReviewNotices(reviews, checks.check_runs, currentHeadSha);
+  return { open: true, headSha: currentHeadSha.toLowerCase(), notices };
+}

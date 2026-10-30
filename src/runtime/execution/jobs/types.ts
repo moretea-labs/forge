@@ -10,7 +10,6 @@ export type ExecutionJobType =
   | 'verify-edit'
   | 'repository-command'
   | 'integration'
-  | 'release-gate'
   | 'reconciliation'
   | 'scheduled-occurrence';
 

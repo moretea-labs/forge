@@ -10,7 +10,10 @@
   const COMPOSER = '#prompt-textarea, [data-testid="prompt-textarea"], [data-testid="composer-text-input"], textarea[name="prompt"], textarea[placeholder*="Message"], textarea[placeholder*="消息"], form [contenteditable="true"], div[role="textbox"][contenteditable="true"]';
   const SEND = 'button[data-testid="send-button"], button[aria-label*="Send"], button[aria-label*="发送"], button[data-testid*="send"]';
   const STOP = '[data-testid="stop-button"], [data-testid*="stop-button"], button[aria-label="Stop"], button[aria-label="Stop generating"], button[aria-label="停止"], button[aria-label="停止生成"]';
-  const TURN = '[data-testid^="conversation-turn-"]';
+  // Both provider layouts expose a structural turn boundary. The newer
+  // virtualized layout omits conversation-turn test ids; its state attribute
+  // identifies the container, not proof that a stream is live or finished.
+  const TURN = '[data-testid^="conversation-turn-"], [data-talvt-turn-state]';
   const PROVIDER_ACTIVITY_CHARS = 64 * 1024;
   const PROVIDER_FAILURE_CHARS = 250_000;
   const absoluteChatgptUrl = (href) => {
@@ -102,6 +105,42 @@
   // An explicitly authorized Supervisor recovery may disregard that *historical*
   // role only after confirming that no live stream/stop/busy signal remains.
   const isGenerating = () => hasLiveGenerationSignal() || latestTurnRole() === 'user';
+  // Recovery must never terminate a provider turn. A visible Stop button is
+  // treated as stale only when the last assistant message maps to the exact
+  // last TURN and neither that message nor its TURN shows stream/busy evidence.
+  // Missing or ambiguous DOM mapping fails closed before editor mutation.
+  const recoverNoStopReadiness = () => {
+    const turns = Array.from(conversationRoot().querySelectorAll(TURN));
+    const currentTurn = turns.length ? turns[turns.length - 1] : undefined;
+    const messages = roleNodes(`${USER}, ${ASSISTANT}`);
+    const lastMessage = messages.length ? messages[messages.length - 1] : undefined;
+    const role = lastMessage?.getAttribute?.('data-message-author-role');
+    const semanticKey = String(lastMessage?.getAttribute?.('data-chatgpt-search-unit-key') || lastMessage?.getAttribute?.('data-content-search-unit-key') || '');
+    const lastRole = role === 'assistant' || semanticKey.endsWith(':assistant') ? 'assistant'
+      : role === 'user' || semanticKey.endsWith(':user') ? 'user' : undefined;
+    if (!currentTurn || !lastMessage || lastMessage.closest?.(TURN) !== currentTurn) {
+      return { ready: false, reason: 'provider_recovery_turn_unknown' };
+    }
+    const hasLiveSignal = (node) => Boolean(node && (
+      node.matches?.('[data-is-streaming="true"], [aria-busy="true"]')
+      || Array.from(node.querySelectorAll?.('[data-is-streaming="true"], [aria-busy="true"]') ?? []).some(visible)
+    ));
+    // A global Stop control also fences an incomplete turn even if the
+    // provider has not attached an assistant-role message to the final TURN.
+    if (hasLiveGenerationSignal() || hasLiveSignal(currentTurn) || hasLiveSignal(lastMessage)) {
+      return { ready: false, reason: 'provider_recovery_turn_live' };
+    }
+    if (lastRole === 'assistant') return { ready: true, capability: 'recover-no-stop-prewrite-v1' };
+    // A known failed stream can leave the last visible role as user forever.
+    // Only a short, visible provider-owned status OUTSIDE every chat message
+    // proves that the turn terminated. Unmapped turns, arbitrary message text,
+    // and mere absence of Stop cannot authorize recovery.
+    const interrupted = providerFailureText().split('\n').some((text) =>
+      /^(?:连接已中断，正在等待完整答复|Connection interrupted, waiting for the full response|分析已暂停|Analysis paused)[。.!]?$/.test(text.trim()));
+    return lastRole === 'user' && interrupted
+      ? { ready: true, capability: 'recover-no-stop-prewrite-v1' }
+      : { ready: false, reason: 'provider_recovery_turn_unknown' };
+  };
   /**
    * Live progress of the running provider turn. The last *committed* assistant
    * answer cannot change while a new turn runs, so liveness has to read the live
@@ -119,14 +158,20 @@
     // history must never be interpreted as a current provider failure.
     const status = Array.from(document.querySelectorAll('[role="alert"], [role="status"], [aria-live="assertive"], [aria-live="polite"]'))
       .filter((node) => !node.closest(TURN) && !node.closest('[data-message-author-role]') && visible(node));
-    const capacity = Array.from(conversationRoot().querySelectorAll('p, span, div'))
-      // Exclude message subtrees before layout-dependent visibility reads.
+    // A navigation/history error is a live empty page, not proof that a
+    // conversation was deleted or that its last provider Send failed.
+    // Reuse the existing single short-banner scan; history remains excluded.
+    const banners = Array.from(conversationRoot().querySelectorAll('p, span, div'))
       .filter((node) => !node.closest(TURN) && !node.closest('[data-message-author-role]') && visible(node))
       .filter((node) => {
         const text = core.normalizeText(node.innerText ?? node.textContent);
-        return text.length <= 250 && /(?:你已达到此对话的长度上限|此对话已达到长度上限|you(?:'ve| have) reached the (?:maximum length for this conversation|conversation length limit)|this conversation has reached its maximum length)/i.test(text);
+        return text.length <= 250 && (
+          /(?:你已达到此对话的长度上限|此对话已达到长度上限|you(?:'ve| have) reached the (?:maximum length for this conversation|conversation length limit)|this conversation has reached its maximum length)/i.test(text)
+          || /^(?:无法加载此 ChatGPT 对话|Unable to load this ChatGPT conversation|Unable to load this conversation)$/i.test(text)
+          || /^(?:连接已中断，正在等待完整答复|Connection interrupted, waiting for the full response|分析已暂停|Analysis paused)[。.!]?$/.test(text)
+        );
       });
-    return [...status, ...capacity]
+    return [...status, ...banners]
       .map((node) => core.normalizeText(node.innerText ?? node.textContent))
       .filter(Boolean).slice(-8).join('\n').slice(-PROVIDER_FAILURE_CHARS);
   };
@@ -237,16 +282,17 @@
     const actualPrompt = replacement ? prompt.slice(replacement[0].length)
       : retired ? prompt.slice(retired[0].length) : prompt;
     if (mode === 'recover') {
-      const stop = Array.from(document.querySelectorAll(STOP)).find(visible);
-      if (prepareOnly && stop instanceof HTMLElement) return { prepared: false, reason: 'provider_recovery_stop_pending' };
-      if (stop instanceof HTMLElement) {
-        if (!exactConversationIsCurrent()) return { dispatched: false, reason: 'target_identity_changed' };
-        stop.click();
-        for (let attempt = 0; attempt < 20 && Array.from(document.querySelectorAll(STOP)).some(visible); attempt += 1) {
-          await new Promise((resolve) => setTimeout(resolve, 100));
-          if (!exactConversationIsCurrent()) return { dispatched: false, reason: 'target_identity_changed' };
-        }
-        if (Array.from(document.querySelectorAll(STOP)).some(visible)) return { dispatched: false, reason: 'provider_recovery_stop_unconfirmed' };
+      const recovery = recoverNoStopReadiness();
+      if (!recovery.ready) {
+        const prewriteNoMutationProof = {
+          kind: 'prewrite_no_mutation_proof', phase: 'prewrite_or_preclick',
+          reason: recovery.reason, issued_at_ms: Date.now(),
+          editor_touched: false, stop_clicked: false, send_clicked: false,
+          loaded_capability: 'recover-no-stop-prewrite-v1',
+        };
+        return prepareOnly
+          ? { prepared: false, reason: recovery.reason }
+          : { dispatched: false, reason: recovery.reason, recoveryCapability: 'recover-no-stop-prewrite-v1', prewriteNoMutationProof };
       }
     } else if (isGenerating()) return { dispatched: false, reason: 'provider_busy' };
     const node = composer();
@@ -258,17 +304,20 @@
     const payload = supervisor ? actualPrompt.replace(/^@forge\s+(?=<<<FORGE_WORKFLOW_EFFECT_V1:(?:fx|crpe)_[a-zA-Z0-9_-]{8,120}>>>)/, '') : actualPrompt;
     const expected = exactComposerText(payload);
     const existing = composerText();
-    // A single serialized Supervisor writer may replace a stale machine-owned
-    // draft by its strict prefix; old body equality is not an ownership test.
-    // Never infer ownership from @forge, incidental text, or an unmarked draft.
-    // Exact backup/retirement envelopes keep their stronger one-use proof.
-    const markedForgeDraft = supervisor && !replacement && !retired
-      && /^<<<FORGE_WORKFLOW_EFFECT_V1:(?:fx|crpe)_[a-zA-Z0-9_-]{8,120}>>>(?:\n|$)/.test(existing);
-    const ownedDrafts = supervisor
-      ? [expected, expected + '\n', exactComposerText(payload + '\n@'), exactComposerText(payload + '\nforge'), exactComposerText('forge ' + payload)]
-      : [expected];
+    // A draft belongs to this exact conversation/effect, not to every Forge
+    // writer in the account. Existing backup/retirement envelopes are the
+    // only authority for replacing a different effect or a human draft.
+    const effectPrefix = /^<<<FORGE_WORKFLOW_EFFECT_V1:((?:fx|crpe)_[a-zA-Z0-9_-]{8,120})>>>(?:\n|$)/;
+    const currentEffectId = effectPrefix.exec(payload)?.[1];
+    const restoredSameEffectPrefix = Boolean(supervisor && !replacement && !retired
+      && currentEffectId && effectPrefix.exec(existing)?.[1] === currentEffectId
+      && expected.startsWith(existing));
+    // Only the exact canonical bytes (plus ProseMirror's generated final
+    // newline) are owner-attested. Historical app-mention typing artifacts are
+    // indistinguishable from human edits and must never be overwritten.
+    const ownedDrafts = supervisor ? [expected, expected + '\n'] : [expected];
     if (node.querySelector('[plugin-mention-name], [app-mention-name]')) return { dispatched: false, reason: 'composer_has_app_mention' };
-    const unowned = Boolean(existing && !ownedDrafts.includes(existing) && !markedForgeDraft);
+    const unowned = Boolean(existing && !ownedDrafts.includes(existing) && !restoredSameEffectPrefix);
     if (unowned && ((!replacement && !retired) || !supervisor)) return { dispatched: false, reason: 'composer_not_empty' };
     if (retired && (!unowned || !existing.startsWith(`<<<FORGE_WORKFLOW_EFFECT_V1:${retired[1]}>>>`))) {
       return { dispatched: false, reason: 'composer_not_empty' };
@@ -305,9 +354,16 @@
         if (!exactConversationIsCurrent()) { finish({ reason: 'target_identity_changed' }); return; }
         // ProseMirror may expose one editor-generated final newline. Do not
         // widen matching beyond that break or tolerate another visible draft.
-        const text = composerText();
-        if (text !== expected && text !== expected + '\n') { finish({ reason: 'composer_write_unconfirmed' }); return; }
-        if (mode === 'recover' ? hasLiveGenerationSignal() : isGenerating()) { finish({ reason: 'provider_busy' }); return; }
+        if (composer() !== node) { finish({ reason: 'composer_missing' }); return; }
+        const text = composerText(node);
+        // ProseMirror may commit a programmatic edit after the initial event.
+        // Keep observing only within the existing bounded readiness window;
+        // never click Send until exact bytes are visible in this same editor.
+        if (text !== expected && text !== expected + '\n') {
+          if (expired) finish({ reason: 'composer_write_unconfirmed' });
+          return;
+        }
+        if (mode === 'recover' ? !recoverNoStopReadiness().ready : isGenerating()) { finish({ reason: mode === 'recover' ? 'provider_recovery_turn_live' : 'provider_busy' }); return; }
         const buttons = Array.from(document.querySelectorAll(SEND)).filter(visible);
         const send = buttons.length === 1 ? buttons[0] : undefined;
         if (send && !send.disabled && send.getAttribute('aria-disabled') !== 'true') { finish({ send }); return; }
@@ -326,11 +382,11 @@
     if (composer() !== node) return { dispatched: false, reason: 'composer_missing' };
     const text = composerText();
     if (text !== expected && text !== expected + '\n') return { dispatched: false, reason: 'composer_write_unconfirmed' };
-    if (mode === 'recover' ? hasLiveGenerationSignal() : isGenerating()) return { dispatched: false, reason: 'provider_busy' };
+    if (mode === 'recover' ? !recoverNoStopReadiness().ready : isGenerating()) return { dispatched: false, reason: mode === 'recover' ? 'provider_recovery_turn_live' : 'provider_busy' };
     const send = ready.send;
     if (!send.isConnected || !visible(send)) return { dispatched: false, reason: 'send_button_missing' };
     if (send.disabled || send.getAttribute('aria-disabled') === 'true') return { dispatched: false, reason: 'send_button_disabled' };
-    if (prepareOnly) return { prepared: true };
+    if (prepareOnly) return { prepared: true, ...(mode === 'recover' ? { recoveryCapability: 'recover-no-stop-prewrite-v1' } : {}) };
     // Confirm the committed turn inside the content script, rather than
     // requesting delayed snapshots from the extension background worker.
     const beforeSend = roleNodes(USER).at(-1);
@@ -360,7 +416,7 @@
         timer = setTimeout(() => finish(false), 2_000);
         check();
       });
-      return { dispatched: true, confirmed };
+      return { dispatched: true, confirmed, ...(mode === 'recover' ? { recoveryCapability: 'recover-no-stop-prewrite-v1' } : {}) };
     } catch {
       return { dispatched: true, confirmed: false };
     }
@@ -375,13 +431,14 @@
     // Read-only exact-tab attestation for bootstrap/draft target guards.
     if (message.type === 'forge-computer-chatgpt-capabilities') {
       sendResponse({ bootstrapTargetGuard: 'project-checked-before-send-v1',
-        composerReplacementContract: 'exact-backed-up-project-draft-v1' });
+        composerReplacementContract: 'exact-backed-up-project-draft-v1',
+        recoveryCapability: 'recover-no-stop-prewrite-v1' });
       return false;
     }
     if (message.type === 'forge-computer-chatgpt-prepare') {
       dispatchPrompt(String(message.prompt ?? ''), String(message.mode ?? 'send'), message.expectedConversationId, true, message.expectedProjectId)
         .then((result) => sendResponse(result?.prepared === true
-          ? { prepared: true }
+          ? { prepared: true, ...(result.recoveryCapability ? { recoveryCapability: result.recoveryCapability } : {}) }
           : { prepared: false, reason: String(result?.reason ?? 'COMPUTER_CHATGPT_PREPARE_REJECTED') }),
           (error) => sendResponse({ prepared: false, reason: String(error?.message ?? error) }));
       return true;
@@ -394,19 +451,33 @@
     return false;
   });
   let timer;
+  let contextInvalidated = false;
+  const observer = new MutationObserver(notify);
   function notify() {
+    if (contextInvalidated) return;
     clearTimeout(timer);
     timer = setTimeout(() => {
       const current = core.parseConversation(location.href);
-      chrome.runtime.sendMessage({
-        type: 'forge-computer-chatgpt-page',
-        ...(current ?? {}),
-        pageUrl: location.href,
-        // A final user role is a Send-admission fence, not live-generation evidence.
-        isGenerating: hasLiveGenerationSignal(),
-      }, () => void chrome.runtime.lastError);
+      try {
+        if (!chrome.runtime?.sendMessage) {
+          contextInvalidated = true;
+          observer.disconnect();
+          return;
+        }
+        chrome.runtime.sendMessage({
+          type: 'forge-computer-chatgpt-page',
+          ...(current ?? {}),
+          pageUrl: location.href,
+          // A final user role is a Send-admission fence, not live-generation evidence.
+          isGenerating: hasLiveGenerationSignal(),
+        }, () => void chrome.runtime.lastError);
+      } catch (error) {
+        if (!String(error?.message ?? error).includes('Extension context invalidated')) throw error;
+        contextInvalidated = true;
+        observer.disconnect();
+      }
     }, 200);
   }
-  new MutationObserver(notify).observe(document.documentElement, { subtree: true, childList: true, characterData: true });
+  observer.observe(document.documentElement, { subtree: true, childList: true, characterData: true });
   notify();
 })();

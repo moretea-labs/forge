@@ -42,7 +42,7 @@ import {
   restartPrimaryConnector,
   restartPrimaryRuntime,
   restartRecoveryGateway,
-  stageAndActivateConfiguredRuntimeRelease,
+  prepareConfiguredRuntimeReleaseSession,
   rollbackPrevious,
   runtimeStatus,
   verifyStableRuntime,
@@ -743,60 +743,6 @@ export function buildRecoveryCommand(): Command {
       if (!result.ok) process.exitCode = 1;
     });
 
-  command.command('bootstrap-cutover')
-    .description('One-time external lifecycle bootstrap: upgrade standalone Recovery, activate current Runtime source transactionally, then restart the explicit primary Connector')
-    .requiredOption('--controller-home <path>', 'Explicit Controller Home')
-    .requiredOption('--repo <path>', 'Forge source repository root used for Recovery and Runtime immutable releases')
-    .requiredOption('--primary-connector-service-label <label>', 'Primary OAuth/Connector launchd label')
-    .option('--primary-connector-service-plist <path>', 'Absolute primary OAuth/Connector launchd plist path')
-    .action(async (opts: {
-      controllerHome: string;
-      repo: string;
-      primaryConnectorServiceLabel: string;
-      primaryConnectorServicePlist?: string;
-    }) => {
-      const home = resolveControllerHome(opts.controllerHome);
-      const repoRoot = resolve(opts.repo);
-      const primaryRuntimeSourceRepository = findRegisteredRepositoryByCheckoutRoot(repoRoot, home);
-      if (!primaryRuntimeSourceRepository) {
-        throw new Error(`RECOVERY_PRIMARY_RUNTIME_SOURCE_REPOSITORY_NOT_REGISTERED: ${repoRoot}`);
-      }
-      const current = loadRecoveryConfig(home);
-      const primaryConnectorBase = launchdService(
-        opts.primaryConnectorServiceLabel,
-        opts.primaryConnectorServicePlist,
-        'RECOVERY_PRIMARY_CONNECTOR',
-      ) as PrimaryConnectorServiceConfig;
-      const primaryConnectorService: PrimaryConnectorServiceConfig = {
-        ...primaryConnectorBase,
-        ...(current.primaryConnectorService?.localMcpUrl ? { localMcpUrl: current.primaryConnectorService.localMcpUrl } : {}),
-      };
-      const installed = await installStandaloneRecovery({
-        controllerHome: home,
-        repoRoot,
-        primaryRuntimeSourceRepositoryId: primaryRuntimeSourceRepository.repoId,
-        port: current.gateway?.port ?? 8787,
-        publicMcpUrl: current.publicMcpUrl,
-        recoveryPublicUrl: current.recoveryPublicUrl,
-        recoveryTunnelService: current.recoveryTunnelService,
-        primaryPublicTunnelService: current.primaryPublicTunnelService,
-        primaryRuntimeService: current.primaryRuntimeService ?? defaultPrimaryRuntimeServiceConfig(),
-        primaryConnectorService,
-        profile: 'self-healing',
-      });
-      const refreshed = loadRecoveryConfig(home);
-      const runtime = await stageAndActivateConfiguredRuntimeRelease(refreshed);
-      if (!runtime.ok) {
-        output({ ok: false, phase: 'runtime_activation', recovery: installed, runtime });
-        process.exitCode = 1;
-        return;
-      }
-      const connector = await restartPrimaryConnector(refreshed);
-      const ok = connector.ok;
-      output({ ok, phase: !connector.ok ? 'connector_restart' : 'complete', recovery: installed, runtime, connector });
-      if (!ok) process.exitCode = 1;
-    });
-
   command.command('restart-connector')
     .description('Restart the explicitly configured primary OAuth/Connector launchd service through standalone Recovery')
     .requiredOption('--controller-home <path>', 'Explicit Controller Home')
@@ -807,12 +753,12 @@ export function buildRecoveryCommand(): Command {
       if (!result.ok) process.exitCode = 1;
     });
 
-  command.command('stage-and-activate-runtime')
-    .description('Stage current configured Runtime source as an immutable release and activate it transactionally through standalone Recovery')
+  command.command('prepare-runtime-release-session')
+    .description('Freeze the configured Runtime source and build one immutable release into the canonical durable ReleaseSession')
     .requiredOption('--controller-home <path>', 'Explicit Controller Home')
     .action(async (opts: { controllerHome: string }) => {
       const home = resolveControllerHome(opts.controllerHome);
-      const result = await stageAndActivateConfiguredRuntimeRelease(loadRecoveryConfig(home));
+      const result = await prepareConfiguredRuntimeReleaseSession(loadRecoveryConfig(home));
       output(result);
       if (!result.ok) process.exitCode = 1;
     });
@@ -848,12 +794,23 @@ export function buildRecoveryCommand(): Command {
     });
 
   command.command('activate-runtime')
-    .description('Activate an already staged immutable Runtime release: stop, atomically switch whole-release authority, start, verify, and restore the previous whole release on failure')
+    .description('Activate one staged immutable Runtime release only while exact accepted source and observed Runtime authority still match')
     .requiredOption('--controller-home <path>', 'Explicit Controller Home')
     .requiredOption('--release-manifest <path>', 'Absolute manifest.json of the staged immutable Runtime release')
-    .action(async (opts: { controllerHome: string; releaseManifest: string }) => {
+    .requiredOption('--expected-source-revision <sha>', 'Exact accepted 40-hex source commit')
+    .requiredOption('--expected-active-release-id <id>', 'Active Runtime release observed before activation')
+    .requiredOption('--expected-authority-revision <revision>', 'RuntimeReleaseAuthority revision observed before activation')
+    .action(async (opts: { controllerHome: string; releaseManifest: string; expectedSourceRevision: string; expectedActiveReleaseId: string; expectedAuthorityRevision: string }) => {
       const home = resolveControllerHome(opts.controllerHome);
-      const result = await activateRuntimeRelease(loadRecoveryConfig(home), resolve(opts.releaseManifest));
+      const authorityRevision = Number(opts.expectedAuthorityRevision);
+      if (!/^[a-f0-9]{40}$/i.test(opts.expectedSourceRevision) || !Number.isInteger(authorityRevision) || authorityRevision < 1) {
+        throw new Error('RECOVERY_RUNTIME_RELEASE_ACTIVATION_FENCE_INVALID');
+      }
+      const result = await activateRuntimeRelease(loadRecoveryConfig(home), resolve(opts.releaseManifest), {}, {
+        expectedSourceRevision: opts.expectedSourceRevision,
+        expectedActiveReleaseId: opts.expectedActiveReleaseId,
+        expectedAuthorityRevision: authorityRevision,
+      });
       output(result);
       if (!result.ok) process.exitCode = 1;
     });

@@ -90,6 +90,5 @@ try {
   const contentSource = readFileSync(resolve('adapters/computer/chrome-extension/content.js'), 'utf8');
   assert.ok(contentSource.includes('forge-computer-chatgpt-snapshot'));
   assert.ok(contentSource.includes('forge-computer-chatgpt-dispatch'));
-  assert.ok(contentSource.includes('new MutationObserver(notify).observe'));
   console.log('[workflow-supervisor-chrome-smoke] OK');
 } finally { rmSync(home, { recursive: true, force: true }); }

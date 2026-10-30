@@ -1,4 +1,5 @@
 import {
+  listAllControlPlaneRecordsWithinTransaction,
   listControlPlaneRecords,
   listControlPlaneRecordsWithinTransaction,
   readControlPlaneRecord,
@@ -8,6 +9,7 @@ import {
   type ControlPlaneRecord,
   type SqliteDatabase,
 } from './sqlite-store';
+import { createHash } from 'node:crypto';
 import { REQUIREMENT_STATE_TRANSITIONS, type RequirementState } from '../../../../packages/kernel/goal/api/index';
 import type { ScopeRef } from '../../../../packages/kernel/identity/api/index';
 export { REQUIREMENT_STATES, type RequirementState } from '../../../../packages/kernel/goal/api/index';
@@ -20,17 +22,15 @@ export interface Requirement {
   outcomeStatement: string;
   acceptanceCriteria: string[];
   requiredDeliveryReferences: string[];
+  /** Model-authored progress and accepted delivery evidence; never projected from Work. */
+  progressSummary?: string;
+  remainingWork?: string[];
+  acceptedEvidenceRefs?: string[];
   /** @deprecated Migration compatibility pointer only. Current Plan.requirementId is the relationship authority. */
   activePlanId?: string;
   state: RequirementState;
   needsAttention: boolean;
   attentionSummary?: string;
-  semanticAcceptance?: {
-    reviewer: string;
-    rationale: string;
-    planIds: string[];
-    acceptedAt: string;
-  };
   /** Semantic authored-context revision. Legacy rows normalize to semantic revision 1 until first thin semantic write. */
   semanticRevision?: number;
   /** Timestamp of the authored semantic content; mechanical Requirement updates must not change it. */
@@ -67,6 +67,9 @@ export interface RequirementSemanticView {
   outcomeStatement: string;
   acceptanceCriteria: string[];
   requiredDeliveryReferences: string[];
+  progressSummary: string;
+  remainingWork: string[];
+  acceptedEvidenceRefs: string[];
   state: SemanticRequirementState;
   createdAt: string;
   updatedAt: string;
@@ -83,6 +86,9 @@ export interface ReviseRequirementSemanticInput {
   outcomeStatement?: string;
   acceptanceCriteria?: string[];
   requiredDeliveryReferences?: string[];
+  progressSummary?: string;
+  remainingWork?: string[];
+  acceptedEvidenceRefs?: string[];
   state?: SemanticRequirementState;
 }
 
@@ -90,6 +96,41 @@ const NAMESPACE = 'requirement';
 const REVISION_NAMESPACE = 'requirement_revision';
 const SCOPE = 'controller';
 const SCHEMA_VERSION = 1;
+
+/** Startup-only format conversion in the existing Requirement owner. The old
+ * acceptance remains immutable provenance, never a second completion authority.
+ * Recovery snapshots the complete database before activation; this transaction
+ * also rolls back every row and audit entry together on any failure.
+ */
+export function normalizeLegacyRequirementAcceptance(options: RequirementStoreOptions): number {
+  return withControlPlaneTransaction(options.controllerHome, (database) => {
+    let normalized = 0;
+    for (const record of listAllControlPlaneRecordsWithinTransaction<Requirement & { semanticAcceptance?: unknown }>(database, { namespace: NAMESPACE, scope: SCOPE })) {
+      const value = record.value;
+      if (value.state !== 'done' || (value.acceptedEvidenceRefs?.length ?? 0) > 0
+        || (value.remainingWork?.length ?? 0) > 0) continue;
+      const acceptance = value.semanticAcceptance;
+      if (!acceptance || typeof acceptance !== 'object' || Array.isArray(acceptance)) continue;
+      const legacy = acceptance as Record<string, unknown>;
+      if (typeof legacy.reviewer !== 'string' || !legacy.reviewer.trim()
+        || typeof legacy.rationale !== 'string' || !legacy.rationale.trim()
+        || typeof legacy.acceptedAt !== 'string' || !Number.isFinite(Date.parse(legacy.acceptedAt))
+        || !Array.isArray(legacy.planIds) || !legacy.planIds.every((planId) => typeof planId === 'string' && planId.trim())) continue;
+      const digest = createHash('sha256').update(JSON.stringify({ requirementId: value.requirementId, acceptance })).digest('hex');
+      const updated = { ...value, remainingWork: [], acceptedEvidenceRefs: [`requirement:${value.requirementId}:legacy-acceptance:sha256:${digest}`] };
+      // This is a representation upgrade, not a semantic revision. Keep both
+      // record and authored revision/timestamps, state, and original provenance.
+      const statement = database.prepare('UPDATE control_plane_records SET payload = ? WHERE namespace = ? AND scope = ? AND record_key = ? AND revision = ?');
+      try { statement.run(JSON.stringify(updated), NAMESPACE, SCOPE, record.key, record.revision); }
+      finally { statement.finalize?.(); }
+      const audit = database.prepare('INSERT INTO control_plane_audit(namespace,scope,record_key,action,revision,occurred_at) VALUES (?,?,?,?,?,?)');
+      try { audit.run(NAMESPACE, SCOPE, record.key, 'requirement_legacy_acceptance_normalized_v1', record.revision, nowIso(options)); }
+      finally { audit.finalize?.(); }
+      normalized++;
+    }
+    return normalized;
+  });
+}
 
 function nowIso(options: RequirementStoreOptions): string {
   return options.now?.() ?? new Date().toISOString();
@@ -125,6 +166,9 @@ export function requirementSemanticView(requirement: Requirement): RequirementSe
     outcomeStatement: requirement.outcomeStatement,
     acceptanceCriteria: [...requirement.acceptanceCriteria],
     requiredDeliveryReferences: [...requirement.requiredDeliveryReferences],
+    progressSummary: requirement.progressSummary ?? '',
+    remainingWork: [...(requirement.remainingWork ?? [])],
+    acceptedEvidenceRefs: [...(requirement.acceptedEvidenceRefs ?? [])],
     state: semanticRequirementState(requirement),
     createdAt: requirement.createdAt,
     updatedAt: requirement.semanticUpdatedAt ?? requirement.createdAt,
@@ -211,6 +255,24 @@ export function reviseRequirementSemantic(
     if (semanticRevision !== input.expectedRevision) {
       throw new Error(`REQUIREMENT_REVISION_CONFLICT:${requirementId}:expected=${input.expectedRevision}:actual=${semanticRevision}`);
     }
+    const requestedState = input.state;
+    const legacyState: RequirementState = requestedState === 'completed'
+      ? 'done'
+      : requestedState === 'cancelled'
+        ? 'cancelled'
+        : requestedState === 'open'
+          ? 'active'
+          : current.value.state;
+    const currentTerminal = current.value.state === 'done' || current.value.state === 'cancelled';
+    if (requestedState === 'open' && currentTerminal) {
+      throw new Error(`REQUIREMENT_SEMANTIC_REOPEN_FORBIDDEN:${requirementId}:${current.value.state}`);
+    }
+    if (requestedState && currentTerminal && legacyState !== current.value.state) {
+      throw new Error(`REQUIREMENT_SEMANTIC_TERMINAL_TRANSITION_FORBIDDEN:${requirementId}:${current.value.state}->${legacyState}`);
+    }
+    if (currentTerminal) {
+      throw new Error(`REQUIREMENT_SEMANTIC_TERMINAL_IMMUTABLE:${requirementId}:${current.value.state}`);
+    }
     const at = nowIso(options);
     const revisionKey = requirementRevisionKey(requirementId, semanticRevision);
     if (!readControlPlaneRecordWithinTransaction<RequirementRevisionRecord>(database, REVISION_NAMESPACE, SCOPE, revisionKey)) {
@@ -220,26 +282,29 @@ export function reviseRequirementSemantic(
         value: archived, action: 'requirement_semantic_revision_archived', expectedRevision: null,
       });
     }
-    const requestedState = input.state;
-    if (requestedState === 'open' && (current.value.state === 'done' || current.value.state === 'cancelled')) {
-      throw new Error(`REQUIREMENT_SEMANTIC_REOPEN_FORBIDDEN:${requirementId}:${current.value.state}`);
+    const remainingWork = input.remainingWork === undefined ? [...(current.value.remainingWork ?? [])] : bounded(input.remainingWork, 50);
+    const acceptedEvidenceRefs = input.acceptedEvidenceRefs === undefined
+      ? [...(current.value.acceptedEvidenceRefs ?? [])]
+      : bounded(input.acceptedEvidenceRefs, 100, 512);
+    if (legacyState === 'done' && (remainingWork.length > 0 || acceptedEvidenceRefs.length === 0)) {
+      throw new Error(`REQUIREMENT_SEMANTIC_ACCEPTANCE_EVIDENCE_REQUIRED:${requirementId}`);
     }
-    const legacyState: RequirementState = requestedState === 'completed'
-      ? 'done'
-      : requestedState === 'cancelled'
-        ? 'cancelled'
-        : requestedState === 'open'
-          ? 'active'
-          : current.value.state;
+    // Old rows may contain the former acceptance marker. Requirement-first
+    // completion is now represented only by state + accepted evidence.
+    const currentValue = { ...current.value } as Requirement & { semanticAcceptance?: unknown };
+    delete currentValue.semanticAcceptance;
     const title = input.title === undefined ? current.value.title : String(input.title).trim().slice(0, 500);
     const outcomeStatement = input.outcomeStatement === undefined ? current.value.outcomeStatement : String(input.outcomeStatement).trim().slice(0, 2_000);
     if (!title || !outcomeStatement) throw new Error('REQUIREMENT_CONTENT_REQUIRED');
     const updated: Requirement = {
-      ...current.value,
+      ...currentValue,
       title,
       outcomeStatement,
       acceptanceCriteria: input.acceptanceCriteria === undefined ? [...current.value.acceptanceCriteria] : bounded(input.acceptanceCriteria, 50),
       requiredDeliveryReferences: input.requiredDeliveryReferences === undefined ? [...current.value.requiredDeliveryReferences] : bounded(input.requiredDeliveryReferences, 50),
+      progressSummary: input.progressSummary === undefined ? current.value.progressSummary ?? '' : String(input.progressSummary).trim().slice(0, 2_000),
+      remainingWork,
+      acceptedEvidenceRefs,
       state: legacyState,
       ...(requestedState ? { needsAttention: false, attentionSummary: undefined } : {}),
       semanticRevision: semanticRevision + 1,
@@ -268,6 +333,9 @@ export function createRequirement(
     outcomeStatement: String(input.outcomeStatement ?? '').trim().slice(0, 2_000),
     acceptanceCriteria: bounded(input.acceptanceCriteria, 50),
     requiredDeliveryReferences: bounded(input.requiredDeliveryReferences, 50),
+    progressSummary: '',
+    remainingWork: [],
+    acceptedEvidenceRefs: [],
     auditRefs: bounded(input.auditRefs, 50),
     state: 'planned',
     needsAttention: false,
@@ -360,6 +428,9 @@ export function updateRequirement(
     if (!current) throw new Error(`REQUIREMENT_NOT_FOUND: ${requirementId}`);
     const next = input.mutate(current.value);
     if (next === current.value) return current.value;
+    if (current.value.state === 'done' || current.value.state === 'cancelled') {
+      throw new Error(`REQUIREMENT_TERMINAL_IMMUTABLE:${requirementId}:${current.value.state}`);
+    }
     if (!REQUIREMENT_STATE_TRANSITIONS[current.value.state].includes(next.state)) {
       throw new Error(`REQUIREMENT_STATE_TRANSITION_INVALID: ${current.value.state} -> ${next.state}`);
     }

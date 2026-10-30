@@ -7,7 +7,7 @@ import { appendWorkEvidence, getWorkContract, promoteWorkToRepositoryChange, rec
 import { currentPermissionSnapshotVersion } from './validation';
 import { listActiveLeases } from '../../resources/leases/store';
 import { listRecoverableProcessRecords } from '../../execution/process-runtime/store';
-import { listWorkHandles, readWorkHandle, transitionWorkHandle, writeWorkHandle, type WorkHandleState } from './work-handle-store';
+import { listWorkHandlesFailClosed, readWorkHandle, transitionWorkHandle, writeWorkHandle, type WorkHandleState } from './work-handle-store';
 import { gitIsAncestor } from './work-execution-support';
 
 export interface RepositoryWorkHandleControllerIdentity {
@@ -31,21 +31,6 @@ function samePhysicalCheckout(left: string, right: string): boolean {
     throw new Error('WORK_CHECKOUT_PHYSICAL_IDENTITY_UNAVAILABLE');
   }
 }
-function archivedWorkRevisionRefs(root: string, workId: string): string[] {
-  const result = spawnSync('git', ['-C', root, 'for-each-ref', '--format=%(refname:short)', 'refs/heads/archive/'], {
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-    timeout: 10_000,
-    maxBuffer: 1024 * 1024,
-  });
-  if (result.error || result.status !== 0 || typeof result.stdout !== 'string') return [];
-  const prefix = `archive/${workId}-`;
-  return [...new Set(result.stdout.split(/\r?\n/)
-    .map((ref) => ref.trim())
-    .filter((ref) => ref.startsWith(prefix) && /^\d{8}$/.test(ref.slice(prefix.length))))].sort();
-}
-
-
 export interface CanonicalMutationTargetEvidence {
   checkoutId: string;
   branch?: string;
@@ -58,12 +43,12 @@ export interface CanonicalMutationTargetEvidence {
 
 /**
  * Decide whether one WorkHandle still owns the physical mutation surface of a
- * canonical checkout. Semantic Work may remain open after its repository delta
- * has already been absorbed; semantic openness alone is not a checkout mutex.
+ * canonical checkout. Semantic Work state is not physical ownership evidence
+ * in either direction.
  *
- * Semantic openness and the WorkHandle `prepared` state do not by themselves
- * own a physical mutation surface. Only distinct source revisions, active
- * leases/processes, or ambiguous physical checkout evidence retain ownership.
+ * Only uncontained source revisions, active leases/processes, or ambiguous
+ * physical checkout evidence retain canonical mutation ownership. An unknown
+ * expected source HEAD fails closed even after semantic Work becomes terminal.
  */
 export function workHandleRetainsCanonicalMutationOwnership(input: {
   controllerHome: string;
@@ -74,16 +59,11 @@ export function workHandleRetainsCanonicalMutationOwnership(input: {
   const { handle, target } = input;
   if (handle.checkoutId !== target.checkoutId || handle.managedWorktree) return false;
 
-  let contract: ReturnType<typeof getWorkContract>;
-  try {
-    contract = getWorkContract(
-      { controllerHome: input.controllerHome, repoId: input.repositoryId },
-      handle.workContractId ?? handle.workId,
-    );
-  } catch {
-    return true;
-  }
-  if (contract && semanticWorkState(contract) !== 'open') return false;
+  // An unknown source tip cannot be released merely because the semantic Work
+  // is terminal. Require the exact expected HEAD before considering semantic
+  // terminality or baseline ancestry as evidence of absorbed source state.
+  const expectedHead = handle.expectedHead?.trim();
+  if (!expectedHead) return true;
 
   let sameCheckout: boolean;
   try {
@@ -95,8 +75,7 @@ export function workHandleRetainsCanonicalMutationOwnership(input: {
     || !target.branch
     || handle.branch !== target.branch
     || !target.clean
-    || !target.head
-    || !handle.expectedHead?.trim()) {
+    || !target.head) {
     return true;
   }
 
@@ -110,8 +89,9 @@ export function workHandleRetainsCanonicalMutationOwnership(input: {
       .filter((value): value is string => Boolean(value)));
   if (recoverableProcessWorkIds.has(handle.workId)) return true;
 
+  // Baseline revisions supplement but never replace the exact source HEAD.
   const revisions = [...new Set([
-    handle.expectedHead,
+    expectedHead,
     handle.deliveryBaseCommit,
     handle.baseCommit,
   ].map((value) => value?.trim()).filter((value): value is string => Boolean(value)))];
@@ -120,15 +100,8 @@ export function workHandleRetainsCanonicalMutationOwnership(input: {
   const uncontainedRevisions = revisions.filter((revision) => !gitIsAncestor(target.root, revision, target.head!));
   if (uncontainedRevisions.length === 0) return false;
 
-  // A missing WorkContract can leave a stale handle on the canonical checkout
-  // after cleanup has already preserved its unique source commit on a dated,
-  // Work-specific archive ref. Keep that ref untouched and release only the
-  // physical checkout fence; an open WorkContract never qualifies for this.
-  if (!contract) {
-    const archiveRefs = archivedWorkRevisionRefs(target.root, handle.workId);
-    if (archiveRefs.length > 0 && uncontainedRevisions.every((revision) =>
-      archiveRefs.some((ref) => gitIsAncestor(target.root, revision, ref)))) return false;
-  }
+  // Keep the fence while any recorded source revision is outside the exact
+  // canonical target HEAD, even if the WorkContract is gone.
   return true;
 }
 
@@ -167,7 +140,8 @@ export function assertCanonicalRepositoryMutationWorkHandleAvailable(input: {
     recoverableProcessWorkIds,
   };
 
-  const owners = listWorkHandles(input.controllerHome, input.repositoryId, 5_000)
+  const scannedHandles = listWorkHandlesFailClosed(input.controllerHome, input.repositoryId);
+  const owners = scannedHandles
     .filter((handle) => handle.workId !== input.workId
       && DURABLE_CANONICAL_MUTATION_OWNER_STATES.has(handle.state)
       && workHandleRetainsCanonicalMutationOwnership({
@@ -211,6 +185,75 @@ function resolveRepositoryWorkHandlePlacement(input: {
 }
 
 /**
+ * Resolve the active physical WorkHandle for a given Work ID, which may be either
+ * a semantic Work Contract ID or a physical WorkHandle ID. When a semantic ID is
+ * provided and no direct WorkHandle match exists, scan for the active physical
+ * Handle that references this semantic Work via workContractId.
+ *
+ * After Work recovery/succession, the semantic Work Contract may be bound to a new
+ * physical WorkHandle with a different checkout. Only the unique active successor
+ * matching the canonical WorkContract.checkoutId is selected; fail closed on conflict.
+ */
+export function resolveActiveWorkHandle(
+  controllerHome: string,
+  repositoryId: string,
+  workId: string,
+  purpose: 'execution' | 'preparation' = 'execution',
+): WorkHandleState | undefined {
+  const direct = readWorkHandle(controllerHome, repositoryId, workId);
+  const contract = getWorkContract({ controllerHome, repoId: repositoryId }, workId);
+
+  // Without a semantic Contract this is an exact physical Handle lookup.
+  // Historical inspection remains available separately from mutation attribution.
+  if (!contract) return direct;
+
+  const canonicalCheckoutId = contract.checkoutId?.trim();
+  if (!canonicalCheckoutId) {
+    // Legacy Contract without explicit checkout: exact physical lookup only
+    return direct;
+  }
+
+  const ACTIVE_STATES = new Set<WorkHandleState['state']>(['prepared', 'editing', 'validating', 'committed', 'merged']);
+  // Even a live direct Handle must compete with any successor on the same
+  // checkout. An early return would silently admit two physical Writers.
+  const scannedHandles = listWorkHandlesFailClosed(controllerHome, repositoryId);
+  const candidates = scannedHandles
+    .filter((handle) =>
+      (handle.workId === workId || handle.workContractId === workId)
+      && handle.checkoutId === canonicalCheckoutId
+      && (ACTIVE_STATES.has(handle.state)
+        // Only an exact failed physical Handle of an open Work can resume editing.
+        // A failed successor cannot revive a cleaned historical semantic ID.
+        || (handle.workId === workId && handle.state === 'failed' && semanticWorkState(contract) === 'open'))
+    );
+  // Exact lookup may find a Handle outside a bounded scan. Count it once,
+  // without making the historical direct identity authoritative over a peer.
+  if (direct && direct.checkoutId === canonicalCheckoutId && ACTIVE_STATES.has(direct.state)
+      && !candidates.some((candidate) => candidate.workId === direct.workId)) {
+    candidates.push(direct);
+  }
+
+  if (candidates.length === 0) {
+    // Preparation owns terminal inspection and lost-placement recovery. Only
+    // after ruling out a live successor may it examine the exact old Handle.
+    if (purpose === 'preparation') return direct;
+    // A recorded historical Handle is not fresh placement authority.
+    if (direct && direct.checkoutId !== canonicalCheckoutId) {
+      throw new Error(`WORK_HANDLE_PLACEMENT_CHECKOUT_MISMATCH: ${workId}`);
+    }
+    if (direct) throw new Error(`WORK_HANDLE_NOT_ACTIVE: ${workId}`);
+    return undefined;
+  }
+
+  if (candidates.length === 1) return candidates[0];
+
+  // Multiple active handles: fail-closed
+  throw new Error(
+    `WORK_HANDLE_AMBIGUOUS: semantic Work ${workId} has multiple active physical handles on checkout ${canonicalCheckoutId}: ${candidates.map((h) => h.workId).join(', ')}`,
+  );
+}
+
+/**
  * Materialize concrete repository-mutation ownership for an optional semantic
  * Work attribution. Thin Work does not classify execution kind; checkout/CAS
  * placement and the WorkHandle resource fence own mutation safety.
@@ -223,7 +266,7 @@ export function ensureRepositoryWorkHandle(input: {
   identity: RepositoryWorkHandleControllerIdentity;
   checkoutId?: string;
 }): WorkHandleState | undefined {
-  const existing = readWorkHandle(input.controllerHome, input.repository.repoId, input.workId);
+  const existing = resolveActiveWorkHandle(input.controllerHome, input.repository.repoId, input.workId);
   if (existing) {
     if (input.checkoutId?.trim() && existing.checkoutId !== input.checkoutId.trim()) {
       throw new Error(`WORK_HANDLE_PLACEMENT_CHECKOUT_MISMATCH: ${input.workId}`);
@@ -290,7 +333,7 @@ export function reconcileRepositoryWorkHandlePlacement(input: {
   repositoryId: string;
   workId: string;
 }): WorkHandleState | undefined {
-  const existing = readWorkHandle(input.controllerHome, input.repositoryId, input.workId);
+  const existing = resolveActiveWorkHandle(input.controllerHome, input.repositoryId, input.workId);
   if (!existing || existing.managedWorktree) return existing;
   const contract = getWorkContract({ controllerHome: input.controllerHome, repoId: input.repositoryId }, input.workId);
   if (!contract || !contract.checkoutId) return existing;
@@ -468,7 +511,7 @@ export function markRepositoryMutationStarted(input: {
   const store = { controllerHome: input.controllerHome, repoId: input.repository.repoId };
   const contract = getWorkContract(store, input.workId);
   if (!contract) return undefined;
-  const handle = readWorkHandle(input.controllerHome, input.repository.repoId, input.workId);
+  const handle = resolveActiveWorkHandle(input.controllerHome, input.repository.repoId, input.workId);
   if (!handle || handle.managedWorktree || handle.state !== 'prepared') return handle;
   const boundWorkId = handle.workContractId ?? handle.workId;
   if (boundWorkId !== input.workId) {

@@ -61,6 +61,18 @@ export interface WorkflowSupervisorTaskInput {
   userBlockerPolicy: Record<string, unknown>;
 }
 
+/** Identity-bound external notification, not GitHub review or merge authorization. */
+export interface WorkflowSupervisorReviewNotice {
+  taskId: string;
+  repoId: string;
+  prNumber: number;
+  reviewedHeadSha: string;
+  currentHeadSha: string;
+  reviewId: string;
+  source: 'github_review' | 'github_ci' | 'independent_reviewer';
+  outcome: 'ACCEPT' | 'REVISE' | 'BLOCK' | 'COMMENTED' | 'CI_FAILED' | 'CI_PASSED';
+}
+
 export interface WorkflowSupervisorTask extends WorkflowSupervisorTaskInput {
   createdAt: string;
 }

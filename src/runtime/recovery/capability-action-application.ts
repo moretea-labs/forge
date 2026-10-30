@@ -17,6 +17,7 @@ export interface CapabilityRecoveryApplicationInput {
   authorization?: string;
   minAgeMinutes?: number;
   maxCandidates?: number;
+  expectedSourceRevision?: string;
   callStandaloneRecoveryTool: (name: string, args: Record<string, unknown>) => Promise<Record<string, unknown>>;
   recoverySnapshot: () => Promise<Record<string, unknown>>;
 }
@@ -30,7 +31,7 @@ export interface CapabilityRecoveryApplicationResult {
 }
 
 const INSTANCE_RECOVERY_ACTION_IDS = new Set([
-  'recovery.stage_and_activate_runtime_release',
+  'recovery.stage_runtime_release',
   'recovery.restart_primary_connector',
   'recovery.probe_again',
   'recovery.workspace_auth_login_prepare',
@@ -105,11 +106,16 @@ export async function executeCapabilityRecoveryAction(
   let payload: Record<string, unknown>;
   let affectedPaths: string[] = [];
   switch (action.id) {
-    case 'recovery.stage_and_activate_runtime_release': {
-      payload = await input.callStandaloneRecoveryTool('prepare_runtime_release_session', {
-        request_id: `runtime-release-session-${Date.now()}`,
+    case 'recovery.stage_runtime_release': {
+      const expectedSourceRevision = input.expectedSourceRevision?.trim();
+      if (!expectedSourceRevision || !/^[a-f0-9]{40}$/i.test(expectedSourceRevision)) {
+        throw new Error('RECOVERY_EXPECTED_SOURCE_REVISION_REQUIRED');
+      }
+      payload = await input.callStandaloneRecoveryTool('stage_runtime_release', {
+        request_id: `runtime-release-stage-${Date.now()}`,
+        expected_source_revision: expectedSourceRevision,
       });
-      affectedPaths = ['controllerHome/recovery/state/release-sessions', 'candidate-runtime-lanes'];
+      affectedPaths = ['controllerHome/runtime/releases'];
       break;
     }
     case 'recovery.restart_primary_connector': {

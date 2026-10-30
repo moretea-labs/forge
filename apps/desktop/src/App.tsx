@@ -98,7 +98,7 @@ function phaseEvidenceStateLabel(state: string): string {
 
 function statusTone(status: AutomaticContinuationTaskProjection['status']): string {
   if (status === 'needs_user') return 'attention';
-  if (status === 'completed' || status === 'stopped') return 'quiet';
+  if (status === 'completed' || status === 'stopped' || status === 'registered' || status === 'unbound') return 'quiet';
   if (status === 'switching_conversation') return 'switching';
   return 'live';
 }
@@ -455,7 +455,7 @@ function WorkView({
           </div>
           <div className="mcp-summary-card">
             <span>Plan</span>
-            <strong>{projection.plan ? 'r' + projection.plan.revision + ' · ' + projection.plan.status : '未绑定'}</strong>
+            <strong>{projection.plan ? 'r' + projection.plan.revision : '未绑定'}</strong>
             <small>{projection.plan ? projection.plan.items.length + ' 个计划项' : 'Work 可独立存在'}</small>
           </div>
           <div className="mcp-summary-card">
@@ -803,9 +803,9 @@ function RuntimeView({
 
         <section className="runtime-summary" aria-label="Forge 连接">
           <div className="runtime-primary-row">
-            <span className={`health-dot ${connection?.ready ? 'connected' : connection?.configured ? 'degraded' : 'not_connected'}`} />
+            <span className={`health-dot ${connectionError ? 'degraded' : connection?.ready ? 'connected' : connection?.configured ? 'degraded' : 'not_connected'}`} />
             <div>
-              <strong>{connection?.ready ? '控制器连接已就绪' : connection?.configured ? '控制器连接需要处理' : connectionLoading ? '正在读取连接状态' : '连接尚未配置'}</strong>
+              <strong>{connectionError ? '连接状态读取失败' : connection?.ready ? '控制器连接已就绪' : connection?.configured ? '控制器连接需要处理' : connectionLoading ? '正在读取连接状态' : '连接尚未配置'}</strong>
               <p>{connection?.controller.detail ?? '连接状态来自 Forge setup authority；客户端不保存配置副本。'}</p>
             </div>
           </div>

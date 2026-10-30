@@ -85,9 +85,17 @@ describe('execution-speed test governance', () => {
   });
 
   test('models task, main, and release as one reusable nested gate DAG', () => {
+    expect(stepsFor('task').some((step) => !('gate' in step) && step.label === 'context pack readiness regression' && step.command === 'bun' && step.args.join(' ') === 'test tests/runtime/context-pack-readiness.test.ts')).toBe(true);
     expect(stepsFor('task').some((step) => !('gate' in step) && step.label === 'affected tests')).toBe(true);
     expect(stepsFor('main').some((step) => !('gate' in step) && step.label === 'frozen MCP tool contract')).toBe(true);
     expect(stepsFor('main').some((step) => !('gate' in step) && step.label === 'quality harness benchmark')).toBe(true);
+    expect(stepsFor('main')).toContainEqual({
+      label: 'Recovery rollback and known-good authority',
+      command: 'bun',
+      args: ['test', 'tests/runtime/standalone-recovery.test.ts', '--test-name-pattern',
+        'restores only the attested previous whole-Runtime release while Runtime is stopped|independent CPU rejection does not own ReleaseSession rollback or known-good|long soak and absent Supervisor proof do not veto mechanical known-good'],
+      timeoutMs: 5 * 60_000,
+    });
     expect(stepsFor('main').some((step) => 'gate' in step && step.gate === 'task')).toBe(true);
     expect(stepsFor('release').some((step) => 'gate' in step && step.gate === 'main')).toBe(true);
     expect(gateDefinitionDigest('release')).not.toBe(gateDefinitionDigest('main'));

@@ -5,6 +5,7 @@ import { buildWorkspaceAuthStatus, prepareWorkspaceAuthLogin, summarizePluginFor
 import {
   assistantPluginScope,
   getAssistantPluginManifest,
+  getAssistantPluginManifestForAction,
   getControllerPluginManifest,
   listAssistantPluginManifests,
   listControllerPluginManifests,
@@ -30,7 +31,13 @@ function pluginTransportScope(
     throw new Error('PLUGIN_CONTROLLER_REPOSITORY_SENTINEL_RETIRED: controller-scoped plugins no longer use a synthetic repository id');
   }
   const scope = assistantPluginScope(pluginId, ctx.controllerHome);
-  if (scope === 'controller') return { kind: 'controller' };
+  // Computer's physical iPhone actions are repository-bound; its browser and
+  // desktop actions remain Controller-scoped. Match the existing action family
+  // instead of routing the whole dual-surface plugin to the Controller manifest.
+  const repositoryPhoneAction = pluginId === 'computer'
+    && typeof args.action_id === 'string'
+    && args.action_id.startsWith('physical_device_');
+  if (scope === 'controller' && !repositoryPhoneAction) return { kind: 'controller' };
   return { kind: 'repository', repository: selected(ctx, args) };
 }
 
@@ -38,10 +45,13 @@ function pluginManifestForScope(
   ctx: MultiRepositoryMcpToolContext,
   scope: PluginTransportScope,
   pluginId: string,
+  actionId?: string,
 ): AssistantPluginManifest {
   return scope.kind === 'controller'
     ? getControllerPluginManifest(ctx.controllerHome, pluginId)
-    : getAssistantPluginManifest(ctx.controllerHome, scope.repository, pluginId);
+    : pluginId === 'computer' && actionId?.startsWith('physical_device_')
+      ? getAssistantPluginManifestForAction(ctx.controllerHome, scope.repository, { pluginId, actionId })
+      : getAssistantPluginManifest(ctx.controllerHome, scope.repository, pluginId);
 }
 
 function pluginScopeLabel(scope: PluginTransportScope): 'controller' | 'repository' {
@@ -156,7 +166,7 @@ export async function callPluginAdapter(
       const scope = pluginTransportScope(ctx, args, pluginId);
       return result({
         scope: pluginScopeLabel(scope),
-        plugin: summarizePlugin(pluginManifestForScope(ctx, scope, pluginId)),
+        plugin: summarizePlugin(pluginManifestForScope(ctx, scope, pluginId, typeof args.action_id === 'string' ? args.action_id : undefined)),
       });
     }
     case 'plugin_action_execute': {
@@ -370,7 +380,7 @@ export async function callPluginAdapter(
     case 'toolchain_plugin_summary': {
       const pluginId = String(args.plugin_id ?? '').trim();
       const scope = pluginTransportScope(ctx, args, pluginId);
-      const manifest = pluginManifestForScope(ctx, scope, pluginId);
+      const manifest = pluginManifestForScope(ctx, scope, pluginId, typeof args.action_id === 'string' ? args.action_id : undefined);
       return result({
         plugin: summarizePluginForLowInterception(manifest),
         nonOpaque: true,

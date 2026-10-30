@@ -8,6 +8,10 @@ import { buildClaudeControllerInvocation, buildCodexControllerInvocation, buildS
 import { parseCodexConversationJsonl } from '../../src/runtime/control-plane/launcher/local-conversation-controller';
 import { RH_WORK_MODEL_OPERATIONS, isRhWorkAcceptedOperation } from '../../src/runtime/control-plane/facade/rh-work-operation-contract';
 import { runtimeToolDefinitions } from '../../adapters/mcp/runtime-gateway/runtime-tool-definitions';
+import { mcpServerInstructions } from '../../adapters/mcp/instructions';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { normalizeRhWorkInputWireMigration } from '../../adapters/mcp/runtime-gateway/work-input-wire-migration';
 import { CONTROLLER_LEARNING_SIGNAL_ENVELOPE_MAX_ITEMS } from '../../src/runtime/context/automatic-learning';
 import {
@@ -19,6 +23,64 @@ import {
 } from '../../src/runtime/control-plane/facade/types';
 
 describe('handoff and facade contracts', () => {
+  test('Controller MCP instructions require progressive cross-entry discovery and independent requirement close review', () => {
+    const guidance = mcpServerInstructions('controller');
+    expect(guidance).toContain('Progressive source discovery');
+    expect(guidance).toContain('unmodified entry points');
+    expect(guidance).toContain('independent acceptance review');
+    expect(guidance).toContain('Requirement remains open');
+    expect(guidance).toContain('source-language search terms');
+    expect(guidance).toContain('no fixed search quota');
+  });
+
+  test('flags negated issue-closing phrases before GitHub interprets them as automatic completion', () => {
+    const check = (body: string) => {
+      const result = Bun.spawnSync(['node', 'scripts/check-pr-closing-intent.mjs'], {
+        cwd: process.cwd(),
+        env: { ...process.env, GITHUB_EVENT_NAME: '', FORGE_PR_TITLE: '', FORGE_PR_BODY: body },
+      });
+      return { code: result.exitCode, stderr: new TextDecoder().decode(result.stderr) };
+    };
+    expect(check('Do not close #478 or mark Requirement DONE.').code).toBe(1);
+    expect(check('Must not resolve moretea-labs/forge#483.').code).toBe(1);
+    expect(check('Never fixes #313; issue remains open.').code).toBe(1);
+    expect(check('Keep Issue #478 OPEN pending independent review.').code).toBe(0);
+    expect(check('Refs #478; user outcome remains pending.').code).toBe(0);
+    expect(check('Fixes #42').code).toBe(0);
+    expect(check('This is not related to closing #123.').code).toBe(0);
+    expect(check('Results are not close to fixing #456.').code).toBe(0);
+    expect(check('Not close #789; do not infer intent.').code).toBe(0);
+    expect(check('Do not close https://github.com/moretea-labs/forge/issues/478.').code).toBe(1);
+    const duplicate = check('Do not close #478. Must not fix #478.');
+    expect(duplicate.code).toBe(1);
+    expect(duplicate.stderr).toContain('references: #478');
+    expect(duplicate.stderr).not.toContain('#478, #478');
+  });
+
+  test('validates GitHub pull_request event body and fails closed on missing or malformed metadata', () => {
+    const temp = mkdtempSync(join(tmpdir(), 'forge-pr-closing-intent-'));
+    const eventPath = join(temp, 'event.json');
+    const checkEvent = (body?: string, raw?: string) => {
+      if (raw !== undefined) writeFileSync(eventPath, raw);
+      else writeFileSync(eventPath, JSON.stringify(body === undefined ? {} : {
+        pull_request: { title: 'Refs #478', body },
+      }));
+      return Bun.spawnSync(['node', 'scripts/check-pr-closing-intent.mjs'], {
+        cwd: process.cwd(),
+        env: { ...process.env, FORGE_PR_BODY: '', FORGE_PR_TITLE: '',
+          GITHUB_EVENT_NAME: 'pull_request', GITHUB_EVENT_PATH: eventPath },
+      });
+    };
+    try {
+      expect(checkEvent('Do not close #478').exitCode).toBe(1);
+      expect(checkEvent('Issue #478 remains OPEN').exitCode).toBe(0);
+      expect(checkEvent(undefined).exitCode).toBe(1);
+      expect(checkEvent(undefined, '{malformed').exitCode).toBe(1);
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
   test('keeps the ChatGPT-facing facade small and stable', () => {
     expect(FACADE_TOOLS).toEqual(['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work', 'capability_execute']);
   });

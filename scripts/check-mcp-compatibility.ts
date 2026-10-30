@@ -47,7 +47,12 @@ const EXPECTED_PREFERRED_TOOL_NAME_FINGERPRINT = 'f22e635a213b45fa';
 // queries; this intentional input-schema revision invalidates stale Connector
 // tool snapshots without adding an internal semantic model or provider.
 // 2026-10-21: rh_context documents bounded flat semantic navigation locations.
-const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = 'f169b76886e344eb';
+// 2026-10-27: rh_context describes conversation-context reuse and compact search
+// summaries; only descriptive metadata changes, with names and input types intact.
+// 2026-10-29: compose the read-only rh_work get_contract operation with
+// #483 A02 typed Requirement progress CAS fields. Refresh the exact combined
+// schema fingerprint without relaxing the frozen public-contract assertion.
+const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = '6ed619e093dbeeae';
 
 const policy = runtimePolicy(process.cwd(), {
   profile: 'controller',

@@ -267,7 +267,7 @@ describe('rh_work Scheduler MCP adapter', () => {
         policy: { shadowMode: false },
       });
       expect(created.data.supervisorWakeBinding).toEqual({ status: 'bound', taskId });
-      expect(control.getEffect(initial.effectId)?.prompt).toContain('SCHEDULED WORK:');
+      expect(control.getEffect(initial.effectId)?.prompt).toContain('<<<FORGE_WORKFLOW_EFFECT_V1:');
       expect(cronDue('0 8 * * *', Date.parse('2026-10-17T00:00:00.000Z'), 'Asia/Shanghai')).toBe(true);
       expect(cronDue('0 8 * * *', Date.parse('2026-10-17T23:59:00.000Z'), 'Asia/Shanghai')).toBe(false);
       expect(cronDue('0 8 * * *', Date.parse('2026-10-18T00:00:00.000Z'), 'Asia/Shanghai')).toBe(true);

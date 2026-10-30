@@ -11,7 +11,7 @@ import { callCoreCapabilityAdapter } from '../../adapters/mcp/runtime-gateway/co
 import { createWorkflowSupervisorServer } from '../../supervisor/server';
 import { workflowSupervisorSocketPath } from '../../supervisor/paths';
 import { createWorkSemanticContext, reviseWorkSemanticContext } from '../../packages/kernel/work/api/index';
-import { createRequirement, updateRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
+import { createRequirement, reviseRequirementSemantic, updateRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { SEMANTIC_SCOPE_KEY } from '../../src/effects/controller-home';
 
 const roots: string[] = [];
@@ -189,11 +189,8 @@ describe('Workflow Supervisor automation receipts', () => {
       requirementId: 'REQ-LINEAGE', action: 'fixture_activate',
       mutate: (current) => ({ ...current, state: 'active' }),
     });
-    updateRequirement({ controllerHome: root }, {
-      requirementId: 'REQ-LINEAGE', action: 'fixture_acceptance',
-      mutate: (current) => ({ ...current, state: 'done', semanticAcceptance: {
-        reviewer: 'test', rationale: 'goal accepted', planIds: [], acceptedAt: new Date().toISOString(),
-      } }),
+    reviseRequirementSemantic({ controllerHome: root }, 'REQ-LINEAGE', {
+      expectedRevision: 1, state: 'completed', remainingWork: [], acceptedEvidenceRefs: ['review:goal-accepted'],
     });
     const parent = createWorkSemanticContext(options, {
       workId: 'lineage-parent', objective: 'Bound parent', requirementId: 'REQ-LINEAGE',
@@ -209,7 +206,7 @@ describe('Workflow Supervisor automation receipts', () => {
       completionContract: { kind: 'forge_requirement_done', controller_home: root, repo_id: options.repoId, requirement_id: 'REQ-LINEAGE' },
       continuationPolicy: {}, userBlockerPolicy: {},
     };
-    expect((await validators.completionContract!(validationTask, proposal)).valid).toBe(false);
+    expect((await validators.completionContract!(validationTask, proposal)).valid).toBe(true);
     const workTask = { ...validationTask, completionContract: {
       kind: 'forge_work_done', controller_home: root, repo_id: options.repoId, work_id: parent.workId,
     } };
@@ -235,12 +232,7 @@ describe('Workflow Supervisor automation receipts', () => {
       dependsOnWorkIds: [dependency.workId],
     });
     reviseWorkSemanticContext(portable, 'portable-child', { expectedRevision: 1, state: 'completed' });
-    const portableRequirementTask = { ...validationTask, completionContract: {
-      kind: 'forge_requirement_done', controller_home: root, requirement_id: 'REQ-LINEAGE',
-    } };
-    expect((await validators.completionContract!(portableRequirementTask, proposal)).valid).toBe(false);
-    reviseWorkSemanticContext(portable, dependency.workId, { expectedRevision: 1, state: 'completed' });
-    expect((await validators.completionContract!(portableRequirementTask, proposal)).valid).toBe(true);
+    // Requirement completion uses its own accepted evidence, not a hidden Work-lineage gate.
 
     const store = new WorkflowSupervisorStore(root);
     const control = new WorkflowSupervisorControlPlane(store, forgeWorkflowSupervisorValidators());
@@ -281,6 +273,66 @@ describe('Workflow Supervisor automation receipts', () => {
       action: 'DONE',
       terminal: true,
       validation: { valid: true, reason: 'model_semantic_completion' },
+    });
+    store.close();
+  });
+
+  test('advances a Requirement-bound standalone Supervisor CONTINUE -> CONTINUE -> DONE without Work or Plan', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-requirement-ccd-'));
+    roots.push(root);
+    const requirementId = 'REQ-STANDALONE-CCD';
+    createRequirement({ controllerHome: root }, {
+      requirementId,
+      title: 'Requirement-only autonomous delivery',
+      outcomeStatement: 'Complete through Requirement semantic acceptance without Work or Plan.',
+    });
+    const store = new WorkflowSupervisorStore(root);
+    const control = new WorkflowSupervisorControlPlane(store, forgeWorkflowSupervisorValidators());
+    const task = control.registerTask({
+      taskId: 'supervisor:standalone-requirement-ccd',
+      conversationId: '22222222-aaaa-bbbb-cccc-333333333333',
+      conversationUrl: 'https://chatgpt.com/c/22222222-aaaa-bbbb-cccc-333333333333',
+      objective: 'Advance the Requirement directly until accepted.',
+      completionContract: {
+        kind: 'model_semantic_completion', controller_home: root,
+        repo_id: 'repo-requirement-ccd', requirement_id: requirementId,
+      },
+      continuationPolicy: { kind: 'standalone_supervisor', repo_id: 'repo-requirement-ccd' },
+      userBlockerPolicy: { kind: 'model_semantic_user_blocker' },
+    });
+
+    const firstEffect = control.reserveEnrollment(task.taskId);
+    control.observeEffect({ effectId: firstEffect.effectId, observationId: 'requirement-applied-1', outcome: 'applied' });
+    const first = await control.observeAssistantTurn({
+      taskId: task.taskId, conversationId: task.conversationId,
+      responseText: 'Source progress.\n' + renderSupervisorReceipt(task, firstEffect.effectId, 'CONTINUE'),
+    });
+    expect(first).toMatchObject({ action: 'CONTINUE', terminal: false });
+
+    const secondEffect = (first as { successorEffect: { effectId: string } }).successorEffect;
+    control.observeEffect({ effectId: secondEffect.effectId, observationId: 'requirement-applied-2', outcome: 'applied' });
+    const second = await control.observeAssistantTurn({
+      taskId: task.taskId, conversationId: task.conversationId,
+      responseText: 'Review progress.\n' + renderSupervisorReceipt(task, secondEffect.effectId, 'CONTINUE'),
+    });
+    expect(second).toMatchObject({ action: 'CONTINUE', terminal: false });
+
+    reviseRequirementSemantic({ controllerHome: root }, requirementId, {
+      expectedRevision: 1,
+      state: 'completed',
+      progressSummary: 'Accepted delivery evidence committed.',
+      remainingWork: [],
+      acceptedEvidenceRefs: ['git:fixed-head', 'review:accepted', 'runtime:verified'],
+    });
+    const thirdEffect = (second as { successorEffect: { effectId: string } }).successorEffect;
+    control.observeEffect({ effectId: thirdEffect.effectId, observationId: 'requirement-applied-3', outcome: 'applied' });
+    const third = await control.observeAssistantTurn({
+      taskId: task.taskId, conversationId: task.conversationId,
+      responseText: 'Requirement accepted.\n' + renderSupervisorReceipt(task, thirdEffect.effectId, 'DONE'),
+    });
+    expect(third).toMatchObject({
+      action: 'DONE', terminal: true,
+      validation: { valid: true, reason: 'requirement_accepted_evidence_committed' },
     });
     store.close();
   });

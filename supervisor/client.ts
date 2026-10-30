@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { createConnection } from 'node:net';
 import { workflowSupervisorSocketPath } from './paths';
-import type { WorkflowSupervisorConsumerStatus, WorkflowSupervisorContinuationProof, WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorEffect, WorkflowSupervisorTask, WorkflowSupervisorTaskInput, WorkflowSupervisorTaskStall, WorkflowSupervisorTerminalState } from './types';
+import type { WorkflowSupervisorConsumerStatus, WorkflowSupervisorContinuationProof, WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorEffect, WorkflowSupervisorTask, WorkflowSupervisorTaskInput, WorkflowSupervisorTaskStall, WorkflowSupervisorTerminalState, WorkflowSupervisorReviewNotice } from './types';
 
 interface RpcResponse<T> { id: string; ok: boolean; result?: T; error?: { code?: string; message?: string } }
 
@@ -54,6 +54,17 @@ export async function getWorkflowSupervisorConsumerStatus(forgeHome: string): Pr
 export async function getWorkflowSupervisorCurrentConversation(forgeHome: string): Promise<WorkflowSupervisorDiscoveredConversation | undefined> {
   const result = await rpc<{ conversation?: WorkflowSupervisorDiscoveredConversation }>(forgeHome, 'browser_current_conversation', {});
   return result.conversation;
+}
+
+export async function bindWorkflowSupervisorBootstrapProject(forgeHome: string, input: {
+  taskId: string; projectUrl: string; requestId: string; authorizedBy: string;
+}): Promise<{ projectUrl: string; deduplicated: boolean }> {
+  return await rpc(forgeHome, 'task_bind_bootstrap_project', {
+    task_id: input.taskId,
+    project_url: input.projectUrl,
+    request_id: input.requestId,
+    authorized_by: input.authorizedBy,
+  }, SUPERVISOR_RPC_MUTATION_TIMEOUT_MS);
 }
 
 export async function getWorkflowSupervisorTask(forgeHome: string, taskId: string): Promise<WorkflowSupervisorTask | undefined> {
@@ -113,6 +124,27 @@ export async function recoverWorkflowSupervisorTask(forgeHome: string, input: { 
 }
 
 /** Read-only stall classification; derived from the effect ledger, not new state. */
+/** Original-task explicit opt-in; only the current Supervisor owns watch facts. */
+export async function bindWorkflowSupervisorReviewWatch(forgeHome: string, input: {
+  taskId: string; repoId: string; githubRepository: string; prNumber: number;
+}): Promise<{ deduplicated: boolean }> {
+  return await rpc(forgeHome, 'task_review_watch_bind', {
+    task_id: input.taskId, repo_id: input.repoId,
+    github_repository: input.githubRepository, pr_number: input.prNumber,
+  }, SUPERVISOR_RPC_MUTATION_TIMEOUT_MS);
+}
+
+/** Trusted local review/CI ingress. Never authorize merge or provider Send. */
+export async function observeWorkflowSupervisorReviewNotice(forgeHome: string, input: WorkflowSupervisorReviewNotice): Promise<{
+  eventKey: string; deduplicated: boolean; deferred: boolean;
+}> {
+  return await rpc(forgeHome, 'task_review_notice', {
+    task_id: input.taskId, repo_id: input.repoId, pr_number: input.prNumber,
+    reviewed_head_sha: input.reviewedHeadSha, current_head_sha: input.currentHeadSha,
+    review_id: input.reviewId, source: input.source, outcome: input.outcome,
+  }, SUPERVISOR_RPC_MUTATION_TIMEOUT_MS);
+}
+
 export async function getWorkflowSupervisorTaskStall(forgeHome: string, taskId: string): Promise<WorkflowSupervisorTaskStall> {
   return await rpc<WorkflowSupervisorTaskStall>(forgeHome, 'task_stall', { task_id: taskId });
 }

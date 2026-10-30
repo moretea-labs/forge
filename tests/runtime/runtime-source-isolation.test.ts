@@ -8,7 +8,7 @@ import type { MultiRepositoryMcpToolContext } from '../../adapters/mcp/multi-rep
 import { ensureControllerHome, repositoryControllerRoot } from '../../src/effects/controller-home';
 import { addRepositoryCheckout, registerRepository } from '../../src/cli/repositories/registry';
 import { callRuntimeTool } from '../../adapters/mcp/runtime-gateway/runtime-tools';
-import { callContextAdapter } from '../../adapters/mcp/runtime-gateway/context-adapter';
+import { callContextAdapter, selectProgressiveSourcePaths } from '../../adapters/mcp/runtime-gateway/context-adapter';
 import { primaryWorkRuntimeActivity } from '../../adapters/mcp/runtime-gateway/status-inbox-adapter';
 import { recordGatewayLatency } from '../../src/runtime/observability/gateway-contention-metrics';
 import { mintEngineeringAdmissionEvidence } from '../../adapters/mcp/runtime-gateway/engineering-preconditions';
@@ -41,6 +41,8 @@ import { createHandoffItem, getHandoffItem } from '../../src/runtime/control-pla
 import { cancelWorkContract, createWorkContract, type WorkContract } from '../../packages/kernel/work/api/index';
 import { createPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { createRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
+import { forgeWorkflowSupervisorValidators } from '../../supervisor/forge-validators';
+import type { WorkflowSupervisorTask } from '../../supervisor/types';
 import { ensureForgeInstanceIdentity } from '../../packages/kernel/identity/api/index';
 import { recordCognitiveMemory, type CognitiveWriteAuthorityPort } from '../../packages/kernel/cognition/api/index';
 import { cognitionMemoryStore } from '../../src/runtime/control-plane/persistence/cognition-store';
@@ -242,11 +244,19 @@ describe('runtime source isolation', () => {
     expect((plan.data as { plan?: { planId?: string } })?.plan?.planId).toBe(planId);
     expect((work.data as { work?: { workId?: string } })?.work?.workId).toBe(workId);
 
+    // The public rh_work schema is frozen. Forward-compatible Requirement progress
+    // travels in the existing bounded semantic carrier; no extra MCP fields.
     const revisedRequirement = structured(await callRuntimeTool(unscoped, 'rh_work', {
-      operation: 'requirement_revise',
-      requirement_id: requirementId,
-      expected_revision: 1,
-      requirement_outcome: 'Revise Requirement directly by stable id without repository selection.',
+      operation: 'repair',
+      capability_id: `semantic.v1:${JSON.stringify({
+        operation: 'requirement_revise',
+        requirement_id: requirementId,
+        expected_revision: 1,
+        requirement_outcome: 'Revise Requirement directly by stable id without repository selection.',
+        requirement_progress_summary: 'Source under review',
+        requirement_remaining_work: ['Runtime acceptance'],
+        requirement_accepted_evidence_refs: ['git:reviewed'],
+      })}`,
     }));
     const revisedPlan = structured(await callRuntimeTool(unscoped, 'rh_work', {
       operation: 'plan_revise',
@@ -264,7 +274,53 @@ describe('runtime source isolation', () => {
     const revisedRequirementData = (revisedRequirement as unknown as { data?: { requirement?: Record<string, unknown> } }).data;
     const revisedPlanData = (revisedPlan as unknown as { data?: { plan?: Record<string, unknown> } }).data;
     const revisedWorkData = (revisedWork as unknown as { data?: { work?: Record<string, unknown> } }).data;
-    expect(revisedRequirementData?.requirement).toMatchObject({ requirementId, revision: 2 });
+    expect(revisedRequirementData?.requirement).toMatchObject({
+      requirementId, revision: 2, progressSummary: 'Source under review',
+      remainingWork: ['Runtime acceptance'], acceptedEvidenceRefs: ['git:reviewed'],
+    });
+    const resumedRequirement = structured(await callRuntimeTool(unscoped, 'rh_work', {
+      operation: 'requirement_get', requirement_id: requirementId,
+    }));
+    expect((resumedRequirement as unknown as { data?: { progress?: Record<string, unknown> } }).data?.progress).toEqual({
+      source: 'requirement', summary: 'Source under review',
+      remainingWork: ['Runtime acceptance'], acceptedEvidenceRefs: ['git:reviewed'],
+    });
+    const incompleteCompletion = await callRuntimeTool(unscoped, 'rh_work', {
+      operation: 'repair',
+      capability_id: `semantic.v1:${JSON.stringify({
+        operation: 'requirement_revise', requirement_id: requirementId, expected_revision: 2,
+        requirement_state: 'completed', requirement_remaining_work: ['Runtime acceptance'],
+      })}`,
+    });
+    expect(JSON.stringify(incompleteCompletion)).toContain('REQUIREMENT_SEMANTIC_ACCEPTANCE_EVIDENCE_REQUIRED');
+    const missingEvidenceCompletion = await callRuntimeTool(unscoped, 'rh_work', {
+      operation: 'repair',
+      capability_id: `semantic.v1:${JSON.stringify({
+        operation: 'requirement_revise', requirement_id: requirementId, expected_revision: 2,
+        requirement_state: 'completed', requirement_remaining_work: [], requirement_accepted_evidence_refs: [],
+      })}`,
+    });
+    expect(JSON.stringify(missingEvidenceCompletion)).toContain('REQUIREMENT_SEMANTIC_ACCEPTANCE_EVIDENCE_REQUIRED');
+    const acceptedRequirement = structured(await callRuntimeTool(unscoped, 'rh_work', {
+      operation: 'repair',
+      capability_id: `semantic.v1:${JSON.stringify({
+        operation: 'requirement_revise', requirement_id: requirementId, expected_revision: 2,
+        requirement_state: 'completed', requirement_progress_summary: 'Accepted through the public rh_work path',
+        requirement_remaining_work: [], requirement_accepted_evidence_refs: ['git:reviewed', 'review:accepted'],
+      })}`,
+    }));
+    expect((acceptedRequirement.data as { requirement?: Record<string, unknown> })?.requirement).toMatchObject({
+      requirementId, state: 'completed', remainingWork: [], acceptedEvidenceRefs: ['git:reviewed', 'review:accepted'],
+    });
+    const requirementTask = {
+      completionContract: {
+        kind: 'forge_requirement_done', controller_home: controllerHome,
+        repo_id: primary.repoId, requirement_id: requirementId,
+      },
+      userBlockerPolicy: {},
+    } as unknown as WorkflowSupervisorTask;
+    expect(await forgeWorkflowSupervisorValidators().completionContract!(requirementTask, { action: 'DONE' } as any))
+      .toMatchObject({ valid: true, reason: 'requirement_accepted_evidence_committed' });
     expect(revisedPlanData?.plan).toMatchObject({ planId, revision: 2 });
     expect(revisedWorkData?.work).toMatchObject({ workId, revision: 2 });
 
@@ -1423,12 +1479,83 @@ printf '{"ok":true}\\n'
     expect(source?.content).toContain('END_OF_SOURCE_EVIDENCE');
   });
 
+  test('rh_context offers exact bounded follow-up when related source candidates were omitted', async () => {
+    const business = tempRoot('forge-context-progressive-candidates-');
+    const controllerHome = tempRoot('forge-home-context-progressive-candidates-');
+    initGitRepo(business, 'context-progressive-candidates');
+    writeFileSync(join(business, 'src', 'owner.ts'), 'export function progressiveOwner() { return true; }\n');
+    writeFileSync(join(business, 'src', 'consumer.ts'), "import { progressiveOwner } from './owner';\nexport const result = progressiveOwner();\n");
+    const repository = registerRepository({ path: business, controllerHome, displayName: 'Context Progressive Candidates' });
+    const payload = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_context', {
+      repo_id: repository.repoId, operation: 'search', query: 'Inspect progressiveOwner references',
+      search_terms: ['progressiveOwner'], retrieval_mode: 'plan', structural_context: 'off',
+      max_files: 1, max_snippets: 2, detail_level: 'detail', include_learning_recall: false,
+    }));
+    const data = payload.data as { readiness?: { retrieval?: { omittedCandidateCount?: number } } };
+    expect(data.readiness?.retrieval?.omittedCandidateCount).toBeGreaterThan(0);
+    expect(payload.suggestedNextActions).toContainEqual(expect.objectContaining({
+      tool: 'rh_context', operation: 'search', risk: 'readonly',
+      payload: expect.objectContaining({
+        known_paths: expect.arrayContaining(['src/consumer.ts']),
+        include_learning_recall: false,
+      }),
+    }));
+    const action = (payload.suggestedNextActions as Array<{ payload: Record<string, unknown> }>)[0]!;
+    const followed = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_context', {
+      ...action.payload, operation: 'search',
+    }));
+    expect((followed.data as { files: Array<{ path: string }> }).files.map(file => file.path))
+      .toContain('src/consumer.ts');
+    expect((followed.suggestedNextActions as Array<{ payload?: { known_paths?: string[] } }> ?? [])
+      .every(entry => !entry.payload?.known_paths?.includes('src/consumer.ts'))).toBe(true);
+  });
+
+  test('rh_context warns about Chinese-only cold-start and finds English owners after model-selected hints', async () => {
+    const business = tempRoot('forge-context-source-language-');
+    const controllerHome = tempRoot('forge-home-context-source-language-');
+    initGitRepo(business, 'source-language-discovery');
+    mkdirSync(join(business, 'docs'), { recursive: true });
+    writeFileSync(join(business, 'docs', 'first-task.zh-CN.md'), '工作归属应该退役，自动推进需要由需求驱动。\n');
+    writeFileSync(join(business, 'src', 'authority.ts'), 'export function requirementAuthority() { return true; }\n');
+    writeFileSync(join(business, 'src', 'scheduler.ts'), "import { requirementAuthority } from './authority';\nexport function schedulerContinue() { return requirementAuthority(); }\n");
+    git(business, 'add', '.');
+    git(business, 'commit', '-qm', 'discovery fixture');
+    const repository = registerRepository({ path: business, controllerHome, displayName: 'Source Language Discovery' });
+    const context = mcpContext(controllerHome, repository);
+    const query = '工作归属应该退役，自动推进需要由需求驱动。';
+    const cold = structured(await callRuntimeTool(context, 'rh_context', {
+      repo_id: repository.repoId, operation: 'search', query, retrieval_mode: 'plan',
+      structural_context: 'off', max_files: 4, max_snippets: 8, include_learning_recall: false,
+    }));
+    expect((cold.data as { files: Array<{ path: string }> }).files.some(file => file.path.startsWith('src/'))).toBe(false);
+    expect((cold.warnings as string[] | undefined)?.some(warning => warning.includes('search_terms'))).toBe(true);
+    const grounded = structured(await callRuntimeTool(context, 'rh_context', {
+      repo_id: repository.repoId, operation: 'search', query,
+      search_terms: ['requirement', 'scheduler'], retrieval_mode: 'plan',
+      structural_context: 'off', max_files: 4, max_snippets: 8, include_learning_recall: false,
+    }));
+    expect((grounded.data as { files: Array<{ path: string }> }).files.map(file => file.path))
+      .toEqual(expect.arrayContaining(['src/authority.ts', 'src/scheduler.ts']));
+  });
+
+  test('omitted source follow-up excludes stale index entries and already materialized files', () => {
+    const selected = selectProgressiveSourcePaths([
+      { path: 'src/removed.ts', reason: 'structural provider reports file removed since index' },
+      { path: 'src/owner.ts', reason: 'max_files' },
+      { path: 'src/owner.ts', reason: 'max_snippets' },
+      { path: 'src/already.ts', reason: 'max_files' },
+      { path: 'src/next.ts', reason: 'max_files' },
+    ], ['src/already.ts']);
+    expect(selected).toEqual(['src/owner.ts', 'src/next.ts']);
+  });
+
   test('rh_context runtime-issued closure round-trips into engineering preconditions without depth corruption', async () => {
     const business = tempRoot('forge-context-roundtrip-facade-');
     const controllerHome = tempRoot('forge-home-context-roundtrip-facade-');
     initGitRepo(business, 'context-roundtrip-facade');
+    writeFileSync(join(business, 'src', 'index.ts'), 'export const ENTRY_MARKER = true;\n');
     writeProjectEngineeringContract(business);
-    git(business, 'add', '.forge/project-engineering.json');
+    git(business, 'add', '.forge/project-engineering.json', 'src/index.ts');
     git(business, 'commit', '-m', 'add engineering contract');
     const sourceRevision = git(business, 'rev-parse', 'HEAD');
     const repository = registerRepository({ path: business, controllerHome, displayName: 'Context Roundtrip Facade' });
@@ -1543,7 +1670,9 @@ printf '{"ok":true}\\n'
       detail_level: 'summary',
     }));
     const matches = ((payload.data as { capabilitySearch?: { matches?: Array<{ capabilityId?: string }> } }).capabilitySearch?.matches ?? []);
-    expect(matches.some((entry) => entry.capabilityId === 'plugin.computer.physical_device_open')).toBe(true);
+    // Computer publishes repository physical-device actions on macOS only.
+    // Linux/Windows must not advertise unsupported native iPhone control.
+    expect(matches.some((entry) => entry.capabilityId === 'plugin.computer.physical_device_open')).toBe(process.platform === 'darwin');
     expect(matches.some((entry) => entry.capabilityId === 'plugin.ios.physical_device_open')).toBe(false);
   });
 

@@ -1,6 +1,6 @@
 export type RuntimeConnectionStatus = 'not_connected' | 'connecting' | 'connected' | 'degraded';
 export type ProjectionSource = 'runtime' | 'disconnected' | 'design_preview';
-export type AutomaticContinuationStatus = 'running' | 'waiting' | 'needs_user' | 'completed' | 'stopped' | 'switching_conversation';
+export type AutomaticContinuationStatus = 'registered' | 'unbound' | 'running' | 'waiting' | 'needs_user' | 'completed' | 'stopped' | 'switching_conversation';
 export type WorkSemanticState = 'open' | 'completed' | 'cancelled';
 
 export interface AutomaticContinuationTaskProjection {
@@ -117,7 +117,6 @@ export interface ProjectPlanProjection {
   planId: string;
   revision: number;
   goal: string;
-  status: string;
   requirementId?: string;
   updatedAt?: string;
   items: Array<{ id: string; objective: string }>;
@@ -363,7 +362,6 @@ export const designPreviewProjection = Object.freeze<ForgeDesktopProjection>({
     planId: 'PLAN-forge-v3-desktop-client-20260930-r1',
     revision: 1,
     goal: '交付 Forge V3 桌面客户端，并保持 Runtime / Controller 单一权威。',
-    status: 'draft',
     requirementId: 'REQ-forge-v3-desktop-client-20260930',
     updatedAt: '2026-10-04T11:45:31.464Z',
     items: [
@@ -387,9 +385,9 @@ export const designPreviewProjection = Object.freeze<ForgeDesktopProjection>({
       workId: 'work-mcp',
       title: '自动推进',
       objective: '继续 Forge V3 客户端开发，直到形成可审查交付或明确需要用户处理的阻塞。',
-      status: 'running',
-      statusLabel: '推进中',
-      detail: '自动推进监督器负责下一轮外层推进；桌面端只展示其权威状态。',
+      status: 'registered',
+      statusLabel: '任务已登记',
+      detail: '监督器列表不包含执行状态；正式客户端不推断正在运行。',
       conversation: {
         conversationId: '00000000-0000-4000-8000-000000000001',
         conversationUrl: 'https://chatgpt.com/c/00000000-0000-4000-8000-000000000001',

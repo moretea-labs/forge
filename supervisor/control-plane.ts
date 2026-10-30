@@ -2,10 +2,11 @@ import { randomUUID } from 'node:crypto';
 import { parseChatgptConversationIdentity } from './chatgpt-conversation';
 import { parseSupervisorCompletion, renderEffectMarker, renderSupervisorPrompt, sha256, validateEffectId, validateSupervisorObjective } from './protocol';
 import { WorkflowSupervisorStore } from './store';
+import type { ComputerChatgptPrewriteNoMutationReceipt } from '../packages/plugin-runtime/computer/conversation-target';
 import { getWorkContract } from '../packages/kernel/work/api/index';
 import { readRequirement } from '../src/runtime/control-plane/persistence/requirement-store';
 import { resolveWorkflowSupervisorForgeHome } from './paths';
-import type { WorkflowAssistantObservation, WorkflowAssistantObservationResult, WorkflowContractValidation, WorkflowEffectKind, WorkflowSupervisorBrowserPollResult, WorkflowSupervisorBrowserTask, WorkflowSupervisorCompletion, WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorEffect, WorkflowSupervisorLifecycleHooks, WorkflowSupervisorProjectScope, WorkflowSupervisorTask, WorkflowSupervisorTaskInput, WorkflowSupervisorTerminalState, WorkflowSupervisorValidators, WorkflowSupervisorPreflightComposerObservation } from './types';
+import type { WorkflowAssistantObservation, WorkflowAssistantObservationResult, WorkflowContractValidation, WorkflowEffectKind, WorkflowSupervisorBrowserPollResult, WorkflowSupervisorBrowserTask, WorkflowSupervisorCompletion, WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorEffect, WorkflowSupervisorLifecycleHooks, WorkflowSupervisorProjectScope, WorkflowSupervisorTask, WorkflowSupervisorTaskInput, WorkflowSupervisorTerminalState, WorkflowSupervisorValidators, WorkflowSupervisorPreflightComposerObservation, WorkflowSupervisorReviewNotice } from './types';
 
 function compactProjectIdentity(value: string): string {
   return value.normalize('NFKC').toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
@@ -46,6 +47,10 @@ function projectMatchesScope(conversation: WorkflowSupervisorDiscoveredConversat
   const projectSlug = conversation.projectUrl ? projectSlugFromUrl(conversation.projectUrl) : undefined;
   if (!projectSlug) return false;
   return names.some((name) => boundedProjectIdentityMatch(name, projectSlug));
+}
+
+function explicitBootstrapProjectBindingReady(task: WorkflowSupervisorTask, store: WorkflowSupervisorStore): boolean {
+  return task.continuationPolicy.project_binding_required !== true || Boolean(store.boundBootstrapProjectUrl(task.taskId));
 }
 
 function effectId(): string { return `fx_${randomUUID().replaceAll('-', '')}`; }
@@ -235,6 +240,9 @@ export class WorkflowSupervisorControlPlane {
     // could never be delivered, so the ControllerRound waited forever instead of
     // surfacing the operator/provider decision that terminal state represents.
     requireNonTerminalTask(this.store, task.taskId);
+    if (!explicitBootstrapProjectBindingReady(task, this.store)) {
+      throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_REQUIRED');
+    }
     const originKey = `enrollment:${taskId}`;
     // Supervisor owns the outer-turn effect identity. A lower ControllerRound may
     // rotate when the semantic Work carrier changes, but the Requirement + exact
@@ -367,6 +375,39 @@ export class WorkflowSupervisorControlPlane {
       prompt: this.renderPrompt(task, id, 'continuation', `scheduled wake ${input.scheduleId} occurrence ${input.occurrenceId}`),
     });
   }
+  /**
+   * Notify this already-owned Supervisor of an external reviewer/CI change.
+   * A notice is not a verified review verdict, CI gate or merge authorization;
+   * the model must re-read the platform and current PR HEAD before deciding.
+   */
+  bindReviewWatch(input: { taskId: string; repoId: string; githubRepository: string; prNumber: number }): { deduplicated: boolean } {
+    const task = this.requireTask(input.taskId);
+    if (task.completionContract.repo_id !== input.repoId) throw new Error('WORKFLOW_SUPERVISOR_REVIEW_REPOSITORY_MISMATCH');
+    if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(input.githubRepository)) throw new Error('WORKFLOW_SUPERVISOR_GITHUB_REPOSITORY_INVALID');
+    if (!Number.isInteger(input.prNumber) || input.prNumber < 1 || input.prNumber > 1_000_000) throw new Error('WORKFLOW_SUPERVISOR_REVIEW_PR_INVALID');
+    return this.store.bindReviewWatch(input);
+  }
+
+  observeReviewNotice(notice: WorkflowSupervisorReviewNotice): { eventKey: string; deduplicated: boolean; deferred: boolean } {
+    const task = this.requireTask(notice.taskId);
+    if (task.completionContract.repo_id !== notice.repoId) throw new Error('WORKFLOW_SUPERVISOR_REVIEW_REPOSITORY_MISMATCH');
+    if (!Number.isInteger(notice.prNumber) || notice.prNumber < 1 || notice.prNumber > 1_000_000) throw new Error('WORKFLOW_SUPERVISOR_REVIEW_PR_INVALID');
+    if (!/^[0-9a-f]{40}$/i.test(notice.reviewedHeadSha) || !/^[0-9a-f]{40}$/i.test(notice.currentHeadSha)) throw new Error('WORKFLOW_SUPERVISOR_REVIEW_HEAD_INVALID');
+    // A stale review may be the very REVISE finding the original Writer must
+    // see. Deliver as explicitly unverified context; never as merge approval.
+    if (!/^[a-zA-Z0-9_.:-]{1,128}$/.test(notice.reviewId)) throw new Error('WORKFLOW_SUPERVISOR_REVIEW_ID_INVALID');
+    if (!['github_review','github_ci','independent_reviewer'].includes(notice.source)
+      || !['ACCEPT','REVISE','BLOCK','COMMENTED','CI_FAILED','CI_PASSED'].includes(notice.outcome)) throw new Error('WORKFLOW_SUPERVISOR_REVIEW_OUTCOME_INVALID');
+    if ((notice.source === 'github_ci') !== notice.outcome.startsWith('CI_')) throw new Error('WORKFLOW_SUPERVISOR_REVIEW_SOURCE_MISMATCH');
+    const normalized: WorkflowSupervisorReviewNotice = {
+      ...notice, reviewedHeadSha: notice.reviewedHeadSha.toLowerCase(), currentHeadSha: notice.currentHeadSha.toLowerCase(),
+    };
+    const recorded = this.store.recordReviewNotice(normalized);
+    // The original task already owns CONTINUE reservation. Do not synthesize a
+    // competing effect or bypass Scheduler-only WAIT eligibility.
+    return { ...recorded, deferred: true };
+  }
+
   /** Read-only stall classification for one task; no lifecycle authority. */
   taskStall(taskId: string): ReturnType<WorkflowSupervisorStore['taskStall']> { return this.store.taskStall(this.requireTask(taskId).taskId); }
   /**
@@ -423,7 +464,6 @@ export class WorkflowSupervisorControlPlane {
    * from the standalone task's objective or nearby browser tabs. */
   bindBootstrapProject(input: { taskId: string; projectUrl: string; requestId: string; authorizedBy: string }) {
     const task = this.requireTask(input.taskId);
-    requireNonTerminalTask(this.store, task.taskId);
     let parsed: URL;
     try { parsed = new URL(input.projectUrl); }
     catch { throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_URL_INVALID'); }
@@ -431,6 +471,15 @@ export class WorkflowSupervisorControlPlane {
     if (parsed.origin !== 'https://chatgpt.com' || !match || parsed.search || parsed.hash
       || parsed.username || parsed.password) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_URL_INVALID');
     const canonical = `https://chatgpt.com/g/${match[1]!.toLocaleLowerCase()}/project`;
+    // A durable binding receipt remains authoritative after enrollment changes
+    // the conversation or discovery observations change. This path cannot send.
+    if (this.store.boundBootstrapProjectUrl(task.taskId)) {
+      return this.store.bindBootstrapProject({ ...input, projectUrl: canonical });
+    }
+    requireNonTerminalTask(this.store, task.taskId);
+    // Fence legacy bootstrap tasks before validating discovery so a failed bind
+    // cannot later fall back to an inferred Project or race a stale poll command.
+    this.store.requireBootstrapProjectBinding(task.taskId);
     if (!this.store.discoverySnapshot().conversations.some((conversation) => {
       try {
         const value = new URL(conversation.projectUrl ?? '');
@@ -443,6 +492,9 @@ export class WorkflowSupervisorControlPlane {
   bootstrapProjectUrl(taskId: string): string {
     const task = this.requireTask(taskId);
     const explicitlyBound = this.store.boundBootstrapProjectUrl(taskId);
+    if (task.continuationPolicy.project_binding_required === true && !explicitlyBound) {
+      throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_REQUIRED');
+    }
     if (explicitlyBound) return explicitlyBound;
     const scope = this.hooks.projectScopeForTask?.(task);
     const title = scope?.title.trim();
@@ -552,6 +604,9 @@ export class WorkflowSupervisorControlPlane {
     if (!task.conversationId.startsWith('bootstrap:')) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_NOT_PENDING');
     const terminal = this.store.terminalAction(task.taskId);
     if (terminal === 'STOPPED') return { authorized: true, task: browserTask(task), terminal };
+    if (!terminal && !explicitBootstrapProjectBindingReady(task, this.store)) {
+      return { authorized: true, task: browserTask(task) };
+    }
     // While identity is still bootstrap, reconcile the latest applied leaf
     // before dispatching any successor. An unstarted recovery child must not
     // send from a Project/new-composer surface while the source conversation
@@ -617,7 +672,7 @@ export class WorkflowSupervisorControlPlane {
       ...(this.hooks.effectDispatchEvidence?.({ task, effectId: input.effectId }) ?? {}),
     });
   }
-  bootstrapObserveEffect(input: { taskId: string; effectId: string; observationId: string; outcome: 'applied' | 'not_applied' | 'unknown'; evidence?: Record<string, unknown>; reconciled?: boolean }): void {
+  bootstrapObserveEffect(input: { taskId: string; effectId: string; observationId: string; outcome: 'applied' | 'not_applied' | 'unknown'; evidence?: Record<string, unknown>; reconciled?: boolean }): boolean {
     const task = this.requireTask(input.taskId);
     // A bootstrap provider turn becomes applied through the canonical adapter
     // only after the exact conversation URL has been promoted and bound. An
@@ -643,17 +698,19 @@ export class WorkflowSupervisorControlPlane {
         || input.evidence?.send_clicked !== false) {
         throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_NOT_APPLIED_PROOF_INVALID');
       }
-      this.store.recordEffectNotAppliedProof(effect.effectId, input.observationId, {
+      // The provider's pre-click result is an observation, not automatic
+      // refund authority. The Store validates any retryable no-mutation proof.
+      return this.store.recordEffectNotAppliedProof(effect.effectId, input.observationId, {
         surface: 'computer-bootstrap', send_clicked: false,
         dispatch_generation: dispatch.generation,
         pre_send_rejection: true,
         attestation: 'local_computer_dispatch_returned_without_send',
       });
-      return;
     }
     const evidence = { surface: 'computer-bootstrap', ...(input.evidence ?? {}) };
     this.observeEffect({ effectId: effect.effectId, observationId: input.observationId, outcome: input.outcome, evidence });
     if (input.outcome === 'applied') this.hooks.effectApplied?.(task, effect, { observationId: input.observationId, evidence });
+    return false;
   }
   /** Persist a bounded preflight rejection; started generations require an exact no-click proof first. */
   recordProviderPreparationFailure(input: { taskId: string; effectId: string; reasonCode: string; composerObservation?: WorkflowSupervisorPreflightComposerObservation }): void {
@@ -683,6 +740,8 @@ export class WorkflowSupervisorControlPlane {
       baseline_assistant_sha256: sha256(snapshot.latestAssistantResponse),
       baseline_has_source_completion: Boolean(pending.effect.sourceCompletionFingerprint),
       ...(this.hooks.effectDispatchEvidence?.({ task, effectId }) ?? {}),
+      ...(typeof input.evidence?.target_id === 'string' && input.evidence.target_id.trim()
+        ? { target_id: input.evidence.target_id.trim().slice(0, 256) } : {}),
     };
     const started = this.store.recordEffectDispatchStarted(effectId, input.dispatchGeneration, input.dispatchId, dispatchEvidence);
     return { started, mode: started ? 'send' : 'reconcile', generation: input.dispatchGeneration };
@@ -708,23 +767,25 @@ export class WorkflowSupervisorControlPlane {
     return { recorded: true };
   }
   /** Dispatch-owner attestation. Only the adapter that reserved this generation may call it. */
-  browserObserveDispatchFailure(input: { conversationId: string; conversationUrl: string; effectId: string; observationId: string; dispatchGeneration: number; reason: string; surface?: string }): void {
+  browserObserveDispatchFailure(input: { conversationId: string; conversationUrl: string; effectId: string; observationId: string; dispatchGeneration: number; dispatchId: string; targetId: string; reason: string; surface?: string; prewriteNoMutationReceipt?: ComputerChatgptPrewriteNoMutationReceipt }): void {
     const task = this.requireBrowserTask(input.conversationId, input.conversationUrl);
     const effect = this.store.getEffect(input.effectId);
     if (effect?.taskId !== task.taskId) throw new Error('WORKFLOW_SUPERVISOR_BROWSER_EFFECT_TASK_MISMATCH');
     const dispatch = this.store.latestEffectDispatch(input.effectId);
     if (dispatch?.generation !== input.dispatchGeneration) throw new Error('WORKFLOW_SUPERVISOR_DISPATCH_GENERATION_CHANGED');
-    this.store.recordEffectNotAppliedProof(input.effectId, input.observationId, {
-      surface: input.surface?.trim().slice(0, 128) || 'macos-native', reason: input.reason, send_clicked: false, dispatch_generation: input.dispatchGeneration,
-      // This call is the dispatch owner's exact mechanical return before any
-      // Send click. The store refunds this generation once; the existing preflight
-      // gate bounds ordinary repeats without spending actual send budget.
-      pre_send_rejection: true,
+    const accepted = this.store.recordEffectNotAppliedProof(input.effectId, input.observationId, {
+      ...(input.prewriteNoMutationReceipt ?? {}),
+      effect_id: input.effectId, dispatch_generation: input.dispatchGeneration, dispatch_id: input.dispatchId,
+      target_id: input.targetId, surface: input.surface?.trim().slice(0, 128) || 'computer-chatgpt-target',
     });
-    const recoveryStopPending = effect.kind === 'recovery' && input.reason.trim() === 'provider_recovery_stop_pending';
-    if (!recoveryStopPending) {
-      this.recordProviderPreparationFailure({ taskId: task.taskId, effectId: effect.effectId, reasonCode: input.reason });
-    }
+    // A missing/invalid typed receipt is durably UNKNOWN and cannot create retry
+    // or refund authority. The original observation loop will reconcile it.
+    if (!accepted) return;
+    // Recovery readiness refusals happen before composer mutation and are expected
+    // to become retryable after bounded spacing; don't convert them into a sticky
+    // preflight block or click Stop to make progress.
+    if (effect.kind === 'recovery' && ['provider_recovery_stop_pending', 'provider_recovery_turn_unknown', 'provider_recovery_turn_live'].includes(input.reason.trim())) return;
+    this.recordProviderPreparationFailure({ taskId: task.taskId, effectId: effect.effectId, reasonCode: input.reason });
   }
   browserObserveProviderTurn(input: { conversationId: string; conversationUrl: string; generating: boolean; latestAssistantResponse: string; providerActivityText?: string; providerFailureCode?: string; receiptMissing?: boolean; observedAtMs: number; graceMs: number }): { state: 'inactive' | 'none' | 'generating' | 'idle_pending' | 'recovery_reserved' | 'exhausted'; recoveryEffect?: WorkflowSupervisorEffect } {
     const task = this.requireBrowserTask(input.conversationId, input.conversationUrl);
@@ -873,15 +934,23 @@ export class WorkflowSupervisorControlPlane {
   /** Model CONTINUE and its causal successor commit in the same authority transaction. */
   private reserveContinuation(task: WorkflowSupervisorTask, completion: WorkflowSupervisorCompletion) {
     const nextId = stableEffectId(`completion:${completion.completionFingerprint}`);
-    const checkpoint = completion.proposal.checkpoint;
+    const notices = this.store.listPendingReviewNotices(128, task.taskId);
+    // Deliver one exact notice per continuation. A prioritized stale-head notice
+    // must keep its own receipt; all other notices stay pending for a later wake.
+    const selected = notices.find(({ notice }) => notice.reviewedHeadSha !== notice.currentHeadSha) ?? notices[0];
+    const review = selected?.notice;
+    const nextContext = review
+      ? `[UNVERIFIED${review.reviewedHeadSha !== review.currentHeadSha ? ' STALE_HEAD' : ''}] pr=${review.prNumber} reviewed=${review.reviewedHeadSha} current=${review.currentHeadSha} src=${review.source} outcome=${review.outcome} receipt=${review.reviewId} NO_MERGE_AUTHORITY`
+      : undefined;
     return this.store.commitCompletion(completion, {
       effectId: nextId,
       kind: 'continuation',
-      prompt: this.renderPrompt(task, nextId, 'continuation', checkpoint),
+      ...(selected ? { reviewEventKeys: [selected.eventKey] } : {}),
+      prompt: this.renderPrompt(task, nextId, 'continuation', undefined, undefined, nextContext),
       // Rebuild from the same durable goal in a new logical conversation after
       // a confirmed receipt cycle; never migrate an uncompleted mutation.
       ...(task.continuationPolicy.kind === 'standalone_supervisor'
-        ? { freshEnrollmentPrompt: this.renderPrompt(task, nextId, 'enrollment', checkpoint) } : {}),
+        ? { freshEnrollmentPrompt: this.renderPrompt(task, nextId, 'continuation', undefined, undefined, nextContext) } : {}),
     });
   }
 
@@ -915,15 +984,14 @@ export class WorkflowSupervisorControlPlane {
     task: WorkflowSupervisorTask,
     effectId: string,
     kind: WorkflowEffectKind,
-    checkpoint?: string,
+    _checkpoint?: string,
     correctionReason?: string,
     lowerLayerContext?: string,
   ): string {
     const canonicalObjective = this.hooks.canonicalObjectiveForTask?.(task)?.trim();
     const promptTask = canonicalObjective ? { ...task, objective: canonicalObjective } : task;
-    const cognition = this.hooks.advisoryCognitionForTask?.(promptTask);
-    const continuity = checkpoint ?? (kind === 'recovery' ? this.store.getLatestCompletion(task.taskId)?.proposal.checkpoint : undefined);
-    return renderSupervisorPrompt(promptTask, effectId, kind, continuity, correctionReason, lowerLayerContext, cognition);
+    // Historical checkpoints remain in the effect journal, never in the next prompt.
+    return renderSupervisorPrompt(promptTask, effectId, kind, undefined, correctionReason, lowerLayerContext);
   }
 
   private browserTaskActive(task: WorkflowSupervisorTask): boolean { return this.hooks.browserTaskActive?.(task) ?? true; }

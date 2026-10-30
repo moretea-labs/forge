@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'fs';
+import { createHash } from 'crypto';
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { isAbsolute, join } from 'path';
 import { spawnSync } from 'child_process';
@@ -10,6 +11,8 @@ import {
   selectRepositoryCheckout,
 } from '../../src/cli/repositories/registry';
 import { resolveGitExecutable } from '../../src/effects/git-executable';
+import { getOwnedResource } from '../../packages/kernel/identity/api/index';
+import { managedWorkspaceOwnedResourceId } from '../../src/runtime/execution/managed-workspace';
 import {
   assertExecutionIdentity,
   executionIdentityForRepository,
@@ -182,5 +185,42 @@ describe('Git executable and managed workspace guards', () => {
     expect(guarded.gitTopLevel).toBe(workspaceRoot);
     expect(guarded.gitCommonDirectory).toBeTruthy();
     expect(guarded.currentBranch).toBe('work/git-runtime-workspace');
+
+    // Replay the real managed-workspace preparation path with a persisted
+    // worktree witness from an earlier macOS mount device number.
+    if (process.platform === 'darwin') {
+      const resourceId = managedWorkspaceOwnedResourceId(repository.repoId, workspaceCheckoutId);
+      const owned = getOwnedResource(controllerHome, resourceId)!;
+      const stat = lstatSync(workspaceRoot);
+      const canonicalPath = realpathSync(workspaceRoot);
+      const majorBase = Math.floor(stat.dev / 0x1000000) * 0x1000000;
+      const oldDev = majorBase + ((stat.dev - majorBase + 3) % 256);
+      const fingerprint = (ino: number) => createHash('sha256').update([
+        owned.ownerForgeInstanceId,
+        'filesystem_path',
+        canonicalPath,
+        String(oldDev),
+        String(ino),
+        'directory',
+      ].join('\0')).digest('hex');
+      const resourcePath = join(controllerHome, 'owned-resources',
+        resourceId.replace(/[^a-zA-Z0-9._-]/g, '_') + '.json');
+      const saved = { ...owned, identityFingerprint: fingerprint(stat.ino) };
+      writeFileSync(resourcePath, JSON.stringify(saved));
+      const originalBytes = readFileSync(resourcePath, 'utf8');
+      const resume = () => ensureManagedWorkspace(controllerHome, repository, {
+        requestId: 'git-runtime-workspace',
+        title: 'Git Runtime Workspace',
+        branchName: 'work/git-runtime-workspace',
+      });
+
+      expect(resume).toThrow('OWNED_RESOURCE_IDENTITY_CONFLICT');
+      expect(readFileSync(resourcePath, 'utf8')).toBe(originalBytes);
+      expect(getOwnedResource(controllerHome, resourceId)?.provenance.createdAt).toBe(owned.provenance.createdAt);
+
+      // A foreign inode in the persisted proof must never be adopted on replay.
+      writeFileSync(resourcePath, JSON.stringify({ ...saved, identityFingerprint: fingerprint(stat.ino + 1) }));
+      expect(resume).toThrow('OWNED_RESOURCE_IDENTITY_CONFLICT');
+    }
   });
 });

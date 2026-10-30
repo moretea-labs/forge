@@ -2,6 +2,56 @@ import { expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 
+test('invalidated content context stops observing the page without throwing', () => {
+  const source = readFileSync(new URL('../../adapters/computer/chrome-extension/content.js', import.meta.url), 'utf8');
+  let pending: (() => void) | undefined;
+  let onMutation: (() => void) | undefined;
+  let disconnects = 0;
+  let sends = 0;
+  const scope = {
+    ForgeComputerChatgptCore: { parseConversation: () => null },
+    document: { documentElement: {}, querySelectorAll: () => [] },
+    location: { href: 'https://chatgpt.com/' },
+    chrome: { runtime: {
+      onMessage: { addListener: () => {} },
+      sendMessage: () => { sends++; throw new Error('Extension context invalidated.'); },
+    } },
+    MutationObserver: class {
+      constructor(callback: () => void) { onMutation = callback; }
+      observe() {}
+      disconnect() { disconnects++; }
+    },
+    setTimeout: (callback: () => void) => { pending = callback; return 1; },
+    clearTimeout: () => {}, URL,
+  };
+  runInNewContext(source, scope, { filename: 'content.js' });
+  expect(() => pending!()).not.toThrow();
+  expect(disconnects).toBe(1);
+  pending = undefined;
+  onMutation!();
+  expect(pending).toBeUndefined();
+  expect(sends).toBe(1);
+});
+
+test('content context stops observing when runtime is absent after reload', () => {
+  const source = readFileSync(new URL('../../adapters/computer/chrome-extension/content.js', import.meta.url), 'utf8');
+  let pending: (() => void) | undefined;
+  let disconnected = false;
+  const runtime: { onMessage: { addListener: () => void } } | undefined = { onMessage: { addListener: () => {} } };
+  const chrome: { runtime: { onMessage: { addListener: () => void } } | undefined } = { runtime };
+  const scope = {
+    ForgeComputerChatgptCore: { parseConversation: () => null },
+    document: { documentElement: {} }, location: { href: 'https://chatgpt.com/' }, chrome,
+    MutationObserver: class { observe() {} disconnect() { disconnected = true; } },
+    setTimeout: (callback: () => void) => { pending = callback; return 1; },
+    clearTimeout: () => {}, URL,
+  };
+  runInNewContext(source, scope, { filename: 'content.js' });
+  chrome.runtime = undefined;
+  expect(() => pending!()).not.toThrow();
+  expect(disconnected).toBe(true);
+});
+
 
 test('new bootstrap tab requires its hydrated editor, not a model picker, before preflight', async () => {
   const src = readFileSync(new URL('../../adapters/computer/chrome-extension/background.js', import.meta.url), 'utf8');
@@ -16,11 +66,16 @@ test('new bootstrap tab requires its hydrated editor, not a model picker, before
   ];
   let snapshotCount = 0;
   let created = 0;
+  const ownerTokens = new Map<string, string>();
   const sandbox = {
     ForgeComputerChatgptCore: { projectId: () => 'g-p-abc', parseConversation: () => null },
     navigator: { userAgent: 'Chrome' },
     crypto: { randomUUID: () => 'model-ready-test' },
     chrome: {
+      storage: { session: {
+        async set(values: Record<string, string>) { for (const [k, v] of Object.entries(values)) ownerTokens.set(k, v); },
+        async get(k: string) { return { [k]: ownerTokens.get(k) }; },
+      } },
       runtime: { lastError: null },
       tabs: {
         query: async () => [],
@@ -59,10 +114,14 @@ test('unhydrated bootstrap remains bound to its one created tab without creating
   const tab = { id: 508, windowId: 8, url };
   let created = 0;
   let snapshots = 0;
+  const ownerTokens = new Map<string, string>();
   const sandbox = {
     ForgeComputerChatgptCore: { projectId: () => 'g-p-abc', parseConversation: () => null },
     navigator: { userAgent: 'Chrome' }, crypto: { randomUUID: () => 'unready-test' },
-    chrome: { runtime: { lastError: null }, tabs: {
+    chrome: { runtime: { lastError: null }, storage: { session: {
+      async set(values: Record<string, string>) { for (const [k, v] of Object.entries(values)) ownerTokens.set(k, v); },
+      async get(k: string) { return { [k]: ownerTokens.get(k) }; },
+    } }, tabs: {
       query: async () => [],
       create: (_options: unknown, callback: (t: typeof tab) => void) => { created++; callback(tab); },
       get: (_id: number, callback: (t: typeof tab) => void) => callback(tab),
@@ -138,6 +197,7 @@ test('restarted worker prepares and dispatches only the Controller-pinned bootst
     // Moving the pinned tab to another window preserves its physical tab id.
     { id: 42, windowId: 9, url: tabUrl },
   ];
+  const ownerStorage = new Map([['forgeComputerOwnedTabV1:42', 'verified-worker-tab']]);
   const sandbox = {
     ForgeComputerChatgptCore: {
       projectId: (value: string) => /^\/g\/(g-p-[a-z0-9]+)/i.exec(new URL(value).pathname)?.[1] ?? null,
@@ -145,6 +205,9 @@ test('restarted worker prepares and dispatches only the Controller-pinned bootst
     crypto: { randomUUID: () => 'worker-test' },
     navigator: { userAgent: 'Chrome' },
     chrome: {
+      storage: { session: { async get(k: string) {
+        return ownerStorage.has(k) ? { [k]: ownerStorage.get(k) } : {};
+      } } },
       runtime: { lastError: null },
       tabs: {
         query: async () => tabs,
@@ -162,17 +225,17 @@ test('restarted worker prepares and dispatches only the Controller-pinned bootst
   };
   runInNewContext(worker, sandbox);
   const funcs = sandbox as typeof sandbox & {
-    testPrepare: (cmd: unknown) => Promise<Record<string, unknown>>;
-    testDispatch: (cmd: unknown) => Promise<Record<string, unknown>>;
+    testPrepare: (cmd: unknown, instanceId: string) => Promise<Record<string, unknown>>;
+    testDispatch: (cmd: unknown, instanceId: string) => Promise<Record<string, unknown>>;
   };
   const command = {
     identity: { namespace: 'chatgpt.bootstrap', bootstrapKey: 'supervisor:saved', projectUrl },
     providerBinding: { providerId: 'browser.chrome-extension', providerSessionId: 'previous-worker',
-      browserProduct: 'chrome', windowId: '8', tabId: '42' },
+      browserProduct: 'chrome', windowId: '8', tabId: '42', ownerToken: 'verified-worker-tab' },
     prompt: '@forge <<<FORGE_WORKFLOW_EFFECT_V1:fx_test>>> body',
   };
-  expect(await funcs.testPrepare(command)).toMatchObject({ kind: 'prepared', ready: true });
-  expect(await funcs.testDispatch(command)).toMatchObject({ kind: 'dispatch', mutation: 'not_attempted', reasonCode: 'test_no_send' });
+  expect(await funcs.testPrepare(command, 'previous-worker')).toMatchObject({ kind: 'prepared', ready: true });
+  expect(await funcs.testDispatch(command, 'previous-worker')).toMatchObject({ kind: 'dispatch', mutation: 'not_attempted', reasonCode: 'test_no_send' });
   expect(messages).toHaveLength(4);
   expect(messages.map(x => x.tabId)).toEqual([42, 42, 42, 42]);
   expect(messages.map(x => x.message.expectedProjectId)).toEqual([undefined, 'g-p-abc', undefined, 'g-p-abc']);
@@ -184,9 +247,9 @@ test('restarted worker prepares and dispatches only the Controller-pinned bootst
   // must reject both preparation and submission before reaching its Send path.
   oldContentScript = true;
   messages.length = 0;
-  expect(await funcs.testPrepare(command)).toMatchObject({ kind: 'prepared', ready: false,
+  expect(await funcs.testPrepare(command, 'previous-worker')).toMatchObject({ kind: 'prepared', ready: false,
     reasonCode: 'COMPUTER_CHATGPT_BOOTSTRAP_PROJECT_GUARD_UNSUPPORTED' });
-  expect(await funcs.testDispatch(command)).toMatchObject({ kind: 'dispatch', mutation: 'not_attempted',
+  expect(await funcs.testDispatch(command, 'previous-worker')).toMatchObject({ kind: 'dispatch', mutation: 'not_attempted',
     reasonCode: 'COMPUTER_CHATGPT_BOOTSTRAP_PROJECT_GUARD_UNSUPPORTED' });
   expect(messages.map(x => x.message.type)).toEqual([
     'forge-computer-chatgpt-capabilities', 'forge-computer-chatgpt-capabilities',

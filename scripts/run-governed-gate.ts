@@ -21,9 +21,11 @@ export function stepsFor(gate: Gate): Step[] {
     { label: 'static architecture', command: 'bun', args: ['run', 'check:runtime-architecture'], timeoutMs: 5 * 60_000 },
     { label: 'module boundaries', command: 'node', args: ['scripts/check-module-boundaries.mjs'], timeoutMs: 2 * 60_000 },
     { label: 'repository hygiene', command: 'node', args: ['scripts/check-repository-hygiene.mjs'], timeoutMs: 2 * 60_000 },
+    { label: 'PR closing-reference intent', command: 'node', args: ['scripts/check-pr-closing-intent.mjs'], timeoutMs: 30_000 },
     { label: 'generated authority', command: 'node', args: ['scripts/sync-generated-authority.mjs', '--check'], timeoutMs: 2 * 60_000 },
     { label: 'source duplication', command: 'node', args: ['scripts/check-source-duplication.mjs'], timeoutMs: 2 * 60_000 },
     { label: 'test manifest', command: 'bun', args: ['run', 'check:test-governance'], timeoutMs: 5 * 60_000 },
+    { label: 'context pack readiness regression', command: 'bun', args: ['test', 'tests/runtime/context-pack-readiness.test.ts'], timeoutMs: 2 * 60_000 },
     { label: 'affected tests', command: 'bun', args: ['run', 'test'], timeoutMs: 30 * 60_000 },
   ];
   if (gate === 'main') return [
@@ -32,6 +34,13 @@ export function stepsFor(gate: Gate): Step[] {
     { label: 'quality harness benchmark', command: 'bun', args: ['run', 'check:quality-harness'], timeoutMs: 2 * 60_000 },
     { label: 'core regression', command: 'bun', args: ['run', 'test:core'], timeoutMs: 20 * 60_000 },
     { label: 'runtime smoke', command: 'bun', args: ['run', 'check:smoke'], timeoutMs: 10 * 60_000 },
+    // The affected-test selector excludes some Recovery process-tree suites. Keep one
+    // explicit main-gate boundary for exact rollback safety plus the current
+    // recoverability-only known-good authority.
+    { label: 'Recovery rollback and known-good authority', command: 'bun',
+      args: ['test', 'tests/runtime/standalone-recovery.test.ts', '--test-name-pattern',
+        'restores only the attested previous whole-Runtime release while Runtime is stopped|independent CPU rejection does not own ReleaseSession rollback or known-good|long soak and absent Supervisor proof do not veto mechanical known-good'],
+      timeoutMs: 5 * 60_000 },
   ];
   return [
     { label: 'main candidate receipt', gate: 'main' },

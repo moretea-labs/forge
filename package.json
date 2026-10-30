@@ -141,7 +141,6 @@
     "check:ci": "bun run check:main",
     "cleanup:works": "bun tools/cleanup-works.ts",
     "cleanup:works:dry": "bun tools/cleanup-works.ts --dry-run",
-    "cleanup:works:force": "bun tools/force-cleanup-clean-works.ts",
     "check:release": "bun scripts/run-governed-gate.ts release",
     "check:stable-baseline": "bun scripts/check-stable-baseline.ts",
     "check:release-surface": "bash scripts/check-public-release-surface.sh",

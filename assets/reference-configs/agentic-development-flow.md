@@ -66,7 +66,7 @@ For small work keep this internal. For architecture, debugging, risky refactors,
 
 1. Read the current user request and current Canonical Runtime state first.
 2. Use `/direct`, `/plan`, `/debug`, `/review`, `/release`, or `/scale` according to intent.
-3. Use bounded rh_context search for current source, then explicit semantic_navigation for known symbols and their references.
+3. Reuse the current conversation working set. Read necessary Work/Plan/decisions and source once, then fetch only changed or missing evidence. New conversations recover minimal current durable facts. Use exact reads for known files; use bounded rh_context discovery or explicit semantic_navigation only for new dependencies or insufficient context. Verify relevant HEAD, dirty paths, Writer/leases, permissions and effect outcomes live before the operation that depends on them.
 4. If a decision-complete plan is useful, capture it into `plans/` as a durable business/engineering artifact. It is not a second Runtime lifecycle authority.
 5. Execute bounded work through Forge repository/Process/Work primitives and collect verification evidence.
 6. Use `/review` plus focused checks before closeout. Optional peer or Waza reviews may add evidence but may not become the only pass condition.

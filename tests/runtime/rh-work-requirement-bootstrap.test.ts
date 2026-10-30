@@ -11,6 +11,7 @@ import { createWorkContract, getWorkContract } from '../../src/runtime/control-p
 import { getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { readRequirement, updateRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { ensureForgeInstanceIdentity, readForgeInstanceIdentity } from '../../packages/kernel/identity/api/index';
+import { forgeWorkflowSupervisorLifecycleHooks } from '../../src/runtime/root/workflow-supervisor-composition';
 import { recordCognitiveMemory, type CognitiveWriteAuthorityPort } from '../../packages/kernel/cognition/api/index';
 import { cognitionMemoryStore } from '../../src/runtime/control-plane/persistence/cognition-store';
 import {
@@ -20,6 +21,7 @@ import {
   writeWorkspaceIdentity,
 } from '../../src/runtime/control-plane/workspace/workspace-store';
 import { callRuntimeTool } from '../../adapters/mcp/runtime-gateway/runtime-tools';
+import { runtimeToolDefinitions } from '../../adapters/mcp/runtime-gateway/runtime-tool-definitions';
 
 const roots: string[] = [];
 
@@ -71,6 +73,112 @@ function structured(result: Awaited<ReturnType<typeof callRuntimeTool>>): Record
 }
 
 describe('rh_work Requirement bootstrap', () => {
+  test('exposes typed Requirement progress and CAS through rh_work without a Work or legacy carrier', async () => {
+    const schema = runtimeToolDefinitions.find((definition) => definition.name === 'rh_work')?.inputSchema;
+    expect(schema).toBeDefined();
+    const properties = schema?.properties as Record<string, unknown>;
+    expect(properties.requirement_progress_summary).toMatchObject({ type: 'string', maxLength: 2_000 });
+    expect(properties.requirement_remaining_work).toMatchObject({
+      type: 'array', maxItems: 50, items: { type: 'string', maxLength: 500 },
+    });
+    expect(properties.requirement_accepted_evidence_refs).toMatchObject({
+      type: 'array', maxItems: 100, items: { type: 'string', maxLength: 512 },
+    });
+
+    const repoRoot = tempRoot('forge-typed-requirement-progress-repo-');
+    const controllerHome = tempRoot('forge-typed-requirement-progress-home-');
+    initRepo(repoRoot);
+    ensureControllerHome(controllerHome);
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'Typed Requirement progress fixture' });
+    const ctx = mcpContext(controllerHome, repository);
+
+    const created = structured(await callRuntimeTool(ctx, 'rh_work', {
+      operation: 'requirement_create',
+      requirement_id: 'REQ-TYPED-PROGRESS',
+      requirement_title: 'Typed progress',
+      requirement_outcome: 'Deliver an independently verified change.',
+    }));
+    expect(created.status).toBe('ok');
+
+    const updated = structured(await callRuntimeTool(ctx, 'rh_work', {
+      operation: 'requirement_revise',
+      requirement_id: 'REQ-TYPED-PROGRESS',
+      expected_revision: 1,
+      requirement_progress_summary: 'Source patch submitted; review pending.',
+      requirement_remaining_work: ['Review exact HEAD', 'Verify deployed Runtime'],
+      requirement_accepted_evidence_refs: ['https://github.com/example/forge/pull/123'],
+    }));
+    expect(updated.status).toBe('ok');
+    expect(updated.data.requirement).toMatchObject({
+      revision: 2,
+      progressSummary: 'Source patch submitted; review pending.',
+      remainingWork: ['Review exact HEAD', 'Verify deployed Runtime'],
+      acceptedEvidenceRefs: ['https://github.com/example/forge/pull/123'],
+      state: 'open',
+    });
+
+    const stale = structured(await callRuntimeTool(ctx, 'rh_work', {
+      operation: 'requirement_revise',
+      requirement_id: 'REQ-TYPED-PROGRESS',
+      expected_revision: 1,
+      requirement_progress_summary: 'Stale write must fail.',
+    }));
+    expect(stale.status).toBe('blocked');
+    expect(stale.data.currentRequirement.progressSummary).toBe('Source patch submitted; review pending.');
+
+    const reread = structured(await callRuntimeTool(ctx, 'rh_work', {
+      operation: 'requirement_get',
+      requirement_id: 'REQ-TYPED-PROGRESS',
+    }));
+    expect(reread.data.progress).toEqual({
+      source: 'requirement',
+      summary: 'Source patch submitted; review pending.',
+      remainingWork: ['Review exact HEAD', 'Verify deployed Runtime'],
+      acceptedEvidenceRefs: ['https://github.com/example/forge/pull/123'],
+    });
+  });
+
+  test('get_contract exposes the complete canonical WorkContract read-only, separate from the thin semantic view', async () => {
+    const repoRoot = tempRoot('forge-work-full-contract-read-repo-');
+    const controllerHome = tempRoot('forge-work-full-contract-read-home-');
+    initRepo(repoRoot);
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'work-full-contract-read' });
+    const workId = 'WORK-FULL-CONTRACT-READ';
+    createWorkContract({ controllerHome, repoId: repository.repoId }, {
+      workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId,
+      objective: 'Read the exact canonical Work acceptance and safety contract before disposition.',
+      acceptanceCriteria: ['External evaluation boundary must use wait rather than goal_complete.'],
+      checks: ['bun test tests/runtime/control-plane-hardening.test.ts'],
+      constraints: { workspaceMode: 'current' },
+      requestedBy: 'chatgpt', dispatchState: 'running',
+    });
+    const before = getWorkContract({ controllerHome, repoId: repository.repoId }, workId)!;
+    const continuationPointer = forgeWorkflowSupervisorLifecycleHooks(controllerHome).canonicalObjectiveForTask?.({
+      taskId: 'supervisor:historical-work-contract-pointer',
+      conversationId: '11111111-2222-3333-4444-555555555555',
+      conversationUrl: 'https://chatgpt.com/c/11111111-2222-3333-4444-555555555555',
+      objective: 'Historical standalone Work continuation.',
+      completionContract: { controller_home: controllerHome, repo_id: repository.repoId, work_id: workId },
+      continuationPolicy: { kind: 'forge_goal_outer_turn' },
+      userBlockerPolicy: { kind: 'model_semantic_user_blocker' },
+      createdAt: '2026-01-01T00:00:00.000Z',
+    });
+    expect(continuationPointer).toContain(`Work ${workId}`);
+    expect(continuationPointer).toContain('rh_work get_contract');
+
+    const response = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_work', {
+      operation: 'get_contract', repo_id: repository.repoId, work_id: workId,
+    }));
+    expect(response.data.workContract).toEqual(before);
+    expect(response.data.workContract).toMatchObject({
+      workId, acceptanceCriteria: before.acceptanceCriteria, constraints: before.constraints, checks: before.checks,
+      worktreePolicy: before.worktreePolicy, approvalPolicy: before.approvalPolicy, recoveryPolicy: before.recoveryPolicy,
+    });
+    expect(response.data.workContract).not.toHaveProperty('allowedPaths');
+    expect(response.data.workContract).not.toHaveProperty('forbiddenPaths');
+    expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)).toEqual(before);
+    expect(response.data).not.toHaveProperty('work');
+  });
   test('automatically onboards Project/Workspace identity during normal Work start admission', async () => {
     const repoRoot = tempRoot('forge-work-project-onboarding-repo-');
     const controllerHome = tempRoot('forge-work-project-onboarding-home-');

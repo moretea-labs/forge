@@ -6,6 +6,7 @@ import type {
   ComputerChatgptConversationObservation,
   ComputerChatgptConversationObservationOptions,
   ComputerChatgptConversationTarget,
+  ComputerChatgptPrewriteNoMutationReceipt,
   ComputerChatgptConversationTargetPort,
   ComputerChatgptExtensionBrokerRpc,
   ComputerChatgptExtensionCommand,
@@ -263,12 +264,15 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
     }).target;
   }
 
-  private async bindAsync(identity: ComputerChatgptTargetIdentity, binding: ComputerSurfaceProviderBinding | undefined, instanceId: string): Promise<ComputerSurfaceTarget> {
-    const record = this.upsert(identity);
+  private async bindAsync(identity: ComputerChatgptTargetIdentity, binding: ComputerSurfaceProviderBinding | undefined, instanceId: string, expected?: { binding: ComputerSurfaceProviderBinding | undefined }): Promise<ComputerSurfaceTarget> {
+    const record = this.authority.findSurfaceByStableIdentity(this.controllerHome, stableIdentity(identity)) ?? this.upsert(identity);
     const normalized = normalizeBinding(binding, instanceId);
     if (!normalized) return record;
     return await this.authority.withSurfaceLease(this.controllerHome, record.targetId, async (lease) => {
       const previous = lease.current().providerBinding;
+      if (expected && JSON.stringify(previous) !== JSON.stringify(expected.binding)) {
+        throw new Error('COMPUTER_CHATGPT_EXTENSION_PINNED_BINDING_CHANGED');
+      }
       // Heartbeat inventory omits the Forge-create token. Carry it forward only
       // for the same exact physical attachment; never transfer it to a new tab.
       const sameAttachment = previous?.providerId === normalized.providerId
@@ -276,9 +280,11 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
         && previous.browserProduct === normalized.browserProduct
         && previous.windowId === normalized.windowId
         && previous.tabId === normalized.tabId;
+      const ownerToken = normalized.ownerToken ?? (sameAttachment ? previous?.ownerToken : undefined);
+      if (sameAttachment && previous?.ownerToken === ownerToken) return lease.current();
       return lease.bind({
         ...normalized,
-        ...(normalized.ownerToken ? {} : sameAttachment && previous?.ownerToken ? { ownerToken: previous.ownerToken } : {}),
+        ...(ownerToken ? { ownerToken } : {}),
       });
     });
   }
@@ -331,7 +337,8 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
         }
         if (response.result.kind === 'dispatch') {
           if (response.result.mutation === 'attempted') return { mutation: 'attempted' as const, ...(response.result.confirmed === undefined ? {} : { confirmed: response.result.confirmed }) };
-          if (response.result.mutation === 'not_attempted') return { mutation: 'not_attempted' as const, reasonCode: response.result.reasonCode };
+          if (response.result.mutation === 'not_attempted') return { mutation: 'not_attempted' as const, reasonCode: response.result.reasonCode,
+            ...(response.result.prewriteNoMutationReceipt ? { prewriteNoMutationReceipt: response.result.prewriteNoMutationReceipt as ComputerChatgptPrewriteNoMutationReceipt } : {}) };
         }
         // Only a typed dispatch/not_attempted result proves no Send click. A
         // generic failure or wrong response kind cannot authorize another send.
@@ -382,7 +389,11 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
     }
     // A stale binding must not turn two observed exact tabs into a third tab.
     if (exact.length > 1 && candidates.length !== 1) return failure('COMPUTER_CHATGPT_EXTENSION_EXACT_TARGET_AMBIGUOUS', { failoverSafe: false });
-    if (candidates.length === 1) {
+    // Ensure must verify the pinned owner before reading content. Heartbeat
+    // inventory carries no owner token and cannot recover a lost attachment.
+    // Route an authorized Ensure through the provider even when inventory still
+    // contains the old tab; only the provider can attest its replacement.
+    if (candidates.length === 1 && !(options.createIfMissing !== false && binding?.providerId === PROVIDER_ID)) {
       const candidate = candidates[0]!;
       if (!candidate.entry.providerBinding) return failure('COMPUTER_CHATGPT_EXTENSION_PHYSICAL_TAB_UNVERIFIED', { failoverSafe: false });
       const record = await this.bindAsync(identity, candidate.entry.providerBinding, candidate.instanceId);
@@ -452,7 +463,20 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
       { failoverSafe: !response.claimed && !preferredInstanceId },
     );
     if (response.result.kind === 'ensured') {
-      const record = await this.bindAsync(identity, response.result.providerBinding, selected.instanceId);
+      const ensuredBinding = response.result.providerBinding;
+      if (!ensuredBinding?.ownerToken || ensuredBinding.providerId !== PROVIDER_ID
+        || (ensuredBinding.providerSessionId && ensuredBinding.providerSessionId !== selected.instanceId)) {
+        return failure('COMPUTER_CHATGPT_EXTENSION_TARGET_IDENTITY_UNVERIFIED', { failoverSafe: false });
+      }
+      let record: ComputerSurfaceTarget;
+      try {
+        record = await this.bindAsync(identity, ensuredBinding, selected.instanceId, { binding: previous?.providerBinding });
+      } catch (error) {
+        if (error instanceof Error && error.message === 'COMPUTER_CHATGPT_EXTENSION_PINNED_BINDING_CHANGED') {
+          return failure(error.message, { failoverSafe: false });
+        }
+        throw error;
+      }
       if (response.result.observation && !conversationContentAvailable(response.result.observation)) {
         return unhydratedExactConversation(identity, response.result.observation);
       }

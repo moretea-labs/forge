@@ -330,23 +330,38 @@ ${prompt}`;
   expect(f.state.sendClicks).toBe(0);
 });
 
-test('Supervisor replaces a stale Forge-marked draft without comparing its old body', async () => {
+test('foreign-effect Forge draft is preserved until exact ledger retirement is attested', async () => {
   const previous = '<<<FORGE_WORKFLOW_EFFECT_V1:fx_old_serial_123456789>>>\nOld content spanning arbitrary lines';
   const current = '<<<FORGE_WORKFLOW_EFFECT_V1:fx_new_serial_123456789>>>\nNew canonical task content';
   const f = fixture({ controlPresent: false, initialDraft: previous });
   const conversationId = '12345678-1234-1234-1234-123456789abc';
-  expect(await f.prepare(undefined, conversationId, current)).toMatchObject({ prepared: true });
-  expect(f.textarea.value).toBe(current);
+  expect(await f.prepare(undefined, conversationId, current))
+    .toMatchObject({ prepared: false, reason: 'composer_not_empty' });
+  expect(await f.dispatch(undefined, conversationId, current))
+    .toMatchObject({ dispatched: false, reason: 'composer_not_empty' });
+  expect(f.textarea.value).toBe(previous);
   expect(f.state.sendClicks).toBe(0);
-  expect(await f.dispatch(undefined, conversationId, current)).toMatchObject({ dispatched: true, confirmed: true });
-  expect(f.state.sendClicks).toBe(1);
 });
 
 test('Supervisor replaces a partial same-effect marked draft before dispatch', async () => {
   const current = '<<<FORGE_WORKFLOW_EFFECT_V1:fx_current_serial_123456>>>\nComplete current payload';
-  const f = fixture({ controlPresent: false, initialDraft: '<<<FORGE_WORKFLOW_EFFECT_V1:fx_current_serial_123456>>>\nIncomplete' });
+  const f = fixture({ controlPresent: false, initialDraft: '<<<FORGE_WORKFLOW_EFFECT_V1:fx_current_serial_123456>>>\nComplete' });
   expect(await f.prepare(undefined, '12345678-1234-1234-1234-123456789abc', current)).toMatchObject({ prepared: true });
   expect(f.textarea.value).toBe(current);
+  expect(f.state.sendClicks).toBe(0);
+  expect(await f.dispatch(undefined, '12345678-1234-1234-1234-123456789abc', current))
+    .toMatchObject({ dispatched: true, confirmed: true });
+  expect(f.state.sendClicks).toBe(1);
+});
+
+test('Supervisor refuses edited same-effect draft before a single Send', async () => {
+  const current = '<<<FORGE_WORKFLOW_EFFECT_V1:fx_current_serial_123456>>>\nComplete current payload';
+  const edited = '<<<FORGE_WORKFLOW_EFFECT_V1:fx_current_serial_123456>>>\nHuman changed draft';
+  const f = fixture({ controlPresent: false, initialDraft: edited });
+  const conversationId = '12345678-1234-1234-1234-123456789abc';
+  expect(await f.prepare(undefined, conversationId, current))
+    .toMatchObject({ prepared: false, reason: 'composer_not_empty' });
+  expect(f.textarea.value).toBe(edited);
   expect(f.state.sendClicks).toBe(0);
 });
 
@@ -375,7 +390,7 @@ test('Ordinary prompts cannot replace a Forge-marked Supervisor draft', async ()
   expect(f.state.sendClicks).toBe(0);
 });
 
-test('Supervisor conversation send and bootstrap execute prepare through dispatch serially', async () => {
+test('account-level provider lane serializes sends without requiring serialized preparation', async () => {
   const scope = 'supervisor-prepare-send-serial-test';
   const events: string[] = [];
   let enteredFirst!: () => void;
@@ -383,30 +398,24 @@ test('Supervisor conversation send and bootstrap execute prepare through dispatc
   const firstEntered = new Promise<void>((resolve) => { enteredFirst = resolve; });
   const firstCanDispatch = new Promise<void>((resolve) => { finishFirst = resolve; });
 
+  events.push('conversation:prepare');
+  events.push('bootstrap:prepare');
   const first = withChatgptProviderDispatchLane(scope, async () => {
-    events.push('conversation:prepare');
     enteredFirst();
     await firstCanDispatch;
     events.push('conversation:dispatch');
     return { providerAccepted: true };
   }, (outcome) => outcome);
   await firstEntered;
-
   const second = withChatgptProviderDispatchLane(scope, async () => {
-    events.push('bootstrap:prepare');
     events.push('bootstrap:dispatch');
     return { providerAccepted: true };
   }, (outcome) => outcome);
   await Promise.resolve();
-  expect(events).toEqual(['conversation:prepare']);
+  expect(events).toEqual(['conversation:prepare', 'bootstrap:prepare']);
   finishFirst();
   await Promise.all([first, second]);
-  expect(events).toEqual([
-    'conversation:prepare',
-    'conversation:dispatch',
-    'bootstrap:prepare',
-    'bootstrap:dispatch',
-  ]);
+  expect(events).toEqual(['conversation:prepare', 'bootstrap:prepare', 'conversation:dispatch', 'bootstrap:dispatch']);
 });
 
 test('an unconfirmed provider submission is not replayed by the shared lane', async () => {
@@ -417,4 +426,48 @@ test('an unconfirmed provider submission is not replayed by the shared lane', as
   }, (outcome) => outcome);
   expect(result.providerAccepted).toBe(false);
   expect(submissions).toBe(1);
+});
+
+
+test('adversarial draft matrix never overwrites another effect or human-edited suffix', async () => {
+  const conversationId = '12345678-1234-1234-1234-123456789abc';
+  const effectId = 'fx_authorized_123456789';
+  const canonical = '<<<FORGE_WORKFLOW_EFFECT_V1:' + effectId + '>>>\nExact canonical continuation';
+  const marker = '<<<FORGE_WORKFLOW_EFFECT_V1:' + effectId + '>>>';
+  const forged = Array.from({ length: 64 }, (_, i) =>
+    '<<<FORGE_WORKFLOW_EFFECT_V1:fx_foreign_' + String(i).padStart(8, '0') + '>>>\n' + canonical);
+  const edited = [
+    marker + '\nExact canonical continuatioX',
+    marker + '\nExact canonical continuation plus arbitrary human text',
+    marker + '\nExact  canonical continuation',
+    'human note\n' + marker,
+    canonical + '\n@',
+    canonical + '\nforge',
+    'forge ' + canonical,
+    '<<<FORGE_WORKFLOW_EFFECT_V1:crpe_foreign_123456789>>>\n' + canonical,
+  ];
+  for (const draft of [...forged, ...edited]) {
+    const f = fixture({ controlPresent: false, initialDraft: draft });
+    expect(await f.prepare(undefined, conversationId, canonical))
+      .toMatchObject({ prepared: false, reason: 'composer_not_empty' });
+    expect(await f.dispatch(undefined, conversationId, canonical))
+      .toMatchObject({ dispatched: false, reason: 'composer_not_empty' });
+    expect(f.textarea.value).toBe(draft);
+    expect(f.state.sendClicks).toBe(0);
+  }
+});
+
+test('same-effect canonical prefixes repair exactly before a single Send', async () => {
+  const conversationId = '12345678-1234-1234-1234-123456789abc';
+  const prompt = '<<<FORGE_WORKFLOW_EFFECT_V1:fx_authorized_123456789>>>\nExact canonical continuation';
+  const start = prompt.indexOf('\n') + 1;
+  for (let chars = start; chars < prompt.length; chars += 5) {
+    const f = fixture({ controlPresent: false, initialDraft: prompt.slice(0, chars) });
+    expect(await f.prepare(undefined, conversationId, prompt)).toMatchObject({ prepared: true });
+    expect(f.textarea.value).toBe(prompt);
+    expect(f.state.sendClicks).toBe(0);
+    expect(await f.dispatch(undefined, conversationId, prompt))
+      .toMatchObject({ dispatched: true, confirmed: true });
+    expect(f.state.sendClicks).toBe(1);
+  }
 });

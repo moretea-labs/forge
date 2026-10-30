@@ -177,30 +177,11 @@ export function assertRepositoryCommandStableHostIdentity(input: unknown): Canon
   return command;
 }
 
-function assertNoUnmanagedControllerWorktreeLifecycle(command: CanonicalRepositoryCommand): void {
-  const isGitWorktreeAdd = (words: string[]) => {
-    const executable = words[0]?.split(/[\\/]/).at(-1)?.toLowerCase();
-    return executable === 'git' && words[1]?.toLowerCase() === 'worktree' && words[2]?.toLowerCase() === 'add';
-  };
-  if (command.kind === 'argv') {
-    if (isGitWorktreeAdd([command.executable!, ...(command.args ?? [])])) {
-      throw new Error('MANAGED_WORKSPACE_REQUIRED: execute_command must not create an unmanaged temporary git worktree; use rh_work so Forge persists checkout/worktree ownership and terminal cleanup authority');
-    }
-    return;
-  }
-  for (const segment of shellSegments(command.shellCommand ?? '')) {
-    if (isGitWorktreeAdd(shellWords(segment))) {
-      throw new Error('MANAGED_WORKSPACE_REQUIRED: execute_command must not create an unmanaged temporary git worktree; use rh_work so Forge persists checkout/worktree ownership and terminal cleanup authority');
-    }
-  }
-}
-
 export function assertRepositoryCommandInputAllowed(
   input: unknown,
   options: RepositoryCommandInputPolicyOptions = {},
 ): CanonicalRepositoryCommand {
   const command = assertRepositoryCommandStableHostIdentity(input);
-  assertNoUnmanagedControllerWorktreeLifecycle(command);
   if (command.kind === 'shell') {
     assertRepositoryCommandAllowed(command.shellCommand!, options);
   }

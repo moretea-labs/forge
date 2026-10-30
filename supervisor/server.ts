@@ -4,7 +4,7 @@ import { dirname } from 'node:path';
 import { mkdirSync } from 'node:fs';
 import type { WorkflowSupervisorControlPlane } from './control-plane';
 import { parseChatgptConversationIdentity } from './chatgpt-conversation';
-import type { WorkflowSupervisorConsumerStatus, WorkflowSupervisorDiscoverySnapshot, WorkflowSupervisorDiscoveredConversation } from './types';
+import type { WorkflowSupervisorConsumerStatus, WorkflowSupervisorDiscoverySnapshot, WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorReviewNotice } from './types';
 import type { ComputerChatgptExtensionBrokerRpc, ComputerChatgptExtensionCommandResult, ComputerChatgptExtensionHeartbeat } from '../packages/plugin-runtime/computer';
 import { chatgptProviderPageFailure } from '../adapters/chatgpt/provider-delivery';
 
@@ -378,6 +378,16 @@ async function dispatch(control: WorkflowSupervisorControlPlane, discovery: Work
     reason: text(p, 'reason'),
     ...(p.supersede_unknown === true ? { supersedeUnknown: true } : {}),
     ...(typeof p.authorized_by === 'string' && p.authorized_by.trim() ? { authorizedBy: p.authorized_by.trim() } : {}),
+  });
+  if (req.method === 'task_review_watch_bind') return control.bindReviewWatch({
+    taskId: text(p, 'task_id'), repoId: text(p, 'repo_id'),
+    githubRepository: text(p, 'github_repository'), prNumber: positiveInteger(p, 'pr_number'),
+  });
+  if (req.method === 'task_review_notice') return control.observeReviewNotice({
+    taskId: text(p, 'task_id'), repoId: text(p, 'repo_id'), prNumber: positiveInteger(p, 'pr_number'),
+    reviewedHeadSha: text(p, 'reviewed_head_sha'), currentHeadSha: text(p, 'current_head_sha'),
+    reviewId: text(p, 'review_id'), source: text(p, 'source') as 'github_review' | 'github_ci' | 'independent_reviewer',
+    outcome: text(p, 'outcome') as WorkflowSupervisorReviewNotice['outcome'],
   });
   if (req.method === 'task_stall') return control.taskStall(text(p, 'task_id'));
   if (req.method === 'task_bind_scheduled_wake') return control.bindScheduledWake({

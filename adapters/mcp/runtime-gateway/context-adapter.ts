@@ -16,7 +16,7 @@ import { CONTROLLER_CONTEXT_IMPACT_DOMAINS, type ControllerContextImpactDomain }
 import { buildControllerContextPackInSidecar } from "../../../src/runtime/context/context-pack-process";
 import { isCodeShapedTerm } from "../../../src/cli/controller/context/query-planning";
 import { listControllerChecks } from "../../../src/cli/controller/check-runner";
-import { getAssistantPluginManifest, getControllerPluginManifest, listAssistantPluginManifests, listControllerPluginManifests } from "../../../src/runtime/plugins/store";
+import { getAssistantPluginManifest, getAssistantPluginManifestForAction, getControllerPluginManifest, listAssistantPluginManifests, listControllerPluginManifests } from "../../../src/runtime/plugins/store";
 import { allowedFacadeOperations, buildFacadeResult, listCapabilityDescriptors, getCapabilityDescriptor, getCoreCapabilityExecutionSchema, getPluginActionCapabilitySchema, searchCapabilityDescriptors, summarizeCapabilityGroups, listHandoffAttentionItems, listHandoffItems, normalizeCheckIds, summarizeHandoffItem, buildWorkContinuationSnapshot, getPlanContract, planSemanticView, FACADE_TOOLS } from "../../../src/runtime/control-plane/facade";
 import { currentTaskLineageWorkIds, currentTaskSemanticProjectionForWork, getWorkContract, readActiveWorkCandidates, readWorkContractStore, workSemanticView, type InvalidActiveWorkCandidate, type WorkContract } from "../../../packages/kernel/work/api/index";
 import { readRequirement, requirementSemanticView } from '../../../src/runtime/control-plane/persistence/requirement-store';
@@ -34,6 +34,19 @@ import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contra
 const RH_CONTEXT_RECENT_ACTIVITY_WINDOW_MS = 24 * 60 * 60 * 1_000;
 const RH_CONTEXT_AUTOMATIC_RECALL_LIMIT = 4;
 const RH_CONTEXT_SEMANTIC_EVIDENCE_LIMIT = 64;
+
+/** Select only retrievable bounded-search omissions; removed index entries must not be suggested. */
+export function selectProgressiveSourcePaths(
+  omitted: readonly { path: string; reason: string }[],
+  materializedPaths: readonly string[],
+): string[] {
+  const alreadyRead = new Set(materializedPaths);
+  return Array.from(new Set(omitted
+    .filter(entry => entry.reason === 'max_files' || entry.reason === 'max_snippets')
+    .map(entry => entry.path)))
+    .filter(path => !alreadyRead.has(path))
+    .slice(0, 3);
+}
 
 function timestampIsRecent(value: string | undefined, cutoffMs: number): boolean {
   if (!value) return false;
@@ -739,6 +752,46 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
       const warnings = structuralContext === 'required' && !pack.structuralContext.requiredSatisfied
         ? [pack.structuralContext.fallbackReason ?? 'Required structural context is not ready; lexical retrieval results are returned as degraded evidence.']
         : [];
+      // Surface an exact, optional next read when bounded discovery found more
+      // source candidates than could be materialized. This is evidence, not an
+      // admission gate, semantic completeness claim, or automatic search loop.
+      // No persistent seen-path cursor: each suggestion is advisory and the model
+      // chooses whether to follow it using current goal/evidence, not a fixed quota.
+      const retrievableOmissions = pack.omitted.filter(entry => entry.reason === 'max_files' || entry.reason === 'max_snippets');
+      const omittedSourcePaths = selectProgressiveSourcePaths(pack.omitted, pack.files.map(file => file.path));
+      const progressiveSourceAction = omittedSourcePaths.length > 0 ? [{
+        label: `Inspect ${omittedSourcePaths.length} of ${retrievableOmissions.length} omitted source candidates and decide whether they affect the goal`,
+        tool: 'rh_context' as const,
+        operation: 'search',
+        payload: {
+          repo_id: repository.repoId,
+          checkout_id: repository.activeCheckoutId,
+          query: retrievalQuery,
+          known_paths: omittedSourcePaths,
+          ...(codeSearchTerms.length ? { search_terms: codeSearchTerms } : {}),
+          retrieval_mode: 'implementation',
+          include_learning_recall: false,
+          max_files: Math.max(omittedSourcePaths.length, 3),
+          max_snippets: Math.max(omittedSourcePaths.length * 2, 6),
+        },
+        risk: 'readonly' as const,
+        confidence: 'medium' as const,
+      }] : [];
+      // Source-language interpretation belongs to the model, not the lexical
+      // retriever. Don't invent translations or silently broaden a user query.
+      // Warn only when a non-English cold start returned no implementation owner.
+      const nonEnglishColdStart = /\p{Script=Han}/u.test(retrievalQuery)
+        && codeSearchTerms.length === 0
+        && list(args.known_paths).length === 0
+        && !pack.files.some(file => /\.(?:ts|tsx|js|jsx|swift|py|rs|go|java|kt|c|cc|cpp|h|hpp|cs|rb)$/i.test(file.path));
+      if (nonEnglishColdStart) {
+        warnings.push('No implementation source found from the non-English query alone. The model should supply source-language code concepts using search_terms (or use targeted rg) and retry; do not infer that only documentation is affected.');
+      }
+      if (readiness.status !== 'ready' && omittedSourcePaths.length === 0) {
+        warnings.push('Search evidence is incomplete; assess unresolved reason codes and use targeted source reads or symbol navigation only if the gaps affect the goal.');
+      }
+      const detailLevel = args.detail_level === 'detail' || args.detail_level === 'raw' ? args.detail_level : 'summary';
+      const isSummary = detailLevel === 'summary';
       const facade = buildFacadeResult({
         status: 'ok',
         summary: pack.files.length
@@ -748,39 +801,53 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
           operation,
           repoId: repository.repoId,
           goal: pack.goal,
-          search: pack.search,
-          structuralContext: pack.structuralContext,
-          impactContext: pack.impactContext,
-          semanticNavigation,
+          search: isSummary ? {
+            terms: pack.search.terms,
+            truncated: pack.search.truncated,
+            evidenceTruncated: pack.search.evidenceTruncated,
+          } : pack.search,
+          ...(!isSummary || structuralContext !== 'off' ? { structuralContext: pack.structuralContext } : {}),
+          ...(!isSummary || impactDomains.length > 0 || retrievalMode !== 'implementation' ? { impactContext: pack.impactContext } : {}),
+          ...(!isSummary || semanticNavigation.requested > 0 ? { semanticNavigation } : {}),
           ...(semanticEvidence ? { semanticEvidence } : {}),
           contextClosure,
           readiness,
-          expansion: pack.expansion,
           files: pack.files,
-          coverage: pack.coverage,
-          cache: pack.cache,
-          timingsMs: pack.timingsMs,
+          coverage: isSummary ? {
+            exactKnownPaths: pack.coverage.exactKnownPaths,
+            unresolvedRelationships: pack.coverage.unresolvedRelationships,
+            skippedCandidates: pack.coverage.skippedCandidates,
+            likelyRelatedNotInspectedCount: pack.coverage.likelyRelatedNotInspected.length,
+          } : pack.coverage,
           deniedPaths: pack.deniedPaths,
-          omitted: pack.omitted,
           limits: pack.limits,
-          contextContract: pack.contextContract,
+          ...(isSummary ? {
+            omittedCandidateCount: pack.omitted.length,
+            detailPointer: { tool: 'rh_context', arguments: { ...args, detail_level: 'detail' } },
+          } : {
+            expansion: pack.expansion,
+            cache: pack.cache,
+            timingsMs: pack.timingsMs,
+            omitted: pack.omitted,
+            contextContract: pack.contextContract,
+            retrievalPolicy: {
+              defaultBackend: 'bounded_lexical',
+              structuralBackend: 'retired',
+              rawReadTool: 'read_repository_file',
+              shellSearchFallbackOnly: true,
+              executionReadiness: 'requested_check_ids_only',
+            },
+          }),
           ...(cognitionAudit ? { cognitionAudit } : {}),
           ...(learningRecall ? { learningRecall } : {}),
           ...(executionReadiness ? {
             executionReadiness,
             registeredChecks: checks.slice(0, 80).map((check) => ({ id: check.id, description: check.description, source: check.source, effects: check.effects })),
           } : {}),
-          retrievalPolicy: {
-            defaultBackend: 'bounded_lexical',
-            structuralBackend: 'retired',
-            rawReadTool: 'read_repository_file',
-            shellSearchFallbackOnly: true,
-            executionReadiness: 'requested_check_ids_only',
-          },
         },
         warnings,
-        suggestedNextActions: [],
-        detailLevel: args.detail_level === 'detail' || args.detail_level === 'raw' ? args.detail_level : 'summary',
+        suggestedNextActions: progressiveSourceAction,
+        detailLevel,
         rawAvailable: true,
       });
       // ContextClosureReceipt already enforces bounded paths, tests, skills, semantic providers,
@@ -835,7 +902,12 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
       const manifests = pluginMatch ? (() => {
         const pluginId = pluginMatch[1];
         try {
-          return [getAssistantPluginManifest(ctx.controllerHome, repository, pluginId)];
+          const actionId = pluginMatch[2];
+          // Exact iPhone action schemas do not require the unrelated Controller
+          // legacy migration. All other capability reads keep the usual path.
+          return [pluginId === 'computer' && actionId.startsWith('physical_device_')
+            ? getAssistantPluginManifestForAction(ctx.controllerHome, repository, { pluginId, actionId })
+            : getAssistantPluginManifest(ctx.controllerHome, repository, pluginId)];
         } catch (error) {
           if (!(error instanceof Error) || !error.message.startsWith('PLUGIN_NOT_FOUND:')) throw error;
         }

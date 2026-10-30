@@ -16,7 +16,7 @@ import {
   rebindChatgptWorkConversation,
   type ChatgptWorkConversationBinding,
 } from '../../../adapters/chatgpt/work-conversation-binding-store';
-import { readRequirement } from '../control-plane/persistence/requirement-store';
+import { readRequirement, requirementSemanticView } from '../control-plane/persistence/requirement-store';
 import { bindWorkflowSupervisorScheduledWake, getWorkflowSupervisorCurrentConversation, getWorkflowSupervisorTask, getWorkflowSupervisorTaskByConversationId, getWorkflowSupervisorTaskStall, registerWorkflowSupervisorTask, reserveWorkflowSupervisorEnrollment, wakeWorkflowSupervisorScheduledTask } from '../../../supervisor/client';
 import { resolveWorkflowSupervisorForgeHome, workflowSupervisorSocketPath } from '../../../supervisor/paths';
 import type { WorkflowSupervisorLifecycleHooks, WorkflowSupervisorTask } from '../../../supervisor/types';
@@ -165,21 +165,40 @@ function workflowSupervisorOriginWorkId(
 }
 
 /**
- * Mechanical Work projection used to decide whether a provider turn advanced
- * anything. `updatedAt` is deliberately excluded: mechanical Supervisor and
- * Controller bookkeeping touches the record every turn, while only a real Work
- * mutation (authored revision/state, phase evidence, execution evidence,
- * observable changed paths, or a delivery receipt) means the turn did work.
+ * Mechanical semantic projection used to decide whether a provider turn
+ * advanced its canonical goal. A Requirement-only standalone task reads only
+ * Requirement semantic CAS state; an incidental Work bound to the same
+ * conversation must never become its progress authority. Legacy Work-owned
+ * tasks keep their existing Work projection.
  */
-function workflowSupervisorWorkProgressFingerprint(controllerHome: string, task: WorkflowSupervisorTask): string | undefined {
-  const repoId = workflowSupervisorContractText(task, 'repo_id');
+function workflowSupervisorSemanticProgressFingerprint(controllerHome: string, task: WorkflowSupervisorTask): string | undefined {
   const taskControllerHome = workflowSupervisorContractText(task, 'controller_home');
-  if (!repoId || (taskControllerHome && taskControllerHome !== controllerHome)) return undefined;
+  if (taskControllerHome && taskControllerHome !== controllerHome) return undefined;
+  const requirementId = workflowSupervisorContractText(task, 'requirement_id');
+  const declaredWorkId = workflowSupervisorContractText(task, 'work_id');
+  if (requirementId) {
+    // A Work carrier may provide execution context, never progress authority.
+    // Reject a forged or mismatched carrier instead of borrowing its Goal.
+    if (declaredWorkId) {
+      const repoId = workflowSupervisorContractText(task, 'repo_id');
+      const work = repoId ? getWorkContract({ controllerHome, repoId }, declaredWorkId) : undefined;
+      if (work?.requirementId !== requirementId) return undefined;
+    }
+    const requirement = readRequirement({ controllerHome }, requirementId)?.value;
+    if (!requirement) return undefined;
+    return createHash('sha256').update(JSON.stringify({
+      authority: 'requirement',
+      semantic: requirementSemanticView(requirement),
+    })).digest('hex');
+  }
+  const repoId = workflowSupervisorContractText(task, 'repo_id');
+  if (!repoId) return undefined;
   const workId = workflowSupervisorOriginWorkId(task, repoId, controllerHome);
   if (!workId) return undefined;
   const work = getWorkContract({ controllerHome, repoId }, workId);
   if (!work) return undefined;
   return createHash('sha256').update(JSON.stringify({
+    authority: 'work',
     semanticRevision: work.semanticRevision ?? null,
     semanticState: work.semanticState,
     phase: work.phase,
@@ -211,13 +230,27 @@ function workflowSupervisorProjectAliases(task: WorkflowSupervisorTask): string[
  */
 function createForgeWorkflowSupervisorBrowserTaskActive(controllerHome: string): (task: WorkflowSupervisorTask) => boolean {
   return (task) => {
-    if (task.continuationPolicy.kind === 'standalone_supervisor') return true;
-    if (task.continuationPolicy.kind !== 'forge_goal_outer_turn') return false;
-    const repoId = workflowSupervisorContractText(task, 'repo_id');
     const requirementId = workflowSupervisorContractText(task, 'requirement_id');
     const taskControllerHome = workflowSupervisorContractText(task, 'controller_home');
+    if (task.continuationPolicy.kind === 'standalone_supervisor') {
+      if (!requirementId) return true;
+      if (taskControllerHome && taskControllerHome !== controllerHome) return false;
+      const repoId = workflowSupervisorContractText(task, 'repo_id');
+      const declaredWorkId = workflowSupervisorContractText(task, 'work_id');
+      if (declaredWorkId && (!repoId
+        || getWorkContract({ controllerHome, repoId }, declaredWorkId)?.requirementId !== requirementId)) return false;
+      const requirement = readRequirement({ controllerHome }, requirementId)?.value;
+      return Boolean(requirement && !['waiting_for_user', 'done', 'cancelled'].includes(requirement.state));
+    }
+    if (task.continuationPolicy.kind !== 'forge_goal_outer_turn') return false;
+    const repoId = workflowSupervisorContractText(task, 'repo_id');
     if (!repoId || taskControllerHome !== controllerHome) return false;
-    if (requirementId && readRequirement({ controllerHome }, requirementId)?.value.state === 'cancelled') return false;
+    if (requirementId) {
+      const requirement = readRequirement({ controllerHome }, requirementId)?.value;
+      if (!requirement || ['waiting_for_user', 'done', 'cancelled'].includes(requirement.state)) return false;
+      const declaredWorkId = workflowSupervisorContractText(task, 'work_id');
+      if (declaredWorkId && getWorkContract({ controllerHome, repoId }, declaredWorkId)?.requirementId !== requirementId) return false;
+    }
     const workId = workflowSupervisorOriginWorkId(task, repoId, controllerHome);
     if (!requirementId && !workId) return false;
     // An independent Requirement Goal can outlive an execution Work; an exact
@@ -240,6 +273,19 @@ function terminalWorkSupervisorStopReason(controllerHome: string, task: Workflow
   if (!repoId || !declaredWorkId || (taskHome && taskHome !== controllerHome)) return undefined;
   if (task.taskId !== `forge:${repoId}:work:${declaredWorkId}`
     || task.continuationPolicy.kind === 'standalone_supervisor') return undefined;
+  const requirementId = workflowSupervisorContractText(task, 'requirement_id');
+  if (requirementId) {
+    const carrier = getWorkContract({ controllerHome, repoId }, declaredWorkId);
+    const requirement = readRequirement({ controllerHome }, requirementId)?.value;
+    if (carrier?.requirementId === requirementId && requirement) {
+      // A lower-layer Work reaching a terminal state never closes an OPEN
+      // Requirement. Only the Requirement's own wait/terminal state revokes
+      // this Goal's new-send authority.
+      return ['waiting_for_user', 'done', 'cancelled'].includes(requirement.state)
+        ? `Requirement ${requirementId} is ${requirement.state}; do not send after its terminal/wait authority.`
+        : undefined;
+    }
+  }
   // The task id stays anchored to its original Work for audit and exactly-once
   // effects. Terminality follows the unique active Work projection on that same
   // conversation, which may be an explicit same-Requirement predecessor successor.
@@ -269,15 +315,18 @@ export function forgeWorkflowSupervisorLifecycleHooks(controllerHome: string): W
       // canonical Supervisor goal; a Work objective is lower-layer execution
       // context and must not become a permanent outer-turn instruction surface.
       if (requirementId) {
-        const outcome = readRequirement({ controllerHome }, requirementId)?.value.outcomeStatement?.trim();
-        if (outcome) return outcome;
+        const requirement = readRequirement({ controllerHome }, requirementId)?.value;
+        return `Requirement ${requirementId}：${requirement?.title ?? '继续完成该需求'}`;
       }
       const workId = workflowSupervisorOriginWorkId(task, repoId, controllerHome);
       if (!workId) return undefined;
       const work = getWorkContract({ controllerHome, repoId }, workId);
-      // Legacy / independent Work without Requirement authority keeps the
-      // existing fallback. Absence never manufactures a replacement Work.
-      return work?.objective;
+      if (work?.requirementId) {
+        const requirement = readRequirement({ controllerHome }, work.requirementId)?.value;
+        return `Requirement ${work.requirementId}：${requirement?.title ?? '继续完成该需求'}`;
+      }
+      // Historical standalone Work without a Requirement remains addressable.
+      return work ? `Work ${workId}：请用 rh_work get_contract 读取完整 Work 目标、验收条件及安全约束；此处仅为续跑指针` : undefined;
     },
     advisoryCognitionForTask: (task) => {
       const repoId = workflowSupervisorContractText(task, 'repo_id');
@@ -301,7 +350,7 @@ export function forgeWorkflowSupervisorLifecycleHooks(controllerHome: string): W
     },
     effectDispatchEvidence: ({ task }) => {
       const claim = getRuntimeWriteClaim();
-      const progress = workflowSupervisorWorkProgressFingerprint(controllerHome, task);
+      const progress = workflowSupervisorSemanticProgressFingerprint(controllerHome, task);
       return {
         ...(claim && !claim.unmanaged
           ? {
@@ -314,7 +363,9 @@ export function forgeWorkflowSupervisorLifecycleHooks(controllerHome: string): W
         ...(progress ? { work_progress_fingerprint: progress } : {}),
       };
     },
-    workProgressFingerprint: (task) => workflowSupervisorWorkProgressFingerprint(controllerHome, task),
+    // Compatibility hook name; the value is Requirement-first semantic progress
+    // for Requirement-only tasks and legacy Work progress otherwise.
+    workProgressFingerprint: (task) => workflowSupervisorSemanticProgressFingerprint(controllerHome, task),
     inheritedEffectDispatch: (task, effect) => {
       if (effect.kind !== 'enrollment') return undefined;
       const repoId = workflowSupervisorContractText(task, 'repo_id');

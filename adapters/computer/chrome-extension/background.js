@@ -10,6 +10,10 @@ const RPC_TIMEOUT_MS = 30_000;
 // callback must settle earlier without claiming a Send never happened.
 const TAB_MESSAGE_TIMEOUT_MS = 7_000;
 const bootstrapTabs = new Map();
+// Transient per-tab hydration retry spacing, not a Supervisor effect state.
+const unreadableConversationTabs = new Map();
+const UNREADABLE_CHAT_GRACE_MS = 60_000;
+const UNREADABLE_CHAT_RELOAD_INTERVAL_MS = 5 * 60_000;
 const randomId = () => globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 let providerInstancePromise;
 function providerInstanceId() {
@@ -39,11 +43,19 @@ function rejectNativePending(error) {
   for (const pending of pendingNative.values()) { clearTimeout(pending.timer); pending.reject(error); }
   pendingNative.clear();
 }
+function invalidateNativePort(port, error) {
+  if (nativePort !== port) return;
+  nativePort = undefined;
+  rejectNativePending(error);
+  try { port.disconnect(); } catch { /* already disconnected */ }
+  setTimeout(() => { void providerTick().catch(() => undefined); }, 500);
+}
 function ensureNativePort() {
   if (nativePort) return nativePort;
   const port = chrome.runtime.connectNative(NATIVE_HOST);
   nativePort = port;
   port.onMessage.addListener((response) => {
+    if (nativePort !== port) return;
     const pending = pendingNative.get(response?.id);
     if (!pending) return;
     pendingNative.delete(response.id);
@@ -52,23 +64,25 @@ function ensureNativePort() {
     else pending.reject(new Error(response?.error?.message ?? 'COMPUTER_CHATGPT_NATIVE_RPC_FAILED'));
   });
   port.onDisconnect.addListener(() => {
-    if (nativePort !== port) return;
-    nativePort = undefined;
-    rejectNativePending(new Error(chrome.runtime.lastError?.message ?? 'COMPUTER_CHATGPT_NATIVE_PORT_DISCONNECTED'));
-    setTimeout(() => { void providerTick().catch(() => undefined); }, 500);
+    invalidateNativePort(port, new Error(chrome.runtime.lastError?.message ?? 'COMPUTER_CHATGPT_NATIVE_PORT_DISCONNECTED'));
   });
   return port;
 }
 function nativeRpc(method, params = {}) {
   return new Promise((resolve, reject) => {
     const id = randomId();
+    let port;
     const timer = setTimeout(() => {
-      pendingNative.delete(id);
-      reject(new Error(`COMPUTER_CHATGPT_NATIVE_RPC_TIMEOUT:${method}`));
+      const error = new Error(`COMPUTER_CHATGPT_NATIVE_RPC_TIMEOUT:${method}`);
+      if (port && nativePort === port) invalidateNativePort(port, error);
+      else { pendingNative.delete(id); reject(error); }
     }, RPC_TIMEOUT_MS);
     pendingNative.set(id, { resolve, reject, timer });
-    try { ensureNativePort().postMessage({ id, method, params }); }
-    catch (error) { clearTimeout(timer); pendingNative.delete(id); reject(error); }
+    try { port = ensureNativePort(); port.postMessage({ id, method, params }); }
+    catch (error) {
+      if (port && nativePort === port) invalidateNativePort(port, error);
+      else { clearTimeout(timer); pendingNative.delete(id); reject(error); }
+    }
   });
 }
 function tabMessage(tabId, message) {
@@ -109,7 +123,10 @@ function tabRemove(tabId) { return new Promise((resolve, reject) => chrome.tabs.
   const error = chrome.runtime.lastError;
   if (error) reject(new Error(error.message)); else resolve();
 })); }
-function tabReload(tabId) { return new Promise((resolve) => chrome.tabs.reload(tabId, () => resolve())); }
+function tabReload(tabId) { return new Promise((resolve, reject) => chrome.tabs.reload(tabId, () => {
+  const error = chrome.runtime.lastError;
+  if (error) reject(new Error(error.message)); else resolve();
+})); }
 async function chatgptTabs() { return await chrome.tabs.query({ url: 'https://chatgpt.com/*' }); }
 // Controller binding owns the durable source identity. This browser-session
 // attestation proves that the exact physical tab was created by this extension;
@@ -117,13 +134,30 @@ async function chatgptTabs() { return await chrome.tabs.query({ url: 'https://ch
 // an unrelated restored/user tab.
 function ownedTabKey(tabId) { return `forgeComputerOwnedTabV1:${tabId}`; }
 async function attestedOwnerToken(tab, pinnedBinding) {
-  if (!pinnedBinding?.ownerToken || String(pinnedBinding.tabId) !== String(tab.id)
-    || String(pinnedBinding.windowId) !== String(tab.windowId)) return;
+  // Chrome preserves a tab ID across window moves, so the browser-session
+  // token (not the mutable window ID) attests its physical identity.
+  if (!pinnedBinding?.ownerToken || String(pinnedBinding.tabId) !== String(tab.id)) return;
   try {
     const key = ownedTabKey(tab.id);
     const stored = await chrome.storage.session.get(key);
     if (stored[key] === pinnedBinding.ownerToken) return pinnedBinding.ownerToken;
   } catch { /* missing browser-session provenance is never closure authority */ }
+}
+async function requirePinnedOwner(tab, pinnedBinding, identity) {
+  const ownerToken = await attestedOwnerToken(tab, pinnedBinding);
+  // A reused Chrome tab ID with the same Project or conversation URL is not
+  // sufficient authority to adopt a different physical browser tab.
+  if (pinnedBinding?.providerId === PROVIDER_ID && pinnedBinding.tabId && !pinnedBinding.ownerToken)
+    throw new Error(identity?.namespace === 'chatgpt.bootstrap'
+      ? 'COMPUTER_CHATGPT_BOOTSTRAP_OWNER_TOKEN_MISSING'
+      : 'COMPUTER_CHATGPT_EXTENSION_PINNED_OWNER_TOKEN_MISSING');
+  if (pinnedBinding?.providerId === PROVIDER_ID && pinnedBinding.ownerToken
+    && ownerToken !== pinnedBinding.ownerToken) {
+    throw new Error(identity?.namespace === 'chatgpt.bootstrap'
+      ? 'COMPUTER_CHATGPT_BOOTSTRAP_OWNER_TOKEN_MISMATCH'
+      : 'COMPUTER_CHATGPT_EXTENSION_PINNED_OWNER_TOKEN_MISMATCH');
+  }
+  return ownerToken;
 }
 function binding(tab, instanceId, ownerToken) {
   return {
@@ -177,6 +211,18 @@ async function restoreExactContentReceiver(tabId, identity) {
 }
 function isMissingContentReceiver(error) {
   return /Receiving end does not exist|Could not establish connection/i.test(String(error?.message ?? error));
+}
+// A pinned bootstrap tab becomes a conversation after its first successful
+// Send. For marker reconciliation ONLY, hydrate a missing read receiver against
+// the new exact conversation while retaining the original physical tab pin.
+// Bootstrap preparation and all Send paths still reject migrated tabs.
+function markerReconciliationReadIdentity(tab, bootstrapIdentity) {
+  if (bootstrapIdentity?.namespace !== 'chatgpt.bootstrap') return bootstrapIdentity;
+  const conversation = core.parseConversation(tab?.url ?? '');
+  const projectId = core.projectId(bootstrapIdentity.projectUrl);
+  if (!conversation || !projectId || core.projectId(tab?.url ?? '') !== projectId) return bootstrapIdentity;
+  return { namespace: 'chatgpt.conversation', conversationId: conversation.conversationId,
+    canonicalUrl: conversation.canonicalUrl };
 }
 async function snapshotWithExactReceiverRecovery(tabId, identity, options = {}) {
   try { return await snapshot(tabId, options); }
@@ -241,8 +287,54 @@ function matchingTabs(tabs, identity, pinnedBinding) {
   }
   return [];
 }
-async function resolveTarget(identity, createIfMissing, pinnedBinding) {
+async function resolveTarget(identity, createIfMissing, pinnedBinding, instanceId) {
+  // A provider switch or incomplete legacy pin must not silently fall back
+  // to the extension's cached Bootstrap tab, nor allocate a new Send target.
+  if (pinnedBinding != null) {
+    if (pinnedBinding.providerId !== PROVIDER_ID)
+      throw new Error('COMPUTER_CHATGPT_EXTENSION_PROVIDER_BINDING_MISMATCH');
+    if (pinnedBinding.tabId && !pinnedBinding.ownerToken)
+      throw new Error(identity?.namespace === 'chatgpt.bootstrap'
+        ? 'COMPUTER_CHATGPT_BOOTSTRAP_OWNER_TOKEN_MISSING'
+        : 'COMPUTER_CHATGPT_EXTENSION_PINNED_OWNER_TOKEN_MISSING');
+    if (!pinnedBinding.tabId || !pinnedBinding.windowId || !pinnedBinding.ownerToken)
+      throw new Error('COMPUTER_CHATGPT_EXTENSION_PINNED_BINDING_INCOMPLETE');
+    // Tab ID and Token cannot authorize a different Chrome profile/session.
+    // Reject before lookup, snapshot or any possible Send.
+    if (!instanceId || !pinnedBinding.providerSessionId
+      || pinnedBinding.providerSessionId !== instanceId)
+      throw new Error('COMPUTER_CHATGPT_EXTENSION_PROVIDER_SESSION_MISMATCH');
+  } else if (identity?.namespace === 'chatgpt.bootstrap' && bootstrapTabs.has(identity.bootstrapKey)) {
+    // A same-worker map never authorizes Prepare/Dispatch or URL-only adoption.
+    // Ensure may only reconstruct a Controller pin when this exact task's
+    // mapped physical tab is still on the bootstrap Project AND the same
+    // browser session proves the owner token written when that tab was created.
+    // This closes the crash/lost-receipt window after tabCreate but before the
+    // Controller persisted providerBinding, without creating or sending again.
+    if (!createIfMissing) throw new Error('COMPUTER_CHATGPT_BOOTSTRAP_BINDING_REQUIRED');
+    const mappedId = bootstrapTabs.get(identity.bootstrapKey);
+    const currentTabs = await chatgptTabs();
+    const mapped = currentTabs.find((tab) => tab.id === mappedId);
+    if (mapped && receiverMatchesIdentity(mapped, identity)) {
+      let ownerToken;
+      try {
+        const stored = await chrome.storage.session.get(ownedTabKey(mapped.id));
+        ownerToken = stored[ownedTabKey(mapped.id)];
+      } catch { /* absence is not ownership proof */ }
+      if (typeof ownerToken !== 'string' || !ownerToken)
+        throw new Error('COMPUTER_CHATGPT_BOOTSTRAP_BINDING_REQUIRED');
+      return { tab: mapped, created: false, ownerToken };
+    }
+    // After a completed bootstrap migration the pinned tab can be a /c/...
+    // conversation (or have closed), while this MV3 worker still remembers
+    // its old bootstrap id. The Controller no longer owns a bootstrap pin.
+    // Retire ONLY this stale in-worker hint; never close/adopt/navigate its
+    // former tab. A fresh Ensure must still create and attest its own tab
+    // before the Controller can bind it and authorize any Send.
+    bootstrapTabs.delete(identity.bootstrapKey);
+  }
   const tabs = await chatgptTabs();
+  let staleUnattestedConversationPin = false;
   if (identity?.namespace === 'chatgpt.conversation' && pinnedBinding?.providerId === PROVIDER_ID && pinnedBinding.tabId) {
     // Window moves preserve Chrome's profile-local tab id. A vanished id may
     // be recovered by exact conversation, but an existing tab at another URL
@@ -256,15 +348,32 @@ async function resolveTarget(identity, createIfMissing, pinnedBinding) {
       if (core.parseConversation(pinned.url ?? '')?.conversationId !== identity.conversationId) {
         throw new Error('COMPUTER_CHATGPT_EXTENSION_PINNED_TAB_IDENTITY_CHANGED');
       }
-      return { tab: pinned, created: false, ownerToken: await attestedOwnerToken(pinned, pinnedBinding) };
+      try {
+        return { tab: pinned, created: false, ownerToken: await requirePinnedOwner(pinned, pinnedBinding, identity) };
+      } catch (error) {
+        if (!createIfMissing || String(error?.message ?? error) !== 'COMPUTER_CHATGPT_EXTENSION_PINNED_OWNER_TOKEN_MISMATCH')
+          throw error;
+        // The old physical tab is NOT ours to observe, close or navigate.
+        // Ensure alone may create a NEW owned tab for this exact conversation
+        // and return its attested identity to the Controller's leased binder.
+        // Prepare/Dispatch still reject the stale owner token; no Send occurs.
+        staleUnattestedConversationPin = true;
+      }
     }
   }
-  const matches = matchingTabs(tabs, identity, pinnedBinding);
+  // An exact Conversation URL proves page identity, not ownership of the
+  // physical tab. First-time Ensure can create a dedicated attested tab;
+  // Prepare and Dispatch cannot borrow an existing user's unbound tab.
+  const trustedConversationPin = identity?.namespace === 'chatgpt.conversation'
+    && pinnedBinding?.providerId === PROVIDER_ID && pinnedBinding.tabId && pinnedBinding.ownerToken;
+  const matches = identity?.namespace === 'chatgpt.conversation' && (!trustedConversationPin || staleUnattestedConversationPin)
+    ? [] : matchingTabs(tabs, identity, pinnedBinding);
   if (matches.length > 1) throw new Error('COMPUTER_CHATGPT_EXTENSION_EXACT_TARGET_AMBIGUOUS');
   if (matches.length === 1) {
     const tab = matches[0];
+    const ownerToken = await requirePinnedOwner(tab, pinnedBinding, identity);
     if (identity.namespace === 'chatgpt.bootstrap') bootstrapTabs.set(identity.bootstrapKey, tab.id);
-    return { tab, created: false, ownerToken: await attestedOwnerToken(tab, pinnedBinding) };
+    return { tab, created: false, ownerToken };
   }
   if (identity?.namespace === 'chatgpt.bootstrap' && pinnedBinding?.providerId === PROVIDER_ID
     && pinnedBinding.tabId && pinnedBinding.windowId) {
@@ -273,29 +382,67 @@ async function resolveTarget(identity, createIfMissing, pinnedBinding) {
   if (!createIfMissing) return undefined;
   const url = identity.namespace === 'chatgpt.conversation' ? identity.canonicalUrl : identity.projectUrl;
   const tab = await tabCreate(url);
-  if (identity.namespace === 'chatgpt.bootstrap') bootstrapTabs.set(identity.bootstrapKey, tab.id);
   const token = randomId();
-  let ownerToken;
+  const key = ownedTabKey(tab.id);
   try {
-    await chrome.storage.session.set({ [ownedTabKey(tab.id)]: token });
-    ownerToken = token;
-  } catch { /* still preserve the created tab's exact binding, but never auto-close without provenance */ }
-  return { tab, created: true, ownerToken };
+    await chrome.storage.session.set({ [key]: token });
+    const stored = await chrome.storage.session.get(key);
+    if (stored[key] !== token) throw new Error('COMPUTER_CHATGPT_BOOTSTRAP_OWNER_TOKEN_UNAVAILABLE');
+  } catch {
+    // Preserve the visible tab, but neither a Controller binding nor an
+    // in-worker map may adopt an unverified physical tab or enable Send.
+    throw new Error('COMPUTER_CHATGPT_BOOTSTRAP_OWNER_TOKEN_UNAVAILABLE');
+  }
+  if (identity.namespace === 'chatgpt.bootstrap') bootstrapTabs.set(identity.bootstrapKey, tab.id);
+  return { tab, created: true, ownerToken: token };
 }
 function dispatchTransportNotReached(error) {
   const text = String(error?.message ?? error);
   return /Receiving end does not exist|Could not establish connection|No tab with id/i.test(text);
 }
+function shouldReloadUnreadableConversation(tabId, identity, observation, nowMs = Date.now()) {
+  const unreadable = identity?.namespace === 'chatgpt.conversation'
+    && typeof observation?.url === 'string'
+    && core.parseConversation(observation.url)?.conversationId === identity.conversationId
+    && /(?:无法加载此 ChatGPT 对话|Unable to load this (?:ChatGPT )?conversation)/i.test(observation.providerFailureText ?? '')
+    && !observation.latestUserText?.trim() && !observation.latestAssistantResponse?.trim()
+    && !observation.composerText?.trim() && observation.isGenerating !== true;
+  if (!unreadable) {
+    const prior = unreadableConversationTabs.get(tabId);
+    if (prior) prior.firstObservedAt = undefined;
+    return false;
+  }
+  const prior = unreadableConversationTabs.get(tabId) ?? { firstObservedAt: nowMs, lastReloadAt: -Infinity };
+  prior.firstObservedAt ??= nowMs;
+  unreadableConversationTabs.set(tabId, prior);
+  if (nowMs - prior.firstObservedAt < UNREADABLE_CHAT_GRACE_MS
+    || nowMs - prior.lastReloadAt < UNREADABLE_CHAT_RELOAD_INTERVAL_MS) return false;
+  prior.lastReloadAt = nowMs;
+  return true;
+}
 async function executeEnsure(command, instanceId) {
   let target;
   try {
-    target = await resolveTarget(command.identity, true, command.providerBinding);
+    target = await resolveTarget(command.identity, true, command.providerBinding, instanceId);
     // Created and already-bound tabs share one exact-identity receiver repair.
     // The editor must hydrate before 'ensured'; on failure the existing typed
     // failed receipt still carries this tab's binding without permitting Send.
-    const observation = await waitForContent(target.tab.id, command.identity.namespace === 'chatgpt.bootstrap',
+    let observation = await waitForContent(target.tab.id, command.identity.namespace === 'chatgpt.bootstrap',
       () => restoreExactContentReceiver(target.tab.id, command.identity));
+    if (shouldReloadUnreadableConversation(target.tab.id, command.identity, observation)) {
+      // Reload ONLY the already-attested exact physical tab, after the same
+      // error has remained visible for a minute. No new tab, Send or effect
+      // dispatch is permitted by this read-only page recovery.
+      const before = await tabGet(target.tab.id);
+      if (!receiverMatchesIdentity(before, command.identity))
+        throw new Error('COMPUTER_CHATGPT_EXTENSION_RECEIVER_TARGET_CHANGED');
+      await tabReload(target.tab.id);
+      observation = await waitForContent(target.tab.id, false,
+        () => restoreExactContentReceiver(target.tab.id, command.identity));
+    }
     const refreshed = await tabGet(target.tab.id);
+    if (!receiverMatchesIdentity(refreshed, command.identity))
+      throw new Error('COMPUTER_CHATGPT_EXTENSION_RECEIVER_TARGET_CHANGED');
     return { kind: 'ensured', providerBinding: binding(refreshed, instanceId, target.ownerToken), observation };
   } catch (error) {
     return {
@@ -314,7 +461,7 @@ async function executeEnsure(command, instanceId) {
 }
 async function executeObserve(command, instanceId) {
   try {
-    const target = await resolveTarget(command.identity, false, command.providerBinding);
+    const target = await resolveTarget(command.identity, false, command.providerBinding, instanceId);
     if (!target) return { kind: 'failed', code: 'COMPUTER_CHATGPT_EXTENSION_TARGET_MISSING', retryable: true, failoverSafe: true };
     const observation = await snapshotWithExactReceiverRecovery(target.tab.id, command.identity, command.options ?? {});
     const refreshed = await tabGet(target.tab.id);
@@ -325,14 +472,24 @@ async function executeObserve(command, instanceId) {
     return { kind: 'failed', code: String(error?.message ?? error).split(':')[0] || 'COMPUTER_CHATGPT_EXTENSION_OBSERVE_FAILED', retryable: true, failoverSafe: true };
   }
 }
-async function executePrepare(command) {
-  const target = await resolveTarget(command.identity, false, command.providerBinding).catch(() => undefined);
+function targetResolutionReasonCode(error) {
+  const code = String(error?.message ?? error).split(':')[0];
+  // Preserve only stable local target-refusal codes, never arbitrary message
+  // content or a transport-failure claim of whether Send was attempted.
+  return /^COMPUTER_CHATGPT_[A-Z0-9_]+$/.test(code)
+    ? code : 'COMPUTER_CHATGPT_EXTENSION_TARGET_MISSING';
+}
+async function executePrepare(command, instanceId) {
+  let target;
+  try { target = await resolveTarget(command.identity, false, command.providerBinding, instanceId); }
+  catch (error) { return { kind: 'prepared', ready: false, reasonCode: targetResolutionReasonCode(error) }; }
   if (!target) return { kind: 'prepared', ready: false, reasonCode: 'COMPUTER_CHATGPT_EXTENSION_TARGET_MISSING' };
   const expectedProjectId = command.identity?.namespace === 'chatgpt.bootstrap' ? core.projectId(command.identity.projectUrl) : undefined;
   if (command.identity?.namespace === 'chatgpt.bootstrap' && !expectedProjectId)
     return { kind: 'prepared', ready: false, reasonCode: 'COMPUTER_CHATGPT_BOOTSTRAP_PROJECT_UNPROVEN' };
   const requiresDraftReplacement = typeof command.prompt === 'string' && command.prompt.startsWith('<<<FORGE_DRAFT_REPLACE_V1:');
-  if (expectedProjectId || requiresDraftReplacement) {
+  const requiresRecoveryCapability = command.mode === 'recover' && command.identity?.namespace === 'chatgpt.conversation';
+  if (expectedProjectId || requiresDraftReplacement || requiresRecoveryCapability) {
     let capability;
     try { capability = await tabMessage(target.tab.id, { type: 'forge-computer-chatgpt-capabilities' }); }
     catch { return { kind: 'prepared', ready: false, reasonCode: 'COMPUTER_CHATGPT_CONTENT_CAPABILITIES_UNAVAILABLE' }; }
@@ -342,6 +499,8 @@ async function executePrepare(command) {
       return { kind: 'prepared', ready: false, reasonCode: 'COMPUTER_CHATGPT_BOOTSTRAP_PROJECT_GUARD_UNSUPPORTED' };
     if (requiresDraftReplacement && capability?.composerReplacementContract !== 'exact-backed-up-project-draft-v1')
       return { kind: 'prepared', ready: false, reasonCode: 'COMPUTER_CHATGPT_BOOTSTRAP_LOADED_SCRIPT_STALE' };
+    if (requiresRecoveryCapability && capability?.recoveryCapability !== 'recover-no-stop-prewrite-v1')
+      return { kind: 'prepared', ready: false, reasonCode: 'COMPUTER_CHATGPT_RECOVERY_CAPABILITY_UNSUPPORTED' };
   }
   try {
     const result = await tabMessage(target.tab.id, {
@@ -350,14 +509,25 @@ async function executePrepare(command) {
       ...(expectedProjectId ? { expectedProjectId } : {}),
     });
     if (result?.prepared !== true) return { kind: 'prepared', ready: false, reasonCode: String(result?.reason ?? 'COMPUTER_CHATGPT_EXTENSION_PREPARE_REJECTED') };
-    return { kind: 'prepared', ready: true };
-  } catch {
-    // A prepare command contains no Send action. Failure is not a submitted effect.
-    return { kind: 'prepared', ready: false, reasonCode: 'COMPUTER_CHATGPT_EXTENSION_PREPARE_UNAVAILABLE' };
+    if (requiresRecoveryCapability && result?.recoveryCapability !== 'recover-no-stop-prewrite-v1')
+      return { kind: 'prepared', ready: false, reasonCode: 'COMPUTER_CHATGPT_RECOVERY_CAPABILITY_UNSUPPORTED' };
+    return { kind: 'prepared', ready: true, ...(requiresRecoveryCapability ? { recoveryCapability: result.recoveryCapability } : {}) };
+  } catch (error) {
+    // Prepare has not clicked Send. Preserve the transport reason for the
+    // Supervisor's exact-effect recovery instead of masking a receiver loss
+    // or a timed-out content script as a generic infrastructure failure.
+    const reasonCode = String(error?.message ?? error) === 'COMPUTER_CHATGPT_EXTENSION_TAB_MESSAGE_TIMEOUT'
+      ? 'COMPUTER_CHATGPT_EXTENSION_TAB_MESSAGE_TIMEOUT'
+      : isMissingContentReceiver(error)
+        ? 'COMPUTER_CHATGPT_EXTENSION_CONTENT_UNAVAILABLE'
+        : 'COMPUTER_CHATGPT_EXTENSION_PREPARE_UNAVAILABLE';
+    return { kind: 'prepared', ready: false, reasonCode };
   }
 }
-async function executeDispatch(command) {
-  const target = await resolveTarget(command.identity, false, command.providerBinding).catch(() => undefined);
+async function executeDispatch(command, instanceId) {
+  let target;
+  try { target = await resolveTarget(command.identity, false, command.providerBinding, instanceId); }
+  catch (error) { return { kind: 'dispatch', mutation: 'not_attempted', reasonCode: targetResolutionReasonCode(error) }; }
   if (!target) return { kind: 'dispatch', mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_EXTENSION_TARGET_MISSING' };
   const expectedProjectId = command.identity?.namespace === 'chatgpt.bootstrap' ? core.projectId(command.identity.projectUrl) : undefined;
   if (command.identity?.namespace === 'chatgpt.bootstrap' && !expectedProjectId)
@@ -365,12 +535,15 @@ async function executeDispatch(command) {
   // An old tab may still contain a pre-upgrade content script after the
   // extension/runtime has been upgraded. Probe the *exact target tab* before
   // submitting; a background/version heartbeat alone cannot prove it.
-  if (expectedProjectId) {
+  const requiresRecoveryCapability = command.mode === 'recover' && command.identity?.namespace === 'chatgpt.conversation';
+  if (expectedProjectId || requiresRecoveryCapability) {
     let capability;
     try { capability = await tabMessage(target.tab.id, { type: 'forge-computer-chatgpt-capabilities' }); }
     catch { return { kind: 'dispatch', mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_CONTENT_CAPABILITIES_UNAVAILABLE' }; }
     if (expectedProjectId && capability?.bootstrapTargetGuard !== 'project-checked-before-send-v1')
       return { kind: 'dispatch', mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_BOOTSTRAP_PROJECT_GUARD_UNSUPPORTED' };
+    if (requiresRecoveryCapability && capability?.recoveryCapability !== 'recover-no-stop-prewrite-v1')
+      return { kind: 'dispatch', mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_RECOVERY_CAPABILITY_UNSUPPORTED' };
   }
   let result;
   try { result = await tabMessage(target.tab.id, {
@@ -383,40 +556,79 @@ async function executeDispatch(command) {
       ? { kind: 'dispatch', mutation: 'not_attempted', reasonCode: 'COMPUTER_CHATGPT_EXTENSION_CONTENT_UNAVAILABLE' }
       : { kind: 'dispatch', mutation: 'attempted' };
   }
-  if (result?.dispatched === false) return { kind: 'dispatch', mutation: 'not_attempted', reasonCode: String(result?.reason ?? 'COMPUTER_CHATGPT_EXTENSION_PRE_MUTATION_REJECTION') };
+  if (result?.dispatched === false) {
+    const rawProof = result?.prewriteNoMutationProof;
+    const reason = String(result?.reason ?? 'COMPUTER_CHATGPT_EXTENSION_PRE_MUTATION_REJECTION');
+    const proofReasonAllowed = reason === 'provider_recovery_turn_unknown' || reason === 'provider_recovery_turn_live';
+    const ownerToken = typeof target.ownerToken === 'string' ? target.ownerToken : '';
+    const recoveryCapability = requiresRecoveryCapability && result?.recoveryCapability === 'recover-no-stop-prewrite-v1'
+      ? result.recoveryCapability : undefined;
+    const prewriteNoMutationReceipt = recoveryCapability && proofReasonAllowed
+      && rawProof?.kind === 'prewrite_no_mutation_proof'
+      && rawProof?.phase === 'prewrite_or_preclick'
+      && rawProof?.editor_touched === false && rawProof?.stop_clicked === false && rawProof?.send_clicked === false
+      && rawProof?.loaded_capability === recoveryCapability
+      && Number.isSafeInteger(rawProof?.issued_at_ms) && Math.abs(Date.now() - rawProof.issued_at_ms) <= 30_000
+      && ownerToken && String(target.tab?.id) && String(target.tab?.windowId)
+      ? {
+          kind: 'prewrite_no_mutation_proof', phase: 'prewrite_or_preclick', reason,
+          issued_at_ms: rawProof.issued_at_ms, editor_touched: false, stop_clicked: false, send_clicked: false,
+          loaded_capability: 'recover-no-stop-prewrite-v1', provider_id: PROVIDER_ID,
+          provider_instance_id: instanceId, command_id: command.commandId,
+          provider_session_id: String(command.providerBinding?.providerSessionId ?? instanceId),
+          profile_id: instanceId, window_id: String(target.tab.windowId), tab_id: String(target.tab.id), owner_token: ownerToken,
+        }
+      : undefined;
+    return { kind: 'dispatch', mutation: 'not_attempted', reasonCode: reason,
+      ...(recoveryCapability ? { recoveryCapability } : {}),
+      ...(prewriteNoMutationReceipt ? { prewriteNoMutationReceipt } : {}) };
+  }
   // A missing/malformed reply after dispatch crossed the content-script boundary
   // is not an attestation that Send never ran.
   if (result?.dispatched !== true) return { kind: 'dispatch', mutation: 'attempted', confirmed: false };
   // The content script observes the committed user turn within the same page.
   // A missing/negative receipt is an outcome-unknown submission, not a retry grant.
-  return { kind: 'dispatch', mutation: 'attempted', confirmed: result.confirmed === true };
+  return { kind: 'dispatch', mutation: 'attempted', confirmed: result.confirmed === true, ...(requiresRecoveryCapability && result?.recoveryCapability === 'recover-no-stop-prewrite-v1' ? { recoveryCapability: result.recoveryCapability } : {}) };
 }
 async function executeFindMarker(command, instanceId) {
-  const matches = [];
   const pinnedBinding = command.providerBinding;
+  // Discovery can read unrelated browser pages, but must never convert an
+  // explicit other-Provider binding into Chrome's actionable owner identity.
+  // Reject before any Chrome tab query or marker scan.
+  if (pinnedBinding != null && pinnedBinding.providerId !== PROVIDER_ID)
+    return { kind: 'failed', code: 'COMPUTER_CHATGPT_EXTENSION_PROVIDER_BINDING_MISMATCH', retryable: false };
+  if (pinnedBinding != null && (!pinnedBinding.providerSessionId
+    || pinnedBinding.providerSessionId !== instanceId))
+    return { kind: 'failed', code: 'COMPUTER_CHATGPT_EXTENSION_PROVIDER_SESSION_MISMATCH', retryable: false };
+  const matches = [];
   let pinnedTarget;
   if (command.identity?.namespace === 'chatgpt.bootstrap'
     && pinnedBinding?.providerId === PROVIDER_ID
     && pinnedBinding.providerSessionId === instanceId
     && pinnedBinding.tabId && pinnedBinding.windowId) {
-    try { pinnedTarget = await resolveTarget(command.identity, false, pinnedBinding); }
-    catch { /* Invalid pin never permits repair or other-tab adoption. */ }
+    try { pinnedTarget = await resolveTarget(command.identity, false, pinnedBinding, instanceId); }
+    catch (error) { return { kind: 'failed', code: targetResolutionReasonCode(error), retryable: false }; }
   }
+  // A malformed command with a pin but no bootstrap identity must not fall
+  // through to discovery of unrelated tabs.
+  if (pinnedBinding && !pinnedTarget)
+    return { kind: 'failed', code: 'COMPUTER_CHATGPT_BOOTSTRAP_PINNED_TAB_MISSING', retryable: false };
   const tabs = await chatgptTabs();
   const pinnedTabId = pinnedTarget ? String(pinnedTarget.tab.id) : undefined;
-  // Only the exact pinned physical tab can receive receiver restoration.
-  const orderedTabs = pinnedTarget
-    ? [pinnedTarget.tab, ...tabs.filter((tab) => String(tab.id) !== pinnedTabId)]
-    : tabs;
+  // A persisted pin is the only acceptable result for this bootstrap. Do not
+  // let unrelated tabs exhaust the broker timeout after that result is found.
+  const orderedTabs = pinnedBinding ? (pinnedTarget ? [pinnedTarget.tab] : []) : tabs;
   for (const tab of orderedTabs) {
     if (!tab.id) continue;
     const pinned = Boolean(pinnedTarget && String(tab.id) === pinnedTabId);
     try {
+      const readIdentity = pinned
+        ? markerReconciliationReadIdentity(await tabGet(tab.id), command.identity) : undefined;
       const observation = pinned
-        ? await snapshotWithExactReceiverRecovery(tab.id, command.identity, { includeUserHistory: true, includePageText: false })
+        ? await snapshotWithExactReceiverRecovery(tab.id, readIdentity, { includeUserHistory: true, includePageText: false })
         : await snapshot(tab.id, { includeUserHistory: true, includePageText: false });
       const observedTab = pinned ? await tabGet(tab.id) : tab;
-      if (pinned && !receiverMatchesIdentity(observedTab, command.identity))
+      if (pinned && !receiverMatchesIdentity(observedTab, readIdentity))
         throw new Error('COMPUTER_CHATGPT_EXTENSION_RECEIVER_TARGET_CHANGED');
       const identity = core.parseConversation(observation?.url ?? observedTab.url ?? '');
       if (!identity) continue;
@@ -424,7 +636,8 @@ async function executeFindMarker(command, instanceId) {
       if (!texts.some((text) => String(text ?? '').includes(command.marker))) continue;
       // Only the originally pinned physical tab can re-attest its session
       // ownerToken. Never copy the token to a same-URL or another-profile tab.
-      const ownerToken = command.providerBinding && String(command.providerBinding.tabId) === String(tab.id)
+      const ownerToken = command.providerBinding?.providerId === PROVIDER_ID
+        && String(command.providerBinding.tabId) === String(tab.id)
         && command.providerBinding.providerSessionId === instanceId
         ? await attestedOwnerToken(tab, command.providerBinding) : undefined;
       matches.push({ identity: { namespace: 'chatgpt.conversation', conversationId: identity.conversationId, canonicalUrl: identity.canonicalUrl }, providerBinding: binding(observedTab, instanceId, ownerToken), observation });
@@ -469,8 +682,8 @@ async function executeCommand(command, instanceId) {
   if (!command || typeof command.commandId !== 'string') return { kind: 'failed', code: 'COMPUTER_CHATGPT_EXTENSION_COMMAND_INVALID', retryable: false, failoverSafe: true };
   if (command.kind === 'ensure') return await executeEnsure(command, instanceId);
   if (command.kind === 'observe') return await executeObserve(command, instanceId);
-  if (command.kind === 'prepare') return await executePrepare(command);
-  if (command.kind === 'dispatch') return await executeDispatch(command);
+  if (command.kind === 'prepare') return await executePrepare(command, instanceId);
+  if (command.kind === 'dispatch') return await executeDispatch(command, instanceId);
   if (command.kind === 'find_marker') return await executeFindMarker(command, instanceId);
   if (command.kind === 'close') return await executeClose(command, instanceId);
   return { kind: 'failed', code: 'COMPUTER_CHATGPT_EXTENSION_COMMAND_UNKNOWN', retryable: false, failoverSafe: true };
@@ -585,7 +798,7 @@ chrome.runtime.onStartup.addListener(() => { chrome.alarms.create(ALARM, { perio
 chrome.alarms.onAlarm.addListener((alarm) => { if (alarm.name === ALARM) { void providerTick().catch(() => undefined); scheduleDiscovery(); } });
 chrome.tabs.onUpdated.addListener((_tabId, changeInfo, tab) => { if (changeInfo.status === 'complete' && String(tab.url ?? '').startsWith('https://chatgpt.com/')) { void providerTick().catch(() => undefined); scheduleDiscovery(); } });
 chrome.tabs.onActivated.addListener(() => { void providerTick().catch(() => undefined); scheduleDiscovery(); });
-chrome.tabs.onRemoved.addListener(() => { void providerTick().catch(() => undefined); scheduleDiscovery(); });
+chrome.tabs.onRemoved.addListener((tabId) => { unreadableConversationTabs.delete(tabId); void providerTick().catch(() => undefined); scheduleDiscovery(); });
 chrome.windows.onFocusChanged.addListener(() => { void providerTick().catch(() => undefined); scheduleDiscovery(); });
 chrome.alarms.create(ALARM, { periodInMinutes: 1 });
 setInterval(() => { void providerTick().catch(() => undefined); }, PROVIDER_TICK_MS);

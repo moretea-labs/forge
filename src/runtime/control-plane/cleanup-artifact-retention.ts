@@ -6,6 +6,7 @@ import { measureReclaimablePath } from './lifecycle-retention-metrics';
 import { getRepository } from '../../cli/repositories/registry';
 import {
   listWorkHandles,
+  readWorkHandle,
   workDeliveryBaseRevision,
   writeWorkHandle,
   type WorkCleanupReceipt,
@@ -412,7 +413,20 @@ export function cleanupWorkPreservationArtifacts(
     for (const entry of artifactEntries) {
       if (!entry.isDirectory()) continue;
       const directoryPath = join(artifactRoot, entry.name);
-      const handle = handles.get(entry.name);
+      // The bounded repository inventory is not proof that a Handle is absent.
+      // A missing map entry must be checked against the canonical key before
+      // entering the orphan deletion path, including beyond the 5,000-row cap.
+      let handle = handles.get(entry.name);
+      if (!handle) {
+        try {
+          handle = readWorkHandle(controllerHome, repositoryId, entry.name);
+        } catch (error) {
+          report.retained += 1;
+          skip(report, 'physical_bundle_handle_lookup_failed');
+          report.errors.push(`${repositoryId}:${entry.name}: ${error instanceof Error ? error.message : String(error)}`);
+          continue;
+        }
+      }
       const canonicalBundlePath = resolve(join(directoryPath, 'branch.bundle'));
       if (referencedBundlePaths.has(canonicalBundlePath)) continue;
       if (physicalInspected >= maxEntries) {

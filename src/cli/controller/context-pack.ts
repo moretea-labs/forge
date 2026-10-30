@@ -1,4 +1,5 @@
 import {
+  exactCodeNeedleMatches,
   gitSnapshot,
   getRepositoryReadSessionCache,
   searchRepositoryMany,
@@ -8,7 +9,7 @@ import {
 import { globMatches } from "../../../adapters/mcp/paths";
 import { posix } from "path";
 import type { McpPolicy } from "../../../adapters/mcp/types";
-import { materializeSource } from "./context/source-materializer";
+import { exactCodeOwnerEvidence, exactCodeOwnerQueries, materializeSource } from "./context/source-materializer";
 import { projectBoard } from "./issue-store";
 import { buildControllerTaskLedgerProjection } from "./task-ledger";
 import { legacyIssueAuthorityRetired } from "./legacy-issue-cutover";
@@ -103,6 +104,23 @@ function contextPathPriority(path: string, reasons: string[]): number {
   return testBonus + sourceBonus + structuralBonus;
 }
 
+
+
+function lexicalDiscoveryExclusions(
+  options: ControllerContextPackOptions,
+  knownPaths: string[],
+  includeGlobs: string[],
+  excludeGlobs: string[],
+): string[] {
+  const sourceFirstDiscovery = (options.searchTerms?.length ?? 0) > 0
+    && includeGlobs.length === 0
+    && !knownPaths.some(path => /(^|\/)(?:docs?|references|tasks)(?:\/|$)/i.test(path))
+    && !/\b(?:documentation|docs?|readme|tutorial|guide|design decision|architecture notes)\b|文档|教程|手册/i.test(options.description ?? '');
+  return sourceFirstDiscovery
+    ? cleanList([...excludeGlobs, 'docs/**', 'references/**', 'tasks/**'])
+    : excludeGlobs;
+}
+
 export function buildControllerContextPack(
   repoRoot: string,
   policy: McpPolicy,
@@ -138,6 +156,7 @@ export function buildControllerContextPack(
   // investigation already discovered the complete semantic scope. Only an
   // explicit retrieval include narrows discovery.
   const searchIncludeGlobs = includeGlobs;
+  const lexicalExcludeGlobs = lexicalDiscoveryExclusions(options, knownPaths, searchIncludeGlobs, excludeGlobs);
   const taskChecks = cleanList(compactTask?.checks);
   const goalParts = [
     options.description,
@@ -378,6 +397,14 @@ export function buildControllerContextPack(
     && structuralMode === "off"
     && impactDomains.length === 0
     && searchIncludeGlobs.length === 0;
+  // Reserve one exact declaration window per authored owner only when the
+  // caller supplied enough snippet slots. The two-slot saturated case remains
+  // fail-closed; a three-slot request must not lose its third late owner to
+  // earlier lexical references.
+  const useBoundedExactWindows = scopedExactKnownFileSearch
+    && requiredSearchQueries.length > 0
+    && requiredSearchQueries.length <= requestedMaxSnippets;
+  const scopedRequiredHitLines = new Map<string, Array<{ line: number; query: string }>>();
 
   // Lexical retrieval is one bounded pass across candidate files for all terms.
   // The old per-term loop reread the same source files up to 14 times even
@@ -389,16 +416,18 @@ export function buildControllerContextPack(
       queries: searchQueries,
       files: scopedExactKnownFileSearch ? exactKnownFiles : undefined,
       includeGlobs: scopedExactKnownFileSearch ? undefined : searchIncludeGlobs,
-      excludeGlobs,
+      excludeGlobs: lexicalExcludeGlobs,
       maxResultsPerQuery: Math.max(maxFiles * 4, 12),
       maxFiles: scopedExactKnownFileSearch ? exactKnownFiles.length : MAX_TOTAL_SEARCHED_FILES,
       caseSensitive: false,
       cacheKey: JSON.stringify({ head: git.head, status: git.status, diffStat: git.diffStat }),
+      // Preserve the baseline for requests with more exact owners than the
+      // bounded two-window selection can represent without new budget proof.
+      requiredQueries: !scopedExactKnownFileSearch || useBoundedExactWindows ? requiredSearchQueries : [],
       ...(!scopedExactKnownFileSearch ? {
         completionMode: 'discovery' as const,
         discoveryTargetFiles: Math.max(maxFiles * 2, 12),
         discoveryMinQueryCoverage: Math.min(3, searchQueries.length),
-        requiredQueries: requiredSearchQueries,
       } : {}),
       session: options.session,
     });
@@ -413,8 +442,13 @@ export function buildControllerContextPack(
       if (candidates.size >= maxFiles * 3 && !candidates.has(hit.path) && !requiredSearchQueries.includes(hit.query)) continue;
       if (requiredSearchQueries.includes(hit.query)) {
         const source = hit.text.trimStart();
-        const declared = /^(?:(?:export|declare|default|async)\s+)*(?:function|class|interface|type|const|let|enum)\s+([\w$]+)/.exec(source)?.[1];
-        if (declared?.toLowerCase() === hit.query.toLowerCase()) {
+        const ownerEvidence = scopedExactKnownFileSearch ? undefined : exactCodeOwnerEvidence(source, hit.query);
+        if (useBoundedExactWindows) {
+          const exactLines = scopedRequiredHitLines.get(hit.path) ?? [];
+          exactLines.push({ line: hit.line, query: hit.query });
+          scopedRequiredHitLines.set(hit.path, exactLines);
+        }
+        if (ownerEvidence?.declared?.toLowerCase() === hit.query.toLowerCase()) {
           addReason(candidates, hit.path, `${source.startsWith('export ') ? 'exported' : 'local'}-definition:${hit.query}`, hit.line);
         }
       }
@@ -503,6 +537,7 @@ export function buildControllerContextPack(
 
   let remainingSnippets = maxSnippets;
   const files: ControllerContextPackFile[] = [];
+  const emittedOwnerEvidence = new Set<string>();
   const expansionDiscoveredPaths: string[] = [];
   const expansionMaterializedPaths: string[] = [];
   const materializationStartedAt = performance.now();
@@ -526,13 +561,51 @@ export function buildControllerContextPack(
     const fileSnippetBudget = exactKnown
       ? Math.max(1, remainingSnippets - exactKnownAfter)
       : Math.min(remainingSnippets, waveOnePerFileCap, inferredFairShare);
+    // Keep exact-symbol windows bounded by authored symbol count rather than
+    // expanding a small, formerly broad result to every occurrence in a file.
+    const exactHits = scopedRequiredHitLines.get(entry.path) ?? [];
+    const requiredWindows: Array<{ first: number; last: number; count: number; queries: Set<string> }> = [];
+    for (const hit of [...exactHits].sort((a, b) => a.line - b.line)) {
+      const last = requiredWindows[requiredWindows.length - 1];
+      if (last && hit.line - last.first <= 40) {
+        last.last = hit.line;
+        last.count += 1;
+        last.queries.add(hit.query);
+      } else {
+        requiredWindows.push({
+          first: hit.line, last: hit.line, count: 1,
+          queries: new Set([hit.query]),
+        });
+      }
+    }
+    // Reserve bounded evidence for distinct authored symbols before allowing
+    // dense references to one symbol to consume both available windows.
+    const rankedRequiredWindows = requiredWindows.sort((a, b) =>
+      b.queries.size - a.queries.size || b.count - a.count || a.first - b.first);
+    // Cover distinct required owners before duplicate dense reference windows.
+    // This is bounded by the caller's existing snippet budget (maximum 80);
+    // no extra file search or source scan is introduced.
+    const chosenRequiredWindows: typeof rankedRequiredWindows = [];
+    const coveredQueries = new Set<string>();
+    for (const window of rankedRequiredWindows) {
+      if (chosenRequiredWindows.length >= Math.min(fileSnippetBudget, requiredSearchQueries.length || 1)) break;
+      if (chosenRequiredWindows.length > 0
+        && ![...window.queries].some((query) => !coveredQueries.has(query))) continue;
+      chosenRequiredWindows.push(window);
+      for (const query of window.queries) coveredQueries.add(query);
+    }
+    const prioritizedLines = chosenRequiredWindows
+      // Shift anchors so each bounded source window includes its last hit.
+      .map((window) => Math.max(window.first, window.last - 28));
     let snippets: ControllerContextPackSnippet[] = [];
     try {
       snippets = materializeSource({
         repoRoot,
         policy,
         path: entry.path,
-        hitLines: entry.lines.length > 0 ? entry.lines : [1],
+        // When the caller supplied exact symbols in one known file, return
+        // their windows before spending bytes on generic language matches.
+        hitLines: prioritizedLines.length > 0 ? prioritizedLines : entry.lines.length > 0 ? entry.lines : [1],
         reasons: entry.reasons,
         // Discovery should cover multiple entry points rather than dump one huge file.
         // Explicit known files retain their full evidence budget; only inferred
@@ -541,7 +614,15 @@ export function buildControllerContextPack(
         maxCharsPerSnippet: exactKnown && options.maxCharsPerSnippet === undefined ? 8000 : maxCharsPerSnippet,
         session: options.session,
         preferSymbolRanges,
+        ...(scopedExactKnownFileSearch && useBoundedExactWindows ? { requiredOwnerQueries: requiredSearchQueries } : {}),
       });
+      for (const snippet of snippets) {
+        for (const query of snippet.ownerQueries ?? []) emittedOwnerEvidence.add(query);
+        if (scopedExactKnownFileSearch && !useBoundedExactWindows) {
+          for (const query of exactCodeOwnerQueries(snippet.content, requiredSearchQueries, true)) emittedOwnerEvidence.add(query);
+        }
+      }
+      snippets = snippets.map(({ ownerQueries: _ownerQueries, ...snippet }) => snippet);
       for (const snippet of snippets) {
         if (snippet.cacheHit) rangeCacheHits += 1;
         else rangeCacheMisses += 1;
@@ -554,7 +635,11 @@ export function buildControllerContextPack(
       files.push({
         path: entry.path,
         reasons: entry.reasons,
-        hitLines: Array.from(new Set(entry.lines)).sort((a, b) => a - b).slice(0, 30),
+        // Keep evidence for exact hits even when earlier broad hits exceed
+        // the public thirty-line diagnostic limit.
+        hitLines: Array.from(new Set([
+          ...exactHits.map((hit) => hit.line), ...Array.from(new Set(entry.lines)).sort((a, b) => a - b),
+        ])).slice(0, 30).sort((a, b) => a - b),
         snippetCount: snippets.length,
         snippets,
       });
@@ -842,6 +927,15 @@ export function buildControllerContextPack(
     .map((file) => file.path);
   const materializedExactKnownSet = new Set(materializedExactKnownPaths);
   const omittedCandidateCount = rankedCandidates.filter((entry) => !inspectedSet.has(entry.path)).length;
+  // A fully materialized known file is not sufficient when an explicitly
+  // authored code symbol is absent from the actual snippets emitted to the model.
+  // In the bounded exact-known-file path, references alone are not sufficient
+  // implementation evidence: require the requested owner line in an emitted snippet.
+  const requiredSymbolEvidenceMissing = scopedExactKnownFileSearch
+    ? requiredSearchQueries.some((query) => !emittedOwnerEvidence.has(query))
+    : requiredSearchQueries.some((query) =>
+        !files.some((file) => file.snippets.some((snippet) =>
+          exactCodeNeedleMatches(snippet.content.toLowerCase(), query.toLowerCase()))));
   const exactKnownFilesLosslesslyMaterialized = scopedExactKnownFileSearch
     && exactKnownFiles.length > 0
     && exactKnownFiles.every((path) => files.some((file) => file.path === path
@@ -855,6 +949,7 @@ export function buildControllerContextPack(
   // separate readiness failure through `rawSnippetTruncated`.
   const evidenceSearchTruncated = searchTruncated
     && !(exactKnownFilesLosslesslyMaterialized
+      && !requiredSymbolEvidenceMissing
       && omittedCandidateCount === 0
       && policyDeniedFiles === 0
       && deniedPaths.length === 0
@@ -870,6 +965,7 @@ export function buildControllerContextPack(
     ...(files.length === 0 ? ["raw_source_unavailable"] : []),
     ...(rawSnippetTruncated ? ["raw_source_truncated"] : []),
     ...(evidenceSearchTruncated ? ["retrieval_truncated"] : []),
+    ...(requiredSymbolEvidenceMissing ? ["required_symbol_not_materialized"] : []),
     ...(structuralMode === "required" && !structuralContext.requiredSatisfied ? ["required_structural_context_unsatisfied"] : []),
     ...(structuralContext.status === "stale" ? ["structural_context_stale"] : []),
     ...(structuralContext.status === "unavailable" || structuralContext.status === "degraded" ? ["structural_provider_degraded"] : []),
@@ -1118,6 +1214,7 @@ export async function buildControllerContextPackAsync(
   const explicitKnownPaths = knownPaths.filter((path) => !looksLikeGlob(path));
   const includeGlobs = cleanList([...(options.includeGlobs ?? []), ...knownGlobs]);
   const excludeGlobs = cleanList([...DEFAULT_SEARCH_EXCLUDE_GLOBS, ...(options.excludeGlobs ?? [])]);
+  const lexicalExcludeGlobs = lexicalDiscoveryExclusions(options, knownPaths, includeGlobs, excludeGlobs);
   const requiredSearchQueries = explicitCodeQueries(options.searchTerms);
   const terms = cleanList([...requiredSearchQueries, ...(options.searchTerms ?? []), ...(options.searchTerms ?? []).flatMap(textTokens), ...textTokens(options.description ?? '')]).slice(0, 14);
   const impactDomains = cleanList(options.impactDomains)
@@ -1170,7 +1267,7 @@ export async function buildControllerContextPackAsync(
           queries: searchQueries,
           files: scopedExactKnownFileSearch ? exactKnownFiles : undefined,
           includeGlobs: scopedExactKnownFileSearch ? undefined : includeGlobs,
-          excludeGlobs,
+          excludeGlobs: lexicalExcludeGlobs,
           maxResultsPerQuery: Math.max(maxFiles * 4, 12),
           maxFiles: scopedExactKnownFileSearch ? exactKnownFiles.length : MAX_TOTAL_SEARCHED_FILES,
           caseSensitive: false,

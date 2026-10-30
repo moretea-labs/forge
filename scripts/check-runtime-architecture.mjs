@@ -756,7 +756,6 @@ const required = [
   'src/runtime/workflow/schedules/work-continuation.ts',
   'scripts/smoke-runtime-recovery.ts',
   'scripts/smoke-schedule-engine.ts',
-  'src/runtime/release/release-gate.ts',
   'src/runtime/root/runtime.ts',
   'src/runtime/root/readiness.ts',
   'src/runtime/root/types.ts',
@@ -1221,13 +1220,28 @@ requireText('adapters/mcp/runtime-gateway/workflow-supervisor-adapter.ts', 'WORK
 requireText('adapters/mcp/runtime-gateway/workflow-supervisor-adapter.ts', "...(workId ? { work_id: workId } : {})");
 requireText('adapters/mcp/runtime-gateway/workflow-supervisor-adapter.ts', "...(requirementId ? { requirement_id: requirementId } : {})");
 requireText('supervisor/forge-validators.ts', "requirement.state === 'waiting_for_user'");
-requireText('supervisor/native-browser-adapter.ts', "command.kind === 'recovery' && prepared.reasonCode === 'provider_recovery_stop_pending'");
-requireText('supervisor/native-browser-adapter.ts', 'provider-turn observation, not an infrastructure preparation failure');
-requireText('supervisor/store.ts', 'proofGeneration === ledger.lastGeneration');
-requireText('supervisor/store.ts', 'dispatch_generation: dispatch.lastGeneration');
-requireText('supervisor/store.ts', 'dispatch_generation: row?.dispatch_generation, pre_send_rejection: true');
-requireText('supervisor/store.ts', 'effect-dispatch-budget-refund:${effectId}:${proofGeneration}');
-requireText('supervisor/control-plane.ts', 'const recoveryStopPending = effect.kind === \'recovery\' && input.reason.trim() === \'provider_recovery_stop_pending\';');
+// Recovery's three typed live/unknown provider states are read-only
+// observations; none may become a sticky preflight failure or spend Send.
+requireText('supervisor/native-browser-adapter.ts', "command.kind === 'recovery' && ['provider_recovery_stop_pending',");
+requireText('supervisor/native-browser-adapter.ts', "'provider_recovery_turn_unknown', 'provider_recovery_turn_live'].includes(prepared.reasonCode)");
+requireText('supervisor/native-browser-adapter.ts', 'this.noteTaskFailure(prepared.reasonCode, task, command.effectId, false)');
+// A single Store-owned typed proof validator and refund writer replace the
+// legacy generic pre_send_rejection/no-click string authority. Keep these
+// guards pointed at the actual safety boundary, not obsolete implementation text.
+requireText('supervisor/store.ts', 'proofGeneration !== ledger.lastGeneration');
+requireText('supervisor/store.ts', 'insertValidatedDispatchBudgetRefundWithin(db,');
+requireText('supervisor/store.ts', 'effect-dispatch-budget-refund:${input.effectId}:${input.generation}');
+requireText('supervisor/store.ts', 'proof.effect_id === effectId');
+requireText('supervisor/store.ts', "proof.dispatch_id === String(dispatchPayload.dispatchId ?? '')");
+requireText('supervisor/store.ts', "proof.target_id === String(dispatchPayload.target_id ?? '')");
+requireText('supervisor/store.ts', 'proof_identity_validated');
+requireText('supervisor/store.ts', 'proof_rejected: true');
+requireText('supervisor/control-plane.ts', 'if (!accepted) return;');
+requireText('adapters/computer/chrome-extension/content.js', 'recoverNoStopReadiness');
+requireText('adapters/computer/chrome-extension/background.js', 'requiresRecoveryCapability');
+forbid('adapters/computer/chrome-extension/content.js', /\bstop\.click\s*\(/, 'recovery must not click Stop and interfere with a possibly live provider turn');
+forbid('supervisor/control-plane.ts', /['"]effect_dispatch_budget_refunded['"]/, 'refund events must have exactly one Store writer, not a Control Plane writer');
+forbid('supervisor/native-browser-adapter.ts', /['"]effect_dispatch_budget_refunded['"]/, 'provider adapter must not own a second refund writer');
 requireText('supervisor/native-browser-adapter.ts', "reasonCode: dispatch.reasonCode ?? 'COMPUTER_CHATGPT_DISPATCH_NOT_ATTEMPTED'");
 forbid('src/runtime/root/workflow-supervisor-composition.ts', /WorkflowSupervisorStore|supervisor\.sqlite|registerTask\(|reserveEffect\(/, 'Forge composition must access Supervisor state only through daemon RPC, never open its database or become a second writer');
 requireText('src/runtime/root/workflow-supervisor-composition.ts', 'workflowSupervisorBoundaryForWork');
@@ -1376,13 +1390,20 @@ requireText('supervisor/entry.ts', "argument('--controller-home')");
 forbid('supervisor/entry.ts', /FORGE_HOME|--forge-home/, 'Workflow Supervisor foreground entry must use the canonical Controller Home authority rather than a second Forge-home root');
 requireText('supervisor/control-plane.ts', 'await this.validateTerminalProposal(task, parsed.proposal)');
 requireText('supervisor/protocol.ts', 'SUPERVISOR_BLOCK_END');
-requireText('supervisor/protocol.ts', String.raw`const objective = task.objective.trim().replace(/\s+/g, ' ');`);
-requireText('supervisor/protocol.ts', "const prefix = '目标摘录：';");
+requireText('supervisor/protocol.ts', "const objective = validateSupervisorObjective(task.objective).trim()");
+requireText('supervisor/protocol.ts', "'目标摘录：' + excerpt");
 requireText('supervisor/protocol.ts', 'supervisor_task get');
 requireText('supervisor/protocol.ts', 'MAX_SUPERVISOR_CONTINUATION_PROMPT_CHARS');
-requireText('supervisor/protocol.ts', "const chars = Array.from(objective);");
-requireText('supervisor/protocol.ts', "const excerpt = chars.slice(0, Math.min(240, available)).join('');");
+requireText('supervisor/protocol.ts', "const goal = Array.from(objective);");
+requireText('supervisor/protocol.ts', "const excerpt = goal.slice(0, goalChars).join('');");
+requireText('supervisor/protocol.ts', 'const includeGoalExcerpt = !lowerLayerContext?.trim();');
+requireText('supervisor/protocol.ts', 'const minimumGoalChars = includeGoalExcerpt ? Math.min(24, goal.length) : 0;');
+requireText('supervisor/protocol.ts', "if (capacity < minimumGoalChars || (includeGoalExcerpt && goal.length === 0)) throw new Error('WORKFLOW_SUPERVISOR_PROMPT_TOO_LARGE');");
+requireText('supervisor/protocol.ts', "if (includeGoalExcerpt && goalChars + length(tail) > goalCapacity) throw new Error('WORKFLOW_SUPERVISOR_PROMPT_TOO_LARGE');");
+requireText('supervisor/protocol.ts', "if (required && (length(normalized) > bound || length(normalized) > available)) {");
 requireText('supervisor/protocol.ts', "if (length(prompt) > max) throw new Error('WORKFLOW_SUPERVISOR_PROMPT_TOO_LARGE');");
+forbid('supervisor/protocol.ts', /上轮进展（参考，执行前核对事实）|\['上轮进展'/, 'Supervisor prompt must not embed prior-turn progress');
+forbid('adapters/chatgpt/controller-round-host.ts', /readControllerRoundContextSnapshot\s*\(/, 'ChatGPT continuation prompt must not load full semantic snapshots');
 requireText('supervisor/protocol.ts', 'MAX_SUPERVISOR_PROMPT_CHARS');
 forbid('supervisor/protocol.ts', /objective:\s*task\.objective\.slice\(/, 'Supervisor must reject oversized objectives, never silently truncate them in rendered effects');
 requireText('supervisor/store.ts', 'validateSupervisorObjective(input.objective)');
@@ -1405,7 +1426,17 @@ requireText('adapters/computer/chrome-extension/content.js', 'exactComposerText(
 requireText('adapters/computer/chrome-extension/content.js', "return text.trim() ? text : '';");
 requireText('adapters/computer/chrome-extension/content.js', "blocks.every((block) => block.tagName === 'P')");
 requireText('adapters/computer/chrome-extension/content.js', "blocks.map((block) => {");
-requireText('adapters/computer/chrome-extension/background.js', 'resolveTarget(command.identity, false, command.providerBinding)');
+requireText('adapters/computer/chrome-extension/background.js', 'resolveTarget(command.identity, true, command.providerBinding, instanceId)');
+requireText('adapters/computer/chrome-extension/background.js', 'resolveTarget(command.identity, false, command.providerBinding, instanceId)');
+forbid('adapters/computer/chrome-extension/background.js', /resolveTarget\(command\.identity,\s*(?:true|false),\s*command\.providerBinding\)/, 'Both Ensure and read/send target resolution must verify the active Chrome provider session');
+for (const [kind, handler] of [
+  ['ensure', 'executeEnsure'], ['observe', 'executeObserve'],
+  ['prepare', 'executePrepare'], ['dispatch', 'executeDispatch'],
+  ['find_marker', 'executeFindMarker'], ['close', 'executeClose'],
+]) {
+  requireText('adapters/computer/chrome-extension/background.js',
+    `if (command.kind === '${kind}') return await ${handler}(command, instanceId);`);
+}
 requireText('adapters/computer/chatgpt-extension-target.ts', "response.result.code === 'COMPUTER_CHATGPT_BOOTSTRAP_PINNED_TAB_MISSING'");
 requireText('adapters/computer/chatgpt-extension-target.ts', 'this.authority.withSurfaceLease(this.controllerHome, previous.targetId');
 requireText('adapters/computer/chatgpt-extension-target.ts', 'return await this.openBootstrap(projectUrl, bootstrapKey, false)');
@@ -1430,7 +1461,6 @@ requireText('supervisor/native-browser-adapter.ts', 'control.effectDispatchBudge
 requireText('adapters/computer/chrome-extension/content.js', 'FORGE_RETIRED_DRAFT_V1');
 requireText('docs/architecture/CURRENT.md', 'A STOPPED bootstrap draft may be replaced only from the canonical Supervisor ledger');
 requireText('supervisor/store.ts', 'tried.at(-1)?.eventId');
-requireText('supervisor/store.ts', 'WORKFLOW_SUPERVISOR_PRE_SEND_OPERATOR_REARM_EXHAUSTED');
 requireText('supervisor/store.ts', '`effect-dispatch:${effectId}:${generation}`');
 requireText('supervisor/control-plane.ts', 'PERSISTED_BROWSER_EVIDENCE_KEYS');
 requireText('supervisor/control-plane.ts', "reason: 'not_applied_proof_incomplete'");
@@ -1591,7 +1621,6 @@ requireText('src/runtime/standalone-recovery/core.ts', 'rollbackPreviousLocked')
 requireText('src/runtime/standalone-recovery/entry.ts', "'restart_primary_runtime'");
 requireText('src/runtime/standalone-recovery/entry.ts', "'recover_primary_runtime'");
 requireText('src/runtime/standalone-recovery/core.ts', 'armPackageConnectorCutoverDrain');
-requireText('src/runtime/standalone-recovery/entry.ts', "parsed.result.detail.startsWith('RELEASE_SESSION_CUTOVER_DEFERRED_FOR_MCP_ACTIVITY')");
 forbid('src/runtime/standalone-recovery/entry.ts', /if\s*\(decision\.required\s*&&\s*decision\.action\s*===\s*['"]cutover['"]\)\s*\{\s*const gate = await probeReleaseCutoverReadiness/, 'Automatic Recovery must enter the canonical fenced drain transaction rather than block cutover before the drain can be armed');
 
 forbid(
@@ -1958,7 +1987,6 @@ requireText('packages/kernel/scheduler/domain/schedule.ts', "'repository-event'"
 requireText('packages/kernel/scheduler/domain/schedule.ts', "'dependency-checkpoint'");
 requireText('packages/kernel/scheduler/infrastructure/schedule-store.ts', 'saveScheduleDecision');
 requireText('packages/kernel/scheduler/application/settlement.ts', 'backoffMinutes');
-requireText('src/runtime/release/release-gate.ts', 'releaseReady');
 requireText('adapters/mcp/transports/http-observation.ts', "'/ready'");
 requireText('adapters/mcp/transports/http-observation.ts', "'/repos/:repoId/health'");
 requireText('src/runtime/control-plane/governance/external-effects.ts', 'EXTERNAL_EFFECT_AUTHORIZATION_REQUIRED');
@@ -2180,7 +2208,9 @@ for (const path of [...sourceFiles('src'), ...sourceFiles('adapters')]) {
 // observations, never a completion gate.
 requireText('packages/kernel/work/domain/types.ts', "export const SEMANTIC_WORK_STATES = ['open', 'completed', 'cancelled'] as const;");
 requireText('packages/kernel/work/domain/types.ts', 'export type SemanticWorkState = (typeof SEMANTIC_WORK_STATES)[number];');
-requireText('adapters/mcp/runtime-gateway/work-semantic-operations.ts', "const RH_WORK_SEMANTIC_OPERATIONS = new Set(['start', 'get', 'revise', 'complete']);");
+requireText('adapters/mcp/runtime-gateway/work-semantic-operations.ts', "const RH_WORK_SEMANTIC_OPERATIONS = new Set(['start', 'get', 'get_contract', 'revise', 'complete']);");
+requireText('adapters/mcp/runtime-gateway/work-semantic-operations.ts', "if (operation === 'get_contract') {");
+requireText('adapters/mcp/runtime-gateway/work-adapter.ts', "operation === 'get_contract'");
 for (const path of [
   'packages/kernel/work/domain/state-machine.ts',
   'src/runtime/control-plane/execution/work-evidence-policy.ts',
