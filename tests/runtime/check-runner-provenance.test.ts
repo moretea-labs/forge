@@ -18,6 +18,7 @@ import {
 } from '../../src/cli/controller/check-runner';
 import type { RepositoryCheckStorageAuthority } from '../../src/runtime/execution/process-runtime/check-storage';
 import { registerRepository } from '../../src/cli/repositories/registry';
+import { ensureRepositoryRuntimeStorage } from '../../src/cli/repositories/runtime-storage';
 import { resolvePersistedCheckCliInvocation, resolvePersistedCheckProcessInvocation } from '../../adapters/mcp/runtime-gateway/persisted-check-process';
 import { runPersistedCheckSidecar } from '../../src/runtime/execution/process-runtime/check-runner-sidecar';
 import { claimsForCheck } from '../../src/runtime/execution/process-runtime/resource-claims';
@@ -584,6 +585,20 @@ describe('controller check provenance and failure classification', () => {
     expect(peer.reuseScope).toBe('repository');
     expect(peer.cacheKey).toBe(first.cacheKey);
     expect(peer.revision).toBe(first.revision);
+
+    const runtimeHome = mkdtempSync(join(tmpdir(), 'forge-check-runtime-links-'));
+    roots.push(runtimeHome);
+    const repository = registerRepository({ path: repoRoot, controllerHome: runtimeHome });
+    const storage = ensureRepositoryRuntimeStorage(repository, runtimeHome);
+    expect(storage.readyForExecution).toBe(true);
+    const withRuntimeLinks = controllerCheckExecutionIdentity(repoRoot, 'reusable');
+    expect(withRuntimeLinks.checkoutClean).toBe(true);
+    expect(withRuntimeLinks.reuseScope).toBe('repository');
+    expect(withRuntimeLinks.cacheKey).toBe(first.cacheKey);
+    expect(withRuntimeLinks.revision).toBe(first.revision);
+    const browser = storage.bindings.find((binding) => binding.name === 'browser-provider')!;
+    writeFileSync(join(browser.controllerPath, 'observation.json'), '{"diagnostic":"runtime-only"}\n');
+    expect(controllerCheckExecutionIdentity(repoRoot, 'reusable').cacheKey).toBe(first.cacheKey);
 
     writeFileSync(join(peerRoot, 'dirty.txt'), 'dirty\n');
     const dirty = controllerCheckExecutionIdentity(peerRoot, 'reusable');

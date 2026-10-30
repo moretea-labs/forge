@@ -698,6 +698,32 @@ describe('Unified Process Runtime', () => {
     expect(sameSemantic.binding.processId).toBe(processId);
   });
 
+  test('semantic Check recovery never reuses unknown terminal outcomes as successful evidence', () => {
+    const fx = fixture();
+    for (const status of ['completed_unknown', 'unknown', 'orphaned', 'failed', 'timed_out', 'cancelled'] as const) {
+      const processId = `proc-cache-recovery-${status}`;
+      const cacheKey = `cache-recovery-${status}`;
+      claimProcessCheckExecution({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId,
+        sourceCheckoutId: fx.repository.activeCheckoutId, scopeKey: 'repository', cacheKey, processId });
+      createProcessRecord({
+        schemaVersion: 1, processId, repoId: fx.repository.repoId,
+        checkoutId: fx.repository.activeCheckoutId, controllerHome: fx.controllerHome,
+        status, route: 'managed',
+        command: { kind: 'argv', executable: 'node', args: ['--version'], cwd: fx.repoRoot },
+        resourceClaims: [], interactiveWaitMs: 100, timeoutMs: 15_000, maxOutputBytes: 4096,
+        startedAt: '2026-08-07T00:00:00.000Z', updatedAt: '2026-08-07T00:00:01.000Z',
+        finishedAt: '2026-08-07T00:00:01.000Z', terminalFenceToken: 1, terminalWritten: true,
+        origin: { surface: 'check', checkId: 'recovery-negative' },
+      });
+      const recovered = claimProcessCheckExecution({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId,
+        sourceCheckoutId: fx.repository.activeCheckoutId, scopeKey: 'repository', cacheKey,
+        processId: `${processId}-new-request` });
+      expect(recovered.status).toBe('reclaimed');
+      expect(recovered.binding.processId).toBe(`${processId}-new-request`);
+      expect(getProcessRecord(fx.controllerHome, fx.repository.repoId, processId)?.status).toBe(status);
+    }
+  });
+
   test('retains successful semantic Check evidence past age cutoff but still enforces terminal record budget', () => {
     const fx = fixture();
     const runtime = bindCanonicalRuntime(fx.controllerHome);

@@ -29,6 +29,7 @@ import {
   waitForProcess,
 } from '../src/runtime/execution/process-runtime';
 import { controllerCheckExecutionIdentity } from '../src/cli/controller/check-runner';
+import { ensureRepositoryRuntimeStorage } from '../src/cli/repositories/runtime-storage';
 
 const PHASES = [
   'wallClockMs',
@@ -48,6 +49,7 @@ interface Sample {
   phases: Phases;
   outcome: Outcome;
   metrics?: Record<string, number>;
+  diagnostics?: Record<string, unknown>;
 }
 
 interface SemanticAdmissionWorkerResult {
@@ -108,6 +110,7 @@ function summarize(samples: Sample[]) {
     metrics: Object.fromEntries([...new Set(samples.flatMap((sample) => Object.keys(sample.metrics ?? {})))]
       .sort()
       .map((key) => [key, samples.reduce((total, sample) => total + (sample.metrics?.[key] ?? 0), 0)])),
+    diagnostics: samples.flatMap((sample, index) => sample.diagnostics ? [{ sample: index + 1, ...sample.diagnostics }] : []),
     derivedThresholds: Object.fromEntries(PHASES.map((phase) => {
       const values = samples.map((sample) => sample.phases[phase]);
       const p95 = percentile(values, 0.95);
@@ -336,6 +339,8 @@ async function runSemanticAdmissionBurst(input: {
 }
 
 async function main(): Promise<void> {
+  const selectedScenario = cliValue('--scenario');
+  if (process.argv.includes('--scenario') && !selectedScenario) throw new Error('--scenario requires one scenario name');
   const iterationsIndex = process.argv.indexOf('--iterations');
   const outputIndex = process.argv.indexOf('--output');
   const outputPath = outputIndex >= 0 ? process.argv[outputIndex + 1]?.trim() : undefined;
@@ -347,40 +352,43 @@ async function main(): Promise<void> {
     const first = repositoryFixture(root, controllerHome, 'repository-a');
     const second = repositoryFixture(root, controllerHome, 'repository-b');
     const firstIsolated = worktreeFixture(root, controllerHome, first);
-    createRequirement({ controllerHome }, {
-      requirementId: 'REQ-semantic-admission-benchmark-shared',
-      title: 'Semantic admission benchmark shared authority',
-      outcomeStatement: 'Measure deterministic concurrent admission for one shared Requirement authority.',
-    });
-    for (let index = 0; index < 32; index += 1) {
+    const semanticAdmission = selectedScenario ? undefined : await (async () => {
       createRequirement({ controllerHome }, {
-        requirementId: `REQ-semantic-admission-benchmark-${index}`,
-        title: `Semantic admission benchmark independent authority ${index}`,
-        outcomeStatement: 'Measure deterministic concurrent admission for an independent Requirement authority.',
+        requirementId: 'REQ-semantic-admission-benchmark-shared',
+        title: 'Semantic admission benchmark shared authority',
+        outcomeStatement: 'Measure deterministic concurrent admission for one shared Requirement authority.',
       });
-    }
-    const sameAuthorityAdmission = await runSemanticAdmissionBurst({ controllerHome, repoId: first.repository.repoId, storeRoot: join(root, 'semantic-same-authority'), mode: 'same' });
-    const independentRequirementAdmission = await runSemanticAdmissionBurst({ controllerHome, repoId: first.repository.repoId, storeRoot: join(root, 'semantic-independent-requirements'), mode: 'independent' });
-    const semanticAdmissionCriticalWallP95Ms = Math.max(sameAuthorityAdmission.criticalSectionP95Ms, independentRequirementAdmission.criticalSectionP95Ms);
-    const semanticAdmissionCriticalCpuP95Ms = Math.max(sameAuthorityAdmission.criticalSectionCpuP95Ms, independentRequirementAdmission.criticalSectionCpuP95Ms);
-    const semanticAdmission = {
-      sameAuthority: sameAuthorityAdmission,
-      independentRequirements: independentRequirementAdmission,
-      acceptance: {
-        minimumControllers: 32,
-        criticalSectionCpuP95ThresholdMs: 10,
-        criticalSectionCpuP95TargetMs: 5,
-        criticalSectionWallP95GuardrailMs: 100,
-        observedCriticalSectionCpuP95Ms: semanticAdmissionCriticalCpuP95Ms,
-        observedCriticalSectionWallP95Ms: semanticAdmissionCriticalWallP95Ms,
-        passed: sameAuthorityAdmission.success
-          && independentRequirementAdmission.success
-          && semanticAdmissionCriticalCpuP95Ms <= 10
-          && semanticAdmissionCriticalWallP95Ms <= 100,
-      },
-    };
+      for (let index = 0; index < 32; index += 1) {
+        createRequirement({ controllerHome }, {
+          requirementId: `REQ-semantic-admission-benchmark-${index}`,
+          title: `Semantic admission benchmark independent authority ${index}`,
+          outcomeStatement: 'Measure deterministic concurrent admission for an independent Requirement authority.',
+        });
+      }
+      const sameAuthorityAdmission = await runSemanticAdmissionBurst({ controllerHome, repoId: first.repository.repoId, storeRoot: join(root, 'semantic-same-authority'), mode: 'same' });
+      const independentRequirementAdmission = await runSemanticAdmissionBurst({ controllerHome, repoId: first.repository.repoId, storeRoot: join(root, 'semantic-independent-requirements'), mode: 'independent' });
+      const semanticAdmissionCriticalWallP95Ms = Math.max(sameAuthorityAdmission.criticalSectionP95Ms, independentRequirementAdmission.criticalSectionP95Ms);
+      const semanticAdmissionCriticalCpuP95Ms = Math.max(sameAuthorityAdmission.criticalSectionCpuP95Ms, independentRequirementAdmission.criticalSectionCpuP95Ms);
+      return {
+        sameAuthority: sameAuthorityAdmission,
+        independentRequirements: independentRequirementAdmission,
+        acceptance: {
+          minimumControllers: 32,
+          criticalSectionCpuP95ThresholdMs: 10,
+          criticalSectionCpuP95TargetMs: 5,
+          criticalSectionWallP95GuardrailMs: 100,
+          observedCriticalSectionCpuP95Ms: semanticAdmissionCriticalCpuP95Ms,
+          observedCriticalSectionWallP95Ms: semanticAdmissionCriticalWallP95Ms,
+          passed: sameAuthorityAdmission.success
+            && independentRequirementAdmission.success
+            && semanticAdmissionCriticalCpuP95Ms <= 10
+            && semanticAdmissionCriticalWallP95Ms <= 100,
+        },
+      };
+    })();
     const results = new Map<string, Sample[]>();
     const run = async (name: string, operation: () => Promise<Sample>) => {
+      if (selectedScenario && name !== selectedScenario) return;
       results.set(name, [...(results.get(name) ?? []), await guarded(operation)]);
     };
 
@@ -736,6 +744,9 @@ async function main(): Promise<void> {
       await run('check_cache_coalescing_reuse', async () => {
         const timing = phases();
         const started = performance.now();
+        // Reproduce normal Runtime-linked primary state even when run alone;
+        // this scenario must not depend on earlier context reads creating links.
+        ensureRepositoryRuntimeStorage(first.repository, controllerHome);
         const requestedTimeoutMs = 5_000 + index;
         const sourceIdentity = controllerCheckExecutionIdentity(
           first.repoRoot,
@@ -830,16 +841,27 @@ async function main(): Promise<void> {
         const cacheInvalidated = dirtyIdentity.cacheKey !== sourceIdentity.cacheKey
           && dirtyIdentity.reuseScope === 'checkout'
           && invalidated.processId !== firstSubscriber.processId;
+        const subscribers = [firstSubscriber, secondSubscriber, crossCheckoutReuse, invalidated];
+        const identityChanges = (identity: typeof sourceIdentity) =>
+          (['revision', 'definitionDigest', 'environmentFingerprint', 'timeoutMs', 'cacheKey', 'checkoutClean', 'reuseScope'] as const)
+            .filter((field) => identity[field] !== sourceIdentity[field]);
         return {
           phases: timing,
           outcome: completed.ok && invalidatedCompleted.ok && coalesced && reused && cacheInvalidated ? 'success' : 'failed',
           metrics: {
-            physicalExecutions: 2,
-            logicalSubscribers: 4,
+            physicalExecutions: new Set(subscribers.map((subscriber) => subscriber.processId)).size,
+            logicalSubscribers: subscribers.length,
             coalesced: coalesced ? 1 : 0,
             cacheHits: reused ? 1 : 0,
             invalidations: cacheInvalidated ? 1 : 0,
             crossCheckoutReuses: reused ? 1 : 0,
+          },
+          diagnostics: {
+            identities: { source: sourceIdentity, peer: isolatedIdentity, dirty: dirtyIdentity },
+            peerIdentityChanges: identityChanges(isolatedIdentity),
+            dirtyIdentityChanges: identityChanges(dirtyIdentity),
+            processIds: subscribers.map((subscriber) => subscriber.processId),
+            coalesced, reused, cacheInvalidated,
           },
         };
       });
@@ -874,10 +896,12 @@ async function main(): Promise<void> {
       });
     }
 
+    if (results.size === 0) throw new Error(`Unknown benchmark scenario: ${selectedScenario}`);
     const report = {
       schemaVersion: 1,
       measuredAt: new Date().toISOString(),
       iterations,
+      selectedScenario: selectedScenario ?? null,
       thresholdPolicy: 'max(1ms, observed p99 * 1.25, observed p95 * 1.5)',
       notes: {
         durableJobSubmit: 'ExecutionJob creation is retired; this measures durable Process admission and persistence.',
@@ -886,7 +910,7 @@ async function main(): Promise<void> {
         sameCheckoutContention: 'leaseWaitMs is the bounded end-to-end admission time for the conflicting second Process, including identity/persistence work around the Lease decision.',
         checkIdentity: 'The cache identity is derived from repository-scoped storage plus content revision, check definition digest, environment/toolchain fingerprint, timeout contract, and reuse scope. Session and request ids are subscribers, not cache-key inputs.',
         checkCacheMetrics: 'physicalExecutions/logicalSubscribers/coalesced/cacheHits/invalidations/crossCheckoutReuses are summed across measured iterations.',
-        semanticAdmission: 'Two 32-process bursts share one repository-scoped semantic admission lock: one contends for a single Requirement authority and one admits 32 independent Requirement identities. Critical-section latency measures only canonical ownership resolution and persistence inside the lock.',
+        semanticAdmission: 'Full-suite runs measure two 32-process semantic-admission bursts. Selected-scenario runs do not measure or report that independent scenario.',
       },
       semanticAdmission,
       scenarios: Object.fromEntries([...results].map(([name, samples]) => [name, summarize(samples)])),
@@ -897,7 +921,8 @@ async function main(): Promise<void> {
       writeFileSync(outputPath, serialized);
     }
     process.stdout.write(serialized);
-    if (!semanticAdmission.acceptance.passed) process.exitCode = 1;
+    if ((semanticAdmission && !semanticAdmission.acceptance.passed)
+      || [...results.values()].some((samples) => samples.some((sample) => sample.outcome === 'failed' || sample.outcome === 'timeout'))) process.exitCode = 1;
   } finally {
     clearRuntimeWriteClaimForTests();
     rmSync(root, { recursive: true, force: true });

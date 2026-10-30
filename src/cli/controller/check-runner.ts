@@ -9,6 +9,7 @@ import {
   type ProcessRunResult,
 } from '../../effects/process-runner';
 import { atomicWriteFileSync } from '../installer/shared';
+import { repositoryRuntimeStorageSourcePaths } from '../repositories/runtime-storage';
 import { runBoundedChild } from '../../runtime/shared/bounded-child-supervisor';
 import { signalProcessTree } from '../../runtime/shared/process-tree';
 import { repositoryChildProcessEnvironment, resolveBunExecutable } from '../../runtime/shared/process-environment';
@@ -520,7 +521,11 @@ const CHECK_REVISION_EXCLUDES = [
   // `.ai/harness` is Forge runtime/check state, not repository source. Checks
   // are allowed to materialize artifacts such as design-system audit reports
   // there; hashing those outputs would make a stable check invalidate itself.
+  '.ai/harness',
   '.ai/harness/**',
+  // Exact nodes matter as well as descendants: Git lists directory symlinks
+  // themselves, so a trailing /** alone would leave Runtime links in source identity.
+  ...repositoryRuntimeStorageSourcePaths().flatMap((path) => [path, `${path}/**`]),
 ];
 
 function checkRevisionPathspecs(): string[] {

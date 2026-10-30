@@ -80,6 +80,12 @@ const RUNTIME_STORAGE_SPECS: RuntimeStorageSpec[] = [
   { name: 'interaction-sessions', sourceName: 'interactions', controllerName: 'interactions', sourceRoot: 'forge' },
 ];
 
+/** Repository-relative compatibility paths whose data is owned by Controller Home.
+ * This projects the existing storage contract without creating links or state. */
+export function repositoryRuntimeStorageSourcePaths(): string[] {
+  return RUNTIME_STORAGE_SPECS.map((spec) => `${spec.sourceRoot === 'forge' ? '.forge' : '.ai/harness'}/${spec.sourceName}`);
+}
+
 function directoryEntries(path: string): string[] {
   if (!existsSync(path)) return [];
   return readdirSync(path).filter((entry) => entry !== OWNER_MARKER);
