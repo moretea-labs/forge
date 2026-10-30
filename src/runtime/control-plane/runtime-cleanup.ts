@@ -63,10 +63,10 @@ const TEMP_SCAN_MAX_DEPTH = numericSetting(
 );
 // Deleted records in rebuildable projection namespaces are not semantic
 // evidence. Keep a bounded tail and let SQLite maintenance compact it.
-// Opt-in until retention candidate selection is index/cursor bounded: the
-// current selection query can hold a write transaction longer than the
-// scheduler's 5s busy budget on a multi-million-row audit table.
-const REBUILDABLE_AUDIT_RETENTION_ENABLED = process.env.FORGE_ENABLE_REBUILDABLE_AUDIT_RETENTION === '1';
+// Orphan retention is cursor-bounded and safe by default. Current-record
+// retention remains opt-in until its candidate selection is similarly bounded.
+const ORPHAN_AUDIT_RETENTION_ENABLED = process.env.FORGE_ENABLE_ORPHAN_AUDIT_RETENTION === '1';
+const CURRENT_AUDIT_RETENTION_ENABLED = process.env.FORGE_ENABLE_CURRENT_AUDIT_RETENTION === '1';
 const ORPHAN_AUDIT_RETENTION_MS = numericSetting(
   process.env.FORGE_ORPHAN_AUDIT_RETENTION_MS,
   7 * 24 * 60 * 60_000,
@@ -74,7 +74,12 @@ const ORPHAN_AUDIT_RETENTION_MS = numericSetting(
 );
 const ORPHAN_AUDIT_MAX_ROWS_PER_PASS = numericSetting(
   process.env.FORGE_ORPHAN_AUDIT_MAX_ROWS_PER_PASS,
-  20_000,
+  10_000,
+  1,
+);
+const ORPHAN_AUDIT_SCAN_WINDOW = numericSetting(
+  process.env.FORGE_ORPHAN_AUDIT_SCAN_WINDOW,
+  200_000,
   1,
 );
 // Rebuildable indexes only; retain the newest revisions and floor the rest.
@@ -1343,11 +1348,14 @@ export function cleanupControllerRuntimeState(
     sqliteMaintenance = maintainControlPlaneDatabase(home, {
       minimumReclaimableBytes: options.sqliteVacuumMinReclaimableBytes,
       minimumReclaimableRatio: options.sqliteVacuumMinReclaimableRatio,
-      ...(REBUILDABLE_AUDIT_RETENTION_ENABLED ? {
+      ...(ORPHAN_AUDIT_RETENTION_ENABLED ? {
         pruneOrphanedAudit: {
           olderThanMs: ORPHAN_AUDIT_RETENTION_MS,
           maxRows: ORPHAN_AUDIT_MAX_ROWS_PER_PASS,
+          scanWindow: ORPHAN_AUDIT_SCAN_WINDOW,
         },
+      } : {}),
+      ...(CURRENT_AUDIT_RETENTION_ENABLED ? {
         pruneRebuildableRecordAudit: {
           olderThanMs: CURRENT_AUDIT_RETENTION_MS,
           keepTail: CURRENT_AUDIT_KEEP_TAIL,

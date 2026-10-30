@@ -112,6 +112,8 @@ export interface PruneOrphanedAuditOptions {
   olderThanMs: number;
   /** Bound one maintenance pass so a large history converges without a long lock. */
   maxRows?: number;
+  /** Bound the audited event-id range scanned per pass; the cursor persists. */
+  scanWindow?: number;
   nowMs?: number;
   namespaces?: readonly string[];
 }
@@ -284,6 +286,7 @@ function tableExists(database: SqliteDatabase, table: string): boolean {
 }
 
 const AUDIT_FLOOR_TABLE = 'control_plane_audit_floor';
+const AUDIT_CURSOR_TABLE = 'control_plane_audit_cursor';
 
 /** Additive migration for existing schema-v1 databases; old releases ignore the table. */
 function ensureAuditFloorTable(database: SqliteDatabase): void {
@@ -296,6 +299,18 @@ function ensureAuditFloorTable(database: SqliteDatabase): void {
       floor_revision INTEGER NOT NULL,
       updated_at TEXT NOT NULL,
       PRIMARY KEY (namespace, scope, record_key)
+    );
+  `);
+}
+
+/** Bounded scan checkpoint for rebuildable audit retention. */
+function ensureAuditCursorTable(database: SqliteDatabase): void {
+  if (tableExists(database, AUDIT_CURSOR_TABLE)) return;
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS ${AUDIT_CURSOR_TABLE} (
+      name TEXT PRIMARY KEY,
+      last_event_id INTEGER NOT NULL,
+      updated_at TEXT NOT NULL
     );
   `);
 }
@@ -372,6 +387,11 @@ function initializeSchema(database: SqliteDatabase): void {
       floor_revision INTEGER NOT NULL,
       updated_at TEXT NOT NULL,
       PRIMARY KEY (namespace, scope, record_key)
+    );
+    CREATE TABLE IF NOT EXISTS control_plane_audit_cursor (
+      name TEXT PRIMARY KEY,
+      last_event_id INTEGER NOT NULL,
+      updated_at TEXT NOT NULL
     );
   `);
   withSqliteStatement(
@@ -1049,16 +1069,51 @@ function pruneOrphanedAuditRows(
   const namespaces = [...new Set(options.namespaces ?? REBUILDABLE_AUDIT_NAMESPACES)]
     .filter((namespace) => typeof namespace === 'string' && namespace.trim());
   if (namespaces.length === 0) return 0;
-  const maxRows = Math.max(1, Math.min(Math.trunc(options.maxRows ?? 50_000), 500_000));
   if (!Number.isFinite(options.olderThanMs)) throw new Error('CONTROL_PLANE_ORPHAN_AUDIT_AGE_INVALID');
+  const scanWindow = Math.max(1, Math.min(Math.trunc(options.scanWindow ?? 50_000), 500_000));
+  const maxRows = Math.max(1, Math.min(Math.trunc(options.maxRows ?? 20_000), scanWindow));
   const cutoff = new Date((options.nowMs ?? Date.now()) - options.olderThanMs).toISOString();
   const placeholders = namespaces.map(() => '?').join(',');
-  withSqliteStatement(database, `
-      DELETE FROM control_plane_audit
-      WHERE event_id IN (
-        SELECT audit.event_id
+  ensureAuditCursorTable(database);
+  const maxEventId = Number(withSqliteStatement(database,
+    'SELECT MAX(event_id) AS event_id FROM control_plane_audit',
+    (statement) => scalar(statement.get())) ?? 0);
+  const persistedCursor = withSqliteStatement(database,
+    `SELECT last_event_id FROM ${AUDIT_CURSOR_TABLE} WHERE name = 'orphan'`,
+    (statement) => scalar(statement.get()));
+  let cursor = Number(persistedCursor);
+  if (persistedCursor == null) {
+    // First run: seek directly to the first eligible event id instead of
+    // scanning every semantic audit row from 1. This is a one-time read.
+    const firstEligible = Number(withSqliteStatement(database, `
+        SELECT MIN(audit.event_id) AS event_id
         FROM control_plane_audit audit
         WHERE audit.namespace IN (${placeholders})
+          AND audit.occurred_at < ?
+          AND NOT EXISTS (
+            SELECT 1 FROM control_plane_records record
+            WHERE record.namespace = audit.namespace
+              AND record.scope = audit.scope
+              AND record.record_key = audit.record_key
+          )
+      `, (statement) => scalar(statement.get(...namespaces, cutoff))));
+    cursor = Number.isSafeInteger(firstEligible) && firstEligible > 0 ? firstEligible - 1 : 0;
+    withSqliteStatement(database, `
+        INSERT INTO ${AUDIT_CURSOR_TABLE} (name, last_event_id, updated_at)
+        VALUES ('orphan', ?, ?)
+      `, (statement) => statement.run(cursor, now()));
+  }
+  if (!Number.isSafeInteger(cursor) || cursor < 0 || cursor >= maxEventId) cursor = 0;
+  const scanEnd = Math.min(maxEventId, cursor + scanWindow);
+  if (scanEnd <= cursor) return 0;
+  let deleted = 0;
+  database.exec('BEGIN IMMEDIATE');
+  try {
+    const rows = withSqliteStatement(database, `
+        SELECT audit.event_id, audit.namespace, audit.scope, audit.record_key
+        FROM control_plane_audit audit
+        WHERE audit.event_id > ? AND audit.event_id <= ?
+          AND audit.namespace IN (${placeholders})
           AND audit.occurred_at < ?
           AND NOT EXISTS (
             SELECT 1 FROM control_plane_records record
@@ -1075,30 +1130,43 @@ function pruneOrphanedAuditRows(
           )
         ORDER BY audit.event_id ASC
         LIMIT ?
-      )
-    `, (statement) => statement.run(...namespaces, cutoff, maxRows));
-  const deleted = Number(withSqliteStatement(database, 'SELECT changes() AS count', (statement) => scalar(statement.get())) ?? 0);
-  if (deleted > 0) {
-    // Every orphaned key keeps its newest audit row. Record that retained
-    // revision as the floor so a later recreation has an exact contiguous
-    // chain instead of appearing to have lost revisions 1..N.
-    ensureAuditFloorTable(database);
+      `, (statement) => statement.all(cursor, scanEnd, ...namespaces, cutoff, maxRows)) as Array<{
+        event_id: number; namespace: string; scope: string; record_key: string;
+      }>;
+    if (rows.length > 0) {
+      const ids = rows.map((row) => row.event_id);
+      const idPlaceholders = ids.map(() => '?').join(',');
+      withSqliteStatement(database, `DELETE FROM control_plane_audit WHERE event_id IN (${idPlaceholders})`,
+        (statement) => statement.run(...ids));
+      deleted = Number(withSqliteStatement(database, 'SELECT changes() AS count', (statement) => scalar(statement.get())) ?? 0);
+      if (deleted > 0) {
+        ensureAuditFloorTable(database);
+        const keys = new Map<string, { namespace: string; scope: string; record_key: string }>();
+        for (const row of rows) keys.set(`${row.namespace}\0${row.scope}\0${row.record_key}`, row);
+        for (const key of keys.values()) {
+          const minimumRetained = Number(withSqliteStatement(database, `
+              SELECT MIN(revision) AS revision FROM control_plane_audit
+              WHERE namespace = ? AND scope = ? AND record_key = ?
+            `, (statement) => scalar(statement.get(key.namespace, key.scope, key.record_key))));
+          if (Number.isSafeInteger(minimumRetained) && minimumRetained > 1) {
+            writeAuditFloor(database, key.namespace, key.scope, key.record_key, minimumRetained);
+          }
+        }
+      }
+    }
+    const nextCursor = rows.length >= maxRows ? rows[rows.length - 1]!.event_id : scanEnd;
+    const wrappedCursor = nextCursor >= maxEventId ? 0 : nextCursor;
     withSqliteStatement(database, `
-        INSERT INTO ${AUDIT_FLOOR_TABLE} (namespace, scope, record_key, floor_revision, updated_at)
-        SELECT audit.namespace, audit.scope, audit.record_key, MAX(audit.revision), ?
-        FROM control_plane_audit audit
-        WHERE audit.namespace IN (${placeholders})
-          AND NOT EXISTS (
-            SELECT 1 FROM control_plane_records record
-            WHERE record.namespace = audit.namespace
-              AND record.scope = audit.scope
-              AND record.record_key = audit.record_key
-          )
-        GROUP BY audit.namespace, audit.scope, audit.record_key
-        ON CONFLICT(namespace, scope, record_key) DO UPDATE SET
-          floor_revision = MAX(${AUDIT_FLOOR_TABLE}.floor_revision, excluded.floor_revision),
+        INSERT INTO ${AUDIT_CURSOR_TABLE} (name, last_event_id, updated_at)
+        VALUES ('orphan', ?, ?)
+        ON CONFLICT(name) DO UPDATE SET
+          last_event_id = excluded.last_event_id,
           updated_at = excluded.updated_at
-      `, (statement) => statement.run(now(), ...namespaces));
+      `, (statement) => statement.run(wrappedCursor, now()));
+    database.exec('COMMIT');
+  } catch (error) {
+    try { database.exec('ROLLBACK'); } catch { /* preserve the original error */ }
+    throw error;
   }
   return deleted;
 }
