@@ -66,7 +66,7 @@ const TEMP_SCAN_MAX_DEPTH = numericSetting(
 // Orphan retention is cursor-bounded and safe by default. Current-record
 // retention remains opt-in until its candidate selection is similarly bounded.
 const ORPHAN_AUDIT_RETENTION_ENABLED = process.env.FORGE_DISABLE_ORPHAN_AUDIT_RETENTION !== '1';
-const CURRENT_AUDIT_RETENTION_ENABLED = process.env.FORGE_ENABLE_CURRENT_AUDIT_RETENTION === '1';
+const CURRENT_AUDIT_RETENTION_ENABLED = process.env.FORGE_DISABLE_CURRENT_AUDIT_RETENTION !== '1';
 const ORPHAN_AUDIT_RETENTION_MS = numericSetting(
   process.env.FORGE_ORPHAN_AUDIT_RETENTION_MS,
   7 * 24 * 60 * 60_000,
@@ -1349,6 +1349,11 @@ export function cleanupControllerRuntimeState(
     maxRows: ORPHAN_AUDIT_MAX_ROWS_PER_PASS,
     scanWindow: ORPHAN_AUDIT_SCAN_WINDOW,
   } : undefined;
+  const currentAuditRetention = CURRENT_AUDIT_RETENTION_ENABLED ? {
+    olderThanMs: CURRENT_AUDIT_RETENTION_MS,
+    keepTail: CURRENT_AUDIT_KEEP_TAIL,
+    maxRows: CURRENT_AUDIT_MAX_ROWS_PER_PASS,
+  } : undefined;
   const fullSqliteMaintenance = !periodic || removalPhases.includes('releases');
   if (fullSqliteMaintenance) try {
     sqliteMaintenance = maintainControlPlaneDatabase(home, {
@@ -1360,26 +1365,21 @@ export function cleanupControllerRuntimeState(
       // explicit offline operation, never part of the live periodic tick.
       allowVacuum: false,
       ...(orphanAuditRetention ? { pruneOrphanedAudit: orphanAuditRetention } : {}),
-      ...(CURRENT_AUDIT_RETENTION_ENABLED ? {
-        pruneRebuildableRecordAudit: {
-          olderThanMs: CURRENT_AUDIT_RETENTION_MS,
-          keepTail: CURRENT_AUDIT_KEEP_TAIL,
-          maxRows: CURRENT_AUDIT_MAX_ROWS_PER_PASS,
-        },
-      } : {}),
+      ...(currentAuditRetention ? { pruneRebuildableRecordAudit: currentAuditRetention } : {}),
     });
     if (sqliteMaintenance.skippedReason === 'database_busy') {
       skippedByReason.sqlite_maintenance_busy = (skippedByReason.sqlite_maintenance_busy ?? 0) + 1;
     }
   } catch (error) {
     errors.push(errorText('SQLite maintenance', error));
-  } else if (orphanAuditRetention) try {
-    // Orphan retention is cursor-bounded and deletes in 500-row transactions;
-    // run it on every periodic tick instead of one phase per seven ticks. The
-    // full maintenance path above still owns vacuum/current-record retention.
+  } else if (orphanAuditRetention || currentAuditRetention) try {
+    // Both retentions are cursor-bounded and delete in 500-row transactions;
+    // run them on every periodic tick instead of one phase per seven ticks.
+    // The full maintenance path above still owns vacuum and phase rotation.
     sqliteMaintenance = maintainControlPlaneDatabase(home, {
       allowVacuum: false,
-      pruneOrphanedAudit: orphanAuditRetention,
+      ...(orphanAuditRetention ? { pruneOrphanedAudit: orphanAuditRetention } : {}),
+      ...(currentAuditRetention ? { pruneRebuildableRecordAudit: currentAuditRetention } : {}),
     });
     if (sqliteMaintenance.skippedReason === 'database_busy') {
       skippedByReason.sqlite_maintenance_busy = (skippedByReason.sqlite_maintenance_busy ?? 0) + 1;
