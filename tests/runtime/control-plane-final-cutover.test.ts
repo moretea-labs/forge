@@ -229,6 +229,20 @@ describe('final SQLite control-plane cutover', () => {
         value: { state: 'orphan-recreated' }, expectedRevision: null,
       });
       expect(recreated.revision).toBe(6);
+      expect(inspectControlPlaneDatabase(controllerHome)).toMatchObject({ integrity: 'ok', orphanRecordCount: 0 });
+      const recreatedDatabase = new Database(controlPlaneDatabasePath(controllerHome));
+      try {
+        const floor = recreatedDatabase.query(
+          'SELECT floor_revision FROM control_plane_audit_floor WHERE namespace = ? AND scope = ? AND record_key = ?',
+        ).get(namespace, 'controller', 'stable-orphan') as { floor_revision: number } | null;
+        expect(floor?.floor_revision).toBe(5);
+        const recreatedRevisions = recreatedDatabase.query(
+          'SELECT revision FROM control_plane_audit WHERE namespace = ? AND scope = ? AND record_key = ? ORDER BY revision',
+        ).all(namespace, 'controller', 'stable-orphan').map((row) => (row as { revision: number }).revision);
+        expect(recreatedRevisions).toEqual([5, 6]);
+      } finally {
+        recreatedDatabase.close();
+      }
     });
   });
 
