@@ -279,6 +279,7 @@ function handleToPayload(handle: NonNullable<ReturnType<typeof getRepositoryComm
     stdoutTail: handle.stdoutTail,
     stderrTail: handle.stderrTail,
     continuation: managedProcessContinuation(handle),
+    concurrencyWait: handle.concurrencyWait,
     durableSideEffects: handle.durableSideEffects,
   };
 }
