@@ -88,16 +88,15 @@ test('heartbeat RPC has a sub-TTL deadline and cannot cancel an independent comp
   expect(ports).toHaveLength(1);
 });
 
-test('Chrome tabs query deadline bounds waiters and single-flights an unresolved underlying query', async () => {
+test('Chrome tabs query timeout retires a permanently hung read and allows recovery', async () => {
   const source = readFileSync('adapters/computer/chrome-extension/background.js', 'utf8');
   const code = source.slice(source.indexOf('function boundedTabsQuery('), source.indexOf('// Controller binding owns the durable source identity.'));
   const timers = new Map<number, { callback: () => void; delay: number }>();
   let timerId = 0;
   let queryCalls = 0;
-  let resolveFirstQuery: ((tabs: unknown[]) => void) | undefined;
   const chrome = { tabs: { query: () => {
     queryCalls += 1;
-    if (queryCalls === 1) return new Promise<unknown[]>((resolve) => { resolveFirstQuery = resolve; });
+    if (queryCalls === 1) return new Promise<unknown[]>(() => {});
     return Promise.resolve([]);
   } } };
   const context = {
@@ -113,19 +112,10 @@ test('Chrome tabs query deadline bounds waiters and single-flights an unresolved
   timers.get(1)?.callback();
   expect(await first).toBe('COMPUTER_CHATGPT_EXTENSION_TABS_QUERY_TIMEOUT');
 
-  const second = chatgptTabs().catch((error: Error) => error.message);
-  await Promise.resolve();
-  expect(queryCalls).toBe(1);
-  expect([...timers.values()].map(timer => timer.delay)).toEqual([5_000]);
-  timers.get(2)?.callback();
-  expect(await second).toBe('COMPUTER_CHATGPT_EXTENSION_TABS_QUERY_TIMEOUT');
-  expect(queryCalls).toBe(1);
-
-  resolveFirstQuery?.([]);
-  await Promise.resolve();
-  await Promise.resolve();
+  // The first browser query never settles; a later read must recover.
   expect(await chatgptTabs()).toEqual([]);
   expect(queryCalls).toBe(2);
+
 });
 
 test('provider identity storage timeout releases its cache and retries with the same candidate', async () => {
@@ -156,7 +146,7 @@ test('provider identity storage timeout releases its cache and retries with the 
     },
   } } };
   const context = {
-    chrome, HEARTBEAT_DEADLINE_MS: 10_000, randomId: () => `profile-${++randomIdCalls}`, Date,
+    chrome, HEARTBEAT_DEADLINE_MS: 10_000, randomId: () => `profile-${++randomIdCalls}`, Date: { now: () => 1_000 },
     setTimeout(callback: () => void, delay: number) {
       const id = ++timerId;
       timers.set(id, { callback: () => { timers.delete(id); callback(); }, delay });
@@ -165,7 +155,7 @@ test('provider identity storage timeout releases its cache and retries with the 
     clearTimeout(id: number) { timers.delete(id); },
   };
   const providerInstanceId = runInNewContext(code + '\nproviderInstanceId', context) as (deadlineAt: number) => Promise<string>;
-  const first = providerInstanceId(Date.now() + 10_000).catch((error: Error) => error.message);
+  const first = providerInstanceId(11_000).catch((error: Error) => error.message);
   await getStarted;
   resolveFirstGet?.({});
   await writeStarted;
@@ -174,7 +164,7 @@ test('provider identity storage timeout releases its cache and retries with the 
   [...timers.values()][0]!.callback();
   expect(await first).toBe('COMPUTER_CHATGPT_EXTENSION_PROVIDER_ID_TIMEOUT');
   allowSet = true;
-  expect(await providerInstanceId(Date.now() + 10_000)).toBe('profile-1');
+  expect(await providerInstanceId(11_000)).toBe('profile-1');
   expect(randomIdCalls).toBe(1);
   expect(writes).toEqual([
     { forgeComputerProviderInstanceId: 'profile-1' },

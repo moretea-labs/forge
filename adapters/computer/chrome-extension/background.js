@@ -174,7 +174,10 @@ function boundedTabsQuery(query, deadlineAt = Date.now() + TABS_QUERY_TIMEOUT_MS
   return Promise.race([
     operation,
     new Promise((_, reject) => {
-      timer = setTimeout(() => reject(new Error('COMPUTER_CHATGPT_EXTENSION_TABS_QUERY_TIMEOUT')), timeoutMs);
+      timer = setTimeout(() => {
+        if (tabsQueryInFlight.get(queryKey) === operation) tabsQueryInFlight.delete(queryKey);
+        reject(new Error('COMPUTER_CHATGPT_EXTENSION_TABS_QUERY_TIMEOUT'));
+      }, timeoutMs);
     }),
   ]).finally(() => { if (timer !== undefined) clearTimeout(timer); });
 }
