@@ -13,6 +13,10 @@
   const TURN = '[data-testid^="conversation-turn-"]';
   const PROVIDER_ACTIVITY_CHARS = 64 * 1024;
   const PROVIDER_FAILURE_CHARS = 250_000;
+  // Ephemeral per-tab ownership for staged prompts. The Supervisor effect ledger
+  // remains the only send authority; this receipt exists only to restore the
+  // exact pre-prepare editor value after a proven pre-Send rejection.
+  const preparedDrafts = new Map();
   const absoluteChatgptUrl = (href) => {
     try { const url = new URL(String(href ?? ''), location.href); return url.protocol === 'https:' && url.hostname === 'chatgpt.com' ? url.toString() : undefined; }
     catch { return undefined; }
@@ -204,7 +208,8 @@
       range.selectNodeContents(node);
       selection?.removeAllRanges();
       selection?.addRange(range);
-      if (!document.execCommand('insertText', false, prompt)) {
+      const inserted = document.execCommand('insertText', false, prompt);
+      if (!inserted || composerText(node) !== exactComposerText(prompt)) {
         node.textContent = prompt;
         node.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: prompt }));
       }
@@ -232,53 +237,105 @@
     }
     const actualPrompt = replacement ? prompt.slice(replacement[0].length)
       : retired ? prompt.slice(retired[0].length) : prompt;
+    const supervisor = /^(?:@forge\s+)?<<<FORGE_WORKFLOW_EFFECT_V1:(?:fx|crpe)_[a-zA-Z0-9_-]{8,120}>>>/.test(actualPrompt);
+    const payload = supervisor ? actualPrompt.replace(/^@forge\s+(?=<<<FORGE_WORKFLOW_EFFECT_V1:(?:fx|crpe)_[a-zA-Z0-9_-]{8,120}>>>)/, '') : actualPrompt;
+    const expected = exactComposerText(payload);
+    const effectId = supervisor ? /<<<FORGE_WORKFLOW_EFFECT_V1:((?:fx|crpe)_[a-zA-Z0-9_-]{8,120})>>>/.exec(payload)?.[1] : undefined;
+    const targetKey = expectedConversationId ? `conversation:${expectedConversationId}`
+      : expectedProjectId ? `project:${expectedProjectId}` : undefined;
+    const draftKey = effectId && targetKey ? `${targetKey}|${effectId}` : undefined;
+    const rollbackPreparedDraft = () => {
+      if (!draftKey || !exactConversationIsCurrent()) return false;
+      const receipt = preparedDrafts.get(draftKey);
+      // Matching text alone is not proof Forge wrote it. Only roll back a
+      // draft with a receipt created immediately before this effect's write.
+      if (!receipt || receipt.expected !== expected) return false;
+      const editor = composer();
+      if (!editor) return false;
+      if (editor.querySelector('[plugin-mention-name], [app-mention-name]')) {
+        preparedDrafts.delete(draftKey);
+        return false;
+      }
+      const current = composerText(editor);
+      if (current !== expected && current !== expected + '\n') {
+        preparedDrafts.delete(draftKey);
+        return false;
+      }
+      try { writeComposer(editor, receipt.originalText); }
+      catch {
+        preparedDrafts.set(draftKey, { ...receipt, rollbackPending: true });
+        return false;
+      }
+      if (composerText(editor) !== exactComposerText(receipt.originalText)) {
+        preparedDrafts.set(draftKey, { ...receipt, rollbackPending: true });
+        return false;
+      }
+      preparedDrafts.delete(draftKey);
+      return true;
+    };
+    const rejectBeforeSend = (reason) => {
+      rollbackPreparedDraft();
+      const failure = draftKey && preparedDrafts.get(draftKey)?.rollbackPending
+        ? 'COMPUTER_CHATGPT_DRAFT_ROLLBACK_PENDING' : reason;
+      return prepareOnly ? { prepared: false, reason: failure } : { dispatched: false, reason: failure };
+    };
     if (mode === 'recover') {
       const stop = document.querySelector(STOP);
-      if (prepareOnly && stop instanceof HTMLElement) return { prepared: false, reason: 'provider_recovery_stop_pending' };
+      if (prepareOnly && stop instanceof HTMLElement) return rejectBeforeSend('provider_recovery_stop_pending');
       if (stop instanceof HTMLElement) {
-        if (!exactConversationIsCurrent()) return { dispatched: false, reason: 'target_identity_changed' };
+        if (!exactConversationIsCurrent()) return rejectBeforeSend('target_identity_changed');
         stop.click();
         for (let attempt = 0; attempt < 20 && document.querySelector(STOP); attempt += 1) {
           await new Promise((resolve) => setTimeout(resolve, 100));
-          if (!exactConversationIsCurrent()) return { dispatched: false, reason: 'target_identity_changed' };
+          if (!exactConversationIsCurrent()) return rejectBeforeSend('target_identity_changed');
         }
-        if (document.querySelector(STOP)) return { dispatched: false, reason: 'provider_recovery_stop_unconfirmed' };
+        if (document.querySelector(STOP)) return rejectBeforeSend('provider_recovery_stop_unconfirmed');
       }
-    } else if (isGenerating()) return { dispatched: false, reason: 'provider_busy' };
+    } else if (isGenerating()) return rejectBeforeSend('provider_busy');
     const node = composer();
-    if (!node) return { dispatched: false, reason: 'composer_missing' };
+    if (!node) return rejectBeforeSend('composer_missing');
     // Project instructions select tools. No @forge UI mention is needed.
-    const supervisor = /^(?:@forge\s+)?<<<FORGE_WORKFLOW_EFFECT_V1:(?:fx|crpe)_[a-zA-Z0-9_-]{8,120}>>>/.test(actualPrompt);
-    if (supervisor && !expectedConversationId && !expectedProjectId) return { dispatched: false, reason: 'target_identity_unavailable' };
-    // Strip only the exact legacy prefix on already-durable effects.
-    const payload = supervisor ? actualPrompt.replace(/^@forge\s+(?=<<<FORGE_WORKFLOW_EFFECT_V1:(?:fx|crpe)_[a-zA-Z0-9_-]{8,120}>>>)/, '') : actualPrompt;
-    const expected = exactComposerText(payload);
-    const existing = composerText();
+    if (supervisor && !expectedConversationId && !expectedProjectId) return rejectBeforeSend('target_identity_unavailable');
+    const existing = composerText(node);
+    const priorPrepared = draftKey ? preparedDrafts.get(draftKey) : undefined;
+    // An exact-looking machine prompt without this tab's receipt may be a
+    // restored or user-authored draft. Never submit it on text equality alone.
+    if (supervisor && (existing === expected || existing === expected + '\n')
+      && (!priorPrepared || priorPrepared.expected !== expected)) {
+      return rejectBeforeSend('prepared_draft_receipt_missing');
+    }
+    const originalText = priorPrepared?.expected === expected ? priorPrepared.originalText : existing;
     // A restored draft belongs to this effect only when it matches precisely.
     // Never overwrite another task's draft or a human-authored message.
     const ownedDrafts = supervisor
       ? [expected, expected + '\n', exactComposerText(payload + '\n@'), exactComposerText(payload + '\nforge'), exactComposerText('forge ' + payload)]
       : [expected];
-    if (node.querySelector('[plugin-mention-name], [app-mention-name]')) return { dispatched: false, reason: 'composer_has_app_mention' };
+    if (node.querySelector('[plugin-mention-name], [app-mention-name]')) return rejectBeforeSend('composer_has_app_mention');
     const unowned = Boolean(existing && !ownedDrafts.includes(existing));
-    if (unowned && ((!replacement && !retired) || !supervisor)) return { dispatched: false, reason: 'composer_not_empty' };
+    if (unowned && ((!replacement && !retired) || !supervisor)) return rejectBeforeSend('composer_not_empty');
     if (retired && (!unowned || !existing.startsWith(`<<<FORGE_WORKFLOW_EFFECT_V1:${retired[1]}>>>`))) {
-      return { dispatched: false, reason: 'composer_not_empty' };
+      return rejectBeforeSend('composer_not_empty');
     }
     if (unowned) {
       // Hash the *currently visible* single editor, not the page or another
       // tab. If it changed since the backup, do not touch it.
-      if (!globalThis.crypto?.subtle || !globalThis.TextEncoder) return { dispatched: false, reason: 'composer_replacement_digest_unavailable' };
+      if (!globalThis.crypto?.subtle || !globalThis.TextEncoder) return rejectBeforeSend('composer_replacement_digest_unavailable');
       const bytes = new TextEncoder().encode('preflight-composer-v1:\0' + existing);
       const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
       const prefix = Array.from(digest).map((byte) => byte.toString(16).padStart(2, '0')).join('').slice(0, 24);
-      if (prefix !== (replacement ? replacement[1] : retired?.[2])) return { dispatched: false, reason: 'composer_not_empty' };
+      if (prefix !== (replacement ? replacement[1] : retired?.[2])) return rejectBeforeSend('composer_not_empty');
     }
-    if (!exactConversationIsCurrent()) return { dispatched: false, reason: 'target_identity_changed' };
+    if (!exactConversationIsCurrent()) return rejectBeforeSend('target_identity_changed');
     // Hashing and model-picker hydration yield to page/user edits. Revalidate
     // the same single editor before overwriting any bytes observed above.
-    if (composer() !== node || composerText(node) !== existing) return { dispatched: false, reason: 'composer_not_empty' };
-    if (existing !== expected && existing !== expected + '\n') writeComposer(node, payload);
+    if (composer() !== node || composerText(node) !== existing) return rejectBeforeSend('composer_not_empty');
+    if (existing !== expected && existing !== expected + '\n') {
+      // Record ownership before mutation so every typed pre-Send rejection can
+      // restore only the exact value this invocation replaced.
+      if (draftKey) preparedDrafts.set(draftKey, { expected, originalText });
+      try { writeComposer(node, payload); }
+      catch { return rejectBeforeSend('composer_write_failed'); }
+    }
     // React may acknowledge the exact draft before it enables Send. Observe
     // this same target for at most two seconds, below the broker deadline;
     // this is read-only readiness, never another write or Send attempt.
@@ -311,16 +368,16 @@
       timer = setTimeout(() => check(true), 2_000);
       check();
     });
-    if (!ready.send) return { dispatched: false, reason: ready.reason };
+    if (!ready.send) return rejectBeforeSend(ready.reason);
     // Await resumes in a new microtask: retain the exact pre-click fences even
     // if an input/route update was queued alongside the readiness observation.
-    if (!exactConversationIsCurrent()) return { dispatched: false, reason: 'target_identity_changed' };
+    if (!exactConversationIsCurrent()) return rejectBeforeSend('target_identity_changed');
     const text = composerText();
-    if (text !== expected && text !== expected + '\n') return { dispatched: false, reason: 'composer_write_unconfirmed' };
-    if (isGenerating()) return { dispatched: false, reason: 'provider_busy' };
+    if (text !== expected && text !== expected + '\n') return rejectBeforeSend('composer_write_unconfirmed');
+    if (isGenerating()) return rejectBeforeSend('provider_busy');
     const send = ready.send;
-    if (!send.isConnected || !visible(send)) return { dispatched: false, reason: 'send_button_missing' };
-    if (send.disabled || send.getAttribute('aria-disabled') === 'true') return { dispatched: false, reason: 'send_button_disabled' };
+    if (!send.isConnected || !visible(send)) return rejectBeforeSend('send_button_missing');
+    if (send.disabled || send.getAttribute('aria-disabled') === 'true') return rejectBeforeSend('send_button_disabled');
     if (prepareOnly) return { prepared: true };
     // Confirm the committed turn inside the content script, rather than
     // requesting delayed snapshots from the extension background worker.
@@ -328,6 +385,7 @@
     // Once click starts, an exception cannot prove that the provider did not
     // receive the message. Keep post-click observation failures outcome-unknown.
     try {
+      if (draftKey) preparedDrafts.delete(draftKey);
       send.click();
       const confirmed = await new Promise((resolve) => {
         // Unobserved submission is unknown, never proof that Send did not run.

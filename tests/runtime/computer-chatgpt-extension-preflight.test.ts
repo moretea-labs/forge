@@ -258,7 +258,9 @@ test('real Chrome content script preserves all prompt spaces and newlines during
     });
     expect(response.dispatched).toBe(shouldSend);
     expect(sends).toBe(shouldSend ? 1 : 0);
+    if (!shouldSend) expect(composer.value).toBe(rendered);
   }
+
   // The very same content-script snapshot must preserve the final assistant
   // receipt's newline; UI-label normalization would flatten it to one line.
   const instrumented = content.replace(

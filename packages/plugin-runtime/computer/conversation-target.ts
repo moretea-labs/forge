@@ -135,6 +135,39 @@ export interface ComputerChatgptExtensionBrokerRpc {
   complete(providerInstanceId: string, commandId: string, result: ComputerChatgptExtensionCommandResult): boolean;
 }
 
+/**
+ * Mechanical driver port for the native Browser adapter. It exposes exact
+ * physical tab attachment but owns no ChatGPT DOM semantics or send authority.
+ */
+export interface ComputerChatgptNativeBrowserTabRef {
+  windowId: string;
+  tabId: string;
+}
+
+export interface ComputerChatgptNativeBrowserTab extends ComputerChatgptNativeBrowserTabRef {
+  url: string;
+  title: string;
+  active: boolean;
+  frontmost?: boolean;
+}
+
+export interface ComputerChatgptNativeBrowserTabInventory {
+  tabs: ComputerChatgptNativeBrowserTab[];
+  truncated: boolean;
+}
+
+export interface ComputerChatgptNativeBrowserTargetPage {
+  evaluate<T>(expression: string | ((...args: unknown[]) => unknown), arg?: unknown): Promise<T>;
+  tabRef(): ComputerChatgptNativeBrowserTabRef | undefined;
+}
+
+export interface ComputerChatgptNativeBrowserTargetDriver {
+  listTabs(): Promise<ComputerChatgptNativeBrowserTabInventory>;
+  attach(ref: ComputerChatgptNativeBrowserTabRef): Promise<ComputerChatgptNativeBrowserTargetPage>;
+  create(url: string, preferredWindowId?: string): Promise<ComputerChatgptNativeBrowserTargetPage>;
+  close(ref: ComputerChatgptNativeBrowserTabRef): Promise<void>;
+}
+
 export interface ComputerChatgptConversationTargetPort {
   inventory(): Promise<ComputerChatgptConversationInventory>;
   /** Read-only reconciliation cannot create a missing tab. Only a separately authorized new send may opt in to exact conversation creation. */
