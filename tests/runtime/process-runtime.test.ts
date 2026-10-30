@@ -3714,6 +3714,104 @@ describe('process MCP live surface', () => {
     expect(String((logs?.structuredContent as { stdout?: string })?.stdout ?? '')).toContain('mcp-ok');
   });
 
+  test('process_get and process_wait expose the exact same-Work Process lease join target', async () => {
+    const fx = fixture();
+    const workId = 'work-process-mcp-same-work-join';
+    createFixtureWork(fx, workId);
+    const marker = join(fx.root, 'blocked-mutation.txt');
+    const resourceClaims = [{ resourceKey: `workspace:${fx.repository.activeCheckoutId}`, mode: 'write' as const }];
+    const first = await spawnManagedProcess({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
+      workId,
+      command: {
+        kind: 'argv',
+        executable: 'node',
+        args: ['-e', 'setTimeout(() => process.exit(0), 2500)'],
+        cwd: fx.repoRoot,
+      },
+      resourceClaims,
+      interactiveWaitMs: 50,
+      timeoutMs: 10_000,
+      returnHandleImmediately: true,
+    });
+    expect(first.completed).not.toBe(true);
+
+    const blocked = await spawnManagedProcess({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
+      workId,
+      command: {
+        kind: 'argv',
+        executable: 'node',
+        args: ['-e', `require('fs').writeFileSync(${JSON.stringify(marker)}, 'must-not-run')`],
+        cwd: fx.repoRoot,
+      },
+      resourceClaims,
+      interactiveWaitMs: 0,
+      timeoutMs: 10_000,
+    });
+    expect(blocked).toMatchObject({ completed: true, ok: false, concurrencyWait: {
+      source: 'resource_lease',
+      blockingWorkId: workId,
+      blockingProcessId: first.processId,
+      blockingOwnerRelation: 'same_work_same_checkout',
+    } });
+    expect(existsSync(marker)).toBe(false);
+
+    const ctx = {
+      controllerHome: fx.controllerHome,
+      repo: fx.repoRoot,
+    } as unknown as MultiRepositoryMcpToolContext;
+    const got = await callProcessTool(ctx, 'process_get', {
+      repo_id: fx.repository.repoId,
+      process_id: blocked.processId,
+    });
+    expect(got?.isError).not.toBe(true);
+    expect((got?.structuredContent as { process?: { concurrencyWait?: unknown } })?.process?.concurrencyWait).toMatchObject({
+      source: 'resource_lease',
+      blockingWorkId: workId,
+      blockingProcessId: first.processId,
+      blockingOwnerRelation: 'same_work_same_checkout',
+    });
+
+    const waited = await callProcessTool(ctx, 'process_wait', {
+      repo_id: fx.repository.repoId,
+      process_id: blocked.processId,
+      timeout_ms: 1_000,
+    });
+    expect(waited?.isError).not.toBe(true);
+    expect((waited?.structuredContent as { process?: { concurrencyWait?: unknown } })?.process?.concurrencyWait).toMatchObject({
+      source: 'resource_lease',
+      blockingWorkId: workId,
+      blockingProcessId: first.processId,
+      blockingOwnerRelation: 'same_work_same_checkout',
+    });
+
+    await waitForProcess(fx.controllerHome, fx.repository.repoId, first.processId, { timeoutMs: 10_000 });
+    const next = await spawnManagedProcess({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
+      workId,
+      command: {
+        kind: 'argv',
+        executable: 'node',
+        args: ['-e', `require('fs').writeFileSync(${JSON.stringify(marker)}, 'next-action')`],
+        cwd: fx.repoRoot,
+      },
+      resourceClaims,
+      timeoutMs: 10_000,
+    });
+    expect(next).toMatchObject({ completed: true, ok: true });
+    expect(readFileSync(marker, 'utf8')).toBe('next-action');
+  });
+
   test('process_wait keeps the default MCP attach budget short enough for shared Runtime concurrency', () => {
     expect(DEFAULT_PROCESS_WAIT_ATTACH_BUDGET_MS).toBeLessThanOrEqual(5_000);
   });
