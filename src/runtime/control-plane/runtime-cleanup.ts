@@ -65,7 +65,7 @@ const TEMP_SCAN_MAX_DEPTH = numericSetting(
 // evidence. Keep a bounded tail and let SQLite maintenance compact it.
 // Orphan retention is cursor-bounded and safe by default. Current-record
 // retention remains opt-in until its candidate selection is similarly bounded.
-const ORPHAN_AUDIT_RETENTION_ENABLED = process.env.FORGE_ENABLE_ORPHAN_AUDIT_RETENTION === '1';
+const ORPHAN_AUDIT_RETENTION_ENABLED = process.env.FORGE_DISABLE_ORPHAN_AUDIT_RETENTION !== '1';
 const CURRENT_AUDIT_RETENTION_ENABLED = process.env.FORGE_ENABLE_CURRENT_AUDIT_RETENTION === '1';
 const ORPHAN_AUDIT_RETENTION_MS = numericSetting(
   process.env.FORGE_ORPHAN_AUDIT_RETENTION_MS,
