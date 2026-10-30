@@ -101,9 +101,26 @@ export const REBUILDABLE_AUDIT_NAMESPACES = [
   'computer_interaction_target',
 ] as const;
 
+/** Rebuildable index namespaces whose current-record history may be bounded by a floor. */
+export const REBUILDABLE_RECORD_AUDIT_NAMESPACES = [
+  'computer_interaction_target_index',
+  'execution_work_validation_index',
+] as const;
+
 export interface PruneOrphanedAuditOptions {
   /** Delete only orphaned history older than this age. A negative value is test-only. */
   olderThanMs: number;
+  /** Bound one maintenance pass so a large history converges without a long lock. */
+  maxRows?: number;
+  nowMs?: number;
+  namespaces?: readonly string[];
+}
+
+export interface PruneRebuildableRecordAuditOptions {
+  /** Prune current-record rows older than this age. A negative value is test-only. */
+  olderThanMs: number;
+  /** Always retain this many newest revisions for a current record. */
+  keepTail?: number;
   /** Bound one maintenance pass so a large history converges without a long lock. */
   maxRows?: number;
   nowMs?: number;
@@ -116,6 +133,8 @@ export interface ControlPlaneDatabaseMaintenanceOptions {
   allowVacuum?: boolean;
   /** Optional bounded retention for deleted records in rebuildable projection namespaces. */
   pruneOrphanedAudit?: PruneOrphanedAuditOptions;
+  /** Optional bounded floor retention for current records in rebuildable index namespaces. */
+  pruneRebuildableRecordAudit?: PruneRebuildableRecordAuditOptions;
 }
 
 export interface ControlPlaneDatabaseMaintenanceReport {
@@ -138,6 +157,8 @@ export interface ControlPlaneDatabaseMaintenanceReport {
   reclaimedBytes: number;
   /** Orphaned rebuildable audit rows removed before compaction. */
   prunedAuditRows?: number;
+  /** Current-record rebuildable audit rows removed before compaction. */
+  prunedCurrentAuditRows?: number;
   skippedReason?: 'database_missing' | 'below_threshold' | 'vacuum_disabled' | 'database_busy';
 }
 
@@ -1083,6 +1104,85 @@ function pruneOrphanedAuditRows(
 }
 
 /**
+ * Bound current-record history for rebuildable index namespaces only. The
+ * newest `keepTail` revisions always remain, and every prune advances the
+ * record's audit floor so inspection still proves an exact contiguous chain.
+ * Semantic/business namespaces are never eligible.
+ */
+function pruneRebuildableRecordAuditRows(
+  database: SqliteDatabase,
+  options: PruneRebuildableRecordAuditOptions,
+): number {
+  const namespaces = [...new Set(options.namespaces ?? REBUILDABLE_RECORD_AUDIT_NAMESPACES)]
+    .filter((namespace) => typeof namespace === 'string' && namespace.trim());
+  if (namespaces.length === 0) return 0;
+  if (!Number.isFinite(options.olderThanMs)) throw new Error('CONTROL_PLANE_CURRENT_AUDIT_AGE_INVALID');
+  const keepTail = Math.max(1, Math.min(Math.trunc(options.keepTail ?? 50), 1_000));
+  const maxRows = Math.max(1, Math.min(Math.trunc(options.maxRows ?? 250_000), 500_000));
+  const cutoff = new Date((options.nowMs ?? Date.now()) - options.olderThanMs).toISOString();
+  const placeholders = namespaces.map(() => '?').join(',');
+  ensureAuditFloorTable(database);
+  let total = 0;
+  database.exec('BEGIN IMMEDIATE');
+  try {
+    const candidates = withSqliteStatement(database, `
+        SELECT record.namespace, record.scope, record.record_key, record.revision,
+          COALESCE((
+            SELECT retained.floor_revision
+            FROM ${AUDIT_FLOOR_TABLE} retained
+            WHERE retained.namespace = record.namespace
+              AND retained.scope = record.scope
+              AND retained.record_key = record.record_key
+          ), 1) AS floor_revision,
+          (
+            SELECT MAX(audit.revision)
+            FROM control_plane_audit audit
+            WHERE audit.namespace = record.namespace
+              AND audit.scope = record.scope
+              AND audit.record_key = record.record_key
+              AND audit.occurred_at < ?
+          ) AS old_max
+        FROM control_plane_records record
+        WHERE record.namespace IN (${placeholders})
+          AND record.revision > COALESCE((
+            SELECT retained.floor_revision
+            FROM ${AUDIT_FLOOR_TABLE} retained
+            WHERE retained.namespace = record.namespace
+              AND retained.scope = record.scope
+              AND retained.record_key = record.record_key
+          ), 1) + ?
+        ORDER BY record.revision DESC
+        LIMIT 500
+      `, (statement) => statement.all(cutoff, ...namespaces, keepTail)) as Array<{
+        namespace: string; scope: string; record_key: string; revision: number;
+        floor_revision: number; old_max: number | null;
+      }>;
+    for (const candidate of candidates) {
+      if (total >= maxRows) break;
+      const floor = Number.isSafeInteger(Number(candidate.floor_revision)) ? Number(candidate.floor_revision) : 1;
+      const oldMax = Number(candidate.old_max);
+      if (!Number.isSafeInteger(oldMax)) continue;
+      const pruneThrough = Math.min(oldMax, Number(candidate.revision) - keepTail);
+      if (pruneThrough < floor) continue;
+      const through = Math.min(pruneThrough, floor + (maxRows - total) - 1);
+      withSqliteStatement(database, `
+          DELETE FROM control_plane_audit
+          WHERE namespace = ? AND scope = ? AND record_key = ? AND revision BETWEEN ? AND ?
+        `, (statement) => statement.run(candidate.namespace, candidate.scope, candidate.record_key, floor, through));
+      const deleted = Number(withSqliteStatement(database, 'SELECT changes() AS count', (statement) => scalar(statement.get())) ?? 0);
+      if (deleted <= 0) continue;
+      writeAuditFloor(database, candidate.namespace, candidate.scope, candidate.record_key, through + 1);
+      total += deleted;
+    }
+    database.exec('COMMIT');
+  } catch (error) {
+    try { database.exec('ROLLBACK'); } catch { /* preserve the original error */ }
+    throw error;
+  }
+  return total;
+}
+
+/**
  * Physical SQLite maintenance only. Domain lifecycles own row deletion; this
  * boundary never decides semantic terminality or removes canonical records.
  * PASSIVE checkpointing is non-blocking, and VACUUM is attempted only when
@@ -1135,6 +1235,18 @@ export function maintainControlPlaneDatabase(
     if (options.pruneOrphanedAudit) {
       try {
         report.prunedAuditRows = pruneOrphanedAuditRows(database, options.pruneOrphanedAudit);
+      } catch (error) {
+        const busy = sqliteBusyError(path, error);
+        if (busy) {
+          report.skippedReason = 'database_busy';
+          return report;
+        }
+        throw error;
+      }
+    }
+    if (options.pruneRebuildableRecordAudit) {
+      try {
+        report.prunedCurrentAuditRows = pruneRebuildableRecordAuditRows(database, options.pruneRebuildableRecordAudit);
       } catch (error) {
         const busy = sqliteBusyError(path, error);
         if (busy) {

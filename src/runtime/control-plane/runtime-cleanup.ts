@@ -65,11 +65,27 @@ const TEMP_SCAN_MAX_DEPTH = numericSetting(
 // evidence. Keep a bounded tail and let SQLite maintenance compact it.
 const ORPHAN_AUDIT_RETENTION_MS = numericSetting(
   process.env.FORGE_ORPHAN_AUDIT_RETENTION_MS,
-  30 * 24 * 60 * 60_000,
+  7 * 24 * 60 * 60_000,
   0,
 );
 const ORPHAN_AUDIT_MAX_ROWS_PER_PASS = numericSetting(
   process.env.FORGE_ORPHAN_AUDIT_MAX_ROWS_PER_PASS,
+  250_000,
+  1,
+);
+// Rebuildable indexes only; retain the newest revisions and floor the rest.
+const CURRENT_AUDIT_RETENTION_MS = numericSetting(
+  process.env.FORGE_CURRENT_AUDIT_RETENTION_MS,
+  7 * 24 * 60 * 60_000,
+  0,
+);
+const CURRENT_AUDIT_KEEP_TAIL = numericSetting(
+  process.env.FORGE_CURRENT_AUDIT_KEEP_TAIL,
+  50,
+  1,
+);
+const CURRENT_AUDIT_MAX_ROWS_PER_PASS = numericSetting(
+  process.env.FORGE_CURRENT_AUDIT_MAX_ROWS_PER_PASS,
   250_000,
   1,
 );
@@ -1326,6 +1342,11 @@ export function cleanupControllerRuntimeState(
       pruneOrphanedAudit: {
         olderThanMs: ORPHAN_AUDIT_RETENTION_MS,
         maxRows: ORPHAN_AUDIT_MAX_ROWS_PER_PASS,
+      },
+      pruneRebuildableRecordAudit: {
+        olderThanMs: CURRENT_AUDIT_RETENTION_MS,
+        keepTail: CURRENT_AUDIT_KEEP_TAIL,
+        maxRows: CURRENT_AUDIT_MAX_ROWS_PER_PASS,
       },
     });
     if (sqliteMaintenance.skippedReason === 'database_busy') {
