@@ -246,6 +246,40 @@ describe('final SQLite control-plane cutover', () => {
     });
   });
 
+  test('cursor-bounded orphan retention converges across passes without a full scan', () => {
+    withHome((controllerHome) => {
+      const namespace = 'computer_interaction_target_index';
+      let record = writeControlPlaneRecord(controllerHome, {
+        namespace, scope: 'controller', key: 'cursor-orphan', schemaVersion: 1,
+        value: { revision: 1 }, expectedRevision: null,
+      });
+      for (let revision = 2; revision <= 4; revision += 1) {
+        record = writeControlPlaneRecord(controllerHome, {
+          namespace, scope: 'controller', key: 'cursor-orphan', schemaVersion: 1,
+          value: { revision }, expectedRevision: record.revision,
+        });
+      }
+      deleteControlPlaneRecord(controllerHome, { namespace, scope: 'controller', key: 'cursor-orphan' });
+
+      let pruned = 0;
+      for (let pass = 0; pass < 8; pass += 1) {
+        const report = maintainControlPlaneDatabase(controllerHome, {
+          allowVacuum: false,
+          pruneOrphanedAudit: { olderThanMs: -1_000, maxRows: 1, scanWindow: 1 },
+        });
+        pruned += report.prunedAuditRows ?? 0;
+      }
+      expect(pruned).toBe(4);
+      expect(inspectControlPlaneDatabase(controllerHome)).toMatchObject({ integrity: 'ok', orphanRecordCount: 0 });
+      const recreated = writeControlPlaneRecord(controllerHome, {
+        namespace, scope: 'controller', key: 'cursor-orphan', schemaVersion: 1,
+        value: { revision: 'recreated' }, expectedRevision: null,
+      });
+      expect(recreated.revision).toBe(6);
+      expect(inspectControlPlaneDatabase(controllerHome)).toMatchObject({ integrity: 'ok', orphanRecordCount: 0 });
+    });
+  });
+
   test('SQLite maintenance bounds current rebuildable index history with an audit floor', () => {
     withHome((controllerHome) => {
       const namespace = 'computer_interaction_target_index';
