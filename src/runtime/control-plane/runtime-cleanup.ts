@@ -1348,6 +1348,11 @@ export function cleanupControllerRuntimeState(
     sqliteMaintenance = maintainControlPlaneDatabase(home, {
       minimumReclaimableBytes: options.sqliteVacuumMinReclaimableBytes,
       minimumReclaimableRatio: options.sqliteVacuumMinReclaimableRatio,
+      // VACUUM rewrites the whole multi-GB database and holds an exclusive
+      // lock for tens of seconds; the scheduler's 5s busy budget would restart
+      // the Runtime. Free pages are reused in place. Physical compaction is an
+      // explicit offline operation, never part of the live periodic tick.
+      allowVacuum: false,
       ...(ORPHAN_AUDIT_RETENTION_ENABLED ? {
         pruneOrphanedAudit: {
           olderThanMs: ORPHAN_AUDIT_RETENTION_MS,
