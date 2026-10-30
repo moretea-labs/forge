@@ -7,6 +7,7 @@ import {
   backupControlPlaneDatabase,
   controlPlaneDatabasePath,
   disableControlPlaneReadConnectionReuse,
+  deleteControlPlaneRecord,
   enableControlPlaneReadConnectionReuse,
   inspectControlPlaneDatabase,
   listControlPlaneRecords,
@@ -159,6 +160,75 @@ describe('final SQLite control-plane cutover', () => {
         revision: 1, value: { state: 'preserve' },
       });
       expect(inspectControlPlaneDatabase(controllerHome)).toMatchObject({ integrity: 'ok', orphanRecordCount: 0 });
+    });
+  });
+
+  test('SQLite maintenance bounds deleted rebuildable history without touching current or semantic chains', () => {
+    withHome((controllerHome) => {
+      const namespace = 'computer_interaction_target_index';
+      const current = writeControlPlaneRecord(controllerHome, {
+        namespace, scope: 'controller', key: 'stable-current', schemaVersion: 1,
+        value: { state: 'current-1' }, expectedRevision: null,
+      });
+      writeControlPlaneRecord(controllerHome, {
+        namespace, scope: 'controller', key: 'stable-current', schemaVersion: 1,
+        value: { state: 'current-2' }, expectedRevision: current.revision,
+      });
+
+      let orphan = writeControlPlaneRecord(controllerHome, {
+        namespace, scope: 'controller', key: 'stable-orphan', schemaVersion: 1,
+        value: { state: 'orphan-1' }, expectedRevision: null,
+      });
+      for (let revision = 2; revision <= 4; revision += 1) {
+        orphan = writeControlPlaneRecord(controllerHome, {
+          namespace, scope: 'controller', key: 'stable-orphan', schemaVersion: 1,
+          value: { state: `orphan-${revision}` }, expectedRevision: orphan.revision,
+        });
+      }
+      deleteControlPlaneRecord(controllerHome, { namespace, scope: 'controller', key: 'stable-orphan' });
+
+      let semantic = writeControlPlaneRecord(controllerHome, {
+        namespace: 'work_contract', scope: 'repo-test', key: 'semantic-orphan', schemaVersion: 1,
+        value: { state: 'semantic-1' }, expectedRevision: null,
+      });
+      semantic = writeControlPlaneRecord(controllerHome, {
+        namespace: 'work_contract', scope: 'repo-test', key: 'semantic-orphan', schemaVersion: 1,
+        value: { state: 'semantic-2' }, expectedRevision: semantic.revision,
+      });
+      deleteControlPlaneRecord(controllerHome, { namespace: 'work_contract', scope: 'repo-test', key: 'semantic-orphan' });
+
+      const report = maintainControlPlaneDatabase(controllerHome, {
+        minimumReclaimableBytes: 1,
+        minimumReclaimableRatio: 0,
+        pruneOrphanedAudit: { olderThanMs: -1_000, maxRows: 100 },
+      });
+      expect(report.prunedAuditRows).toBe(4);
+
+      const path = controlPlaneDatabasePath(controllerHome);
+      const database = new Database(path);
+      try {
+        const orphanRevisions = database.query(
+          "SELECT revision FROM control_plane_audit WHERE namespace = ? AND scope = ? AND record_key = ? ORDER BY revision",
+        ).all(namespace, 'controller', 'stable-orphan').map((row) => (row as { revision: number }).revision);
+        expect(orphanRevisions).toEqual([5]);
+        const currentRevisions = database.query(
+          "SELECT revision FROM control_plane_audit WHERE namespace = ? AND scope = ? AND record_key = ? ORDER BY revision",
+        ).all(namespace, 'controller', 'stable-current').map((row) => (row as { revision: number }).revision);
+        expect(currentRevisions).toEqual([1, 2]);
+        const semanticRevisions = database.query(
+          "SELECT revision FROM control_plane_audit WHERE namespace = 'work_contract' AND scope = 'repo-test' AND record_key = 'semantic-orphan' ORDER BY revision",
+        ).all().map((row) => (row as { revision: number }).revision);
+        expect(semanticRevisions).toEqual([1, 2, 3]);
+      } finally {
+        database.close();
+      }
+
+      expect(inspectControlPlaneDatabase(controllerHome)).toMatchObject({ integrity: 'ok', orphanRecordCount: 0 });
+      const recreated = writeControlPlaneRecord(controllerHome, {
+        namespace, scope: 'controller', key: 'stable-orphan', schemaVersion: 1,
+        value: { state: 'orphan-recreated' }, expectedRevision: null,
+      });
+      expect(recreated.revision).toBe(6);
     });
   });
 

@@ -95,11 +95,27 @@ export function sha256ControlPlaneDatabaseFile(path: string): string {
 export const CONTROL_PLANE_SQLITE_MAINTENANCE_POLICY_VERSION = 'control-plane-sqlite-maintenance-v1' as const;
 export const DEFAULT_CONTROL_PLANE_SQLITE_VACUUM_MIN_RECLAIMABLE_BYTES = 64 * 1024 * 1024;
 export const DEFAULT_CONTROL_PLANE_SQLITE_VACUUM_MIN_RECLAIMABLE_RATIO = 0.20;
+/** Rebuildable projection namespaces whose deleted-record history is not semantic evidence. */
+export const REBUILDABLE_AUDIT_NAMESPACES = [
+  'computer_interaction_target_index',
+  'computer_interaction_target',
+] as const;
+
+export interface PruneOrphanedAuditOptions {
+  /** Delete only orphaned history older than this age. A negative value is test-only. */
+  olderThanMs: number;
+  /** Bound one maintenance pass so a large history converges without a long lock. */
+  maxRows?: number;
+  nowMs?: number;
+  namespaces?: readonly string[];
+}
 
 export interface ControlPlaneDatabaseMaintenanceOptions {
   minimumReclaimableBytes?: number;
   minimumReclaimableRatio?: number;
   allowVacuum?: boolean;
+  /** Optional bounded retention for deleted records in rebuildable projection namespaces. */
+  pruneOrphanedAudit?: PruneOrphanedAuditOptions;
 }
 
 export interface ControlPlaneDatabaseMaintenanceReport {
@@ -120,6 +136,8 @@ export interface ControlPlaneDatabaseMaintenanceReport {
   reclaimableBytesAfter: number;
   reclaimableRatioAfter: number;
   reclaimedBytes: number;
+  /** Orphaned rebuildable audit rows removed before compaction. */
+  prunedAuditRows?: number;
   skippedReason?: 'database_missing' | 'below_threshold' | 'vacuum_disabled' | 'database_busy';
 }
 
@@ -936,6 +954,53 @@ function controlPlaneDatabasePageSnapshot(database: SqliteDatabase): ControlPlan
 }
 
 /**
+ * Bound deleted-record audit history for rebuildable projection namespaces.
+ *
+ * The continuity invariant applies to a current record's revision chain, not to
+ * a record that no longer exists. This keeps the newest audit row for each
+ * orphaned key so a later recreation still advances monotonically from the
+ * historical max revision, and never touches canonical records, active Work,
+ * authorization, release or effect evidence namespaces.
+ */
+function pruneOrphanedAuditRows(
+  database: SqliteDatabase,
+  options: PruneOrphanedAuditOptions,
+): number {
+  const namespaces = [...new Set(options.namespaces ?? REBUILDABLE_AUDIT_NAMESPACES)]
+    .filter((namespace) => typeof namespace === 'string' && namespace.trim());
+  if (namespaces.length === 0) return 0;
+  const maxRows = Math.max(1, Math.min(Math.trunc(options.maxRows ?? 50_000), 500_000));
+  if (!Number.isFinite(options.olderThanMs)) throw new Error('CONTROL_PLANE_ORPHAN_AUDIT_AGE_INVALID');
+  const cutoff = new Date((options.nowMs ?? Date.now()) - options.olderThanMs).toISOString();
+  const placeholders = namespaces.map(() => '?').join(',');
+  withSqliteStatement(database, `
+      DELETE FROM control_plane_audit
+      WHERE event_id IN (
+        SELECT audit.event_id
+        FROM control_plane_audit audit
+        WHERE audit.namespace IN (${placeholders})
+          AND audit.occurred_at < ?
+          AND NOT EXISTS (
+            SELECT 1 FROM control_plane_records record
+            WHERE record.namespace = audit.namespace
+              AND record.scope = audit.scope
+              AND record.record_key = audit.record_key
+          )
+          AND audit.revision < (
+            SELECT MAX(latest.revision)
+            FROM control_plane_audit latest
+            WHERE latest.namespace = audit.namespace
+              AND latest.scope = audit.scope
+              AND latest.record_key = audit.record_key
+          )
+        ORDER BY audit.event_id ASC
+        LIMIT ?
+      )
+    `, (statement) => statement.run(...namespaces, cutoff, maxRows));
+  return Number(withSqliteStatement(database, 'SELECT changes() AS count', (statement) => scalar(statement.get())) ?? 0);
+}
+
+/**
  * Physical SQLite maintenance only. Domain lifecycles own row deletion; this
  * boundary never decides semantic terminality or removes canonical records.
  * PASSIVE checkpointing is non-blocking, and VACUUM is attempted only when
@@ -985,6 +1050,18 @@ export function maintainControlPlaneDatabase(
   try {
     database.exec('PRAGMA busy_timeout = 0; PRAGMA foreign_keys = ON;');
     assertSupportedSchema(database, path, true);
+    if (options.pruneOrphanedAudit) {
+      try {
+        report.prunedAuditRows = pruneOrphanedAuditRows(database, options.pruneOrphanedAudit);
+      } catch (error) {
+        const busy = sqliteBusyError(path, error);
+        if (busy) {
+          report.skippedReason = 'database_busy';
+          return report;
+        }
+        throw error;
+      }
+    }
     try {
       database.exec('PRAGMA wal_checkpoint(PASSIVE);');
       report.checkpointed = true;
