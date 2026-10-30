@@ -262,6 +262,36 @@ function tableExists(database: SqliteDatabase, table: string): boolean {
   return row?.name === table;
 }
 
+const AUDIT_FLOOR_TABLE = 'control_plane_audit_floor';
+
+/** Additive migration for existing schema-v1 databases; old releases ignore the table. */
+function ensureAuditFloorTable(database: SqliteDatabase): void {
+  if (tableExists(database, AUDIT_FLOOR_TABLE)) return;
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS ${AUDIT_FLOOR_TABLE} (
+      namespace TEXT NOT NULL,
+      scope TEXT NOT NULL,
+      record_key TEXT NOT NULL,
+      floor_revision INTEGER NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (namespace, scope, record_key)
+    );
+  `);
+}
+
+/** Raise (never lower) the contiguous audit floor for one record. */
+function writeAuditFloor(database: SqliteDatabase, namespace: string, scope: string, key: string, floor: number): void {
+  if (!Number.isSafeInteger(floor) || floor < 2) return;
+  ensureAuditFloorTable(database);
+  withSqliteStatement(database, `
+      INSERT INTO ${AUDIT_FLOOR_TABLE} (namespace, scope, record_key, floor_revision, updated_at)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(namespace, scope, record_key) DO UPDATE SET
+        floor_revision = MAX(${AUDIT_FLOOR_TABLE}.floor_revision, excluded.floor_revision),
+        updated_at = excluded.updated_at
+    `, (statement) => statement.run(namespace, scope, key, floor, now()));
+}
+
 function currentSchemaVersion(database: SqliteDatabase): number | undefined {
   if (!tableExists(database, 'control_plane_schema')) return undefined;
   const value = withSqliteStatement(
@@ -314,6 +344,14 @@ function initializeSchema(database: SqliteDatabase): void {
     );
     CREATE INDEX IF NOT EXISTS control_plane_audit_lookup
       ON control_plane_audit (namespace, scope, record_key, revision);
+    CREATE TABLE IF NOT EXISTS control_plane_audit_floor (
+      namespace TEXT NOT NULL,
+      scope TEXT NOT NULL,
+      record_key TEXT NOT NULL,
+      floor_revision INTEGER NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (namespace, scope, record_key)
+    );
   `);
   withSqliteStatement(
     database,
@@ -504,6 +542,18 @@ function writeRecord<T>(
   const revision = existing
     ? existing.revision + 1
     : Math.max(0, Number.isSafeInteger(previousAuditRevision) ? previousAuditRevision : 0) + 1;
+  if (!existing) {
+    // A recreated key can legitimately start above revision 1 only when its
+    // orphan history was retention-pruned. Record the actual retained floor so
+    // inspection remains an exact contiguous-chain check.
+    const minimumAuditRevision = Number(withSqliteStatement(database, `
+        SELECT MIN(revision) AS revision FROM control_plane_audit
+        WHERE namespace = ? AND scope = ? AND record_key = ?
+      `, (statement) => scalar(statement.get(input.namespace, input.scope, input.key))));
+    if (Number.isSafeInteger(minimumAuditRevision) && minimumAuditRevision > 1) {
+      writeAuditFloor(database, input.namespace, input.scope, input.key, minimumAuditRevision);
+    }
+  }
   const createdAt = existing?.createdAt ?? at;
   withSqliteStatement(database, `
       INSERT INTO control_plane_records (
@@ -873,6 +923,15 @@ function inspectOpenDatabase(database: SqliteDatabase, path: string): ControlPla
     'SELECT COUNT(*) AS count FROM control_plane_audit',
     (statement) => scalar(statement.get()),
   ) ?? 0);
+  const auditFloorExpression = tableExists(database, AUDIT_FLOOR_TABLE)
+    ? `COALESCE((
+        SELECT floor.floor_revision
+        FROM ${AUDIT_FLOOR_TABLE} floor
+        WHERE floor.namespace = record.namespace
+          AND floor.scope = record.scope
+          AND floor.record_key = record.record_key
+      ), 1)`
+    : '1';
   const orphanRecordCount = Number(withSqliteStatement(database, `
       SELECT COUNT(*) AS count
       FROM control_plane_records record
@@ -882,15 +941,15 @@ function inspectOpenDatabase(database: SqliteDatabase, path: string): ControlPla
         WHERE audit.namespace = record.namespace
           AND audit.scope = record.scope
           AND audit.record_key = record.record_key
-          AND audit.revision BETWEEN 1 AND record.revision
-      ) != record.revision
+          AND audit.revision BETWEEN ${auditFloorExpression} AND record.revision
+      ) != record.revision - ${auditFloorExpression} + 1
         OR COALESCE((
           SELECT MIN(audit.revision)
           FROM control_plane_audit audit
           WHERE audit.namespace = record.namespace
             AND audit.scope = record.scope
             AND audit.record_key = record.record_key
-        ), 0) != 1
+        ), 0) != ${auditFloorExpression}
         OR COALESCE((
           SELECT MAX(audit.revision)
           FROM control_plane_audit audit
@@ -997,7 +1056,30 @@ function pruneOrphanedAuditRows(
         LIMIT ?
       )
     `, (statement) => statement.run(...namespaces, cutoff, maxRows));
-  return Number(withSqliteStatement(database, 'SELECT changes() AS count', (statement) => scalar(statement.get())) ?? 0);
+  const deleted = Number(withSqliteStatement(database, 'SELECT changes() AS count', (statement) => scalar(statement.get())) ?? 0);
+  if (deleted > 0) {
+    // Every orphaned key keeps its newest audit row. Record that retained
+    // revision as the floor so a later recreation has an exact contiguous
+    // chain instead of appearing to have lost revisions 1..N.
+    ensureAuditFloorTable(database);
+    withSqliteStatement(database, `
+        INSERT INTO ${AUDIT_FLOOR_TABLE} (namespace, scope, record_key, floor_revision, updated_at)
+        SELECT audit.namespace, audit.scope, audit.record_key, MAX(audit.revision), ?
+        FROM control_plane_audit audit
+        WHERE audit.namespace IN (${placeholders})
+          AND NOT EXISTS (
+            SELECT 1 FROM control_plane_records record
+            WHERE record.namespace = audit.namespace
+              AND record.scope = audit.scope
+              AND record.record_key = audit.record_key
+          )
+        GROUP BY audit.namespace, audit.scope, audit.record_key
+        ON CONFLICT(namespace, scope, record_key) DO UPDATE SET
+          floor_revision = MAX(${AUDIT_FLOOR_TABLE}.floor_revision, excluded.floor_revision),
+          updated_at = excluded.updated_at
+      `, (statement) => statement.run(now(), ...namespaces));
+  }
+  return deleted;
 }
 
 /**
