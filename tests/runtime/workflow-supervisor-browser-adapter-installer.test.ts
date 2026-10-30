@@ -278,9 +278,11 @@ describe('Computer Chrome extension browser-resource authority', () => {
               if (message.method === 'browser_discovery_update') discoveryUpdates.push(message.params ?? {});
               const result = message.method === 'computer_extension_claim'
                 ? { command: null }
-                : message.method === 'browser_project_scopes'
-                  ? { projects: fixture.projects ?? [] }
-                  : {};
+                : message.method === 'computer_extension_heartbeat'
+                  ? { recorded: true }
+                  : message.method === 'browser_project_scopes'
+                    ? { projects: fixture.projects ?? [] }
+                    : {};
               queueMicrotask(() => { for (const listener of nativeMessageListeners) listener({ id: message.id, ok: true, result }); });
             },
             onMessage: { addListener: (listener: (response: { id: string; ok: boolean; result?: unknown }) => void) => { nativeMessageListeners.push(listener); } },

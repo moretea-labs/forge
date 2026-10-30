@@ -88,25 +88,42 @@ test('heartbeat RPC has a sub-TTL deadline and cannot cancel an independent comp
   expect(ports).toHaveLength(1);
 });
 
-test('Chrome tabs query deadline releases a stuck heartbeat read and permits a later retry', async () => {
+test('Chrome tabs query deadline bounds waiters and single-flights an unresolved underlying query', async () => {
   const source = readFileSync('adapters/computer/chrome-extension/background.js', 'utf8');
   const code = source.slice(source.indexOf('function boundedTabsQuery('), source.indexOf('// Controller binding owns the durable source identity.'));
   const timers = new Map<number, { callback: () => void; delay: number }>();
   let timerId = 0;
   let queryCalls = 0;
-  const chrome = { tabs: { query: () => { queryCalls += 1; return new Promise<unknown[]>(() => undefined); } } };
+  let resolveFirstQuery: ((tabs: unknown[]) => void) | undefined;
+  const chrome = { tabs: { query: () => {
+    queryCalls += 1;
+    if (queryCalls === 1) return new Promise<unknown[]>((resolve) => { resolveFirstQuery = resolve; });
+    return Promise.resolve([]);
+  } } };
   const context = {
-    chrome, TABS_QUERY_TIMEOUT_MS: 5_000,
+    chrome, TABS_QUERY_TIMEOUT_MS: 5_000, tabsQueryInFlight: new Map<string, Promise<unknown[]>>(),
     setTimeout(callback: () => void, delay: number) { const id = ++timerId; timers.set(id, { callback, delay }); return id; },
     clearTimeout(id: number) { timers.delete(id); },
   };
   const chatgptTabs = runInNewContext(code + '\nchatgptTabs', context) as () => Promise<unknown[]>;
   const first = chatgptTabs().catch((error: Error) => error.message);
+  await Promise.resolve();
+  expect(queryCalls).toBe(1);
   expect([...timers.values()].map(timer => timer.delay)).toEqual([5_000]);
   timers.get(1)?.callback();
   expect(await first).toBe('COMPUTER_CHATGPT_EXTENSION_TABS_QUERY_TIMEOUT');
+
+  const second = chatgptTabs().catch((error: Error) => error.message);
+  await Promise.resolve();
   expect(queryCalls).toBe(1);
-  chrome.tabs.query = async () => { queryCalls += 1; return []; };
+  expect([...timers.values()].map(timer => timer.delay)).toEqual([5_000]);
+  timers.get(2)?.callback();
+  expect(await second).toBe('COMPUTER_CHATGPT_EXTENSION_TABS_QUERY_TIMEOUT');
+  expect(queryCalls).toBe(1);
+
+  resolveFirstQuery?.([]);
+  await Promise.resolve();
+  await Promise.resolve();
   expect(await chatgptTabs()).toEqual([]);
   expect(queryCalls).toBe(2);
 });
@@ -176,6 +193,7 @@ test('publishHeartbeat carries one absolute deadline through identity, parallel 
   let rpcMethod = '';
   let rpcTimeout = 0;
   let rpcPayload: Record<string, unknown> | undefined;
+  let recorded = true;
   const FakeDate = class extends Date { static now() { return nowMs; } };
   const context = {
     Date: FakeDate, HEARTBEAT_DEADLINE_MS: 10_000, HEARTBEAT_RPC_TIMEOUT_MS: 6_000, PROVIDER_ID: 'browser.chrome-extension',
@@ -187,7 +205,7 @@ test('publishHeartbeat carries one absolute deadline through identity, parallel 
     binding: (value: typeof tab, instanceId: string) => ({ providerId: 'browser.chrome-extension', providerSessionId: instanceId,
       tabId: String(value.id), windowId: String(value.windowId), ownerToken: 'owner-one' }),
     nativeRpc: async (method: string, params: Record<string, unknown>, timeoutMs: number) => {
-      rpcMethod = method; rpcPayload = params; rpcTimeout = timeoutMs; return { recorded: true };
+      rpcMethod = method; rpcPayload = params; rpcTimeout = timeoutMs; return { recorded };
     },
   };
   const publishHeartbeat = runInNewContext(code + '\npublishHeartbeat', context) as () => Promise<string>;
@@ -199,6 +217,9 @@ test('publishHeartbeat carries one absolute deadline through identity, parallel 
   expect((rpcPayload?.conversations as Array<Record<string, unknown>>)[0]).toMatchObject({
     conversationId, canonicalUrl: tab.url, isCurrent: true,
   });
+  recorded = false;
+  const rejected = await publishHeartbeat().then(() => undefined, (error: Error) => error.message);
+  expect(rejected).toBe('COMPUTER_CHATGPT_EXTENSION_HEARTBEAT_NOT_RECORDED');
 });
 
 test('provider tick shares one heartbeat, claims only after success, and retries after heartbeat timeout', async () => {

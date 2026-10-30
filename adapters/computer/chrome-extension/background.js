@@ -156,12 +156,23 @@ function tabReload(tabId) { return new Promise((resolve, reject) => chrome.tabs.
   const error = chrome.runtime.lastError;
   if (error) reject(new Error(error.message)); else resolve();
 })); }
+const tabsQueryInFlight = new Map();
 function boundedTabsQuery(query, deadlineAt = Date.now() + TABS_QUERY_TIMEOUT_MS) {
   const timeoutMs = Math.min(TABS_QUERY_TIMEOUT_MS, deadlineAt - Date.now());
   if (timeoutMs <= 0) return Promise.reject(new Error('COMPUTER_CHATGPT_EXTENSION_TABS_QUERY_TIMEOUT'));
+  const queryKey = JSON.stringify(query);
+  let operation = tabsQueryInFlight.get(queryKey);
+  if (!operation) {
+    let tracked;
+    tracked = Promise.resolve().then(() => chrome.tabs.query(query)).finally(() => {
+      if (tabsQueryInFlight.get(queryKey) === tracked) tabsQueryInFlight.delete(queryKey);
+    });
+    operation = tracked;
+    tabsQueryInFlight.set(queryKey, operation);
+  }
   let timer;
   return Promise.race([
-    Promise.resolve().then(() => chrome.tabs.query(query)),
+    operation,
     new Promise((_, reject) => {
       timer = setTimeout(() => reject(new Error('COMPUTER_CHATGPT_EXTENSION_TABS_QUERY_TIMEOUT')), timeoutMs);
     }),
@@ -752,7 +763,8 @@ async function publishHeartbeat() {
   }
   const remainingMs = deadlineAt - Date.now();
   if (remainingMs <= 0) throw new Error('COMPUTER_CHATGPT_EXTENSION_HEARTBEAT_DEADLINE_EXCEEDED');
-  await nativeRpc('computer_extension_heartbeat', { providerId: PROVIDER_ID, providerInstanceId: instanceId, observedAt: new Date().toISOString(), conversations }, Math.min(HEARTBEAT_RPC_TIMEOUT_MS, remainingMs));
+  const receipt = await nativeRpc('computer_extension_heartbeat', { providerId: PROVIDER_ID, providerInstanceId: instanceId, observedAt: new Date().toISOString(), conversations }, Math.min(HEARTBEAT_RPC_TIMEOUT_MS, remainingMs));
+  if (receipt?.recorded !== true) throw new Error('COMPUTER_CHATGPT_EXTENSION_HEARTBEAT_NOT_RECORDED');
   return instanceId;
 }
 let providerTickInFlight;

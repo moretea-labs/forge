@@ -136,20 +136,25 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
     private readonly timerApi: { setTimeout: typeof setTimeout; clearTimeout: typeof clearTimeout } = { setTimeout, clearTimeout },
   ) {}
 
-  heartbeat(input: ComputerChatgptExtensionHeartbeat): void {
+  heartbeat(input: ComputerChatgptExtensionHeartbeat): boolean {
     if (input.providerId !== PROVIDER_ID) throw new Error('COMPUTER_CHATGPT_EXTENSION_PROVIDER_ID_INVALID');
     const instanceId = providerInstanceId(input.providerInstanceId);
     if (!instanceId) throw new Error('COMPUTER_CHATGPT_EXTENSION_PROVIDER_INSTANCE_REQUIRED');
     const receivedAtMs = this.nowMs();
     const inputObservedAtMs = typeof input.observedAt === 'string' ? Date.parse(input.observedAt) : Number.NaN;
-    const observedAt = Number.isFinite(inputObservedAtMs)
-      ? new Date(inputObservedAtMs).toISOString()
-      : new Date(receivedAtMs).toISOString();
+    // observedAt and receivedAt share the local host clock. Reject malformed,
+    // future, and already-expired snapshots before they can create fresh state.
+    // This also protects against a delayed socket request arriving after
+    // freshProviders() has pruned the previous provider state.
+    if (!Number.isFinite(inputObservedAtMs)
+      || inputObservedAtMs > receivedAtMs
+      || receivedAtMs - inputObservedAtMs > HEARTBEAT_FRESH_MS) return false;
+    const observedAt = new Date(inputObservedAtMs).toISOString();
     const previous = this.providerStates.get(instanceId);
     const previousObservedAtMs = previous ? Date.parse(previous.heartbeat.observedAt) : Number.NaN;
     // A timed-out older socket request can arrive after a newer heartbeat.
     // Never let that late arrival replace newer inventory or refresh freshness.
-    if (Number.isFinite(previousObservedAtMs) && Date.parse(observedAt) < previousObservedAtMs) return;
+    if (Number.isFinite(previousObservedAtMs) && inputObservedAtMs < previousObservedAtMs) return false;
     const conversations = Array.isArray(input.conversations)
       ? input.conversations.flatMap((entry) => {
           if (!entry || typeof entry.conversationId !== 'string' || !entry.conversationId.trim() || typeof entry.canonicalUrl !== 'string' || !entry.canonicalUrl.trim()) return [];
@@ -174,6 +179,7 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
         conversations,
       },
     });
+    return true;
   }
 
   claim(rawProviderInstanceId: string): ComputerChatgptExtensionCommand | undefined {

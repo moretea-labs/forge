@@ -313,8 +313,7 @@ async function dispatch(control: WorkflowSupervisorControlPlane, discovery: Work
   if (req.method === 'health') return { status: 'ready', writer: 'workflow-supervisor-daemon' };
   if (req.method === 'computer_extension_heartbeat') {
     if (!computerExtensionBroker) throw new Error('COMPUTER_CHATGPT_EXTENSION_BROKER_UNAVAILABLE');
-    computerExtensionBroker.heartbeat(p as unknown as ComputerChatgptExtensionHeartbeat);
-    return { recorded: true };
+    return { recorded: computerExtensionBroker.heartbeat(p as unknown as ComputerChatgptExtensionHeartbeat) };
   }
   if (req.method === 'computer_extension_claim') {
     if (!computerExtensionBroker) throw new Error('COMPUTER_CHATGPT_EXTENSION_BROKER_UNAVAILABLE');

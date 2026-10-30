@@ -152,7 +152,7 @@ export interface ComputerChatgptExtensionHeartbeat {
 }
 
 export interface ComputerChatgptExtensionBrokerRpc {
-  heartbeat(input: ComputerChatgptExtensionHeartbeat): void;
+  heartbeat(input: ComputerChatgptExtensionHeartbeat): boolean;
   claim(providerInstanceId: string): ComputerChatgptExtensionCommand | undefined;
   complete(providerInstanceId: string, commandId: string, result: ComputerChatgptExtensionCommandResult): boolean;
 }
