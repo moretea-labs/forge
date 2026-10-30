@@ -79,7 +79,8 @@ try {
   assert.ok(backgroundSource.includes('const instanceId = await providerInstanceId();'));
   assert.ok(backgroundSource.includes('source: `chrome-extension:${instanceId}`'));
   assert.equal(backgroundSource.includes('PROVIDER_INSTANCE_ID'), false);
-  assert.ok(backgroundSource.includes('chrome.storage.local.set({ forgeComputerProviderInstanceId: instanceId })'));
+  assert.ok(backgroundSource.includes('providerInstanceCandidate ??= randomId()'));
+  assert.ok(backgroundSource.includes('chrome.storage.local.set({ forgeComputerProviderInstanceId: providerInstanceCandidate })'));
   assert.ok(backgroundSource.includes("nativeRpc('computer_extension_heartbeat'"));
   assert.ok(backgroundSource.includes('providerInstanceId: instanceId'));
   assert.ok(backgroundSource.includes("nativeRpc('computer_extension_claim', { provider_instance_id: instanceId })"));

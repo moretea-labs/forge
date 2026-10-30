@@ -23,6 +23,7 @@ import { parseCanonicalChatgptConversationIdentity } from '../../packages/plugin
 
 const PROVIDER_ID = 'browser.chrome-extension';
 const HEARTBEAT_FRESH_MS = 15_000;
+// Bound both queue wait and claimed execution; claim re-arms the same single timer.
 const COMMAND_TIMEOUT_MS = 12_000;
 
 type ProviderState = {
@@ -132,12 +133,28 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
     private readonly controllerHome: string,
     private readonly authority: ComputerInteractionTargetAuthorityPort,
     private readonly nowMs: () => number = () => Date.now(),
+    private readonly timerApi: { setTimeout: typeof setTimeout; clearTimeout: typeof clearTimeout } = { setTimeout, clearTimeout },
   ) {}
 
-  heartbeat(input: ComputerChatgptExtensionHeartbeat): void {
+  heartbeat(input: ComputerChatgptExtensionHeartbeat): boolean {
     if (input.providerId !== PROVIDER_ID) throw new Error('COMPUTER_CHATGPT_EXTENSION_PROVIDER_ID_INVALID');
     const instanceId = providerInstanceId(input.providerInstanceId);
     if (!instanceId) throw new Error('COMPUTER_CHATGPT_EXTENSION_PROVIDER_INSTANCE_REQUIRED');
+    const receivedAtMs = this.nowMs();
+    const inputObservedAtMs = typeof input.observedAt === 'string' ? Date.parse(input.observedAt) : Number.NaN;
+    // observedAt and receivedAt share the local host clock. Reject malformed,
+    // future, and already-expired snapshots before they can create fresh state.
+    // This also protects against a delayed socket request arriving after
+    // freshProviders() has pruned the previous provider state.
+    if (!Number.isFinite(inputObservedAtMs)
+      || inputObservedAtMs > receivedAtMs
+      || receivedAtMs - inputObservedAtMs > HEARTBEAT_FRESH_MS) return false;
+    const observedAt = new Date(inputObservedAtMs).toISOString();
+    const previous = this.providerStates.get(instanceId);
+    const previousObservedAtMs = previous ? Date.parse(previous.heartbeat.observedAt) : Number.NaN;
+    // A timed-out older socket request can arrive after a newer heartbeat.
+    // Never let that late arrival replace newer inventory or refresh freshness.
+    if (Number.isFinite(previousObservedAtMs) && inputObservedAtMs < previousObservedAtMs) return false;
     const conversations = Array.isArray(input.conversations)
       ? input.conversations.flatMap((entry) => {
           if (!entry || typeof entry.conversationId !== 'string' || !entry.conversationId.trim() || typeof entry.canonicalUrl !== 'string' || !entry.canonicalUrl.trim()) return [];
@@ -154,14 +171,15 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
         })
       : [];
     this.providerStates.set(instanceId, {
-      receivedAtMs: this.nowMs(),
+      receivedAtMs,
       heartbeat: {
         providerId: PROVIDER_ID,
         providerInstanceId: instanceId,
-        observedAt: typeof input.observedAt === 'string' && input.observedAt ? input.observedAt : new Date(this.nowMs()).toISOString(),
+        observedAt,
         conversations,
       },
     });
+    return true;
   }
 
   claim(rawProviderInstanceId: string): ComputerChatgptExtensionCommand | undefined {
@@ -173,6 +191,14 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
       const entry = this.pending.get(id);
       if (!entry || entry.providerInstanceId !== instanceId || entry.claimed) continue;
       entry.claimed = true;
+      this.timerApi.clearTimeout(entry.timer);
+      entry.timer = this.timerApi.setTimeout(() => {
+        const current = this.pending.get(id);
+        if (!current) return;
+        this.pending.delete(id);
+        current.resolve({ claimed: current.claimed });
+      }, COMMAND_TIMEOUT_MS);
+      entry.timer.unref?.();
       return structuredClone(entry.command);
     }
     if (queue?.length === 0) this.queues.delete(instanceId);
@@ -183,7 +209,7 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
     const instanceId = providerInstanceId(rawProviderInstanceId);
     const entry = this.pending.get(commandId);
     if (!instanceId || !entry || entry.providerInstanceId !== instanceId || !entry.claimed) return false;
-    clearTimeout(entry.timer);
+    this.timerApi.clearTimeout(entry.timer);
     this.pending.delete(commandId);
     entry.resolve({ claimed: true, result: structuredClone(result) });
     return true;
@@ -231,7 +257,7 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
   private async submit(providerInstanceId: string, command: ComputerChatgptExtensionCommandInput): Promise<{ claimed: boolean; result?: ComputerChatgptExtensionCommandResult }> {
     const commandId = `computer-extension-${randomUUID()}`;
     return await new Promise((resolve) => {
-      const timer = setTimeout(() => {
+      const timer = this.timerApi.setTimeout(() => {
         const current = this.pending.get(commandId);
         if (!current) return;
         this.pending.delete(commandId);
@@ -789,7 +815,7 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
 
   async close(): Promise<void> {
     for (const entry of this.pending.values()) {
-      clearTimeout(entry.timer);
+      this.timerApi.clearTimeout(entry.timer);
       entry.resolve({ claimed: entry.claimed, result: entry.command.kind === 'dispatch' && entry.claimed
         ? { kind: 'dispatch', mutation: 'attempted' }
         : { kind: 'failed', code: 'COMPUTER_CHATGPT_EXTENSION_RUNTIME_CLOSED', retryable: true } });

@@ -176,19 +176,25 @@ function effectSuperseded(db: Database, effectId: string): boolean {
 }
 
 function appliedEffectAwaitingCompletionWithin(db: Database, taskId: string): boolean {
-  return Boolean(statement(db, `SELECT 1 AS ok FROM effects e
-    WHERE e.task_id = ?
-      AND EXISTS (SELECT 1 FROM events applied WHERE applied.effect_id = e.effect_id AND applied.kind = 'effect_applied')
-      AND NOT EXISTS (SELECT 1 FROM completions c WHERE c.task_id = e.task_id AND c.source_effect_id = e.effect_id)
-      -- Once the exact provider recovery actually commits a receipt, the
-      -- dispatched parent can no longer commit a competing completion.
-      -- Its causal observation is fulfilled by the completed recovery child.
-      -- Merely reserving/dispatching/applying a child never lifts this fence.
-      AND NOT EXISTS (SELECT 1 FROM effects child
-        JOIN completions receipt ON receipt.task_id = child.task_id AND receipt.source_effect_id = child.effect_id
-        WHERE child.task_id = e.task_id AND child.kind = 'recovery'
-          AND child.origin_key = 'provider-recovery:' || e.effect_id)
-    LIMIT 1`, (s) => s.get(taskId)));
+  // A verified receipt fulfills its own applied Effect and every exact ancestor
+  // on the provider-recovery chain. This is a causal closure over one Task;
+  // a reserved/dispatched/applied child without a receipt never settles a
+  // parent, and an unrelated applied sibling still blocks migration.
+  return Boolean(statement(db, `WITH RECURSIVE settled(effect_id) AS (
+      SELECT source_effect_id FROM completions WHERE task_id=?
+      UNION
+      SELECT parent.effect_id FROM effects child
+        JOIN settled ON settled.effect_id=child.effect_id
+        JOIN effects parent ON parent.task_id=child.task_id
+          AND child.origin_key='provider-recovery:' || parent.effect_id
+        WHERE child.task_id=? AND child.kind='recovery'
+    )
+    SELECT 1 AS ok FROM effects e
+    WHERE e.task_id=?
+      AND EXISTS (SELECT 1 FROM events applied
+        WHERE applied.effect_id=e.effect_id AND applied.kind='effect_applied')
+      AND NOT EXISTS (SELECT 1 FROM settled WHERE settled.effect_id=e.effect_id)
+    LIMIT 1`, (s) => s.get(taskId, taskId, taskId)));
 }
 
 function providerResumeExhaustedWithin(db: Database, effectId: string): boolean {
@@ -1548,27 +1554,33 @@ export class WorkflowSupervisorStore {
   }
   providerResumeExhausted(effectId: string): boolean { return this.read((db) => Boolean(statement(db, "SELECT 1 AS ok FROM events WHERE effect_id = ? AND kind = 'assistant_recovery_exhausted' LIMIT 1", (s) => s.get(effectId)))); }
   /**
-   * Read-only elapsed silence for one applied effect, derived from the exact
-   * provider-state event the observation loop already journals. It adds no
-   * durable state, no second threshold and no resend authorization: it only
-   * stops the caller from reporting "still running" as if output were arriving.
+   * Read-only timing projection for one applied effect, derived from the exact
+   * provider-state event the observation loop already journals. Digest changes
+   * may reset the observed interval but are not meaningful-progress evidence;
+   * this projection makes no progress/completion claim and never authorizes resend.
    */
   providerSilence(effectId: string, nowMs = this.clockMs()): WorkflowSupervisorSilentTurn | undefined {
     return this.read((db) => {
+      const applied = statement(db, `SELECT occurred_at FROM events
+        WHERE effect_id = ? AND kind = 'effect_applied'
+        ORDER BY event_id ASC LIMIT 1`, (s) => s.get(effectId)) as { occurred_at?: string } | undefined;
       const latest = statement(db, `SELECT kind, occurred_at FROM events
         WHERE effect_id = ? AND kind IN ('assistant_provider_generating','assistant_provider_idle')
         ORDER BY event_id DESC LIMIT 1`, (s) => s.get(effectId)) as { kind?: string; occurred_at?: string } | undefined;
-      if (!latest || (latest.kind !== 'assistant_provider_generating' && latest.kind !== 'assistant_provider_idle')) return undefined;
+      if (!applied?.occurred_at || !latest
+        || (latest.kind !== 'assistant_provider_generating' && latest.kind !== 'assistant_provider_idle')) return undefined;
+      const effectAppliedAtMs = Date.parse(String(applied.occurred_at));
       const observedSinceMs = Date.parse(String(latest.occurred_at ?? ''));
-      if (!Number.isFinite(observedSinceMs)) return undefined;
+      if (!Number.isFinite(effectAppliedAtMs) || !Number.isFinite(observedSinceMs)) return undefined;
       return {
         effectId,
         providerState: latest.kind === 'assistant_provider_generating' ? 'generating' : 'idle',
+        effectAppliedAt: new Date(effectAppliedAtMs).toISOString(),
+        effectElapsedMs: Math.max(0, nowMs - effectAppliedAtMs),
         observedSince: new Date(observedSinceMs).toISOString(),
         elapsedMs: Math.max(0, nowMs - observedSinceMs),
         recoveryGraceMs: WORKFLOW_SUPERVISOR_PROVIDER_IDLE_GRACE_MS,
-        recoveryReviewAt: new Date(observedSinceMs + WORKFLOW_SUPERVISOR_PROVIDER_IDLE_GRACE_MS).toISOString(),
-        progress: 'no_visible_output',
+        recoveryReviewAt: new Date(effectAppliedAtMs + WORKFLOW_SUPERVISOR_PROVIDER_IDLE_GRACE_MS).toISOString(),
         resendAuthorized: false,
       };
     });
@@ -2099,20 +2111,59 @@ export class WorkflowSupervisorStore {
             JOIN completions c ON c.completion_fingerprint=e.completion_fingerprint
             WHERE e.task_id=? AND e.kind='assistant_completion' AND e.event_id>? AND c.action='CONTINUE'`,
             (s) => s.get(input.taskId, lastMigration?.id ?? 0)) as { total?: number };
-          // One durable completion ledger owns proactive rotation. Count real
-          // completed turns instead of estimating a conversation's token size;
-          // verified exact-target load failures advance the rotation cadence.
-          const unavailableReads = statement(db, `SELECT COUNT(*) AS total FROM events
-            WHERE task_id=? AND kind='browser_delivery_attempt_failed' AND event_id>?
-              AND json_extract(payload_json,'$.conversation_id')=?
-              AND json_extract(payload_json,'$.code')='COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE'
-              AND json_extract(payload_json,'$.verified_empty_shell')=1`,
-            (s) => s.get(input.taskId, lastMigration?.id ?? 0, currentTask.conversationId)) as { total?: number };
-          const receiptLimit = (unavailableReads.total ?? 0) >= 2 ? 6 : 10;
+          // Count one failed provider *turn* only when its recovery has actually
+          // completed, not one browser retry or repeated error observation.
+          // Unsettled provider outcomes remain protected by the migration fence.
+          const recoveredFailedTurns = statement(db, `WITH RECURSIVE settled(effect_id) AS (
+              SELECT source_effect_id FROM completions WHERE task_id=?
+              UNION
+              SELECT parent.effect_id FROM effects child
+                JOIN settled ON settled.effect_id=child.effect_id
+                JOIN effects parent ON parent.task_id=child.task_id
+                  AND child.origin_key='provider-recovery:' || parent.effect_id
+                WHERE child.task_id=? AND child.kind='recovery'
+            )
+            SELECT COUNT(DISTINCT failed.effect_id) AS total
+            FROM events failed JOIN settled ON settled.effect_id=failed.effect_id
+            WHERE failed.task_id=? AND failed.event_id>?
+              AND failed.kind='assistant_provider_failed'
+              AND failed.effect_id IS NOT NULL
+              AND NOT EXISTS (SELECT 1 FROM completions original
+                WHERE original.task_id=failed.task_id AND original.source_effect_id=failed.effect_id)`,
+            (s) => s.get(input.taskId, input.taskId, input.taskId, lastMigration?.id ?? 0)) as { total?: number };
+          const previousCompletion = statement(db, `SELECT MAX(event_id) AS id FROM events
+            WHERE task_id=? AND kind='assistant_completion' AND event_id>?
+              AND completion_fingerprint<>?`,
+            (s) => s.get(input.taskId, lastMigration?.id ?? 0, input.completionFingerprint)) as { id?: number };
+          const failuresSincePreviousCompletion = statement(db, `WITH RECURSIVE settled(effect_id) AS (
+              SELECT source_effect_id FROM completions WHERE task_id=?
+              UNION
+              SELECT parent.effect_id FROM effects child
+                JOIN settled ON settled.effect_id=child.effect_id
+                JOIN effects parent ON parent.task_id=child.task_id
+                  AND child.origin_key='provider-recovery:' || parent.effect_id
+                WHERE child.task_id=? AND child.kind='recovery'
+            )
+            SELECT COUNT(DISTINCT failed.effect_id) AS total
+            FROM events failed JOIN settled ON settled.effect_id=failed.effect_id
+            WHERE failed.task_id=? AND failed.kind='assistant_provider_failed'
+              AND failed.event_id>? AND failed.event_id<(SELECT event_id FROM events WHERE event_key=? LIMIT 1)
+              AND failed.effect_id IS NOT NULL
+              -- A late valid receipt for the failed source turns that source
+              -- into a successful turn. Never count it as both outcomes.
+              AND NOT EXISTS (SELECT 1 FROM completions original
+                WHERE original.task_id=failed.task_id AND original.source_effect_id=failed.effect_id)`,
+            (s) => s.get(input.taskId, input.taskId, input.taskId,
+              Math.max(lastMigration?.id ?? 0, previousCompletion?.id ?? 0),
+              `completion:${input.completionFingerprint}`)) as { total?: number };
+          const completedOrFailedTurns = (completedSinceMigration.total ?? 0) + (recoveredFailedTurns.total ?? 0);
+          // An explicit three-turn failure burst accelerates rotation at a
+          // safe completion boundary only; unknown/applied siblings still veto.
+          const failureBurst = (failuresSincePreviousCompletion.total ?? 0) >= 3;
           const rotate = successor.freshEnrollmentPrompt !== undefined
             && currentTask.continuationPolicy.kind === 'standalone_supervisor'
             && !currentTask.conversationId.startsWith('bootstrap:')
-            && (completedSinceMigration.total ?? 0) >= receiptLimit
+            && (completedOrFailedTurns >= 10 || failureBurst)
             // The source completion cannot retire any other still-unapplied
             // command: a started send may have reached the provider, and even
             // an unstarted effect still owns an undispatched continuation.
@@ -2144,7 +2195,7 @@ export class WorkflowSupervisorStore {
               json({ from_conversation_id: sourceConversationId, to_conversation_id: bootstrapConversationId,
                 to_conversation_url: 'https://chatgpt.com/', fresh_conversation: true,
                 replacement_effect_id: successorEffect!.effectId, request_id: `automatic-receipt:${input.completionFingerprint}`,
-                authorized_by: 'user-configured-standalone-rotation', reason: `confirmed_continue_receipts:${receiptLimit}` }), now()));
+                authorized_by: 'user-configured-standalone-rotation', reason: failureBurst ? 'confirmed_provider_failure_burst:3' : `confirmed_success_and_recovered_failures:${completedOrFailedTurns}` }), now()));
           }
         }
       }

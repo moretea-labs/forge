@@ -365,8 +365,10 @@ export class WorkflowSupervisorNativeBrowserAdapter {
   private readonly projectedTaskStalls = new Map<string, Omit<WorkflowSupervisorStallProjection, 'taskId' | 'state' | 'observedAt'>>();
   /** Spacing for read-only observation of a turn whose bounded resume is exhausted. */
   private readonly awaitingReceiptObservedAtMs = new Map<string, number>();
-  /** Derived from the tick's taskStall passes; the store remains the silence authority. */
-  private projectedSilence?: WorkflowSupervisorSilentTurn & { taskId: string };
+  /** Per-task derived projection cache; Supervisor store remains the silence authority. */
+  private readonly projectedSilences = new Map<string, WorkflowSupervisorSilentTurn & { taskId: string; conversationId: string }>();
+  /** Per-task ephemeral observations, never scheduling or replay authority. */
+  private readonly lastProviderObservations = new Map<string, { taskId: string; effectId: string; conversationId: string; observedAt: string }>();
   /** Rebuildable idle-grace projection; Supervisor effects remain the sole authority. */
   private readonly idleResourceSinceMs = new Map<string, number>();
 
@@ -539,7 +541,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
   private syncTaskStallProjections(): void {
     const activeTaskIds = new Set<string>();
     const observedAt = new Date(this.deps.nowMs()).toISOString();
-    let oldestSilence: (WorkflowSupervisorSilentTurn & { taskId: string }) | undefined;
+    const silenceByTask = new Map<string, WorkflowSupervisorSilentTurn & { taskId: string; conversationId: string }>();
     for (const task of this.control.listTasks(true)) {
       activeTaskIds.add(task.taskId);
       let stall: ReturnType<WorkflowSupervisorControlPlane['taskStall']>;
@@ -548,8 +550,11 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       // Silence is reported from the same existing provider-state evidence the
       // tick already read. It never adds a target, a send or a durable state.
       const silentTurn = 'silentTurn' in stall ? stall.silentTurn : undefined;
-      if (silentTurn && (!oldestSilence || silentTurn.elapsedMs > oldestSilence.elapsedMs)) {
-        oldestSilence = { taskId: task.taskId, ...silentTurn };
+      if (silentTurn) silenceByTask.set(task.taskId, { taskId: task.taskId, conversationId: task.conversationId, ...silentTurn });
+      const observation = this.lastProviderObservations.get(task.taskId);
+      if (observation && (observation.conversationId !== task.conversationId
+        || !('effectId' in stall) || stall.effectId !== observation.effectId)) {
+        this.lastProviderObservations.delete(task.taskId);
       }
       if (stall.state === 'retryable' || stall.state === 'provider_resume_exhausted') {
         const next = {
@@ -582,11 +587,15 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       catch (error) { this.deps.onError(error); }
       this.projectedTaskStalls.delete(taskId);
     }
-    this.projectedSilence = oldestSilence;
+    for (const taskId of this.lastProviderObservations.keys()) {
+      if (!activeTaskIds.has(taskId)) this.lastProviderObservations.delete(taskId);
+    }
+    this.projectedSilences.clear();
+    for (const [taskId, silence] of silenceByTask) this.projectedSilences.set(taskId, silence);
   }
 
-  private dueCommand(nowMs: number): WorkflowSupervisorConsumerStatus['dueCommand'] {
-    const candidates: NonNullable<WorkflowSupervisorConsumerStatus['dueCommand']>[] = [];
+  private dueCommands(nowMs: number): NonNullable<WorkflowSupervisorConsumerStatus['dueCommands']> {
+    const candidates: NonNullable<WorkflowSupervisorConsumerStatus['dueCommands']> = [];
     for (const task of this.control.browserTasks()) {
       try {
         const poll = task.conversationId.startsWith('bootstrap:') ? this.control.bootstrapPoll(task.taskId) : this.control.browserPoll({ conversationId: task.conversationId, conversationUrl: task.conversationUrl });
@@ -599,23 +608,53 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       } catch { /* read projection only */ }
     }
     candidates.sort((left, right) => (right.ageMs ?? -1) - (left.ageMs ?? -1));
-    return candidates[0];
+    return candidates;
   }
 
   status(): WorkflowSupervisorConsumerStatus {
     const nowMs = this.deps.nowMs();
-    const dueCommand = this.dueCommand(nowMs);
-    const dueTaskFailure = dueCommand ? this.taskTransportFailures.get(dueCommand.taskId) : undefined;
-    const projectedFailure = dueTaskFailure
-      ? { code: dueTaskFailure.code, observedAtMs: dueTaskFailure.observedAtMs, taskId: dueCommand!.taskId, ...(dueTaskFailure.effectId ? { effectId: dueTaskFailure.effectId } : {}) }
+    const lastProviderObservations = [...this.lastProviderObservations.values()].filter((observation) => {
+      const task = this.control.getTask(observation.taskId);
+      if (!task || task.conversationId !== observation.conversationId) return false;
+      const stall = this.control.taskStall(task.taskId);
+      return 'effectId' in stall && stall.effectId === observation.effectId;
+    }).sort((left, right) => left.taskId.localeCompare(right.taskId));
+    const awaitingReceiptSilences = [...this.projectedSilences.values()].flatMap((projected) => {
+      const task = this.control.getTask(projected.taskId);
+      if (!task || task.conversationId !== projected.conversationId) return [];
+      const stall = this.control.taskStall(task.taskId);
+      if (!('effectId' in stall) || stall.effectId !== projected.effectId) return [];
+      const silenceSinceMs = Date.parse(projected.observedSince);
+      const effectAppliedAtMs = Date.parse(projected.effectAppliedAt);
+      if (!Number.isFinite(silenceSinceMs) || !Number.isFinite(effectAppliedAtMs)) return [];
+      const lastCompletion = this.control.store.getLatestCompletion(task.taskId);
+      return [{
+        ...projected,
+        elapsedMs: Math.max(0, nowMs - silenceSinceMs),
+        effectElapsedMs: Math.max(0, nowMs - effectAppliedAtMs),
+        lastCommittedCompletion: lastCompletion ? {
+          sourceEffectId: lastCompletion.sourceEffectId,
+          completionFingerprint: lastCompletion.completionFingerprint,
+          committedAt: lastCompletion.committedAt,
+        } : null,
+      }];
+    }).sort((left, right) => right.elapsedMs - left.elapsedMs);
+    const dueCommands = this.dueCommands(nowMs);
+    const activeTaskIds = new Set(this.control.listTasks(true).map((task) => task.taskId));
+    const activeTaskFailures = [...this.taskTransportFailures.entries()].filter(([taskId]) => activeTaskIds.has(taskId));
+    const taskFailures = activeTaskFailures.map(([taskId, failure]) => ({
+      taskId, code: failure.code, observedAt: new Date(failure.observedAtMs).toISOString(),
+      ...(failure.effectId ? { effectId: failure.effectId } : {}),
+    })).sort((left, right) => right.observedAt.localeCompare(left.observedAt));
+    const latestTaskFailure = activeTaskFailures.sort((left, right) => right[1].observedAtMs - left[1].observedAtMs)[0];
+    const projectedFailure = latestTaskFailure
+      ? { code: latestTaskFailure[1].code, observedAtMs: latestTaskFailure[1].observedAtMs, taskId: latestTaskFailure[0],
+        ...(latestTaskFailure[1].effectId ? { effectId: latestTaskFailure[1].effectId } : {}) }
       : this.lastFailure;
     const stalled = Boolean(this.inflight && this.lastTickStartedAtMs !== undefined && nowMs - this.lastTickStartedAtMs > MAX_TRANSPORT_BACKOFF_MS + 10_000);
     // Elapsed is recomputed from the recorded observation instant so a read
     // between ticks cannot report a stale "still working" duration.
-    const silenceSinceMs = this.projectedSilence ? Date.parse(this.projectedSilence.observedSince) : Number.NaN;
-    const silence = this.projectedSilence && Number.isFinite(silenceSinceMs)
-      ? { ...this.projectedSilence, elapsedMs: Math.max(0, nowMs - silenceSinceMs) }
-      : undefined;
+
     return {
       enabled: true, running: Boolean(this.timer) && !this.closed, observedAt: new Date(nowMs).toISOString(),
       ...(isoTime(this.lastTickStartedAtMs) ? { lastTickStartedAt: isoTime(this.lastTickStartedAtMs) } : {}),
@@ -624,8 +663,10 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       ...(this.nextRunAtMs > 0 ? { nextAttemptAt: new Date(this.nextRunAtMs).toISOString() } : {}),
       transportFailureStreak: this.transportFailureStreak,
       providerBackpressureMs: chatgptProviderBackpressureRemainingMs(this.deps.providerScopeKey, nowMs), stalled,
-      ...(dueCommand ? { dueCommand } : {}),
-      ...(silence ? { awaitingReceiptSilence: silence } : {}),
+      ...(dueCommands.length > 0 ? { dueCommands } : {}),
+      ...(taskFailures.length > 0 ? { taskFailures } : {}),
+      ...(awaitingReceiptSilences.length > 0 ? { awaitingReceiptSilences } : {}),
+      ...(lastProviderObservations.length > 0 ? { lastProviderObservations } : {}),
       ...(projectedFailure ? { lastFailure: { code: projectedFailure.code, observedAt: new Date(projectedFailure.observedAtMs).toISOString(),
         ...(projectedFailure.taskId ? { taskId: projectedFailure.taskId } : {}), ...(projectedFailure.effectId ? { effectId: projectedFailure.effectId } : {}) } } : {}),
     };
@@ -659,6 +700,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     await this.inflight?.catch(() => undefined);
     await this.deps.targetPort.close().catch(() => undefined);
     this.observedAssistant.clear(); this.providerFailureSeen.clear(); this.providerFailureAwaitingClear.clear(); this.freshSendCheckedAt.clear(); this.taskTransportFailures.clear(); this.projectedTaskStalls.clear(); this.awaitingReceiptObservedAtMs.clear(); this.idleResourceSinceMs.clear();
+    this.projectedSilences.clear(); this.lastProviderObservations.clear();
   }
 
   async runOnce(): Promise<void> {
@@ -812,12 +854,12 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     // strands the task.
     if (chatgptProviderBackpressureRemainingMs(this.deps.providerScopeKey, this.deps.nowMs()) > 0
       && !this.conversations.some((conversation) => conversation.conversation_id === task.conversationId)) return;
-    // Prefer the exact pinned tab. When it is truly absent, a recorded exact
-    // conversation URL may be reopened for READ-ONLY applied-turn observation;
-    // this does not authorize another Send or spend a dispatch generation.
-    // An unknown effect remains unknown until its own marker is verified.
+    // The conversation ID is the durable target. Opening a new owned tab for
+    // that exact URL is read-only transport recovery for Send and reconciliation;
+    // it never sends or changes the Supervisor Effect. Unknown effects remain
+    // unknown until their own marker is verified.
     const ensured = await this.deps.targetPort.ensureExact(identityForTask(task), {
-      createIfMissing: poll.command?.mode === 'send'
+      createIfMissing: poll.command !== undefined
         || this.control.store.hasAppliedEffectAwaitingCompletion(task.taskId),
     });
     if (ensured.state !== 'ready') {
@@ -846,6 +888,11 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     if (!this.taskConversationContentAvailable(task, snapshot)) {
       this.observeVerifiedEmptyShell(task, poll.command?.effectId ?? (stall.state === 'spaced' ? stall.effectId : undefined), poll.command, snapshot);
       return;
+    }
+    const observedSource = this.control.store.latestAppliedLeafEffectWithoutCompletion(task.taskId);
+    if (observedSource && targetMarkerPresent(snapshot.latestUserText, observedSource.effectId)) {
+      this.lastProviderObservations.set(task.taskId, { taskId: task.taskId, effectId: observedSource.effectId,
+        conversationId: task.conversationId, observedAt: new Date(this.deps.nowMs()).toISOString() });
     }
     // Do not clear a pre-send failure merely because a conversation loaded:
     // only a successful provider preparation proves the obstacle is gone.

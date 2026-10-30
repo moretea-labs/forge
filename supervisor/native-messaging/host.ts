@@ -4,6 +4,8 @@ import { workflowSupervisorSocketPath } from '../paths';
 import { encodeNativeMessage, NativeMessageDecoder } from './protocol';
 
 export const WORKFLOW_SUPERVISOR_NATIVE_HOST_NAME = 'com.moretea.forge.workflow_supervisor';
+const NATIVE_HEARTBEAT_TIMEOUT_MS = 4_000;
+const NATIVE_RPC_TIMEOUT_MS = 30_000;
 export const ALLOWED_BROWSER_METHODS = new Set([
   'health','browser_discovery','browser_discovery_update','browser_project_scopes',
   'computer_extension_heartbeat','computer_extension_claim','computer_extension_complete',
@@ -19,7 +21,8 @@ function request(value: unknown): BrowserNativeRequest {
 export async function forwardNativeRequest(value: unknown, forgeHome?: string): Promise<Record<string, unknown>> {
   const req = request(value);
   try {
-    const result = await callExternalUnixJsonl({ socketPath: workflowSupervisorSocketPath(forgeHome), requestId: req.id, method: req.method, params: req.params, timeoutMs: 30_000 });
+    const timeoutMs = req.method === 'computer_extension_heartbeat' ? NATIVE_HEARTBEAT_TIMEOUT_MS : NATIVE_RPC_TIMEOUT_MS;
+    const result = await callExternalUnixJsonl({ socketPath: workflowSupervisorSocketPath(forgeHome), requestId: req.id, method: req.method, params: req.params, timeoutMs });
     return { id: req.id, ok: true, result };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -31,11 +34,10 @@ export function runNativeMessagingHost(forgeHome?: string): void {
   process.stdin.on('data', (chunk: Buffer) => {
     let messages: unknown[];
     try { messages = decoder.push(chunk); } catch (error) { process.stdout.write(encodeNativeMessage({ id: 'invalid', ok: false, error: { code: 'WORKFLOW_SUPERVISOR_NATIVE_FRAME_INVALID', message: String(error) } })); return; }
-    // Chrome matches replies by request id, not FIFO position. A slow page
-    // discovery/command must never queue heartbeats behind its 30s RPC budget:
-    // the Computer broker expires a provider heartbeat after 15s. Requests
-    // use independent Supervisor socket calls; the broker still exclusively
-    // owns effect claims, dispatch outcomes and exactly-once Send safety.
+    // Chrome matches replies by request id, not FIFO position. Each request
+    // uses an independent Supervisor socket call. Heartbeat forwarding has a
+    // 4s deadline, below the Broker's 15s freshness TTL; command/discovery RPCs
+    // retain their existing 30s budget. The Broker remains the sole Effect owner.
     for (const message of messages) {
       void forwardNativeRequest(message, forgeHome).then(
         (response) => { process.stdout.write(encodeNativeMessage(response)); },

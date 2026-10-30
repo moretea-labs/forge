@@ -152,14 +152,14 @@ export interface ComputerChatgptExtensionHeartbeat {
 }
 
 export interface ComputerChatgptExtensionBrokerRpc {
-  heartbeat(input: ComputerChatgptExtensionHeartbeat): void;
+  heartbeat(input: ComputerChatgptExtensionHeartbeat): boolean;
   claim(providerInstanceId: string): ComputerChatgptExtensionCommand | undefined;
   complete(providerInstanceId: string, commandId: string, result: ComputerChatgptExtensionCommandResult): boolean;
 }
 
 export interface ComputerChatgptConversationTargetPort {
   inventory(): Promise<ComputerChatgptConversationInventory>;
-  /** Read-only reconciliation cannot create a missing tab. Only a separately authorized new send may opt in to exact conversation creation. */
+  /** May create an owned tab for this exact existing conversation during read-only reconciliation or an authorized Send; it never creates a new conversation or grants Send authority. */
   ensureExact(identity: ComputerChatgptConversationIdentity, options?: { createIfMissing?: boolean }): Promise<ComputerChatgptTargetResult>;
   openBootstrap(projectUrl: string, bootstrapKey: string): Promise<ComputerChatgptTargetResult>;
   findBySubmittedMarker(
