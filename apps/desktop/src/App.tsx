@@ -803,9 +803,9 @@ function RuntimeView({
 
         <section className="runtime-summary" aria-label="Forge 连接">
           <div className="runtime-primary-row">
-            <span className={`health-dot ${connection?.ready ? 'connected' : connection?.configured ? 'degraded' : 'not_connected'}`} />
+            <span className={`health-dot ${connectionError ? 'degraded' : connection?.ready ? 'connected' : connection?.configured ? 'degraded' : 'not_connected'}`} />
             <div>
-              <strong>{connection?.ready ? '控制器连接已就绪' : connection?.configured ? '控制器连接需要处理' : connectionLoading ? '正在读取连接状态' : '连接尚未配置'}</strong>
+              <strong>{connectionError ? '连接状态读取失败' : connection?.ready ? '控制器连接已就绪' : connection?.configured ? '控制器连接需要处理' : connectionLoading ? '正在读取连接状态' : '连接尚未配置'}</strong>
               <p>{connection?.controller.detail ?? '连接状态来自 Forge setup authority；客户端不保存配置副本。'}</p>
             </div>
           </div>

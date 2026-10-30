@@ -518,6 +518,47 @@ test('retains separate explicit code symbols in sync and async discovery beyond 
   expect(asyncPack.search.scannedFiles).toBeLessThan(30);
 });
 
+
+test('prioritizes implementation sources when explicit code hints accompany a migration goal', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-context-source-first-'));
+  roots.push(root);
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: root });
+  execFileSync('git', ['config', 'user.email', 'context@example.test'], { cwd: root });
+  execFileSync('git', ['config', 'user.name', 'Context Test'], { cwd: root });
+  mkdirSync(join(root, 'docs'), { recursive: true });
+  mkdirSync(join(root, 'src'), { recursive: true });
+  for (let index = 0; index < 10; index += 1) {
+    writeFileSync(join(root, 'docs', 'a-summary-' + index + '.md'),
+      Array.from({ length: 12 }, () => 'requirement scheduler migration background work').join('\\n') + '\\n');
+  }
+  writeFileSync(join(root, 'src', 'z-owner.ts'), 'export const requirementScheduler = true;\\n');
+  execFileSync('git', ['add', '.'], { cwd: root });
+  execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: root });
+  const options = {
+    description: '迁移需求权威并查找自动调度调用者',
+    searchTerms: ['requirement', 'scheduler'],
+    retrievalMode: 'plan',
+    structuralContext: 'off',
+    maxFiles: 4,
+    maxSnippets: 8,
+  } satisfies ControllerContextPackOptions;
+  const pack = buildControllerContextPack(root, getMcpPolicy('controller'), options);
+  expect(pack.files.map(file => file.path)).toContain('src/z-owner.ts');
+  const asyncPack = await buildControllerContextPackAsync(root, getMcpPolicy('controller'), {
+    ...options, session: { sessionId: root, repoId: 'source-first', checkoutId: root },
+  });
+  expect(asyncPack.timingsMs.parallelFirstPass).toBe(true);
+  expect(asyncPack.files.map(file => file.path)).toEqual(pack.files.map(file => file.path));
+
+
+  for (const intent of ['documentation', 'Documentation', 'Docs', 'README', 'Tutorial', 'Guide', '文档', '源码文档 Guide']) {
+    const docsPack = buildControllerContextPack(root, getMcpPolicy('controller'), {
+      ...options, description: `Read ${intent} explaining requirement scheduler migration`,
+    });
+    expect(docsPack.files.some(file => file.path.startsWith('docs/'))).toBe(true);
+  }
+});
+
 test('ranks the full natural-language discovery result before applying the bounded candidate budget', () => {
   const root = mkdtempSync(join(tmpdir(), 'forge-context-discovery-ranking-'));
   roots.push(root);
@@ -542,4 +583,30 @@ test('ranks the full natural-language discovery result before applying the bound
 
   expect(pack.files.map((file) => file.path)).toContain('src/z-release-rejection.ts');
   expect(pack.files[0]?.path).toBe('src/z-release-rejection.ts');
+});
+
+test('preserves late lexical hits in explicitly selected documentation roots', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-context-known-docs-'));
+  roots.push(root);
+  execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: root });
+  execFileSync('git', ['config', 'user.email', 'context@example.test'], { cwd: root });
+  execFileSync('git', ['config', 'user.name', 'Context Test'], { cwd: root });
+  for (const directory of ['docs', 'references', 'tasks']) {
+    mkdirSync(join(root, directory));
+    writeFileSync(join(root, directory, 'migration.md'), `${'Unrelated background.\n'.repeat(1500)}migrationNeedle target evidence\n`);
+  }
+  execFileSync('git', ['add', '.'], { cwd: root });
+  execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: root });
+  for (const knownPath of ['docs', 'references/migration.md', 'tasks/migration.md']) {
+    const options = {
+      description: 'Inspect migrationNeedle', searchTerms: ['migrationNeedle'], knownPaths: [knownPath],
+      structuralContext: 'off', maxFiles: 1, maxSnippets: 2, maxCharsPerSnippet: 500,
+    } satisfies ControllerContextPackOptions;
+    const sync = buildControllerContextPack(root, getMcpPolicy('controller'), options);
+    expect(sync.files.some(file => file.hitLines.includes(1501))).toBe(true);
+    const asyncPack = await buildControllerContextPackAsync(root, getMcpPolicy('controller'), {
+      ...options, session: { sessionId: `${root}-${knownPath}`, repoId: 'known-docs', checkoutId: root },
+    });
+    expect(asyncPack.files.some(file => file.hitLines.includes(1501))).toBe(true);
+  }
 });
