@@ -332,6 +332,51 @@ describe('final SQLite control-plane cutover', () => {
     });
   });
 
+  test('current-record retention uses a bounded record cursor across passes', () => {
+    withHome((controllerHome) => {
+      const namespace = 'computer_interaction_target_index';
+      for (const key of ['cursor-current-a', 'cursor-current-b']) {
+        let record = writeControlPlaneRecord(controllerHome, {
+          namespace, scope: 'controller', key, schemaVersion: 1,
+          value: { revision: 1 }, expectedRevision: null,
+        });
+        for (let revision = 2; revision <= 40; revision += 1) {
+          record = writeControlPlaneRecord(controllerHome, {
+            namespace, scope: 'controller', key, schemaVersion: 1,
+            value: { revision }, expectedRevision: record.revision,
+          });
+        }
+      }
+      let pruned = 0;
+      for (let pass = 0; pass < 12; pass += 1) {
+        const report = maintainControlPlaneDatabase(controllerHome, {
+          allowVacuum: false,
+          pruneRebuildableRecordAudit: {
+            olderThanMs: -1_000, keepTail: 5, maxRows: 10, maxRecords: 1,
+          },
+        });
+        pruned += report.prunedCurrentAuditRows ?? 0;
+      }
+      expect(pruned).toBe(70);
+      const database = new Database(controlPlaneDatabasePath(controllerHome));
+      try {
+        for (const key of ['cursor-current-a', 'cursor-current-b']) {
+          const revisions = database.query(
+            'SELECT revision FROM control_plane_audit WHERE namespace = ? AND scope = ? AND record_key = ? ORDER BY revision',
+          ).all(namespace, 'controller', key).map((row) => (row as { revision: number }).revision);
+          expect(revisions).toEqual([36, 37, 38, 39, 40]);
+        }
+        const cursor = database.query(
+          "SELECT namespace, scope, record_key FROM control_plane_audit_record_cursor WHERE name = 'current'",
+        ).get() as { namespace: string; scope: string; record_key: string } | null;
+        expect(cursor).toEqual({ namespace: '', scope: '', record_key: '' });
+      } finally {
+        database.close();
+      }
+      expect(inspectControlPlaneDatabase(controllerHome)).toMatchObject({ integrity: 'ok', orphanRecordCount: 0 });
+    });
+  });
+
   test('SQLite maintenance fails closed instead of waiting on a live writer for VACUUM', () => {
     withHome((controllerHome) => {
       writeControlPlaneRecord(controllerHome, {
