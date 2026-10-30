@@ -535,12 +535,10 @@ export async function callStatusInboxAdapter(
       } catch {
         autonomousContinuationConsumerObservation = 'unavailable';
       }
-      const dueConsumerFailure = Boolean(
-        autonomousContinuationConsumerStatus?.dueCommand
-        && autonomousContinuationConsumerStatus.lastFailure
-        && (!autonomousContinuationConsumerStatus.lastFailure.effectId
-          || autonomousContinuationConsumerStatus.lastFailure.effectId === autonomousContinuationConsumerStatus.dueCommand.effectId),
-      );
+      const dueCommands = autonomousContinuationConsumerStatus?.dueCommands ?? [];
+      const taskFailures = autonomousContinuationConsumerStatus?.taskFailures ?? [];
+      const dueConsumerFailure = dueCommands.some((command) => taskFailures.some((failure) =>
+        failure.taskId === command.taskId && (!failure.effectId || failure.effectId === command.effectId)));
       const autonomousContinuationConsumerReady = autonomousContinuationConsumerObservation === 'observed'
         && autonomousContinuationConsumerStatus?.enabled === true
         && autonomousContinuationConsumerStatus.running === true

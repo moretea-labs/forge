@@ -91,7 +91,7 @@ test('new bootstrap tab requires its hydrated editor, not a model picker, before
         },
       },
     },
-    URL, Date, Map, Promise, setTimeout: (callback: () => void) => { queueMicrotask(callback); return 1; },
+    URL, Date, Map, Promise, setTimeout: (callback: () => void, delay = 0) => { if (delay < 5_000) queueMicrotask(callback); return 1; },
     clearTimeout() {},
   };
   runInNewContext(worker, sandbox);
@@ -130,7 +130,7 @@ test('unhydrated bootstrap remains bound to its one created tab without creating
         snapshots++;callback({ url });
       },
     } },
-    URL, Date, Map, Promise, setTimeout: (fn: () => void) => { queueMicrotask(fn); return 1; }, clearTimeout() {},
+    URL, Date, Map, Promise, setTimeout: (fn: () => void, delay = 0) => { if (delay < 5_000) queueMicrotask(fn); return 1; }, clearTimeout() {},
   };
   runInNewContext(worker, sandbox);
   const result = await (sandbox as typeof sandbox & {

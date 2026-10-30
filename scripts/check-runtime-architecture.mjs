@@ -2351,7 +2351,9 @@ requireText('adapters/computer/chatgpt-extension-target.ts', 'parseCanonicalChat
 requireText('supervisor/native-browser-adapter.ts', 'exactCanonicalConversationUrl(observation, task)');
 requireText('supervisor/native-browser-adapter.ts', 'chatgptProviderPageFailure(observation.providerFailureText)');
 requireText('supervisor/native-browser-adapter.ts', 'WORKFLOW_SUPERVISOR_EMPTY_SHELL_EVIDENCE_UNVERIFIED');
-requireText('supervisor/store.ts', "json_extract(payload_json,'$.verified_empty_shell')=1");
+requireText('supervisor/store.ts', 'COUNT(DISTINCT failed.effect_id) AS total');
+requireText('supervisor/store.ts', 'completedOrFailedTurns >= 10 || failureBurst');
+requireText('supervisor/store.ts', '!appliedEffectAwaitingCompletionWithin(db, input.taskId)');
 // Cognitive Plane stays one advisory application path: all Controller tools expose the
 // same optional settlement metadata, the MCP server settles it after the primary
 // outcome, and Supervisor/external launchers consume Cognition-only projections.

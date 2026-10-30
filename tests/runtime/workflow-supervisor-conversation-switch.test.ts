@@ -214,7 +214,153 @@ describe('Workflow Supervisor fresh conversation switch', () => {
   });
 
 
-  test('earlier confirmed receipt rotation derives from durable exact-target load failures', async () => {
+  test('three distinct provider errors can rotate after the recovery chain is safely settled', async () => {
+    const fx = fixture();
+    const taskId = 'supervisor:three-provider-failures';
+    const conversationId = '88888888-aaaa-bbbb-cccc-666666666666';
+    const store = new WorkflowSupervisorStore(fx.controllerHome);
+    const control = new WorkflowSupervisorControlPlane(store);
+    control.registerTask({
+      taskId, conversationId, conversationUrl: 'https://chatgpt.com/c/' + conversationId,
+      objective: 'Retire one three-failure recovery chain without replay.',
+      completionContract: {}, continuationPolicy: { kind: 'standalone_supervisor' }, userBlockerPolicy: {},
+    });
+    let effect = control.reserveEnrollment(taskId);
+    const failedIds: string[] = [];
+    for (let n = 1; n <= 3; n += 1) {
+      expect(store.recordEffectDispatchStarted(effect.effectId, 1, 'burst-send-' + n)).toBe(true);
+      control.observeEffect({ effectId: effect.effectId, observationId: 'burst-applied-' + n, outcome: 'applied' });
+      failedIds.push(effect.effectId);
+      const observed = store.observeProviderTurn({
+        taskId, effectId: effect.effectId, generating: false,
+        assistantDigest: 'provider-stream-error-' + n,
+        providerFailureCode: 'CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE',
+        observedAtMs: Date.now(), graceMs: 1000,
+        recovery: { effectId: 'fx_provider-burst-recovery-' + n, prompt: 'Resume source-' + n },
+      });
+      if (n < 3) {
+        expect(observed.state).toBe('recovery_reserved');
+        effect = observed.recoveryEffect!;
+      } else {
+        expect(observed.state).toBe('exhausted');
+      }
+    }
+    // All failed effects were applied and remain unresolved. No migration is
+    // allowed before the separately authorized, final recovery completes.
+    expect(store.hasAppliedEffectAwaitingCompletion(taskId)).toBe(true);
+    expect(store.getTask(taskId)?.conversationId).toBe(conversationId);
+    const resumed = control.recoverTask({
+      taskId, sourceEffectId: effect.effectId,
+      requestId: 'operator-after-exhaustion', reason: 'Three explicit provider failures',
+      authorizedBy: 'user',
+    });
+    expect(resumed.action).toBe('recovery_reserved');
+    effect = resumed.recoveryEffect;
+    expect(store.recordEffectDispatchStarted(effect.effectId, 1, 'burst-final-send')).toBe(true);
+    control.observeEffect({ effectId: effect.effectId, observationId: 'burst-final-applied', outcome: 'applied' });
+    const result = await control.observeAssistantTurn({
+      taskId, conversationId,
+      responseText: 'Recovered and completed.\n'
+        + renderSupervisorReceipt(control.getTask(taskId)!, effect.effectId, 'CONTINUE'),
+    });
+    if (!('successorEffect' in result) || !result.successorEffect) throw new Error('MISSING_BURST_SUCCESSOR');
+    expect(result.successorEffect.kind).toBe('enrollment');
+    expect(store.getTask(taskId)?.conversationId).toBe('bootstrap:' + taskId);
+    expect(store.hasAppliedEffectAwaitingCompletion(taskId)).toBe(false);
+    store.close();
+  });
+
+  test('a late valid source receipt cancels its prior failure for early rotation', async () => {
+    const fx = fixture();
+    const taskId = 'supervisor:late-success-excludes-failed-turn';
+    const conversationId = '78787878-aaaa-bbbb-cccc-565656565656';
+    const store = new WorkflowSupervisorStore(fx.controllerHome);
+    const control = new WorkflowSupervisorControlPlane(store);
+    control.registerTask({
+      taskId, conversationId, conversationUrl: 'https://chatgpt.com/c/' + conversationId,
+      objective: 'Late source completion must not count as a failed turn.',
+      completionContract: {}, continuationPolicy: { kind: 'standalone_supervisor' }, userBlockerPolicy: {},
+    });
+    let effect = control.reserveEnrollment(taskId);
+    for (let n = 1; n <= 3; n += 1) {
+      expect(store.recordEffectDispatchStarted(effect.effectId, 1, 'late-source-send-' + n)).toBe(true);
+      control.observeEffect({ effectId: effect.effectId, observationId: 'late-source-applied-' + n, outcome: 'applied' });
+      const observed = store.observeProviderTurn({
+        taskId, effectId: effect.effectId, generating: false,
+        assistantDigest: 'provider-stream-error-late-' + n,
+        providerFailureCode: 'CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE',
+        observedAtMs: Date.now(), graceMs: 1000,
+        recovery: { effectId: 'fx_late_source_recovery_' + n, prompt: 'Recover source-' + n },
+      });
+      if (n < 3) {
+        expect(observed.state).toBe('recovery_reserved');
+        effect = observed.recoveryEffect!;
+      } else {
+        expect(observed.state).toBe('exhausted');
+      }
+    }
+    const reserved = control.recoverTask({
+      taskId, sourceEffectId: effect.effectId,
+      requestId: 'late-source-operator-recovery', reason: 'Bounded recovery after exhausted provider error',
+      authorizedBy: 'user',
+    });
+    expect(reserved.action).toBe('recovery_reserved');
+    // The operator recovery is reserved, but no delivery was started. A late
+    // exact source receipt can still win; that effect is then successful.
+    const completion = await control.observeAssistantTurn({
+      taskId, conversationId,
+      responseText: 'Original turn completed after failed observation.\n'
+        + renderSupervisorReceipt(control.getTask(taskId)!, effect.effectId, 'CONTINUE'),
+    });
+    if (!('successorEffect' in completion) || !completion.successorEffect) throw new Error('LATE_SOURCE_SUCCESSOR_MISSING');
+    expect(completion.successorEffect.kind).toBe('continuation');
+    expect(store.getTask(taskId)?.conversationId).toBe(conversationId);
+    store.close();
+  });
+
+  test('confirmed provider failure with a completed recovery counts once toward normal rotation', async () => {
+    const fx = fixture();
+    const taskId = 'supervisor:provider-failure-budget-test';
+    const conversationId = '99999999-aaaa-bbbb-cccc-777777777777';
+    const store = new WorkflowSupervisorStore(fx.controllerHome);
+    const control = new WorkflowSupervisorControlPlane(store);
+    control.registerTask({
+      taskId, conversationId, conversationUrl: 'https://chatgpt.com/c/' + conversationId,
+      objective: 'Preserve a failed provider turn across recovery.',
+      completionContract: {}, continuationPolicy: { kind: 'standalone_supervisor' }, userBlockerPolicy: {},
+    });
+    const original = control.reserveEnrollment(taskId);
+    expect(store.recordEffectDispatchStarted(original.effectId, 1, 'failed-dispatch')).toBe(true);
+    control.observeEffect({ effectId: original.effectId, observationId: 'failed-applied', outcome: 'applied' });
+    const failure = {
+      taskId, effectId: original.effectId, generating: false, assistantDigest: 'explicit-failure',
+      providerFailureCode: 'CHATGPT_AUTOMATION_RESPONSE_STREAM_UNAVAILABLE',
+      observedAtMs: Date.now(), graceMs: 1000,
+      recovery: { effectId: 'fx_recovered_failure_counted_once', prompt: 'Recover the task.' },
+    };
+    const observed = store.observeProviderTurn(failure);
+    expect(observed.state).toBe('recovery_reserved');
+    // Repeated observations of the same failure are not new failed turns.
+    expect(store.observeProviderTurn(failure).state).toBe('recovery_reserved');
+    expect(store.hasAppliedEffectAwaitingCompletion(taskId)).toBe(true);
+    expect(store.getTask(taskId)?.conversationId).toBe(conversationId);
+    let effect = observed.recoveryEffect!;
+    for (let n = 1; n <= 9; n += 1) {
+      expect(store.recordEffectDispatchStarted(effect.effectId, 1, 'recovered-round-' + n)).toBe(true);
+      control.observeEffect({ effectId: effect.effectId, observationId: 'recovered-applied-' + n, outcome: 'applied' });
+      const result = await control.observeAssistantTurn({
+        taskId, conversationId,
+        responseText: 'Useful progress.\n' + renderSupervisorReceipt(control.getTask(taskId)!, effect.effectId, 'CONTINUE'),
+      });
+      if (!('successorEffect' in result) || !result.successorEffect) throw new Error('MISSING_RECOVERED_SUCCESSOR');
+      effect = result.successorEffect;
+      expect(effect.kind).toBe(n === 9 ? 'enrollment' : 'continuation');
+    }
+    expect(store.getTask(taskId)?.conversationId).toBe('bootstrap:' + taskId);
+    store.close();
+  });
+
+  test('repeated browser target errors do not shorten rotation without distinct failed turns', async () => {
     const fx = fixture();
     const conversationId = '75757575-aaaa-bbbb-cccc-878787878787';
     const taskId = 'supervisor:degraded-receipt-rotation';
@@ -228,7 +374,7 @@ describe('Workflow Supervisor fresh conversation switch', () => {
     store.recordBrowserDeliveryAttemptFailure({ taskId, conversationId, code: 'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE', verifiedEmptyShell: true });
     store.recordBrowserDeliveryAttemptFailure({ taskId, conversationId, code: 'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE', verifiedEmptyShell: true });
     let effect = control.reserveEnrollment(taskId);
-    for (let n = 1; n <= 6; n += 1) {
+    for (let n = 1; n <= 10; n += 1) {
       expect(store.recordEffectDispatchStarted(effect.effectId, 1, `degraded-round-${n}`)).toBe(true);
       control.observeEffect({ effectId: effect.effectId, observationId: `degraded-applied-${n}`, outcome: 'applied' });
       const result = await control.observeAssistantTurn({
@@ -237,7 +383,7 @@ describe('Workflow Supervisor fresh conversation switch', () => {
       });
       if (!('successorEffect' in result) || !result.successorEffect) throw new Error('DEGRADED_SUCCESSOR_MISSING');
       effect = result.successorEffect;
-      expect(effect.kind).toBe(n === 6 ? 'enrollment' : 'continuation');
+      expect(effect.kind).toBe(n === 10 ? 'enrollment' : 'continuation');
     }
     expect(store.getTask(taskId)?.conversationId).toBe(`bootstrap:${taskId}`);
     expect(store.latestEffectDispatch(effect.effectId)?.generation ?? 0).toBe(0);
@@ -266,7 +412,7 @@ describe('Workflow Supervisor fresh conversation switch', () => {
     }
     expect(store.getTask(unverifiedTaskId)?.conversationId).toBe('bootstrap:' + unverifiedTaskId);
 
-    // The sixth receipt cannot retire an unrelated applied, unanswered turn.
+    // The tenth receipt cannot retire an unrelated applied, unanswered turn.
     const siblingTaskId = 'supervisor:receipt-cadence-unanswered-sibling';
     const siblingConversation = 'abababab-aaaa-bbbb-cccc-cdcdcdcdcdcd';
     control.registerTask({
@@ -280,10 +426,10 @@ describe('Workflow Supervisor fresh conversation switch', () => {
       code: 'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE', verifiedEmptyShell: true,
     });
     let siblingSource = control.reserveEnrollment(siblingTaskId);
-    for (let n = 1; n <= 6; n += 1) {
+    for (let n = 1; n <= 10; n += 1) {
       // Preserve the real source as the latest applied turn for causal receipt
       // matching; the extra applied sibling still remains unanswered.
-      if (n === 6) {
+      if (n === 10) {
         const outstanding = store.reserveEffect({
           taskId: siblingTaskId, effectId: 'fx_applied_unanswered_sibling_source',
           kind: 'continuation', originKey: 'test:unanswered-sibling-source',
@@ -304,6 +450,7 @@ describe('Workflow Supervisor fresh conversation switch', () => {
       expect(store.getTask(siblingTaskId)?.conversationId).toBe(siblingConversation);
     }
     expect(store.hasAppliedEffectAwaitingCompletion(siblingTaskId)).toBe(true);
+    expect(store.latestEffectDispatch('fx_applied_unanswered_sibling_source')?.generation).toBe(1);
 
     // The same auto-rotation path must not abandon an unresolved send.
     // Unlike an applied sibling, this one has a dispatched generation with
@@ -321,8 +468,8 @@ describe('Workflow Supervisor fresh conversation switch', () => {
       code: 'COMPUTER_CHATGPT_CONVERSATION_CONTENT_UNAVAILABLE', verifiedEmptyShell: true,
     });
     let current = control.reserveEnrollment(unknownTaskId);
-    for (let n = 1; n <= 6; n += 1) {
-      if (n === 6) {
+    for (let n = 1; n <= 10; n += 1) {
+      if (n === 10) {
         const unknown = store.reserveEffect({
           taskId: unknownTaskId, effectId: 'fx_undetermined_sibling_send',
           kind: 'continuation', originKey: 'test:undetermined-sibling-send',
@@ -345,6 +492,7 @@ describe('Workflow Supervisor fresh conversation switch', () => {
       expect(store.getTask(unknownTaskId)?.conversationId).toBe(unknownConversation);
     }
     expect(store.currentUnappliedEffect(unknownTaskId)?.effectId).toBe('fx_undetermined_sibling_send');
+    expect(store.latestEffectDispatch('fx_undetermined_sibling_send')?.generation).toBe(1);
     // Unknown delivery remains the queue owner; a fresh receipt successor
     // cannot become sendable when both effects share a millisecond timestamp.
     expect(store.nextBrowserEffect(unknownTaskId)?.mode).not.toBe('send');

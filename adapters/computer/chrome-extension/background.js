@@ -6,6 +6,9 @@ const PROVIDER_ID = 'browser.chrome-extension';
 const PROVIDER_TICK_MS = 750;
 const DISCOVERY_MIN_INTERVAL_MS = 2_000;
 const RPC_TIMEOUT_MS = 30_000;
+const HEARTBEAT_DEADLINE_MS = 10_000;
+const HEARTBEAT_RPC_TIMEOUT_MS = 6_000;
+const TABS_QUERY_TIMEOUT_MS = 5_000;
 // The broker budgets 12 seconds for a claimed command; a hung content
 // callback must settle earlier without claiming a Send never happened.
 const TAB_MESSAGE_TIMEOUT_MS = 7_000;
@@ -16,17 +19,36 @@ const UNREADABLE_CHAT_GRACE_MS = 60_000;
 const UNREADABLE_CHAT_RELOAD_INTERVAL_MS = 5 * 60_000;
 const randomId = () => globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 let providerInstancePromise;
-function providerInstanceId() {
+let providerInstanceCandidate;
+function withDeadline(promise, deadlineAt, code) {
+  const remainingMs = deadlineAt - Date.now();
+  if (remainingMs <= 0) return Promise.reject(new Error(code));
+  let timer;
+  return Promise.race([
+    Promise.resolve(promise),
+    new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(code)), remainingMs); }),
+  ]).finally(() => { if (timer !== undefined) clearTimeout(timer); });
+}
+function providerInstanceId(deadlineAt = Date.now() + HEARTBEAT_DEADLINE_MS) {
   // Profile-local storage survives worker and browser restarts. It identifies
   // this Chrome profile, never a task or an outbound effect.
   // A fresh worker UUID would invalidate every Controller-pinned tab.
-  providerInstancePromise ??= (async () => {
-    const saved = await chrome.storage.local.get('forgeComputerProviderInstanceId');
-    if (typeof saved.forgeComputerProviderInstanceId === 'string' && saved.forgeComputerProviderInstanceId) return saved.forgeComputerProviderInstanceId;
-    const instanceId = randomId();
-    await chrome.storage.local.set({ forgeComputerProviderInstanceId: instanceId });
-    return instanceId;
-  })().catch((error) => { providerInstancePromise = undefined; throw error; });
+  if (!providerInstancePromise) {
+    const operation = (async () => {
+      const saved = await chrome.storage.local.get('forgeComputerProviderInstanceId');
+      if (typeof saved.forgeComputerProviderInstanceId === 'string' && saved.forgeComputerProviderInstanceId) return saved.forgeComputerProviderInstanceId;
+      // Reuse the same candidate if a timed-out storage write completes late.
+      providerInstanceCandidate ??= randomId();
+      await chrome.storage.local.set({ forgeComputerProviderInstanceId: providerInstanceCandidate });
+      return providerInstanceCandidate;
+    })();
+    let attempt;
+    attempt = withDeadline(operation, deadlineAt, 'COMPUTER_CHATGPT_EXTENSION_PROVIDER_ID_TIMEOUT').catch((error) => {
+      if (providerInstancePromise === attempt) providerInstancePromise = undefined;
+      throw error;
+    });
+    providerInstancePromise = attempt;
+  }
   return providerInstancePromise;
 }
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -68,15 +90,22 @@ function ensureNativePort() {
   });
   return port;
 }
-function nativeRpc(method, params = {}) {
+function nativeRpc(method, params = {}, timeoutOverrideMs) {
   return new Promise((resolve, reject) => {
     const id = randomId();
     let port;
+    const timeoutMs = timeoutOverrideMs ?? (method === 'computer_extension_heartbeat' ? HEARTBEAT_RPC_TIMEOUT_MS : RPC_TIMEOUT_MS);
     const timer = setTimeout(() => {
-      const error = new Error(`COMPUTER_CHATGPT_NATIVE_RPC_TIMEOUT:${method}`);
-      if (port && nativePort === port) invalidateNativePort(port, error);
-      else { pendingNative.delete(id); reject(error); }
-    }, RPC_TIMEOUT_MS);
+      const pending = pendingNative.get(id);
+      if (!pending) return;
+      pendingNative.delete(id);
+      pending.reject(new Error(`COMPUTER_CHATGPT_NATIVE_RPC_TIMEOUT:${method}`));
+      // One slow request must not cancel a concurrent command/receipt RPC.
+      // Retire the shared port only when this was its final pending request.
+      if (port && nativePort === port && pendingNative.size === 0) {
+        invalidateNativePort(port, new Error(`COMPUTER_CHATGPT_NATIVE_RPC_TIMEOUT:${method}`));
+      }
+    }, timeoutMs);
     pendingNative.set(id, { resolve, reject, timer });
     try { port = ensureNativePort(); port.postMessage({ id, method, params }); }
     catch (error) {
@@ -127,7 +156,32 @@ function tabReload(tabId) { return new Promise((resolve, reject) => chrome.tabs.
   const error = chrome.runtime.lastError;
   if (error) reject(new Error(error.message)); else resolve();
 })); }
-async function chatgptTabs() { return await chrome.tabs.query({ url: 'https://chatgpt.com/*' }); }
+const tabsQueryInFlight = new Map();
+function boundedTabsQuery(query, deadlineAt = Date.now() + TABS_QUERY_TIMEOUT_MS) {
+  const timeoutMs = Math.min(TABS_QUERY_TIMEOUT_MS, deadlineAt - Date.now());
+  if (timeoutMs <= 0) return Promise.reject(new Error('COMPUTER_CHATGPT_EXTENSION_TABS_QUERY_TIMEOUT'));
+  const queryKey = JSON.stringify(query);
+  let operation = tabsQueryInFlight.get(queryKey);
+  if (!operation) {
+    let tracked;
+    tracked = Promise.resolve().then(() => chrome.tabs.query(query)).finally(() => {
+      if (tabsQueryInFlight.get(queryKey) === tracked) tabsQueryInFlight.delete(queryKey);
+    });
+    operation = tracked;
+    tabsQueryInFlight.set(queryKey, operation);
+  }
+  let timer;
+  return Promise.race([
+    operation,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        if (tabsQueryInFlight.get(queryKey) === operation) tabsQueryInFlight.delete(queryKey);
+        reject(new Error('COMPUTER_CHATGPT_EXTENSION_TABS_QUERY_TIMEOUT'));
+      }, timeoutMs);
+    }),
+  ]).finally(() => { if (timer !== undefined) clearTimeout(timer); });
+}
+async function chatgptTabs(deadlineAt) { return await boundedTabsQuery({ url: 'https://chatgpt.com/*' }, deadlineAt); }
 // Controller binding owns the durable source identity. This browser-session
 // attestation proves that the exact physical tab was created by this extension;
 // browser restarts invalidate it rather than permitting tab-id reuse to close
@@ -338,7 +392,7 @@ async function resolveTarget(identity, createIfMissing, pinnedBinding, instanceI
   if (identity?.namespace === 'chatgpt.conversation' && pinnedBinding?.providerId === PROVIDER_ID && pinnedBinding.tabId) {
     // Window moves preserve Chrome's profile-local tab id. A vanished id may
     // be recovered by exact conversation, but an existing tab at another URL
-    // is identity drift and must never be silently replaced.
+    // is not ours to reuse or alter; Ensure may create a separate owned tab.
     let pinned;
     try { pinned = await tabGet(Number(pinnedBinding.tabId)); }
     catch (error) {
@@ -346,18 +400,21 @@ async function resolveTarget(identity, createIfMissing, pinnedBinding, instanceI
     }
     if (pinned) {
       if (core.parseConversation(pinned.url ?? '')?.conversationId !== identity.conversationId) {
-        throw new Error('COMPUTER_CHATGPT_EXTENSION_PINNED_TAB_IDENTITY_CHANGED');
-      }
-      try {
-        return { tab: pinned, created: false, ownerToken: await requirePinnedOwner(pinned, pinnedBinding, identity) };
-      } catch (error) {
-        if (!createIfMissing || String(error?.message ?? error) !== 'COMPUTER_CHATGPT_EXTENSION_PINNED_OWNER_TOKEN_MISMATCH')
-          throw error;
-        // The old physical tab is NOT ours to observe, close or navigate.
-        // Ensure alone may create a NEW owned tab for this exact conversation
-        // and return its attested identity to the Controller's leased binder.
-        // Prepare/Dispatch still reject the stale owner token; no Send occurs.
+        if (!createIfMissing) throw new Error('COMPUTER_CHATGPT_EXTENSION_PINNED_TAB_IDENTITY_CHANGED');
         staleUnattestedConversationPin = true;
+      }
+      if (!staleUnattestedConversationPin) {
+        try {
+          return { tab: pinned, created: false, ownerToken: await requirePinnedOwner(pinned, pinnedBinding, identity) };
+        } catch (error) {
+          if (!createIfMissing || String(error?.message ?? error) !== 'COMPUTER_CHATGPT_EXTENSION_PINNED_OWNER_TOKEN_MISMATCH')
+            throw error;
+          // The old physical tab is NOT ours to observe, close or navigate.
+          // Ensure alone may create a NEW owned tab for this exact conversation
+          // and return its attested identity to the Controller's leased binder.
+          // Prepare/Dispatch still reject the stale owner token; no Send occurs.
+          staleUnattestedConversationPin = true;
+        }
       }
     }
   }
@@ -688,9 +745,13 @@ async function executeCommand(command, instanceId) {
   if (command.kind === 'close') return await executeClose(command, instanceId);
   return { kind: 'failed', code: 'COMPUTER_CHATGPT_EXTENSION_COMMAND_UNKNOWN', retryable: false, failoverSafe: true };
 }
-async function publishHeartbeat(instanceId) {
-  const tabs = await chatgptTabs();
-  const [current] = await chrome.tabs.query({ active: true, lastFocusedWindow: true, url: 'https://chatgpt.com/*' });
+async function publishHeartbeat() {
+  const deadlineAt = Date.now() + HEARTBEAT_DEADLINE_MS;
+  const instanceId = await providerInstanceId(deadlineAt);
+  const [tabs, [current]] = await Promise.all([
+    chatgptTabs(deadlineAt),
+    boundedTabsQuery({ active: true, lastFocusedWindow: true, url: 'https://chatgpt.com/*' }, deadlineAt),
+  ]);
   const conversations = [];
   for (const tab of tabs) {
     const identity = core.parseConversation(tab.url ?? '');
@@ -703,12 +764,16 @@ async function publishHeartbeat(instanceId) {
       providerBinding: binding(tab, instanceId),
     });
   }
-  await nativeRpc('computer_extension_heartbeat', { providerId: PROVIDER_ID, providerInstanceId: instanceId, observedAt: new Date().toISOString(), conversations });
+  const remainingMs = deadlineAt - Date.now();
+  if (remainingMs <= 0) throw new Error('COMPUTER_CHATGPT_EXTENSION_HEARTBEAT_DEADLINE_EXCEEDED');
+  const receipt = await nativeRpc('computer_extension_heartbeat', { providerId: PROVIDER_ID, providerInstanceId: instanceId, observedAt: new Date().toISOString(), conversations }, Math.min(HEARTBEAT_RPC_TIMEOUT_MS, remainingMs));
+  if (receipt?.recorded !== true) throw new Error('COMPUTER_CHATGPT_EXTENSION_HEARTBEAT_NOT_RECORDED');
+  return instanceId;
 }
 let providerTickInFlight;
 let providerHeartbeatInFlight;
 function heartbeatTick() {
-  providerHeartbeatInFlight ??= providerInstanceId().then(publishHeartbeat)
+  providerHeartbeatInFlight ??= publishHeartbeat()
     .finally(() => { providerHeartbeatInFlight = undefined; });
   return providerHeartbeatInFlight;
 }
@@ -717,15 +782,19 @@ async function providerTick() {
   // suppress profile heartbeat when a page/Chrome callback is slow or hangs.
   if (providerTickInFlight) { await heartbeatTick(); return; }
   providerTickInFlight = (async () => {
-    const instanceId = await providerInstanceId();
-    await heartbeatTick();
+    const instanceId = await heartbeatTick();
     // One command per tick keeps heartbeats and other tasks fair. The broker
     // remains the only authority for a claimed Send and its unknown outcome.
     const claim = await nativeRpc('computer_extension_claim', { provider_instance_id: instanceId });
     const command = claim?.command;
     if (!command) return;
     const result = await executeCommand(command, instanceId);
-    await nativeRpc('computer_extension_complete', { provider_instance_id: instanceId, command_id: command.commandId, result });
+    const completion = await nativeRpc('computer_extension_complete', { provider_instance_id: instanceId, command_id: command.commandId, result });
+    if (completion?.recorded !== true) {
+      console.warn('COMPUTER_CHATGPT_EXTENSION_COMMAND_COMPLETION_NOT_RECORDED', {
+        commandId: command.commandId, kind: command.kind, conversationId: command.identity?.conversationId,
+      });
+    }
   })().finally(() => { providerTickInFlight = undefined; });
   return await providerTickInFlight;
 }
@@ -735,7 +804,7 @@ async function discoveryScan(tabId, projectTitles) {
 }
 async function refreshDiscovery() {
   const tabs = await chatgptTabs();
-  const [current] = await chrome.tabs.query({ active: true, lastFocusedWindow: true, url: 'https://chatgpt.com/*' });
+  const [current] = await boundedTabsQuery({ active: true, lastFocusedWindow: true, url: 'https://chatgpt.com/*' });
   const scopeResult = await nativeRpc('browser_project_scopes').catch(() => ({ projects: [] }));
   const projectScopes = Array.isArray(scopeResult?.projects) ? scopeResult.projects.filter((entry) => typeof entry?.title === 'string' && entry.title.trim()) : [];
   const projectTitles = [...new Set(projectScopes.map((entry) => entry.title.trim()))];

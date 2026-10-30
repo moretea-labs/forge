@@ -510,6 +510,82 @@ describe('Computer durable InteractionTarget authority', () => {
     }
   });
 
+  test('Broker command timeout restarts after claim so heartbeat wait cannot consume dispatch budget', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'forge-extension-command-phase-timeout-'));
+    let nowMs = Date.parse('2026-10-30T00:00:00.000Z');
+    let timerId = 0;
+    const timers = new Map<number, { callback: () => void; delay: number }>();
+    const timerApi = {
+      setTimeout: ((callback: () => void, delay = 0) => {
+        const handle = { id: ++timerId, unref: () => undefined };
+        timers.set(handle.id, { callback: () => { timers.delete(handle.id); callback(); }, delay });
+        return handle as unknown as ReturnType<typeof setTimeout>;
+      }) as typeof setTimeout,
+      clearTimeout: ((handle: ReturnType<typeof setTimeout>) => {
+        timers.delete((handle as unknown as { id: number }).id);
+      }) as typeof clearTimeout,
+    };
+    const extension = new ChromeExtensionChatgptConversationTargetPort(home, targetAuthority, () => nowMs, timerApi);
+    const identity = { namespace: 'chatgpt.conversation' as const,
+      conversationId: '56565656-6767-8989-9090-121212121214',
+      canonicalUrl: 'https://chatgpt.com/c/56565656-6767-8989-9090-121212121214' };
+    try {
+      extension.heartbeat({ providerId: 'browser.chrome-extension', providerInstanceId: 'profile-one',
+        observedAt: new Date(nowMs).toISOString(), conversations: [] });
+      const pending = extension.ensureExact(identity, { createIfMissing: true });
+      expect([...timers.values()].map(timer => timer.delay)).toEqual([12_000]);
+      nowMs += 11_000;
+      const claimed = extension.claim('profile-one');
+      expect(claimed?.kind).toBe('ensure');
+      expect(timers.size).toBe(1);
+      expect([...timers.values()].map(timer => timer.delay)).toEqual([12_000]);
+      // The original queue deadline was cleared; the claimed command owns a fresh 12s execution fence.
+      [...timers.values()][0]!.callback();
+      expect(await pending).toMatchObject({ state: 'unavailable', failure: {
+        code: 'COMPUTER_CHATGPT_EXTENSION_TARGET_OPEN_OUTCOME_UNKNOWN', failoverSafe: false,
+      } });
+      expect(timers.size).toBe(0);
+    } finally {
+      await extension.close();
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test('late heartbeat cannot replace newer inventory or revive a provider after TTL pruning', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'forge-extension-heartbeat-order-'));
+    let nowMs = Date.parse('2026-10-30T00:00:00.000Z');
+    const extension = new ChromeExtensionChatgptConversationTargetPort(home, targetAuthority, () => nowMs);
+    const conversation = (id: string) => ({ conversationId: id, canonicalUrl: `https://chatgpt.com/c/${id}` });
+    const heartbeat = (observedAt: string, id: string) => extension.heartbeat({
+      providerId: 'browser.chrome-extension', providerInstanceId: 'profile-one', observedAt,
+      conversations: [conversation(id)],
+    });
+    try {
+      expect(heartbeat(new Date(nowMs).toISOString(), 'older-inventory')).toBe(true);
+      nowMs += 5_000;
+      expect(heartbeat(new Date(nowMs).toISOString(), 'newer-inventory')).toBe(true);
+      nowMs += 1_000;
+      expect(heartbeat('2026-10-30T00:00:02.000Z', 'late-older-inventory')).toBe(false);
+      expect((await extension.inventory()).conversations.map(entry => entry.conversationId)).toEqual(['newer-inventory']);
+
+      // Public inventory prunes the expired state; the original timestamp must
+      // still be rejected without retaining an unbounded per-profile tombstone.
+      nowMs = Date.parse('2026-10-30T00:00:20.001Z');
+      expect(await extension.inventory()).toMatchObject({ conversations: [], complete: false,
+        unavailableProviders: ['browser.chrome-extension'] });
+      expect(heartbeat('2026-10-30T00:00:00.000Z', 'late-after-prune')).toBe(false);
+      expect(heartbeat('not-a-timestamp', 'invalid-time')).toBe(false);
+      expect(await extension.inventory()).toMatchObject({ conversations: [], complete: false,
+        unavailableProviders: ['browser.chrome-extension'] });
+
+      expect(heartbeat(new Date(nowMs).toISOString(), 'fresh-after-prune')).toBe(true);
+      expect((await extension.inventory()).conversations.map(entry => entry.conversationId)).toEqual(['fresh-after-prune']);
+    } finally {
+      await extension.close();
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   test('keeps extension provider ownership scoped to the exact browser instance through bootstrap promotion and dispatch', async () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-computer-bootstrap-promotion-'));
     try {
@@ -579,13 +655,13 @@ describe('Computer durable InteractionTarget authority', () => {
       extension.heartbeat({
         providerId: 'browser.chrome-extension',
         providerInstanceId: 'profile-logged-out',
-        observedAt: '2026-10-04T05:02:00.000Z',
+        observedAt: new Date().toISOString(),
         conversations: [],
       });
       extension.heartbeat({
         providerId: 'browser.chrome-extension',
         providerInstanceId: 'profile-logged-in',
-        observedAt: '2026-10-04T05:02:00.000Z',
+        observedAt: new Date().toISOString(),
         conversations: [{
           conversationId: exactConversation.conversationId,
           canonicalUrl: exactConversation.canonicalUrl,
@@ -655,7 +731,7 @@ describe('Computer durable InteractionTarget authority', () => {
       extension.heartbeat({
         providerId: 'browser.chrome-extension',
         providerInstanceId: 'profile-logged-in',
-        observedAt: '2026-10-04T05:03:00.000Z',
+        observedAt: new Date().toISOString(),
         conversations: [{
           conversationId: exactConversation.conversationId,
           canonicalUrl: exactConversation.canonicalUrl,
@@ -720,7 +796,7 @@ describe('Computer durable InteractionTarget authority', () => {
       ] as const) {
         extension.heartbeat({
           providerId: 'browser.chrome-extension', providerInstanceId,
-          observedAt: '2026-10-09T05:01:00.000Z',
+          observedAt: new Date().toISOString(),
           conversations: [{ conversationId: identity.conversationId, canonicalUrl: identity.canonicalUrl,
             isCurrent, providerBinding: { ...bound, providerSessionId: providerInstanceId, windowId, tabId } }],
         });
@@ -781,7 +857,7 @@ describe('Computer durable InteractionTarget authority', () => {
         conversationId: 'conversation-ambiguous', canonicalUrl: 'https://chatgpt.com/c/conversation-ambiguous' };
       for (const [providerInstanceId, tabId] of [['profile-one', 'tab-one'], ['profile-two', 'tab-two']] as const) {
         extension.heartbeat({ providerId: 'browser.chrome-extension', providerInstanceId,
-          observedAt: '2026-10-09T05:01:00.000Z',
+          observedAt: new Date().toISOString(),
           conversations: [{ conversationId: identity.conversationId, canonicalUrl: identity.canonicalUrl,
             providerBinding: { providerId: 'browser.chrome-extension', providerSessionId: providerInstanceId,
               browserProduct: 'chrome', windowId: providerInstanceId, tabId, observedAt: '2026-10-09T05:01:00.000Z' } }],
@@ -865,7 +941,7 @@ describe('Computer durable InteractionTarget authority', () => {
       const conversationId = 'conversation-bootstrap-pin-precedence';
       const identity = { namespace: 'chatgpt.conversation' as const, conversationId,
         canonicalUrl: `https://chatgpt.com/c/${conversationId}` };
-      const observedAt = '2026-10-17T02:00:00.000Z';
+      const observedAt = new Date().toISOString();
       const pinnedBinding = { providerId: 'browser.chrome-extension', providerSessionId: 'profile-one',
         browserProduct: 'chrome', windowId: 'window-pinned', tabId: 'tab-pinned', ownerToken: 'owner-pinned', observedAt };
       const otherBinding = { providerId: 'browser.chrome-extension', providerSessionId: 'profile-one',
@@ -976,7 +1052,7 @@ describe('Computer durable InteractionTarget authority', () => {
           observedAt: '2026-10-18T06:00:00.000Z' },
       });
       extension.heartbeat({ providerId: 'browser.chrome-extension', providerInstanceId: 'profile-a',
-        observedAt: '2026-10-18T06:00:00.000Z', conversations: [] });
+        observedAt: new Date().toISOString(), conversations: [] });
       const pending = extension.ensureExact(identity, { createIfMissing: false });
       const command = extension.claim('profile-a');
       expect(command?.kind).toBe('observe');
@@ -995,7 +1071,7 @@ describe('Computer durable InteractionTarget authority', () => {
       expect(extension.claim('profile-a')).toBeUndefined();
 
       extension.heartbeat({ providerId: 'browser.chrome-extension', providerInstanceId: 'profile-a',
-        observedAt: '2026-10-18T06:01:00.000Z', conversations: [] });
+        observedAt: new Date().toISOString(), conversations: [] });
       const invalid = extension.ensureExact(identity, { createIfMissing: false });
       const invalidCommand = extension.claim('profile-a');
       expect(invalidCommand?.kind).toBe('observe');
@@ -1063,7 +1139,7 @@ describe('Computer durable InteractionTarget authority', () => {
       // old-tab observation, and commit the new attestation through the lease.
       const staleBinding = targetAuthority.getSurface(home, record.targetId)!.providerBinding!;
       extension.heartbeat({ providerId: 'browser.chrome-extension', providerInstanceId: 'profile-a',
-        observedAt: '2026-10-18T06:02:00.000Z', conversations: [{ conversationId: identity.conversationId,
+        observedAt: new Date().toISOString(), conversations: [{ conversationId: identity.conversationId,
           canonicalUrl: identity.canonicalUrl, providerBinding: { ...staleBinding, ownerToken: undefined } }] });
       const replacement = extension.ensureExact(identity, { createIfMissing: true });
       const ensure = extension.claim('profile-a');
@@ -1103,7 +1179,7 @@ describe('Computer durable InteractionTarget authority', () => {
       extension.heartbeat({
         providerId: 'browser.chrome-extension',
         providerInstanceId: 'profile-primary',
-        observedAt: '2026-10-04T05:03:30.000Z',
+        observedAt: new Date().toISOString(),
         conversations: [{
           conversationId: identity.conversationId,
           canonicalUrl: identity.canonicalUrl,
@@ -1176,7 +1252,7 @@ describe('Computer durable InteractionTarget authority', () => {
       extension.heartbeat({
         providerId: 'browser.chrome-extension',
         providerInstanceId: 'profile-primary',
-        observedAt: '2026-10-04T05:04:00.000Z',
+        observedAt: new Date().toISOString(),
         conversations: [],
       });
 

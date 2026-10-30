@@ -120,7 +120,10 @@ export function createTestChatgptTargetPort(
     };
   };
 
-  const ensureExact = async (identity: ComputerChatgptConversationIdentity): Promise<ComputerChatgptTargetResult> => {
+  const ensureExact = async (
+    identity: ComputerChatgptConversationIdentity,
+    options: { createIfMissing?: boolean } = {},
+  ): Promise<ComputerChatgptTargetResult> => {
     const targetId = `test-chatgpt-${identity.conversationId}`;
     const cached = bound.get(targetId);
     if (cached) return { state: 'ready', target: wrap(cached), observation: await deps.snapshot(cached.page, { includeUserHistory: false, includePageText: false }) };
@@ -135,6 +138,12 @@ export function createTestChatgptTargetPort(
     }
     if ((raw.unavailableProducts?.length ?? 0) > 0) {
       return { state: 'unavailable', failure: { code: 'WORKFLOW_SUPERVISOR_NATIVE_INVENTORY_INCOMPLETE', retryable: true, phase: 'pre_mutation' } };
+    }
+    if (options.createIfMissing === false) {
+      return { state: 'unavailable', failure: {
+        code: 'COMPUTER_CHATGPT_EXTENSION_EXACT_TARGET_ABSENT_READ_ONLY',
+        retryable: true, phase: 'pre_mutation', failoverSafe: false,
+      } };
     }
     const page = await deps.create(identity.canonicalUrl);
     const entry = await bind(identity, page, targetId);
