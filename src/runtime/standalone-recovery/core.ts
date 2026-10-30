@@ -3822,7 +3822,7 @@ export function legacyStableContextPackUpgradeBaseline(verification: VerifyResul
 
 export async function prepareConfiguredRuntimeReleaseSession(
   config: RecoveryConfig,
-  dependencies: Pick<ConfiguredRuntimeActivationDependencies, 'stage'> = {},
+  dependencies: ConfiguredRuntimePreparationDependencies = {},
   requestId?: string,
 ): Promise<ConfiguredRuntimeActivationResult> {
   const sourceRoot = config.primaryRuntimeSourceRoot?.trim();
@@ -5907,9 +5907,8 @@ export async function promoteConfiguredRuntimeReleaseSessionKnownGood(
   return locked.value;
 }
 
-export interface ConfiguredRuntimeActivationDependencies {
+export interface ConfiguredRuntimePreparationDependencies {
   stage?: typeof stageRuntimeReleaseFromCandidateSource;
-  activate?: (config: RecoveryConfig, manifestPath: string, guard: RuntimeReleaseActivationGuard) => Promise<RuntimeReleaseActivationResult>;
 }
 
 function tunnelLaunchdService(configured: RecoveryTunnelServiceConfig | undefined, uid: number): LaunchdService | undefined {

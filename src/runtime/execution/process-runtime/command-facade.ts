@@ -122,7 +122,6 @@ const emptyEffects = {
 
 const STANDALONE_RECOVERY_LIFECYCLE_COMMANDS = new Set([
   'restart-runtime',
-  'bootstrap-cutover',
   'restart-connector',
   'prepare-runtime-release-session',
   'recover',
