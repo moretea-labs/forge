@@ -69,7 +69,7 @@ import { classifyPersistedCheckTerminalEvidence, readPersistedCheckResultReceipt
 import { ensureControllerHome, repositoryControllerRoot } from '../../src/effects/controller-home';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { routeExecution } from '../../src/runtime/execution/thin-harness';
-import { listActiveLeases, acquireExecutionLeases } from '../../src/runtime/resources/leases/store';
+import { listActiveLeases, acquireExecutionLeases, releaseExecutionLeases } from '../../src/runtime/resources/leases/store';
 import { resourceClaimsConflict } from '../../src/runtime/resources/claims/conflicts';
 import { acquireRuntimeOwnership } from '../../src/runtime/root/ownership';
 import { ensureActiveRuntimeRelease, publishRuntimeRelease } from '../../src/runtime/root/release-store';
@@ -2535,6 +2535,63 @@ describe('Process Runtime real lease contention', () => {
     expect(serialized).toMatchObject({ completed: true, ok: true, status: 'succeeded' });
     expect(await waitForProcess(fx.controllerHome, fx.repository.repoId, holder.processId, { timeoutMs: 5_000 }))
       .toMatchObject({ completed: true, ok: true, status: 'succeeded' });
+  });
+
+  test('missing and terminal Process lease owners are unknown and never joinable', async () => {
+    const fx = fixture();
+    bindCanonicalRuntime(fx.controllerHome);
+    createFixtureWork(fx, 'work-lease-owner-safety');
+    const claim = {
+      resourceKey: `workspace:${fx.repository.activeCheckoutId}`,
+      mode: 'write' as const,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      workId: 'work-lease-owner-safety',
+    };
+    const terminal = await spawnManagedProcess({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
+      workId: 'work-lease-owner-safety',
+      command: { kind: 'argv', executable: 'node', args: ['-e', 'process.exit(0)'], cwd: fx.repoRoot },
+      resourceClaims: [],
+      timeoutMs: 10_000,
+    });
+    expect(terminal).toMatchObject({ completed: true, ok: true, status: 'succeeded' });
+
+    for (const ownerJobId of ['process:missing-process-record', `process:${terminal.processId}`]) {
+      const acquired = acquireExecutionLeases(
+        fx.controllerHome,
+        fx.repository.repoId,
+        ownerJobId,
+        [claim],
+        { visibility: 'durable', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false, ttlMs: 30_000 },
+      );
+      expect(acquired.acquired).toBe(true);
+      try {
+        const blocked = await spawnManagedProcess({
+          controllerHome: fx.controllerHome,
+          repoId: fx.repository.repoId,
+          checkoutId: fx.repository.activeCheckoutId,
+          executionIdentity: executionIdentityForRepository(fx.repository),
+          workId: 'work-lease-owner-safety',
+          command: { kind: 'argv', executable: 'node', args: ['-e', 'process.stdout.write("must-not-run")'], cwd: fx.repoRoot },
+          resourceClaims: [claim],
+          timeoutMs: 10_000,
+        });
+        expect(blocked).toMatchObject({
+          completed: true,
+          ok: false,
+          concurrencyWait: { source: 'resource_lease', blockingOwnerRelation: 'unknown' },
+        });
+        expect(blocked.concurrencyWait?.blockingProcessId).toBeUndefined();
+        expect(blocked.concurrencyWait?.blockingWorkId).toBeUndefined();
+        expect(blocked.stdout).not.toContain('must-not-run');
+      } finally {
+        releaseExecutionLeases(fx.controllerHome, fx.repository.repoId, ownerJobId);
+      }
+    }
   });
 
   test('write claim blocks concurrent write; multiple reads may run', async () => {

@@ -1447,21 +1447,28 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
       // every conflict belongs to that one exact owner, never a guessed first.
       const ownerIds = [...new Set(acquisition.blockers.map((blocker) => blocker.ownerJobId))];
       const ownerId = ownerIds.length === 1 ? ownerIds[0] : undefined;
-      const blockingProcessId = ownerId?.startsWith('process:') ? ownerId.slice('process:'.length) : undefined;
+      const isProcessOwner = Boolean(ownerId?.startsWith('process:'));
+      const blockingProcessId = isProcessOwner ? ownerId!.slice('process:'.length) : undefined;
       const blockingProcess = blockingProcessId
         ? getProcessRecord(input.controllerHome, input.repoId, blockingProcessId)
         : undefined;
+      // A missing or terminal Process record cannot be joined. Keep unknown
+      // ownership distinct from a known non-Work owner; only a live Process
+      // may be projected as the exact join target.
+      const activeBlockingProcess = blockingProcess && isManagedProcessActive(blockingProcess)
+        ? blockingProcess : undefined;
       const blockingOwnerRelation = !ownerId ? 'unknown'
-        : !blockingProcess ? 'non_work_owner'
-        : !blockingProcess.workId ? 'non_work_owner'
-        : blockingProcess.workId === input.workId && blockingProcess.checkoutId === input.checkoutId
+        : !isProcessOwner ? 'non_work_owner'
+        : !blockingProcess || !activeBlockingProcess ? 'unknown'
+        : !activeBlockingProcess.workId ? 'non_work_owner'
+        : activeBlockingProcess.workId === input.workId && activeBlockingProcess.checkoutId === input.checkoutId
           ? 'same_work_same_checkout' : 'other_work_or_checkout';
       const wait = executionConcurrencyWaitProjection({
         source: 'resource_lease',
         blockerCode: 'resource_claim_conflict',
         disposition: 'wait',
-        blockingWorkId: blockingProcess?.workId,
-        blockingProcessId: blockingProcess ? blockingProcessId : undefined,
+        blockingWorkId: activeBlockingProcess?.workId,
+        blockingProcessId: activeBlockingProcess ? blockingProcessId : undefined,
         blockingOwnerRelation,
         semanticScopeKeys: [],
         resourceKeys,
