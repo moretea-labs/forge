@@ -2680,9 +2680,23 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
   });
 
   test('verify_edit_session validates ordinary and Work-bound edits without extra preparation', async () => {
-    for (const withWork of [false, true]) {
+    for (const { withWork, nestedGit } of [
+      { withWork: false, nestedGit: false },
+      { withWork: true, nestedGit: false },
+      { withWork: false, nestedGit: true },
+    ]) {
       const fx = fixture();
       roots.push(fx.root);
+      const nestedRoot = join(fx.repoRoot, 'nested-input');
+      if (nestedGit) {
+        mkdirSync(nestedRoot);
+        git(nestedRoot, ['init', '-b', 'main']);
+        writeFileSync(join(nestedRoot, 'source.txt'), 'nested source\n');
+        git(nestedRoot, ['add', 'source.txt']);
+        git(nestedRoot, ['-c', 'user.name=Validation test', '-c', 'user.email=validation@example.invalid', 'commit', '-m', 'nested input']);
+        writeFileSync(join(nestedRoot, 'source.txt'), 'changed nested source\n');
+      }
+      const nestedIndex = nestedGit ? readFileSync(join(nestedRoot, '.git', 'index')) : undefined;
       writeFileSync(join(fx.repoRoot, '.forge', 'checks.json'), JSON.stringify({
         version: 1,
         checks: {
@@ -2776,6 +2790,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       expect(getEditSession(fx.repoRoot, session.sessionId).status).toBe('checked');
       expect(finalizeEditSession(fx.repoRoot, session.sessionId, { binding }).status).toBe('finalized');
       expect(Boolean(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId))).toBe(withWork);
+      if (nestedIndex) expect(readFileSync(join(nestedRoot, '.git', 'index'))).toEqual(nestedIndex);
     }
   });
 
