@@ -61,6 +61,18 @@ const TEMP_SCAN_MAX_DEPTH = numericSetting(
   10,
   1,
 );
+// Deleted records in rebuildable projection namespaces are not semantic
+// evidence. Keep a bounded tail and let SQLite maintenance compact it.
+const ORPHAN_AUDIT_RETENTION_MS = numericSetting(
+  process.env.FORGE_ORPHAN_AUDIT_RETENTION_MS,
+  30 * 24 * 60 * 60_000,
+  0,
+);
+const ORPHAN_AUDIT_MAX_ROWS_PER_PASS = numericSetting(
+  process.env.FORGE_ORPHAN_AUDIT_MAX_ROWS_PER_PASS,
+  250_000,
+  1,
+);
 
 /** Terminal / abandoned runs that no longer need their worktree for integration/review. */
 const WORKTREE_RELEASE_STATUSES = new Set([
@@ -1311,6 +1323,10 @@ export function cleanupControllerRuntimeState(
     sqliteMaintenance = maintainControlPlaneDatabase(home, {
       minimumReclaimableBytes: options.sqliteVacuumMinReclaimableBytes,
       minimumReclaimableRatio: options.sqliteVacuumMinReclaimableRatio,
+      pruneOrphanedAudit: {
+        olderThanMs: ORPHAN_AUDIT_RETENTION_MS,
+        maxRows: ORPHAN_AUDIT_MAX_ROWS_PER_PASS,
+      },
     });
     if (sqliteMaintenance.skippedReason === 'database_busy') {
       skippedByReason.sqlite_maintenance_busy = (skippedByReason.sqlite_maintenance_busy ?? 0) + 1;
