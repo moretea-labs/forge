@@ -70,7 +70,7 @@ const ORPHAN_AUDIT_RETENTION_MS = numericSetting(
 );
 const ORPHAN_AUDIT_MAX_ROWS_PER_PASS = numericSetting(
   process.env.FORGE_ORPHAN_AUDIT_MAX_ROWS_PER_PASS,
-  250_000,
+  20_000,
   1,
 );
 // Rebuildable indexes only; retain the newest revisions and floor the rest.
@@ -86,7 +86,7 @@ const CURRENT_AUDIT_KEEP_TAIL = numericSetting(
 );
 const CURRENT_AUDIT_MAX_ROWS_PER_PASS = numericSetting(
   process.env.FORGE_CURRENT_AUDIT_MAX_ROWS_PER_PASS,
-  250_000,
+  20_000,
   1,
 );
 
