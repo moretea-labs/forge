@@ -1556,6 +1556,20 @@ describe('terminal Work cleanup', () => {
     expect(blocked.receipt.blockers).toContain('DIRTY_WORKTREE_RETAINED');
     expect(existsSync(fx.workspace.root!)).toBe(true);
 
+    // A retry that observes the same durable blocker must not rewrite the
+    // WorkHandle or append another audit event on every scheduler tick.
+    const retriedBlocked = await cleanupTerminalWork({
+      controllerHome: fx.controllerHome,
+      handle: blocked.handle,
+      targetBranch: 'main',
+      deleteBranch: true,
+      terminalOutcome: 'completed_cleanup',
+    });
+    expect(retriedBlocked.handle.state).toBe('failed_terminal_cleanup');
+    expect(retriedBlocked.handle.recordRevision).toBe(blocked.handle.recordRevision);
+    expect(retriedBlocked.handle.updatedAt).toBe(blocked.handle.updatedAt);
+    expect(retriedBlocked.receipt.blockers).toContain('DIRTY_WORKTREE_RETAINED');
+
     rmSync(dirtyPath, { force: true });
     const retried = await cleanupTerminalWork({
       controllerHome: fx.controllerHome,
