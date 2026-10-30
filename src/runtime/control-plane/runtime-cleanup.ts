@@ -63,6 +63,10 @@ const TEMP_SCAN_MAX_DEPTH = numericSetting(
 );
 // Deleted records in rebuildable projection namespaces are not semantic
 // evidence. Keep a bounded tail and let SQLite maintenance compact it.
+// Opt-in until retention candidate selection is index/cursor bounded: the
+// current selection query can hold a write transaction longer than the
+// scheduler's 5s busy budget on a multi-million-row audit table.
+const REBUILDABLE_AUDIT_RETENTION_ENABLED = process.env.FORGE_ENABLE_REBUILDABLE_AUDIT_RETENTION === '1';
 const ORPHAN_AUDIT_RETENTION_MS = numericSetting(
   process.env.FORGE_ORPHAN_AUDIT_RETENTION_MS,
   7 * 24 * 60 * 60_000,
@@ -1339,15 +1343,17 @@ export function cleanupControllerRuntimeState(
     sqliteMaintenance = maintainControlPlaneDatabase(home, {
       minimumReclaimableBytes: options.sqliteVacuumMinReclaimableBytes,
       minimumReclaimableRatio: options.sqliteVacuumMinReclaimableRatio,
-      pruneOrphanedAudit: {
-        olderThanMs: ORPHAN_AUDIT_RETENTION_MS,
-        maxRows: ORPHAN_AUDIT_MAX_ROWS_PER_PASS,
-      },
-      pruneRebuildableRecordAudit: {
-        olderThanMs: CURRENT_AUDIT_RETENTION_MS,
-        keepTail: CURRENT_AUDIT_KEEP_TAIL,
-        maxRows: CURRENT_AUDIT_MAX_ROWS_PER_PASS,
-      },
+      ...(REBUILDABLE_AUDIT_RETENTION_ENABLED ? {
+        pruneOrphanedAudit: {
+          olderThanMs: ORPHAN_AUDIT_RETENTION_MS,
+          maxRows: ORPHAN_AUDIT_MAX_ROWS_PER_PASS,
+        },
+        pruneRebuildableRecordAudit: {
+          olderThanMs: CURRENT_AUDIT_RETENTION_MS,
+          keepTail: CURRENT_AUDIT_KEEP_TAIL,
+          maxRows: CURRENT_AUDIT_MAX_ROWS_PER_PASS,
+        },
+      } : {}),
     });
     if (sqliteMaintenance.skippedReason === 'database_busy') {
       skippedByReason.sqlite_maintenance_busy = (skippedByReason.sqlite_maintenance_busy ?? 0) + 1;
