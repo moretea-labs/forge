@@ -246,6 +246,58 @@ describe('final SQLite control-plane cutover', () => {
     });
   });
 
+  test('SQLite maintenance bounds current rebuildable index history with an audit floor', () => {
+    withHome((controllerHome) => {
+      const namespace = 'computer_interaction_target_index';
+      let current = writeControlPlaneRecord(controllerHome, {
+        namespace, scope: 'controller', key: 'current-long', schemaVersion: 1,
+        value: { revision: 1 }, expectedRevision: null,
+      });
+      for (let revision = 2; revision <= 100; revision += 1) {
+        current = writeControlPlaneRecord(controllerHome, {
+          namespace, scope: 'controller', key: 'current-long', schemaVersion: 1,
+          value: { revision }, expectedRevision: current.revision,
+        });
+      }
+      let semantic = writeControlPlaneRecord(controllerHome, {
+        namespace: 'work_contract', scope: 'repo-test', key: 'semantic-long', schemaVersion: 1,
+        value: { revision: 1 }, expectedRevision: null,
+      });
+      for (let revision = 2; revision <= 100; revision += 1) {
+        semantic = writeControlPlaneRecord(controllerHome, {
+          namespace: 'work_contract', scope: 'repo-test', key: 'semantic-long', schemaVersion: 1,
+          value: { revision }, expectedRevision: semantic.revision,
+        });
+      }
+
+      const report = maintainControlPlaneDatabase(controllerHome, {
+        minimumReclaimableBytes: 1,
+        minimumReclaimableRatio: 0,
+        pruneRebuildableRecordAudit: { olderThanMs: -1_000, keepTail: 10, maxRows: 1_000 },
+      });
+      expect(report.prunedCurrentAuditRows).toBe(90);
+
+      const database = new Database(controlPlaneDatabasePath(controllerHome));
+      try {
+        const currentRevisions = database.query(
+          'SELECT revision FROM control_plane_audit WHERE namespace = ? AND scope = ? AND record_key = ? ORDER BY revision',
+        ).all(namespace, 'controller', 'current-long').map((row) => (row as { revision: number }).revision);
+        expect(currentRevisions).toEqual(Array.from({ length: 10 }, (_, index) => 91 + index));
+        const currentFloor = database.query(
+          'SELECT floor_revision FROM control_plane_audit_floor WHERE namespace = ? AND scope = ? AND record_key = ?',
+        ).get(namespace, 'controller', 'current-long') as { floor_revision: number } | null;
+        expect(currentFloor?.floor_revision).toBe(91);
+        const semanticRevisions = database.query(
+          "SELECT revision FROM control_plane_audit WHERE namespace = 'work_contract' AND scope = 'repo-test' AND record_key = 'semantic-long' ORDER BY revision",
+        ).all().map((row) => (row as { revision: number }).revision);
+        expect(semanticRevisions).toHaveLength(100);
+      } finally {
+        database.close();
+      }
+      expect(inspectControlPlaneDatabase(controllerHome)).toMatchObject({ integrity: 'ok', orphanRecordCount: 0 });
+    });
+  });
+
   test('SQLite maintenance fails closed instead of waiting on a live writer for VACUUM', () => {
     withHome((controllerHome) => {
       writeControlPlaneRecord(controllerHome, {
