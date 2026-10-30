@@ -127,6 +127,8 @@ export interface PruneRebuildableRecordAuditOptions {
   keepTail?: number;
   /** Bound one maintenance pass so a large history converges without a long lock. */
   maxRows?: number;
+  /** Bound the number of current records selected per pass; the cursor persists. */
+  maxRecords?: number;
   nowMs?: number;
   namespaces?: readonly string[];
 }
@@ -317,6 +319,22 @@ function ensureAuditCursorTable(database: SqliteDatabase): void {
   `);
 }
 
+const AUDIT_RECORD_CURSOR_TABLE = 'control_plane_audit_record_cursor';
+
+/** Bounded record-scan checkpoint for rebuildable current-record retention. */
+function ensureAuditRecordCursorTable(database: SqliteDatabase): void {
+  if (tableExists(database, AUDIT_RECORD_CURSOR_TABLE)) return;
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS ${AUDIT_RECORD_CURSOR_TABLE} (
+      name TEXT PRIMARY KEY,
+      namespace TEXT NOT NULL,
+      scope TEXT NOT NULL,
+      record_key TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+  `);
+}
+
 /** Raise (never lower) the contiguous audit floor for one record. */
 function writeAuditFloor(database: SqliteDatabase, namespace: string, scope: string, key: string, floor: number): void {
   if (!Number.isSafeInteger(floor) || floor < 2) return;
@@ -393,6 +411,13 @@ function initializeSchema(database: SqliteDatabase): void {
     CREATE TABLE IF NOT EXISTS control_plane_audit_cursor (
       name TEXT PRIMARY KEY,
       last_event_id INTEGER NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS control_plane_audit_record_cursor (
+      name TEXT PRIMARY KEY,
+      namespace TEXT NOT NULL,
+      scope TEXT NOT NULL,
+      record_key TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
   `);
@@ -1201,65 +1226,106 @@ function pruneRebuildableRecordAuditRows(
   if (!Number.isFinite(options.olderThanMs)) throw new Error('CONTROL_PLANE_CURRENT_AUDIT_AGE_INVALID');
   const keepTail = Math.max(1, Math.min(Math.trunc(options.keepTail ?? 50), 1_000));
   const maxRows = Math.max(1, Math.min(Math.trunc(options.maxRows ?? 250_000), 500_000));
+  const maxRecords = Math.max(1, Math.min(Math.trunc(options.maxRecords ?? 100), 1_000));
   const cutoff = new Date((options.nowMs ?? Date.now()) - options.olderThanMs).toISOString();
   const placeholders = namespaces.map(() => '?').join(',');
   ensureAuditFloorTable(database);
+  ensureAuditRecordCursorTable(database);
+  const persisted = withSqliteStatement(database, `
+      SELECT namespace, scope, record_key FROM ${AUDIT_RECORD_CURSOR_TABLE} WHERE name = 'current'
+    `, (statement) => statement.get() as { namespace?: string; scope?: string; record_key?: string } | undefined);
+  const cursorNamespace = persisted?.namespace ?? '';
+  const cursorScope = persisted?.scope ?? '';
+  const cursorKey = persisted?.record_key ?? '';
+  const candidates = withSqliteStatement(database, `
+      SELECT record.namespace, record.scope, record.record_key, record.revision,
+        COALESCE((
+          SELECT retained.floor_revision
+          FROM ${AUDIT_FLOOR_TABLE} retained
+          WHERE retained.namespace = record.namespace
+            AND retained.scope = record.scope
+            AND retained.record_key = record.record_key
+        ), 1) AS floor_revision,
+        (
+          SELECT MAX(audit.revision)
+          FROM control_plane_audit audit
+          WHERE audit.namespace = record.namespace
+            AND audit.scope = record.scope
+            AND audit.record_key = record.record_key
+            AND audit.occurred_at < ?
+        ) AS old_max
+      FROM control_plane_records record
+      WHERE record.namespace IN (${placeholders})
+        AND (record.namespace, record.scope, record.record_key) > (?, ?, ?)
+      ORDER BY record.namespace ASC, record.scope ASC, record.record_key ASC
+      LIMIT ?
+    `, (statement) => statement.all(cutoff, ...namespaces, cursorNamespace, cursorScope, cursorKey, maxRecords)) as Array<{
+      namespace: string; scope: string; record_key: string; revision: number;
+      floor_revision: number; old_max: number | null;
+    }>;
   let total = 0;
-  database.exec('BEGIN IMMEDIATE');
-  try {
-    const candidates = withSqliteStatement(database, `
-        SELECT record.namespace, record.scope, record.record_key, record.revision,
-          COALESCE((
-            SELECT retained.floor_revision
-            FROM ${AUDIT_FLOOR_TABLE} retained
-            WHERE retained.namespace = record.namespace
-              AND retained.scope = record.scope
-              AND retained.record_key = record.record_key
-          ), 1) AS floor_revision,
-          (
-            SELECT MAX(audit.revision)
-            FROM control_plane_audit audit
-            WHERE audit.namespace = record.namespace
-              AND audit.scope = record.scope
-              AND audit.record_key = record.record_key
-              AND audit.occurred_at < ?
-          ) AS old_max
-        FROM control_plane_records record
-        WHERE record.namespace IN (${placeholders})
-          AND record.revision > COALESCE((
-            SELECT retained.floor_revision
-            FROM ${AUDIT_FLOOR_TABLE} retained
-            WHERE retained.namespace = record.namespace
-              AND retained.scope = record.scope
-              AND retained.record_key = record.record_key
-          ), 1) + ?
-        ORDER BY record.revision DESC
-        LIMIT 500
-      `, (statement) => statement.all(cutoff, ...namespaces, keepTail)) as Array<{
-        namespace: string; scope: string; record_key: string; revision: number;
-        floor_revision: number; old_max: number | null;
-      }>;
-    for (const candidate of candidates) {
-      if (total >= maxRows) break;
-      const floor = Number.isSafeInteger(Number(candidate.floor_revision)) ? Number(candidate.floor_revision) : 1;
-      const oldMax = Number(candidate.old_max);
-      if (!Number.isSafeInteger(oldMax)) continue;
-      const pruneThrough = Math.min(oldMax, Number(candidate.revision) - keepTail);
-      if (pruneThrough < floor) continue;
-      const through = Math.min(pruneThrough, floor + (maxRows - total) - 1);
-      withSqliteStatement(database, `
-          DELETE FROM control_plane_audit
-          WHERE namespace = ? AND scope = ? AND record_key = ? AND revision BETWEEN ? AND ?
-        `, (statement) => statement.run(candidate.namespace, candidate.scope, candidate.record_key, floor, through));
-      const deleted = Number(withSqliteStatement(database, 'SELECT changes() AS count', (statement) => scalar(statement.get())) ?? 0);
-      if (deleted <= 0) continue;
-      writeAuditFloor(database, candidate.namespace, candidate.scope, candidate.record_key, through + 1);
-      total += deleted;
+  let lastProcessed: { namespace: string; scope: string; record_key: string } | undefined;
+  let completedAllCandidates = true;
+  for (const candidate of candidates) {
+    if (total >= maxRows) {
+      completedAllCandidates = false;
+      break;
     }
-    database.exec('COMMIT');
-  } catch (error) {
-    try { database.exec('ROLLBACK'); } catch { /* preserve the original error */ }
-    throw error;
+    const floor = Number.isSafeInteger(Number(candidate.floor_revision)) ? Number(candidate.floor_revision) : 1;
+    const oldMax = Number(candidate.old_max);
+    if (Number.isSafeInteger(oldMax)) {
+      const pruneThrough = Math.min(oldMax, Number(candidate.revision) - keepTail);
+      let cursorRevision = floor;
+      while (cursorRevision <= pruneThrough && total < maxRows) {
+        const end = Math.min(
+          pruneThrough,
+          cursorRevision + AUDIT_RETENTION_CHUNK_ROWS - 1,
+          cursorRevision + (maxRows - total) - 1,
+        );
+        database.exec('BEGIN IMMEDIATE');
+        try {
+          withSqliteStatement(database, `
+              DELETE FROM control_plane_audit
+              WHERE namespace = ? AND scope = ? AND record_key = ? AND revision BETWEEN ? AND ?
+            `, (statement) => statement.run(candidate.namespace, candidate.scope, candidate.record_key, cursorRevision, end));
+          const deleted = Number(withSqliteStatement(database, 'SELECT changes() AS count', (statement) => scalar(statement.get())) ?? 0);
+          if (deleted > 0) {
+            writeAuditFloor(database, candidate.namespace, candidate.scope, candidate.record_key, end + 1);
+            total += deleted;
+          }
+          database.exec('COMMIT');
+        } catch (error) {
+          try { database.exec('ROLLBACK'); } catch { /* preserve the original error */ }
+          throw error;
+        }
+        cursorRevision = end + 1;
+      }
+      if (total >= maxRows && cursorRevision <= pruneThrough) {
+        completedAllCandidates = false;
+        break;
+      }
+    }
+    lastProcessed = candidate;
+  }
+  const wrapped = completedAllCandidates && candidates.length < maxRecords;
+  const next = wrapped ? { namespace: '', scope: '', record_key: '' } : lastProcessed;
+  if (next) {
+    database.exec('BEGIN IMMEDIATE');
+    try {
+      withSqliteStatement(database, `
+          INSERT INTO ${AUDIT_RECORD_CURSOR_TABLE} (name, namespace, scope, record_key, updated_at)
+          VALUES ('current', ?, ?, ?, ?)
+          ON CONFLICT(name) DO UPDATE SET
+            namespace = excluded.namespace,
+            scope = excluded.scope,
+            record_key = excluded.record_key,
+            updated_at = excluded.updated_at
+        `, (statement) => statement.run(next.namespace, next.scope, next.record_key, now()));
+      database.exec('COMMIT');
+    } catch (error) {
+      try { database.exec('ROLLBACK'); } catch { /* preserve the original error */ }
+      throw error;
+    }
   }
   return total;
 }
