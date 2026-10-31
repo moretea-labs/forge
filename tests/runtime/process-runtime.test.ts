@@ -2127,6 +2127,27 @@ describe('command classifier safe shell combinations', () => {
     expect(classifyRepositoryCommand(['gh', 'pr', 'checkout', '123']).risk).toBe('workspace_write');
   });
 
+  test('classifies combined read-only Git branch flags without treating branch mutations as reads', () => {
+    const readonly = [
+      ['git', 'branch', '-avv'],
+      ['git', 'branch', '-a', '-v', '-v'],
+      ['git', 'branch', '--all', '--verbose'],
+    ];
+    for (const command of readonly) {
+      expect(classifyRepositoryCommand(command).risk).toBe('readonly');
+      expect(classifyRepositoryCommandRoute(command)).toEqual({ route: 'process_direct', reason: 'readonly_fast_path' });
+    }
+
+    const mutations = [
+      ['git', 'branch', '-avD', 'obsolete'],
+      ['git', 'branch', '-avf', 'current'],
+      ['git', 'branch', '-a', '-t', 'origin'],
+      ['git', 'branch', '-m', 'old', 'new'],
+      ['git', 'branch', '--all', '--force', 'current'],
+    ];
+    for (const command of mutations) expect(classifyRepositoryCommand(command).risk).not.toBe('readonly');
+  });
+
   test('keeps package-manager version mutations out of the readonly fast path', () => {
     expect(classifyRepositoryCommand(['npm', 'version', '1.5.1', '--no-git-tag-version'])).toMatchObject({
       risk: 'workspace_write',
