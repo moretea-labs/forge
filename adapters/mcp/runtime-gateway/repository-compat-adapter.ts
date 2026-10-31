@@ -8,7 +8,7 @@ import {
   selectedPathDiff,
   stageSelectedPaths,
 } from '../../../src/cli/repositories/selected-path-actions';
-import { assertCanonicalRepositoryMutationWorkHandleAvailable, ensureRepositoryMutationWorkHandle } from '../../../src/runtime/control-plane/execution/work-handle-authority';
+import { ensureRepositoryMutationWorkHandle } from '../../../src/runtime/control-plane/execution/work-handle-authority';
 import { settleWorkHandleExpectedHeadAfterRepositoryCommand } from '../../../src/runtime/control-plane/execution/work-head-settlement';
 import { readWorkHandle } from '../../../src/runtime/control-plane/execution/work-handle-store';
 import type { ResolvedExecutionIdentity } from '../../../src/runtime/control-plane/execution/execution-identity';
@@ -52,14 +52,6 @@ export async function callRepositoryCompatibilityAdapter(ctx: MultiRepositoryMcp
               const repository = ownedCheckoutId
                 ? selected(ctx, { ...args, checkout_id: ownedCheckoutId })
                 : requestedRepository;
-              // Do not allow a sessionless commit to advance an active Work's
-              // canonical checkout and leave that Work bound to an old HEAD.
-              assertCanonicalRepositoryMutationWorkHandleAvailable({
-                controllerHome: ctx.controllerHome,
-                repositoryId: repository.repoId,
-                checkoutId: repository.activeCheckoutId,
-                ...(workId ? { workId } : {}),
-              });
               const handle = workId ? ensureRepositoryMutationWorkHandle({
                 controllerHome: ctx.controllerHome,
                 repository,
