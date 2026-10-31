@@ -10,4 +10,4 @@ Keep this file focused on the local contract for this primary functional block.
 - Route deep implementation detail into nearby docs instead of inflating root agent context files.
 - Treat `.ai/context/context-map.json` as the index of discoverable context files.
 - Do not keep pushing context files deeper by default; add lower-level files only for a separately owned functional block with its own commands and invariants.
-- Prefer repo-local workflow artifacts over tool-specific chat memory.
+- GitHub Issues/Projects alone track development progress; use Direct Edit/terminal first, no Work/Plan/WorkHandle, and keep Issues open for completion audit.
