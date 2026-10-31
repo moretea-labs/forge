@@ -5,6 +5,7 @@ import type { Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { callWorkflowSupervisorAdapter } from '../../adapters/mcp/runtime-gateway/workflow-supervisor-adapter';
+import { callCoreCapabilityAdapter } from '../../adapters/mcp/runtime-gateway/core-capability-adapter';
 import { runtimeToolDefinitions } from '../../adapters/mcp/runtime-gateway/runtime-tool-definitions';
 import { WorkflowSupervisorControlPlane } from '../../supervisor/control-plane';
 import { workflowSupervisorSocketPath } from '../../supervisor/paths';
@@ -163,7 +164,11 @@ describe('Supervisor bootstrap Project binding before enrollment', () => {
       project_url: projectUrl, request_id: 'bind-existing-work-reviewer',
       authorized_by: 'explicit operator verified Project',
     };
-    const receipt = await callWorkflowSupervisorAdapter(context(root), 'supervisor_task', args);
+    const receipt = await callCoreCapabilityAdapter(context(root), 'capability_execute', {
+      capability_id: 'controller.workflow_supervisor', action: 'bootstrap_project_bind',
+      repo_id: repoId, request_id: args.request_id,
+      arguments: { task_id: args.task_id, project_url: args.project_url, authorized_by: args.authorized_by },
+    });
     expect(receipt?.structuredContent).toMatchObject({ taskId: task.taskId, projectUrl, status: 'project_bound' });
     expect(control.bootstrapProjectUrl(task.taskId)).toBe(projectUrl);
     expect(control.bootstrapPoll(task.taskId).command?.effectId).toBe(effect.effectId);

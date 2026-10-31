@@ -183,7 +183,8 @@ describe('handoff and facade contracts', () => {
       actions?: Record<string, { argumentsSchema?: { required?: string[]; properties?: Record<string, unknown> } }>;
     } | undefined;
     expect(schema?.executeWith).toBe('capability_execute');
-    expect(Object.keys(schema?.actions ?? {}).sort()).toEqual(['get', 'list', 'proof', 'recover', 'revise', 'start', 'stop', 'switch_to_fresh_conversation']);
+    expect(Object.keys(schema?.actions ?? {}).sort()).toEqual(['bootstrap_project_bind', 'get', 'list', 'proof', 'recover', 'revise', 'start', 'stop', 'switch_to_fresh_conversation']);
+    expect(schema?.actions?.bootstrap_project_bind?.argumentsSchema?.required).toEqual(['task_id', 'project_url', 'authorized_by']);
     expect(schema?.actions?.revise?.argumentsSchema?.required).toEqual(['task_id', 'objective', 'expected_objective_sha256']);
     expect(schema?.actions?.recover?.argumentsSchema?.required).toEqual(['task_id', 'reason']);
     expect(schema?.actions?.recover?.argumentsSchema?.properties).toEqual(expect.objectContaining({
