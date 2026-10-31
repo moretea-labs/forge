@@ -408,13 +408,13 @@ export async function reconcileEditValidationRun(
   const status = repositoryGitStatus(validationRepository);
   const currentSourceRevision = status.head?.trim();
   const currentWorkspaceFingerprint = workspaceValidationFingerprint(validationRepository.canonicalRoot, status);
-  if (session.workId && (!run.sourceRevision || !run.workspaceFingerprint)) {
+  if (!run.workspaceFingerprint || (session.workId && !run.sourceRevision)) {
     return failedRun(controllerHome, run, 'EDIT_VALIDATION_WORK_IDENTITY_REQUIRED', 'Work-bound Edit validation requires a persisted exact source revision and workspace fingerprint.');
   }
   if (run.sourceRevision && currentSourceRevision !== run.sourceRevision) {
     return failedRun(controllerHome, run, 'EDIT_VALIDATION_SOURCE_CHANGED', `Validation source changed from ${run.sourceRevision} to ${currentSourceRevision ?? 'unavailable'}.`);
   }
-  if (run.workspaceFingerprint && currentWorkspaceFingerprint !== run.workspaceFingerprint) {
+  if (currentWorkspaceFingerprint !== run.workspaceFingerprint) {
     return failedRun(controllerHome, run, 'EDIT_VALIDATION_WORKSPACE_CHANGED', 'Validation workspace changed after the persisted Process identity was captured.');
   }
 
@@ -440,7 +440,7 @@ export async function reconcileEditValidationRun(
         timeoutMs: run.timeoutMs,
         interactiveWaitMs: 0,
         requestId: checkRequestId,
-        requestSemanticFingerprint: session.workId && run.sourceRevision && run.workspaceFingerprint
+        requestSemanticFingerprint: run.sourceRevision && run.workspaceFingerprint
           ? verificationInputFingerprint({
               sourceRevision: run.sourceRevision,
               workspaceFingerprint: run.workspaceFingerprint,
@@ -542,6 +542,7 @@ export async function reconcileEditValidationRun(
       repoId: validationRepository.repoId,
       checkoutId: validationRepository.activeCheckoutId,
       receipts,
+      validatedWorkspaceFingerprint: run.workspaceFingerprint,
       reviewer: run.reviewer,
       note: run.note,
     });
@@ -653,8 +654,8 @@ export async function startOrJoinEditValidation(
     editSessionId: session.sessionId,
     editRevision: session.currentRevision,
     requestId,
-    sourceRevision: session.workId ? validationSourceRevision : undefined,
-    workspaceFingerprint: session.workId ? validationWorkspaceFingerprint : undefined,
+    sourceRevision: validationSourceRevision ?? undefined,
+    workspaceFingerprint: validationWorkspaceFingerprint,
     checkIds,
     lanes: checkLanes(validationRepository, checkIds),
     processes: {},
