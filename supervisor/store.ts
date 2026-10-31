@@ -550,6 +550,19 @@ export class WorkflowSupervisorStore {
       }
       const taskRepo = typeof task.completionContract.repo_id === 'string' ? task.completionContract.repo_id : task.continuationPolicy.repo_id;
       const inputRepo = typeof input.completionContract.repo_id === 'string' ? input.completionContract.repo_id : input.continuationPolicy.repo_id;
+      // Explicit Project binding adds one monotonic local fence to the stored
+      // Work bootstrap policy. An exact registration retry must preserve that
+      // fence and reuse this task, never interpret it as a new identity.
+      if (task.continuationPolicy.project_binding_required === true && canBindBootstrapProject(task)
+        && statement(db, "SELECT 1 FROM events WHERE task_id=? AND kind='bootstrap_project_bound' LIMIT 1", (s) => s.get(task.taskId))) {
+        const { project_binding_required: _boundProjectGate, ...originalPolicy } = task.continuationPolicy;
+        if (taskRepo === inputRepo
+          && task.conversationId === input.conversationId && task.conversationUrl === input.conversationUrl
+          && task.objective === input.objective
+          && json(task.completionContract) === json(input.completionContract)
+          && json(originalPolicy) === json(input.continuationPolicy)
+          && json(task.userBlockerPolicy) === json(input.userBlockerPolicy)) return task;
+      }
       const { checkout_id: incomingCheckout, ...incomingCompletion } = input.completionContract;
       const { checkout_id: selectedCheckout, ...selectedCompletion } = task.completionContract;
       // Registration may fill an initially missing execution hint. It cannot

@@ -138,13 +138,14 @@ describe('Supervisor bootstrap Project binding before enrollment', () => {
     const { root, store, control } = await fixture(true, true, competingProjectId);
     const workId = 'work-review-once';
     const taskId = `forge:${repoId}:work:${workId}`;
-    const task = control.registerTask({
+    const registration = {
       taskId, conversationId: `bootstrap:${workId}`, conversationUrl: 'https://chatgpt.com/',
       objective: 'One-shot exact SHA independent reviewer',
       completionContract: { kind: 'forge_work_done', controller_home: root, repo_id: repoId, work_id: workId },
       continuationPolicy: { kind: 'forge_goal_outer_turn', bootstrap: true, outer_turn_owner: 'workflow_supervisor' },
       userBlockerPolicy: { kind: 'forge_work_waiting_for_user', controller_home: root, repo_id: repoId, work_id: workId },
-    });
+    };
+    const task = control.registerTask(registration);
     const effect = control.reserveEnrollment(task.taskId);
     control.recordBrowserDiscovery('chrome', [{
       conversationId: '22222222-3333-4444-5555-666666666666',
@@ -166,6 +167,10 @@ describe('Supervisor bootstrap Project binding before enrollment', () => {
     expect(receipt?.structuredContent).toMatchObject({ taskId: task.taskId, projectUrl, status: 'project_bound' });
     expect(control.bootstrapProjectUrl(task.taskId)).toBe(projectUrl);
     expect(control.bootstrapPoll(task.taskId).command?.effectId).toBe(effect.effectId);
+    expect(control.registerTask(registration)).toMatchObject({ taskId, conversationId: task.conversationId });
+    expect(store.getEffectByOriginKey(`enrollment:${task.taskId}`)?.effectId).toBe(effect.effectId);
+    expect(() => control.registerTask({ ...registration, objective: 'Conflicting identity' }))
+      .toThrow('WORKFLOW_SUPERVISOR_TASK_ID_CONFLICT');
     expect(store.effectDispatchBudget(effect.effectId).generations).toBe(0);
     expect((await callWorkflowSupervisorAdapter(context(root), 'supervisor_task', args))?.structuredContent)
       .toMatchObject({ deduplicated: true });
