@@ -103,6 +103,8 @@ export interface EditSession {
   workspaceFingerprint?: string;
   /** Exact content identity captured with successful checks, including nested Git source. */
   validatedWorkspaceFingerprint?: string;
+  /** Same input fingerprint excluding paths this EditSession owns; permits safe post-commit reconciliation. */
+  validatedOutsideWorkspaceFingerprint?: string;
   assurance?: EditSessionAssurance;
   purpose: string;
   status: EditSessionStatus;
@@ -261,20 +263,44 @@ function workspaceFingerprint(repoRoot: string): string {
 }
 
 /** Reuse the Check evidence owner's exact source identity, not Git status shape alone. */
-function verifiedWorkspaceInput(repoRoot: string): string {
+function verifiedWorkspaceInput(repoRoot: string, excludedPaths: string[] = []): string {
   const status = runProcess('git', [
-    'status', '--porcelain=v1', '--branch', '--untracked-files=all', '--', '.', ':(exclude).ai/harness/**',
+    'status', '--porcelain=v1', ...(excludedPaths.length ? [] : ['--branch']), '--untracked-files=all', '--', '.',
+    ':(exclude).ai/harness/**', ...excludedPaths.map((path) => `:(exclude,literal)${path}`),
   ], { cwd: repoRoot, timeoutMs: 10_000, maxOutputBytes: 4 * 1024 * 1024 });
   const branch = runProcess('git', ['branch', '--show-current'], {
     cwd: repoRoot, timeoutMs: 10_000, maxOutputBytes: 1024,
   });
   if (!status.ok || !branch.ok) throw new Error('EDIT_VALIDATION_WORKSPACE_STATUS_UNAVAILABLE');
   return workspaceValidationFingerprint(repoRoot, {
-    head: gitRevision(repoRoot) ?? null,
+    head: excludedPaths.length ? null : gitRevision(repoRoot) ?? null,
     branch: branch.stdout.trim() || null,
     porcelain: status.stdout,
     ...splitRepositoryGitStatus(status.stdout),
   });
+}
+
+/** Checked input outside the paths this session owns; captured before Check Process dispatch. */
+export function editSessionOutsideWorkspaceFingerprint(repoRoot: string, sessionId: string): string {
+  return verifiedWorkspaceInput(repoRoot, sessionTrackedPaths(getEditSession(repoRoot, sessionId)));
+}
+
+/** Only a descendant commit touching exactly the owned after-image paths may reconcile a checked edit. */
+function checkedAfterImageCommitted(repoRoot: string, session: EditSession): boolean {
+  const head = gitRevision(repoRoot);
+  const base = session.baseRevision;
+  if (!base || !head || base === head) return false;
+  const ancestor = runProcess('git', ['merge-base', '--is-ancestor', base, head], {
+    cwd: repoRoot, timeoutMs: 10_000, maxOutputBytes: 1024,
+  });
+  if (!ancestor.ok) return false;
+  const diff = runProcess('git', ['diff', '--name-only', '--no-renames', `${base}..${head}`, '--'], {
+    cwd: repoRoot, timeoutMs: 10_000, maxOutputBytes: 512 * 1024,
+  });
+  if (!diff.ok) return false;
+  const changed = diff.stdout.trim().split('\n').filter(Boolean);
+  const owned = new Set(sessionTrackedPaths(session));
+  return changed.length > 0 && changed.every((path) => owned.has(path));
 }
 
 function calculateAssurance(session: EditSession, at: string): EditSessionAssurance {
@@ -427,6 +453,7 @@ function normalizeStoredSession(value: Partial<EditSession> & { sessionId: strin
     controllerInstanceId: value.controllerInstanceId,
     workspaceFingerprint: value.workspaceFingerprint,
     validatedWorkspaceFingerprint: value.validatedWorkspaceFingerprint,
+    validatedOutsideWorkspaceFingerprint: value.validatedOutsideWorkspaceFingerprint,
     assurance: value.assurance,
     purpose: value.purpose ?? 'Direct edit',
     status: normalizeLegacyStatus(value.status),
@@ -839,8 +866,14 @@ export function reconcileEditSession(repoRoot: string, sessionId: string, input:
 
   if (!['dirty', 'checked', 'check_failed'].includes(session.status)) return session;
   if (session.requestedChecks.length > 0 && !requestedChecksPassed(session)) return session;
-  if (session.requestedChecks.length > 0 && (!session.validatedWorkspaceFingerprint ||
-      verifiedWorkspaceInput(repoRoot) !== session.validatedWorkspaceFingerprint)) return session;
+  if (session.requestedChecks.length > 0) {
+    const currentInputMatches = Boolean(session.validatedWorkspaceFingerprint &&
+      verifiedWorkspaceInput(repoRoot) === session.validatedWorkspaceFingerprint);
+    const committedOwnedEditOnly = !currentInputMatches && checkedAfterImageCommitted(repoRoot, session) &&
+      Boolean(session.validatedOutsideWorkspaceFingerprint &&
+        verifiedWorkspaceInput(repoRoot, sessionTrackedPaths(session)) === session.validatedOutsideWorkspaceFingerprint);
+    if (!currentInputMatches && !committedOwnedEditOnly) return session;
+  }
 
   const paths = sessionTrackedPaths(session);
   const dirtyPaths = uncommittedSessionPaths(repoRoot, paths);
@@ -1062,6 +1095,7 @@ function persistVerificationResult(
     note?: string;
     results: EditSessionCheckRecord[];
     validatedWorkspaceFingerprint?: string;
+    validatedOutsideWorkspaceFingerprint?: string;
   },
 ): EditSession {
   const at = now();
@@ -1070,6 +1104,8 @@ function persistVerificationResult(
   }
   session.validatedWorkspaceFingerprint = input.results.length && input.results.every((result) => result.ok)
     ? input.validatedWorkspaceFingerprint : undefined;
+  session.validatedOutsideWorkspaceFingerprint = session.validatedWorkspaceFingerprint
+    ? input.validatedOutsideWorkspaceFingerprint : undefined;
   session.requestedChecks = input.checkIds;
   session.checkResults = input.results;
   session.reviewer = input.reviewer;
@@ -1099,6 +1135,7 @@ export function recordEditSessionProcessCheckReceipts(
     checkoutId: string;
     receipts: ProcessCheckCompletionReceipt[];
     validatedWorkspaceFingerprint?: string;
+    validatedOutsideWorkspaceFingerprint?: string;
     reviewer?: string;
     note?: string;
   },
@@ -1165,6 +1202,7 @@ export function recordEditSessionProcessCheckReceipts(
     note: resolved.note,
     results: records,
     validatedWorkspaceFingerprint: input.validatedWorkspaceFingerprint,
+    validatedOutsideWorkspaceFingerprint: input.validatedOutsideWorkspaceFingerprint,
   });
 }
 
@@ -1784,6 +1822,7 @@ export function verifyEditSession(repoRoot: string, sessionId: string, input: {
 } = {}): EditSession {
   const request = resolveVerificationRequest(repoRoot, sessionId, input);
   const checkedInput = request.checkIds.length ? verifiedWorkspaceInput(repoRoot) : undefined;
+  const checkedOutsideInput = checkedInput ? verifiedWorkspaceInput(repoRoot, sessionTrackedPaths(request.session)) : undefined;
   const results = request.checkIds.map((checkId) => {
     try {
       return checkRecord(runControllerCheck(repoRoot, checkId));
@@ -1802,6 +1841,8 @@ export function verifyEditSession(repoRoot: string, sessionId: string, input: {
     note: request.note,
     results,
     validatedWorkspaceFingerprint: checkedInput && verifiedWorkspaceInput(repoRoot) === checkedInput ? checkedInput : undefined,
+    validatedOutsideWorkspaceFingerprint: checkedInput && verifiedWorkspaceInput(repoRoot) === checkedInput
+      ? checkedOutsideInput : undefined,
   });
 }
 
@@ -1815,6 +1856,7 @@ export async function verifyEditSessionAsync(repoRoot: string, sessionId: string
 } = {}): Promise<EditSession> {
   const request = resolveVerificationRequest(repoRoot, sessionId, input);
   const checkedInput = request.checkIds.length ? verifiedWorkspaceInput(repoRoot) : undefined;
+  const checkedOutsideInput = checkedInput ? verifiedWorkspaceInput(repoRoot, sessionTrackedPaths(request.session)) : undefined;
   const results: EditSessionCheckRecord[] = [];
   for (const checkId of request.checkIds) {
     try {
@@ -1839,6 +1881,8 @@ export async function verifyEditSessionAsync(repoRoot: string, sessionId: string
     note: request.note,
     results,
     validatedWorkspaceFingerprint: checkedInput && verifiedWorkspaceInput(repoRoot) === checkedInput ? checkedInput : undefined,
+    validatedOutsideWorkspaceFingerprint: checkedInput && verifiedWorkspaceInput(repoRoot) === checkedInput
+      ? checkedOutsideInput : undefined,
   });
 }
 

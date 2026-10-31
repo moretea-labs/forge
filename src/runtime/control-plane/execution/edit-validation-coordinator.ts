@@ -1,6 +1,7 @@
 import { createHash } from 'crypto';
 import {
   getEditSession,
+  editSessionOutsideWorkspaceFingerprint,
   recordEditSessionProcessCheckReceipts,
   type EditSession,
 } from '../../../cli/editing/edit-session';
@@ -42,6 +43,7 @@ export interface EditValidationRunState {
   /** Exact Work verification source identity captured before any lane starts. */
   sourceRevision?: string;
   workspaceFingerprint?: string;
+  outsideWorkspaceFingerprint?: string;
   checkIds: string[];
   lanes: string[][];
   processes: Record<string, { processId: string; requestId: string }>;
@@ -543,6 +545,7 @@ export async function reconcileEditValidationRun(
       checkoutId: validationRepository.activeCheckoutId,
       receipts,
       validatedWorkspaceFingerprint: run.workspaceFingerprint,
+      validatedOutsideWorkspaceFingerprint: run.outsideWorkspaceFingerprint,
       reviewer: run.reviewer,
       note: run.note,
     });
@@ -643,6 +646,7 @@ export async function startOrJoinEditValidation(
   const validationStatus = repositoryGitStatus(validationRepository);
   const validationSourceRevision = validationStatus.head?.trim();
   const validationWorkspaceFingerprint = workspaceValidationFingerprint(validationRepository.canonicalRoot, validationStatus);
+  const validationOutsideFingerprint = editSessionOutsideWorkspaceFingerprint(validationRepository.canonicalRoot, session.sessionId);
   if (session.workId && !validationSourceRevision) {
     throw new Error('EDIT_VALIDATION_WORK_SOURCE_REVISION_REQUIRED');
   }
@@ -656,6 +660,7 @@ export async function startOrJoinEditValidation(
     requestId,
     sourceRevision: validationSourceRevision ?? undefined,
     workspaceFingerprint: validationWorkspaceFingerprint,
+    outsideWorkspaceFingerprint: validationOutsideFingerprint,
     checkIds,
     lanes: checkLanes(validationRepository, checkIds),
     processes: {},
