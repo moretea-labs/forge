@@ -2854,7 +2854,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect(git(fx.repoRoot, ['status', '--porcelain=v1', '--untracked-files=all'])).toBe(parentStatus);
     expect(reconcileEditSession(fx.repoRoot, edit.sessionId).status).toBe('checked');
     writeFileSync(join(linked, 'source.txt'), 'baseline\\n');
-    expect(reconcileEditSession(fx.repoRoot, edit.sessionId).status).toBe('finalized');
+    expect(finalizeEditSession(fx.repoRoot, edit.sessionId, { binding }).status).toBe('finalized');
     expect(readFileSync(nestedIndex)).toEqual(originalIndex);
     git(owner, ['worktree', 'remove', linked]);
   });
@@ -2928,7 +2928,27 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     expect(getEditSession(fx.repoRoot, edit.sessionId).status).toBe('checked');
     expect(readFileSync(nestedIndex)).toEqual(originalIndex);
 
+    // A new request with changed nested input must launch a physical Check,
+    // never rebind the old passing Process through its unchanged Check cacheKey.
+    const changedRequest = { ...args, validationRequestId: 'no-work-linked-git-receipt-changed-input' };
+    const changedStart = await startOrJoinEditValidation(fx.controllerHome, fx.repository, changedRequest);
+    expect(changedStart.processes[0]?.processId).not.toBe(verified.processes[0]?.processId);
+    for (const process of changedStart.processes) {
+      await waitForProcess(fx.controllerHome, fx.repository.repoId, process.processId, { timeoutMs: 10_000 });
+    }
+    const changedEnd = await startOrJoinEditValidation(fx.controllerHome, fx.repository, changedRequest);
+    expect(changedEnd).toMatchObject({ completed: true, ok: false });
+    const changedRecord = getProcessRecord(fx.controllerHome, fx.repository.repoId, changedEnd.processes[0]!.processId);
+    expect(readPersistedCheckResultReceipt(changedRecord?.origin?.checkResultReceiptPath)).toMatchObject({ ok: false, status: 9 });
+
     writeFileSync(join(linked, 'source.txt'), 'baseline\\n');
+    const restoredRequest = { ...args, validationRequestId: 'no-work-linked-git-receipt-restored-input' };
+    const restoredStart = await startOrJoinEditValidation(fx.controllerHome, fx.repository, restoredRequest);
+    for (const process of restoredStart.processes) {
+      await waitForProcess(fx.controllerHome, fx.repository.repoId, process.processId, { timeoutMs: 10_000 });
+    }
+    const restoredEnd = await startOrJoinEditValidation(fx.controllerHome, fx.repository, restoredRequest);
+    expect(restoredEnd).toMatchObject({ completed: true, ok: true });
     expect(finalizeEditSession(fx.repoRoot, edit.sessionId, { binding }).status).toBe('finalized');
     expect(readFileSync(nestedIndex)).toEqual(originalIndex);
     git(owner, ['worktree', 'remove', linked]);

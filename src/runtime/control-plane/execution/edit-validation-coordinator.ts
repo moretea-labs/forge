@@ -325,11 +325,22 @@ function validationRunRepository(
   return candidate;
 }
 
+function editCheckInputFingerprint(run: EditValidationRunState, checkId: string, requestedChecks: string[]): string {
+  if (!run.workspaceFingerprint) throw new Error('EDIT_VALIDATION_WORKSPACE_IDENTITY_REQUIRED');
+  return verificationInputFingerprint({
+    sourceRevision: run.sourceRevision ?? '',
+    workspaceFingerprint: run.workspaceFingerprint,
+    checkId,
+    requestedChecks,
+  });
+}
+
 function receiptFor(
   controllerHome: string,
   repository: RepositoryRecord,
   run: EditValidationRunState,
   checkId: string,
+  requestedChecks: string[],
 ): ProcessCheckCompletionReceipt {
   const binding = run.processes[checkId];
   if (!binding) throw new Error(`EDIT_VALIDATION_PROCESS_MISSING: ${checkId}`);
@@ -368,6 +379,7 @@ function receiptFor(
         scopeKey: processCheckSemanticScopeKey({
           checkoutId: repository.activeCheckoutId,
           workId: session.workId,
+          requestSemanticFingerprint: editCheckInputFingerprint(run, checkId, requestedChecks),
           verificationBinding: {
             editSessionId: run.editSessionId,
             editRevision: run.editRevision,
@@ -442,14 +454,7 @@ export async function reconcileEditValidationRun(
         timeoutMs: run.timeoutMs,
         interactiveWaitMs: 0,
         requestId: checkRequestId,
-        requestSemanticFingerprint: run.sourceRevision && run.workspaceFingerprint
-          ? verificationInputFingerprint({
-              sourceRevision: run.sourceRevision,
-              workspaceFingerprint: run.workspaceFingerprint,
-              checkId,
-              requestedChecks: work?.checks.length ? work.checks : run.checkIds,
-            })
-          : undefined,
+        requestSemanticFingerprint: editCheckInputFingerprint(run, checkId, work?.checks.length ? work.checks : run.checkIds),
         workId: session.workId,
         commandId: checkRequestId,
         verificationBinding: {
@@ -498,7 +503,7 @@ export async function reconcileEditValidationRun(
   }
 
   try {
-    const receipts = run.checkIds.map((checkId) => receiptFor(controllerHome, validationRepository, run, checkId));
+    const receipts = run.checkIds.map((checkId) => receiptFor(controllerHome, validationRepository, run, checkId, work?.checks.length ? work.checks : run.checkIds));
     const projections = receipts.map((receipt, index) => {
       const record = records[index]!;
       const legacyEvidence = record.origin?.checkResultReceiptPath
