@@ -5,7 +5,7 @@ import { commandExecutionScopeKey, type RepositoryCommandScopeTarget } from '../
 import { executionIdentityForWork, type ResolvedExecutionIdentity } from '../../../src/runtime/control-plane/execution/execution-identity';
 import { resolveClaimedRepositoryWorkId, resolveExplicitClaimedRepositoryWork, type RepositoryWorkAttributionCaller } from '../../../src/runtime/control-plane/execution/repository-work-attribution';
 import { getWorkContract, semanticWorkState, type WorkContract } from '../../../packages/kernel/work/api';
-import { assertCanonicalRepositoryMutationWorkHandleAvailable, ensureRepositoryMutationWorkHandle, markRepositoryMutationStarted } from '../../../src/runtime/control-plane/execution/work-handle-authority';
+import { ensureRepositoryMutationWorkHandle, markRepositoryMutationStarted } from '../../../src/runtime/control-plane/execution/work-handle-authority';
 import { readWorkHandle } from '../../../src/runtime/control-plane/execution/work-handle-store';
 import { ensureRunningRepositoryWorkCheckout } from '../../../src/runtime/control-plane/execution/retained-work-resume';
 import { executeRepositoryCommand, previewRepositoryCommandExecution } from '../../../src/cli/repositories/command-executor';
@@ -959,14 +959,6 @@ export async function callRepositoryTool(
           repository.repoId,
           'mcp:repository_safe_patch_apply',
           () => {
-            if (args.validation_only !== true) {
-              assertCanonicalRepositoryMutationWorkHandleAvailable({
-                controllerHome,
-                repositoryId: repository.repoId,
-                checkoutId: repository.activeCheckoutId,
-                workId: binding?.workId,
-              });
-            }
             // A validation-only reattachment is not repository mutation admission;
             // it must never promote a thin investigation to repository_change.
             const mutationAuthority = binding?.workId && args.validation_only !== true
@@ -1169,23 +1161,6 @@ export async function callRepositoryTool(
             // repository identity here drops branch/expectedHead and prevents the
             // successful command from settling its legitimate successor HEAD.
             executionIdentity = executionIdentityForWork(repository!, mutationAuthority.handle);
-          } else if (repository) {
-            // Repository-semantic mutation fencing applies only to a registered
-            // repository target; an arbitrary workspace owns no registry record,
-            // WorkHandle, or lease, so a registry-keyed ownership assert would
-            // fail with "repository not found" for a valid existing directory.
-            // Path-scoped execution keeps its cwd containment and root checks.
-            withControllerLock(
-              controllerHome,
-              { scope: 'repository', repoId: commandExecutionScopeKey(commandTarget) },
-              'mcp:execute_command:unattributed-mutation-authority',
-              () => assertCanonicalRepositoryMutationWorkHandleAvailable({
-                controllerHome,
-                repositoryId: commandExecutionScopeKey(commandTarget),
-                checkoutId: commandTarget.activeCheckoutId ?? '',
-              }),
-              60_000,
-            );
           }
         }
         // Compatibility boundary only: this facade owns repository-domain

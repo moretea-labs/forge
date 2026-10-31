@@ -219,7 +219,11 @@ function isReadOnlyGitCommand(words: string[]): boolean {
   if (!subcommand) return false;
   if (READ_ONLY_GIT_SUBCOMMANDS.has(subcommand)) return true;
   if (subcommand === 'branch') {
-    if (hasGitFlag(words, '-d', '-D', '-m', '-M', '--delete', '--move', '--copy', '--set-upstream-to', '--unset-upstream')
+    const shortFlags = words.slice(2)
+      .filter((word) => /^-[^-]+$/.test(word))
+      .flatMap((word) => [...word.slice(1)]);
+    if (shortFlags.some((flag) => 'dDmMcCfFtuU'.includes(flag))
+      || hasGitFlag(words, '--delete', '--move', '--copy', '--force', '--track', '--no-track', '--create-reflog', '--edit-description', '--set-upstream-to', '--unset-upstream')
       || words.some((word) => word.startsWith('--set-upstream-to='))) {
       return false;
     }
@@ -229,6 +233,7 @@ function isReadOnlyGitCommand(words: string[]): boolean {
         '-a', '--all', '-r', '--remotes', '-l', '--list', '-v', '-vv',
         '--merged', '--no-merged', '--contains', '--no-contains', '--points-at', '--show-current',
       )
+      || (shortFlags.length > 1 && shortFlags.every((flag) => 'arlv'.includes(flag)))
       || words.some((word) => word.startsWith('--contains=') || word.startsWith('--points-at='));
   }
   if (subcommand === 'tag') {
