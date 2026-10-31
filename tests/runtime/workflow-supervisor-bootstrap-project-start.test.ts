@@ -133,6 +133,71 @@ describe('Supervisor bootstrap Project binding before enrollment', () => {
     expect(store.getEffectByOriginKey(`enrollment:${task.taskId}`)?.effectId).toBe(effect.effectId);
   });
 
+  test('binds an existing Work-owned Reviewer after ambiguous pre-send discovery without replacing its effect', async () => {
+    const competingProjectId = 'g-p-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const { root, store, control } = await fixture(true, true, competingProjectId);
+    const workId = 'work-review-once';
+    const taskId = `forge:${repoId}:work:${workId}`;
+    const registration = {
+      taskId, conversationId: `bootstrap:${workId}`, conversationUrl: 'https://chatgpt.com/',
+      objective: 'One-shot exact SHA independent reviewer',
+      completionContract: { kind: 'forge_work_done', controller_home: root, repo_id: repoId, work_id: workId },
+      continuationPolicy: { kind: 'forge_goal_outer_turn', bootstrap: true, outer_turn_owner: 'workflow_supervisor' },
+      userBlockerPolicy: { kind: 'forge_work_waiting_for_user', controller_home: root, repo_id: repoId, work_id: workId },
+    };
+    const task = control.registerTask(registration);
+    const effect = control.reserveEnrollment(task.taskId);
+    control.recordBrowserDiscovery('chrome', [{
+      conversationId: '22222222-3333-4444-5555-666666666666',
+      canonicalUrl: `https://chatgpt.com/g/${projectId}/c/22222222-3333-4444-5555-666666666666`,
+      projectTitle: 'Forge', projectUrl,
+    }]);
+    expect(() => control.bootstrapProjectUrl(task.taskId)).toThrow('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_AMBIGUOUS');
+    store.recordBrowserDeliveryAttemptFailure({
+      taskId: task.taskId, conversationId: task.conversationId, effectId: effect.effectId,
+      code: 'WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_AMBIGUOUS',
+    });
+    expect(store.effectDispatchBudget(effect.effectId).generations).toBe(0);
+    const args = {
+      operation: 'bootstrap_project_bind', repo_id: repoId, task_id: task.taskId,
+      project_url: projectUrl, request_id: 'bind-existing-work-reviewer',
+      authorized_by: 'explicit operator verified Project',
+    };
+    const receipt = await callWorkflowSupervisorAdapter(context(root), 'supervisor_task', args);
+    expect(receipt?.structuredContent).toMatchObject({ taskId: task.taskId, projectUrl, status: 'project_bound' });
+    expect(control.bootstrapProjectUrl(task.taskId)).toBe(projectUrl);
+    expect(control.bootstrapPoll(task.taskId).command?.effectId).toBe(effect.effectId);
+    expect(control.registerTask(registration)).toMatchObject({ taskId, conversationId: task.conversationId });
+    expect(store.getEffectByOriginKey(`enrollment:${task.taskId}`)?.effectId).toBe(effect.effectId);
+    expect(() => control.registerTask({ ...registration, objective: 'Conflicting identity' }))
+      .toThrow('WORKFLOW_SUPERVISOR_TASK_ID_CONFLICT');
+    expect(store.effectDispatchBudget(effect.effectId).generations).toBe(0);
+    expect((await callWorkflowSupervisorAdapter(context(root), 'supervisor_task', args))?.structuredContent)
+      .toMatchObject({ deduplicated: true });
+    await expect(callWorkflowSupervisorAdapter(context(root), 'supervisor_task', {
+      ...args, project_url: `https://chatgpt.com/g/${competingProjectId}/project`,
+    })).rejects.toThrow('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_BINDING_CONFLICT');
+  });
+
+  test('cannot bind a Work-owned bootstrap after any provider dispatch has started', async () => {
+    const { root, store, control } = await fixture(true);
+    const workId = 'work-review-already-dispatched';
+    const task = control.registerTask({
+      taskId: `forge:${repoId}:work:${workId}`,
+      conversationId: `bootstrap:${workId}`, conversationUrl: 'https://chatgpt.com/',
+      objective: 'Unsafe late Project change must be blocked',
+      completionContract: { kind: 'forge_work_done', repo_id: repoId, work_id: workId },
+      continuationPolicy: { kind: 'forge_goal_outer_turn', bootstrap: true },
+      userBlockerPolicy: {},
+    });
+    const effect = control.reserveEnrollment(task.taskId);
+    store.recordEffectDispatchStarted(effect.effectId, 1, 'real-send-already-started');
+    expect(() => control.bindBootstrapProject({
+      taskId: task.taskId, projectUrl, requestId: 'late-work-binding', authorizedBy: 'operator',
+    })).toThrow('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_BINDING_OUTCOME_UNRESOLVED');
+    expect(store.boundBootstrapProjectUrl(task.taskId)).toBeUndefined();
+  });
+
   test('first Project binding is rejected after any provider dispatch has begun', async () => {
     const { root, store, control } = await fixture(true);
     const task = control.registerTask({

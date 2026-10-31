@@ -413,6 +413,22 @@ function effectPreflightFailureReleaseIds(db: Database, effectId: string): Array
   return rows.map((row) => ({ eventId: Number(row.event_id ?? 0), releaseId: String(parsedObject(row.payload_json).active_release_id ?? 'unidentified-runtime') }));
 }
 
+/** The existing Project-binding authority applies only to a real unsent bootstrap,
+ * including Work-owned enrollments whose task id and conversation identity agree. */
+function canBindBootstrapProject(task: WorkflowSupervisorTask): boolean {
+  if (task.continuationPolicy.kind === 'standalone_supervisor') {
+    return task.conversationId === `bootstrap:${task.taskId}`;
+  }
+  const workId = boundedText(task.completionContract.work_id);
+  const repoId = boundedText(task.completionContract.repo_id);
+  return task.continuationPolicy.kind === 'forge_goal_outer_turn'
+    && task.continuationPolicy.bootstrap === true
+    && ['forge_work_done', 'forge_requirement_done'].includes(String(task.completionContract.kind))
+    && Boolean(repoId && workId)
+    && task.taskId === `forge:${repoId}:work:${workId}`
+    && task.conversationId === `bootstrap:${workId}`;
+}
+
 export class WorkflowSupervisorStore {
   private readonly db: Database;
   private closed = false;
@@ -534,6 +550,19 @@ export class WorkflowSupervisorStore {
       }
       const taskRepo = typeof task.completionContract.repo_id === 'string' ? task.completionContract.repo_id : task.continuationPolicy.repo_id;
       const inputRepo = typeof input.completionContract.repo_id === 'string' ? input.completionContract.repo_id : input.continuationPolicy.repo_id;
+      // Explicit Project binding adds one monotonic local fence to the stored
+      // Work bootstrap policy. An exact registration retry must preserve that
+      // fence and reuse this task, never interpret it as a new identity.
+      if (task.continuationPolicy.project_binding_required === true && canBindBootstrapProject(task)
+        && statement(db, "SELECT 1 FROM events WHERE task_id=? AND kind='bootstrap_project_bound' LIMIT 1", (s) => s.get(task.taskId))) {
+        const { project_binding_required: _boundProjectGate, ...originalPolicy } = task.continuationPolicy;
+        if (taskRepo === inputRepo
+          && task.conversationId === input.conversationId && task.conversationUrl === input.conversationUrl
+          && task.objective === input.objective
+          && json(task.completionContract) === json(input.completionContract)
+          && json(originalPolicy) === json(input.continuationPolicy)
+          && json(task.userBlockerPolicy) === json(input.userBlockerPolicy)) return task;
+      }
       const { checkout_id: incomingCheckout, ...incomingCompletion } = input.completionContract;
       const { checkout_id: selectedCheckout, ...selectedCompletion } = task.completionContract;
       // Registration may fill an initially missing execution hint. It cannot
@@ -895,8 +924,7 @@ export class WorkflowSupervisorStore {
       const row = statement(db, 'SELECT * FROM tasks WHERE task_id = ?', (s) => s.get(taskId)) as Record<string, unknown> | undefined;
       if (!row) throw new Error('WORKFLOW_SUPERVISOR_TASK_UNKNOWN');
       const task = taskFromRow(row);
-      if (task.continuationPolicy.kind !== 'standalone_supervisor'
-        || task.conversationId !== `bootstrap:${task.taskId}`) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_BINDING_NOT_PENDING');
+      if (!canBindBootstrapProject(task)) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_BINDING_NOT_PENDING');
       if (statement(db, "SELECT 1 FROM events WHERE task_id=? AND kind IN ('terminal_done','terminal_needs_user','terminal_stopped') LIMIT 1", (s) => s.get(taskId))) {
         throw new Error('WORKFLOW_SUPERVISOR_TASK_TERMINAL');
       }
@@ -931,8 +959,7 @@ export class WorkflowSupervisorStore {
         if (parsedObject(prior.payload_json).project_url !== input.projectUrl) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_BINDING_CONFLICT');
         return { projectUrl: input.projectUrl, deduplicated: true };
       }
-      if (task.continuationPolicy.kind !== 'standalone_supervisor'
-        || task.conversationId !== `bootstrap:${task.taskId}`) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_BINDING_NOT_PENDING');
+      if (!canBindBootstrapProject(task)) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_BINDING_NOT_PENDING');
       if (statement(db, "SELECT 1 FROM events WHERE task_id=? AND kind IN ('terminal_done','terminal_needs_user','terminal_stopped') LIMIT 1", (s) => s.get(input.taskId))) throw new Error('WORKFLOW_SUPERVISOR_TASK_TERMINAL');
       const effects = statement(db, 'SELECT effect_id FROM effects WHERE task_id = ?', (s) => s.all(input.taskId)) as Array<{ effect_id?: string }>;
       const dispatchStarted = effects.some((effect) => {
