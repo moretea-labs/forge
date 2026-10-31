@@ -42,6 +42,7 @@ import {
   assertEditSessionDurableBinding,
   beginEditSession,
   finalizeEditSession,
+  reconcileEditSession,
   getEditSession,
 } from '../../src/cli/editing/edit-session';
 import { getMcpPolicy } from '../../adapters/mcp/policy';
@@ -2792,6 +2793,165 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       expect(Boolean(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, workId))).toBe(withWork);
       if (nestedIndex) expect(readFileSync(join(nestedRoot, '.git', 'index'))).toEqual(nestedIndex);
     }
+  });
+
+  test('a checked ordinary edit reconciles after its verified after-image is committed', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    const checkId = 'verify';
+    const owner = join(fx.root, 'afterimage-owner');
+    const linked = join(fx.repoRoot, 'nested-linked');
+    mkdirSync(owner);
+    git(owner, ['init', '-b', 'main']);
+    git(owner, ['config', 'user.name', 'Test']);
+    git(owner, ['config', 'user.email', 'test@example.com']);
+    writeFileSync(join(owner, 'source.txt'), 'baseline\\n');
+    git(owner, ['add', 'source.txt']);
+    git(owner, ['commit', '-m', 'nested baseline']);
+    git(owner, ['worktree', 'add', '--detach', linked, 'HEAD']);
+    const nestedIndex = git(linked, ['rev-parse', '--git-path', 'index']);
+    const originalIndex = readFileSync(nestedIndex);
+    writeFileSync(join(fx.repoRoot, '.forge', 'checks.json'), JSON.stringify({
+      version: 1,
+      checks: { [checkId]: {
+        description: 'verify integrated after-image and nested source',
+        command: [process.execPath, '-e', "const fs = require('fs'); if (fs.readFileSync('nested-linked/source.txt', 'utf8') !== 'baseline\\\\n') process.exit(9)"],
+        timeoutMs: 10_000,
+        effects: { reads: ['src/lib.ts', 'nested-linked/source.txt'] },
+      } },
+    }));
+    const binding = {
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      principalId: fx.ctx.principalId ?? 'controller-http-client',
+      controllerInstanceId: fx.ctx.controllerInstanceId,
+    };
+    ensureRepositoryRuntimeStorageBinding(fx.repository, 'edit-sessions', fx.controllerHome);
+    const edit = beginEditSession(fx.repoRoot, {
+      purpose: 'after-image checked edit commit reconciliation',
+      allowedPaths: ['src/lib.ts'],
+      checks: [checkId],
+      binding,
+    });
+    applyEditOperations(fx.repoRoot, getMcpPolicy('controller'), edit.sessionId, [{
+      type: 'replace',
+      path: 'src/lib.ts',
+      expectedSha256: createHash('sha256').update(readFileSync(join(fx.repoRoot, 'src', 'lib.ts'))).digest('hex'),
+      replacements: [{ oldText: 'n = 1', newText: 'n = 2' }],
+    }], { binding });
+    const request = { editSessionId: edit.sessionId, checkIds: [checkId], validationRequestId: 'checked-afterimage-commit' };
+    const started = await startOrJoinEditValidation(fx.controllerHome, fx.repository, request);
+    for (const process of started.processes) {
+      await waitForProcess(fx.controllerHome, fx.repository.repoId, process.processId, { timeoutMs: 10_000 });
+    }
+    const checked = await startOrJoinEditValidation(fx.controllerHome, fx.repository, request);
+    expect(checked).toMatchObject({ completed: true, ok: true });
+    expect(getEditSession(fx.repoRoot, edit.sessionId).status).toBe('checked');
+    git(fx.repoRoot, ['add', 'src/lib.ts']);
+    git(fx.repoRoot, ['commit', '-m', 'integrate checked after-image']);
+    const parentStatus = git(fx.repoRoot, ['status', '--porcelain=v1', '--untracked-files=all']);
+    writeFileSync(join(linked, 'source.txt'), 'changed after checked receipt and commit\\n');
+    expect(git(fx.repoRoot, ['status', '--porcelain=v1', '--untracked-files=all'])).toBe(parentStatus);
+    expect(reconcileEditSession(fx.repoRoot, edit.sessionId).status).toBe('checked');
+    writeFileSync(join(linked, 'source.txt'), 'baseline\\n');
+    expect(finalizeEditSession(fx.repoRoot, edit.sessionId, { binding }).status).toBe('finalized');
+    expect(readFileSync(nestedIndex)).toEqual(originalIndex);
+    git(owner, ['worktree', 'remove', linked]);
+  });
+
+  test('no-Work edit rejects a stale Check receipt when only linked Git source changes', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    const owner = join(fx.root, 'nested-owner');
+    const linked = join(fx.repoRoot, 'nested-linked');
+    mkdirSync(owner);
+    git(owner, ['init', '-b', 'main']);
+    git(owner, ['config', 'user.name', 'Test']);
+    git(owner, ['config', 'user.email', 'test@example.com']);
+    writeFileSync(join(owner, 'source.txt'), 'baseline\\n');
+    git(owner, ['add', 'source.txt']);
+    git(owner, ['commit', '-m', 'nested baseline']);
+    git(owner, ['worktree', 'add', '--detach', linked, 'HEAD']);
+    const nestedIndex = git(linked, ['rev-parse', '--git-path', 'index']);
+    const originalIndex = readFileSync(nestedIndex);
+    const checkSource = "const fs = require('fs'); if (fs.readFileSync('nested-linked/source.txt', 'utf8') !== 'baseline\\\\n') process.exit(9)";
+    writeFileSync(join(fx.repoRoot, '.forge', 'checks.json'), JSON.stringify({
+      version: 1,
+      checks: {
+        verify: {
+          description: 'verify the real linked source content',
+          command: [process.execPath, '-e', checkSource],
+          timeoutMs: 10_000,
+          effects: { reads: ['nested-linked/source.txt'] },
+        },
+      },
+    }));
+    const binding = {
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      principalId: fx.ctx.principalId ?? 'controller-http-client',
+      controllerInstanceId: fx.ctx.controllerInstanceId,
+    };
+    ensureRepositoryRuntimeStorageBinding(fx.repository, 'edit-sessions', fx.controllerHome);
+    const edit = beginEditSession(fx.repoRoot, {
+      purpose: 'no-Work stale linked Git receipt regression',
+      allowedPaths: ['src/lib.ts'],
+      checks: ['verify'],
+      binding,
+    });
+    applyEditOperations(fx.repoRoot, getMcpPolicy('controller'), edit.sessionId, [{
+      type: 'replace',
+      path: 'src/lib.ts',
+      expectedSha256: createHash('sha256').update(readFileSync(join(fx.repoRoot, 'src', 'lib.ts'))).digest('hex'),
+      replacements: [{ oldText: 'n = 1', newText: 'n = 2' }],
+    }], { binding });
+    const args = {
+      editSessionId: edit.sessionId,
+      checkIds: ['verify'],
+      validationRequestId: 'no-work-linked-git-receipt-baseline',
+    };
+    const started = await startOrJoinEditValidation(fx.controllerHome, fx.repository, args);
+    for (const process of started.processes) {
+      await waitForProcess(fx.controllerHome, fx.repository.repoId, process.processId, { timeoutMs: 10_000 });
+    }
+    const verified = await startOrJoinEditValidation(fx.controllerHome, fx.repository, args);
+    expect(verified).toMatchObject({ completed: true, ok: true });
+    expect(verified.receipts?.[0]?.status).toBe('passed');
+    expect(getEditSession(fx.repoRoot, edit.sessionId).status).toBe('checked');
+
+    const parentStatus = git(fx.repoRoot, ['status', '--porcelain=v1', '--untracked-files=all']);
+    writeFileSync(join(linked, 'source.txt'), 'changed after receipt\\n');
+    expect(git(fx.repoRoot, ['status', '--porcelain=v1', '--untracked-files=all'])).toBe(parentStatus);
+    expect(spawnSync(process.execPath, ['-e', checkSource], { cwd: fx.repoRoot }).status).toBe(9);
+    expect(() => finalizeEditSession(fx.repoRoot, edit.sessionId, { binding }))
+      .toThrow('EDIT_SESSION_VALIDATED_WORKSPACE_CHANGED');
+    expect(getEditSession(fx.repoRoot, edit.sessionId).status).toBe('checked');
+    expect(readFileSync(nestedIndex)).toEqual(originalIndex);
+
+    // A new request with changed nested input must launch a physical Check,
+    // never rebind the old passing Process through its unchanged Check cacheKey.
+    const changedRequest = { ...args, validationRequestId: 'no-work-linked-git-receipt-changed-input' };
+    const changedStart = await startOrJoinEditValidation(fx.controllerHome, fx.repository, changedRequest);
+    expect(changedStart.processes[0]?.processId).not.toBe(verified.processes[0]?.processId);
+    for (const process of changedStart.processes) {
+      await waitForProcess(fx.controllerHome, fx.repository.repoId, process.processId, { timeoutMs: 10_000 });
+    }
+    const changedEnd = await startOrJoinEditValidation(fx.controllerHome, fx.repository, changedRequest);
+    expect(changedEnd).toMatchObject({ completed: true, ok: false });
+    const changedRecord = getProcessRecord(fx.controllerHome, fx.repository.repoId, changedEnd.processes[0]!.processId);
+    expect(readPersistedCheckResultReceipt(changedRecord?.origin?.checkResultReceiptPath)).toMatchObject({ ok: false, status: 9 });
+
+    writeFileSync(join(linked, 'source.txt'), 'baseline\\n');
+    const restoredRequest = { ...args, validationRequestId: 'no-work-linked-git-receipt-restored-input' };
+    const restoredStart = await startOrJoinEditValidation(fx.controllerHome, fx.repository, restoredRequest);
+    for (const process of restoredStart.processes) {
+      await waitForProcess(fx.controllerHome, fx.repository.repoId, process.processId, { timeoutMs: 10_000 });
+    }
+    const restoredEnd = await startOrJoinEditValidation(fx.controllerHome, fx.repository, restoredRequest);
+    expect(restoredEnd).toMatchObject({ completed: true, ok: true });
+    expect(finalizeEditSession(fx.repoRoot, edit.sessionId, { binding }).status).toBe('finalized');
+    expect(readFileSync(nestedIndex)).toEqual(originalIndex);
+    git(owner, ['worktree', 'remove', linked]);
   });
 
   test('durable edit-session validation binding rejects different Work, principal, or checkout', () => {

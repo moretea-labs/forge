@@ -75,10 +75,14 @@ export interface RunCheckFacadeInput {
 }
 
 export function processCheckSemanticScopeKey(
-  input: Pick<RunCheckFacadeInput, 'workId' | 'verificationBinding' | 'checkoutId'>,
+  input: Pick<RunCheckFacadeInput, 'workId' | 'verificationBinding' | 'checkoutId' | 'requestSemanticFingerprint'>,
   reuseScope: 'repository' | 'checkout',
 ): string {
-  return reuseScope === 'repository' ? 'repository' : `checkout:${input.checkoutId ?? 'unknown'}`;
+  const scope = reuseScope === 'repository' ? 'repository' : `checkout:${input.checkoutId ?? 'unknown'}`;
+  // The physical Check cacheKey stays owned by Check Runner; an EditSession's
+  // exact source identity fences semantic Process reuse across input changes.
+  const editInput = input.verificationBinding?.editSessionId ? input.requestSemanticFingerprint?.trim() : undefined;
+  return editInput ? `${scope}:edit-input:${editInput}` : scope;
 }
 
 export interface RunCheckFacadeResult {
