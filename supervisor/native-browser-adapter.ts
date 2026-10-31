@@ -884,8 +884,8 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     const target = ensured.target;
     const snapshot = ensured.observation ?? await target.observe({ includeUserHistory: false, includePageText: false });
     if (!exactConversation(snapshot, task)) { this.noteTargetUnavailable(task, poll.command?.effectId, { code: 'WORKFLOW_SUPERVISOR_EXACT_CONVERSATION_UNPROVEN' }); return; }
-    if (this.handleVerifiedTerminalCapacity(task, poll.command?.effectId, snapshot)) return;
     if (!this.taskConversationContentAvailable(task, snapshot)) {
+      if (this.handleVerifiedTerminalCapacity(task, poll.command?.effectId, snapshot)) return;
       this.observeVerifiedEmptyShell(task, poll.command?.effectId ?? (stall.state === 'spaced' ? stall.effectId : undefined), poll.command, snapshot);
       return;
     }
@@ -969,6 +969,10 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       poll = this.control.browserPoll({ conversationId: task.conversationId, conversationUrl: task.conversationUrl });
       if (poll.terminal) return;
     }
+    // Terminal capacity may coexist with a finished assistant message. Consume
+    // only a validated, causal Supervisor receipt above before evaluating
+    // migration; an absent/invalid receipt still keeps applied turns fenced.
+    if (this.handleVerifiedTerminalCapacity(task, poll.command?.effectId, snapshot)) return;
     // An exact applied user turn can stop without rendering any assistant
     // message. Only an idle provider and no unresolved successor permit the
     // existing stable-digest grace to recover it; this never replays its Send.

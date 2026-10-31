@@ -4627,6 +4627,7 @@ test('a terminal conversation capacity banner migrates the same Supervisor but q
 
   const warning = '你已达到此对话的长度上限，你可以开始新聊天以继续对话。';
   let activeStatus = '';
+  let confirmedResponse = '';
   const page: TestBrowserPage = {
     evaluate: async <T>() => false as T,
     waitForSelector: async () => undefined,
@@ -4651,10 +4652,12 @@ test('a terminal conversation capacity banner migrates the same Supervisor but q
       title: 'Avela',
       // The live capacity banner can outlive hydration of the old transcript.
       // A quoted activity line without a live failure remains insufficient.
-      latestUserText: observedPage === page && !activeStatus ? 'Original durable effect already submitted.' : '',
-      latestAssistantResponse: '', providerActivityText: observedPage === page && !activeStatus ? warning : '',
+      latestUserText: observedPage === page
+        ? (confirmedResponse ? effect.prompt : 'Original durable effect already submitted.') : '',
+      latestAssistantResponse: observedPage === page ? confirmedResponse : '',
+      providerActivityText: observedPage === page && !activeStatus ? warning : '',
       providerFailureText: observedPage === page ? activeStatus : '',
-      latestTurnRole: 'user' as const,
+      latestTurnRole: confirmedResponse ? 'assistant' as const : 'user' as const,
       isGenerating: false,
     }),
     // A separate NEW enrollment may be attempted; the old applied source
@@ -4690,16 +4693,21 @@ test('a terminal conversation capacity banner migrates the same Supervisor but q
     conversationUrl: 'https://chatgpt.com/c/99999999-8888-7777-6666-555555555555',
     requestId: 'capacity-unresolved-explicit', reason: 'Move conversation', authorizedBy: 'test',
   })).toThrow('WORKFLOW_SUPERVISOR_MIGRATION_APPLIED_TURN_UNRESOLVED');
-  const completed = await control.observeAssistantTurn({ taskId, conversationId,
-    responseText: 'Existing turn completed.\n' + renderSupervisorReceipt(control.getTask(taskId)!, effect.effectId, 'CONTINUE'),
-  });
-  expect(completed.action).toBe('CONTINUE');
-  // The old transcript is now empty while the exact provider failure banner
-  // remains visible. The CAS can migrate only after that applied receipt.
-  // The previous capacity observation set task-local backoff. A completed
-  // source receipt restores eligibility, but it must respect that spacing.
+  // Visible assistant text without an exact causal receipt must still be
+  // fenced even when terminal capacity is independently verified.
+  confirmedResponse = 'Assistant stopped, but there is no Supervisor receipt.';
   clockMs += 5 * 60_000;
   await adapter.runOnce();
+  expect(store.getLatestCompletion(taskId)).toBeUndefined();
+  expect(store.getTask(taskId)?.conversationId).toBe(conversationId);
+  // The valid receipt was already rendered in the same exact old conversation,
+  // despite the provider showing a live terminal-capacity banner. The native
+  // consumer must commit that evidence before considering safe migration.
+  confirmedResponse = 'Existing turn completed.\n'
+    + renderSupervisorReceipt(control.getTask(taskId)!, effect.effectId, 'CONTINUE');
+  clockMs += 5 * 60_000;
+  await adapter.runOnce();
+  expect(store.getLatestCompletion(taskId)?.action).toBe('CONTINUE');
   expect(store.getTask(taskId)?.conversationId).toBe(`bootstrap:${taskId}`);
   expect(store.latestEffectDispatch(effect.effectId)?.generation).toBe(1);
   expect(store.getEffectByOriginKey(`fresh-conversation:${taskId}:capacity:${conversationId}`)?.kind).toBe('enrollment');
