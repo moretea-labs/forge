@@ -428,9 +428,24 @@ async function resolveTarget(identity, createIfMissing, pinnedBinding, instanceI
   if (matches.length > 1) throw new Error('COMPUTER_CHATGPT_EXTENSION_EXACT_TARGET_AMBIGUOUS');
   if (matches.length === 1) {
     const tab = matches[0];
-    const ownerToken = await requirePinnedOwner(tab, pinnedBinding, identity);
-    if (identity.namespace === 'chatgpt.bootstrap') bootstrapTabs.set(identity.bootstrapKey, tab.id);
-    return { tab, created: false, ownerToken };
+    let attested = true;
+    let ownerToken;
+    try {
+      ownerToken = await requirePinnedOwner(tab, pinnedBinding, identity);
+    } catch (error) {
+      // A Chrome restart replaces physical tab IDs. A restored tab at the exact
+      // conversation URL proves page identity, not ownership of a tab this
+      // provider created. Ensure alone may create a NEW attested tab below; the
+      // restored tab is never adopted, navigated or closed, and Prepare/Dispatch
+      // still reject the stale pin, so no Send is authorized here.
+      if (!createIfMissing || String(error?.message ?? error) !== 'COMPUTER_CHATGPT_EXTENSION_PINNED_OWNER_TOKEN_MISMATCH')
+        throw error;
+      attested = false;
+    }
+    if (attested) {
+      if (identity.namespace === 'chatgpt.bootstrap') bootstrapTabs.set(identity.bootstrapKey, tab.id);
+      return { tab, created: false, ownerToken };
+    }
   }
   if (identity?.namespace === 'chatgpt.bootstrap' && pinnedBinding?.providerId === PROVIDER_ID
     && pinnedBinding.tabId && pinnedBinding.windowId) {

@@ -974,6 +974,33 @@ test('F11 exact conversation owner mismatch can recover only through new atteste
   expect(f.dispatchSends).toBe(0);
 });
 
+// F11/Chrome restart: the persisted physical tab id no longer exists, but a
+// restored tab shows the exact conversation. Ensure may mint its own attested
+// tab; it must never adopt the restored tab or make Prepare/Dispatch usable
+// with the stale pin.
+test('F11 vanished pinned tab with exact restored conversation recovers only through a new attested Ensure tab', async () => {
+  const conversationId = '12345678-1234-1234-1234-123456789abc';
+  const conversationUrl = `https://chatgpt.com/c/${conversationId}`;
+  const f = bootstrapFixture([{ id: 900, windowId: 19, url: conversationUrl }], { validEnsureSnapshot: true });
+  const exactIdentity = { namespace: 'chatgpt.conversation', conversationId, canonicalUrl: conversationUrl };
+  const stalePin = { providerId: 'browser.chrome-extension', providerSessionId: 'profile-1',
+    tabId: '708', windowId: '19', ownerToken: 'pre-restart-owner-token' };
+  expect((await f.observe(exactIdentity, stalePin, 'profile-1'))).toMatchObject({
+    kind: 'failed', code: 'COMPUTER_CHATGPT_EXTENSION_PINNED_OWNER_TOKEN_MISMATCH',
+  });
+  expect((await f.prepare(exactIdentity, stalePin, 'profile-1'))).toMatchObject({
+    ready: false, reasonCode: 'COMPUTER_CHATGPT_EXTENSION_PINNED_OWNER_TOKEN_MISMATCH',
+  });
+  const recovered = await f.ensure(exactIdentity, stalePin, 'profile-1');
+  expect(recovered).toMatchObject({ kind: 'ensured' });
+  expect(recovered.providerBinding?.tabId).not.toBe('708');
+  expect(recovered.providerBinding?.tabId).not.toBe('900');
+  expect(recovered.providerBinding?.ownerToken).toEqual(expect.any(String));
+  expect(f.tabs).toHaveLength(2);
+  expect(f.tabs[0]).toEqual({ id: 900, windowId: 19, url: conversationUrl });
+  expect(f.dispatchSends).toBe(0);
+});
+
 test('F11 reused conversation tab id at another URL is left untouched while Ensure creates a new attested exact target', async () => {
   const otherConversationId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
   const otherConversationUrl = `https://chatgpt.com/c/${otherConversationId}`;
