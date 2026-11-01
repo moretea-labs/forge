@@ -8,7 +8,7 @@ const NATIVE_HEARTBEAT_TIMEOUT_MS = 4_000;
 const NATIVE_RPC_TIMEOUT_MS = 30_000;
 export const ALLOWED_BROWSER_METHODS = new Set([
   'health','browser_discovery','browser_discovery_update','browser_project_scopes',
-  'computer_extension_heartbeat','computer_extension_claim','computer_extension_complete',
+  'computer_extension_heartbeat','computer_extension_claim','computer_extension_complete','computer_extension_turn_event',
 ]);
 
 interface BrowserNativeRequest { id: string; method: string; params: Record<string, unknown> }

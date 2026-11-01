@@ -421,6 +421,14 @@
       return { dispatched: true, confirmed: false };
     }
   };
+  window.addEventListener('message', (event) => {
+    if (event.source !== window || event.origin !== location.origin) return;
+    const data = event.data;
+    if (data?.source !== 'forge-computer-provider-turn-v1' || data?.type !== 'turn-event' || !data.event) return;
+    try {
+      chrome.runtime.sendMessage({ type: 'forge-computer-provider-turn-event', event: data.event }, () => void chrome.runtime.lastError);
+    } catch {}
+  });
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (!message || message.type === 'forge-computer-chatgpt-scan') { notify(); sendResponse?.({ ok: true }); return false; }
     if (message.type === 'forge-computer-chatgpt-discovery-scan') {

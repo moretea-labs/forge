@@ -224,6 +224,7 @@ test('provider tick shares one heartbeat, claims only after success, and retries
       heartbeatCalls += 1;
       return new Promise<string>((resolve, reject) => { resolveHeartbeat = resolve; rejectHeartbeat = reject; });
     },
+    flushProviderTurnEvents: async () => undefined,
     nativeRpc: async (method: string) => { rpcCalls.push(method); return { command: undefined }; },
     executeCommand: async () => { throw new Error('no command expected'); },
   };
@@ -259,6 +260,7 @@ test('late Broker completion refusal is surfaced without replaying the claimed c
     identity: { conversationId: '78787878-8989-0101-2323-454545454546' } };
   const context = {
     publishHeartbeat: async () => 'profile-one',
+    flushProviderTurnEvents: async () => undefined,
     nativeRpc: async (method: string) => {
       rpcCalls.push(method);
       if (method === 'computer_extension_claim') return { command };
@@ -382,4 +384,92 @@ test('a timed-out completion schedules a new heartbeat rather than replaying the
   expect(ports).toHaveLength(2);
   expect(ports[0].sent.map((entry) => entry.method)).toEqual(['computer_extension_complete']);
   expect(ports[1].sent.map((entry) => entry.method)).toEqual(['computer_extension_heartbeat']);
+});
+
+
+test('MAIN-world provider capture requires a final assistant SSE receipt, not HTTP 200 alone', async () => {
+  const manifest = JSON.parse(readFileSync('adapters/computer/chrome-extension/manifest.json', 'utf8')) as {
+    permissions: string[]; content_scripts: Array<{ world?: string; js: string[]; run_at?: string }>;
+  };
+  expect(manifest.permissions).not.toContain('webRequest');
+  expect(manifest.content_scripts.some((s) => s.world === 'MAIN' && s.run_at === 'document_start'
+    && s.js.includes('provider-turn-main.js'))).toBe(true);
+  const source = readFileSync('adapters/computer/chrome-extension/provider-turn-main.js', 'utf8');
+  const bridge = readFileSync('adapters/computer/chrome-extension/content.js', 'utf8');
+  const background = readFileSync('adapters/computer/chrome-extension/background.js', 'utf8');
+  expect(bridge).toContain("'forge-computer-provider-turn-v1'");
+  expect(background).toContain("req");
+  expect(background).toContain("'computer_extension_turn_event'");
+  const conversationId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+  const url = 'https://chatgpt.com/c/' + conversationId;
+  const events: Array<{ event: Record<string, unknown> }> = [];
+  let statusCode = 200;
+  let sse = '';
+  const windowMock = {
+    postMessage(data: { event: Record<string, unknown> }) { events.push(data); },
+    fetch: async (_input: unknown, _init: unknown) => ({
+      status: statusCode,
+      headers: { get(name: string) {
+        if (name === 'content-type') return statusCode === 200 ? 'text/event-stream' : 'application/json';
+        if (name === 'retry-after') return '45';
+        return null;
+      } },
+      clone() {
+        let read = false;
+        return { body: { getReader() { return { async read() {
+          if (read) return { done: true };
+          read = true;
+          return { done: false, value: new TextEncoder().encode(sse) };
+        } }; } } };
+      },
+    }),
+  };
+  runInNewContext(source, {
+    window: windowMock,
+    location: { href: url, origin: 'https://chatgpt.com' },
+    crypto: { randomUUID: () => '00000000-0000-4000-8000-000000000001' },
+    URL, Request, Blob, URLSearchParams, TextDecoder, TextEncoder, Uint8Array,
+  });
+  const prompt = '<<<FORGE_WORKFLOW_EFFECT_V1:fx_0123456789abcdef0123456789abcdef>>>' +
+    '\ntask_id:"supervisor:test"\nreceipt:abc1234\nprovider_turn:sse-final-v1\nContinue.';
+  const body = JSON.stringify({ conversation_id: conversationId,
+    messages: [{ id: 'turn-user-1', author: { role: 'user' }, content: { parts: [prompt] } }] });
+  async function send() {
+    await windowMock.fetch('https://chatgpt.com/backend-api/conversation', { method: 'POST', body });
+    for (let i = 0; i < 4; i++) await new Promise<void>((resolve) => setImmediate(resolve));
+    const last = events.pop()?.event;
+    expect(last).toBeDefined();
+    return last!;
+  }
+  sse = 'data: ' + JSON.stringify({ message: { id: 'assistant-1', author: { role: 'assistant' },
+    status: 'finished_successfully', end_turn: true } }) + '\n\n' + 'data: [DONE]\n\n';
+  expect(await send()).toMatchObject({ task_id: 'supervisor:test', turn_id: 'turn-user-1',
+    effect_id: 'fx_0123456789abcdef0123456789abcdef', conversation_id: conversationId,
+    outcome: 'completed', assistant_message_id: 'assistant-1', assistant_status: 'finished_successfully',
+    assistant_end_turn: true, stream_done: true, status_code: 200 });
+  sse = 'data: ' + JSON.stringify({ message: { id: 'assistant-2', author: { role: 'assistant' },
+    status: 'finished_successfully', end_turn: true } }) + '\n\n';
+  expect(await send()).toMatchObject({ outcome: 'unknown',
+    failure_code: 'CHATGPT_PROVIDER_TURN_COMPLETION_MISSING', status_code: 200 });
+  statusCode = 429;
+  expect(await send()).toMatchObject({ outcome: 'failed', failure_code: 'CHATGPT_AUTOMATION_RATE_LIMITED',
+    status_code: 429, retry_after_ms: 45000 });
+});
+
+test('provider turn receipt delivery cannot block the next Supervisor command claim', async () => {
+  const source = readFileSync('adapters/computer/chrome-extension/background.js', 'utf8');
+  const start = source.indexOf('let providerTickInFlight;');
+  const end = source.indexOf('async function discoveryScan', start);
+  const code = source.slice(start, end);
+  const calls: string[] = [];
+  const context = {
+    publishHeartbeat: async () => 'provider-instance',
+    flushProviderTurnEvents: () => new Promise<void>(() => {}),
+    nativeRpc: async (method: string) => { calls.push(method); return { command: null }; },
+    executeCommand: async () => undefined,
+    console: { warn: () => undefined },
+  };
+  const providerTick = runInNewContext(code + '\nproviderTick', context) as () => Promise<void>;
+  await providerTick();
+  expect(calls).toEqual(['computer_extension_claim']);
 });

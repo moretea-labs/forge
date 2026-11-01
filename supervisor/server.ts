@@ -4,7 +4,7 @@ import { dirname } from 'node:path';
 import { mkdirSync } from 'node:fs';
 import type { WorkflowSupervisorControlPlane } from './control-plane';
 import { parseChatgptConversationIdentity } from './chatgpt-conversation';
-import type { WorkflowSupervisorConsumerStatus, WorkflowSupervisorDiscoverySnapshot, WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorReviewNotice } from './types';
+import type { WorkflowSupervisorConsumerStatus, WorkflowSupervisorDiscoverySnapshot, WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorProviderTurnEvent, WorkflowSupervisorReviewNotice } from './types';
 import type { ComputerChatgptExtensionBrokerRpc, ComputerChatgptExtensionCommandResult, ComputerChatgptExtensionHeartbeat } from '../packages/plugin-runtime/computer';
 import { chatgptProviderPageFailure } from '../adapters/chatgpt/provider-delivery';
 
@@ -323,6 +323,37 @@ async function dispatch(control: WorkflowSupervisorControlPlane, discovery: Work
     if (!computerExtensionBroker) throw new Error('COMPUTER_CHATGPT_EXTENSION_BROKER_UNAVAILABLE');
     return { recorded: computerExtensionBroker.complete(text(p, 'provider_instance_id'), text(p, 'command_id'), object(p.result) as unknown as ComputerChatgptExtensionCommandResult) };
   }
+  if (req.method === 'computer_extension_turn_event') {
+    if (!computerExtensionBroker) throw new Error('COMPUTER_CHATGPT_EXTENSION_BROKER_UNAVAILABLE');
+    const outcome = text(p, 'outcome');
+    // Unknown network observation is not an authoritative completion or failure.
+    // Acknowledge as non-retryable so it does not poison the extension outbox.
+    if (outcome === 'unknown') return { accepted: false, retryable: false, reason: 'WORKFLOW_SUPERVISOR_PROVIDER_TURN_OUTCOME_UNKNOWN' };
+    if (outcome !== 'completed' && outcome !== 'failed') throw new Error('WORKFLOW_SUPERVISOR_RPC_PROVIDER_TURN_OUTCOME_INVALID');
+    const event: WorkflowSupervisorProviderTurnEvent = {
+      providerId: text(p, 'provider_id') as 'browser.chrome-extension',
+      providerInstanceId: text(p, 'provider_instance_id'),
+      taskId: text(p, 'task_id'),
+      conversationId: text(p, 'conversation_id'),
+      conversationUrl: text(p, 'conversation_url'),
+      effectId: text(p, 'effect_id'),
+      receiptChallenge: text(p, 'receipt_challenge'),
+      turnId: text(p, 'turn_id'),
+      requestId: text(p, 'request_id'),
+      startedAtMs: safeInteger(p, 'started_at_ms'),
+      observedAtMs: safeInteger(p, 'observed_at_ms'),
+      outcome,
+      statusCode: safeInteger(p, 'status_code'),
+      ...(typeof p.content_type === 'string' ? { contentType: stringValue(p.content_type) } : {}),
+      ...(typeof p.assistant_message_id === 'string' ? { assistantMessageId: stringValue(p.assistant_message_id) } : {}),
+      ...(typeof p.assistant_status === 'string' ? { assistantStatus: stringValue(p.assistant_status) } : {}),
+      ...(typeof p.assistant_end_turn === 'boolean' ? { assistantEndTurn: p.assistant_end_turn } : {}),
+      ...(typeof p.stream_done === 'boolean' ? { streamDone: p.stream_done } : {}),
+      ...(typeof p.failure_code === 'string' ? { failureCode: stringValue(p.failure_code) } : {}),
+      ...(p.retry_after_ms !== undefined ? { retryAfterMs: safeInteger(p, 'retry_after_ms') } : {}),
+    };
+    return control.recordProviderTurnEvent(event);
+  }
   if (req.method === 'consumer_status') return browserConsumerStatus?.() ?? {
     enabled: browserAdapterEnabled,
     running: false,
@@ -355,7 +386,7 @@ async function dispatch(control: WorkflowSupervisorControlPlane, discovery: Work
   if (req.method === 'browser_observe_dispatch_failure') throw new Error('WORKFLOW_SUPERVISOR_RPC_DISPATCH_OWNER_ONLY');
   if (req.method === 'browser_observe_provider_turn') return control.browserObserveProviderTurn({ conversationId: text(p, 'conversation_id'), conversationUrl: text(p, 'conversation_url'), generating: p.generating === true, latestAssistantResponse: stringValue(p.latest_assistant_response), providerActivityText: stringValue(p.provider_activity_text), providerFailureCode: chatgptProviderPageFailure(stringValue(p.provider_failure_text)), observedAtMs: safeInteger(p, 'observed_at_ms'), graceMs: positiveInteger(p, 'grace_ms') });
   if (req.method === 'browser_observe_assistant') return control.browserObserveAssistant({ conversationId: text(p, 'conversation_id'), conversationUrl: text(p, 'conversation_url'), responseText: text(p, 'response_text') });
-  if (req.method === 'task_register') return control.registerTask({ taskId: text(p, 'task_id'), conversationId: text(p, 'conversation_id'), conversationUrl: text(p, 'conversation_url'), objective: text(p, 'objective'), completionContract: object(p.completion_contract), continuationPolicy: object(p.continuation_policy), userBlockerPolicy: object(p.user_blocker_policy) });
+  if (req.method === 'task_register') return control.registerTask({ taskId: text(p, 'task_id'), conversationId: text(p, 'conversation_id'), conversationUrl: text(p, 'conversation_url'), objective: text(p, 'objective'), completionContract: object(p.completion_contract), continuationPolicy: { ...object(p.continuation_policy), provider_turn_receipt_required: true }, userBlockerPolicy: object(p.user_blocker_policy) });
   if (req.method === 'task_revise_objective') return control.reviseTaskObjective({
     taskId: text(p, 'task_id'),
     objective: text(p, 'objective'),

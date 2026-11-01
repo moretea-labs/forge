@@ -15,6 +15,39 @@ import { createRequirement, reviseRequirementSemantic, updateRequirement } from 
 import { SEMANTIC_SCOPE_KEY } from '../../src/effects/controller-home';
 
 const roots: string[] = [];
+type ProviderTurnEvent = {
+  providerId: 'browser.chrome-extension'; providerInstanceId: string; taskId: string; conversationId: string; conversationUrl: string;
+  effectId: string; receiptChallenge: string; turnId: string; requestId: string; startedAtMs: number; observedAtMs: number;
+  outcome: 'completed' | 'failed'; statusCode: number; contentType?: string;
+  assistantMessageId?: string; assistantStatus?: string; assistantEndTurn?: boolean; streamDone?: boolean;
+  failureCode?: string; retryAfterMs?: number;
+};
+function providerTurnEvent(task: { taskId: string; conversationId: string; conversationUrl: string }, effect: { effectId: string }, options: Partial<ProviderTurnEvent> = {}): ProviderTurnEvent {
+  const nowMs = Date.now();
+  const outcome = options.outcome ?? 'completed';
+  return {
+    providerId: 'browser.chrome-extension', providerInstanceId: options.providerInstanceId ?? 'provider-instance-test',
+    taskId: task.taskId, conversationId: options.conversationId ?? task.conversationId,
+    conversationUrl: options.conversationUrl ?? task.conversationUrl, effectId: effect.effectId,
+    receiptChallenge: options.receiptChallenge ?? supervisorReceiptChallenge(task as never, effect.effectId),
+    turnId: options.turnId ?? `turn:${effect.effectId}`, requestId: options.requestId ?? `request:${effect.effectId}`,
+    startedAtMs: options.startedAtMs ?? nowMs - 20, observedAtMs: options.observedAtMs ?? nowMs,
+    outcome, statusCode: options.statusCode ?? (outcome === 'completed' ? 200 : 429),
+    ...(options.contentType !== undefined ? { contentType: options.contentType } : outcome === 'completed' ? { contentType: 'text/event-stream' } : { contentType: 'application/json' }),
+    ...(options.assistantMessageId !== undefined ? { assistantMessageId: options.assistantMessageId } : outcome === 'completed' ? { assistantMessageId: 'assistant:' + effect.effectId } : {}),
+    ...(options.assistantStatus !== undefined ? { assistantStatus: options.assistantStatus } : outcome === 'completed' ? { assistantStatus: 'finished_successfully' } : {}),
+    ...(options.assistantEndTurn !== undefined ? { assistantEndTurn: options.assistantEndTurn } : outcome === 'completed' ? { assistantEndTurn: true } : {}),
+    ...(options.streamDone !== undefined ? { streamDone: options.streamDone } : outcome === 'completed' ? { streamDone: true } : {}),
+    ...(options.failureCode !== undefined ? { failureCode: options.failureCode } : outcome === 'failed' ? { failureCode: 'CHATGPT_AUTOMATION_RATE_LIMITED' } : {}),
+    ...(options.retryAfterMs !== undefined ? { retryAfterMs: options.retryAfterMs } : outcome === 'failed' ? { retryAfterMs: 30_000 } : {}),
+  };
+}
+function markProviderEffectApplied(control: WorkflowSupervisorControlPlane, store: WorkflowSupervisorStore, effect: { effectId: string }, observationId: string): number {
+  const dispatchedAtMs = Date.now() - 20;
+  store.recordEffectDispatchStarted(effect.effectId, 1, `dispatch:${effect.effectId}`, { dispatched_at_ms: dispatchedAtMs });
+  control.observeEffect({ effectId: effect.effectId, observationId, outcome: 'applied' });
+  return dispatchedAtMs;
+}
 afterEach(() => {
   while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true });
 });
@@ -129,7 +162,18 @@ describe('Workflow Supervisor automation receipts', () => {
     const supervisorRoot = join(root, 'supervisor');
     mkdirSync(supervisorRoot, { recursive: true });
     const store = new WorkflowSupervisorStore(supervisorRoot);
-    const control = new WorkflowSupervisorControlPlane(store, forgeWorkflowSupervisorValidators());
+    const slash = String.fromCharCode(47);
+    const origin = 'https:' + slash + slash + 'chatgpt.com';
+    const discoveredConversationId = '11111111-2222-3333-4444-555555555555';
+    const projectUrl = origin + slash + 'g' + slash + 'g-p-forge' + slash + 'project';
+    const control = new WorkflowSupervisorControlPlane(store, forgeWorkflowSupervisorValidators(), {
+      projectScopeForTask: () => ({ title: 'Forge', repoId: 'repo-forge' }),
+    });
+    store.recordDiscovery('capability-test', [{
+      conversationId: discoveredConversationId,
+      canonicalUrl: origin + slash + 'g' + slash + 'g-p-forge' + slash + 'c' + slash + discoveredConversationId,
+      projectTitle: 'Forge', projectUrl,
+    }]);
     const socketPath = workflowSupervisorSocketPath(root);
     const server = createWorkflowSupervisorServer({ controlPlane: control, socketPath });
     await new Promise<void>((resolve, reject) => {
@@ -141,13 +185,18 @@ describe('Workflow Supervisor automation receipts', () => {
       const ctx = { controllerHome: root, repoId: 'repo-forge' } as any;
       const started = await callCoreCapabilityAdapter(ctx, 'capability_execute', {
         capability_id: 'controller.workflow_supervisor', action: 'start', request_id: 'standalone-proof-capability-test', repo_id: 'repo-forge',
-        arguments: { objective: 'Prove the existing Supervisor authority is reachable through capability_execute.' },
+        arguments: {
+          objective: 'Prove the existing Supervisor authority is reachable through capability_execute.',
+          project_url: projectUrl,
+          authorized_by: 'user',
+        },
       });
       expect(started?.isError).not.toBe(true);
       expect(started?.structuredContent).toMatchObject({
         task: { conversationId: expect.stringContaining('bootstrap:supervisor:'), continuationPolicy: { kind: 'standalone_supervisor', bootstrap: true, repo_id: 'repo-forge' } },
         effect: { kind: 'enrollment' },
       });
+      expect((started?.structuredContent as any).effect.prompt).toContain('provider_turn:sse-final-v1');
       const listed = await callCoreCapabilityAdapter(ctx, 'capability_execute', {
         capability_id: 'controller.workflow_supervisor', action: 'list', request_id: 'standalone-proof-capability-list-test', repo_id: 'repo-forge', arguments: {},
       });
@@ -274,6 +323,88 @@ describe('Workflow Supervisor automation receipts', () => {
       terminal: true,
       validation: { valid: true, reason: 'model_semantic_completion' },
     });
+    store.close();
+  });
+
+
+  test('requires an exact provider TurnCompleted receipt before accepting assistant completion', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-provider-turn-'));
+    roots.push(root);
+    const store = new WorkflowSupervisorStore(root);
+    const control = new WorkflowSupervisorControlPlane(store);
+    const origin = 'https:' + String.fromCharCode(47, 47) + 'chatgpt.com/c/';
+    const conversationId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+    const task = control.registerTask({
+      taskId: 'supervisor:provider-turn-completion', conversationId, conversationUrl: origin + conversationId,
+      objective: 'Prove exact browser provider turn completion.', completionContract: {},
+      continuationPolicy: { kind: 'standalone_supervisor', provider_turn_receipt_required: true }, userBlockerPolicy: {},
+    });
+    const effect = control.reserveEnrollment(task.taskId);
+    expect(effect.prompt).toContain('provider_turn:sse-final-v1');
+    markProviderEffectApplied(control, store, effect, 'provider-turn-applied');
+    const responseText = 'Progress committed.' + String.fromCharCode(10) + renderSupervisorReceipt(task, effect.effectId, 'CONTINUE');
+    await expect(control.observeAssistantTurn({ taskId: task.taskId, conversationId: task.conversationId, responseText }))
+      .rejects.toThrow('WORKFLOW_SUPERVISOR_PROVIDER_TURN_RECEIPT_REQUIRED');
+
+    const event = providerTurnEvent(task, effect);
+    expect(control.recordProviderTurnEvent({ ...event, streamDone: false })).toMatchObject({
+      accepted: false, retryable: false, reason: 'WORKFLOW_SUPERVISOR_PROVIDER_TURN_COMPLETION_EVIDENCE_INVALID' });
+    expect(control.recordProviderTurnEvent({ ...event, assistantEndTurn: false })).toMatchObject({
+      accepted: false, retryable: false, reason: 'WORKFLOW_SUPERVISOR_PROVIDER_TURN_COMPLETION_EVIDENCE_INVALID' });
+    expect(control.recordProviderTurnEvent(event)).toMatchObject({ accepted: true, duplicate: false, receipt: { outcome: 'completed', turnId: event.turnId, requestId: event.requestId } });
+    expect(control.recordProviderTurnEvent(event)).toMatchObject({ accepted: true, duplicate: true });
+    const accepted = await control.observeAssistantTurn({ taskId: task.taskId, conversationId: task.conversationId, responseText });
+    expect(accepted).toMatchObject({ action: 'CONTINUE', terminal: false });
+    store.close();
+  });
+
+  test('persists TurnFailed with Retry-After and never treats it as assistant completion', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-provider-turn-failed-'));
+    roots.push(root);
+    const store = new WorkflowSupervisorStore(root);
+    const control = new WorkflowSupervisorControlPlane(store);
+    const origin = 'https:' + String.fromCharCode(47, 47) + 'chatgpt.com/c/';
+    const conversationId = 'bbbbbbbb-cccc-dddd-eeee-ffffffffffff';
+    const task = control.registerTask({
+      taskId: 'supervisor:provider-turn-failed', conversationId, conversationUrl: origin + conversationId,
+      objective: 'Record failed browser provider turn.', completionContract: {},
+      continuationPolicy: { kind: 'standalone_supervisor', provider_turn_receipt_required: true }, userBlockerPolicy: {},
+    });
+    const effect = control.reserveEnrollment(task.taskId);
+    markProviderEffectApplied(control, store, effect, 'provider-turn-failed-applied');
+    const event = providerTurnEvent(task, effect, { outcome: 'failed', statusCode: 429, contentType: 'application/json', failureCode: 'CHATGPT_AUTOMATION_RATE_LIMITED', retryAfterMs: 45_000 });
+    expect(control.recordProviderTurnEvent(event)).toMatchObject({ accepted: true, duplicate: false });
+    expect(store.getProviderTurnEvent(task.taskId, effect.effectId)).toMatchObject({ outcome: 'failed', failureCode: 'CHATGPT_AUTOMATION_RATE_LIMITED', retryAfterMs: 45_000 });
+    const responseText = 'A response was visible, but transport failed.' + String.fromCharCode(10) + renderSupervisorReceipt(task, effect.effectId, 'CONTINUE');
+    await expect(control.observeAssistantTurn({ taskId: task.taskId, conversationId: task.conversationId, responseText }))
+      .rejects.toThrow('WORKFLOW_SUPERVISOR_PROVIDER_TURN_FAILED');
+    store.close();
+  });
+
+  test('keeps an early provider event retryable until effect-applied is durable and rejects stale identity', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-supervisor-provider-turn-order-'));
+    roots.push(root);
+    const store = new WorkflowSupervisorStore(root);
+    const control = new WorkflowSupervisorControlPlane(store);
+    const origin = 'https:' + String.fromCharCode(47, 47) + 'chatgpt.com/c/';
+    const conversationId = 'cccccccc-dddd-eeee-ffff-aaaaaaaaaaaa';
+    const task = control.registerTask({
+      taskId: 'supervisor:provider-turn-order', conversationId, conversationUrl: origin + conversationId,
+      objective: 'Order provider receipt against effect application.', completionContract: {},
+      continuationPolicy: { kind: 'standalone_supervisor', provider_turn_receipt_required: true }, userBlockerPolicy: {},
+    });
+    const effect = control.reserveEnrollment(task.taskId);
+    const dispatchedAtMs = Date.now() - 20;
+    store.recordEffectDispatchStarted(effect.effectId, 1, `dispatch:${effect.effectId}`, { dispatched_at_ms: dispatchedAtMs });
+    const event = providerTurnEvent(task, effect, { startedAtMs: dispatchedAtMs + 1 });
+    expect(control.recordProviderTurnEvent(event)).toMatchObject({ accepted: false, retryable: true, reason: 'effect_not_applied' });
+    control.observeEffect({ effectId: effect.effectId, observationId: 'provider-turn-order-applied', outcome: 'applied' });
+    expect(control.recordProviderTurnEvent(event)).toMatchObject({ accepted: true, duplicate: false });
+    const stale = control.recordProviderTurnEvent({ ...event, requestId: 'request-stale', turnId: 'turn-stale', startedAtMs: dispatchedAtMs - 1 });
+    expect(stale).toMatchObject({ accepted: false, retryable: false, reason: 'WORKFLOW_SUPERVISOR_PROVIDER_TURN_STALE_DISPATCH' });
+    const otherConversation = 'dddddddd-eeee-ffff-aaaa-bbbbbbbbbbbb';
+    const wrongConversation = control.recordProviderTurnEvent({ ...event, effectId: 'fx_0123456789abcdef0123456789abcdef', conversationId: otherConversation, conversationUrl: origin + otherConversation });
+    expect(wrongConversation).toMatchObject({ accepted: false, retryable: false });
     store.close();
   });
 

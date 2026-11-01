@@ -184,11 +184,13 @@ export function noteChatgptProviderBackpressure(
   controllerHome: string,
   message?: string,
   nowMs = Date.now(),
+  retryAfterMs?: number,
 ): number {
   const key = providerGateKey(controllerHome);
   const gate = chatgptProviderDispatchGate(controllerHome);
   gate.pressureLevel += 1;
-  const delayMs = chatgptProviderBackoffDelayMs(gate.pressureLevel, key, message);
+  const explicitRetryAfter = Number.isSafeInteger(retryAfterMs) ? Math.max(0, Math.min(86_400_000, Number(retryAfterMs))) : 0;
+  const delayMs = Math.max(chatgptProviderBackoffDelayMs(gate.pressureLevel, key, message), explicitRetryAfter);
   gate.cooldownUntilMs = Math.max(gate.cooldownUntilMs, nowMs + delayMs);
   return delayMs;
 }
