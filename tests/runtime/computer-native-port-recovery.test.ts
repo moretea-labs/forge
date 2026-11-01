@@ -626,7 +626,7 @@ test('isolated readback retries only its GET after a lagging final status, never
   user.id = 'second-user';
   notify({ ...hint, turn_id: 'second-user', request_id: '00000000-0000-4000-8000-000000000002' });
   for (let i = 0; i < 5; i++) await new Promise<void>((resolve) => setImmediate(resolve));
-  expect(fetches).toBe(8); // Three bounded attempts, two read-only GETs each.
+  expect(fetches).toBe(2); // A completed Effect stays deduplicated even when a page hint changes Turn ID.
   expect(outbound).toHaveLength(1);
 });
 
@@ -752,6 +752,137 @@ test('429 on auth or conversation GET never retries or creates completion author
     expect(urls).toHaveLength(failedEndpoint === 'session' ? 1 : 2);
     expect(emitted).toBe(0);
   }
+});
+
+test('existing exact-tab snapshot re-arms late persisted final after initial readback window without Send', async () => {
+  const source = readFileSync('adapters/computer/chrome-extension/provider-turn-readback.js', 'utf8');
+  const content = readFileSync('adapters/computer/chrome-extension/content.js', 'utf8');
+  expect(content).toContain('globalThis.__forgeProviderReadbackFromSnapshot?.(observed.latestUserText)');
+  const conversationId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+  const effectId = 'fx_0123456789abcdef0123456789abcdef';
+  const prompt = '<<<FORGE_WORKFLOW_EFFECT_V1:' + effectId + '>>>'
+    + '\ntask_id:"supervisor:test"\nreceipt:abc1234\nprovider_turn:conversation-readback-v1\nContinue.';
+  const hint = { task_id: 'supervisor:test', effect_id: effectId, receipt_challenge: 'abc1234',
+    turn_id: 'original-user-id', conversation_id: conversationId, started_at_ms: 1793490000000,
+    request_id: '00000000-0000-4000-8000-000000000001', outcome: 'unknown' };
+  let now = 15_000;
+  let finalPersisted = false;
+  let conversationGets = 0;
+  const outbox: Array<Record<string, unknown>> = [];
+  const windowMock = { addEventListener(_type: string, handler: (event: Record<string, unknown>) => void) {
+    listener = handler;
+  } };
+  let listener: ((event: Record<string, unknown>) => void) | undefined;
+  const context: Record<string, unknown> = {
+    window: windowMock, location: { pathname: '/c/' + conversationId, origin: 'https://chatgpt.com' },
+    Date: { now: () => now, parse: Date.parse },
+    crypto: { randomUUID: () => '00000000-0000-4000-8000-000000000002' },
+    chrome: { runtime: { async sendMessage(message: { event: Record<string, unknown> }) {
+      outbox.push(message.event);
+      return { accepted: true };
+    } } },
+    fetch: async (url: string, options?: { method?: string }) => {
+      expect(options?.method).not.toBe('POST');
+      if (url === '/api/auth/session') return { ok: true, status: 200,
+        async json() { return { accessToken: 'test-only' }; } };
+      conversationGets++;
+      return { ok: true, status: 200, headers: { get: (key: string) =>
+        key === 'content-type' ? 'application/json' : null },
+        async text() { return JSON.stringify({
+          conversation_id: conversationId, page_info: { has_next_page: false },
+          messages: [
+            { id: 'original-user-id', author: { role: 'user' }, content: { parts: [prompt] } },
+            { id: 'assistant-authenticated', author: { role: 'assistant' }, recipient: 'all',
+              status: finalPersisted ? 'finished_successfully' : 'in_progress', end_turn: finalPersisted },
+          ],
+        }); } };
+    },
+    setTimeout: (fn: () => void) => { queueMicrotask(fn); return 1; }, Number, JSON, Set, Map,
+  };
+  runInNewContext(source, context);
+  const notify = () => listener?.({ source: windowMock, origin: 'https://chatgpt.com',
+    data: { source: 'forge-computer-provider-turn-v1', type: 'turn-event', event: hint } });
+  const settle = async () => { for (let i = 0; i < 7; i++) await new Promise<void>((resolve) => setImmediate(resolve)); };
+  notify(); await settle(); // The one original POST hint exhausted its bounded readback.
+  expect(conversationGets).toBe(6);
+  expect(outbox).toHaveLength(0);
+  finalPersisted = true;
+  notify(); await settle(); // Untrusted page replay is still denied, including after cooldown.
+  expect(conversationGets).toBe(6);
+  now += 60_001;
+  const snapshotProbe = context.__forgeProviderReadbackFromSnapshot as (text: string) => void;
+  snapshotProbe(prompt); await settle(); // The existing Supervisor observe/snapshot re-arms read-only.
+  expect(outbox).toHaveLength(1);
+  expect(outbox[0]).toMatchObject({ outcome: 'completed', turn_id: 'original-user-id',
+    assistant_message_id: 'assistant-authenticated', proof_source: 'chatgpt-conversation-readback-v1' });
+  const afterSuccess = conversationGets;
+  now += 60_001;
+  snapshotProbe(prompt); await settle();
+  expect(conversationGets).toBe(afterSuccess);
+  expect(outbox).toHaveLength(1); // Existing completion remains exactly once.
+
+  // MV3 receiver reinjection/new-document readback has no original POST hint.
+  // It can still re-attest an already-persisted assistant from a later snapshot.
+  const nextOutbox: Array<Record<string, unknown>> = [];
+  const rebound: Record<string, unknown> = { ...context,
+    __forgeProviderReadbackInstalledV1: undefined,
+    __forgeProviderReadbackFromSnapshot: undefined,
+    window: { addEventListener() {} },
+    chrome: { runtime: { async sendMessage(message: { event: Record<string, unknown> }) {
+      nextOutbox.push(message.event); return { accepted: true };
+    } } },
+  };
+  runInNewContext(source, rebound);
+  (rebound.__forgeProviderReadbackFromSnapshot as (text: string) => void)(prompt);
+  await settle();
+  expect(nextOutbox).toHaveLength(1);
+  expect(nextOutbox[0]).toMatchObject({ turn_id: 'original-user-id', outcome: 'completed' });
+});
+
+test('snapshot re-arm honours 429 Retry-After before later authenticated completion', async () => {
+  const source = readFileSync('adapters/computer/chrome-extension/provider-turn-readback.js', 'utf8');
+  const conversationId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+  const prompt = '<<<FORGE_WORKFLOW_EFFECT_V1:fx_0123456789abcdef0123456789abcdef>>>'
+    + '\ntask_id:"supervisor:test"\nreceipt:abc1234\nprovider_turn:conversation-readback-v1';
+  let now = 15_000;
+  let authCalls = 0;
+  const completed: Array<Record<string, unknown>> = [];
+  const context: Record<string, unknown> = {
+    window: { addEventListener() {} },
+    location: { pathname: '/c/' + conversationId, origin: 'https://chatgpt.com' },
+    Date: { now: () => now, parse: Date.parse },
+    crypto: { randomUUID: () => '00000000-0000-4000-8000-000000000002' },
+    chrome: { runtime: { async sendMessage(message: { event: Record<string, unknown> }) {
+      completed.push(message.event); return { accepted: true };
+    } } },
+    fetch: async (url: string) => {
+      if (url === '/api/auth/session') {
+        authCalls++;
+        if (authCalls === 1) return { ok: false, status: 429, headers: { get: () => '120' } };
+        return { ok: true, status: 200, async json() { return { accessToken: 'test-only' }; } };
+      }
+      return { ok: true, status: 200, headers: { get: () => 'application/json' },
+        async text() { return JSON.stringify({ conversation_id: conversationId, page_info: { has_next_page: false },
+          messages: [
+            { id: 'user-turn', author: { role: 'user' }, content: { parts: [prompt] } },
+            { id: 'assistant-id', author: { role: 'assistant' }, recipient: 'all',
+              status: 'finished_successfully', end_turn: true },
+          ] }); } };
+    },
+    setTimeout: () => { throw new Error('429 must not spin a retry'); }, Number, JSON, Set, Map,
+  };
+  runInNewContext(source, context);
+  const probe = context.__forgeProviderReadbackFromSnapshot as (s: string) => void;
+  const settle = async () => { for (let i = 0; i < 5; i++) await new Promise<void>((resolve) => setImmediate(resolve)); };
+  probe(prompt); await settle();
+  expect(authCalls).toBe(1);
+  now += 60_001;
+  probe(prompt); await settle();
+  expect(authCalls).toBe(1);
+  now += 60_000;
+  probe(prompt); await settle();
+  expect(authCalls).toBe(2);
+  expect(completed).toHaveLength(1);
 });
 
 test('page Provider event cannot claim a different conversation in the same Chrome tab', async () => {
