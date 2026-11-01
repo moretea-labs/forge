@@ -482,6 +482,16 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
         const record = await this.bindAsync(identity, providerBinding, selected.instanceId);
         return { state: 'ready', target: this.target(identity, record, selected.instanceId), observation };
       }
+      if (recoverStalePin && response.result.kind === 'failed'
+        && response.result.code === 'COMPUTER_CHATGPT_EXTENSION_PINNED_OWNER_TOKEN_MISMATCH'
+        && binding?.providerId === PROVIDER_ID
+        && binding.providerSessionId === selected.instanceId) {
+        // A Chrome extension reload or reinstall clears its session owner token,
+        // so the persisted pin can no longer be attested. Ensure alone may mint
+        // a NEW owned tab for this exact conversation; the old tab is never
+        // reused, navigated or closed, and no provider Send is authorized here.
+        return await this.ensureExact(identity, { ...options, createIfMissing: true }, false);
+      }
       return failure(response.result.kind === 'failed'
         ? response.result.code === 'COMPUTER_CHATGPT_EXTENSION_TARGET_MISSING'
           ? 'COMPUTER_CHATGPT_EXTENSION_EXACT_TARGET_ABSENT_READ_ONLY'
