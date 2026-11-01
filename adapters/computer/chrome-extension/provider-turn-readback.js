@@ -6,7 +6,9 @@
   const SOURCE = 'forge-computer-provider-turn-v1';
   const PROOF = 'chatgpt-conversation-readback-v1';
   const MAX_BODY = 8 * 1024 * 1024;
-  const inFlight = new Set();
+  // One readback per exact turn per document; page scripts cannot trigger a
+  // flood of authenticated ChatGPT requests by replaying synthetic hints.
+  const attempted = new Set();
 
   function conversationId() {
     const match = location.pathname.match(/(?:^|\/)c\/([0-9a-f-]{36})(?:\/|$)/i);
@@ -24,16 +26,30 @@
   }
   function verifiedAssistant(data, hint) {
     if (!data || data.conversation_id?.toLowerCase() !== hint.conversation_id.toLowerCase()
-      || !Array.isArray(data.messages)) return;
-    const index = data.messages.findIndex((message) => matchesPrompt(message, hint));
-    if (index < 0) return; // A page hint cannot create its own matching server-side user message.
+      || !data.mapping || typeof data.mapping !== 'object'
+      || typeof data.current_node !== 'string') return;
+    // Follow exactly one persisted conversation branch. Iterating the mapping
+    // would accept completed messages on abandoned/regenerated branches.
+    const chain = [];
+    const visited = new Set();
+    let cursor = data.current_node;
+    while (cursor != null) {
+      if (typeof cursor !== 'string' || visited.has(cursor) || visited.size >= 2048) return;
+      visited.add(cursor);
+      const node = data.mapping[cursor];
+      if (!node || typeof node !== 'object') return;
+      if (node.message) chain.push(node.message);
+      cursor = node.parent;
+    }
+    chain.reverse();
+    const latestUserIndex = chain.findLastIndex((message) => message?.author?.role === 'user');
+    if (latestUserIndex < 0 || !matchesPrompt(chain[latestUserIndex], hint)) return;
     let assistant;
-    for (const message of data.messages.slice(index + 1)) {
-      if (message?.author?.role === 'user') return; // Not the current exchange.
+    for (const message of chain.slice(latestUserIndex + 1)) {
+      if (message?.author?.role === 'user') return;
       if (message?.author?.role !== 'assistant' || (message.recipient && message.recipient !== 'all')) continue;
-      if (message.status === 'finished_successfully' && message.end_turn === true && typeof message.id === 'string') {
-        assistant = message;
-      }
+      assistant = message.status === 'finished_successfully' && message.end_turn === true
+        && typeof message.id === 'string' ? message : undefined;
     }
     return assistant;
   }
@@ -46,16 +62,16 @@
       || typeof hint.turn_id !== 'string' || typeof hint.request_id !== 'string'
       || !Number.isSafeInteger(hint.started_at_ms)) return;
     const key = hint.effect_id + ':' + hint.turn_id;
-    if (inFlight.has(key)) return;
-    inFlight.add(key);
+    if (attempted.has(key)) return;
+    attempted.add(key);
     try {
       const auth = await fetch('/api/auth/session', { credentials: 'include', cache: 'no-store' });
       if (!auth.ok) return;
       const session = await auth.json();
       const token = typeof session?.accessToken === 'string' ? session.accessToken : '';
       if (!token) return;
-      const response = await fetch('/backend-api/conversations/' + encodeURIComponent(hint.conversation_id)
-        + '?include_has_versions=true&num_turns=100', {
+      const response = await fetch('/backend-api/conversation/' + encodeURIComponent(hint.conversation_id)
+        + '?include_has_versions=true', {
         credentials: 'include', cache: 'no-store',
         headers: { Authorization: 'Bearer ' + token, Accept: 'application/json' },
       });
@@ -77,7 +93,6 @@
         },
       });
     } catch { /* No provider proof; keep the Effect unknown, never retry its Send. */ }
-    finally { inFlight.delete(key); }
   }
   window.addEventListener('message', (event) => {
     if (event.source !== window || event.origin !== location.origin) return;

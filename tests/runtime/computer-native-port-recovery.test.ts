@@ -477,6 +477,23 @@ test('isolated conversation readback proves an exact persisted user and final as
     { id: 'assistant-from-server', author: { role: 'assistant' },
       status: 'finished_successfully', end_turn: true, recipient: 'all' },
   ];
+  // Actual ChatGPT conversation detail has a parent-linked mapping and
+  // current_node, not a flat messages[] list.
+  const conversation = {
+    conversation_id: conversationId,
+    current_node: 'node-assistant',
+    mapping: {
+      'node-user': { parent: null, message: messages[0] },
+      'node-assistant': { parent: 'node-user', message: messages[1] },
+      'node-foreign-user': { parent: null, message: {
+        id: 'foreign-user', author: { role: 'user' }, content: { parts: ['unrelated prompt'] },
+      } },
+      'node-abandoned': { parent: 'node-foreign-user', message: {
+        id: 'finished-abandoned-assistant', author: { role: 'assistant' },
+        status: 'finished_successfully', end_turn: true, recipient: 'all',
+      } },
+    },
+  };
   const outbound: Array<{ event: Record<string, unknown> }> = [];
   const calls: string[] = [];
   let listener: ((event: Record<string, unknown>) => void) | undefined;
@@ -493,7 +510,7 @@ test('isolated conversation readback proves an exact persisted user and final as
     fetch: async (url: string) => {
       calls.push(url);
       if (url === '/api/auth/session') return response({ accessToken: 'secret-not-to-forward' }, sessionStatus);
-      return response({ conversation_id: conversationId, messages });
+      return response(conversation);
     },
     Number, JSON, Set,
   });
@@ -511,15 +528,25 @@ test('isolated conversation readback proves an exact persisted user and final as
   });
   expect(JSON.stringify(outbound)).not.toContain('secret-not-to-forward');
   expect(calls).toEqual(['/api/auth/session',
-    '/backend-api/conversations/' + conversationId + '?include_has_versions=true&num_turns=100']);
+    '/backend-api/conversation/' + conversationId + '?include_has_versions=true']);
   messages[1].status = 'in_progress';
   await send({ ...hint, request_id: '00000000-0000-4000-8000-000000000002' });
   expect(outbound).toHaveLength(1);
+  // A completed assistant in an abandoned mapping branch cannot prove the
+  // active response, even when that node is present in the returned JSON.
+  conversation.current_node = 'node-abandoned';
+  await send({ ...hint, request_id: '00000000-0000-4000-8000-000000000005' });
+  expect(outbound).toHaveLength(1);
+  conversation.current_node = 'node-assistant';
   messages[1].status = 'finished_successfully';
   messages[0].id = 'different-user';
   await send({ ...hint, request_id: '00000000-0000-4000-8000-000000000003' });
   expect(outbound).toHaveLength(1);
   messages[0].id = 'user-turn-1';
+  conversation.current_node = 'node-missing';
+  await send({ ...hint, request_id: '00000000-0000-4000-8000-000000000006' });
+  expect(outbound).toHaveLength(1);
+  conversation.current_node = 'node-assistant';
   await send({ ...hint, conversation_id: 'bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee' });
   expect(outbound).toHaveLength(1);
   sessionStatus = 403;
