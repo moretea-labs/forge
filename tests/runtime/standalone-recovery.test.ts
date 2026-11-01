@@ -582,7 +582,13 @@ function writeReleaseBrowserSurface(manifestPath: string): void {
   const packageHash = createHash('sha256');
   for (const file of files) {
     const bytes = file === 'manifest.json'
-      ? JSON.stringify({ manifest_version: 3, key: Buffer.alloc(64, 7).toString('base64'), version: '1.0.0' })
+      ? JSON.stringify({
+        manifest_version: 3, key: Buffer.alloc(64, 7).toString('base64'), version: '1.0.0',
+        // The projection derives its file set from the packaged manifest, so
+        // the fixture must reference every file it writes.
+        background: { service_worker: 'background.js' },
+        content_scripts: [{ matches: ['https://chatgpt.com/*'], js: ['core.js', 'content.js'] }],
+      })
       : `// ${release.releaseId}: ${file}\n`;
     writeFileSync(join(extensionRoot, file), bytes);
     packageHash.update(join('adapters', 'computer', 'chrome-extension', file)).update('\0').update(bytes).update('\0');
