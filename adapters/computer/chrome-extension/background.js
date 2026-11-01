@@ -242,7 +242,7 @@ function receiverMatchesIdentity(tab, identity) {
   return bootstrapTabBelongsToProject(tab, identity)
     && !core.parseConversation(tab.url ?? '');
 }
-async function restoreExactContentReceiver(tabId, identity) {
+async function restoreExactContentReceiver(tabId, identity, files = ['core.js', 'provider-turn-readback.js', 'content.js']) {
   // The physical tab is already resolved by the one Computer target authority.
   // A missing MV3 message receiver is not permission to reload/navigate that tab,
   // replace its draft, or create another tab. Inject only read-only listeners on
@@ -255,7 +255,7 @@ async function restoreExactContentReceiver(tabId, identity) {
   const before = await tabGet(tabId);
   if (before.discarded || !matches(before)) throw new Error('COMPUTER_CHATGPT_EXTENSION_RECEIVER_TARGET_CHANGED');
   await new Promise((resolve, reject) => chrome.scripting.executeScript({
-    target: { tabId }, files: ['core.js', 'provider-turn-readback.js', 'content.js'],
+    target: { tabId }, files,
   }, () => {
     const error = chrome.runtime.lastError;
     if (error) reject(new Error(error.message)); else resolve();
@@ -278,14 +278,50 @@ function markerReconciliationReadIdentity(tab, bootstrapIdentity) {
   return { namespace: 'chatgpt.conversation', conversationId: conversation.conversationId,
     canonicalUrl: conversation.canonicalUrl };
 }
+async function invokeProviderReadbackFromSnapshot(tabId, identity, userText) {
+  const expectedUrl = new URL(identity.canonicalUrl);
+  const injections = await new Promise((resolve, reject) => chrome.scripting.executeScript({
+    target: { tabId },
+    world: 'ISOLATED',
+    func: (text, expectedOrigin, expectedPath) => {
+      if (location.origin !== expectedOrigin || location.pathname !== expectedPath) return false;
+      const readback = globalThis.__forgeProviderReadbackFromSnapshot;
+      if (typeof readback !== 'function') return false;
+      readback(text);
+      return true;
+    },
+    args: [userText, expectedUrl.origin, expectedUrl.pathname],
+  }, (results) => {
+    const error = chrome.runtime.lastError;
+    if (error) reject(new Error(error.message)); else resolve(results ?? []);
+  }));
+  return Array.isArray(injections) && injections.some((injection) => injection?.result === true);
+}
+async function triggerProviderReadbackFromSnapshot(tabId, identity, userText) {
+  if (identity?.namespace !== 'chatgpt.conversation' || typeof userText !== 'string'
+    || !userText.startsWith('<<<FORGE_WORKFLOW_EFFECT_V1:')
+    || !userText.includes('provider_turn:conversation-readback-v1')) return;
+  const current = await tabGet(tabId);
+  if (!current || current.discarded || !receiverMatchesIdentity(current, identity))
+    throw new Error('COMPUTER_CHATGPT_EXTENSION_RECEIVER_TARGET_CHANGED');
+  // A stale content listener may still answer snapshot without the newer
+  // readback helper. Trigger that helper directly in the same isolated world.
+  if (await invokeProviderReadbackFromSnapshot(tabId, identity, userText)) return;
+  await restoreExactContentReceiver(tabId, identity, ['provider-turn-readback.js']);
+  if (!(await invokeProviderReadbackFromSnapshot(tabId, identity, userText)))
+    throw new Error('COMPUTER_CHATGPT_PROVIDER_READBACK_UNAVAILABLE');
+}
 async function snapshotWithExactReceiverRecovery(tabId, identity, options = {}) {
-  try { return await snapshot(tabId, options); }
+  let observed;
+  try { observed = await snapshot(tabId, options); }
   catch (error) {
     if (!isMissingContentReceiver(error)) throw error;
     // Restore only the exact physical tab's read-only listener, never Send.
     await restoreExactContentReceiver(tabId, identity);
-    return await snapshot(tabId, options);
+    observed = await snapshot(tabId, options);
   }
+  await triggerProviderReadbackFromSnapshot(tabId, identity, observed?.latestUserText);
+  return observed;
 }
 async function waitForContent(tabId, requireBootstrapUi = false, recoverReceiver) {
   let lastError;

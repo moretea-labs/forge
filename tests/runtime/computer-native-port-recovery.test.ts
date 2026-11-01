@@ -989,3 +989,62 @@ test('provider turn receipt delivery cannot block the next Supervisor command cl
   await providerTick();
   expect(calls).toEqual(['computer_extension_claim']);
 });
+
+test('existing snapshot receiver rearms Provider readback when the listener predates the readback script', async () => {
+  const source = readFileSync('adapters/computer/chrome-extension/background.js', 'utf8');
+  const start = source.indexOf('async function restoreExactContentReceiver(');
+  const end = source.indexOf('async function waitForContent(', start);
+  expect(start).toBeGreaterThan(0);
+  expect(end).toBeGreaterThan(start);
+  const code = source.slice(start, end);
+  const conversationId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+  const canonicalUrl = 'https://chatgpt.com/c/' + conversationId;
+  const prompt = '<<<FORGE_WORKFLOW_EFFECT_V1:fx_0123456789abcdef0123456789abcdef>>>'
+    + '\ntask_id:"supervisor:test"\nreceipt:abc1234\nprovider_turn:conversation-readback-v1';
+  const identity = { namespace: 'chatgpt.conversation', conversationId, canonicalUrl };
+  const tab = { id: 17, windowId: 4, url: canonicalUrl, discarded: false };
+  const injected: string[][] = [];
+  const readbackCalls: string[] = [];
+  let snapshotCalls = 0;
+  const context: Record<string, unknown> = {};
+  const location = { origin: 'https://chatgpt.com', pathname: '/c/' + conversationId };
+  const chrome = {
+    runtime: { lastError: undefined },
+    scripting: { executeScript(details: Record<string, unknown>, callback: (results?: unknown[]) => void) {
+      if (Array.isArray(details.files)) {
+        injected.push(details.files as string[]);
+        // The existing content listener already answers snapshot. Only the
+        // isolated readback helper is missing from this older document.
+        context.__forgeProviderReadbackFromSnapshot = (text: string) => readbackCalls.push(text);
+        callback([]);
+        return;
+      }
+      expect(details.world).toBe('ISOLATED');
+      const invoke = details.func as (text: string, expectedOrigin: string, expectedPath: string) => boolean;
+      const args = details.args as [string, string, string];
+      const result = invoke(...args);
+      const previousPath = location.pathname;
+      location.pathname = '/c/ffffffff-ffff-ffff-ffff-ffffffffffff';
+      expect(invoke(...args)).toBe(false);
+      location.pathname = previousPath;
+      callback([{ result }]);
+    } },
+  };
+  Object.assign(context, {
+    chrome,
+    URL,
+    location,
+    snapshot: async () => { snapshotCalls += 1; return { latestUserText: prompt, title: 'ChatGPT' }; },
+    tabGet: async () => tab,
+    receiverMatchesIdentity: (candidate: typeof tab, expected: typeof identity) =>
+      candidate.id === tab.id && candidate.url === expected.canonicalUrl,
+    isMissingContentReceiver: () => false,
+  });
+  const snapshotWithRecovery = runInNewContext(code + '\nsnapshotWithExactReceiverRecovery', context) as (tabId: number, target: typeof identity) => Promise<{ latestUserText: string }>
+
+  const observed = await snapshotWithRecovery(tab.id, identity);
+  expect(snapshotCalls).toBe(1);
+  expect(observed.latestUserText).toBe(prompt);
+  expect(injected).toEqual([['provider-turn-readback.js']]);
+  expect(readbackCalls).toEqual([prompt]);
+});
