@@ -125,6 +125,17 @@ function fixture(scenario: Scenario) {
   return { dispatch, prepare, messages, get submissions() { return submissions; }, get draftWrites() { return draftWrites; } };
 }
 
+function runChromeContentScript(source: string, scope: Record<string, unknown>): unknown {
+  const existing = scope.window && typeof scope.window === 'object' ? scope.window as Record<string, unknown> : {};
+  const events = new EventTarget();
+  if (typeof existing.addEventListener !== 'function') {
+    existing.addEventListener = events.addEventListener.bind(events);
+    existing.removeEventListener = events.removeEventListener.bind(events);
+  }
+  scope.window = existing;
+  return runInNewContext(source, scope, { filename: 'content.js' });
+}
+
 test('exact conversation send requires no model-picker capability', async () => {
   const f = fixture({ capability: undefined });
   expect(await f.dispatch()).toMatchObject({ mutation: 'attempted', confirmed: true });
@@ -372,7 +383,7 @@ test('receiver identity and unreadable-page recovery preserve the exact target w
     MutationObserver: class { observe() {} disconnect() {} },
     setTimeout() { return 1; }, clearTimeout() {},
   };
-  runInNewContext(instrumented, context);
+  runChromeContentScript(instrumented, context);
   const failureText = (context as typeof context & { __failureText: () => string }).__failureText;
   expect(failureText()).toContain('无法加载此 ChatGPT 对话');
   isMessage = true;
@@ -592,7 +603,7 @@ test('Chrome content script awaits delayed exact editor readback without duplica
       setTimeout: (callback: () => void, ms: number) => { if (ms === 2_000 || ms === 75) queueMicrotask(callback); return 1; },
       clearTimeout() {},
     };
-    runInNewContext(source, context);
+    runChromeContentScript(source, context);
     if (!listener) throw new Error('Chrome content listener missing');
     const result = await new Promise<Record<string, unknown>>((resolve) => {
       listener!({ type: 'forge-computer-chatgpt-dispatch', prompt, expectedConversationId: id }, null, (value) => resolve(value as Record<string, unknown>));
@@ -645,7 +656,7 @@ test('real Chrome content script preserves all prompt spaces and newlines during
       setTimeout: (callback: () => void, ms: number) => { if (ms === 75 || ms === 2_000) queueMicrotask(callback); return 1; },
       clearTimeout: () => undefined,
     };
-    runInNewContext(content, context);
+    runChromeContentScript(content, context);
     if (!listener) throw new Error('content script listener was not installed');
     const response = await new Promise<Record<string, unknown>>((resolve) => {
       listener!({ type: 'forge-computer-chatgpt-dispatch', prompt, expectedConversationId: identity.conversationId }, null, (value) => resolve(value as Record<string, unknown>));
@@ -689,7 +700,7 @@ test('real Chrome content script preserves all prompt spaces and newlines during
     MutationObserver: class { observe() {} },
     setTimeout() { return 1; }, clearTimeout() {},
   };
-  runInNewContext(instrumented, snapshotContext);
+  runChromeContentScript(instrumented, snapshotContext);
   const snapshotReader = (snapshotContext as typeof snapshotContext & {
     __receiptSnapshot: (options?: { includePageText?: boolean }) => { latestAssistantResponse: string; latestTurnRole: string; pageText?: string };
   }).__receiptSnapshot;
@@ -748,7 +759,7 @@ test('recovery never clicks Stop and requires an exact idle assistant or explici
       MutationObserver: class { observe() {} disconnect() {} },
       setTimeout() { return 1; }, clearTimeout() {},
     };
-    runInNewContext(instrumented, context);
+    runChromeContentScript(instrumented, context);
     return (context as typeof context & { __recoverNoStopReadiness: () => { ready: boolean; reason?: string; capability?: string } }).__recoverNoStopReadiness();
   };
   expect(run({ turnSelector: 'conversation-turn', lastRole: 'assistant' })).toMatchObject({ ready: true, capability: 'recover-no-stop-prewrite-v1' });
@@ -813,7 +824,7 @@ test('live current-turn activity changes before the assistant role commits', () 
     MutationObserver: class { observe() {} disconnect() {} },
     setTimeout() { return 1; }, clearTimeout() {},
   };
-  runInNewContext(instrumented, context);
+  runChromeContentScript(instrumented, context);
   const snapshot = (context as typeof context & {
     __providerActivitySnapshot: () => {
       latestAssistantResponse: string; latestTurnRole?: string; providerActivityText: string; isGenerating: boolean;
@@ -864,7 +875,7 @@ test('content script fences bootstrap sends to the exact Project and rejects mig
       MutationObserver: class { observe() {} },
       setTimeout: () => 1, clearTimeout: () => undefined,
     };
-    runInNewContext(source, ctx);
+    runChromeContentScript(source, ctx);
     if (!listener) throw new Error('No content listener');
     const result = await new Promise<Record<string, unknown>>(resolve => {
       listener!({
