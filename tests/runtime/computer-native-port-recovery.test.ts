@@ -494,12 +494,13 @@ test('isolated conversation readback proves an exact persisted user and final as
   });
   runInNewContext(source, {
     window: windowMock, location: { pathname: '/g/g-p-forge/c/' + conversationId, origin: 'https://chatgpt.com' },
-    chrome: { runtime: { async sendMessage(message: { event: Record<string, unknown> }) { outbound.push(message); } } },
+    chrome: { runtime: { async sendMessage(message: { event: Record<string, unknown> }) { outbound.push(message); return { accepted: true }; } } },
     fetch: async (url: string) => {
       calls.push(url);
       if (url === '/api/auth/session') return response({ accessToken: 'secret-not-to-forward' }, sessionStatus);
       return response(conversation);
     },
+    setTimeout: (callback: () => void) => { queueMicrotask(callback); return 1; },
     Number, JSON, Set,
   });
   const send = async (input: Record<string, unknown>) => {
@@ -594,7 +595,7 @@ test('isolated readback retries only its GET after a lagging final status, never
   });
   runInNewContext(source, {
     window: windowMock, location: { pathname: '/c/' + conversationId, origin: 'https://chatgpt.com' },
-    chrome: { runtime: { async sendMessage(message: { event: Record<string, unknown> }) { outbound.push(message.event); } } },
+    chrome: { runtime: { async sendMessage(message: { event: Record<string, unknown> }) { outbound.push(message.event); return { accepted: true }; } } },
     fetch: async (url: string) => {
       if (url === '/api/auth/session') return response({ accessToken: 'fake-token' });
       expect(url).toContain('/backend-api/conversations/' + conversationId);
@@ -625,11 +626,11 @@ test('isolated readback retries only its GET after a lagging final status, never
   user.id = 'second-user';
   notify({ ...hint, turn_id: 'second-user', request_id: '00000000-0000-4000-8000-000000000002' });
   for (let i = 0; i < 5; i++) await new Promise<void>((resolve) => setImmediate(resolve));
-  expect(fetches).toBe(4);
+  expect(fetches).toBe(8); // Three bounded attempts, two read-only GETs each.
   expect(outbound).toHaveLength(1);
 });
 
-test('transient readback denial does not permanently consume an exact Effect hint', async () => {
+test('one real wake-up survives transient auth and Computer receipt failures without replaying Send', async () => {
   const source = readFileSync('adapters/computer/chrome-extension/provider-turn-readback.js', 'utf8');
   const conversationId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
   const effectId = 'fx_0123456789abcdef0123456789abcdef';
@@ -638,11 +639,10 @@ test('transient readback denial does not permanently consume an exact Effect hin
   const hint = { task_id: 'supervisor:test', effect_id: effectId, receipt_challenge: 'abc1234',
     turn_id: 'user-turn', conversation_id: conversationId, started_at_ms: 1793490000000,
     request_id: '00000000-0000-4000-8000-000000000001', outcome: 'unknown' };
-  let now = 10_000;
-  let authStatus = 403;
-  let accepted = false;
-  let saved = 0;
-  let getCount = 0;
+  let authCalls = 0;
+  let gets = 0;
+  let submittedReceipts = 0;
+  const delays: number[] = [];
   let listener: ((event: Record<string, unknown>) => void) | undefined;
   const windowMock = { addEventListener(_type: string, callback: (event: Record<string, unknown>) => void) {
     listener = callback;
@@ -655,11 +655,18 @@ test('transient readback denial does not permanently consume an exact Effect hin
   runInNewContext(source, {
     window: windowMock,
     location: { pathname: '/c/' + conversationId, origin: 'https://chatgpt.com' },
-    Date: { now: () => now },
-    chrome: { runtime: { async sendMessage() { saved++; return { accepted }; } } },
-    fetch: async (url: string) => {
-      if (url === '/api/auth/session') return response({ accessToken: 'fake-token' }, authStatus);
-      getCount++;
+    chrome: { runtime: { async sendMessage() {
+      submittedReceipts++;
+      return { accepted: submittedReceipts === 2 };
+    } } },
+    fetch: async (url: string, init?: {method?: string}) => {
+      expect(init?.method).not.toBe('POST');
+      if (url === '/api/auth/session') {
+        authCalls++;
+        return response({ accessToken: 'test-only' }, authCalls === 1 ? 403 : 200);
+      }
+      expect(url).toContain('/backend-api/conversations/' + conversationId);
+      gets++;
       return response({ conversation_id: conversationId, page_info: { has_next_page: false },
         messages: [
           { id: 'user-turn', author: { role: 'user' }, content: { parts: [prompt] } },
@@ -667,34 +674,84 @@ test('transient readback denial does not permanently consume an exact Effect hin
             recipient: 'all', end_turn: true },
         ] });
     },
+    setTimeout: (callback: () => void, delay: number) => { delays.push(delay); queueMicrotask(callback); return 1; },
+    Number, JSON, Set,
+  });
+  const notify = () => listener?.({
+    source: windowMock, origin: 'https://chatgpt.com',
+    data: { source: 'forge-computer-provider-turn-v1', type: 'turn-event', event: hint },
+  });
+  notify(); // Exactly one real MAIN-world POST observation.
+  for (let i = 0; i < 7; i++) await new Promise<void>((resolve) => setImmediate(resolve));
+  expect(authCalls).toBe(3);
+  expect(gets).toBe(2);
+  expect(submittedReceipts).toBe(2);
+  expect([...delays]).toEqual([3_000, 3_000]);
+  notify(); // A forged/replayed hint cannot trigger a second readback process.
+  for (let i = 0; i < 3; i++) await new Promise<void>((resolve) => setImmediate(resolve));
+  expect(authCalls).toBe(3);
+  expect(gets).toBe(2);
+  expect(submittedReceipts).toBe(2);
+});
+
+test('a single wake-up exhausts bounded auth retries without a false terminal receipt', async () => {
+  const source = readFileSync('adapters/computer/chrome-extension/provider-turn-readback.js', 'utf8');
+  const conversationId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+  const effectId = 'fx_0123456789abcdef0123456789abcdef';
+  let attempts = 0;
+  let listener: ((event: Record<string, unknown>) => void) | undefined;
+  const windowMock = { addEventListener(_type: string, callback: (event: Record<string, unknown>) => void) { listener = callback; } };
+  runInNewContext(source, {
+    window: windowMock, location: { pathname: '/c/' + conversationId, origin: 'https://chatgpt.com' },
+    chrome: { runtime: { async sendMessage() { throw new Error('unexpected completion'); } } },
+    fetch: async () => { attempts++; return { ok: false, status: 403 }; },
     setTimeout: (callback: () => void) => { queueMicrotask(callback); return 1; },
     Number, JSON, Set,
   });
-  async function notify() {
+  listener?.({ source: windowMock, origin: 'https://chatgpt.com',
+    data: { source: 'forge-computer-provider-turn-v1', type: 'turn-event',
+      event: { task_id: 'supervisor:test', effect_id: effectId, receipt_challenge: 'abc1234',
+        turn_id: 'user-turn', conversation_id: conversationId, started_at_ms: 1793490000000,
+        request_id: '00000000-0000-4000-8000-000000000001', outcome: 'unknown' } } });
+  for (let i = 0; i < 5; i++) await new Promise<void>((resolve) => setImmediate(resolve));
+  expect(attempts).toBe(3);
+});
+
+test('429 on auth or conversation GET never retries or creates completion authority', async () => {
+  const source = readFileSync('adapters/computer/chrome-extension/provider-turn-readback.js', 'utf8');
+  const conversationId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+  for (const failedEndpoint of ['session', 'conversation']) {
+    const urls: string[] = [];
+    let listener: ((event: Record<string, unknown>) => void) | undefined;
+    let emitted = 0;
+    const windowMock = { addEventListener(_type: string, callback: (event: Record<string, unknown>) => void) {
+      listener = callback;
+    } };
+    runInNewContext(source, {
+      window: windowMock,
+      location: { pathname: '/c/' + conversationId, origin: 'https://chatgpt.com' },
+      chrome: { runtime: { async sendMessage() { emitted++; return { accepted: true }; } } },
+      fetch: async (url: string) => {
+        urls.push(url);
+        if (failedEndpoint === 'session' || url.includes('/backend-api/conversations/')) {
+          return { ok: false, status: 429, headers: { get: () => 'application/json' } };
+        }
+        return { ok: true, status: 200, async json() { return { accessToken: 'test-only' }; } };
+      },
+      setTimeout: () => { throw new Error('429 must not schedule an immediate retry'); },
+      Number, JSON, Set,
+    });
     listener?.({ source: windowMock, origin: 'https://chatgpt.com',
-      data: { source: 'forge-computer-provider-turn-v1', type: 'turn-event', event: hint } });
-    for (let i = 0; i < 5; i++) await new Promise<void>((resolve) => setImmediate(resolve));
+      data: { source: 'forge-computer-provider-turn-v1', type: 'turn-event', event: {
+        task_id: 'supervisor:test', effect_id: 'fx_0123456789abcdef0123456789abcdef',
+        receipt_challenge: 'abc1234', turn_id: 'user-turn',
+        conversation_id: conversationId, started_at_ms: 1793490000000,
+        request_id: '00000000-0000-4000-8000-000000000001', outcome: 'unknown',
+      } } });
+    for (let i = 0; i < 4; i++) await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(urls).toHaveLength(failedEndpoint === 'session' ? 1 : 2);
+    expect(emitted).toBe(0);
   }
-  await notify(); // Auth 403: no readback and no privileged receipt
-  expect(getCount).toBe(0);
-  await notify(); // page-origin flood within cooldown must not issue another auth request
-  expect(getCount).toBe(0);
-  now += 3_001;
-  authStatus = 200;
-  await notify(); // trusted persisted final; background temporarily refuses persistence
-  expect(getCount).toBe(1);
-  expect(saved).toBe(1);
-  await notify();
-  expect(getCount).toBe(1);
-  now += 3_001;
-  accepted = true;
-  await notify(); // same exact Turn may be verified after transient store unavailability
-  expect(getCount).toBe(2);
-  expect(saved).toBe(2);
-  now += 4_000;
-  await notify(); // accepted receipt is terminal, never repeated
-  expect(getCount).toBe(2);
-  expect(saved).toBe(2);
 });
 
 test('page Provider event cannot claim a different conversation in the same Chrome tab', async () => {

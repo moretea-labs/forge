@@ -6,10 +6,10 @@
   const SOURCE = 'forge-computer-provider-turn-v1';
   const PROOF = 'chatgpt-conversation-readback-v1';
   const MAX_BODY = 8 * 1024 * 1024;
-  // Per-turn bounded retries allow a later *read-only* observation after a
-  // transient auth/persistence error; no Send is ever retried here. Do not let
-  // untrusted page hints trigger unlimited authenticated requests.
-  const attempts = new Map();
+  // One bounded read-only verification per observed user Turn. A real
+  // conversation POST produces only one wake-up hint; retry inside that
+  // observation, never rely on another page event or resend the POST.
+  const attempted = new Set();
   const MAX_TURNS_PER_DOCUMENT = 128;
   const MAX_READBACK_ATTEMPTS = 3;
   const RETRY_INTERVAL_MS = 3_000;
@@ -56,57 +56,53 @@
       || typeof hint.turn_id !== 'string' || typeof hint.request_id !== 'string'
       || !Number.isSafeInteger(hint.started_at_ms)) return;
     const key = hint.effect_id + ':' + hint.turn_id;
-    const previous = attempts.get(key);
-    const now = Date.now();
-    if ((attempts.size >= MAX_TURNS_PER_DOCUMENT && !previous)
-      || previous?.completed || previous?.inFlight
-      || (previous && (previous.count >= MAX_READBACK_ATTEMPTS
-        || now - previous.startedAt < RETRY_INTERVAL_MS))) return;
-    const state = { count: (previous?.count ?? 0) + 1, startedAt: now, inFlight: true, completed: false };
-    attempts.set(key, state);
-    try {
-      const auth = await fetch('/api/auth/session', { credentials: 'include', cache: 'no-store' });
-      if (!auth.ok) return;
-      const session = await auth.json();
-      const token = typeof session?.accessToken === 'string' ? session.accessToken : '';
-      if (!token) return;
-      // An SSE stream can finish just before its final assistant status is
-      // visible in the authenticated conversation view. Repeat one read-only
-      // observation, never the original Send or an unverified page event.
-      for (let attempt = 0; attempt < 2; attempt += 1) {
-        if (attempt) await new Promise((resolve) => setTimeout(resolve, 700));
-        const response = await fetch('/backend-api/conversations/' + encodeURIComponent(hint.conversation_id)
-          + '?include_has_versions=true&num_turns=100', {
-          credentials: 'include', cache: 'no-store',
-          headers: { Authorization: 'Bearer ' + token, Accept: 'application/json' },
-        });
-        if (response.status !== 200 || !response.headers.get('content-type')?.includes('application/json')) return;
-        if (Number(response.headers.get('content-length') ?? 0) > MAX_BODY) return;
-        const body = await response.text();
-        if (body.length > MAX_BODY) return;
-        const assistant = verifiedAssistant(JSON.parse(body), hint);
-        if (!assistant) continue;
-        const accepted = await chrome.runtime.sendMessage({
-          type: 'forge-computer-provider-turn-event',
-          event: {
-            task_id: hint.task_id, effect_id: hint.effect_id, receipt_challenge: hint.receipt_challenge,
-            turn_id: hint.turn_id, request_id: hint.request_id,
-            conversation_id: hint.conversation_id, started_at_ms: hint.started_at_ms,
-            outcome: 'completed', status_code: 200, content_type: 'application/json',
-            proof_source: PROOF, assistant_message_id: assistant.id,
-            assistant_status: 'finished_successfully', assistant_end_turn: true,
-          },
-        });
-        if (accepted?.accepted === true) {
-          state.completed = true;
-          return;
+    if (attempted.has(key) || attempted.size >= MAX_TURNS_PER_DOCUMENT) return;
+    attempted.add(key);
+    for (let retry = 0; retry < MAX_READBACK_ATTEMPTS; retry += 1) {
+      if (retry) await new Promise((resolve) => setTimeout(resolve, RETRY_INTERVAL_MS));
+      try {
+        const auth = await fetch('/api/auth/session', { credentials: 'include', cache: 'no-store' });
+        // 429 is provider backpressure, not a transient persistence lag.
+        // Never challenge Retry-After with the bounded readback polling loop.
+        if (auth.status === 429) return;
+        if (!auth.ok) continue;
+        const session = await auth.json();
+        const token = typeof session?.accessToken === 'string' ? session.accessToken : undefined;
+        if (!token) continue;
+        // The SSE stream can finish before the final assistant is persisted.
+        // Recheck a maximum of twice per bounded attempt.
+        for (let read = 0; read < 2; read += 1) {
+          if (read) await new Promise((resolve) => setTimeout(resolve, 700));
+          const response = await fetch('/backend-api/conversations/' + encodeURIComponent(hint.conversation_id)
+            + '?include_has_versions=true&num_turns=100', {
+            credentials: 'include', cache: 'no-store',
+            headers: { Authorization: 'Bearer ' + token, Accept: 'application/json' },
+          });
+          if (response.status === 429) return;
+          if (response.status !== 200 || !response.headers.get('content-type')?.includes('application/json')) break;
+          if (Number(response.headers.get('content-length') ?? 0) > MAX_BODY) break;
+          const body = await response.text();
+          if (body.length > MAX_BODY) break;
+          const assistant = verifiedAssistant(JSON.parse(body), hint);
+          if (!assistant) continue;
+          const accepted = await chrome.runtime.sendMessage({
+            type: 'forge-computer-provider-turn-event',
+            event: {
+              task_id: hint.task_id, effect_id: hint.effect_id, receipt_challenge: hint.receipt_challenge,
+              turn_id: hint.turn_id, request_id: hint.request_id,
+              conversation_id: hint.conversation_id, started_at_ms: hint.started_at_ms,
+              outcome: 'completed', status_code: 200, content_type: 'application/json',
+              proof_source: PROOF, assistant_message_id: assistant.id,
+              assistant_status: 'finished_successfully', assistant_end_turn: true,
+            },
+          });
+          // The existing Computer outbox owns durability. A transient refusal
+          // may be reconciled via read-only GET; never repeat the original Send.
+          if (accepted?.accepted === true || accepted?.retryable === false) return;
+          break;
         }
-        // The Computer owner might be temporarily unavailable. The next
-        // event may recheck the persisted response, but never replay Send.
-        return;
-      }
-    } catch { /* No provider proof; keep the Effect unknown, never retry its Send. */ }
-    finally { state.inFlight = false; }
+      } catch { /* No trusted proof; keep the original Effect unknown. */ }
+    }
   }
   window.addEventListener('message', (event) => {
     if (event.source !== window || event.origin !== location.origin) return;
