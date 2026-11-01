@@ -36,9 +36,10 @@
     for (const message of data.messages.slice(index + 1)) {
       if (message?.author?.role === 'user') return;
       if (message?.author?.role !== 'assistant' || (message.recipient && message.recipient !== 'all')) continue;
-      if (message.status === 'finished_successfully' && message.end_turn === true && typeof message.id === 'string') {
-        assistant = message;
-      }
+      // An earlier assistant final is not proof if a newer assistant is still
+      // generating in this same exchange.
+      assistant = message.status === 'finished_successfully' && message.end_turn === true
+        && typeof message.id === 'string' ? message : undefined;
     }
     return assistant;
   }

@@ -543,6 +543,34 @@ test('isolated conversation readback proves an exact persisted user and final as
   expect(outbound).toHaveLength(1);
 });
 
+test('conversation readback never treats an earlier finished assistant as the latest final', () => {
+  const source = readFileSync('adapters/computer/chrome-extension/provider-turn-readback.js', 'utf8');
+  const begin = source.indexOf('  function matchesPrompt(');
+  const end = source.indexOf('  async function readback(', begin);
+  expect(begin).toBeGreaterThan(0);
+  expect(end).toBeGreaterThan(begin);
+  const verify = runInNewContext(source.slice(begin, end) + '\nverifiedAssistant', {}) as
+    (data: Record<string, unknown>, hint: Record<string, unknown>) => { id?: string } | undefined;
+  const conversationId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+  const effectId = 'fx_0123456789abcdef0123456789abcdef';
+  const prompt = '<<<FORGE_WORKFLOW_EFFECT_V1:' + effectId + '>>>'
+    + '\ntask_id:"supervisor:test"\nreceipt:abc1234\nprovider_turn:conversation-readback-v1';
+  const hint = { conversation_id: conversationId, effect_id: effectId, task_id: 'supervisor:test',
+    receipt_challenge: 'abc1234', turn_id: 'user-turn' };
+  const messages = [
+    { id: 'user-turn', author: { role: 'user' }, content: { parts: [prompt] } },
+    { id: 'completed-older', author: { role: 'assistant' }, recipient: 'all',
+      status: 'finished_successfully', end_turn: true },
+    { id: 'still-generating', author: { role: 'assistant' }, recipient: 'all',
+      status: 'in_progress', end_turn: false },
+  ];
+  const data = { conversation_id: conversationId, page_info: { has_next_page: false }, messages };
+  expect(verify(data, hint)).toBeUndefined();
+  messages[2].status = 'finished_successfully';
+  messages[2].end_turn = true;
+  expect(verify(data, hint)?.id).toBe('still-generating');
+});
+
 test('isolated readback retries only its GET after a lagging final status, never replays Send', async () => {
   const source = readFileSync('adapters/computer/chrome-extension/provider-turn-readback.js', 'utf8');
   const conversationId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
