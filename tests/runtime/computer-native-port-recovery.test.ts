@@ -387,7 +387,7 @@ test('a timed-out completion schedules a new heartbeat rather than replaying the
 });
 
 
-test('MAIN-world provider capture requires a final assistant SSE receipt, not HTTP 200 alone', async () => {
+test('MAIN-world observer emits only a wake-up hint even for a finished SSE or HTTP 429', async () => {
   const manifest = JSON.parse(readFileSync('adapters/computer/chrome-extension/manifest.json', 'utf8')) as {
     permissions: string[]; content_scripts: Array<{ world?: string; js: string[]; run_at?: string }>;
   };
@@ -422,7 +422,7 @@ test('MAIN-world provider capture requires a final assistant SSE receipt, not HT
           if (read) return { done: true };
           read = true;
           return { done: false, value: new TextEncoder().encode(sse) };
-        } }; } } };
+        }, async cancel() {} }; } } };
       },
     }),
   };
@@ -447,15 +447,14 @@ test('MAIN-world provider capture requires a final assistant SSE receipt, not HT
     status: 'finished_successfully', end_turn: true } }) + '\n\n' + 'data: [DONE]\n\n';
   expect(await send()).toMatchObject({ task_id: 'supervisor:test', turn_id: 'turn-user-1',
     effect_id: 'fx_0123456789abcdef0123456789abcdef', conversation_id: conversationId,
-    outcome: 'completed', assistant_message_id: 'assistant-1', assistant_status: 'finished_successfully',
-    assistant_end_turn: true, stream_done: true, status_code: 200 });
+    outcome: 'unknown', status_code: 200 });
+  expect(source).not.toContain('function processPayload(');
   sse = 'data: ' + JSON.stringify({ message: { id: 'assistant-2', author: { role: 'assistant' },
     status: 'finished_successfully', end_turn: true } }) + '\n\n';
-  expect(await send()).toMatchObject({ outcome: 'unknown',
-    failure_code: 'CHATGPT_PROVIDER_TURN_COMPLETION_MISSING', status_code: 200 });
+  expect(await send()).toMatchObject({ outcome: 'unknown', status_code: 200 });
   statusCode = 429;
-  expect(await send()).toMatchObject({ outcome: 'failed', failure_code: 'CHATGPT_AUTOMATION_RATE_LIMITED',
-    status_code: 429, retry_after_ms: 45000 });
+  expect(await send()).toMatchObject({ outcome: 'unknown', status_code: 429 });
+  expect(JSON.stringify(events)).not.toContain('assistant-1');
 });
 
 test('isolated conversation readback proves an exact persisted user and final assistant', async () => {
