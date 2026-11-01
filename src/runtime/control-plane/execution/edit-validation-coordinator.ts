@@ -1,6 +1,7 @@
 import { createHash } from 'crypto';
 import {
   getEditSession,
+  editSessionOutsideWorkspaceFingerprint,
   recordEditSessionProcessCheckReceipts,
   type EditSession,
 } from '../../../cli/editing/edit-session';
@@ -42,6 +43,7 @@ export interface EditValidationRunState {
   /** Exact Work verification source identity captured before any lane starts. */
   sourceRevision?: string;
   workspaceFingerprint?: string;
+  outsideWorkspaceFingerprint?: string;
   checkIds: string[];
   lanes: string[][];
   processes: Record<string, { processId: string; requestId: string }>;
@@ -323,11 +325,22 @@ function validationRunRepository(
   return candidate;
 }
 
+function editCheckInputFingerprint(run: EditValidationRunState, checkId: string, requestedChecks: string[]): string {
+  if (!run.workspaceFingerprint) throw new Error('EDIT_VALIDATION_WORKSPACE_IDENTITY_REQUIRED');
+  return verificationInputFingerprint({
+    sourceRevision: run.sourceRevision ?? '',
+    workspaceFingerprint: run.workspaceFingerprint,
+    checkId,
+    requestedChecks,
+  });
+}
+
 function receiptFor(
   controllerHome: string,
   repository: RepositoryRecord,
   run: EditValidationRunState,
   checkId: string,
+  requestedChecks: string[],
 ): ProcessCheckCompletionReceipt {
   const binding = run.processes[checkId];
   if (!binding) throw new Error(`EDIT_VALIDATION_PROCESS_MISSING: ${checkId}`);
@@ -366,6 +379,7 @@ function receiptFor(
         scopeKey: processCheckSemanticScopeKey({
           checkoutId: repository.activeCheckoutId,
           workId: session.workId,
+          requestSemanticFingerprint: editCheckInputFingerprint(run, checkId, requestedChecks),
           verificationBinding: {
             editSessionId: run.editSessionId,
             editRevision: run.editRevision,
@@ -408,13 +422,13 @@ export async function reconcileEditValidationRun(
   const status = repositoryGitStatus(validationRepository);
   const currentSourceRevision = status.head?.trim();
   const currentWorkspaceFingerprint = workspaceValidationFingerprint(validationRepository.canonicalRoot, status);
-  if (session.workId && (!run.sourceRevision || !run.workspaceFingerprint)) {
+  if (!run.workspaceFingerprint || (session.workId && !run.sourceRevision)) {
     return failedRun(controllerHome, run, 'EDIT_VALIDATION_WORK_IDENTITY_REQUIRED', 'Work-bound Edit validation requires a persisted exact source revision and workspace fingerprint.');
   }
   if (run.sourceRevision && currentSourceRevision !== run.sourceRevision) {
     return failedRun(controllerHome, run, 'EDIT_VALIDATION_SOURCE_CHANGED', `Validation source changed from ${run.sourceRevision} to ${currentSourceRevision ?? 'unavailable'}.`);
   }
-  if (run.workspaceFingerprint && currentWorkspaceFingerprint !== run.workspaceFingerprint) {
+  if (currentWorkspaceFingerprint !== run.workspaceFingerprint) {
     return failedRun(controllerHome, run, 'EDIT_VALIDATION_WORKSPACE_CHANGED', 'Validation workspace changed after the persisted Process identity was captured.');
   }
 
@@ -440,14 +454,7 @@ export async function reconcileEditValidationRun(
         timeoutMs: run.timeoutMs,
         interactiveWaitMs: 0,
         requestId: checkRequestId,
-        requestSemanticFingerprint: session.workId && run.sourceRevision && run.workspaceFingerprint
-          ? verificationInputFingerprint({
-              sourceRevision: run.sourceRevision,
-              workspaceFingerprint: run.workspaceFingerprint,
-              checkId,
-              requestedChecks: work?.checks.length ? work.checks : run.checkIds,
-            })
-          : undefined,
+        requestSemanticFingerprint: editCheckInputFingerprint(run, checkId, work?.checks.length ? work.checks : run.checkIds),
         workId: session.workId,
         commandId: checkRequestId,
         verificationBinding: {
@@ -496,7 +503,7 @@ export async function reconcileEditValidationRun(
   }
 
   try {
-    const receipts = run.checkIds.map((checkId) => receiptFor(controllerHome, validationRepository, run, checkId));
+    const receipts = run.checkIds.map((checkId) => receiptFor(controllerHome, validationRepository, run, checkId, work?.checks.length ? work.checks : run.checkIds));
     const projections = receipts.map((receipt, index) => {
       const record = records[index]!;
       const legacyEvidence = record.origin?.checkResultReceiptPath
@@ -542,6 +549,8 @@ export async function reconcileEditValidationRun(
       repoId: validationRepository.repoId,
       checkoutId: validationRepository.activeCheckoutId,
       receipts,
+      validatedWorkspaceFingerprint: run.workspaceFingerprint,
+      validatedOutsideWorkspaceFingerprint: run.outsideWorkspaceFingerprint,
       reviewer: run.reviewer,
       note: run.note,
     });
@@ -642,6 +651,7 @@ export async function startOrJoinEditValidation(
   const validationStatus = repositoryGitStatus(validationRepository);
   const validationSourceRevision = validationStatus.head?.trim();
   const validationWorkspaceFingerprint = workspaceValidationFingerprint(validationRepository.canonicalRoot, validationStatus);
+  const validationOutsideFingerprint = editSessionOutsideWorkspaceFingerprint(validationRepository.canonicalRoot, session.sessionId);
   if (session.workId && !validationSourceRevision) {
     throw new Error('EDIT_VALIDATION_WORK_SOURCE_REVISION_REQUIRED');
   }
@@ -653,8 +663,9 @@ export async function startOrJoinEditValidation(
     editSessionId: session.sessionId,
     editRevision: session.currentRevision,
     requestId,
-    sourceRevision: session.workId ? validationSourceRevision : undefined,
-    workspaceFingerprint: session.workId ? validationWorkspaceFingerprint : undefined,
+    sourceRevision: validationSourceRevision ?? undefined,
+    workspaceFingerprint: validationWorkspaceFingerprint,
+    outsideWorkspaceFingerprint: validationOutsideFingerprint,
     checkIds,
     lanes: checkLanes(validationRepository, checkIds),
     processes: {},

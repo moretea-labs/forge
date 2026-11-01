@@ -15,7 +15,16 @@ import { buildLocalSystemPluginManifest, localSystemPluginAdapter } from '../../
 
 const roots: string[] = [];
 const sourceManifestPath = join(process.cwd(), 'adapters', 'computer', 'chrome-extension', 'manifest.json');
-const sourceManifest = JSON.parse(readFileSync(sourceManifestPath, 'utf8')) as { key: string };
+const sourceManifest = JSON.parse(readFileSync(sourceManifestPath, 'utf8')) as {
+  key: string;
+  background?: { service_worker?: string };
+  content_scripts?: Array<{ js?: string[] }>;
+};
+const SOURCE_EXTENSION_FILES = [...new Set([
+  'manifest.json',
+  ...(sourceManifest.background?.service_worker ? [sourceManifest.background.service_worker] : []),
+  ...(sourceManifest.content_scripts ?? []).flatMap((entry) => entry.js ?? []),
+])];
 const EXPECTED_EXTENSION_ID = 'glinahpcibpcfcimdcceplmfkgcjehin';
 
 afterEach(() => {
@@ -37,7 +46,7 @@ function fixture() {
   const nativeHostSourcePath = join(releaseRoot, 'forge-workflow-supervisor-native-host');
   const nativeMessagingRoot = join(root, 'native-hosts');
   mkdirSync(extensionSourcePath, { recursive: true });
-  for (const file of ['manifest.json', 'background.js', 'content.js', 'core.js']) {
+  for (const file of SOURCE_EXTENSION_FILES) {
     const content = file === 'manifest.json' ? readFileSync(sourceManifestPath) : Buffer.from('// fixture\n');
     writeFileSync(join(extensionSourcePath, file), content);
   }
@@ -134,6 +143,11 @@ describe('Workflow Supervisor browser adapter installer', () => {
     expect(ready.state).toBe('ready');
     expect(ready.extensionId).toBe(EXPECTED_EXTENSION_ID);
     expect(ready.projectionCurrent).toBe(true);
+    // Every file the packaged manifest references must reach the projection;
+    // Chrome refuses the whole extension when one content script is missing.
+    for (const file of SOURCE_EXTENSION_FILES) {
+      expect(existsSync(join(ready.extensionPath, file))).toBe(true);
+    }
     expect(existsSync(join(ready.extensionPath, 'background.js'))).toBe(true);
     expect(existsSync(ready.nativeHostPath)).toBe(true);
     const managedDeclaration = JSON.parse(readFileSync(join(ready.extensionPath, 'forge-native-messaging-host.json'), 'utf8')) as Record<string, unknown>;

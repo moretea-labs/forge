@@ -128,7 +128,7 @@ export function resolveCandidatePersistedCheckRunnerTarget(
 }
 
 export function persistedCheckSemanticScopeKey(
-  input: Pick<RunCheckFacadeInput, 'workId' | 'verificationBinding' | 'checkoutId'>,
+  input: Pick<RunCheckFacadeInput, 'workId' | 'verificationBinding' | 'checkoutId' | 'requestSemanticFingerprint'>,
   reuseScope: 'repository' | 'checkout',
 ): string {
   return processCheckSemanticScopeKey(input, reuseScope);
@@ -335,9 +335,15 @@ export async function runPersistedCheckViaProcessRuntime(
   })
     ? resolveCandidatePersistedCheckRunnerTarget(executionRoot, preliminarySemanticCheck.revision)
     : undefined;
-  const executionStateFingerprint = candidateRunner?.executionStateFingerprint
-    ?? liveExecutionStateFingerprint;
-  const semanticCheck = candidateRunner
+  const runnerStateFingerprint = candidateRunner?.executionStateFingerprint ?? liveExecutionStateFingerprint;
+  // Freeze the same exact EditSession input for both Process reuse and the
+  // Check Runner's own success cache; a fresh Process alone is insufficient.
+  const editInputFingerprint = input.verificationBinding?.editSessionId
+    ? input.requestSemanticFingerprint?.trim() : undefined;
+  const executionStateFingerprint = editInputFingerprint
+    ? createHash('sha256').update(JSON.stringify({ runnerStateFingerprint: runnerStateFingerprint ?? '', editInputFingerprint })).digest('hex').slice(0, 24)
+    : runnerStateFingerprint;
+  const semanticCheck = candidateRunner || editInputFingerprint
     ? controllerCheckExecutionIdentity(
         executionRoot,
         input.checkId,
@@ -380,9 +386,9 @@ export async function runPersistedCheckViaProcessRuntime(
     Buffer.from(JSON.stringify(checkSnapshot)).toString('base64url'),
     '--result-receipt',
     checkResultReceiptPath,
+    ...(executionStateFingerprint ? ['--execution-state-fingerprint', executionStateFingerprint] : []),
     ...(verificationSnapshot ? [
       ...(liveCertification ? ['--live-controller-home'] : ['--isolated-controller-home', verificationSnapshot.isolatedControllerHome]),
-      ...(executionStateFingerprint ? ['--execution-state-fingerprint', executionStateFingerprint] : []),
       '--cleanup-root', verificationSnapshot.root,
     ] : []),
   ];

@@ -182,6 +182,21 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
     return true;
   }
 
+  attestsProviderTurnBinding(conversationId: string, rawProviderInstanceId: string, binding: ComputerSurfaceProviderBinding): boolean {
+    const instanceId = providerInstanceId(rawProviderInstanceId);
+    if (!instanceId || !this.providerIsFresh(instanceId) || !binding.ownerToken
+      || binding.providerId !== PROVIDER_ID || binding.providerSessionId !== instanceId
+      || !binding.tabId || !binding.windowId) return false;
+    const owned = this.authority.findSurfaceByStableIdentity(this.controllerHome, stableIdentity({
+      namespace: 'chatgpt.conversation', conversationId, canonicalUrl: 'https://chatgpt.com/c/' + conversationId,
+    }));
+    const pinned = owned?.providerBinding;
+    return pinned?.providerId === PROVIDER_ID && pinned.providerSessionId === instanceId
+      && pinned.ownerToken === binding.ownerToken
+      && pinned.tabId === binding.tabId && pinned.windowId === binding.windowId
+      && pinned.browserProduct === binding.browserProduct;
+  }
+
   claim(rawProviderInstanceId: string): ComputerChatgptExtensionCommand | undefined {
     const instanceId = providerInstanceId(rawProviderInstanceId);
     if (!instanceId) return undefined;
@@ -387,11 +402,20 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
   }
 
   async ensureExact(identity: ComputerChatgptConversationIdentity, options: { createIfMissing?: boolean } = {}, recoverStalePin = true): Promise<ComputerChatgptTargetResult> {
-    const preferredInstanceId = this.preferredProviderInstance(identity);
+    const configuredPreferredInstanceId = this.preferredProviderInstance(identity);
     const fresh = this.freshProviders();
-    if (fresh.length === 0 || (preferredInstanceId && !fresh.some(([instanceId]) => instanceId === preferredInstanceId))) {
-      return failure('COMPUTER_CHATGPT_EXTENSION_NOT_CONNECTED', { failoverSafe: !preferredInstanceId });
+    if (fresh.length === 0) return failure('COMPUTER_CHATGPT_EXTENSION_NOT_CONNECTED', { failoverSafe: false });
+    const preferredFresh = !configuredPreferredInstanceId
+      || fresh.some(([instanceId]) => instanceId === configuredPreferredInstanceId);
+    // A Chrome extension reload or reinstall may mint a new ephemeral provider
+    // instance id for the SAME browser profile. Treat the persisted instance as
+    // stale only when exactly one live provider remains; a second live instance
+    // is ambiguous and still fails closed.
+    if (!preferredFresh && fresh.length !== 1) {
+      return failure('COMPUTER_CHATGPT_EXTENSION_NOT_CONNECTED', { failoverSafe: false });
     }
+    const staleProviderInstance = !preferredFresh && configuredPreferredInstanceId !== undefined;
+    const preferredInstanceId = preferredFresh ? configuredPreferredInstanceId : undefined;
     const exact = fresh.filter(([instanceId]) => !preferredInstanceId || instanceId === preferredInstanceId)
       .flatMap(([instanceId, state]) => state.heartbeat.conversations
       .filter((entry) => entry.conversationId === identity.conversationId)
@@ -431,12 +455,20 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
         }
         return { state: 'ready', target, observation };
       } catch (error) {
-        return failure(
-          error instanceof Error && error.message.trim()
-            ? error.message.trim()
-            : 'COMPUTER_CHATGPT_EXTENSION_OBSERVATION_UNAVAILABLE',
-          { failoverSafe: false },
-        );
+        const code = error instanceof Error && error.message.trim()
+          ? error.message.trim()
+          : 'COMPUTER_CHATGPT_EXTENSION_OBSERVATION_UNAVAILABLE';
+        if (recoverStalePin && options.createIfMissing === false
+          && code === 'COMPUTER_CHATGPT_EXTENSION_PINNED_OWNER_TOKEN_MISMATCH'
+          && binding?.providerId === PROVIDER_ID
+          && (staleProviderInstance || binding.providerSessionId === candidate.instanceId)) {
+          // A heartbeat still advertises the tab after an extension reload or
+          // reinstall, but its session owner token is gone. Ensure alone may
+          // mint a NEW owned tab for this exact conversation; the old tab is
+          // never reused, navigated or closed and no Send is authorized here.
+          return await this.ensureExact(identity, { ...options, createIfMissing: true }, false);
+        }
+        return failure(code, { failoverSafe: false });
       }
     }
     // A heartbeat is an inventory hint, not the exact-target authority.
@@ -466,6 +498,16 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
         if (!conversationContentAvailable(observation)) return unhydratedExactConversation(identity, observation);
         const record = await this.bindAsync(identity, providerBinding, selected.instanceId);
         return { state: 'ready', target: this.target(identity, record, selected.instanceId), observation };
+      }
+      if (recoverStalePin && response.result.kind === 'failed'
+        && response.result.code === 'COMPUTER_CHATGPT_EXTENSION_PINNED_OWNER_TOKEN_MISMATCH'
+        && binding?.providerId === PROVIDER_ID
+        && (staleProviderInstance || binding.providerSessionId === selected.instanceId)) {
+        // A Chrome extension reload or reinstall clears its session owner token,
+        // so the persisted pin can no longer be attested. Ensure alone may mint
+        // a NEW owned tab for this exact conversation; the old tab is never
+        // reused, navigated or closed, and no provider Send is authorized here.
+        return await this.ensureExact(identity, { ...options, createIfMissing: true }, false);
       }
       return failure(response.result.kind === 'failed'
         ? response.result.code === 'COMPUTER_CHATGPT_EXTENSION_TARGET_MISSING'

@@ -125,6 +125,17 @@ function fixture(scenario: Scenario) {
   return { dispatch, prepare, messages, get submissions() { return submissions; }, get draftWrites() { return draftWrites; } };
 }
 
+function runChromeContentScript(source: string, scope: Record<string, unknown>): unknown {
+  const existing = scope.window && typeof scope.window === 'object' ? scope.window as Record<string, unknown> : {};
+  const events = new EventTarget();
+  if (typeof existing.addEventListener !== 'function') {
+    existing.addEventListener = events.addEventListener.bind(events);
+    existing.removeEventListener = events.removeEventListener.bind(events);
+  }
+  scope.window = existing;
+  return runInNewContext(source, scope, { filename: 'content.js' });
+}
+
 test('exact conversation send requires no model-picker capability', async () => {
   const f = fixture({ capability: undefined });
   expect(await f.dispatch()).toMatchObject({ mutation: 'attempted', confirmed: true });
@@ -372,7 +383,7 @@ test('receiver identity and unreadable-page recovery preserve the exact target w
     MutationObserver: class { observe() {} disconnect() {} },
     setTimeout() { return 1; }, clearTimeout() {},
   };
-  runInNewContext(instrumented, context);
+  runChromeContentScript(instrumented, context);
   const failureText = (context as typeof context & { __failureText: () => string }).__failureText;
   expect(failureText()).toContain('无法加载此 ChatGPT 对话');
   isMessage = true;
@@ -447,7 +458,7 @@ test('find_marker hydrates only the exact pinned migrated conversation after rec
     scripting: {
       executeScript(args: { target: { tabId: number }; files: string[] }, cb: () => void) {
         expect(args.target.tabId).toBe(pinned.id);
-        expect(args.files).toEqual(['core.js', 'content.js']);
+        expect(args.files).toEqual(['core.js', 'provider-turn-readback.js', 'content.js']);
         reinjections++;
         receiverInstalled = true;
         cb();
@@ -592,7 +603,7 @@ test('Chrome content script awaits delayed exact editor readback without duplica
       setTimeout: (callback: () => void, ms: number) => { if (ms === 2_000 || ms === 75) queueMicrotask(callback); return 1; },
       clearTimeout() {},
     };
-    runInNewContext(source, context);
+    runChromeContentScript(source, context);
     if (!listener) throw new Error('Chrome content listener missing');
     const result = await new Promise<Record<string, unknown>>((resolve) => {
       listener!({ type: 'forge-computer-chatgpt-dispatch', prompt, expectedConversationId: id }, null, (value) => resolve(value as Record<string, unknown>));
@@ -645,7 +656,7 @@ test('real Chrome content script preserves all prompt spaces and newlines during
       setTimeout: (callback: () => void, ms: number) => { if (ms === 75 || ms === 2_000) queueMicrotask(callback); return 1; },
       clearTimeout: () => undefined,
     };
-    runInNewContext(content, context);
+    runChromeContentScript(content, context);
     if (!listener) throw new Error('content script listener was not installed');
     const response = await new Promise<Record<string, unknown>>((resolve) => {
       listener!({ type: 'forge-computer-chatgpt-dispatch', prompt, expectedConversationId: identity.conversationId }, null, (value) => resolve(value as Record<string, unknown>));
@@ -689,7 +700,7 @@ test('real Chrome content script preserves all prompt spaces and newlines during
     MutationObserver: class { observe() {} },
     setTimeout() { return 1; }, clearTimeout() {},
   };
-  runInNewContext(instrumented, snapshotContext);
+  runChromeContentScript(instrumented, snapshotContext);
   const snapshotReader = (snapshotContext as typeof snapshotContext & {
     __receiptSnapshot: (options?: { includePageText?: boolean }) => { latestAssistantResponse: string; latestTurnRole: string; pageText?: string };
   }).__receiptSnapshot;
@@ -748,7 +759,7 @@ test('recovery never clicks Stop and requires an exact idle assistant or explici
       MutationObserver: class { observe() {} disconnect() {} },
       setTimeout() { return 1; }, clearTimeout() {},
     };
-    runInNewContext(instrumented, context);
+    runChromeContentScript(instrumented, context);
     return (context as typeof context & { __recoverNoStopReadiness: () => { ready: boolean; reason?: string; capability?: string } }).__recoverNoStopReadiness();
   };
   expect(run({ turnSelector: 'conversation-turn', lastRole: 'assistant' })).toMatchObject({ ready: true, capability: 'recover-no-stop-prewrite-v1' });
@@ -813,7 +824,7 @@ test('live current-turn activity changes before the assistant role commits', () 
     MutationObserver: class { observe() {} disconnect() {} },
     setTimeout() { return 1; }, clearTimeout() {},
   };
-  runInNewContext(instrumented, context);
+  runChromeContentScript(instrumented, context);
   const snapshot = (context as typeof context & {
     __providerActivitySnapshot: () => {
       latestAssistantResponse: string; latestTurnRole?: string; providerActivityText: string; isGenerating: boolean;
@@ -864,7 +875,7 @@ test('content script fences bootstrap sends to the exact Project and rejects mig
       MutationObserver: class { observe() {} },
       setTimeout: () => 1, clearTimeout: () => undefined,
     };
-    runInNewContext(source, ctx);
+    runChromeContentScript(source, ctx);
     if (!listener) throw new Error('No content listener');
     const result = await new Promise<Record<string, unknown>>(resolve => {
       listener!({
@@ -960,6 +971,33 @@ test('F11 exact conversation owner mismatch can recover only through new atteste
   expect((await f.prepare(identity, stalePin, 'profile-1'))).toMatchObject({
     kind: 'prepared', ready: false, reasonCode: 'COMPUTER_CHATGPT_EXTENSION_PINNED_OWNER_TOKEN_MISMATCH',
   });
+  expect(f.dispatchSends).toBe(0);
+});
+
+// F11/Chrome restart: the persisted physical tab id no longer exists, but a
+// restored tab shows the exact conversation. Ensure may mint its own attested
+// tab; it must never adopt the restored tab or make Prepare/Dispatch usable
+// with the stale pin.
+test('F11 vanished pinned tab with exact restored conversation recovers only through a new attested Ensure tab', async () => {
+  const conversationId = '12345678-1234-1234-1234-123456789abc';
+  const conversationUrl = `https://chatgpt.com/c/${conversationId}`;
+  const f = bootstrapFixture([{ id: 900, windowId: 19, url: conversationUrl }], { validEnsureSnapshot: true });
+  const exactIdentity = { namespace: 'chatgpt.conversation', conversationId, canonicalUrl: conversationUrl };
+  const stalePin = { providerId: 'browser.chrome-extension', providerSessionId: 'profile-1',
+    tabId: '708', windowId: '19', ownerToken: 'pre-restart-owner-token' };
+  expect((await f.observe(exactIdentity, stalePin, 'profile-1'))).toMatchObject({
+    kind: 'failed', code: 'COMPUTER_CHATGPT_EXTENSION_PINNED_OWNER_TOKEN_MISMATCH',
+  });
+  expect((await f.prepare(exactIdentity, stalePin, 'profile-1'))).toMatchObject({
+    ready: false, reasonCode: 'COMPUTER_CHATGPT_EXTENSION_PINNED_OWNER_TOKEN_MISMATCH',
+  });
+  const recovered = await f.ensure(exactIdentity, stalePin, 'profile-1');
+  expect(recovered).toMatchObject({ kind: 'ensured' });
+  expect(recovered.providerBinding?.tabId).not.toBe('708');
+  expect(recovered.providerBinding?.tabId).not.toBe('900');
+  expect(recovered.providerBinding?.ownerToken).toEqual(expect.any(String));
+  expect(f.tabs).toHaveLength(2);
+  expect(f.tabs[0]).toEqual({ id: 900, windowId: 19, url: conversationUrl });
   expect(f.dispatchSends).toBe(0);
 });
 

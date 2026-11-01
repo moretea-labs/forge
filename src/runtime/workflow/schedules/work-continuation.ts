@@ -1,10 +1,9 @@
 import { createHash } from 'crypto';
 import { getWorkContract, semanticWorkState, type WorkContract } from '../../../../packages/kernel/work/api/index';
-import { getControllerRoundRelay, getRetainedControllerSession, rearmControllerRoundAfterProviderUserAction, type ControllerRoundRelayRecord, type ControllerType } from '../../../../packages/kernel/controller/api/index';
+import { getControllerRoundRelay, getRetainedControllerSession, rearmControllerRoundAfterProviderUserAction, type ControllerType } from '../../../../packages/kernel/controller/api/index';
 import { ensureScheduledControllerBinding } from '../../root/scheduled-controller-composition';
 import { resolveHandoffItem } from '../../control-plane/facade/handoff-inbox-store';
 import type { HandoffItem } from '../../control-plane/facade/types';
-import { readWorkHandle, type WorkHandleState } from '../../control-plane/execution/work-handle-store';
 import { touchSchedulerWakeSignal } from '../../control-plane/global-scheduler/wake-signal';
 
 import { assertAutomatedOperationAllowed } from '../../control-plane/governance/external-effects';
@@ -406,10 +405,6 @@ export async function triggerWorkContinuationSchedule(
   return evaluateSchedule(controllerHome, schedule, true, context);
 }
 
-export function repositoryCleanContinuationEventName(targetBranch: string): string {
-  return `repository-clean:${targetBranch.trim() || 'main'}`;
-}
-
 export function handoffResolvedContinuationEventName(handoffId: string): string {
   return `handoff-resolved:${handoffId.trim()}`;
 }
@@ -436,68 +431,6 @@ export async function triggerWorkContinuationRepositoryEvent(
     triggered.push({ scheduleId: schedule.scheduleId, occurrenceId: occurrence?.occurrenceId, status: occurrence?.status });
   }
   return triggered;
-}
-
-export function eventDrivenContinuationSchedule(
-  controllerHome: string,
-  repoId: string,
-  input: {
-    workId: string;
-    eventName: string;
-    reason: string;
-  },
-): RepositorySchedule {
-  const workSchedules = listWorkContinuationSchedules(controllerHome, repoId, { workId: input.workId }).schedules;
-  const existing = workSchedules
-    .filter((schedule) => isWorkContinuationOperation(schedule.action.operation))
-    .reverse()
-    .find((schedule) => schedule.enabled)
-    ?? workSchedules.at(-1);
-  return createWorkContinuationSchedule(controllerHome, repoId, {
-    workId: input.workId,
-    continuationPrompt: `Resume exact Work ${input.workId}. Mechanical blocker changed: ${input.reason}`,
-    scheduleName: `Event continuation for ${input.workId}`,
-    triggerType: 'repository-event',
-    eventName: input.eventName,
-    maxFailures: existing?.policy.maxFailures,
-    cooldownMinutes: existing?.policy.cooldownMinutes,
-    dailyBudgetMinutes: existing?.policy.dailyBudgetMinutes,
-    shadowMode: false,
-    backoffBaseMinutes: existing?.policy.backoffBaseMinutes,
-    backoffMaxMinutes: existing?.policy.backoffMaxMinutes,
-    stopConditions: existing?.stopConditions,
-  }).schedule;
-}
-
-
-function dirtyTargetBranchFromWorkHandle(handle: WorkHandleState | undefined): string | undefined {
-  const reason = handle?.finalization.lastError ?? handle?.failureReason ?? '';
-  const match = /WORK_TARGET_DIRTY_OWNERSHIP_REQUIRED: target ([^\s]+) has dirty path/.exec(reason);
-  return match?.[1]?.trim() || undefined;
-}
-
-export function ensureControllerDispositionContinuation(
-  controllerHome: string,
-  repoId: string,
-  relay: Pick<ControllerRoundRelayRecord, 'originWorkId' | 'status' | 'handoffId'>,
-): RepositorySchedule | undefined {
-  if (relay.status === 'waiting') {
-    const targetBranch = dirtyTargetBranchFromWorkHandle(readWorkHandle(controllerHome, repoId, relay.originWorkId));
-    if (!targetBranch) return undefined;
-    return eventDrivenContinuationSchedule(controllerHome, repoId, {
-      workId: relay.originWorkId,
-      eventName: repositoryCleanContinuationEventName(targetBranch),
-      reason: `target ${targetBranch} is clean after WORK_TARGET_DIRTY_OWNERSHIP_REQUIRED`,
-    });
-  }
-  if (relay.status === 'waiting_for_user' && relay.handoffId) {
-    return eventDrivenContinuationSchedule(controllerHome, repoId, {
-      workId: relay.originWorkId,
-      eventName: handoffResolvedContinuationEventName(relay.handoffId),
-      reason: `handoff ${relay.handoffId} was resolved`,
-    });
-  }
-  return undefined;
 }
 
 export async function resolveHandoffAndTriggerContinuation(

@@ -427,7 +427,14 @@
       sendResponse({ projects: discoverProjectLinks(message.projectTitles), conversations: discoverConversationLinks(), pageUrl: location.href });
       return false;
     }
-    if (message.type === 'forge-computer-chatgpt-snapshot') { sendResponse(pageSnapshot(message.options ?? {})); return false; }
+    if (message.type === 'forge-computer-chatgpt-snapshot') {
+      const observed = pageSnapshot(message.options ?? {});
+      // Existing Supervisor exact-tab observation is the only re-arm cadence;
+      // this text is merely a hint for the isolated authenticated readback.
+      try { globalThis.__forgeProviderReadbackFromSnapshot?.(observed.latestUserText); } catch {}
+      sendResponse(observed);
+      return false;
+    }
     // Read-only exact-tab attestation for bootstrap/draft target guards.
     if (message.type === 'forge-computer-chatgpt-capabilities') {
       sendResponse({ bootstrapTargetGuard: 'project-checked-before-send-v1',

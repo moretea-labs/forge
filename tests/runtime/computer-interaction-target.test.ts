@@ -345,6 +345,33 @@ describe('Computer durable InteractionTarget authority', () => {
   });
 
 
+  test('Provider final receipt is bound to the exact live Computer-owned conversation tab', () => {
+    const home = mkdtempSync(join(tmpdir(), 'forge-provider-receipt-binding-'));
+    try {
+      const conversationId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+      const canonicalUrl = 'https://chatgpt.com/c/' + conversationId;
+      const binding = { providerId: 'browser.chrome-extension', providerSessionId: 'profile-a',
+        observedAt: new Date().toISOString(), browserProduct: 'chrome',
+        windowId: 'window-3', tabId: 'tab-4', ownerToken: 'owned-tab-token' };
+      targetAuthority.upsertSurface(home, { stableIdentity: {
+        surfaceType: 'browser-tab', ownership: 'provider_owned',
+        resource: { namespace: 'chatgpt.conversation', key: conversationId },
+      }, visibility: 'controller', providerBinding: binding, reactivate: true });
+      const port = new ChromeExtensionChatgptConversationTargetPort(home, targetAuthority);
+      expect(port.attestsProviderTurnBinding(conversationId, 'profile-a', binding)).toBe(false);
+      expect(port.heartbeat({ providerId: 'browser.chrome-extension', providerInstanceId: 'profile-a',
+        observedAt: new Date().toISOString(), conversations: [{ conversationId, canonicalUrl, providerBinding: binding }] })).toBe(true);
+      expect(port.attestsProviderTurnBinding(conversationId, 'profile-a', binding)).toBe(true);
+      expect(port.attestsProviderTurnBinding('bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee', 'profile-a', binding)).toBe(false);
+      expect(port.attestsProviderTurnBinding(conversationId, 'profile-b', binding)).toBe(false);
+      expect(port.attestsProviderTurnBinding(conversationId, 'profile-a', { ...binding, tabId: 'tab-foreign' })).toBe(false);
+      expect(port.attestsProviderTurnBinding(conversationId, 'profile-a', { ...binding, ownerToken: 'foreign-token' })).toBe(false);
+      expect(port.attestsProviderTurnBinding(conversationId, 'profile-a', { ...binding, ownerToken: undefined })).toBe(false);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   test('extension bootstrap keeps durable tab ownership when the worker is offline', async () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-bootstrap-extension-offline-'));
     try {
@@ -1161,6 +1188,109 @@ describe('Computer durable InteractionTarget authority', () => {
       extension.complete('profile-a', raceCommand.commandId, { kind: 'ensured', providerBinding: replacementBinding, observation });
       expect(await racing).toMatchObject({ state: 'unavailable', failure: { code: 'COMPUTER_CHATGPT_EXTENSION_PINNED_BINDING_CHANGED' } });
       expect(targetAuthority.getSurface(home, record.targetId)?.providerBinding).toMatchObject(concurrent);
+      await extension.close();
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test('mints one new owned exact tab when a reloaded extension lost its pinned owner token', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'forge-extension-owner-token-reset-'));
+    try {
+      const extension = new ChromeExtensionChatgptConversationTargetPort(home, targetAuthority);
+      const identity = { namespace: 'chatgpt.conversation' as const, conversationId: 'conversation-reload',
+        canonicalUrl: 'https://chatgpt.com/c/conversation-reload' };
+      const record = targetAuthority.createSurface(home, {
+        stableIdentity: { surfaceType: 'browser-tab', ownership: 'provider_owned',
+          resource: { namespace: identity.namespace, key: identity.conversationId } },
+        visibility: 'controller',
+        providerBinding: { providerId: 'browser.chrome-extension', providerSessionId: 'profile-a',
+          browserProduct: 'chrome', windowId: 'old-window', tabId: 'old-tab', ownerToken: 'lost-owner-token',
+          observedAt: '2026-11-01T08:00:00.000Z' },
+      });
+      extension.heartbeat({ providerId: 'browser.chrome-extension', providerInstanceId: 'profile-a',
+        observedAt: new Date().toISOString(), conversations: [] });
+      const pending = extension.ensureExact(identity, { createIfMissing: false });
+      const observe = extension.claim('profile-a');
+      expect(observe?.kind).toBe('observe');
+      if (!observe) throw new Error('expected one read-only observation');
+      // A Chrome extension reload or reinstall clears session storage, so the
+      // persisted owner token can no longer be attested by the old tab.
+      expect(extension.complete('profile-a', observe.commandId,
+        { kind: 'failed', code: 'COMPUTER_CHATGPT_EXTENSION_PINNED_OWNER_TOKEN_MISMATCH' })).toBe(true);
+      let ensure = extension.claim('profile-a');
+      for (let attempt = 0; attempt < 20 && !ensure; attempt += 1) {
+        await Bun.sleep(1);
+        ensure = extension.claim('profile-a');
+      }
+      expect(ensure?.kind).toBe('ensure');
+      if (!ensure) throw new Error('owner-token reset must fall back to canonical Ensure');
+      const binding = { providerId: 'browser.chrome-extension', providerSessionId: 'profile-a',
+        browserProduct: 'chrome', windowId: 'new-window', tabId: 'new-tab', ownerToken: 'fresh-owner-token',
+        observedAt: '2026-11-01T08:00:01.000Z' };
+      const observation = { url: identity.canonicalUrl, title: 'Original', latestUserText: 'already submitted',
+        latestAssistantResponse: '', providerActivityText: '', providerFailureText: '', composerText: '',
+        isGenerating: false };
+      expect(extension.complete('profile-a', ensure.commandId,
+        { kind: 'ensured', providerBinding: binding, observation })).toBe(true);
+      expect((await pending).state).toBe('ready');
+      expect(targetAuthority.getSurface(home, record.targetId)?.providerBinding).toMatchObject({
+        tabId: 'new-tab', ownerToken: 'fresh-owner-token',
+      });
+      expect(extension.claim('profile-a')).toBeUndefined();
+      await extension.close();
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test('rebinds one fresh provider instance after a reload minted a new instance id', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'forge-extension-provider-instance-rebind-'));
+    try {
+      const extension = new ChromeExtensionChatgptConversationTargetPort(home, targetAuthority);
+      const identity = { namespace: 'chatgpt.conversation' as const, conversationId: 'conversation-instance',
+        canonicalUrl: 'https://chatgpt.com/c/conversation-instance' };
+      const record = targetAuthority.createSurface(home, {
+        stableIdentity: { surfaceType: 'browser-tab', ownership: 'provider_owned',
+          resource: { namespace: identity.namespace, key: identity.conversationId } },
+        visibility: 'controller',
+        providerBinding: { providerId: 'browser.chrome-extension', providerSessionId: 'profile-a',
+          browserProduct: 'chrome', windowId: 'window-1', tabId: 'tab-1', ownerToken: 'lost-owner-token',
+          observedAt: '2026-11-01T08:00:00.000Z' },
+      });
+      // The reinstall restarted the extension under a new ephemeral instance
+      // id; only that live instance can still attest the same physical tab.
+      extension.heartbeat({ providerId: 'browser.chrome-extension', providerInstanceId: 'profile-b',
+        observedAt: new Date().toISOString(), conversations: [{ conversationId: identity.conversationId,
+          canonicalUrl: identity.canonicalUrl, providerBinding: { providerId: 'browser.chrome-extension',
+            providerSessionId: 'profile-b', browserProduct: 'chrome', windowId: 'window-1', tabId: 'tab-1',
+            observedAt: '2026-11-01T08:00:00.000Z' } }] });
+      const pending = extension.ensureExact(identity, { createIfMissing: false });
+      const observe = extension.claim('profile-b');
+      expect(observe?.kind).toBe('observe');
+      if (!observe) throw new Error('expected one observation from the fresh instance');
+      expect(extension.complete('profile-b', observe.commandId,
+        { kind: 'failed', code: 'COMPUTER_CHATGPT_EXTENSION_PINNED_OWNER_TOKEN_MISMATCH' })).toBe(true);
+      let ensure = extension.claim('profile-b');
+      for (let attempt = 0; attempt < 20 && !ensure; attempt += 1) {
+        await Bun.sleep(1);
+        ensure = extension.claim('profile-b');
+      }
+      expect(ensure?.kind).toBe('ensure');
+      if (!ensure) throw new Error('a single fresh instance must fall back to Ensure');
+      const binding = { providerId: 'browser.chrome-extension', providerSessionId: 'profile-b',
+        browserProduct: 'chrome', windowId: 'window-2', tabId: 'tab-2', ownerToken: 'fresh-owner-token',
+        observedAt: '2026-11-01T08:00:01.000Z' };
+      const observation = { url: identity.canonicalUrl, title: 'Original', latestUserText: 'already submitted',
+        latestAssistantResponse: '', providerActivityText: '', providerFailureText: '', composerText: '',
+        isGenerating: false };
+      expect(extension.complete('profile-b', ensure.commandId,
+        { kind: 'ensured', providerBinding: binding, observation })).toBe(true);
+      expect((await pending).state).toBe('ready');
+      expect(targetAuthority.getSurface(home, record.targetId)?.providerBinding).toMatchObject({
+        providerSessionId: 'profile-b', tabId: 'tab-2', ownerToken: 'fresh-owner-token',
+      });
+      expect(extension.claim('profile-b')).toBeUndefined();
       await extension.close();
     } finally {
       rmSync(home, { recursive: true, force: true });

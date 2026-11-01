@@ -2,7 +2,7 @@
 
 @AGENTS.md
 
-Follow AGENTS.md as the single repository-wide development rule authority. Do not maintain a competing copy of its workflow or architecture policy here. Controller Home owns mutable workflow state; tasks/todos.md is human-authored repository context, and retired repo-local workflow state directories are legacy migration inputs, not current authority.
+Follow AGENTS.md as the single repository-wide development rule authority. Do not maintain a competing copy of its workflow or architecture policy here. GitHub Issues/Projects alone track development progress and manual issue completion review. Forge Controller retains only execution/effect mechanics; old Work/Plan/WorkHandle records are historical.
 
 - Work directly in the assigned checkout. For bounded changes, use Read/Edit/Bash and focused checks rather than spawning extra agents or workflows.
 - Use the model selected by the operator in CC Switch or the current CLI environment. Prefer a proven cost-effective model for routine implementation; escalate only for evidence-based harder reasoning or independent review. Do not hardcode credentials, endpoints, billing rates, or model aliases into shared repository rules.
@@ -32,5 +32,5 @@ Follow AGENTS.md as the single repository-wide development rule authority. Do no
 - Semantic diagram source: `docs/architecture/modules/runtime-harness/hook-adapters.md`
 - Latest human diagram: `(none yet)`
 - Pending architecture request: `(none)`
-- Runtime progress authority: Forge Controller Home Requirement/Plan/Work/Evidence; this repository block contains authored architecture context only.
+- Development progress authority: GitHub Issue/Project; Forge owns only mechanical execution/effect evidence.
 <!-- END ARCHITECTURE CONTRACT -->

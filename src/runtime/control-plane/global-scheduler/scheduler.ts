@@ -20,7 +20,6 @@ import {
   runSchedulerValidationReconciliation,
 } from './maintenance';
 import { planSchedulerSourceSampling } from './source-scan';
-import { runSchedulerAutonomousContinuationReconciliation } from './autonomous-continuation';
 import { tickSchedules } from '../../workflow/schedules/engine';
 import { sampleRepositoryGitStatusForRepositories } from '../../projections/git-status-sampler';
 import {
@@ -280,7 +279,6 @@ export class GlobalScheduler {
     this.lastTickAt = this.lastHeartbeatAt;
     this.persistState();
     const repositories = this.repositoryList(this.controllerHome).filter((repo) => repo.enabled && !repo.removedAt);
-    let reconciliationRan = false;
     if (now - this.lastCleanupAt >= RUNTIME_CLEANUP_INTERVAL_MS) {
       // Advance the interval before cleanup so a failing pass cannot create a
       // tight retry loop on every scheduler tick. Canonical Runtime launches the
@@ -319,7 +317,6 @@ export class GlobalScheduler {
       });
       this.lastReconcile = now;
       this.lastReconcileAt = new Date(now).toISOString();
-      reconciliationRan = true;
     }
     const activeSourceRepoIds = new Set<string>();
     const sourceSampling = planSchedulerSourceSampling({
@@ -355,18 +352,9 @@ export class GlobalScheduler {
         .map((repository) => [repository.repoId, repository] as const),
     ).values());
     this.sourceScansAvoided += sourceSampling.avoidedRepositoryCount;
-    // Migration-era global Work admission gates are retired. Scheduler dispatch
-    // is constrained by durable admission, placement and concrete resource authority.
-    if (reconciliationRan) {
-      const liveness = await runSchedulerAutonomousContinuationReconciliation({
-        controllerHome: this.controllerHome,
-        nowMs: now,
-        repositories,
-      });
-      if (liveness.failed > 0) {
-        console.error('[forge liveness] controller progression reconciliation reported ' + liveness.failed + ' failure(s)');
-      }
-    }
+    // Work-bound liveness continuation is retired: GitHub Issues are the only
+    // progress ledger and the standalone Workflow Supervisor is the only
+    // continuation writer. Schedules still drive explicit Supervisor wakes.
     // ExecutionJob creation is retired. Work and Process own live execution.
     if (now - this.lastScheduleTick >= SCHEDULE_TICK_INTERVAL_MS) {
       await tickSchedules(this.controllerHome, repositories.map((repo) => repo.repoId));

@@ -1092,7 +1092,6 @@ requireText('packages/kernel/controller/domain/controller-round-transition-polic
 forbid('packages/kernel/controller/application/continuation-service.ts', /scheduler_continuation_dispatch|ScheduledContinuationDispatch/, 'Controller continuation must not recreate Scheduler-owned continuation lifecycle persistence');
 requireText('src/runtime/root/controller-progression-composition.ts', 'reconcileControllerProgression');
 requireText('src/runtime/root/controller-progression-composition.ts', 'ensureWorkflowSupervisorEnrollmentForWork');
-requireText('src/runtime/control-plane/global-scheduler/autonomous-continuation.ts', 'reconcileControllerProgression');
 requireText('src/runtime/workflow/schedules/engine.ts', 'reconcileControllerProgression');
 requireText('adapters/mcp/runtime-gateway/work-controller-operations.ts', 'reconcileControllerProgression');
 forbid(
@@ -2181,7 +2180,6 @@ for (const path of [
   'src/runtime/control-plane/facade/goal-workloop.ts',
   'src/runtime/control-plane/facade/plan-contract-store.ts',
   'src/runtime/control-plane/facade/requirement-authority.ts',
-  'src/runtime/control-plane/global-scheduler/autonomous-continuation.ts',
   'adapters/mcp/runtime-gateway/work-plan-operations.ts',
   'adapters/mcp/runtime-gateway/work-repair-adapter.ts',
 ]) {
@@ -2656,6 +2654,13 @@ requireMissing('adapters/browser/session-authority.ts');
 requireMissing('adapters/browser/sqlite-session-authority.ts');
 requireMissing('packages/plugin-runtime/browser/session-persistence.ts');
 requireMissing('src/runtime/root/browser-session-persistence.ts');
+// Work-bound liveness continuation is retired. GitHub Issues are the only
+// progress ledger; Schedules wake the one standalone Supervisor, so the
+// Scheduler must not recreate a Work scanner or ControllerRound dispatch loop.
+requireMissing('src/runtime/control-plane/global-scheduler/autonomous-continuation.ts');
+for (const path of sourceFiles('src/runtime/control-plane/global-scheduler')) {
+  forbid(path, /readActiveWorkCandidates|ensureWorkflowSupervisorEnrollmentForWork|getRetainedControllerSession/, 'Work-bound liveness continuation must not be reintroduced');
+}
 forbid('packages/plugin-runtime/browser/session-authority.ts', /\bBrowserSession(?:Authority|Persistence)Port\b/, 'Browser compatibility contracts must not expose a second durable authority or persistence port');
 requireText('src/runtime/plugins/browser-session-authority.ts', 'findComputerBackedBrowserSession');
 requireText('src/runtime/plugins/browser-session-authority.ts', 'saveComputerBackedBrowserSession');

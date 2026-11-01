@@ -148,7 +148,9 @@ function fixture(options: {
   };
   const context = {
     document,
-    window: { getSelection: () => ({ removeAllRanges() {}, addRange() {} }) },
+    window: { getSelection: () => ({ removeAllRanges() {}, addRange() {} }),
+      addEventListener: documentEvents.addEventListener.bind(documentEvents),
+      removeEventListener: documentEvents.removeEventListener.bind(documentEvents) },
     location,
     URL,
     crypto: webcrypto,

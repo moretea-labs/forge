@@ -10,7 +10,7 @@ Keep this file focused on the local contract for this primary functional block.
 - Route deep implementation detail into nearby docs instead of inflating root agent context files.
 - Treat `.ai/context/context-map.json` as the index of discoverable context files.
 - Do not keep pushing context files deeper by default; add lower-level files only for a separately owned functional block with its own commands and invariants.
-- Prefer authored repository context for durable source knowledge and Controller Home for mutable workflow state; tool-specific chat memory is never authority.
+- GitHub Issues/Projects are the only development progress ledger; authored repository context holds stable source knowledge and Forge owns mechanical execution/effect receipts. Do not require Work/Plan/WorkHandle.
 
 <!-- BEGIN CAPABILITY CONTEXT -->
 ## Capability Context
@@ -60,5 +60,5 @@ Owns the runtime-harness-hook-adapters capability boundary declared in .ai/conte
 - Semantic diagram source: `docs/architecture/modules/runtime-harness/hook-adapters.md`
 - Latest human diagram: `(none yet)`
 - Pending architecture request: `(none)`
-- Runtime progress authority: Forge Controller Home Requirement/Plan/Work/Evidence; this repository block contains authored architecture context only.
+- Development progress authority: existing GitHub Issues/Projects; Forge retains only runtime execution and effect receipts. This block contains authored architecture context only.
 <!-- END ARCHITECTURE CONTRACT -->

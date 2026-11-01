@@ -2,8 +2,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { mkdirSync } from 'node:fs';
 import { resolveWorkflowSupervisorForgeHome, workflowSupervisorDatabasePathValue, workflowSupervisorRootPath } from './paths';
-import { validateSupervisorObjective } from './protocol';
-import type { WorkflowEffectKind, WorkflowEffectOutcome, WorkflowSupervisorCompletion, WorkflowSupervisorContinuationProof, WorkflowSupervisorDiscoverySnapshot, WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorEffect, WorkflowSupervisorTask, WorkflowSupervisorTaskInput, WorkflowSupervisorTaskStall, WorkflowSupervisorTerminalState, WorkflowSupervisorPreflightComposerObservation, WorkflowSupervisorSilentTurn, WorkflowSupervisorReviewNotice } from './types';
+import { SUPERVISOR_PROVIDER_TURN_MARKER, validateEffectId, validateSupervisorObjective } from './protocol';
+import type { WorkflowEffectKind, WorkflowEffectOutcome, WorkflowSupervisorCompletion, WorkflowSupervisorContinuationProof, WorkflowSupervisorDiscoverySnapshot, WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorEffect, WorkflowSupervisorProviderTurnEvent, WorkflowSupervisorProviderTurnEventResult, WorkflowSupervisorProviderTurnReceipt, WorkflowSupervisorTask, WorkflowSupervisorTaskInput, WorkflowSupervisorTaskStall, WorkflowSupervisorTerminalState, WorkflowSupervisorPreflightComposerObservation, WorkflowSupervisorSilentTurn, WorkflowSupervisorReviewNotice } from './types';
 export type { WorkflowSupervisorTaskStall } from './types';
 
 interface Statement { get(...params: unknown[]): unknown; all(...params: unknown[]): unknown[]; run(...params: unknown[]): unknown; finalize?(): void }
@@ -413,6 +413,22 @@ function effectPreflightFailureReleaseIds(db: Database, effectId: string): Array
   return rows.map((row) => ({ eventId: Number(row.event_id ?? 0), releaseId: String(parsedObject(row.payload_json).active_release_id ?? 'unidentified-runtime') }));
 }
 
+/** The existing Project-binding authority applies only to a real unsent bootstrap,
+ * including Work-owned enrollments whose task id and conversation identity agree. */
+function canBindBootstrapProject(task: WorkflowSupervisorTask): boolean {
+  if (task.continuationPolicy.kind === 'standalone_supervisor') {
+    return task.conversationId === `bootstrap:${task.taskId}`;
+  }
+  const workId = boundedText(task.completionContract.work_id);
+  const repoId = boundedText(task.completionContract.repo_id);
+  return task.continuationPolicy.kind === 'forge_goal_outer_turn'
+    && task.continuationPolicy.bootstrap === true
+    && ['forge_work_done', 'forge_requirement_done'].includes(String(task.completionContract.kind))
+    && Boolean(repoId && workId)
+    && task.taskId === `forge:${repoId}:work:${workId}`
+    && task.conversationId === `bootstrap:${workId}`;
+}
+
 export class WorkflowSupervisorStore {
   private readonly db: Database;
   private closed = false;
@@ -534,6 +550,19 @@ export class WorkflowSupervisorStore {
       }
       const taskRepo = typeof task.completionContract.repo_id === 'string' ? task.completionContract.repo_id : task.continuationPolicy.repo_id;
       const inputRepo = typeof input.completionContract.repo_id === 'string' ? input.completionContract.repo_id : input.continuationPolicy.repo_id;
+      // Explicit Project binding adds one monotonic local fence to the stored
+      // Work bootstrap policy. An exact registration retry must preserve that
+      // fence and reuse this task, never interpret it as a new identity.
+      if (task.continuationPolicy.project_binding_required === true && canBindBootstrapProject(task)
+        && statement(db, "SELECT 1 FROM events WHERE task_id=? AND kind='bootstrap_project_bound' LIMIT 1", (s) => s.get(task.taskId))) {
+        const { project_binding_required: _boundProjectGate, ...originalPolicy } = task.continuationPolicy;
+        if (taskRepo === inputRepo
+          && task.conversationId === input.conversationId && task.conversationUrl === input.conversationUrl
+          && task.objective === input.objective
+          && json(task.completionContract) === json(input.completionContract)
+          && json(originalPolicy) === json(input.continuationPolicy)
+          && json(task.userBlockerPolicy) === json(input.userBlockerPolicy)) return task;
+      }
       const { checkout_id: incomingCheckout, ...incomingCompletion } = input.completionContract;
       const { checkout_id: selectedCheckout, ...selectedCompletion } = task.completionContract;
       // Registration may fill an initially missing execution hint. It cannot
@@ -895,8 +924,7 @@ export class WorkflowSupervisorStore {
       const row = statement(db, 'SELECT * FROM tasks WHERE task_id = ?', (s) => s.get(taskId)) as Record<string, unknown> | undefined;
       if (!row) throw new Error('WORKFLOW_SUPERVISOR_TASK_UNKNOWN');
       const task = taskFromRow(row);
-      if (task.continuationPolicy.kind !== 'standalone_supervisor'
-        || task.conversationId !== `bootstrap:${task.taskId}`) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_BINDING_NOT_PENDING');
+      if (!canBindBootstrapProject(task)) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_BINDING_NOT_PENDING');
       if (statement(db, "SELECT 1 FROM events WHERE task_id=? AND kind IN ('terminal_done','terminal_needs_user','terminal_stopped') LIMIT 1", (s) => s.get(taskId))) {
         throw new Error('WORKFLOW_SUPERVISOR_TASK_TERMINAL');
       }
@@ -931,8 +959,7 @@ export class WorkflowSupervisorStore {
         if (parsedObject(prior.payload_json).project_url !== input.projectUrl) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_BINDING_CONFLICT');
         return { projectUrl: input.projectUrl, deduplicated: true };
       }
-      if (task.continuationPolicy.kind !== 'standalone_supervisor'
-        || task.conversationId !== `bootstrap:${task.taskId}`) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_BINDING_NOT_PENDING');
+      if (!canBindBootstrapProject(task)) throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_BINDING_NOT_PENDING');
       if (statement(db, "SELECT 1 FROM events WHERE task_id=? AND kind IN ('terminal_done','terminal_needs_user','terminal_stopped') LIMIT 1", (s) => s.get(input.taskId))) throw new Error('WORKFLOW_SUPERVISOR_TASK_TERMINAL');
       const effects = statement(db, 'SELECT effect_id FROM effects WHERE task_id = ?', (s) => s.all(input.taskId)) as Array<{ effect_id?: string }>;
       const dispatchStarted = effects.some((effect) => {
@@ -1970,6 +1997,187 @@ export class WorkflowSupervisorStore {
       // an injected clock without changing durable event timestamps.
       statement(db, 'INSERT INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', (s) => s.run(effect.task_id, `effect-dispatch:${effectId}:${generation}`, 'effect_dispatch_started', effectId, json({ dispatchId, generation, dispatched_at_ms: this.clockMs(), ...evidence }), now()));
       return true;
+    });
+  }
+
+  recordProviderTurnEvent(input: WorkflowSupervisorProviderTurnEvent): WorkflowSupervisorProviderTurnEventResult {
+    const effectId = validateEffectId(input.effectId);
+    if (input.providerId !== 'browser.chrome-extension') throw new Error('WORKFLOW_SUPERVISOR_PROVIDER_TURN_PROVIDER_INVALID');
+    const bounded = (value: unknown, max: number): string => {
+      if (typeof value !== 'string' || !value.trim() || value.trim().length > max) throw new Error('WORKFLOW_SUPERVISOR_PROVIDER_TURN_IDENTITY_INVALID');
+      return value.trim();
+    };
+    const taskId = bounded(input.taskId, 256);
+    const conversationId = bounded(input.conversationId, 256);
+    const conversationUrl = bounded(input.conversationUrl, 2048);
+    const providerInstanceId = bounded(input.providerInstanceId, 256);
+    const turnId = bounded(input.turnId, 256);
+    const requestId = bounded(input.requestId, 256);
+    const receiptChallenge = bounded(input.receiptChallenge, 7);
+    if (receiptChallenge.length !== 7 || !Array.from(receiptChallenge).every((c) => '0123456789abcdef'.includes(c))) {
+      throw new Error('WORKFLOW_SUPERVISOR_PROVIDER_TURN_RECEIPT_INVALID');
+    }
+    if (!Number.isSafeInteger(input.startedAtMs) || !Number.isSafeInteger(input.observedAtMs)
+      || input.startedAtMs < 0 || input.observedAtMs < input.startedAtMs
+      || !Number.isSafeInteger(input.statusCode) || input.statusCode < 0 || input.statusCode > 599) {
+      throw new Error('WORKFLOW_SUPERVISOR_PROVIDER_TURN_TIMING_INVALID');
+    }
+    const contentType = typeof input.contentType === 'string' ? input.contentType.trim().slice(0, 256) : '';
+    const failureCode = typeof input.failureCode === 'string' ? input.failureCode.trim().slice(0, 128) : '';
+    const retryAfterMs = input.retryAfterMs;
+    if (retryAfterMs !== undefined && (!Number.isSafeInteger(retryAfterMs) || retryAfterMs < 0 || retryAfterMs > 86_400_000)) {
+      throw new Error('WORKFLOW_SUPERVISOR_PROVIDER_TURN_RETRY_AFTER_INVALID');
+    }
+    const isEventStream = contentType.toLowerCase().includes('text/event-stream');
+    const proofSource = input.proofSource ?? '';
+    const assistantMessageId = typeof input.assistantMessageId === 'string' ? input.assistantMessageId.trim().slice(0, 256) : '';
+    const assistantStatus = typeof input.assistantStatus === 'string' ? input.assistantStatus.trim().slice(0, 64) : '';
+    const assistantEndTurn = input.assistantEndTurn;
+    const streamDone = input.streamDone;
+    if (input.outcome === 'completed') {
+      if (proofSource !== 'chatgpt-conversation-readback-v1' || input.statusCode !== 200
+        || !contentType.toLowerCase().includes('application/json') || failureCode || !assistantMessageId
+        || assistantStatus !== 'finished_successfully' || assistantEndTurn !== true || streamDone !== undefined) {
+        throw new Error('WORKFLOW_SUPERVISOR_PROVIDER_TURN_COMPLETION_EVIDENCE_INVALID');
+      }
+    } else if (input.outcome === 'failed') {
+      const explicitSseFailure = isEventStream && input.statusCode === 200
+        && (assistantStatus === 'failed' || assistantStatus === 'cancelled') && streamDone === true;
+      if (!failureCode || (isEventStream && input.statusCode === 200 && !explicitSseFailure)) {
+        throw new Error('WORKFLOW_SUPERVISOR_PROVIDER_TURN_FAILURE_EVIDENCE_INVALID');
+      }
+    } else throw new Error('WORKFLOW_SUPERVISOR_PROVIDER_TURN_OUTCOME_INVALID');
+
+    return this.transaction((db) => {
+      const taskRow = statement(db, 'SELECT * FROM tasks WHERE task_id=?', (s) => s.get(taskId)) as Record<string, unknown> | undefined;
+      if (!taskRow) throw new Error('WORKFLOW_SUPERVISOR_TASK_UNKNOWN');
+      const task = taskFromRow(taskRow);
+      const conversationOwned = task.conversationId === conversationId || Boolean(statement(db, `SELECT 1 FROM events
+        WHERE task_id=? AND kind='conversation_migrated'
+          AND (json_extract(payload_json,'$.from_conversation_id')=? OR json_extract(payload_json,'$.to_conversation_id')=?) LIMIT 1`,
+        (s) => s.get(taskId, conversationId, conversationId)));
+      if (!conversationOwned) {
+        if (task.conversationId.startsWith('bootstrap:')) return { accepted: false, retryable: true, reason: 'task_conversation_unbound' };
+        throw new Error('WORKFLOW_SUPERVISOR_PROVIDER_TURN_CONVERSATION_MISMATCH');
+      }
+
+      const effectRow = statement(db, 'SELECT * FROM effects WHERE effect_id=? AND task_id=?', (s) => s.get(effectId, taskId)) as Record<string, unknown> | undefined;
+      if (!effectRow) throw new Error('WORKFLOW_SUPERVISOR_PROVIDER_TURN_EFFECT_MISMATCH');
+      const effect = effectFromRow(effectRow);
+      const promptLines = effect.prompt.split(String.fromCharCode(10));
+      const promptReceiptLine = promptLines[2] ?? '';
+      const promptReceipt = promptReceiptLine.startsWith('receipt:') ? promptReceiptLine.slice(8) : '';
+      if (promptLines[0] !== `<<<FORGE_WORKFLOW_EFFECT_V1:${effectId}>>>`
+        || promptLines[1] !== `task_id:${JSON.stringify(taskId)}`
+        || promptReceipt !== receiptChallenge
+        || !promptLines.includes(SUPERVISOR_PROVIDER_TURN_MARKER)) {
+        throw new Error('WORKFLOW_SUPERVISOR_PROVIDER_TURN_EFFECT_RECEIPT_MISMATCH');
+      }
+
+      const dispatch = statement(db, `SELECT event_id,payload_json FROM events
+        WHERE task_id=? AND effect_id=? AND kind='effect_dispatch_started' ORDER BY event_id DESC LIMIT 1`,
+        (s) => s.get(taskId, effectId)) as { event_id?: number; payload_json?: string } | undefined;
+      if (!dispatch?.event_id) throw new Error('WORKFLOW_SUPERVISOR_PROVIDER_TURN_DISPATCH_MISSING');
+      const dispatchPayload = parsedObject(dispatch.payload_json);
+      const dispatchedAtMs = Number(dispatchPayload.dispatched_at_ms);
+      if (!Number.isSafeInteger(dispatchedAtMs) || input.startedAtMs < dispatchedAtMs) {
+        throw new Error('WORKFLOW_SUPERVISOR_PROVIDER_TURN_STALE_DISPATCH');
+      }
+      const nowMs = this.clockMs();
+      if (input.observedAtMs > nowMs + 5_000 || nowMs - input.startedAtMs > 86_400_000) {
+        throw new Error('WORKFLOW_SUPERVISOR_PROVIDER_TURN_OBSERVATION_STALE');
+      }
+      const applied = statement(db, "SELECT 1 AS ok FROM events WHERE task_id=? AND effect_id=? AND kind='effect_applied' LIMIT 1", (s) => s.get(taskId, effectId));
+      if (!applied) return { accepted: false, retryable: true, reason: 'effect_not_applied' };
+
+      const eventKey = `provider-turn:${effectId}`;
+      const kind = input.outcome === 'completed' ? 'provider_turn_completed' : 'provider_turn_failed';
+      const payload = {
+        provider_id: input.providerId, provider_instance_id: providerInstanceId, task_id: taskId,
+        conversation_id: conversationId, conversation_url: conversationUrl, effect_id: effectId,
+        receipt_challenge: receiptChallenge, turn_id: turnId, request_id: requestId,
+        started_at_ms: input.startedAtMs, observed_at_ms: input.observedAtMs,
+        status_code: input.statusCode,
+        ...(proofSource ? { proof_source: proofSource } : {}),
+        ...(contentType ? { content_type: contentType } : {}),
+        ...(assistantMessageId ? { assistant_message_id: assistantMessageId } : {}),
+        ...(assistantStatus ? { assistant_status: assistantStatus } : {}),
+        ...(assistantEndTurn !== undefined ? { assistant_end_turn: assistantEndTurn } : {}),
+        ...(streamDone !== undefined ? { stream_done: streamDone } : {}),
+        ...(failureCode ? { failure_code: failureCode } : {}),
+        ...(retryAfterMs !== undefined ? { retry_after_ms: retryAfterMs } : {}),
+        dispatch_generation: storedGeneration(dispatch.payload_json), dispatch_event_id: Number(dispatch.event_id),
+      };
+      const existing = statement(db, 'SELECT kind,payload_json,occurred_at FROM events WHERE event_key=? LIMIT 1', (s) => s.get(eventKey)) as { kind?: string; payload_json?: string; occurred_at?: string } | undefined;
+      if (existing) {
+        const prior = parsedObject(existing.payload_json);
+        const comparisons: Array<[string, boolean]> = [
+          ['kind', existing.kind === kind], ['task', prior.task_id === taskId], ['effect', prior.effect_id === effectId],
+          ['conversation', prior.conversation_id === conversationId], ['receipt', prior.receipt_challenge === receiptChallenge],
+          ['turn', prior.turn_id === turnId], ['request', prior.request_id === requestId],
+          ['provider_instance', prior.provider_instance_id === providerInstanceId], ['started_at', Number(prior.started_at_ms) === input.startedAtMs],
+          ['observed_at', Number(prior.observed_at_ms) === input.observedAtMs], ['status', Number(prior.status_code) === input.statusCode],
+          ['proof_source', String(prior.proof_source ?? '') === proofSource],
+          ['content_type', String(prior.content_type ?? '') === contentType],
+          ['assistant_message_id', String(prior.assistant_message_id ?? '') === assistantMessageId],
+          ['assistant_status', String(prior.assistant_status ?? '') === assistantStatus],
+          ['assistant_end_turn', prior.assistant_end_turn === assistantEndTurn],
+          ['stream_done', prior.stream_done === streamDone], ['failure_code', String(prior.failure_code ?? '') === failureCode],
+          ['retry_after', Number(prior.retry_after_ms ?? -1) === Number(retryAfterMs ?? -1)],
+        ];
+        const mismatches = comparisons.filter(([, equal]) => !equal).map(([name]) => name);
+        if (mismatches.length) throw new Error('WORKFLOW_SUPERVISOR_PROVIDER_TURN_EVENT_CONFLICT:' + mismatches.join(','));
+        return { accepted: true, duplicate: true, receipt: {
+          ...input, providerInstanceId, taskId, conversationId, conversationUrl, effectId, receiptChallenge, turnId, requestId,
+          dispatchGeneration: Number(prior.dispatch_generation), dispatchEventId: Number(prior.dispatch_event_id),
+          recordedAt: String(existing.occurred_at ?? ''),
+        } };
+      }
+      const duplicateRequest = statement(db, `SELECT event_id,effect_id FROM events WHERE task_id=?
+        AND kind IN ('provider_turn_completed','provider_turn_failed')
+        AND json_extract(payload_json,'$.request_id')=? LIMIT 1`, (s) => s.get(taskId, requestId)) as { effect_id?: string } | undefined;
+      if (duplicateRequest) throw new Error('WORKFLOW_SUPERVISOR_PROVIDER_TURN_REQUEST_REUSED');
+      const duplicateTurn = statement(db, `SELECT event_id,effect_id FROM events WHERE task_id=?
+        AND kind IN ('provider_turn_completed','provider_turn_failed')
+        AND json_extract(payload_json,'$.turn_id')=? LIMIT 1`, (s) => s.get(taskId, turnId)) as { effect_id?: string } | undefined;
+      if (duplicateTurn) throw new Error('WORKFLOW_SUPERVISOR_PROVIDER_TURN_ID_REUSED');
+      const completed = statement(db, 'SELECT 1 AS ok FROM completions WHERE task_id=? AND source_effect_id=? LIMIT 1', (s) => s.get(taskId, effectId));
+      if (completed) throw new Error('WORKFLOW_SUPERVISOR_PROVIDER_TURN_AFTER_COMPLETION');
+      const occurredAt = new Date(input.observedAtMs).toISOString();
+      statement(db, 'INSERT INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)',
+        (s) => s.run(taskId, eventKey, kind, effectId, json(payload), occurredAt));
+      return { accepted: true, duplicate: false, receipt: {
+        ...input, providerInstanceId, taskId, conversationId, conversationUrl, effectId, receiptChallenge, turnId, requestId,
+        dispatchGeneration: storedGeneration(dispatch.payload_json), dispatchEventId: Number(dispatch.event_id), recordedAt: occurredAt,
+      } };
+    });
+  }
+
+  getProviderTurnEvent(taskId: string, effectId: string): WorkflowSupervisorProviderTurnReceipt | undefined {
+    return this.read((db) => {
+      const row = statement(db, `SELECT kind,payload_json,occurred_at FROM events
+        WHERE task_id=? AND effect_id=? AND kind IN ('provider_turn_completed','provider_turn_failed') ORDER BY event_id DESC LIMIT 1`,
+        (s) => s.get(taskId, effectId)) as { kind?: string; payload_json?: string; occurred_at?: string } | undefined;
+      if (!row) return undefined;
+      const p = parsedObject(row.payload_json);
+      return {
+        providerId: 'browser.chrome-extension', providerInstanceId: String(p.provider_instance_id ?? ''),
+        taskId: String(p.task_id ?? taskId), conversationId: String(p.conversation_id ?? ''),
+        conversationUrl: String(p.conversation_url ?? ''), effectId: String(p.effect_id ?? effectId),
+        receiptChallenge: String(p.receipt_challenge ?? ''), turnId: String(p.turn_id ?? ''), requestId: String(p.request_id ?? ''),
+        startedAtMs: Number(p.started_at_ms), observedAtMs: Number(p.observed_at_ms),
+        outcome: row.kind === 'provider_turn_completed' ? 'completed' : 'failed', statusCode: Number(p.status_code),
+        ...(p.proof_source === 'chatgpt-conversation-readback-v1' ? { proofSource: p.proof_source } : {}),
+        ...(typeof p.content_type === 'string' ? { contentType: p.content_type } : {}),
+        ...(typeof p.assistant_message_id === 'string' ? { assistantMessageId: p.assistant_message_id } : {}),
+        ...(typeof p.assistant_status === 'string' ? { assistantStatus: p.assistant_status } : {}),
+        ...(typeof p.assistant_end_turn === 'boolean' ? { assistantEndTurn: p.assistant_end_turn } : {}),
+        ...(typeof p.stream_done === 'boolean' ? { streamDone: p.stream_done } : {}),
+        ...(typeof p.failure_code === 'string' ? { failureCode: p.failure_code } : {}),
+        ...(Number.isSafeInteger(p.retry_after_ms) ? { retryAfterMs: Number(p.retry_after_ms) } : {}),
+        dispatchGeneration: Number(p.dispatch_generation), dispatchEventId: Number(p.dispatch_event_id),
+        recordedAt: String(row.occurred_at ?? ''),
+      };
     });
   }
 

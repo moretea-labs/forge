@@ -438,8 +438,25 @@ export function getCoreCapabilityExecutionSchema(capabilityId: string): Record<s
           readOnly: false,
           risk: 'workspace_write',
           argumentsSchema: {
-            type: 'object', additionalProperties: false, required: ['objective'],
-            properties: { objective: { type: 'string', minLength: 1, maxLength: 4000 } },
+            type: 'object', additionalProperties: false, required: ['objective', 'project_url', 'authorized_by'],
+            properties: {
+              objective: { type: 'string', minLength: 1, maxLength: 4000 },
+              project_url: { type: 'string', minLength: 1, maxLength: 2048 },
+              authorized_by: { type: 'string', minLength: 1, maxLength: 256 },
+            },
+          },
+        },
+        bootstrap_project_bind: {
+          readOnly: false,
+          risk: 'workspace_write',
+          argumentsSchema: {
+            type: 'object', additionalProperties: false,
+            required: ['task_id', 'project_url', 'authorized_by'],
+            properties: {
+              task_id: { type: 'string', minLength: 1, maxLength: 256 },
+              project_url: { type: 'string', minLength: 1, maxLength: 2048 },
+              authorized_by: { type: 'string', minLength: 1, maxLength: 256 },
+            },
           },
         },
         list: {

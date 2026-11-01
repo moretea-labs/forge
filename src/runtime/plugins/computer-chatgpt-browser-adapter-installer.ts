@@ -9,8 +9,30 @@ import { ensureBrowserStateInControllerHome } from './browser-session-store';
 import { renderWorkflowSupervisorNativeManifest } from '../../../supervisor/native-messaging/manifest';
 import { WORKFLOW_SUPERVISOR_NATIVE_HOST_NAME } from '../../../supervisor/native-messaging/host';
 
-const EXTENSION_FILES = ['manifest.json', 'background.js', 'content.js', 'core.js'] as const;
 const FORGE_NATIVE_MESSAGING_DECLARATION = 'forge-native-messaging-host.json';
+// The release manifest is the single source of the extension file set. A
+// hand-maintained allowlist silently dropped later scripts (provider-turn-*)
+// from the projection and produced an extension Chrome could not load.
+function extensionFiles(source: string): string[] {
+  const manifest = JSON.parse(readFileSync(join(source, 'manifest.json'), 'utf8')) as {
+    background?: { service_worker?: unknown };
+    content_scripts?: Array<{ js?: unknown }>;
+  };
+  const files = new Set<string>(['manifest.json']);
+  const add = (value: unknown): void => {
+    if (typeof value !== 'string' || !/^[A-Za-z0-9_.-]{1,120}$/.test(value)) {
+      throw new Error('WORKFLOW_SUPERVISOR_EXTENSION_MANIFEST_FILE_INVALID');
+    }
+    files.add(value);
+  };
+  if (manifest.background?.service_worker !== undefined) add(manifest.background.service_worker);
+  for (const entry of Array.isArray(manifest.content_scripts) ? manifest.content_scripts : []) {
+    const scripts = entry?.js;
+    if (!Array.isArray(scripts)) continue;
+    for (const file of scripts) add(file);
+  }
+  return [...files];
+}
 
 export interface WorkflowSupervisorBrowserInstallation {
   browser: 'chrome' | 'chrome-for-testing' | 'chromium' | 'vivaldi' | 'forge-managed';
@@ -107,7 +129,7 @@ function projectExtension(source: string, destination: string): void {
   rmSync(staging, { recursive: true, force: true });
   mkdirSync(staging, { recursive: true, mode: 0o700 });
   try {
-    for (const file of EXTENSION_FILES) {
+    for (const file of extensionFiles(source)) {
       const sourcePath = join(source, file);
       assertRegularFile(sourcePath, 'WORKFLOW_SUPERVISOR_EXTENSION_SOURCE_INVALID');
       writeFileSync(join(staging, file), readFileSync(sourcePath), { mode: 0o600 });
@@ -138,7 +160,7 @@ function projectNativeHost(source: string, expectedIdentity: string, destination
   renameSync(temporary, destination);
 }
 function extensionProjectionCurrent(source: string, destination: string): boolean {
-  return EXTENSION_FILES.every((file) => {
+  return extensionFiles(source).every((file) => {
     const sourcePath = join(source, file), destinationPath = join(destination, file);
     return existsSync(sourcePath) && existsSync(destinationPath) && sha256(sourcePath) === sha256(destinationPath);
   });
