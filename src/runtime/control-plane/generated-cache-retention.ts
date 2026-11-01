@@ -202,6 +202,22 @@ function directChildDirectories(root: string, predicate: (name: string) => boole
   return found;
 }
 
+// The sibling iOS namespace shares `.forge/ios` with the canonical `DerivedData`
+// bucket. Filter to eligible names BEFORE spending the bounded budget so a
+// non-matching entry can never starve the group's rotation.
+function directChildMatchingDirectories(root: string, predicate: (name: string) => boolean, budget: { remaining: number }, round = 0): string[] {
+  const found: string[] = [];
+  if (budget.remaining <= 0) return found;
+  const entries = rotatedEntries(root, round)
+    .filter((entry) => entry.isDirectory() && predicate(String(entry.name)));
+  for (const entry of entries) {
+    if (budget.remaining <= 0) break;
+    budget.remaining -= 1;
+    found.push(join(root, String(entry.name)));
+  }
+  return found;
+}
+
 function directChildFiles(root: string, budget: { remaining: number }): string[] {
   const found: string[] = [];
   if (budget.remaining <= 0) return found;
@@ -262,8 +278,9 @@ function discoverCandidates(repoRoot: string, maxEntries: number, scanRound: num
   namespaces.push(...namespaces.splice(0, offset));
   const entryRound = Math.floor(scanRound / namespaces.length);
   for (const namespace of namespaces) {
+    const iosNamespace = namespace.kind === 'forge_ios_derived_data';
     const roots: Array<{ path: string; kind: Candidate['kind']; matches: (name: string) => boolean }> =
-      namespace.kind === 'forge_ios_derived_data'
+      iosNamespace
         ? [
             { path: namespace.root, kind: namespace.kind, matches: () => true },
             { path: join(root, '.forge', 'ios'), kind: 'forge_ios_derived_data_sibling',
@@ -271,12 +288,17 @@ function discoverCandidates(repoRoot: string, maxEntries: number, scanRound: num
           ]
         : [{ path: namespace.root, kind: namespace.kind, matches: () => true }];
     // Keep the existing namespace rotation stable; alternate iOS bucket priority
-    // so a busy nested DerivedData directory cannot starve sibling caches.
+    // so a busy nested DerivedData directory cannot starve sibling caches. The
+    // entry ordinal advances once per priority cycle, independently of the
+    // parity bit, so an even-length bucket list still visits every entry.
+    const groupRound = iosNamespace ? Math.floor(entryRound / 2) : entryRound;
     if (roots.length > 1 && entryRound % 2 === 1) roots.reverse();
     for (const group of roots) {
       const cacheRoots = namespace.depth === undefined
-        ? directChildDirectories(group.path, group.matches, budget, entryRound).filter(isXcodeCacheRoot)
-        : nestedDerivedDataDirectories(group.path, namespace.depth, budget, entryRound);
+        ? (iosNamespace
+          ? directChildMatchingDirectories(group.path, group.matches, budget, groupRound)
+          : directChildDirectories(group.path, group.matches, budget, groupRound)).filter(isXcodeCacheRoot)
+        : nestedDerivedDataDirectories(group.path, namespace.depth, budget, groupRound);
       for (const cacheRoot of cacheRoots) {
         // Never remove the bucket: Logs, results, SourcePackages and unknown files
         // are evidence/dependencies, not disposable build cache.

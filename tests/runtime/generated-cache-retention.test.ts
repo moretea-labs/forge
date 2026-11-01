@@ -192,6 +192,34 @@ describe('generated repository cache retention', () => {
     expect(existsSync(join(sibling, 'Build'))).toBe(false);
   });
 
+  test('one-entry rotation reaches every nested and sibling iOS bucket across priority cycles', () => {
+    const root = repository();
+    const ios = join(root, '.forge', 'ios');
+    const nestedA = join(ios, 'DerivedData', 'nested-a');
+    const nestedB = join(ios, 'DerivedData', 'nested-b');
+    const siblingA = join(ios, 'DerivedData-sibling-a');
+    const siblingB = join(ios, 'DerivedData-sibling-b');
+    for (const bucket of [nestedA, nestedB, siblingA, siblingB]) {
+      xcodeCache(bucket);
+      age(bucket);
+    }
+    const options = {
+      nowMs: Date.parse('2026-10-31T00:00:00.000Z'),
+      graceMs: 60_000,
+      processCommands: [] as string[],
+      maxEntries: 1,
+      maxRemovals: 1,
+    };
+    const removed: string[] = [];
+    for (const scanStartIndex of [0, 4, 8, 12]) {
+      removed.push(...cleanupGeneratedRepositoryCaches(root, { ...options, scanStartIndex }).removedPaths);
+    }
+    expect(removed).toContain('.forge/ios/DerivedData/nested-a/Build');
+    expect(removed).toContain('.forge/ios/DerivedData/nested-b/Build');
+    expect(removed).toContain('.forge/ios/DerivedData-sibling-a/Build');
+    expect(removed).toContain('.forge/ios/DerivedData-sibling-b/Build');
+  });
+
   test('reclaims stale generated caches from active managed worktrees with one repository budget', () => {
     const canonicalRoot = repository();
     const activeWorktreeRoot = repository();
