@@ -197,7 +197,7 @@ describe('Workflow Supervisor automation receipts', () => {
         task: { conversationId: expect.stringContaining('bootstrap:supervisor:'), continuationPolicy: { kind: 'standalone_supervisor', bootstrap: true, repo_id: 'repo-forge' } },
         effect: { kind: 'enrollment' },
       });
-      expect((started?.structuredContent as any).effect.prompt).toContain('provider_turn:sse-final-v1');
+      expect((started?.structuredContent as any).effect.prompt).toContain('provider_turn:conversation-readback-v1');
       const listed = await callCoreCapabilityAdapter(ctx, 'capability_execute', {
         capability_id: 'controller.workflow_supervisor', action: 'list', request_id: 'standalone-proof-capability-list-test', repo_id: 'repo-forge', arguments: {},
       });
@@ -341,7 +341,7 @@ describe('Workflow Supervisor automation receipts', () => {
       continuationPolicy: { kind: 'standalone_supervisor', provider_turn_receipt_required: true }, userBlockerPolicy: {},
     });
     const effect = control.reserveEnrollment(task.taskId);
-    expect(effect.prompt).toContain('provider_turn:sse-final-v1');
+    expect(effect.prompt).toContain('provider_turn:conversation-readback-v1');
     markProviderEffectApplied(control, store, effect, 'provider-turn-applied');
     const responseText = 'Progress committed.' + String.fromCharCode(10) + renderSupervisorReceipt(task, effect.effectId, 'CONTINUE');
     await expect(control.observeAssistantTurn({ taskId: task.taskId, conversationId: task.conversationId, responseText }))

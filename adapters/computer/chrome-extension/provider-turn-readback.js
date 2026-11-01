@@ -22,7 +22,7 @@
     return lines[0] === '<<<FORGE_WORKFLOW_EFFECT_V1:' + hint.effect_id + '>>>'
       && lines[1] === 'task_id:' + JSON.stringify(hint.task_id)
       && lines[2] === 'receipt:' + hint.receipt_challenge
-      && lines.includes('provider_turn:sse-final-v1');
+      && lines.includes('provider_turn:conversation-readback-v1');
   }
   function verifiedAssistant(data, hint) {
     if (!data || data.conversation_id?.toLowerCase() !== hint.conversation_id.toLowerCase()

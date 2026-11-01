@@ -433,7 +433,7 @@ test('MAIN-world observer emits only a wake-up hint even for a finished SSE or H
     URL, Request, Blob, URLSearchParams, TextDecoder, TextEncoder, Uint8Array,
   });
   const prompt = '<<<FORGE_WORKFLOW_EFFECT_V1:fx_0123456789abcdef0123456789abcdef>>>' +
-    '\ntask_id:"supervisor:test"\nreceipt:abc1234\nprovider_turn:sse-final-v1\nContinue.';
+    '\ntask_id:"supervisor:test"\nreceipt:abc1234\nprovider_turn:conversation-readback-v1\nContinue.';
   const body = JSON.stringify({ conversation_id: conversationId,
     messages: [{ id: 'turn-user-1', author: { role: 'user' }, content: { parts: [prompt] } }] });
   async function send() {
@@ -462,7 +462,7 @@ test('isolated conversation readback proves an exact persisted user and final as
   const conversationId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
   const effectId = 'fx_0123456789abcdef0123456789abcdef';
   const prompt = '<<<FORGE_WORKFLOW_EFFECT_V1:' + effectId + '>>>'
-    + '\ntask_id:"supervisor:test"\nreceipt:abc1234\nprovider_turn:sse-final-v1\nContinue.';
+    + '\ntask_id:"supervisor:test"\nreceipt:abc1234\nprovider_turn:conversation-readback-v1\nContinue.';
   const hint = {
     task_id: 'supervisor:test', effect_id: effectId, receipt_challenge: 'abc1234',
     turn_id: 'user-turn-1', request_id: '00000000-0000-4000-8000-000000000001',
@@ -548,7 +548,7 @@ test('isolated readback retries only its GET after a lagging final status, never
   const conversationId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
   const effectId = 'fx_0123456789abcdef0123456789abcdef';
   const prompt = '<<<FORGE_WORKFLOW_EFFECT_V1:' + effectId + '>>>'
-    + '\ntask_id:"supervisor:test"\nreceipt:abc1234\nprovider_turn:sse-final-v1\nContinue.';
+    + '\ntask_id:"supervisor:test"\nreceipt:abc1234\nprovider_turn:conversation-readback-v1\nContinue.';
   let fetches = 0;
   let completedOnSecondRead = true;
   const outbound: Array<Record<string, unknown>> = [];

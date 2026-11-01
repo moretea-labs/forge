@@ -3,7 +3,7 @@
   globalThis.__forgeProviderTurnObserverV1 = true;
 
   const SOURCE = 'forge-computer-provider-turn-v1';
-  const MARKER = 'provider_turn:sse-final-v1';
+  const MARKER = 'provider_turn:conversation-readback-v1';
   const MAX_STREAM_BYTES = 8 * 1024 * 1024;
   const CONVERSATION_PATH = '/backend-api/conversation';
 
