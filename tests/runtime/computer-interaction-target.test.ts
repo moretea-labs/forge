@@ -345,6 +345,33 @@ describe('Computer durable InteractionTarget authority', () => {
   });
 
 
+  test('Provider final receipt is bound to the exact live Computer-owned conversation tab', () => {
+    const home = mkdtempSync(join(tmpdir(), 'forge-provider-receipt-binding-'));
+    try {
+      const conversationId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+      const canonicalUrl = 'https://chatgpt.com/c/' + conversationId;
+      const binding = { providerId: 'browser.chrome-extension', providerSessionId: 'profile-a',
+        observedAt: new Date().toISOString(), browserProduct: 'chrome',
+        windowId: 'window-3', tabId: 'tab-4', ownerToken: 'owned-tab-token' };
+      targetAuthority.upsertSurface(home, { stableIdentity: {
+        surfaceType: 'browser-tab', ownership: 'provider_owned',
+        resource: { namespace: 'chatgpt.conversation', key: conversationId },
+      }, visibility: 'controller', providerBinding: binding, reactivate: true });
+      const port = new ChromeExtensionChatgptConversationTargetPort(home, targetAuthority);
+      expect(port.attestsProviderTurnBinding(conversationId, 'profile-a', binding)).toBe(false);
+      expect(port.heartbeat({ providerId: 'browser.chrome-extension', providerInstanceId: 'profile-a',
+        observedAt: new Date().toISOString(), conversations: [{ conversationId, canonicalUrl, providerBinding: binding }] })).toBe(true);
+      expect(port.attestsProviderTurnBinding(conversationId, 'profile-a', binding)).toBe(true);
+      expect(port.attestsProviderTurnBinding('bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee', 'profile-a', binding)).toBe(false);
+      expect(port.attestsProviderTurnBinding(conversationId, 'profile-b', binding)).toBe(false);
+      expect(port.attestsProviderTurnBinding(conversationId, 'profile-a', { ...binding, tabId: 'tab-foreign' })).toBe(false);
+      expect(port.attestsProviderTurnBinding(conversationId, 'profile-a', { ...binding, ownerToken: 'foreign-token' })).toBe(false);
+      expect(port.attestsProviderTurnBinding(conversationId, 'profile-a', { ...binding, ownerToken: undefined })).toBe(false);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   test('extension bootstrap keeps durable tab ownership when the worker is offline', async () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-bootstrap-extension-offline-'));
     try {

@@ -456,6 +456,36 @@ test('MAIN-world provider capture requires a final assistant SSE receipt, not HT
     status_code: 429, retry_after_ms: 45000 });
 });
 
+test('page Provider event cannot claim a different conversation in the same Chrome tab', async () => {
+  const source = readFileSync('adapters/computer/chrome-extension/background.js', 'utf8');
+  const start = source.indexOf('const PROVIDER_TURN_EVENT_PREFIX');
+  const end = source.indexOf('chrome.runtime.onMessage.addListener((message, sender', start);
+  expect(start).toBeGreaterThan(0);
+  expect(end).toBeGreaterThan(start);
+  const code = source.slice(start, end);
+  const actualId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+  const foreignId = 'bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee';
+  const fns = runInNewContext(code + '\n({ persistProviderTurnEvent })', {
+    core: { parseConversation(url: string) {
+      const id = /\/c\/([0-9a-f-]{36})/.exec(url)?.[1];
+      return id ? { conversationId: id, canonicalUrl: url } : undefined;
+    } },
+  }) as { persistProviderTurnEvent(event: Record<string, unknown>, sender: Record<string, unknown>): Promise<{ accepted: boolean; reason: string }> };
+  const event = {
+    task_id: 'supervisor:test', effect_id: 'fx_0123456789abcdef0123456789abcdef',
+    receipt_challenge: 'abc1234', turn_id: 'user-turn',
+    request_id: '00000000-0000-4000-8000-000000000001',
+    conversation_id: foreignId, started_at_ms: 1793490000000, outcome: 'completed',
+    status_code: 200, content_type: 'text/event-stream',
+    assistant_message_id: 'assistant-1', assistant_status: 'finished_successfully',
+    assistant_end_turn: true, stream_done: true,
+  };
+  const sender = { frameId: 0, tab: { id: 7, windowId: 8, url: 'https://chatgpt.com/c/' + actualId } };
+  expect(await fns.persistProviderTurnEvent(event, sender)).toMatchObject({
+    accepted: false, reason: 'provider_turn_conversation_invalid',
+  });
+});
+
 test('provider turn receipt delivery cannot block the next Supervisor command claim', async () => {
   const source = readFileSync('adapters/computer/chrome-extension/background.js', 'utf8');
   const start = source.indexOf('let providerTickInFlight;');

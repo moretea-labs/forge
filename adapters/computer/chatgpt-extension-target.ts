@@ -182,6 +182,21 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
     return true;
   }
 
+  attestsProviderTurnBinding(conversationId: string, rawProviderInstanceId: string, binding: ComputerSurfaceProviderBinding): boolean {
+    const instanceId = providerInstanceId(rawProviderInstanceId);
+    if (!instanceId || !this.providerIsFresh(instanceId) || !binding.ownerToken
+      || binding.providerId !== PROVIDER_ID || binding.providerSessionId !== instanceId
+      || !binding.tabId || !binding.windowId) return false;
+    const owned = this.authority.findSurfaceByStableIdentity(this.controllerHome, stableIdentity({
+      namespace: 'chatgpt.conversation', conversationId, canonicalUrl: 'https://chatgpt.com/c/' + conversationId,
+    }));
+    const pinned = owned?.providerBinding;
+    return pinned?.providerId === PROVIDER_ID && pinned.providerSessionId === instanceId
+      && pinned.ownerToken === binding.ownerToken
+      && pinned.tabId === binding.tabId && pinned.windowId === binding.windowId
+      && pinned.browserProduct === binding.browserProduct;
+  }
+
   claim(rawProviderInstanceId: string): ComputerChatgptExtensionCommand | undefined {
     const instanceId = providerInstanceId(rawProviderInstanceId);
     if (!instanceId) return undefined;

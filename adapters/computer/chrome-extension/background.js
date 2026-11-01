@@ -916,7 +916,10 @@ async function persistProviderTurnEvent(input, sender) {
   if (outcome === 'unknown' && !failureCode) return { accepted: false, reason: 'provider_turn_unknown_reason_missing' };
 
   const canonicalUrl = 'https://chatgpt.com/c/' + encodeURIComponent(conversationId);
-  if (!core.parseConversation(canonicalUrl)) return { accepted: false, reason: 'provider_turn_conversation_invalid' };
+  if (!core.parseConversation(canonicalUrl)
+    || core.parseConversation(tab.url)?.conversationId !== conversationId) {
+    return { accepted: false, reason: 'provider_turn_conversation_invalid' };
+  }
   const ownerKey = ownedTabKey(tabId);
   let owner;
   try { owner = await chrome.storage.session.get(ownerKey); } catch { return { accepted: false, reason: 'provider_turn_owner_unavailable' }; }

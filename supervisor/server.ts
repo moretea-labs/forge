@@ -5,7 +5,7 @@ import { mkdirSync } from 'node:fs';
 import type { WorkflowSupervisorControlPlane } from './control-plane';
 import { parseChatgptConversationIdentity } from './chatgpt-conversation';
 import type { WorkflowSupervisorConsumerStatus, WorkflowSupervisorDiscoverySnapshot, WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorProviderTurnEvent, WorkflowSupervisorReviewNotice } from './types';
-import type { ComputerChatgptExtensionBrokerRpc, ComputerChatgptExtensionCommandResult, ComputerChatgptExtensionHeartbeat } from '../packages/plugin-runtime/computer';
+import type { ComputerChatgptExtensionBrokerRpc, ComputerChatgptExtensionCommandResult, ComputerChatgptExtensionHeartbeat, ComputerSurfaceProviderBinding } from '../packages/plugin-runtime/computer';
 import { chatgptProviderPageFailure } from '../adapters/chatgpt/provider-delivery';
 
 interface RpcRequest { id: string; method: string; params: Record<string, unknown> }
@@ -352,6 +352,10 @@ async function dispatch(control: WorkflowSupervisorControlPlane, discovery: Work
       ...(typeof p.failure_code === 'string' ? { failureCode: stringValue(p.failure_code) } : {}),
       ...(p.retry_after_ms !== undefined ? { retryAfterMs: safeInteger(p, 'retry_after_ms') } : {}),
     };
+    const providerBinding = object(p.provider_binding) as unknown as ComputerSurfaceProviderBinding;
+    if (!computerExtensionBroker.attestsProviderTurnBinding(event.conversationId, event.providerInstanceId, providerBinding)) {
+      return { accepted: false, retryable: false, reason: 'WORKFLOW_SUPERVISOR_PROVIDER_TURN_TARGET_NOT_OWNED' };
+    }
     return control.recordProviderTurnEvent(event);
   }
   if (req.method === 'consumer_status') return browserConsumerStatus?.() ?? {
