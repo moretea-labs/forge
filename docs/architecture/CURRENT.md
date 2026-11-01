@@ -669,7 +669,7 @@ Repository-local guidance for Forge #313, not a new Control Plane or Work author
 | Exact pinned browser target, pre-send and dispatch | supervisor/native-browser-adapter.ts; adapters/computer/chatgpt-extension-target.ts; src/runtime/root/workflow-supervisor-runtime.ts; tests/runtime/computer-chatgpt-extension-preflight.test.ts |
 | Native heartbeat, claim, complete, timeout | adapters/computer/chrome-extension/background.js; content.js; core.js; supervisor/native-messaging/host.ts; tests/runtime/computer-native-port-recovery.test.ts |
 | Installed vs running extension and host | src/runtime/plugins/computer-chatgpt-browser-adapter-installer.ts; tests/runtime/workflow-supervisor-browser-adapter-installer.test.ts; real Chrome loaded-worker inspection |
-| Other scheduler/launcher entrypoints | src/runtime/control-plane/global-scheduler/autonomous-continuation.ts; src/runtime/workflow/schedules/work-continuation.ts; adapters/chatgpt/provider-delivery.ts |
+| Other scheduler/launcher entrypoints | src/runtime/workflow/schedules/work-continuation.ts; adapters/chatgpt/provider-delivery.ts |
 
 ## Acceptance-test-driven development (ATDD)
 

@@ -2,28 +2,15 @@ import { strict as assert } from 'node:assert';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createHash } from 'node:crypto';
 import { createMcpHttpSessionRegistry } from '../adapters/mcp/transports/http';
 import { authenticatedFacadeControllerIdentity } from '../adapters/mcp/runtime-gateway/controller-authority-adapter';
 import { readExecutionSession, startExecutionSession } from '../src/runtime/control-plane/execution/session-store';
-import {
-  bindControllerSessionBinding,
-  claimControllerSession,
-  getControllerRoundRelay,
-  releaseControllerSession,
-  type ControllerHost,
-} from '../packages/kernel/controller/api/index';
-import { createWorkContract } from '../packages/kernel/work/api/index';
-import { upsertProcessControllerBinding } from '../adapters/controller-process/binding-store';
-import { runSchedulerAutonomousContinuationReconciliation } from '../src/runtime/control-plane/global-scheduler/autonomous-continuation';
 import { WorkflowSupervisorControlPlane } from '../supervisor/control-plane';
 import { SUPERVISOR_BLOCK_END, SUPERVISOR_BLOCK_START } from '../supervisor/protocol';
 import { WorkflowSupervisorStore } from '../supervisor/store';
 
 const root = mkdtempSync(join(tmpdir(), 'forge-unattended-transport-recovery-'));
 const controllerHome = join(root, 'controller');
-const repoId = 'repo-unattended-recovery';
-const workId = 'work-unattended-recovery';
 const oldTransportSessionId = 'mcp-transport-old';
 const newTransportSessionId = 'mcp-transport-new';
 const principalId = 'chatgpt-controller';
@@ -100,72 +87,7 @@ try {
   assert.equal(rolloverIdentity.controllerAuthorityId, oldTransportSessionId);
   assert.equal(rolloverIdentity.authorityViaSessionCompatibility, true);
 
-  // 4) Scheduler liveness owns unattended Work wake-up. Repeated reconciliation
-  // of the same durable state must never duplicate provider dispatch.
-  createWorkContract({ controllerHome, repoId }, {
-    workId,
-    repoId,
-    objective: 'Continue without manual user wake-ups.',
-    acceptanceCriteria: ['The Work resumes from durable authority.'],
-    allowedPaths: [],
-    forbiddenPaths: [],
-    checks: [],
-    constraints: {},
-    requestedBy: 'chatgpt',
-    dispatchState: 'running',
-    baseRevision: 'abc123',
-  } as Parameters<typeof createWorkContract>[1]);
-
-  const store = { controllerHome, repoId };
-  const controllerAuthorityId = oldTransportSessionId;
-  const owner = claimControllerSession(store, {
-    workId,
-    controllerId: principalId,
-    // This section proves the generic retained-provider wake path. ChatGPT is
-    // intentionally covered by the Workflow Supervisor section below and must
-    // not silently fall back to direct provider dispatch when its daemon is down.
-    controllerType: 'claude',
-    sessionId: oldTransportSessionId,
-    authorityDigest: createHash('sha256').update(controllerAuthorityId).digest('hex'),
-    principalId,
-    controllerInstanceId: 'runtime-before-restart',
-    leaseMs: 60_000,
-  });
-  const binding = upsertProcessControllerBinding(store, {
-    workId,
-    sessionId: owner.sessionId,
-    controllerType: 'claude',
-    executable: 'claude',
-    launchArgs: [],
-  });
-  bindControllerSessionBinding(store, { workId, sessionId: owner.sessionId, binding: binding.binding });
-  releaseControllerSession(store, workId, owner.controllerId);
-
-  let providerDispatches = 0;
-  const host: ControllerHost = {
-    resume: async () => {
-      providerDispatches += 1;
-      return { accepted: true, dispatchId: `dispatch-${providerDispatches}` };
-    },
-  };
-  const schedulerInput = {
-    controllerHome,
-    nowMs: Date.parse('2026-09-22T12:00:00.000Z'),
-    repositories: [{ repoId, canonicalRoot: root, localRoot: root }],
-    dependencies: {
-      authorizeWake: () => undefined,
-      boundaryForWork: () => ({ status: 'not_eligible' as const }),
-      hostForBinding: () => host,
-    },
-  };
-  const firstWake = await runSchedulerAutonomousContinuationReconciliation(schedulerInput);
-  assert.equal(firstWake.dispatched, 1);
-  const duplicateWake = await runSchedulerAutonomousContinuationReconciliation(schedulerInput);
-  assert.equal(duplicateWake.dispatched, 0);
-  assert.equal(providerDispatches, 1);
-  assert.equal(getControllerRoundRelay(store, workId)?.status, 'dispatched');
-
-  // 5) Workflow Supervisor state is durable across process/control-plane
+  // 4) Workflow Supervisor state is durable across process/control-plane
   // reconstruction. Ten CONTINUE rounds publish exactly one successor each, and
   // replaying the same completion never creates a second effect.
   const taskId = 'unattended-transport-recovery-task';
@@ -214,7 +136,6 @@ try {
     transportDisconnectedWithoutExecutionInvalidation: true,
     reconnectUsedExplicitRolloverAuthority: true,
     runtimeRestartRecoveredExecution: true,
-    schedulerProviderDispatches: providerDispatches,
     unattendedContinuationRounds: 10,
     duplicateSuccessorEffects: 0,
   }, null, 2));
