@@ -2658,7 +2658,9 @@ requireMissing('src/runtime/root/browser-session-persistence.ts');
 // progress ledger; Schedules wake the one standalone Supervisor, so the
 // Scheduler must not recreate a Work scanner or ControllerRound dispatch loop.
 requireMissing('src/runtime/control-plane/global-scheduler/autonomous-continuation.ts');
-forbid('src/runtime/control-plane/global-scheduler/scheduler.ts', /runSchedulerAutonomousContinuationReconciliation|autonomous-continuation/, 'Work-bound liveness continuation must not be reintroduced');
+for (const path of sourceFiles('src/runtime/control-plane/global-scheduler')) {
+  forbid(path, /readActiveWorkCandidates|ensureWorkflowSupervisorEnrollmentForWork|getRetainedControllerSession/, 'Work-bound liveness continuation must not be reintroduced');
+}
 forbid('packages/plugin-runtime/browser/session-authority.ts', /\bBrowserSession(?:Authority|Persistence)Port\b/, 'Browser compatibility contracts must not expose a second durable authority or persistence port');
 requireText('src/runtime/plugins/browser-session-authority.ts', 'findComputerBackedBrowserSession');
 requireText('src/runtime/plugins/browser-session-authority.ts', 'saveComputerBackedBrowserSession');
