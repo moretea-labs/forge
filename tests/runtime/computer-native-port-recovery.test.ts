@@ -1007,6 +1007,7 @@ test('existing snapshot receiver rearms Provider readback when the listener pred
   const readbackCalls: string[] = [];
   let snapshotCalls = 0;
   const context: Record<string, unknown> = {};
+  const location = { origin: 'https://chatgpt.com', pathname: '/c/' + conversationId };
   const chrome = {
     runtime: { lastError: undefined },
     scripting: { executeScript(details: Record<string, unknown>, callback: (results?: unknown[]) => void) {
@@ -1019,13 +1020,20 @@ test('existing snapshot receiver rearms Provider readback when the listener pred
         return;
       }
       expect(details.world).toBe('ISOLATED');
-      const invoke = details.func as (text: string) => boolean;
-      const result = invoke(...(details.args as [string]));
+      const invoke = details.func as (text: string, expectedOrigin: string, expectedPath: string) => boolean;
+      const args = details.args as [string, string, string];
+      const result = invoke(...args);
+      const previousPath = location.pathname;
+      location.pathname = '/c/ffffffff-ffff-ffff-ffff-ffffffffffff';
+      expect(invoke(...args)).toBe(false);
+      location.pathname = previousPath;
       callback([{ result }]);
     } },
   };
   Object.assign(context, {
     chrome,
+    URL,
+    location,
     snapshot: async () => { snapshotCalls += 1; return { latestUserText: prompt, title: 'ChatGPT' }; },
     tabGet: async () => tab,
     receiverMatchesIdentity: (candidate: typeof tab, expected: typeof identity) =>

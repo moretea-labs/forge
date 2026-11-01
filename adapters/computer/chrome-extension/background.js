@@ -278,17 +278,19 @@ function markerReconciliationReadIdentity(tab, bootstrapIdentity) {
   return { namespace: 'chatgpt.conversation', conversationId: conversation.conversationId,
     canonicalUrl: conversation.canonicalUrl };
 }
-async function invokeProviderReadbackFromSnapshot(tabId, userText) {
+async function invokeProviderReadbackFromSnapshot(tabId, identity, userText) {
+  const expectedUrl = new URL(identity.canonicalUrl);
   const injections = await new Promise((resolve, reject) => chrome.scripting.executeScript({
     target: { tabId },
     world: 'ISOLATED',
-    func: (text) => {
+    func: (text, expectedOrigin, expectedPath) => {
+      if (location.origin !== expectedOrigin || location.pathname !== expectedPath) return false;
       const readback = globalThis.__forgeProviderReadbackFromSnapshot;
       if (typeof readback !== 'function') return false;
       readback(text);
       return true;
     },
-    args: [userText],
+    args: [userText, expectedUrl.origin, expectedUrl.pathname],
   }, (results) => {
     const error = chrome.runtime.lastError;
     if (error) reject(new Error(error.message)); else resolve(results ?? []);
@@ -304,9 +306,9 @@ async function triggerProviderReadbackFromSnapshot(tabId, identity, userText) {
     throw new Error('COMPUTER_CHATGPT_EXTENSION_RECEIVER_TARGET_CHANGED');
   // A stale content listener may still answer snapshot without the newer
   // readback helper. Trigger that helper directly in the same isolated world.
-  if (await invokeProviderReadbackFromSnapshot(tabId, userText)) return;
+  if (await invokeProviderReadbackFromSnapshot(tabId, identity, userText)) return;
   await restoreExactContentReceiver(tabId, identity, ['provider-turn-readback.js']);
-  if (!(await invokeProviderReadbackFromSnapshot(tabId, userText)))
+  if (!(await invokeProviderReadbackFromSnapshot(tabId, identity, userText)))
     throw new Error('COMPUTER_CHATGPT_PROVIDER_READBACK_UNAVAILABLE');
 }
 async function snapshotWithExactReceiverRecovery(tabId, identity, options = {}) {
