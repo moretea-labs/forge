@@ -52,7 +52,6 @@
     "src/runtime/control-plane/facade/handoff-inbox-store.ts|../../../cli/repositories/locks",
     "src/runtime/control-plane/facade/plan-contract-store.ts|../../../cli/repositories/locks",
     "src/runtime/control-plane/facade/semantic-admission.ts|../../../cli/repositories/locks",
-    "src/runtime/control-plane/global-scheduler/autonomous-continuation.ts|../../../cli/repositories/types",
     "src/runtime/control-plane/global-scheduler/maintenance.ts|../../../cli/repositories/types",
     "src/runtime/control-plane/global-scheduler/periodic-cleanup-entry.ts|../../../cli/repositories/registry",
     "src/runtime/control-plane/global-scheduler/projection-refresh.ts|../../../cli/repositories/types",
