@@ -402,11 +402,20 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
   }
 
   async ensureExact(identity: ComputerChatgptConversationIdentity, options: { createIfMissing?: boolean } = {}, recoverStalePin = true): Promise<ComputerChatgptTargetResult> {
-    const preferredInstanceId = this.preferredProviderInstance(identity);
+    const configuredPreferredInstanceId = this.preferredProviderInstance(identity);
     const fresh = this.freshProviders();
-    if (fresh.length === 0 || (preferredInstanceId && !fresh.some(([instanceId]) => instanceId === preferredInstanceId))) {
-      return failure('COMPUTER_CHATGPT_EXTENSION_NOT_CONNECTED', { failoverSafe: !preferredInstanceId });
+    if (fresh.length === 0) return failure('COMPUTER_CHATGPT_EXTENSION_NOT_CONNECTED', { failoverSafe: false });
+    const preferredFresh = !configuredPreferredInstanceId
+      || fresh.some(([instanceId]) => instanceId === configuredPreferredInstanceId);
+    // A Chrome extension reload or reinstall may mint a new ephemeral provider
+    // instance id for the SAME browser profile. Treat the persisted instance as
+    // stale only when exactly one live provider remains; a second live instance
+    // is ambiguous and still fails closed.
+    if (!preferredFresh && fresh.length !== 1) {
+      return failure('COMPUTER_CHATGPT_EXTENSION_NOT_CONNECTED', { failoverSafe: false });
     }
+    const staleProviderInstance = !preferredFresh && configuredPreferredInstanceId !== undefined;
+    const preferredInstanceId = preferredFresh ? configuredPreferredInstanceId : undefined;
     const exact = fresh.filter(([instanceId]) => !preferredInstanceId || instanceId === preferredInstanceId)
       .flatMap(([instanceId, state]) => state.heartbeat.conversations
       .filter((entry) => entry.conversationId === identity.conversationId)
@@ -452,7 +461,7 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
         if (recoverStalePin && options.createIfMissing === false
           && code === 'COMPUTER_CHATGPT_EXTENSION_PINNED_OWNER_TOKEN_MISMATCH'
           && binding?.providerId === PROVIDER_ID
-          && binding.providerSessionId === candidate.instanceId) {
+          && (staleProviderInstance || binding.providerSessionId === candidate.instanceId)) {
           // A heartbeat still advertises the tab after an extension reload or
           // reinstall, but its session owner token is gone. Ensure alone may
           // mint a NEW owned tab for this exact conversation; the old tab is
@@ -493,7 +502,7 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
       if (recoverStalePin && response.result.kind === 'failed'
         && response.result.code === 'COMPUTER_CHATGPT_EXTENSION_PINNED_OWNER_TOKEN_MISMATCH'
         && binding?.providerId === PROVIDER_ID
-        && binding.providerSessionId === selected.instanceId) {
+        && (staleProviderInstance || binding.providerSessionId === selected.instanceId)) {
         // A Chrome extension reload or reinstall clears its session owner token,
         // so the persisted pin can no longer be attested. Ensure alone may mint
         // a NEW owned tab for this exact conversation; the old tab is never
