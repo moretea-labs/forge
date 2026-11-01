@@ -629,6 +629,74 @@ test('isolated readback retries only its GET after a lagging final status, never
   expect(outbound).toHaveLength(1);
 });
 
+test('transient readback denial does not permanently consume an exact Effect hint', async () => {
+  const source = readFileSync('adapters/computer/chrome-extension/provider-turn-readback.js', 'utf8');
+  const conversationId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+  const effectId = 'fx_0123456789abcdef0123456789abcdef';
+  const prompt = '<<<FORGE_WORKFLOW_EFFECT_V1:' + effectId + '>>>'
+    + '\ntask_id:"supervisor:test"\nreceipt:abc1234\nprovider_turn:conversation-readback-v1\nContinue.';
+  const hint = { task_id: 'supervisor:test', effect_id: effectId, receipt_challenge: 'abc1234',
+    turn_id: 'user-turn', conversation_id: conversationId, started_at_ms: 1793490000000,
+    request_id: '00000000-0000-4000-8000-000000000001', outcome: 'unknown' };
+  let now = 10_000;
+  let authStatus = 403;
+  let accepted = false;
+  let saved = 0;
+  let getCount = 0;
+  let listener: ((event: Record<string, unknown>) => void) | undefined;
+  const windowMock = { addEventListener(_type: string, callback: (event: Record<string, unknown>) => void) {
+    listener = callback;
+  } };
+  const response = (body: unknown, status = 200) => ({
+    ok: status === 200, status,
+    headers: { get: (key: string) => key === 'content-type' ? 'application/json' : null },
+    async json() { return body; }, async text() { return JSON.stringify(body); },
+  });
+  runInNewContext(source, {
+    window: windowMock,
+    location: { pathname: '/c/' + conversationId, origin: 'https://chatgpt.com' },
+    Date: { now: () => now },
+    chrome: { runtime: { async sendMessage() { saved++; return { accepted }; } } },
+    fetch: async (url: string) => {
+      if (url === '/api/auth/session') return response({ accessToken: 'fake-token' }, authStatus);
+      getCount++;
+      return response({ conversation_id: conversationId, page_info: { has_next_page: false },
+        messages: [
+          { id: 'user-turn', author: { role: 'user' }, content: { parts: [prompt] } },
+          { id: 'assistant', author: { role: 'assistant' }, status: 'finished_successfully',
+            recipient: 'all', end_turn: true },
+        ] });
+    },
+    setTimeout: (callback: () => void) => { queueMicrotask(callback); return 1; },
+    Number, JSON, Set,
+  });
+  async function notify() {
+    listener?.({ source: windowMock, origin: 'https://chatgpt.com',
+      data: { source: 'forge-computer-provider-turn-v1', type: 'turn-event', event: hint } });
+    for (let i = 0; i < 5; i++) await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  await notify(); // Auth 403: no readback and no privileged receipt
+  expect(getCount).toBe(0);
+  await notify(); // page-origin flood within cooldown must not issue another auth request
+  expect(getCount).toBe(0);
+  now += 3_001;
+  authStatus = 200;
+  await notify(); // trusted persisted final; background temporarily refuses persistence
+  expect(getCount).toBe(1);
+  expect(saved).toBe(1);
+  await notify();
+  expect(getCount).toBe(1);
+  now += 3_001;
+  accepted = true;
+  await notify(); // same exact Turn may be verified after transient store unavailability
+  expect(getCount).toBe(2);
+  expect(saved).toBe(2);
+  now += 4_000;
+  await notify(); // accepted receipt is terminal, never repeated
+  expect(getCount).toBe(2);
+  expect(saved).toBe(2);
+});
+
 test('page Provider event cannot claim a different conversation in the same Chrome tab', async () => {
   const source = readFileSync('adapters/computer/chrome-extension/background.js', 'utf8');
   const start = source.indexOf('const PROVIDER_TURN_EVENT_PREFIX');

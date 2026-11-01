@@ -6,9 +6,13 @@
   const SOURCE = 'forge-computer-provider-turn-v1';
   const PROOF = 'chatgpt-conversation-readback-v1';
   const MAX_BODY = 8 * 1024 * 1024;
-  // One readback per exact turn per document; page scripts cannot trigger a
-  // flood of authenticated ChatGPT requests by replaying synthetic hints.
-  const attempted = new Set();
+  // Per-turn bounded retries allow a later *read-only* observation after a
+  // transient auth/persistence error; no Send is ever retried here. Do not let
+  // untrusted page hints trigger unlimited authenticated requests.
+  const attempts = new Map();
+  const MAX_TURNS_PER_DOCUMENT = 128;
+  const MAX_READBACK_ATTEMPTS = 3;
+  const RETRY_INTERVAL_MS = 3_000;
 
   function conversationId() {
     const match = location.pathname.match(/(?:^|\/)c\/([0-9a-f-]{36})(?:\/|$)/i);
@@ -52,8 +56,14 @@
       || typeof hint.turn_id !== 'string' || typeof hint.request_id !== 'string'
       || !Number.isSafeInteger(hint.started_at_ms)) return;
     const key = hint.effect_id + ':' + hint.turn_id;
-    if (attempted.has(key)) return;
-    attempted.add(key);
+    const previous = attempts.get(key);
+    const now = Date.now();
+    if ((attempts.size >= MAX_TURNS_PER_DOCUMENT && !previous)
+      || previous?.completed || previous?.inFlight
+      || (previous && (previous.count >= MAX_READBACK_ATTEMPTS
+        || now - previous.startedAt < RETRY_INTERVAL_MS))) return;
+    const state = { count: (previous?.count ?? 0) + 1, startedAt: now, inFlight: true, completed: false };
+    attempts.set(key, state);
     try {
       const auth = await fetch('/api/auth/session', { credentials: 'include', cache: 'no-store' });
       if (!auth.ok) return;
@@ -76,7 +86,7 @@
         if (body.length > MAX_BODY) return;
         const assistant = verifiedAssistant(JSON.parse(body), hint);
         if (!assistant) continue;
-        await chrome.runtime.sendMessage({
+        const accepted = await chrome.runtime.sendMessage({
           type: 'forge-computer-provider-turn-event',
           event: {
             task_id: hint.task_id, effect_id: hint.effect_id, receipt_challenge: hint.receipt_challenge,
@@ -87,9 +97,16 @@
             assistant_status: 'finished_successfully', assistant_end_turn: true,
           },
         });
+        if (accepted?.accepted === true) {
+          state.completed = true;
+          return;
+        }
+        // The Computer owner might be temporarily unavailable. The next
+        // event may recheck the persisted response, but never replay Send.
         return;
       }
     } catch { /* No provider proof; keep the Effect unknown, never retry its Send. */ }
+    finally { state.inFlight = false; }
   }
   window.addEventListener('message', (event) => {
     if (event.source !== window || event.origin !== location.origin) return;
