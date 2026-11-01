@@ -59,28 +59,35 @@
       const session = await auth.json();
       const token = typeof session?.accessToken === 'string' ? session.accessToken : '';
       if (!token) return;
-      const response = await fetch('/backend-api/conversations/' + encodeURIComponent(hint.conversation_id)
-        + '?include_has_versions=true&num_turns=100', {
-        credentials: 'include', cache: 'no-store',
-        headers: { Authorization: 'Bearer ' + token, Accept: 'application/json' },
-      });
-      if (response.status !== 200 || !response.headers.get('content-type')?.includes('application/json')) return;
-      if (Number(response.headers.get('content-length') ?? 0) > MAX_BODY) return;
-      const body = await response.text();
-      if (body.length > MAX_BODY) return;
-      const assistant = verifiedAssistant(JSON.parse(body), hint);
-      if (!assistant) return;
-      await chrome.runtime.sendMessage({
-        type: 'forge-computer-provider-turn-event',
-        event: {
-          task_id: hint.task_id, effect_id: hint.effect_id, receipt_challenge: hint.receipt_challenge,
-          turn_id: hint.turn_id, request_id: hint.request_id,
-          conversation_id: hint.conversation_id, started_at_ms: hint.started_at_ms,
-          outcome: 'completed', status_code: 200, content_type: 'application/json',
-          proof_source: PROOF, assistant_message_id: assistant.id,
-          assistant_status: 'finished_successfully', assistant_end_turn: true,
-        },
-      });
+      // An SSE stream can finish just before its final assistant status is
+      // visible in the authenticated conversation view. Repeat one read-only
+      // observation, never the original Send or an unverified page event.
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        if (attempt) await new Promise((resolve) => setTimeout(resolve, 700));
+        const response = await fetch('/backend-api/conversations/' + encodeURIComponent(hint.conversation_id)
+          + '?include_has_versions=true&num_turns=100', {
+          credentials: 'include', cache: 'no-store',
+          headers: { Authorization: 'Bearer ' + token, Accept: 'application/json' },
+        });
+        if (response.status !== 200 || !response.headers.get('content-type')?.includes('application/json')) return;
+        if (Number(response.headers.get('content-length') ?? 0) > MAX_BODY) return;
+        const body = await response.text();
+        if (body.length > MAX_BODY) return;
+        const assistant = verifiedAssistant(JSON.parse(body), hint);
+        if (!assistant) continue;
+        await chrome.runtime.sendMessage({
+          type: 'forge-computer-provider-turn-event',
+          event: {
+            task_id: hint.task_id, effect_id: hint.effect_id, receipt_challenge: hint.receipt_challenge,
+            turn_id: hint.turn_id, request_id: hint.request_id,
+            conversation_id: hint.conversation_id, started_at_ms: hint.started_at_ms,
+            outcome: 'completed', status_code: 200, content_type: 'application/json',
+            proof_source: PROOF, assistant_message_id: assistant.id,
+            assistant_status: 'finished_successfully', assistant_end_turn: true,
+          },
+        });
+        return;
+      }
     } catch { /* No provider proof; keep the Effect unknown, never retry its Send. */ }
   }
   window.addEventListener('message', (event) => {

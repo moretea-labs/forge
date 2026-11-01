@@ -543,6 +543,64 @@ test('isolated conversation readback proves an exact persisted user and final as
   expect(outbound).toHaveLength(1);
 });
 
+test('isolated readback retries only its GET after a lagging final status, never replays Send', async () => {
+  const source = readFileSync('adapters/computer/chrome-extension/provider-turn-readback.js', 'utf8');
+  const conversationId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+  const effectId = 'fx_0123456789abcdef0123456789abcdef';
+  const prompt = '<<<FORGE_WORKFLOW_EFFECT_V1:' + effectId + '>>>'
+    + '\ntask_id:"supervisor:test"\nreceipt:abc1234\nprovider_turn:sse-final-v1\nContinue.';
+  let fetches = 0;
+  let completedOnSecondRead = true;
+  const outbound: Array<Record<string, unknown>> = [];
+  const user = { id: 'user-turn', author: { role: 'user' }, content: { parts: [prompt] } };
+  const hint = { task_id: 'supervisor:test', effect_id: effectId, receipt_challenge: 'abc1234',
+    turn_id: 'user-turn', conversation_id: conversationId, started_at_ms: 1793490000000,
+    request_id: '00000000-0000-4000-8000-000000000001', outcome: 'unknown' };
+  let listener: ((event: Record<string, unknown>) => void) | undefined;
+  const windowMock = { addEventListener(_type: string, callback: (event: Record<string, unknown>) => void) {
+    listener = callback;
+  } };
+  const response = (body: unknown) => ({
+    ok: true, status: 200, headers: { get: (key: string) => key === 'content-type' ? 'application/json' : null },
+    async json() { return body; }, async text() { return JSON.stringify(body); },
+  });
+  runInNewContext(source, {
+    window: windowMock, location: { pathname: '/c/' + conversationId, origin: 'https://chatgpt.com' },
+    chrome: { runtime: { async sendMessage(message: { event: Record<string, unknown> }) { outbound.push(message.event); } } },
+    fetch: async (url: string) => {
+      if (url === '/api/auth/session') return response({ accessToken: 'fake-token' });
+      expect(url).toContain('/backend-api/conversations/' + conversationId);
+      fetches += 1;
+      return response({ conversation_id: conversationId, page_info: { has_next_page: false },
+        messages: [user, { id: 'server-assistant', author: { role: 'assistant' }, recipient: 'all',
+          status: completedOnSecondRead && fetches === 2 ? 'finished_successfully' : 'in_progress',
+          end_turn: completedOnSecondRead && fetches === 2 }] });
+    },
+    setTimeout: (callback: () => void) => { queueMicrotask(callback); return 1; },
+    Number, JSON, Set,
+  });
+  const notify = (event: Record<string, unknown>) => listener?.({
+    source: windowMock, origin: 'https://chatgpt.com',
+    data: { source: 'forge-computer-provider-turn-v1', type: 'turn-event', event },
+  });
+  notify(hint);
+  for (let i = 0; i < 5; i++) await new Promise<void>((resolve) => setImmediate(resolve));
+  expect(fetches).toBe(2);
+  expect(outbound).toHaveLength(1);
+  expect(outbound[0]).toMatchObject({ outcome: 'completed',
+    assistant_message_id: 'server-assistant', proof_source: 'chatgpt-conversation-readback-v1' });
+  // Replayed hints for the same exact turn cannot trigger a third authenticated GET.
+  notify({ ...hint, request_id: '00000000-0000-4000-8000-000000000009' });
+  for (let i = 0; i < 3; i++) await new Promise<void>((resolve) => setImmediate(resolve));
+  expect(fetches).toBe(2);
+  completedOnSecondRead = false;
+  user.id = 'second-user';
+  notify({ ...hint, turn_id: 'second-user', request_id: '00000000-0000-4000-8000-000000000002' });
+  for (let i = 0; i < 5; i++) await new Promise<void>((resolve) => setImmediate(resolve));
+  expect(fetches).toBe(4);
+  expect(outbound).toHaveLength(1);
+});
+
 test('page Provider event cannot claim a different conversation in the same Chrome tab', async () => {
   const source = readFileSync('adapters/computer/chrome-extension/background.js', 'utf8');
   const start = source.indexOf('const PROVIDER_TURN_EVENT_PREFIX');
