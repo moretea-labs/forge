@@ -4,7 +4,7 @@ import { join, relative, resolve } from 'path';
 import { capProcessOutput, redactProcessOutput } from '../../effects/process-runner';
 import { buildPatchHandoffArtifact } from '../../runtime/recovery/patch-handoff';
 import { executeRepositoryGitCommand, type RepositoryGitExecution } from './git-command-executor';
-import { resolveRepositoryGitCommitScope } from './structured-git';
+import { repositoryGitStatus, resolveRepositoryGitCommitScope } from './structured-git';
 import { withControllerLock } from './locks';
 import { withRepositoryMutationExclusion } from '../../runtime/resources/leases/store';
 import type { RepositoryRecord } from './types';
@@ -279,9 +279,22 @@ export function commitSelectedPaths(
       repository.repoId,
       `selected-path-commit:${repository.activeCheckoutId}`,
       () => {
-  // Refuse a stale Work before even staging its selected files. This
-  // preserves the existing index on rejected checkout/HEAD ownership.
+  // Pin the transaction to the selected checkout independently of Work
+  // identity. Existing repository locks and Process leases serialize Forge
+  // writers; branch/HEAD checks reject stale placement at both boundaries.
+  const initial = repositoryGitStatus(repository);
+  const assertCheckoutUnchanged = (phase: string) => {
+    const current = repositoryGitStatus(repository);
+    if (current.branch !== initial.branch) {
+      throw new Error(`SELECTED_PATH_COMMIT_BRANCH_CHANGED: phase=${phase}; expected ${initial.branch ?? 'detached'}, found ${current.branch ?? 'detached'}`);
+    }
+    if (current.head !== initial.head) {
+      throw new Error(`SELECTED_PATH_COMMIT_HEAD_CHANGED: phase=${phase}; expected ${initial.head ?? 'missing'}, found ${current.head ?? 'missing'}`);
+    }
+    return current;
+  };
   input.beforeStageGuard?.();
+  assertCheckoutUnchanged('before_stage');
   const stage = executeRepositoryGitCommand(controllerHome, repository, {
     args: ['add', '--all', '--', ...paths],
     authorization: 'explicit_user_request',
@@ -308,8 +321,9 @@ export function commitSelectedPaths(
   // The repository layer owns staging and exact staged-path discovery, but it
   // does not own Work lifecycle/review policy. Callers may inject one typed
   // fail-closed guard at the last safe boundary before the physical commit.
-  const currentHead = gitText(repository, ['rev-parse', '--verify', 'HEAD']) || null;
-  input.beforeCommitGuard?.({ repository, requestedPaths: paths, stagedPaths: staged, currentHead });
+  const current = assertCheckoutUnchanged('before_commit');
+  input.beforeCommitGuard?.({ repository, requestedPaths: paths, stagedPaths: staged, currentHead: current.head });
+  assertCheckoutUnchanged('before_commit_guard');
 
   const commit = executeRepositoryGitCommand(controllerHome, repository, {
     args: ['commit', '--only', '-m', message, '--', ...paths],
