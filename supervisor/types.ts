@@ -86,6 +86,41 @@ export interface WorkflowSupervisorEffect {
   createdAt: string;
 }
 
+export interface WorkflowSupervisorProviderTurnEvent {
+  providerId: 'browser.chrome-extension';
+  providerInstanceId: string;
+  taskId: string;
+  conversationId: string;
+  conversationUrl: string;
+  effectId: string;
+  receiptChallenge: string;
+  turnId: string;
+  requestId: string;
+  startedAtMs: number;
+  observedAtMs: number;
+  outcome: 'completed' | 'failed';
+  statusCode: number;
+  /** Authenticated conversation history read by the isolated Chrome content script. */
+  proofSource?: 'chatgpt-conversation-readback-v1';
+  contentType?: string;
+  assistantMessageId?: string;
+  assistantStatus?: string;
+  assistantEndTurn?: boolean;
+  streamDone?: boolean;
+  failureCode?: string;
+  retryAfterMs?: number;
+}
+
+export interface WorkflowSupervisorProviderTurnReceipt extends WorkflowSupervisorProviderTurnEvent {
+  dispatchGeneration: number;
+  dispatchEventId: number;
+  recordedAt: string;
+}
+
+export type WorkflowSupervisorProviderTurnEventResult =
+  | { accepted: true; duplicate: boolean; receipt: WorkflowSupervisorProviderTurnReceipt }
+  | { accepted: false; retryable: boolean; reason: string };
+
 export interface WorkflowSupervisorCompletion {
   completionFingerprint: string;
   taskId: string;

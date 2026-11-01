@@ -155,6 +155,8 @@ export interface ComputerChatgptExtensionBrokerRpc {
   heartbeat(input: ComputerChatgptExtensionHeartbeat): boolean;
   claim(providerInstanceId: string): ComputerChatgptExtensionCommand | undefined;
   complete(providerInstanceId: string, commandId: string, result: ComputerChatgptExtensionCommandResult): boolean;
+  /** Read-only exact Computer-owned surface binding check for provider turn observations. */
+  attestsProviderTurnBinding(conversationId: string, providerInstanceId: string, binding: ComputerSurfaceProviderBinding): boolean;
 }
 
 export interface ComputerChatgptConversationTargetPort {

@@ -906,16 +906,22 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     // transcript text must never trigger automatic conversation migration.
     const liveFailure = chatgptProviderPageFailure(snapshot.providerFailureText);
     const turnFailure = chatgptProviderPageFailure(snapshot.providerActivityText);
-    const observedProviderFailureCode = liveFailure
+    const providerTurnEvent = observedSource ? this.control.store.getProviderTurnEvent(task.taskId, observedSource.effectId) : undefined;
+    const trustedProviderFailureCode = providerTurnEvent?.outcome === 'failed' ? providerTurnEvent.failureCode : undefined;
+    const observedProviderFailureCode = trustedProviderFailureCode ?? liveFailure
       ?? (turnFailure === CHATGPT_AUTOMATION_CONVERSATION_LIMIT_REACHED ? undefined : turnFailure);
     const providerFailureAwaitingClear = this.providerFailureAwaitingClear.get(task.conversationId);
     if (!observedProviderFailureCode) this.providerFailureAwaitingClear.delete(task.conversationId);
-    const providerFailureCode = observedProviderFailureCode && observedProviderFailureCode !== providerFailureAwaitingClear
-      ? observedProviderFailureCode
-      : undefined;
+    const providerFailureCode = trustedProviderFailureCode
+      ?? (observedProviderFailureCode && observedProviderFailureCode !== providerFailureAwaitingClear ? observedProviderFailureCode : undefined);
+    const providerFailureFingerprint = trustedProviderFailureCode
+      ? `${observedSource?.effectId ?? ''}:${trustedProviderFailureCode}` : observedProviderFailureCode;
     const priorProviderFailure = this.providerFailureSeen.get(task.conversationId);
     if (!observedProviderFailureCode) this.providerFailureSeen.delete(task.conversationId);
-    else if (priorProviderFailure !== observedProviderFailureCode) { noteChatgptProviderBackpressure(this.deps.providerScopeKey, observedProviderFailureCode, this.deps.nowMs()); this.providerFailureSeen.set(task.conversationId, observedProviderFailureCode); }
+    else if (priorProviderFailure !== providerFailureFingerprint) {
+      noteChatgptProviderBackpressure(this.deps.providerScopeKey, observedProviderFailureCode, this.deps.nowMs(), trustedProviderFailureCode ? providerTurnEvent?.retryAfterMs : undefined);
+      this.providerFailureSeen.set(task.conversationId, providerFailureFingerprint ?? observedProviderFailureCode);
+    }
     let providerBackpressureMs = chatgptProviderBackpressureRemainingMs(this.deps.providerScopeKey, this.deps.nowMs());
     if (poll.command?.mode !== 'reconcile' && providerFailureCode === CHATGPT_AUTOMATION_RATE_LIMITED && providerBackpressureMs > 0) return;
     let missingReceiptForAppliedTurn = false;
@@ -927,11 +933,16 @@ export class WorkflowSupervisorNativeBrowserAdapter {
       const pending = this.control.taskStall(task.taskId);
       const sourceEffect = this.control.store.latestAppliedEffectWithoutCompletion(task.taskId)
         ?? this.control.store.latestAppliedLeafEffectWithoutCompletion(task.taskId);
+      const providerTurnReceipt = sourceEffect ? this.control.store.getProviderTurnEvent(task.taskId, sourceEffect.effectId) : undefined;
+      const providerTurnFingerprint = providerTurnReceipt
+        ? `${providerTurnReceipt.outcome}:${providerTurnReceipt.turnId}:${providerTurnReceipt.requestId}:${providerTurnReceipt.observedAtMs}`
+        : 'provider-turn-receipt-missing';
       // Receipt validation depends on the applied source as well as the text.
       // A stable invalid receipt must not be reparsed on every browser poll;
       // a different exact effect still gets an independent validation.
       const responseFingerprint = sha256(JSON.stringify({
         effectId: sourceEffect?.effectId ?? ('effectId' in pending ? pending.effectId : null),
+        providerTurnFingerprint,
         text: snapshot.latestAssistantResponse,
       }));
       const observed = this.observedAssistant.get(task.conversationId);
@@ -954,7 +965,10 @@ export class WorkflowSupervisorNativeBrowserAdapter {
             // Rejected response syntax/identity proves a missing valid receipt.
             // Storage failures and valid DONE contract rejection are distinct.
             let receiptRejected = message.startsWith('WORKFLOW_SUPERVISOR_RESPONSE_')
-              || message === 'WORKFLOW_SUPERVISOR_CAUSAL_EFFECT_NOT_APPLIED';
+              || message === 'WORKFLOW_SUPERVISOR_CAUSAL_EFFECT_NOT_APPLIED'
+              || message === 'WORKFLOW_SUPERVISOR_PROVIDER_TURN_RECEIPT_REQUIRED'
+              || message === 'WORKFLOW_SUPERVISOR_PROVIDER_TURN_FAILED'
+              || message === 'WORKFLOW_SUPERVISOR_PROVIDER_TURN_CONVERSATION_MISMATCH';
             const receiptTask = this.control.getTask(task.taskId);
             if (!receiptRejected && sourceEffect && receiptTask) {
               try { parseSupervisorCompletion(snapshot.latestAssistantResponse, { task: receiptTask, effectId: sourceEffect.effectId, prompt: sourceEffect.prompt }); }
@@ -987,7 +1001,8 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     if (!poll.command || providerFailureCode) {
       this.control.browserObserveProviderTurn({ conversationId: task.conversationId, conversationUrl: task.conversationUrl,
         generating: providerFailureCode ? false : providerBusy, latestAssistantResponse: snapshot.latestAssistantResponse,
-        providerActivityText: snapshot.providerActivityText, receiptMissing: missingReceiptForAppliedTurn, providerFailureCode: providerFailureCode === CHATGPT_AUTOMATION_RATE_LIMITED ? undefined : providerFailureCode,
+        providerActivityText: snapshot.providerActivityText, receiptMissing: missingReceiptForAppliedTurn,
+        providerFailureCode: trustedProviderFailureCode ? providerFailureCode : providerFailureCode === CHATGPT_AUTOMATION_RATE_LIMITED ? undefined : providerFailureCode,
         observedAtMs: this.deps.nowMs(), graceMs: this.deps.providerIdleGraceMs });
       poll = this.control.browserPoll({ conversationId: task.conversationId, conversationUrl: task.conversationUrl });
       const staleTurnRecovery = poll.command?.kind === 'recovery';

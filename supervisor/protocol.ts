@@ -21,6 +21,7 @@ export const LEGACY_BRACKET_SUPERVISOR_BLOCK_END = '[[[END_FORGE_WORKFLOW_SUPERV
 export const LEGACY_SUPERVISOR_BLOCK_START = '<<<FORGE_WORKFLOW_SUPERVISOR_V1>>>';
 export const LEGACY_SUPERVISOR_BLOCK_END = '<<<END_FORGE_WORKFLOW_SUPERVISOR_V1>>>';
 export const EFFECT_MARKER_PREFIX = '<<<FORGE_WORKFLOW_EFFECT_V1:';
+export const SUPERVISOR_PROVIDER_TURN_MARKER = 'provider_turn:conversation-readback-v1';
 export const SUPERVISOR_TURN_BLOCK_START = 'FORGE_WORKFLOW_TURN_V2_BEGIN';
 export const SUPERVISOR_TURN_BLOCK_END = 'FORGE_WORKFLOW_TURN_V2_END';
 const EFFECT_ID = /^(?:fx|crpe)_[a-zA-Z0-9_-]{8,120}$/;
@@ -218,6 +219,7 @@ export function renderSupervisorPrompt(
     renderEffectMarker(effectId),
     'task_id:' + JSON.stringify(task.taskId),
     'receipt:' + challenge,
+    ...(task.continuationPolicy.provider_turn_receipt_required === true ? [SUPERVISOR_PROVIDER_TURN_MARKER] : []),
     ...(kind !== 'enrollment' && !lowerLayerContext?.trim() && repoId && !requirementId && !workId ? ['repo_id:' + repoId] : []),
     ...(kind !== 'enrollment' && !lowerLayerContext?.trim() && requirementId ? ['requirement_id:' + requirementId]
       : kind !== 'enrollment' && !lowerLayerContext?.trim() && workId ? ['work_id:' + workId] : []),

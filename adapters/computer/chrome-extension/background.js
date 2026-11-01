@@ -255,7 +255,7 @@ async function restoreExactContentReceiver(tabId, identity) {
   const before = await tabGet(tabId);
   if (before.discarded || !matches(before)) throw new Error('COMPUTER_CHATGPT_EXTENSION_RECEIVER_TARGET_CHANGED');
   await new Promise((resolve, reject) => chrome.scripting.executeScript({
-    target: { tabId }, files: ['core.js', 'content.js'],
+    target: { tabId }, files: ['core.js', 'provider-turn-readback.js', 'content.js'],
   }, () => {
     const error = chrome.runtime.lastError;
     if (error) reject(new Error(error.message)); else resolve();
@@ -780,9 +780,10 @@ function heartbeatTick() {
 async function providerTick() {
   // One claimed command retains the sole mutation lane; it must not also
   // suppress profile heartbeat when a page/Chrome callback is slow or hangs.
-  if (providerTickInFlight) { await heartbeatTick(); return; }
+  if (providerTickInFlight) { void flushProviderTurnEvents().catch(() => undefined); await heartbeatTick(); return; }
   providerTickInFlight = (async () => {
     const instanceId = await heartbeatTick();
+    void flushProviderTurnEvents().catch(() => undefined);
     // One command per tick keeps heartbeats and other tasks fair. The broker
     // remains the only authority for a claimed Send and its unknown outcome.
     const claim = await nativeRpc('computer_extension_claim', { provider_instance_id: instanceId });
@@ -855,7 +856,184 @@ function scheduleDiscovery() {
     discoveryInFlight = refreshDiscovery().catch(() => undefined).finally(() => { lastDiscoveryAt = Date.now(); discoveryInFlight = undefined; });
   }, delay);
 }
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+const PROVIDER_TURN_EVENT_PREFIX = 'forgeComputerProviderTurnEventV2:';
+const PROVIDER_TURN_BINDING_PREFIX = 'forgeComputerProviderTurnBindingV2:';
+let providerTurnFlushInFlight;
+function providerTurnEventText(value, maxLength) {
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.trim();
+  return normalized && normalized.length <= maxLength ? normalized : undefined;
+}
+function providerTurnEventRequestId(value) {
+  const normalized = providerTurnEventText(value, 64);
+  return normalized && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(normalized)
+    ? normalized : undefined;
+}
+async function persistProviderTurnEvent(input, sender) {
+  if (!input || typeof input !== 'object' || sender?.frameId !== 0) return { accepted: false, reason: 'provider_turn_sender_invalid' };
+  const tab = sender.tab;
+  const tabId = Number.isSafeInteger(tab?.id) ? tab.id : undefined;
+  const windowId = Number.isSafeInteger(tab?.windowId) ? tab.windowId : undefined;
+  if (tabId === undefined || windowId === undefined || !String(tab.url ?? '').startsWith('https://chatgpt.com/')) {
+    return { accepted: false, reason: 'provider_turn_tab_unavailable' };
+  }
+  const taskId = providerTurnEventText(input.task_id, 256);
+  const conversationId = providerTurnEventText(input.conversation_id, 256);
+  const effectId = providerTurnEventText(input.effect_id, 256);
+  const receiptChallenge = providerTurnEventText(input.receipt_challenge, 7);
+  const turnId = providerTurnEventText(input.turn_id, 256);
+  const requestId = providerTurnEventRequestId(input.request_id);
+  const startedAtMs = input.started_at_ms;
+  const outcome = input.outcome;
+  const statusCode = input.status_code;
+  const contentType = providerTurnEventText(input.content_type, 256) ?? '';
+  const proofSource = providerTurnEventText(input.proof_source, 64);
+  const assistantMessageId = providerTurnEventText(input.assistant_message_id, 256);
+  const assistantStatus = providerTurnEventText(input.assistant_status, 64);
+  const assistantEndTurn = typeof input.assistant_end_turn === 'boolean' ? input.assistant_end_turn : undefined;
+  const streamDone = typeof input.stream_done === 'boolean' ? input.stream_done : undefined;
+  const failureCode = providerTurnEventText(input.failure_code, 128);
+  const retryAfterMs = input.retry_after_ms;
+  if (!taskId || !conversationId || !effectId || !receiptChallenge || !turnId || !requestId
+    || !/^[0-9a-f]{7}$/.test(receiptChallenge)
+    || !Number.isSafeInteger(startedAtMs) || startedAtMs < 0
+    || !Number.isSafeInteger(statusCode) || statusCode < 0 || statusCode > 599
+    || !['completed', 'failed', 'unknown'].includes(outcome)) {
+    return { accepted: false, reason: 'provider_turn_event_invalid' };
+  }
+  if (retryAfterMs !== undefined && (!Number.isSafeInteger(retryAfterMs) || retryAfterMs < 0 || retryAfterMs > 86_400_000)) {
+    return { accepted: false, reason: 'provider_turn_retry_after_invalid' };
+  }
+  const eventStream = contentType.toLowerCase().includes('text/event-stream');
+  if (outcome === 'completed' && (proofSource !== 'chatgpt-conversation-readback-v1'
+    || statusCode !== 200 || !contentType.toLowerCase().includes('application/json') || !assistantMessageId
+    || assistantStatus !== 'finished_successfully' || assistantEndTurn !== true || streamDone !== undefined || failureCode)) {
+    return { accepted: false, reason: 'provider_turn_completion_evidence_invalid' };
+  }
+  if (outcome === 'failed' && (!failureCode || !(
+    statusCode === 429 || ((assistantStatus === 'failed' || assistantStatus === 'cancelled') && streamDone === true)
+  ))) {
+    return { accepted: false, reason: 'provider_turn_failure_evidence_invalid' };
+  }
+  if (outcome === 'unknown' && !failureCode) return { accepted: false, reason: 'provider_turn_unknown_reason_missing' };
+
+  const canonicalUrl = 'https://chatgpt.com/c/' + encodeURIComponent(conversationId);
+  if (!core.parseConversation(canonicalUrl)
+    || core.parseConversation(tab.url)?.conversationId !== conversationId) {
+    return { accepted: false, reason: 'provider_turn_conversation_invalid' };
+  }
+  // An owned tab alone cannot attest page-origin SSE facts. Only the ISOLATED
+  // script's authenticated conversation readback may produce a terminal receipt.
+  if ((outcome === 'completed' && proofSource !== 'chatgpt-conversation-readback-v1') || outcome === 'failed') {
+    return { accepted: false, reason: 'provider_turn_page_origin_untrusted' };
+  }
+  const ownerKey = ownedTabKey(tabId);
+  let owner;
+  try { owner = await chrome.storage.session.get(ownerKey); } catch { return { accepted: false, reason: 'provider_turn_owner_unavailable' }; }
+  const ownerToken = owner?.[ownerKey];
+  if (typeof ownerToken !== 'string' || !ownerToken.trim()) return { accepted: false, reason: 'provider_turn_tab_not_owned' };
+  const instanceId = await providerInstanceId();
+  const providerBinding = binding(tab, instanceId, ownerToken);
+  if (!providerBinding?.ownerToken) return { accepted: false, reason: 'provider_turn_binding_unavailable' };
+
+  const eventKey = PROVIDER_TURN_EVENT_PREFIX + requestId;
+  const bindingKey = PROVIDER_TURN_BINDING_PREFIX + requestId;
+  const existing = await chrome.storage.local.get(eventKey).catch(() => ({}));
+  if (existing?.[eventKey]) {
+    const prior = existing[eventKey];
+    if (prior.task_id !== taskId || prior.effect_id !== effectId || prior.turn_id !== turnId) {
+      return { accepted: false, reason: 'provider_turn_request_conflict' };
+    }
+    void flushProviderTurnEvents().catch(() => undefined);
+    return { accepted: true, duplicate: true };
+  }
+  const event = {
+    provider_id: PROVIDER_ID,
+    provider_instance_id: instanceId,
+    task_id: taskId,
+    conversation_id: conversationId,
+    conversation_url: canonicalUrl,
+    effect_id: effectId,
+    receipt_challenge: receiptChallenge,
+    turn_id: turnId,
+    request_id: requestId,
+    started_at_ms: startedAtMs,
+    observed_at_ms: Date.now(),
+    outcome,
+    status_code: statusCode,
+    ...(proofSource ? { proof_source: proofSource } : {}),
+    ...(contentType ? { content_type: contentType } : {}),
+    ...(assistantMessageId ? { assistant_message_id: assistantMessageId } : {}),
+    ...(assistantStatus ? { assistant_status: assistantStatus } : {}),
+    ...(assistantEndTurn === undefined ? {} : { assistant_end_turn: assistantEndTurn }),
+    ...(streamDone === undefined ? {} : { stream_done: streamDone }),
+    ...(failureCode ? { failure_code: failureCode } : {}),
+    ...(retryAfterMs === undefined ? {} : { retry_after_ms: retryAfterMs }),
+    tab_id: String(tabId),
+    window_id: String(windowId),
+  };
+  await chrome.storage.session.set({ [bindingKey]: providerBinding });
+  try {
+    await chrome.storage.local.set({ [eventKey]: event });
+  } catch (error) {
+    await chrome.storage.session.remove(bindingKey).catch(() => undefined);
+    throw error;
+  }
+  void flushProviderTurnEvents().catch(() => undefined);
+  return { accepted: true, duplicate: false };
+}
+async function flushProviderTurnEvents() {
+  if (providerTurnFlushInFlight) return await providerTurnFlushInFlight;
+  providerTurnFlushInFlight = (async () => {
+    const stored = await chrome.storage.local.get(null);
+    const pending = Object.entries(stored ?? {})
+      .filter(([key, value]) => key.startsWith(PROVIDER_TURN_EVENT_PREFIX) && value && typeof value === 'object')
+      .sort(([left], [right]) => left.localeCompare(right));
+    for (const [key, event] of pending.slice(0, 8)) {
+      const requestId = String(event.request_id ?? '');
+      const bindingKey = PROVIDER_TURN_BINDING_PREFIX + requestId;
+      let session;
+      try { session = await chrome.storage.session.get(bindingKey); } catch { return; }
+      const pinned = session?.[bindingKey];
+      if (!pinned || typeof pinned.ownerToken !== 'string' || !pinned.ownerToken
+        || pinned.providerSessionId !== event.provider_instance_id
+        || pinned.tabId !== String(event.tab_id) || pinned.windowId !== String(event.window_id)) {
+        await chrome.storage.local.remove(key).catch(() => undefined);
+        await chrome.storage.session.remove(bindingKey).catch(() => undefined);
+        continue;
+      }
+      const params = {
+        ...event,
+        provider_binding: {
+          provider_id: pinned.providerId,
+          provider_session_id: pinned.providerSessionId,
+          observed_at: pinned.observedAt,
+          browser_product: pinned.browserProduct,
+          window_id: pinned.windowId,
+          tab_id: pinned.tabId,
+          owner_token: pinned.ownerToken,
+        },
+      };
+      let result;
+      try { result = await nativeRpc('computer_extension_turn_event', params, 5_000); }
+      catch { return; }
+      if (result?.accepted === true || result?.retryable === false) {
+        await chrome.storage.local.remove(key).catch(() => undefined);
+        await chrome.storage.session.remove(bindingKey).catch(() => undefined);
+        continue;
+      }
+      return;
+    }
+  })().finally(() => { providerTurnFlushInFlight = undefined; });
+  return await providerTurnFlushInFlight;
+}
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type === 'forge-computer-provider-turn-event') {
+    void persistProviderTurnEvent(message.event, sender).then(sendResponse, (error) => {
+      sendResponse({ accepted: false, reason: String(error?.message ?? error).slice(0, 256) });
+    });
+    return true;
+  }
   if (message?.type !== 'forge-computer-chatgpt-page') return false;
   void providerTick().catch(() => undefined);
   scheduleDiscovery();
@@ -867,7 +1045,7 @@ chrome.runtime.onStartup.addListener(() => { chrome.alarms.create(ALARM, { perio
 chrome.alarms.onAlarm.addListener((alarm) => { if (alarm.name === ALARM) { void providerTick().catch(() => undefined); scheduleDiscovery(); } });
 chrome.tabs.onUpdated.addListener((_tabId, changeInfo, tab) => { if (changeInfo.status === 'complete' && String(tab.url ?? '').startsWith('https://chatgpt.com/')) { void providerTick().catch(() => undefined); scheduleDiscovery(); } });
 chrome.tabs.onActivated.addListener(() => { void providerTick().catch(() => undefined); scheduleDiscovery(); });
-chrome.tabs.onRemoved.addListener((tabId) => { unreadableConversationTabs.delete(tabId); void providerTick().catch(() => undefined); scheduleDiscovery(); });
+chrome.tabs.onRemoved.addListener((tabId) => { unreadableConversationTabs.delete(tabId); void chrome.storage.session.remove(ownedTabKey(tabId)).catch(() => undefined); void providerTick().catch(() => undefined); scheduleDiscovery(); });
 chrome.windows.onFocusChanged.addListener(() => { void providerTick().catch(() => undefined); scheduleDiscovery(); });
 chrome.alarms.create(ALARM, { periodInMinutes: 1 });
 setInterval(() => { void providerTick().catch(() => undefined); }, PROVIDER_TICK_MS);

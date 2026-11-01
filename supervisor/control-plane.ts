@@ -1,12 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { parseChatgptConversationIdentity } from './chatgpt-conversation';
-import { parseSupervisorCompletion, renderEffectMarker, renderSupervisorPrompt, sha256, validateEffectId, validateSupervisorObjective } from './protocol';
+import { SUPERVISOR_PROVIDER_TURN_MARKER, parseSupervisorCompletion, renderEffectMarker, renderSupervisorPrompt, sha256, validateEffectId, validateSupervisorObjective } from './protocol';
 import { WorkflowSupervisorStore } from './store';
 import type { ComputerChatgptPrewriteNoMutationReceipt } from '../packages/plugin-runtime/computer/conversation-target';
 import { getWorkContract } from '../packages/kernel/work/api/index';
 import { readRequirement } from '../src/runtime/control-plane/persistence/requirement-store';
 import { resolveWorkflowSupervisorForgeHome } from './paths';
-import type { WorkflowAssistantObservation, WorkflowAssistantObservationResult, WorkflowContractValidation, WorkflowEffectKind, WorkflowSupervisorBrowserPollResult, WorkflowSupervisorBrowserTask, WorkflowSupervisorCompletion, WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorEffect, WorkflowSupervisorLifecycleHooks, WorkflowSupervisorProjectScope, WorkflowSupervisorTask, WorkflowSupervisorTaskInput, WorkflowSupervisorTerminalState, WorkflowSupervisorValidators, WorkflowSupervisorPreflightComposerObservation, WorkflowSupervisorReviewNotice } from './types';
+import type { WorkflowAssistantObservation, WorkflowAssistantObservationResult, WorkflowContractValidation, WorkflowEffectKind, WorkflowSupervisorBrowserPollResult, WorkflowSupervisorBrowserTask, WorkflowSupervisorCompletion, WorkflowSupervisorDiscoveredConversation, WorkflowSupervisorEffect, WorkflowSupervisorProviderTurnEvent, WorkflowSupervisorProviderTurnEventResult, WorkflowSupervisorLifecycleHooks, WorkflowSupervisorProjectScope, WorkflowSupervisorTask, WorkflowSupervisorTaskInput, WorkflowSupervisorTerminalState, WorkflowSupervisorValidators, WorkflowSupervisorPreflightComposerObservation, WorkflowSupervisorReviewNotice } from './types';
 
 function compactProjectIdentity(value: string): string {
   return value.normalize('NFKC').toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
@@ -787,6 +787,23 @@ export class WorkflowSupervisorControlPlane {
     if (effect.kind === 'recovery' && ['provider_recovery_stop_pending', 'provider_recovery_turn_unknown', 'provider_recovery_turn_live'].includes(input.reason.trim())) return;
     this.recordProviderPreparationFailure({ taskId: task.taskId, effectId: effect.effectId, reasonCode: input.reason });
   }
+  recordProviderTurnEvent(input: WorkflowSupervisorProviderTurnEvent): WorkflowSupervisorProviderTurnEventResult {
+    try {
+      let identity;
+      try { identity = parseChatgptConversationIdentity(input.conversationUrl); }
+      catch { return { accepted: false, retryable: false, reason: 'WORKFLOW_SUPERVISOR_PROVIDER_TURN_CONVERSATION_URL_INVALID' }; }
+      if (identity.conversationId !== input.conversationId) {
+        return { accepted: false, retryable: false, reason: 'WORKFLOW_SUPERVISOR_PROVIDER_TURN_CONVERSATION_MISMATCH' };
+      }
+      return this.store.recordProviderTurnEvent(input);
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith('WORKFLOW_SUPERVISOR_')) {
+        return { accepted: false, retryable: false, reason: error.message };
+      }
+      throw error;
+    }
+  }
+
   browserObserveProviderTurn(input: { conversationId: string; conversationUrl: string; generating: boolean; latestAssistantResponse: string; providerActivityText?: string; providerFailureCode?: string; receiptMissing?: boolean; observedAtMs: number; graceMs: number }): { state: 'inactive' | 'none' | 'generating' | 'idle_pending' | 'recovery_reserved' | 'exhausted'; recoveryEffect?: WorkflowSupervisorEffect } {
     const task = this.requireBrowserTask(input.conversationId, input.conversationUrl);
     if (!this.browserTaskActiveForExternalEffect(task)) return { state: 'inactive' };
@@ -895,6 +912,12 @@ export class WorkflowSupervisorControlPlane {
     );
     const sourceEffect = this.store.getEffect(parsed.proposal.sourceEffectId);
     if (!sourceEffect || sourceEffect.taskId !== task.taskId || !this.store.effectApplied(sourceEffect.effectId)) throw new Error('WORKFLOW_SUPERVISOR_CAUSAL_EFFECT_NOT_APPLIED');
+    if (sourceEffect.prompt.includes(SUPERVISOR_PROVIDER_TURN_MARKER)) {
+      const providerTurn = this.store.getProviderTurnEvent(task.taskId, sourceEffect.effectId);
+      if (!providerTurn) throw new Error('WORKFLOW_SUPERVISOR_PROVIDER_TURN_RECEIPT_REQUIRED');
+      if (providerTurn.outcome !== 'completed') throw new Error('WORKFLOW_SUPERVISOR_PROVIDER_TURN_FAILED');
+      if (providerTurn.conversationId !== task.conversationId) throw new Error('WORKFLOW_SUPERVISOR_PROVIDER_TURN_CONVERSATION_MISMATCH');
+    }
     const explicitIdentityProtocol = sourceEffect.prompt.includes('conversation_id=') && sourceEffect.prompt.includes('task_id=') && sourceEffect.prompt.includes('supervisor_state');
     if (parsed.proposal.conversationId && parsed.proposal.conversationId !== task.conversationId) throw new Error('WORKFLOW_SUPERVISOR_RESPONSE_CONVERSATION_MISMATCH');
     if (parsed.proposal.taskId && parsed.proposal.taskId !== task.taskId) throw new Error('WORKFLOW_SUPERVISOR_RESPONSE_TASK_MISMATCH');

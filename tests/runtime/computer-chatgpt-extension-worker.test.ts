@@ -2,6 +2,17 @@ import { expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 
+function runChromeContentScript(source: string, scope: Record<string, unknown>): unknown {
+  const existing = scope.window && typeof scope.window === 'object' ? scope.window as Record<string, unknown> : {};
+  const events = new EventTarget();
+  if (typeof existing.addEventListener !== 'function') {
+    existing.addEventListener = events.addEventListener.bind(events);
+    existing.removeEventListener = events.removeEventListener.bind(events);
+  }
+  scope.window = existing;
+  return runInNewContext(source, scope, { filename: 'content.js' });
+}
+
 test('invalidated content context stops observing the page without throwing', () => {
   const source = readFileSync(new URL('../../adapters/computer/chrome-extension/content.js', import.meta.url), 'utf8');
   let pending: (() => void) | undefined;
@@ -24,7 +35,7 @@ test('invalidated content context stops observing the page without throwing', ()
     setTimeout: (callback: () => void) => { pending = callback; return 1; },
     clearTimeout: () => {}, URL,
   };
-  runInNewContext(source, scope, { filename: 'content.js' });
+  runChromeContentScript(source, scope);
   expect(() => pending!()).not.toThrow();
   expect(disconnects).toBe(1);
   pending = undefined;
@@ -46,7 +57,7 @@ test('content context stops observing when runtime is absent after reload', () =
     setTimeout: (callback: () => void) => { pending = callback; return 1; },
     clearTimeout: () => {}, URL,
   };
-  runInNewContext(source, scope, { filename: 'content.js' });
+  runChromeContentScript(source, scope);
   chrome.runtime = undefined;
   expect(() => pending!()).not.toThrow();
   expect(disconnected).toBe(true);
@@ -290,7 +301,7 @@ test('content snapshot reports only live provider status, not quoted historical 
     setTimeout: () => 1, clearTimeout: () => {},
     URL,
   };
-  runInNewContext(source, scope, { filename: 'content.js' });
+  runChromeContentScript(source, scope);
   const snapshot = () => {
     let result: Record<string, unknown> | undefined;
     listeners[0]!({ type: 'forge-computer-chatgpt-snapshot' }, {}, (value) => { result = value; });
@@ -335,7 +346,7 @@ test('read-only ChatGPT generation status ignores a historical user turn while s
     MutationObserver: class { observe() {} },
     setTimeout: () => 1, clearTimeout: () => {}, URL,
   };
-  runInNewContext(source, scope, { filename: 'content.js' });
+  runChromeContentScript(source, scope);
   const snapshot = () => {
     let result: Record<string, unknown> | undefined;
     listeners[0]!({ type: 'forge-computer-chatgpt-snapshot' }, {}, (value) => { result = value; });
