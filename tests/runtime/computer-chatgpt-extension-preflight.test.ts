@@ -458,7 +458,7 @@ test('find_marker hydrates only the exact pinned migrated conversation after rec
     scripting: {
       executeScript(args: { target: { tabId: number }; files: string[] }, cb: () => void) {
         expect(args.target.tabId).toBe(pinned.id);
-        expect(args.files).toEqual(['core.js', 'content.js']);
+        expect(args.files).toEqual(['core.js', 'provider-turn-readback.js', 'content.js']);
         reinjections++;
         receiverInstalled = true;
         cb();

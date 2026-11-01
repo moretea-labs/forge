@@ -395,7 +395,9 @@ test('MAIN-world provider capture requires a final assistant SSE receipt, not HT
   expect(manifest.content_scripts.some((s) => s.world === 'MAIN' && s.run_at === 'document_start'
     && s.js.includes('provider-turn-main.js'))).toBe(true);
   const source = readFileSync('adapters/computer/chrome-extension/provider-turn-main.js', 'utf8');
-  const bridge = readFileSync('adapters/computer/chrome-extension/content.js', 'utf8');
+  const bridge = readFileSync('adapters/computer/chrome-extension/provider-turn-readback.js', 'utf8');
+  expect(manifest.content_scripts.some((script) => script.world !== 'MAIN'
+    && script.js.includes('provider-turn-readback.js'))).toBe(true);
   const background = readFileSync('adapters/computer/chrome-extension/background.js', 'utf8');
   expect(bridge).toContain("'forge-computer-provider-turn-v1'");
   expect(background).toContain("req");
@@ -456,6 +458,77 @@ test('MAIN-world provider capture requires a final assistant SSE receipt, not HT
     status_code: 429, retry_after_ms: 45000 });
 });
 
+test('isolated conversation readback proves an exact persisted user and final assistant', async () => {
+  const source = readFileSync('adapters/computer/chrome-extension/provider-turn-readback.js', 'utf8');
+  const conversationId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+  const effectId = 'fx_0123456789abcdef0123456789abcdef';
+  const prompt = '<<<FORGE_WORKFLOW_EFFECT_V1:' + effectId + '>>>'
+    + '\ntask_id:"supervisor:test"\nreceipt:abc1234\nprovider_turn:sse-final-v1\nContinue.';
+  const hint = {
+    task_id: 'supervisor:test', effect_id: effectId, receipt_challenge: 'abc1234',
+    turn_id: 'user-turn-1', request_id: '00000000-0000-4000-8000-000000000001',
+    started_at_ms: 1793490000000, conversation_id: conversationId,
+    outcome: 'completed', status_code: 200, content_type: 'text/event-stream',
+    assistant_message_id: 'attacker-supplied-id', assistant_status: 'finished_successfully',
+    assistant_end_turn: true, stream_done: true,
+  };
+  const messages = [
+    { id: 'user-turn-1', author: { role: 'user' }, content: { parts: [prompt] } },
+    { id: 'assistant-from-server', author: { role: 'assistant' },
+      status: 'finished_successfully', end_turn: true, recipient: 'all' },
+  ];
+  const outbound: Array<{ event: Record<string, unknown> }> = [];
+  const calls: string[] = [];
+  let listener: ((event: Record<string, unknown>) => void) | undefined;
+  const windowMock = { addEventListener(_name: string, callback: (event: Record<string, unknown>) => void) { listener = callback; } };
+  let sessionStatus = 200;
+  const response = (body: unknown, status = 200) => ({
+    ok: status === 200, status,
+    headers: { get(name: string) { return name === 'content-type' ? 'application/json' : null; } },
+    async json() { return body; }, async text() { return JSON.stringify(body); },
+  });
+  runInNewContext(source, {
+    window: windowMock, location: { pathname: '/g/g-p-forge/c/' + conversationId, origin: 'https://chatgpt.com' },
+    chrome: { runtime: { async sendMessage(message: { event: Record<string, unknown> }) { outbound.push(message); } } },
+    fetch: async (url: string) => {
+      calls.push(url);
+      if (url === '/api/auth/session') return response({ accessToken: 'secret-not-to-forward' }, sessionStatus);
+      return response({ conversation_id: conversationId, messages });
+    },
+    Number, JSON, Set,
+  });
+  const send = async (input: Record<string, unknown>) => {
+    listener?.({ source: windowMock, origin: 'https://chatgpt.com',
+      data: { source: 'forge-computer-provider-turn-v1', type: 'turn-event', event: input } });
+    for (let i = 0; i < 4; i++) await new Promise<void>((resolve) => setImmediate(resolve));
+  };
+  // Even a parser-level unknown hint can prompt a server-verified readback.
+  await send({ ...hint, outcome: 'unknown', status_code: 0, stream_done: false });
+  expect(outbound).toHaveLength(1);
+  expect(outbound[0].event).toMatchObject({
+    assistant_message_id: 'assistant-from-server', proof_source: 'chatgpt-conversation-readback-v1',
+    status_code: 200, content_type: 'application/json', outcome: 'completed', assistant_end_turn: true,
+  });
+  expect(JSON.stringify(outbound)).not.toContain('secret-not-to-forward');
+  expect(calls).toEqual(['/api/auth/session',
+    '/backend-api/conversations/' + conversationId + '?include_has_versions=true&num_turns=100']);
+  messages[1].status = 'in_progress';
+  await send({ ...hint, request_id: '00000000-0000-4000-8000-000000000002' });
+  expect(outbound).toHaveLength(1);
+  messages[1].status = 'finished_successfully';
+  messages[0].id = 'different-user';
+  await send({ ...hint, request_id: '00000000-0000-4000-8000-000000000003' });
+  expect(outbound).toHaveLength(1);
+  messages[0].id = 'user-turn-1';
+  await send({ ...hint, conversation_id: 'bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee' });
+  expect(outbound).toHaveLength(1);
+  sessionStatus = 403;
+  await send({ ...hint, request_id: '00000000-0000-4000-8000-000000000004' });
+  expect(outbound).toHaveLength(1);
+  await send({ ...hint, outcome: 'failed', status_code: 429 });
+  expect(outbound).toHaveLength(1);
+});
+
 test('page Provider event cannot claim a different conversation in the same Chrome tab', async () => {
   const source = readFileSync('adapters/computer/chrome-extension/background.js', 'utf8');
   const start = source.indexOf('const PROVIDER_TURN_EVENT_PREFIX');
@@ -476,9 +549,10 @@ test('page Provider event cannot claim a different conversation in the same Chro
     receipt_challenge: 'abc1234', turn_id: 'user-turn',
     request_id: '00000000-0000-4000-8000-000000000001',
     conversation_id: foreignId, started_at_ms: 1793490000000, outcome: 'completed',
-    status_code: 200, content_type: 'text/event-stream',
+    status_code: 200, content_type: 'application/json',
+    proof_source: 'chatgpt-conversation-readback-v1',
     assistant_message_id: 'assistant-1', assistant_status: 'finished_successfully',
-    assistant_end_turn: true, stream_done: true,
+    assistant_end_turn: true,
   };
   const sender = { frameId: 0, tab: { id: 7, windowId: 8, url: 'https://chatgpt.com/c/' + actualId } };
   expect(await fns.persistProviderTurnEvent(event, sender)).toMatchObject({
@@ -506,9 +580,7 @@ test('page-origin completed or failed claims cannot become trusted Computer prov
   const chrome = {
     storage: {
       session: {
-        // The stub attests whichever owner-token field the extension's session schema reads.
-        get: async (_key: string) => new Proxy({}, { get: () =>
-          new Proxy({}, { get: () => 'owned-tab-token' }) }),
+        get: async (_key: string) => ({ 'forgeComputerOwnedTabV1:7': 'owned-tab-token' }),
         set: async (_value: unknown) => undefined,
         remove: async (_key: unknown) => undefined,
       },
@@ -526,13 +598,22 @@ test('page-origin completed or failed claims cannot become trusted Computer prov
   }) as { persistProviderTurnEvent(event: Record<string, unknown>, sender: Record<string, unknown>): Promise<{ accepted: boolean; reason?: string }> };
   // A script in this same tab can post this payload without observing a real SSE response.
   expect(await fns.persistProviderTurnEvent(event, sender)).toMatchObject({
-    accepted: false, reason: 'provider_turn_page_origin_untrusted',
+    accepted: false, reason: 'provider_turn_completion_evidence_invalid',
   });
   expect(await fns.persistProviderTurnEvent({
     ...event, outcome: 'failed', status_code: 429, content_type: 'application/json',
     failure_code: 'CHATGPT_AUTOMATION_RATE_LIMITED',
   }, sender)).toMatchObject({ accepted: false, reason: 'provider_turn_page_origin_untrusted' });
   expect(writes).toHaveLength(0);
+  const { stream_done: _ignored, ...untrusted } = event;
+  const attested = {
+    ...untrusted, proof_source: 'chatgpt-conversation-readback-v1',
+    content_type: 'application/json',
+  };
+  expect(await fns.persistProviderTurnEvent(attested, sender)).toMatchObject({
+    accepted: true, duplicate: false,
+  });
+  expect(writes).toHaveLength(1);
 });
 
 test('provider turn receipt delivery cannot block the next Supervisor command claim', async () => {

@@ -344,6 +344,7 @@ async function dispatch(control: WorkflowSupervisorControlPlane, discovery: Work
       observedAtMs: safeInteger(p, 'observed_at_ms'),
       outcome,
       statusCode: safeInteger(p, 'status_code'),
+      ...(typeof p.proof_source === 'string' ? { proofSource: stringValue(p.proof_source) as 'chatgpt-conversation-readback-v1' } : {}),
       ...(typeof p.content_type === 'string' ? { contentType: stringValue(p.content_type) } : {}),
       ...(typeof p.assistant_message_id === 'string' ? { assistantMessageId: stringValue(p.assistant_message_id) } : {}),
       ...(typeof p.assistant_status === 'string' ? { assistantStatus: stringValue(p.assistant_status) } : {}),

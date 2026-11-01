@@ -18,7 +18,7 @@ const roots: string[] = [];
 type ProviderTurnEvent = {
   providerId: 'browser.chrome-extension'; providerInstanceId: string; taskId: string; conversationId: string; conversationUrl: string;
   effectId: string; receiptChallenge: string; turnId: string; requestId: string; startedAtMs: number; observedAtMs: number;
-  outcome: 'completed' | 'failed'; statusCode: number; contentType?: string;
+  outcome: 'completed' | 'failed'; statusCode: number; proofSource?: 'chatgpt-conversation-readback-v1'; contentType?: string;
   assistantMessageId?: string; assistantStatus?: string; assistantEndTurn?: boolean; streamDone?: boolean;
   failureCode?: string; retryAfterMs?: number;
 };
@@ -33,11 +33,12 @@ function providerTurnEvent(task: { taskId: string; conversationId: string; conve
     turnId: options.turnId ?? `turn:${effect.effectId}`, requestId: options.requestId ?? `request:${effect.effectId}`,
     startedAtMs: options.startedAtMs ?? nowMs - 20, observedAtMs: options.observedAtMs ?? nowMs,
     outcome, statusCode: options.statusCode ?? (outcome === 'completed' ? 200 : 429),
-    ...(options.contentType !== undefined ? { contentType: options.contentType } : outcome === 'completed' ? { contentType: 'text/event-stream' } : { contentType: 'application/json' }),
+    ...(outcome === 'completed' ? { proofSource: options.proofSource ?? 'chatgpt-conversation-readback-v1' } : {}),
+    ...(options.contentType !== undefined ? { contentType: options.contentType } : { contentType: 'application/json' }),
     ...(options.assistantMessageId !== undefined ? { assistantMessageId: options.assistantMessageId } : outcome === 'completed' ? { assistantMessageId: 'assistant:' + effect.effectId } : {}),
     ...(options.assistantStatus !== undefined ? { assistantStatus: options.assistantStatus } : outcome === 'completed' ? { assistantStatus: 'finished_successfully' } : {}),
     ...(options.assistantEndTurn !== undefined ? { assistantEndTurn: options.assistantEndTurn } : outcome === 'completed' ? { assistantEndTurn: true } : {}),
-    ...(options.streamDone !== undefined ? { streamDone: options.streamDone } : outcome === 'completed' ? { streamDone: true } : {}),
+    ...(options.streamDone !== undefined ? { streamDone: options.streamDone } : {}),
     ...(options.failureCode !== undefined ? { failureCode: options.failureCode } : outcome === 'failed' ? { failureCode: 'CHATGPT_AUTOMATION_RATE_LIMITED' } : {}),
     ...(options.retryAfterMs !== undefined ? { retryAfterMs: options.retryAfterMs } : outcome === 'failed' ? { retryAfterMs: 30_000 } : {}),
   };
@@ -347,6 +348,10 @@ describe('Workflow Supervisor automation receipts', () => {
       .rejects.toThrow('WORKFLOW_SUPERVISOR_PROVIDER_TURN_RECEIPT_REQUIRED');
 
     const event = providerTurnEvent(task, effect);
+    expect(control.recordProviderTurnEvent({
+      ...event, proofSource: undefined, contentType: 'text/event-stream', streamDone: true,
+    })).toMatchObject({
+      accepted: false, retryable: false, reason: 'WORKFLOW_SUPERVISOR_PROVIDER_TURN_COMPLETION_EVIDENCE_INVALID' });
     expect(control.recordProviderTurnEvent({ ...event, streamDone: false })).toMatchObject({
       accepted: false, retryable: false, reason: 'WORKFLOW_SUPERVISOR_PROVIDER_TURN_COMPLETION_EVIDENCE_INVALID' });
     expect(control.recordProviderTurnEvent({ ...event, assistantEndTurn: false })).toMatchObject({

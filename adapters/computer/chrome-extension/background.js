@@ -255,7 +255,7 @@ async function restoreExactContentReceiver(tabId, identity) {
   const before = await tabGet(tabId);
   if (before.discarded || !matches(before)) throw new Error('COMPUTER_CHATGPT_EXTENSION_RECEIVER_TARGET_CHANGED');
   await new Promise((resolve, reject) => chrome.scripting.executeScript({
-    target: { tabId }, files: ['core.js', 'content.js'],
+    target: { tabId }, files: ['core.js', 'provider-turn-readback.js', 'content.js'],
   }, () => {
     const error = chrome.runtime.lastError;
     if (error) reject(new Error(error.message)); else resolve();
@@ -887,6 +887,7 @@ async function persistProviderTurnEvent(input, sender) {
   const outcome = input.outcome;
   const statusCode = input.status_code;
   const contentType = providerTurnEventText(input.content_type, 256) ?? '';
+  const proofSource = providerTurnEventText(input.proof_source, 64);
   const assistantMessageId = providerTurnEventText(input.assistant_message_id, 256);
   const assistantStatus = providerTurnEventText(input.assistant_status, 64);
   const assistantEndTurn = typeof input.assistant_end_turn === 'boolean' ? input.assistant_end_turn : undefined;
@@ -904,8 +905,9 @@ async function persistProviderTurnEvent(input, sender) {
     return { accepted: false, reason: 'provider_turn_retry_after_invalid' };
   }
   const eventStream = contentType.toLowerCase().includes('text/event-stream');
-  if (outcome === 'completed' && (statusCode !== 200 || !eventStream || !assistantMessageId
-    || assistantStatus !== 'finished_successfully' || assistantEndTurn !== true || streamDone !== true || failureCode)) {
+  if (outcome === 'completed' && (proofSource !== 'chatgpt-conversation-readback-v1'
+    || statusCode !== 200 || !contentType.toLowerCase().includes('application/json') || !assistantMessageId
+    || assistantStatus !== 'finished_successfully' || assistantEndTurn !== true || streamDone !== undefined || failureCode)) {
     return { accepted: false, reason: 'provider_turn_completion_evidence_invalid' };
   }
   if (outcome === 'failed' && (!failureCode || !(
@@ -920,10 +922,9 @@ async function persistProviderTurnEvent(input, sender) {
     || core.parseConversation(tab.url)?.conversationId !== conversationId) {
     return { accepted: false, reason: 'provider_turn_conversation_invalid' };
   }
-  // The MAIN-world fetch observer crosses a page-controlled postMessage bridge.
-  // Even an owned tab with an exact conversation URL cannot attest the SSE body.
-  // Keep page hints non-terminal until a Browser/Provider-trusted network receipt exists.
-  if (outcome === 'completed' || outcome === 'failed') {
+  // An owned tab alone cannot attest page-origin SSE facts. Only the ISOLATED
+  // script's authenticated conversation readback may produce a terminal receipt.
+  if ((outcome === 'completed' && proofSource !== 'chatgpt-conversation-readback-v1') || outcome === 'failed') {
     return { accepted: false, reason: 'provider_turn_page_origin_untrusted' };
   }
   const ownerKey = ownedTabKey(tabId);
@@ -960,6 +961,7 @@ async function persistProviderTurnEvent(input, sender) {
     observed_at_ms: Date.now(),
     outcome,
     status_code: statusCode,
+    ...(proofSource ? { proof_source: proofSource } : {}),
     ...(contentType ? { content_type: contentType } : {}),
     ...(assistantMessageId ? { assistant_message_id: assistantMessageId } : {}),
     ...(assistantStatus ? { assistant_status: assistantStatus } : {}),

@@ -100,6 +100,8 @@ export interface WorkflowSupervisorProviderTurnEvent {
   observedAtMs: number;
   outcome: 'completed' | 'failed';
   statusCode: number;
+  /** Authenticated conversation history read by the isolated Chrome content script. */
+  proofSource?: 'chatgpt-conversation-readback-v1';
   contentType?: string;
   assistantMessageId?: string;
   assistantStatus?: string;

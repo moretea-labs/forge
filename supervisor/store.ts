@@ -2029,13 +2029,15 @@ export class WorkflowSupervisorStore {
       throw new Error('WORKFLOW_SUPERVISOR_PROVIDER_TURN_RETRY_AFTER_INVALID');
     }
     const isEventStream = contentType.toLowerCase().includes('text/event-stream');
+    const proofSource = input.proofSource ?? '';
     const assistantMessageId = typeof input.assistantMessageId === 'string' ? input.assistantMessageId.trim().slice(0, 256) : '';
     const assistantStatus = typeof input.assistantStatus === 'string' ? input.assistantStatus.trim().slice(0, 64) : '';
     const assistantEndTurn = input.assistantEndTurn;
     const streamDone = input.streamDone;
     if (input.outcome === 'completed') {
-      if (input.statusCode !== 200 || !isEventStream || failureCode || !assistantMessageId
-        || assistantStatus !== 'finished_successfully' || assistantEndTurn !== true || streamDone !== true) {
+      if (proofSource !== 'chatgpt-conversation-readback-v1' || input.statusCode !== 200
+        || !contentType.toLowerCase().includes('application/json') || failureCode || !assistantMessageId
+        || assistantStatus !== 'finished_successfully' || assistantEndTurn !== true || streamDone !== undefined) {
         throw new Error('WORKFLOW_SUPERVISOR_PROVIDER_TURN_COMPLETION_EVIDENCE_INVALID');
       }
     } else if (input.outcome === 'failed') {
@@ -2096,6 +2098,7 @@ export class WorkflowSupervisorStore {
         receipt_challenge: receiptChallenge, turn_id: turnId, request_id: requestId,
         started_at_ms: input.startedAtMs, observed_at_ms: input.observedAtMs,
         status_code: input.statusCode,
+        ...(proofSource ? { proof_source: proofSource } : {}),
         ...(contentType ? { content_type: contentType } : {}),
         ...(assistantMessageId ? { assistant_message_id: assistantMessageId } : {}),
         ...(assistantStatus ? { assistant_status: assistantStatus } : {}),
@@ -2114,6 +2117,7 @@ export class WorkflowSupervisorStore {
           ['turn', prior.turn_id === turnId], ['request', prior.request_id === requestId],
           ['provider_instance', prior.provider_instance_id === providerInstanceId], ['started_at', Number(prior.started_at_ms) === input.startedAtMs],
           ['observed_at', Number(prior.observed_at_ms) === input.observedAtMs], ['status', Number(prior.status_code) === input.statusCode],
+          ['proof_source', String(prior.proof_source ?? '') === proofSource],
           ['content_type', String(prior.content_type ?? '') === contentType],
           ['assistant_message_id', String(prior.assistant_message_id ?? '') === assistantMessageId],
           ['assistant_status', String(prior.assistant_status ?? '') === assistantStatus],
@@ -2163,6 +2167,7 @@ export class WorkflowSupervisorStore {
         receiptChallenge: String(p.receipt_challenge ?? ''), turnId: String(p.turn_id ?? ''), requestId: String(p.request_id ?? ''),
         startedAtMs: Number(p.started_at_ms), observedAtMs: Number(p.observed_at_ms),
         outcome: row.kind === 'provider_turn_completed' ? 'completed' : 'failed', statusCode: Number(p.status_code),
+        ...(p.proof_source === 'chatgpt-conversation-readback-v1' ? { proofSource: p.proof_source } : {}),
         ...(typeof p.content_type === 'string' ? { contentType: p.content_type } : {}),
         ...(typeof p.assistant_message_id === 'string' ? { assistantMessageId: p.assistant_message_id } : {}),
         ...(typeof p.assistant_status === 'string' ? { assistantStatus: p.assistant_status } : {}),
