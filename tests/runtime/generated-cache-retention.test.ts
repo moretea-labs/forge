@@ -96,6 +96,130 @@ describe('generated repository cache retention', () => {
     expect(report.skippedByReason.tracked_content ?? 0).toBeGreaterThanOrEqual(2);
   });
 
+  test('discovers only valid sibling DerivedData-* buckets under .forge/ios and preserves guarded content', () => {
+    const root = repository();
+    const ios = join(root, '.forge', 'ios');
+    const stale = join(ios, 'DerivedData-icon-signed-20261012');
+    const protectedBuild = join(ios, 'DerivedData-active');
+    const tracked = join(ios, 'DerivedData-tracked');
+    const invalid = join(ios, 'DerivedData-unknown');
+    const unrelated = join(ios, 'other-build-cache');
+    const linked = join(ios, 'DerivedData-symlink');
+    const outside = join(root, 'external-cache');
+
+    xcodeCache(stale);
+    mkdirSync(join(stale, 'CompilationCache.noindex'), { recursive: true });
+    writeFileSync(join(stale, 'CompilationCache.noindex', 'rebuild.bin'), 'rebuildable');
+    mkdirSync(join(stale, 'SourcePackages'), { recursive: true });
+    mkdirSync(join(stale, 'Logs', 'Build'), { recursive: true });
+    writeFileSync(join(stale, 'Logs', 'Build', 'evidence.log'), 'must retain');
+    age(join(stale, 'Build'));
+    age(join(stale, 'CompilationCache.noindex'));
+    age(stale);
+
+    xcodeCache(protectedBuild);
+    xcodeCache(tracked);
+    writeFileSync(join(tracked, 'keep.txt'), 'tracked identity');
+    execFileSync('git', ['-C', root, 'add', '.forge/ios/DerivedData-tracked/keep.txt']);
+    age(protectedBuild);
+    age(tracked);
+
+    mkdirSync(join(invalid, 'Build'), { recursive: true });
+    writeFileSync(join(invalid, 'Build', 'keep.bin'), 'no Xcode identity');
+    age(join(invalid, 'Build'));
+    age(invalid);
+
+    xcodeCache(unrelated);
+    age(unrelated);
+    xcodeCache(outside);
+    age(outside);
+    symlinkSync(outside, linked, 'dir');
+
+    const result = cleanupGeneratedRepositoryCaches(root, {
+      nowMs: Date.parse('2026-10-31T00:00:00.000Z'),
+      graceMs: 60_000,
+      processCommands: [`xcodebuild -derivedDataPath ${protectedBuild}`],
+      maxRemovals: 10,
+    });
+
+    expect(existsSync(join(stale, 'Build'))).toBe(false);
+    // The first deletion updates the bucket's mtime; the existing grace rule
+    // intentionally defers other siblings until their next eligible scan.
+    expect(existsSync(join(stale, 'CompilationCache.noindex'))).toBe(true);
+    expect(existsSync(join(stale, 'info.plist'))).toBe(true);
+    expect(existsSync(join(stale, 'SourcePackages'))).toBe(true);
+    expect(existsSync(join(stale, 'Logs', 'Build', 'evidence.log'))).toBe(true);
+    expect(existsSync(join(protectedBuild, 'Build'))).toBe(true);
+    expect(existsSync(join(tracked, 'Build'))).toBe(true);
+    expect(existsSync(join(invalid, 'Build', 'keep.bin'))).toBe(true);
+    expect(existsSync(join(unrelated, 'Build'))).toBe(true);
+    expect(existsSync(linked)).toBe(true);
+    expect(existsSync(join(outside, 'Build'))).toBe(true);
+    expect(result.removedPaths).toContain('.forge/ios/DerivedData-icon-signed-20261012/Build');
+    age(stale);
+    const next = cleanupGeneratedRepositoryCaches(root, {
+      nowMs: Date.parse('2026-10-31T00:00:00.000Z'),
+      graceMs: 60_000,
+      processCommands: [`xcodebuild -derivedDataPath ${protectedBuild}`],
+      maxRemovals: 10,
+    });
+    expect(next.removedPaths).toContain('.forge/ios/DerivedData-icon-signed-20261012/CompilationCache.noindex');
+    expect(existsSync(join(stale, 'CompilationCache.noindex'))).toBe(false);
+    expect(result.skippedByReason.active_process ?? 0).toBeGreaterThanOrEqual(1);
+    expect(result.skippedByReason.tracked_content ?? 0).toBeGreaterThanOrEqual(1);
+  });
+
+  test('rotates sibling and nested iOS DerivedData priority under a one-entry scan budget', () => {
+    const root = repository();
+    const nested = join(root, '.forge', 'ios', 'DerivedData', 'nested');
+    const sibling = join(root, '.forge', 'ios', 'DerivedData-sibling');
+    xcodeCache(nested);
+    xcodeCache(sibling);
+    age(nested);
+    age(sibling);
+    const options = {
+      nowMs: Date.parse('2026-10-31T00:00:00.000Z'),
+      graceMs: 60_000,
+      processCommands: [] as string[],
+      maxEntries: 1,
+      maxRemovals: 1,
+    };
+    const first = cleanupGeneratedRepositoryCaches(root, { ...options, scanStartIndex: 0 });
+    expect(first.removedPaths).toContain('.forge/ios/DerivedData/nested/Build');
+    expect(existsSync(join(sibling, 'Build'))).toBe(true);
+    const next = cleanupGeneratedRepositoryCaches(root, { ...options, scanStartIndex: 4 });
+    expect(next.removedPaths).toContain('.forge/ios/DerivedData-sibling/Build');
+    expect(existsSync(join(sibling, 'Build'))).toBe(false);
+  });
+
+  test('one-entry rotation reaches every nested and sibling iOS bucket across priority cycles', () => {
+    const root = repository();
+    const ios = join(root, '.forge', 'ios');
+    const nestedA = join(ios, 'DerivedData', 'nested-a');
+    const nestedB = join(ios, 'DerivedData', 'nested-b');
+    const siblingA = join(ios, 'DerivedData-sibling-a');
+    const siblingB = join(ios, 'DerivedData-sibling-b');
+    for (const bucket of [nestedA, nestedB, siblingA, siblingB]) {
+      xcodeCache(bucket);
+      age(bucket);
+    }
+    const options = {
+      nowMs: Date.parse('2026-10-31T00:00:00.000Z'),
+      graceMs: 60_000,
+      processCommands: [] as string[],
+      maxEntries: 1,
+      maxRemovals: 1,
+    };
+    const removed: string[] = [];
+    for (const scanStartIndex of [0, 4, 8, 12]) {
+      removed.push(...cleanupGeneratedRepositoryCaches(root, { ...options, scanStartIndex }).removedPaths);
+    }
+    expect(removed).toContain('.forge/ios/DerivedData/nested-a/Build');
+    expect(removed).toContain('.forge/ios/DerivedData/nested-b/Build');
+    expect(removed).toContain('.forge/ios/DerivedData-sibling-a/Build');
+    expect(removed).toContain('.forge/ios/DerivedData-sibling-b/Build');
+  });
+
   test('reclaims stale generated caches from active managed worktrees with one repository budget', () => {
     const canonicalRoot = repository();
     const activeWorktreeRoot = repository();

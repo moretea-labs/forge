@@ -99,6 +99,7 @@ interface Candidate {
   cacheRoot?: string;
   kind:
     | 'forge_ios_derived_data'
+    | 'forge_ios_derived_data_sibling'
     | 'harness_derived_data'
     | 'repo_harness_derived_data'
     | 'tmp_derived_data'
@@ -201,6 +202,32 @@ function directChildDirectories(root: string, predicate: (name: string) => boole
   return found;
 }
 
+// iOS cache buckets share a directory with non-cache entries (the canonical
+// `DerivedData` root, worktree scratch dirs). Rotate only entries that are valid
+// Xcode cache roots RIGHT NOW, so a cleaned or invalid bucket cannot consume the
+// bounded budget and pin the rotation.
+function directChildValidCacheRoots(root: string, predicate: (name: string) => boolean, budget: { remaining: number }, round = 0): string[] {
+  const found: string[] = [];
+  if (budget.remaining <= 0) return found;
+  let entries;
+  try { entries = readdirSync(root, { withFileTypes: true }); } catch { return found; }
+  const valid = entries
+    .filter((entry) => entry.isDirectory() && predicate(String(entry.name)))
+    .map((entry) => join(root, String(entry.name)))
+    .filter(isXcodeCacheRoot)
+    .sort((left, right) => left.localeCompare(right));
+  if (valid.length > 1) {
+    const offset = ((Math.trunc(round) % valid.length) + valid.length) % valid.length;
+    valid.push(...valid.splice(0, offset));
+  }
+  for (const path of valid) {
+    if (budget.remaining <= 0) break;
+    budget.remaining -= 1;
+    found.push(path);
+  }
+  return found;
+}
+
 function directChildFiles(root: string, budget: { remaining: number }): string[] {
   const found: string[] = [];
   if (budget.remaining <= 0) return found;
@@ -261,15 +288,34 @@ function discoverCandidates(repoRoot: string, maxEntries: number, scanRound: num
   namespaces.push(...namespaces.splice(0, offset));
   const entryRound = Math.floor(scanRound / namespaces.length);
   for (const namespace of namespaces) {
-    const cacheRoots = namespace.depth === undefined
-      ? directChildDirectories(namespace.root, () => true, budget, entryRound).filter(isXcodeCacheRoot)
-      : nestedDerivedDataDirectories(namespace.root, namespace.depth, budget, entryRound);
-    for (const cacheRoot of cacheRoots) {
-      // Never remove the bucket: Logs, results, SourcePackages and unknown files
-      // are evidence/dependencies, not disposable build cache.
-      for (const name of REBUILDABLE_XCODE_CHILDREN) {
-        const path = join(cacheRoot, name);
-        if (existsSync(path)) candidates.push({ path, kind: namespace.kind, cacheRoot });
+    const iosNamespace = namespace.kind === 'forge_ios_derived_data';
+    const roots: Array<{ path: string; kind: Candidate['kind']; matches: (name: string) => boolean }> =
+      iosNamespace
+        ? [
+            { path: namespace.root, kind: namespace.kind, matches: () => true },
+            { path: join(root, '.forge', 'ios'), kind: 'forge_ios_derived_data_sibling',
+              matches: (name) => name.startsWith('DerivedData-') && name.length > 'DerivedData-'.length },
+          ]
+        : [{ path: namespace.root, kind: namespace.kind, matches: () => true }];
+    // Keep the existing namespace rotation stable; alternate iOS bucket priority
+    // so a busy nested DerivedData directory cannot starve sibling caches. The
+    // entry ordinal advances once per priority cycle, independently of the
+    // parity bit, so an even-length bucket list still visits every entry.
+    const groupRound = iosNamespace ? Math.floor(entryRound / 2) : entryRound;
+    if (roots.length > 1 && entryRound % 2 === 1) roots.reverse();
+    for (const group of roots) {
+      const cacheRoots = namespace.depth === undefined
+        ? (iosNamespace
+          ? directChildValidCacheRoots(group.path, group.matches, budget, groupRound)
+          : directChildDirectories(group.path, group.matches, budget, groupRound).filter(isXcodeCacheRoot))
+        : nestedDerivedDataDirectories(group.path, namespace.depth, budget, groupRound);
+      for (const cacheRoot of cacheRoots) {
+        // Never remove the bucket: Logs, results, SourcePackages and unknown files
+        // are evidence/dependencies, not disposable build cache.
+        for (const name of REBUILDABLE_XCODE_CHILDREN) {
+          const path = join(cacheRoot, name);
+          if (existsSync(path)) candidates.push({ path, kind: group.kind, cacheRoot });
+        }
       }
     }
   }
@@ -286,6 +332,7 @@ function retentionGraceMs(candidate: Candidate, explicitGraceMs: number | undefi
 function candidateOwnedRoot(repoRoot: string, candidate: Candidate): string {
   switch (candidate.kind) {
     case 'forge_ios_derived_data': return join(repoRoot, '.forge', 'ios', 'DerivedData');
+    case 'forge_ios_derived_data_sibling': return join(repoRoot, '.forge', 'ios');
     case 'harness_derived_data': return join(repoRoot, '.ai', 'harness');
     case 'repo_harness_derived_data': return join(repoRoot, '.repo-harness');
     case 'tmp_derived_data': return join(repoRoot, '.tmp');
