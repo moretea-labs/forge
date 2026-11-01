@@ -486,6 +486,55 @@ test('page Provider event cannot claim a different conversation in the same Chro
   });
 });
 
+test('page-origin completed or failed claims cannot become trusted Computer provider receipts', async () => {
+  const source = readFileSync('adapters/computer/chrome-extension/background.js', 'utf8');
+  const start = source.indexOf('const PROVIDER_TURN_EVENT_PREFIX');
+  const end = source.indexOf('chrome.runtime.onMessage.addListener((message, sender', start);
+  const writes: Array<Record<string, unknown>> = [];
+  const id = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+  const binding = { ownerToken: 'owned-tab-token', tabId: '7', windowId: '8' };
+  const event = {
+    task_id: 'supervisor:test', effect_id: 'fx_0123456789abcdef0123456789abcdef',
+    receipt_challenge: 'abc1234', turn_id: 'user-turn',
+    request_id: '00000000-0000-4000-8000-000000000001',
+    conversation_id: id, started_at_ms: 1793490000000,
+    outcome: 'completed', status_code: 200, content_type: 'text/event-stream',
+    assistant_message_id: 'assistant-1', assistant_status: 'finished_successfully',
+    assistant_end_turn: true, stream_done: true,
+  };
+  const sender = { frameId: 0, tab: { id: 7, windowId: 8, url: 'https://chatgpt.com/c/' + id } };
+  const chrome = {
+    storage: {
+      session: {
+        // The stub attests whichever owner-token field the extension's session schema reads.
+        get: async (_key: string) => new Proxy({}, { get: () =>
+          new Proxy({}, { get: () => 'owned-tab-token' }) }),
+        set: async (_value: unknown) => undefined,
+        remove: async (_key: unknown) => undefined,
+      },
+      local: { get: async (_key: unknown) => ({}), set: async (value: Record<string, unknown>) => {
+        writes.push(value);
+      }, remove: async (_key: unknown) => undefined },
+    },
+  };
+  const fns = runInNewContext(source.slice(start, end) + '\n({ persistProviderTurnEvent })', {
+    chrome, PROVIDER_ID: 'browser.chrome-extension',
+    ownedTabKey: (tabId: number) => 'forgeComputerOwnedTabV1:' + tabId,
+    providerInstanceId: async () => 'extension-session',
+    binding: () => binding,
+    core: { parseConversation(url: string) { return { conversationId: id, canonicalUrl: url }; } },
+  }) as { persistProviderTurnEvent(event: Record<string, unknown>, sender: Record<string, unknown>): Promise<{ accepted: boolean; reason?: string }> };
+  // A script in this same tab can post this payload without observing a real SSE response.
+  expect(await fns.persistProviderTurnEvent(event, sender)).toMatchObject({
+    accepted: false, reason: 'provider_turn_page_origin_untrusted',
+  });
+  expect(await fns.persistProviderTurnEvent({
+    ...event, outcome: 'failed', status_code: 429, content_type: 'application/json',
+    failure_code: 'CHATGPT_AUTOMATION_RATE_LIMITED',
+  }, sender)).toMatchObject({ accepted: false, reason: 'provider_turn_page_origin_untrusted' });
+  expect(writes).toHaveLength(0);
+});
+
 test('provider turn receipt delivery cannot block the next Supervisor command claim', async () => {
   const source = readFileSync('adapters/computer/chrome-extension/background.js', 'utf8');
   const start = source.indexOf('let providerTickInFlight;');

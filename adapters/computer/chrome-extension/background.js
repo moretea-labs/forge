@@ -920,6 +920,12 @@ async function persistProviderTurnEvent(input, sender) {
     || core.parseConversation(tab.url)?.conversationId !== conversationId) {
     return { accepted: false, reason: 'provider_turn_conversation_invalid' };
   }
+  // The MAIN-world fetch observer crosses a page-controlled postMessage bridge.
+  // Even an owned tab with an exact conversation URL cannot attest the SSE body.
+  // Keep page hints non-terminal until a Browser/Provider-trusted network receipt exists.
+  if (outcome === 'completed' || outcome === 'failed') {
+    return { accepted: false, reason: 'provider_turn_page_origin_untrusted' };
+  }
   const ownerKey = ownedTabKey(tabId);
   let owner;
   try { owner = await chrome.storage.session.get(ownerKey); } catch { return { accepted: false, reason: 'provider_turn_owner_unavailable' }; }
