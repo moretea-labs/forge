@@ -1238,6 +1238,8 @@ describe('Computer durable InteractionTarget authority', () => {
         tabId: 'new-tab', ownerToken: 'fresh-owner-token',
       });
       expect(extension.claim('profile-a')).toBeUndefined();
+
+      expect(extension.claim('profile-a')).toBeUndefined();
       await extension.close();
     } finally {
       rmSync(home, { recursive: true, force: true });

@@ -446,12 +446,20 @@ implements ComputerChatgptConversationTargetPort, ComputerChatgptExtensionBroker
         }
         return { state: 'ready', target, observation };
       } catch (error) {
-        return failure(
-          error instanceof Error && error.message.trim()
-            ? error.message.trim()
-            : 'COMPUTER_CHATGPT_EXTENSION_OBSERVATION_UNAVAILABLE',
-          { failoverSafe: false },
-        );
+        const code = error instanceof Error && error.message.trim()
+          ? error.message.trim()
+          : 'COMPUTER_CHATGPT_EXTENSION_OBSERVATION_UNAVAILABLE';
+        if (recoverStalePin && options.createIfMissing === false
+          && code === 'COMPUTER_CHATGPT_EXTENSION_PINNED_OWNER_TOKEN_MISMATCH'
+          && binding?.providerId === PROVIDER_ID
+          && binding.providerSessionId === candidate.instanceId) {
+          // A heartbeat still advertises the tab after an extension reload or
+          // reinstall, but its session owner token is gone. Ensure alone may
+          // mint a NEW owned tab for this exact conversation; the old tab is
+          // never reused, navigated or closed and no Send is authorized here.
+          return await this.ensureExact(identity, { ...options, createIfMissing: true }, false);
+        }
+        return failure(code, { failoverSafe: false });
       }
     }
     // A heartbeat is an inventory hint, not the exact-target authority.
