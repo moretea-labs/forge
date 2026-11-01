@@ -26,30 +26,19 @@
   }
   function verifiedAssistant(data, hint) {
     if (!data || data.conversation_id?.toLowerCase() !== hint.conversation_id.toLowerCase()
-      || !data.mapping || typeof data.mapping !== 'object'
-      || typeof data.current_node !== 'string') return;
-    // Follow exactly one persisted conversation branch. Iterating the mapping
-    // would accept completed messages on abandoned/regenerated branches.
-    const chain = [];
-    const visited = new Set();
-    let cursor = data.current_node;
-    while (cursor != null) {
-      if (typeof cursor !== 'string' || visited.has(cursor) || visited.size >= 2048) return;
-      visited.add(cursor);
-      const node = data.mapping[cursor];
-      if (!node || typeof node !== 'object') return;
-      if (node.message) chain.push(node.message);
-      cursor = node.parent;
-    }
-    chain.reverse();
-    const latestUserIndex = chain.findLastIndex((message) => message?.author?.role === 'user');
-    if (latestUserIndex < 0 || !matchesPrompt(chain[latestUserIndex], hint)) return;
+      || !Array.isArray(data.messages) || data.page_info?.has_next_page !== false) return;
+    // The current paginated conversation API returns messages on the active
+    // branch in order. A page with more *later* messages is never final proof.
+    // Only the latest persisted user message can own the next final assistant.
+    const index = data.messages.findLastIndex((message) => message?.author?.role === 'user');
+    if (index < 0 || !matchesPrompt(data.messages[index], hint)) return;
     let assistant;
-    for (const message of chain.slice(latestUserIndex + 1)) {
+    for (const message of data.messages.slice(index + 1)) {
       if (message?.author?.role === 'user') return;
       if (message?.author?.role !== 'assistant' || (message.recipient && message.recipient !== 'all')) continue;
-      assistant = message.status === 'finished_successfully' && message.end_turn === true
-        && typeof message.id === 'string' ? message : undefined;
+      if (message.status === 'finished_successfully' && message.end_turn === true && typeof message.id === 'string') {
+        assistant = message;
+      }
     }
     return assistant;
   }
@@ -70,8 +59,8 @@
       const session = await auth.json();
       const token = typeof session?.accessToken === 'string' ? session.accessToken : '';
       if (!token) return;
-      const response = await fetch('/backend-api/conversation/' + encodeURIComponent(hint.conversation_id)
-        + '?include_has_versions=true', {
+      const response = await fetch('/backend-api/conversations/' + encodeURIComponent(hint.conversation_id)
+        + '?include_has_versions=true&num_turns=100', {
         credentials: 'include', cache: 'no-store',
         headers: { Authorization: 'Bearer ' + token, Accept: 'application/json' },
       });
