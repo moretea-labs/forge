@@ -202,18 +202,28 @@ function directChildDirectories(root: string, predicate: (name: string) => boole
   return found;
 }
 
-// The sibling iOS namespace shares `.forge/ios` with the canonical `DerivedData`
-// bucket. Filter to eligible names BEFORE spending the bounded budget so a
-// non-matching entry can never starve the group's rotation.
-function directChildMatchingDirectories(root: string, predicate: (name: string) => boolean, budget: { remaining: number }, round = 0): string[] {
+// iOS cache buckets share a directory with non-cache entries (the canonical
+// `DerivedData` root, worktree scratch dirs). Rotate only entries that are valid
+// Xcode cache roots RIGHT NOW, so a cleaned or invalid bucket cannot consume the
+// bounded budget and pin the rotation.
+function directChildValidCacheRoots(root: string, predicate: (name: string) => boolean, budget: { remaining: number }, round = 0): string[] {
   const found: string[] = [];
   if (budget.remaining <= 0) return found;
-  const entries = rotatedEntries(root, round)
-    .filter((entry) => entry.isDirectory() && predicate(String(entry.name)));
-  for (const entry of entries) {
+  let entries;
+  try { entries = readdirSync(root, { withFileTypes: true }); } catch { return found; }
+  const valid = entries
+    .filter((entry) => entry.isDirectory() && predicate(String(entry.name)))
+    .map((entry) => join(root, String(entry.name)))
+    .filter(isXcodeCacheRoot)
+    .sort((left, right) => left.localeCompare(right));
+  if (valid.length > 1) {
+    const offset = ((Math.trunc(round) % valid.length) + valid.length) % valid.length;
+    valid.push(...valid.splice(0, offset));
+  }
+  for (const path of valid) {
     if (budget.remaining <= 0) break;
     budget.remaining -= 1;
-    found.push(join(root, String(entry.name)));
+    found.push(path);
   }
   return found;
 }
@@ -296,8 +306,8 @@ function discoverCandidates(repoRoot: string, maxEntries: number, scanRound: num
     for (const group of roots) {
       const cacheRoots = namespace.depth === undefined
         ? (iosNamespace
-          ? directChildMatchingDirectories(group.path, group.matches, budget, groupRound)
-          : directChildDirectories(group.path, group.matches, budget, groupRound)).filter(isXcodeCacheRoot)
+          ? directChildValidCacheRoots(group.path, group.matches, budget, groupRound)
+          : directChildDirectories(group.path, group.matches, budget, groupRound).filter(isXcodeCacheRoot))
         : nestedDerivedDataDirectories(group.path, namespace.depth, budget, groupRound);
       for (const cacheRoot of cacheRoots) {
         // Never remove the bucket: Logs, results, SourcePackages and unknown files
