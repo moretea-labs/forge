@@ -9,8 +9,7 @@
     "storage",
     "tabs",
     "scripting",
-    "alarms",
-    "webRequest"
+    "alarms"
   ],
   "host_permissions": [
     "https://chatgpt.com/*"

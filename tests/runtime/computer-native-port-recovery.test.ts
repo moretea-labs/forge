@@ -391,7 +391,7 @@ test('MAIN-world observer emits only a wake-up hint even for a finished SSE or H
   const manifest = JSON.parse(readFileSync('adapters/computer/chrome-extension/manifest.json', 'utf8')) as {
     permissions: string[]; content_scripts: Array<{ world?: string; js: string[]; run_at?: string }>;
   };
-  expect(manifest.permissions).toContain('webRequest');
+  expect(manifest.permissions).not.toContain('webRequest');
   expect(manifest.permissions).not.toContain('webRequestBlocking');
   expect(manifest.content_scripts.some((s) => s.world === 'MAIN' && s.run_at === 'document_start'
     && s.js.includes('provider-turn-main.js'))).toBe(true);
@@ -509,8 +509,8 @@ test('isolated conversation readback proves an exact persisted user and final as
       data: { source: 'forge-computer-provider-turn-v1', type: 'turn-event', event: input } });
     for (let i = 0; i < 4; i++) await new Promise<void>((resolve) => setImmediate(resolve));
   };
-  // Even a parser-level unknown hint can prompt a server-verified readback.
-  await send({ ...hint, outcome: 'unknown', status_code: 0, stream_done: false });
+  // A request-level POST 429 remains a nonterminal hint: authenticated GET can later prove success for the same Effect/Turn.
+  await send({ ...hint, outcome: 'unknown', status_code: 429, stream_done: false });
   expect(outbound).toHaveLength(1);
   expect(outbound[0].event).toMatchObject({
     assistant_message_id: 'assistant-from-server', proof_source: 'chatgpt-conversation-readback-v1',
@@ -1109,7 +1109,7 @@ test('isolated conversation readback records failed and cancelled final assistan
   await run('cancelled', 'fx_1123456789abcdef0123456789abcdef', '00000000-0000-4000-8000-000000000002');
 });
 
-test('background accepts only authenticated or internal network TurnFailed receipts', async () => {
+test('background rejects provisional HTTP 429 and only accepts authenticated terminal TurnFailed', async () => {
   const source = readFileSync('adapters/computer/chrome-extension/background.js', 'utf8');
   const start = source.indexOf('const PROVIDER_TURN_EVENT_PREFIX');
   const end = source.indexOf('chrome.runtime.onMessage.addListener((message, sender', start);
@@ -1143,7 +1143,6 @@ test('background accepts only authenticated or internal network TurnFailed recei
     persistProviderTurnEvent(
       event: Record<string, unknown>,
       sender: Record<string, unknown>,
-      options?: Record<string, unknown>,
     ): Promise<{ accepted: boolean; reason?: string }>;
   };
   const sender = { frameId: 0, tab: { id: 7, windowId: 8, url: 'https://chatgpt.com/c/' + id } };
@@ -1157,149 +1156,46 @@ test('background accepts only authenticated or internal network TurnFailed recei
     ...base, outcome: 'failed', status_code: 429, content_type: 'application/json',
     failure_code: 'CHATGPT_AUTOMATION_RATE_LIMITED',
   }, sender)).toMatchObject({ accepted: false, reason: 'provider_turn_page_origin_untrusted' });
+  // The *same* Effect/Turn/Request can complete after provisional 429:
+  // the 429 must not take the immutable provider-turn:<effectId> event key.
+  expect(writes).toHaveLength(0);
   expect(await fns.persistProviderTurnEvent({
-    ...base, request_id: '00000000-0000-4000-8000-000000000002',
+    ...base, outcome: 'completed', status_code: 200, content_type: 'application/json',
+    proof_source: 'chatgpt-conversation-readback-v1',
+    assistant_message_id: 'assistant-finished', assistant_status: 'finished_successfully',
+    assistant_end_turn: true,
+  }, sender)).toMatchObject({ accepted: true, duplicate: false });
+  expect(await fns.persistProviderTurnEvent({
+    ...base, effect_id: 'fx_1123456789abcdef0123456789abcdef', turn_id: 'different-user-turn',
+    request_id: '00000000-0000-4000-8000-000000000002',
     outcome: 'failed', status_code: 200, content_type: 'application/json',
     proof_source: 'chatgpt-conversation-readback-v1',
     assistant_message_id: 'assistant-failed', assistant_status: 'failed',
     assistant_end_turn: true, stream_done: true, failure_code: 'CHATGPT_PROVIDER_TURN_FAILED',
   }, sender)).toMatchObject({ accepted: true, duplicate: false });
+  // Even a forged source label cannot turn a request-level HTTP 429 into an assistant outcome.
   expect(await fns.persistProviderTurnEvent({
     ...base, request_id: '00000000-0000-4000-8000-000000000003',
     outcome: 'failed', status_code: 429, content_type: 'application/json',
+    proof_source: 'chatgpt-conversation-readback-v1',
     failure_code: 'CHATGPT_AUTOMATION_RATE_LIMITED',
-  }, sender, { trustedNetworkFailure: true })).toMatchObject({ accepted: true, duplicate: false });
-  expect(await fns.persistProviderTurnEvent({
-    ...base, request_id: '00000000-0000-4000-8000-000000000004',
-    outcome: 'failed', status_code: 500, content_type: 'application/json',
-    failure_code: 'CHATGPT_PROVIDER_RESPONSE_FAILED',
-  }, sender, { trustedNetworkFailure: true })).toMatchObject({ accepted: false });
+  }, sender)).toMatchObject({ accepted: false, reason: 'provider_turn_page_origin_untrusted' });
   expect(writes).toHaveLength(2);
+  expect(Object.values(writes[0])[0]).toMatchObject({
+    outcome: 'completed', status_code: 200, turn_id: 'user-turn',
+  });
+  expect(Object.values(writes[1])[0]).toMatchObject({
+    outcome: 'failed', status_code: 200, turn_id: 'different-user-turn',
+  });
 });
 
-test('exact owned Supervisor POST 429 records one failed receipt with Retry-After; other statuses stay unknown', async () => {
-  const source = readFileSync('adapters/computer/chrome-extension/background.js', 'utf8');
-  const start = source.indexOf('const PROVIDER_TURN_NETWORK_REQUEST_PREFIX');
-  const end = source.indexOf('async function persistProviderTurnEvent(', start);
-  expect(start).toBeGreaterThan(0);
-  expect(end).toBeGreaterThan(start);
-  const conversationId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
-  const canonicalUrl = 'https://chatgpt.com/c/' + conversationId;
-  const effectId = 'fx_0123456789abcdef0123456789abcdef';
-  const payload = {
-    conversation_id: conversationId,
-    messages: [{
-      id: 'user-turn-1', author: { role: 'user' },
-      content: { parts: [
-        '<<<FORGE_WORKFLOW_EFFECT_V1:' + effectId + '>>>',
-        'task_id:"supervisor:test"', 'receipt:abc1234',
-        'provider_turn:conversation-readback-v1',
-      ] },
-    }],
-  };
-  const values = new Map<string, unknown>();
-  values.set('forgeComputerOwnedTabV1:7', 'owned-tab-token');
-  const calls: Array<{ event: Record<string, unknown>; sender: Record<string, unknown>; options?: Record<string, unknown> }> = [];
-  const ids = [
-    '00000000-0000-4000-8000-000000000011',
-    '00000000-0000-4000-8000-000000000012',
-    '00000000-0000-4000-8000-000000000013',
-    '00000000-0000-4000-8000-000000000014',
-  ];
-  const webRequestListeners: Record<string, (details: Record<string, unknown>) => void> = {};
-  const webRequestEvent = (name: string) => ({
-    addListener(callback: (details: Record<string, unknown>) => void) { webRequestListeners[name] = callback; },
-  });
-  const tab = { id: 7, windowId: 8, url: canonicalUrl, discarded: false };
-  const chrome = {
-    storage: {
-      session: {
-        get: async (key: string) => ({ [key]: values.get(key) }),
-        set: async (record: Record<string, unknown>) => { for (const [key, value] of Object.entries(record)) values.set(key, value); },
-        remove: async (key: string) => { values.delete(key); },
-      },
-    },
-    webRequest: {
-      onBeforeRequest: webRequestEvent('before'),
-      onCompleted: webRequestEvent('completed'),
-      onErrorOccurred: webRequestEvent('error'),
-    },
-  };
-  const context = {
-    chrome,
-    PROVIDER_ID: 'browser.chrome-extension',
-    core: { parseConversation(url: string) {
-      const match = new URL(url).pathname.match(/\/c\/([0-9a-f-]{36})/i);
-      return match ? { conversationId: match[1], canonicalUrl } : undefined;
-    } },
-    tabGet: async (_tabId: number) => tab,
-    ownedTabKey: (tabId: number) => 'forgeComputerOwnedTabV1:' + tabId,
-    providerInstanceId: async () => 'extension-session',
-    sha256Hex: async (_value: string) => 'owner-token-sha256',
-    crypto: { randomUUID: () => ids.shift(), subtle: globalThis.crypto.subtle },
-    TextEncoder, TextDecoder, URL, Date, Number, JSON, Map, Object, Array, Promise,
-    persistProviderTurnEvent: async (
-      event: Record<string, unknown>, sender: Record<string, unknown>, options?: Record<string, unknown>,
-    ) => { calls.push({ event, sender, options }); return { accepted: true, duplicate: false }; },
-  };
-  const fns = runInNewContext(source.slice(start, end)
-    + '\n({ providerTurnRequestFromDetails, installProviderTurnNetworkListeners })', context) as {
-      providerTurnRequestFromDetails(details: Record<string, unknown>): Record<string, unknown> | undefined;
-      installProviderTurnNetworkListeners(): void;
-    };
-  fns.installProviderTurnNetworkListeners();
-  const details = {
-    requestId: 'chrome-request-1', method: 'POST', type: 'xmlhttprequest',
-    url: 'https://chatgpt.com/backend-api/conversation', initiator: 'https://chatgpt.com',
-    frameId: 0, tabId: 7, timeStamp: 1793490000000,
-    requestBody: { raw: [{ bytes: new TextEncoder().encode(JSON.stringify(payload)).buffer }] },
-  };
-  const parsedRequest = fns.providerTurnRequestFromDetails(details);
-  expect(parsedRequest).toMatchObject({
-    taskId: 'supervisor:test', effectId, receiptChallenge: 'abc1234',
-    turnId: 'user-turn-1', conversationId, startedAtMs: 1793490000000,
-  });
-  webRequestListeners.before(details);
-  for (let i = 0; i < 3; i += 1) await new Promise<void>((resolve) => setImmediate(resolve));
-  webRequestListeners.completed({
-    ...details, statusCode: 429,
-    responseHeaders: [
-      { name: 'Content-Type', value: 'application/json' },
-      { name: 'Retry-After', value: '120' },
-    ],
-  });
-  for (let i = 0; i < 4; i += 1) await new Promise<void>((resolve) => setImmediate(resolve));
-  // The mock records persistProviderTurnEvent calls; it does not push the method's ACK.
-  expect(calls).toHaveLength(1);
-  expect(calls[0].event).toMatchObject({
-    task_id: 'supervisor:test', effect_id: effectId, receipt_challenge: 'abc1234',
-    turn_id: 'user-turn-1', conversation_id: conversationId,
-    outcome: 'failed', status_code: 429, content_type: 'application/json',
-    failure_code: 'CHATGPT_AUTOMATION_RATE_LIMITED', retry_after_ms: 120000,
-  });
-  expect(calls[0].options).toMatchObject({ trustedNetworkFailure: true });
-  expect(values.has('forgeComputerProviderTurnNetworkRequestV1:chrome-request-1')).toBe(false);
-
-  const otherRequest = { ...details, requestId: 'chrome-request-2', timeStamp: 1793490001000 };
-  webRequestListeners.before(otherRequest);
-  for (let i = 0; i < 3; i += 1) await new Promise<void>((resolve) => setImmediate(resolve));
-  webRequestListeners.completed({ ...otherRequest, statusCode: 500, responseHeaders: [] });
-  for (let i = 0; i < 3; i += 1) await new Promise<void>((resolve) => setImmediate(resolve));
-  expect(calls).toHaveLength(1);
-
-  const ownerMismatchRequest = { ...details, requestId: 'chrome-request-3', timeStamp: 1793490002000 };
-  webRequestListeners.before(ownerMismatchRequest);
-  for (let i = 0; i < 3; i += 1) await new Promise<void>((resolve) => setImmediate(resolve));
-  values.set('forgeComputerOwnedTabV1:7', 'different-owner-token');
-  webRequestListeners.completed({ ...ownerMismatchRequest, statusCode: 429, responseHeaders: [] });
-  for (let i = 0; i < 3; i += 1) await new Promise<void>((resolve) => setImmediate(resolve));
-  expect(calls).toHaveLength(1);
-});
-
-test('Chrome provider extension manifest declares passive webRequest observation for trusted 429 receipts', () => {
+test('Chrome provider manifest does not grant provisional HTTP 429 terminal authority', () => {
   const manifest = JSON.parse(readFileSync('adapters/computer/chrome-extension/manifest.json', 'utf8')) as {
     version: string; permissions: string[];
   };
+  const background = readFileSync('adapters/computer/chrome-extension/background.js', 'utf8');
   expect(manifest.version).toBe('0.3.7');
-  expect(manifest.permissions).toContain('webRequest');
+  expect(manifest.permissions).not.toContain('webRequest');
+  expect(background).not.toContain('installProviderTurnNetworkListeners');
+  expect(background).not.toContain('trustedNetworkFailure');
 });

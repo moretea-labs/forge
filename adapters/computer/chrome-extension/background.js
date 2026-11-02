@@ -909,178 +909,6 @@ function scheduleDiscovery() {
 }
 const PROVIDER_TURN_EVENT_PREFIX = 'forgeComputerProviderTurnEventV2:';
 const PROVIDER_TURN_BINDING_PREFIX = 'forgeComputerProviderTurnBindingV2:';
-const PROVIDER_TURN_NETWORK_REQUEST_PREFIX = 'forgeComputerProviderTurnNetworkRequestV1:';
-const PROVIDER_TURN_NETWORK_REQUEST_MAX_BYTES = 1_048_576;
-const providerTurnNetworkRequestInFlight = new Map();
-function providerTurnNetworkRequestKey(requestId) {
-  return PROVIDER_TURN_NETWORK_REQUEST_PREFIX + encodeURIComponent(requestId);
-}
-function providerTurnRequestBodyText(details) {
-  const raw = details?.requestBody?.raw;
-  if (!Array.isArray(raw) || raw.length === 0) return undefined;
-  const chunks = [];
-  let size = 0;
-  for (const part of raw) {
-    const bytes = part?.bytes;
-    const isArrayBuffer = Object.prototype.toString.call(bytes) === '[object ArrayBuffer]';
-    if (!isArrayBuffer && !ArrayBuffer.isView(bytes)) continue;
-    const view = isArrayBuffer
-      ? new Uint8Array(bytes)
-      : new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    size += view.byteLength;
-    if (size > PROVIDER_TURN_NETWORK_REQUEST_MAX_BYTES) return undefined;
-    chunks.push(view);
-  }
-  if (!size) return undefined;
-  const body = new Uint8Array(size);
-  let offset = 0;
-  for (const chunk of chunks) { body.set(chunk, offset); offset += chunk.byteLength; }
-  return new TextDecoder().decode(body);
-}
-function providerTurnRequestFromDetails(details) {
-  if (details?.method !== 'POST' || details?.type !== 'xmlhttprequest' || details?.frameId !== 0
-    || !Number.isSafeInteger(details.tabId) || details.tabId < 0
-    || typeof details.requestId !== 'string' || !details.requestId
-    || !Number.isFinite(details.timeStamp)) return undefined;
-  let requestUrl;
-  try { requestUrl = new URL(details.url); } catch { return undefined; }
-  if (requestUrl.origin !== 'https://chatgpt.com' || requestUrl.pathname !== '/backend-api/conversation') return undefined;
-  const bodyText = providerTurnRequestBodyText(details);
-  if (!bodyText) return undefined;
-  let payload;
-  try { payload = JSON.parse(bodyText); } catch { return undefined; }
-  const conversationId = typeof payload?.conversation_id === 'string' ? payload.conversation_id.toLowerCase() : '';
-  if (!conversationId || !Array.isArray(payload?.messages)) return undefined;
-  let userMessage;
-  for (let index = payload.messages.length - 1; index >= 0; index -= 1) {
-    if (payload.messages[index]?.author?.role === 'user') { userMessage = payload.messages[index]; break; }
-  }
-  if (!userMessage || typeof userMessage.id !== 'string' || !userMessage.id.trim()) return undefined;
-  const parts = userMessage.content?.parts;
-  const prompt = Array.isArray(parts)
-    ? parts.filter((part) => typeof part === 'string').join('\n')
-    : typeof userMessage.content?.text === 'string' ? userMessage.content.text : '';
-  const lines = prompt.split(/\r?\n/);
-  const effect = /^<<<FORGE_WORKFLOW_EFFECT_V1:(fx_[a-z0-9_-]{16,128})>>>$/i.exec(lines[0] ?? '');
-  const taskLine = lines[1] ?? '';
-  let taskId;
-  try { taskId = JSON.parse(taskLine.replace(/^task_id:/, '')); } catch { return undefined; }
-  const receipt = /^receipt:([0-9a-f]{7})$/i.exec(lines[2] ?? '');
-  if (!effect || !taskLine.startsWith('task_id:') || typeof taskId !== 'string' || !taskId.trim()
-    || !receipt || !lines.includes('provider_turn:conversation-readback-v1')) return undefined;
-  const requestId = crypto.randomUUID();
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(requestId)) return undefined;
-  return {
-    taskId, effectId: effect[1], receiptChallenge: receipt[1].toLowerCase(),
-    turnId: userMessage.id, conversationId, requestId,
-    startedAtMs: Math.trunc(details.timeStamp), tabId: details.tabId,
-  };
-}
-async function providerTurnOwnerTokenDigest(ownerToken) {
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(ownerToken));
-  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
-}
-async function captureProviderTurnNetworkRequest(details, parsed = providerTurnRequestFromDetails(details)) {
-  if (!parsed) return undefined;
-  const tab = await tabGet(parsed.tabId).catch(() => undefined);
-  if (!tab || tab.discarded || tab.id !== parsed.tabId || !Number.isSafeInteger(tab.windowId)
-    || core.parseConversation(tab.url ?? '')?.conversationId !== parsed.conversationId) return undefined;
-  const ownerKey = ownedTabKey(parsed.tabId);
-  const owner = await chrome.storage.session.get(ownerKey).catch(() => ({}));
-  const ownerToken = owner?.[ownerKey];
-  if (typeof ownerToken !== 'string' || !ownerToken.trim()) return undefined;
-  const instanceId = await providerInstanceId().catch(() => undefined);
-  if (typeof instanceId !== 'string' || !instanceId) return undefined;
-  const ownerTokenSha256 = await providerTurnOwnerTokenDigest(ownerToken).catch(() => undefined);
-  if (!ownerTokenSha256) return undefined;
-  const capture = { ...parsed, windowId: tab.windowId, providerInstanceId: instanceId, ownerTokenSha256 };
-  await chrome.storage.session.set({ [providerTurnNetworkRequestKey(details.requestId)]: capture });
-  return capture;
-}
-function providerTurnResponseHeader(headers, name) {
-  const header = Array.isArray(headers)
-    ? headers.find((item) => String(item?.name ?? '').toLowerCase() === name.toLowerCase())
-    : undefined;
-  return typeof header?.value === 'string' ? header.value.trim() : '';
-}
-function providerTurnRetryAfterMs(headers) {
-  const value = providerTurnResponseHeader(headers, 'retry-after');
-  const seconds = Number(value);
-  const duration = value
-    ? Number.isFinite(seconds) ? seconds * 1000 : Date.parse(value) - Date.now()
-    : Number.NaN;
-  return Math.max(60_000, Math.min(86_400_000,
-    Number.isFinite(duration) ? Math.max(0, duration) : 60_000));
-}
-async function recordProviderTurnNetworkFailure(details) {
-  const chromeRequestId = typeof details?.requestId === 'string' ? details.requestId : '';
-  if (!chromeRequestId) return { accepted: false, reason: 'provider_turn_network_request_missing' };
-  const pending = providerTurnNetworkRequestInFlight.get(chromeRequestId);
-  if (pending) await pending.catch(() => undefined);
-  const key = providerTurnNetworkRequestKey(chromeRequestId);
-  const stored = await chrome.storage.session.get(key).catch(() => ({}));
-  const capture = stored?.[key];
-  if (!capture) return { accepted: false, reason: 'provider_turn_network_request_missing' };
-  await chrome.storage.session.remove(key).catch(() => undefined);
-  if (details.statusCode !== 429) return { accepted: false, reason: 'provider_turn_network_not_rate_limited' };
-  const tab = await tabGet(capture.tabId).catch(() => undefined);
-  if (!tab || tab.discarded || tab.id !== capture.tabId || tab.windowId !== capture.windowId
-    || core.parseConversation(tab.url ?? '')?.conversationId !== capture.conversationId) {
-    return { accepted: false, reason: 'provider_turn_network_target_changed' };
-  }
-  const ownerKey = ownedTabKey(capture.tabId);
-  const owner = await chrome.storage.session.get(ownerKey).catch(() => ({}));
-  const ownerToken = owner?.[ownerKey];
-  if (typeof ownerToken !== 'string' || !ownerToken.trim()) {
-    return { accepted: false, reason: 'provider_turn_owner_unavailable' };
-  }
-  const ownerTokenSha256 = await providerTurnOwnerTokenDigest(ownerToken).catch(() => undefined);
-  if (!ownerTokenSha256 || ownerTokenSha256 !== capture.ownerTokenSha256) {
-    return { accepted: false, reason: 'provider_turn_owner_changed' };
-  }
-  const instanceId = await providerInstanceId().catch(() => undefined);
-  if (!instanceId || instanceId !== capture.providerInstanceId) {
-    return { accepted: false, reason: 'provider_turn_instance_changed' };
-  }
-  const contentType = providerTurnResponseHeader(details.responseHeaders, 'content-type');
-  return await persistProviderTurnEvent({
-    task_id: capture.taskId, effect_id: capture.effectId, receipt_challenge: capture.receiptChallenge,
-    turn_id: capture.turnId, request_id: capture.requestId, conversation_id: capture.conversationId,
-    started_at_ms: capture.startedAtMs, outcome: 'failed', status_code: 429,
-    ...(contentType ? { content_type: contentType } : {}),
-    failure_code: 'CHATGPT_AUTOMATION_RATE_LIMITED',
-    retry_after_ms: providerTurnRetryAfterMs(details.responseHeaders),
-  }, { frameId: 0, tab }, { trustedNetworkFailure: true });
-}
-async function discardProviderTurnNetworkRequest(details) {
-  const chromeRequestId = typeof details?.requestId === 'string' ? details.requestId : '';
-  if (!chromeRequestId) return;
-  const pending = providerTurnNetworkRequestInFlight.get(chromeRequestId);
-  if (pending) await pending.catch(() => undefined);
-  await chrome.storage.session.remove(providerTurnNetworkRequestKey(chromeRequestId)).catch(() => undefined);
-}
-function installProviderTurnNetworkListeners() {
-  const api = chrome.webRequest;
-  if (!api?.onBeforeRequest?.addListener || !api?.onCompleted?.addListener || !api?.onErrorOccurred?.addListener) return;
-  const filter = { urls: ['https://chatgpt.com/backend-api/conversation*'], types: ['xmlhttprequest'] };
-  api.onBeforeRequest.addListener((details) => {
-    const parsed = providerTurnRequestFromDetails(details);
-    if (!parsed) return;
-    const pending = captureProviderTurnNetworkRequest(details, parsed);
-    providerTurnNetworkRequestInFlight.set(details.requestId, pending);
-    void pending.catch(() => undefined).finally(() => {
-      if (providerTurnNetworkRequestInFlight.get(details.requestId) === pending) {
-        providerTurnNetworkRequestInFlight.delete(details.requestId);
-      }
-    });
-  }, filter, ['requestBody']);
-  api.onCompleted.addListener((details) => {
-    void recordProviderTurnNetworkFailure(details).catch(() => undefined);
-  }, filter, ['responseHeaders']);
-  api.onErrorOccurred.addListener((details) => {
-    void discardProviderTurnNetworkRequest(details).catch(() => undefined);
-  }, filter);
-}
 let providerTurnFlushInFlight;
 function providerTurnEventText(value, maxLength) {
   if (typeof value !== 'string') return undefined;
@@ -1092,7 +920,7 @@ function providerTurnEventRequestId(value) {
   return normalized && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(normalized)
     ? normalized : undefined;
 }
-async function persistProviderTurnEvent(input, sender, options = {}) {
+async function persistProviderTurnEvent(input, sender) {
   if (!input || typeof input !== 'object' || sender?.frameId !== 0) return { accepted: false, reason: 'provider_turn_sender_invalid' };
   const tab = sender.tab;
   const tabId = Number.isSafeInteger(tab?.id) ? tab.id : undefined;
@@ -1135,12 +963,10 @@ async function persistProviderTurnEvent(input, sender, options = {}) {
   const trustedReadbackFailure = proofSource === 'chatgpt-conversation-readback-v1'
     && statusCode === 200 && contentType.toLowerCase().includes('application/json')
     && (assistantStatus === 'failed' || assistantStatus === 'cancelled') && streamDone === true;
-  const trustedNetworkFailure = options?.trustedNetworkFailure === true
-    && statusCode === 429 && failureCode === 'CHATGPT_AUTOMATION_RATE_LIMITED';
   if (outcome === 'failed' && !failureCode) {
     return { accepted: false, reason: 'provider_turn_failure_evidence_invalid' };
   }
-  if (outcome === 'failed' && !trustedReadbackFailure && !trustedNetworkFailure) {
+  if (outcome === 'failed' && !trustedReadbackFailure) {
     return { accepted: false, reason: 'provider_turn_page_origin_untrusted' };
   }
   if (outcome === 'unknown' && !failureCode) return { accepted: false, reason: 'provider_turn_unknown_reason_missing' };
@@ -1151,9 +977,9 @@ async function persistProviderTurnEvent(input, sender, options = {}) {
     return { accepted: false, reason: 'provider_turn_conversation_invalid' };
   }
   // Page-origin signals cannot create terminal receipts. Failed outcomes are accepted
-  // only from authenticated conversation readback or the background's exact POST 429 observer.
+  // only from authenticated conversation readback, never a provisional HTTP request error.
   if ((outcome === 'completed' && proofSource !== 'chatgpt-conversation-readback-v1')
-    || (outcome === 'failed' && !trustedReadbackFailure && !trustedNetworkFailure)) {
+    || (outcome === 'failed' && !trustedReadbackFailure)) {
     return { accepted: false, reason: 'provider_turn_page_origin_untrusted' };
   }
   const ownerKey = ownedTabKey(tabId);
@@ -1256,7 +1082,6 @@ async function flushProviderTurnEvents() {
   })().finally(() => { providerTurnFlushInFlight = undefined; });
   return await providerTurnFlushInFlight;
 }
-if (typeof chrome !== 'undefined') installProviderTurnNetworkListeners();
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.type === 'forge-computer-provider-turn-event') {
     void persistProviderTurnEvent(message.event, sender).then(sendResponse, (error) => {
