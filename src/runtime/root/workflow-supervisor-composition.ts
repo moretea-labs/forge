@@ -314,7 +314,13 @@ export function forgeWorkflowSupervisorLifecycleHooks(controllerHome: string): W
     if (!repository) return undefined;
     const sample = readRepositoryGitStatusSample(controllerHome, repository.repoId, repository.activeCheckoutId);
     if (!sample || sample.staleAgeMs > 5 * 60_000) return undefined;
-    return createHash('sha256').update(JSON.stringify({ head: sample.head, status: sample.porcelain })).digest('hex');
+    // Untracked paths are not durable source progress: linked checkout
+    // directories and handoff artifacts live beside the canonical source tree.
+    // Preserve Git's tracked status codes/paths, including staged additions.
+    const trackedStatus = sample.porcelain.split(/\r?\n/)
+      .filter((line) => line && !line.startsWith('## ') && line.slice(0, 2) !== '??')
+      .join('\n');
+    return createHash('sha256').update(JSON.stringify({ head: sample.head, status: trackedStatus })).digest('hex');
   };
   return {
     terminalWorkStopReasonForTask: (task) => terminalWorkSupervisorStopReason(controllerHome, task),
