@@ -11,6 +11,14 @@ import { resolveCompiledRuntimeBundle } from '../../src/runtime/root/release-loa
 import { runPersistedCheckSidecar } from '../../src/runtime/execution/process-runtime/check-runner-sidecar';
 import { cleanupControllerReleaseHistory } from '../../src/runtime/control-plane/release-retention';
 
+// The Runtime can run Scheduler and Launcher without starting an autonomous
+// model-turn Supervisor. Source deletion must preserve this invariant.
+test('Canonical Runtime does not start an autonomous workflow Supervisor', () => {
+  const source = readFileSync(join(import.meta.dir, '../../src/runtime/root/runtime.ts'), 'utf8');
+  expect(source).not.toContain('startWorkflowSupervisorRuntime');
+  expect(source).not.toContain('this.workflowSupervisor');
+});
+
 const roots: string[] = [];
 
 const STABLE_MACOS_SIGNING: MacOSRuntimeCodeSigning = {

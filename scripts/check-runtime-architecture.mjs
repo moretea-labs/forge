@@ -1366,8 +1366,7 @@ requireText('supervisor/paths.ts', "join(resolveWorkflowSupervisorForgeHome(cont
 forbid('supervisor/paths.ts', /control-plane\/persistence\/sqlite-store|workflow-run-store|packages\/kernel\/(?:work|controller)/, 'Workflow Supervisor path authority may share the canonical Controller Home root but must not depend on lower lifecycle persistence or Kernel authorities');
 forbid('supervisor/store.ts', /resolveControllerHome|FORGE_CONTROLLER_HOME|control-plane\/persistence\/sqlite-store|workflow-run-store|packages\/kernel\/(?:work|controller)/, 'Workflow Supervisor persistence must resolve its root only through supervisor/paths and remain a separate database authority');
 requireMissing('supervisor/service.ts');
-requireText('src/runtime/root/runtime.ts', 'startWorkflowSupervisorRuntime');
-requireText('src/runtime/root/runtime.ts', 'WORKFLOW_SUPERVISOR_STOPPED');
+forbid('src/runtime/root/runtime.ts', /startWorkflowSupervisorRuntime|WORKFLOW_SUPERVISOR_STOPPED|this\.workflowSupervisor/, 'Canonical Runtime must not start, stop, or require autonomous Workflow Supervisor; Launcher and Scheduler remain independent');
 requireText('src/runtime/root/workflow-supervisor-runtime.ts', 'startWorkflowSupervisorRuntime(controllerHome: string)');
 requireText('src/runtime/root/workflow-supervisor-runtime.ts', 'new WorkflowSupervisorStore(forgeHome, {');
 requireText('src/runtime/root/workflow-supervisor-runtime.ts', 'activeReleaseId: () => getRuntimeWriteClaim()?.releaseId');

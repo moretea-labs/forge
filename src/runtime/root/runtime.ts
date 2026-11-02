@@ -28,7 +28,6 @@ import { bindRuntimeWriteClaim, clearRuntimeWriteClaim } from './write-fence';
 import { startInProcessScheduler, type RuntimeSchedulerHandle } from './scheduler';
 import { startConfiguredRuntimeLocalBridge, type RuntimeLocalBridgeHandle } from './local-bridge';
 import { startActiveExecutionPowerAssertion, type RuntimePowerAssertionHandle } from './active-execution-power-assertion';
-import { startWorkflowSupervisorRuntime, type RuntimeWorkflowSupervisorHandle } from './workflow-supervisor-runtime';
 import { normalizeRuntimeDeploymentTopology, type RuntimeDeploymentTopology } from './deployment-topology';
 import { removeRuntimeStartupFailureEvidence, removeRuntimeStatusSnapshot, writeRuntimeStartupFailureEvidence, writeRuntimeStatusSnapshot } from './status';
 import type {
@@ -55,7 +54,6 @@ export interface CanonicalRuntimeDependencies {
   startScheduler(input: Parameters<typeof startInProcessScheduler>[0]): RuntimeSchedulerHandle;
   startLocalBridge(input: { controllerHome: string; repositoryRoot?: string }): Promise<RuntimeLocalBridgeHandle | undefined>;
   startPowerAssertion(input: { controllerHome: string; runtimePid: number }): RuntimePowerAssertionHandle;
-  startWorkflowSupervisor(controllerHome: string, options?: { nativeBrowserAdapter?: boolean }): Promise<RuntimeWorkflowSupervisorHandle>;
   startTransport(options: Parameters<typeof startRuntimeMcpTransport>[0]): Promise<RuntimeMcpTransportHandle>;
   runMcpProbe(endpoint: string, authToken: string): Promise<void>;
   collectRuntimeSourceIdentity: typeof collectRuntimeSourceIdentity;
@@ -190,7 +188,6 @@ const DEFAULT_DEPENDENCIES: CanonicalRuntimeDependencies = {
   startScheduler: startInProcessScheduler,
   startLocalBridge: startConfiguredRuntimeLocalBridge,
   startPowerAssertion: startActiveExecutionPowerAssertion,
-  startWorkflowSupervisor: startWorkflowSupervisorRuntime,
   startTransport: startRuntimeMcpTransport,
   runMcpProbe: defaultMcpProbe,
   collectRuntimeSourceIdentity,
@@ -212,7 +209,6 @@ export class CanonicalForgeRuntime {
   private scheduler?: RuntimeSchedulerHandle;
   private localBridge?: RuntimeLocalBridgeHandle;
   private powerAssertion?: RuntimePowerAssertionHandle;
-  private workflowSupervisor?: RuntimeWorkflowSupervisorHandle;
   private toolSurfaceFingerprint?: string;
   private transport?: RuntimeMcpTransportHandle;
   private controller?: RuntimeControllerServices;
@@ -508,17 +504,6 @@ export class CanonicalForgeRuntime {
       this.installJscSamplingProfilerSignal();
       this.readinessState.setDiagnostic('database', 'pass');
       this.publishStatus();
-      if (this.topology.components.workflowSupervisor) {
-        stage = 'supervisor';
-        this.workflowSupervisor = await this.dependencies.startWorkflowSupervisor(this.config.controllerHome, {
-          nativeBrowserAdapter: this.topology.components.workflowSupervisorNativeBrowser,
-        });
-        void this.workflowSupervisor.done.then(
-          () => this.failCore('WORKFLOW_SUPERVISOR_STOPPED', 'Workflow Supervisor stopped while Runtime was active.'),
-          (error) => this.failCore('WORKFLOW_SUPERVISOR_FAILED', error instanceof Error ? error.message : String(error)),
-        );
-      }
-
       stage = 'scheduler';
       const standaloneReleaseRoot = this.release.executionMode === 'standalone-binary'
         ? dirname(this.config.releaseManifestPath)
@@ -664,8 +649,6 @@ export class CanonicalForgeRuntime {
       this.removeJscSamplingProfilerSignal();
       // Stop accepting new MCP work before quiescing Scheduler activity, then
       // release the Controller Home claim only after all in-process services stop.
-      await this.workflowSupervisor?.close().catch(() => undefined);
-      this.workflowSupervisor = undefined;
       await this.transport?.close().catch(() => undefined);
       await this.dependencies.stopLightweightProcesses(this.config.controllerHome).catch(() => undefined);
       await this.dependencies.stopContextReadHelpers().catch(() => undefined);
