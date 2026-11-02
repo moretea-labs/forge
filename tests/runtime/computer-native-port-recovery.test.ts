@@ -392,6 +392,7 @@ test('MAIN-world observer emits only a wake-up hint even for a finished SSE or H
     permissions: string[]; content_scripts: Array<{ world?: string; js: string[]; run_at?: string }>;
   };
   expect(manifest.permissions).not.toContain('webRequest');
+  expect(manifest.permissions).not.toContain('webRequestBlocking');
   expect(manifest.content_scripts.some((s) => s.world === 'MAIN' && s.run_at === 'document_start'
     && s.js.includes('provider-turn-main.js'))).toBe(true);
   const source = readFileSync('adapters/computer/chrome-extension/provider-turn-main.js', 'utf8');
@@ -508,8 +509,8 @@ test('isolated conversation readback proves an exact persisted user and final as
       data: { source: 'forge-computer-provider-turn-v1', type: 'turn-event', event: input } });
     for (let i = 0; i < 4; i++) await new Promise<void>((resolve) => setImmediate(resolve));
   };
-  // Even a parser-level unknown hint can prompt a server-verified readback.
-  await send({ ...hint, outcome: 'unknown', status_code: 0, stream_done: false });
+  // A request-level POST 429 remains a nonterminal hint: authenticated GET can later prove success for the same Effect/Turn.
+  await send({ ...hint, outcome: 'unknown', status_code: 429, stream_done: false });
   expect(outbound).toHaveLength(1);
   expect(outbound[0].event).toMatchObject({
     assistant_message_id: 'assistant-from-server', proof_source: 'chatgpt-conversation-readback-v1',
@@ -1047,4 +1048,154 @@ test('existing snapshot receiver rearms Provider readback when the listener pred
   expect(observed.latestUserText).toBe(prompt);
   expect(injected).toEqual([['provider-turn-readback.js']]);
   expect(readbackCalls).toEqual([prompt]);
+});
+
+test('isolated conversation readback records failed and cancelled final assistant states from authenticated GET', async () => {
+  const source = readFileSync('adapters/computer/chrome-extension/provider-turn-readback.js', 'utf8');
+  const conversationId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+  const run = async (status: 'failed' | 'cancelled', effectId: string, requestId: string) => {
+    const prompt = '<<<FORGE_WORKFLOW_EFFECT_V1:' + effectId + '>>>'
+      + '\ntask_id:"supervisor:test"\nreceipt:abc1234\nprovider_turn:conversation-readback-v1';
+    const conversation = {
+      conversation_id: conversationId,
+      messages: [
+        { id: 'user-' + status, author: { role: 'user' }, content: { parts: [prompt] } },
+        { id: 'assistant-' + status, author: { role: 'assistant' }, recipient: 'all',
+          status, end_turn: true },
+      ],
+      page_info: { has_previous_page: false, has_next_page: false },
+    };
+    const outbound: Array<{ event: Record<string, unknown> }> = [];
+    let listener: ((event: Record<string, unknown>) => void) | undefined;
+    const windowMock = {
+      addEventListener(_name: string, callback: (event: Record<string, unknown>) => void) { listener = callback; },
+    };
+    const response = (body: unknown) => ({
+      ok: true, status: 200,
+      headers: { get(name: string) { return name === 'content-type' ? 'application/json' : null; } },
+      async json() { return body; },
+      async text() { return JSON.stringify(body); },
+    });
+    runInNewContext(source, {
+      window: windowMock,
+      location: { pathname: '/c/' + conversationId, origin: 'https://chatgpt.com' },
+      chrome: { runtime: { async sendMessage(message: { event: Record<string, unknown> }) {
+        outbound.push(message); return { accepted: true };
+      } } },
+      fetch: async (url: string) => url === '/api/auth/session'
+        ? response({ accessToken: 'session-token' }) : response(conversation),
+      setTimeout: (callback: () => void) => { queueMicrotask(callback); return 1; },
+      Date, Number, JSON, Set, Map, Object, Array, Promise,
+    });
+    listener?.({
+      source: windowMock, origin: 'https://chatgpt.com',
+      data: { source: 'forge-computer-provider-turn-v1', type: 'turn-event', event: {
+        task_id: 'supervisor:test', effect_id: effectId, receipt_challenge: 'abc1234',
+        turn_id: 'user-' + status, request_id: requestId, conversation_id: conversationId,
+        started_at_ms: 1793490000000, outcome: 'unknown', status_code: 0,
+      } },
+    });
+    for (let i = 0; i < 4; i += 1) await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(outbound).toHaveLength(1);
+    expect(outbound[0].event).toMatchObject({
+      outcome: 'failed', status_code: 200, content_type: 'application/json',
+      proof_source: 'chatgpt-conversation-readback-v1',
+      assistant_message_id: 'assistant-' + status, assistant_status: status,
+      assistant_end_turn: true, stream_done: true,
+      failure_code: status === 'failed' ? 'CHATGPT_PROVIDER_TURN_FAILED' : 'CHATGPT_PROVIDER_TURN_CANCELLED',
+    });
+  };
+  await run('failed', 'fx_0123456789abcdef0123456789abcdef', '00000000-0000-4000-8000-000000000001');
+  await run('cancelled', 'fx_1123456789abcdef0123456789abcdef', '00000000-0000-4000-8000-000000000002');
+});
+
+test('background rejects provisional HTTP 429 and only accepts authenticated terminal TurnFailed', async () => {
+  const source = readFileSync('adapters/computer/chrome-extension/background.js', 'utf8');
+  const start = source.indexOf('const PROVIDER_TURN_EVENT_PREFIX');
+  const end = source.indexOf('chrome.runtime.onMessage.addListener((message, sender', start);
+  expect(start).toBeGreaterThan(0);
+  expect(end).toBeGreaterThan(start);
+  const writes: Array<Record<string, unknown>> = [];
+  const id = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+  const chrome = {
+    storage: {
+      session: {
+        get: async (key: string) => ({ [key]: 'owned-tab-token' }),
+        set: async (_value: unknown) => undefined,
+        remove: async (_key: unknown) => undefined,
+      },
+      local: {
+        get: async (_key: unknown) => ({}),
+        set: async (value: Record<string, unknown>) => { writes.push(value); },
+        remove: async (_key: unknown) => undefined,
+      },
+    },
+  };
+  const fns = runInNewContext(source.slice(start, end) + '\n({ persistProviderTurnEvent })', {
+    chrome, PROVIDER_ID: 'browser.chrome-extension',
+    ownedTabKey: (tabId: number) => 'forgeComputerOwnedTabV1:' + tabId,
+    providerInstanceId: async () => 'extension-session',
+    binding: (_tab: unknown, _instance: string, ownerToken: string) => ({
+      ownerToken, tabId: '7', windowId: '8',
+    }),
+    core: { parseConversation(_url: string) { return { conversationId: id, canonicalUrl: 'https://chatgpt.com/c/' + id }; } },
+  }) as {
+    persistProviderTurnEvent(
+      event: Record<string, unknown>,
+      sender: Record<string, unknown>,
+    ): Promise<{ accepted: boolean; reason?: string }>;
+  };
+  const sender = { frameId: 0, tab: { id: 7, windowId: 8, url: 'https://chatgpt.com/c/' + id } };
+  const base = {
+    task_id: 'supervisor:test', effect_id: 'fx_0123456789abcdef0123456789abcdef',
+    receipt_challenge: 'abc1234', turn_id: 'user-turn',
+    request_id: '00000000-0000-4000-8000-000000000001',
+    conversation_id: id, started_at_ms: 1793490000000,
+  };
+  expect(await fns.persistProviderTurnEvent({
+    ...base, outcome: 'failed', status_code: 429, content_type: 'application/json',
+    failure_code: 'CHATGPT_AUTOMATION_RATE_LIMITED',
+  }, sender)).toMatchObject({ accepted: false, reason: 'provider_turn_page_origin_untrusted' });
+  // The *same* Effect/Turn/Request can complete after provisional 429:
+  // the 429 must not take the immutable provider-turn:<effectId> event key.
+  expect(writes).toHaveLength(0);
+  expect(await fns.persistProviderTurnEvent({
+    ...base, outcome: 'completed', status_code: 200, content_type: 'application/json',
+    proof_source: 'chatgpt-conversation-readback-v1',
+    assistant_message_id: 'assistant-finished', assistant_status: 'finished_successfully',
+    assistant_end_turn: true,
+  }, sender)).toMatchObject({ accepted: true, duplicate: false });
+  expect(await fns.persistProviderTurnEvent({
+    ...base, effect_id: 'fx_1123456789abcdef0123456789abcdef', turn_id: 'different-user-turn',
+    request_id: '00000000-0000-4000-8000-000000000002',
+    outcome: 'failed', status_code: 200, content_type: 'application/json',
+    proof_source: 'chatgpt-conversation-readback-v1',
+    assistant_message_id: 'assistant-failed', assistant_status: 'failed',
+    assistant_end_turn: true, stream_done: true, failure_code: 'CHATGPT_PROVIDER_TURN_FAILED',
+  }, sender)).toMatchObject({ accepted: true, duplicate: false });
+  // Even a forged source label cannot turn a request-level HTTP 429 into an assistant outcome.
+  expect(await fns.persistProviderTurnEvent({
+    ...base, request_id: '00000000-0000-4000-8000-000000000003',
+    outcome: 'failed', status_code: 429, content_type: 'application/json',
+    proof_source: 'chatgpt-conversation-readback-v1',
+    failure_code: 'CHATGPT_AUTOMATION_RATE_LIMITED',
+  }, sender)).toMatchObject({ accepted: false, reason: 'provider_turn_page_origin_untrusted' });
+  expect(writes).toHaveLength(2);
+  expect(Object.values(writes[0])[0]).toMatchObject({
+    outcome: 'completed', status_code: 200, turn_id: 'user-turn',
+  });
+  expect(Object.values(writes[1])[0]).toMatchObject({
+    outcome: 'failed', status_code: 200, turn_id: 'different-user-turn',
+  });
+});
+
+test('Chrome provider manifest does not grant provisional HTTP 429 terminal authority', () => {
+  const manifest = JSON.parse(readFileSync('adapters/computer/chrome-extension/manifest.json', 'utf8')) as {
+    version: string; permissions: string[];
+  };
+  const background = readFileSync('adapters/computer/chrome-extension/background.js', 'utf8');
+  expect(manifest.version).toBe('0.3.7');
+  expect(manifest.permissions).not.toContain('webRequest');
+  expect(background).not.toContain('installProviderTurnNetworkListeners');
+  expect(background).not.toContain('trustedNetworkFailure');
 });

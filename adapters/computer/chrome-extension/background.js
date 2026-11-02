@@ -955,16 +955,19 @@ async function persistProviderTurnEvent(input, sender) {
   if (retryAfterMs !== undefined && (!Number.isSafeInteger(retryAfterMs) || retryAfterMs < 0 || retryAfterMs > 86_400_000)) {
     return { accepted: false, reason: 'provider_turn_retry_after_invalid' };
   }
-  const eventStream = contentType.toLowerCase().includes('text/event-stream');
   if (outcome === 'completed' && (proofSource !== 'chatgpt-conversation-readback-v1'
     || statusCode !== 200 || !contentType.toLowerCase().includes('application/json') || !assistantMessageId
     || assistantStatus !== 'finished_successfully' || assistantEndTurn !== true || streamDone !== undefined || failureCode)) {
     return { accepted: false, reason: 'provider_turn_completion_evidence_invalid' };
   }
-  if (outcome === 'failed' && (!failureCode || !(
-    statusCode === 429 || ((assistantStatus === 'failed' || assistantStatus === 'cancelled') && streamDone === true)
-  ))) {
+  const trustedReadbackFailure = proofSource === 'chatgpt-conversation-readback-v1'
+    && statusCode === 200 && contentType.toLowerCase().includes('application/json')
+    && (assistantStatus === 'failed' || assistantStatus === 'cancelled') && streamDone === true;
+  if (outcome === 'failed' && !failureCode) {
     return { accepted: false, reason: 'provider_turn_failure_evidence_invalid' };
+  }
+  if (outcome === 'failed' && !trustedReadbackFailure) {
+    return { accepted: false, reason: 'provider_turn_page_origin_untrusted' };
   }
   if (outcome === 'unknown' && !failureCode) return { accepted: false, reason: 'provider_turn_unknown_reason_missing' };
 
@@ -973,9 +976,10 @@ async function persistProviderTurnEvent(input, sender) {
     || core.parseConversation(tab.url)?.conversationId !== conversationId) {
     return { accepted: false, reason: 'provider_turn_conversation_invalid' };
   }
-  // An owned tab alone cannot attest page-origin SSE facts. Only the ISOLATED
-  // script's authenticated conversation readback may produce a terminal receipt.
-  if ((outcome === 'completed' && proofSource !== 'chatgpt-conversation-readback-v1') || outcome === 'failed') {
+  // Page-origin signals cannot create terminal receipts. Failed outcomes are accepted
+  // only from authenticated conversation readback, never a provisional HTTP request error.
+  if ((outcome === 'completed' && proofSource !== 'chatgpt-conversation-readback-v1')
+    || (outcome === 'failed' && !trustedReadbackFailure)) {
     return { accepted: false, reason: 'provider_turn_page_origin_untrusted' };
   }
   const ownerKey = ownedTabKey(tabId);
