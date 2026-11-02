@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { getRepository } from '../../cli/repositories/registry';
-import { cachedGitIdentity } from '../../cli/repository/inspector';
+import { readRepositoryGitStatusSample } from '../projections/git-status-sampler';
 import { getWorkContract, semanticWorkState } from '../../../packages/kernel/work/api/index';
 import {
   controllerRoundBlockerClass,
@@ -302,7 +302,7 @@ function terminalWorkSupervisorStopReason(controllerHome: string, task: Workflow
 
 export function forgeWorkflowSupervisorLifecycleHooks(controllerHome: string): WorkflowSupervisorLifecycleHooks {
   const browserTaskActive = createForgeWorkflowSupervisorBrowserTaskActive(controllerHome);
-  // Reuse the existing bounded Git identity cache: GitHub-only tasks do not
+  // Reuse the existing Scheduler Git projection: GitHub-only tasks do not
   // need a semantic Work to report real source changes.
   const progressFingerprint = (task: WorkflowSupervisorTask): string | undefined => {
     const semantic = workflowSupervisorSemanticProgressFingerprint(controllerHome, task);
@@ -312,7 +312,9 @@ export function forgeWorkflowSupervisorLifecycleHooks(controllerHome: string): W
       || (repoId && listChatgptWorkBindingsForConversation({ controllerHome, repoId }, task.conversationId).length > 0)) return undefined;
     const repository = repoId ? getRepository(repoId, controllerHome) : undefined;
     if (!repository) return undefined;
-    return cachedGitIdentity(repository.canonicalRoot).workingTreeFingerprint;
+    const sample = readRepositoryGitStatusSample(controllerHome, repository.repoId, repository.activeCheckoutId);
+    if (!sample || sample.staleAgeMs > 5 * 60_000) return undefined;
+    return createHash('sha256').update(JSON.stringify({ head: sample.head, status: sample.porcelain })).digest('hex');
   };
   return {
     terminalWorkStopReasonForTask: (task) => terminalWorkSupervisorStopReason(controllerHome, task),

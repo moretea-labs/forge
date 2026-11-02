@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { registerRepository } from '../../src/cli/repositories/registry';
-import { invalidateRepositoryReadCaches } from '../../src/cli/repository/inspector';
+import { writeRepositoryGitStatusSample } from '../../src/runtime/projections/git-status-sampler';
 import { forgeWorkflowSupervisorLifecycleHooks } from '../../src/runtime/root/workflow-supervisor-composition';
 import { join } from 'node:path';
 import { WorkflowSupervisorControlPlane } from '../../supervisor/control-plane';
@@ -151,7 +151,7 @@ test('late old completion cannot create another successor after deadline migrati
 });
 
 
-test('GitHub-only tasks expose real Git content progress without creating Work', () => {
+test('GitHub-only tasks expose real Git status progress without creating Work', async () => {
   const fx = fixture();
   const root = join(fx.home, 'source');
   mkdirSync(root);
@@ -162,10 +162,11 @@ test('GitHub-only tasks expose real Git content progress without creating Work',
   const repository = registerRepository({ path: root, controllerHome: fx.home, displayName: 'deadline-source' });
   const task = { ...fx.control.getTask(fx.taskId)!, completionContract: { repo_id: repository.repoId } };
   const hooks = forgeWorkflowSupervisorLifecycleHooks(fx.home);
+  await writeRepositoryGitStatusSample(fx.home, repository);
   const before = hooks.workProgressFingerprint!(task);
   expect(before).toBeTruthy();
   writeFileSync(join(root, 'code.ts'), 'export const value = 2;');
-  invalidateRepositoryReadCaches(repository.canonicalRoot);
+  await writeRepositoryGitStatusSample(fx.home, repository);
   expect(hooks.workProgressFingerprint!(task)).not.toBe(before);
   fx.store.close();
 });
