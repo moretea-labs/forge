@@ -9,12 +9,80 @@ import { claimsConflict } from '../../src/runtime/resources/claims/conflicts';
 import type { ExecutionLease } from '../../src/runtime/resources/leases/types';
 import { claimsForAssistantPluginAction } from '../../src/runtime/plugins/store';
 import type { AssistantPluginActionDescriptor } from '../../src/runtime/plugins/types';
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { acquireExecutionLeases } from '../../src/runtime/resources/leases/store';
 
 function lease(resourceKey: string, mode: 'read' | 'write' | 'exclusive'): ExecutionLease {
   return { resourceKey, mode } as ExecutionLease;
 }
 
 describe('Process Runtime fine-grained resource claims', () => {
+  test('explicit disjoint Xcode DerivedData permits concurrent real leases while shared and unknown caches block', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-xcode-cache-'));
+    try {
+      mkdirSync(join(root, 'checkout-a'));
+      mkdirSync(join(root, 'checkout-b'));
+      const command = ['xcodebuild', '-project', 'App.xcodeproj', '-derivedDataPath', 'build/DerivedData', 'build'];
+      const a = claimsForRepositoryCommand(command, 'repo1', 'co-a', 'main', join(root, 'checkout-a'));
+      const b = claimsForRepositoryCommand(command, 'repo1', 'co-b', 'main', join(root, 'checkout-b'));
+      const home = join(root, 'controller');
+      const options = { visibility: 'ephemeral' as const };
+      expect(acquireExecutionLeases(home, 'repo1', 'build-a', a, options).acquired).toBe(true);
+      expect(acquireExecutionLeases(home, 'repo1', 'build-b', b, options).acquired).toBe(true);
+      const shared = claimsForRepositoryCommand([
+        'xcodebuild', '-project', 'App.xcodeproj', '-derivedDataPath', join(root, 'checkout-a/build/DerivedData'), 'build',
+      ], 'repo2', 'co-c', 'main', root);
+      expect(acquireExecutionLeases(home, 'repo2', 'shared-cache', shared, options).acquired).toBe(false);
+      const parent = claimsForRepositoryCommand([
+        'xcodebuild', '-project', 'App.xcodeproj', '-derivedDataPath', join(root, 'checkout-a/build'), 'clean',
+      ], 'repo1', 'co-d', 'main', root);
+      expect(acquireExecutionLeases(home, 'repo1', 'parent-cache', parent, options).acquired).toBe(false);
+      const unknown = claimsForRepositoryCommand(['xcodebuild', '-project', 'App.xcodeproj', 'build'], 'repo1', 'co-e');
+      expect(acquireExecutionLeases(home, 'repo1', 'unknown-cache', unknown, options).acquired).toBe(false);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test('Xcode cache identity follows the execution cwd, literal shell paths and existing symlinks', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-xcode-path-'));
+    try {
+      const cwd = join(root, 'actual cwd');
+      mkdirSync(cwd);
+      symlinkSync(cwd, join(root, 'alias'), process.platform === 'win32' ? 'junction' : 'dir');
+      symlinkSync(join(root, 'missing-target'), join(root, 'dangling'), process.platform === 'win32' ? 'junction' : 'dir');
+      const absolute = claimsForRepositoryCommand(['xcodebuild', '-derivedDataPath', join(cwd, 'cache'), 'build'], 'repo1', 'co-a');
+      for (const command of [
+        'xcodebuild -derivedDataPath cache build',
+        'xcrun xcodebuild -derivedDataPath cache build',
+        ['bash', '-lc', 'xcodebuild -derivedDataPath cache build'],
+        `cd '${join(root, 'alias')}' && xcodebuild -derivedDataPath cache build`,
+      ]) {
+        const relative = claimsForRepositoryCommand(command, 'repo1', 'co-b', 'main', root, cwd);
+        expect(relative.some((claim) => absolute.some((other) => claimsConflict(claim, lease(other.resourceKey, other.mode))))).toBe(true);
+        expect(relative).toContainEqual({ resourceKey: 'build-cache:repo1', mode: 'read' });
+      }
+      for (const command of [
+        'xcodebuild -derivedDataPath "$CACHE" build',
+        'xcodebuild -derivedDataPath cache build && bun run build',
+        `cd '${cwd}' || xcodebuild -derivedDataPath cache build`,
+        `cd '${cwd}' ; xcodebuild -derivedDataPath cache build`,
+        ['xcodebuild', '-derivedDataPath', 'one', '-derivedDataPath', 'two', 'build'],
+        ['xcodebuild', '-derivedDataPath', 'cache', 'OBJROOT=/shared', 'build'],
+        ['xcodebuild', '-derivedDataPath', 'cache', 'PROJECT_TEMP_DIR=/shared', 'build'],
+        ['xcodebuild', '-derivedDataPath', 'cache', 'archive'],
+        ['xcodebuild', '-derivedDataPath', join(root, 'dangling/cache'), 'build'],
+      ]) {
+        expect(claimsForRepositoryCommand(command, 'repo1', 'co-b', 'main', root, cwd))
+          .toContainEqual({ resourceKey: 'build-cache:repo1', mode: 'write' });
+      }
+      const testA = claimsForRepositoryCommand(['xcodebuild', 'test', '-derivedDataPath', join(cwd, 'a')], 'repo1', 'co-a');
+      const testB = claimsForRepositoryCommand(['xcodebuild', 'test', '-derivedDataPath', join(cwd, 'b')], 'repo2', 'co-b');
+      expect(testA).toContainEqual({ resourceKey: 'host-service:ios-simulator-test', mode: 'write' });
+      expect(testB.some((claim) => claimsConflict(claim, lease('host-service:ios-simulator-test', 'write')))).toBe(true);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   test('readonly commands claim workspace read only', () => {
     const claims = claimsForRepositoryCommand(['git', 'status'], 'repo1', 'co1');
     expect(claims).toEqual([{ resourceKey: 'workspace:co1', mode: 'read' }]);
