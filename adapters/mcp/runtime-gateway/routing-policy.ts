@@ -82,6 +82,7 @@ const INTERACTIVE_SYNC_WRITE_TOOLS = new Set([
   'repository_git_switch_branch',
   'repository_git_merge_branch',
   'repository_git_delete_branch',
+  'repository_git_remove_worktree',
   'repository_git_commit',
   'repository_git_finish_workflow',
   'begin_edit_session',

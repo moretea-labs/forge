@@ -16,7 +16,9 @@ import {
   REPOSITORY_COMMAND_DEFAULT_TIMEOUT_MS,
   REPOSITORY_COMMAND_MAX_TIMEOUT_MS,
   REPOSITORY_COMMAND_MIN_TIMEOUT_MS} from '../../src/cli/repositories/command-executor';
-import { registerRepository } from '../../src/cli/repositories/registry';
+import { addRepositoryCheckout, getRepository, registerRepository } from '../../src/cli/repositories/registry';
+import { repositoryGitRemoveWorktree } from '../../src/cli/repositories/structured-worktree-cleanup';
+import { recordOwnedResource } from '../../packages/kernel/identity/api/index';
 import { commitSelectedPaths } from '../../src/cli/repositories/selected-path-actions';
 import { acquireControllerLock, releaseControllerLock } from '../../src/cli/repositories/locks';
 import { persistControllerAccessMode } from '../../adapters/mcp/access-mode';
@@ -73,6 +75,108 @@ function seedRepo(controllerHome: string, repoRoot: string) {
   git(repoRoot, ['commit', '-m', 'init']);
   return registerRepository({ path: repoRoot, controllerHome });
 }
+
+describe('structured registered worktree cleanup (#41)', () => {
+  function fixture() {
+    const root = tempRoot('forge-worktree-cleanup-');
+    const controllerHome = join(root, 'controller');
+    const repoRoot = join(root, 'repo');
+    const repository = seedRepo(controllerHome, repoRoot);
+    const linked = join(root, 'linked');
+    git(repoRoot, ['worktree', 'add', '--detach', linked, 'HEAD']);
+    const registered = addRepositoryCheckout({ repoId: repository.repoId, path: linked, controllerHome });
+    const target = registered.checkouts.find((item) => item.localRoot === realpathSync(linked));
+    if (!target) throw new Error('checkout registration missing');
+    const current = () => getRepository(repository.repoId, controllerHome)!;
+    const cleanup = (input: { expectedHead?: string; expectedIdentity?: string; previewToken?: string; confirmCleanup?: boolean } = {}) =>
+      repositoryGitRemoveWorktree(controllerHome, current(), { checkoutId: target.checkoutId, ...input });
+    return { root, controllerHome, repoRoot, linked, repository, target, current, cleanup };
+  }
+
+  test('previews exact clean detached checkout then removes with matching Git/physical witnesses and Registry receipt', () => {
+    const fx = fixture();
+    const before = fx.current();
+    const preview = fx.cleanup();
+    expect(preview.status).toBe('preview');
+    expect(preview.execution?.approvalToken).toBeTruthy();
+    expect(existsSync(fx.linked)).toBe(true);
+    expect(() => fx.cleanup({ confirmCleanup: true })).toThrow('GIT_WORKTREE_PREVIEW_PROOF_REQUIRED');
+    const result = fx.cleanup({
+      expectedHead: preview.expectedHead,
+      expectedIdentity: preview.physicalIdentity,
+      previewToken: preview.execution?.approvalToken,
+      confirmCleanup: true,
+    });
+    expect(result.status).toBe('removed');
+    expect(existsSync(fx.linked)).toBe(false);
+    expect(gitOutput(fx.repoRoot, ['worktree', 'list', '--porcelain'])).not.toContain(fx.linked);
+    const after = fx.current();
+    expect(after.canonicalRoot).toBe(before.canonicalRoot);
+    expect(after.displayName).toBe(before.displayName);
+    expect(after.activeCheckoutId).toBe(before.activeCheckoutId);
+    expect(after.checkouts.find((item) => item.checkoutId === fx.target.checkoutId)?.lifecycle).toBe('removed');
+    expect(fx.cleanup().status).toBe('already_removed');
+  });
+
+  test('fails closed for active/primary target, stale proofs, dirty content, and nonmerged detached commits', () => {
+    const fx = fixture();
+    expect(() => repositoryGitRemoveWorktree(fx.controllerHome, fx.current(), {
+      checkoutId: fx.repository.activeCheckoutId,
+    })).toThrow('GIT_WORKTREE_PRIMARY_OR_ACTIVE_PROTECTED');
+    const preview = fx.cleanup();
+    expect(() => fx.cleanup({
+      expectedHead: '0'.repeat(40),
+      expectedIdentity: preview.physicalIdentity,
+      previewToken: preview.execution?.approvalToken,
+      confirmCleanup: true,
+    })).toThrow('GIT_WORKTREE_STALE_HEAD');
+    expect(() => fx.cleanup({
+      expectedHead: preview.expectedHead,
+      expectedIdentity: 'reused:inode',
+      previewToken: preview.execution?.approvalToken,
+      confirmCleanup: true,
+    })).toThrow('GIT_WORKTREE_PHYSICAL_IDENTITY_CHANGED');
+    writeFileSync(join(fx.linked, 'untracked.txt'), 'preserve');
+    expect(() => fx.cleanup()).toThrow('GIT_WORKTREE_DIRTY_PROTECTED');
+    expect(existsSync(join(fx.linked, 'untracked.txt'))).toBe(true);
+    rmSync(join(fx.linked, 'untracked.txt'));
+    writeFileSync(join(fx.linked, 'unique.txt'), 'unique');
+    git(fx.linked, ['add', 'unique.txt']);
+    git(fx.linked, ['commit', '-m', 'detached unique evidence']);
+    expect(() => fx.cleanup()).toThrow('GIT_WORKTREE_UNMERGED_HEAD_PROTECTED');
+    expect(existsSync(fx.linked)).toBe(true);
+  });
+
+  test('retains historical WorkHandle checkout identity even when no OwnedResource metadata exists', () => {
+    const fx = fixture();
+    const previous = seedWorkHandle(fx.controllerHome, fx.repository, 'work-old-checkout-identity');
+    writeWorkHandle(fx.controllerHome, {
+      ...previous,
+      checkoutId: fx.target.checkoutId,
+      worktreePath: fx.linked,
+      managedWorktree: true,
+      branch: 'legacy-work-source',
+    });
+    expect(() => fx.cleanup()).toThrow('GIT_WORKTREE_LEGACY_WORK_HANDLE_PROTECTED');
+    expect(existsSync(fx.linked)).toBe(true);
+    expect(fx.current().checkouts.find((item) => item.checkoutId === fx.target.checkoutId)?.lifecycle).toBe('active');
+  });
+
+  test('does not delete an explicitly Forge-owned linked worktree, even if its HEAD is merged and tree is clean', () => {
+    const fx = fixture();
+    recordOwnedResource(fx.controllerHome, {
+      resourceId: 'worktree-owned-by-other-task',
+      kind: 'worktree',
+      targetRef: fx.linked,
+      creator: 'forge:managed-workspace',
+      repoId: fx.repository.repoId,
+      associatedWorkId: 'existing-other-work',
+    });
+    expect(() => fx.cleanup()).toThrow('GIT_WORKTREE_OWNED_RESOURCE_PROTECTED');
+    expect(existsSync(fx.linked)).toBe(true);
+    expect(fx.current().checkouts.find((item) => item.checkoutId === fx.target.checkoutId)?.lifecycle).toBe('active');
+  });
+});
 
 test('macOS temporary repository and Controller Home aliases are accepted consistently', () => {
   if (process.platform !== 'darwin') return;
