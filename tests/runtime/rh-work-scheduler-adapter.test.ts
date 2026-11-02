@@ -9,14 +9,10 @@ import { ensureControllerHome } from '../../src/effects/controller-home';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { callRuntimeTool } from '../../adapters/mcp/runtime-gateway/runtime-tools';
 import { reconcileControllerProgression } from '../../src/runtime/root/controller-progression-composition';
-import { WorkflowSupervisorControlPlane } from '../../supervisor/control-plane';
-import { renderSupervisorReceipt } from '../../supervisor/protocol';
-import { createWorkflowSupervisorServer, WorkflowSupervisorEphemeralDiscovery } from '../../supervisor/server';
-import { WorkflowSupervisorStore } from '../../supervisor/store';
 import { bindControllerSessionBinding, claimControllerSession, releaseControllerSession } from '../../packages/kernel/controller/api/index';
 import { upsertChatgptControllerBinding } from '../../adapters/chatgpt/controller-binding-store';
 import { cronDue, scheduleTriggerWindowKey } from '../../packages/kernel/scheduler/application/eligibility';
-import { saveSchedule } from '../../packages/kernel/scheduler/api/index';
+import { getSchedule, saveSchedule } from '../../packages/kernel/scheduler/api/index';
 import { evaluateSchedule } from '../../src/runtime/workflow/schedules/engine';
 import { createWorkContract } from '../../packages/kernel/work/api/index';
 
@@ -102,6 +98,35 @@ async function createShadowKeepalive(ctx: MultiRepositoryMcpToolContext, repoId:
   return created.data.schedule.scheduleId as string;
 }
 
+test('cron schedule eligibility stays correct across consecutive days and DST-independent dates', () => {
+  expect(cronDue('0 8 * * *', Date.parse('2026-10-17T00:00:00.000Z'), 'Asia/Shanghai')).toBe(true);
+  expect(cronDue('0 8 * * *', Date.parse('2026-10-17T23:59:00.000Z'), 'Asia/Shanghai')).toBe(false);
+  expect(cronDue('0 8 * * *', Date.parse('2026-10-18T00:00:00.000Z'), 'Asia/Shanghai')).toBe(true);
+  expect(cronDue('0 8 * * *', Date.parse('2026-11-01T00:00:00.000Z'), 'Asia/Shanghai')).toBe(true);
+});
+
+describe('retired autonomous Schedule actions', () => {
+  for (const operation of ['external_controller_wake', 'controller_progression']) {
+    test(operation + ' stops once without dispatching or creating an occurrence', async () => {
+      const { controllerHome, repository, ctx, workId } = fixture();
+      const scheduleId = await createShadowKeepalive(ctx, repository.repoId, workId, 'retire-' + operation);
+      const old = getSchedule(controllerHome, repository.repoId, scheduleId);
+      const candidate = saveSchedule(controllerHome, {
+        ...old,
+        enabled: true,
+        action: { operation, target: 'controller', arguments: { work_id: workId, controller_type: 'chatgpt' } },
+      });
+      expect(await evaluateSchedule(controllerHome, candidate, true, { source: 'manual' })).toBeUndefined();
+      const stopped = getSchedule(controllerHome, repository.repoId, scheduleId);
+      expect(stopped.enabled).toBe(false);
+      expect(stopped.pausedReason).toBe('RETIRED_AUTONOMOUS_CONTINUATION_SCHEDULE');
+      expect(stopped.lastOccurrenceId).toBeUndefined();
+      expect(await evaluateSchedule(controllerHome, candidate, true, { source: 'manual' })).toBeUndefined();
+      expect(getSchedule(controllerHome, repository.repoId, scheduleId).revision).toBe(stopped.revision);
+    });
+  }
+});
+
 describe('rh_work Scheduler MCP adapter', () => {
   test('wakes a waiting Supervisor before a lower ControllerRound semantic wait can veto the scheduled turn', async () => {
     const { controllerHome, repository, ctx, workId } = fixture();
@@ -161,204 +186,6 @@ describe('rh_work Scheduler MCP adapter', () => {
       effectId: 'fx_1234567890abcdef1234567890abcdef',
     });
     expect(lowerLayerPrepared).toBe(false);
-  });
-
-  test('executes two distinct cron occurrences through the same durable WAIT task without pausing the Schedule', async () => {
-    const { controllerHome, repository, ctx, workId } = fixture();
-    const controllerStore = { controllerHome, repoId: repository.repoId };
-    const owner = claimControllerSession(controllerStore, {
-      workId,
-      controllerId: 'controller-daily-wake',
-      controllerType: 'chatgpt',
-      sessionId: 'session-daily-wake',
-      principalId: 'controller-daily-wake',
-      controllerInstanceId: 'runtime-daily-wake',
-      leaseMs: 60_000,
-    });
-    const controllerBinding = upsertChatgptControllerBinding(controllerStore, {
-      workId,
-      sessionId: owner.sessionId,
-      title: 'daily Gmail scheduled wake fixture',
-      model: 'gpt-6',
-      reasoning: 'high',
-      tabPolicy: 'auto',
-    });
-    bindControllerSessionBinding(controllerStore, {
-      workId,
-      sessionId: owner.sessionId,
-      binding: controllerBinding.binding,
-    });
-    releaseControllerSession(controllerStore, workId, owner.controllerId);
-
-    const supervisorRoot = join(controllerHome, 'supervisor');
-    mkdirSync(supervisorRoot, { recursive: true });
-    const supervisorStore = new WorkflowSupervisorStore(supervisorRoot);
-    const control = new WorkflowSupervisorControlPlane(supervisorStore);
-    const taskId = `forge:${repository.repoId}:work:${workId}`;
-    const conversationId = 'bcbcbcbc-1111-2222-3333-444444444444';
-    const task = control.registerTask({
-      taskId,
-      conversationId,
-      conversationUrl: `https://chatgpt.com/c/${conversationId}`,
-      objective: 'Run the scheduled Gmail routine daily at 08:00 China time and remain open between occurrences.',
-      completionContract: {
-        kind: 'forge_work_done',
-        controller_home: controllerHome,
-        repo_id: repository.repoId,
-        work_id: workId,
-      },
-      continuationPolicy: {
-        kind: 'forge_goal_outer_turn',
-        exact_conversation_id: conversationId,
-        exact_conversation_url: `https://chatgpt.com/c/${conversationId}`,
-        outer_turn_owner: 'workflow_supervisor',
-      },
-      userBlockerPolicy: {
-        kind: 'forge_work_waiting_for_user',
-        controller_home: controllerHome,
-        repo_id: repository.repoId,
-        work_id: workId,
-      },
-    });
-    const initial = control.reserveEnrollment(taskId);
-    const server = createWorkflowSupervisorServer({
-      controlPlane: control,
-      socketPath: join(supervisorRoot, 'supervisor.sock'),
-      discovery: new WorkflowSupervisorEphemeralDiscovery(),
-      browserAdapterEnabled: true,
-    });
-    await new Promise<void>((resolve, reject) => {
-      if (server.listening) { resolve(); return; }
-      server.once('listening', () => resolve());
-      server.once('error', reject);
-    });
-
-    const originalDate = globalThis.Date;
-    let clockNow = originalDate.parse('2026-10-17T00:00:00.000Z');
-    class ScheduledClockDate extends originalDate {
-      constructor(value?: string | number, month?: number, day?: number, hours?: number, minutes?: number, seconds?: number, milliseconds?: number) {
-        if (value === undefined) super(clockNow);
-        else if (typeof value === 'number' && month !== undefined) super(value, month, day ?? 1, hours ?? 0, minutes ?? 0, seconds ?? 0, milliseconds ?? 0);
-        else super(value as string | number);
-      }
-      static now(): number { return clockNow; }
-    }
-    try {
-      const created = structured(await callRuntimeTool(ctx, 'rh_work', {
-        repo_id: repository.repoId,
-        operation: 'schedule_create',
-        work_id: workId,
-        schedule_mode: 'continuation',
-        controller_type: 'chatgpt',
-        schedule_name: 'Fixture daily Gmail Supervisor wake',
-        schedule_request_id: 'schedule-daily-gmail-two-consecutive-occurrences',
-        trigger_type: 'cron',
-        cron_expression: '0 8 * * *',
-        schedule_timezone: 'Asia/Shanghai',
-        continuation_hint: 'Continue the same scheduled Gmail Work.',
-        shadow_mode: false,
-      }));
-      expect(created.status).toBe('ok');
-      const scheduleId = created.data.schedule.scheduleId as string;
-      expect(created.data.schedule).toMatchObject({
-        enabled: true,
-        action: { operation: 'controller_progression', arguments: { work_id: workId, controller_binding_id: controllerBinding.binding.bindingId } },
-        trigger: { type: 'cron', cronExpression: '0 8 * * *', timezone: 'Asia/Shanghai' },
-        policy: { shadowMode: false },
-      });
-      expect(created.data.supervisorWakeBinding).toEqual({ status: 'bound', taskId });
-      expect(control.getEffect(initial.effectId)?.prompt).toContain('<<<FORGE_WORKFLOW_EFFECT_V1:');
-      expect(cronDue('0 8 * * *', Date.parse('2026-10-17T00:00:00.000Z'), 'Asia/Shanghai')).toBe(true);
-      expect(cronDue('0 8 * * *', Date.parse('2026-10-17T23:59:00.000Z'), 'Asia/Shanghai')).toBe(false);
-      expect(cronDue('0 8 * * *', Date.parse('2026-10-18T00:00:00.000Z'), 'Asia/Shanghai')).toBe(true);
-      expect(cronDue('0 8 * * *', Date.parse('2026-10-19T00:00:00.000Z'), 'Asia/Shanghai')).toBe(true);
-      expect(cronDue('0 8 * * *', Date.parse('2026-10-31T00:00:00.000Z'), 'Asia/Shanghai')).toBe(true);
-      expect(cronDue('0 8 * * *', Date.parse('2026-11-01T00:00:00.000Z'), 'Asia/Shanghai')).toBe(true);
-
-      const paused = structured(await callRuntimeTool(ctx, 'rh_work', {
-        repo_id: repository.repoId,
-        operation: 'schedule_pause',
-        schedule_id: scheduleId,
-        reason: 'verify exact Supervisor wake binding survives Schedule resume',
-      }));
-      expect(paused.data.schedule.enabled).toBe(false);
-      const resumed = structured(await callRuntimeTool(ctx, 'rh_work', {
-        repo_id: repository.repoId,
-        operation: 'schedule_resume',
-        schedule_id: scheduleId,
-      }));
-      expect(resumed.data.schedule).toMatchObject({
-        enabled: true,
-        action: { operation: 'controller_progression', arguments: { work_id: workId, controller_binding_id: controllerBinding.binding.bindingId } },
-      });
-      expect(resumed.data.supervisorWakeBinding).toEqual({ status: 'bound', taskId });
-
-      control.observeEffect({ effectId: initial.effectId, observationId: 'daily-gmail-initial-applied', outcome: 'applied' });
-      const firstWait = await control.observeAssistantTurn({
-        taskId,
-        conversationId: task.conversationId,
-        responseText: renderSupervisorReceipt(control.getTask(taskId)!, initial.effectId, 'WAIT'),
-      });
-      expect(firstWait).toMatchObject({ action: 'WAIT', terminal: false });
-
-      globalThis.Date = ScheduledClockDate as DateConstructor;
-      const firstTrigger = await evaluateSchedule(controllerHome, created.data.schedule, false, { source: 'timer' });
-      expect(firstTrigger).toMatchObject({
-        status: 'dispatched',
-        decision: 'execute',
-        triggerContext: { source: 'timer' },
-        windowKey: expect.stringContaining('2026-10-17@08:00[Asia/Shanghai]'),
-      });
-      const afterFirst = structured(await callRuntimeTool(ctx, 'rh_work', {
-        repo_id: repository.repoId,
-        operation: 'schedule_get',
-        schedule_id: scheduleId,
-      }));
-      expect(afterFirst.data.schedule.enabled).toBe(true);
-      const firstWakeStall = control.taskStall(taskId);
-      if (!('effectId' in firstWakeStall) || !firstWakeStall.effectId) throw new Error('FIRST_SCHEDULED_WAKE_EFFECT_MISSING');
-      const firstWake = control.getEffect(firstWakeStall.effectId)!;
-      expect(firstWake).toMatchObject({
-        kind: 'continuation',
-        sourceCompletionFingerprint: firstWait.completionFingerprint,
-      });
-
-      control.observeEffect({ effectId: firstWake.effectId, observationId: 'daily-gmail-occurrence-one-applied', outcome: 'applied' });
-      const secondWait = await control.observeAssistantTurn({
-        taskId,
-        conversationId: task.conversationId,
-        responseText: renderSupervisorReceipt(control.getTask(taskId)!, firstWake.effectId, 'WAIT'),
-      });
-      expect(secondWait).toMatchObject({ action: 'WAIT', terminal: false });
-
-      clockNow = originalDate.parse('2026-10-18T00:00:00.000Z');
-      const secondTrigger = await evaluateSchedule(controllerHome, created.data.schedule, false, { source: 'timer' });
-      expect(secondTrigger).toMatchObject({
-        status: 'dispatched',
-        decision: 'execute',
-        triggerContext: { source: 'timer' },
-        windowKey: expect.stringContaining('2026-10-18@08:00[Asia/Shanghai]'),
-      });
-      const afterSecond = structured(await callRuntimeTool(ctx, 'rh_work', {
-        repo_id: repository.repoId,
-        operation: 'schedule_get',
-        schedule_id: scheduleId,
-      }));
-      expect(afterSecond.data.schedule.enabled).toBe(true);
-      const secondWakeStall = control.taskStall(taskId);
-      if (!('effectId' in secondWakeStall) || !secondWakeStall.effectId) throw new Error('SECOND_SCHEDULED_WAKE_EFFECT_MISSING');
-      const secondWake = control.getEffect(secondWakeStall.effectId)!;
-      expect(secondWake).toMatchObject({
-        kind: 'continuation',
-        sourceCompletionFingerprint: secondWait.completionFingerprint,
-      });
-      expect(secondWake.effectId).not.toBe(firstWake.effectId);
-      expect(control.getTask(taskId)?.taskId).toBe(taskId);
-    } finally {
-      globalThis.Date = originalDate;
-      await new Promise<void>((resolve) => server.close(() => resolve()));
-      supervisorStore.close();
-    }
   });
 
   test('routes the complete schedule lifecycle through the Scheduler adapter without external effects', async () => {

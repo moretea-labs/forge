@@ -67,6 +67,10 @@ function isDeterministicSchedule(schedule: RepositorySchedule): boolean {
 }
 
 function retiredScheduleReason(schedule: RepositorySchedule): string | undefined {
+  if (schedule.action.operation === EXTERNAL_CONTROLLER_WAKE_OPERATION
+    || schedule.action.operation === CONTROLLER_PROGRESSION_OPERATION) {
+    return 'RETIRED_AUTONOMOUS_CONTINUATION_SCHEDULE';
+  }
   if (schedule.action.operation === 'chatgpt_browser_prompt') return 'RETIRED_WORK_FREE_PROMPT_SCHEDULE';
   if (schedule.action.operation === 'assistant_routine_execute') return 'RETIRED_PERSONAL_ASSISTANT_SCHEDULE';
   if ((schedule.trigger.condition as { kind?: string } | undefined)?.kind === 'candidate_observation_threshold') {
@@ -556,9 +560,19 @@ export async function evaluateSchedule(
   // retain the object returned by create/list/get across multiple trigger
   // attempts, so never let an older in-memory revision become execution state.
   schedule = getSchedule(controllerHome, schedule.repoId, schedule.scheduleId);
-  // Preserve retired schedule records as evidence, but do not create a new
-  // occurrence or resume a controller/external action from their old payload.
-  if (retiredScheduleReason(schedule)) return undefined;
+  // Preserve retired schedule records, but never create an occurrence or
+  // replay an autonomous model Turn. Disable once in the existing Schedule
+  // store so operator resume cannot silently revive the retired action.
+  const retirementReason = retiredScheduleReason(schedule);
+  if (retirementReason) {
+    if (schedule.enabled || schedule.pausedReason !== retirementReason) {
+      updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({
+        enabled: false,
+        pausedReason: retirementReason,
+      }));
+    }
+    return undefined;
+  }
   const eligibilityNowMs = Date.now();
   const triggerJobIds = new Set<string>(schedule.trigger.dependencyJobIds ?? []);
   if (schedule.trigger.condition?.jobId) triggerJobIds.add(schedule.trigger.condition.jobId);

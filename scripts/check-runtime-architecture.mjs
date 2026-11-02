@@ -1197,12 +1197,9 @@ requireText('src/runtime/root/controller-progression-composition.ts', 'wakeWorkf
 requireText('src/runtime/root/controller-progression-composition.ts', "if (wake.status === 'woken' && wake.taskId && wake.effectId)");
 requireText('src/runtime/root/controller-progression-composition.ts', "status: 'scheduled_supervisor_woken'");
 requireText('src/runtime/workflow/schedules/engine.ts', "progression.status === 'scheduled_supervisor_woken'");
-requireText('tests/runtime/rh-work-scheduler-adapter.test.ts', 'executes two distinct cron occurrences through the same durable WAIT task without pausing the Schedule');
-requireText('tests/runtime/rh-work-scheduler-adapter.test.ts', "schedule_request_id: 'schedule-daily-gmail-two-consecutive-occurrences'");
-requireText('tests/runtime/rh-work-scheduler-adapter.test.ts', "cron_expression: '0 8 * * *'");
-requireText('tests/runtime/rh-work-scheduler-adapter.test.ts', "2026-10-18@08:00[Asia/Shanghai]");
-requireText('tests/runtime/rh-work-scheduler-adapter.test.ts', '2026-11-01T00:00:00.000Z');
-requireText('tests/runtime/rh-work-scheduler-adapter.test.ts', "evaluateSchedule(controllerHome, created.data.schedule, false, { source: 'timer' })");
+requireText('tests/runtime/rh-work-scheduler-adapter.test.ts', 'retired autonomous Schedule actions');
+requireText('tests/runtime/rh-work-scheduler-adapter.test.ts', 'stops once without dispatching or creating an occurrence');
+requireText('src/runtime/workflow/schedules/engine.ts', 'RETIRED_AUTONOMOUS_CONTINUATION_SCHEDULE');
 requireText('src/runtime/workflow/schedules/engine.ts', "schedule.action.operation !== CONTROLLER_PROGRESSION_OPERATION");
 requireText('src/runtime/root/workflow-supervisor-runtime.ts', 'authorizationGrantRefs: [grant.grantId]');
 requireText('src/runtime/root/workflow-supervisor-runtime.ts', 'workflow-supervisor.notification-send-auth:');
