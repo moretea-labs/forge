@@ -8,7 +8,6 @@ import { validateWork } from '../../../src/runtime/control-plane/execution/work-
 import { startOrResumeSession } from './execution-tools';
 import { result } from './result-adapter';
 import { selected } from './shared-adapter';
-import { callWorkflowSupervisorAdapter } from './workflow-supervisor-adapter';
 import {
   claimControllerRoundSession,
   getControllerRoundRelay,
@@ -61,15 +60,6 @@ export async function callCoreCapabilityAdapter(
         }) });
       }
       return result({ error: { code: 'CORE_CAPABILITY_ACTION_UNSUPPORTED', message: `Unsupported controller.local_conversation action: ${action || '<empty>'}` } }, true);
-    }
-    if (capabilityId === 'controller.workflow_supervisor') {
-      const forwarded = await callWorkflowSupervisorAdapter(ctx, 'supervisor_task', {
-        ...input,
-        operation: action,
-        request_id: typeof args.request_id === 'string' ? args.request_id.trim() : '',
-        ...(typeof args.repo_id === 'string' && args.repo_id.trim() ? { repo_id: args.repo_id.trim() } : {}),
-      });
-      return forwarded ?? result({ error: { code: 'CORE_CAPABILITY_ROUTE_UNAVAILABLE', message: 'Workflow Supervisor capability route is unavailable.' } }, true);
     }
     if (capabilityId === 'controller.round_recovery') {
       if (action !== 'recover_and_dispose') {

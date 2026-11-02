@@ -137,20 +137,6 @@ function providerSeedArguments(input: WorkContinuationScheduleInput, controllerT
   };
 }
 
-function exactContinuationArguments(input: {
-  workId: string;
-  controllerType: ContinuationControllerType;
-  controllerBindingId: string;
-  continuationHint?: string;
-}): Record<string, unknown> {
-  return {
-    work_id: input.workId,
-    controller_type: input.controllerType,
-    controller_binding_id: input.controllerBindingId,
-    ...(input.continuationHint?.trim() ? { continuation_hint: input.continuationHint.trim() } : {}),
-  };
-}
-
 function probeArguments(input: WorkContinuationScheduleInput, controllerType: ContinuationControllerType, keepaliveOnly: boolean): Record<string, unknown> {
   if (!input.probeUrl?.trim() && !input.probeBrowserSessionId?.trim()) {
     throw new Error('SCHEDULE_BROWSER_PROBE_TARGET_REQUIRED');
@@ -180,16 +166,14 @@ export function createWorkContinuationSchedule(
   input: WorkContinuationScheduleInput,
 ): { schedule: RepositorySchedule; work?: WorkContract } {
   const scheduleMode = input.scheduleMode ?? 'continuation';
+  if (scheduleMode === 'continuation') throw new Error('SCHEDULE_AUTONOMOUS_CONTINUATION_RETIRED');
   const requestedWorkId = input.workId?.trim();
   const requestedControllerType = input.controllerType;
   if (!requestedWorkId && scheduleMode !== 'browser_keepalive') throw new Error('WORK_ID_REQUIRED');
   const work = requestedWorkId ? activeWork(controllerHome, repoId, requestedWorkId) : undefined;
-  const retainedSession = (scheduleMode === 'continuation' || scheduleMode === 'browser_watch') && work
+  const retainedSession = scheduleMode === 'browser_watch' && work
     ? getRetainedControllerSession({ controllerHome, repoId }, work.workId)
     : undefined;
-  if (scheduleMode === 'continuation' && !retainedSession) {
-    throw new Error(`SCHEDULE_CONTINUATION_CONTROLLER_SESSION_REQUIRED: ${work!.workId}`);
-  }
   if (scheduleMode === 'browser_watch' && !retainedSession) {
     throw new Error(`SCHEDULE_BROWSER_WATCH_CONTROLLER_SESSION_REQUIRED: ${work!.workId}`);
   }
@@ -200,13 +184,11 @@ export function createWorkContinuationSchedule(
   }
   if (!requestedWorkId && scheduleMode === 'browser_keepalive' && controllerType !== 'chatgpt') throw new Error('STANDALONE_BROWSER_KEEPALIVE_CHATGPT_REQUIRED');
   const trigger = normalizedTrigger(input);
-  const operation = scheduleMode === 'continuation' ? CONTROLLER_PROGRESSION_OPERATION : 'browser_probe';
-  const name = input.scheduleName?.trim()
-    || (scheduleMode === 'browser_watch' ? `Watch external state for Work ${work!.workId}`
-      : scheduleMode === 'browser_keepalive'
-        ? (work ? `Keep browser session alive for Work ${work.workId}` : 'Keep browser session alive')
-        : `Continue Work ${work!.workId}`);
-  const controllerBinding = (scheduleMode === 'continuation' || scheduleMode === 'browser_watch')
+  const operation = 'browser_probe';
+  const name = input.scheduleName?.trim() || (scheduleMode === 'browser_watch'
+    ? ['Watch external state for Work', work!.workId].join(' ')
+    : work ? ['Keep browser session alive for Work', work.workId].join(' ') : 'Keep browser session alive');
+  const controllerBinding = scheduleMode === 'browser_watch'
     ? ensureScheduledControllerBinding(
         { controllerHome, repoId },
         {
@@ -217,17 +199,10 @@ export function createWorkContinuationSchedule(
         },
       )
     : undefined;
-  const actionArguments = scheduleMode === 'continuation'
-    ? exactContinuationArguments({
-        workId: work!.workId,
-        controllerType,
-        controllerBindingId: controllerBinding!.bindingId,
-        continuationHint: input.continuationPrompt,
-      })
-    : {
-        ...probeArguments(input, controllerType, scheduleMode === 'browser_keepalive'),
-        ...(scheduleMode === 'browser_watch' ? { controller_binding_id: controllerBinding!.bindingId } : {}),
-      };
+  const actionArguments = {
+    ...probeArguments(input, controllerType, scheduleMode === 'browser_keepalive'),
+    ...(scheduleMode === 'browser_watch' ? { controller_binding_id: controllerBinding!.bindingId } : {}),
+  };
   assertAutomatedOperationAllowed(operation, actionArguments);
   const policy = {
     maxActiveOccurrences: 1,
@@ -239,38 +214,6 @@ export function createWorkContinuationSchedule(
     backoffMaxMinutes: input.backoffMaxMinutes !== undefined ? Math.max(1, Math.trunc(input.backoffMaxMinutes)) : 24 * 60,
   };
   const stopConditions = input.stopConditions ?? (work ? ['work_terminal', 'human_review_required', 'external_blocker'] : []);
-
-  // A durable Work has one authoritative continuation lane. Changing cadence,
-  // prompt, controller, or policy updates that lane instead of minting another
-  // Workflow. Browser watches/keepalives are intentionally excluded because one
-  // Work may legitimately observe several independent external targets.
-  if (scheduleMode === 'continuation') {
-    const existing = listSchedules(controllerHome, repoId)
-      .filter((candidate) => isWorkContinuationOperation(candidate.action.operation))
-      .filter((candidate) => candidate.action.arguments?.work_id === work!.workId);
-    const authoritative = [...existing].reverse().find((candidate) => candidate.enabled) ?? existing.at(-1);
-    if (authoritative) {
-      const schedule = saveSchedule(controllerHome, {
-        ...authoritative,
-        name,
-        enabled: true,
-        trigger,
-        policy,
-        action: { operation, target: 'runtime', arguments: actionArguments, resourceClaims: [] },
-        stopConditions,
-        pausedReason: undefined,
-      });
-      for (const duplicate of existing) {
-        if (duplicate.scheduleId === schedule.scheduleId || !duplicate.enabled) continue;
-        saveSchedule(controllerHome, {
-          ...duplicate,
-          enabled: false,
-          pausedReason: `Superseded by authoritative continuation ${schedule.scheduleId} for Work ${work!.workId}.`,
-        });
-      }
-      return { schedule, work };
-    }
-  }
 
   const semantic = JSON.stringify({
     repoId,
@@ -346,46 +289,11 @@ export function pauseWorkContinuationSchedule(
 
 export function resumeWorkContinuationSchedule(controllerHome: string, repoId: string, scheduleId: string): RepositorySchedule {
   const schedule = continuationSchedule(getSchedule(controllerHome, repoId, scheduleId));
-  const workId = typeof schedule.action.arguments?.work_id === 'string' ? schedule.action.arguments.work_id : '';
-  activeWork(controllerHome, repoId, workId);
-  if (schedule.action.operation === LEGACY_EXTERNAL_CONTROLLER_WAKE_OPERATION) {
-    const trigger = schedule.trigger;
-    const migrated = createWorkContinuationSchedule(controllerHome, repoId, {
-      workId,
-      scheduleName: schedule.name,
-      controllerType: typeof schedule.action.arguments?.controller_type === 'string'
-        ? schedule.action.arguments.controller_type as ContinuationControllerType
-        : undefined,
-      continuationPrompt: typeof schedule.action.arguments?.continuation_hint === 'string'
-        ? schedule.action.arguments.continuation_hint
-        : typeof schedule.action.arguments?.continuation_prompt === 'string'
-          ? schedule.action.arguments.continuation_prompt
-          : undefined,
-      triggerType: trigger.type,
-      everyMinutes: trigger.everyMinutes,
-      cronExpression: trigger.cronExpression,
-      timezone: trigger.timezone,
-      catchUpMinutes: trigger.catchUpMinutes,
-      calendarAt: trigger.calendarAt,
-      condition: trigger.condition,
-      eventName: trigger.eventName,
-      dependencyJobIds: trigger.dependencyJobIds,
-      maxFailures: schedule.policy.maxFailures,
-      cooldownMinutes: schedule.policy.cooldownMinutes,
-      dailyBudgetMinutes: schedule.policy.dailyBudgetMinutes,
-      shadowMode: schedule.policy.shadowMode,
-      backoffBaseMinutes: schedule.policy.backoffBaseMinutes,
-      backoffMaxMinutes: schedule.policy.backoffMaxMinutes,
-      stopConditions: schedule.stopConditions,
-    }).schedule;
-    return saveSchedule(controllerHome, {
-      ...migrated,
-      enabled: true,
-      pausedReason: undefined,
-      consecutiveFailures: 0,
-      nextEligibleAt: undefined,
-    });
+  if (isWorkContinuationOperation(schedule.action.operation)) {
+    throw new Error('SCHEDULE_AUTONOMOUS_CONTINUATION_RETIRED');
   }
+  const workId = typeof schedule.action.arguments?.work_id === 'string' ? schedule.action.arguments.work_id : '';
+  if (workId) activeWork(controllerHome, repoId, workId);
   return saveSchedule(controllerHome, {
     ...schedule,
     enabled: true,

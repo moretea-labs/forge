@@ -172,28 +172,10 @@ describe('handoff and facade contracts', () => {
     expect(FACADE_TOOLS).toHaveLength(6);
   });
 
-  test('exposes standalone Workflow Supervisor through capability_execute without widening the facade', () => {
-    const descriptor = listCapabilityDescriptors().find((entry) => entry.capabilityId === 'controller.workflow_supervisor');
-    expect(descriptor).toMatchObject({
-      domain: 'controller', group: 'controller', operationClass: 'execute', risk: 'workspace_write',
-      exposedVia: 'capability_execute', schemaExposure: 'stable_static',
-    });
-    const schema = getCoreCapabilityExecutionSchema('controller.workflow_supervisor') as {
-      executeWith?: string;
-      actions?: Record<string, { argumentsSchema?: { required?: string[]; properties?: Record<string, unknown> } }>;
-    } | undefined;
-    expect(schema?.executeWith).toBe('capability_execute');
-    expect(Object.keys(schema?.actions ?? {}).sort()).toEqual(['bootstrap_project_bind', 'get', 'list', 'proof', 'recover', 'revise', 'start', 'stop', 'switch_to_fresh_conversation']);
-    expect(schema?.actions?.bootstrap_project_bind?.argumentsSchema?.required).toEqual(['task_id', 'project_url', 'authorized_by']);
-    expect(schema?.actions?.revise?.argumentsSchema?.required).toEqual(['task_id', 'objective', 'expected_objective_sha256']);
-    expect(schema?.actions?.recover?.argumentsSchema?.required).toEqual(['task_id', 'reason']);
-    expect(schema?.actions?.recover?.argumentsSchema?.properties).toEqual(expect.objectContaining({
-      source_effect_id: expect.any(Object),
-      supersede_unknown: expect.any(Object),
-      authorized_by: expect.any(Object),
-    }));
-    expect(searchCapabilityDescriptors('workflow supervisor continuation proof').map((entry) => entry.capabilityId)).toContain('controller.workflow_supervisor');
-    expect(runtimeToolDefinitions.some((definition) => definition.name === 'supervisor_task')).toBe(true);
+  test('does not expose retired autonomous Supervisor as an MCP tool or capability', () => {
+    expect(listCapabilityDescriptors().some((entry) => entry.capabilityId === 'controller.workflow_supervisor')).toBe(false);
+    expect(getCoreCapabilityExecutionSchema('controller.workflow_supervisor')).toBeUndefined();
+    expect(runtimeToolDefinitions.some((entry) => entry.name === 'supervisor_task')).toBe(false);
     expect(FACADE_TOOLS).toEqual(['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work', 'capability_execute']);
   });
 

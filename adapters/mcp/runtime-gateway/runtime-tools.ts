@@ -4,7 +4,6 @@ import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 import { result } from './result-adapter';
 import { callContextAdapter } from './context-adapter';import { callPluginAdapter } from './plugin-adapter';import { callRecoveryAdapter } from './recovery-adapter';import { callArtifactAdapter } from './artifact-adapter';import { callFilesystemAdapter } from './filesystem-adapter';import { callModelAdapter } from './model-adapter';
 import { callProtectedComputerAdapter } from './protected-computer-adapter';
-import { callWorkflowSupervisorAdapter } from './workflow-supervisor-adapter';
 import { callRepositoryCompatibilityAdapter } from './repository-compat-adapter';
 import { callSchedulerAdapter } from './scheduler-adapter';
 import { callRuntimeObservationAdapter } from './runtime-observation-adapter';
@@ -42,8 +41,6 @@ async function callRuntimeToolUnchecked(ctx: MultiRepositoryMcpToolContext, name
     if (filesystem) return filesystem;
     const model = callModelAdapter(ctx, name, args);
     if (model) return model;
-    const workflowSupervisor = await callWorkflowSupervisorAdapter(ctx, name, args);
-    if (workflowSupervisor) return workflowSupervisor;
     const repositoryCompatibility = await callRepositoryCompatibilityAdapter(ctx, name, args);
     if (repositoryCompatibility) return repositoryCompatibility;
     const scheduler = await callSchedulerAdapter(ctx, name, args);

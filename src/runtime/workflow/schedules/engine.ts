@@ -37,7 +37,6 @@ export { cronDue };
 import { ensureScheduledControllerBinding } from '../../root/scheduled-controller-composition';
 import { reconcileControllerProgression } from '../../root/controller-progression-composition';
 import { listUserRequests } from '../../../../packages/kernel/identity/api/index';
-import { runStandaloneChatgptPrompt } from '../../control-plane/launcher/chatgpt-work-continuation';
 
 import { classifyScheduledBrowserObservation, executeScheduledBrowserProbe } from './browser-probe';
 import { executeScheduledGithubIssueWatch } from './github-issue-watch';
@@ -799,18 +798,9 @@ export async function evaluateSchedule(
           : 'GitHub issue watcher found no new, reopened, or updated open issue.';
         return decideOccurrence(controllerHome, observedSchedule, occurrence, 'nothing_to_do', 'skipped', reason, evidence);
       }
-      const issueSummary = observation.changedOpenIssues.slice(0, 10)
-        .map((issue) => `#${issue.number} ${issue.title}`)
-        .join('; ');
-      const wakeArgs = {
-        ...args,
-        continuation_prompt: typeof args.continuation_prompt === 'string'
-          ? `${args.continuation_prompt}\n\nGitHub issue watcher detected: ${issueSummary}`
-          : `GitHub issue watcher detected actionable issue changes: ${issueSummary}. Read current Work/Plan/evidence and process these issues through the bounded repair workflow.`,
-      };
-      const wake = await executeControllerProgression(controllerHome, schedule, occurrence, timestamp, wakeArgs, evidence, { transientWakeFailure: true });
-      if (wake.status !== 'failed') persistObservation();
-      return wake;
+      const observedSchedule = persistObservation();
+      return decideOccurrence(controllerHome, observedSchedule, occurrence, 'execute', 'succeeded',
+        'GitHub issue change recorded; Schedule never dispatches a model continuation.', evidence);
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       const failed = applyScheduleFailure(controllerHome, schedule.scheduleId, schedule.repoId, occurrence.occurrenceId, {
@@ -864,45 +854,9 @@ export async function evaluateSchedule(
           nextEligibleAt: undefined,
           ...(current.enabled ? { pausedReason: undefined } : {}),
         }));
-        if (args.wake_on_auth_required !== false) {
-          const authPrompt = typeof args.auth_required_prompt === 'string'
-            ? args.auth_required_prompt
-            : typeof args.continuation_prompt === 'string'
-              ? args.continuation_prompt
-              : `Scheduled browser watcher ${schedule.scheduleId} detected that authentication is required (${probe.authReason ?? 'login marker'}). Inspect the external dependency and request user login only if it cannot be restored safely.`;
-          if (workId) {
-            const wakeArgs = { ...args, continuation_prompt: authPrompt };
-            return executeControllerProgression(controllerHome, observedSchedule, occurrence, timestamp, wakeArgs, { ...observationEvidence, authReason: probe.authReason });
-          }
-          const controllerType = typeof args.controller_type === 'string' ? args.controller_type.trim() : 'chatgpt';
-          if (controllerType !== 'chatgpt') {
-            return decideOccurrence(controllerHome, observedSchedule, occurrence, 'operation_blocked', 'skipped', 'STANDALONE_BROWSER_KEEPALIVE_CHATGPT_REQUIRED', observationEvidence);
-          }
-          const dispatched = await runStandaloneChatgptPrompt({
-            controllerHome,
-            repoId: schedule.repoId,
-            scopeId: `schedule:${schedule.scheduleId}`,
-            prompt: authPrompt,
-            browserSessionId: typeof args.browser_session_id === 'string' ? args.browser_session_id : undefined,
-            conversationUrl: typeof args.conversation_url === 'string' ? args.conversation_url : undefined,
-          });
-          if (dispatched.status === 'failed') throw new Error(dispatched.error?.message ?? 'CHATGPT_STANDALONE_PROMPT_FAILED');
-          return decideOccurrence(
-            controllerHome,
-            observedSchedule,
-            occurrence,
-            'execute',
-            'succeeded',
-            'Standalone browser keepalive auth-required prompt dispatched to ChatGPT.',
-            {
-              ...observationEvidence,
-              authReason: probe.authReason,
-              browserSessionId: dispatched.browserSessionId,
-              conversationUrl: dispatched.conversationUrl,
-            },
-          );
-        }
-        return decideOccurrence(controllerHome, observedSchedule, occurrence, 'operation_blocked', 'skipped', `Browser ${workId ? 'watcher' : 'keepalive'} requires authentication: ${probe.authReason ?? 'login marker matched'}`, observationEvidence);
+        return decideOccurrence(controllerHome, observedSchedule, occurrence, 'operation_blocked', 'skipped',
+          'Browser ' + (workId ? 'watcher' : 'keepalive') + ' requires authentication: ' + (probe.authReason ?? 'login marker matched'),
+          { ...observationEvidence, authReason: probe.authReason });
       }
 
       if (probe.status === 'keepalive') {
@@ -947,13 +901,9 @@ export async function evaluateSchedule(
         return decideOccurrence(controllerHome, observedSchedule, occurrence, 'nothing_to_do', 'skipped', reason, { ...observationEvidence, observationStatus });
       }
 
-      const wakeArgs = {
-        ...args,
-        continuation_prompt: typeof args.continuation_prompt === 'string'
-          ? args.continuation_prompt
-          : `Scheduled browser watcher ${schedule.scheduleId} detected a changed external observation. Read the current external state, correlate it with Work ${workId}, and continue only the bounded Work objective.`,
-      };
-      return executeControllerProgression(controllerHome, observedSchedule, occurrence, timestamp, wakeArgs, { ...observationEvidence, observationStatus });
+      return decideOccurrence(controllerHome, observedSchedule, occurrence, 'execute', 'succeeded',
+        'Browser observation changed; Schedule recorded the result without sending a model message.',
+        { ...observationEvidence, observationStatus });
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       const failed = applyScheduleFailure(controllerHome, schedule.scheduleId, schedule.repoId, occurrence.occurrenceId, {

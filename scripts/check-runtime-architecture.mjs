@@ -1093,7 +1093,6 @@ forbid('packages/kernel/controller/application/continuation-service.ts', /schedu
 requireText('src/runtime/root/controller-progression-composition.ts', 'reconcileControllerProgression');
 requireText('src/runtime/root/controller-progression-composition.ts', 'ensureWorkflowSupervisorEnrollmentForWork');
 requireText('src/runtime/workflow/schedules/engine.ts', 'reconcileControllerProgression');
-requireText('adapters/mcp/runtime-gateway/work-controller-operations.ts', 'reconcileControllerProgression');
 forbid(
   'src/runtime/control-plane/launcher/chatgpt-round-continuation.ts',
   /beginControllerRoundProviderDispatch|runWorkChatgptContinuation|openChatgptControllerRoundFromSource|continueChatgptControllerRoundFromSource/,
@@ -1128,7 +1127,6 @@ requireText('supervisor/control-plane.ts', 'WORKFLOW_SUPERVISOR_SEMANTIC_BINDING
 requireText('supervisor/control-plane.ts', 'WORKFLOW_SUPERVISOR_SEMANTIC_BINDING_REQUIREMENT_NOT_FOUND');
 requireText('supervisor/client.ts', 'expected_completion_contract_sha256: input.expectedCompletionContractSha256');
 requireText('supervisor/server.ts', 'p.expected_completion_contract_sha256');
-requireText('adapters/mcp/runtime-gateway/runtime-tool-definitions.ts', 'expected_completion_contract_sha256');
 requireText('adapters/mcp/runtime-gateway/workflow-supervisor-adapter.ts', 'completionContractSha256: workflowSupervisorCompletionContractSha256(task.completionContract)');
 requireText('docs/architecture/CURRENT.md', 'An existing nonterminal unbound task may acquire one explicit Work or Requirement binding');
 forbid('supervisor/client.ts', /reserveWorkflowSupervisorSchedulerRecovery|reserve_scheduler_recovery/, 'Scheduler recovery is not a Supervisor RPC; reconciliation stays on the canonical effect ledger');
@@ -1188,10 +1186,13 @@ requireText('supervisor/server.ts', "req.method === 'task_wake_scheduled'");
 requireText('src/runtime/root/workflow-supervisor-composition.ts', 'bindWorkflowSupervisorScheduledWakeForWork');
 requireText('src/runtime/root/workflow-supervisor-composition.ts', 'scheduleOccurrenceId');
 requireText('src/runtime/workflow/schedules/engine.ts', 'scheduleOccurrenceId: occurrence.occurrenceId');
-requireText('adapters/mcp/runtime-gateway/scheduler-adapter.ts', 'bindWorkflowSupervisorScheduledWakeForWork');
-requireText('adapters/mcp/runtime-gateway/scheduler-adapter.ts', 'async function bindSupervisorWakeForSchedule');
 requireText('adapters/mcp/runtime-gateway/scheduler-adapter.ts', "operation === 'schedule_resume'");
-requireText('adapters/mcp/runtime-gateway/scheduler-adapter.ts', 'bindSupervisorWakeForSchedule(ctx, repository.repoId, saved)');
+forbid('adapters/mcp/runtime-gateway/scheduler-adapter.ts', /bindSupervisorWakeForSchedule|bindWorkflowSupervisorScheduledWakeForWork/, 'Schedule must not bind an autonomous Supervisor on create or resume');
+forbid('adapters/mcp/runtime-gateway/work-controller-operations.ts', /reconcileControllerProgression|bindWorkflowSupervisorConversationForWork|wakeWorkflowSupervisor/, 'Launch Session must not enroll, wake, or reconcile autonomous Supervisor');
+for (const path of ['adapters/mcp/runtime-gateway/runtime-tool-definitions.ts', 'adapters/mcp/runtime-gateway/runtime-tools.ts', 'adapters/mcp/runtime-gateway/core-capability-adapter.ts', 'src/runtime/control-plane/facade/capability-registry.ts']) {
+  forbid(path, /supervisor_task|callWorkflowSupervisorAdapter|controller\.workflow_supervisor/, 'retired autonomous Supervisor must not be a callable or advertised MCP capability');
+}
+requireText('src/runtime/workflow/schedules/work-continuation.ts', 'SCHEDULE_AUTONOMOUS_CONTINUATION_RETIRED');
 requireText('src/runtime/root/workflow-supervisor-composition.ts', 'wakeWorkflowSupervisorScheduledTaskForWork');
 requireText('src/runtime/root/controller-progression-composition.ts', 'wakeWorkflowSupervisorScheduledTaskForWork');
 requireText('src/runtime/root/controller-progression-composition.ts', "if (wake.status === 'woken' && wake.taskId && wake.effectId)");
@@ -1210,7 +1211,6 @@ requireText('supervisor/forge-validators.ts', 'validateSemanticCompletionBinding
 requireText('supervisor/forge-validators.ts', 'function validateWorkCompletion(');
 requireText('supervisor/forge-validators.ts', 'function validateRequirementCompletion(');
 requireText('adapters/mcp/runtime-gateway/runtime-tool-definitions.ts', "work_id: { type: 'string', minLength: 1, maxLength: 256");
-requireText('adapters/mcp/runtime-gateway/runtime-tool-definitions.ts', "requirement_id: { type: 'string', minLength: 1, maxLength: 256");
 requireText('adapters/mcp/runtime-gateway/workflow-supervisor-adapter.ts', 'WORKFLOW_SUPERVISOR_SEMANTIC_BINDING_AMBIGUOUS');
 requireText('adapters/mcp/runtime-gateway/workflow-supervisor-adapter.ts', 'WORKFLOW_SUPERVISOR_SEMANTIC_BINDING_REPO_REQUIRED');
 requireText('adapters/mcp/runtime-gateway/workflow-supervisor-adapter.ts', "...(workId ? { work_id: workId } : {})");

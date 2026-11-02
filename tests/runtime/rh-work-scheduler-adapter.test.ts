@@ -11,7 +11,7 @@ import { callRuntimeTool } from '../../adapters/mcp/runtime-gateway/runtime-tool
 import { reconcileControllerProgression } from '../../src/runtime/root/controller-progression-composition';
 import { bindControllerSessionBinding, claimControllerSession, releaseControllerSession } from '../../packages/kernel/controller/api/index';
 import { upsertChatgptControllerBinding } from '../../adapters/chatgpt/controller-binding-store';
-import { cronDue, scheduleTriggerWindowKey } from '../../packages/kernel/scheduler/application/eligibility';
+import { cronDue } from '../../packages/kernel/scheduler/application/eligibility';
 import { getSchedule, saveSchedule } from '../../packages/kernel/scheduler/api/index';
 import { evaluateSchedule } from '../../src/runtime/workflow/schedules/engine';
 import { createWorkContract } from '../../packages/kernel/work/api/index';
@@ -192,98 +192,18 @@ describe('rh_work Scheduler MCP adapter', () => {
     const { controllerHome, repository, ctx, workId } = fixture();
     const scheduleId = await createShadowKeepalive(ctx, repository.repoId, workId, 'schedule-lifecycle-fixture');
 
-    const controllerStore = { controllerHome, repoId: repository.repoId };
-    const owner = claimControllerSession(controllerStore, {
-      workId,
-      controllerId: 'controller-a',
-      controllerType: 'chatgpt',
-      sessionId: 'session-a',
-      principalId: 'controller-a',
-      controllerInstanceId: 'runtime-a',
-      leaseMs: 60_000,
-    });
-    const controllerBinding = upsertChatgptControllerBinding(controllerStore, {
-      workId,
-      sessionId: owner.sessionId,
-      title: 'scheduled continuation fixture',
-      model: 'gpt-6',
-      reasoning: 'high',
-      tabPolicy: 'auto',
-    });
-    bindControllerSessionBinding(controllerStore, {
-      workId,
-      sessionId: owner.sessionId,
-      binding: controllerBinding.binding,
-    });
-    releaseControllerSession(controllerStore, workId, owner.controllerId);
-
-    const continuation = structured(await callRuntimeTool(ctx, 'rh_work', {
+    const retired = structured(await callRuntimeTool(ctx, 'rh_work', {
       repo_id: repository.repoId,
       operation: 'schedule_create',
       work_id: workId,
       schedule_mode: 'continuation',
       controller_type: 'chatgpt',
-      schedule_name: 'Fixture canonical Controller progression',
-      schedule_request_id: 'schedule-controller-progression-fixture',
-      trigger_type: 'cron',
-      cron_expression: '0 8 */2 * *',
-      schedule_timezone: 'Asia/Shanghai',
-      continuation_hint: 'Continue the exact scheduled Work round.',
-      max_failures: 20,
-      cooldown_minutes: 0,
-      daily_budget_minutes: 600,
-      backoff_base_minutes: 1,
-      backoff_max_minutes: 2,
-      shadow_mode: true,
+      schedule_name: 'Retired autonomous schedule',
+      schedule_request_id: 'schedule-autonomous-creation-denied-fixture',
+      trigger_type: 'manual',
     }));
-    expect(continuation.status).toBe('ok');
-    expect(continuation.data.schedule.action).toMatchObject({
-      operation: 'controller_progression',
-      arguments: { work_id: workId, controller_binding_id: controllerBinding.binding.bindingId },
-    });
-    expect(continuation.data.schedule.trigger).toMatchObject({ type: 'cron', cronExpression: '0 8 */2 * *', timezone: 'Asia/Shanghai' });
-    expect(continuation.data.schedule.policy).toMatchObject({
-      shadowMode: true,
-      maxFailures: 3,
-      dailyBudgetMinutes: 60,
-      cooldownMinutes: 10,
-      backoffBaseMinutes: 10,
-      backoffMaxMinutes: 10,
-    });
-    const legacyContinuation = saveSchedule(controllerHome, {
-      ...continuation.data.schedule,
-      action: { ...continuation.data.schedule.action, operation: 'external_controller_wake' },
-    });
-    expect(legacyContinuation.action.operation).toBe('external_controller_wake');
-    const pausedContinuation = structured(await callRuntimeTool(ctx, 'rh_work', {
-      repo_id: repository.repoId,
-      operation: 'schedule_pause',
-      schedule_id: continuation.data.schedule.scheduleId,
-      reason: 'fixture policy persistence check',
-    }));
-    expect(pausedContinuation.status).toBe('ok');
-    const resumedContinuation = structured(await callRuntimeTool(ctx, 'rh_work', {
-      repo_id: repository.repoId,
-      operation: 'schedule_resume',
-      schedule_id: continuation.data.schedule.scheduleId,
-    }));
-    expect(resumedContinuation.status).toBe('ok');
-    expect(resumedContinuation.data.schedule.enabled).toBe(true);
-    expect(resumedContinuation.data.schedule.action.operation).toBe('controller_progression');
-    expect(resumedContinuation.data.schedule.policy).toMatchObject({
-      shadowMode: true,
-      maxFailures: 3,
-      dailyBudgetMinutes: 60,
-      cooldownMinutes: 10,
-      backoffBaseMinutes: 10,
-      backoffMaxMinutes: 10,
-    });
-    expect(continuation.data.supervisorWakeBinding).toEqual({ status: 'binding_deferred' });
-    const firstCronWindow = scheduleTriggerWindowKey(continuation.data.schedule, { source: 'timer' }, Date.parse('2026-10-17T00:00:00.000Z'));
-    const secondCronWindow = scheduleTriggerWindowKey(continuation.data.schedule, { source: 'timer' }, Date.parse('2026-10-19T00:00:00.000Z'));
-    expect(firstCronWindow).toContain('2026-10-17');
-    expect(secondCronWindow).toContain('2026-10-19');
-    expect(secondCronWindow).not.toBe(firstCronWindow);
+    expect(retired.status).toBe('blocked');
+    expect(retired.summary).toContain('SCHEDULE_AUTONOMOUS_CONTINUATION_RETIRED');
 
     const listed = structured(await callRuntimeTool(ctx, 'rh_work', {
       repo_id: repository.repoId,
