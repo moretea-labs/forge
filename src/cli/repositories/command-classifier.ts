@@ -42,6 +42,12 @@ const READ_ONLY_GIT_SUBCOMMANDS = new Set([
   'count-objects', 'verify-pack', 'check-ignore',
 ]);
 
+/** File-descriptor redirection uses '&' as data flow, not job control. */
+function isRedirectionAmpersand(command: string, index: number): boolean {
+  if (command[index] !== '&' || command[index - 1] === '&' || command[index + 1] === '&') return false;
+  return command[index - 1] === '>' || command[index - 1] === '<' || command[index + 1] === '>';
+}
+
 export function shellSegments(command: string): string[] {
   const segments: string[] = [];
   let current = '';
@@ -73,6 +79,10 @@ export function shellSegments(command: string): string[] {
     }
     if (character === "'" || character === '"') {
       quote = character;
+      current += character;
+      continue;
+    }
+    if (character === '&' && isRedirectionAmpersand(command, index)) {
       current += character;
       continue;
     }
@@ -451,7 +461,10 @@ export function shellCommandHasUnsafeConstructs(command: string): { unsafe: bool
   const normalized = command.trim();
   const operators = shellOperatorView(normalized);
   // Background jobs
-  if (/(?:^|[^&])&(?:[^&]|$)/.test(operators.replace(/&&/g, ' '))) {
+  const controlOperators = [...operators].map((char, index) =>
+    char === '&' && isRedirectionAmpersand(operators, index) ? ' ' : char
+  ).join('');
+  if (/(?:^|[^&])&(?:[^&]|$)/.test(controlOperators.replace(/&&/g, ' '))) {
     reasons.push('background execution (&) is not allowed on the direct process path');
   }
   // Dynamic substitution / eval

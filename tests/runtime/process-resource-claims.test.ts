@@ -4,6 +4,7 @@ import {
   claimsForRepositoryCommand,
   scopeResourceClaims,
 } from '../../src/runtime/execution/process-runtime/resource-claims';
+import { classifyRepositoryCommand, shellCommandHasUnsafeConstructs, shellSegments } from '../../src/cli/repositories/command-classifier';
 import { claimsConflict } from '../../src/runtime/resources/claims/conflicts';
 import type { ExecutionLease } from '../../src/runtime/resources/leases/types';
 import { claimsForAssistantPluginAction } from '../../src/runtime/plugins/store';
@@ -17,6 +18,29 @@ describe('Process Runtime fine-grained resource claims', () => {
   test('readonly commands claim workspace read only', () => {
     const claims = claimsForRepositoryCommand(['git', 'status'], 'repo1', 'co1');
     expect(claims).toEqual([{ resourceKey: 'workspace:co1', mode: 'read' }]);
+  });
+
+  test('ordinary xcodebuild log redirection does not acquire unrelated Git-ref ownership', () => {
+    const command = "cd /worktrees/ocr && xcodebuild -project ios/App.xcodeproj -derivedDataPath .forge/ios/ocr -jobs 2 build > .forge/ios/build.log 2>&1; rc=$?; grep 'BUILD' .forge/ios/build.log | tail -2; exit $rc";
+    expect(shellCommandHasUnsafeConstructs(command).unsafe).toBe(false);
+    expect(shellSegments('xcodebuild build > result.log 2>&1 && echo done')).toEqual([
+      'xcodebuild build > result.log 2>&1',
+      'echo done',
+    ]);
+    expect(classifyRepositoryCommand(command).risk).toBe('workspace_write');
+    const claims = claimsForRepositoryCommand(command, 'repo1', 'checkout-ocr');
+    expect(claims.some((claim) => claim.resourceKey === 'git-refs:repo1')).toBe(false);
+    expect(claims.some((claim) => claim.resourceKey === 'git-index:checkout-ocr')).toBe(false);
+    expect(claims.some((claim) => claimsConflict(claim, lease('git-refs:repo1', 'exclusive')))).toBe(false);
+
+    const actualBackground = command + ' &';
+    expect(shellCommandHasUnsafeConstructs(actualBackground).unsafe).toBe(true);
+    expect(classifyRepositoryCommand(actualBackground).risk).toBe('destructive');
+    expect(claimsForRepositoryCommand(actualBackground, 'repo1', 'checkout-ocr'))
+      .toContainEqual({ resourceKey: 'git-refs:repo1', mode: 'exclusive' });
+    for (const redirection of ['2>&1', '1>&2', '<&0', '&>build.log', '&>>build.log']) {
+      expect(shellCommandHasUnsafeConstructs('xcodebuild build ' + redirection).unsafe).toBe(false);
+    }
   });
 
   test('Homebrew host mutations do not monopolize repository write resources', () => {
