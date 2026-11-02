@@ -151,7 +151,7 @@ test('late old completion cannot create another successor after deadline migrati
 });
 
 
-test('GitHub-only tasks expose real Git status progress without creating Work', async () => {
+test('GitHub-only tasks ignore untracked checkout artifacts but count tracked source progress', async () => {
   const fx = fixture();
   const root = join(fx.home, 'source');
   mkdirSync(root);
@@ -165,9 +165,22 @@ test('GitHub-only tasks expose real Git status progress without creating Work', 
   await writeRepositoryGitStatusSample(fx.home, repository);
   const before = hooks.workProgressFingerprint!(task);
   expect(before).toBeTruthy();
+
+  mkdirSync(join(root, '.forge', 'worktrees', 'sibling'), { recursive: true });
+  writeFileSync(join(root, '.forge', 'worktrees', 'sibling', 'README.md'), 'unrelated checkout artifact');
+  writeFileSync(join(root, 'pr507-CURRENT-merged.md'), 'unrelated handoff note');
+  await writeRepositoryGitStatusSample(fx.home, repository);
+  expect(hooks.workProgressFingerprint!(task)).toBe(before);
+
   writeFileSync(join(root, 'code.ts'), 'export const value = 2;');
   await writeRepositoryGitStatusSample(fx.home, repository);
-  expect(hooks.workProgressFingerprint!(task)).not.toBe(before);
+  const trackedChange = hooks.workProgressFingerprint!(task);
+  expect(trackedChange).not.toBe(before);
+
+  writeFileSync(join(root, 'new-source.ts'), 'export const added = true;');
+  git('add', 'new-source.ts');
+  await writeRepositoryGitStatusSample(fx.home, repository);
+  expect(hooks.workProgressFingerprint!(task)).not.toBe(trackedChange);
   fx.store.close();
 });
 
