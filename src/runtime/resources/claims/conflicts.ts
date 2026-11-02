@@ -107,6 +107,16 @@ export function resourceKeysOverlap(leftRaw: string, rightRaw: string): boolean 
   const right = normalizeResourceKey(rightRaw);
   if (left === right) return true;
 
+  // Explicit Xcode caches also carry a shared read on build-cache:<repo>.
+  // Opaque builds retain its write lock; concrete caches serialize by physical
+  // path (including ancestor/child overlap), even across different repositories.
+  const cacheMarker = ':xcode-derived-data:';
+  if (left.startsWith('build-cache:') && right.startsWith('build-cache:')
+    && left.includes(cacheMarker) && right.includes(cacheMarker)) {
+    return pathOverlaps(left.slice(left.indexOf(cacheMarker) + cacheMarker.length).replace(/^\/+/, ''),
+      right.slice(right.indexOf(cacheMarker) + cacheMarker.length).replace(/^\/+/, ''));
+  }
+
   if (left === 'repo-content:*') {
     return right === 'repo-content:*'
       || right.startsWith('path:')

@@ -500,6 +500,7 @@ export async function executeRepositoryCommandViaProcessRuntime(
       executionIdentity.checkoutId,
       input.repository.defaultBranch,
       input.repository.canonicalRoot,
+      cwd,
     ),
     executionIdentity.repositoryId,
     executionIdentity.checkoutId,

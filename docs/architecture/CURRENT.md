@@ -1,5 +1,9 @@
 # Forge Current Architecture
 
+### Xcode DerivedData resource claims (Refs #478)
+
+Process Runtime resolves an explicit literal `xcodebuild -derivedDataPath` against the actual execution cwd, canonicalizes existing symlink ancestors, and claims the physical cache path through the existing Lease owner. Distinct caches may build concurrently across checkouts; equal or ancestor/child paths conflict across repositories. Each concrete cache also holds a repository build-cache read claim, so an opaque/default-cache build's existing write claim remains exclusive. Dynamic or opaque compound shell commands, dangling symlinks, duplicate cache arguments and output/cache overrides retain that conservative repository claim. Native XCTest commands additionally retain the host-wide simulator-test write claim. This changes command resource admission only; it does not create a scheduler, build executor or progress authority.
+
 ### Requirement-owned semantic progress (Issue #483 migration slice)
 
 Before Supervisor/Scheduler startup, the existing Requirement SQLite owner normalizes historical `done` rows only when their preserved legacy acceptance contains a non-empty reviewer/rationale, valid acceptance time, and valid Plan references. It adds a content-addressed canonical accepted-evidence reference and empty remaining work in one transaction with the existing audit log. Terminal state, both revisions, timestamps, and legacy provenance remain unchanged; incomplete provenance remains unaccepted. Each row converts once, with no new migration-state authority. Existing whole-database Recovery backup/restore covers activation rollback; a transaction failure rolls back all conversions and audit entries. Ordinary terminal writes remain forbidden after conversion.
