@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { join, resolve } from 'path';
 import { spawnSync } from 'child_process';
 import { runProcess } from '../../src/effects/process-runner';
 import {
@@ -21,6 +21,40 @@ import {
 } from '../../adapters/mcp/runtime-gateway/persisted-check-process';
 
 const diagnosticArgs = ['runtime', 'diagnostic-read', '--tool', 'workflow_watchdog_report'];
+
+describe('bounded runtime process inventory', () => {
+  test.skipIf(process.platform === 'win32')('terminates a hung inventory scan instead of blocking diagnostics indefinitely', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-process-scan-'));
+    try {
+      writeFileSync(join(root, 'ps'), '#!/bin/sh\nexec /bin/sleep 10\n', { mode: 0o700 });
+      const child = spawnSync(process.execPath, ['-e', `
+        import { collectRuntimeProcesses } from ${JSON.stringify(resolve(import.meta.dir, '../../src/runtime/diagnostics/performance.ts'))};
+        try { collectRuntimeProcesses([], { forceRefresh: true }); console.log('unexpected_success'); }
+        catch (error) { console.log(error.message); }
+      `], { env: { ...process.env, PATH: root }, encoding: 'utf8', timeout: 5_000, killSignal: 'SIGKILL' });
+      expect(child.error).toBeUndefined();
+      expect(child.status).toBe(0);
+      expect(child.stdout).toContain('RUNTIME_PROCESS_INVENTORY_UNAVAILABLE');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  }, 7_000);
+
+  test.skipIf(process.platform === 'win32')('refuses temp removal when process occupancy cannot be observed', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-process-scan-'));
+    const candidate = join(root, 'forge-owned-temp');
+    try {
+      writeFileSync(join(root, 'ps'), '#!/bin/sh\nexit 1\n', { mode: 0o700 });
+      writeFileSync(candidate, 'retain while occupancy is unknown');
+      const child = spawnSync(process.execPath, ['-e', `
+        import { removeRuntimeTempEntry } from ${JSON.stringify(resolve(import.meta.dir, '../../src/runtime/diagnostics/performance.ts'))};
+        try { removeRuntimeTempEntry(${JSON.stringify(candidate)}, { roots: [${JSON.stringify(root)}], minAgeMinutes: 0 }); console.log('unexpected_success'); }
+        catch (error) { console.log(error.message); }
+      `], { env: { ...process.env, PATH: root }, encoding: 'utf8', timeout: 5_000, killSignal: 'SIGKILL' });
+      expect(child.status).toBe(0);
+      expect(child.stdout).toContain('RUNTIME_PROCESS_INVENTORY_UNAVAILABLE');
+      expect(readFileSync(candidate, 'utf8')).toBe('retain while occupancy is unknown');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
 
 describe('structured process stdout capture', () => {
   test('preserves machine framing until validation and reports byte-cap truncation', () => {

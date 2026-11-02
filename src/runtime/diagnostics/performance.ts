@@ -178,9 +178,13 @@ export function clearRuntimeProcessListCacheForTest(): void {
 function scanRuntimeProcessList(): RuntimeProcessBase[] {
   let output = '';
   try {
-    output = execFileSync('ps', ['-axo', 'pid=,ppid=,pgid=,etime=,%cpu=,%mem=,command='], { encoding: 'utf8', maxBuffer: 1024 * 1024 });
+    output = execFileSync('ps', ['-axo', 'pid=,ppid=,pgid=,etime=,%cpu=,%mem=,command='], {
+      encoding: 'utf8', maxBuffer: 1024 * 1024, timeout: 2_000, killSignal: 'SIGKILL',
+    });
   } catch (_error) {
-    return [];
+    // Host pressure can stall ps itself. An unavailable inventory proves neither
+    // a healthy idle host nor that a scratch path is unoccupied for removal.
+    throw new Error('RUNTIME_PROCESS_INVENTORY_UNAVAILABLE: bounded process scan failed');
   }
   const samples: RuntimeProcessBase[] = [];
   for (const raw of output.split('\n')) {
