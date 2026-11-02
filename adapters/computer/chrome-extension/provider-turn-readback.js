@@ -45,8 +45,10 @@
       if (message?.author?.role !== 'assistant' || (message.recipient && message.recipient !== 'all')) continue;
       // An earlier assistant final is not proof if a newer assistant is still
       // generating in this same exchange.
-      assistant = message.status === 'finished_successfully' && message.end_turn === true
-        && typeof message.id === 'string' ? message : undefined;
+      const completed = message.status === 'finished_successfully' && message.end_turn === true;
+      const failed = message.status === 'failed' || message.status === 'cancelled';
+      assistant = (completed || failed) && typeof message.id === 'string'
+        ? { ...message, outcome: failed ? 'failed' : 'completed' } : undefined;
     }
     return assistant && { ...assistant, verifiedUserTurnId: data.messages[index]?.id };
   }
@@ -104,15 +106,21 @@
             if (body.length > MAX_BODY) break;
             const assistant = verifiedAssistant(JSON.parse(body), hint);
             if (!assistant) continue;
+            const failed = assistant.outcome === 'failed';
             const accepted = await chrome.runtime.sendMessage({
               type: 'forge-computer-provider-turn-event',
               event: {
                 task_id: hint.task_id, effect_id: hint.effect_id, receipt_challenge: hint.receipt_challenge,
                 turn_id: assistant.verifiedUserTurnId, request_id: hint.request_id,
                 conversation_id: hint.conversation_id, started_at_ms: hint.started_at_ms,
-                outcome: 'completed', status_code: 200, content_type: 'application/json',
+                outcome: failed ? 'failed' : 'completed', status_code: 200, content_type: 'application/json',
                 proof_source: PROOF, assistant_message_id: assistant.id,
-                assistant_status: 'finished_successfully', assistant_end_turn: true,
+                assistant_status: assistant.status, assistant_end_turn: assistant.end_turn === true,
+                ...(failed ? {
+                  stream_done: true,
+                  failure_code: assistant.status === 'cancelled'
+                    ? 'CHATGPT_PROVIDER_TURN_CANCELLED' : 'CHATGPT_PROVIDER_TURN_FAILED',
+                } : {}),
               },
             });
             // The existing Computer outbox owns durability. A transient refusal
