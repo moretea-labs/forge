@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { getRepository } from '../../cli/repositories/registry';
+import { cachedGitIdentity } from '../../cli/repository/inspector';
 import { getWorkContract, semanticWorkState } from '../../../packages/kernel/work/api/index';
 import {
   controllerRoundBlockerClass,
@@ -301,6 +302,18 @@ function terminalWorkSupervisorStopReason(controllerHome: string, task: Workflow
 
 export function forgeWorkflowSupervisorLifecycleHooks(controllerHome: string): WorkflowSupervisorLifecycleHooks {
   const browserTaskActive = createForgeWorkflowSupervisorBrowserTaskActive(controllerHome);
+  // Reuse the existing bounded Git identity cache: GitHub-only tasks do not
+  // need a semantic Work to report real source changes.
+  const progressFingerprint = (task: WorkflowSupervisorTask): string | undefined => {
+    const semantic = workflowSupervisorSemanticProgressFingerprint(controllerHome, task);
+    if (semantic || task.continuationPolicy.kind !== 'standalone_supervisor') return semantic;
+    const repoId = workflowSupervisorContractText(task, 'repo_id');
+    if (workflowSupervisorContractText(task, 'requirement_id') || workflowSupervisorContractText(task, 'work_id')
+      || (repoId && listChatgptWorkBindingsForConversation({ controllerHome, repoId }, task.conversationId).length > 0)) return undefined;
+    const repository = repoId ? getRepository(repoId, controllerHome) : undefined;
+    if (!repository) return undefined;
+    return cachedGitIdentity(repository.canonicalRoot).workingTreeFingerprint;
+  };
   return {
     terminalWorkStopReasonForTask: (task) => terminalWorkSupervisorStopReason(controllerHome, task),
     canonicalObjectiveForTask: (task) => {
@@ -350,7 +363,7 @@ export function forgeWorkflowSupervisorLifecycleHooks(controllerHome: string): W
     },
     effectDispatchEvidence: ({ task }) => {
       const claim = getRuntimeWriteClaim();
-      const progress = workflowSupervisorSemanticProgressFingerprint(controllerHome, task);
+      const progress = progressFingerprint(task);
       return {
         ...(claim && !claim.unmanaged
           ? {
@@ -365,7 +378,7 @@ export function forgeWorkflowSupervisorLifecycleHooks(controllerHome: string): W
     },
     // Compatibility hook name; the value is Requirement-first semantic progress
     // for Requirement-only tasks and legacy Work progress otherwise.
-    workProgressFingerprint: (task) => workflowSupervisorSemanticProgressFingerprint(controllerHome, task),
+    workProgressFingerprint: progressFingerprint,
     inheritedEffectDispatch: (task, effect) => {
       if (effect.kind !== 'enrollment') return undefined;
       const repoId = workflowSupervisorContractText(task, 'repo_id');

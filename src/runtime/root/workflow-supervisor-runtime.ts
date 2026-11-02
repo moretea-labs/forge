@@ -594,14 +594,9 @@ export async function startWorkflowSupervisorRuntime(
     nativeBrowser = startWorkflowSupervisorNativeBrowserAdapter(controlPlane, discovery, {
       targetPort,
       nowMs: () => Date.now(),
-      // Liveness authority for one applied provider turn. Live evidence: these
-      // Supervisor turns run for 10-50 minutes, so any quiet window shorter than
-      // that reserved duplicate recovery prompts on turns that were still
-      // working (60s and then 3 minutes both fired in production). This is the
-      // existing bounded maximum, and the digest itself now tracks live turn
-      // activity, so the window only elapses on a genuinely silent surface. A
-      // real provider failure is classified from provider failure text
-      // independently of this threshold.
+      // Thirty minutes without durable source/semantic progress permits a
+      // separately identified recovery turn, including stale generating and
+      // disconnected receivers. Browser activity cannot reset that deadline.
       providerIdleGraceMs: WORKFLOW_SUPERVISOR_PROVIDER_IDLE_GRACE_MS,
       providerScopeKey: controllerHome,
       sleep: async (ms) => { await new Promise((resolve) => setTimeout(resolve, ms)); },

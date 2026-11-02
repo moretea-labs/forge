@@ -17,6 +17,7 @@ import {
 } from '../adapters/chatgpt/provider-delivery';
 import { parseChatgptConversationIdentity } from './chatgpt-conversation';
 import { WorkflowSupervisorControlPlane } from './control-plane';
+import { WORKFLOW_SUPERVISOR_PROVIDER_IDLE_GRACE_MS } from './store';
 import { hasCommittedSupervisorEnvelope, parseSupervisorCompletion, renderEffectMarker, sha256 } from './protocol';
 import type { WorkflowSupervisorEphemeralDiscovery } from './server';
 import type {
@@ -712,6 +713,14 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     // One Supervisor terminal-event authority. A Work closed while this
     // consumer was offline cannot keep delivering a stale effect on restart.
     this.control.reconcileTerminalWorkBoundTasks();
+    // A disconnected receiver cannot veto the task's durable progress deadline.
+    // Account-wide Retry-After defers both recovery and dispatch, never resets it.
+    if (chatgptProviderBackpressureRemainingMs(this.deps.providerScopeKey, this.deps.nowMs()) === 0) {
+      for (const task of this.control.browserTasks()) {
+        try { this.control.recoverProgressDeadline(task.taskId, this.deps.nowMs(), WORKFLOW_SUPERVISOR_PROVIDER_IDLE_GRACE_MS); }
+        catch (error) { this.noteTaskFailure(consumerFailureCode(error, 'WORKFLOW_SUPERVISOR_DEADLINE_RECOVERY_FAILED'), task); this.deps.onError(error); }
+      }
+    }
     this.syncTaskStallProjections();
     const tasks = this.control.browserTasks();
     this.lastRunHadTasks = tasks.length > 0;
@@ -1006,9 +1015,9 @@ export class WorkflowSupervisorNativeBrowserAdapter {
         observedAtMs: this.deps.nowMs(), graceMs: this.deps.providerIdleGraceMs });
       poll = this.control.browserPoll({ conversationId: task.conversationId, conversationUrl: task.conversationUrl });
       const staleTurnRecovery = poll.command?.kind === 'recovery';
-      // Recovery no longer clicks Stop: a live provider turn always wins.
-      // Keep the original generation untouched until the provider is idle or reports failure.
-      if (providerBusy && !providerFailureCode) return;
+      // A deadline may reserve recovery despite stale generating. Preparation
+      // still owns UI readiness; a blocked recovery escalates at its deadline.
+      if (providerBusy && !providerFailureCode && !staleTurnRecovery) return;
       if (latestRoleStillUser && !providerFailureCode && !staleTurnRecovery) return;
     }
     providerBackpressureMs = chatgptProviderBackpressureRemainingMs(this.deps.providerScopeKey, this.deps.nowMs());
