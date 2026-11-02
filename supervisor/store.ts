@@ -191,6 +191,7 @@ function appliedEffectAwaitingCompletionWithin(db: Database, taskId: string): bo
     )
     SELECT 1 AS ok FROM effects e
     WHERE e.task_id=?
+      AND NOT EXISTS (SELECT 1 FROM events retired WHERE retired.effect_id=e.effect_id AND retired.kind='effect_outcome_unknown_superseded')
       AND EXISTS (SELECT 1 FROM events applied
         WHERE applied.effect_id=e.effect_id AND applied.kind='effect_applied')
       AND NOT EXISTS (SELECT 1 FROM settled WHERE settled.effect_id=e.effect_id)
@@ -282,13 +283,12 @@ export const WORKFLOW_SUPERVISOR_MAX_PREFLIGHT_RELEASE_ATTEMPTS = 3;
 
 /**
  * Once a provider has accepted a Supervisor effect, recovery never replays that
- * source mutation. It may emit at most two separately identified recovery turns,
- * matching the repository-wide three-provider-attempt ceiling (initial turn plus
- * two causal retries). The depth is derived from effect origin links, not stored
- * as another lifecycle state.
+ * source mutation. Two same-conversation recovery turns exhaust the local
+ * strategy; the progress deadline then escalates to the same Project's fresh
+ * conversation. The depth is derived from effect origin links.
  */
 export const WORKFLOW_SUPERVISOR_MAX_PROVIDER_RECOVERY_TURNS = 2;
-/** Stable idle evidence, never Runtime heartbeat, starts the bounded recovery clock. */
+/** No-progress deadline; also bounds the legacy stable-idle grace. Never reset by heartbeat. */
 export const WORKFLOW_SUPERVISOR_PROVIDER_IDLE_GRACE_MS = 30 * 60_000;
 export const WORKFLOW_SUPERVISOR_DISPATCH_RETRY_BASE_MS = 30_000;
 export const WORKFLOW_SUPERVISOR_DISPATCH_RETRY_MAX_MS = 10 * 60_000;
@@ -1616,6 +1616,7 @@ export class WorkflowSupervisorStore {
     return this.read((db) => {
       const row = statement(db, `SELECT e.* FROM effects e
         WHERE e.task_id = ?
+          AND NOT EXISTS (SELECT 1 FROM events retired WHERE retired.effect_id=e.effect_id AND retired.kind='effect_outcome_unknown_superseded')
           AND EXISTS (SELECT 1 FROM events applied WHERE applied.effect_id = e.effect_id AND applied.kind = 'effect_applied')
           AND NOT EXISTS (SELECT 1 FROM completions c WHERE c.task_id = e.task_id AND c.source_effect_id = e.effect_id)
           AND NOT EXISTS (SELECT 1 FROM effects child WHERE child.origin_key = 'provider-recovery:' || e.effect_id)
@@ -1629,6 +1630,7 @@ export class WorkflowSupervisorStore {
     return this.read((db) => {
       const row = statement(db, `SELECT e.* FROM effects e
         WHERE e.task_id = ?
+          AND NOT EXISTS (SELECT 1 FROM events retired WHERE retired.effect_id=e.effect_id AND retired.kind='effect_outcome_unknown_superseded')
           AND EXISTS (SELECT 1 FROM events applied WHERE applied.effect_id = e.effect_id AND applied.kind = 'effect_applied')
           AND NOT EXISTS (SELECT 1 FROM completions c WHERE c.task_id = e.task_id AND c.source_effect_id = e.effect_id)
           AND NOT EXISTS (SELECT 1 FROM effects child
@@ -1650,6 +1652,99 @@ export class WorkflowSupervisorStore {
    */
   hasAppliedEffectAwaitingCompletion(taskId: string): boolean {
     return this.read((db) => appliedEffectAwaitingCompletionWithin(db, taskId));
+  }
+
+  /** Persist only changes to real lower-layer progress. Browser activity is never an input. */
+  progressDeadline(taskId: string, nowMs: number, graceMs: number, progressFingerprint?: string): {
+    source: WorkflowSupervisorEffect; fresh: boolean; deadlineAtMs: number;
+  } | undefined {
+    if (!Number.isFinite(nowMs) || !Number.isFinite(graceMs) || graceMs < 1_000) throw new Error('WORKFLOW_SUPERVISOR_DEADLINE_INVALID');
+    if (this.terminalAction(taskId)) return undefined;
+    const source = this.currentUnappliedEffect(taskId) ?? this.latestAppliedLeafEffectWithoutCompletion(taskId);
+    if (!source) return undefined; // Includes scheduled WAIT: only its Schedule may wake it.
+    return this.transaction((db) => {
+      const latest = statement(db, `SELECT payload_json, occurred_at FROM events
+        WHERE task_id=? AND kind='task_effective_progress' ORDER BY event_id DESC LIMIT 1`, s => s.get(taskId)) as { payload_json?: string; occurred_at?: string } | undefined;
+      const dispatch = effectDispatchLedger(db, source.effectId);
+      const baseline = statement(db, `SELECT payload_json FROM events WHERE effect_id=? AND kind='effect_dispatch_started'
+        ORDER BY event_id LIMIT 1`, s => s.get(source.effectId)) as { payload_json?: string } | undefined;
+      const priorFingerprint = parsedObject(latest?.payload_json).fingerprint ?? parsedObject(baseline?.payload_json).work_progress_fingerprint;
+      let progressAtMs = Date.parse(latest?.occurred_at ?? '');
+      if (progressFingerprint && priorFingerprint !== progressFingerprint) {
+        // Establish a missing baseline at the original effect time, not restart time.
+        progressAtMs = priorFingerprint ? nowMs : Date.parse(source.createdAt);
+        statement(db, 'INSERT INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', s => s.run(
+          taskId, `task-progress:${taskId}:${randomUUID()}`, 'task_effective_progress', source.effectId,
+          json({ fingerprint: progressFingerprint }), new Date(progressAtMs).toISOString()));
+      }
+      const attemptAtMs = Math.max(Date.parse(source.createdAt), dispatch.lastOccurredAtMs || 0);
+      const migrations = statement(db, `SELECT COUNT(*) AS total FROM events WHERE task_id=? AND kind='conversation_migrated'
+        AND event_id>COALESCE((SELECT MAX(event_id) FROM events WHERE task_id=? AND kind='assistant_completion'),0)`, s => s.get(taskId, taskId)) as { total?: number };
+      // Repeated failures cool down, never become permanently exhausted.
+      const delayMs = graceMs * 2 ** Math.min(3, Math.max(0, (migrations.total ?? 0) - 2));
+      // Repository progress can belong to a sibling task. It may extend the
+      // soft deadline, never keep this attempt alive without an absolute bound.
+      const deadlineAtMs = Math.min(Math.max(attemptAtMs, Number.isFinite(progressAtMs) ? progressAtMs : 0) + delayMs,
+        attemptAtMs + Math.max(delayMs, graceMs * 4));
+      if (nowMs < deadlineAtMs) return undefined;
+      const applied = statement(db, "SELECT 1 FROM events WHERE effect_id=? AND kind='effect_applied' LIMIT 1", s => s.get(source.effectId));
+      return { source, deadlineAtMs, fresh: providerRecoveryDepthWithin(db, source.effectId) >= WORKFLOW_SUPERVISOR_MAX_PROVIDER_RECOVERY_TURNS
+        || (source.kind === 'recovery' && !applied) };
+    });
+  }
+
+  /** A timeout retires an execution obligation, never claims Provider completion/failure. */
+  reserveProgressDeadlineRecovery(input: {
+    taskId: string; sourceEffectId: string; nowMs: number; fresh: boolean; projectUrl?: string;
+    replacement: { effectId: string; prompt: string };
+  }): { action: 'recovery_reserved' | 'conversation_migrated'; effect: WorkflowSupervisorEffect } | undefined {
+    return this.transaction(db => {
+      const row = statement(db, 'SELECT * FROM tasks WHERE task_id=?', s => s.get(input.taskId)) as Record<string, unknown> | undefined;
+      if (!row) throw new Error('WORKFLOW_SUPERVISOR_TASK_UNKNOWN');
+      const task = taskFromRow(row);
+      if (statement(db, "SELECT 1 FROM events WHERE task_id=? AND kind IN ('terminal_done','terminal_needs_user','terminal_stopped') LIMIT 1", s => s.get(input.taskId))) return undefined;
+      const source = statement(db, 'SELECT task_id FROM effects WHERE effect_id=?', s => s.get(input.sourceEffectId)) as { task_id?: string } | undefined;
+      if (source?.task_id !== input.taskId) throw new Error('WORKFLOW_SUPERVISOR_SOURCE_EFFECT_MISMATCH');
+      const current = oldestUnappliedEffect(db, input.taskId) ?? this.latestAppliedLeafEffectWithoutCompletion(input.taskId);
+      if (current?.effectId !== input.sourceEffectId) return undefined;
+      if (effectSuperseded(db, input.sourceEffectId)
+        || statement(db, 'SELECT 1 FROM completions WHERE task_id=? AND source_effect_id=? LIMIT 1', s => s.get(input.taskId, input.sourceEffectId))) return undefined;
+      const originKey = input.fresh ? `fresh-conversation:${input.taskId}:deadline:${input.sourceEffectId}` : `provider-recovery:${input.sourceEffectId}`;
+      if (statement(db, 'SELECT 1 FROM effects WHERE origin_key=? LIMIT 1', s => s.get(originKey))) return undefined;
+      if (input.fresh && !input.projectUrl) return undefined;
+      const occurredAt = new Date(input.nowMs).toISOString();
+      const effect = this.reserveEffectWithin(db, { taskId: input.taskId, effectId: input.replacement.effectId,
+        kind: input.fresh ? 'enrollment' : 'recovery', originKey, prompt: input.replacement.prompt });
+      // reserveEffectWithin uses wall time for ordinary callers; deadline attempts
+      // use the caller's canonical clock, including deterministic restart tests.
+      statement(db, 'UPDATE effects SET created_at=? WHERE effect_id=?', s => s.run(occurredAt, effect.effectId));
+      effect.createdAt = occurredAt;
+      if (!input.fresh && !statement(db, "SELECT 1 FROM events WHERE effect_id=? AND kind='effect_applied' LIMIT 1", s => s.get(input.sourceEffectId))) {
+        // An older unapplied obligation would otherwise keep winning command
+        // selection forever and hide its newly reserved recovery.
+        statement(db, 'INSERT INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', s => s.run(
+          input.taskId, `deadline-retired:${input.sourceEffectId}`, 'effect_outcome_unknown_superseded', input.sourceEffectId,
+          json({ reason: 'progress_deadline_elapsed', replacement_effect_id: effect.effectId, provider_outcome: 'unknown' }), occurredAt));
+      }
+      if (input.fresh) {
+        const unresolved = statement(db, `SELECT e.effect_id FROM effects e WHERE e.task_id=? AND e.effect_id<>?
+          AND NOT EXISTS (SELECT 1 FROM completions c WHERE c.source_effect_id=e.effect_id)
+          AND NOT EXISTS (SELECT 1 FROM events retired WHERE retired.effect_id=e.effect_id AND retired.kind='effect_outcome_unknown_superseded')`,
+          s => s.all(input.taskId, effect.effectId)) as Array<{ effect_id: string }>;
+        for (const old of unresolved) statement(db, 'INSERT INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', s => s.run(
+          input.taskId, `deadline-retired:${old.effect_id}`, 'effect_outcome_unknown_superseded', old.effect_id,
+          json({ reason: 'progress_deadline_elapsed', replacement_effect_id: effect.effectId, provider_outcome: 'unknown' }), occurredAt));
+        statement(db, 'UPDATE tasks SET conversation_id=?,conversation_url=? WHERE task_id=?', s => s.run(`bootstrap:${input.taskId}`, 'https://chatgpt.com/', input.taskId));
+        statement(db, 'INSERT INTO events(task_id,event_key,kind,payload_json,occurred_at) VALUES (?,?,?,?,?)', s => s.run(
+          input.taskId, `conversation-migrated:deadline:${input.sourceEffectId}`, 'conversation_migrated',
+          json({ from_conversation_id: task.conversationId, to_conversation_id: `bootstrap:${input.taskId}`, fresh_conversation: true,
+            replacement_effect_id: effect.effectId, request_id: `deadline:${input.sourceEffectId}`, reason: 'progress_deadline_elapsed' }), occurredAt));
+      }
+      statement(db, 'INSERT INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', s => s.run(
+        input.taskId, `deadline-recovery:${input.sourceEffectId}`, 'assistant_recovery_reserved', input.sourceEffectId,
+        json({ recovery_effect_id: effect.effectId, reason: 'progress_deadline_elapsed', fresh_conversation: input.fresh }), occurredAt));
+      return { action: input.fresh ? 'conversation_migrated' : 'recovery_reserved', effect };
+    });
   }
 
   observeProviderTurn(input: {
@@ -1975,6 +2070,7 @@ export class WorkflowSupervisorStore {
       if (!effect?.task_id) throw new Error('WORKFLOW_SUPERVISOR_EFFECT_UNKNOWN');
       const taskRow = statement(db, 'SELECT continuation_policy_json FROM tasks WHERE task_id = ?', (s) => s.get(effect.task_id)) as { continuation_policy_json?: string } | undefined;
       if (!taskRow) throw new Error('WORKFLOW_SUPERVISOR_TASK_UNKNOWN');
+      if (effectSuperseded(db, effectId)) return false;
       if (parsedObject(taskRow.continuation_policy_json).project_binding_required === true
         && !statement(db, "SELECT 1 FROM events WHERE task_id=? AND kind='bootstrap_project_bound' LIMIT 1", (s) => s.get(effect.task_id))) {
         throw new Error('WORKFLOW_SUPERVISOR_BOOTSTRAP_PROJECT_REQUIRED');
@@ -2273,6 +2369,7 @@ export class WorkflowSupervisorStore {
       if (!task) throw new Error('WORKFLOW_SUPERVISOR_TASK_UNKNOWN');
       const sourceEffect = statement(db, 'SELECT task_id FROM effects WHERE effect_id = ?', (s) => s.get(input.sourceEffectId)) as { task_id?: string } | undefined;
       if (sourceEffect?.task_id !== input.taskId) throw new Error('WORKFLOW_SUPERVISOR_SOURCE_EFFECT_MISMATCH');
+      if (effectSuperseded(db, input.sourceEffectId)) throw new Error('WORKFLOW_SUPERVISOR_SOURCE_EFFECT_RETIRED');
       const applied = statement(db, "SELECT 1 AS ok FROM events WHERE effect_id = ? AND kind = 'effect_applied' LIMIT 1", (s) => s.get(input.sourceEffectId));
       if (!applied) throw new Error('WORKFLOW_SUPERVISOR_SOURCE_EFFECT_NOT_APPLIED');
       const priorForEffect = statement(db, 'SELECT completion_fingerprint FROM completions WHERE task_id = ? AND source_effect_id = ?', (s) => s.get(input.taskId, input.sourceEffectId)) as { completion_fingerprint?: string } | undefined;
