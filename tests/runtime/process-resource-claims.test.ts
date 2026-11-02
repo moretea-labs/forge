@@ -54,6 +54,7 @@ describe('Process Runtime fine-grained resource claims', () => {
       const absolute = claimsForRepositoryCommand(['xcodebuild', '-derivedDataPath', join(cwd, 'cache'), 'build'], 'repo1', 'co-a');
       for (const command of [
         'xcodebuild -derivedDataPath cache build',
+        'xcrun xcodebuild -derivedDataPath cache build',
         ['bash', '-lc', 'xcodebuild -derivedDataPath cache build'],
         `cd '${join(root, 'alias')}' && xcodebuild -derivedDataPath cache build`,
       ]) {

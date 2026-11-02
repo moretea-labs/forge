@@ -548,7 +548,8 @@ export function claimsForRepositoryCommand(
   const classification = classifyRepositoryCommand(command, defaultBranch);
   const canonical = normalizeRepositoryCommand(command);
   const focused = isFocusedCheckCommand(command);
-  const cacheClaims = xcodeBuildCacheClaims(command, repoId, executionCwd) ?? [claimBuildCacheWrite(repoId)];
+  const explicitXcodeCache = xcodeBuildCacheClaims(command, repoId, executionCwd);
+  const cacheClaims = explicitXcodeCache ?? [claimBuildCacheWrite(repoId)];
   const iosSimulatorClaims = iosSimulatorTestCommandClaims(command, repoId, checkoutId, cacheClaims);
   if (iosSimulatorClaims) return iosSimulatorClaims;
   const hostClaims = hostOnlyCommandClaims(command, repoId, checkoutId, repoRoot);
@@ -584,7 +585,7 @@ export function claimsForRepositoryCommand(
     for (const path of extractLikelyPaths(command).slice(0, 16)) claims.push(claimPathWrite(path, checkoutId, repoId));
     return normalizeClaims(claims);
   }
-  if (looksLikeBuildOrTest(command)) {
+  if (explicitXcodeCache || looksLikeBuildOrTest(command)) {
     const paths = extractLikelyPaths(command);
     if (paths.length === 0) {
       // Broad or opaque build/test commands may create arbitrary artifacts.
