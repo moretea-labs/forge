@@ -16,7 +16,7 @@ import type { ComputerChatgptConversationTargetPort } from '../../packages/plugi
 const roots: string[] = [];
 afterEach(() => { while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true }); });
 const graceMs = 30 * 60_000;
-function fixture() {
+function fixture(options: { applied?: boolean; dispatched?: boolean } = {}) {
   const home = mkdtempSync(join(tmpdir(), 'forge-progress-deadline-'));
   roots.push(home);
   let now = Date.now();
@@ -34,8 +34,8 @@ function fixture() {
   store.bindBootstrapProject({ taskId, projectUrl, requestId: 'bind-project', authorizedBy: 'test' });
   const effect = control.reserveEnrollment(taskId);
   control.bindBootstrapConversation({ taskId, conversationId, conversationUrl: `https://chatgpt.com/g/g-p-123456789abc-forge/c/${conversationId}` });
-  store.recordEffectDispatchStarted(effect.effectId, 1, 'initial-send', { work_progress_fingerprint: progress });
-  store.recordEffectObservation(effect.effectId, 'initial-applied', 'applied');
+  if (options.dispatched !== false) store.recordEffectDispatchStarted(effect.effectId, 1, 'initial-send', { work_progress_fingerprint: progress });
+  if (options.applied !== false) store.recordEffectObservation(effect.effectId, 'initial-applied', 'applied');
   return { home, store, control, taskId, effect, projectUrl,
     now: () => now, advance: (ms: number) => { now += ms; }, progress: (value: string) => { progress = value; } };
 }
@@ -49,6 +49,7 @@ test('generating forever expires without inventing a provider terminal or replay
   fx.advance(graceMs + 1_000);
   const recovered = fx.control.recoverProgressDeadline(fx.taskId, fx.now(), graceMs)!;
   expect(recovered.action).toBe('recovery_reserved');
+  expect(recovered.effect.prompt).toContain('Git/Process');
   expect(recovered.effect.effectId).not.toBe(fx.effect.effectId);
   expect(fx.store.effectDispatchBudget(fx.effect.effectId).generations).toBe(1);
   expect(fx.store.getProviderTurnEvent(fx.taskId, fx.effect.effectId)).toBeUndefined();
@@ -166,5 +167,60 @@ test('GitHub-only tasks expose real Git content progress without creating Work',
   writeFileSync(join(root, 'code.ts'), 'export const value = 2;');
   invalidateRepositoryReadCaches(repository.canonicalRoot);
   expect(hooks.workProgressFingerprint!(task)).not.toBe(before);
+  fx.store.close();
+});
+
+for (const dispatched of [false, true]) test(`expired unapplied source retires so its recovery is deliverable (send started=${dispatched})`, () => {
+  const fx = fixture({ applied: false, dispatched });
+  fx.advance(graceMs + 1_000);
+  const recovery = fx.control.recoverProgressDeadline(fx.taskId, fx.now(), graceMs)!;
+  expect(recovery.action).toBe('recovery_reserved');
+  expect(fx.store.nextBrowserEffect(fx.taskId)?.effect.effectId).toBe(recovery.effect.effectId);
+  expect(fx.store.recordEffectDispatchStarted(fx.effect.effectId, 1, 'stale-send')).toBe(false);
+  fx.advance(graceMs + 1_000);
+  expect(fx.control.recoverProgressDeadline(fx.taskId, fx.now(), graceMs)?.action).toBe('conversation_migrated');
+  fx.store.close();
+});
+
+test('preflight-blocked fresh bootstrap remains deadline-eligible even when browserTasks hides it', async () => {
+  const fx = fixture();
+  fx.advance(graceMs + 1_000); fx.control.recoverProgressDeadline(fx.taskId, fx.now(), graceMs);
+  fx.advance(graceMs + 1_000);
+  const migrated = fx.control.recoverProgressDeadline(fx.taskId, fx.now(), graceMs)!;
+  fx.store.recordEffectPreparationFailure(migrated.effect.effectId, 'FORGE_PLUGIN_NOT_BOUND');
+  expect(fx.control.browserTasks().some(task => task.taskId === fx.taskId)).toBe(false);
+  fx.advance(graceMs + 1_000);
+  const targetPort = { inventory: async () => { throw new Error('offline'); }, close: async () => {} } as unknown as ComputerChatgptConversationTargetPort;
+  const adapter = new WorkflowSupervisorNativeBrowserAdapter(fx.control, new WorkflowSupervisorEphemeralDiscovery(), {
+    targetPort, nowMs: fx.now, providerIdleGraceMs: graceMs, providerScopeKey: fx.home,
+    sleep: async () => {}, setInterval: () => 0 as unknown as ReturnType<typeof setInterval>, clearInterval: () => {}, onError: () => {},
+  });
+  await expect(adapter.runOnce()).rejects.toThrow('offline');
+  expect(fx.store.currentUnappliedEffect(fx.taskId)?.effectId).not.toBe(migrated.effect.effectId);
+  expect(fx.store.currentUnappliedEffect(fx.taskId)?.kind).toBe('enrollment');
+  await adapter.close(); fx.store.close();
+});
+
+test('unattributed repository changes cannot keep a stalled attempt alive forever', () => {
+  const fx = fixture();
+  for (let index = 1; index < 6; index++) {
+    fx.advance(20 * 60_000); fx.progress(`sibling-commit-${index}`);
+    expect(fx.control.recoverProgressDeadline(fx.taskId, fx.now(), graceMs)).toBeUndefined();
+  }
+  fx.advance(20 * 60_000 + 1_000); fx.progress('another-sibling-commit');
+  expect(fx.control.recoverProgressDeadline(fx.taskId, fx.now(), graceMs)?.action).toBe('recovery_reserved');
+  fx.store.close();
+});
+
+test('repeated bootstrap migrations cool down but never permanently exhaust recovery', () => {
+  const fx = fixture();
+  fx.advance(graceMs + 1_000); fx.control.recoverProgressDeadline(fx.taskId, fx.now(), graceMs);
+  for (let index = 0; index < 6; index++) {
+    fx.advance(graceMs * 8 + 1_000);
+    expect(fx.control.recoverProgressDeadline(fx.taskId, fx.now(), graceMs)?.action).toBe('conversation_migrated');
+  }
+  expect(fx.control.recoverProgressDeadline(fx.taskId, fx.now() + graceMs, graceMs)).toBeUndefined();
+  fx.advance(graceMs * 8 + 1_000);
+  expect(fx.control.recoverProgressDeadline(fx.taskId, fx.now(), graceMs)?.action).toBe('conversation_migrated');
   fx.store.close();
 });

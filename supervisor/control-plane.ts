@@ -423,7 +423,7 @@ export class WorkflowSupervisorControlPlane {
     const origin = fresh ? `fresh-conversation:${taskId}:deadline:${expired.source.effectId}` : `provider-recovery:${expired.source.effectId}`;
     const id = stableEffectId(origin);
     const checkpoint = this.store.getLatestCompletion(taskId)?.proposal.checkpoint;
-    const reason = `Automatic recovery: no effective task progress before the deadline. Prior provider outcome may remain unknown. Read the existing GitHub Issue, current source, Git and Process receipts; continue unfinished work rather than repeating the old prompt. Preserve existing results.${checkpoint ? ` Last verified checkpoint: ${checkpoint}` : ''}`;
+    const reason = `超时自动恢复：先核对现有 Issue、代码、Git/Process 回执，接续未完工作；原轮次结果未知。${checkpoint ? `进度：${checkpoint}` : ''}`;
     return this.store.reserveProgressDeadlineRecovery({ taskId, sourceEffectId: expired.source.effectId, nowMs, fresh,
       ...(projectUrl ? { projectUrl } : {}), replacement: { effectId: id, prompt: this.renderPrompt(task, id, fresh ? 'enrollment' : 'recovery', undefined, reason) } });
   }

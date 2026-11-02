@@ -716,7 +716,7 @@ export class WorkflowSupervisorNativeBrowserAdapter {
     // A disconnected receiver cannot veto the task's durable progress deadline.
     // Account-wide Retry-After defers both recovery and dispatch, never resets it.
     if (chatgptProviderBackpressureRemainingMs(this.deps.providerScopeKey, this.deps.nowMs()) === 0) {
-      for (const task of this.control.browserTasks()) {
+      for (const task of this.control.listTasks(true)) {
         try { this.control.recoverProgressDeadline(task.taskId, this.deps.nowMs(), WORKFLOW_SUPERVISOR_PROVIDER_IDLE_GRACE_MS); }
         catch (error) { this.noteTaskFailure(consumerFailureCode(error, 'WORKFLOW_SUPERVISOR_DEADLINE_RECOVERY_FAILED'), task); this.deps.onError(error); }
       }

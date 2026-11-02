@@ -1682,7 +1682,10 @@ export class WorkflowSupervisorStore {
         AND event_id>COALESCE((SELECT MAX(event_id) FROM events WHERE task_id=? AND kind='assistant_completion'),0)`, s => s.get(taskId, taskId)) as { total?: number };
       // Repeated failures cool down, never become permanently exhausted.
       const delayMs = graceMs * 2 ** Math.min(3, Math.max(0, (migrations.total ?? 0) - 2));
-      const deadlineAtMs = Math.max(attemptAtMs, Number.isFinite(progressAtMs) ? progressAtMs : 0) + delayMs;
+      // Repository progress can belong to a sibling task. It may extend the
+      // soft deadline, never keep this attempt alive without an absolute bound.
+      const deadlineAtMs = Math.min(Math.max(attemptAtMs, Number.isFinite(progressAtMs) ? progressAtMs : 0) + delayMs,
+        attemptAtMs + Math.max(delayMs, graceMs * 4));
       if (nowMs < deadlineAtMs) return undefined;
       const applied = statement(db, "SELECT 1 FROM events WHERE effect_id=? AND kind='effect_applied' LIMIT 1", s => s.get(source.effectId));
       return { source, deadlineAtMs, fresh: providerRecoveryDepthWithin(db, source.effectId) >= WORKFLOW_SUPERVISOR_MAX_PROVIDER_RECOVERY_TURNS
@@ -1716,6 +1719,13 @@ export class WorkflowSupervisorStore {
       // use the caller's canonical clock, including deterministic restart tests.
       statement(db, 'UPDATE effects SET created_at=? WHERE effect_id=?', s => s.run(occurredAt, effect.effectId));
       effect.createdAt = occurredAt;
+      if (!input.fresh && !statement(db, "SELECT 1 FROM events WHERE effect_id=? AND kind='effect_applied' LIMIT 1", s => s.get(input.sourceEffectId))) {
+        // An older unapplied obligation would otherwise keep winning command
+        // selection forever and hide its newly reserved recovery.
+        statement(db, 'INSERT INTO events(task_id,event_key,kind,effect_id,payload_json,occurred_at) VALUES (?,?,?,?,?,?)', s => s.run(
+          input.taskId, `deadline-retired:${input.sourceEffectId}`, 'effect_outcome_unknown_superseded', input.sourceEffectId,
+          json({ reason: 'progress_deadline_elapsed', replacement_effect_id: effect.effectId, provider_outcome: 'unknown' }), occurredAt));
+      }
       if (input.fresh) {
         const unresolved = statement(db, `SELECT e.effect_id FROM effects e WHERE e.task_id=? AND e.effect_id<>?
           AND NOT EXISTS (SELECT 1 FROM completions c WHERE c.source_effect_id=e.effect_id)
