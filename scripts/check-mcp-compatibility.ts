@@ -22,7 +22,9 @@ const MAX_PREFERRED_TOOL_COUNT = 24;
 // ordinary repository inspection/Direct Edit and Controller Home remain owners.
 // Deliberate retirement: prepare_transfer_artifacts called the already-retired
 // task-ledger Writer. The 20 preferred Tool contracts remain unchanged.
-const EXPECTED_EXPOSED_NAME_FINGERPRINT = 'ae848f7370f52b5a';
+// #41 adds one explicit, preview-first registered worktree cleanup operation;
+// preferred ChatGPT routing and preferred schemas remain unchanged.
+const EXPECTED_EXPOSED_NAME_FINGERPRINT = '31964532b881067a';
 
 // #197 decomposition authority: the public/frozen Tool Contract is an explicit
 // baseline, independent from whichever internal adapter currently defines a
