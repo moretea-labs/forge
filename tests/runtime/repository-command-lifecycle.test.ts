@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { spawn, spawnSync, type ChildProcess } from 'child_process';
-import { existsSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
+import { closeSync, existsSync, mkdtempSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { MAX_AGENT_TIMEOUT_MS, MIN_AGENT_TIMEOUT_MS } from '../../src/cli/controller/runtime-config';
@@ -101,6 +101,13 @@ describe('structured registered worktree cleanup (#41)', () => {
     expect(preview.execution?.approvalToken).toBeTruthy();
     expect(existsSync(fx.linked)).toBe(true);
     expect(() => fx.cleanup({ confirmCleanup: true })).toThrow('GIT_WORKTREE_PREVIEW_PROOF_REQUIRED');
+    expect(() => fx.cleanup({
+      confirmCleanup: true,
+      expectedHead: preview.expectedHead,
+      expectedIdentity: preview.physicalIdentity,
+      previewToken: 'deliberately-wrong-preview-token',
+    })).toThrow('GIT_WORKTREE_APPROVAL_TOKEN_STALE');
+    expect(existsSync(fx.linked)).toBe(true);
     const result = fx.cleanup({
       expectedHead: preview.expectedHead,
       expectedIdentity: preview.physicalIdentity,
@@ -145,6 +152,39 @@ describe('structured registered worktree cleanup (#41)', () => {
     git(fx.linked, ['commit', '-m', 'detached unique evidence']);
     expect(() => fx.cleanup()).toThrow('GIT_WORKTREE_UNMERGED_HEAD_PROTECTED');
     expect(existsSync(fx.linked)).toBe(true);
+  });
+
+  test('rejects an in-flight external Git HEAD writer without deleting its checkout', () => {
+    const fx = fixture();
+    const preview = fx.cleanup();
+    const adminRoot = gitOutput(fx.linked, ['rev-parse', '--absolute-git-dir']);
+    const headLock = join(adminRoot, 'HEAD.lock');
+    const fd = openSync(headLock, 'wx', 0o600);
+    try {
+      const attempted = spawnSync('git', ['-C', fx.linked, 'commit', '--allow-empty', '-m', 'concurrent git head writer'], {
+        encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      expect(attempted.status).not.toBe(0);
+      expect(String(attempted.stderr)).toContain('HEAD.lock');
+      expect(() => fx.cleanup({
+        confirmCleanup: true,
+        expectedHead: preview.expectedHead,
+        expectedIdentity: preview.physicalIdentity,
+        previewToken: preview.execution?.approvalToken,
+      })).toThrow('GIT_WORKTREE_HEAD_LOCK_HELD');
+      expect(existsSync(fx.linked)).toBe(true);
+      expect(gitOutput(fx.linked, ['rev-parse', 'HEAD'])).toBe(preview.expectedHead);
+    } finally {
+      closeSync(fd);
+      unlinkSync(headLock);
+    }
+    expect(fx.cleanup({
+      confirmCleanup: true,
+      expectedHead: preview.expectedHead,
+      expectedIdentity: preview.physicalIdentity,
+      previewToken: preview.execution?.approvalToken,
+    }).status).toBe('removed');
+    expect(existsSync(fx.linked)).toBe(false);
   });
 
   test('retains historical WorkHandle checkout identity even when no OwnedResource metadata exists', () => {

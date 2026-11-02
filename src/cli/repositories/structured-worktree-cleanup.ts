@@ -1,6 +1,6 @@
 import { spawnSync } from 'child_process';
-import { existsSync, lstatSync, realpathSync } from 'fs';
-import { resolve } from 'path';
+import { closeSync, existsSync, fstatSync, lstatSync, openSync, realpathSync, unlinkSync } from 'fs';
+import { dirname, join, resolve } from 'path';
 import { listOwnedResources } from '../../../packages/kernel/identity/api/index';
 import { withRepositoryMutationExclusion } from '../../runtime/resources/leases/store';
 import { listWorkHandlesFailClosed } from '../../runtime/control-plane/execution/work-handle-store';
@@ -33,6 +33,53 @@ function gitWorktreeListed(root: string, targetRoot: string): boolean {
   if (!listed.ok) throw new Error('GIT_WORKTREE_INVENTORY_UNAVAILABLE');
   return listed.text.split(/\r?\n/).some((line) =>
     line.startsWith('worktree ') && resolve(line.slice('worktree '.length)) === targetRoot);
+}
+
+
+/**
+ * Native Git HEAD lock, not a second Forge lease. Git commit/switch/reset
+ * cannot update this linked worktree's HEAD while it is held, including from
+ * external Git processes outside Forge's cooperative Process lease.
+ *
+ * Git worktree remove does not acquire this lock; it deletes the administrative
+ * HEAD.lock along with the checkout. On failure release only our exact inode,
+ * never a replacement foreign lock.
+ */
+function withNativeWorktreeHeadLock<T>(
+  canonicalRoot: string,
+  targetRoot: string,
+  run: () => T,
+): T {
+  const common = git(canonicalRoot, ['rev-parse', '--path-format=absolute', '--git-common-dir']);
+  const admin = git(targetRoot, ['rev-parse', '--absolute-git-dir']);
+  if (!common.ok || !admin.ok) throw new Error('GIT_WORKTREE_HEAD_LOCK_AUTHORITY_MISSING');
+  const adminRoot = realpathSync(admin.text);
+  if (dirname(adminRoot) !== join(realpathSync(common.text), 'worktrees')) {
+    throw new Error('GIT_WORKTREE_HEAD_LOCK_SCOPE_MISMATCH');
+  }
+  const lockPath = join(adminRoot, 'HEAD.lock');
+  let fd: number;
+  try {
+    fd = openSync(lockPath, 'wx', 0o600);
+  } catch {
+    throw new Error('GIT_WORKTREE_HEAD_LOCK_HELD');
+  }
+  try {
+    return run();
+  } finally {
+    try {
+      const own = fstatSync(fd);
+      if (existsSync(lockPath)) {
+        const current = lstatSync(lockPath);
+        if (own.dev !== current.dev || own.ino !== current.ino) {
+          throw new Error('GIT_WORKTREE_HEAD_LOCK_REPLACED');
+        }
+        unlinkSync(lockPath);
+      }
+    } finally {
+      closeSync(fd);
+    }
+  }
 }
 
 /**
@@ -123,18 +170,39 @@ export function repositoryGitRemoveWorktree(
     const merged = git(repository.canonicalRoot, ['merge-base', '--is-ancestor',
       currentHead.text, 'refs/heads/' + (repository.defaultBranch || 'main')]);
     if (!merged.ok) throw new Error('GIT_WORKTREE_UNMERGED_HEAD_PROTECTED');
-    // The existing Git command approval token is derived from the exact
-    // current repository snapshot, not a new cleanup authorization state.
+    // The Git approval token binds target path plus canonical Git snapshot.
+    // On confirmation, the native target HEAD.lock must fence standard Git
+    // writers not using Forge; recheck target-specific facts under that lock.
     const args = ['worktree', 'remove', targetRoot];
-    const confirmed = input.confirmCleanup === true && Boolean(input.previewToken);
-    const execution = executeRepositoryGitCommand(controllerHome, repository, {
-      args, dryRun: !confirmed, ...(confirmed ? {
-        approvalToken: input.previewToken, authorization: 'confirmed_plan' as const,
-      } : {}),
+    if (!input.confirmCleanup) {
+      const execution = executeRepositoryGitCommand(controllerHome, repository, { args, dryRun: true });
+      return { ...base, expectedHead: currentHead.text, physicalIdentity,
+        status: 'preview', execution };
+    }
+    const execution = withNativeWorktreeHeadLock(repository.canonicalRoot, targetRoot, () => {
+      const heldHead = git(targetRoot, ['rev-parse', '--verify', 'HEAD']);
+      const heldStat = lstatSync(targetRoot);
+      if (!heldHead.ok || heldHead.text !== currentHead.text
+        || heldStat.dev !== physicalStat.dev || heldStat.ino !== physicalStat.ino) {
+        throw new Error('GIT_WORKTREE_CHANGED_BEFORE_REMOVE');
+      }
+      const heldDirty = git(targetRoot, ['status', '--porcelain=v1', '--untracked-files=all']);
+      if (!heldDirty.ok || heldDirty.text) throw new Error('GIT_WORKTREE_DIRTY_PROTECTED');
+      if (!git(repository.canonicalRoot, ['merge-base', '--is-ancestor',
+        heldHead.text, 'refs/heads/' + (repository.defaultBranch || 'main')]).ok) {
+        throw new Error('GIT_WORKTREE_UNMERGED_HEAD_PROTECTED');
+      }
+      // The general-purpose Git executor can grant approved operations even
+      // when the optional approvalToken differs. This destructive path must
+      // independently compare the exact current preview before invoking it.
+      const fresh = executeRepositoryGitCommand(controllerHome, repository, { args, dryRun: true });
+      if (fresh.approvalToken !== input.previewToken) {
+        throw new Error('GIT_WORKTREE_APPROVAL_TOKEN_STALE');
+      }
+      return executeRepositoryGitCommand(controllerHome, repository, {
+        args, approvalToken: input.previewToken, authorization: 'confirmed_plan',
+      });
     });
-    if (execution.status === 'preview') return {
-      ...base, expectedHead: currentHead.text, physicalIdentity, status: 'preview', execution,
-    };
     if (execution.status !== 'executed') return {
       ...base, expectedHead: currentHead.text, physicalIdentity, status: 'approval_required', execution,
       reason: 'Exact Git confirmation required',
