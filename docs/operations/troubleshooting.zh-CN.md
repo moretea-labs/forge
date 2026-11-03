@@ -73,3 +73,11 @@ Forge 没有一个必须修复的内部 Agent。没有选择 Codex/Claude 时直
 ## 发布检查发现个人路径或日志
 
 应删除被跟踪的运行态、绝对用户目录、凭据、日志、PID 和生成物，不要用大范围 allowlist 掩盖真实问题。
+
+## 高负载导致 Forge 或 Recovery 卡顿
+
+区分三类证据：普通外网可达不代表 `api.openai.com` 的隧道轮询成功；隧道进程存活不代表请求可达；本地鉴权 MCP 也超时才是本地服务无响应的证据。分别检查隧道日志中的 DNS/TCP/TLS 错误、本地 MCP 请求和主机负载，不因一次网络超时就重启 Runtime 或重放写操作。
+
+Forge 内的原生 Xcode 构建通过现有 host Lease 每次只运行一个，首方 iOS 构建/测试最多两个编译任务。XCTest 默认串行，显式并行时最多两个 worker；构建超时会清理它所拥有的进程组，不按进程名杀掉用户的其他构建。外部终端或 Xcode 自行启动的任务不受 Forge 的限制。
+
+Recovery 重型工具最多同时执行一个，另留两个状态/历史查询位置。超额请求返回 `RECOVERY_BUSY`，未开始任何操作；子进程超时或异常返回 `RECOVERY_TOOL_OUTCOME_UNKNOWN` 时，先检查原请求的操作锁、日志和权威状态，再决定恢复，不能自动换 request_id 重发。HTTP 健康检查和 MCP discovery 不占重型位置。

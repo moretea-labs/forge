@@ -543,7 +543,7 @@
     },
     "tests/runtime/ios-development.test.ts": {
       "module": "ios",
-      "resource": "temp-isolated"
+      "resource": "process-tree"
     },
     "tests/runtime/ios-physical-device.test.ts": {
       "module": "ios",

@@ -21,7 +21,8 @@ import { normalizeClaimPath, normalizeClaims } from '../../resources/claims/conf
 export const LIVE_DEVICE_ADMISSION_WAIT_MS = 2 * 60 * 60_000;
 
 export function claimsRequireLiveDeviceAdmission(claims: readonly { resourceKey: string }[]): boolean {
-  return claims.some((claim) => claim.resourceKey === 'host-service:ios-simulator-test'
+  return claims.some((claim) => claim.resourceKey === 'host-service:ios-build'
+    || claim.resourceKey === 'host-service:ios-simulator-test'
     || claim.resourceKey === 'host-service:android-emulator-test');
 }
 
@@ -613,7 +614,7 @@ function exactLeasedRemoteReviewBranchDeletion(
  * Classify resource claims for a repository command without taking whole-repo exclusive locks
  * for ordinary readonly / focused validation commands.
  */
-export function claimsForRepositoryCommand(
+function repositoryCommandClaims(
   command: string | readonly string[],
   repoId: string,
   checkoutId?: string,
@@ -700,6 +701,33 @@ export function claimsForRepositoryCommand(
   return [claimWorkspaceWrite(checkoutId, repoId)];
 }
 
+/** One native build at a time per host, using the existing Lease owner. */
+export function claimsForRepositoryCommand(
+  command: string | readonly string[],
+  repoId: string,
+  checkoutId?: string,
+  defaultBranch?: string,
+  repoRoot?: string,
+  executionCwd: string | undefined = repoRoot,
+): ResourceClaimSpec[] {
+  const canonical = normalizeRepositoryCommand(command);
+  let nativeBuild = false;
+  if (canonical.kind === 'argv') {
+    const words = [canonical.executable!, ...(canonical.args ?? [])];
+    const wrapped = fixedShellWrapperCommand(words);
+    if (wrapped) nativeBuild = /\bxcodebuild\b/.test(wrapped);
+    else {
+      const program = basename(words[0]!);
+      const args = program === 'xcrun' && words[1] === 'xcodebuild' ? words.slice(2) : words.slice(1);
+      nativeBuild = (program === 'xcodebuild' || (program === 'xcrun' && words[1] === 'xcodebuild'))
+        && !args.some((arg) => ['-list', '-version', '-showsdks', '-showdestinations', '-showBuildSettings', '-help'].includes(arg));
+    }
+  } else nativeBuild = /\bxcodebuild\b/.test(canonical.shellCommand ?? '');
+  const claims = repositoryCommandClaims(command, repoId, checkoutId, defaultBranch, repoRoot, executionCwd);
+  nativeBuild ||= claims.some((claim) => claim.resourceKey === 'host-service:ios-simulator-test');
+  return normalizeClaims([...claims, ...(nativeBuild ? [claimHostService('ios-build')] : [])]);
+}
+
 /**
  * Claims for run_check by check id / command.
  * Full CI/release/multi-phase checks and compiler-intensive latency gates take
@@ -728,9 +756,11 @@ export function claimsForCheck(
   // substitute for the resources the check actually reads or writes.
   const liveAuthorityClaims = executionAuthority === 'live_controller_home' ? [claimRelease(repoId)] : [];
   const deviceClaims = command ? validationDeviceClaims(command) : [];
+  const buildClaims = command ? claimsForRepositoryCommand(command, repoId, checkoutId)
+    .filter((claim) => claim.resourceKey === 'host-service:ios-build') : [];
   return heavy
-    ? normalizeClaims([claimHeavyCheck(repoId), ...liveAuthorityClaims, ...baseClaims, ...deviceClaims])
-    : normalizeClaims([...liveAuthorityClaims, ...baseClaims, ...deviceClaims]);
+    ? normalizeClaims([claimHeavyCheck(repoId), ...liveAuthorityClaims, ...baseClaims, ...deviceClaims, ...buildClaims])
+    : normalizeClaims([...liveAuthorityClaims, ...baseClaims, ...deviceClaims, ...buildClaims]);
 }
 
 export function scopeResourceClaims(

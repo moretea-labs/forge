@@ -12,7 +12,7 @@ import type { AssistantPluginActionDescriptor } from '../../src/runtime/plugins/
 import { mkdtempSync, mkdirSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { acquireExecutionLeases } from '../../src/runtime/resources/leases/store';
+import { acquireExecutionLeases, releaseExecutionLeases } from '../../src/runtime/resources/leases/store';
 
 function lease(resourceKey: string, mode: 'read' | 'write' | 'exclusive'): ExecutionLease {
   return { resourceKey, mode } as ExecutionLease;
@@ -62,7 +62,7 @@ describe('Process Runtime fine-grained resource claims', () => {
   });
 
 
-  test('explicit disjoint Xcode DerivedData permits concurrent real leases while shared and unknown caches block', () => {
+  test('host build capacity bounds disjoint Xcode caches while preserving cache identity fences', () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-xcode-cache-'));
     try {
       mkdirSync(join(root, 'checkout-a'));
@@ -73,7 +73,11 @@ describe('Process Runtime fine-grained resource claims', () => {
       const home = join(root, 'controller');
       const options = { visibility: 'ephemeral' as const };
       expect(acquireExecutionLeases(home, 'repo1', 'build-a', a, options).acquired).toBe(true);
-      expect(acquireExecutionLeases(home, 'repo1', 'build-b', b, options).acquired).toBe(true);
+      expect(acquireExecutionLeases(home, 'repo1', 'build-b', b, options).acquired).toBe(false);
+      expect(a).toContainEqual({ resourceKey: 'host-service:ios-build', mode: 'write' });
+      const cacheA = a.filter((claim) => claim.resourceKey.startsWith('build-cache:'));
+      const cacheB = b.filter((claim) => claim.resourceKey.startsWith('build-cache:'));
+      expect(cacheA.some((left) => cacheB.some((right) => claimsConflict(left, lease(right.resourceKey, right.mode))))).toBe(false);
       const shared = claimsForRepositoryCommand([
         'xcodebuild', '-project', 'App.xcodeproj', '-derivedDataPath', join(root, 'checkout-a/build/DerivedData'), 'build',
       ], 'repo2', 'co-c', 'main', root);
@@ -84,6 +88,11 @@ describe('Process Runtime fine-grained resource claims', () => {
       expect(acquireExecutionLeases(home, 'repo1', 'parent-cache', parent, options).acquired).toBe(false);
       const unknown = claimsForRepositoryCommand(['xcodebuild', '-project', 'App.xcodeproj', 'build'], 'repo1', 'co-e');
       expect(acquireExecutionLeases(home, 'repo1', 'unknown-cache', unknown, options).acquired).toBe(false);
+      releaseExecutionLeases(home, 'repo1', 'build-a');
+      expect(acquireExecutionLeases(home, 'repo1', 'build-b', b, options).acquired).toBe(true);
+      const otherRepo = claimsForRepositoryCommand(command, 'repo2', 'co-f', 'main', join(root, 'checkout-a'));
+      expect(acquireExecutionLeases(home, 'repo2', 'other-repo', otherRepo, options).acquired).toBe(false);
+      expect(claimsForRepositoryCommand(['xcodebuild', '-version'], 'repo2', 'co-f')).not.toContainEqual({ resourceKey: 'host-service:ios-build', mode: 'write' });
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
@@ -320,6 +329,10 @@ describe('Process Runtime fine-grained resource claims', () => {
       const pluginClaims = claimsForAssistantPluginAction(action(id), repository, 'ios');
       expect(pluginClaims).toContainEqual({ resourceKey: 'host-service:ios-simulator-test', mode: 'write' });
       expect(pluginClaims.some((claim) => testClaims.some((other) => claimsConflict(claim, lease(other.resourceKey, other.mode))))).toBe(true);
+    }
+    for (const id of ['build', 'xcode_test', 'smoke_review']) {
+      const native = claimsForAssistantPluginAction(action(id), repository, 'ios');
+      expect(native).toContainEqual({ resourceKey: 'host-service:ios-build', mode: 'write' });
     }
     expect(claimsForAssistantPluginAction(action('agent_device_status'), repository, 'ios')
       .some((claim) => claim.resourceKey === 'host-service:ios-simulator-test')).toBe(false);
