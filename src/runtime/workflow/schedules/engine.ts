@@ -3,23 +3,16 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { getRepository } from '../../../cli/repositories/registry';
 import { findExecutionJob, listActiveExecutionJobs, listExecutionJobs } from '../../execution/jobs/store';
-import { executionJobBelongsToWork, workHasActiveExecution } from '../../execution/work-activity';
+import { executionJobBelongsToWork } from '../../execution/work-activity';
 import { readRepositoryProjection } from '../../projections/materialized-view';
 import {
   applyRuntimeMaintenance,
   previewAutomaticRuntimeMaintenance,
   type RuntimeMaintenanceActionId,
 } from '../../recovery/maintenance-executor';
-import { appendWorkEvidence, getWorkContract, semanticWorkState } from '../../../../packages/kernel/work/api/index';
-import {
-  controllerSessionBlocksRecovery,
-  getControllerSession,
-  getControllerWorkBinding,
-  getRetainedControllerSession,
-} from '../../../../packages/kernel/controller/api/index';
+import { getWorkContract, semanticWorkState } from '../../../../packages/kernel/work/api/index';
 import {
   applyScheduleFailure,
-  applyScheduleRetryableFailure,
   cronDue,
   evaluateScheduleOccurrenceAdmission,
   evaluateScheduleTriggerEligibility,
@@ -34,8 +27,6 @@ import {
   updateSchedule,
 } from '../../../../packages/kernel/scheduler/api/index';
 export { cronDue };
-import { ensureScheduledControllerBinding } from '../../root/scheduled-controller-composition';
-import { reconcileControllerProgression } from '../../root/controller-progression-composition';
 import { listUserRequests } from '../../../../packages/kernel/identity/api/index';
 
 import { classifyScheduledBrowserObservation, executeScheduledBrowserProbe } from './browser-probe';
@@ -53,8 +44,6 @@ const EXTERNAL_CONTROLLER_WAKE_OPERATION = 'external_controller_wake';
 const CONTROLLER_PROGRESSION_OPERATION = 'controller_progression';
 const BROWSER_PROBE_OPERATION = 'browser_probe';
 const GITHUB_ISSUE_WATCH_OPERATION = 'github_issue_watch';
-const DEFAULT_EXTERNAL_CONTROLLER_WAKE_TIMEOUT_MS = 60_000;
-const MAX_EXTERNAL_CONTROLLER_WAKE_TIMEOUT_MS = 120_000;
 
 function isDeterministicSchedule(schedule: RepositorySchedule): boolean {
   // Kernel executes only typed, bounded dispatch operations.
@@ -192,361 +181,6 @@ function decideOccurrence(
     createdAt: new Date().toISOString(),
   });
   return saveOccurrence(controllerHome, { ...occurrence, decision, decisionId, status, reason });
-}
-
-export type ChatgptWakeFailureClass = 'retryable_readiness' | 'semantic_wait' | 'user_action_required' | 'ordinary_failure';
-
-export function externalControllerWakeTimeoutMs(value: unknown): number {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return DEFAULT_EXTERNAL_CONTROLLER_WAKE_TIMEOUT_MS;
-  return Math.max(5_000, Math.min(Math.trunc(value), MAX_EXTERNAL_CONTROLLER_WAKE_TIMEOUT_MS));
-}
-
-export async function awaitExternalControllerWake<T>(operation: Promise<T>, timeoutMs: number): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      operation,
-      new Promise<T>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`CONTROLLER_WAKE_TOTAL_TIMEOUT: external Controller dispatch exceeded ${timeoutMs}ms.`)), timeoutMs);
-      }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-}
-
-export function classifyChatgptWakeFailure(reason: string): ChatgptWakeFailureClass {
-  const normalized = reason.toUpperCase();
-  if (
-    normalized.includes('CHATGPT_AUTOMATION_LOGIN_REQUIRED')
-    || normalized.includes('PLUGIN_BROWSER_JAVASCRIPT_PERMISSION_REQUIRED')
-    || normalized.includes('PLUGIN_MACOS_CAPABILITY_BROKER_CAPABILITY_UNSUPPORTED')
-    || normalized.includes('AUTHENTICATION_REQUIRED')
-    || normalized.includes('CONSENT_REQUIRED')
-  ) return 'user_action_required';
-  if (normalized.includes('REPEATED_STATE:')) return 'semantic_wait';
-  const retryableMarkers = [
-    'PLUGIN_BROWSER_ATTACH_UNAVAILABLE',
-    'PLUGIN_BROWSER_DEPENDENCY_UNAVAILABLE',
-    'PLUGIN_BROWSER_NODE_HOST_UNAVAILABLE',
-    'PLUGIN_BROWSER_NODE_UNAVAILABLE',
-    'PLUGIN_BROWSER_ACTIVE_TAB_UNAVAILABLE',
-    'PLUGIN_BROWSER_SESSION_STATE_LOST',
-    'PLUGIN_SESSION_NOT_FOUND',
-    'PLUGIN_BROWSER_NATIVE_TAB_IDENTITY_UNPROVEN',
-    'PLUGIN_MACOS_CAPABILITY_BROKER_UNAVAILABLE',
-    'PLUGIN_BROWSER_NATIVE_FOREGROUND_ACTIVATOR_UNAVAILABLE',
-    'CHATGPT_CONTROLLER_BROWSER_ROOT_UNAVAILABLE',
-    'CHATGPT_CONTROLLER_BROWSER_FAILED',
-    'CHATGPT_AUTOMATION_COMPOSER_UNAVAILABLE',
-    'CHATGPT_AUTOMATION_INTELLIGENCE_CONTROL_UNAVAILABLE',
-    'CHATGPT_AUTOMATION_REPLACEMENT_SESSION_NOT_CONFIRMED',
-    'CONTROLLER_WAKE_TOTAL_TIMEOUT',
-    'HTTP 502',
-    'ECONNREFUSED',
-    'ECONNRESET',
-    'ETIMEDOUT',
-    'UND_ERR_CONNECT_TIMEOUT',
-  ];
-  if (retryableMarkers.some((marker) => normalized.includes(marker))) return 'retryable_readiness';
-  return 'ordinary_failure';
-}
-
-async function executeControllerProgression(
-  controllerHome: string,
-  schedule: RepositorySchedule,
-  occurrence: ScheduleOccurrence,
-  timestamp: string,
-  args: Record<string, unknown>,
-  extraEvidence: Record<string, unknown> = {},
-  options: { transientWakeFailure?: boolean } = {},
-): Promise<ScheduleOccurrence> {
-  const workId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
-  if (!workId) {
-    return decideOccurrence(controllerHome, schedule, occurrence, 'operation_blocked', 'skipped', 'EXTERNAL_CONTROLLER_WAKE_WORK_ID_REQUIRED');
-  }
-  const workStore = { controllerHome, repoId: schedule.repoId };
-  const work = getWorkContract(workStore, workId);
-  if (!work) {
-    updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({ enabled: false, pausedReason: `Work ${workId} no longer exists.`, lastTriggeredAt: timestamp, lastOccurrenceId: occurrence.occurrenceId }));
-    return decideOccurrence(controllerHome, schedule, occurrence, 'operation_blocked', 'skipped', `EXTERNAL_CONTROLLER_WAKE_WORK_NOT_FOUND:${workId}`);
-  }
-  if (semanticWorkState(work) !== 'open') {
-    updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({ enabled: false, pausedReason: `Work ${workId} is terminal (${work.semanticState}).`, lastTriggeredAt: timestamp, lastOccurrenceId: occurrence.occurrenceId }));
-    return decideOccurrence(controllerHome, schedule, occurrence, 'nothing_to_do', 'skipped', `Work ${workId} is terminal (${work.semanticState}); automatic continuation stopped.`);
-  }
-
-  const retainedSession = getRetainedControllerSession(workStore, workId);
-  if (!retainedSession) {
-    return decideOccurrence(controllerHome, schedule, occurrence, 'operation_blocked', 'skipped', `SCHEDULE_CONTINUATION_CONTROLLER_SESSION_REQUIRED:${workId}`);
-  }
-  const requestedControllerType = typeof args.controller_type === 'string' ? args.controller_type.trim() : '';
-  if (requestedControllerType && requestedControllerType !== retainedSession.controllerType) {
-    return decideOccurrence(
-      controllerHome,
-      schedule,
-      occurrence,
-      'operation_blocked',
-      'skipped',
-      `SCHEDULE_CONTINUATION_CONTROLLER_TYPE_MISMATCH:${workId}:expected=${retainedSession.controllerType}:requested=${requestedControllerType}`,
-    );
-  }
-  const occurrenceNowMs = Date.parse(timestamp);
-  const nowMs = Number.isFinite(occurrenceNowMs) ? occurrenceNowMs : Date.now();
-  if (workHasActiveExecution(controllerHome, schedule.repoId, workId)) {
-    updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({ lastTriggeredAt: timestamp, lastOccurrenceId: occurrence.occurrenceId }));
-    return decideOccurrence(controllerHome, schedule, occurrence, 'nothing_to_do', 'skipped', `Work ${workId} has active execution; duplicate Controller wake suppressed.`);
-  }
-  const existingOwner = getControllerSession(workStore, workId);
-  if (existingOwner && controllerSessionBlocksRecovery(workStore, workId, { nowMs })) {
-    updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({ lastTriggeredAt: timestamp, lastOccurrenceId: occurrence.occurrenceId }));
-    return decideOccurrence(controllerHome, schedule, occurrence, 'nothing_to_do', 'skipped', `Work ${workId} has a recently active Controller ${existingOwner.controllerId}.`);
-  }
-
-  const repository = getRepository(schedule.repoId, controllerHome, { includeRemoved: true });
-  let bindingId = typeof args.controller_binding_id === 'string' ? args.controller_binding_id.trim() : '';
-  let bindingRecord = getControllerWorkBinding(workStore, workId);
-  if (bindingRecord && bindingRecord.binding.bindingId !== bindingId) {
-    return decideOccurrence(
-      controllerHome,
-      schedule,
-      occurrence,
-      'operation_blocked',
-      'skipped',
-      `SCHEDULE_CONTINUATION_BINDING_DRIFT:${workId}:expected=${bindingId}:actual=${bindingRecord.binding.bindingId}`,
-    );
-  }
-
-  if (schedule.action.operation === CONTROLLER_PROGRESSION_OPERATION
-    && (typeof args.controller_binding_id !== 'string' || !args.controller_binding_id.trim())) {
-    throw new Error(`SCHEDULE_CONTROLLER_PROGRESSION_BINDING_REQUIRED:${workId}`);
-  }
-
-  const hadLegacySessionIdentity = typeof args.controller_session_id === 'string' && args.controller_session_id.trim().length > 0;
-
-  // Explicit compatibility migration for schedules written before Kernel V2 B4.
-  // Provider metadata is copied once into the adapter-owned binding and the
-  // Schedule is rewritten to exact Work/ControllerSession/ControllerBinding ids.
-  if (!bindingRecord) {
-    if (schedule.action.operation === CONTROLLER_PROGRESSION_OPERATION) {
-      throw new Error(`SCHEDULE_CONTROLLER_PROGRESSION_BINDING_NOT_FOUND:${workId}`);
-    }
-    const binding = ensureScheduledControllerBinding(
-      { controllerHome, repoId: schedule.repoId },
-      { workId, session: retainedSession, scheduleName: schedule.name, args },
-    );
-    bindingId = binding.bindingId;
-    bindingRecord = getControllerWorkBinding(workStore, workId);
-    if (!bindingRecord || bindingRecord.binding.bindingId !== bindingId) {
-      throw new Error(`SCHEDULE_CONTINUATION_BINDING_MIGRATION_FAILED:${workId}`);
-    }
-  }
-
-  const continuationHintForMigration = typeof args.continuation_hint === 'string'
-    ? args.continuation_hint
-    : typeof args.continuation_prompt === 'string'
-      ? args.continuation_prompt
-      : undefined;
-  const relayScopeIdForMigration = typeof args.relay_scope_id === 'string' ? args.relay_scope_id.trim() : undefined;
-  if (hadLegacySessionIdentity || bindingId !== bindingRecord.binding.bindingId) {
-    bindingId = bindingRecord.binding.bindingId;
-    schedule = updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, (current) => ({
-      action: {
-        ...current.action,
-        arguments: {
-          work_id: workId,
-          controller_type: retainedSession.controllerType,
-          controller_binding_id: bindingId,
-          ...(relayScopeIdForMigration ? { relay_scope_id: relayScopeIdForMigration } : {}),
-          ...(continuationHintForMigration?.trim() ? { continuation_hint: continuationHintForMigration.trim() } : {}),
-        },
-      },
-    }));
-  }
-
-  const controllerType = retainedSession.controllerType;
-  const continuationHint = typeof schedule.action.arguments?.continuation_hint === 'string'
-    ? schedule.action.arguments.continuation_hint
-    : undefined;
-  const relayScopeId = typeof schedule.action.arguments?.relay_scope_id === 'string'
-    ? schedule.action.arguments.relay_scope_id
-    : undefined;
-  const controllerRoundOccurrenceId = typeof occurrence.triggerContext?.data?.controllerRoundOccurrenceId === 'string'
-    && occurrence.triggerContext.data.controllerRoundOccurrenceId.trim()
-    ? occurrence.triggerContext.data.controllerRoundOccurrenceId.trim()
-    : occurrence.occurrenceId;
-  const wakeDecision = decideOccurrence(
-    controllerHome,
-    schedule,
-    occurrence,
-    'execute',
-    'running',
-    'Deterministic Controller continuation is starting through Kernel Scheduler and ControllerHost.',
-    occurrenceDecisionEvidence({
-      operation: schedule.action.operation,
-      workId,
-      controllerType,
-      controllerSessionId: retainedSession.sessionId,
-      controllerBindingId: bindingRecord.binding.bindingId,
-      ...extraEvidence,
-    }),
-  );
-
-  try {
-    const progression = await reconcileControllerProgression(
-      { controllerHome, repoId: schedule.repoId, repoRoot: repository.canonicalRoot },
-      {
-        occurrenceId: controllerRoundOccurrenceId,
-        workId,
-        relayScopeId,
-        continuationHint,
-        allowSemanticWaitRecovery: controllerType === 'chatgpt',
-        scheduleName: schedule.name,
-        scheduleId: schedule.scheduleId,
-        scheduleOccurrenceId: occurrence.occurrenceId,
-        bindingArgs: args,
-      },
-    );
-
-    if (progression.status === 'terminal_or_missing') {
-      updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({
-        enabled: false,
-        pausedReason: progression.reason,
-        lastTriggeredAt: timestamp,
-        lastOccurrenceId: occurrence.occurrenceId,
-      }));
-      return saveOccurrence(controllerHome, {
-        ...wakeDecision,
-        status: 'skipped',
-        decision: 'nothing_to_do',
-        reason: progression.reason,
-      });
-    }
-
-    if (progression.status === 'semantic_wait'
-      || progression.status === 'wait_for_user'
-      || progression.status === 'retained_session_missing'
-      || progression.status === 'human_controller') {
-      updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({
-        lastTriggeredAt: timestamp,
-        lastOccurrenceId: occurrence.occurrenceId,
-      }));
-      return saveOccurrence(controllerHome, {
-        ...wakeDecision,
-        status: 'skipped',
-        decision: 'nothing_to_do',
-        reason: progression.reason ?? `Work ${workId} is not currently eligible for provider progression.`,
-      });
-    }
-
-    if (progression.status === 'rejected') {
-      throw new Error(progression.reason ?? 'CONTROLLER_HOST_RESUME_REJECTED');
-    }
-
-    if (progression.status === 'chatgpt_not_enrolled') {
-      updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({
-        lastTriggeredAt: timestamp,
-        lastOccurrenceId: occurrence.occurrenceId,
-      }));
-      return saveOccurrence(controllerHome, {
-        ...wakeDecision,
-        status: 'skipped',
-        decision: 'nothing_to_do',
-        reason: `Workflow Supervisor enrollment is not yet ready (${progression.supervisorEnrollment.status}); no ChatGPT provider attempt was consumed.`,
-      });
-    }
-
-    const supervisorEnrollment = progression.status === 'chatgpt_enrolled'
-      ? progression.supervisorEnrollment
-      : progression.status === 'scheduled_supervisor_woken'
-        ? { status: 'enrolled' as const, taskId: progression.taskId, effectId: progression.effectId }
-        : { status: 'not_eligible' as const };
-    const supervisorOwnsTurn = progression.status === 'chatgpt_enrolled' || progression.status === 'scheduled_supervisor_woken';
-    updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, (current) => ({
-      lastTriggeredAt: timestamp,
-      lastOccurrenceId: occurrence.occurrenceId,
-      consecutiveFailures: 0,
-      nextEligibleAt: undefined,
-      ...(supervisorEnrollment.status === 'enrolled'
-        && schedule.action.operation !== CONTROLLER_PROGRESSION_OPERATION
-        ? { enabled: false, pausedReason: 'workflow_supervisor_owns_outer_turn' }
-        : current.enabled ? { pausedReason: undefined } : {}),
-    }));
-    const dispatchedOccurrence = saveOccurrence(controllerHome, {
-      ...wakeDecision,
-      status: 'dispatched',
-      reason: progression.status === 'chatgpt_enrolled'
-        ? `Workflow Supervisor reserved the exact ChatGPT effect ${progression.supervisorEnrollment.effectId ?? progression.relayScopeId}; Scheduler issued no provider send.`
-        : progression.status === 'scheduled_supervisor_woken'
-          ? `Scheduler occurrence ${occurrence.occurrenceId} woke the same Workflow Supervisor task and reserved effect ${progression.effectId}; Scheduler issued no provider send.`
-          : progression.reused
-            ? `Controller continuation occurrence ${occurrence.occurrenceId} was already durably dispatched; external replay suppressed and semantic round closure is still pending.`
-            : `ControllerHost accepted durable binding ${bindingRecord.binding.bindingId} for Work ${workId}; dispatch ${progression.providerDispatchReceiptId ?? progression.relayScopeId}; semantic round closure is still pending.`,
-    });
-    appendWorkEvidence(workStore, workId, {
-      evidenceId: dispatchedOccurrence.occurrenceId,
-      title: supervisorOwnsTurn
-        ? 'scheduled Workflow Supervisor effect reserved'
-        : 'scheduled Controller continuation dispatched',
-      summary: progression.status === 'scheduled_supervisor_woken'
-        ? `Schedule ${schedule.scheduleId} occurrence ${dispatchedOccurrence.occurrenceId} woke the same Work-bound Supervisor task; Supervisor owns ChatGPT delivery.`
-        : progression.status === 'chatgpt_enrolled'
-          ? `Schedule ${schedule.scheduleId} materialized the exact ControllerRound occurrence and Supervisor effect; Supervisor owns ChatGPT delivery.`
-          : `Schedule ${schedule.scheduleId} occurrence ${dispatchedOccurrence.occurrenceId} resumed the exact Work-bound ControllerSession through ControllerHost.`,
-      detailLevel: 'summary',
-    });
-    return dispatchedOccurrence;
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    if (reason.startsWith('CONTROLLER_CONTINUATION_ROUND_ALREADY_OPEN:') || reason.startsWith('CONTROLLER_CONTINUATION_ALREADY_DISPATCHING:')) {
-      updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({ lastTriggeredAt: timestamp, lastOccurrenceId: occurrence.occurrenceId }));
-      return decideOccurrence(controllerHome, schedule, wakeDecision, 'nothing_to_do', 'skipped', `Work ${workId} already has an open Controller round awaiting claim or disposition.`);
-    }
-    const failureClass = controllerType === 'chatgpt' ? classifyChatgptWakeFailure(reason) : 'ordinary_failure';
-    if (options.transientWakeFailure || failureClass === 'retryable_readiness' || failureClass === 'semantic_wait') {
-      const semanticWait = failureClass === 'semantic_wait';
-      const deferred = applyScheduleRetryableFailure(controllerHome, schedule.scheduleId, schedule.repoId, occurrence.occurrenceId, {
-        outcome: semanticWait ? 'skipped' : 'failed',
-        decision: semanticWait ? 'nothing_to_do' : 'execute',
-        reason: semanticWait
-          ? `Controller wake deferred until durable state changes; schedule remains active: ${reason}`
-          : `Controller wake deferred by transient readiness; schedule remains active with bounded backoff: ${reason}`,
-        countFailure: !semanticWait,
-      });
-      updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({
-        lastTriggeredAt: timestamp,
-        lastOccurrenceId: occurrence.occurrenceId,
-      }));
-      return deferred.occurrence ?? saveOccurrence(controllerHome, {
-        ...wakeDecision,
-        status: semanticWait ? 'skipped' : 'failed',
-        decision: semanticWait ? 'nothing_to_do' : 'execute',
-        reason,
-      });
-    }
-    const failed = applyScheduleFailure(controllerHome, schedule.scheduleId, schedule.repoId, occurrence.occurrenceId, {
-      outcome: 'failed',
-      decision: 'execute',
-      reason,
-      ...(failureClass === 'user_action_required' ? { pauseReason: reason } : {}),
-      ...(failureClass === 'user_action_required' ? {
-        handoff: {
-          title: `External Controller wake ${occurrence.occurrenceId} requires user authorization`,
-          summary: 'Forge cannot resume the configured ControllerSession until the required user authorization is restored.',
-          reason,
-          creationReason: 'missing_authorization' as const,
-          blockingDecision: 'Restore the required authenticated/authorized controller capability, then retry the same scheduled Work.',
-          recommendedDecision: 'Restore authorization only; do not create replacement Work or replay an unknown external effect.',
-          recommendedPrompt: `Restore authorization for Work ${workId} and retry scheduled continuation ${occurrence.occurrenceId}.`,
-          statusSummary: 'Scheduled Controller continuation is waiting on user authorization.',
-          blockedBy: ['controller_authorization_required'],
-          attemptedActions: [`schedule:${schedule.scheduleId}`, `work:${workId}`, `controller:${controllerType}`, `session:${retainedSession.sessionId}`, `binding:${bindingRecord.binding.bindingId}`],
-        },
-      } : {}),
-    });
-    updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({ lastTriggeredAt: timestamp, lastOccurrenceId: occurrence.occurrenceId }));
-    return failed.occurrence ?? saveOccurrence(controllerHome, { ...wakeDecision, status: 'failed', reason });
-  }
 }
 
 export async function evaluateSchedule(
@@ -758,11 +392,6 @@ export async function evaluateSchedule(
   }
 
   const args = schedule.action.arguments ?? {};
-  if (schedule.action.operation === EXTERNAL_CONTROLLER_WAKE_OPERATION
-    || schedule.action.operation === CONTROLLER_PROGRESSION_OPERATION) {
-    return executeControllerProgression(controllerHome, schedule, occurrence, timestamp, args);
-  }
-
   if (schedule.action.operation === GITHUB_ISSUE_WATCH_OPERATION) {
     try {
       const repository = getRepository(schedule.repoId, controllerHome, { includeRemoved: true });

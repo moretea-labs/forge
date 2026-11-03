@@ -988,7 +988,6 @@ printf '{"ok":true}\\n'
     const summary = summaryPayload.data as {
       readiness?: {
         readyFor?: string;
-        diagnostics?: { semantics?: { autonomousContinuationReady?: boolean | null; autonomousContinuationBlockers?: string[] | null } };
       };
       controllerSnapshot?: {
         activeWork?: Array<{ workId?: string }>;
@@ -997,10 +996,6 @@ printf '{"ok":true}\\n'
       };
     };
     expect(summary.readiness?.readyFor).toBe('bounded_execution');
-    expect(summary.readiness?.diagnostics?.semantics).toMatchObject({
-      autonomousContinuationReady: null,
-      autonomousContinuationBlockers: null,
-    });
     expect(summary.controllerSnapshot?.activeWork?.some((entry) => entry.workId === valid.workId)).toBe(true);
     expect(summary.controllerSnapshot?.invalidActiveWorkCount).toBe(1);
     expect(summary.controllerSnapshot?.invalidActiveWork?.[0]).toMatchObject({
@@ -1027,8 +1022,6 @@ printf '{"ok":true}\\n'
         readyFor?: string;
         diagnostics?: {
           semantics?: {
-            autonomousContinuationReady?: boolean;
-            autonomousContinuationBlockers?: string[];
             maintenanceHealthy?: boolean | null;
             maintenanceCandidateCount?: number | null;
             maintenanceObservation?: string;
@@ -1041,11 +1034,7 @@ printf '{"ok":true}\\n'
     expect(detail.gatewayLatency?.buckets).toContainEqual(expect.objectContaining({ operationClass: 'controller_lock', p95Ms: 12 }));
     expect(detail.gatewayLatency?.buckets.find((entry) => entry.operationClass === 'controller_lock')?.count).toBeGreaterThanOrEqual(1);
     expect(detail.readiness?.readyFor).toBe('bounded_execution');
-    expect(detail.readiness?.diagnostics?.semantics?.autonomousContinuationReady).toBe(false);
-    expect(Array.isArray(detail.readiness?.diagnostics?.semantics?.autonomousContinuationBlockers)).toBe(true);
-    expect(detail.readiness?.diagnostics?.semantics?.autonomousContinuationBlockers).toEqual(
-      expect.arrayContaining([expect.stringMatching(/^AUTONOMOUS_CONTINUATION_LIVE_PROOF_(MISSING|UNAVAILABLE)$/)]),
-    );
+    expect(detail.readiness?.diagnostics?.semantics).not.toHaveProperty('autonomousContinuationReady');
     expect(detail.activeContractCount).toBe(1);
     expect(detail.activePrimaryWorkCount).toBe(1);
     expect(detail.primaryWorkActivityCounts).toEqual({

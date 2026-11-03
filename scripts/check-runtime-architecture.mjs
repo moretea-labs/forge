@@ -1092,7 +1092,6 @@ requireText('packages/kernel/controller/domain/controller-round-transition-polic
 forbid('packages/kernel/controller/application/continuation-service.ts', /scheduler_continuation_dispatch|ScheduledContinuationDispatch/, 'Controller continuation must not recreate Scheduler-owned continuation lifecycle persistence');
 requireText('src/runtime/root/controller-progression-composition.ts', 'reconcileControllerProgression');
 requireText('src/runtime/root/controller-progression-composition.ts', 'ensureWorkflowSupervisorEnrollmentForWork');
-requireText('src/runtime/workflow/schedules/engine.ts', 'reconcileControllerProgression');
 forbid(
   'src/runtime/control-plane/launcher/chatgpt-round-continuation.ts',
   /beginControllerRoundProviderDispatch|runWorkChatgptContinuation|openChatgptControllerRoundFromSource|continueChatgptControllerRoundFromSource/,
@@ -1107,7 +1106,6 @@ requireText('src/runtime/root/scheduled-controller-composition.ts', 'CHATGPT_CON
 requireText('src/runtime/control-plane/launcher/thin-launcher.ts', 'LAUNCHER_CHATGPT_SUPERVISOR_OWNED');
 requireMissing('adapters/scheduler/controller-binding.ts');
 requireText('adapters/controller-process/controller-host.ts', 'createProcessControllerHost');
-requireText('src/runtime/workflow/schedules/engine.ts', 'workflow_supervisor_owns_outer_turn');
 requireText('src/runtime/root/workflow-supervisor-composition.ts', 'registerWorkflowSupervisorTask');
 requireText('src/runtime/root/workflow-supervisor-composition.ts', 'reserveWorkflowSupervisorEnrollment');
 requireText('src/runtime/root/workflow-supervisor-composition.ts', 'getWorkflowSupervisorTask(forgeHome, taskId)');
@@ -1185,7 +1183,6 @@ requireText('supervisor/server.ts', "req.method === 'task_bind_scheduled_wake'")
 requireText('supervisor/server.ts', "req.method === 'task_wake_scheduled'");
 requireText('src/runtime/root/workflow-supervisor-composition.ts', 'bindWorkflowSupervisorScheduledWakeForWork');
 requireText('src/runtime/root/workflow-supervisor-composition.ts', 'scheduleOccurrenceId');
-requireText('src/runtime/workflow/schedules/engine.ts', 'scheduleOccurrenceId: occurrence.occurrenceId');
 requireText('adapters/mcp/runtime-gateway/scheduler-adapter.ts', "operation === 'schedule_resume'");
 forbid('adapters/mcp/runtime-gateway/scheduler-adapter.ts', /bindSupervisorWakeForSchedule|bindWorkflowSupervisorScheduledWakeForWork/, 'Schedule must not bind an autonomous Supervisor on create or resume');
 forbid('adapters/mcp/runtime-gateway/work-controller-operations.ts', /reconcileControllerProgression|bindWorkflowSupervisorConversationForWork|wakeWorkflowSupervisor/, 'Launch Session must not enroll, wake, or reconcile autonomous Supervisor');
@@ -1197,7 +1194,6 @@ requireText('src/runtime/root/workflow-supervisor-composition.ts', 'wakeWorkflow
 requireText('src/runtime/root/controller-progression-composition.ts', 'wakeWorkflowSupervisorScheduledTaskForWork');
 requireText('src/runtime/root/controller-progression-composition.ts', "if (wake.status === 'woken' && wake.taskId && wake.effectId)");
 requireText('src/runtime/root/controller-progression-composition.ts', "status: 'scheduled_supervisor_woken'");
-requireText('src/runtime/workflow/schedules/engine.ts', "progression.status === 'scheduled_supervisor_woken'");
 requireText('tests/runtime/rh-work-scheduler-adapter.test.ts', 'retired autonomous Schedule actions');
 requireText('tests/runtime/rh-work-scheduler-adapter.test.ts', 'stops once without dispatching or creating an occurrence');
 requireText('src/runtime/workflow/schedules/engine.ts', 'RETIRED_AUTONOMOUS_CONTINUATION_SCHEDULE');
@@ -1247,8 +1243,7 @@ forbid('src/runtime/root/workflow-supervisor-composition.ts', /forge:\$\{repoId\
 forbid('supervisor/client.ts', /task_has_effect|taskHasAnyEffect/, 'Supervisor boundary is derived from canonical Work+conversation facts; do not add a second ownership projection RPC');
 requireText('src/runtime/workflow/schedules/engine.ts', 'evaluateScheduleTriggerEligibility');
 requireText('src/runtime/workflow/schedules/engine.ts', 'evaluateScheduleOccurrenceAdmission');
-requireText('src/runtime/workflow/schedules/engine.ts', 'controller_session_id');
-requireText('src/runtime/workflow/schedules/engine.ts', 'controller_binding_id');
+forbid('src/runtime/workflow/schedules/engine.ts', /executeControllerProgression|reconcileControllerProgression|workflow_supervisor_owns_outer_turn|CONTROLLER_WAKE_TOTAL_TIMEOUT/, 'Schedule cannot dispatch retired autonomous Controller wake');
 requireText('src/runtime/workflow/schedules/store.ts', '@deprecated Kernel V2 compatibility shim');
 requireText('src/runtime/workflow/schedules/store.ts', 'packages/kernel/scheduler/api/index');
 forbid('src/runtime/workflow/schedules/store.ts', /scheduler\/infrastructure\//, 'legacy Schedule shim must route through the Kernel Scheduler public API');
