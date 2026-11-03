@@ -4,7 +4,6 @@ import { controllerCheckExecutionIdentity, listControllerChecks, readLatestContr
 import { repositoryGitStatus } from '../../../cli/repositories/structured-git';
 import type { RepositoryRecord } from '../../../cli/repositories/types';
 import {
-  DEFAULT_WORK_CHECK_LEASE_WAIT_MS,
   checkRequiresDurableWorkflow,
   getProcessRecord,
   isManagedProcessActive,
@@ -791,7 +790,9 @@ export async function executeWorkVerification(input: ExecuteWorkVerificationInpu
       checkId: normalizedCheckId,
       timeoutMs: input.timeoutMs,
       interactiveWaitMs: input.interactiveWaitMs ?? 0,
-      leaseWaitMs: input.leaseWaitMs ?? (workId ? DEFAULT_WORK_CHECK_LEASE_WAIT_MS : undefined),
+      // Persisted Check selects the host-device queue budget when appropriate;
+      // other Work checks retain their existing bounded default there.
+      leaseWaitMs: input.leaseWaitMs,
       requestId: input.requestId,
       requestSemanticFingerprint: verificationRequestFingerprint,
       workId: workId || undefined,
