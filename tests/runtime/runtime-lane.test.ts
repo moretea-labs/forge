@@ -85,10 +85,6 @@ describe('Stable A and Candidate B execution lanes', () => {
         remoteControllers: ['chatgpt'],
         capabilityIntents: [],
         persistentRuntimeRequired: true,
-        components: {
-          workflowSupervisor: true,
-          workflowSupervisorNativeBrowser: true,
-        },
       },
     });
   });
