@@ -537,6 +537,10 @@
       "module": "ios",
       "resource": "process-tree"
     },
+    "tests/runtime/ios-agent-device-orphan-reclaim.test.ts": {
+      "module": "ios",
+      "resource": "temp-isolated"
+    },
     "tests/runtime/ios-development.test.ts": {
       "module": "ios",
       "resource": "temp-isolated"

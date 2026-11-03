@@ -897,6 +897,38 @@ function bestEffortClose(input: AssistantPluginActionExecutionInput, record: Int
   }
 }
 
+/** A Forge interaction is not live authority after its provider session is gone.
+ * Confirm absence through the provider's scoped state directory; a failed or
+ * unfamiliar response must not take ownership from a possibly live session.
+ */
+async function providerSessionConfirmedAbsent(
+  input: AssistantPluginActionExecutionInput,
+  record: InteractionSessionRecord,
+): Promise<boolean> {
+  const result = await hooks.runCommandAsync(executable(input.repoRoot), ['session', '--platform', 'ios', '--json'], {
+    cwd: input.repoRoot,
+    env: sessionEnv(input, record),
+    timeoutMs: effectiveCommandTimeout(input, 10_000),
+    signal: input.signal,
+  });
+  if (!result.ok) return false;
+  try {
+    const response = JSON.parse(result.stdout) as { success?: unknown; data?: { sessions?: unknown } };
+    if (response.success !== true || !Array.isArray(response.data?.sessions)) return false;
+    const sessions = response.data.sessions;
+    const ids = sessions.map((entry): string | undefined => {
+      if (typeof entry === 'string') return entry;
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return undefined;
+      const value = entry as Record<string, unknown>;
+      return [value.session, value.sessionId, value.name, value.id].find((item): item is string =>
+        typeof item === 'string' && item.length > 0);
+    });
+    return ids.every((id) => id !== undefined && id !== record.sessionId);
+  } catch {
+    return false;
+  }
+}
+
 async function closeProviderSession(
   input: AssistantPluginActionExecutionInput,
   record: InteractionSessionRecord,
@@ -2321,8 +2353,19 @@ export async function executeIosAgentDeviceAction(input: AssistantPluginActionEx
     }
     const selected = selectTarget(input, optionalString(input.args.device));
     const provider = providerForDevice(selected);
-    const conflict = listInteractionSessions(input.repoRoot, provider).find((entry) =>
+    let conflict = listInteractionSessions(input.repoRoot, provider).find((entry) =>
       isInteractionSessionActive(entry.status) && interactionMayOwnTarget(entry, selected.aliases));
+    // A dropped interaction can leave the Forge record active after agent-device
+    // lost its session. Reconcile only provider-confirmed absence; never steal a
+    // live or unobservable provider session.
+    if (conflict && interactionAutomationEngine(conflict) === 'agent-device'
+      && await providerSessionConfirmedAbsent(input, conflict) && bestEffortClose(input, conflict)) {
+      patchInteractionSession(input.repoRoot, provider, conflict.interactionId, { status: 'closed' });
+      if (provider === DEVICE_PROVIDER) {
+        releaseIosDeviceOwnership(input.controllerHome, conflict.owner.repoId, conflict.interactionId, conflict.targetId);
+      }
+      conflict = undefined;
+    }
     if (conflict) {
       if (selected.kind === 'device' && provider === DEVICE_PROVIDER && conflict.instructions === app && input.args.relaunch !== true) {
         const ownership = ensureIosDeviceOwnership(input.controllerHome, input.repoId, conflict.interactionId, selected.id);
