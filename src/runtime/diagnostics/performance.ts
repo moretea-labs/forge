@@ -178,16 +178,24 @@ export function clearRuntimeProcessListCacheForTest(): void {
 function scanRuntimeProcessList(): RuntimeProcessBase[] {
   let output = '';
   try {
-    output = execFileSync('ps', ['-axo', 'pid=,ppid=,pgid=,etime=,%cpu=,%mem=,command='], { encoding: 'utf8', maxBuffer: 1024 * 1024 });
+    output = execFileSync('ps', ['-axo', 'pid=,ppid=,pgid=,etime=,%cpu=,%mem=,command='], {
+      encoding: 'utf8', maxBuffer: 1024 * 1024, timeout: 2_000, killSignal: 'SIGKILL',
+    });
   } catch (_error) {
-    return [];
+    // Host pressure can stall ps itself. An unavailable inventory proves neither
+    // a healthy idle host nor that a scratch path is unoccupied for removal.
+    throw new Error('RUNTIME_PROCESS_INVENTORY_UNAVAILABLE: bounded process scan failed');
   }
+  // A successful but empty ps response does not prove no process holds a temp path.
+  if (!output.trim()) throw new Error('RUNTIME_PROCESS_INVENTORY_UNAVAILABLE: empty process scan');
+  let parsedRows = 0;
   const samples: RuntimeProcessBase[] = [];
   for (const raw of output.split('\n')) {
     const line = raw.trim();
     if (!line) continue;
     const match = line.match(/^(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+([\d.]+)\s+([\d.]+)\s+(.+)$/);
     if (!match) continue;
+    parsedRows += 1;
     const command = match[7];
     const kind = classify(command);
     const relevant = kind !== 'other' || /\b(bun|node|tsx)\b/.test(command);
@@ -209,6 +217,7 @@ function scanRuntimeProcessList(): RuntimeProcessBase[] {
       highCpu: cpu >= 20,
     });
   }
+  if (parsedRows === 0) throw new Error('RUNTIME_PROCESS_INVENTORY_UNAVAILABLE: unparseable process scan');
   return samples.sort((a, b) => b.cpu - a.cpu);
 }
 
@@ -360,7 +369,8 @@ export function collectRuntimePerformanceDiagnostics(input: DiagnosticsInput): R
   const highCpuPeerMcp = peerMcpProcesses;
   const localController = repoProcesses.find((process) => process.kind === 'local-controller');
   const localControllerRunning = localController !== undefined || input.localControllerRunning === true;
-  const temp = input.includeTempDirs === false
+  // Process inventory omitted means occupancy unknown: do not declare temp cleanup safe.
+  const temp = input.includeTempDirs === false || input.includeProcesses === false
     ? { roots: [] as string[], entries: [] as RuntimeTempEntry[] }
     : scanRuntimeTempEntries(processes);
   const storage = readStorageCapacity(input.repoRoot);
