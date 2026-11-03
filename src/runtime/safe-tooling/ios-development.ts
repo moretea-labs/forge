@@ -368,20 +368,57 @@ export function iosSchemesList(repository: RepositoryRecord, input: { workspace?
   return value;
 }
 
+/** Reuse warm devices; Forge's existing host Simulator Lease serializes concurrent plugin admissions. */
+const MAX_BOOTED_IOS_SIMULATORS = 2;
+
 export function iosSimulatorBoot(input: { udid: string; openSimulator?: boolean; timeoutMs?: number }) {
   const unsupported = assertDarwin();
   if (unsupported) return unsupported;
   const udid = String(input.udid ?? '').trim();
   if (!udid) throw new Error('IOS_SIMULATOR_UDID_REQUIRED');
   const timeoutMs = input.timeoutMs ?? 60_000;
-  const boot = runCommand('xcrun', ['simctl', 'boot', udid], { timeoutMs });
-  const alreadyBooted = /current state:\s*Booted|already booted/i.test(boot.stderr + boot.stdout);
-  if (!boot.ok && !alreadyBooted) {
+  const inventory = iosSimulatorsList();
+  if (!inventory.ready || !('devices' in inventory) || !Array.isArray(inventory.devices)) {
     return {
-      ready: false,
-      booted: false,
-      udid,
-      alreadyBooted: false,
+      ready: false, booted: false, udid, alreadyBooted: false,
+      error: { code: 'IOS_SIMULATOR_INVENTORY_UNAVAILABLE', message: 'Cannot safely admit a Simulator boot without a trustworthy simctl inventory.' },
+    };
+  }
+  const devices = inventory.devices.filter((device) => /SimRuntime\.iOS-/i.test(device.runtime));
+  const target = devices.find((device) => device.udid === udid);
+  if (!target) {
+    return {
+      ready: false, booted: false, udid, alreadyBooted: false,
+      error: { code: 'IOS_SIMULATOR_UNAVAILABLE', message: 'The requested iOS Simulator is not available in simctl inventory.' },
+    };
+  }
+  const alreadyRunning = target.state === 'Booted';
+  if (!alreadyRunning) {
+    if (target.state !== 'Shutdown') {
+      return {
+        ready: false, booted: false, udid, alreadyBooted: false,
+        error: { code: 'IOS_SIMULATOR_STATE_NOT_READY', message: 'Simulator ' + udid + ' is ' + target.state + '; wait for its state to settle.' },
+      };
+    }
+    const bootedDevices = devices.filter((device) => device.state === 'Booted')
+      .map((device) => ({ udid: device.udid, name: device.name }));
+    if (bootedDevices.length >= MAX_BOOTED_IOS_SIMULATORS) {
+      return {
+        ready: false, booted: false, udid, alreadyBooted: false,
+        maxBootedDevices: MAX_BOOTED_IOS_SIMULATORS, bootedDevices,
+        error: {
+          code: 'IOS_SIMULATOR_CAPACITY_REACHED',
+          message: 'Two iOS Simulators are already booted; reuse an available booted device or explicitly shut down an idle owner before starting ' + udid + '.',
+        },
+      };
+    }
+  }
+  // A warm, already Booted device needs readiness confirmation, not another boot.
+  const boot = alreadyRunning ? undefined : runCommand('xcrun', ['simctl', 'boot', udid], { timeoutMs });
+  const alreadyBooted = alreadyRunning || Boolean(boot && /current state:\s*Booted|already booted/i.test(boot.stderr + boot.stdout));
+  if (boot && !boot.ok && !alreadyBooted) {
+    return {
+      ready: false, booted: false, udid, alreadyBooted: false,
       error: { code: 'SIMULATOR_BOOT_FAILED', message: boot.stderr || boot.stdout },
       command: boot.command,
     };
@@ -389,25 +426,18 @@ export function iosSimulatorBoot(input: { udid: string; openSimulator?: boolean;
   const readiness = runCommand('xcrun', ['simctl', 'bootstatus', udid, '-b'], { timeoutMs });
   if (!readiness.ok) {
     return {
-      ready: false,
-      booted: false,
-      bootRequested: boot.ok || alreadyBooted,
-      udid,
-      alreadyBooted,
-      ownership: alreadyBooted ? 'reused' : 'started_by_work',
-      command: boot.command,
+      ready: false, booted: false, bootRequested: Boolean(boot?.ok) || alreadyBooted, udid,
+      alreadyBooted, ownership: alreadyBooted ? 'reused' : 'started_by_work',
+      ...(boot ? { command: boot.command } : {}),
       readinessCommand: readiness.command,
       error: { code: 'SIMULATOR_BOOTSTATUS_FAILED', message: readiness.stderr || readiness.stdout },
     };
   }
   if (input.openSimulator !== false) runCommand('open', ['-a', 'Simulator']);
   return {
-    ready: true,
-    booted: true,
-    udid,
-    alreadyBooted,
+    ready: true, booted: true, udid, alreadyBooted,
     ownership: alreadyBooted ? 'reused' : 'started_by_work',
-    command: boot.command,
+    ...(boot ? { command: boot.command } : {}),
     readinessCommand: readiness.command,
   };
 }
@@ -544,6 +574,15 @@ export async function iosXcodeTest(repository: RepositoryRecord, input: {
   const workspace = safeRepoRelativePath(repository.canonicalRoot, input.workspace ?? listedReady.workspace);
   const project = safeRepoRelativePath(repository.canonicalRoot, input.project ?? listedReady.project);
   const configuration = input.configuration ?? 'Debug';
+  // XCTest may auto-boot a named destination. Resolve and admit an exact warm
+  // Simulator first so the host never silently starts a third device.
+  let targetUdid: string;
+  try { targetUdid = chooseSimulatorUdid(input); }
+  catch (error) {
+    return { ready: false, error: { code: 'IOS_SIMULATOR_UNAVAILABLE', message: error instanceof Error ? error.message : String(error) } };
+  }
+  const boot = iosSimulatorBoot({ udid: targetUdid, openSimulator: false });
+  if (!boot.ready) return { ready: false, udid: targetUdid, error: 'error' in boot ? boot.error : undefined };
   const derivedDataPath = stableBuildDerivedDataPath(repository, { workspace, project, scheme, configuration, destinationPlatform: 'ios_simulator' });
   const resultBundlePath = join(safeArtifactDir(repository, 'test-results'), `${artifactStamp()}-${sanitize(scheme)}.xcresult`);
   mkdirSync(derivedDataPath, { recursive: true });
@@ -551,8 +590,7 @@ export async function iosXcodeTest(repository: RepositoryRecord, input: {
   if (workspace) args.push('-workspace', workspace);
   else if (project) args.push('-project', project);
   args.push('-scheme', scheme, '-configuration', input.configuration ?? 'Debug');
-  if (input.udid) args.push('-destination', `platform=iOS Simulator,id=${String(input.udid).trim()}`);
-  else args.push('-destination', 'platform=iOS Simulator,name=' + (input.simulatorName ?? 'iPhone 16 Pro'));
+  args.push('-destination', `platform=iOS Simulator,id=${targetUdid}`);
   const parallelTesting = input.parallelTesting === true;
   const maxParallelTestingWorkers = parallelTesting
     ? Math.max(1, Math.min(2, Math.trunc(Number.isFinite(input.maxParallelTestingWorkers) ? input.maxParallelTestingWorkers! : 2)))
@@ -671,6 +709,7 @@ function chooseSimulatorUdid(input: { udid?: string; simulatorName?: string }): 
     ? devices.filter((device) => device.name.includes(requestedName)).sort(compareSimulatorCandidates)
     : [];
   if (matches[0]?.udid) return matches[0].udid;
+  if (requestedName) throw new Error('IOS_SIMULATOR_UNAVAILABLE: requested simulator name was not found');
   if (!requestedName) {
     const booted = devices.filter((device) => device.state === 'Booted').sort(compareSimulatorCandidates);
     if (booted[0]?.udid) return booted[0].udid;
