@@ -149,7 +149,7 @@ export function redactSensitiveText(input: string): SensitiveTextRedactionResult
         const sourceCounter = /^[+-]?(?:\d+\.\d*|\.\d+)(?:e[+-]?\d+)?[;)]?$/i.test(rhs);
         const sourceReference = /^token[;)]?$/.test(rhs);
         const sourceType = separator.trim() === ':' && !typeDefault && /^(?:Double|Float|Int|Int8|Int16|Int32|Int64|Bool|String|Character|CGFloat|Date|UUID)[?!]?[),{;]?$/.test(rhs);
-        if (genericToken && (sourceCounter || sourceReference || sourceType)) return matched;
+        if (sourceType || (genericToken && (sourceCounter || sourceReference))) return matched;
         redactions += 1;
         return `${prefix}[REDACTED]`;
       });
