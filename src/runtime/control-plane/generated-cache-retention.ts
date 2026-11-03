@@ -1,4 +1,5 @@
 import { execFileSync } from 'child_process';
+import { createHash } from 'crypto';
 import {
   existsSync,
   lstatSync,
@@ -8,9 +9,10 @@ import {
   rmSync,
 } from 'fs';
 import { homedir } from 'os';
-import { basename, join, relative, resolve, sep } from 'path';
+import { basename, dirname, join, relative, resolve, sep } from 'path';
 import { repositoryControllerRoot } from '../../effects/controller-home';
 import { measureReclaimablePath } from './lifecycle-retention-metrics';
+import { assertOwnedResourceCleanupTarget, getOwnedResource, recordOwnedResource } from '../../../packages/kernel/identity/api/index';
 
 const DEFAULT_GENERATED_CACHE_GRACE_MS = 6 * 60 * 60_000;
 const DEFAULT_BROWSER_UPLOAD_GRACE_MS = 24 * 60 * 60_000;
@@ -509,6 +511,62 @@ export function cleanupGeneratedRepositoryCheckoutCaches(
 }
 
 /**
+ * The producer records a filesystem-inode-bound OwnedResource only after Xcode
+ * actually creates a result bundle. This is provenance, not deletion approval:
+ * XCTest/review evidence remains retained until an explicit release policy.
+ */
+export function iosTestEvidenceResourceId(repoId: string, resultPath: string): string {
+  return 'ios-xcresult-' + createHash('sha256').update(repoId + '\0' + resolve(resultPath)).digest('hex');
+}
+
+export function recordIosTestEvidenceOwner(input: {
+  controllerHome: string;
+  repoId: string;
+  repoRoot: string;
+  resultBundlePath: string;
+  producerRequestId: string;
+}): { recorded: boolean; resourceId?: string; reason?: string } {
+  const root = resolve(input.repoRoot, '.forge', 'ios', 'test-results');
+  const target = resolve(input.repoRoot, input.resultBundlePath);
+  if (dirname(target) !== root || !basename(target).endsWith('.xcresult')
+      || !pathInside(root, target) || !existsSync(target)) {
+    return { recorded: false, reason: 'missing_or_untrusted_result_path' };
+  }
+  const stat = lstatSync(target);
+  if (!stat.isDirectory() || stat.isSymbolicLink() || hasSymlinkAncestor(input.repoRoot, target)) {
+    return { recorded: false, reason: 'untrusted_result_identity' };
+  }
+  const record = recordOwnedResource(input.controllerHome, {
+    resourceId: iosTestEvidenceResourceId(input.repoId, target),
+    kind: 'temp_dir',
+    targetRef: target,
+    creator: 'forge:ios.xcode_test:' + input.producerRequestId,
+    repoId: input.repoId,
+    retentionIntent: 'persistent_until_explicit_release',
+    cleanupCapable: true,
+  });
+  return { recorded: true, resourceId: record.resourceId };
+}
+
+function hasVerifiedIosTestEvidenceOwner(controllerHome: string, repoId: string, path: string): boolean {
+  const resource = getOwnedResource(controllerHome, iosTestEvidenceResourceId(repoId, path));
+  if (!resource || resource.provenance.repoId !== repoId
+      || !resource.provenance.creator.startsWith('forge:ios.xcode_test:')
+      || resource.retention.intent !== 'persistent_until_explicit_release') return false;
+  try {
+    assertOwnedResourceCleanupTarget(controllerHome, {
+      resourceId: resource.resourceId,
+      kind: 'temp_dir',
+      targetRef: path,
+      locator: { kind: 'filesystem_path', value: path },
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Read-only accounting for Forge's iOS test result namespace. A conventional
  * Xcode result filename is not an ownership receipt, so this deliberately
  * cannot authorize deletion: active Work/review evidence may still reference
@@ -521,6 +579,7 @@ export interface IosTestEvidenceInventoryReport {
   bundlesObserved: number;
   producerNamedBundles: number;
   ownershipUnverified: number;
+  verifiedOwnerCount: number;
   observedBytesLowerBound: number;
   incompleteSizeCount: number;
   oldestObservedAgeMs: number;
@@ -530,7 +589,7 @@ export interface IosTestEvidenceInventoryReport {
 
 export function inspectRepositoryIosTestEvidence(
   repository: GeneratedCacheRepositoryRootSet,
-  options: Pick<GeneratedCacheRetentionOptions, 'nowMs' | 'maxEntries' | 'rootStartIndex'> = {},
+  options: Pick<GeneratedCacheRetentionOptions, 'nowMs' | 'maxEntries' | 'rootStartIndex'> & { owner?: { controllerHome: string; repoId: string } } = {},
 ): IosTestEvidenceInventoryReport {
   const nowMs = options.nowMs ?? Date.now();
   let budget = Math.max(1, Math.floor(options.maxEntries ?? 4_096));
@@ -541,6 +600,7 @@ export function inspectRepositoryIosTestEvidence(
     bundlesObserved: 0,
     producerNamedBundles: 0,
     ownershipUnverified: 0,
+    verifiedOwnerCount: 0,
     observedBytesLowerBound: 0,
     incompleteSizeCount: 0,
     oldestObservedAgeMs: 0,
@@ -590,7 +650,11 @@ export function inspectRepositoryIosTestEvidence(
             continue;
           }
           report.bundlesObserved += 1;
-          report.ownershipUnverified += 1;
+          if (options.owner && hasVerifiedIosTestEvidenceOwner(options.owner.controllerHome, options.owner.repoId, path)) {
+            report.verifiedOwnerCount += 1;
+          } else {
+            report.ownershipUnverified += 1;
+          }
           // A name matching iosXcodeTest's artifactStamp is not an
           // authenticated producer identity or retention grant.
           if (/^\d{8}T\d{6}Z-\d+-\d+-[A-Za-z0-9._-]+\.xcresult$/.test(name)) report.producerNamedBundles += 1;

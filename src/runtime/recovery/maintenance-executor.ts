@@ -1794,6 +1794,7 @@ export function applyRuntimeMaintenance(
       nowMs: cacheScanNowMs,
       rootStartIndex: Math.floor(cacheScanNowMs / 60_000),
       maxEntries: Math.max(256, (options.maxCandidates ?? 50) * 20),
+      owner: { controllerHome, repoId: repository.repoId },
     });
     cleanupArtifactGc = cleanupWorkPreservationArtifacts(controllerHome, {
       maxEntries: Math.max(1_000, (options.maxCandidates ?? 50) * 20),
