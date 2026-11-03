@@ -1087,11 +1087,13 @@ forbid(
   /runWorkChatgptContinuation|prepareWorkChatgptContinuationTransport/,
   'Work-bound ChatGPT provider delivery is Workflow Supervisor-owned; this module may expose only standalone prompt and Browser settlement primitives',
 );
-requireText('src/runtime/root/scheduled-controller-composition.ts', 'ensureScheduledControllerBinding');
-forbid('src/runtime/root/scheduled-controller-composition.ts', /inheritWorkflowSupervisorConversationBinding|controllerHostForScheduledBinding|ensureScheduledControllerBindingForWork/, 'Schedule binding must not bridge into retired Supervisor or Controller progression');
 requireText('src/runtime/control-plane/launcher/thin-launcher.ts', 'LAUNCHER_CHATGPT_SUPERVISOR_OWNED');
 requireMissing('adapters/scheduler/controller-binding.ts');
 requireMissing('src/runtime/root/controller-progression-composition.ts');
+requireMissing('src/runtime/root/scheduled-controller-composition.ts');
+requireMissing('scripts/smoke-user-request-continuation-restart.ts');
+forbid('src/runtime/control-plane/facade/handoff-inbox-application.ts', /triggerResolvedContinuation|rearmControllerRoundAfterProviderUserAction/, 'resolved handoff must not auto rearm or wake a model turn');
+forbid('src/runtime/workflow/schedules/work-continuation.ts', /rearmControllerRoundAfterProviderUserAction|touchSchedulerWakeSignal|ensureScheduledControllerBinding/, 'Schedule and historical Handoff reading must not rearm a Controller turn');
 requireMissing('tests/runtime/controller-progression-continuation.test.ts');
 requireText('adapters/controller-process/controller-host.ts', 'createProcessControllerHost');
 requireText('docs/architecture/CURRENT.md', 'An existing nonterminal unbound task may acquire one explicit Work or Requirement binding');
@@ -1872,7 +1874,6 @@ for (const edge of dependencyEdges(b7ProductionGraph)) {
   }
 }
 for (const compositionPath of [
-  'src/runtime/root/scheduled-controller-composition.ts',
   'src/runtime/root/controller-round-composition.ts',
 ]) requireText(compositionPath, 'Kernel V2 composition root');
 

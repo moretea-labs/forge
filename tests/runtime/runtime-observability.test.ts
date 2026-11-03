@@ -1239,7 +1239,7 @@ describe('runtime observability', () => {
     }
   });
 
-  test('handoff resolve delegates continuation through the application port without importing workflow authority', async () => {
+  test('handoff resolve persists the decision without rearming automatic model continuation', async () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-handoff-application-port-'));
     const store = { controllerHome, repoId: 'repo-handoff-port' };
     try {
@@ -1259,30 +1259,18 @@ describe('runtime observability', () => {
         recommendedPrompt: 'Resolve fixture.',
         suggestedNextActions: [],
       });
-      const triggered: Array<{ id: string; workId?: string; status: string; decision?: string }> = [];
       const result = await runHandoffInboxApplication({
         operation: 'resolve',
         store,
         handoffId: 'HND-APPLICATION-PORT',
         decision: 'continue exact work',
         resolver: 'test-controller',
-      }, {
-        triggerResolvedContinuation: async (item) => {
-          triggered.push({ id: item.id, workId: item.workId, status: item.status, decision: item.decision });
-          return [{ scheduleId: 'SCH-APPLICATION-PORT', occurrenceId: 'OCC-APPLICATION-PORT', status: 'shadowed' }];
-        },
       });
 
-      expect(triggered).toEqual([{
-        id: 'HND-APPLICATION-PORT',
-        workId: 'WORK-APPLICATION-PORT',
-        status: 'resolved',
-        decision: 'continue exact work',
-      }]);
       expect(result).toMatchObject({
         operation: 'resolve',
         item: { id: 'HND-APPLICATION-PORT', workId: 'WORK-APPLICATION-PORT', status: 'resolved' },
-        continuationOccurrences: [{ scheduleId: 'SCH-APPLICATION-PORT', occurrenceId: 'OCC-APPLICATION-PORT', status: 'shadowed' }],
+        continuationOccurrences: [],
       });
     } finally {
       rmSync(controllerHome, { recursive: true, force: true });

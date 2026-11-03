@@ -24,7 +24,6 @@ import { getControllerSession } from "../../../packages/kernel/controller/api/in
 import { listActiveOccurrences, listSchedules, scheduleOwnsWork } from "../../../packages/kernel/scheduler/api/index";
 import { summarizeHandoffItem } from '../../../src/runtime/control-plane/facade';
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
-import { triggerResolvedHandoffContinuation } from '../../../src/runtime/workflow/schedules/work-continuation';
 import { getUserRequest, listUserRequests, recordUserRequest, resolveUserRequest, type UserRequest } from '../../../packages/kernel/identity/api/index';
 import { controllerReadinessEvidence, runtimeSourceSnapshotStatus } from './runtime-readiness-observation';
 export { ageMs, probeLocalControllerHealth, localControllerDiagnosticMatchesRuntime, controllerReadinessEvidence, runtimeSourceSnapshotStatus } from './runtime-readiness-observation';
@@ -885,8 +884,6 @@ async function callInboxAdapter(ctx: MultiRepositoryMcpToolContext, args: Record
     decision: typeof args.decision === 'string' ? args.decision : undefined,
     resolver: typeof args.resolver === 'string' ? args.resolver : undefined,
     controllerIdentity: { principalId: ctx.principalId, sessionId: ctx.sessionId },
-  }, {
-    triggerResolvedContinuation: (item) => triggerResolvedHandoffContinuation(ctx.controllerHome, repository.repoId, item),
   });
   if (operation === 'get') {
     const item = 'item' in app ? app.item : undefined;

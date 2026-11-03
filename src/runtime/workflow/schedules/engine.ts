@@ -444,10 +444,6 @@ export async function evaluateSchedule(
 
   if (schedule.action.operation === BROWSER_PROBE_OPERATION) {
     const workId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
-    const keepaliveOnly = args.keepalive_only === true;
-    if (!workId && !keepaliveOnly) {
-      return decideOccurrence(controllerHome, schedule, occurrence, 'operation_blocked', 'skipped', 'SCHEDULE_BROWSER_PROBE_WORK_ID_REQUIRED');
-    }
     if (workId) {
       const workStore = { controllerHome, repoId: schedule.repoId };
       const work = getWorkContract(workStore, workId);

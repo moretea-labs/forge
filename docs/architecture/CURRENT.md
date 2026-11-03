@@ -9,7 +9,7 @@ Retire autonomous model-turn continuation instead of adding another completion o
 ## Kept capabilities
 
 1. **Launch Session** is an explicit bounded action. It opens or attaches one selected session (ChatGPT or supported external CLI); an explicitly requested prompt may be dispatched at most once using the existing delivery/authorization owner. Return exact session identity and an honest dispatched/not-applied/unknown delivery receipt, never a model task completion. A transport-unknown external mutation is not retried automatically.
-2. **Schedule** retains canonical schedules, trigger admission, one occurrence identity, one bounded explicit action, and occurrence receipts. Existing create/get/list/pause/resume/delete/manual trigger remain. Schedule reports whether its explicit dispatch occurred; it does not invent next-round CONTINUE, infer DONE or migrate the conversation.
+2. **Schedule** retains canonical schedules, trigger admission, one occurrence identity, one bounded explicit action, and occurrence receipts. Work-free browser watch is observe-only; resolving a Handoff persists a decision without rearming ControllerRound or waking a model. Existing create/get/list/pause/resume/delete/manual trigger remain. Schedule reports whether its explicit dispatch occurred; it does not invent next-round CONTINUE, infer DONE or migrate the conversation.
 3. The model or user owns planning, results interpretation, additional manual launches and task acceptance. GitHub Issue and Project remain progress authority. Forge Process/Git/permission/release safety authorities remain unchanged.
 
 ## Retired surface and canonical migration map

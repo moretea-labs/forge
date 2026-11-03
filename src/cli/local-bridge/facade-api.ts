@@ -48,7 +48,7 @@ import {
   type SuggestedNextAction,
   type WorkContract,
 } from '../../runtime/control-plane/facade';
-import { resolveHandoffAndTriggerContinuation } from '../../runtime/workflow/schedules/work-continuation';
+import { resolveHandoffItem } from '../../runtime/control-plane/facade/handoff-inbox-store';
 import { buildRuntimeMaintenanceStatus } from '../../runtime/recovery';
 import { applySafePatch } from '../repositories/safe-patch';
 import { withControllerLock } from '../repositories/locks';
@@ -1133,7 +1133,7 @@ export function ackConsoleHandoff(ctx: ConsoleFacadeContext, handoffId: string) 
 }
 
 export async function resolveConsoleHandoff(ctx: ConsoleFacadeContext, handoffId: string, decision: string, resolver = 'user') {
-  const { item } = await resolveHandoffAndTriggerContinuation(ctx.controllerHome, ctx.repository.repoId, handoffId, { decision, resolver });
+  const item = resolveHandoffItem(store(ctx), handoffId, { decision, resolver });
   return mapHandoffCard(item);
 }
 
@@ -1175,7 +1175,7 @@ export async function approveConsoleHandoff(ctx: ConsoleFacadeContext, handoffId
       summary: `批准已收到，但后续动作未成功：${actionResult.summary}`,
     };
   }
-  const { item: resolved } = await resolveHandoffAndTriggerContinuation(ctx.controllerHome, ctx.repository.repoId, handoffId, {
+  const resolved = resolveHandoffItem(store(ctx), handoffId, {
     decision: `approved: ${item.approvalAction.label}`,
     resolver,
   });

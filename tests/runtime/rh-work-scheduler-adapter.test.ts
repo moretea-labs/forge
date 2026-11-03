@@ -126,6 +126,51 @@ describe('retired autonomous Schedule actions', () => {
   }
 });
 
+describe('Work-free observe-only Schedule', () => {
+  test('creates and manually triggers a browser watcher without Work, Controller binding, or model wake', async () => {
+    const { controllerHome, repository, ctx } = fixture();
+    const input = {
+      repo_id: repository.repoId,
+      operation: 'schedule_create',
+      schedule_mode: 'browser_watch',
+      schedule_name: 'Standalone browser observation',
+      schedule_request_id: 'observe-without-work',
+      trigger_type: 'manual',
+      probe_url: 'https://chatgpt.com/',
+      shadow_mode: true,
+    };
+    const created = structured(await callRuntimeTool(ctx, 'rh_work', input));
+    expect(created.status).toBe('ok');
+    const scheduleId = created.data.schedule.scheduleId as string;
+    const stored = getSchedule(controllerHome, repository.repoId, scheduleId);
+    expect(stored.action.operation).toBe('browser_probe');
+    expect(stored.action.arguments?.work_id).toBeUndefined();
+    expect(stored.action.arguments?.controller_binding_id).toBeUndefined();
+    expect(stored.action.arguments?.keepalive_only).toBe(false);
+
+    const unsafe = structured(await callRuntimeTool(ctx, 'rh_work', {
+      ...input,
+      schedule_request_id: 'rejected-auto-turn',
+      continuation_prompt: 'CONTINUE',
+    }));
+    expect(unsafe.status).toBe('blocked');
+    expect(unsafe.summary).toContain('SCHEDULE_AUTONOMOUS_MODEL_LAUNCH_FIELDS_RETIRED');
+
+    const replay = structured(await callRuntimeTool(ctx, 'rh_work', input));
+    expect(replay.status).toBe('ok');
+    expect(replay.data.schedule.scheduleId).toBe(scheduleId);
+
+    const triggered = structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'schedule_trigger',
+      schedule_id: scheduleId,
+      request_id: 'observe-once',
+    }));
+    expect(triggered.status).toBe('ok');
+    expect(triggered.data.occurrence).toMatchObject({ decision: 'would_execute', status: 'shadowed' });
+  });
+});
+
 describe('rh_work Scheduler MCP adapter', () => {
   test('routes the complete schedule lifecycle through the Scheduler adapter without external effects', async () => {
     const { controllerHome, repository, ctx, workId } = fixture();
