@@ -30,7 +30,8 @@ Retire autonomous model-turn continuation instead of adding another completion o
 - Migrate all direct and indirect callers; update architecture/build manifest and targeted tests; delete dead code rather than retaining disabled parallel paths.
 - Confirm Work-free manual session launch; Schedule create, trigger, receipt, pause/resume and restart safety; no auto CONTINUE/migration/second Writer; unknown dispatch not repeated.
 - Require current executor exact-HEAD diff verification, focused type/architecture checks and CI; independent review only on explicit request. Current Runtime remains untouched until approval of a particular release activation.
-- This decision document and an initial source cut do not constitute full retirement. GitHub #313 retains the single progress and acceptance ledger.
+- Source merge records code integration only; GitHub Issue #313 remains OPEN until Work-free Launch Session and Schedule occurrence/receipt/restart/no-replay are verified on a specifically authorized Runtime release.
+
 ### Xcode DerivedData resource claims (Refs #478)
 
 Process Runtime resolves an explicit literal `xcodebuild -derivedDataPath` against the actual execution cwd, canonicalizes existing symlink ancestors, and claims the physical cache path through the existing Lease owner. Distinct caches may build concurrently across checkouts; equal or ancestor/child paths conflict across repositories. Each concrete cache also holds a repository build-cache read claim, so an opaque/default-cache build's existing write claim remains exclusive. Dynamic or opaque compound shell commands, dangling symlinks, duplicate cache arguments and output/cache overrides retain that conservative repository claim. Native XCTest commands additionally retain the host-wide simulator-test write claim. This changes command resource admission only; it does not create a scheduler, build executor or progress authority.
