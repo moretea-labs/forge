@@ -274,7 +274,8 @@ describe('iOS development simulator reliability', () => {
         return result(command, args);
       },
     });
-    const action = async (requestId: string) => executeIosPluginAction({
+    const action = async (requestId: string, boundWork?: { workId: string; workRepoId: string }) => executeIosPluginAction({
+      ...(boundWork ?? {}),
       controllerHome,
       repoId: repo.record.repoId,
       repoRoot: repo.root,
@@ -310,6 +311,20 @@ describe('iOS development simulator reliability', () => {
     expect(inspectRepositoryIosTestEvidence({ canonicalRoot: repo.root, checkouts: [] }, {
       owner: { controllerHome, repoId: repo.record.repoId }, maxEntries: 100,
     }).verifiedOwnerCount).toBe(1);
+
+    materializeResult = true;
+    const bound = await action('JOB-ios-xcresult-work', {
+      workId: 'work-exact-current', workRepoId: repo.record.repoId,
+    });
+    const boundOwner = bound.resultBundleOwnership as { recorded: boolean; resourceId: string };
+    expect(boundOwner.recorded).toBe(true);
+    expect(getOwnedResource(controllerHome, boundOwner.resourceId)?.provenance.associatedWorkId).toBe('work-exact-current');
+    const crossRepo = await action('JOB-ios-xcresult-cross-repo', {
+      workId: 'work-other-repo', workRepoId: 'repo-unrelated',
+    });
+    const crossRepoOwner = crossRepo.resultBundleOwnership as { recorded: boolean; resourceId: string };
+    expect(crossRepoOwner.recorded).toBe(true);
+    expect(getOwnedResource(controllerHome, crossRepoOwner.resourceId)?.provenance.associatedWorkId).toBeUndefined();
   });
 
   test('XCTest uses an already booted exact UDID and refuses a third implicit destination', async () => {
