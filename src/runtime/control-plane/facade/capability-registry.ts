@@ -109,16 +109,6 @@ const CORE_CAPABILITIES: CapabilityDescriptor[] = [
     summary: 'Start an explicitly requested external Codex, Claude, or ChatGPT controller through launcher_start; provider identity, transport recovery, and mechanical binding remain internal.',
   },
   {
-    capabilityId: 'controller.workflow_supervisor',
-    domain: 'controller',
-    group: 'controller',
-    operationClass: 'execute',
-    risk: 'workspace_write',
-    exposedVia: 'capability_execute',
-    schemaExposure: 'stable_static',
-    summary: 'Start, inspect, revise, recover, stop, and verify standalone Workflow Supervisor tasks through the existing Supervisor single-writer authority; used for bounded cross-turn continuation and release-bound live proof without creating semantic Work or another public facade tool.',
-  },
-  {
     capabilityId: 'controller.round_recovery',
     domain: 'controller',
     group: 'controller',
@@ -423,117 +413,6 @@ export function getCoreCapabilityExecutionSchema(capabilityId: string): Record<s
               disposition: { type: 'string', enum: ['continue_immediately', 'wait', 'wait_for_user', 'goal_complete'] },
               handoff_id: { type: 'string', minLength: 1, maxLength: 200 },
               user_directed: { type: 'boolean', const: true },
-            },
-          },
-        },
-      },
-    };
-  }
-  if (capabilityId === 'controller.workflow_supervisor') {
-    return {
-      capabilityId,
-      executeWith: 'capability_execute',
-      actions: {
-        start: {
-          readOnly: false,
-          risk: 'workspace_write',
-          argumentsSchema: {
-            type: 'object', additionalProperties: false, required: ['objective', 'project_url', 'authorized_by'],
-            properties: {
-              objective: { type: 'string', minLength: 1, maxLength: 4000 },
-              project_url: { type: 'string', minLength: 1, maxLength: 2048 },
-              authorized_by: { type: 'string', minLength: 1, maxLength: 256 },
-            },
-          },
-        },
-        bootstrap_project_bind: {
-          readOnly: false,
-          risk: 'workspace_write',
-          argumentsSchema: {
-            type: 'object', additionalProperties: false,
-            required: ['task_id', 'project_url', 'authorized_by'],
-            properties: {
-              task_id: { type: 'string', minLength: 1, maxLength: 256 },
-              project_url: { type: 'string', minLength: 1, maxLength: 2048 },
-              authorized_by: { type: 'string', minLength: 1, maxLength: 256 },
-            },
-          },
-        },
-        list: {
-          readOnly: true,
-          risk: 'readonly',
-          argumentsSchema: {
-            type: 'object', additionalProperties: false,
-            properties: { active_only: { type: 'boolean' } },
-          },
-        },
-        get: {
-          readOnly: true,
-          risk: 'readonly',
-          argumentsSchema: {
-            type: 'object', additionalProperties: false, required: ['task_id'],
-            properties: { task_id: { type: 'string', minLength: 1, maxLength: 256 } },
-          },
-        },
-        revise: {
-          readOnly: false,
-          risk: 'workspace_write',
-          argumentsSchema: {
-            type: 'object', additionalProperties: false, required: ['task_id', 'objective', 'expected_objective_sha256'],
-            properties: {
-              task_id: { type: 'string', minLength: 1, maxLength: 256 },
-              objective: { type: 'string', minLength: 1, maxLength: 8000 },
-              expected_objective_sha256: { type: 'string', minLength: 64, maxLength: 64 },
-              authorized_by: { type: 'string', minLength: 1, maxLength: 256 },
-            },
-          },
-        },
-        switch_to_fresh_conversation: {
-          readOnly: false,
-          risk: 'workspace_write',
-          argumentsSchema: {
-            type: 'object', additionalProperties: false, required: ['task_id', 'expected_conversation_id', 'reason'],
-            properties: {
-              task_id: { type: 'string', minLength: 1, maxLength: 256 },
-              expected_conversation_id: { type: 'string', minLength: 1, maxLength: 256 },
-              reason: { type: 'string', minLength: 1, maxLength: 2000 },
-              authorized_by: { type: 'string', minLength: 1, maxLength: 256 },
-            },
-          },
-        },
-        recover: {
-          readOnly: false,
-          risk: 'workspace_write',
-          argumentsSchema: {
-            type: 'object', additionalProperties: false, required: ['task_id', 'reason'],
-            properties: {
-              task_id: { type: 'string', minLength: 1, maxLength: 256 },
-              reason: { type: 'string', minLength: 1, maxLength: 2000 },
-              source_effect_id: { type: 'string', minLength: 1, maxLength: 256 },
-              supersede_unknown: { type: 'boolean' },
-              authorized_by: { type: 'string', minLength: 1, maxLength: 256 },
-            },
-          },
-        },
-        stop: {
-          readOnly: false,
-          risk: 'workspace_write',
-          argumentsSchema: {
-            type: 'object', additionalProperties: false, required: ['task_id'],
-            properties: {
-              task_id: { type: 'string', minLength: 1, maxLength: 256 },
-              reason: { type: 'string', maxLength: 2000 },
-            },
-          },
-        },
-        proof: {
-          readOnly: true,
-          risk: 'readonly',
-          argumentsSchema: {
-            type: 'object', additionalProperties: false, required: ['active_release_id', 'not_before'],
-            properties: {
-              active_release_id: { type: 'string', minLength: 1, maxLength: 256 },
-              not_before: { type: 'string', minLength: 1, maxLength: 128 },
             },
           },
         },

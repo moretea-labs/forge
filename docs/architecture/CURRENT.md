@@ -1,5 +1,37 @@
 # Forge Current Architecture
 
+## Decision
+
+The operator has withdrawn authorization for unattended ChatGPT CONTINUE to CONTINUE to DONE automation. Real release-bound evidence repeatedly showed applied effects without trusted completion receipts, followed by timeout-based migration and another applied effect. The system must not infer model acceptance from DOM, idle state, HTTP success, CI, or scheduler health.
+
+Retire autonomous model-turn continuation instead of adding another completion observer, retry loop, provider, scheduler, or duplicate authority. This is a source migration decision, not authorization to activate/restart/cut over the current Runtime.
+
+## Kept capabilities
+
+1. **Launch Session** is an explicit bounded action. It opens or attaches one selected session (ChatGPT or supported external CLI); an explicitly requested prompt may be dispatched at most once using the existing delivery/authorization owner. Return exact session identity and an honest dispatched/not-applied/unknown delivery receipt, never a model task completion. A transport-unknown external mutation is not retried automatically.
+2. **Schedule** retains canonical schedules, trigger admission, one occurrence identity, one bounded explicit action, and occurrence receipts. Work-free browser watch is observe-only; resolving a Handoff persists a decision without rearming ControllerRound or waking a model. Existing create/get/list/pause/resume/delete/manual trigger remain. Schedule reports whether its explicit dispatch occurred; it does not invent next-round CONTINUE, infer DONE or migrate the conversation.
+3. The model or user owns planning, results interpretation, additional manual launches and task acceptance. GitHub Issue and Project remain progress authority. Forge Process/Git/permission/release safety authorities remain unchanged.
+
+## Retired surface and canonical migration map
+
+| Old path | Treatment |
+| --- | --- |
+| Supervisor Task/Effect/Turn/Completion/Review Watch and source root composition | Remove autonomous execution and mutation entrypoints; preserve historical persisted rows read-only until independently authorized retention |
+| Runtime unconditional Supervisor startup/stop/fail-core binding | Delete: Runtime starts Scheduler and Launch independently |
+| MCP Supervisor task, Supervisor status/proof gates, browser delivery adapter actions | Delete from public tool surface, contracts, checks and tests; no compatibility-only hidden execution path |
+| NativeMessaging Supervisor release host, Chrome provider-turn scripts and automatic receipt probing | Delete after launch callers migrate to ordinary Computer/session delivery; keep general Browser and Computer |
+| Controller progression and scheduled auto-continue/on-failure wake | Retire; persisted schedules using these actions become disabled with a recorded reason, not silently converted |
+| Launcher ChatGPT currently rejecting launch as Supervisor-owned | Route to existing authorized one-shot ChatGPT open/dispatch owner; do not make Work mandatory |
+| Scheduler/Kernel Schedule Store, general launcher, idempotent Process and authorization | Keep unchanged; no new stores or control loops |
+
+## Safety and final acceptance
+
+- Stop active autonomous Task through its sole owner before source retirement; do not cancel/replay an applied external Send or delete the user's conversation.
+- Migrate all direct and indirect callers; update architecture/build manifest and targeted tests; delete dead code rather than retaining disabled parallel paths.
+- Confirm Work-free manual session launch; Schedule create, trigger, receipt, pause/resume and restart safety; no auto CONTINUE/migration/second Writer; unknown dispatch not repeated.
+- Require current executor exact-HEAD diff verification, focused type/architecture checks and CI; independent review only on explicit request. Current Runtime remains untouched until approval of a particular release activation.
+- Source merge records code integration only; GitHub Issue #313 remains OPEN until Work-free Launch Session and Schedule occurrence/receipt/restart/no-replay are verified on a specifically authorized Runtime release.
+
 ### Xcode DerivedData resource claims (Refs #478)
 
 Process Runtime resolves an explicit literal `xcodebuild -derivedDataPath` against the actual execution cwd, canonicalizes existing symlink ancestors, and claims the physical cache path through the existing Lease owner. Distinct caches may build concurrently across checkouts; equal or ancestor/child paths conflict across repositories. Each concrete cache also holds a repository build-cache read claim, so an opaque/default-cache build's existing write claim remains exclusive. Dynamic or opaque compound shell commands, dangling symlinks, duplicate cache arguments and output/cache overrides retain that conservative repository claim. Native XCTest commands additionally retain the host-wide simulator-test write claim. This changes command resource admission only; it does not create a scheduler, build executor or progress authority.

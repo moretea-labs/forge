@@ -39,7 +39,7 @@ import { buildChatgptControllerRoundPrompt } from '../../adapters/chatgpt/contro
 import { decideControllerRoundTransition } from '../../packages/kernel/controller/domain/controller-round-transition-policy';
 import { closeChatgptControllerRoundFromSource } from '../../src/runtime/control-plane/launcher/chatgpt-round-continuation';
 import { getExternalControllerLaunchReservation } from '../../src/runtime/control-plane/launcher/launch-reservation-store';
-import { awaitExternalControllerWake, classifyChatgptWakeFailure, evaluateSchedule, externalControllerWakeTimeoutMs } from '../../src/runtime/workflow/schedules/engine';
+import { evaluateSchedule } from '../../src/runtime/workflow/schedules/engine';
 import { applyScheduleRetryableFailure } from '../../src/runtime/workflow/schedules/settlement';
 import { createSchedule, getOccurrence, getSchedule, reclaimStaleCreatedOccurrences, saveOccurrence, saveSchedule, updateSchedule } from '../../src/runtime/workflow/schedules/store';
 import {
@@ -594,23 +594,6 @@ describe('control-plane hardening', () => {
 
 
 describe('scheduled external Controller wake', () => {
-  test('classifies only explicit readiness failures as retryable while keeping consent and unknown failures fail-closed', () => {
-    expect(classifyChatgptWakeFailure('PLUGIN_BROWSER_ATTACH_UNAVAILABLE: Chrome attach failed')).toBe('retryable_readiness');
-    expect(classifyChatgptWakeFailure('HTTP 502 from primary connector')).toBe('retryable_readiness');
-    expect(classifyChatgptWakeFailure('CONTROLLER_WAKE_TOTAL_TIMEOUT: external Controller dispatch exceeded 120000ms.')).toBe('retryable_readiness');
-    expect(classifyChatgptWakeFailure('CONTROLLER_RELAY_LAUNCH_BLOCKED: repeated_state:2>=2')).toBe('semantic_wait');
-    expect(classifyChatgptWakeFailure('CHATGPT_AUTOMATION_LOGIN_REQUIRED')).toBe('user_action_required');
-    expect(classifyChatgptWakeFailure('PLUGIN_BROWSER_JAVASCRIPT_PERMISSION_REQUIRED')).toBe('user_action_required');
-    expect(classifyChatgptWakeFailure('PLUGIN_CONFIGURATION_INVALID')).toBe('ordinary_failure');
-  });
-
-  test('bounds a whole external Controller wake instead of multiplying timeout across browser substeps', async () => {
-    expect(externalControllerWakeTimeoutMs(undefined)).toBe(60_000);
-    expect(externalControllerWakeTimeoutMs(1)).toBe(5_000);
-    expect(externalControllerWakeTimeoutMs(600_000)).toBe(120_000);
-    await expect(awaitExternalControllerWake(new Promise<never>(() => {}), 5)).rejects.toThrow('CONTROLLER_WAKE_TOTAL_TIMEOUT');
-  });
-
   test('retryable continuation failure backs off once, then honours the declared failure circuit breaker', () => {
     const root = temp('forge-schedule-retryable-'), controllerHome = join(root, 'controller'), repoRoot = join(root, 'repo');
     ensureControllerHome(controllerHome); mkdirSync(repoRoot, { recursive: true });
@@ -1891,7 +1874,7 @@ describe('scheduled external Controller wake', () => {
     expect(getOccurrence(controllerHome, repoId, 'OCC-orphaned-created')?.reason).toContain('Orphaned created occurrence reclaimed');
   });
 
-  test('scopes continuation stop conditions to the target Work instead of historical repository noise', async () => {
+  test('retires legacy controller wake while preserving Work-scoped browser observation stop conditions', async () => {
     const root = temp('forge-schedule-stop-scope-'), controllerHome = join(root, 'controller'), repoRoot = join(root, 'repo');
     ensureControllerHome(controllerHome); mkdirSync(repoRoot, { recursive: true });
     for (const args of [['init', '-q', '-b', 'main'], ['config', 'user.email', 'scope@example.test'], ['config', 'user.name', 'Scope Test']] as string[][]) execFileSync('git', args, { cwd: repoRoot });
@@ -1904,8 +1887,10 @@ describe('scheduled external Controller wake', () => {
     const oldAt = new Date(Date.parse(work.createdAt) - 86_400_000).toISOString();
     writeFileSync(join(records, 'OLD-UNRELATED.json'), JSON.stringify({ schemaVersion: 1, revision: 1, jobId: 'OLD-UNRELATED', repoId: repository.repoId, type: 'repository-tool', status: 'failed', priority: 'normal', requestId: 'old-unrelated', semanticKey: 'old-unrelated', payload: { operation: 'legacy' }, origin: { surface: 'system' }, resourceClaims: [], dependencies: [], leaseRefs: [], createdAt: oldAt, updatedAt: oldAt, queuedAt: oldAt, attempt: 1, maxAttempts: 1, error: { code: 'NETWORK_TIMEOUT', message: 'historical external timeout', retryable: true }, evidenceIds: [] }));
     const schedule = createSchedule(controllerHome, { requestId: 'schedule-stop-scope-request', repoId: repository.repoId, name: 'scoped continuation', enabled: true, trigger: { type: 'manual' }, policy: { maxActiveOccurrences: 1, maxFailures: 3, cooldownMinutes: 0, dailyBudgetMinutes: 60, shadowMode: true }, action: { operation: 'external_controller_wake', target: 'runtime', arguments: { work_id: workId, controller_type: 'codex' } }, stopConditions: ['human_review_required', 'external_blocker'] });
-    const first = await evaluateSchedule(controllerHome, schedule, true, { source: 'manual', eventId: 'old-noise' });
-    expect(first?.decision).toBe('would_execute');
+    expect(await evaluateSchedule(controllerHome, schedule, true, { source: 'manual', eventId: 'old-noise' })).toBeUndefined();
+    expect(getSchedule(controllerHome, repository.repoId, schedule.scheduleId)).toMatchObject({
+      enabled: false, pausedReason: 'RETIRED_AUTONOMOUS_CONTINUATION_SCHEDULE',
+    });
 
     const browserSchedule = createSchedule(controllerHome, { requestId: 'browser-schedule-stop-scope-request', repoId: repository.repoId, name: 'scoped browser watcher', enabled: true, trigger: { type: 'manual' }, policy: { maxActiveOccurrences: 1, maxFailures: 3, cooldownMinutes: 0, dailyBudgetMinutes: 60, shadowMode: true }, action: { operation: 'browser_probe', target: 'runtime', arguments: { work_id: workId, controller_type: 'chatgpt', probe_session_id: 'browser-scope-test', wake_on_change: true, keepalive_only: false } }, stopConditions: ['human_review_required', 'external_blocker'] });
     const browserFirst = await evaluateSchedule(controllerHome, browserSchedule, true, { source: 'manual', eventId: 'browser-old-noise' });
@@ -1921,18 +1906,18 @@ describe('scheduled external Controller wake', () => {
       actionRequired: 'product_decision',
       targetScope: { scopeKind: 'work', scopeId: 'WORK-OTHER', repoId: repository.repoId, workId: 'WORK-OTHER' },
     });
-    const unrelated = await evaluateSchedule(controllerHome, schedule, true, { source: 'manual', eventId: 'unrelated-user-request' });
+    const unrelated = await evaluateSchedule(controllerHome, browserSchedule, true, { source: 'manual', eventId: 'unrelated-user-request' });
     expect(unrelated?.decision).toBe('would_execute');
 
     // A legacy ambiguous Handoff is also projected into canonical authority, so
     // a genuine judgement request on the exact Work stops continuation.
     createHandoffItem({ controllerHome, repoId: repository.repoId }, { id: 'HND-WORK-SCOPE', repoId: repository.repoId, workId, title: 'Current Work needs controller review', severity: 'needs_review', creationReason: 'ambiguous_outcome', reason: 'Current Work needs semantic review.', summary: 'Bounded controller review required.', currentState: { repoId: repository.repoId, workId, statusSummary: 'reviewable' }, attemptedActions: [], evidenceRefs: [], recommendedDecision: 'Review current Work.', recommendedPrompt: 'Review current Work.', suggestedNextActions: [] });
-    const second = await evaluateSchedule(controllerHome, schedule, true, { source: 'manual', eventId: 'controller-review-handoff' });
+    const second = await evaluateSchedule(controllerHome, browserSchedule, true, { source: 'manual', eventId: 'controller-review-handoff' });
     expect(second).toMatchObject({ decision: 'stopped', status: 'skipped' });
     expect(second?.reason).toContain(`Work ${workId} has pending UserRequest`);
 
     createHandoffItem({ controllerHome, repoId: repository.repoId }, { id: 'HND-WORK-HUMAN', repoId: repository.repoId, workId, title: 'Current Work requires authorization', severity: 'needs_review', creationReason: 'policy_approval_required', reason: 'Explicit user authorization is required.', summary: 'Human approval required before continuation.', currentState: { repoId: repository.repoId, workId, statusSummary: 'approval required' }, attemptedActions: [], evidenceRefs: [], recommendedDecision: 'Request approval.', recommendedPrompt: 'Request explicit approval.', suggestedNextActions: [] });
-    const third = await evaluateSchedule(controllerHome, schedule, true, { source: 'manual', eventId: 'human-review-handoff' });
+    const third = await evaluateSchedule(controllerHome, browserSchedule, true, { source: 'manual', eventId: 'human-review-handoff' });
     expect(third).toMatchObject({ decision: 'stopped', status: 'skipped' });
     expect(third?.reason).toContain(`Work ${workId} has pending UserRequest`);
   });

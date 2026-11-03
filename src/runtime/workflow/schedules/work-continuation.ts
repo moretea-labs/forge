@@ -1,10 +1,6 @@
 import { createHash } from 'crypto';
 import { getWorkContract, semanticWorkState, type WorkContract } from '../../../../packages/kernel/work/api/index';
-import { getControllerRoundRelay, getRetainedControllerSession, rearmControllerRoundAfterProviderUserAction, type ControllerType } from '../../../../packages/kernel/controller/api/index';
-import { ensureScheduledControllerBinding } from '../../root/scheduled-controller-composition';
-import { resolveHandoffItem } from '../../control-plane/facade/handoff-inbox-store';
-import type { HandoffItem } from '../../control-plane/facade/types';
-import { touchSchedulerWakeSignal } from '../../control-plane/global-scheduler/wake-signal';
+import type { ControllerType } from '../../../../packages/kernel/controller/api/index';
 
 import { assertAutomatedOperationAllowed } from '../../control-plane/governance/external-effects';
 import { evaluateSchedule } from './engine';
@@ -30,6 +26,8 @@ export type WorkScheduleMode = 'continuation' | 'browser_watch' | 'browser_keepa
 const CONTROLLER_PROGRESSION_OPERATION = 'controller_progression';
 const LEGACY_EXTERNAL_CONTROLLER_WAKE_OPERATION = 'external_controller_wake';
 
+// Historical Schedule actions remain readable so the canonical Scheduler can
+// disable them once, but no caller can create, resume, or dispatch them.
 function isWorkContinuationOperation(operation: string): boolean {
   return operation === CONTROLLER_PROGRESSION_OPERATION || operation === LEGACY_EXTERNAL_CONTROLLER_WAKE_OPERATION;
 }
@@ -120,43 +118,16 @@ function normalizedTrigger(input: WorkContinuationScheduleInput): ScheduleTrigge
   };
 }
 
-function providerSeedArguments(input: WorkContinuationScheduleInput, controllerType: ContinuationControllerType): Record<string, unknown> {
-  const workId = input.workId?.trim();
-  return {
-    ...(workId ? { work_id: workId } : {}),
-    controller_type: controllerType,
-    ...(input.authorizationGrantRefs?.length
-      ? { authorization_grant_refs: [...new Set(input.authorizationGrantRefs.map(String).map(value => value.trim()).filter(Boolean))] }
-      : {}),
-    ...(input.executable?.trim() ? { executable: input.executable.trim() } : {}),
-    ...(input.launchArgs ? { launch_args: input.launchArgs.map(String) } : {}),
-    ...(input.launchReservationMs !== undefined ? { launch_reservation_ms: input.launchReservationMs } : {}),
-    ...(input.handoffId?.trim() ? { handoff_id: input.handoffId.trim() } : {}),
-    ...(input.browserSessionId?.trim() ? { browser_session_id: input.browserSessionId.trim() } : {}),
-    ...(input.conversationUrl?.trim() ? { conversation_url: input.conversationUrl.trim() } : {}),
-  };
-}
-
-function exactContinuationArguments(input: {
-  workId: string;
-  controllerType: ContinuationControllerType;
-  controllerBindingId: string;
-  continuationHint?: string;
-}): Record<string, unknown> {
-  return {
-    work_id: input.workId,
-    controller_type: input.controllerType,
-    controller_binding_id: input.controllerBindingId,
-    ...(input.continuationHint?.trim() ? { continuation_hint: input.continuationHint.trim() } : {}),
-  };
-}
-
 function probeArguments(input: WorkContinuationScheduleInput, controllerType: ContinuationControllerType, keepaliveOnly: boolean): Record<string, unknown> {
   if (!input.probeUrl?.trim() && !input.probeBrowserSessionId?.trim()) {
     throw new Error('SCHEDULE_BROWSER_PROBE_TARGET_REQUIRED');
   }
   return {
-    ...providerSeedArguments(input, controllerType),
+    ...(input.workId?.trim() ? { work_id: input.workId.trim() } : {}),
+    controller_type: controllerType,
+    ...(input.authorizationGrantRefs?.length
+      ? { authorization_grant_refs: [...new Set(input.authorizationGrantRefs.map(String).map(value => value.trim()).filter(Boolean))] }
+      : {}),
     ...(input.probeUrl?.trim() ? { probe_url: input.probeUrl.trim() } : {}),
     ...(input.probeBrowserSessionId?.trim() ? { probe_session_id: input.probeBrowserSessionId.trim() } : {}),
     ...(input.probeSelector?.trim() ? { selector: input.probeSelector.trim() } : {}),
@@ -180,54 +151,26 @@ export function createWorkContinuationSchedule(
   input: WorkContinuationScheduleInput,
 ): { schedule: RepositorySchedule; work?: WorkContract } {
   const scheduleMode = input.scheduleMode ?? 'continuation';
+  if (scheduleMode === 'continuation') throw new Error('SCHEDULE_AUTONOMOUS_CONTINUATION_RETIRED');
+  if (input.continuationPrompt?.trim() || input.authRequiredPrompt?.trim()
+    || input.executable?.trim() || input.launchArgs?.length || input.launchReservationMs !== undefined
+    || input.handoffId?.trim() || input.conversationUrl?.trim()) {
+    throw new Error('SCHEDULE_AUTONOMOUS_MODEL_LAUNCH_FIELDS_RETIRED');
+  }
   const requestedWorkId = input.workId?.trim();
-  const requestedControllerType = input.controllerType;
-  if (!requestedWorkId && scheduleMode !== 'browser_keepalive') throw new Error('WORK_ID_REQUIRED');
   const work = requestedWorkId ? activeWork(controllerHome, repoId, requestedWorkId) : undefined;
-  const retainedSession = (scheduleMode === 'continuation' || scheduleMode === 'browser_watch') && work
-    ? getRetainedControllerSession({ controllerHome, repoId }, work.workId)
-    : undefined;
-  if (scheduleMode === 'continuation' && !retainedSession) {
-    throw new Error(`SCHEDULE_CONTINUATION_CONTROLLER_SESSION_REQUIRED: ${work!.workId}`);
+  // A Schedule is a separate capability: its browser observation is not a
+  // Controller session and must never enroll, rearm, or dispatch model turns.
+  const controllerType = input.controllerType ?? 'chatgpt';
+  if (!requestedWorkId && scheduleMode === 'browser_keepalive' && controllerType !== 'chatgpt') {
+    throw new Error('STANDALONE_BROWSER_KEEPALIVE_CHATGPT_REQUIRED');
   }
-  if (scheduleMode === 'browser_watch' && !retainedSession) {
-    throw new Error(`SCHEDULE_BROWSER_WATCH_CONTROLLER_SESSION_REQUIRED: ${work!.workId}`);
-  }
-  if (retainedSession?.controllerType === 'human') throw new Error('SCHEDULE_CONTINUATION_HUMAN_HOST_UNSUPPORTED');
-  const controllerType = (retainedSession?.controllerType ?? requestedControllerType ?? 'chatgpt') as ContinuationControllerType;
-  if (requestedControllerType && retainedSession && requestedControllerType !== retainedSession.controllerType) {
-    throw new Error(`SCHEDULE_CONTINUATION_CONTROLLER_TYPE_MISMATCH: ${work!.workId}:expected=${retainedSession.controllerType}:requested=${requestedControllerType}`);
-  }
-  if (!requestedWorkId && scheduleMode === 'browser_keepalive' && controllerType !== 'chatgpt') throw new Error('STANDALONE_BROWSER_KEEPALIVE_CHATGPT_REQUIRED');
   const trigger = normalizedTrigger(input);
-  const operation = scheduleMode === 'continuation' ? CONTROLLER_PROGRESSION_OPERATION : 'browser_probe';
-  const name = input.scheduleName?.trim()
-    || (scheduleMode === 'browser_watch' ? `Watch external state for Work ${work!.workId}`
-      : scheduleMode === 'browser_keepalive'
-        ? (work ? `Keep browser session alive for Work ${work.workId}` : 'Keep browser session alive')
-        : `Continue Work ${work!.workId}`);
-  const controllerBinding = (scheduleMode === 'continuation' || scheduleMode === 'browser_watch')
-    ? ensureScheduledControllerBinding(
-        { controllerHome, repoId },
-        {
-          workId: work!.workId,
-          session: retainedSession!,
-          scheduleName: name,
-          args: providerSeedArguments(input, controllerType),
-        },
-      )
-    : undefined;
-  const actionArguments = scheduleMode === 'continuation'
-    ? exactContinuationArguments({
-        workId: work!.workId,
-        controllerType,
-        controllerBindingId: controllerBinding!.bindingId,
-        continuationHint: input.continuationPrompt,
-      })
-    : {
-        ...probeArguments(input, controllerType, scheduleMode === 'browser_keepalive'),
-        ...(scheduleMode === 'browser_watch' ? { controller_binding_id: controllerBinding!.bindingId } : {}),
-      };
+  const operation = 'browser_probe';
+  const name = input.scheduleName?.trim() || (scheduleMode === 'browser_watch'
+    ? (work ? ['Watch external state for Work', work.workId].join(' ') : 'Watch browser state')
+    : (work ? ['Keep browser session alive for Work', work.workId].join(' ') : 'Keep browser session alive'));
+  const actionArguments = probeArguments(input, controllerType, scheduleMode === 'browser_keepalive');
   assertAutomatedOperationAllowed(operation, actionArguments);
   const policy = {
     maxActiveOccurrences: 1,
@@ -239,38 +182,6 @@ export function createWorkContinuationSchedule(
     backoffMaxMinutes: input.backoffMaxMinutes !== undefined ? Math.max(1, Math.trunc(input.backoffMaxMinutes)) : 24 * 60,
   };
   const stopConditions = input.stopConditions ?? (work ? ['work_terminal', 'human_review_required', 'external_blocker'] : []);
-
-  // A durable Work has one authoritative continuation lane. Changing cadence,
-  // prompt, controller, or policy updates that lane instead of minting another
-  // Workflow. Browser watches/keepalives are intentionally excluded because one
-  // Work may legitimately observe several independent external targets.
-  if (scheduleMode === 'continuation') {
-    const existing = listSchedules(controllerHome, repoId)
-      .filter((candidate) => isWorkContinuationOperation(candidate.action.operation))
-      .filter((candidate) => candidate.action.arguments?.work_id === work!.workId);
-    const authoritative = [...existing].reverse().find((candidate) => candidate.enabled) ?? existing.at(-1);
-    if (authoritative) {
-      const schedule = saveSchedule(controllerHome, {
-        ...authoritative,
-        name,
-        enabled: true,
-        trigger,
-        policy,
-        action: { operation, target: 'runtime', arguments: actionArguments, resourceClaims: [] },
-        stopConditions,
-        pausedReason: undefined,
-      });
-      for (const duplicate of existing) {
-        if (duplicate.scheduleId === schedule.scheduleId || !duplicate.enabled) continue;
-        saveSchedule(controllerHome, {
-          ...duplicate,
-          enabled: false,
-          pausedReason: `Superseded by authoritative continuation ${schedule.scheduleId} for Work ${work!.workId}.`,
-        });
-      }
-      return { schedule, work };
-    }
-  }
 
   const semantic = JSON.stringify({
     repoId,
@@ -286,7 +197,7 @@ export function createWorkContinuationSchedule(
   const requestId = input.requestId?.trim()
     || (work
       ? `work-continuation:${repoId}:${work.workId}:${createHash('sha256').update(semantic).digest('hex').slice(0, 16)}`
-      : `browser-keepalive:${repoId}:${createHash('sha256').update(semantic).digest('hex').slice(0, 16)}`);
+      : `browser-probe:${repoId}:${createHash('sha256').update(semantic).digest('hex').slice(0, 16)}`);
   const schedule = createSchedule(controllerHome, {
     requestId,
     repoId,
@@ -294,8 +205,8 @@ export function createWorkContinuationSchedule(
     enabled: true,
     trigger,
     policy,
-    // Work-bound continuation schedules persist only exact Work/ControllerSession/ControllerBinding identities.
-    // Browser/process launch metadata lives in ControllerHost adapter stores; browser probes remain adapter actions.
+    // Browser probes are bounded Scheduler observations; no Controller binding
+    // or Work is required to create or execute them.
     action: { operation, target: 'runtime', arguments: actionArguments, resourceClaims: [] },
     stopConditions,
   });
@@ -346,46 +257,11 @@ export function pauseWorkContinuationSchedule(
 
 export function resumeWorkContinuationSchedule(controllerHome: string, repoId: string, scheduleId: string): RepositorySchedule {
   const schedule = continuationSchedule(getSchedule(controllerHome, repoId, scheduleId));
-  const workId = typeof schedule.action.arguments?.work_id === 'string' ? schedule.action.arguments.work_id : '';
-  activeWork(controllerHome, repoId, workId);
-  if (schedule.action.operation === LEGACY_EXTERNAL_CONTROLLER_WAKE_OPERATION) {
-    const trigger = schedule.trigger;
-    const migrated = createWorkContinuationSchedule(controllerHome, repoId, {
-      workId,
-      scheduleName: schedule.name,
-      controllerType: typeof schedule.action.arguments?.controller_type === 'string'
-        ? schedule.action.arguments.controller_type as ContinuationControllerType
-        : undefined,
-      continuationPrompt: typeof schedule.action.arguments?.continuation_hint === 'string'
-        ? schedule.action.arguments.continuation_hint
-        : typeof schedule.action.arguments?.continuation_prompt === 'string'
-          ? schedule.action.arguments.continuation_prompt
-          : undefined,
-      triggerType: trigger.type,
-      everyMinutes: trigger.everyMinutes,
-      cronExpression: trigger.cronExpression,
-      timezone: trigger.timezone,
-      catchUpMinutes: trigger.catchUpMinutes,
-      calendarAt: trigger.calendarAt,
-      condition: trigger.condition,
-      eventName: trigger.eventName,
-      dependencyJobIds: trigger.dependencyJobIds,
-      maxFailures: schedule.policy.maxFailures,
-      cooldownMinutes: schedule.policy.cooldownMinutes,
-      dailyBudgetMinutes: schedule.policy.dailyBudgetMinutes,
-      shadowMode: schedule.policy.shadowMode,
-      backoffBaseMinutes: schedule.policy.backoffBaseMinutes,
-      backoffMaxMinutes: schedule.policy.backoffMaxMinutes,
-      stopConditions: schedule.stopConditions,
-    }).schedule;
-    return saveSchedule(controllerHome, {
-      ...migrated,
-      enabled: true,
-      pausedReason: undefined,
-      consecutiveFailures: 0,
-      nextEligibleAt: undefined,
-    });
+  if (isWorkContinuationOperation(schedule.action.operation)) {
+    throw new Error('SCHEDULE_AUTONOMOUS_CONTINUATION_RETIRED');
   }
+  const workId = typeof schedule.action.arguments?.work_id === 'string' ? schedule.action.arguments.work_id : '';
+  if (workId) activeWork(controllerHome, repoId, workId);
   return saveSchedule(controllerHome, {
     ...schedule,
     enabled: true,
@@ -403,84 +279,4 @@ export async function triggerWorkContinuationSchedule(
 ): Promise<ScheduleOccurrence | undefined> {
   const schedule = continuationSchedule(getSchedule(controllerHome, repoId, scheduleId));
   return evaluateSchedule(controllerHome, schedule, true, context);
-}
-
-export function handoffResolvedContinuationEventName(handoffId: string): string {
-  return `handoff-resolved:${handoffId.trim()}`;
-}
-
-export async function triggerWorkContinuationRepositoryEvent(
-  controllerHome: string,
-  repoId: string,
-  eventName: string,
-  eventId: string,
-  input: { workId?: string; data?: Record<string, unknown> } = {},
-): Promise<Array<{ scheduleId: string; occurrenceId?: string; status?: string }>> {
-  const schedules = listWorkContinuationSchedules(controllerHome, repoId, { workId: input.workId }).schedules
-    .filter((schedule) => schedule.enabled)
-    .filter((schedule) => isWorkContinuationOperation(schedule.action.operation))
-    .filter((schedule) => schedule.trigger.type === 'repository-event' && schedule.trigger.eventName === eventName);
-  const triggered: Array<{ scheduleId: string; occurrenceId?: string; status?: string }> = [];
-  for (const schedule of schedules) {
-    const occurrence = await triggerWorkContinuationSchedule(controllerHome, repoId, schedule.scheduleId, {
-      source: 'repository-event',
-      eventName,
-      eventId: `${eventId}:${schedule.scheduleId}`,
-      data: input.data,
-    });
-    triggered.push({ scheduleId: schedule.scheduleId, occurrenceId: occurrence?.occurrenceId, status: occurrence?.status });
-  }
-  return triggered;
-}
-
-export async function resolveHandoffAndTriggerContinuation(
-  controllerHome: string,
-  repoId: string,
-  handoffId: string,
-  input: { decision: string; resolver: string },
-): Promise<{ item: HandoffItem; continuationOccurrences: Array<{ scheduleId: string; occurrenceId?: string; status?: string }> }> {
-  const item = resolveHandoffItem({ controllerHome, repoId }, handoffId, input);
-  const continuationOccurrences = await triggerResolvedHandoffContinuation(controllerHome, repoId, item);
-  return { item, continuationOccurrences };
-}
-
-/**
- * The Inbox application resolves persistence before it calls its continuation
- * port. Keep the post-resolution transition here so every transport re-arms
- * the exact ControllerRound before it can wake its Work schedule.
- */
-export async function triggerResolvedHandoffContinuation(
-  controllerHome: string,
-  repoId: string,
-  item: HandoffItem,
-): Promise<Array<{ scheduleId: string; occurrenceId?: string; status?: string }>> {
-  const relay = item.workId ? getControllerRoundRelay({ controllerHome, repoId }, item.workId) : undefined;
-  const rearmedRelay = item.workId && relay?.status === 'waiting_for_user' && relay.blockedReason === 'provider_user_action_required' && relay.handoffId === item.id
-    ? rearmControllerRoundAfterProviderUserAction({ controllerHome, repoId }, { workId: item.workId, handoffId: item.id })
-    : undefined;
-  if (rearmedRelay) {
-    // The ControllerRound itself is the continuation authority. A repository-event
-    // Schedule is optional policy, not the wake mechanism for an already rearmed
-    // provider dispatch. Wake the canonical Scheduler immediately so a resolved
-    // provider blocker resumes the same occurrence even when no Schedule exists.
-    touchSchedulerWakeSignal(controllerHome, `provider-user-action-resolved:${item.workId}`);
-  }
-  const continuationOccurrences = item.workId
-    ? await triggerWorkContinuationRepositoryEvent(
-        controllerHome,
-        repoId,
-        handoffResolvedContinuationEventName(item.id),
-        `handoff:${item.id}:${item.updatedAt}`,
-        {
-          workId: item.workId,
-          data: {
-            handoffId: item.id,
-            status: item.status,
-            decision: item.decision,
-            ...(rearmedRelay?.occurrenceId ? { controllerRoundOccurrenceId: rearmedRelay.occurrenceId } : {}),
-          },
-        },
-      )
-    : [];
-  return continuationOccurrences;
 }

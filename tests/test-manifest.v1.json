@@ -357,10 +357,6 @@
       "module": "ios",
       "resource": "temp-isolated"
     },
-    "tests/runtime/controller-progression-continuation.test.ts": {
-      "module": "controller",
-      "resource": "controller-home-isolated"
-    },
     "tests/runtime/browser-state-controller-home-boundary.test.ts": {
       "module": "browser",
       "resource": "controller-home-isolated"
@@ -818,19 +814,7 @@
       "module": "browser",
       "resource": "pure"
     },
-    "tests/runtime/computer-chatgpt-extension-worker.test.ts": {
-      "module": "browser",
-      "resource": "pure"
-    },
-    "tests/runtime/computer-chatgpt-extension-preflight.test.ts": {
-      "module": "browser",
-      "resource": "pure"
-    },
-    "tests/runtime/computer-native-port-recovery.test.ts": {
-      "module": "browser",
-      "resource": "pure"
-    },
-    "tests/runtime/computer-chatgpt-reasoning-control.test.ts": {
+    "tests/runtime/chatgpt-provider-dispatch-lane.test.ts": {
       "module": "browser",
       "resource": "pure"
     },
@@ -949,46 +933,6 @@
     "tests/runtime/deployment-topology.test.ts": {
       "module": "controller",
       "resource": "pure"
-    },
-    "tests/runtime/workflow-supervisor-automation-receipt.test.ts": {
-      "module": "workflow",
-      "resource": "controller-home-isolated"
-    },
-    "tests/runtime/workflow-supervisor-bootstrap-project-start.test.ts": {
-      "module": "workflow",
-      "resource": "controller-home-isolated"
-    },
-    "tests/runtime/workflow-supervisor-browser-adapter-installer.test.ts": {
-      "module": "browser",
-      "resource": "temp-isolated"
-    },
-    "tests/runtime/workflow-supervisor-control-plane.test.ts": {
-      "module": "workflow",
-      "resource": "controller-home-isolated"
-    },
-    "tests/runtime/workflow-supervisor-duplicate-failure.test.ts": {
-      "module": "workflow",
-      "resource": "temp-isolated"
-    },
-    "tests/runtime/workflow-supervisor-progress-deadline.test.ts": {
-      "module": "workflow",
-      "resource": "controller-home-isolated"
-    },
-    "tests/runtime/workflow-supervisor-retired-bootstrap-draft.test.ts": {
-      "module": "workflow",
-      "resource": "controller-home-isolated"
-    },
-    "tests/runtime/workflow-supervisor-work-closure.test.ts": {
-      "module": "workflow",
-      "resource": "controller-home-isolated"
-    },
-    "tests/runtime/workflow-supervisor-conversation-switch.test.ts": {
-      "module": "workflow",
-      "resource": "controller-home-isolated"
-    },
-    "tests/runtime/workflow-supervisor-stop.test.ts": {
-      "module": "workflow",
-      "resource": "controller-home-isolated"
     },
     "tests/runtime/workflow-asset-storage.test.ts": {
       "module": "workflow",

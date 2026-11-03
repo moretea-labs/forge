@@ -160,8 +160,6 @@
     "src/runtime/resources/leases/store.ts|../../../cli/repositories/locks",
     "src/runtime/root/computer-target-persistence.ts|../../cli/repositories/locks",
     "src/runtime/root/local-bridge.ts|../../cli/local-bridge/server",
-    "src/runtime/root/workflow-supervisor-composition.ts|../../cli/repositories/registry",
-    "src/runtime/root/workflow-supervisor-runtime.ts|../../cli/repositories/registry",
     "src/runtime/safe-tooling/ios-development.ts|../../cli/repositories/types",
     "src/runtime/safe-tooling/job-summary.ts|../../cli/agent-jobs/job-manager",
     "src/runtime/safe-tooling/job-summary.ts|../../cli/local-bridge/job-store",

@@ -3,6 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } 
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { ensureControllerHome } from '../../src/effects/controller-home';
+import { chatgptLaunchSessionRequest } from '../../adapters/mcp/runtime-gateway/work-controller-operations';
 import { createWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import {
   buildClaudeControllerInvocation,
@@ -14,6 +15,36 @@ import {
 import { getExternalControllerLaunchReservation, readExternalControllerLaunchReservationRecord } from '../../src/runtime/control-plane/launcher/launch-reservation-store';
 import { recordCognitiveMemory } from '../../packages/kernel/cognition/api/index';
 import { cognitionMemoryStore } from '../../src/runtime/control-plane/persistence/cognition-store';
+
+describe('ChatGPT Launch Session without Work or Supervisor', () => {
+  test('produces a stable one-shot Computer session for the same request ID', () => {
+    const first = chatgptLaunchSessionRequest({ request_id: 'manual-launch-1', controller_type: 'chatgpt' }, 'repo-example');
+    const replay = chatgptLaunchSessionRequest({ request_id: 'manual-launch-1' }, 'repo-example');
+    expect(first).toEqual(replay);
+    expect(first.sessionId).toStartWith('forge-launch-');
+    expect(first.url).toBe('https://chatgpt.com/');
+  });
+
+  test('can open a precise authorized ChatGPT conversation without enrolling a Work', () => {
+    const request = chatgptLaunchSessionRequest({
+      request_id: 'bound-conversation',
+      transport_conversation: 'bound',
+      conversation_url: 'https://chatgpt.com/c/11111111-2222-3333-4444-555555555555',
+    }, 'repo-example');
+    expect(request.url).toBe('https://chatgpt.com/c/11111111-2222-3333-4444-555555555555');
+  });
+
+  test('rejects prompt auto-send, Supervisor enrollment, and external origins before browser actions', () => {
+    for (const args of [
+      { request_id: 'x', continuation_prompt: 'CONTINUE' },
+      { request_id: 'x', enroll_current_conversation: true },
+      { request_id: 'x', conversation_url: 'https://example.com/c/1' },
+      { request_id: 'x', conversation_url: 'https://chatgpt.com.evil.test/' },
+      { request_id: 'x', transport_conversation: 'bound' },
+      { request_id: 'x', transport_conversation: 'fresh', conversation_url: 'https://chatgpt.com/c/abc' },
+    ]) expect(() => chatgptLaunchSessionRequest(args, 'repo-example')).toThrow();
+  });
+});
 
 const roots: string[] = [];
 const launchedPids: number[] = [];

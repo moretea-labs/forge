@@ -5,10 +5,6 @@ export interface RuntimeDeploymentTopology {
   remoteControllers: RuntimeRemoteControllerKind[];
   capabilityIntents: string[];
   persistentRuntimeRequired: boolean;
-  components: {
-    workflowSupervisor: boolean;
-    workflowSupervisorNativeBrowser: boolean;
-  };
 }
 
 const REMOTE_CONTROLLERS = new Set<RuntimeRemoteControllerKind>(['chatgpt', 'mcp']);
@@ -35,27 +31,17 @@ export function deriveRuntimeDeploymentTopology(input: {
   const capabilityIntents = Array.from(new Set(
     (input.capabilityIntents ?? []).map(normalizeCapabilityIntent),
   )).sort();
-  const chatgpt = remoteControllers.includes('chatgpt');
   return {
     schemaVersion: 1,
     remoteControllers,
     capabilityIntents,
     persistentRuntimeRequired: remoteControllers.length > 0,
-    components: {
-      // Requirement-level ChatGPT continuation uses Supervisor Core as its
-      // outer-turn authority. Generic remote MCP transport does not.
-      workflowSupervisor: chatgpt,
-      // ChatGPT Work has one controlled outer-turn executor: the Supervisor's
-      // Computer adapter. It owns exact-conversation delivery and its durable
-      // effect ledger; Scheduler must never fall back to direct Browser delivery.
-      workflowSupervisorNativeBrowser: chatgpt,
-    },
   };
 }
 
 /**
  * Missing topology means an installation predates this contract. Preserve the
- * complete ChatGPT Supervisor composition during upgrade.
+ * existing ChatGPT RemoteController intent without resurrecting retired automation.
  */
 export function legacyRuntimeDeploymentTopology(): RuntimeDeploymentTopology {
   return deriveRuntimeDeploymentTopology({ controllers: ['chatgpt'] });
@@ -79,19 +65,10 @@ export function normalizeRuntimeDeploymentTopology(value: unknown): RuntimeDeplo
     (record.capabilityIntents as string[]).map(normalizeCapabilityIntent),
   )).sort();
   const canonical = deriveRuntimeDeploymentTopology({ controllers: remoteControllers, capabilityIntents });
-  const components = record.components;
-  if (!components || typeof components !== 'object' || Array.isArray(components)) throw new Error('RUNTIME_TOPOLOGY_COMPONENTS_REQUIRED');
-  const componentRecord = components as Record<string, unknown>;
-  if (typeof componentRecord.workflowSupervisor !== 'boolean'
-    || typeof componentRecord.workflowSupervisorNativeBrowser !== 'boolean') {
-    throw new Error('RUNTIME_TOPOLOGY_COMPONENTS_INVALID');
-  }
-  if (componentRecord.workflowSupervisor !== canonical.components.workflowSupervisor
-    || record.persistentRuntimeRequired !== canonical.persistentRuntimeRequired) {
+  // Historical persisted Supervisor component flags are not execution authority.
+  if (record.persistentRuntimeRequired !== canonical.persistentRuntimeRequired) {
     throw new Error('RUNTIME_TOPOLOGY_DERIVATION_MISMATCH');
   }
-  // The flag is derived, so stale persisted topology cannot disable the sole
-  // autonomous delivery owner or reintroduce an alternate Browser path.
   return canonical;
 }
 

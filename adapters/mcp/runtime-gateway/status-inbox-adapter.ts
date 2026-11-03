@@ -24,12 +24,8 @@ import { getControllerSession } from "../../../packages/kernel/controller/api/in
 import { listActiveOccurrences, listSchedules, scheduleOwnsWork } from "../../../packages/kernel/scheduler/api/index";
 import { summarizeHandoffItem } from '../../../src/runtime/control-plane/facade';
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
-import { triggerResolvedHandoffContinuation } from '../../../src/runtime/workflow/schedules/work-continuation';
 import { getUserRequest, listUserRequests, recordUserRequest, resolveUserRequest, type UserRequest } from '../../../packages/kernel/identity/api/index';
 import { controllerReadinessEvidence, runtimeSourceSnapshotStatus } from './runtime-readiness-observation';
-import { readRuntimeReleaseAuthority } from '../../../src/runtime/root/release-store';
-import { getWorkflowSupervisorConsumerStatus, getWorkflowSupervisorContinuationProof } from '../../../supervisor/client';
-import { resolveWorkflowSupervisorForgeHome } from '../../../supervisor/paths';
 export { ageMs, probeLocalControllerHealth, localControllerDiagnosticMatchesRuntime, controllerReadinessEvidence, runtimeSourceSnapshotStatus } from './runtime-readiness-observation';
 export type { ControllerReadinessSignals } from './runtime-readiness-observation';
 
@@ -349,8 +345,6 @@ export async function callStatusInboxAdapter(
                   // Summary is intentionally the cheap Runtime snapshot path. It
                   // reports bounded execution readiness without pretending that the
                   // full scheduler/worker diagnostics for unattended continuation ran.
-                  autonomousContinuationReady: null,
-                  autonomousContinuationBlockers: null,
                   maintenanceHealthy: null,
                   maintenanceCandidateCount: 0,
                   releaseReady: releaseDiagnostic?.outcome === 'pass',
@@ -507,72 +501,6 @@ export async function callStatusInboxAdapter(
         });
       }
       const toolSurfaceComputed = exposure.expectedToolNames.length > 0 || exposure.actualToolNames.length > 0 || toolSurfaceReady;
-      const activeReleaseAuthority = readRuntimeReleaseAuthority(ctx.controllerHome);
-      let autonomousContinuationProof: Awaited<ReturnType<typeof getWorkflowSupervisorContinuationProof>>;
-      let autonomousContinuationProofObservation: 'proven' | 'missing' | 'unavailable' = 'missing';
-      if (activeReleaseAuthority?.committedAt) {
-        try {
-          autonomousContinuationProof = await getWorkflowSupervisorContinuationProof(
-            resolveWorkflowSupervisorForgeHome(ctx.controllerHome),
-            {
-              repoId: repository.repoId,
-              activeReleaseId: activeReleaseAuthority.active.releaseId,
-              notBefore: activeReleaseAuthority.committedAt,
-            },
-          );
-          autonomousContinuationProofObservation = autonomousContinuationProof ? 'proven' : 'missing';
-        } catch {
-          autonomousContinuationProofObservation = 'unavailable';
-        }
-      }
-      let autonomousContinuationConsumerStatus: Awaited<ReturnType<typeof getWorkflowSupervisorConsumerStatus>> | undefined;
-      let autonomousContinuationConsumerObservation: 'observed' | 'unavailable' = 'unavailable';
-      try {
-        autonomousContinuationConsumerStatus = await getWorkflowSupervisorConsumerStatus(
-          resolveWorkflowSupervisorForgeHome(ctx.controllerHome),
-        );
-        autonomousContinuationConsumerObservation = 'observed';
-      } catch {
-        autonomousContinuationConsumerObservation = 'unavailable';
-      }
-      const dueCommands = autonomousContinuationConsumerStatus?.dueCommands ?? [];
-      const taskFailures = autonomousContinuationConsumerStatus?.taskFailures ?? [];
-      const dueConsumerFailure = dueCommands.some((command) => taskFailures.some((failure) =>
-        failure.taskId === command.taskId && (!failure.effectId || failure.effectId === command.effectId)));
-      const autonomousContinuationConsumerReady = autonomousContinuationConsumerObservation === 'observed'
-        && autonomousContinuationConsumerStatus?.enabled === true
-        && autonomousContinuationConsumerStatus.running === true
-        && autonomousContinuationConsumerStatus.lastTickStartedAt !== undefined
-        && autonomousContinuationConsumerStatus.stalled === false
-        && !dueConsumerFailure;
-      const autonomousContinuationReady = readiness.ready
-        && toolSurfaceReady
-        && !sourceSnapshotStale
-        && autonomousContinuationProofObservation === 'proven'
-        && autonomousContinuationConsumerReady;
-      const autonomousContinuationBlockers = [...new Set([
-        ...readinessReasons
-          .map((reason) => reason.code)
-          .filter((code): code is string => typeof code === 'string' && code.length > 0),
-        ...(autonomousContinuationProofObservation === 'proven'
-          ? []
-          : [autonomousContinuationProofObservation === 'unavailable'
-              ? 'AUTONOMOUS_CONTINUATION_LIVE_PROOF_UNAVAILABLE'
-              : 'AUTONOMOUS_CONTINUATION_LIVE_PROOF_MISSING']),
-        ...(autonomousContinuationConsumerObservation === 'unavailable'
-          ? ['AUTONOMOUS_CONTINUATION_CONSUMER_STATUS_UNAVAILABLE']
-          : autonomousContinuationConsumerStatus?.enabled !== true
-            ? ['AUTONOMOUS_CONTINUATION_CONSUMER_DISABLED']
-            : autonomousContinuationConsumerStatus.running !== true
-              ? ['AUTONOMOUS_CONTINUATION_CONSUMER_NOT_RUNNING']
-              : autonomousContinuationConsumerStatus.lastTickStartedAt === undefined
-                ? ['AUTONOMOUS_CONTINUATION_CONSUMER_NOT_OBSERVED']
-                : autonomousContinuationConsumerStatus.stalled
-                  ? ['AUTONOMOUS_CONTINUATION_CONSUMER_STALLED']
-                  : dueConsumerFailure
-                    ? ['AUTONOMOUS_CONTINUATION_CONSUMER_DEGRADED']
-                    : []),
-      ])];
       const readinessWithToolSurface = {
         ready: effectiveReady,
         readyFor: 'bounded_execution' as const,
@@ -599,22 +527,7 @@ export async function callStatusInboxAdapter(
           },
           semantics: {
             executionReady,
-            // Runtime/tool health is necessary but not sufficient. Thin acceptance
-            // requires a fresh exact-active-release Supervisor ledger proof of
-            // CONTINUE -> CONTINUE -> DONE spanning at least one Runtime reconnect.
-            autonomousContinuationReady,
-            autonomousContinuationBlockers,
-            autonomousContinuationConsumer: {
-              observation: autonomousContinuationConsumerObservation,
-              ...(autonomousContinuationConsumerStatus ? { status: autonomousContinuationConsumerStatus } : {}),
-            },
-            autonomousContinuationProof: {
-              observation: autonomousContinuationProofObservation,
-              activeReleaseId: activeReleaseAuthority?.active.releaseId,
-              activeReleaseAuthorityRevision: activeReleaseAuthority?.revision,
-              activeReleaseCommittedAt: activeReleaseAuthority?.committedAt,
-              ...(autonomousContinuationProof ? { proof: autonomousContinuationProof } : {}),
-            },
+            // Bounded execution readiness is independent of model Turn completion.
             maintenanceHealthy,
             maintenanceCandidateCount,
             maintenanceObservation,
@@ -741,9 +654,7 @@ export async function callStatusInboxAdapter(
       const facade = buildFacadeResult({
         status: effectiveReady ? 'ok' : 'blocked',
         summary: effectiveReady
-          ? autonomousContinuationReady
-            ? 'Controller and MCP tool surface are ready for bounded work and autonomous continuation.'
-            : 'Controller and MCP tool surface are ready for bounded work; autonomous continuation needs attention.'
+          ? 'Controller and MCP tool surface are ready for bounded work.'
           : 'Controller or MCP tool surface needs attention before bounded work.',
         data: {
           operation,
@@ -973,8 +884,6 @@ async function callInboxAdapter(ctx: MultiRepositoryMcpToolContext, args: Record
     decision: typeof args.decision === 'string' ? args.decision : undefined,
     resolver: typeof args.resolver === 'string' ? args.resolver : undefined,
     controllerIdentity: { principalId: ctx.principalId, sessionId: ctx.sessionId },
-  }, {
-    triggerResolvedContinuation: (item) => triggerResolvedHandoffContinuation(ctx.controllerHome, repository.repoId, item),
   });
   if (operation === 'get') {
     const item = 'item' in app ? app.item : undefined;

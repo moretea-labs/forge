@@ -33,12 +33,6 @@ export interface HandoffInboxApplicationInput {
   controllerIdentity?: { principalId?: string; sessionId?: string };
 }
 
-export type HandoffContinuationOccurrence = { scheduleId: string; occurrenceId?: string; status?: string };
-
-export interface HandoffInboxApplicationPorts {
-  triggerResolvedContinuation(item: ReturnType<typeof resolveHandoffItem>): Promise<HandoffContinuationOccurrence[]>;
-}
-
 export type HandoffInboxApplicationRunner = (
   input: HandoffInboxApplicationInput,
 ) => ReturnType<typeof runHandoffInboxApplication>;
@@ -81,10 +75,10 @@ export function listHandoffAttentionItems(
 
 /**
  * Canonical application boundary for Inbox behavior. MCP adapters translate
- * arguments/results only; Handoff persistence, continuation wake-up and exact
- * Controller ownership release remain here.
+ * arguments/results only; Handoff persistence and exact Controller ownership
+ * release remain here. Resolving a decision never launches another model turn.
  */
-export async function runHandoffInboxApplication(input: HandoffInboxApplicationInput, ports: HandoffInboxApplicationPorts) {
+export async function runHandoffInboxApplication(input: HandoffInboxApplicationInput) {
   const { store, operation } = input;
   if (operation === 'get') return { operation, item: getHandoffItem(store, input.handoffId ?? '') };
   if (operation === 'list') {
@@ -98,8 +92,9 @@ export async function runHandoffInboxApplication(input: HandoffInboxApplicationI
       decision: input.decision ?? 'resolved',
       resolver: input.resolver ?? 'chatgpt',
     });
-    const continuationOccurrences = item.workId ? await ports.triggerResolvedContinuation(item) : [];
-    return { operation, item, continuationOccurrences };
+    // Resolution records a user decision only. It must never wake/rearm a
+    // retired automatic Controller turn, even for historical Work-linked items.
+    return { operation, item, continuationOccurrences: [] };
   }
   if (operation === 'dismiss') {
     const item = dismissHandoffItem(store, (input.handoffId ?? '').trim(), {

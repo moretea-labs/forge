@@ -1,27 +1,49 @@
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 import type { RepositoryRecord } from '../../../src/cli/repositories/types';
+import { createHash } from 'crypto';
 import { result } from './result-adapter';
-import { buildFacadeResult, getHandoffItem } from '../../../src/runtime/control-plane/facade';
-import { getWorkContract } from '../../../packages/kernel/work/api/index';
+import { callPluginAdapter } from './plugin-adapter';
+import { buildFacadeResult } from '../../../src/runtime/control-plane/facade';
 import { launchSuperController } from '../../../src/runtime/control-plane/launcher/thin-launcher';
-import {
-  upsertChatgptControllerRoundTransportBinding,
-} from '../../../src/runtime/root/controller-round-composition';
-import { touchSchedulerWakeSignal } from '../../../src/runtime/control-plane/global-scheduler/wake-signal';
-import {
-  bindControllerSessionBinding,
-  controllerRoundBlockerClass,
-  getControllerRoundRelay,
-  releaseObservedControllerSession,
-} from '../../../packages/kernel/controller/api/index';
-import { authenticatedFacadeControllerIdentity, bindFacadeControllerOwnership } from './controller-authority-adapter';
-import {
-  bindCurrentWorkflowSupervisorConversationForWork,
-  bindWorkflowSupervisorConversationForWork,
-  getWorkflowSupervisorConversationBindingForWork,
-} from '../../../src/runtime/root/workflow-supervisor-composition';
-import { reconcileControllerProgression } from '../../../src/runtime/root/controller-progression-composition';
+
+// The existing Computer create_session action owns browser/session state.
+// This thin launcher validates intent only; it never sends a model message.
+export function chatgptLaunchSessionRequest(args: Record<string, unknown>, repoId: string): {
+  requestId: string;
+  sessionId: string;
+  url: string;
+} {
+  const requestId = typeof args.request_id === 'string' ? args.request_id.trim() : '';
+  if (!requestId) throw new Error('LAUNCH_SESSION_REQUEST_ID_REQUIRED');
+  if (typeof args.continuation_prompt === 'string' && args.continuation_prompt.trim()) {
+    throw new Error('LAUNCH_SESSION_PROMPT_NOT_SUPPORTED: a Launch Session never auto-sends CONTINUE');
+  }
+  if (Array.isArray(args.launch_args) && args.launch_args.length > 0) {
+    throw new Error('LAUNCH_SESSION_PROVIDER_ARGS_UNSUPPORTED: configure the model in the session');
+  }
+  if (args.enroll_current_conversation === true) {
+    throw new Error('LAUNCH_SESSION_SUPERVISOR_ENROLLMENT_RETIRED');
+  }
+  const transport = args.transport_conversation;
+  if (transport !== undefined && transport !== 'fresh' && transport !== 'bound') {
+    throw new Error('LAUNCH_SESSION_TRANSPORT_INVALID');
+  }
+  const explicitUrl = typeof args.conversation_url === 'string' ? args.conversation_url.trim() : '';
+  if (transport === 'fresh' && explicitUrl) throw new Error('LAUNCH_SESSION_FRESH_URL_CONFLICT');
+  if (transport === 'bound' && !explicitUrl) throw new Error('LAUNCH_SESSION_BOUND_URL_REQUIRED');
+  const url = explicitUrl || 'https://chatgpt.com/';
+  let parsed: URL;
+  try { parsed = new URL(url); } catch { throw new Error('LAUNCH_SESSION_URL_INVALID'); }
+  if (parsed.protocol !== 'https:' || parsed.hostname !== 'chatgpt.com'
+    || parsed.username || parsed.password || parsed.port) {
+    throw new Error('LAUNCH_SESSION_CHATGPT_ORIGIN_REQUIRED');
+  }
+  const suppliedSessionId = typeof args.browser_session_id === 'string' ? args.browser_session_id.trim() : '';
+  const sessionId = suppliedSessionId
+    || 'forge-launch-' + createHash('sha256').update(repoId + ':' + requestId).digest('hex').slice(0, 20);
+  return { requestId, sessionId, url: parsed.href };
+}
 
 const RH_WORK_CONTROLLER_OPERATIONS = new Set(['launcher_start']);
 
@@ -44,189 +66,19 @@ export async function callRhWorkControllerOperation(
     const launchArgs = Array.isArray(args.launch_args) ? args.launch_args.map(String) : [];
 
     if (controllerType === 'chatgpt') {
-      const work = getWorkContract(store, workId);
-      if (!work) throw new Error(`WORK_NOT_FOUND: ${workId}`);
-      const launchRequestId = typeof args.request_id === 'string' ? args.request_id.trim() : '';
-      if (!launchRequestId) throw new Error('LAUNCHER_START_REQUEST_ID_REQUIRED');
-
-      const explicitConversationUrl = typeof args.conversation_url === 'string' && args.conversation_url.trim()
-        ? args.conversation_url.trim()
-        : undefined;
-      const enrollCurrentConversation = args.enroll_current_conversation === true;
-      if (enrollCurrentConversation && explicitConversationUrl) {
-        throw new Error('CURRENT_CONVERSATION_ENROLLMENT_EXPLICIT_URL_CONFLICT');
-      }
-
-      const handoffId = typeof args.handoff_id === 'string' ? args.handoff_id.trim() : '';
-      const handoff = handoffId ? getHandoffItem(store, handoffId) : undefined;
-      const valueForFlag = (flag: string): string | undefined => {
-        const index = launchArgs.indexOf(flag);
-        if (index < 0) return undefined;
-        const value = launchArgs[index + 1];
-        if (!value || value.startsWith('--')) throw new Error(`CHATGPT_LAUNCH_ARG_VALUE_REQUIRED: ${flag}`);
-        return value;
-      };
-      const supportedFlags = new Set(['--model', '--reasoning', '--tab-policy', '--timeout-ms']);
-      for (let index = 0; index < launchArgs.length; index += 2) {
-        const flag = launchArgs[index];
-        if (!flag || !supportedFlags.has(flag)) throw new Error(`CHATGPT_LAUNCH_ARG_UNSUPPORTED: ${flag ?? ''}`);
-        if (!launchArgs[index + 1] || launchArgs[index + 1]!.startsWith('--')) {
-          throw new Error(`CHATGPT_LAUNCH_ARG_VALUE_REQUIRED: ${flag}`);
-        }
-      }
-
-      const reasoning = valueForFlag('--reasoning') ?? 'high';
-      if (!['medium', 'high', 'xhigh'].includes(reasoning)) throw new Error(`CHATGPT_LAUNCH_REASONING_INVALID: ${reasoning}`);
-      const tabPolicy = valueForFlag('--tab-policy') ?? 'auto';
-      if (!['auto', 'reuse', 'new'].includes(tabPolicy)) throw new Error(`CHATGPT_LAUNCH_TAB_POLICY_INVALID: ${tabPolicy}`);
-      const timeoutValue = valueForFlag('--timeout-ms');
-      const timeoutMs = timeoutValue === undefined ? undefined : Number(timeoutValue);
-      if (timeoutMs !== undefined && (!Number.isFinite(timeoutMs) || timeoutMs <= 0)) {
-        throw new Error(`CHATGPT_LAUNCH_TIMEOUT_INVALID: ${timeoutValue}`);
-      }
-      const continuationPrompt = typeof args.continuation_prompt === 'string' ? args.continuation_prompt.trim() : '';
-      const initialContinuationPrompt = [
-        handoff ? `Handoff: ${handoff.summary}\nNext: ${handoff.recommendedContinuationPrompt ?? handoff.recommendedPrompt}` : '',
-        continuationPrompt ? `Continuation: ${continuationPrompt}` : '',
-      ].filter(Boolean).join('\n') || undefined;
-
-      const requestedTransportConversation = args.transport_conversation === 'fresh'
-        ? 'fresh'
-        : args.transport_conversation === 'bound' ? 'bound' : undefined;
-      if (enrollCurrentConversation && requestedTransportConversation === 'fresh') {
-        throw new Error('CURRENT_CONVERSATION_ENROLLMENT_FRESH_TRANSPORT_CONFLICT');
-      }
-
-      // All request/identity and clearly terminal round validation happens before
-      // any conversation binding is persisted. Frozen compatibility must be
-      // transport-only: an invalid launcher request is a zero-write request.
-      const identity = authenticatedFacadeControllerIdentity(ctx, args);
-      const existingRound = getControllerRoundRelay(store, workId);
-      if (existingRound?.status === 'failed') {
-        throw new Error(existingRound.lastError ?? `CONTROLLER_RELAY_FAILED:${workId}`);
-      }
-      if (existingRound?.status === 'blocked'
-        && controllerRoundBlockerClass(existingRound) !== 'provider_dispatch_outcome_unknown') {
-        throw new Error(`CONTROLLER_RELAY_LAUNCH_BLOCKED:${existingRound.blockedReason ?? existingRound.relayScopeId}`);
-      }
-      if (existingRound && ['pending_release', 'goal_complete', 'handed_off'].includes(existingRound.status)) {
-        throw new Error(`CONTROLLER_RELAY_NOT_PROGRESSABLE:${existingRound.status}`);
-      }
-
-      let conversationBinding = getWorkflowSupervisorConversationBindingForWork(store, workId);
-      if (requestedTransportConversation === 'fresh' && conversationBinding) {
-        throw new Error('CHATGPT_FRESH_CONVERSATION_EXISTING_BINDING_CONFLICT');
-      }
-      if (enrollCurrentConversation) {
-        const currentBinding = await bindCurrentWorkflowSupervisorConversationForWork(store, workId);
-        if (currentBinding.status !== 'bound') {
-          throw new Error(currentBinding.reason ?? `CURRENT_CONVERSATION_ENROLLMENT_${currentBinding.status.toUpperCase()}`);
-        }
-        conversationBinding = currentBinding.binding;
-      } else if (explicitConversationUrl) {
-        if (args.transport_conversation === 'fresh') {
-          throw new Error('CHATGPT_FRESH_CONVERSATION_EXPLICIT_URL_CONFLICT');
-        }
-        conversationBinding = bindWorkflowSupervisorConversationForWork(store, {
-          workId,
-          conversationUrl: explicitConversationUrl,
-          localAlias: 'Forge autonomous execution',
-        });
-      }
-
-      const transportConversation = requestedTransportConversation
-        ?? (conversationBinding ? 'bound' : 'fresh');
-      if (transportConversation === 'bound' && !conversationBinding) {
-        throw new Error('WORKFLOW_SUPERVISOR_BOUND_CONVERSATION_REQUIRED');
-      }
-
-      const occurrenceId = `launcher_start:${work.workId}:${launchRequestId}`;
-      const relayScopeId = work.requirementId ? `requirement:${work.requirementId}` : `goal:${work.workId}`;
-
-      let launchOwner;
-      if (!existingRound) {
-        launchOwner = bindFacadeControllerOwnership(ctx, store, workId, identity, {
-          allowClaimIfMissing: true,
-          leaseMs: 60_000,
-        });
-        const controllerBinding = upsertChatgptControllerRoundTransportBinding(store, {
-          workId,
-          sessionId: launchOwner.sessionId,
-          browserSessionId: undefined,
-          conversationUrl: transportConversation === 'bound' ? conversationBinding?.conversationUrl : undefined,
-          model: valueForFlag('--model') ?? 'gpt-5.6',
-          reasoning: reasoning as 'medium' | 'high' | 'xhigh',
-          tabPolicy: tabPolicy as 'auto' | 'reuse' | 'new',
-          timeoutMs,
-          transportConversation,
-          continuationPrompt: initialContinuationPrompt,
-          authorizationGrantRefs: conversationBinding?.authorizationGrantRefs ?? [],
-        });
-        bindControllerSessionBinding(store, {
-          workId,
-          sessionId: launchOwner.sessionId,
-          binding: controllerBinding.binding,
-        });
-      }
-
-      let progression;
-      try {
-        progression = await reconcileControllerProgression(
-          {
-            controllerHome: ctx.controllerHome,
-            repoId: repository.repoId,
-            repoRoot: repository.canonicalRoot,
-          },
-          {
-            workId,
-            occurrenceId,
-            relayScopeId,
-            continuationHint: initialContinuationPrompt,
-            scheduleName: 'launcher-start',
-          },
-        );
-      } finally {
-        if (launchOwner) {
-          const released = releaseObservedControllerSession(store, {
-            workId,
-            actor: `launcher-start-retain:${workId}`,
-            owner: launchOwner,
-          });
-          if (!released.allowed) {
-            throw new Error(`CONTROLLER_LAUNCH_RESUME_IDENTITY_RELEASE_FAILED:${workId}:${released.reason}`);
-          }
-        }
-      }
-
-      touchSchedulerWakeSignal(ctx.controllerHome, `controller-round-ready:${workId}`);
-      if (progression.status === 'rejected') {
-        throw new Error(progression.reason ?? 'CHATGPT_CONTINUATION_LAUNCH_REJECTED');
-      }
-      if (progression.status === 'terminal_or_missing') {
-        throw new Error(progression.reason);
-      }
-      if (progression.status === 'retained_session_missing' || progression.status === 'human_controller') {
-        throw new Error(progression.reason);
-      }
-
-      return result(buildFacadeResult({
-        summary: progression.status === 'chatgpt_enrolled'
-          ? 'ChatGPT continuation enrolled with Workflow Supervisor effect authority.'
-          : progression.status === 'chatgpt_not_enrolled'
-            ? 'ChatGPT continuation is durably queued; Workflow Supervisor enrollment will retry without consuming provider failure budget.'
-            : `ChatGPT continuation is waiting in canonical progression state: ${progression.status}.`,
-        data: {
-          workId,
-          continuationQueued: true,
-          continuationDispatched: false,
-          relayScopeId: 'relayScopeId' in progression ? progression.relayScopeId : relayScopeId,
-          transportConversation,
-          progressionStatus: progression.status,
-          ...(progression.status === 'chatgpt_enrolled' || progression.status === 'chatgpt_not_enrolled'
-            ? { supervisorEnrollment: progression.supervisorEnrollment }
-            : {}),
+      const launch = chatgptLaunchSessionRequest(args, repository.repoId);
+      const launched = await callPluginAdapter(ctx, 'plugin_action_execute', {
+        plugin_id: 'computer',
+        action_id: 'create_session',
+        request_id: launch.requestId,
+        arguments: {
+          session_id: launch.sessionId,
+          url: launch.url,
+          wait_until: 'domcontentloaded',
         },
-      }) as unknown as Record<string, unknown>);
+      });
+      if (!launched) throw new Error('LAUNCH_SESSION_COMPUTER_ACTION_UNAVAILABLE');
+      return launched;
     }
 
     const launched = await launchSuperController({ work: store, handoff: store }, {

@@ -1022,9 +1022,8 @@ describe('runtime observability', () => {
           expect(result).toMatchObject({ eligible: true, recurrent: true, repairRepoId: repository.repoId, reusedExistingWork: false });
           expect(result.workId).toBeTruthy();
           // An incident record does not invent an external Controller session.
-          // It creates repair Work first; a later authenticated session claim
-          // authorizes the continuation schedule.
-          expect(result.scheduleId).toBeUndefined();
+          // It creates exactly one repair Work without starting a model turn.
+          // Even an authenticated session cannot re-enable retired continuation.
           repairWorkId = result.workId;
           claimControllerSession({ controllerHome, repoId: repository.repoId }, {
             workId: repairWorkId!,
@@ -1036,7 +1035,7 @@ describe('runtime observability', () => {
           });
         } else {
           expect(result).toMatchObject({ eligible: true, recurrent: true, workId: repairWorkId, reusedExistingWork: true });
-          expect(result.scheduleId).toBeTruthy();
+          expect(result.workId).toBe(repairWorkId);
         }
       }
 
@@ -1051,13 +1050,9 @@ describe('runtime observability', () => {
       });
       expect(works[0]?.evidenceRefs.filter((entry) => entry.evidenceId?.startsWith('MCPINC-')).length).toBe(4);
       const schedules = listWorkContinuationSchedules(controllerHome, repository.repoId, { workId: repairWorkId });
-      expect(schedules.schedules).toHaveLength(1);
-      expect(schedules.schedules[0]).toMatchObject({
-        enabled: true,
-        trigger: { type: 'interval', everyMinutes: 5 },
-        policy: { shadowMode: false },
-        action: { operation: 'controller_progression', arguments: { work_id: repairWorkId, controller_type: 'chatgpt' } },
-      });
+      // Incident registration may record repair Work, but cannot create or
+      // reactivate an autonomous Controller schedule through any session.
+      expect(schedules.schedules).toHaveLength(0);
 
       cancelWorkContract({ controllerHome, repoId: repository.repoId }, repairWorkId!, { summary: 'Close the prior repair generation before registering a successor.' });
       const recurrentAfterTerminal = makeIncident(5);
@@ -1175,9 +1170,9 @@ describe('runtime observability', () => {
         expect(fullNames).not.toContain('work_execute');
         const hostCall = await fullClient.callTool({ name: 'execute_command', arguments: { scope: 'host', command: ['echo', 'ungranted-host'] } });
         expect(hostCall.isError).toBe(true);
-        // This isolated test Controller has no live ForgeInstance identity; a
-        // host command must stop before spawning or considering a Grant.
-        expect(JSON.stringify(hostCall.structuredContent)).toContain('HOST_PROCESS_TARGET_UNAVAILABLE');
+        // The public MCP boundary refuses host execution without an authenticated
+        // principal, before resolving the instance target or considering Grants.
+        expect(JSON.stringify(hostCall.structuredContent)).toContain('HOST_PROCESS_PRINCIPAL_REQUIRED');
         // Exercise the public MCP schema/dispatch all the way through Process
         // Runtime. Ordinary repository commands need neither a Work nor a Plan.
         const initialized = spawnSync('git', ['init', '-b', 'main', commandRepoRoot], { encoding: 'utf8' });
@@ -1239,7 +1234,7 @@ describe('runtime observability', () => {
     }
   });
 
-  test('handoff resolve delegates continuation through the application port without importing workflow authority', async () => {
+  test('handoff resolve persists the decision without rearming automatic model continuation', async () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-handoff-application-port-'));
     const store = { controllerHome, repoId: 'repo-handoff-port' };
     try {
@@ -1259,30 +1254,18 @@ describe('runtime observability', () => {
         recommendedPrompt: 'Resolve fixture.',
         suggestedNextActions: [],
       });
-      const triggered: Array<{ id: string; workId?: string; status: string; decision?: string }> = [];
       const result = await runHandoffInboxApplication({
         operation: 'resolve',
         store,
         handoffId: 'HND-APPLICATION-PORT',
         decision: 'continue exact work',
         resolver: 'test-controller',
-      }, {
-        triggerResolvedContinuation: async (item) => {
-          triggered.push({ id: item.id, workId: item.workId, status: item.status, decision: item.decision });
-          return [{ scheduleId: 'SCH-APPLICATION-PORT', occurrenceId: 'OCC-APPLICATION-PORT', status: 'shadowed' }];
-        },
       });
 
-      expect(triggered).toEqual([{
-        id: 'HND-APPLICATION-PORT',
-        workId: 'WORK-APPLICATION-PORT',
-        status: 'resolved',
-        decision: 'continue exact work',
-      }]);
       expect(result).toMatchObject({
         operation: 'resolve',
         item: { id: 'HND-APPLICATION-PORT', workId: 'WORK-APPLICATION-PORT', status: 'resolved' },
-        continuationOccurrences: [{ scheduleId: 'SCH-APPLICATION-PORT', occurrenceId: 'OCC-APPLICATION-PORT', status: 'shadowed' }],
+        continuationOccurrences: [],
       });
     } finally {
       rmSync(controllerHome, { recursive: true, force: true });

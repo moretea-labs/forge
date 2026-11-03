@@ -11,6 +11,14 @@ import { resolveCompiledRuntimeBundle } from '../../src/runtime/root/release-loa
 import { runPersistedCheckSidecar } from '../../src/runtime/execution/process-runtime/check-runner-sidecar';
 import { cleanupControllerReleaseHistory } from '../../src/runtime/control-plane/release-retention';
 
+// The Runtime can run Scheduler and Launcher without starting an autonomous
+// model-turn Supervisor. Source deletion must preserve this invariant.
+test('Canonical Runtime does not start an autonomous workflow Supervisor', () => {
+  const source = readFileSync(join(import.meta.dir, '../../src/runtime/root/runtime.ts'), 'utf8');
+  expect(source).not.toContain('startWorkflowSupervisorRuntime');
+  expect(source).not.toContain('this.workflowSupervisor');
+});
+
 const roots: string[] = [];
 
 const STABLE_MACOS_SIGNING: MacOSRuntimeCodeSigning = {
@@ -76,8 +84,6 @@ function sourceFixture() {
   mkdirSync(join(root, 'src/runtime/plugins'), { recursive: true });
   mkdirSync(join(root, 'src/runtime/shared'), { recursive: true });
   mkdirSync(join(root, 'src/cli/commands'), { recursive: true });
-  mkdirSync(join(root, 'supervisor/native-messaging'), { recursive: true });
-  mkdirSync(join(root, 'adapters/computer/chrome-extension'), { recursive: true });
   mkdirSync(join(root, 'bin'), { recursive: true });
   mkdirSync(join(root, 'scripts'), { recursive: true });
   writeFileSync(join(root, 'README.md'), 'fixture\n');
@@ -89,8 +95,6 @@ function sourceFixture() {
   writeFileSync(join(root, 'src/runtime/plugins/browser-node-bridge-host.ts'), 'console.log("host");\n');
   writeFileSync(join(root, 'src/runtime/plugins/browser-handoff-host.ts'), 'console.log("handoff");\n');
   writeFileSync(join(root, 'src/runtime/plugins/external-unix-socket-probe.cjs'), 'console.log("probe");\n');
-  writeFileSync(join(root, 'supervisor/native-messaging/host.ts'), 'process.exit(0);\n');
-  for (const file of ['manifest.json', 'background.js', 'content.js', 'core.js']) writeFileSync(join(root, 'adapters/computer/chrome-extension', file), file === 'manifest.json' ? '{"manifest_version":3}\n' : '// computer extension fixture\n');
   writeFileSync(join(root, 'scripts/stage-runtime-release.ts'), '// candidate-owned stager fixture\n');
   spawnSync('git', ['init', '-b', 'main'], { cwd: root, stdio: 'ignore' });
   spawnSync('git', ['config', 'user.email', 'forge-test@example.invalid'], { cwd: root, stdio: 'ignore' });
@@ -508,10 +512,7 @@ describe('runtime release materialization', () => {
     expect(existsSync(handoffHostPath)).toBe(true);
     expect(readFileSync(handoffHostPath, 'utf8')).toBe('handoff-host-bundle');
     expect(staged.browserHandoffArtifactIdentity).toMatch(/^sha256:/);
-    const supervisorNativeHostPath = join(staged.releasePath, 'forge-workflow-supervisor-native-host');
-    expect(existsSync(supervisorNativeHostPath)).toBe(true);
-    expect(readFileSync(supervisorNativeHostPath, 'utf8')).toBe('supervisor-native-host-binary');
-    expect(staged.workflowSupervisorNativeHostArtifactIdentity).toMatch(/^sha256:/);
+    expect(existsSync(join(staged.releasePath, 'forge-workflow-supervisor-native-host'))).toBe(false);
     expect(existsSync(join(staged.releasePath, 'browser-automation-helper'))).toBe(false);
     const externalPluginProbePath = join(staged.releasePath, 'external-unix-socket-probe.cjs');
     expect(existsSync(externalPluginProbePath)).toBe(true);
@@ -554,8 +555,6 @@ describe('runtime release materialization', () => {
     expect(manifest.browserNodeBridgeArtifactIdentity).toBe(staged.browserNodeBridgeArtifactIdentity);
     expect(manifest.browserHandoffEntrypoint).toBe('browser-handoff-host.js');
     expect(manifest.browserHandoffArtifactIdentity).toBe(staged.browserHandoffArtifactIdentity);
-    expect(manifest.workflowSupervisorNativeHostEntrypoint).toBe('forge-workflow-supervisor-native-host');
-    expect(manifest.workflowSupervisorNativeHostArtifactIdentity).toBe(staged.workflowSupervisorNativeHostArtifactIdentity);
     expect(manifest.desktopHelperEntrypoint).toBeUndefined();
     expect(manifest.desktopHelperArtifactIdentity).toBeUndefined();
     expect(manifest.executionMode).toBe('standalone-binary');
@@ -573,7 +572,7 @@ describe('runtime release materialization', () => {
     expect(existsSync(join(staged.releasePath, 'package', 'src', 'cli', 'index.ts'))).toBe(true);
     expect(existsSync(join(staged.releasePath, 'package', 'src', 'cli', 'commands', 'install.ts'))).toBe(true);
     expect(existsSync(join(staged.releasePath, 'package', 'src', 'runtime', 'shared', 'node-ts-loader.mjs'))).toBe(true);
-    expect(existsSync(join(staged.releasePath, 'package', 'adapters', 'computer', 'chrome-extension', 'background.js'))).toBe(true);
+    expect(existsSync(join(staged.releasePath, 'package', 'adapters', 'computer', 'chrome-extension'))).toBe(false);
     expect(staged.packageArtifactIdentity).toMatch(/^sha256:/);
     expect(manifest.packageRoot).toBe('package');
     expect(manifest.packageArtifactIdentity).toBe(staged.packageArtifactIdentity);

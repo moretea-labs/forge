@@ -104,13 +104,8 @@ function candidateServiceConfig(stable: ForgeRuntimeServiceConfig, lane: Candida
     controllerHome: lane.controllerHome,
     port: lane.port,
     authTokenFile: lane.authTokenFile,
-    // Candidate B may verify the Supervisor socket and internal lifecycle,
-    // but it must never submit external browser effects against Stable A's
-    // real conversation during an isolated canary.
-    topology: {
-      ...topology,
-      components: { ...topology.components },
-    },
+    // Candidate B reuses session intents, not retired autonomous executors.
+    topology,
   };
 }
 

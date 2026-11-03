@@ -41,8 +41,6 @@ import { createHandoffItem, getHandoffItem } from '../../src/runtime/control-pla
 import { cancelWorkContract, createWorkContract, type WorkContract } from '../../packages/kernel/work/api/index';
 import { createPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { createRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
-import { forgeWorkflowSupervisorValidators } from '../../supervisor/forge-validators';
-import type { WorkflowSupervisorTask } from '../../supervisor/types';
 import { ensureForgeInstanceIdentity } from '../../packages/kernel/identity/api/index';
 import { recordCognitiveMemory, type CognitiveWriteAuthorityPort } from '../../packages/kernel/cognition/api/index';
 import { cognitionMemoryStore } from '../../src/runtime/control-plane/persistence/cognition-store';
@@ -312,15 +310,6 @@ describe('runtime source isolation', () => {
     expect((acceptedRequirement.data as { requirement?: Record<string, unknown> })?.requirement).toMatchObject({
       requirementId, state: 'completed', remainingWork: [], acceptedEvidenceRefs: ['git:reviewed', 'review:accepted'],
     });
-    const requirementTask = {
-      completionContract: {
-        kind: 'forge_requirement_done', controller_home: controllerHome,
-        repo_id: primary.repoId, requirement_id: requirementId,
-      },
-      userBlockerPolicy: {},
-    } as unknown as WorkflowSupervisorTask;
-    expect(await forgeWorkflowSupervisorValidators().completionContract!(requirementTask, { action: 'DONE' } as any))
-      .toMatchObject({ valid: true, reason: 'requirement_accepted_evidence_committed' });
     expect(revisedPlanData?.plan).toMatchObject({ planId, revision: 2 });
     expect(revisedWorkData?.work).toMatchObject({ workId, revision: 2 });
 
@@ -988,7 +977,6 @@ printf '{"ok":true}\\n'
     const summary = summaryPayload.data as {
       readiness?: {
         readyFor?: string;
-        diagnostics?: { semantics?: { autonomousContinuationReady?: boolean | null; autonomousContinuationBlockers?: string[] | null } };
       };
       controllerSnapshot?: {
         activeWork?: Array<{ workId?: string }>;
@@ -997,10 +985,6 @@ printf '{"ok":true}\\n'
       };
     };
     expect(summary.readiness?.readyFor).toBe('bounded_execution');
-    expect(summary.readiness?.diagnostics?.semantics).toMatchObject({
-      autonomousContinuationReady: null,
-      autonomousContinuationBlockers: null,
-    });
     expect(summary.controllerSnapshot?.activeWork?.some((entry) => entry.workId === valid.workId)).toBe(true);
     expect(summary.controllerSnapshot?.invalidActiveWorkCount).toBe(1);
     expect(summary.controllerSnapshot?.invalidActiveWork?.[0]).toMatchObject({
@@ -1027,8 +1011,6 @@ printf '{"ok":true}\\n'
         readyFor?: string;
         diagnostics?: {
           semantics?: {
-            autonomousContinuationReady?: boolean;
-            autonomousContinuationBlockers?: string[];
             maintenanceHealthy?: boolean | null;
             maintenanceCandidateCount?: number | null;
             maintenanceObservation?: string;
@@ -1041,11 +1023,7 @@ printf '{"ok":true}\\n'
     expect(detail.gatewayLatency?.buckets).toContainEqual(expect.objectContaining({ operationClass: 'controller_lock', p95Ms: 12 }));
     expect(detail.gatewayLatency?.buckets.find((entry) => entry.operationClass === 'controller_lock')?.count).toBeGreaterThanOrEqual(1);
     expect(detail.readiness?.readyFor).toBe('bounded_execution');
-    expect(detail.readiness?.diagnostics?.semantics?.autonomousContinuationReady).toBe(false);
-    expect(Array.isArray(detail.readiness?.diagnostics?.semantics?.autonomousContinuationBlockers)).toBe(true);
-    expect(detail.readiness?.diagnostics?.semantics?.autonomousContinuationBlockers).toEqual(
-      expect.arrayContaining([expect.stringMatching(/^AUTONOMOUS_CONTINUATION_LIVE_PROOF_(MISSING|UNAVAILABLE)$/)]),
-    );
+    expect(detail.readiness?.diagnostics?.semantics).not.toHaveProperty('autonomousContinuationReady');
     expect(detail.activeContractCount).toBe(1);
     expect(detail.activePrimaryWorkCount).toBe(1);
     expect(detail.primaryWorkActivityCounts).toEqual({
