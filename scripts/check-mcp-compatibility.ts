@@ -24,7 +24,10 @@ const MAX_PREFERRED_TOOL_COUNT = 24;
 // task-ledger Writer. The 20 preferred Tool contracts remain unchanged.
 // #41 adds one explicit, preview-first registered worktree cleanup operation;
 // preferred ChatGPT routing and preferred schemas remain unchanged.
-const EXPECTED_EXPOSED_NAME_FINGERPRINT = '31964532b881067a';
+// Forge #313 (2026-11-03): intentional removal of the standalone
+// supervisor_task public tool. Preserve the preferred tool ABI; fail closed on
+// any further drift in the complete registry.
+const EXPECTED_EXPOSED_NAME_FINGERPRINT = '42bee78c458ae762';
 
 // #197 decomposition authority: the public/frozen Tool Contract is an explicit
 // baseline, independent from whichever internal adapter currently defines a
