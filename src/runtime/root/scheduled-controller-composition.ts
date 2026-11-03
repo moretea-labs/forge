@@ -1,16 +1,11 @@
 import {
   bindControllerSessionBinding,
-  getRequirementControllerRoundRelay,
   type ControllerBinding,
-  type ControllerHost,
   type ControllerSession,
 } from '../../../packages/kernel/controller/api/index';
 import { upsertChatgptControllerBinding } from '../../../adapters/chatgpt/controller-binding-store';
 import { DEFAULT_CHATGPT_AUTOMATION_REASONING } from '../../../adapters/chatgpt/provider-delivery';
-import { getWorkContract } from '../../../packages/kernel/work/api/index';
-import { inheritWorkflowSupervisorConversationBinding } from './workflow-supervisor-composition';
 import { getChatgptWorkConversationBinding } from '../../../adapters/chatgpt/work-conversation-binding-store';
-import { createProcessControllerHost } from '../../../adapters/controller-process/controller-host';
 import { upsertProcessControllerBinding, type ProcessControllerType } from '../../../adapters/controller-process/binding-store';
 
 // Kernel V2 composition root: Scheduler selects Kernel continuation; this file wires concrete provider adapters.
@@ -48,30 +43,4 @@ export function ensureScheduledControllerBinding(
   }
   bindControllerSessionBinding(options, { workId: input.workId, sessionId: input.session.sessionId, binding });
   return binding;
-}
-
-export function ensureScheduledControllerBindingForWork(
-  options: { controllerHome: string; repoId: string },
-  input: { workId: string; session: ControllerSession; scheduleName?: string; args: Record<string, unknown> },
-): ControllerBinding {
-  if (input.session.controllerType === 'chatgpt') {
-    const work = getWorkContract(options, input.workId);
-    if (work?.requirementId && !getChatgptWorkConversationBinding(options, input.workId)) {
-      const requirementRelay = getRequirementControllerRoundRelay(options, work.requirementId);
-      if (requirementRelay?.originWorkId && requirementRelay.originWorkId !== input.workId) {
-        inheritWorkflowSupervisorConversationBinding(options, requirementRelay.originWorkId, input.workId);
-      }
-    }
-  }
-  return ensureScheduledControllerBinding(options, input);
-}
-
-export function controllerHostForScheduledBinding(
-  options: { controllerHome: string; repoId: string; repoRoot: string },
-  binding: ControllerBinding,
-): ControllerHost {
-  if (binding.hostKind === 'chatgpt') {
-    throw new Error('CHATGPT_CONTROLLER_HOST_SUPERVISOR_OWNED');
-  }
-  return createProcessControllerHost(options);
 }

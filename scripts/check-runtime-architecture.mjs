@@ -1090,8 +1090,6 @@ requireText('packages/kernel/controller/application/continuation-service.ts', 'h
 requireText('packages/kernel/controller/infrastructure/controller-round-store.ts', 'controller-provider-dispatch-start');
 requireText('packages/kernel/controller/domain/controller-round-transition-policy.ts', "type: 'provider_dispatch_started'");
 forbid('packages/kernel/controller/application/continuation-service.ts', /scheduler_continuation_dispatch|ScheduledContinuationDispatch/, 'Controller continuation must not recreate Scheduler-owned continuation lifecycle persistence');
-requireText('src/runtime/root/controller-progression-composition.ts', 'reconcileControllerProgression');
-requireText('src/runtime/root/controller-progression-composition.ts', 'ensureWorkflowSupervisorEnrollmentForWork');
 forbid(
   'src/runtime/control-plane/launcher/chatgpt-round-continuation.ts',
   /beginControllerRoundProviderDispatch|runWorkChatgptContinuation|openChatgptControllerRoundFromSource|continueChatgptControllerRoundFromSource/,
@@ -1102,9 +1100,12 @@ forbid(
   /runWorkChatgptContinuation|prepareWorkChatgptContinuationTransport/,
   'Work-bound ChatGPT provider delivery is Workflow Supervisor-owned; this module may expose only standalone prompt and Browser settlement primitives',
 );
-requireText('src/runtime/root/scheduled-controller-composition.ts', 'CHATGPT_CONTROLLER_HOST_SUPERVISOR_OWNED');
+requireText('src/runtime/root/scheduled-controller-composition.ts', 'ensureScheduledControllerBinding');
+forbid('src/runtime/root/scheduled-controller-composition.ts', /inheritWorkflowSupervisorConversationBinding|controllerHostForScheduledBinding|ensureScheduledControllerBindingForWork/, 'Schedule binding must not bridge into retired Supervisor or Controller progression');
 requireText('src/runtime/control-plane/launcher/thin-launcher.ts', 'LAUNCHER_CHATGPT_SUPERVISOR_OWNED');
 requireMissing('adapters/scheduler/controller-binding.ts');
+requireMissing('src/runtime/root/controller-progression-composition.ts');
+requireMissing('tests/runtime/controller-progression-continuation.test.ts');
 requireText('adapters/controller-process/controller-host.ts', 'createProcessControllerHost');
 requireText('src/runtime/root/workflow-supervisor-composition.ts', 'registerWorkflowSupervisorTask');
 requireText('src/runtime/root/workflow-supervisor-composition.ts', 'reserveWorkflowSupervisorEnrollment');
@@ -1191,9 +1192,6 @@ for (const path of ['adapters/mcp/runtime-gateway/runtime-tool-definitions.ts', 
 }
 requireText('src/runtime/workflow/schedules/work-continuation.ts', 'SCHEDULE_AUTONOMOUS_CONTINUATION_RETIRED');
 requireText('src/runtime/root/workflow-supervisor-composition.ts', 'wakeWorkflowSupervisorScheduledTaskForWork');
-requireText('src/runtime/root/controller-progression-composition.ts', 'wakeWorkflowSupervisorScheduledTaskForWork');
-requireText('src/runtime/root/controller-progression-composition.ts', "if (wake.status === 'woken' && wake.taskId && wake.effectId)");
-requireText('src/runtime/root/controller-progression-composition.ts', "status: 'scheduled_supervisor_woken'");
 requireText('tests/runtime/rh-work-scheduler-adapter.test.ts', 'retired autonomous Schedule actions');
 requireText('tests/runtime/rh-work-scheduler-adapter.test.ts', 'stops once without dispatching or creating an occurrence');
 requireText('src/runtime/workflow/schedules/engine.ts', 'RETIRED_AUTONOMOUS_CONTINUATION_SCHEDULE');

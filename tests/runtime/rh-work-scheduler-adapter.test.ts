@@ -8,7 +8,6 @@ import type { MultiRepositoryMcpToolContext } from '../../adapters/mcp/multi-rep
 import { ensureControllerHome } from '../../src/effects/controller-home';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { callRuntimeTool } from '../../adapters/mcp/runtime-gateway/runtime-tools';
-import { reconcileControllerProgression } from '../../src/runtime/root/controller-progression-composition';
 import { bindControllerSessionBinding, claimControllerSession, releaseControllerSession } from '../../packages/kernel/controller/api/index';
 import { upsertChatgptControllerBinding } from '../../adapters/chatgpt/controller-binding-store';
 import { cronDue } from '../../packages/kernel/scheduler/application/eligibility';
@@ -128,66 +127,6 @@ describe('retired autonomous Schedule actions', () => {
 });
 
 describe('rh_work Scheduler MCP adapter', () => {
-  test('wakes a waiting Supervisor before a lower ControllerRound semantic wait can veto the scheduled turn', async () => {
-    const { controllerHome, repository, ctx, workId } = fixture();
-    const controllerStore = { controllerHome, repoId: repository.repoId };
-    const owner = claimControllerSession(controllerStore, {
-      workId,
-      controllerId: 'controller-a',
-      controllerType: 'chatgpt',
-      sessionId: 'session-wake-a',
-      principalId: 'controller-a',
-      controllerInstanceId: 'runtime-wake-a',
-      leaseMs: 60_000,
-    });
-    const controllerBinding = upsertChatgptControllerBinding(controllerStore, {
-      workId,
-      sessionId: owner.sessionId,
-      title: 'scheduled wake fixture',
-      model: 'gpt-6',
-      reasoning: 'high',
-      tabPolicy: 'auto',
-    });
-    bindControllerSessionBinding(controllerStore, {
-      workId,
-      sessionId: owner.sessionId,
-      binding: controllerBinding.binding,
-    });
-    releaseControllerSession(controllerStore, workId, owner.controllerId);
-
-    let lowerLayerPrepared = false;
-    const progression = await reconcileControllerProgression({
-      controllerHome,
-      repoId: repository.repoId,
-      repoRoot: repository.canonicalRoot,
-    }, {
-      occurrenceId: 'controller-round-occurrence-fixture',
-      workId,
-      relayScopeId: 'relay-scope-fixture',
-      scheduleId: 'SCH-wait-wake-fixture',
-      scheduleOccurrenceId: 'SCH-wait-wake-fixture:occurrence-2026-10-17T08:00+08:00',
-      bindingArgs: { controller_type: 'chatgpt' },
-    }, {
-      wakeScheduledSupervisorTask: async () => ({
-        status: 'woken',
-        taskId: 'task-wait-wake-fixture',
-        effectId: 'fx_1234567890abcdef1234567890abcdef',
-      }),
-      prepareOccurrence: () => {
-        lowerLayerPrepared = true;
-        return { outcome: 'semantic_wait', reason: 'lower round already semantically settled' } as never;
-      },
-    });
-
-    expect(progression).toMatchObject({
-      status: 'scheduled_supervisor_woken',
-      binding: { bindingId: controllerBinding.binding.bindingId },
-      taskId: 'task-wait-wake-fixture',
-      effectId: 'fx_1234567890abcdef1234567890abcdef',
-    });
-    expect(lowerLayerPrepared).toBe(false);
-  });
-
   test('routes the complete schedule lifecycle through the Scheduler adapter without external effects', async () => {
     const { controllerHome, repository, ctx, workId } = fixture();
     const scheduleId = await createShadowKeepalive(ctx, repository.repoId, workId, 'schedule-lifecycle-fixture');
