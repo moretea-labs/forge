@@ -4,6 +4,9 @@ import { spawn } from 'child_process';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { isProcessAlive } from '../../src/runtime/shared/process-tree';
+import { executeIosPluginAction } from '../../src/runtime/plugins/ios-adapter';
+import { getOwnedResource } from '../../packages/kernel/identity/api/index';
+import { inspectRepositoryIosTestEvidence } from '../../src/runtime/control-plane/generated-cache-retention';
 import {
   iosAppBuild,
   iosAppInstall,
@@ -251,6 +254,77 @@ describe('iOS development simulator reliability', () => {
         expect('error' in unsettled ? unsettled.error?.code : undefined).toBe('IOS_SIMULATOR_STATE_NOT_READY');
       }
     }
+  });
+
+  test('iOS xcode_test records exact producer ownership only for a real created result bundle', async () => {
+    const repo = repository();
+    const controllerHome = join(repo.root, 'controller-home');
+    let materializeResult = true;
+    setIosDevelopmentHooksForTest({
+      platform: () => 'darwin',
+      runCommand: (command, args) => {
+        if (command === 'xcodebuild' && args.includes('-list')) {
+          return result(command, args, { stdout: JSON.stringify({ project: { schemes: ['AppTests'] } }) });
+        }
+        if (command === 'xcodebuild' && args[0] === 'test' && materializeResult) {
+          const bundle = args[args.indexOf('-resultBundlePath') + 1]!;
+          mkdirSync(bundle, { recursive: true });
+          writeFileSync(join(bundle, 'Info.plist'), 'test result');
+        }
+        return result(command, args);
+      },
+    });
+    const action = async (requestId: string, boundWork?: { workId: string; workRepoId: string }) => executeIosPluginAction({
+      ...(boundWork ?? {}),
+      controllerHome,
+      repoId: repo.record.repoId,
+      repoRoot: repo.root,
+      pluginId: 'ios',
+      actionId: 'xcode_test',
+      requestId,
+      jobId: requestId,
+      args: { scheme: 'AppTests', udid: 'D1' },
+      origin: { surface: 'cli' },
+    });
+    const first = await action('JOB-ios-xcresult-1');
+    expect(first.ready).toBe(true);
+    const owner = first.resultBundleOwnership as { recorded: boolean; resourceId?: string };
+    expect(owner.recorded).toBe(true);
+    expect(owner.resourceId).toStartWith('ios-xcresult-');
+    const ownedRecord = getOwnedResource(controllerHome, owner.resourceId!);
+    expect(ownedRecord?.provenance.creator).toBe('forge:ios.xcode_test:JOB-ios-xcresult-1');
+    const inventory = inspectRepositoryIosTestEvidence({ canonicalRoot: repo.root, checkouts: [] }, {
+      owner: { controllerHome, repoId: repo.record.repoId },
+      maxEntries: 100,
+    });
+    expect(inventory.verifiedOwnerCount).toBe(1);
+    expect(inventory.ownershipUnverified).toBe(0);
+
+    // Successful mocked command without an actual XCTest bundle cannot
+    // create phantom ownership records or authorize future deletion.
+    materializeResult = false;
+    const missing = await action('JOB-ios-xcresult-2');
+    expect(missing.ready).toBe(true);
+    expect(missing.resultBundleOwnership).toMatchObject({
+      recorded: false, reason: 'missing_or_untrusted_result_path',
+    });
+    expect(inspectRepositoryIosTestEvidence({ canonicalRoot: repo.root, checkouts: [] }, {
+      owner: { controllerHome, repoId: repo.record.repoId }, maxEntries: 100,
+    }).verifiedOwnerCount).toBe(1);
+
+    materializeResult = true;
+    const bound = await action('JOB-ios-xcresult-work', {
+      workId: 'work-exact-current', workRepoId: repo.record.repoId,
+    });
+    const boundOwner = bound.resultBundleOwnership as { recorded: boolean; resourceId: string };
+    expect(boundOwner.recorded).toBe(true);
+    expect(getOwnedResource(controllerHome, boundOwner.resourceId)?.provenance.associatedWorkId).toBe('work-exact-current');
+    const crossRepo = await action('JOB-ios-xcresult-cross-repo', {
+      workId: 'work-other-repo', workRepoId: 'repo-unrelated',
+    });
+    const crossRepoOwner = crossRepo.resultBundleOwnership as { recorded: boolean; resourceId: string };
+    expect(crossRepoOwner.recorded).toBe(true);
+    expect(getOwnedResource(controllerHome, crossRepoOwner.resourceId)?.provenance.associatedWorkId).toBeUndefined();
   });
 
   test('XCTest uses an already booted exact UDID and refuses a third implicit destination', async () => {

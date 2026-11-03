@@ -59,7 +59,7 @@ const SENSITIVE_PATTERNS: readonly SensitivePattern[] = [
   },
   {
     type: 'secret_assignment',
-    pattern: /((?:^|[^\w]))(["']?)([A-Za-z0-9_.-]*(?:api[_-]?key|access[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|private[_-]?key|password|passwd|secret|credentials?|auth[_-]?token|token|cookie)[A-Za-z0-9_.-]*)\2(\s*(?:=>|:=|=|:)\s*)((?:[A-Z][A-Za-z0-9_]*(?:[?!])?\s*=\s*)?)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,}\r\n]+)/gim,
+    pattern: /((?:^|[^\w]))(["']?)([A-Za-z0-9_.-]*(?:api[_-]?key|access[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|private[_-]?key|password|passwd|secret|credentials?|auth[_-]?token|token|cookie)[A-Za-z0-9_.-]*)\2(\s*(?:=>|:=|=(?!=)|:)\s*)((?:[A-Z][A-Za-z0-9_]*(?:[?!])?\s*=\s*)?)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,}\r\n]+)/gim,
     replacement: '$1$2$3$2$4$5[REDACTED]',
   },
   {
@@ -138,7 +138,7 @@ export function redactSensitiveText(input: string): SensitiveTextRedactionResult
   for (const entry of SENSITIVE_PATTERNS) {
     if (entry.type === 'secret_assignment') {
       let redactions = 0;
-      text = text.replace(entry.pattern, (matched, boundary: string, quote: string, key: string, separator: string, typeDefault: string) => {
+      text = text.replace(entry.pattern, (matched, boundary: string, quote: string, key: string, separator: string, typeDefault: string, offset: number, source: string) => {
         // Preserve non-credential data flow even when a source symbol ends in "Token".
         // An unquoted floating-point counter or a reference to the local token
         // variable is not a secret literal. Keep unknown opaque/quoted token values
@@ -148,8 +148,21 @@ export function redactSensitiveText(input: string): SensitiveTextRedactionResult
         const genericToken = /token$/i.test(key) && !/^(?:token|(?:api|access|refresh|auth|session|bearer|csrf|id|jwt|oauth)[_-]?token)$/i.test(key);
         const sourceCounter = /^[+-]?(?:\d+\.\d*|\.\d+)(?:e[+-]?\d+)?[;)]?$/i.test(rhs);
         const sourceReference = /^token[;)]?$/.test(rhs);
+        // An awaited Swift/JS call is an expression, not a credential value.
+        // Require a following call target: a standalone unquoted `token: await`
+        // remains redacted, as do all quoted/opaque credential literals.
+        const sourceAwaitedCall = /^(?:await|try)$/.test(rhs)
+          && /^\s+(?:await\s+)?[A-Za-z_$][\w$.]*\s*\(/.test(source.slice(offset + matched.length));
+        const sourceDataChangeReference = separator.trim() === ':'
+          && /^[A-Za-z_][A-Za-z0-9_]*DataChangeToken[;)]?$/.test(rhs);
+        // A type-qualified function-call prefix can span lines; the pattern's
+        // whitespace boundary stops at `(` before the Swift arguments. Limit
+        // the exemption to nonliteral data-change counters, never credentials.
+        const sourceDataChangeCall = genericToken && /DataChangeToken$/.test(key)
+          && /^[A-Z][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+\($/.test(rhs);
         const sourceType = separator.trim() === ':' && !typeDefault && /^(?:Double|Float|Int|Int8|Int16|Int32|Int64|Bool|String|Character|CGFloat|Date|UUID)[?!]?[),{;]?$/.test(rhs);
-        if (sourceType || (genericToken && (sourceCounter || sourceReference))) return matched;
+        if (sourceType || sourceAwaitedCall || sourceDataChangeReference || sourceDataChangeCall
+          || (genericToken && (sourceCounter || sourceReference))) return matched;
         redactions += 1;
         return `${prefix}[REDACTED]`;
       });

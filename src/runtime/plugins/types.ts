@@ -170,6 +170,9 @@ export interface AssistantPluginActionExecutionInput {
   args: Record<string, unknown>;
   origin: ExecutionJobOrigin;
   jobId?: string;
+  /** Canonically validated Work attribution for this exact plugin invocation. */
+  workId?: string;
+  workRepoId?: string;
   timeoutMs?: number;
   signal?: AbortSignal;
   /** Exact reusable grants bound to the Workflow asset. Never accepts grant contents. */

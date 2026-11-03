@@ -2060,6 +2060,10 @@ async function submitPluginAction(
         args: normalizedArgs,
         origin: request.origin,
         jobId: receiptId,
+        ...(attributedWork ? {
+          workId: attributedWork.workId,
+          workRepoId: workAttributionRepoId(scope, request),
+        } : {}),
         timeoutMs: request.timeoutMs,
         signal: request.signal,
         authorizationGrantRefs: request.authorizationGrantRefs,

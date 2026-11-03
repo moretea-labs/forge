@@ -33,6 +33,41 @@ describe('Swift source redaction preserves type annotations (Issue #280)', () =>
     expect(result.redactions).toEqual([]);
   });
 
+  test('preserves Swift asynchronous data-change token flow and comparisons throughout a real source read', () => {
+    const source = [
+      'let sourceDataChangeToken = SharedTodayStore.dataChangeGeneration(',
+      '    sharedContainer)',
+      'let finalDataChangeToken = SharedTodayStore.dataChangeGeneration(',
+      '    sharedContainer)',
+      'let sourceDataChangeToken = await refreshObservation.currentToken()',
+      'let finalDataChangeToken = await refreshObservation.currentToken()',
+      'guard finalDataChangeToken == sourceDataChangeToken else {',
+      '    return',
+      '}',
+      'await refreshObservation.markConverged(token: finalDataChangeToken)',
+      'await refreshObservation.markConverged(token: await refreshObservation.currentToken())',
+      'if lastConvergedToken != finalDataChangeToken {',
+      '}',
+    ].join('\n');
+    const redacted = redactSensitiveText(source);
+    expect(redacted.changed).toBe(false);
+    expect(redacted.text).toBe(source);
+    expect(redacted.redactions).toEqual([]);
+  });
+
+  test('does not exempt quoted data-change credentials or standalone awaited token values', () => {
+    const input = [
+      'sourceDataChangeToken = "synthetic_opaque_secret_value_abc123"',
+      'token: await',
+      'password: "synthetic_password_value_abc123"',
+    ].join('\n');
+    const redacted = redactSensitiveText(input);
+    expect(redacted.changed).toBe(true);
+    expect(redacted.redactions).toContainEqual({ type: 'secret_assignment', count: 3 });
+    expect(redacted.text).not.toContain('synthetic_opaque_secret_value_abc123');
+    expect(redacted.text).not.toContain('synthetic_password_value_abc123');
+  });
+
   test('does not turn real token assignments into an exemption', () => {
     const credentials = [
       'token: synthetic_opaque_value_abc123',
