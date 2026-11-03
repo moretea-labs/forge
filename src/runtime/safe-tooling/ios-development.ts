@@ -433,7 +433,8 @@ export function iosSimulatorBoot(input: { udid: string; openSimulator?: boolean;
       error: { code: 'SIMULATOR_BOOTSTATUS_FAILED', message: readiness.stderr || readiness.stdout },
     };
   }
-  if (input.openSimulator !== false) runCommand('open', ['-a', 'Simulator']);
+  // Headless tests must not launch a GPU-heavy GUI; manual launch opts in.
+  if (input.openSimulator === true) runCommand('open', ['-a', 'Simulator']);
   return {
     ready: true, booted: true, udid, alreadyBooted,
     ownership: alreadyBooted ? 'reused' : 'started_by_work',

@@ -158,13 +158,17 @@ describe('iOS development simulator reliability', () => {
         return result(command, args);
       },
     });
-    const reused = iosSimulatorBoot({ udid: 'D1', openSimulator: false });
+    const reused = iosSimulatorBoot({ udid: 'D1' });
     expect(reused.ready).toBe(true);
     expect('ownership' in reused ? reused.ownership : undefined).toBe('reused');
     expect('alreadyBooted' in reused ? reused.alreadyBooted : undefined).toBe(true);
     expect(commands.filter((argv) => argv[1] === 'simctl' && argv[2] === 'boot')).toHaveLength(0);
     expect(commands.filter((argv) => argv[2] === 'bootstatus')).toHaveLength(1);
     expect(commands.filter((argv) => argv[2] === 'shutdown')).toHaveLength(0);
+    expect(commands.filter((argv) => argv[0] === 'open')).toHaveLength(0);
+    const manual = iosSimulatorBoot({ udid: 'D2', openSimulator: true });
+    expect(manual.ready).toBe(true);
+    expect(commands.filter((argv) => argv[0] === 'open')).toHaveLength(1);
   });
 
   test('a new third iOS Simulator fails closed with current booted owners and never calls boot', () => {
