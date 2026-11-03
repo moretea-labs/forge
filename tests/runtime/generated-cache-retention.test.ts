@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { execFileSync } from 'child_process';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { cleanupControllerHomeBrowserArtifacts, cleanupGeneratedRepositoryCaches, cleanupGeneratedRepositoryCheckoutCaches, inspectRepositoryIosTestEvidence } from '../../src/runtime/control-plane/generated-cache-retention';
+import { cleanupControllerHomeBrowserArtifacts, cleanupGeneratedRepositoryCaches, cleanupGeneratedRepositoryCheckoutCaches, inspectRepositoryIosTestEvidence, iosTestEvidenceResourceId, recordIosTestEvidenceOwner } from '../../src/runtime/control-plane/generated-cache-retention';
+import { getOwnedResource } from '../../packages/kernel/identity/api/index';
 
 import { planSchedulerPeriodicMaintenance } from '../../src/runtime/control-plane/global-scheduler/maintenance';
 
@@ -387,6 +388,45 @@ describe('generated repository cache retention', () => {
     expect(bounded.budgetExhausted).toBe(true);
     expect(bounded.rootsInspected).toBe(1);
     expect(existsSync(unknown)).toBe(true);
+  });
+
+  test('binds Xcode result bundles to one exact inode-backed OwnedResource and rejects replacement', () => {
+    const root = repository();
+    const controllerHome = join(root, 'controller-home');
+    const repoId = 'repo-owned-ios-evidence';
+    const relativePath = '.forge/ios/test-results/20261103T130000Z-22-1-AppTests.xcresult';
+    const path = join(root, relativePath);
+    mkdirSync(path, { recursive: true });
+    writeFileSync(join(path, 'Info.plist'), 'finished Xcode test evidence');
+    const args = { controllerHome, repoId, repoRoot: root, resultBundlePath: relativePath, producerRequestId: 'JOB-exact-1' };
+    const created = recordIosTestEvidenceOwner(args);
+    expect(created.recorded).toBe(true);
+    expect(created.resourceId).toBe(iosTestEvidenceResourceId(repoId, path));
+    expect(recordIosTestEvidenceOwner(args)).toEqual(created);
+    const stored = getOwnedResource(controllerHome, created.resourceId!);
+    expect(stored?.provenance.creator).toBe('forge:ios.xcode_test:JOB-exact-1');
+    expect(stored?.retention.intent).toBe('persistent_until_explicit_release');
+    expect(stored?.locator).toEqual({ kind: 'filesystem_path', value: path });
+    const owned = inspectRepositoryIosTestEvidence({ canonicalRoot: root, checkouts: [] }, {
+      owner: { controllerHome, repoId }, maxEntries: 50,
+    });
+    expect(owned.verifiedOwnerCount).toBe(1);
+    expect(owned.ownershipUnverified).toBe(0);
+    expect(existsSync(path)).toBe(true);
+    const foreign = recordIosTestEvidenceOwner({ ...args, resultBundlePath: '../../outside.xcresult' });
+    expect(foreign.recorded).toBe(false);
+
+    // Replaced on disk: old metadata cannot confer ownership of a new inode.
+    renameSync(path, join(root, 'old-result-elsewhere'));
+    mkdirSync(path, { recursive: true });
+    writeFileSync(join(path, 'Info.plist'), 'different evidence, same name');
+    const replaced = inspectRepositoryIosTestEvidence({ canonicalRoot: root, checkouts: [] }, {
+      owner: { controllerHome, repoId }, maxEntries: 50,
+    });
+    expect(replaced.verifiedOwnerCount).toBe(0);
+    expect(replaced.ownershipUnverified).toBe(1);
+    expect(() => recordIosTestEvidenceOwner(args)).toThrow('OWNED_RESOURCE_IDENTITY_CONFLICT');
+    expect(existsSync(path)).toBe(true);
   });
 
   test('bounds Controller Home Browser disposable artifacts by TTL, count/bytes and active grace', () => {

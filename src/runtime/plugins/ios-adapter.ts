@@ -26,6 +26,7 @@ import type {
 } from './types';
 import { AssistantPluginError } from './errors';
 import { resolveAppStoreConnectXcodeAuthenticationReference } from './app-store-connect-adapter';
+import { recordIosTestEvidenceOwner } from '../control-plane/generated-cache-retention';
 import {
   executeIosAgentDeviceAction,
   iosAgentDeviceActions,
@@ -501,8 +502,7 @@ export async function executeIosPluginAction(input: AssistantPluginActionExecuti
       const onlyTesting = Array.isArray(input.args.only_testing)
         ? input.args.only_testing.map((entry) => String(entry).trim()).filter(Boolean).slice(0, 50)
         : undefined;
-      return {
-        ...await iosXcodeTest(repository, {
+      const testResult = await iosXcodeTest(repository, {
           scheme: stringValue(input.args.scheme),
           udid: stringValue(input.args.udid),
           simulatorName: stringValue(input.args.simulator_name),
@@ -515,8 +515,24 @@ export async function executeIosPluginAction(input: AssistantPluginActionExecuti
             ? input.args.max_parallel_testing_workers
             : undefined,
           timeoutMs: typeof input.args.timeout_ms === 'number' ? input.args.timeout_ms : undefined,
-        }),
-      };
+      });
+      let resultBundleOwnership: { recorded: boolean; resourceId?: string; reason?: string } | undefined;
+      if ('resultBundlePath' in testResult && typeof testResult.resultBundlePath === 'string') {
+        try {
+          resultBundleOwnership = recordIosTestEvidenceOwner({
+            controllerHome: input.controllerHome,
+            repoId: input.repoId,
+            repoRoot: input.repoRoot,
+            resultBundlePath: testResult.resultBundlePath,
+            producerRequestId: input.jobId ?? input.requestId,
+          });
+        } catch {
+          // Test result remains inspectable, but its evidence is never cleanup-
+          // eligible when the canonical ownership write cannot be verified.
+          resultBundleOwnership = { recorded: false, reason: 'ownership_record_failed' };
+        }
+      }
+      return { ...testResult, ...(resultBundleOwnership ? { resultBundleOwnership } : {}) };
     }
     case 'launch_simulator': {
       const udid = stringValue(input.args.udid);

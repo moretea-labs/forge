@@ -980,9 +980,17 @@ describe('runtime maintenance executor', () => {
       const second = applyRuntimeMaintenance(registered, controllerHome, {
         actionId: 'full_maintenance_pass', confirmMaintenance: true, maxCandidates: 1,
       });
-      expect(second.generatedCacheGc?.removedPaths.some((path) =>
-        path.endsWith(':.repo-harness/ios-build/DerivedData/Build'))).toBe(true);
-      expect(existsSync(join(cache, 'Build'))).toBe(false);
+      const targetSuffix = ':.repo-harness/ios-build/DerivedData/Build';
+      const wasRemoved = second.generatedCacheGc?.removedPaths.some((path) => path.endsWith(targetSuffix));
+      const wasRetained = second.generatedCacheGc?.retainedPaths.some((path) => path.endsWith(targetSuffix));
+      // A concurrent Xcode suite may legitimately hold this cache while the
+      // maintenance test runs. In either case we must reach the second root.
+      expect(wasRemoved || wasRetained).toBe(true);
+      expect(second.generatedCacheGc?.errors).toEqual([]);
+      if (wasRetained) {
+        expect(second.generatedCacheGc?.skippedByReason.active_process).toBeGreaterThan(0);
+      }
+      expect(existsSync(join(cache, 'Build'))).toBe(!wasRemoved);
       expect(existsSync(join(cache, 'info.plist'))).toBe(true);
     } finally {
       now.mockRestore();
