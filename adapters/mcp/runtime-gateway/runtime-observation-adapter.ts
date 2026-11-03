@@ -1158,7 +1158,7 @@ export async function callRuntimeObservationAdapter(ctx: MultiRepositoryMcpToolC
               const repository = selected(ctx, args);
               const projection = readRepositoryProjectionSnapshot(ctx.controllerHome, repository.repoId).projection;
               const runtime = loadMcpRuntimeState(repository.canonicalRoot);
-              const inferredLocalBridge = inferLocalControllerProcess(repository.canonicalRoot);
+              const inferredLocalBridge = args.include_processes === false ? undefined : inferLocalControllerProcess(repository.canonicalRoot);
               const activeJobIds = listExecutionJobs(ctx.controllerHome, repository.repoId, 100)
                 .filter((job) => ['queued', 'dispatched', 'running', 'waiting_for_dependency', 'waiting_for_workspace', 'waiting_for_heavy_check', 'waiting_for_integration'].includes(job.status))
                 .map((job) => job.jobId);

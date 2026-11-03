@@ -29,8 +29,11 @@ Retire autonomous model-turn continuation instead of adding another completion o
 - Stop active autonomous Task through its sole owner before source retirement; do not cancel/replay an applied external Send or delete the user's conversation.
 - Migrate all direct and indirect callers; update architecture/build manifest and targeted tests; delete dead code rather than retaining disabled parallel paths.
 - Confirm Work-free manual session launch; Schedule create, trigger, receipt, pause/resume and restart safety; no auto CONTINUE/migration/second Writer; unknown dispatch not repeated.
-- Require fixed HEAD independent review, focused type/architecture checks and CI. Current Runtime remains untouched until approval of a particular release activation.
+- Require current executor exact-HEAD diff verification, focused type/architecture checks and CI; independent review only on explicit request. Current Runtime remains untouched until approval of a particular release activation.
 - This decision document and an initial source cut do not constitute full retirement. GitHub #313 retains the single progress and acceptance ledger.
+### Xcode DerivedData resource claims (Refs #478)
+
+Process Runtime resolves an explicit literal `xcodebuild -derivedDataPath` against the actual execution cwd, canonicalizes existing symlink ancestors, and claims the physical cache path through the existing Lease owner. Distinct caches may build concurrently across checkouts; equal or ancestor/child paths conflict across repositories. Each concrete cache also holds a repository build-cache read claim, so an opaque/default-cache build's existing write claim remains exclusive. Dynamic or opaque compound shell commands, dangling symlinks, duplicate cache arguments and output/cache overrides retain that conservative repository claim. Native XCTest commands additionally retain the host-wide simulator-test write claim. This changes command resource admission only; it does not create a scheduler, build executor or progress authority.
 
 ### Requirement-owned semantic progress (Issue #483 migration slice)
 
@@ -257,6 +260,12 @@ Execution placement, lifecycle, retry, authorization, and acceptance decisions c
 ### Failure contract authority
 
 Machine-visible failures have a stable code plus an explicit class and retry disposition; transport projections such as HTTP status derive from that contract. Free-form messages exist for diagnostics and user presentation. A producer-specific adapter may translate a native SDK/OS error into the failure contract once, but retry policy must not be inferred from words such as `temporary`, `worker`, or `network`, and authorization must not be inferred from arbitrary prose. Ambiguous non-idempotent outcomes use an explicit reconciliation-before-retry disposition rather than generic transient retry.
+
+### Shared live-device validation admission (Forge #192)
+
+`Process Runtime` owns the execution receipt and the existing global execution-Lease store owns the host resource identity: `host-service:ios-simulator-test` for iOS and `host-service:android-emulator-test` for Android. Registered simulator checks, persisted Edit/Work verification, and compatible repository commands use this one admission path. Source-only builds and static checks do not consume a device claim. These are host-wide resource classes, not new simulator instances or per-session queues; platform checks may overlap each other but not another check on the same platform.
+
+When a claimed device is occupied, the check returns the same tracked Process handle in `starting`/resource-wait state and the original Runtime continuation retries lease acquisition. There is no 30-second admission cap: live-device checks default to a two-hour queue budget, explicit callers can select up to 24 hours, and the command execution timeout starts after acquisition. Cancellation, an expired queue budget, or checkout HEAD drift must fail before OS spawn, preserving the original Process/evidence identity. Repo-local OS locks remain defensive protection for legacy executors outside Forge; they are not a second semantic progress store. In-memory pre-spawn waiters are **not** yet restart-surviving: a Runtime restart can reconcile them as abandoned rather than resuming automatically. Do not claim crash-resilient queue acceptance without a separate real recovery proof.
 
 ### Persistent service identity authority
 

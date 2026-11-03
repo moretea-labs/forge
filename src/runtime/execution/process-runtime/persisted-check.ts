@@ -25,8 +25,8 @@ import {
   type RunCheckFacadeInput,
   type RunCheckFacadeResult,
 } from './check-facade';
-import { claimsForCheck, toProcessClaims } from './resource-claims';
-import { getProcessHandle, spawnManagedProcess } from './runtime';
+import { claimsForCheck, claimsRequireLiveDeviceAdmission, LIVE_DEVICE_ADMISSION_WAIT_MS, toProcessClaims } from './resource-claims';
+import { getProcessHandle, spawnWithQueuedAdmission } from './runtime';
 import { getProcessRecord, getProcessRequestBinding } from './store';
 import { allocatePersistedCheckResultReceiptPath } from './check-result';
 import { durationAwareInteractiveWaitMs } from './interactive-admission';
@@ -276,8 +276,6 @@ export async function runPersistedCheckViaProcessRuntime(
   }
 
   const interactiveWaitMs = durationAwareInteractiveWaitMs(check.command, input.interactiveWaitMs);
-  const leaseWaitMs = input.leaseWaitMs
-    ?? (input.workId?.trim() ? DEFAULT_WORK_CHECK_LEASE_WAIT_MS : undefined);
   const timeoutMs = Math.min(
     check.timeoutMs,
     typeof input.timeoutMs === 'number' && Number.isFinite(input.timeoutMs)
@@ -306,6 +304,10 @@ export async function runPersistedCheckViaProcessRuntime(
     check.effects,
     check.executionAuthority,
   );
+  const usesLiveDevice = claimsRequireLiveDeviceAdmission(claims);
+  const leaseWaitMs = input.leaseWaitMs
+    ?? (usesLiveDevice ? LIVE_DEVICE_ADMISSION_WAIT_MS
+      : input.workId?.trim() ? DEFAULT_WORK_CHECK_LEASE_WAIT_MS : undefined);
   const checkFingerprint = createHash('sha256')
     .update(JSON.stringify(checkSnapshot))
     .digest('hex');
@@ -397,7 +399,7 @@ export async function runPersistedCheckViaProcessRuntime(
     : {});
   let handle;
   try {
-    handle = await spawnManagedProcess({
+    handle = await spawnWithQueuedAdmission({
     controllerHome: input.controllerHome,
     repoId: executionIdentity.repositoryId,
     checkoutId: executionIdentity.checkoutId,
@@ -431,7 +433,7 @@ export async function runPersistedCheckViaProcessRuntime(
       ...(verificationSnapshot ? { workVerificationSnapshot: true } : {}),
     },
     signal: input.signal,
-  });
+  }, usesLiveDevice);
   } catch (error) {
     cleanupVerificationSnapshot();
     throw error;

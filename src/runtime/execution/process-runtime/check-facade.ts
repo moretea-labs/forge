@@ -15,9 +15,9 @@ import {
   type ControllerCheck,
   type ControllerCheckSnapshot,
 } from '../../../cli/controller/check-runner';
-import { claimsForCheck, scopeResourceClaims, toProcessClaims } from './resource-claims';
+import { claimsForCheck, claimsRequireLiveDeviceAdmission, LIVE_DEVICE_ADMISSION_WAIT_MS, scopeResourceClaims, toProcessClaims } from './resource-claims';
 import { resolveCheckCompletionGraceWaitMs } from '../../control-plane/persistence/operational-prior-store';
-import { spawnManagedProcess, waitForProcess, getProcessHandle } from './runtime';
+import { spawnWithQueuedAdmission, waitForProcess, getProcessHandle } from './runtime';
 import {
   getLightweightProcessHandle,
   isLightweightProcessId,
@@ -207,7 +207,23 @@ export async function runCheckViaProcessRuntime(
       `CHECKOUT_ROUTE_MISMATCH: check checkout ${input.checkoutId} differs from identity ${executionIdentity.checkoutId}`,
     );
   }
-  if (!durableVerificationBinding) {
+  const claims = scopeResourceClaims(
+    claimsForCheck(
+      input.checkId,
+      check.command,
+      executionIdentity.repositoryId,
+      executionIdentity.checkoutId,
+      check.effects,
+      check.executionAuthority,
+    ),
+    executionIdentity.repositoryId,
+    executionIdentity.checkoutId,
+    input.workId,
+  );
+  // Live device validation must retain a Process lease across independent
+  // sessions. The lightweight lane has no resource admission authority.
+  const usesLiveDevice = claimsRequireLiveDeviceAdmission(claims);
+  if (!durableVerificationBinding && !usesLiveDevice) {
     const lightweight = await startLightweightControllerCheck({
       controllerHome: input.controllerHome,
       repoId: input.repoId,
@@ -228,19 +244,6 @@ export async function runCheckViaProcessRuntime(
       durableSideEffects: emptyEffects,
     };
   }
-  const claims = scopeResourceClaims(
-    claimsForCheck(
-      input.checkId,
-      check.command,
-      executionIdentity.repositoryId,
-      executionIdentity.checkoutId,
-      check.effects,
-      check.executionAuthority,
-    ),
-    executionIdentity.repositoryId,
-    executionIdentity.checkoutId,
-    input.workId,
-  );
   const cwd = check.cwd === '.'
     ? executionIdentity.canonicalRoot
     : `${executionIdentity.canonicalRoot}/${check.cwd}`.replace(/\/+/g, '/');
@@ -261,7 +264,7 @@ export async function runCheckViaProcessRuntime(
     }, semanticCheck.reuseScope),
   };
 
-  const handle = await spawnManagedProcess({
+  const handle = await spawnWithQueuedAdmission({
     controllerHome: input.controllerHome,
     repoId: executionIdentity.repositoryId,
     checkoutId: executionIdentity.checkoutId,
@@ -275,7 +278,7 @@ export async function runCheckViaProcessRuntime(
       cwd,
     },
     interactiveWaitMs,
-    leaseWaitMs: input.leaseWaitMs,
+    leaseWaitMs: input.leaseWaitMs ?? (usesLiveDevice ? LIVE_DEVICE_ADMISSION_WAIT_MS : undefined),
     timeoutMs,
     resourceClaims: toProcessClaims(claims),
     checkExecution: processCheckExecution,
@@ -292,7 +295,7 @@ export async function runCheckViaProcessRuntime(
       taskId: input.verificationBinding?.taskId,
     },
     signal: input.signal,
-  });
+  }, usesLiveDevice);
 
   const mode: CheckExecutionMode = handle.completed ? 'direct' : 'managed';
   return {

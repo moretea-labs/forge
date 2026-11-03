@@ -1306,10 +1306,12 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
     return recordToHandle(completed!, { completed: true });
   }
 
-  const leaseWaitMs = Math.max(
-    0,
-    Math.min(Math.trunc(input.leaseWaitMs ?? 0), 30_000),
-  );
+  // Lease admission is independent from the interactive response budget. Live
+  // device checks may remain queued longer than 30 seconds; the caller owns
+  // the bounded queue budget (up to one day), not a hidden Runtime clamp.
+  const leaseWaitMs = Number.isFinite(input.leaseWaitMs)
+    ? Math.max(0, Math.min(Math.trunc(input.leaseWaitMs!), 24 * 60 * 60_000))
+    : 0;
   let compatibility = evaluateManagedProcessWorkCompatibility({
     controllerHome: input.controllerHome,
     repoId: input.repoId,
@@ -1422,10 +1424,38 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
     // conflicting leases to release instead of failing immediately. The Lease
     // store remains the single conflict authority; this loop only polls it.
     if (!acquisition.acquired && leaseWaitMs > 0) {
+      const resourceKeys = [...new Set(acquisition.blockers.map((blocker) => blocker.resourceKey))].sort();
+      const wait = executionConcurrencyWaitProjection({
+        source: 'resource_lease',
+        blockerCode: 'resource_claim_conflict',
+        disposition: 'wait',
+        semanticScopeKeys: [],
+        resourceKeys,
+        wakeTrigger: { kind: 'resource_release', resourceKeys },
+      });
+      // The Process record is the existing admission receipt. The caller can
+      // return a managed handle while this original request continues waiting.
+      // No second Job/Queue/Controller is created.
+      const queued = updateProcessRecord(input.controllerHome, input.repoId, processId, {
+        route: 'managed', concurrencyWait: wait,
+      });
+      if (queued) input.onAdmissionWait?.(recordToHandle(queued, { completed: false }));
       const leaseDeadline = Date.now() + leaseWaitMs;
+      let lastHeartbeat = Date.now();
       while (!acquisition.acquired && Date.now() < leaseDeadline) {
+        const current = getProcessRecord(input.controllerHome, input.repoId, processId);
+        if (current?.terminalWritten) return recordToHandle(current, { completed: true });
         if (input.signal?.aborted) break;
-        await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
+        await new Promise((resolvePromise) => setTimeout(resolvePromise, 500));
+        const afterSleep = getProcessRecord(input.controllerHome, input.repoId, processId);
+        if (afterSleep?.terminalWritten) return recordToHandle(afterSleep, { completed: true });
+        if (input.signal?.aborted) break;
+        // An active waiter must not look like an abandoned pre-spawn request
+        // to Process maintenance. Abandoned waiters still reconcile normally.
+        if (Date.now() - lastHeartbeat >= 30_000) {
+          updateProcessRecord(input.controllerHome, input.repoId, processId, { concurrencyWait: wait });
+          lastHeartbeat = Date.now();
+        }
         acquisition = acquireExecutionLeases(
           input.controllerHome,
           input.repoId,
@@ -1440,6 +1470,13 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
           },
         );
       }
+    }
+    if (!acquisition.acquired && input.signal?.aborted) {
+      const cancelled = completeProcessFromEvidence(input.controllerHome, input.repoId, processId, fenceToken, {
+        status: 'cancelled', exitCode: 1, cancelled: true,
+        errorMessage: 'cancelled during lease admission', exitReceiptPath,
+      }, { authority: 'durable_pre_spawn_abandonment' });
+      return recordToHandle(cancelled ?? record, { completed: true });
     }
     if (!acquisition.acquired) {
       const resourceKeys = [...new Set(acquisition.blockers.map((blocker) => blocker.resourceKey))].sort();
@@ -1504,6 +1541,21 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
         stderr: failed.error?.message ?? `PROCESS_LEASE_CONFLICT: ${blockers}`,
       });
     }
+    const afterAdmission = getProcessRecord(input.controllerHome, input.repoId, processId);
+    if (afterAdmission?.terminalWritten) {
+      // Cancellation can race the precise moment the final conflicting owner
+      // releases. Release only the newly obtained fenced set, never dispatch.
+      releaseExecutionLeases(
+        input.controllerHome, input.repoId, processOwnerJobId(processId),
+        acquisition.leases.map((lease) => ({
+          leaseId: lease.leaseId, fencingToken: lease.fencingToken,
+          repoId: lease.repoId, checkoutId: lease.checkoutId, workId: lease.workId,
+          resourceKey: lease.resourceKey,
+        })),
+        { visibility: 'ephemeral', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false },
+      );
+      return recordToHandle(afterAdmission, { completed: true });
+    }
     leaseRefs = acquisition.leases.map((lease) => ({
       leaseId: lease.leaseId,
       resourceKey: lease.resourceKey,
@@ -1517,6 +1569,39 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
     updateProcessRecord(input.controllerHome, input.repoId, processId, { leaseRefs, concurrencyWait: undefined });
   }
 
+  if (input.signal?.aborted) {
+    const cancelled = completeProcessFromEvidence(input.controllerHome, input.repoId, processId, fenceToken, {
+      status: 'cancelled', exitCode: 1, cancelled: true,
+      errorMessage: 'cancelled before spawn', exitReceiptPath,
+    }, { authority: 'durable_pre_spawn_abandonment' });
+    return recordToHandle(cancelled ?? record, { completed: true });
+  }
+
+  // A checkout may change while a device admission waits in another session.
+  // Revalidate its physical identity and original HEAD before crossing spawn.
+  // Never silently test newer source under the queued Check's old evidence ID.
+  if (input.executionIdentity.expectedHead || leaseWaitMs > 0) {
+    try {
+      const resumedIdentity = assertExecutionIdentity({
+        controllerHome: input.controllerHome,
+        identity: input.executionIdentity,
+        cwd: command.cwd,
+        requestedRepoId: input.repoId,
+        requestedCheckoutId: input.checkoutId,
+      });
+      if (leaseWaitMs > 0 && guardedIdentity.currentHead
+        && resumedIdentity.currentHead !== guardedIdentity.currentHead) {
+        throw new Error('PROCESS_QUEUED_CHECK_SOURCE_CHANGED: checkout HEAD changed while waiting for device');
+      }
+    } catch (error) {
+      releaseProcessLeasesOnce(input.controllerHome, input.repoId, processId);
+      const message = error instanceof Error ? error.message : String(error);
+      const failed = completeProcessFromEvidence(input.controllerHome, input.repoId, processId, fenceToken, {
+        status: 'failed', exitCode: 1, errorMessage: message, exitReceiptPath,
+      }, { authority: 'durable_pre_spawn_abandonment' });
+      return recordToHandle(failed ?? record, { completed: true, stderr: message });
+    }
+  }
   const descriptor: ProcessCommandDescriptor = {
     schemaVersion: 1,
     processId,
@@ -1637,6 +1722,21 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
   return recordToHandle(completed, { completed: true, stdout, stderr });
 }
 
+/**
+ * The same Process and lease admission continue after an interactive caller
+ * receives a managed handle. This is not a second queue or execution owner.
+ */
+export async function spawnWithQueuedAdmission(
+  input: SpawnManagedProcessInput,
+  usesLiveDevice: boolean,
+): Promise<ProcessHandle> {
+  if (!usesLiveDevice) return spawnManagedProcess(input);
+  let notifyQueued: (handle: ProcessHandle) => void = () => {};
+  const queuedHandle = new Promise<ProcessHandle>((resolve) => { notifyQueued = resolve; });
+  const execution = spawnManagedProcess({ ...input, onAdmissionWait: notifyQueued });
+  return Promise.race([execution, queuedHandle]);
+}
+
 function applyReceiptIfPresent(
   controllerHome: string,
   repoId: string,
@@ -1687,6 +1787,11 @@ export function getProcessHandle(
     return recordToHandle(reconcileObservedTerminalProcess(controllerHome, repoId, record), { completed: true });
   }
   if (isManagedProcessActive(record) && !liveMonitors.has(processId)) {
+    // A lease-waiting Process has not spawned an OS child yet. It is a valid
+    // joinable managed request, not a dead PID / completed_unknown.
+    if (record.status === 'starting' && record.concurrencyWait?.source === 'resource_lease') {
+      return recordToHandle(record, { completed: false });
+    }
     const fromReceipt = applyReceiptIfPresent(controllerHome, repoId, processId, record);
     if (fromReceipt) return recordToHandle(fromReceipt, { completed: true });
     if (!identityStillMatches(record.identity, record.identityUntrusted)) {
@@ -1757,6 +1862,10 @@ export async function waitForProcess(
     if (current.terminalWritten) return recordToHandle(current, { completed: true });
     const fromReceipt = applyReceiptIfPresent(controllerHome, repoId, processId, current);
     if (fromReceipt) return recordToHandle(fromReceipt, { completed: true });
+    if (current.status === 'starting' && current.concurrencyWait?.source === 'resource_lease') {
+      await new Promise((r) => setTimeout(r, pollIntervalMs));
+      continue;
+    }
     if (!identityStillMatches(current.identity, current.identityUntrusted)) {
       // The independent Runner atomically writes its durable receipt before it
       // exits, but process identity observation and filesystem visibility can

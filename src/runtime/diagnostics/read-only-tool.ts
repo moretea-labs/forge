@@ -60,7 +60,7 @@ function performanceDiagnostic(
 ): Record<string, unknown> {
   const projection = readRepositoryProjectionSnapshot(controllerHome, repository.repoId).projection;
   const runtime = loadMcpRuntimeState(repository.canonicalRoot);
-  const inferredLocalBridge = inferLocalControllerProcess(repository.canonicalRoot);
+  const inferredLocalBridge = args.include_processes === false ? undefined : inferLocalControllerProcess(repository.canonicalRoot);
   const activeJobs = activeExecutionJobs(controllerHome, repository.repoId);
   const daemon = readForgeRuntimeStatus(controllerHome);
   return {

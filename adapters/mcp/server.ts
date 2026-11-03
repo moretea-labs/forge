@@ -1010,6 +1010,18 @@ function canonicalRuntimeSchemaMatchesGateway(ctx: MultiRepositoryMcpToolContext
   return !runtimeFingerprint || runtimeFingerprint === controllerToolSurfaceStatus(ctx).fingerprint;
 }
 
+function toolNotFoundResult(name: string): CallToolResult {
+  const value = {
+    error: {
+      code: 'TOOL_NOT_FOUND',
+      message: `${name} is not available in this session's tools/list. Refresh tool discovery before retrying.`,
+      recoverable: true,
+      action: 'refresh_tools_list',
+    },
+  };
+  return { content: [{ type: 'text', text: JSON.stringify(value) }], structuredContent: value, isError: true };
+}
+
 function toolSurfaceMismatchResult(): CallToolResult {
   const value = {
     error: {
@@ -1070,18 +1082,8 @@ export function createForgeMcpServerFromContext(
         if (!getRuntimeWriteClaim() && !runtimeSchema && !canonicalRuntimeSchemaMatchesGateway(ctx)) {
           return toolSurfaceMismatchResult();
         }
-        if (runtimeSchema && !runtimeSchema.toolNames.includes(name)) {
-          return toolSurfaceMismatchResult();
-        }
-        if (!runtimeSchema && !isControllerToolExposed(ctx, name)) {
-          const value = {
-            error: {
-              code: 'TOOL_NOT_FOUND',
-              message: `${name} is not registered by this forge build. Tool availability is independent of Request vs Full Access.`,
-            },
-          };
-          return { content: [{ type: 'text', text: JSON.stringify(value, null, 2) }], structuredContent: value, isError: true };
-        }
+        if (runtimeSchema && !runtimeSchema.toolNames.includes(name)) return toolNotFoundResult(name);
+        if (!runtimeSchema && !isControllerToolExposed(ctx, name)) return toolNotFoundResult(name);
         // The public OAuth Gateway is intentionally thin. If this process does
         // not own the Canonical Runtime write claim, forward the complete tool
         // call to the loopback Runtime MCP endpoint. This prevents source-checkout
