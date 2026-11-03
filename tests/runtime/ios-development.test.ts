@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { spawn } from 'child_process';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { isProcessAlive } from '../../src/runtime/shared/process-tree';
 import {
   iosAppBuild,
   iosAppInstall,
@@ -51,6 +53,50 @@ function repository() {
 }
 
 describe('iOS development simulator reliability', () => {
+  test('keeps the event loop responsive and reaps only owned compiler descendants on timeout or parent exit', async () => {
+    if (process.platform === 'win32') return;
+    const repo = repository();
+    const sentinel = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+    const pidPath = join(repo.root, 'compiler.pid');
+    const executable = join(repo.root, 'xcodebuild');
+    setIosDevelopmentHooksForTest({ platform: () => 'darwin', xcodebuildExecutable: executable });
+    try {
+      for (const orphan of [false, true]) {
+        writeFileSync(executable, `#!${process.execPath}
+          const fs = require('fs');
+          if (process.argv.includes('-list')) {
+            console.log(JSON.stringify({project:{schemes:['App']}})); process.exit(0);
+          }
+          const child = require('child_process').spawn(process.execPath,
+            ['-e', "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"], {stdio:'ignore'});
+          fs.writeFileSync(${JSON.stringify(pidPath)}, String(child.pid));
+          process.on('SIGTERM', () => {});
+          ${orphan ? 'setTimeout(() => process.exit(0), 100);' : ''}
+          setInterval(() => {}, 1000);
+        `);
+        chmodSync(executable, 0o700);
+        let ticks = 0;
+        const heartbeat = setInterval(() => { ticks += 1; }, 10);
+        let built;
+        try { built = await iosAppBuild(repo.record, { scheme: 'App', timeoutMs: 1_000 }); }
+        finally { clearInterval(heartbeat); }
+        if (ticks === 0) throw new Error('build did not reach supervised execution: ' + JSON.stringify(built));
+        expect(ticks).toBeGreaterThan(0);
+        expect(built.ready).toBe(false);
+        if (!('stderr' in built)) throw new Error('missing failure evidence');
+        expect(built.stderr.content).toContain(orphan ? 'CHILD_SUPERVISOR_RESIDUAL_PROCESS' : 'CHILD_SUPERVISOR_WALL_TIMEOUT');
+        expect(isProcessAlive(Number(readFileSync(pidPath, 'utf8')))).toBe(false);
+        expect(isProcessAlive(sentinel.pid)).toBe(true);
+      }
+    } finally {
+      sentinel.kill('SIGKILL');
+      // Failed assertions must not leave a fault-injected compiler behind.
+      if (existsSync(pidPath)) {
+        try { process.kill(Number(readFileSync(pidPath, 'utf8')), 'SIGKILL'); } catch { /* already reaped */ }
+      }
+    }
+  }, 15_000);
+
   test('does not treat generic simctl Unable failures as target-state success', () => {
     setIosDevelopmentHooksForTest({
       platform: () => 'darwin',
@@ -122,7 +168,7 @@ describe('iOS development simulator reliability', () => {
     expect(listCalls).toBe(1);
   });
 
-  test('reuses stable build DerivedData while preferring newly produced apps over stale cached products', () => {
+  test('reuses stable build DerivedData while preferring newly produced apps over stale cached products', async () => {
     const repo = repository();
     let buildCalls = 0;
     setIosDevelopmentHooksForTest({
@@ -143,13 +189,16 @@ describe('iOS development simulator reliability', () => {
       },
     });
 
-    const first = iosAppBuild(repo.record, { scheme: 'Old', udid: 'D1' });
-    const second = iosAppBuild(repo.record, { scheme: 'Old', udid: 'D1' });
-    const otherConfiguration = iosAppBuild(repo.record, { scheme: 'Old', udid: 'D1', configuration: 'Release' });
-    const otherDestination = iosAppBuild(repo.record, { scheme: 'Old', udid: 'D2' });
+    const first = await iosAppBuild(repo.record, { scheme: 'Old', udid: 'D1' });
+    const second = await iosAppBuild(repo.record, { scheme: 'Old', udid: 'D1' });
+    const otherConfiguration = await iosAppBuild(repo.record, { scheme: 'Old', udid: 'D1', configuration: 'Release' });
+    const otherDestination = await iosAppBuild(repo.record, { scheme: 'Old', udid: 'D2' });
 
     expect(first.ready).toBe(true);
     expect(second.ready).toBe(true);
+    if (!('command' in first) || !first.command) throw new Error('missing build command');
+    expect(first.command.slice(first.command.indexOf('-jobs'), first.command.indexOf('-jobs') + 2)).toEqual(['-jobs', '2']);
+    expect(first.command).toContain('OTHER_SWIFT_FLAGS=$(inherited) -j 2');
     if (!(
       'derivedDataPath' in first
       && 'derivedDataPath' in second
@@ -167,16 +216,16 @@ describe('iOS development simulator reliability', () => {
     expect(second.newBuiltApps.some((entry: string) => entry.endsWith('/New.app'))).toBe(true);
     expect(otherConfiguration.derivedDataPath).not.toBe(first.derivedDataPath);
     expect(otherDestination.derivedDataPath).toBe(first.derivedDataPath);
-    const physical = iosAppBuild(repo.record, { scheme: 'Old', udid: 'P1', destinationPlatform: 'ios' });
-    const testRun = iosXcodeTest(repo.record, { scheme: 'Old', udid: 'D2' });
-    const repeatTestRun = iosXcodeTest(repo.record, { scheme: 'Old', udid: 'D1', onlyTesting: ['OldTests/example'] });
+    const physical = await iosAppBuild(repo.record, { scheme: 'Old', udid: 'P1', destinationPlatform: 'ios' });
+    const testRun = await iosXcodeTest(repo.record, { scheme: 'Old', udid: 'D2' });
+    const repeatTestRun = await iosXcodeTest(repo.record, { scheme: 'Old', udid: 'D1', onlyTesting: ['OldTests/example'] });
     if (!('derivedDataPath' in physical && 'derivedDataPath' in testRun && 'resultBundlePath' in testRun && 'resultBundlePath' in repeatTestRun)) throw new Error('expected cache evidence');
     expect(physical.derivedDataPath).not.toBe(first.derivedDataPath);
     expect(testRun.derivedDataPath).toBe(first.derivedDataPath);
     expect(repeatTestRun.resultBundlePath).not.toBe(testRun.resultBundlePath);
   });
 
-  test('builds an exact physical iOS destination with provisioning credentials inside the runner while redacting returned evidence', () => {
+  test('builds an exact physical iOS destination with provisioning credentials inside the runner while redacting returned evidence', async () => {
     const repo = repository();
     const commands: string[][] = [];
     const privateKeyPath = '/tmp/AuthKey_PRIVATE.p8';
@@ -198,7 +247,7 @@ describe('iOS development simulator reliability', () => {
       },
     });
 
-    const built = iosAppBuild(repo.record, {
+    const built = await iosAppBuild(repo.record, {
       scheme: 'App',
       udid: 'PHYSICAL-UDID',
       destinationPlatform: 'ios',
@@ -227,7 +276,7 @@ describe('iOS development simulator reliability', () => {
     expect(built.stderr.content).not.toContain(issuerId);
   });
 
-  test('keeps Xcode tests serial by default but supports bounded opt-in parallel workers', () => {
+  test('keeps Xcode tests serial by default but supports bounded opt-in parallel workers', async () => {
     const repo = repository();
     const commands: string[][] = [];
     setIosDevelopmentHooksForTest({
@@ -241,15 +290,16 @@ describe('iOS development simulator reliability', () => {
       },
     });
 
-    const serial = iosXcodeTest(repo.record, { scheme: 'AppTests', udid: 'D1' });
-    const parallel = iosXcodeTest(repo.record, { scheme: 'AppTests', udid: 'D1', parallelTesting: true, maxParallelTestingWorkers: 4 });
+    const serial = await iosXcodeTest(repo.record, { scheme: 'AppTests', udid: 'D1' });
+    const parallel = await iosXcodeTest(repo.record, { scheme: 'AppTests', udid: 'D1', parallelTesting: true, maxParallelTestingWorkers: 4 });
     expect(serial.ready).toBe(true);
     expect(parallel.ready).toBe(true);
     const testCommands = commands.filter((entry) => entry[0] === 'xcodebuild' && entry[1] === 'test');
     expect(testCommands[0]).toContain('NO');
     expect(testCommands[0]).toContain('1');
     expect(testCommands[1]).toContain('YES');
-    expect(testCommands[1]).toContain('4');
+    expect(testCommands[1]!.slice(testCommands[1]!.indexOf('-maximum-parallel-testing-workers') + 1, testCommands[1]!.indexOf('-maximum-parallel-testing-workers') + 2)).toEqual(['2']);
+    for (const command of testCommands) expect(command.slice(command.indexOf('-jobs'), command.indexOf('-jobs') + 2)).toEqual(['-jobs', '2']);
   });
 
   test('uses collision-resistant screenshot artifact names even with a fixed clock', () => {
@@ -267,7 +317,7 @@ describe('iOS development simulator reliability', () => {
     expect('screenshot' in first ? first.screenshot : undefined).not.toBe('screenshot' in second ? second.screenshot : undefined);
   });
 
-  test('accepts Controller-owned prebuilt apps for skip-build smoke while rejecting arbitrary external paths', () => {
+  test('accepts Controller-owned prebuilt apps for skip-build smoke while rejecting arbitrary external paths', async () => {
     const repo = repository();
     const artifactRoot = mkdtempSync(join(tmpdir(), 'forge-ios-controller-artifacts-'));
     const outsideRoot = mkdtempSync(join(tmpdir(), 'forge-ios-untrusted-app-'));
@@ -304,7 +354,7 @@ describe('iOS development simulator reliability', () => {
       },
     });
 
-    const review = iosSmokeReview(repo.record, {
+    const review = await iosSmokeReview(repo.record, {
       scheme: 'App',
       udid: 'D',
       skipBuild: true,
@@ -320,7 +370,7 @@ describe('iOS development simulator reliability', () => {
     expect(() => iosAppInstall(repo.record, { udid: 'D', appPath: outsideApp, artifactRoot })).toThrow('IOS_APP_PATH_NOT_BOUNDED');
   });
 
-  test('keeps smoke stages unique, reuses one simulator inventory, and filters logs by app executable', () => {
+  test('keeps smoke stages unique, reuses one simulator inventory, and filters logs by app executable', async () => {
     const repo = repository();
     let simulatorListCalls = 0;
     let logPredicate = '';
@@ -369,7 +419,7 @@ describe('iOS development simulator reliability', () => {
       },
     });
 
-    const review = iosSmokeReview(repo.record, {
+    const review = await iosSmokeReview(repo.record, {
       scheme: 'App',
       appPath: repo.appPath,
       skipBuild: true,

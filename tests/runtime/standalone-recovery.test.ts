@@ -53,6 +53,7 @@ import {
   type VerifyResult,
 } from '../../src/runtime/standalone-recovery/core';
 import {
+  createRecoveryToolExecutor,
   classifyRecoveryMcpRequest,
   dispatchRecoveryTool,
   RECOVERY_CLI_COMMANDS,
@@ -67,6 +68,7 @@ import {
   nextReleaseReconcileBackoff,
   boundReleaseReconcileDelayForAcceptance,
 } from '../../src/runtime/standalone-recovery/entry';
+import { runBoundedChild } from '../../src/runtime/shared/bounded-child-supervisor';
 import { RecoveryMcpServer } from '../../src/runtime/standalone-recovery/mcp-server';
 import { readControlPlaneRecord, writeControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
 import { RECOVERY_MUTATION_IDENTITY_CONTRACT, RECOVERY_MUTATION_IDENTITY_FIELDS } from '../../src/runtime/standalone-recovery/mutation-identity-contract';
@@ -126,6 +128,93 @@ function idleCpuDependencies() {
 const roots: string[] = [];
 const servers: Server[] = [];
 const ownerships: RuntimeOwnershipHandle[] = [];
+
+test('Recovery bounds heavy tool concurrency while reserving status capacity and releasing failed slots', async () => {
+  let finishHeavy!: () => void;
+  let calls = 0;
+  const execute = createRecoveryToolExecutor(createRecoveryConfig('/tmp/unused-recovery-home'), {
+    releasePath: '/tmp/unused-recovery-release',
+    runChild: async (_command, _args, options) => {
+      calls += 1;
+      const input = JSON.parse(String(options.input));
+      expect(options.forwardSignals).toBe(false);
+      if (input.name === 'verify_stable_runtime') await new Promise<void>((done) => { finishHeavy = done; });
+      return {
+        status: 0, signal: null, timedOut: false, stderr: '', residualPids: [], remainingPids: [], pidReuseFenced: false,
+        stdout: JSON.stringify({ schemaVersion: 1, ok: input.name !== 'list_releases', value: { ready: true }, error: 'expected failure' }),
+      };
+    },
+  });
+  const heavy = execute('verify_stable_runtime', {});
+  await expect(execute('verify_stable_runtime', {})).rejects.toThrow('RECOVERY_BUSY');
+  expect(calls).toBe(1);
+  expect(await execute('runtime_status', {})).toEqual({ ready: true });
+  finishHeavy();
+  await heavy;
+  await expect(execute('list_releases', {})).rejects.toThrow('expected failure');
+  await expect(execute('list_releases', {})).rejects.toThrow('expected failure');
+  await expect(execute('unknown_tool', {})).rejects.toThrow('RECOVERY_TOOL_REQUEST_INVALID');
+  await expect(execute('runtime_status', { data: 'x'.repeat(65_536) })).rejects.toThrow('RECOVERY_REQUEST_TOO_LARGE');
+  expect(calls).toBe(4);
+});
+
+test('Recovery keeps HTTP health responsive during CPU-heavy isolated tool execution', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-recovery-responsive-'));
+  roots.push(root);
+  const marker = join(root, 'worker-started');
+  const execute = createRecoveryToolExecutor(createRecoveryConfig(root), {
+    releasePath: root,
+    runChild: async (_command, _args, options) => runBoundedChild(process.execPath, ['-e', `
+      const fs = require('fs');
+      fs.writeFileSync(${JSON.stringify(marker)}, 'started');
+      const end = Date.now() + 750;
+      while (Date.now() < end) {}
+      console.log(JSON.stringify({schemaVersion:1,ok:true,value:{ready:true}}));
+    `], { ...options, input: undefined, timeoutMs: 5_000 }),
+  });
+  const server = createServer((_request, response) => response.end('healthy'));
+  servers.push(server);
+  await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('missing test address');
+  const heavy = execute('verify_stable_runtime', {});
+  const deadline = Date.now() + 5_000;
+  while (!existsSync(marker) && Date.now() < deadline) await Bun.sleep(10);
+  expect(existsSync(marker)).toBe(true);
+  let finished = false;
+  void heavy.then(() => { finished = true; });
+  const health = await fetch(`http://127.0.0.1:${address.port}/health`, { signal: AbortSignal.timeout(500) });
+  expect(await health.text()).toBe('healthy');
+  expect(finished).toBe(false);
+  expect(await heavy).toEqual({ ready: true });
+});
+
+test('Recovery bounds status fan-out and never replays an outcome-unknown tool child', async () => {
+  const finishes: Array<() => void> = [];
+  let calls = 0;
+  const execute = createRecoveryToolExecutor(createRecoveryConfig('/tmp/unused-recovery-home'), {
+    releasePath: '/tmp/unused-recovery-release',
+    runChild: async () => {
+      calls += 1;
+      await new Promise<void>((done) => { finishes.push(done); });
+      return {
+        status: 1, signal: null, timedOut: true, stderr: '', residualPids: [], remainingPids: [], pidReuseFenced: false,
+        stdout: '', failureCode: 'CHILD_SUPERVISOR_WALL_TIMEOUT',
+      };
+    },
+  });
+  const first = execute('runtime_status', {});
+  const second = execute('runtime_status', {});
+  await expect(execute('runtime_status', {})).rejects.toThrow('RECOVERY_BUSY');
+  expect(calls).toBe(2);
+  const outcomes = Promise.allSettled([first, second]);
+  for (const finish of finishes) finish();
+  for (const result of await outcomes) {
+    expect(result.status).toBe('rejected');
+    if (result.status === 'rejected') expect(result.reason.message).toContain('RECOVERY_TOOL_OUTCOME_UNKNOWN');
+  }
+  expect(calls).toBe(2);
+});
 
 function recoveryMutationIdentityArgs(config: ReturnType<typeof createRecoveryConfig>): Record<string, string> {
   const identity = recoveryMachineIdentity(config);
@@ -3018,11 +3107,18 @@ describe('standalone recovery on canonical Runtime', () => {
     }
   });
 
-  test('frozen Recovery clients can use their exported activation schema while partial or wrong explicit identity still fails closed', async () => {
+  test('Recovery clients require the exported source revision fence while partial or wrong explicit identity still fails closed', async () => {
     const home = controllerHome();
     const config = createRecoveryConfig(home);
+    await expect(dispatchRecoveryTool(config, 'activate_runtime_release', {
+      request_id: 'missing-source-fence',
+      release_path: join(home, 'runtime', 'releases', 'missing-release'),
+      expected_active_release_id: 'release-baseline',
+      expected_authority_revision: 1,
+    })).rejects.toThrow('RECOVERY_EXPECTED_SOURCE_REVISION_REQUIRED');
     const frozenActivation = await dispatchRecoveryTool(config, 'activate_runtime_release', {
       request_id: 'frozen-schema-client',
+      expected_source_revision: 'a'.repeat(40),
       release_path: join(home, 'runtime', 'releases', 'missing-release'),
       expected_active_release_id: 'release-baseline',
       expected_authority_revision: 1,

@@ -598,6 +598,9 @@ function claimsForPluginActionScope(
             : `repo-state:${scope.scopeKey}`,
     mode: claim.mode,
   }));
+  if (pluginId === 'ios' && ['build', 'xcode_test', 'smoke_review'].includes(action.actionId)) {
+    claims.push({ resourceKey: 'host-service:ios-build', mode: 'write' });
+  }
   // The Process Runtime and iOS plugin must arbitrate the same physical
   // Simulator rather than independent provider-local / repository locks.
   if (pluginId === 'ios' && (

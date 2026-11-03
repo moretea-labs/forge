@@ -2,6 +2,7 @@ import { createHash } from 'crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, utimesSync, writeFileSync } from 'fs';
 import { basename, dirname, join, relative, resolve, sep } from 'path';
 import { spawnSync } from 'child_process';
+import { runBoundedChild } from '../shared/bounded-child-supervisor';
 import type { RepositoryRecord } from '../../cli/repositories/types';
 
 export interface IosCommandResult {
@@ -14,6 +15,7 @@ export interface IosCommandResult {
 
 export interface IosDevelopmentHooks {
   platform?: () => NodeJS.Platform;
+  xcodebuildExecutable?: string;
   runCommand?: (command: string, args: string[], options?: { cwd?: string; timeoutMs?: number }) => IosCommandResult;
   now?: () => Date;
   sleep?: (ms: number) => void;
@@ -21,6 +23,7 @@ export interface IosDevelopmentHooks {
 
 let hooks: IosDevelopmentHooks = {};
 let artifactSequence = 0;
+const XCODE_RESOURCE_ARGS = ['-jobs', '2', 'OTHER_SWIFT_FLAGS=$(inherited) -j 2'];
 
 /** Host Xcode/simctl probes are expensive (spawnSync). Cache them for hot MCP reads. */
 const XCODE_STATUS_TTL_MS = 60_000;
@@ -85,7 +88,8 @@ function sleep(ms: number): void {
 
 function runCommand(command: string, args: string[], options: { cwd?: string; timeoutMs?: number } = {}): IosCommandResult {
   if (hooks.runCommand) return hooks.runCommand(command, args, options);
-  const result = spawnSync(command, args, {
+  const executable = command === 'xcodebuild' ? hooks.xcodebuildExecutable ?? command : command;
+  const result = spawnSync(executable, args, {
     cwd: options.cwd,
     encoding: 'utf-8',
     timeout: options.timeoutMs ?? 30_000,
@@ -164,11 +168,28 @@ function stableBuildDerivedDataPath(
 
 // Xcode owns invalidation within this checkout-local, platform/configuration bucket.
 // Device identity and test selectors affect execution, not the reusable build cache.
-function runCachedXcodeCommand(repository: RepositoryRecord, derivedDataPath: string, args: string[], timeoutMs: number): IosCommandResult {
+async function runCachedXcodeCommand(repository: RepositoryRecord, derivedDataPath: string, args: string[], timeoutMs: number): Promise<IosCommandResult> {
   const touch = (): void => { const usedAt = now(); utimesSync(derivedDataPath, usedAt, usedAt); };
   touch();
   try {
-    return runCommand('xcodebuild', args, { cwd: repository.canonicalRoot, timeoutMs });
+    const boundedTimeoutMs = Number.isFinite(timeoutMs) ? Math.max(1, Math.min(Math.trunc(timeoutMs), 15 * 60_000)) : 10 * 60_000;
+    if (hooks.runCommand) return hooks.runCommand('xcodebuild', args, { cwd: repository.canonicalRoot, timeoutMs: boundedTimeoutMs });
+    // The existing child supervisor owns one process group, bounded logs and
+    // timeout/signal cleanup. spawnSync only killed xcodebuild, leaving Swift
+    // descendants alive and blocking the caller's event loop during the build.
+    const result = await runBoundedChild(hooks.xcodebuildExecutable ?? 'xcodebuild', args, {
+      cwd: repository.canonicalRoot,
+      timeoutMs: boundedTimeoutMs,
+      maxOutputBytes: 4 * 1024 * 1024,
+      forwardSignals: true,
+    });
+    return {
+      ok: result.status === 0 && !result.failureCode,
+      status: result.status,
+      stdout: result.stdout,
+      stderr: [result.stderr, result.failureCode, result.error].filter(Boolean).join('\n'),
+      command: ['xcodebuild', ...args],
+    };
   } finally {
     // Reuse may only modify descendants; keep last-use grace on the bucket itself.
     touch();
@@ -408,7 +429,7 @@ export function iosSimulatorShutdown(input: { udid: string; timeoutMs?: number }
   };
 }
 
-export function iosAppBuild(repository: RepositoryRecord, input: {
+export async function iosAppBuild(repository: RepositoryRecord, input: {
   scheme?: string;
   udid?: string;
   workspace?: string;
@@ -444,7 +465,7 @@ export function iosAppBuild(repository: RepositoryRecord, input: {
   const derivedDataReused = existsSync(derivedDataPath);
   mkdirSync(derivedDataPath, { recursive: true });
   const priorBuiltApps = derivedDataReused ? findBuiltApps(repository, derivedDataPath) : [];
-  const args = ['build'];
+  const args = ['build', ...XCODE_RESOURCE_ARGS];
   if (workspace) args.push('-workspace', workspace);
   else if (project) args.push('-project', project);
   args.push('-scheme', scheme, '-configuration', configuration, '-destination', destination);
@@ -458,7 +479,7 @@ export function iosAppBuild(repository: RepositoryRecord, input: {
       '-authenticationKeyIssuerID', authentication.issuerId,
     );
   }
-  const result = runCachedXcodeCommand(repository, derivedDataPath, args, input.timeoutMs ?? 10 * 60_000);
+  const result = await runCachedXcodeCommand(repository, derivedDataPath, args, input.timeoutMs ?? 10 * 60_000);
   const sensitiveValues = authentication
     ? [authentication.privateKeyPath, authentication.keyId, authentication.issuerId]
     : [];
@@ -501,7 +522,7 @@ export function iosAppBuild(repository: RepositoryRecord, input: {
   };
 }
 
-export function iosXcodeTest(repository: RepositoryRecord, input: {
+export async function iosXcodeTest(repository: RepositoryRecord, input: {
   scheme?: string;
   udid?: string;
   simulatorName?: string;
@@ -526,7 +547,7 @@ export function iosXcodeTest(repository: RepositoryRecord, input: {
   const derivedDataPath = stableBuildDerivedDataPath(repository, { workspace, project, scheme, configuration, destinationPlatform: 'ios_simulator' });
   const resultBundlePath = join(safeArtifactDir(repository, 'test-results'), `${artifactStamp()}-${sanitize(scheme)}.xcresult`);
   mkdirSync(derivedDataPath, { recursive: true });
-  const args = ['test'];
+  const args = ['test', ...XCODE_RESOURCE_ARGS];
   if (workspace) args.push('-workspace', workspace);
   else if (project) args.push('-project', project);
   args.push('-scheme', scheme, '-configuration', input.configuration ?? 'Debug');
@@ -534,7 +555,7 @@ export function iosXcodeTest(repository: RepositoryRecord, input: {
   else args.push('-destination', 'platform=iOS Simulator,name=' + (input.simulatorName ?? 'iPhone 16 Pro'));
   const parallelTesting = input.parallelTesting === true;
   const maxParallelTestingWorkers = parallelTesting
-    ? Math.max(1, Math.min(8, Math.trunc(input.maxParallelTestingWorkers ?? 2)))
+    ? Math.max(1, Math.min(2, Math.trunc(Number.isFinite(input.maxParallelTestingWorkers) ? input.maxParallelTestingWorkers! : 2)))
     : 1;
   args.push(
     '-parallel-testing-enabled', parallelTesting ? 'YES' : 'NO',
@@ -545,7 +566,7 @@ export function iosXcodeTest(repository: RepositoryRecord, input: {
     if (normalized) args.push(`-only-testing:${normalized}`);
   }
   args.push('-derivedDataPath', derivedDataPath, '-resultBundlePath', resultBundlePath);
-  const result = runCachedXcodeCommand(repository, derivedDataPath, args, input.timeoutMs ?? 15 * 60_000);
+  const result = await runCachedXcodeCommand(repository, derivedDataPath, args, input.timeoutMs ?? 15 * 60_000);
   return {
     ready: result.ok,
     ok: result.ok,
@@ -860,7 +881,7 @@ function stageSkipped(stage: IosSmokeStageId, summary: string): IosSmokeStageRes
  * Staged iOS smoke review. Each stage records independent evidence; later stages
  * are skipped when an earlier stage fails, without erasing successful evidence.
  */
-export function iosSmokeReview(repository: RepositoryRecord, input: IosSmokeReviewInput = {}) {
+export async function iosSmokeReview(repository: RepositoryRecord, input: IosSmokeReviewInput = {}) {
   const stages: IosSmokeStageResult[] = [];
   const artifacts: string[] = [];
   const commands: string[][] = [];
@@ -980,7 +1001,7 @@ export function iosSmokeReview(repository: RepositoryRecord, input: IosSmokeRevi
 
   // 3. build
   let appPath = String(input.appPath ?? '').trim();
-  let buildResult: ReturnType<typeof iosAppBuild> | undefined;
+  let buildResult: Awaited<ReturnType<typeof iosAppBuild>> | undefined;
   let udid = '';
   try {
     udid = chooseSimulatorUdid(input);
@@ -994,7 +1015,7 @@ export function iosSmokeReview(repository: RepositoryRecord, input: IosSmokeRevi
       evidence: { appPath, skipped: true },
     }));
   } else {
-    buildResult = iosAppBuild(repository, {
+    buildResult = await iosAppBuild(repository, {
       scheme: selectedScheme,
       udid: udid || undefined,
       simulatorName: input.simulatorName,
@@ -1290,8 +1311,8 @@ export function iosSmokeReview(repository: RepositoryRecord, input: IosSmokeRevi
   };
 }
 
-export function iosUiSmokeTest(repository: RepositoryRecord, input: { udid?: string; simulatorName?: string; scheme?: string; bundleId?: string; workspace?: string; project?: string; configuration?: string; appPath?: string; screenshotLabel?: string; launchWaitMs?: number; cleanupPolicy?: 'keep' | 'shutdown_on_success' | 'shutdown_always' }) {
-  const review = iosSmokeReview(repository, input);
+export async function iosUiSmokeTest(repository: RepositoryRecord, input: { udid?: string; simulatorName?: string; scheme?: string; bundleId?: string; workspace?: string; project?: string; configuration?: string; appPath?: string; screenshotLabel?: string; launchWaitMs?: number; cleanupPolicy?: 'keep' | 'shutdown_on_success' | 'shutdown_always' }) {
+  const review = await iosSmokeReview(repository, input);
   return {
     ready: review.ready,
     udid: review.udid,

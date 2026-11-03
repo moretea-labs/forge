@@ -312,7 +312,7 @@ function actions(): AssistantPluginActionDescriptor[] {
           configuration: { type: 'string' },
           only_testing: { type: 'array', items: { type: 'string' }, maxItems: 50 },
           parallel_testing: { type: 'boolean' },
-          max_parallel_testing_workers: { type: 'number', minimum: 1, maximum: 8 },
+          max_parallel_testing_workers: { type: 'number', minimum: 1, maximum: 2 },
           timeout_ms: { type: 'number' },
         },
         additionalProperties: false,
@@ -484,7 +484,7 @@ export async function executeIosPluginAction(input: AssistantPluginActionExecuti
         ? resolveAppStoreConnectXcodeAuthenticationReference(input.repoRoot, input.controllerHome, input.repoId)
         : undefined;
       return {
-        ...iosAppBuild(repository, {
+        ...await iosAppBuild(repository, {
           scheme: stringValue(input.args.scheme),
           udid: stringValue(input.args.udid),
           simulatorName: stringValue(input.args.simulator_name),
@@ -502,7 +502,7 @@ export async function executeIosPluginAction(input: AssistantPluginActionExecuti
         ? input.args.only_testing.map((entry) => String(entry).trim()).filter(Boolean).slice(0, 50)
         : undefined;
       return {
-        ...iosXcodeTest(repository, {
+        ...await iosXcodeTest(repository, {
           scheme: stringValue(input.args.scheme),
           udid: stringValue(input.args.udid),
           simulatorName: stringValue(input.args.simulator_name),
@@ -545,7 +545,7 @@ export async function executeIosPluginAction(input: AssistantPluginActionExecuti
       };
     }
     case 'smoke_review': {
-      const review = iosSmokeReview(repository, {
+      const review = await iosSmokeReview(repository, {
           scheme: stringValue(input.args.scheme),
           bundleId: stringValue(input.args.bundle_id),
           udid: stringValue(input.args.udid),

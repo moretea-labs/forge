@@ -83,6 +83,7 @@ const RECOVERY_RUNTIME_RELEASE_PROVIDER: RuntimeReleaseProvider<RecoveryConfig> 
   promoteKnownGood: (config, sessionId, requestId) => promoteConfiguredRuntimeReleaseSessionKnownGood(config, sessionId, {}, requestId),
 };
 
+const RECOVERY_INTERNAL_TOOL_COMMAND = '__execute-recovery-tool';
 const RECOVERY_INTERNAL_RELEASE_RECONCILE_COMMAND = '__reconcile-runtime-release-step';
 const RECOVERY_AUTOMATIC_RELEASE_INTERVAL_MS = 15_000;
 /**
@@ -193,6 +194,25 @@ async function cli(): Promise<void> {
     }
     if (executableRole === 'gateway') await startGateway(config);
     else await startWatchdog(config);
+    return;
+  }
+  if (command === RECOVERY_INTERNAL_TOOL_COMMAND) {
+    try {
+      let input = '';
+      process.stdin.setEncoding('utf8');
+      for await (const chunk of process.stdin) {
+        input += chunk.toString();
+        if (Buffer.byteLength(input) > 64 * 1024) throw new Error('RECOVERY_REQUEST_TOO_LARGE');
+      }
+      const request = JSON.parse(input);
+      if (!request || !RECOVERY_TOOLS.some((tool) => tool.name === request.name)
+        || !request.args || typeof request.args !== 'object' || Array.isArray(request.args)) {
+        throw new Error('RECOVERY_TOOL_REQUEST_INVALID');
+      }
+      output({ schemaVersion: 1, ok: true, value: await dispatchRecoveryTool(config, request.name, request.args) });
+    } catch (error) {
+      output({ schemaVersion: 1, ok: false, error: error instanceof Error ? error.message : String(error) });
+    }
     return;
   }
   if (command === RECOVERY_INTERNAL_PERFORMANCE_COMMAND) {
@@ -1138,12 +1158,63 @@ async function startRecoveryDaemon(config: RecoveryConfig): Promise<void> {
   await startGateway(config, runtimeIdentity);
 }
 
+/** Bounded children extend the existing Recovery execution boundary, never its mutation authority. */
+export function createRecoveryToolExecutor(config: RecoveryConfig, options: {
+  releasePath?: string;
+  runChild?: typeof runBoundedChild;
+} = {}): (name: string, args: Record<string, unknown>) => Promise<unknown> {
+  // Resolve/verify the immutable executable once at Gateway startup, not by
+  // synchronously hashing the Recovery binary on every HTTP tool request.
+  const releasePath = options.releasePath ?? readCurrentRecoveryRelease(config.controllerHome)?.releasePath;
+  if (!releasePath) throw new Error('RECOVERY_TOOL_EXECUTABLE_UNAVAILABLE');
+  const runChild = options.runChild ?? runBoundedChild;
+  let activeStatus = 0;
+  let activeHeavy = 0;
+  return async (name, args) => {
+    if (!RECOVERY_TOOLS.some((tool) => tool.name === name)) throw new Error('RECOVERY_TOOL_REQUEST_INVALID');
+    const status = name === 'runtime_status' || name === 'list_recovery_history';
+    if (status ? activeStatus >= 2 : activeHeavy >= 1) {
+      throw new Error('RECOVERY_BUSY: execution capacity reached; no operation was started.');
+    }
+    const input = JSON.stringify({ name, args });
+    if (Buffer.byteLength(input) > 64 * 1024) throw new Error('RECOVERY_REQUEST_TOO_LARGE');
+    if (status) activeStatus += 1; else activeHeavy += 1;
+    try {
+      const result = await runChild(join(releasePath, 'forge-recovery'),
+        [RECOVERY_INTERNAL_TOOL_COMMAND, '--controller-home', config.controllerHome], {
+          input,
+          timeoutMs: status ? 10_000 : 15 * 60_000,
+          maxOutputBytes: 1024 * 1024,
+          forwardSignals: false,
+          env: runtimeAuthorityFreeEnvironment(process.env),
+        });
+      if (result.status !== 0 || result.failureCode || result.timedOut) {
+        // The child may have crossed a mutation boundary. Never automatically
+        // retry/re-key a failed observation; the existing lock/journal decides.
+        throw new Error(`RECOVERY_TOOL_OUTCOME_UNKNOWN: ${result.failureCode ?? 'worker failed'}; inspect the existing request before retrying a mutation.`);
+      }
+      let envelope;
+      try { envelope = JSON.parse(result.stdout); }
+      catch { throw new Error('RECOVERY_TOOL_OUTCOME_UNKNOWN: invalid worker response; inspect the existing request before retrying a mutation.'); }
+      if (envelope?.schemaVersion !== 1 || typeof envelope.ok !== 'boolean'
+        || (envelope.ok && !Object.hasOwn(envelope, 'value'))) {
+        throw new Error('RECOVERY_TOOL_OUTCOME_UNKNOWN: invalid worker response; inspect the existing request before retrying a mutation.');
+      }
+      if (!envelope.ok) throw new Error(typeof envelope.error === 'string' ? envelope.error : 'RECOVERY_TOOL_FAILED');
+      return envelope.value;
+    } finally {
+      if (status) activeStatus -= 1; else activeHeavy -= 1;
+    }
+  };
+}
+
 async function startGateway(config: RecoveryConfig, daemonIdentity?: RecoveryRuntimeIdentity): Promise<void> {
   const gateway = config.gateway;
   if (!gateway || gateway.host !== '127.0.0.1' || !Number.isInteger(gateway.port) || gateway.port < 1024 || gateway.port > 65535) {
     throw new Error('RECOVERY_GATEWAY_CONFIG_INVALID');
   }
   let runtimeIdentity: RecoveryRuntimeIdentity | undefined = daemonIdentity;
+  const executeTool = createRecoveryToolExecutor(config, { releasePath: runtimeIdentity?.releasePath });
   let activeMcpRequests = 0;
   let latestMcpActivityAt: number | undefined;
   const recentMutations = new Map<string, number[]>();
@@ -1164,7 +1235,7 @@ async function startGateway(config: RecoveryConfig, daemonIdentity?: RecoveryRun
         window.push(now);
         recentMutations.set(context.remoteAddress, window);
       }
-      return await dispatchRecoveryTool(config, name, args);
+      return await executeTool(name, args);
     },
   });
   const server = createServer(async (request, response) => {
