@@ -11,8 +11,6 @@ import { readRuntimeReleaseAuthority } from '../root/release-store';
 import { appendRuntimeEvent, type RuntimeEntityEvent } from '../evidence/event-ledger';
 import { listReleaseSessions } from '../release/release-session';
 import { appendWorkEvidence, createWorkSemanticContext, getWorkContract, listWorkContracts } from '../../../packages/kernel/work/api/index';
-import { createWorkContinuationSchedule } from '../workflow/schedules/work-continuation';
-import { touchSchedulerWakeSignal } from '../control-plane/global-scheduler/wake-signal';
 import { recentMcpIncidents, type McpIncident } from './mcp-timing';
 
 const RECURRENCE_WINDOW_MS = 30 * 60_000;
@@ -37,7 +35,6 @@ export interface ForgeIncidentRepairRegistration {
   repairRepoId?: string;
   workId?: string;
   reusedExistingWork?: boolean;
-  scheduleId?: string;
   reason: string;
 }
 
@@ -326,37 +323,6 @@ function incidentEvidence(incident: PersistedMcpIncident, rootCode: string, ordi
   };
 }
 
-function ensureAutomaticContinuation(
-  controllerHome: string,
-  repoId: string,
-  workId: string,
-  rootCode: string,
-): string | undefined {
-  try {
-    const { schedule } = createWorkContinuationSchedule(controllerHome, repoId, {
-      workId,
-      scheduleMode: 'continuation',
-      controllerType: 'chatgpt',
-      scheduleName: `Repair recurrent Forge incident ${rootCode}`,
-      requestId: `incident-repair-continuation:${workId}`,
-      triggerType: 'interval',
-      everyMinutes: 5,
-      shadowMode: false,
-      maxFailures: 5,
-      cooldownMinutes: 15,
-      dailyBudgetMinutes: 180,
-      backoffBaseMinutes: 5,
-      backoffMaxMinutes: 60,
-      continuationPrompt: `Continue automatically registered Forge repair Work ${workId}. Reproduce root incident ${rootCode}, deduplicate against current source/lifecycle evidence, repair the canonical root cause in Forge source, verify, and finalize. Do not bypass Runtime/Recovery/Controller authority.`,
-      stopConditions: ['work_terminal', 'human_review_required', 'external_blocker'],
-    });
-    touchSchedulerWakeSignal(controllerHome, `automatic incident repair schedule ${schedule.scheduleId} for ${workId}`);
-    return schedule.scheduleId;
-  } catch {
-    return undefined;
-  }
-}
-
 interface RepairEvidenceRef {
   evidenceId?: string;
   title: string;
@@ -409,12 +375,11 @@ function registerRecurringForgeRepair(input: {
         if (evidence.evidenceId && active.evidenceRefs.some((entry) => entry.evidenceId === evidence.evidenceId)) continue;
         appendWorkEvidence(store, active.workId, evidence);
       }
-      const scheduleId = ensureAutomaticContinuation(input.controllerHome, repairRepository.repoId, active.workId, classification.rootCode!);
       return {
         eligible: true, recurrent: true, occurrenceCount: input.occurrenceCount,
         fingerprint: classification.fingerprint, rootCode: classification.rootCode,
         repairRepoId: repairRepository.repoId, workId: active.workId, reusedExistingWork: true,
-        scheduleId, reason: 'reused active canonical incident-repair Work',
+        reason: 'reused active canonical incident-repair Work; no automatic Controller continuation',
       };
     }
 
@@ -458,12 +423,11 @@ function registerRecurringForgeRepair(input: {
       detailLevel: 'summary',
     });
     for (const evidence of recentEvidence) appendWorkEvidence(store, created.workId, evidence);
-    const scheduleId = ensureAutomaticContinuation(input.controllerHome, repairRepository.repoId, created.workId, classification.rootCode!);
     return {
       eligible: true, recurrent: true, occurrenceCount: input.occurrenceCount,
       fingerprint: classification.fingerprint, rootCode: classification.rootCode,
       repairRepoId: repairRepository.repoId, workId: created.workId, reusedExistingWork: false,
-      scheduleId, reason: 'created canonical recurrent-incident repair Work',
+      reason: 'created canonical recurrent-incident repair Work; no automatic Controller continuation',
     };
   }, 10_000);
 }
