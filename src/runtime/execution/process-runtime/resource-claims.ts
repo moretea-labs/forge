@@ -18,6 +18,13 @@ import { isFocusedCheckCommand } from '../thin-harness/execution-router';
 import type { ProcessResourceClaim } from './types';
 import { normalizeClaimPath, normalizeClaims } from '../../resources/claims/conflicts';
 
+export const LIVE_DEVICE_ADMISSION_WAIT_MS = 2 * 60 * 60_000;
+
+export function claimsRequireLiveDeviceAdmission(claims: readonly { resourceKey: string }[]): boolean {
+  return claims.some((claim) => claim.resourceKey === 'host-service:ios-simulator-test'
+    || claim.resourceKey === 'host-service:android-emulator-test');
+}
+
 export type ResourceClaimKind =
   | 'workspace_read'
   | 'path_read'
@@ -474,6 +481,43 @@ function extractLikelyPaths(command: string | readonly string[]): string[] {
 }
 
 /**
+ * Host-wide validation device identity. Pure build/unit checks do not acquire
+ * this claim; only live simulator/emulator journeys consume a device slot.
+ * Use the same keys as native xcodebuild and declared check hostServices.
+ */
+function validationDeviceClaims(command: string | readonly string[]): ResourceClaimSpec[] {
+  const canonical = normalizeRepositoryCommand(command);
+  const wrapped = canonical.kind === 'argv'
+    ? fixedShellWrapperCommand([canonical.executable ?? '', ...(canonical.args ?? [])])
+    : undefined;
+  const words = wrapped
+    ? shellWordsPreservingQuotes(wrapped)
+    : canonical.kind === 'argv'
+      ? [canonical.executable ?? '', ...(canonical.args ?? [])]
+      : shellWordsPreservingQuotes(canonical.shellCommand ?? '');
+  const scripts = words.map((word) => word.split('/').at(-1) ?? word);
+  const androidIndex = scripts.indexOf('run_android_check.sh');
+  if (androidIndex >= 0) {
+    return /^(fast-journey|integration|performance)$/.test(words[androidIndex + 1] ?? '')
+      ? [claimHostService('android-emulator-test')] : [];
+  }
+  const layerIndex = scripts.indexOf('run_ios_test_layer.sh');
+  if (layerIndex >= 0) {
+    return /^(fast-journey|integration-consistency|medication-long-journey|destructive-model|performance-critical|ui-geometry|all)$/.test(words[layerIndex + 1] ?? '')
+      ? [claimHostService('ios-simulator-test')] : [];
+  }
+  const iosLiveScripts = new Set([
+    'run_ios_owner_test.sh', 'run_ios_test_profile.sh', 'run_ios_performance_tests.sh',
+    'run_medication_long_journeys.sh', 'run_medication_state_model_tests.sh',
+    'run_cross_domain_state_model_tests.sh', 'verify-runtime-history-queue.sh',
+    'verify-medication-property-tests.sh', 'release_preflight_ios.sh',
+    'smoke_preflight_ios.sh', 'verify_medication_v2_install_matrix.sh',
+  ]);
+  return scripts.some((script) => iosLiveScripts.has(script))
+    ? [claimHostService('ios-simulator-test')] : [];
+}
+
+/**
  * Classify resource claims for a repository command without taking whole-repo exclusive locks
  * for ordinary readonly / focused validation commands.
  */
@@ -489,6 +533,8 @@ export function claimsForRepositoryCommand(
   const focused = isFocusedCheckCommand(command);
   const iosSimulatorClaims = iosSimulatorTestCommandClaims(command, repoId, checkoutId);
   if (iosSimulatorClaims) return iosSimulatorClaims;
+  const deviceClaims = validationDeviceClaims(command);
+  if (deviceClaims.length > 0) return normalizeClaims([claimWorkspaceRead(checkoutId, repoId), claimBuildCacheWrite(repoId), ...deviceClaims]);
   const hostClaims = hostOnlyCommandClaims(command, repoId, checkoutId, repoRoot);
   if (hostClaims) return hostClaims;
 
@@ -579,9 +625,10 @@ export function claimsForCheck(
   // Heavy-check is an additional cross-check serialization fence, not a
   // substitute for the resources the check actually reads or writes.
   const liveAuthorityClaims = executionAuthority === 'live_controller_home' ? [claimRelease(repoId)] : [];
+  const deviceClaims = command ? validationDeviceClaims(command) : [];
   return heavy
-    ? normalizeClaims([claimHeavyCheck(repoId), ...liveAuthorityClaims, ...baseClaims])
-    : normalizeClaims([...liveAuthorityClaims, ...baseClaims]);
+    ? normalizeClaims([claimHeavyCheck(repoId), ...liveAuthorityClaims, ...baseClaims, ...deviceClaims])
+    : normalizeClaims([...liveAuthorityClaims, ...baseClaims, ...deviceClaims]);
 }
 
 export function scopeResourceClaims(

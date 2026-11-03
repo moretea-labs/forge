@@ -150,6 +150,72 @@ describe('Process Runtime fine-grained resource claims', () => {
     expect(claims.some((claim) => claim.resourceKey === 'workspace:co2' && claim.mode !== 'read')).toBe(false);
   });
 
+  test('scripted iOS and Android live journeys claim one host-wide device each', () => {
+    const ios = claimsForCheck(
+      'ios-fast-journey',
+      ['bash', 'scripts/run_ios_test_layer.sh', 'fast-journey'],
+      'avela', 'ios-checkout',
+    );
+    const otherIos = claimsForCheck(
+      'ios-integration-consistency',
+      ['bash', 'scripts/run_ios_test_layer.sh', 'integration-consistency'],
+      'other-repo', 'other-checkout',
+    );
+    const android = claimsForCheck(
+      'android-fast-journey',
+      ['bash', 'scripts/run_android_check.sh', 'fast-journey'],
+      'avela', 'android-checkout',
+    );
+    expect(ios).toContainEqual({ resourceKey: 'host-service:ios-simulator-test', mode: 'write' });
+    expect(android).toContainEqual({ resourceKey: 'host-service:android-emulator-test', mode: 'write' });
+    expect(ios.some((claim) => otherIos.some((other) => claimsConflict(claim, lease(other.resourceKey, other.mode))))).toBe(true);
+    expect(ios.filter((claim) => claim.resourceKey.startsWith('host-service:'))
+      .some((claim) => android.filter((other) => other.resourceKey.startsWith('host-service:'))
+        .some((other) => claimsConflict(claim, lease(other.resourceKey, other.mode))))).toBe(false);
+    expect(claimsForCheck('android-build', ['bash', 'scripts/run_android_check.sh', 'build'], 'avela', 'co1')
+      .some((claim) => claim.resourceKey.startsWith('host-service:'))).toBe(false);
+    expect(claimsForCheck('ios-layout-static', ['python3', 'scripts/audit_swiftui_layout_risks.py'], 'avela', 'co1')
+      .some((claim) => claim.resourceKey.startsWith('host-service:'))).toBe(false);
+    expect(claimsForRepositoryCommand(['bash', 'scripts/run_android_check.sh', 'integration'], 'avela', 'co1'))
+      .toContainEqual({ resourceKey: 'host-service:android-emulator-test', mode: 'write' });
+  });
+
+  test('all Avela live journey, profile, and owner runners share one iOS device key', () => {
+    for (const mode of ['fast-journey', 'integration-consistency', 'medication-long-journey', 'ui-geometry', 'destructive-model', 'performance-critical', 'all']) {
+      expect(claimsForRepositoryCommand(['bash', 'scripts/run_ios_test_layer.sh', mode], 'repo1', 'co1'))
+        .toContainEqual({ resourceKey: 'host-service:ios-simulator-test', mode: 'write' });
+    }
+    for (const script of ['run_ios_owner_test.sh', 'run_ios_test_profile.sh', 'run_ios_performance_tests.sh', 'run_medication_long_journeys.sh']) {
+      expect(claimsForRepositoryCommand(['bash', `scripts/${script}`, 'fast'], 'repo1', 'co1'))
+        .toContainEqual({ resourceKey: 'host-service:ios-simulator-test', mode: 'write' });
+    }
+    const staticLayer = claimsForRepositoryCommand(['bash', 'scripts/run_ios_test_layer.sh', 'static-layout'], 'repo1', 'co1');
+    expect(staticLayer.some((claim) => claim.resourceKey === 'host-service:ios-simulator-test')).toBe(false);
+    const wrapped = claimsForRepositoryCommand(['bash', '-lc', 'bash scripts/run_ios_test_layer.sh ui-geometry'], 'repo1', 'co1');
+    expect(wrapped).toContainEqual({ resourceKey: 'host-service:ios-simulator-test', mode: 'write' });
+  });
+
+  test('iOS plugin simulator calls and Process checks share the exact lease authority', () => {
+    const repository = { repoId: 'avela', activeCheckoutId: 'co1' } as Parameters<typeof claimsForAssistantPluginAction>[1];
+    const action = (actionId: string): AssistantPluginActionDescriptor => ({
+      actionId, title: actionId, description: '', readOnly: false, risk: 'workspace_write',
+      confirmation: 'authorization', defaultTimeoutMs: 60000,
+      cancellable: true, idempotent: false, scopes: ['ios.simulator'],
+      resourceClaims: [{ resource: 'provider-state', mode: 'write' }],
+      argumentsSchema: {},
+    });
+    const testClaims = claimsForCheck('ios-fast-journey', ['bash', 'scripts/run_ios_test_layer.sh', 'fast-journey'], 'avela', 'co1');
+    for (const id of ['xcode_test', 'smoke_review', 'agent_device_open', 'agent_device_batch', 'capture_screenshot']) {
+      const pluginClaims = claimsForAssistantPluginAction(action(id), repository, 'ios');
+      expect(pluginClaims).toContainEqual({ resourceKey: 'host-service:ios-simulator-test', mode: 'write' });
+      expect(pluginClaims.some((claim) => testClaims.some((other) => claimsConflict(claim, lease(other.resourceKey, other.mode))))).toBe(true);
+    }
+    expect(claimsForAssistantPluginAction(action('agent_device_status'), repository, 'ios')
+      .some((claim) => claim.resourceKey === 'host-service:ios-simulator-test')).toBe(false);
+    expect(claimsForAssistantPluginAction(action('xcode_test'), repository, 'another-plugin')
+      .some((claim) => claim.resourceKey === 'host-service:ios-simulator-test')).toBe(false);
+  });
+
   test('declared check effects map to bounded resources', () => {
     const claims = claimsForCheck('custom:report', ['node', 'report.js'], 'repo1', 'co1', {
       reads: ['src'],

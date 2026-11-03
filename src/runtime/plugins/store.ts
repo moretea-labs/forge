@@ -586,7 +586,7 @@ function claimsForPluginActionScope(
 ): ResourceClaimSpec[] {
   const pluginId = trustedPluginId.trim().replace(/[^a-zA-Z0-9._-]+/g, '-');
   if (!pluginId) throw new Error('PLUGIN_ID_REQUIRED_FOR_RESOURCE_CLAIMS');
-  return action.resourceClaims.map((claim) => ({
+  const claims = action.resourceClaims.map((claim) => ({
     resourceKey: claim.resource === 'remote' || claim.resource === 'provider-state'
       ? `provider-state:${pluginId}`
       : scope.kind === 'controller'
@@ -598,6 +598,14 @@ function claimsForPluginActionScope(
             : `repo-state:${scope.scopeKey}`,
     mode: claim.mode,
   }));
+  // The Process Runtime and iOS plugin must arbitrate the same physical
+  // Simulator rather than independent provider-local / repository locks.
+  if (pluginId === 'ios' && (
+    ['xcode_test', 'smoke_review', 'launch_simulator', 'capture_screenshot'].includes(action.actionId)
+    || (action.actionId.startsWith('agent_device_')
+      && !['agent_device_status', 'agent_device_doctor', 'agent_device_jd_search'].includes(action.actionId))
+  )) claims.push({ resourceKey: 'host-service:ios-simulator-test', mode: 'write' });
+  return claims;
 }
 
 export function claimsForAssistantPluginAction(

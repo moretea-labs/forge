@@ -306,6 +306,8 @@ export interface SpawnManagedProcessInput {
    * conflicting claims release, then spawns. Never a second scheduler: the
    * existing Lease store remains the single conflict authority.
    */
+  /** Called once when the Process is durably recorded and waiting for a lease; caller may return this handle without cancelling admission. */
+  onAdmissionWait?: (handle: ProcessHandle) => void;
   leaseWaitMs?: number;
   timeoutMs?: number;
   maxOutputBytes?: number;
