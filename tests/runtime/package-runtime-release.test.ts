@@ -215,7 +215,10 @@ describe('package Runtime release immutability', () => {
     expect(capacity.availableBytes).toBeNumber();
     expect(() => assertStorageHeadroom(home, {
       operation: 'test_impossible_write',
-      requiredBytes: (capacity.availableBytes ?? 0) + 1,
+      // Filesystem free space can increase between separate statfs reads.
+      // Use a fixed impossibly large (but safe integer) requirement to prove
+      // the production headroom guard still rejects the write deterministically.
+      requiredBytes: Number.MAX_SAFE_INTEGER,
       reserveBytes: 0,
     })).toThrow('FORGE_STORAGE_HEADROOM_LOW');
   });
