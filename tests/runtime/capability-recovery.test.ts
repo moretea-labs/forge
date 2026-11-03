@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it, spyOn } from 'bun:test';
 import { execFileSync } from 'child_process';
 import { createHash } from 'crypto';
 import { existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'fs';
@@ -855,6 +855,14 @@ describe('runtime maintenance executor', () => {
     const repoRoot = join(root, 'repo');
     mkdirSync(controllerHome, { recursive: true });
     mkdirSync(repoRoot, { recursive: true });
+    // Cache disposal requires verified Git identity; do not weaken that fence
+    // by exercising retention against an uninitialized directory.
+    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repoRoot });
+    execFileSync('git', ['config', 'user.email', 'test@example.test'], { cwd: repoRoot });
+    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: repoRoot });
+    writeFileSync(join(repoRoot, 'README.md'), '# runtime maintenance fixture\n');
+    execFileSync('git', ['add', 'README.md'], { cwd: repoRoot });
+    execFileSync('git', ['commit', '-qm', 'initial'], { cwd: repoRoot });
     const repository = { repoId: 'repo-stale-work', canonicalRoot: repoRoot };
     const oldAt = '2026-01-01T00:00:00.000Z';
     const work = createWorkContract({ controllerHome, repoId: repository.repoId, now: () => oldAt }, {
@@ -881,9 +889,11 @@ describe('runtime maintenance executor', () => {
     }));
 
     const staleCache = join(repository.canonicalRoot, '.repo-harness', 'maintenance', 'DerivedData');
-    mkdirSync(staleCache, { recursive: true });
-    writeFileSync(join(staleCache, 'cache.bin'), 'cache');
+    mkdirSync(join(staleCache, 'Build'), { recursive: true });
+    writeFileSync(join(staleCache, 'info.plist'), 'Xcode cache metadata');
+    writeFileSync(join(staleCache, 'Build', 'cache.bin'), 'rebuildable cache');
     const old = new Date(Date.now() - 2 * 60_000);
+    utimesSync(join(staleCache, 'Build'), old, old);
     utimesSync(staleCache, old, old);
 
     const applied = applyRuntimeMaintenance(repository, controllerHome, {
@@ -892,8 +902,20 @@ describe('runtime maintenance executor', () => {
       minAgeMinutes: 1,
       maxCandidates: 50,
     });
-    expect(existsSync(staleCache)).toBe(false);
-    expect(applied.generatedCacheGc?.removedPaths.some((path) => path.endsWith('.repo-harness/maintenance/DerivedData'))).toBe(true);
+    const cacheBuildSuffix = '.repo-harness/maintenance/DerivedData/Build';
+    const cacheRemoved = applied.generatedCacheGc?.removedPaths.some((path) => path.endsWith(cacheBuildSuffix));
+    expect(applied.generatedCacheGc?.errors).toEqual([]);
+    expect(existsSync(join(staleCache, 'info.plist'))).toBe(true);
+    if (cacheRemoved) {
+      expect(existsSync(join(staleCache, 'Build'))).toBe(false);
+    } else {
+      // Live xcodebuild without an exact derivedDataPath must retain this
+      // otherwise-rebuildable cache. An integration fixture cannot kill or
+      // ignore that independent host process to force a deletion.
+      expect(applied.generatedCacheGc?.skippedByReason.active_process).toBeGreaterThan(0);
+      expect(applied.generatedCacheGc?.retainedPaths.some((path) => path.endsWith(cacheBuildSuffix))).toBe(true);
+      expect(existsSync(join(staleCache, 'Build'))).toBe(true);
+    }
     expect(applied.cleanupArtifactGc).toBeDefined();
     expect(applied.applied).toContainEqual(expect.objectContaining({
       kind: 'stale_work_contract',
@@ -906,6 +928,62 @@ describe('runtime maintenance executor', () => {
     expect(retained?.phase).not.toBe('cleanup');
     expect(retained?.phaseEvidence.delivery.state).toBe('pending');
     expect(retained?.phaseEvidence.cleanup.state).toBe('pending');
+  });
+
+  it('rotates explicit generated-cache maintenance past a saturated checkout scan', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-maintenance-cache-rotation-'));
+    temporaryRoots.push(root);
+    const controllerHome = join(root, 'controller');
+    const repoRoot = join(root, 'repo');
+    mkdirSync(controllerHome, { recursive: true });
+    mkdirSync(repoRoot, { recursive: true });
+    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repoRoot });
+    execFileSync('git', ['config', 'user.email', 'test@example.test'], { cwd: repoRoot });
+    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: repoRoot });
+    writeFileSync(join(repoRoot, 'README.md'), 'fixture\n');
+    execFileSync('git', ['add', 'README.md'], { cwd: repoRoot });
+    execFileSync('git', ['commit', '-qm', 'initial'], { cwd: repoRoot });
+    const registered = registerRepository({ path: repoRoot, displayName: 'cache-rotation', controllerHome });
+    const worktree = join(root, 'worktree');
+    execFileSync('git', ['worktree', 'add', '-q', '-b', 'test/cache-rotation', worktree, 'HEAD'], { cwd: repoRoot });
+    addRepositoryCheckout({ repoId: registered.repoId, path: worktree, controllerHome });
+
+    // Exhaust the explicit pass's minimum 1,000-entry budget in the first root.
+    const noiseRoot = join(repoRoot, '.repo-harness');
+    for (let i = 0; i < 1_005; i++) mkdirSync(join(noiseRoot, `noise-${i.toString().padStart(4, '0')}`), { recursive: true });
+    const cache = join(worktree, '.repo-harness', 'ios-build', 'DerivedData');
+    mkdirSync(join(cache, 'Build'), { recursive: true });
+    writeFileSync(join(cache, 'info.plist'), 'rebuildable Xcode cache fixture');
+    writeFileSync(join(cache, 'Build', 'compiled.bin'), 'rebuildable');
+    const old = new Date(Date.now() - 2 * 60 * 60_000);
+    utimesSync(join(cache, 'Build'), old, old);
+    utimesSync(cache, old, old);
+
+    const currentMinute = Math.floor(Date.now() / 60_000);
+    const firstMinute = currentMinute + (currentMinute % 2);
+    const now = spyOn(Date, 'now');
+    try {
+      now.mockReturnValue(firstMinute * 60_000);
+      const first = applyRuntimeMaintenance(registered, controllerHome, {
+        actionId: 'full_maintenance_pass', confirmMaintenance: true, maxCandidates: 1,
+      });
+      expect(first.generatedCacheGc?.rootsInspected).toBe(1);
+      expect(first.generatedCacheGc?.budgetExhausted).toBe(true);
+      expect(existsSync(join(cache, 'Build'))).toBe(true);
+
+      // The next minute must visit the other checkout instead of repeatedly
+      // scanning the saturated canonical root.
+      now.mockReturnValue((firstMinute + 1) * 60_000);
+      const second = applyRuntimeMaintenance(registered, controllerHome, {
+        actionId: 'full_maintenance_pass', confirmMaintenance: true, maxCandidates: 1,
+      });
+      expect(second.generatedCacheGc?.removedPaths.some((path) =>
+        path.endsWith(':.repo-harness/ios-build/DerivedData/Build'))).toBe(true);
+      expect(existsSync(join(cache, 'Build'))).toBe(false);
+      expect(existsSync(join(cache, 'info.plist'))).toBe(true);
+    } finally {
+      now.mockRestore();
+    }
   });
 
   it('protects a stale no-authority Work when a recent successful write left dirty managed-worktree source', () => {
