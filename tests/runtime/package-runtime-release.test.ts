@@ -18,12 +18,11 @@ function fixture(targetPackageRoot?: string): { home: string; packageRoot: strin
   const home = join(root, 'home');
   const packageRoot = targetPackageRoot ?? join(root, 'package-source');
   mkdirSync(packageRoot, { recursive: true });
-  for (const dir of ['src/cli', 'src/runtime/root', 'src/runtime/shared', 'src/runtime/execution/process-runtime', 'src/runtime/plugins', 'adapters/mcp/runtime-gateway', 'packages/kernel/scheduler/api', 'supervisor', 'bin', 'assets', 'scripts']) {
+  for (const dir of ['src/cli', 'src/runtime/root', 'src/runtime/shared', 'src/runtime/execution/process-runtime', 'src/runtime/plugins', 'adapters/mcp/runtime-gateway', 'packages/kernel/scheduler/api', 'bin', 'assets', 'scripts']) {
     mkdirSync(join(packageRoot, dir), { recursive: true });
   }
   writeFileSync(join(packageRoot, 'package.json'), JSON.stringify({ name: '@moretea-labs/forge', version: '9.9.9-test' }));
-  writeFileSync(join(packageRoot, 'supervisor', 'client.ts'), 'export const supervisorClient = 1;\n');
-  writeFileSync(join(packageRoot, 'src', 'cli', 'index.ts'), "import { supervisorClient } from '../../supervisor/client';\nif (process.argv.slice(2).join(' ') === 'mcp serve --help') process.exit(supervisorClient === 1 ? 0 : 3);\nprocess.exit(4);\n");
+  writeFileSync(join(packageRoot, 'src', 'cli', 'index.ts'), "import { scheduler } from '../../packages/kernel/scheduler/api/index';\nif (process.argv.slice(2).join(' ') === 'mcp serve --help') process.exit(scheduler === 1 ? 0 : 3);\nprocess.exit(4);\n");
   writeFileSync(join(packageRoot, 'src', 'runtime.ts'), 'export const runtime = 1;\n');
   writeFileSync(join(packageRoot, 'adapters', 'mcp', 'adapter.ts'), 'export const adapter = 1;\n');
   writeFileSync(join(packageRoot, 'adapters', 'mcp', 'runtime-gateway', 'context-pack-sidecar.ts'), "if (process.argv.includes('--forge-release-canary-child')) { console.log('forge context-pack release canary'); process.exit(0); } process.exit(2);\n");
@@ -57,7 +56,6 @@ describe('package Runtime release immutability', () => {
     expect(readFileSync(join(release.packageRoot, 'src', 'runtime.ts'), 'utf8')).toBe('export const runtime = 1;\n');
     expect(readFileSync(join(release.packageRoot, 'adapters', 'mcp', 'adapter.ts'), 'utf8')).toBe('export const adapter = 1;\n');
     expect(readFileSync(join(release.packageRoot, 'packages', 'kernel', 'scheduler', 'api', 'index.ts'), 'utf8')).toBe('export const scheduler = 1;\n');
-    expect(readFileSync(join(release.packageRoot, 'supervisor', 'client.ts'), 'utf8')).toBe('export const supervisorClient = 1;\n');
     expect(readFileSync(join(release.packageRoot, 'node_modules', 'runtime-dependency', 'index.js'), 'utf8')).toBe('export const dependency = 1;\n');
     expect(readFileSync(join(release.packageRoot, 'node_modules', 'runtime-dependency', 'linked-copy.js'), 'utf8')).toBe('export const linked = 1;\n');
     const manifest = JSON.parse(readFileSync(release.manifestPath, 'utf8')) as Record<string, string>;

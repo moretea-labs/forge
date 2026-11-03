@@ -392,19 +392,6 @@ requireExactShrinkingInventory(
   runtimeToolSwitchCaseInventory(text('adapters/mcp/runtime-gateway/runtime-tools.ts')),
   MCP_RUNTIME_TOOLS_SWITCH_CASE_DEBT,
 );
-const supervisorSemanticSources = sourceFiles('supervisor')
-  .filter((path) => !path.startsWith('supervisor/native-messaging/'))
-  .map((path) => ({ path, source: text(path) }));
-requireExactShrinkingDebt(
-  'Workflow Supervisor concrete Browser transport imports',
-  supervisorConcreteBrowserTransportImportsFromSources(supervisorSemanticSources),
-  new Set(),
-);
-for (const path of supervisorSemanticSources.map((entry) => entry.path)) {
-  forbid(path, /\b(?:windowId|tabId|window\.name)\b/, 'Workflow Supervisor semantic code must not own provider tab/window identity; Computer target authority owns provider bindings');
-}
-
-
 const MCP_PURE_TRANSPORT_FORBIDDEN_IMPORT_PATTERN = /(?:packages\/kernel\/|src\/runtime\/)/;
 requireExactShrinkingDebt(
   'MCP pure transport adapter authority imports',
@@ -1107,30 +1094,7 @@ requireMissing('adapters/scheduler/controller-binding.ts');
 requireMissing('src/runtime/root/controller-progression-composition.ts');
 requireMissing('tests/runtime/controller-progression-continuation.test.ts');
 requireText('adapters/controller-process/controller-host.ts', 'createProcessControllerHost');
-requireText('src/runtime/root/workflow-supervisor-composition.ts', 'registerWorkflowSupervisorTask');
-requireText('src/runtime/root/workflow-supervisor-composition.ts', 'reserveWorkflowSupervisorEnrollment');
-requireText('src/runtime/root/workflow-supervisor-composition.ts', 'getWorkflowSupervisorTask(forgeHome, taskId)');
-requireText('src/runtime/root/workflow-supervisor-composition.ts', "stall.state === 'terminal'");
-requireText('supervisor/control-plane.ts', 'if (exhaustedLeaf && this.store.providerResumeExhausted(exhaustedLeaf.effectId)) sourceEffect = exhaustedLeaf;');
-requireText('supervisor/store.ts', "if (first.action !== 'CONTINUE' || second.action !== 'CONTINUE' || third.action !== 'DONE') continue;");
-requireText('supervisor/store.ts', 'const minimumRuntimeInstances = 2;');
-requireText('supervisor/store.ts', "kind = 'terminal_done'");
-requireText('supervisor/types.ts', "actions: ['CONTINUE', 'CONTINUE', 'DONE'];");
-requireText('src/runtime/root/workflow-supervisor-composition.ts', 'WORKFLOW_SUPERVISOR_TASK_REQUIREMENT_CONFLICT');
-requireText('supervisor/entry.ts', 'forgeWorkflowSupervisorValidators()');
-requireText('supervisor/store.ts', 'workflowSupervisorCompletionContractSha256');
-requireText('supervisor/store.ts', "'task_semantic_binding_revised'");
-requireText('supervisor/store.ts', 'WORKFLOW_SUPERVISOR_COMPLETION_CONTRACT_REVISION_CONFLICT');
-requireText('supervisor/store.ts', 'WORKFLOW_SUPERVISOR_SEMANTIC_BINDING_CONFLICT');
-requireText('supervisor/control-plane.ts', 'WORKFLOW_SUPERVISOR_SEMANTIC_BINDING_WORK_NOT_FOUND');
-requireText('supervisor/control-plane.ts', 'WORKFLOW_SUPERVISOR_SEMANTIC_BINDING_REQUIREMENT_NOT_FOUND');
-requireText('supervisor/client.ts', 'expected_completion_contract_sha256: input.expectedCompletionContractSha256');
-requireText('supervisor/server.ts', 'p.expected_completion_contract_sha256');
-requireText('adapters/mcp/runtime-gateway/workflow-supervisor-adapter.ts', 'completionContractSha256: workflowSupervisorCompletionContractSha256(task.completionContract)');
 requireText('docs/architecture/CURRENT.md', 'An existing nonterminal unbound task may acquire one explicit Work or Requirement binding');
-forbid('supervisor/client.ts', /reserveWorkflowSupervisorSchedulerRecovery|reserve_scheduler_recovery/, 'Scheduler recovery is not a Supervisor RPC; reconciliation stays on the canonical effect ledger');
-forbid('supervisor/control-plane.ts', /reserveSchedulerRecovery/, 'Scheduler recovery must not regrow as a second Supervisor recovery authority');
-forbid('supervisor/server.ts', /reserve_scheduler_recovery/, 'Supervisor RPC surface must not expose retired Scheduler recovery authority');
 requireText('src/runtime/workflow/schedules/engine.ts', "const CONTROLLER_PROGRESSION_OPERATION = 'controller_progression';");
 requireText('packages/kernel/scheduler/application/eligibility.ts', 'return value >= min && value <= max && (value - min) % step === 0;');
 requireText('packages/kernel/scheduler/infrastructure/schedule-store.ts', "schedule.action.operation !== 'external_controller_wake' && schedule.action.operation !== 'controller_progression'");
@@ -1155,35 +1119,8 @@ requireText('src/runtime/plugins/gmail-adapter.ts', 'requiresExplicitCapabilityG
 requireText('src/runtime/plugins/gmail-adapter.ts', 'expiresInMinutes: GMAIL_AUTOMATION_GRANT_MINUTES');
 requireText('src/runtime/plugins/store.ts', 'if (action.requiresExplicitCapabilityGrant && !activeAuthorizationGrant)');
 requireText('src/runtime/plugins/store.ts', 'PLUGIN_CAPABILITY_GRANT_REQUIRED');
-requireText('src/runtime/root/workflow-supervisor-runtime.ts', 'notificationRequestId');
-requireText('src/runtime/root/workflow-supervisor-runtime.ts', 'export function recordUnknownSupervisorNotificationReceipt(');
-requireText('src/runtime/root/workflow-supervisor-runtime.ts', 'readPluginActionReceiptForRequest(controllerHome, input.requestId)');
-requireText('src/runtime/root/workflow-supervisor-runtime.ts', 'submitted.receipt');
-requireText('tests/runtime/thin-capability-substrate.test.ts', 'unknown Gmail Supervisor notification keeps one exact receipt');
-requireText('src/runtime/root/workflow-supervisor-runtime.ts', 'export function recordFailedSupervisorNotificationReceipt(');
-requireText('tests/runtime/thin-capability-substrate.test.ts', 'settled failed Gmail owner notifications surface one durable UserRequest without rekeying');
-requireText('src/runtime/root/workflow-supervisor-runtime.ts', "notificationRequestId('stall', taskId, stall.state, stall.effectId)");
-requireText('src/runtime/root/workflow-supervisor-runtime.ts', 'getDirectActivity(controllerHome, stallActivityId(taskId))');
+requireText('tests/runtime/thin-capability-substrate.test.ts', 'Direct activity retains exact identity beyond a 200-item projection window');
 requireText('packages/kernel/identity/infrastructure/activity-projection-store.ts', 'export function getDirectActivity(');
-requireText('src/runtime/root/workflow-supervisor-runtime.ts', "stall.state === 'retryable' && stall.generations >= stall.maxGenerations");
-requireText('src/runtime/root/workflow-supervisor-runtime.ts', 'workflow-supervisor.notification-auth:');
-requireText('supervisor/types.ts', "export type WorkflowSupervisorAction = 'CONTINUE' | 'WAIT' | 'DONE' | 'NEEDS_USER';");
-requireText('supervisor/types.ts', "state: 'waiting'; scheduleId: string; completionFingerprint: string");
-requireText('supervisor/protocol.ts', "scheduled_wake_schedule_id");
-requireText('supervisor/protocol.ts', "WORKFLOW_SUPERVISOR_WAIT_NOT_SCHEDULED");
-requireText('supervisor/store.ts', "scheduled-wake-bound:");
-requireText('supervisor/store.ts', "scheduled-wake-committed:");
-requireText('supervisor/store.ts', "completion_event.kind = 'assistant_completion'");
-requireText('supervisor/store.ts', "WORKFLOW_SUPERVISOR_SCHEDULED_WAKE_ALREADY_CONSUMED");
-requireText('supervisor/control-plane.ts', "action === 'WAIT'");
-requireText('supervisor/control-plane.ts', 'private async validateTerminalProposal');
-requireText('supervisor/control-plane.ts', "'scheduled_work_must_remain_open'");
-requireText('supervisor/protocol.ts', "const outcome = scheduled ? '当日完 W、未完 C、需用户 U' : '未完 C、交付 D、需用户 U';");
-requireText('supervisor/protocol.ts', "const scheduled = typeof task.continuationPolicy.scheduled_wake_schedule_id === 'string';");
-requireText('supervisor/server.ts', "req.method === 'task_bind_scheduled_wake'");
-requireText('supervisor/server.ts', "req.method === 'task_wake_scheduled'");
-requireText('src/runtime/root/workflow-supervisor-composition.ts', 'bindWorkflowSupervisorScheduledWakeForWork');
-requireText('src/runtime/root/workflow-supervisor-composition.ts', 'scheduleOccurrenceId');
 requireText('adapters/mcp/runtime-gateway/scheduler-adapter.ts', "operation === 'schedule_resume'");
 forbid('adapters/mcp/runtime-gateway/scheduler-adapter.ts', /bindSupervisorWakeForSchedule|bindWorkflowSupervisorScheduledWakeForWork/, 'Schedule must not bind an autonomous Supervisor on create or resume');
 forbid('adapters/mcp/runtime-gateway/work-controller-operations.ts', /reconcileControllerProgression|bindWorkflowSupervisorConversationForWork|wakeWorkflowSupervisor/, 'Launch Session must not enroll, wake, or reconcile autonomous Supervisor');
@@ -1191,54 +1128,20 @@ for (const path of ['adapters/mcp/runtime-gateway/runtime-tool-definitions.ts', 
   forbid(path, /supervisor_task|callWorkflowSupervisorAdapter|controller\.workflow_supervisor/, 'retired autonomous Supervisor must not be a callable or advertised MCP capability');
 }
 requireText('src/runtime/workflow/schedules/work-continuation.ts', 'SCHEDULE_AUTONOMOUS_CONTINUATION_RETIRED');
-requireText('src/runtime/root/workflow-supervisor-composition.ts', 'wakeWorkflowSupervisorScheduledTaskForWork');
 requireText('tests/runtime/rh-work-scheduler-adapter.test.ts', 'retired autonomous Schedule actions');
 requireText('tests/runtime/rh-work-scheduler-adapter.test.ts', 'stops once without dispatching or creating an occurrence');
 requireText('src/runtime/workflow/schedules/engine.ts', 'RETIRED_AUTONOMOUS_CONTINUATION_SCHEDULE');
 requireText('src/runtime/workflow/schedules/engine.ts', "schedule.action.operation !== CONTROLLER_PROGRESSION_OPERATION");
-requireText('src/runtime/root/workflow-supervisor-runtime.ts', 'authorizationGrantRefs: [grant.grantId]');
-requireText('src/runtime/root/workflow-supervisor-runtime.ts', 'workflow-supervisor.notification-send-auth:');
-requireText('src/runtime/root/workflow-supervisor-runtime.ts', "creationReason: 'scheduled_gmail_notification_authorization_failed'");
 forbidBetween('src/runtime/plugins/gmail-adapter.ts', "actionId: 'send_owner_notification'", "actionId: 'modify_message_labels',", /\b(?:to|recipient|cc|bcc)\s*:/i, 'scheduled Gmail owner notification must not accept a caller-selected recipient');
-requireText('supervisor/forge-validators.ts', "requirement.state !== 'done'");
-requireText('supervisor/forge-validators.ts', 'validateSemanticCompletionBinding(task, proposal)');
-requireText('supervisor/forge-validators.ts', 'function validateWorkCompletion(');
-requireText('supervisor/forge-validators.ts', 'function validateRequirementCompletion(');
 requireText('adapters/mcp/runtime-gateway/runtime-tool-definitions.ts', "work_id: { type: 'string', minLength: 1, maxLength: 256");
-requireText('adapters/mcp/runtime-gateway/workflow-supervisor-adapter.ts', 'WORKFLOW_SUPERVISOR_SEMANTIC_BINDING_AMBIGUOUS');
-requireText('adapters/mcp/runtime-gateway/workflow-supervisor-adapter.ts', 'WORKFLOW_SUPERVISOR_SEMANTIC_BINDING_REPO_REQUIRED');
-requireText('adapters/mcp/runtime-gateway/workflow-supervisor-adapter.ts', "...(workId ? { work_id: workId } : {})");
-requireText('adapters/mcp/runtime-gateway/workflow-supervisor-adapter.ts', "...(requirementId ? { requirement_id: requirementId } : {})");
-requireText('supervisor/forge-validators.ts', "requirement.state === 'waiting_for_user'");
 // Recovery's three typed live/unknown provider states are read-only
 // observations; none may become a sticky preflight failure or spend Send.
-requireText('supervisor/native-browser-adapter.ts', "command.kind === 'recovery' && ['provider_recovery_stop_pending',");
-requireText('supervisor/native-browser-adapter.ts', "'provider_recovery_turn_unknown', 'provider_recovery_turn_live'].includes(prepared.reasonCode)");
-requireText('supervisor/native-browser-adapter.ts', 'this.noteTaskFailure(prepared.reasonCode, task, command.effectId, false)');
 // A single Store-owned typed proof validator and refund writer replace the
 // legacy generic pre_send_rejection/no-click string authority. Keep these
 // guards pointed at the actual safety boundary, not obsolete implementation text.
-requireText('supervisor/store.ts', 'proofGeneration !== ledger.lastGeneration');
-requireText('supervisor/store.ts', 'insertValidatedDispatchBudgetRefundWithin(db,');
-requireText('supervisor/store.ts', 'effect-dispatch-budget-refund:${input.effectId}:${input.generation}');
-requireText('supervisor/store.ts', 'proof.effect_id === effectId');
-requireText('supervisor/store.ts', "proof.dispatch_id === String(dispatchPayload.dispatchId ?? '')");
-requireText('supervisor/store.ts', "proof.target_id === String(dispatchPayload.target_id ?? '')");
-requireText('supervisor/store.ts', 'proof_identity_validated');
-requireText('supervisor/store.ts', 'proof_rejected: true');
-requireText('supervisor/control-plane.ts', 'if (!accepted) return;');
 requireText('adapters/computer/chrome-extension/content.js', 'recoverNoStopReadiness');
 requireText('adapters/computer/chrome-extension/background.js', 'requiresRecoveryCapability');
 forbid('adapters/computer/chrome-extension/content.js', /\bstop\.click\s*\(/, 'recovery must not click Stop and interfere with a possibly live provider turn');
-forbid('supervisor/control-plane.ts', /['"]effect_dispatch_budget_refunded['"]/, 'refund events must have exactly one Store writer, not a Control Plane writer');
-forbid('supervisor/native-browser-adapter.ts', /['"]effect_dispatch_budget_refunded['"]/, 'provider adapter must not own a second refund writer');
-requireText('supervisor/native-browser-adapter.ts', "reasonCode: dispatch.reasonCode ?? 'COMPUTER_CHATGPT_DISPATCH_NOT_ATTEMPTED'");
-forbid('src/runtime/root/workflow-supervisor-composition.ts', /WorkflowSupervisorStore|supervisor\.sqlite|registerTask\(|reserveEffect\(/, 'Forge composition must access Supervisor state only through daemon RPC, never open its database or become a second writer');
-requireText('src/runtime/root/workflow-supervisor-composition.ts', 'workflowSupervisorBoundaryForWork');
-requireText('src/runtime/root/workflow-supervisor-composition.ts', '`forge:${repoId}:work:${workId}`');
-requireText('src/runtime/root/workflow-supervisor-composition.ts', 'registeredTask.taskId');
-forbid('src/runtime/root/workflow-supervisor-composition.ts', /forge:\$\{repoId\}:conversation:\$\{conversationId\}/, 'Supervisor task identity must remain conversation-stable through registration, not be recomputed from the current Work conversation');
-forbid('supervisor/client.ts', /task_has_effect|taskHasAnyEffect/, 'Supervisor boundary is derived from canonical Work+conversation facts; do not add a second ownership projection RPC');
 requireText('src/runtime/workflow/schedules/engine.ts', 'evaluateScheduleTriggerEligibility');
 requireText('src/runtime/workflow/schedules/engine.ts', 'evaluateScheduleOccurrenceAdmission');
 forbid('src/runtime/workflow/schedules/engine.ts', /executeControllerProgression|reconcileControllerProgression|workflow_supervisor_owns_outer_turn|CONTROLLER_WAKE_TOTAL_TIMEOUT/, 'Schedule cannot dispatch retired autonomous Controller wake');
@@ -1344,60 +1247,18 @@ requireMissing('src/runtime/bootstrap/runtime-authority.ts');
 requireMissing('src/runtime/bootstrap/activation-transaction.ts');
 requireMissing('src/runtime/bootstrap/stable-bootstrap.ts');
 requireMissing('src/runtime/supervisor');
-requireText('supervisor/store.ts', 'BEGIN IMMEDIATE');
-requireText('supervisor/forge-validators.ts', "work.semanticState === 'completed'");
-requireText('supervisor/forge-validators.ts', 'work.predecessorWorkId');
-requireText('supervisor/forge-validators.ts', 'work.supersedes ?? []');
-requireText('supervisor/forge-validators.ts', 'work.supersededBy ? [work.supersededBy]');
-requireText('supervisor/store.ts', 'completions_one_per_source_effect');
-requireText('supervisor/store.ts', 'WORKFLOW_SUPERVISOR_SOURCE_EFFECT_COMPLETION_CONFLICT');
-requireText('supervisor/paths.ts', 'resolveControllerHome');
-requireText('supervisor/paths.ts', "join(resolveWorkflowSupervisorForgeHome(controllerHome), 'supervisor')");
-forbid('supervisor/paths.ts', /control-plane\/persistence\/sqlite-store|workflow-run-store|packages\/kernel\/(?:work|controller)/, 'Workflow Supervisor path authority may share the canonical Controller Home root but must not depend on lower lifecycle persistence or Kernel authorities');
-forbid('supervisor/store.ts', /resolveControllerHome|FORGE_CONTROLLER_HOME|control-plane\/persistence\/sqlite-store|workflow-run-store|packages\/kernel\/(?:work|controller)/, 'Workflow Supervisor persistence must resolve its root only through supervisor/paths and remain a separate database authority');
-requireMissing('supervisor/service.ts');
+requireMissing('supervisor');
+requireMissing('src/runtime/root/workflow-supervisor-runtime.ts');
+requireMissing('src/runtime/root/workflow-supervisor-composition.ts');
+requireMissing('adapters/mcp/runtime-gateway/workflow-supervisor-adapter.ts');
+
 forbid('src/runtime/root/runtime.ts', /startWorkflowSupervisorRuntime|WORKFLOW_SUPERVISOR_STOPPED|this\.workflowSupervisor/, 'Canonical Runtime must not start, stop, or require autonomous Workflow Supervisor; Launcher and Scheduler remain independent');
-requireText('src/runtime/root/workflow-supervisor-runtime.ts', 'startWorkflowSupervisorRuntime(controllerHome: string)');
-requireText('src/runtime/root/workflow-supervisor-runtime.ts', 'new WorkflowSupervisorStore(forgeHome, {');
-requireText('src/runtime/root/workflow-supervisor-runtime.ts', 'activeReleaseId: () => getRuntimeWriteClaim()?.releaseId');
-requireText('src/runtime/root/workflow-supervisor-runtime.ts', 'createWorkflowSupervisorServer');
-requireText('src/runtime/root/workflow-supervisor-runtime.ts', 'startWorkflowSupervisorNativeBrowserAdapter');
-requireText('supervisor/native-browser-adapter.ts', 'targetPort: ComputerChatgptConversationTargetPort;');
-requireText('src/runtime/root/workflow-supervisor-runtime.ts', 'const targetPort = extensionTargetPort;');
-forbid('src/runtime/root/workflow-supervisor-runtime.ts', /PreferredChatgptConversationTargetPort|MacOsChatgptConversationTargetPort|chatgpt-target-router/, 'Work-bound ChatGPT delivery uses one Chrome Extension target port, never a native fallback router');
 requireMissing('adapters/computer/chatgpt-target-router.ts');
 requireMissing('src/runtime/plugins/computer-chatgpt-macos-target.ts');
 requireMissing('src/runtime/plugins/browser-provider-registry.ts');
 requireText('src/runtime/plugins/browser-runtime.ts', 'options.providers.length !== 1');
 forbid('src/runtime/plugins/browser-runtime.ts', /excludedProviderIds|BrowserProviderUnavailableBeforeActionError/, 'Browser Runtime must not retry an action through another provider');
-forbid('supervisor/native-browser-adapter.ts', /MacOs|AppleEvents|browser-macos-bridge|\bwindowId\b|\btabId\b|window\.name/, 'Workflow Supervisor browser consumer must depend only on the provider-neutral Computer ChatGPT target port');
-forbid('supervisor/native-browser-adapter.ts', /supervisor\/store|sqlite|scheduler|packages\/kernel\/(?:work|controller)|control-plane\/persistence/, 'Native Supervisor browser adapter is transport-only and must not own durable lifecycle, Scheduler, Work, Controller, or persistence authority');
-requireText('src/runtime/root/workflow-supervisor-composition.ts', 'resolveWorkflowSupervisorForgeHome(options.controllerHome)');
-forbid('src/runtime/root/workflow-supervisor-runtime.ts', /createPlatformServiceManagerHost|launchd|systemd|startDetached/, 'Workflow Supervisor reuses the Canonical Runtime process lifecycle and must not own a second OS service');
-requireText('supervisor/entry.ts', "argument('--controller-home')");
-forbid('supervisor/entry.ts', /FORGE_HOME|--forge-home/, 'Workflow Supervisor foreground entry must use the canonical Controller Home authority rather than a second Forge-home root');
-requireText('supervisor/control-plane.ts', 'await this.validateTerminalProposal(task, parsed.proposal)');
-requireText('supervisor/protocol.ts', 'SUPERVISOR_BLOCK_END');
-requireText('supervisor/protocol.ts', "const objective = validateSupervisorObjective(task.objective).trim()");
-requireText('supervisor/protocol.ts', "'目标摘录：' + excerpt");
-requireText('supervisor/protocol.ts', 'supervisor_task get');
-requireText('supervisor/protocol.ts', 'MAX_SUPERVISOR_CONTINUATION_PROMPT_CHARS');
-requireText('supervisor/protocol.ts', "const goal = Array.from(objective);");
-requireText('supervisor/protocol.ts', "const excerpt = goal.slice(0, goalChars).join('');");
-requireText('supervisor/protocol.ts', 'const includeGoalExcerpt = !lowerLayerContext?.trim();');
-requireText('supervisor/protocol.ts', 'const minimumGoalChars = includeGoalExcerpt ? Math.min(24, goal.length) : 0;');
-requireText('supervisor/protocol.ts', "if (capacity < minimumGoalChars || (includeGoalExcerpt && goal.length === 0)) throw new Error('WORKFLOW_SUPERVISOR_PROMPT_TOO_LARGE');");
-requireText('supervisor/protocol.ts', "if (includeGoalExcerpt && goalChars + length(tail) > goalCapacity) throw new Error('WORKFLOW_SUPERVISOR_PROMPT_TOO_LARGE');");
-requireText('supervisor/protocol.ts', "if (required && (length(normalized) > bound || length(normalized) > available)) {");
-requireText('supervisor/protocol.ts', "if (length(prompt) > max) throw new Error('WORKFLOW_SUPERVISOR_PROMPT_TOO_LARGE');");
-forbid('supervisor/protocol.ts', /上轮进展（参考，执行前核对事实）|\['上轮进展'/, 'Supervisor prompt must not embed prior-turn progress');
 forbid('adapters/chatgpt/controller-round-host.ts', /readControllerRoundContextSnapshot\s*\(/, 'ChatGPT continuation prompt must not load full semantic snapshots');
-requireText('supervisor/protocol.ts', 'MAX_SUPERVISOR_PROMPT_CHARS');
-forbid('supervisor/protocol.ts', /objective:\s*task\.objective\.slice\(/, 'Supervisor must reject oversized objectives, never silently truncate them in rendered effects');
-requireText('supervisor/store.ts', 'validateSupervisorObjective(input.objective)');
-requireText('supervisor/store.ts', 'const objective = validateSupervisorObjective(input.objective)');
-requireText('supervisor/server.ts', 'createWorkflowSupervisorServer');
-forbid('supervisor/server.ts', /from ['"]\.\/store['"]|supervisor\.sqlite|BEGIN IMMEDIATE/, 'Supervisor transport must relay typed commands through the control plane and never own persistence');
 forbid('src/runtime/plugins/browser-macos-bridge.ts', /PLUGIN_BROWSER_NATIVE_PROCESS_AMBIGUOUS|pids\.length\s*!==\s*1/, 'Chrome GUI PID selection has one authority: Desktop Operator');
 requireText('src/runtime/plugins/browser-macos-bridge.ts', 'await assertMacOsBrowserApplicationRunning(request.product, timeoutMs)');
 requireText('adapters/computer/chrome-extension/manifest.json', 'nativeMessaging');
@@ -1433,30 +1294,13 @@ requireText('adapters/computer/chatgpt-extension-target.ts', 'const candidate = 
 requireText('adapters/computer/chatgpt-extension-target.ts', 'observed.ownerToken === binding.ownerToken');
 forbid('adapters/computer/chrome-extension/background.js', /resolveTarget\(command\.identity,\s*false\)\.catch/, 'Extension worker must recover a pinned bootstrap from the durable Computer binding, not its ephemeral in-worker Map');
 forbid('adapters/computer/chrome-extension/content.js', /core\.normalizeText\(payload\)/, 'Provider pre-send evidence must preserve whitespace in immutable effect payload');
-requireMissing('supervisor/chrome-extension');
 requireText('src/runtime/plugins/browser-adapter.ts', "browserMode: browserMode(raw.browserMode) ?? 'attach_preferred'");
 requireText('src/runtime/plugins/browser-adapter.ts', "nativeAttachMode: browserNativeAttachMode(raw.nativeAttachMode) ?? 'auto'");
-requireText('supervisor/native-messaging/host.ts', 'ALLOWED_BROWSER_METHODS');
-requireText('supervisor/native-messaging/host.ts', 'computer_extension_claim');
-forbid('supervisor/native-messaging/host.ts', /['"](?:browser_tasks|browser_poll|browser_begin_effect|browser_observe_effect|browser_observe_dispatch_failure|browser_observe_provider_turn|browser_observe_assistant|bootstrap_poll|bootstrap_project_url|bootstrap_begin_effect|bootstrap_observe_effect|bootstrap_bind_conversation)['"]/, 'Chrome Native Messaging transport must not expose Workflow Supervisor effect RPCs; extension traffic terminates at Computer target commands');
-requireText('supervisor/store.ts', 'recordEffectNotAppliedProof');
-requireText('supervisor/store.ts', 'preSendComposerObservation(effectId: string)');
-requireText('supervisor/store.ts', "if (value && typeof value === 'object' && !Array.isArray(value)) return value as Record<string, unknown>;");
-requireText('supervisor/native-browser-adapter.ts', 'function retiredBootstrapDraftReplacementPrompt(');
-requireText('supervisor/native-browser-adapter.ts', 'control.preSendComposerObservation(staleEffect.effectId)');
-requireText('supervisor/native-browser-adapter.ts', "retired?.terminal !== 'STOPPED'");
-requireText('supervisor/native-browser-adapter.ts', 'control.effectDispatchBudget(staleEffect.effectId).generations !== 0');
 requireText('adapters/computer/chrome-extension/content.js', 'FORGE_RETIRED_DRAFT_V1');
 requireText('docs/architecture/CURRENT.md', 'A STOPPED bootstrap draft may be replaced only from the canonical Supervisor ledger');
-requireText('supervisor/store.ts', 'tried.at(-1)?.eventId');
-requireText('supervisor/store.ts', '`effect-dispatch:${effectId}:${generation}`');
-requireText('supervisor/control-plane.ts', 'PERSISTED_BROWSER_EVIDENCE_KEYS');
-requireText('supervisor/control-plane.ts', "reason: 'not_applied_proof_incomplete'");
-requireText('supervisor/server.ts', "if (!['applied','unknown'].includes(outcome))");
 forbid('adapters/computer/chrome-extension/background.js', /supervisor\.sqlite|BEGIN IMMEDIATE/, 'Computer Chrome provider must reconstruct provider bindings from live inventory and Computer target authority rather than browser shadow persistence');
 // Provider-local browser identity may persist; tasks and effects remain Supervisor-owned.
 forbid('adapters/computer/chrome-extension/content.js', /chrome\.storage|supervisor\.sqlite|BEGIN IMMEDIATE/, 'Computer Chrome content script must remain a page capability surface rather than durable authority');
-forbid('supervisor/native-messaging/host.ts', /task_register|reserve_enrollment|supervisor\.sqlite|BEGIN IMMEDIATE|bun:sqlite|node:sqlite|from ['"][^'"]*(?:store|control-plane)['"]/, 'Chrome Native Messaging host must remain a stateless browser-method relay and never own Supervisor persistence/lifecycle');
 forbid('adapters/computer/chrome-extension/background.js', /task_register|reserve_enrollment|supervisor\.sqlite|BEGIN IMMEDIATE/, 'Computer Chrome provider must never become durable workflow authority');
 forbid('adapters/computer/chrome-extension/content.js', /task_register|reserve_enrollment|supervisor\.sqlite|BEGIN IMMEDIATE|chrome\.storage/, 'Computer Chrome content script must observe/execute one exact page only and never own durable workflow state');
 
@@ -1795,7 +1639,6 @@ requireText('src/cli/local-bridge/server.ts', 'app.patch("/api/project-state", r
 requireText('src/cli/local-bridge/server.ts', 'runEditSessionMutationInWorker(');
 requireText('packages/kernel/identity/infrastructure/grant-store.ts', 'GRANT_ID_REUSE_REQUIRES_NEW_ENROLLMENT');
 requireText('src/runtime/safe-tooling/mac-keychain-write.ts', "spawnSync('/usr/bin/security', ['-i']");
-requireText('supervisor/native-browser-adapter.ts', 'handleVerifiedTerminalCapacity(');
 requireText('src/runtime/safe-tooling/google-credential-store.ts', 'writeMacKeychainGenericPassword(');
 requireText('src/runtime/safe-tooling/resend-oauth.ts', 'writeMacKeychainGenericPassword(');
 forbid('src/runtime/safe-tooling/google-credential-store.ts', /add-generic-password/, 'Google tokens must never enter security CLI argv');
@@ -2316,40 +2159,22 @@ for (const path of [
 // operator repair may reconstruct a historical dispatch-owner pre-click proof;
 // unknown observation reasons must never be automatic retry authority. Remove
 // this string fence when the existing effect admission contract is AST-fenced.
-forbidBetween(
-  'supervisor/store.ts',
-  'nextBrowserEffect(',
-  'effectDispatchBudget(',
-  /composer_missing|send_button_missing|latestRetryEvidenceEventId/,
-  'dispatch generation may advance only from canonical effect_not_applied proof; effect_unknown never authorizes replay',
-);
 requireText('packages/kernel/controller/domain/controller-round-transition-policy.ts', "Pick<ControllerRoundRelayRecord, 'relayScopeId' | 'originWorkId' | 'roundCount'>");
 forbid(
   'packages/kernel/controller/domain/controller-round-transition-policy.ts',
   /controllerRoundProviderEffectId[\s\S]{0,400}authorityId/,
   'canonical continuation/provider effect identity must survive Controller authority rotation',
 );
-requireText('src/runtime/root/workflow-supervisor-composition.ts', 'reserveWorkflowSupervisorEnrollment(forgeHome, registeredTask.taskId, lowerLayer.providerEffectId)');
-requireText('src/runtime/root/workflow-supervisor-composition.ts', 'providerDispatchEffectId: effect.effectId');
-requireText('supervisor/protocol.ts', '(?:fx|crpe)_');
 requireText('packages/plugin-runtime/computer/conversation-target.ts', "observation?: ComputerChatgptConversationObservation");
 requireText('adapters/computer/chatgpt-extension-target.ts', 'unhydratedExactConversation(identity, observation)');
 requireText('adapters/computer/chatgpt-extension-target.ts', 'parseCanonicalChatgptConversationIdentity(observation.url)');
-requireText('supervisor/native-browser-adapter.ts', 'exactCanonicalConversationUrl(observation, task)');
-requireText('supervisor/native-browser-adapter.ts', 'chatgptProviderPageFailure(observation.providerFailureText)');
-requireText('supervisor/native-browser-adapter.ts', 'WORKFLOW_SUPERVISOR_EMPTY_SHELL_EVIDENCE_UNVERIFIED');
-requireText('supervisor/store.ts', 'COUNT(DISTINCT failed.effect_id) AS total');
-requireText('supervisor/store.ts', 'completedOrFailedTurns >= 10 || failureBurst');
-requireText('supervisor/store.ts', '!appliedEffectAwaitingCompletionWithin(db, input.taskId)');
 // Cognitive Plane stays one advisory application path: all Controller tools expose the
 // same optional settlement metadata, the MCP server settles it after the primary
 // outcome, and Supervisor/external launchers consume Cognition-only projections.
 requireText('adapters/mcp/toolset.ts', 'injectCognitionSettlementFields(injectDurableCommandFields(definition))');
 requireText('adapters/mcp/server.ts', 'settleCognitionAfterTool(ctx, name, args, localResult)');
 forbid('adapters/mcp/runtime-gateway/runtime-tools.ts', /settleCognitionEnvelope/, 'cognition settlement belongs to the canonical all-tool MCP boundary, not the rh_* facade only');
-requireText('src/runtime/root/workflow-supervisor-composition.ts', 'renderCognitiveAttentionForWork');
 requireText('src/runtime/control-plane/launcher/thin-launcher.ts', 'renderCognitiveAttentionForWork');
-forbid('src/runtime/root/workflow-supervisor-composition.ts', /renderAssistantWorkContext/, 'Supervisor prompts may receive bounded Cognition, not the legacy lower-layer AssistantWorkContext blob');
 forbid('src/runtime/control-plane/launcher/thin-launcher.ts', /renderAssistantWorkContext/, 'external controller prompts may receive bounded Cognition, not the legacy lower-layer AssistantWorkContext blob');
 requireText('packages/kernel/cognition/application/activation-service.ts', 'structuredConceptAliasCueScore');
 requireText('packages/kernel/cognition/application/activation-service.ts', 'fairScopedRead');

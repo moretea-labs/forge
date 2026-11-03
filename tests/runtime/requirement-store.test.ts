@@ -8,8 +8,6 @@ import { implementationReviewChangedPathDigest } from '../../packages/kernel/wor
 import { executionPlacement, scopeRef, semanticRecordMetadata } from '../../packages/kernel/identity/api/index';
 import { createPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { buildRequirementBoard } from '../../src/runtime/control-plane/facade/requirement-board';
-import { forgeWorkflowSupervisorValidators } from '../../supervisor/forge-validators';
-import type { WorkflowSupervisorTask, WorkflowSupervisorProposal } from '../../supervisor/types';
 
 const homes: string[] = [];
 afterEach(() => {
@@ -150,10 +148,6 @@ test('rejects reopening a completed Requirement without an explicit replacement 
   expect(readRequirement(options, 'legacy-unproven')?.value.acceptedEvidenceRefs).toEqual([]);
   expect(normalizeLegacyRequirementAcceptance(options)).toBe(0);
   expect(readRequirement(options, 'legacy-a')).toEqual(migrated);
-  const task: WorkflowSupervisorTask = { taskId: 'legacy-validation', conversationId: 'legacy-conversation', conversationUrl: 'https://chatgpt.com/c/legacy-conversation', objective: 'Validate migrated completion', createdAt: acceptance.acceptedAt, continuationPolicy: {}, completionContract: { kind: 'model_semantic_completion', controller_home: home, requirement_id: 'legacy-a' }, userBlockerPolicy: {} };
-  const proposal: WorkflowSupervisorProposal = { action: 'DONE', sourceEffectId: 'legacy-effect', checkpoint: 'migration verified', reason: 'accepted evidence preserved', evidence: [] };
-  expect(await forgeWorkflowSupervisorValidators().completionContract(task, proposal)).toMatchObject({ valid: true, evidence: migrated.value.acceptedEvidenceRefs });
-  expect(await forgeWorkflowSupervisorValidators().completionContract({ ...task, completionContract: { ...task.completionContract, requirement_id: 'legacy-unproven' } }, proposal)).toMatchObject({ valid: false, reason: 'requirement_acceptance_evidence_missing' });
   expect(() => reviseRequirementSemantic(options, 'legacy-a', { expectedRevision: completed.semanticRevision!, progressSummary: 'rewrite' })).toThrow(/TERMINAL_IMMUTABLE/);
   expect(() => updateRequirement(options, { requirementId: 'legacy-a', action: 'rewrite', mutate: (value) => ({ ...value, acceptedEvidenceRefs: ['forged'] }) })).toThrow(/TERMINAL_IMMUTABLE/);
   restoreControlPlaneDatabase(home, backup);

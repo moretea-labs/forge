@@ -41,8 +41,6 @@ import { createHandoffItem, getHandoffItem } from '../../src/runtime/control-pla
 import { cancelWorkContract, createWorkContract, type WorkContract } from '../../packages/kernel/work/api/index';
 import { createPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { createRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
-import { forgeWorkflowSupervisorValidators } from '../../supervisor/forge-validators';
-import type { WorkflowSupervisorTask } from '../../supervisor/types';
 import { ensureForgeInstanceIdentity } from '../../packages/kernel/identity/api/index';
 import { recordCognitiveMemory, type CognitiveWriteAuthorityPort } from '../../packages/kernel/cognition/api/index';
 import { cognitionMemoryStore } from '../../src/runtime/control-plane/persistence/cognition-store';
@@ -312,15 +310,6 @@ describe('runtime source isolation', () => {
     expect((acceptedRequirement.data as { requirement?: Record<string, unknown> })?.requirement).toMatchObject({
       requirementId, state: 'completed', remainingWork: [], acceptedEvidenceRefs: ['git:reviewed', 'review:accepted'],
     });
-    const requirementTask = {
-      completionContract: {
-        kind: 'forge_requirement_done', controller_home: controllerHome,
-        repo_id: primary.repoId, requirement_id: requirementId,
-      },
-      userBlockerPolicy: {},
-    } as unknown as WorkflowSupervisorTask;
-    expect(await forgeWorkflowSupervisorValidators().completionContract!(requirementTask, { action: 'DONE' } as any))
-      .toMatchObject({ valid: true, reason: 'requirement_accepted_evidence_committed' });
     expect(revisedPlanData?.plan).toMatchObject({ planId, revision: 2 });
     expect(revisedWorkData?.work).toMatchObject({ workId, revision: 2 });
 
