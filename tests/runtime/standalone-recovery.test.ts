@@ -109,7 +109,6 @@ import { acquireRecoveryReleaseLock, installStandaloneRecovery, inspectPrimaryCo
 import { acquireRecoveryOperationLock, recoveryOperationLockPath } from '../../src/runtime/standalone-recovery/operation-lock';
 import { readCurrentRecoveryRelease, recoveryGatewayIsDraining } from '../../src/runtime/standalone-recovery/release';
 import { createRecoveryHttpTransport } from '../../src/runtime/standalone-recovery/http-transport';
-import { inspectWorkflowSupervisorBrowserAdapter, installWorkflowSupervisorBrowserAdapter } from '../../src/runtime/plugins/computer-chatgpt-browser-adapter-installer';
 
 import { measureRuntimePerformance, assertRuntimePerformanceEvidence, readRuntimeCpu, RECOVERY_RUNAWAY_MEAN_CPU_PERCENT, RECOVERY_RUNAWAY_P95_CPU_PERCENT } from '../../src/runtime/standalone-recovery/performance';
 
@@ -3595,12 +3594,7 @@ describe('standalone recovery on canonical Runtime', () => {
     removeOwnership(ownership);
 
     publishRuntimeRelease(home, second, 'publish-release-b');
-    const previousHome = process.env.HOME;
-    process.env.HOME = home;
-    try {
-      const installed = installWorkflowSupervisorBrowserAdapter(home);
-      expect(installed).toMatchObject({ projectionCurrent: true, activeReleaseId: 'release-b' });
-      const rolled = await rollbackPrevious(config, 'test rollback');
+    const rolled = await rollbackPrevious(config, 'test rollback');
     expect(rolled.ok).toBe(true);
     expect(rolled.detail).toContain('SQLite backup restored');
     expect(readRuntimeReleaseAuthority(home)).toMatchObject({
@@ -3608,14 +3602,6 @@ describe('standalone recovery on canonical Runtime', () => {
       active: { releaseId: 'release-a', artifactIdentity: 'artifact-a' },
       previous: { releaseId: 'release-b', artifactIdentity: 'artifact-b' },
     });
-      const restoredProjection = inspectWorkflowSupervisorBrowserAdapter(home);
-      expect(restoredProjection).toMatchObject({ projectionCurrent: true, activeReleaseId: 'release-a' });
-      expect(readFileSync(join(restoredProjection.extensionPath, 'content.js'), 'utf8')).toBe('// release-a: content.js\n');
-      expect(readFileSync(restoredProjection.nativeHostPath, 'utf8')).toContain('# release-a\n');
-    } finally {
-      if (previousHome === undefined) delete process.env.HOME;
-      else process.env.HOME = previousHome;
-    }
   });
 
   test('refuses rollback when the independently attested previous release later fails its execution canary', async () => {
@@ -5093,8 +5079,6 @@ describe('standalone recovery on canonical Runtime', () => {
       writeReleaseBrowserSurface(first);
       writeReleaseBrowserSurface(candidateManifestPath);
       ensureActiveRuntimeRelease(home, first);
-      const installed = installWorkflowSupervisorBrowserAdapter(home);
-      expect(installed).toMatchObject({ projectionCurrent: true, activeReleaseId: 'release-a' });
       const runtime = await runtimeServer();
       writeMainToken(home);
       const ownership = startObservedRuntime(home, runtime.endpoint, 'release-a', 'artifact-a');
@@ -5132,13 +5116,6 @@ describe('standalone recovery on canonical Runtime', () => {
         currentUid: async () => 501,
         runCommand: async (_command, args) => {
           commands.push(args);
-          if (args[0] === 'kickstart') {
-            const active = readRuntimeReleaseAuthority(home)!.active.releaseId;
-            const projection = inspectWorkflowSupervisorBrowserAdapter(home);
-            expect(projection).toMatchObject({ projectionCurrent: true, activeReleaseId: active });
-            expect(readFileSync(join(projection.extensionPath, 'content.js'), 'utf8')).toBe(`// ${active}: content.js\n`);
-            expect(readFileSync(projection.nativeHostPath, 'utf8')).toContain(`# ${active}\n`);
-          }
           if (args[0] === 'bootout') launchdLoaded = false;
           if (args[0] === 'print') return launchdLoaded
             ? { ok: true, status: 0, stdout: 'loaded', stderr: '' }
@@ -5177,7 +5154,6 @@ describe('standalone recovery on canonical Runtime', () => {
         active: { releaseId: 'release-a', artifactIdentity: 'artifact-a' },
       });
       expect(restoredAuthority?.previous).toBeUndefined();
-      expect(inspectWorkflowSupervisorBrowserAdapter(home)).toMatchObject({ projectionCurrent: true, activeReleaseId: 'release-a' });
       expect(commands.filter((args) => args.includes('kickstart')).length).toBeGreaterThanOrEqual(2);
       // Candidate B and restored Stable A each cross exactly one strict
       // acceptance boundary; no redundant pre-stop strict verification remains.

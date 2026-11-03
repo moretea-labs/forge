@@ -40,7 +40,6 @@ export interface StagedRuntimeRelease {
   connectorArtifactIdentity?: string;
   browserNodeBridgeArtifactIdentity?: string;
   browserHandoffArtifactIdentity?: string;
-  workflowSupervisorNativeHostArtifactIdentity?: string;
   processRunnerArtifactIdentity?: string;
   checkRunnerArtifactIdentity?: string;
   typescriptNavigationArtifactIdentity?: string;
@@ -433,7 +432,6 @@ export function stageRuntimeReleaseFromCandidateSource(input: {
     connectorArtifactIdentity: manifest.connectorArtifactIdentity,
     browserNodeBridgeArtifactIdentity: manifest.browserNodeBridgeArtifactIdentity,
     browserHandoffArtifactIdentity: manifest.browserHandoffArtifactIdentity,
-    workflowSupervisorNativeHostArtifactIdentity: manifest.workflowSupervisorNativeHostArtifactIdentity,
     processRunnerArtifactIdentity: manifest.processRunnerArtifactIdentity,
     checkRunnerArtifactIdentity: manifest.checkRunnerArtifactIdentity,
     schedulerWorkerArtifactIdentity: manifest.schedulerWorkerArtifactIdentity,
@@ -640,19 +638,6 @@ export function stageRuntimeRelease(input: {
     chmodSync(browserHandoffPath, 0o700);
     const browserHandoffArtifactIdentity = `sha256:${sha256(browserHandoffPath)}`;
 
-    const workflowSupervisorNativeHostEntrypoint = 'forge-workflow-supervisor-native-host' as const;
-    const workflowSupervisorNativeHostPath = join(staging, workflowSupervisorNativeHostEntrypoint);
-    const workflowSupervisorNativeHostCompile = compileBinary({
-      sourceRoot,
-      outputPath: workflowSupervisorNativeHostPath,
-      entryPath: join(sourceRoot, 'supervisor', 'native-messaging', 'host.ts'),
-    });
-    if (!workflowSupervisorNativeHostCompile.ok) {
-      throw new Error(`RUNTIME_RELEASE_WORKFLOW_SUPERVISOR_NATIVE_HOST_BUILD_FAILED: ${workflowSupervisorNativeHostCompile.stderr || workflowSupervisorNativeHostCompile.stdout || workflowSupervisorNativeHostCompile.error}`.slice(0, 2_000));
-    }
-    chmodSync(workflowSupervisorNativeHostPath, 0o700);
-    const workflowSupervisorNativeHostArtifactIdentity = `sha256:${sha256(workflowSupervisorNativeHostPath)}`;
-
     const processRunnerEntrypoint = 'process-runner.js' as const;
     const processRunnerPath = join(staging, processRunnerEntrypoint);
     // Process Runner is part of the immutable execution surface and must not
@@ -792,8 +777,6 @@ export function stageRuntimeRelease(input: {
       browserNodeBridgeArtifactIdentity,
       browserHandoffEntrypoint,
       browserHandoffArtifactIdentity,
-      workflowSupervisorNativeHostEntrypoint,
-      workflowSupervisorNativeHostArtifactIdentity,
       processRunnerEntrypoint,
       processRunnerArtifactIdentity,
       checkRunnerEntrypoint,
@@ -842,7 +825,6 @@ export function stageRuntimeRelease(input: {
       connectorArtifactIdentity,
       browserNodeBridgeArtifactIdentity,
       browserHandoffArtifactIdentity,
-      workflowSupervisorNativeHostArtifactIdentity,
       processRunnerArtifactIdentity,
       checkRunnerArtifactIdentity,
       typescriptNavigationArtifactIdentity,
@@ -1087,7 +1069,6 @@ export function assertRuntimeReleaseFiles(release: StagedRuntimeRelease, depende
   assertComponentFile({ path: join(release.releasePath, 'forge-mcp-gateway'), identity: release.connectorArtifactIdentity, missingCode: 'RUNTIME_RELEASE_CONNECTOR_ENTRYPOINT_MISSING', executable: true });
   assertComponentFile({ path: join(release.releasePath, 'browser-node-bridge-host.js'), identity: release.browserNodeBridgeArtifactIdentity, missingCode: 'RUNTIME_RELEASE_BROWSER_NODE_HOST_MISSING', executable: true });
   assertComponentFile({ path: join(release.releasePath, 'browser-handoff-host.js'), identity: release.browserHandoffArtifactIdentity, missingCode: 'RUNTIME_RELEASE_BROWSER_HANDOFF_HOST_MISSING', executable: true });
-  assertComponentFile({ path: join(release.releasePath, 'forge-workflow-supervisor-native-host'), identity: release.workflowSupervisorNativeHostArtifactIdentity, missingCode: 'RUNTIME_RELEASE_WORKFLOW_SUPERVISOR_NATIVE_HOST_MISSING', executable: true });
   assertComponentFile({ path: join(release.releasePath, 'process-runner.js'), identity: release.processRunnerArtifactIdentity, missingCode: 'RUNTIME_RELEASE_PROCESS_RUNNER_MISSING', executable: true });
   assertComponentFile({ path: join(release.releasePath, 'forge-check-runner'), identity: release.checkRunnerArtifactIdentity, missingCode: 'RUNTIME_RELEASE_CHECK_RUNNER_MISSING', executable: true });
   assertComponentFile({ path: join(release.releasePath, 'forge-typescript-navigation'), identity: release.typescriptNavigationArtifactIdentity, missingCode: 'RUNTIME_RELEASE_TYPESCRIPT_NAVIGATION_MISSING', executable: true });

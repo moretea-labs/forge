@@ -58,7 +58,6 @@ export const COMPILED_RUNTIME_RELEASE_COMPONENT_FIELDS = [
   'connectorEntrypoint', 'connectorArtifactIdentity',
   'browserNodeBridgeEntrypoint', 'browserNodeBridgeArtifactIdentity',
   'browserHandoffEntrypoint', 'browserHandoffArtifactIdentity',
-  'workflowSupervisorNativeHostEntrypoint', 'workflowSupervisorNativeHostArtifactIdentity',
   'processRunnerEntrypoint', 'processRunnerArtifactIdentity',
   'checkRunnerEntrypoint', 'checkRunnerArtifactIdentity',
   'contextPackEntrypoint', 'contextPackArtifactIdentity',
@@ -182,12 +181,6 @@ export function loadRuntimeReleaseManifest(
     identityField: 'browserHandoffArtifactIdentity',
     canonicalEntry: 'browser-handoff-host.js',
   });
-  const workflowSupervisorNativeHost = optionalRuntimeComponent({
-    value,
-    entryField: 'workflowSupervisorNativeHostEntrypoint',
-    identityField: 'workflowSupervisorNativeHostArtifactIdentity',
-    canonicalEntry: 'forge-workflow-supervisor-native-host',
-  });
   const processRunner = optionalRuntimeComponent({
     value,
     entryField: 'processRunnerEntrypoint',
@@ -299,7 +292,6 @@ export function loadRuntimeReleaseManifest(
     ...(connector ?? {}),
     ...(browserNodeBridge ?? {}),
     ...(browserHandoff ?? {}),
-    ...(workflowSupervisorNativeHost ?? {}),
     ...(processRunner ?? {}),
     ...(checkRunner ?? {}),
     ...(typescriptNavigation ?? {}),

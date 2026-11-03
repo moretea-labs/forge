@@ -516,10 +516,7 @@ describe('runtime release materialization', () => {
     expect(existsSync(handoffHostPath)).toBe(true);
     expect(readFileSync(handoffHostPath, 'utf8')).toBe('handoff-host-bundle');
     expect(staged.browserHandoffArtifactIdentity).toMatch(/^sha256:/);
-    const supervisorNativeHostPath = join(staged.releasePath, 'forge-workflow-supervisor-native-host');
-    expect(existsSync(supervisorNativeHostPath)).toBe(true);
-    expect(readFileSync(supervisorNativeHostPath, 'utf8')).toBe('supervisor-native-host-binary');
-    expect(staged.workflowSupervisorNativeHostArtifactIdentity).toMatch(/^sha256:/);
+    expect(existsSync(join(staged.releasePath, 'forge-workflow-supervisor-native-host'))).toBe(false);
     expect(existsSync(join(staged.releasePath, 'browser-automation-helper'))).toBe(false);
     const externalPluginProbePath = join(staged.releasePath, 'external-unix-socket-probe.cjs');
     expect(existsSync(externalPluginProbePath)).toBe(true);
@@ -562,8 +559,6 @@ describe('runtime release materialization', () => {
     expect(manifest.browserNodeBridgeArtifactIdentity).toBe(staged.browserNodeBridgeArtifactIdentity);
     expect(manifest.browserHandoffEntrypoint).toBe('browser-handoff-host.js');
     expect(manifest.browserHandoffArtifactIdentity).toBe(staged.browserHandoffArtifactIdentity);
-    expect(manifest.workflowSupervisorNativeHostEntrypoint).toBe('forge-workflow-supervisor-native-host');
-    expect(manifest.workflowSupervisorNativeHostArtifactIdentity).toBe(staged.workflowSupervisorNativeHostArtifactIdentity);
     expect(manifest.desktopHelperEntrypoint).toBeUndefined();
     expect(manifest.desktopHelperArtifactIdentity).toBeUndefined();
     expect(manifest.executionMode).toBe('standalone-binary');

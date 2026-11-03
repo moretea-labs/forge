@@ -27,7 +27,6 @@ import {
   uninstallForgeRuntimeService,
 } from '../root/service';
 import { removeRetiredCandidateExecutionLane } from '../root/runtime-lane';
-import { inspectWorkflowSupervisorBrowserAdapter, installWorkflowSupervisorBrowserAdapter } from '../plugins/computer-chatgpt-browser-adapter-installer';
 import {
   inspectKnownGoodRecoveryBundle,
   knownGoodRecoveryBundleRoot,
@@ -72,8 +71,6 @@ import {
 import { createRecoveryHttpTransport, type RecoveryHttpTransport } from './http-transport';
 import { observeRecoveryWatchdogHealth } from './watchdog-heartbeat';
 import { RECOVERY_DAEMON_LABEL } from './service-labels';
-import { resolveWorkflowSupervisorForgeHome, workflowSupervisorSocketPath } from '../../../supervisor/paths';
-import { reconcileStoppedWorkflowSupervisorSocket } from '../../../supervisor/server';
 import {
   migrateStoppedRepoLocalControllerHomeStorage,
   repoLocalControllerHomeStorageNeedsMigration,
@@ -1164,23 +1161,6 @@ function quarantine(config: RecoveryConfig, release: ReleaseEvidence | undefined
   writeJson(quarantinePath(config), { schemaVersion: 1, releases });
 }
 
-/** Optional installed projection belongs to the whole active release. Fresh
- * Candidate B/uninstalled Homes never opt into global browser registration.
- * Loaded-tab capability and provider connectivity remain separate evidence.
- */
-function syncInstalledBrowserAdapterProjection(controllerHome: string): void {
-  let projection = inspectWorkflowSupervisorBrowserAdapter(controllerHome);
-  if (!existsSync(projection.extensionPath) && !existsSync(projection.nativeHostPath)) return;
-  const authority = readRuntimeReleaseAuthority(controllerHome);
-  if (!authority) throw new Error('RECOVERY_BROWSER_ADAPTER_RELEASE_AUTHORITY_MISSING');
-  if (!projection.projectionCurrent || projection.activeReleaseId !== authority.active.releaseId) {
-    projection = installWorkflowSupervisorBrowserAdapter(controllerHome);
-  }
-  if (!projection.projectionCurrent || projection.activeReleaseId !== authority.active.releaseId) {
-    throw new Error(`RECOVERY_BROWSER_ADAPTER_PROJECTION_UNVERIFIED: ${projection.detail}`);
-  }
-}
-
 async function rollbackPreviousLocked(config: RecoveryConfig, reason: string): Promise<RollbackResult> {
   const before = await verifyStableRuntime(config);
   const active = before.releases.active;
@@ -1226,7 +1206,6 @@ async function rollbackPreviousLocked(config: RecoveryConfig, reason: string): P
       || committed.active.artifactIdentity !== target.artifactIdentity
       || committed.active.manifestSha256 !== target.manifestSha256
     ) throw new Error('RECOVERY_ROLLBACK_AUTHORITY_MISMATCH');
-    syncInstalledBrowserAdapterProjection(config.controllerHome);
     quarantine(config, active, 'whole-Runtime rollback completed');
     audit(config, 'rollback_succeeded', {
       operationId,
@@ -2645,17 +2624,8 @@ async function stopPrimaryRuntimeForReleaseTransition(input: {
       };
     }
   }
-  const supervisorSocket = workflowSupervisorSocketPath(resolveWorkflowSupervisorForgeHome(input.config.controllerHome));
-  const supervisor = await reconcileStoppedWorkflowSupervisorSocket(supervisorSocket);
-  if (!supervisor.ok) {
-    return {
-      ok: false,
-      detail: `Workflow Supervisor writer did not quiesce after Runtime stop: ${supervisor.detail}`,
-      staleListenerCleanup,
-    };
-  }
   // A corrupt config is reconstructed through the original validated writer
-  // only after the Runtime service, listener, owner and Supervisor are quiescent.
+  // only after the Runtime service, listener, and owner are quiescent.
   try {
     readForgeRuntimeServiceConfig(forgeRuntimeServicePaths(input.config.controllerHome).configPath);
   } catch {
@@ -2666,7 +2636,7 @@ async function stopPrimaryRuntimeForReleaseTransition(input: {
   }
   return {
     ok: true,
-    detail: `primary Runtime ${input.service.platform} service, owner, TCP listener, and Workflow Supervisor writer are quiescent`,
+    detail: `primary Runtime ${input.service.platform} service, owner, and TCP listener are quiescent`,
     staleListenerCleanup,
   };
 }
@@ -2806,7 +2776,6 @@ async function rebindStartAndVerifyPrimaryRuntime(input: {
 
   try {
     input.beforeStart?.();
-    syncInstalledBrowserAdapterProjection(input.config.controllerHome);
   } catch (error) {
     return {
       ok: false,
@@ -4504,13 +4473,10 @@ function candidateCanaryReceipts(
   if (diagnostics?.database.outcome !== 'pass' || diagnostics?.releaseCoherence.outcome !== 'pass' || diagnostics?.mcpEndToEnd.outcome !== 'pass') {
     throw new Error('RELEASE_SESSION_CANDIDATE_RUNTIME_DIAGNOSTICS_FAILED');
   }
-  const supervisorSocket = workflowSupervisorSocketPath(resolveWorkflowSupervisorForgeHome(session.candidate.controllerHome));
-  if (!existsSync(supervisorSocket)) throw new Error('RELEASE_SESSION_CANDIDATE_SUPERVISOR_CANARY_FAILED');
   return [
     { id: 'recovery', kind: 'candidate_canary', summary: 'Candidate B stopped and restarted through Recovery service lifecycle and returned whole-Runtime healthy' },
     { id: 'mcp', kind: 'candidate_canary', summary: 'Candidate B MCP initialize/tools-list/read-only-call/session-close passed using the Candidate credential' },
     { id: 'scheduler', kind: 'candidate_canary', summary: 'Candidate B scheduler readiness diagnostic passed after recovery restart' },
-    { id: 'supervisor', kind: 'candidate_canary', summary: `Candidate B Workflow Supervisor socket is live at ${supervisorSocket}` },
     { id: 'controller', kind: 'candidate_canary', summary: 'Candidate B controller read-only facade completed through MCP after restart' },
   ];
 }
@@ -4902,14 +4868,7 @@ export async function cutoverConfiguredRuntimeReleaseSession(
       const reconciliationDeadline = Date.now() + reconciliationTimeoutMs;
       let stableNow = observeRuntimeStatus(config.controllerHome);
       const stableIdentity = () => {
-        // A crash after authority publication must not bypass projection
-        // verification. Reconciliation observes only; the release transaction
-        // owns any projection mutation before starting the Runtime.
-        const projection = inspectWorkflowSupervisorBrowserAdapter(config.controllerHome);
-        const installed = existsSync(projection.extensionPath) || existsSync(projection.nativeHostPath);
-        const projectionVerified = !installed || (projection.projectionCurrent
-          && projection.activeReleaseId === stableNow.snapshot?.releaseId);
-        const liveRuntimeIdentityVerified = stableNow.running && stableNow.ready && !stableNow.stale && projectionVerified;
+        const liveRuntimeIdentityVerified = stableNow.running && stableNow.ready && !stableNow.stale;
         return {
           candidateIsStable: Boolean(
             liveRuntimeIdentityVerified
@@ -5004,10 +4963,6 @@ export async function cutoverConfiguredRuntimeReleaseSession(
         };
       }
 
-      const projection = inspectWorkflowSupervisorBrowserAdapter(config.controllerHome);
-      const projectionFailure = (existsSync(projection.extensionPath) || existsSync(projection.nativeHostPath))
-        && (!projection.projectionCurrent || projection.activeReleaseId !== stableNow.snapshot?.releaseId)
-        ? `; installed browser projection is unverified: ${projection.detail}` : '';
       session = advanceReleaseSession({
         controllerHome: config.controllerHome,
         sessionId,
@@ -5016,7 +4971,7 @@ export async function cutoverConfiguredRuntimeReleaseSession(
         receipts: [{
           id: 'cutover_failed',
           kind: 'cutover',
-          summary: `${reason}; Stable A outcome is not fully verified${projectionFailure}; Candidate B is retired`.slice(0, 500),
+          summary: `${reason}; Stable A outcome is not fully verified; Candidate B is retired`.slice(0, 500),
         }],
       });
       const cleanup = cleanupRetiredCandidateLane(config, session);
@@ -5030,7 +4985,7 @@ export async function cutoverConfiguredRuntimeReleaseSession(
       return {
         ok: false as const,
         attempted: true,
-        detail: `${reason}; Candidate B is retired but Stable A cutover/rollback outcome is not fully verified${projectionFailure}${cleanup.ok ? '' : `; Candidate B cleanup failed: ${cleanup.detail}`}`,
+        detail: `${reason}; Candidate B is retired but Stable A cutover/rollback outcome is not fully verified${cleanup.ok ? '' : `; Candidate B cleanup failed: ${cleanup.detail}`}`,
         releaseSession: session,
         ...(activation ? { activation } : {}),
       };
