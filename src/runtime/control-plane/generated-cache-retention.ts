@@ -525,6 +525,7 @@ export function recordIosTestEvidenceOwner(input: {
   repoRoot: string;
   resultBundlePath: string;
   producerRequestId: string;
+  associatedWorkId?: string;
 }): { recorded: boolean; resourceId?: string; reason?: string } {
   const root = resolve(input.repoRoot, '.forge', 'ios', 'test-results');
   const target = resolve(input.repoRoot, input.resultBundlePath);
@@ -542,6 +543,7 @@ export function recordIosTestEvidenceOwner(input: {
     targetRef: target,
     creator: 'forge:ios.xcode_test:' + input.producerRequestId,
     repoId: input.repoId,
+    ...(input.associatedWorkId ? { associatedWorkId: input.associatedWorkId } : {}),
     retentionIntent: 'persistent_until_explicit_release',
     cleanupCapable: true,
   });

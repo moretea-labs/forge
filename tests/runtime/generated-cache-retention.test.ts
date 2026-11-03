@@ -429,6 +429,24 @@ describe('generated repository cache retention', () => {
     expect(existsSync(path)).toBe(true);
   });
 
+  test('preserves an explicit originating Work association in the existing inode-bound OwnedResource', () => {
+    const root = repository();
+    const controllerHome = join(root, 'controller-home');
+    const resultBundlePath = '.forge/ios/test-results/20261103T140000Z-32-2-FlowTests.xcresult';
+    mkdirSync(join(root, resultBundlePath), { recursive: true });
+    const args = { controllerHome, repoRoot: root, repoId: 'repo-work-evidence',
+      resultBundlePath, producerRequestId: 'JOB-work-evidence', associatedWorkId: 'work-exact-origin' };
+    const created = recordIosTestEvidenceOwner(args);
+    expect(created.recorded).toBe(true);
+    const stored = getOwnedResource(controllerHome, created.resourceId!);
+    expect(stored?.provenance.associatedWorkId).toBe('work-exact-origin');
+    expect(stored?.retention.intent).toBe('persistent_until_explicit_release');
+    expect(recordIosTestEvidenceOwner(args)).toEqual(created);
+    expect(() => recordIosTestEvidenceOwner({ ...args, associatedWorkId: 'work-different' }))
+      .toThrow('OWNED_RESOURCE_IDENTITY_CONFLICT');
+    expect(existsSync(join(root, resultBundlePath))).toBe(true);
+  });
+
   test('bounds Controller Home Browser disposable artifacts by TTL, count/bytes and active grace', () => {
     const root = repository();
     const controllerHome = join(root, 'controller-home');

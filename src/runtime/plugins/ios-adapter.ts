@@ -525,6 +525,7 @@ export async function executeIosPluginAction(input: AssistantPluginActionExecuti
             repoRoot: input.repoRoot,
             resultBundlePath: testResult.resultBundlePath,
             producerRequestId: input.jobId ?? input.requestId,
+            ...(input.workId && input.workRepoId === input.repoId ? { associatedWorkId: input.workId } : {}),
           });
         } catch {
           // Test result remains inspectable, but its evidence is never cleanup-
