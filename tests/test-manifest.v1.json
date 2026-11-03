@@ -814,7 +814,7 @@
       "module": "browser",
       "resource": "pure"
     },
-    "tests/runtime/computer-chatgpt-reasoning-control.test.ts": {
+    "tests/runtime/chatgpt-provider-dispatch-lane.test.ts": {
       "module": "browser",
       "resource": "pure"
     },

@@ -1092,6 +1092,7 @@ requireMissing('adapters/scheduler/controller-binding.ts');
 requireMissing('src/runtime/root/controller-progression-composition.ts');
 requireMissing('src/runtime/root/scheduled-controller-composition.ts');
 requireMissing('scripts/smoke-user-request-continuation-restart.ts');
+requireMissing('tests/runtime/computer-chatgpt-reasoning-control.test.ts');
 forbid('src/runtime/control-plane/facade/handoff-inbox-application.ts', /triggerResolvedContinuation|rearmControllerRoundAfterProviderUserAction/, 'resolved handoff must not auto rearm or wake a model turn');
 forbid('src/runtime/workflow/schedules/work-continuation.ts', /rearmControllerRoundAfterProviderUserAction|touchSchedulerWakeSignal|ensureScheduledControllerBinding/, 'Schedule and historical Handoff reading must not rearm a Controller turn');
 requireMissing('tests/runtime/controller-progression-continuation.test.ts');
