@@ -29,10 +29,17 @@ afterEach(() => {
 });
 
 function result(command: string, args: string[], input: Partial<IosCommandResult> = {}): IosCommandResult {
+  const defaultSimctlInventory = command === 'xcrun' && args[0] === 'simctl' && args[1] === 'list'
+    ? JSON.stringify({ devices: { 'com.apple.CoreSimulator.SimRuntime.iOS-27-0': [
+      { name: 'Test iPhone', udid: 'D', state: 'Shutdown', isAvailable: true },
+      { name: 'Test iPhone 1', udid: 'D1', state: 'Shutdown', isAvailable: true },
+      { name: 'Test iPhone 2', udid: 'D2', state: 'Shutdown', isAvailable: true },
+    ] } })
+    : '';
   return {
     ok: input.ok ?? true,
     status: input.status ?? (input.ok === false ? 1 : 0),
-    stdout: input.stdout ?? '',
+    stdout: input.stdout ?? defaultSimctlInventory,
     stderr: input.stderr ?? '',
     command: [command, ...args],
   };
@@ -134,6 +141,148 @@ describe('iOS development simulator reliability', () => {
     expect('alreadyBooted' in boot ? boot.alreadyBooted : undefined).toBe(true);
     expect('booted' in boot ? boot.booted : undefined).toBe(false);
     expect('ownership' in boot ? boot.ownership : undefined).toBe('reused');
+  });
+
+  test('reuses the exact warm Simulator even at the two-device cap without another boot', () => {
+    const commands: string[][] = [];
+    setIosDevelopmentHooksForTest({
+      platform: () => 'darwin',
+      runCommand: (command, args) => {
+        commands.push([command, ...args]);
+        if (command === 'xcrun' && args[1] === 'list') return result(command, args, {
+          stdout: JSON.stringify({ devices: { 'com.apple.CoreSimulator.SimRuntime.iOS-27-0': [
+            { name: 'First', udid: 'D1', state: 'Booted' },
+            { name: 'Second', udid: 'D2', state: 'Booted' },
+          ] } }),
+        });
+        return result(command, args);
+      },
+    });
+    const reused = iosSimulatorBoot({ udid: 'D1' });
+    expect(reused.ready).toBe(true);
+    expect('ownership' in reused ? reused.ownership : undefined).toBe('reused');
+    expect('alreadyBooted' in reused ? reused.alreadyBooted : undefined).toBe(true);
+    expect(commands.filter((argv) => argv[1] === 'simctl' && argv[2] === 'boot')).toHaveLength(0);
+    expect(commands.filter((argv) => argv[2] === 'bootstatus')).toHaveLength(1);
+    expect(commands.filter((argv) => argv[2] === 'shutdown')).toHaveLength(0);
+    expect(commands.filter((argv) => argv[0] === 'open')).toHaveLength(0);
+    const manual = iosSimulatorBoot({ udid: 'D2', openSimulator: true });
+    expect(manual.ready).toBe(true);
+    expect(commands.filter((argv) => argv[0] === 'open')).toHaveLength(1);
+  });
+
+  test('a new third iOS Simulator fails closed with current booted owners and never calls boot', () => {
+    const commands: string[][] = [];
+    setIosDevelopmentHooksForTest({
+      platform: () => 'darwin',
+      runCommand: (command, args) => {
+        commands.push([command, ...args]);
+        if (command === 'xcrun' && args[1] === 'list') return result(command, args, {
+          stdout: JSON.stringify({ devices: {
+            'com.apple.CoreSimulator.SimRuntime.watchOS-27-0': [
+              { name: 'Watch', udid: 'W1', state: 'Booted', isAvailable: true },
+            ],
+            'com.apple.CoreSimulator.SimRuntime.iOS-27-0': [
+              { name: 'First', udid: 'D1', state: 'Booted', isAvailable: true },
+              { name: 'Second', udid: 'D2', state: 'Booted', isAvailable: true },
+              { name: 'Third', udid: 'D3', state: 'Shutdown', isAvailable: true },
+            ],
+          } }),
+        });
+        return result(command, args);
+      },
+    });
+    const blocked = iosSimulatorBoot({ udid: 'D3', openSimulator: false });
+    expect(blocked.ready).toBe(false);
+    expect('error' in blocked ? blocked.error?.code : undefined).toBe('IOS_SIMULATOR_CAPACITY_REACHED');
+    expect('bootedDevices' in blocked ? blocked.bootedDevices?.map((device) => device.udid) : undefined).toEqual(['D1', 'D2']);
+    expect(commands.some((argv) => argv[2] === 'boot' || argv[2] === 'shutdown')).toBe(false);
+  });
+
+  test('boots one new Simulator below the cap but never shuts down a successful warm device', () => {
+    const commands: string[][] = [];
+    setIosDevelopmentHooksForTest({
+      platform: () => 'darwin',
+      runCommand: (command, args) => {
+        commands.push([command, ...args]);
+        if (command === 'xcrun' && args[1] === 'list') return result(command, args, {
+          stdout: JSON.stringify({ devices: { 'com.apple.CoreSimulator.SimRuntime.iOS-27-0': [
+            { name: 'First', udid: 'D1', state: 'Booted', isAvailable: true },
+            { name: 'New', udid: 'D2', state: 'Shutdown', isAvailable: true },
+          ] } }),
+        });
+        return result(command, args);
+      },
+    });
+    const started = iosSimulatorBoot({ udid: 'D2', openSimulator: false });
+    expect(started.ready).toBe(true);
+    expect('ownership' in started ? started.ownership : undefined).toBe('started_by_work');
+    expect(commands.filter((argv) => argv[2] === 'boot')).toHaveLength(1);
+    expect(commands.filter((argv) => argv[2] === 'bootstatus')).toHaveLength(1);
+    expect(commands.filter((argv) => argv[2] === 'shutdown')).toHaveLength(0);
+  });
+
+  test('unknown inventory or device state fails closed without starting any Simulator', () => {
+    for (const failure of ['inventory', 'state', 'absent'] as const) {
+      const commands: string[][] = [];
+      setIosDevelopmentHooksForTest({
+        platform: () => 'darwin',
+        runCommand: (command, args) => {
+          commands.push([command, ...args]);
+          if (command === 'xcrun' && args[1] === 'list') {
+            if (failure === 'inventory') return result(command, args, { ok: false, stderr: 'simctl blocked' });
+            return result(command, args, { stdout: JSON.stringify({ devices: {
+              'com.apple.CoreSimulator.SimRuntime.iOS-27-0': [
+                { name: 'New', udid: 'D2', state: failure === 'state' ? 'Booting' : 'Shutdown', isAvailable: true },
+              ],
+            } }) });
+          }
+          return result(command, args);
+        },
+      });
+      const blocked = iosSimulatorBoot({ udid: 'D3', openSimulator: false });
+      expect(blocked.ready).toBe(false);
+      expect('error' in blocked ? blocked.error?.code : undefined).toBe(
+        failure === 'inventory' ? 'IOS_SIMULATOR_INVENTORY_UNAVAILABLE' : 'IOS_SIMULATOR_UNAVAILABLE',
+      );
+      expect(commands.some((argv) => argv[2] === 'boot')).toBe(false);
+      if (failure === 'state') {
+        const unsettled = iosSimulatorBoot({ udid: 'D2', openSimulator: false });
+        expect('error' in unsettled ? unsettled.error?.code : undefined).toBe('IOS_SIMULATOR_STATE_NOT_READY');
+      }
+    }
+  });
+
+  test('XCTest uses an already booted exact UDID and refuses a third implicit destination', async () => {
+    const repo = repository();
+    const commands: string[][] = [];
+    const inventory = { devices: { 'com.apple.CoreSimulator.SimRuntime.iOS-27-0': [
+      { name: 'First', udid: 'D1', state: 'Booted', isAvailable: true },
+      { name: 'Second', udid: 'D2', state: 'Booted', isAvailable: true },
+      { name: 'Third', udid: 'D3', state: 'Shutdown', isAvailable: true },
+    ] } };
+    setIosDevelopmentHooksForTest({
+      platform: () => 'darwin',
+      runCommand: (command, args) => {
+        commands.push([command, ...args]);
+        if (command === 'xcrun' && args[1] === 'list') return result(command, args, { stdout: JSON.stringify(inventory) });
+        if (command === 'xcodebuild' && args.includes('-list')) return result(command, args, {
+          stdout: JSON.stringify({ project: { schemes: ['AppTests'] } }),
+        });
+        return result(command, args);
+      },
+    });
+    const blocked = await iosXcodeTest(repo.record, { scheme: 'AppTests', udid: 'D3' });
+    expect(blocked.ready).toBe(false);
+    expect('error' in blocked ? blocked.error?.code : undefined).toBe('IOS_SIMULATOR_CAPACITY_REACHED');
+    expect(commands.some((argv) => argv[0] === 'xcodebuild' && argv[1] === 'test')).toBe(false);
+
+    const reused = await iosXcodeTest(repo.record, { scheme: 'AppTests' });
+    expect(reused.ready).toBe(true);
+    const testCommand = commands.find((argv) => argv[0] === 'xcodebuild' && argv[1] === 'test');
+    expect(testCommand).toContain('platform=iOS Simulator,id=D1');
+    expect(commands.some((argv) => argv[2] === 'boot')).toBe(false);
+    expect(commands.some((argv) => argv[2] === 'shutdown')).toBe(false);
   });
 
   test('discovers Xcode projects nested deeply in monorepos while pruning generated dependency trees', () => {
@@ -370,7 +519,7 @@ describe('iOS development simulator reliability', () => {
     expect(() => iosAppInstall(repo.record, { udid: 'D', appPath: outsideApp, artifactRoot })).toThrow('IOS_APP_PATH_NOT_BOUNDED');
   });
 
-  test('keeps smoke stages unique, reuses one simulator inventory, and filters logs by app executable', async () => {
+  test('keeps smoke stages unique, rechecks Simulator capacity, and filters logs by app executable', async () => {
     const repo = repository();
     let simulatorListCalls = 0;
     let logPredicate = '';
@@ -429,7 +578,7 @@ describe('iOS development simulator reliability', () => {
     expect(review.ready).toBe(false);
     expect(review.blockedStage).toBe('screenshot');
     expect(review.udid).toBe('BOOTED');
-    expect(simulatorListCalls).toBe(1);
+    expect(simulatorListCalls).toBe(2);
     expect(logPredicate).toContain('process == "Example"');
     const stageIds = review.stages.map((stage) => stage.stage);
     expect(new Set(stageIds).size).toBe(stageIds.length);
