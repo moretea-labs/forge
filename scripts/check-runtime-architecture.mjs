@@ -1136,12 +1136,6 @@ forbidBetween('src/runtime/plugins/gmail-adapter.ts', "actionId: 'send_owner_not
 requireText('adapters/mcp/runtime-gateway/runtime-tool-definitions.ts', "work_id: { type: 'string', minLength: 1, maxLength: 256");
 // Recovery's three typed live/unknown provider states are read-only
 // observations; none may become a sticky preflight failure or spend Send.
-// A single Store-owned typed proof validator and refund writer replace the
-// legacy generic pre_send_rejection/no-click string authority. Keep these
-// guards pointed at the actual safety boundary, not obsolete implementation text.
-requireText('adapters/computer/chrome-extension/content.js', 'recoverNoStopReadiness');
-requireText('adapters/computer/chrome-extension/background.js', 'requiresRecoveryCapability');
-forbid('adapters/computer/chrome-extension/content.js', /\bstop\.click\s*\(/, 'recovery must not click Stop and interfere with a possibly live provider turn');
 requireText('src/runtime/workflow/schedules/engine.ts', 'evaluateScheduleTriggerEligibility');
 requireText('src/runtime/workflow/schedules/engine.ts', 'evaluateScheduleOccurrenceAdmission');
 forbid('src/runtime/workflow/schedules/engine.ts', /executeControllerProgression|reconcileControllerProgression|workflow_supervisor_owns_outer_turn|CONTROLLER_WAKE_TOTAL_TIMEOUT/, 'Schedule cannot dispatch retired autonomous Controller wake');
@@ -1248,6 +1242,8 @@ requireMissing('src/runtime/bootstrap/activation-transaction.ts');
 requireMissing('src/runtime/bootstrap/stable-bootstrap.ts');
 requireMissing('src/runtime/supervisor');
 requireMissing('supervisor');
+requireMissing('adapters/computer/chrome-extension');
+requireMissing('adapters/computer/chatgpt-extension-target.ts');
 requireMissing('src/runtime/root/workflow-supervisor-runtime.ts');
 requireMissing('src/runtime/root/workflow-supervisor-composition.ts');
 requireMissing('adapters/mcp/runtime-gateway/workflow-supervisor-adapter.ts');
@@ -1261,48 +1257,9 @@ forbid('src/runtime/plugins/browser-runtime.ts', /excludedProviderIds|BrowserPro
 forbid('adapters/chatgpt/controller-round-host.ts', /readControllerRoundContextSnapshot\s*\(/, 'ChatGPT continuation prompt must not load full semantic snapshots');
 forbid('src/runtime/plugins/browser-macos-bridge.ts', /PLUGIN_BROWSER_NATIVE_PROCESS_AMBIGUOUS|pids\.length\s*!==\s*1/, 'Chrome GUI PID selection has one authority: Desktop Operator');
 requireText('src/runtime/plugins/browser-macos-bridge.ts', 'await assertMacOsBrowserApplicationRunning(request.product, timeoutMs)');
-requireText('adapters/computer/chrome-extension/manifest.json', 'nativeMessaging');
-requireText('adapters/computer/chrome-extension/background.js', 'computer_extension_claim');
-requireText('adapters/computer/chrome-extension/background.js', 'computer_extension_complete');
-requireText('adapters/computer/chrome-extension/background.js', "typeof observation.composerText === 'string'");
-requireText('adapters/computer/chrome-extension/background.js', "command.identity.namespace === 'chatgpt.bootstrap'");
-forbid('adapters/computer/chrome-extension/background.js', /if \(typeof observation\?\.url === 'string' && observation\.url\) return observation/, 'New bootstrap URL does not attest composer/model hydration before pre-send preparation');
-requireText('adapters/computer/chrome-extension/background.js', 'chrome.runtime.connectNative');
-forbid('adapters/computer/chrome-extension/background.js', /browser_begin_effect|browser_observe_effect|browser_poll|browser_tasks|browser_observe_assistant|task_register|reserve_enrollment/, 'Computer Chrome provider must not consume or mutate Workflow Supervisor effect authority; it executes only typed Computer target commands');
-requireText('adapters/computer/chrome-extension/content.js', 'ForgeComputerChatgptCore');
-requireText('adapters/computer/chrome-extension/content.js', "bootstrapTargetGuard: 'project-checked-before-send-v1'");
-requireText('adapters/computer/chrome-extension/content.js', 'exactComposerText(payload)');
-requireText('adapters/computer/chrome-extension/content.js', "return text.trim() ? text : '';");
-requireText('adapters/computer/chrome-extension/content.js', "blocks.every((block) => block.tagName === 'P')");
-requireText('adapters/computer/chrome-extension/content.js', "blocks.map((block) => {");
-requireText('adapters/computer/chrome-extension/background.js', 'resolveTarget(command.identity, true, command.providerBinding, instanceId)');
-requireText('adapters/computer/chrome-extension/background.js', 'resolveTarget(command.identity, false, command.providerBinding, instanceId)');
-forbid('adapters/computer/chrome-extension/background.js', /resolveTarget\(command\.identity,\s*(?:true|false),\s*command\.providerBinding\)/, 'Both Ensure and read/send target resolution must verify the active Chrome provider session');
-for (const [kind, handler] of [
-  ['ensure', 'executeEnsure'], ['observe', 'executeObserve'],
-  ['prepare', 'executePrepare'], ['dispatch', 'executeDispatch'],
-  ['find_marker', 'executeFindMarker'], ['close', 'executeClose'],
-]) {
-  requireText('adapters/computer/chrome-extension/background.js',
-    `if (command.kind === '${kind}') return await ${handler}(command, instanceId);`);
-}
-requireText('adapters/computer/chatgpt-extension-target.ts', "response.result.code === 'COMPUTER_CHATGPT_BOOTSTRAP_PINNED_TAB_MISSING'");
-requireText('adapters/computer/chatgpt-extension-target.ts', 'this.authority.withSurfaceLease(this.controllerHome, previous.targetId');
-requireText('adapters/computer/chatgpt-extension-target.ts', 'return await this.openBootstrap(projectUrl, bootstrapKey, false)');
-requireText('adapters/computer/chatgpt-extension-target.ts', 'if (pinned && !bootstrapMatch) continue;');
-requireText('adapters/computer/chatgpt-extension-target.ts', 'const candidate = pinned');
-requireText('adapters/computer/chatgpt-extension-target.ts', 'observed.ownerToken === binding.ownerToken');
-forbid('adapters/computer/chrome-extension/background.js', /resolveTarget\(command\.identity,\s*false\)\.catch/, 'Extension worker must recover a pinned bootstrap from the durable Computer binding, not its ephemeral in-worker Map');
-forbid('adapters/computer/chrome-extension/content.js', /core\.normalizeText\(payload\)/, 'Provider pre-send evidence must preserve whitespace in immutable effect payload');
 requireText('src/runtime/plugins/browser-adapter.ts', "browserMode: browserMode(raw.browserMode) ?? 'attach_preferred'");
 requireText('src/runtime/plugins/browser-adapter.ts', "nativeAttachMode: browserNativeAttachMode(raw.nativeAttachMode) ?? 'auto'");
-requireText('adapters/computer/chrome-extension/content.js', 'FORGE_RETIRED_DRAFT_V1');
 requireText('docs/architecture/CURRENT.md', 'A STOPPED bootstrap draft may be replaced only from the canonical Supervisor ledger');
-forbid('adapters/computer/chrome-extension/background.js', /supervisor\.sqlite|BEGIN IMMEDIATE/, 'Computer Chrome provider must reconstruct provider bindings from live inventory and Computer target authority rather than browser shadow persistence');
-// Provider-local browser identity may persist; tasks and effects remain Supervisor-owned.
-forbid('adapters/computer/chrome-extension/content.js', /chrome\.storage|supervisor\.sqlite|BEGIN IMMEDIATE/, 'Computer Chrome content script must remain a page capability surface rather than durable authority');
-forbid('adapters/computer/chrome-extension/background.js', /task_register|reserve_enrollment|supervisor\.sqlite|BEGIN IMMEDIATE/, 'Computer Chrome provider must never become durable workflow authority');
-forbid('adapters/computer/chrome-extension/content.js', /task_register|reserve_enrollment|supervisor\.sqlite|BEGIN IMMEDIATE|chrome\.storage/, 'Computer Chrome content script must observe/execute one exact page only and never own durable workflow state');
 
 requireMissing('docs/architecture/current/stable-external-runtime-supervisor.md');
 requireMissing('docs/architecture/modules/controller-runtime/stable-supervisor.md');
@@ -2166,8 +2123,6 @@ forbid(
   'canonical continuation/provider effect identity must survive Controller authority rotation',
 );
 requireText('packages/plugin-runtime/computer/conversation-target.ts', "observation?: ComputerChatgptConversationObservation");
-requireText('adapters/computer/chatgpt-extension-target.ts', 'unhydratedExactConversation(identity, observation)');
-requireText('adapters/computer/chatgpt-extension-target.ts', 'parseCanonicalChatgptConversationIdentity(observation.url)');
 // Cognitive Plane stays one advisory application path: all Controller tools expose the
 // same optional settlement metadata, the MCP server settles it after the primary
 // outcome, and Supervisor/external launchers consume Cognition-only projections.
