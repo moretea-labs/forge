@@ -1777,7 +1777,13 @@ export function applyRuntimeMaintenance(
       // Embedded/test repositories may not be present in the Controller registry.
       // The explicit maintenance action still safely covers their canonical root.
     }
+    // Explicit maintenance reuses the scheduled retention rotator. Without a
+    // changing ordinal, each manual pass repeatedly exhausts the same first
+    // root and cannot reach later managed checkouts or high-cardinality caches.
+    const cacheScanNowMs = Date.now();
     generatedCacheGc = cleanupGeneratedRepositoryCheckoutCaches(cacheRepository, {
+      nowMs: cacheScanNowMs,
+      rootStartIndex: Math.floor(cacheScanNowMs / 60_000),
       graceMs: 60_000,
       maxEntries: Math.max(1_000, (options.maxCandidates ?? 50) * 20),
       maxRemovals: Math.max(1, options.maxCandidates ?? 50),
