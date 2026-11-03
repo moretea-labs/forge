@@ -829,6 +829,63 @@ describe('repository command execution lifecycle', () => {
     expect(listActiveLeases(controllerHome, repository.repoId)).toHaveLength(0);
   });
 
+  test('exact remote branch CAS deletion succeeds despite unrelated checkout writer lease (#469)', async () => {
+    const controllerHome = tempRoot('forge-469-remote-home-');
+    const repoRoot = tempRoot('forge-469-remote-repo-');
+    const remoteRoot = tempRoot('forge-469-remote-bare-');
+    const repository = seedRepo(controllerHome, repoRoot);
+    persistControllerAccessMode(controllerHome, 'full_access');
+    git(remoteRoot, ['init', '--bare']);
+    git(repoRoot, ['remote', 'add', 'origin', remoteRoot]);
+    const branch = 'review/closed-pr-469';
+    git(repoRoot, ['push', 'origin', 'HEAD:refs/heads/' + branch]);
+    const exactHead = gitOutput(remoteRoot, ['rev-parse', 'refs/heads/' + branch]);
+    const checkoutHead = gitOutput(repoRoot, ['rev-parse', 'HEAD']);
+    writeFileSync(join(repoRoot, 'unrelated-local-edit.txt'), 'preserve owner bytes\n');
+    const blocker = 'unrelated-checkout-owner';
+    const held = acquireExecutionLeases(controllerHome, repository.repoId, blocker, [
+      { resourceKey: 'workspace:' + repository.activeCheckoutId, mode: 'write' },
+    ], { visibility: 'ephemeral' });
+    expect(held.acquired).toBe(true);
+    try {
+      // An exact lease that does not match the remote head must never delete it.
+      const stale = await executeRepositoryCommandViaProcessRuntime({
+        controllerHome, repository,
+        command: ['git', 'push', '--porcelain',
+          '--force-with-lease=refs/heads/' + branch + ':' + 'b'.repeat(40),
+          'origin', ':refs/heads/' + branch],
+        timeoutMs: 10_000,
+        executionIdentity: executionIdentityForRepository(repository),
+      });
+      const staleTerminal = stale.process!.completed ? stale.process!
+        : await waitRepositoryCommandProcess(controllerHome, repository.repoId, stale.process!.processId, { timeoutMs: 10_000 });
+      expect(staleTerminal).toMatchObject({ completed: true, ok: false });
+      expect(gitOutput(remoteRoot, ['rev-parse', 'refs/heads/' + branch])).toBe(exactHead);
+
+      const result = await executeRepositoryCommandViaProcessRuntime({
+        controllerHome,
+        repository,
+        command: ['git', 'push', '--porcelain',
+          '--force-with-lease=refs/heads/' + branch + ':' + exactHead,
+          'origin', ':refs/heads/' + branch],
+        timeoutMs: 10_000,
+        executionIdentity: executionIdentityForRepository(repository),
+      });
+      expect(result.process?.processId).toBeTruthy();
+      const terminal = result.process!.completed ? result.process!
+        : await waitRepositoryCommandProcess(controllerHome, repository.repoId, result.process!.processId, { timeoutMs: 10_000 });
+      expect(terminal).toMatchObject({ completed: true, ok: true });
+      const absent = spawnSync('git', ['ls-remote', remoteRoot, 'refs/heads/' + branch], { encoding: 'utf8' });
+      expect(absent.status).toBe(0);
+      expect(absent.stdout.trim()).toBe('');
+      expect(gitOutput(repoRoot, ['rev-parse', 'HEAD'])).toBe(checkoutHead);
+      expect(readFileSync(join(repoRoot, 'unrelated-local-edit.txt'), 'utf8')).toBe('preserve owner bytes\n');
+      expect(listActiveLeases(controllerHome, repository.repoId).map((lease) => lease.ownerJobId)).toEqual([blocker]);
+    } finally {
+      releaseExecutionLeases(controllerHome, repository.repoId, blocker);
+    }
+  });
+
   test('keeps repository-change Work identity when source work also requests remote delivery', () => {
     const controllerHome = tempRoot('forge-work-remote-kind-home-');
     const repoRoot = tempRoot('forge-work-remote-kind-repo-');

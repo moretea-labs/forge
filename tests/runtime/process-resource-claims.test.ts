@@ -19,6 +19,49 @@ function lease(resourceKey: string, mode: 'read' | 'write' | 'exclusive'): Execu
 }
 
 describe('Process Runtime fine-grained resource claims', () => {
+  test('exact leased remote review-branch deletion does not acquire an unrelated checkout writer (#469)', () => {
+    const sha = 'a'.repeat(40);
+    const branch = 'ios/onboarding-welcome-review-20261026';
+    const exact = ['git', 'push', '--porcelain',
+      '--force-with-lease=refs/heads/' + branch + ':' + sha,
+      'origin', ':refs/heads/' + branch];
+    // Do not downgrade Git authorization: only the physical resource lease is narrowed.
+    expect(classifyRepositoryCommand(exact, 'ios/integration').risk).toBe('destructive');
+    const claims = claimsForRepositoryCommand(exact, 'repo1', 'checkout-dirty', 'ios/integration');
+    expect(claims).toEqual([{ resourceKey: 'remote:repo1', mode: 'exclusive' }]);
+    expect(claimsConflict(claims[0]!, lease('workspace:checkout-dirty', 'write'))).toBe(false);
+    expect(claimsConflict(claims[0]!, lease('git-index:checkout-dirty', 'exclusive'))).toBe(false);
+    expect(claimsConflict(claims[0]!, lease('git-refs:repo1', 'exclusive'))).toBe(false);
+    expect(claimsConflict(claims[0]!, lease('remote:repo1', 'exclusive'))).toBe(true);
+    expect(claimsConflict(claims[0]!, lease('remote:repo2', 'exclusive'))).toBe(false);
+
+    const variants: Array<readonly string[] | string> = [
+      ['git', 'push', 'origin', ':refs/heads/' + branch],
+      ['git', 'push', '--force-with-lease=refs/heads/' + branch + ':' + sha.slice(1),
+        'origin', ':refs/heads/' + branch],
+      ['git', 'push', '--force-with-lease=refs/heads/' + branch + ':' + sha,
+        'origin', ':refs/heads/other-branch'],
+      ['git', 'push', '--force-with-lease=refs/heads/main:' + sha, 'origin', ':refs/heads/main'],
+      ['git', 'push', '--force-with-lease=refs/heads/ios/integration:' + sha, 'origin', ':refs/heads/ios/integration'],
+      ['git', 'push', '--force-with-lease=refs/heads/release/1.8:' + sha, 'origin', ':refs/heads/release/1.8'],
+      ['git', 'push', '--force-with-lease=refs/heads/' + branch + ':' + sha, 'upstream', ':refs/heads/' + branch],
+      ['git', 'push', '--force-with-lease=refs/heads/' + branch + ':' + sha, 'origin', ':refs/heads/' + branch, '--tags'],
+      'git push --force-with-lease=refs/heads/' + branch + ':' + sha + ' origin :refs/heads/' + branch,
+    ];
+    for (const unsafe of variants) {
+      const conservative = claimsForRepositoryCommand(unsafe, 'repo1', 'checkout-dirty', 'ios/integration');
+      expect(conservative.some((claim) => claim.resourceKey === 'remote:repo1')).toBe(false);
+      expect(conservative).toContainEqual({ resourceKey: 'workspace:checkout-dirty', mode: 'write' });
+    }
+    expect(claimsForRepositoryCommand([
+      'git', 'push', '--force-with-lease=refs/heads/' + branch + ':' + sha,
+      'origin', '--delete', branch,
+    ], 'repo1', 'checkout-dirty', 'ios/integration')).toEqual([
+      { resourceKey: 'remote:repo1', mode: 'exclusive' },
+    ]);
+  });
+
+
   test('explicit disjoint Xcode DerivedData permits concurrent real leases while shared and unknown caches block', () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-xcode-cache-'));
     try {
