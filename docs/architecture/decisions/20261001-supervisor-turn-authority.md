@@ -15,12 +15,16 @@ An explicit same-task conversation migration may carry only an existing Work
 projection of its exact source; unrelated bindings remain under their own authority.
 Work-owned enrollment retains its existing exact-conversation conflict fence.
 
-Transport observation failure is never conversation-migration authority. A missing
-extension receiver or repeated unreadable snapshot leaves the same exact causal
-obligation intact under existing bounded diagnostics/backoff; it cannot prove
-that an applied provider turn is no longer active. Automatic migration requires
-the existing committed continuation boundary or a live terminal capacity banner;
-other conversation changes remain explicit operator decisions.
+Transport observation failure is not Provider completion/failure evidence. The
+user-authorized no-progress policy (#313, 2026-11-02) nevertheless permits the
+existing consumer to recover an expired model turn without waiting forever for
+that evidence. Its persistent deadline is checked before browser reads; a new
+recovery turn continues from current Issue/source/receipts. Failed same-chat
+recovery escalates to the same authorized Project's fresh conversation, with
+atomic old-obligation retirement and late-command/completion fencing. The old
+Provider outcome remains unknown; the original prompt is never re-dispatched.
+Repeated migrations cool down instead of permanently exhausting automation.
+Account-wide Retry-After still delays all recovery delivery.
 
 The Supervisor Effect prompt carries immutable task identity, outcome objective and terminal receipt; it is not a per-turn checklist, execution-time budget, or reason to perform a status probe before work. Ordinary CONTINUE turns should resume substantive work for as long as safe, useful actions remain. A terminal C receipt is a protocol acknowledgment, not evidence of productive progress; observed tool calls and deliverables are separate evidence. JSON metadata and Project instructions do not grant a missing ChatGPT App capability.
 

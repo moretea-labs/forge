@@ -50,7 +50,7 @@ export interface EditValidationRunState {
   reviewer?: string;
   note?: string;
   timeoutMs?: number;
-  leaseWaitMs: number;
+  leaseWaitMs?: number;
   status: 'running' | 'completed' | 'failed';
   ok?: boolean;
   error?: { code: string; message: string };
@@ -672,9 +672,11 @@ export async function startOrJoinEditValidation(
     reviewer: input.reviewer,
     note: input.note,
     timeoutMs: input.timeoutMs,
+    // Device Checks may wait in the existing Process lease lane for hours.
+    // Do not convert an unspecified queue budget into a hard 15s fail-fast.
     leaseWaitMs: typeof input.leaseWaitMs === 'number' && Number.isFinite(input.leaseWaitMs)
-      ? Math.max(0, Math.min(Math.trunc(input.leaseWaitMs), 15_000))
-      : 0,
+      ? Math.max(0, Math.min(Math.trunc(input.leaseWaitMs), 24 * 60 * 60_000))
+      : undefined,
     status: 'running',
     createdAt: now(),
     updatedAt: now(),

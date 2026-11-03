@@ -410,6 +410,23 @@ export class WorkflowSupervisorControlPlane {
 
   /** Read-only stall classification for one task; no lifecycle authority. */
   taskStall(taskId: string): ReturnType<WorkflowSupervisorStore['taskStall']> { return this.store.taskStall(this.requireTask(taskId).taskId); }
+  /** Existing consumer tick owns time-based recovery even when browser reads fail. */
+  recoverProgressDeadline(taskId: string, nowMs: number, graceMs: number) {
+    const task = this.requireTask(taskId);
+    if (!this.browserTaskActiveForExternalEffect(task)) return undefined;
+    const expired = this.store.progressDeadline(taskId, nowMs, graceMs, this.hooks.workProgressFingerprint?.(task));
+    if (!expired) return undefined;
+    // A still-unbound bootstrap has no conversation to recover in. Its next
+    // deadline re-enrolls in the exact already-authorized Project.
+    const fresh = expired.fresh || task.conversationId.startsWith('bootstrap:');
+    const projectUrl = fresh ? this.bootstrapProjectUrl(taskId) : undefined;
+    const origin = fresh ? `fresh-conversation:${taskId}:deadline:${expired.source.effectId}` : `provider-recovery:${expired.source.effectId}`;
+    const id = stableEffectId(origin);
+    const checkpoint = this.store.getLatestCompletion(taskId)?.proposal.checkpoint;
+    const reason = `超时自动恢复：先核对现有 Issue、代码、Git/Process 回执，接续未完工作；原轮次结果未知。${checkpoint ? `进度：${checkpoint}` : ''}`;
+    return this.store.reserveProgressDeadlineRecovery({ taskId, sourceEffectId: expired.source.effectId, nowMs, fresh,
+      ...(projectUrl ? { projectUrl } : {}), replacement: { effectId: id, prompt: this.renderPrompt(task, id, fresh ? 'enrollment' : 'recovery', undefined, reason) } });
+  }
   /**
    * Explicit operator move of one task's exact conversation. Chatting in a new
    * conversation is never an automatic answer to provider backpressure: a 429 is

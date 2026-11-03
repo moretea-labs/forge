@@ -23,9 +23,9 @@ import {
   assertRepositoryCommandNoPluginExecutionBypass,
   assertRepositoryCommandStableHostIdentity,
 } from '../../../cli/repositories/command-scope';
-import { claimsForRepositoryCommand, scopeResourceClaims, toProcessClaims } from './resource-claims';
+import { claimsForRepositoryCommand, claimsRequireLiveDeviceAdmission, LIVE_DEVICE_ADMISSION_WAIT_MS, scopeResourceClaims, toProcessClaims } from './resource-claims';
 import {
-  spawnManagedProcess,
+  spawnWithQueuedAdmission,
   getProcessHandle,
   waitForProcess,
   cancelProcess,
@@ -352,11 +352,26 @@ export async function executeRepositoryCommandViaProcessRuntime(
     };
   }
 
+  const claims = scopeResourceClaims(
+    claimsForRepositoryCommand(
+      input.command,
+      executionIdentity.repositoryId,
+      executionIdentity.checkoutId,
+      input.repository.defaultBranch,
+      input.repository.canonicalRoot,
+      cwd,
+    ),
+    executionIdentity.repositoryId,
+    executionIdentity.checkoutId,
+    input.workId,
+  );
+  const usesLiveDevice = claimsRequireLiveDeviceAdmission(claims);
+
   // Ordinary local commands own no durable Process/Lease state. Validate the
   // immutable repository identity first, then execute through the authorized
   // non-persistent repository executor. Runtime/release durability is not a
   // command-execution tax.
-  if (decision.route === 'process_direct') {
+  if (decision.route === 'process_direct' && !usesLiveDevice) {
     assertExecutionIdentity({
       controllerHome: input.controllerHome,
       identity: executionIdentity,
@@ -493,21 +508,7 @@ export async function executeRepositoryCommandViaProcessRuntime(
     Math.min(input.timeoutMs ?? 15 * 60_000, 24 * 60 * 60_000),
   );
 
-  const claims = scopeResourceClaims(
-    claimsForRepositoryCommand(
-      input.command,
-      executionIdentity.repositoryId,
-      executionIdentity.checkoutId,
-      input.repository.defaultBranch,
-      input.repository.canonicalRoot,
-      cwd,
-    ),
-    executionIdentity.repositoryId,
-    executionIdentity.checkoutId,
-    input.workId,
-  );
-
-  const handle = await spawnManagedProcess({
+  const handle = await spawnWithQueuedAdmission({
     controllerHome: input.controllerHome,
     repoId: executionIdentity.repositoryId,
     checkoutId: executionIdentity.checkoutId,
@@ -518,6 +519,7 @@ export async function executeRepositoryCommandViaProcessRuntime(
     command: toProcessCommand(input.command, cwd),
     // Short commands complete inside this budget; longer ones return a running handle.
     interactiveWaitMs,
+    leaseWaitMs: usesLiveDevice ? LIVE_DEVICE_ADMISSION_WAIT_MS : undefined,
     timeoutMs,
     maxOutputBytes: input.maxOutputBytes,
     resourceClaims: toProcessClaims(claims),
@@ -529,7 +531,7 @@ export async function executeRepositoryCommandViaProcessRuntime(
     },
     signal: input.signal,
     returnHandleImmediately: input.returnHandleImmediately === true,
-  });
+  }, usesLiveDevice);
 
   const route: RepositoryCommandRoute = handle.completed ? 'process_direct' : 'process_managed';
   return {

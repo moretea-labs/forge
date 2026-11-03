@@ -2917,7 +2917,7 @@ test('Supervisor preparation rejection is durably release-fenced and never spend
   for (const busyRelease of ['busy-release-one', 'busy-release-two', 'busy-release-three']) {
     release.id = busyRelease;
     await adapter.runOnce();
-    clock.nowMs += 30 * 60_000;
+    clock.nowMs += 30_000;
   }
   expect(preparations).toBe(3);
   expect(store.nextBrowserEffect(taskId)).toMatchObject({ mode: 'send', effect: { effectId: effect.effectId } });
@@ -2925,7 +2925,7 @@ test('Supervisor preparation rejection is durably release-fenced and never spend
   expect(store.effectDispatchBudget(effect.effectId).generations).toBe(0);
   providerBusy = false;
   release.id = 'release-one';
-  for (let n = 0; n < 6; n++) { await adapter.runOnce(); clock.nowMs += 30 * 60_000; }
+  for (let n = 0; n < 6; n++) { await adapter.runOnce(); clock.nowMs += 30_000; }
   expect(preparations).toBe(4);
   expect(sends).toBe(0);
   expect(store.effectDispatchBudget(effect.effectId).generations).toBe(0);
@@ -4958,13 +4958,13 @@ test('final assistant receipt successor waits for observed provider idle before 
   expect(store.latestEffectDispatch(successor!.effectId)).toBeUndefined();
   blankTimeline = false;
   dehydrateOnPrepare = true;
-  nowMs += 15 * 60_000;
+  nowMs += 5 * 60_000;
   await adapter.runOnce();
   expect(dispatched).toEqual([]);
   expect(store.latestEffectDispatch(successor!.effectId)).toBeUndefined();
   // Recover the very same prepared effect; no new Send identity or generation.
   blankTimeline = false;
-  nowMs += 15 * 60_000;
+  nowMs += 5 * 60_000;
   await adapter.runOnce();
   expect(dispatched).toEqual([successor!.prompt]);
   expect(store.latestEffectDispatch(successor!.effectId)?.generation).toBe(1);

@@ -1,6 +1,6 @@
 import { describe, expect, test, beforeEach, afterEach } from 'bun:test';
 import { createHash } from 'crypto';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
@@ -2044,6 +2044,53 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
 
     expect(listExecutionJobs(fx.controllerHome, fx.repository.repoId).length).toBe(jobsBefore);
     expect(listProcessRecords(fx.controllerHome, fx.repository.repoId).length).toBe(processesBefore);
+  });
+
+  test('structured worktree cleanup routes via one registered Checkout and never creates a Work or ExecutionJob (#41)', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    const linked = join(fx.root, 'linked-cleanup-target');
+    git(fx.repoRoot, ['worktree', 'add', '--detach', linked, 'HEAD']);
+    const registered = addRepositoryCheckout({
+      repoId: fx.repository.repoId, path: linked, controllerHome: fx.controllerHome,
+    });
+    const target = registered.checkouts.find((item) => item.localRoot === realpathSync(linked));
+    expect(target).toBeDefined();
+    // registerRepository from a linked checkout is a selection projection,
+    // not permission to replace the canonical repository registration.
+    const linkedProjection = registerRepository({ path: linked, controllerHome: fx.controllerHome });
+    expect(linkedProjection.repoId).toBe(fx.repository.repoId);
+    expect(getRepository(fx.repository.repoId, fx.controllerHome)?.canonicalRoot).toBe(fx.repository.canonicalRoot);
+    expect(getRepository(fx.repository.repoId, fx.controllerHome)?.displayName).toBe(fx.repository.displayName);
+    const jobsBefore = listExecutionJobs(fx.controllerHome, fx.repository.repoId).length;
+    expect(await routeDurableMcpCall(fx.ctx, 'repository_git_remove_worktree', {
+      repo_id: fx.repository.repoId, checkout_id: target!.checkoutId,
+    })).toBeUndefined();
+    const preview = await callRepositoryTool(fx.controllerHome, 'repository_git_remove_worktree', {
+      repo_id: fx.repository.repoId, checkout_id: target!.checkoutId,
+    });
+    expect(preview?.isError).not.toBe(true);
+    const state = (preview?.structuredContent as { cleanup: {
+      status: string; expectedHead: string; physicalIdentity: string;
+      execution: { approvalToken: string };
+    } }).cleanup;
+    expect(state.status).toBe('preview');
+    expect(existsSync(linked)).toBe(true);
+    const removed = await callRepositoryTool(fx.controllerHome, 'repository_git_remove_worktree', {
+      repo_id: fx.repository.repoId,
+      checkout_id: target!.checkoutId,
+      confirm_cleanup: true,
+      expected_head: state.expectedHead,
+      expected_identity: state.physicalIdentity,
+      preview_token: state.execution.approvalToken,
+    });
+    expect(removed?.isError).not.toBe(true);
+    expect(((removed?.structuredContent as { cleanup: { status: string } }).cleanup).status).toBe('removed');
+    expect(existsSync(linked)).toBe(false);
+    expect(getRepository(fx.repository.repoId, fx.controllerHome)?.canonicalRoot).toBe(fx.repository.canonicalRoot);
+    expect(getRepository(fx.repository.repoId, fx.controllerHome)?.checkouts
+      .find((item) => item.checkoutId === target!.checkoutId)?.lifecycle).toBe('removed');
+    expect(listExecutionJobs(fx.controllerHome, fx.repository.repoId).length).toBe(jobsBefore);
   });
 
   test('long run_check returns a managed Process Runtime handle without ExecutionJob creation', async () => {

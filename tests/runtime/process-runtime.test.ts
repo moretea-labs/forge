@@ -31,6 +31,7 @@ import {
   waitForCheckProcess,
   waitForProcess,
 } from '../../src/runtime/execution/process-runtime';
+import type { ProcessHandle } from '../../src/runtime/execution/process-runtime/types';
 import { createProcessRecord, listProcessRecords, updateProcessRecord } from '../../src/runtime/execution/process-runtime/store';
 import { resolveProcessRunnerEntryPath, resolveProcessRunnerInvocation } from '../../src/runtime/execution/process-runtime/runtime';
 import { forgeInstanceExecutionTarget, recordProcessHandleIndexEntry } from '../../src/runtime/execution/process-runtime/handle-index';
@@ -1580,6 +1581,50 @@ describe('run_check Process Runtime facade', () => {
     expect(healthy.handle).toMatchObject({ completed: true, status: 'succeeded', ok: true, exitCode: 0 });
   });
 
+  test('live simulator run_check returns managed admission immediately and completes without replay', async () => {
+    const fx = fixture();
+    const checkFile = join(fx.repoRoot, '.forge', 'checks.json');
+    const registry = JSON.parse(readFileSync(checkFile, 'utf8')) as {
+      checks: Record<string, unknown>;
+    };
+    registry.checks['device-quick-ok'] = {
+      description: 'simulator queue test',
+      command: ['node', '-e', 'process.stdout.write("device checked")'],
+      timeoutMs: 10_000,
+      effects: { reads: ['.'], hostServices: ['ios-simulator-test'] },
+    };
+    writeFileSync(checkFile, JSON.stringify(registry, null, 2));
+    const holder = await spawnManagedProcess({
+      controllerHome: fx.controllerHome, repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
+      command: { kind: 'argv', executable: 'node', args: ['-e', 'setTimeout(() => process.exit(0), 1700)'], cwd: fx.repoRoot },
+      resourceClaims: [{ resourceKey: 'host-service:ios-simulator-test', mode: 'write' }],
+      interactiveWaitMs: 0,
+      timeoutMs: 10_000,
+    });
+    const started = Date.now();
+    const waiting = await runCheckViaProcessRuntime({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      repoRoot: fx.repoRoot,
+      checkId: 'device-quick-ok',
+      requestId: 'device-quick-queued',
+      interactiveWaitMs: 10,
+      executionIdentity: executionIdentityForRepository(fx.repository),
+    });
+    expect(waiting.mode).toBe('managed');
+    expect(Date.now() - started).toBeLessThan(1_500);
+    expect(waiting.process).toMatchObject({
+      status: 'starting', completed: false,
+      concurrencyWait: { source: 'resource_lease', disposition: 'wait' },
+    });
+    expect((await waitForCheckProcess(fx.controllerHome, fx.repository.repoId, waiting.process!.processId, 15_000)))
+      .toMatchObject({ status: 'succeeded', completed: true, ok: true });
+    expect((await waitForProcess(fx.controllerHome, fx.repository.repoId, holder.processId, { timeoutMs: 10_000 })).ok).toBe(true);
+  }, 25_000);
+
   test('ordinary long check returns an in-memory lightweight handle without Process or Lease state', async () => {
     const fx = fixture();
     const before = listProcessRecords(fx.controllerHome, fx.repository.repoId).length;
@@ -2474,6 +2519,186 @@ describe('Process Runtime real lease contention', () => {
     expect(await waitForProcess(fx.controllerHome, fx.repository.repoId, hostWork.processId, { timeoutMs: 5_000 }))
       .toMatchObject({ completed: true, ok: true, status: 'succeeded' });
   });
+
+  test('four independent simulator checks queue on one existing Process lease and all complete', async () => {
+    const fx = fixture();
+    const eventsPath = join(fx.root, 'device-events.log');
+    const queued: string[] = [];
+    const scripts = Array.from({ length: 4 }, (_, index) => {
+      const command = [
+        'const fs = require("fs");',
+        'const [path, id] = process.argv.slice(1);',
+        'fs.appendFileSync(path, "start:" + id + "\\n");',
+        'setTimeout(() => { fs.appendFileSync(path, "end:" + id + "\\n"); }, 170);',
+      ].join(' ');
+      return spawnManagedProcess({
+        controllerHome: fx.controllerHome,
+        repoId: fx.repository.repoId,
+        checkoutId: fx.repository.activeCheckoutId,
+        executionIdentity: executionIdentityForRepository(fx.repository),
+        command: { kind: 'argv', executable: 'node', args: ['-e', command, eventsPath, String(index)], cwd: fx.repoRoot },
+        origin: { surface: 'check', checkId: `device-${index}`, requestId: `device-request-${index}` },
+        resourceClaims: [{ resourceKey: 'host-service:ios-simulator-test', mode: 'write' }],
+        leaseWaitMs: 60_000,
+        interactiveWaitMs: 0,
+        timeoutMs: 12_000,
+        onAdmissionWait: (handle) => queued.push(handle.processId),
+      });
+    });
+    const handles = await Promise.all(scripts);
+    expect(new Set(handles.map((handle) => handle.processId)).size).toBe(4);
+    expect(queued.length).toBeGreaterThanOrEqual(2);
+    const completions = await Promise.all(handles.map((handle) =>
+      waitForProcess(fx.controllerHome, fx.repository.repoId, handle.processId, { timeoutMs: 20_000 })));
+    expect(completions.every((handle) => handle.completed && handle.ok && handle.status === 'succeeded')).toBe(true);
+    const events = readFileSync(eventsPath, 'utf8').trim().split('\n');
+    const active = new Set<string>();
+    const seen = new Set<string>();
+    for (const event of events) {
+      const [kind, id] = event.split(':');
+      if (kind === 'start') {
+        expect(active.size).toBe(0);
+        active.add(id!);
+        seen.add(id!);
+      } else {
+        expect(active.has(id!)).toBe(true);
+        active.delete(id!);
+      }
+    }
+    expect(active.size).toBe(0);
+    expect(seen.size).toBe(4);
+    expect(events.length).toBe(8);
+    expect(listActiveLeases(fx.controllerHome, fx.repository.repoId)
+      .filter((lease) => lease.resourceKey === 'host-service:ios-simulator-test')).toHaveLength(0);
+  }, 40_000);
+
+  test('queued simulator Process returns a joinable handle and can cancel before device admission', async () => {
+    const fx = fixture();
+    const deviceClaim = [{ resourceKey: 'host-service:ios-simulator-test', mode: 'write' as const }];
+    const holder = await spawnManagedProcess({
+      controllerHome: fx.controllerHome, repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
+      command: { kind: 'argv', executable: 'node', args: ['-e', 'setTimeout(() => process.exit(0), 1100)'], cwd: fx.repoRoot },
+      resourceClaims: deviceClaim, timeoutMs: 10_000, interactiveWaitMs: 0,
+    });
+    let signalQueued!: (handle: ProcessHandle) => void;
+    const queued = new Promise<ProcessHandle>((resolve) => { signalQueued = resolve; });
+    const output = join(fx.root, 'should-not-run.txt');
+    const execution = spawnManagedProcess({
+      controllerHome: fx.controllerHome, repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
+      command: {
+        kind: 'argv', executable: 'node',
+        args: ['-e', 'require("fs").writeFileSync(process.argv[1], "ran")', output], cwd: fx.repoRoot,
+      },
+      resourceClaims: deviceClaim, timeoutMs: 10_000, interactiveWaitMs: 0,
+      leaseWaitMs: 60_000, onAdmissionWait: signalQueued,
+    });
+    const handle = await queued;
+    expect(handle.status).toBe('starting');
+    expect(handle.concurrencyWait?.resourceKeys).toContain('host-service:ios-simulator-test');
+    expect(getProcessHandle(fx.controllerHome, fx.repository.repoId, handle.processId))
+      .toMatchObject({ completed: false, status: 'starting' });
+    const cancelled = await cancelProcess(fx.controllerHome, fx.repository.repoId, handle.processId);
+    expect(cancelled.status).toBe('cancelled');
+    expect((await execution).status).toBe('cancelled');
+    expect(existsSync(output)).toBe(false);
+    expect((await waitForProcess(fx.controllerHome, fx.repository.repoId, holder.processId, { timeoutMs: 10_000 })).ok).toBe(true);
+  }, 25_000);
+
+  test('execute_command scripted iOS journey joins the same device Process queue', async () => {
+    const fx = fixture();
+    mkdirSync(join(fx.repoRoot, 'scripts'), { recursive: true });
+    writeFileSync(join(fx.repoRoot, 'scripts', 'run_ios_test_layer.sh'), '#!/bin/bash\necho queued-script-complete\n');
+    const holder = await spawnManagedProcess({
+      controllerHome: fx.controllerHome, repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
+      command: { kind: 'argv', executable: 'node', args: ['-e', 'setTimeout(() => process.exit(0), 1300)'], cwd: fx.repoRoot },
+      resourceClaims: [{ resourceKey: 'host-service:ios-simulator-test', mode: 'write' }],
+      timeoutMs: 10_000, interactiveWaitMs: 0,
+    });
+    const started = Date.now();
+    const command = await executeRepositoryCommandViaProcessRuntime({
+      controllerHome: fx.controllerHome,
+      repository: fx.repository,
+      executionIdentity: executionIdentityForRepository(fx.repository),
+      command: ['bash', 'scripts/run_ios_test_layer.sh', 'fast-journey'],
+      timeoutMs: 10_000, interactiveWaitMs: 10,
+      requestId: 'sim-queue-exec-command',
+    });
+    expect(command.route).toBe('process_managed');
+    expect(Date.now() - started).toBeLessThan(1_100);
+    expect(command.process).toMatchObject({ status: 'starting', completed: false });
+    const completed = await waitForProcess(fx.controllerHome, fx.repository.repoId, command.process!.processId, { timeoutMs: 15_000 });
+    expect(completed).toMatchObject({ completed: true, status: 'succeeded', ok: true });
+    expect(completed.stdout).toContain('queued-script-complete');
+    expect((await waitForProcess(fx.controllerHome, fx.repository.repoId, holder.processId, { timeoutMs: 10_000 })).ok).toBe(true);
+  }, 25_000);
+
+  test('queued simulator check rejects stale checkout HEAD before starting the device command', async () => {
+    const fx = fixture();
+    const resourceClaims = [{ resourceKey: 'host-service:ios-simulator-test', mode: 'write' as const }];
+    const holder = await spawnManagedProcess({
+      controllerHome: fx.controllerHome, repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
+      command: { kind: 'argv', executable: 'node', args: ['-e', 'setTimeout(() => process.exit(0), 1500)'], cwd: fx.repoRoot },
+      resourceClaims, interactiveWaitMs: 0, timeoutMs: 10_000,
+    });
+    let signalQueued!: (handle: ProcessHandle) => void;
+    const queued = new Promise<ProcessHandle>((resolve) => { signalQueued = resolve; });
+    const output = join(fx.root, 'stale-must-not-run.txt');
+    const pending = spawnManagedProcess({
+      controllerHome: fx.controllerHome, repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
+      command: { kind: 'argv', executable: 'node', args: ['-e', 'require("fs").writeFileSync(process.argv[1], "wrong-HEAD")', output], cwd: fx.repoRoot },
+      resourceClaims, interactiveWaitMs: 0, timeoutMs: 10_000,
+      leaseWaitMs: 20_000, onAdmissionWait: signalQueued,
+    });
+    expect((await queued).status).toBe('starting');
+    writeFileSync(join(fx.repoRoot, 'README.md'), 'new revision during device queue\n');
+    expect(spawnSync('git', ['-C', fx.repoRoot, 'add', 'README.md']).status).toBe(0);
+    expect(spawnSync('git', ['-C', fx.repoRoot, 'commit', '-m', 'changed while waiting']).status).toBe(0);
+    const result = await pending;
+    expect(result.status).toBe('failed');
+    expect(result.stderr).toContain('PROCESS_QUEUED_CHECK_SOURCE_CHANGED');
+    expect(existsSync(output)).toBe(false);
+    expect((await waitForProcess(fx.controllerHome, fx.repository.repoId, holder.processId, { timeoutMs: 10_000 })).ok).toBe(true);
+  }, 25_000);
+
+  test('explicit simulator queue admission remains alive beyond thirty seconds', async () => {
+    const fx = fixture();
+    const claim = [{ resourceKey: 'host-service:ios-simulator-test', mode: 'write' as const }];
+    const holder = await spawnManagedProcess({
+      controllerHome: fx.controllerHome, repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
+      command: { kind: 'argv', executable: 'node', args: ['-e', 'setTimeout(() => process.exit(0), 31_500)'], cwd: fx.repoRoot },
+      resourceClaims: claim, interactiveWaitMs: 0, timeoutMs: 40_000,
+    });
+    let signalQueued!: (handle: ProcessHandle) => void;
+    const queued = new Promise<ProcessHandle>((resolve) => { signalQueued = resolve; });
+    const started = Date.now();
+    const pending = spawnManagedProcess({
+      controllerHome: fx.controllerHome, repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
+      command: { kind: 'argv', executable: 'node', args: ['-e', 'process.stdout.write("after-30-seconds")'], cwd: fx.repoRoot },
+      resourceClaims: claim, interactiveWaitMs: 0, timeoutMs: 10_000,
+      leaseWaitMs: 45_000, onAdmissionWait: signalQueued,
+    });
+    const waiting = await queued;
+    expect(waiting.status).toBe('starting');
+    const passed = await pending;
+    expect(Date.now() - started).toBeGreaterThan(30_000);
+    expect((await waitForProcess(fx.controllerHome, fx.repository.repoId, passed.processId, { timeoutMs: 10_000 })))
+      .toMatchObject({ completed: true, ok: true, status: 'succeeded' });
+    expect((await waitForProcess(fx.controllerHome, fx.repository.repoId, holder.processId, { timeoutMs: 10_000 })).ok).toBe(true);
+  }, 55_000);
 
   test('cross-Work build-cache checks serialize within the bounded verification budget and still expose true admission timeout', async () => {
     expect(DEFAULT_WORK_CHECK_LEASE_WAIT_MS).toBe(30_000);

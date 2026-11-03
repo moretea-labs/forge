@@ -25,6 +25,7 @@ import {
   updateRepository,
   validateRepository,
 } from '../../../src/cli/repositories/registry';
+import { repositoryGitRemoveWorktree } from '../../../src/cli/repositories/structured-worktree-cleanup';
 import { buildControllerWorkbench } from '../../../src/cli/repositories/workbench';
 import { applySafePatch, buildSafePatchPlan } from '../../../src/cli/repositories/safe-patch';
 import { EDIT_OPERATION_INPUT_SCHEMA } from '../../../src/cli/editing/edit-operation-contract';
@@ -203,6 +204,15 @@ export const repositoryToolDefinitions: McpToolDefinition[] = [
     branch: { type: 'string' },
     force: { type: 'boolean' },
   }, ['branch']),
+
+  definition('repository_git_remove_worktree', 'Preview then safely remove one exactly registered clean, merged, unowned Git linked checkout; never deletes arbitrary paths, the canonical/active checkout, or branches.', {
+    repo_id: repoId,
+    checkout_id: { type: 'string', description: 'Required exact registered target checkout identity; never a filesystem path.' },
+    expected_head: { type: 'string', description: 'Exact HEAD from the current preview, required for confirmation.' },
+    expected_identity: { type: 'string', description: 'Physical device/inode witness from preview, required for confirmation.' },
+    preview_token: { type: 'string', description: 'Exact approval token returned from a clean preview; bound to the Git snapshot.' },
+    confirm_cleanup: { type: 'boolean', description: 'False/omitted previews. True requires expected_head and preview_token.' },
+  }, ['repo_id', 'checkout_id']),
 
   definition('repository_git_commit', 'Stage optional explicit paths and commit through a structured Git action.', {
     repo_id: repoId,
@@ -930,6 +940,18 @@ export async function callRepositoryTool(
         return result({ repoId: repository.repoId, checkoutId: repository.activeCheckoutId, ...repositoryGitDeleteBranch(controllerHome, repository, { branch: args.branch, force: args.force }) as unknown as Record<string, unknown> });
       }
 
+      case 'repository_git_remove_worktree': {
+        if (!repoIdValue) throw new Error('REPOSITORY_ID_REQUIRED');
+        const repository = getRepository(repoIdValue, controllerHome);
+        if (!repository) throw new Error('REPOSITORY_NOT_FOUND');
+        return result({ cleanup: repositoryGitRemoveWorktree(controllerHome, repository, {
+          checkoutId: String(args.checkout_id ?? '').trim(),
+          expectedHead: typeof args.expected_head === 'string' ? args.expected_head : undefined,
+          expectedIdentity: typeof args.expected_identity === 'string' ? args.expected_identity : undefined,
+          previewToken: typeof args.preview_token === 'string' ? args.preview_token : undefined,
+          confirmCleanup: args.confirm_cleanup === true,
+        }) });
+      }
       case 'repository_git_commit': {
         const repository = resolveRepositorySelection({ repoId: repoIdValue || undefined, checkoutId: typeof args.checkout_id === 'string' ? args.checkout_id : undefined, controllerHome, allowSoleRepository: true });
         return result({ commit: repositoryGitCommit(controllerHome, repository, { message: args.message, paths: args.paths, allowEmpty: args.allow_empty }) });

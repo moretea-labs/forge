@@ -176,18 +176,6 @@ export function isMcpToolsListRequest(body: unknown): boolean {
   });
 }
 
-function toolCallOutsideSessionSchema(body: unknown, toolNames: readonly string[] | undefined): boolean {
-  if (!toolNames) return false;
-  const messages = Array.isArray(body) ? body : [body];
-  return messages.some((message) => {
-    if (!message || typeof message !== 'object') return false;
-    const rpc = message as { method?: unknown; params?: { name?: unknown } };
-    return rpc.method === 'tools/call'
-      && typeof rpc.params?.name === 'string'
-      && !toolNames.includes(rpc.params.name);
-  });
-}
-
 function sendMcpToolSurfaceReset(
   res: Response,
   sessionFingerprint: string | undefined,
@@ -651,14 +639,6 @@ async function handleMcpPost(
               return;
             }
           }
-          sendMcpToolSurfaceReset(res, managed.toolSurfaceFingerprint, currentFingerprint);
-          retireAfterToolSurfaceReset(res, registry, sessionId);
-          return;
-        }
-        if (toolCallOutsideSessionSchema(body, managed.toolNames)) {
-          // A call against a newer discovery surface is the same recoverable
-          // schema-fence condition: this transport must reinitialize before it
-          // can execute anything else.
           sendMcpToolSurfaceReset(res, managed.toolSurfaceFingerprint, currentFingerprint);
           retireAfterToolSurfaceReset(res, registry, sessionId);
           return;

@@ -29,10 +29,10 @@ describe("Bootstrap Script Contracts", () => {
     const claude = read("CLAUDE.md");
     const agents = read("AGENTS.md");
 
+    expect(claude).toContain("@AGENTS.md");
+    expect(agents).toContain("GitHub Issues and GitHub Project are the ONLY development progress ledger");
+    expect(agents).toContain("Work is explicit opt-in, never mandatory");
     for (const content of [claude, agents]) {
-      expect(content).toContain("Controller Home");
-      expect(content).toContain("tasks/todos.md");
-      expect(content).toContain("legacy migration inputs");
       expect(content).not.toContain("Durable progress lives under");
       expect(content).not.toContain("tracked derived status snapshot");
     }
