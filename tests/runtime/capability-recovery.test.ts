@@ -916,6 +916,9 @@ describe('runtime maintenance executor', () => {
       expect(applied.generatedCacheGc?.retainedPaths.some((path) => path.endsWith(cacheBuildSuffix))).toBe(true);
       expect(existsSync(join(staleCache, 'Build'))).toBe(true);
     }
+    expect(applied.iosTestEvidenceInventory).toMatchObject({
+      policyVersion: 'ios-test-evidence-inventory-v1', inspectionOnly: true, errors: [],
+    });
     expect(applied.cleanupArtifactGc).toBeDefined();
     expect(applied.applied).toContainEqual(expect.objectContaining({
       kind: 'stale_work_contract',
