@@ -166,6 +166,10 @@ describe('Forge Runtime service', () => {
 
     expect(activeRuntimeEntrypoint(fx.home)).toBe(entry);
     expect(activeRuntimeLaunchSpec(fx.home)?.environment.FORGE_BUILD_VERSION).toBe('1.7.2-test');
+    // The previous installed Runtime requires these derived fields during rollback.
+    const args = activeRuntimeLaunchSpec(fx.home)!.args;
+    const topology = JSON.parse(args[args.indexOf('--deployment-topology') + 1]!);
+    expect(topology.components).toEqual({ workflowSupervisor: true, workflowSupervisorNativeBrowser: true });
     const synced = syncForgeRuntimeActiveEntrypoint(fx.home);
     expect(synced.target).toBe(entry);
     expect(lstatSync(paths.activeEntrypointPath).isSymbolicLink()).toBe(false);
