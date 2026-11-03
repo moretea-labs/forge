@@ -347,7 +347,15 @@ describe('MCP canonical Runtime proxy routing', () => {
       const client = new Client({ name: `proxy-client-${sessionId}`, version: '1.0.0' }, { capabilities: {} });
       await client.connect(clientTransport);
       try {
-        await client.callTool({ name: 'rh_status', arguments: requestId ? { request_id: requestId } : {} });
+        if (sessionId === 'outer-session-a') {
+          const staleTool = await client.callTool({ name: 'summarize_forge_state', arguments: {} });
+          expect(staleTool.isError).toBe(true);
+          expect(staleTool.structuredContent).toMatchObject({
+            error: { code: 'TOOL_NOT_FOUND', action: 'refresh_tools_list' },
+          });
+        }
+        const currentTool = await client.callTool({ name: 'rh_status', arguments: requestId ? { request_id: requestId } : {} });
+        expect(currentTool.structuredContent).toMatchObject({ ok: true });
       } finally {
         await client.close();
         await server.close();
