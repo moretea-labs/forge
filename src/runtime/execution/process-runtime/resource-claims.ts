@@ -578,6 +578,38 @@ function validationDeviceClaims(command: string | readonly string[]): ResourceCl
 }
 
 /**
+ * A literal, exact-SHA CAS deletion of one non-protected remote review branch
+ * has no checkout/index/local-ref writer. Keep opaque push/shell commands on
+ * their existing broad gate, and leave authorization/classification unchanged.
+ */
+function exactLeasedRemoteReviewBranchDeletion(
+  command: string | readonly string[],
+  defaultBranch?: string,
+): boolean {
+  const canonical = normalizeRepositoryCommand(command);
+  if (canonical.kind !== 'argv' || basename(canonical.executable ?? '').toLowerCase() !== 'git') return false;
+  const args = canonical.args ?? [];
+  if (args[0] !== 'push') return false;
+  const options = args.slice(1);
+  const leases = options.filter((arg) => arg.startsWith('--force-with-lease='));
+  if (leases.length !== 1) return false;
+  const match = /^--force-with-lease=refs\/heads\/([A-Za-z0-9][A-Za-z0-9._/-]*):([a-fA-F0-9]{40})$/.exec(leases[0]!);
+  if (!match) return false;
+  const branch = match[1]!;
+  if (branch === defaultBranch || branch.includes('..')
+    || branch.split('/').some((part) => !part || part.startsWith('.') || part.endsWith('.') || part.endsWith('.lock'))
+    || /(?:^|\/)(?:main|master|develop|integration|release|gh-pages)(?:$|\/)/i.test(branch)) return false;
+  const deletingByFlag = options.includes('--delete');
+  if (options.some((arg) => arg.startsWith('-')
+    && arg !== leases[0] && arg !== '--porcelain' && arg !== '--delete')) return false;
+  if (options.filter((arg) => arg === '--porcelain').length > 1
+    || options.filter((arg) => arg === '--delete').length > 1) return false;
+  const operands = options.filter((arg) => !arg.startsWith('-'));
+  return operands.length === 2 && operands[0] === 'origin'
+    && operands[1] === (deletingByFlag ? branch : ':refs/heads/' + branch);
+}
+
+/**
  * Classify resource claims for a repository command without taking whole-repo exclusive locks
  * for ordinary readonly / focused validation commands.
  */
@@ -603,6 +635,12 @@ export function claimsForRepositoryCommand(
 
   if (classification.risk === 'readonly') {
     return [claimWorkspaceRead(checkoutId, repoId)];
+  }
+  // An exact leased remote-only delete cannot alter this checkout. The existing
+  // remote Process lease serializes deletion without claiming unrelated Work
+  // source/index/HEAD. CAS rejects a moved remote head at execution time.
+  if (exactLeasedRemoteReviewBranchDeletion(command, defaultBranch)) {
+    return [{ resourceKey: 'remote:' + repoId, mode: 'exclusive' }];
   }
   if (classification.risk === 'remote_write') {
     // Raw command text cannot prove the external provider/account target. Keep
