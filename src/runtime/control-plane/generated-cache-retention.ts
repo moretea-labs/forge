@@ -2,6 +2,7 @@ import { execFileSync } from 'child_process';
 import {
   existsSync,
   lstatSync,
+  opendirSync,
   readdirSync,
   realpathSync,
   rmSync,
@@ -9,6 +10,7 @@ import {
 import { homedir } from 'os';
 import { basename, join, relative, resolve, sep } from 'path';
 import { repositoryControllerRoot } from '../../effects/controller-home';
+import { measureReclaimablePath } from './lifecycle-retention-metrics';
 
 const DEFAULT_GENERATED_CACHE_GRACE_MS = 6 * 60 * 60_000;
 const DEFAULT_BROWSER_UPLOAD_GRACE_MS = 24 * 60 * 60_000;
@@ -504,6 +506,110 @@ export function cleanupGeneratedRepositoryCheckoutCaches(
   }
   if (remainingEntries <= 0 || remainingRemovals <= 0) aggregate.budgetExhausted = true;
   return aggregate;
+}
+
+/**
+ * Read-only accounting for Forge's iOS test result namespace. A conventional
+ * Xcode result filename is not an ownership receipt, so this deliberately
+ * cannot authorize deletion: active Work/review evidence may still reference
+ * a bundle long after its last filesystem write.
+ */
+export interface IosTestEvidenceInventoryReport {
+  policyVersion: 'ios-test-evidence-inventory-v1';
+  inspectionOnly: true;
+  rootsInspected: number;
+  bundlesObserved: number;
+  producerNamedBundles: number;
+  ownershipUnverified: number;
+  observedBytesLowerBound: number;
+  incompleteSizeCount: number;
+  oldestObservedAgeMs: number;
+  budgetExhausted: boolean;
+  errors: string[];
+}
+
+export function inspectRepositoryIosTestEvidence(
+  repository: GeneratedCacheRepositoryRootSet,
+  options: Pick<GeneratedCacheRetentionOptions, 'nowMs' | 'maxEntries' | 'rootStartIndex'> = {},
+): IosTestEvidenceInventoryReport {
+  const nowMs = options.nowMs ?? Date.now();
+  let budget = Math.max(1, Math.floor(options.maxEntries ?? 4_096));
+  const report: IosTestEvidenceInventoryReport = {
+    policyVersion: 'ios-test-evidence-inventory-v1',
+    inspectionOnly: true,
+    rootsInspected: 0,
+    bundlesObserved: 0,
+    producerNamedBundles: 0,
+    ownershipUnverified: 0,
+    observedBytesLowerBound: 0,
+    incompleteSizeCount: 0,
+    oldestObservedAgeMs: 0,
+    budgetExhausted: false,
+    errors: [],
+  };
+  const roots = [
+    repository.canonicalRoot,
+    ...repository.checkouts
+      .filter((checkout) => checkout.worktree && (checkout.lifecycle ?? 'active') === 'active')
+      .map((checkout) => checkout.localRoot),
+  ].filter((root, index, values) => values.findIndex((item) => canonical(item) === canonical(root)) === index);
+  if (roots.length > 1) {
+    const offset = ((Math.trunc(options.rootStartIndex ?? 0) % roots.length) + roots.length) % roots.length;
+    roots.push(...roots.splice(0, offset));
+  }
+
+  for (const root of roots) {
+    if (budget <= 0) { report.budgetExhausted = true; break; }
+    const evidenceRoot = join(root, '.forge', 'ios', 'test-results');
+    if (!existsSync(evidenceRoot)) continue;
+    if (hasSymlinkAncestor(root, evidenceRoot) || !pathInside(root, evidenceRoot)) {
+      report.errors.push('untrusted_ios_test_evidence_root');
+      continue;
+    }
+    let directory: ReturnType<typeof opendirSync>;
+    try {
+      directory = opendirSync(evidenceRoot);
+    } catch (error) {
+      report.errors.push('ios_test_evidence_scan_failed:' + (error instanceof Error ? error.message : String(error)));
+      continue;
+    }
+    report.rootsInspected += 1;
+    try {
+      for (;;) {
+        if (budget <= 0) { report.budgetExhausted = true; break; }
+        const entry = directory.readSync();
+        if (!entry) break;
+        budget -= 1;
+        const name = String(entry.name);
+        if (!name.endsWith('.xcresult')) continue;
+        const path = join(evidenceRoot, name);
+        try {
+          const stat = lstatSync(path);
+          if (!entry.isDirectory() || !stat.isDirectory() || stat.isSymbolicLink()) {
+            report.ownershipUnverified += 1;
+            continue;
+          }
+          report.bundlesObserved += 1;
+          report.ownershipUnverified += 1;
+          // A name matching iosXcodeTest's artifactStamp is not an
+          // authenticated producer identity or retention grant.
+          if (/^\d{8}T\d{6}Z-\d+-\d+-[A-Za-z0-9._-]+\.xcresult$/.test(name)) report.producerNamedBundles += 1;
+          report.oldestObservedAgeMs = Math.max(report.oldestObservedAgeMs, Math.max(0, nowMs - stat.mtimeMs));
+          if (budget <= 0) { report.budgetExhausted = true; report.incompleteSizeCount += 1; break; }
+          const size = measureReclaimablePath(path, budget);
+          budget = Math.max(0, budget - size.entries);
+          report.observedBytesLowerBound += size.bytes;
+          if (!size.complete) report.incompleteSizeCount += 1;
+        } catch (error) {
+          report.ownershipUnverified += 1;
+          report.errors.push('ios_test_evidence_entry_failed:' + (error instanceof Error ? error.message : String(error)));
+        }
+      }
+    } finally {
+      directory.closeSync();
+    }
+  }
+  return report;
 }
 
 function emptyBrowserArtifactClassReport(): BrowserArtifactClassRetentionReport {
