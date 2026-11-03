@@ -291,6 +291,13 @@ export function activeRuntimeLaunchSpec(controllerHome: string): ActiveRuntimeLa
   }
   const productVersion = activeRuntimeProductVersion(active);
   const topology = normalizeRuntimeDeploymentTopology(config.topology);
+  // Older immutable releases require these derived fields when Recovery rebinds
+  // their launch contract. Current Runtimes ignore them as execution authority.
+  const legacyChatgpt = topology.remoteControllers.includes('chatgpt');
+  const launchTopology = { ...topology, components: {
+    workflowSupervisor: legacyChatgpt,
+    workflowSupervisorNativeBrowser: legacyChatgpt,
+  } };
   return {
     args: [
       '--controller-home', home,
@@ -299,7 +306,7 @@ export function activeRuntimeLaunchSpec(controllerHome: string): ActiveRuntimeLa
       '--host', config.host,
       '--port', String(config.port),
       '--auth-token-file', config.authTokenFile,
-      '--deployment-topology', JSON.stringify(topology),
+      '--deployment-topology', JSON.stringify(launchTopology),
       ...manifestArguments,
     ],
     environment: {
