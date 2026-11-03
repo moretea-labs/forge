@@ -20,9 +20,40 @@ import {
   shouldUseCandidatePersistedCheckRunner,
 } from '../../adapters/mcp/runtime-gateway/persisted-check-process';
 
+import { collectRuntimePerformanceDiagnostics } from '../../src/runtime/diagnostics/performance';
+
 const diagnosticArgs = ['runtime', 'diagnostic-read', '--tool', 'workflow_watchdog_report'];
 
 describe('bounded runtime process inventory', () => {
+  test('never reports removable temp entries when process sampling is disabled', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-diagnostic-no-processes-'));
+    try {
+      const result = collectRuntimePerformanceDiagnostics({
+        repoId: 'diagnostic-test', repoRoot: root,
+        includeProcesses: false, includeTempDirs: true, cleanupPreview: true,
+      });
+      expect(result.temp.scannedRoots).toEqual([]);
+      expect(result.temp.cleanupCandidates).toBe(0);
+      expect(result.cleanupPreview?.safeToRemoveTempEntries).toEqual([]);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test.skipIf(process.platform === 'win32')('fails closed on empty successful ps output', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-process-scan-'));
+    try {
+      writeFileSync(join(root, 'ps'), '#!/bin/sh\nexit 0\n', { mode: 0o700 });
+      const script = 'import { collectRuntimeProcesses } from '
+        + JSON.stringify(resolve(import.meta.dir, '../../src/runtime/diagnostics/performance.ts'))
+        + '; try { collectRuntimeProcesses([], { forceRefresh: true }); console.log("unexpected_success"); }'
+        + ' catch (error) { console.log(error.message); }';
+      const child = spawnSync(process.execPath, ['-e', script], {
+        env: { ...process.env, PATH: root }, encoding: 'utf8', timeout: 5_000,
+      });
+      expect(child.status).toBe(0);
+      expect(child.stdout).toContain('RUNTIME_PROCESS_INVENTORY_UNAVAILABLE');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   test.skipIf(process.platform === 'win32')('terminates a hung inventory scan instead of blocking diagnostics indefinitely', () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-process-scan-'));
     try {

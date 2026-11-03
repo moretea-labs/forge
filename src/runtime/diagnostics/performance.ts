@@ -186,6 +186,8 @@ function scanRuntimeProcessList(): RuntimeProcessBase[] {
     // a healthy idle host nor that a scratch path is unoccupied for removal.
     throw new Error('RUNTIME_PROCESS_INVENTORY_UNAVAILABLE: bounded process scan failed');
   }
+  // A successful but empty ps response does not prove no process holds a temp path.
+  if (!output.trim()) throw new Error('RUNTIME_PROCESS_INVENTORY_UNAVAILABLE: empty process scan');
   const samples: RuntimeProcessBase[] = [];
   for (const raw of output.split('\n')) {
     const line = raw.trim();
@@ -364,7 +366,8 @@ export function collectRuntimePerformanceDiagnostics(input: DiagnosticsInput): R
   const highCpuPeerMcp = peerMcpProcesses;
   const localController = repoProcesses.find((process) => process.kind === 'local-controller');
   const localControllerRunning = localController !== undefined || input.localControllerRunning === true;
-  const temp = input.includeTempDirs === false
+  // Process inventory omitted means occupancy unknown: do not declare temp cleanup safe.
+  const temp = input.includeTempDirs === false || input.includeProcesses === false
     ? { roots: [] as string[], entries: [] as RuntimeTempEntry[] }
     : scanRuntimeTempEntries(processes);
   const storage = readStorageCapacity(input.repoRoot);
