@@ -188,12 +188,14 @@ function scanRuntimeProcessList(): RuntimeProcessBase[] {
   }
   // A successful but empty ps response does not prove no process holds a temp path.
   if (!output.trim()) throw new Error('RUNTIME_PROCESS_INVENTORY_UNAVAILABLE: empty process scan');
+  let parsedRows = 0;
   const samples: RuntimeProcessBase[] = [];
   for (const raw of output.split('\n')) {
     const line = raw.trim();
     if (!line) continue;
     const match = line.match(/^(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+([\d.]+)\s+([\d.]+)\s+(.+)$/);
     if (!match) continue;
+    parsedRows += 1;
     const command = match[7];
     const kind = classify(command);
     const relevant = kind !== 'other' || /\b(bun|node|tsx)\b/.test(command);
@@ -215,6 +217,7 @@ function scanRuntimeProcessList(): RuntimeProcessBase[] {
       highCpu: cpu >= 20,
     });
   }
+  if (parsedRows === 0) throw new Error('RUNTIME_PROCESS_INVENTORY_UNAVAILABLE: unparseable process scan');
   return samples.sort((a, b) => b.cpu - a.cpu);
 }
 

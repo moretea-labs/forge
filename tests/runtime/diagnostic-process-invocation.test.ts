@@ -54,6 +54,23 @@ describe('bounded runtime process inventory', () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
+  test.skipIf(process.platform === 'win32')('refuses cleanup when ps succeeds with unparseable output', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-process-scan-'));
+    const candidate = join(root, 'forge-owned-temp');
+    try {
+      writeFileSync(join(root, 'ps'), '#!/bin/sh\nprintf "not-process-data\\n"\n', { mode: 0o700 });
+      writeFileSync(candidate, 'retain on malformed inventory');
+      const child = spawnSync(process.execPath, ['-e', `
+        import { removeRuntimeTempEntry } from ${JSON.stringify(resolve(import.meta.dir, '../../src/runtime/diagnostics/performance.ts'))};
+        try { removeRuntimeTempEntry(${JSON.stringify(candidate)}, { roots: [${JSON.stringify(root)}], minAgeMinutes: 0 }); console.log('unexpected_success'); }
+        catch (error) { console.log(error.message); }
+      `], { env: { ...process.env, PATH: root }, encoding: 'utf8', timeout: 5_000 });
+      expect(child.status).toBe(0);
+      expect(child.stdout).toContain('RUNTIME_PROCESS_INVENTORY_UNAVAILABLE');
+      expect(readFileSync(candidate, 'utf8')).toBe('retain on malformed inventory');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   test.skipIf(process.platform === 'win32')('terminates a hung inventory scan instead of blocking diagnostics indefinitely', () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-process-scan-'));
     try {
