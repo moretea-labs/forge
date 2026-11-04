@@ -29,7 +29,9 @@ import { ensureRepositoryRuntimeStorage } from '../../src/cli/repositories/runti
 import { createSchedule, saveOccurrence } from '../../packages/kernel/scheduler/api/index';
 import { cleanupRetiredExecutionJobs, executionJobRoot } from '../../src/runtime/execution/jobs/store';
 import { writeExecutionArtifact } from '../../src/runtime/evidence/artifact-store';
-import { createWorkContract } from '../../packages/kernel/work/api/index';
+import { cancelWorkContract, createWorkContract } from '../../packages/kernel/work/api/index';
+import { recordIosTestEvidenceOwner } from '../../src/runtime/control-plane/generated-cache-retention';
+import { getOwnedResource } from '../../packages/kernel/identity/api/index';
 
 const homes: string[] = [];
 
@@ -871,6 +873,75 @@ describe('runtime cleanup', () => {
     }
     expect(launches).toBe(1);
     expect(inlineCleanupCalls).toBe(0);
+  });
+
+  test('periodic retention reclaims old XCTest evidence only for semantically cancelled Work', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-periodic-ios-evidence-'));
+    homes.push(root);
+    const home = join(root, 'controller');
+    const repositoryRoot = join(root, 'repository');
+    mkdirSync(repositoryRoot, { recursive: true });
+    const git = resolveGitExecutable();
+    expect(spawnSync(git, ['-C', repositoryRoot, 'init', '-b', 'main']).status).toBe(0);
+    expect(spawnSync(git, ['-C', repositoryRoot, 'config', 'user.name', 'Test']).status).toBe(0);
+    expect(spawnSync(git, ['-C', repositoryRoot, 'config', 'user.email', 'test@example.com']).status).toBe(0);
+    writeFileSync(join(repositoryRoot, 'README.md'), 'periodic evidence retention\n');
+    expect(spawnSync(git, ['-C', repositoryRoot, 'add', 'README.md']).status).toBe(0);
+    expect(spawnSync(git, ['-C', repositoryRoot, 'commit', '-m', 'fixture']).status).toBe(0);
+    const repository = registerRepository({ path: repositoryRoot, controllerHome: home, displayName: 'periodic-ios-evidence' });
+
+    const work = createWorkContract({ controllerHome: home, repoId: repository.repoId }, {
+      workId: 'WORK-CANCELLED-IOS-EVIDENCE',
+      repoId: repository.repoId,
+      checkoutId: repository.checkouts[0]!.checkoutId,
+      objective: 'cancelled XCTest evidence is reclaimable',
+      acceptanceCriteria: [],
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      constraints: {},
+      requestedBy: 'system',
+      phase: 'verification',
+    });
+    cancelWorkContract({ controllerHome: home, repoId: repository.repoId }, work.workId, { summary: 'fixture cancellation' });
+
+    const relativeBundle = '.forge/ios/test-results/20261020T120000Z-1-1-CancelledTests.xcresult';
+    const bundle = join(repository.canonicalRoot, relativeBundle);
+    mkdirSync(bundle, { recursive: true });
+    writeFileSync(join(bundle, 'Info.plist'), 'old cancelled evidence');
+    const nowMs = 30 * 24 * 60 * 60_000;
+    const old = new Date(nowMs - 8 * 24 * 60 * 60_000);
+    utimesSync(bundle, old, old);
+    const owner = recordIosTestEvidenceOwner({
+      controllerHome: home,
+      repoId: repository.repoId,
+      repoRoot: repository.canonicalRoot,
+      resultBundlePath: relativeBundle,
+      producerRequestId: 'JOB-periodic-cancelled',
+      associatedWorkId: work.workId,
+    });
+    expect(owner.recorded).toBe(true);
+
+    await runSchedulerPeriodicCleanup({
+      controllerHome: home,
+      controllerPid: process.pid,
+      nowMs,
+      cleanupIntervalMs: 60_000,
+      repositories: [repository],
+      runtimeCleanup: () => ({} as RuntimeCleanupReport),
+      terminalWorkCleanup: async () => ({
+        scanned: 0, eligible: 0, attempted: 0, cleaned: [], blocked: [],
+        skippedRecent: [], skippedRetained: [], skippedNonTerminal: [],
+        branchReconciled: [], errors: [], truncated: false,
+        orphanWorktrees: { scanned: 0, removed: [], retained: [], errors: [] },
+      }),
+      processGc: () => ({
+        ok: true, removedRecords: 0, removedLogs: 0, skippedActive: 0, reconciledStaleActive: 0,
+      }),
+    });
+
+    expect(existsSync(bundle)).toBe(false);
+    expect(getOwnedResource(home, owner.resourceId!)?.status).toBe('released');
   });
 
   test('production periodic maintenance invokes the canonical Runtime cleanup owner', async () => {

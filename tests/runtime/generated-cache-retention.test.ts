@@ -3,8 +3,8 @@ import { execFileSync } from 'child_process';
 import { existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { cleanupControllerHomeBrowserArtifacts, cleanupGeneratedRepositoryCaches, cleanupGeneratedRepositoryCheckoutCaches, inspectRepositoryIosTestEvidence, iosTestEvidenceResourceId, recordIosTestEvidenceOwner } from '../../src/runtime/control-plane/generated-cache-retention';
-import { getOwnedResource } from '../../packages/kernel/identity/api/index';
+import { cleanupControllerHomeBrowserArtifacts, cleanupGeneratedRepositoryCaches, cleanupGeneratedRepositoryCheckoutCaches, cleanupReleasableIosTestEvidence, inspectRepositoryIosTestEvidence, iosTestEvidenceResourceId, recordIosTestEvidenceOwner } from '../../src/runtime/control-plane/generated-cache-retention';
+import { getOwnedResource, markOwnedResourceRetained } from '../../packages/kernel/identity/api/index';
 
 import { planSchedulerPeriodicMaintenance } from '../../src/runtime/control-plane/global-scheduler/maintenance';
 
@@ -553,6 +553,56 @@ describe('generated repository cache retention', () => {
     expect(() => recordIosTestEvidenceOwner({ ...args, associatedWorkId: 'work-different' }))
       .toThrow('OWNED_RESOURCE_IDENTITY_CONFLICT');
     expect(existsSync(join(root, resultBundlePath))).toBe(true);
+  });
+
+  test('reclaims only old exact-owner XCTest evidence explicitly released by semantic maintenance', () => {
+    const root = repository();
+    const controllerHome = join(root, 'controller-home');
+    const repoId = 'repo-ios-release';
+    const evidenceRoot = join(root, '.forge', 'ios', 'test-results');
+    const cancelled = join(evidenceRoot, '20261101T120000Z-1-1-CancelledTests.xcresult');
+    const active = join(evidenceRoot, '20261101T120001Z-1-2-ActiveTests.xcresult');
+    const retained = join(evidenceRoot, '20261101T120002Z-1-3-RetainedTests.xcresult');
+    for (const path of [cancelled, active, retained]) {
+      mkdirSync(path, { recursive: true });
+      writeFileSync(join(path, 'Info.plist'), 'evidence payload');
+      age(path);
+    }
+    const cancelledOwner = recordIosTestEvidenceOwner({
+      controllerHome, repoId, repoRoot: root, resultBundlePath: cancelled,
+      producerRequestId: 'JOB-cancelled', associatedWorkId: 'work-cancelled',
+    });
+    recordIosTestEvidenceOwner({
+      controllerHome, repoId, repoRoot: root, resultBundlePath: active,
+      producerRequestId: 'JOB-active', associatedWorkId: 'work-active',
+    });
+    const retainedOwner = recordIosTestEvidenceOwner({
+      controllerHome, repoId, repoRoot: root, resultBundlePath: retained,
+      producerRequestId: 'JOB-retained', associatedWorkId: 'work-cancelled',
+    });
+    markOwnedResourceRetained(controllerHome, retainedOwner.resourceId!);
+
+    const report = cleanupReleasableIosTestEvidence({ canonicalRoot: root, checkouts: [] }, {
+      owner: { controllerHome, repoId },
+      releasableWorkIds: new Set(['work-cancelled']),
+      nowMs: Date.parse('2026-11-04T12:00:00Z'),
+      graceMs: 1,
+      maxAgeMs: 1,
+      maxCount: 0,
+      maxBytes: 0,
+      maxEntries: 100,
+      maxRemovals: 8,
+    });
+    expect(report.policyVersion).toBe('ios-test-evidence-retention-v1');
+    expect(report.removedPaths).toEqual([cancelled]);
+    expect(report.reclaimedBytes).toBeGreaterThan(0);
+    expect(report.skippedByReason.work_not_releasable).toBe(1);
+    expect(report.skippedByReason.explicit_retained).toBe(1);
+    expect(existsSync(cancelled)).toBe(false);
+    expect(existsSync(active)).toBe(true);
+    expect(existsSync(retained)).toBe(true);
+    expect(getOwnedResource(controllerHome, cancelledOwner.resourceId!)?.status).toBe('released');
+    expect(getOwnedResource(controllerHome, retainedOwner.resourceId!)?.status).toBe('retained');
   });
 
   test('bounds Controller Home Browser disposable artifacts by TTL, count/bytes and active grace', () => {

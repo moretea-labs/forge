@@ -30,7 +30,7 @@ import {
 } from './local-jobs-repair';
 import { gcTerminalProcesses, type ProcessGcResult } from '../execution/process-runtime/gc';
 import { cleanupStaleWorkVerificationSnapshots, type WorkVerificationSnapshotRetentionReport } from '../control-plane/execution/work-verification-snapshot';
-import { cleanupGeneratedRepositoryCheckoutCaches, inspectRepositoryIosTestEvidence, type IosTestEvidenceInventoryReport, type RepositoryGeneratedCacheRetentionReport } from '../control-plane/generated-cache-retention';
+import { cleanupGeneratedRepositoryCheckoutCaches, cleanupReleasableIosTestEvidence, inspectRepositoryIosTestEvidence, type IosTestEvidenceInventoryReport, type IosTestEvidenceRetentionReport, type RepositoryGeneratedCacheRetentionReport } from '../control-plane/generated-cache-retention';
 import { cleanupWorkPreservationArtifacts, type CleanupArtifactRetentionReport } from '../control-plane/cleanup-artifact-retention';
 import {
   cleanupRuntimeQuarantine,
@@ -156,6 +156,7 @@ export interface RuntimeMaintenanceApplyResult extends Omit<RuntimeMaintenanceSt
   verificationSnapshotGc?: WorkVerificationSnapshotRetentionReport;
   quarantineGc?: RuntimeQuarantineRetentionReport;
   generatedCacheGc?: RepositoryGeneratedCacheRetentionReport;
+  iosTestEvidenceGc?: IosTestEvidenceRetentionReport;
   iosTestEvidenceInventory?: IosTestEvidenceInventoryReport;
   cleanupArtifactGc?: CleanupArtifactRetentionReport;
   projection?: unknown;
@@ -1766,6 +1767,7 @@ export function applyRuntimeMaintenance(
     })
     : undefined;
   let generatedCacheGc: RepositoryGeneratedCacheRetentionReport | undefined;
+  let iosTestEvidenceGc: IosTestEvidenceRetentionReport | undefined;
   let iosTestEvidenceInventory: IosTestEvidenceInventoryReport | undefined;
   let cleanupArtifactGc: CleanupArtifactRetentionReport | undefined;
   if (options.actionId === 'full_maintenance_pass') {
@@ -1789,6 +1791,17 @@ export function applyRuntimeMaintenance(
       graceMs: 60_000,
       maxEntries: Math.max(1_000, (options.maxCandidates ?? 50) * 20),
       maxRemovals: Math.max(1, options.maxCandidates ?? 50),
+    });
+    const releasableWorkIds = new Set(readWorkContractStore({ controllerHome, repoId: repository.repoId }).contracts
+      .filter((work) => semanticWorkState(work) === 'cancelled')
+      .map((work) => work.workId));
+    iosTestEvidenceGc = cleanupReleasableIosTestEvidence(cacheRepository, {
+      nowMs: cacheScanNowMs,
+      rootStartIndex: Math.floor(cacheScanNowMs / 60_000),
+      maxEntries: Math.max(256, (options.maxCandidates ?? 50) * 20),
+      maxRemovals: Math.max(1, Math.min(8, options.maxCandidates ?? 50)),
+      owner: { controllerHome, repoId: repository.repoId },
+      releasableWorkIds,
     });
     iosTestEvidenceInventory = inspectRepositoryIosTestEvidence(cacheRepository, {
       nowMs: cacheScanNowMs,
@@ -1822,6 +1835,7 @@ export function applyRuntimeMaintenance(
     verificationSnapshotGc,
     quarantineGc,
     generatedCacheGc,
+    iosTestEvidenceGc,
     iosTestEvidenceInventory,
     cleanupArtifactGc,
     projection,

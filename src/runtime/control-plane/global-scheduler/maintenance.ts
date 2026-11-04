@@ -1,6 +1,6 @@
 import type { RepositoryRecord } from '../../../cli/repositories/types';
 import { cleanupRuntimeComputerInteractionTargets } from '../../root/computer-target-composition';
-import { cleanupControllerHomeBrowserArtifacts, cleanupGeneratedRepositoryCheckoutCaches, cleanupIdleXCTestDevices } from '../generated-cache-retention';
+import { cleanupControllerHomeBrowserArtifacts, cleanupGeneratedRepositoryCheckoutCaches, cleanupIdleXCTestDevices, cleanupReleasableIosTestEvidence } from '../generated-cache-retention';
 import type { cleanupControllerRuntimeState } from '../runtime-cleanup';
 import type { reconcileTerminalWorkCleanups } from '../execution/work-terminal-cleanup';
 import type { gcTerminalProcesses } from '../../execution/process-runtime/gc';
@@ -21,6 +21,7 @@ import {
 } from '../../../../adapters/chatgpt/controller-round-settlement-store';
 import { recordChatgptControllerRoundTabSettlement } from '../../root/controller-round-composition';
 import { deriveForgeActionableFailureCode, maybeRegisterFailedReleaseSessionRepairs, maybeRegisterForgeActionableFailureRepair } from '../../diagnostics/incident-repair';
+import { readWorkContractStore, semanticWorkState } from '../../../../packages/kernel/work/api/index';
 
 const PERIODIC_RETENTION_INTERVAL_MS = 5 * 60_000;
 const PERIODIC_DEEP_RETENTION_INTERVAL_MS = 15 * 60_000;
@@ -270,6 +271,16 @@ export async function runSchedulerPeriodicCleanup(input: {
         nowMs: input.nowMs, rootStartIndex: plan.generatedCacheRootStartIndex,
       });
       if (generated.errors.length > 0) console.error(`[forge cleanup] generated-cache retention reported ${generated.errors.length} error(s) for ${cacheRepo.repoId}`);
+      const releasableWorkIds = new Set(readWorkContractStore({ controllerHome: input.controllerHome, repoId: cacheRepo.repoId }).contracts
+        .filter((work) => semanticWorkState(work) === 'cancelled')
+        .map((work) => work.workId));
+      const evidence = cleanupReleasableIosTestEvidence(cacheRepo, {
+        owner: { controllerHome: input.controllerHome, repoId: cacheRepo.repoId },
+        releasableWorkIds,
+        nowMs: input.nowMs,
+        rootStartIndex: plan.generatedCacheRootStartIndex,
+      });
+      if (evidence.errors.length > 0) console.error(`[forge cleanup] iOS test-evidence retention reported ${evidence.errors.length} error(s) for ${cacheRepo.repoId}`);
     } catch (error) {
       console.error(`[forge cleanup] generated-cache retention failed for ${cacheRepo.repoId}:`, error);
     }
