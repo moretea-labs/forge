@@ -1,5 +1,6 @@
 import { createHash } from 'crypto';
 import { spawnSync } from 'child_process';
+import { homedir } from 'os';
 import { existsSync, readdirSync } from 'fs';
 import { basename, extname, join } from 'path';
 import {
@@ -83,6 +84,8 @@ export interface BuildContextClosureInput {
   workId?: string;
   activeWorkIds?: string[];
   includeRecentChanges?: boolean;
+  /** Executor install root override, useful for hermetic tests. */
+  skillHomeDir?: string;
 }
 
 function unique(values: Iterable<string>, limit = 64): string[] {
@@ -132,36 +135,87 @@ function requiredSkillKinds(languages: string[], platforms: string[]): string[] 
   return [...kinds].sort();
 }
 
-function resolveSkills(contract: ProjectEngineeringContract | undefined, requiredKinds: string[]) {
+type InstalledSkill = { id: string; source: 'repository_skill' | 'user_skill' };
+
+/**
+ * Inventory is read-only and scoped to the current repository and executor's
+ * installed skills. A discovered SKILL.md proves availability, NOT that the
+ * invoking model read its instructions.
+ */
+function discoverInstalledSkills(repoRoot: string, skillHomeDir: string): Map<string, InstalledSkill> {
+  const directories: Array<{ path: string; source: InstalledSkill['source'] }> = [
+    { path: join(repoRoot, '.agents', 'skills'), source: 'repository_skill' },
+    { path: join(repoRoot, '.claude', 'skills'), source: 'repository_skill' },
+    { path: join(skillHomeDir, '.agents', 'skills'), source: 'user_skill' },
+    { path: join(skillHomeDir, '.codex', 'skills'), source: 'user_skill' },
+  ];
+  const installed = new Map<string, InstalledSkill>();
+  for (const directory of directories) {
+    if (!existsSync(directory.path)) continue;
+    let names: string[];
+    try { names = readdirSync(directory.path).sort().slice(0, 128); } catch { continue; }
+    for (const name of names) {
+      if (installed.has(name.toLowerCase()) || !existsSync(join(directory.path, name, 'SKILL.md'))) continue;
+      installed.set(name.toLowerCase(), { id: name, source: directory.source });
+    }
+  }
+  return installed;
+}
+
+/** Only infer language/platform coverage from unambiguous installed skill IDs. */
+function inferredSkillKinds(id: string, requiredKinds: string[]): string[] {
+  const name = id.toLowerCase();
+  const covers = new Set<string>();
+  if (/(^|[-_])ios($|[-_])/.test(name) || name.includes('swiftui')) {
+    covers.add('ios');
+    covers.add('swift');
+  }
+  if (/(^|[-_])swift($|[-_])/.test(name)) covers.add('swift');
+  for (const kind of ['typescript', 'rust', 'go', 'python', 'cpp']) {
+    if (new RegExp(`(^|[-_])${kind}($|[-_])`).test(name)) covers.add(kind);
+  }
+  return requiredKinds.filter((kind) => covers.has(kind));
+}
+
+function resolveSkills(
+  contract: ProjectEngineeringContract | undefined,
+  requiredKinds: string[],
+  installed: Map<string, InstalledSkill>,
+) {
   if (requiredKinds.length === 0) return { status: 'not_required' as const, requiredKinds, resolved: [] as ContextClosureSkillResolution[], unresolvedKinds: [] as string[] };
   const resolvedByKey = new Map<string, ContextClosureSkillResolution>();
   const covered = new Set<string>();
-  const record = (skill: { id: string; version?: string }, matchedKinds: string[]) => {
-    if (matchedKinds.length === 0) return;
+  const record = (id: string, version: string | undefined, kinds: string[], source: ContextClosureSkillResolution['source']) => {
+    const matchedKinds = requiredKinds.filter((kind) => kinds.includes(kind));
+    if (!matchedKinds.length) return;
     matchedKinds.forEach((kind) => covered.add(kind));
-    const key = `${skill.id}@${skill.version ?? ''}`;
+    const key = id.toLowerCase();
     const existing = resolvedByKey.get(key);
     resolvedByKey.set(key, {
-      ...skill,
-      source: 'project_contract',
+      id,
+      ...(version ? { version } : existing?.version ? { version: existing.version } : {}),
+      source: existing?.source === 'project_contract' ? existing.source : source,
       matchedKinds: [...new Set([...(existing?.matchedKinds ?? []), ...matchedKinds])].sort(),
     });
   };
 
+  // Project bindings can declare precise capabilities, but only a real local
+  // SKILL.md can satisfy availability. No phantom "ready" from names alone.
   for (const binding of contract?.skillBindings ?? []) {
-    const declaredKinds = new Set(binding.kinds.map((kind) => kind.toLowerCase()));
-    record(
-      { id: binding.id, ...(binding.version === undefined ? {} : { version: binding.version }) },
-      requiredKinds.filter((kind) => declaredKinds.has(kind.toLowerCase())),
-    );
+    const found = installed.get(binding.id.toLowerCase());
+    if (found) record(found.id, binding.version, binding.kinds.map((kind) => kind.toLowerCase()), 'project_contract');
+  }
+  for (const ref of (contract?.skillRefs ?? []).map(parseSkillRef)) {
+    const found = installed.get(ref.id.toLowerCase());
+    if (found) record(found.id, ref.version, inferredSkillKinds(found.id, requiredKinds), 'project_contract');
+  }
+  // Unconfigured projects need no duplicate engineering contract merely to
+  // see an already installed skill. Repository skills take precedence over user ones.
+  for (const skill of installed.values()) {
+    record(skill.id, undefined, inferredSkillKinds(skill.id, requiredKinds), skill.source);
   }
 
-  for (const skill of (contract?.skillRefs ?? []).map(parseSkillRef)) {
-    const lower = skill.id.toLowerCase();
-    record(skill, requiredKinds.filter((kind) => lower.includes(kind.toLowerCase())));
-  }
-
-  const resolved = [...resolvedByKey.values()];
+  const resolved = [...resolvedByKey.values()].slice(0, 32);
   const unresolvedKinds = requiredKinds.filter((kind) => !covered.has(kind));
   const status = unresolvedKinds.length === 0 ? 'ready' as const : resolved.length > 0 ? 'degraded' as const : 'unavailable' as const;
   return { status, requiredKinds, resolved, unresolvedKinds };
@@ -245,7 +299,7 @@ export function buildContextClosureReceipt(input: BuildContextClosureInput): Con
     : currentPaths.filter((path) => /(^|\/)(tests?|__tests__)(\/|$)|\.(test|spec)\./i.test(path)), 24);
   const languages = detectedLanguages(input.repoRoot, currentPaths);
   const platforms = detectedPlatforms(input.repoRoot, contract);
-  const skills = resolveSkills(contract, requiredSkillKinds(languages, platforms));
+  const skills = resolveSkills(contract, requiredSkillKinds(languages, platforms), discoverInstalledSkills(input.repoRoot, input.skillHomeDir ?? homedir()));
   const semanticTools = resolveSemanticTools(input, languages, contract);
   const reasonCodes = unique([
     ...input.pack.readiness.unresolvedReasonCodes,
