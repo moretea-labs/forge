@@ -58,6 +58,7 @@ import {
 } from './store';
 import { assertExecutionIdentity } from '../../control-plane/execution/execution-identity';
 import { settleWorkHandleExpectedHeadAfterRepositoryCommand } from '../../control-plane/execution/work-head-settlement';
+import { recordProcessXcodeTestEvidenceOwner } from '../../control-plane/generated-cache-retention';
 import {
   clearWorkExecutionConcurrencyWaitForAttempt,
   evaluateManagedProcessWorkCompatibility,
@@ -531,6 +532,28 @@ export function releaseProcessLeasesOnce(
  * Terminal persistence records a retryable pending-release phase. Exact lease
  * cleanup then converges independently of the spawning runtime generation.
  */
+function recordTerminalProcessXcodeEvidenceOwner(record: ManagedProcessRecord): void {
+  const identity = record.executionIdentity;
+  if (!identity || identity.authority === 'forge_instance' || identity.repositoryId !== record.repoId) return;
+  // OwnedResource creation is a producer-side mutation. A durable receipt may
+  // terminalize a Process independently, but it must not create new cleanup
+  // authority unless the current Runtime writer is still authorized.
+  if (!assertRuntimeMayWrite('write_process_terminal', record.controllerHome).allowed) return;
+  try {
+    recordProcessXcodeTestEvidenceOwner({
+      controllerHome: record.controllerHome,
+      repoId: record.repoId,
+      repoRoot: identity.worktreePath ?? identity.canonicalRoot,
+      command: record.command,
+      processId: record.processId,
+      ...(record.workId ? { associatedWorkId: record.workId } : {}),
+    });
+  } catch {
+    // Process terminal truth remains authoritative. Failure to authenticate the
+    // result bundle only means retention must continue to fail closed.
+  }
+}
+
 export function completeProcessFromEvidence(
   controllerHome: string,
   repoId: string,
@@ -629,6 +652,7 @@ export function completeProcessFromEvidence(
         // checkout/session state; Work finalization will continue to fail closed.
       }
     }
+    recordTerminalProcessXcodeEvidenceOwner(released);
     cleanupTerminalRunnerReceipts(released);
     return released;
   }

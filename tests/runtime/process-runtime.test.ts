@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawn, spawnSync } from 'child_process';
@@ -88,6 +88,8 @@ import type { MultiRepositoryMcpToolContext } from '../../adapters/mcp/multi-rep
 import { rebuildRepositoryProjection } from '../../src/runtime/projections/materialized-view';
 import { createWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { rotateRuntimeGeneration } from '../../src/runtime/control-plane/runtime-generation';
+import { iosTestEvidenceResourceId } from '../../src/runtime/control-plane/generated-cache-retention';
+import { getOwnedResource } from '../../packages/kernel/identity/api/index';
 
 const roots: string[] = [];
 const FORGE_ROOT = join(import.meta.dir, '../..');
@@ -253,6 +255,56 @@ describe('Unified Process Runtime', () => {
     const legacy = resolveProcessRunnerInvocation(runner, '/tmp/process-descriptor.json');
     expect(legacy.command).not.toBe(runner);
     expect(legacy.args).toEqual([runner, '--descriptor', '/tmp/process-descriptor.json']);
+  });
+
+  test('terminal Process Runtime registers exact literal xcodebuild result ownership under repo-harness', async () => {
+    const fx = fixture();
+    const runtime = bindCanonicalRuntime(fx.controllerHome);
+    const workId = 'WORK-XCODE-RESULT-OWNER';
+    createFixtureWork(fx, workId);
+    const fakeBin = join(fx.root, 'bin');
+    const fakeXcodebuild = join(fakeBin, 'xcodebuild');
+    const resultBundle = join(fx.repoRoot, '.repo-harness', 'process-runtime', 'managed.xcresult');
+    mkdirSync(fakeBin, { recursive: true });
+    writeFileSync(fakeXcodebuild, '#!/bin/sh\nmkdir -p "$3"\nprintf "managed evidence" > "$3/Info.plist"\n');
+    chmodSync(fakeXcodebuild, 0o755);
+
+    try {
+      const handle = await spawnManagedProcess({
+        controllerHome: fx.controllerHome,
+        repoId: fx.repository.repoId,
+        checkoutId: fx.repository.activeCheckoutId,
+        workId,
+        executionIdentity: executionIdentityForRepository(fx.repository, { workId }),
+        command: {
+          kind: 'argv',
+          executable: fakeXcodebuild,
+          args: ['test', '-resultBundlePath', resultBundle],
+          cwd: fx.repoRoot,
+        },
+        interactiveWaitMs: 5_000,
+        timeoutMs: 30_000,
+      });
+      expect(handle.ok).toBe(true);
+      expect(existsSync(resultBundle)).toBe(true);
+      const resource = getOwnedResource(
+        fx.controllerHome,
+        iosTestEvidenceResourceId(fx.repository.repoId, resultBundle),
+      );
+      expect(resource).toMatchObject({
+        status: 'active',
+        targetRef: realpathSync(resultBundle),
+        provenance: {
+          creator: `forge:ios.xcode_test:process:${handle.processId}`,
+          associatedWorkId: workId,
+          repoId: fx.repository.repoId,
+        },
+        retention: { intent: 'persistent_until_explicit_release' },
+        cleanupCapable: true,
+      });
+    } finally {
+      runtime.owner.release();
+    }
   });
 
   test('repository command facade blocks inline plugin execution bypass before spawning or leasing', async () => {
