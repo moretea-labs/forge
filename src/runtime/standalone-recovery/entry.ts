@@ -1146,7 +1146,7 @@ async function startRecoveryDaemon(config: RecoveryConfig): Promise<void> {
       process.stderr.write(`Recovery release driver failed: ${error instanceof Error ? error.message : String(error)}\n`);
       process.exit(1);
     });
-    if (config.installProfile === 'self-healing') {
+    if (config.installProfile !== 'manual') {
       void startWatchdog(config, runtimeIdentity).catch((error) => {
         process.stderr.write(`Recovery monitor failed: ${error instanceof Error ? error.message : String(error)}\n`);
         process.exit(1);
@@ -1248,7 +1248,7 @@ async function startGateway(config: RecoveryConfig, daemonIdentity?: RecoveryRun
     if (request.method === 'GET' && matchesAnyPath(request.url, ['/health', '/recovery/health'])) {
       const watchdog = observeRecoveryWatchdogHealth(
         config.controllerHome,
-        config.installProfile === 'self-healing',
+        config.installProfile !== 'manual',
       );
       json(response, 200, {
         status: watchdog.ok ? 'ok' : 'degraded',
