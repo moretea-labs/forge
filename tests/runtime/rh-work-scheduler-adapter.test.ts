@@ -172,6 +172,56 @@ describe('Work-free observe-only Schedule', () => {
 });
 
 describe('rh_work Scheduler MCP adapter', () => {
+  test('bounds Schedule listing and hides historical model prompts while preserving exact detail', async () => {
+    const { controllerHome, repository, ctx, workId } = fixture();
+    const first = await createShadowKeepalive(ctx, repository.repoId, workId, 'bounded-list-first');
+    const second = await createShadowKeepalive(ctx, repository.repoId, workId, 'bounded-list-second');
+    const retired = await createShadowKeepalive(ctx, repository.repoId, workId, 'bounded-list-retired');
+    const stored = getSchedule(controllerHome, repository.repoId, retired);
+    saveSchedule(controllerHome, {
+      ...stored,
+      enabled: false,
+      action: {
+        operation: 'external_controller_wake',
+        target: 'runtime',
+        arguments: { work_id: workId, continuation_prompt: 'CONTINUE'.repeat(10_000) },
+      },
+    });
+
+    const bounded = structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'schedule_list',
+      limit: 2,
+      include_occurrences: true,
+    }));
+    expect(bounded.status).toBe('ok');
+    expect(bounded.data.totalCount).toBe(3);
+    expect(bounded.data.truncated).toBe(true);
+    expect(bounded.data.schedules).toHaveLength(2);
+    expect(bounded.data.schedules.every((schedule: { enabled: boolean }) => schedule.enabled)).toBe(true);
+    expect(bounded.data.schedules.map((schedule: { scheduleId: string }) => schedule.scheduleId).sort()).toEqual([first, second].sort());
+    expect(JSON.stringify(bounded.data)).not.toContain('CONTINUE');
+    expect(bounded.data.occurrences).toEqual([]);
+
+    const all = structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'schedule_list',
+      limit: 100,
+    }));
+    expect(all.data.totalCount).toBe(3);
+    expect(all.data.truncated).toBe(false);
+    expect(all.data.schedules).toHaveLength(3);
+    expect(JSON.stringify(all.data)).not.toContain('CONTINUE');
+
+    const detail = structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'schedule_get',
+      schedule_id: retired,
+    }));
+    expect(detail.data.schedule.action.arguments.continuation_prompt).toContain('CONTINUE');
+    expect(detail.data.schedule.action.arguments.continuation_prompt.length).toBeGreaterThan(100);
+  });
+
   test('routes the complete schedule lifecycle through the Scheduler adapter without external effects', async () => {
     const { controllerHome, repository, ctx, workId } = fixture();
     const scheduleId = await createShadowKeepalive(ctx, repository.repoId, workId, 'schedule-lifecycle-fixture');

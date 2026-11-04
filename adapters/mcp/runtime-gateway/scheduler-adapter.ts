@@ -120,8 +120,30 @@ export async function callRhWorkScheduleAdapter(
         workId: workId || undefined,
         includeOccurrences: args.include_occurrences === true,
       });
-      const data = args.include_occurrences === true ? schedules : { schedules: schedules.schedules };
-      return result(buildFacadeResult({ summary: `Found ${schedules.schedules.length} schedule(s).`, data }) as unknown as Record<string, unknown>);
+      // A list is discovery, not a transport for archived controller prompts.
+      // Return compact, bounded entries; schedule_get retains the exact contract.
+      const limit = typeof args.limit === 'number' && Number.isFinite(args.limit)
+        ? Math.min(100, Math.max(1, Math.trunc(args.limit)))
+        : 30;
+      const visible = [...schedules.schedules]
+        .sort((left, right) => Number(right.enabled) - Number(left.enabled)
+          || right.updatedAt.localeCompare(left.updatedAt)
+          || left.scheduleId.localeCompare(right.scheduleId))
+        .slice(0, limit)
+        .map(({ scheduleId, name, enabled, trigger, action, updatedAt, lastTriggeredAt, nextEligibleAt, pausedReason }) => ({
+          scheduleId, name, enabled, trigger, operation: action.operation,
+          updatedAt, lastTriggeredAt, nextEligibleAt, pausedReason,
+        }));
+      const visibleIds = new Set(visible.map((entry) => entry.scheduleId));
+      const data = {
+        schedules: visible,
+        totalCount: schedules.schedules.length,
+        truncated: schedules.schedules.length > visible.length,
+        ...(args.include_occurrences === true
+          ? { occurrences: (schedules.occurrences ?? []).filter((entry) => visibleIds.has(entry.scheduleId)) }
+          : {}),
+      };
+      return result(buildFacadeResult({ summary: `Found ${schedules.schedules.length} schedule(s); returned ${visible.length}.`, data }) as unknown as Record<string, unknown>);
     }
     if (!scheduleId) throw new Error('SCHEDULE_ID_REQUIRED');
     if (operation === 'schedule_get') {
