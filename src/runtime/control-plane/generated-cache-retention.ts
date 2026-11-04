@@ -260,15 +260,23 @@ function nestedDerivedDataDirectories(root: string, maxDepth: number, budget: { 
   const found: string[] = [];
   const visit = (dir: string, depth: number, visitRound: number): void => {
     if (depth > maxDepth || budget.remaining <= 0) return;
-    const entries = rotatedEntries(dir, visitRound);
-    // Divide at each level rather than correlating parent/child rotations.
+    // Rotate only traversable directories. Evidence file cardinality must not
+    // consume the cache discovery budget or delay fair selection of siblings.
+    const entries = rotatedEntries(dir, 0).filter((entry) => {
+      const name = String(entry.name);
+      return entry.isDirectory()
+        && !['.git', 'node_modules', 'SourcePackages', 'Logs', ...REBUILDABLE_XCODE_CHILDREN].includes(name)
+        && !name.endsWith('.xcresult');
+    });
+    if (entries.length > 1) {
+      const offset = ((Math.trunc(visitRound) % entries.length) + entries.length) % entries.length;
+      entries.push(...entries.splice(0, offset));
+    }
     const childRound = Math.floor(visitRound / Math.max(1, entries.length));
     for (const entry of entries) {
       if (budget.remaining <= 0) return;
       budget.remaining -= 1;
-      const name = String(entry.name);
-      if (!entry.isDirectory() || ['.git', 'node_modules', 'SourcePackages', 'Logs', ...REBUILDABLE_XCODE_CHILDREN].includes(name) || name.endsWith('.xcresult')) continue;
-      const path = join(dir, name);
+      const path = join(dir, String(entry.name));
       if (isXcodeCacheRoot(path)) found.push(path);
       else visit(path, depth + 1, childRound);
     }
