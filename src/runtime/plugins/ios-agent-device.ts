@@ -891,16 +891,43 @@ function bestEffortClose(input: AssistantPluginActionExecutionInput, record: Int
   if (!result.ok) return false;
   try {
     const parsed = JSON.parse(result.stdout.trim()) as { success?: unknown };
-    return parsed.success !== false;
+    if (parsed.success !== true) return false;
   } catch {
-    return true;
+    return false;
   }
+  // A successful close response is not proof that its daemon/Runner released
+  // the provider session. Preserve the existing Forge interaction owner until
+  // the same scoped provider inventory confirms that session is absent.
+  const inventory = hooks.runCommand(executable(input.repoRoot), ['session', '--platform', 'ios', '--json'], {
+    cwd: input.repoRoot,
+    timeoutMs: 10_000,
+    env: sessionEnv(input, record),
+  });
+  return providerSessionAbsentFromInventory(inventory, record.sessionId);
 }
 
 /** A Forge interaction is not live authority after its provider session is gone.
  * Confirm absence through the provider's scoped state directory; a failed or
  * unfamiliar response must not take ownership from a possibly live session.
  */
+function providerSessionAbsentFromInventory(result: CommandResult, sessionId: string): boolean {
+  if (!result.ok) return false;
+  try {
+    const response = JSON.parse(result.stdout) as { success?: unknown; data?: { sessions?: unknown } };
+    if (response.success !== true || !Array.isArray(response.data?.sessions)) return false;
+    const ids = response.data.sessions.map((entry): string | undefined => {
+      if (typeof entry === 'string') return entry;
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return undefined;
+      const value = entry as Record<string, unknown>;
+      return [value.session, value.sessionId, value.name, value.id].find((item): item is string =>
+        typeof item === 'string' && item.length > 0);
+    });
+    return ids.every((id) => id !== undefined && id !== sessionId);
+  } catch {
+    return false;
+  }
+}
+
 async function providerSessionConfirmedAbsent(
   input: AssistantPluginActionExecutionInput,
   record: InteractionSessionRecord,
@@ -911,22 +938,7 @@ async function providerSessionConfirmedAbsent(
     timeoutMs: effectiveCommandTimeout(input, 10_000),
     signal: input.signal,
   });
-  if (!result.ok) return false;
-  try {
-    const response = JSON.parse(result.stdout) as { success?: unknown; data?: { sessions?: unknown } };
-    if (response.success !== true || !Array.isArray(response.data?.sessions)) return false;
-    const sessions = response.data.sessions;
-    const ids = sessions.map((entry): string | undefined => {
-      if (typeof entry === 'string') return entry;
-      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return undefined;
-      const value = entry as Record<string, unknown>;
-      return [value.session, value.sessionId, value.name, value.id].find((item): item is string =>
-        typeof item === 'string' && item.length > 0);
-    });
-    return ids.every((id) => id !== undefined && id !== record.sessionId);
-  } catch {
-    return false;
-  }
+  return providerSessionAbsentFromInventory(result, record.sessionId);
 }
 
 async function closeProviderSession(
@@ -2555,6 +2567,12 @@ export async function executeIosAgentDeviceAction(input: AssistantPluginActionEx
         patchInteractionSession(input.repoRoot, current.provider, current.interactionId, { status: 'closing' });
         try {
           const closedProvider = await closeProviderSession(input, current, args);
+          if (!closedProvider.providerAlreadyAbsent && !await providerSessionConfirmedAbsent(input, current)) {
+            throw new AssistantPluginError('AGENT_DEVICE_CLEANUP_UNVERIFIED',
+              'The provider accepted close but still reports the session or cannot verify its absence; ownership remains fenced.', {
+                retryable: true, details: { interactionId: current.interactionId, sessionId: current.sessionId },
+              });
+          }
           const closed = patchInteractionSession(input.repoRoot, current.provider, current.interactionId, { status: 'closed' }) ?? current;
           if (current.provider === DEVICE_PROVIDER) releaseIosDeviceOwnership(input.controllerHome, current.owner.repoId, current.interactionId, current.targetId);
           return {
@@ -2564,7 +2582,13 @@ export async function executeIosAgentDeviceAction(input: AssistantPluginActionEx
             providerAlreadyAbsent: closedProvider.providerAlreadyAbsent,
           };
         } catch (error) {
-          return failSession(input, current, error);
+          const normalized = toAssistantPluginError(error, {
+            code: 'AGENT_DEVICE_CLEANUP_FAILED', message: 'The provider session could not be confirmed closed.', retryable: true,
+          });
+          patchInteractionSession(input.repoRoot, current.provider, current.interactionId, {
+            status: 'closing', error: { code: normalized.code, message: normalized.message },
+          });
+          throw normalized;
         }
       }, { allowTerminal: true });
     }
