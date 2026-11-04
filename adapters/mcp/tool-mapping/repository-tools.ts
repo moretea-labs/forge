@@ -198,11 +198,14 @@ export const repositoryToolDefinitions: McpToolDefinition[] = [
     branch: { type: 'string' },
     no_ff: { type: 'boolean', description: 'Use --no-ff instead of the default --ff-only.' },
   }, ['branch']),
-  definition('repository_git_delete_branch', 'Delete a safe local Git branch after it has been merged or intentionally discarded.', {
+  definition('repository_git_delete_branch', 'Delete one safe Git branch. Defaults to local deletion; remote=true requires an exact expected_remote_sha CAS against origin and reconciles the remote ref after the push.', {
     repo_id: repoId,
     checkout_id: { type: 'string', description: 'Optional checkout identity for repositories with multiple local clones.' },
     branch: { type: 'string' },
-    force: { type: 'boolean' },
+    force: { type: 'boolean', description: 'Local deletion only. Remote deletion never accepts force.' },
+    remote: { type: 'boolean', description: 'When true, delete exactly origin/<branch> with expected_remote_sha CAS and remote readback.' },
+    expected_remote_sha: { type: 'string', description: 'Required with remote=true: exact 40-hex current origin branch SHA.' },
+    approval_request_id: { type: 'string', description: 'Resolved approvalRequestId returned by approval_resolve for this exact remote deletion.' },
   }, ['branch']),
 
   definition('repository_git_remove_worktree', 'Preview then safely remove one exactly registered clean, merged, unowned Git linked checkout; never deletes arbitrary paths, the canonical/active checkout, or branches.', {
@@ -937,7 +940,7 @@ export async function callRepositoryTool(
       }
       case 'repository_git_delete_branch': {
         const repository = resolveRepositorySelection({ repoId: repoIdValue || undefined, checkoutId: typeof args.checkout_id === 'string' ? args.checkout_id : undefined, controllerHome, allowSoleRepository: true });
-        return result({ repoId: repository.repoId, checkoutId: repository.activeCheckoutId, ...repositoryGitDeleteBranch(controllerHome, repository, { branch: args.branch, force: args.force }) as unknown as Record<string, unknown> });
+        return result({ repoId: repository.repoId, checkoutId: repository.activeCheckoutId, ...repositoryGitDeleteBranch(controllerHome, repository, { branch: args.branch, force: args.force, remote: args.remote, expectedRemoteSha: args.expected_remote_sha, approvalRequestId: typeof args.approval_request_id === 'string' ? args.approval_request_id : undefined }) as unknown as Record<string, unknown> });
       }
 
       case 'repository_git_remove_worktree': {
