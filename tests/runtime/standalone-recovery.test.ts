@@ -4871,6 +4871,53 @@ describe('standalone recovery on canonical Runtime', () => {
     }
   });
 
+
+  test('reconciles a stale activation replay when the exact requested candidate is already active', async () => {
+    const home = controllerHome();
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const releaseA = verifiedManifest(home, 'release-replay-a');
+      const candidate = verifiedManifest(home, 'release-replay-candidate');
+      ensureActiveRuntimeRelease(home, releaseA.path);
+      const observed = readRuntimeReleaseAuthority(home)!;
+      publishRuntimeRelease(home, candidate.path, 'prior-activation-with-lost-response');
+      runtimeServiceConfig(home);
+      const paths = forgeRuntimeServicePaths(home);
+      mkdirSync(dirname(paths.installedPlistPath), { recursive: true });
+      writeFileSync(paths.installedPlistPath, '<plist/>');
+      const commands: string[][] = [];
+
+      const result = await activateRuntimeRelease(createRecoveryConfig(home, {
+        primaryRuntimeService: { platform: 'launchd' },
+      }), candidate.path, {
+        platform: 'darwin',
+        currentUid: async () => 501,
+        runCommand: async (name, args) => {
+          commands.push([name, ...args]);
+          return { ok: true, status: 0, stdout: '', stderr: '' };
+        },
+        verifyLocal: async () => healthyVerify(),
+      }, {
+        requestId: 'recovery-gateway:lost-response-replay',
+        expectedAuthorityRevision: observed.revision,
+        expectedActiveReleaseId: observed.active.releaseId,
+      });
+
+      expect(result).toMatchObject({
+        ok: true,
+        attempted: false,
+        noOp: true,
+        detail: expect.stringContaining('stale activation replay reconciled without another mutation'),
+      });
+      expect(commands).toEqual([]);
+      expect(readRuntimeReleaseAuthority(home)?.active.releaseId).toBe('release-replay-candidate');
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
+  });
+
   test('pins, lists, and explicitly unpins one immutable Runtime release', async () => {
     const home = controllerHome();
     const candidate = verifiedManifest(home, 'release-pinned');
