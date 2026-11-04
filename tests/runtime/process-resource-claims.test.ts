@@ -28,11 +28,14 @@ describe('Process Runtime fine-grained resource claims', () => {
     // Do not downgrade Git authorization: only the physical resource lease is narrowed.
     expect(classifyRepositoryCommand(exact, 'ios/integration').risk).toBe('destructive');
     const claims = claimsForRepositoryCommand(exact, 'repo1', 'checkout-dirty', 'ios/integration');
-    expect(claims).toEqual([{ resourceKey: 'remote:repo1', mode: 'exclusive' }]);
+    expect(claims).toEqual([{ resourceKey: 'remote-ref:repo1:origin:refs/heads/' + branch, mode: 'exclusive' }]);
     expect(claimsConflict(claims[0]!, lease('workspace:checkout-dirty', 'write'))).toBe(false);
     expect(claimsConflict(claims[0]!, lease('git-index:checkout-dirty', 'exclusive'))).toBe(false);
-    expect(claimsConflict(claims[0]!, lease('git-refs:repo1', 'exclusive'))).toBe(false);
+    expect(claimsConflict(claims[0]!, lease('git-refs:repo1', 'exclusive'))).toBe(true);
     expect(claimsConflict(claims[0]!, lease('remote:repo1', 'exclusive'))).toBe(true);
+    expect(claimsConflict(claims[0]!, lease('remote-ref:repo1:origin:refs/heads/' + branch, 'write'))).toBe(true);
+    expect(claimsConflict(claims[0]!, lease('remote-ref:repo1:origin:refs/heads/review/other', 'exclusive'))).toBe(false);
+    expect(claimsConflict(claims[0]!, lease('remote-ref:repo2:origin:refs/heads/' + branch, 'exclusive'))).toBe(false);
     expect(claimsConflict(claims[0]!, lease('remote:repo2', 'exclusive'))).toBe(false);
 
     const variants: Array<readonly string[] | string> = [
@@ -50,17 +53,39 @@ describe('Process Runtime fine-grained resource claims', () => {
     ];
     for (const unsafe of variants) {
       const conservative = claimsForRepositoryCommand(unsafe, 'repo1', 'checkout-dirty', 'ios/integration');
-      expect(conservative.some((claim) => claim.resourceKey === 'remote:repo1')).toBe(false);
+      expect(conservative.some((claim) => claim.resourceKey.startsWith('remote-ref:'))).toBe(false);
       expect(conservative).toContainEqual({ resourceKey: 'workspace:checkout-dirty', mode: 'write' });
     }
     expect(claimsForRepositoryCommand([
       'git', 'push', '--force-with-lease=refs/heads/' + branch + ':' + sha,
       'origin', '--delete', branch,
     ], 'repo1', 'checkout-dirty', 'ios/integration')).toEqual([
-      { resourceKey: 'remote:repo1', mode: 'exclusive' },
+      { resourceKey: 'remote-ref:repo1:origin:refs/heads/' + branch, mode: 'exclusive' },
     ]);
   });
 
+
+  test('exact remote ref leases serialize one branch while allowing independent review branches (#469)', () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-remote-ref-claims-'));
+    const original = [{ resourceKey: 'remote-ref:repo1:origin:refs/heads/review/first', mode: 'exclusive' as const }];
+    const same = [{ ...original[0]! }];
+    const different = [{ resourceKey: 'remote-ref:repo1:origin:refs/heads/review/second', mode: 'exclusive' as const }];
+    const broad = [{ resourceKey: 'git-refs:repo1', mode: 'exclusive' as const }];
+    try {
+      expect(acquireExecutionLeases(controllerHome, 'repo1', 'first', original, { visibility: 'ephemeral' }).acquired).toBe(true);
+      expect(acquireExecutionLeases(controllerHome, 'repo1', 'same', same, { visibility: 'ephemeral' }).acquired).toBe(false);
+      expect(acquireExecutionLeases(controllerHome, 'repo1', 'different', different, { visibility: 'ephemeral' }).acquired).toBe(true);
+      expect(acquireExecutionLeases(controllerHome, 'repo1', 'broad', broad, { visibility: 'ephemeral' }).acquired).toBe(false);
+      releaseExecutionLeases(controllerHome, 'repo1', 'first');
+      releaseExecutionLeases(controllerHome, 'repo1', 'different');
+      expect(acquireExecutionLeases(controllerHome, 'repo1', 'broad', broad, { visibility: 'ephemeral' }).acquired).toBe(true);
+    } finally {
+      releaseExecutionLeases(controllerHome, 'repo1', 'first');
+      releaseExecutionLeases(controllerHome, 'repo1', 'different');
+      releaseExecutionLeases(controllerHome, 'repo1', 'broad');
+      rmSync(controllerHome, { recursive: true, force: true });
+    }
+  });
 
   test('host build capacity bounds disjoint Xcode caches while preserving cache identity fences', () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-xcode-cache-'));

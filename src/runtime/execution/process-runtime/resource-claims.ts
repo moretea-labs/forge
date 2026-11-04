@@ -586,28 +586,29 @@ function validationDeviceClaims(command: string | readonly string[]): ResourceCl
 function exactLeasedRemoteReviewBranchDeletion(
   command: string | readonly string[],
   defaultBranch?: string,
-): boolean {
+): string | undefined {
   const canonical = normalizeRepositoryCommand(command);
-  if (canonical.kind !== 'argv' || basename(canonical.executable ?? '').toLowerCase() !== 'git') return false;
+  if (canonical.kind !== 'argv' || basename(canonical.executable ?? '').toLowerCase() !== 'git') return undefined;
   const args = canonical.args ?? [];
-  if (args[0] !== 'push') return false;
+  if (args[0] !== 'push') return undefined;
   const options = args.slice(1);
   const leases = options.filter((arg) => arg.startsWith('--force-with-lease='));
-  if (leases.length !== 1) return false;
+  if (leases.length !== 1) return undefined;
   const match = /^--force-with-lease=refs\/heads\/([A-Za-z0-9][A-Za-z0-9._/-]*):([a-fA-F0-9]{40})$/.exec(leases[0]!);
-  if (!match) return false;
+  if (!match) return undefined;
   const branch = match[1]!;
   if (branch === defaultBranch || branch.includes('..')
     || branch.split('/').some((part) => !part || part.startsWith('.') || part.endsWith('.') || part.endsWith('.lock'))
-    || /(?:^|\/)(?:main|master|develop|integration|release|gh-pages)(?:$|\/)/i.test(branch)) return false;
+    || /(?:^|\/)(?:main|master|develop|integration|release|gh-pages)(?:$|\/)/i.test(branch)) return undefined;
   const deletingByFlag = options.includes('--delete');
   if (options.some((arg) => arg.startsWith('-')
-    && arg !== leases[0] && arg !== '--porcelain' && arg !== '--delete')) return false;
+    && arg !== leases[0] && arg !== '--porcelain' && arg !== '--delete')) return undefined;
   if (options.filter((arg) => arg === '--porcelain').length > 1
-    || options.filter((arg) => arg === '--delete').length > 1) return false;
+    || options.filter((arg) => arg === '--delete').length > 1) return undefined;
   const operands = options.filter((arg) => !arg.startsWith('-'));
   return operands.length === 2 && operands[0] === 'origin'
-    && operands[1] === (deletingByFlag ? branch : ':refs/heads/' + branch);
+    && operands[1] === (deletingByFlag ? branch : ':refs/heads/' + branch)
+    ? 'refs/heads/' + branch : undefined;
 }
 
 /**
@@ -637,11 +638,12 @@ function repositoryCommandClaims(
   if (classification.risk === 'readonly') {
     return [claimWorkspaceRead(checkoutId, repoId)];
   }
-  // An exact leased remote-only delete cannot alter this checkout. The existing
-  // remote Process lease serializes deletion without claiming unrelated Work
-  // source/index/HEAD. CAS rejects a moved remote head at execution time.
-  if (exactLeasedRemoteReviewBranchDeletion(command, defaultBranch)) {
-    return [{ resourceKey: 'remote:' + repoId, mode: 'exclusive' }];
+  // An exact leased remote-only delete cannot alter this checkout. Claim its
+  // remote ref, not all remote branches; broad/opaque Git writers still overlap
+  // this claim through the shared resource conflict authority.
+  const remoteDeletionRef = exactLeasedRemoteReviewBranchDeletion(command, defaultBranch);
+  if (remoteDeletionRef) {
+    return [{ resourceKey: `remote-ref:${repoId}:origin:${remoteDeletionRef}`, mode: 'exclusive' }];
   }
   if (classification.risk === 'remote_write') {
     // Raw command text cannot prove the external provider/account target. Keep
