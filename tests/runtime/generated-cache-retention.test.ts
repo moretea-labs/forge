@@ -3,7 +3,7 @@ import { execFileSync } from 'child_process';
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { cleanupControllerHomeBrowserArtifacts, cleanupGeneratedRepositoryCaches, cleanupGeneratedRepositoryCheckoutCaches, cleanupReleasableIosTestEvidence, inspectRepositoryIosTestEvidence, iosTestEvidenceResourceId, recordIosTestEvidenceOwner, recordProcessXcodeTestEvidenceOwner } from '../../src/runtime/control-plane/generated-cache-retention';
+import { cleanupControllerHomeBrowserArtifacts, cleanupGeneratedRepositoryCaches, cleanupGeneratedRepositoryCheckoutCaches, cleanupReleasableIosTestEvidence, inspectRepositoryIosTestEvidence, iosTestEvidenceResourceId, recordIosTestEvidenceOwner, recordProcessXcodeTestEvidenceOwner, releasableIosTestEvidenceWorkIds } from '../../src/runtime/control-plane/generated-cache-retention';
 import { getOwnedResource, markOwnedResourceRetained } from '../../packages/kernel/identity/api/index';
 
 import { planSchedulerPeriodicMaintenance } from '../../src/runtime/control-plane/global-scheduler/maintenance';
@@ -633,6 +633,14 @@ describe('generated repository cache retention', () => {
       processId: 'proc-dynamic-xcode',
       associatedWorkId: 'work-dynamic',
     })).toEqual({ recorded: false, reason: 'unsupported_or_dynamic_xcode_result_path' });
+  });
+
+  test('admits completed and cancelled Work evidence to retention while open Work remains protected', () => {
+    expect([...releasableIosTestEvidenceWorkIds([
+      { workId: 'work-open', semanticState: 'open' },
+      { workId: 'work-completed', semanticState: 'completed' },
+      { workId: 'work-cancelled', semanticState: 'cancelled' },
+    ])].sort()).toEqual(['work-cancelled', 'work-completed']);
   });
 
   test('reclaims only old exact-owner XCTest evidence explicitly released by semantic maintenance', () => {
