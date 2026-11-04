@@ -14,7 +14,7 @@ import {
   shellWordsPreservingQuotes,
 } from '../../../cli/repositories/command-classifier';
 import { normalizeRepositoryCommand } from '../../../cli/repositories/command-normalization';
-import { isProtectedRemoteBranchDeletionTarget } from '../../../cli/repositories/branch-name-policy';
+import { isProtectedRemoteBranchDeletionTarget } from '../../../core/git-branch-policy';
 import { isFocusedCheckCommand } from '../thin-harness/execution-router';
 import type { ProcessResourceClaim } from './types';
 import { normalizeClaimPath, normalizeClaims } from '../../resources/claims/conflicts';

@@ -80,7 +80,6 @@
     "src/runtime/diagnostics/read-only-tool.ts|../../cli/repository/inspector",
     "src/runtime/diagnostics/read-only-tool.ts|../../cli/repository/session-cache",
     "src/runtime/execution/jobs/store.ts|../../../cli/repositories/locks",
-    "src/runtime/execution/managed-workspace.ts|../../cli/repositories/branch-name-policy",
     "src/runtime/execution/managed-workspace.ts|../../cli/repositories/locks",
     "src/runtime/execution/managed-workspace.ts|../../cli/repositories/registry",
     "src/runtime/execution/managed-workspace.ts|../../cli/repositories/types",

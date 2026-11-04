@@ -10,7 +10,7 @@ import {
   selectRepositoryCheckout,
 } from '../../cli/repositories/registry';
 import { managedWorktreePath } from '../../cli/repositories/worktree-storage';
-import { branchSlugSegment, validateBranchName } from '../../cli/repositories/branch-name-policy';
+import { branchSlugSegment, validateBranchName } from '../../core/git-branch-policy';
 import { withControllerLock } from '../../cli/repositories/locks';
 import { resolveGitExecutable } from '../../effects/git-executable';
 import { runProcess } from '../../effects/process-runner';
