@@ -48,3 +48,15 @@ export function validateBranchName(raw: unknown, options: BranchNamePolicyOption
 export function branchRef(branch: unknown, options: BranchNamePolicyOptions = {}): string {
   return `refs/heads/${validateBranchName(branch, options)}`;
 }
+
+/** Invalid/default/release-line refs are never eligible for typed remote deletion. */
+export function isProtectedRemoteBranchDeletionTarget(raw: unknown, defaultBranch?: string): boolean {
+  let branch: string;
+  try {
+    branch = validateBranchName(raw, { purpose: 'GIT_REMOTE_BRANCH_DELETE' });
+  } catch {
+    return true;
+  }
+  if (defaultBranch?.trim() && branch === defaultBranch.trim()) return true;
+  return /(?:^|\/)(?:main|master|develop|integration|release|gh-pages)(?:$|\/)/i.test(branch);
+}

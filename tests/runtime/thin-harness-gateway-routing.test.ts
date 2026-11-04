@@ -57,6 +57,7 @@ import { readWorkHandle, writeWorkHandle } from '../../src/runtime/control-plane
 import { principalFor } from '../../src/runtime/control-plane/execution/work-execution-support';
 import { workHandleRetainsCanonicalMutationOwnership } from '../../src/runtime/control-plane/execution/work-handle-authority';
 import { verificationInputFingerprint, workspaceValidationFingerprint } from '../../src/runtime/control-plane/execution/verification-evidence';
+import { resolveAuthorizationRequest } from '../../src/runtime/control-plane/governance/authorization';
 
 import { startExecutionSession, updateExecutionSession, readExecutionSession, type ExecutionSessionContext } from '../../src/runtime/control-plane/execution/session-store';
 import { listActiveLeases } from '../../src/runtime/resources/leases/store';
@@ -2023,6 +2024,79 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     });
     expect(deleted?.isError).not.toBe(true);
     expect(((deleted?.structuredContent as Record<string, unknown>).execution as { ok?: boolean }).ok).toBe(true);
+
+    const remoteBranch = 'review/merged-pr-469';
+    git(fx.repoRoot, ['push', 'origin', 'HEAD:refs/heads/' + remoteBranch]);
+    const remoteHead = git(fx.originRoot, ['rev-parse', 'refs/heads/' + remoteBranch]);
+    const remoteDeletePreview = await callRepositoryTool(fx.controllerHome, 'repository_git_delete_branch', {
+      repo_id: fx.repository.repoId,
+      branch: remoteBranch,
+      remote: true,
+      expected_remote_sha: remoteHead,
+    });
+    expect(remoteDeletePreview?.isError).not.toBe(true);
+    const approvalRequestId = String((((remoteDeletePreview?.structuredContent as Record<string, unknown>).execution as Record<string, unknown>).approvalRequestId ?? ''));
+    expect(approvalRequestId).toStartWith('apr_');
+    expect((remoteDeletePreview?.structuredContent as Record<string, unknown>)).toMatchObject({
+      branch: remoteBranch,
+      remote: 'origin',
+      expectedRemoteSha: remoteHead,
+      deleted: false,
+      outcome: 'approval_required',
+      reconciled: true,
+    });
+    resolveAuthorizationRequest({
+      controllerHome: fx.controllerHome,
+      repositoryId: fx.repository.repoId,
+      approvalRequestId,
+      permissionSnapshotVersion: 1,
+      confirm: true,
+    });
+    const remoteDeleted = await callRepositoryTool(fx.controllerHome, 'repository_git_delete_branch', {
+      repo_id: fx.repository.repoId,
+      branch: remoteBranch,
+      remote: true,
+      expected_remote_sha: remoteHead,
+      approval_request_id: approvalRequestId,
+    });
+    expect(remoteDeleted?.isError).not.toBe(true);
+    expect((remoteDeleted?.structuredContent as Record<string, unknown>)).toMatchObject({
+      branch: remoteBranch,
+      remote: 'origin',
+      expectedRemoteSha: remoteHead,
+      deleted: true,
+      outcome: 'deleted',
+      reconciled: true,
+    });
+    expect(spawnSync('git', ['-C', fx.repoRoot, 'ls-remote', '--heads', 'origin', 'refs/heads/' + remoteBranch], { encoding: 'utf8' }).stdout.trim()).toBe('');
+
+    const replay = await callRepositoryTool(fx.controllerHome, 'repository_git_delete_branch', {
+      repo_id: fx.repository.repoId,
+      branch: remoteBranch,
+      remote: true,
+      expected_remote_sha: remoteHead,
+    });
+    expect(replay?.isError).not.toBe(true);
+    expect((replay?.structuredContent as Record<string, unknown>)).toMatchObject({ deleted: true, outcome: 'already_absent', reconciled: true });
+
+    git(fx.repoRoot, ['push', 'origin', 'HEAD:refs/heads/review/sha-drift-469']);
+    const driftHead = git(fx.originRoot, ['rev-parse', 'refs/heads/review/sha-drift-469']);
+    const staleDelete = await callRepositoryTool(fx.controllerHome, 'repository_git_delete_branch', {
+      repo_id: fx.repository.repoId,
+      branch: 'review/sha-drift-469',
+      remote: true,
+      expected_remote_sha: 'b'.repeat(40),
+    });
+    expect(staleDelete?.isError).toBe(true);
+    expect(git(fx.originRoot, ['rev-parse', 'refs/heads/review/sha-drift-469'])).toBe(driftHead);
+
+    const protectedDelete = await callRepositoryTool(fx.controllerHome, 'repository_git_delete_branch', {
+      repo_id: fx.repository.repoId,
+      branch: 'main',
+      remote: true,
+      expected_remote_sha: git(fx.originRoot, ['rev-parse', 'refs/heads/main']),
+    });
+    expect(protectedDelete?.isError).toBe(true);
 
     git(fx.repoRoot, ['switch', '-c', 'feature/finish-fixture']);
     writeFileSync(join(fx.repoRoot, 'src', 'finish.ts'), 'export const finished = true;\n');

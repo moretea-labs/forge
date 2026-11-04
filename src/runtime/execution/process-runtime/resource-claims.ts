@@ -14,6 +14,7 @@ import {
   shellWordsPreservingQuotes,
 } from '../../../cli/repositories/command-classifier';
 import { normalizeRepositoryCommand } from '../../../cli/repositories/command-normalization';
+import { isProtectedRemoteBranchDeletionTarget } from '../../../cli/repositories/branch-name-policy';
 import { isFocusedCheckCommand } from '../thin-harness/execution-router';
 import type { ProcessResourceClaim } from './types';
 import { normalizeClaimPath, normalizeClaims } from '../../resources/claims/conflicts';
@@ -597,9 +598,7 @@ function exactLeasedRemoteReviewBranchDeletion(
   const match = /^--force-with-lease=refs\/heads\/([A-Za-z0-9][A-Za-z0-9._/-]*):([a-fA-F0-9]{40})$/.exec(leases[0]!);
   if (!match) return undefined;
   const branch = match[1]!;
-  if (branch === defaultBranch || branch.includes('..')
-    || branch.split('/').some((part) => !part || part.startsWith('.') || part.endsWith('.') || part.endsWith('.lock'))
-    || /(?:^|\/)(?:main|master|develop|integration|release|gh-pages)(?:$|\/)/i.test(branch)) return undefined;
+  if (isProtectedRemoteBranchDeletionTarget(branch, defaultBranch)) return undefined;
   const deletingByFlag = options.includes('--delete');
   if (options.some((arg) => arg.startsWith('-')
     && arg !== leases[0] && arg !== '--porcelain' && arg !== '--delete')) return undefined;
