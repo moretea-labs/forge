@@ -66,6 +66,8 @@ import {
 import {
   assertBrowserProfileAvailable,
   assertBrowserSessionAvailable,
+  browserHandoffHostAvailable,
+  resolveBrowserHandoffHostPath,
   cancelBrowserHandoff,
   getBrowserHandoff,
   isRuntimeManagedBrowserHandoff,
@@ -3780,6 +3782,8 @@ function health(config: BrowserPluginConfig, repoRoot?: string): AssistantPlugin
   const dependencyReady = runtimeHooks.moduleAvailable('playwright', repoRoot);
   const configErrors = validateConfig(config);
   const warnings = configWarnings(config);
+  const handoffHostReady = browserHandoffHostAvailable();
+  if (!handoffHostReady) warnings.push('Browser handoff host is missing from this Runtime; request_human_handoff is unavailable.');
   const authority = currentRuntimeBrowserSessionExecutionContext();
   const savedSessionCount = repoRoot && authority ? listSavedBrowserSessions(repoRoot).length : 0;
   const activeHandoffCount = repoRoot
@@ -3804,7 +3808,8 @@ function health(config: BrowserPluginConfig, repoRoot?: string): AssistantPlugin
     sessionCountSemantics: authority ? 'controller_authority' as const : 'controller_authority_unavailable' as const,
     savedSessionCount,
     activeHandoffCount,
-    humanHandoffSupported: true,
+    humanHandoffSupported: handoffHostReady,
+    handoffHostReady,
     artifactsAvailable: true,
     artifactRoots: {
       screenshots: '.forge/browser/screenshots',
@@ -3910,6 +3915,7 @@ export function buildBrowserPluginManifest(
   const root = repoRoot ?? process.cwd();
   const config = loadConfig(root, context, computerNativeOnly);
   const state = health(config, root);
+  const handoffReady = state.details?.handoffHostReady === true;
   return {
     schemaVersion: 1,
     manifestVersion: 1,
@@ -3938,8 +3944,10 @@ export function buildBrowserPluginManifest(
     },
     health: state,
     permissions: browserPermissions(state.ready),
-    capabilities: browserCapabilities(),
-    actions: browserActions(),
+    capabilities: browserCapabilities().map((capability) => capability.capabilityId === 'browser-human-handoff' && !handoffReady
+      ? { ...capability, actions: capability.actions.filter((action) => action !== 'request_human_handoff') }
+      : capability),
+    actions: browserActions().filter((action) => handoffReady || action.actionId !== 'request_human_handoff'),
     updatedAt: previousUpdatedAt ?? now(),
   };
 }
@@ -4230,6 +4238,9 @@ async function executeBrowserPluginActionInternal(
         };
       }
       case 'request_human_handoff': {
+        // A stale manifest must not reach the login boundary and then discover
+        // that this immutable release cannot launch its one handoff host.
+        resolveBrowserHandoffHostPath();
         const target = resolveActionTarget(input.repoRoot, input.args);
         const managedSession = target.existingSession;
         if (input.pluginId === 'computer' && managedSession?.browser?.provider

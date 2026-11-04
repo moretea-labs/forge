@@ -103,6 +103,20 @@ export function resolveBrowserHandoffHostPath(
   throw new AssistantPluginError('PLUGIN_BROWSER_HANDOFF_HOST_MISSING', 'Browser handoff host sidecar is unavailable in the active Runtime release.', { retryable: false });
 }
 
+/** Readiness uses the same resolver as execution; no second sidecar authority. */
+export function browserHandoffHostAvailable(
+  execPath: string = process.execPath,
+  argvEntry: string | undefined = process.argv[1],
+  moduleUrl: string = import.meta.url,
+): boolean {
+  try {
+    resolveBrowserHandoffHostPath(execPath, argvEntry, moduleUrl);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 const defaultHooks: BrowserHandoffRuntimeHooks = {
   now: () => new Date().toISOString(),
   pidAlive: defaultPidAlive,
