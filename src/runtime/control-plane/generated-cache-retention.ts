@@ -606,6 +606,8 @@ export interface IosTestEvidenceInventoryReport {
   ownershipUnverified: number;
   verifiedOwnerCount: number;
   observedBytesLowerBound: number;
+  verifiedOwnerBytesLowerBound: number;
+  unverifiedOwnerBytesLowerBound: number;
   incompleteSizeCount: number;
   oldestObservedAgeMs: number;
   budgetExhausted: boolean;
@@ -627,6 +629,8 @@ export function inspectRepositoryIosTestEvidence(
     ownershipUnverified: 0,
     verifiedOwnerCount: 0,
     observedBytesLowerBound: 0,
+    verifiedOwnerBytesLowerBound: 0,
+    unverifiedOwnerBytesLowerBound: 0,
     incompleteSizeCount: 0,
     oldestObservedAgeMs: 0,
     budgetExhausted: false,
@@ -675,11 +679,9 @@ export function inspectRepositoryIosTestEvidence(
             continue;
           }
           report.bundlesObserved += 1;
-          if (options.owner && hasVerifiedIosTestEvidenceOwner(options.owner.controllerHome, options.owner.repoId, path)) {
-            report.verifiedOwnerCount += 1;
-          } else {
-            report.ownershipUnverified += 1;
-          }
+          const verifiedOwner = Boolean(options.owner && hasVerifiedIosTestEvidenceOwner(options.owner.controllerHome, options.owner.repoId, path));
+          if (verifiedOwner) report.verifiedOwnerCount += 1;
+          else report.ownershipUnverified += 1;
           // A name matching iosXcodeTest's artifactStamp is not an
           // authenticated producer identity or retention grant.
           if (/^\d{8}T\d{6}Z-\d+-\d+-[A-Za-z0-9._-]+\.xcresult$/.test(name)) report.producerNamedBundles += 1;
@@ -688,6 +690,8 @@ export function inspectRepositoryIosTestEvidence(
           const size = measureReclaimablePath(path, budget);
           budget = Math.max(0, budget - size.entries);
           report.observedBytesLowerBound += size.bytes;
+          if (verifiedOwner) report.verifiedOwnerBytesLowerBound += size.bytes;
+          else report.unverifiedOwnerBytesLowerBound += size.bytes;
           if (!size.complete) report.incompleteSizeCount += 1;
         } catch (error) {
           report.ownershipUnverified += 1;

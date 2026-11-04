@@ -474,6 +474,8 @@ describe('generated repository cache retention', () => {
     expect(report.producerNamedBundles).toBe(1);
     expect(report.ownershipUnverified).toBe(3); // both bundles + symlink, including producer-like name
     expect(report.observedBytesLowerBound).toBeGreaterThan(20);
+    expect(report.verifiedOwnerBytesLowerBound).toBe(0);
+    expect(report.unverifiedOwnerBytesLowerBound).toBe(report.observedBytesLowerBound);
     expect(report.oldestObservedAgeMs).toBeGreaterThan(0);
     expect(report.errors).toEqual([]);
     expect(existsSync(actual)).toBe(true);
@@ -512,6 +514,9 @@ describe('generated repository cache retention', () => {
     });
     expect(owned.verifiedOwnerCount).toBe(1);
     expect(owned.ownershipUnverified).toBe(0);
+    expect(owned.verifiedOwnerBytesLowerBound).toBeGreaterThan(0);
+    expect(owned.unverifiedOwnerBytesLowerBound).toBe(0);
+    expect(owned.observedBytesLowerBound).toBe(owned.verifiedOwnerBytesLowerBound);
     expect(existsSync(path)).toBe(true);
     const foreign = recordIosTestEvidenceOwner({ ...args, resultBundlePath: '../../outside.xcresult' });
     expect(foreign.recorded).toBe(false);
@@ -525,6 +530,9 @@ describe('generated repository cache retention', () => {
     });
     expect(replaced.verifiedOwnerCount).toBe(0);
     expect(replaced.ownershipUnverified).toBe(1);
+    expect(replaced.verifiedOwnerBytesLowerBound).toBe(0);
+    expect(replaced.unverifiedOwnerBytesLowerBound).toBeGreaterThan(0);
+    expect(replaced.observedBytesLowerBound).toBe(replaced.unverifiedOwnerBytesLowerBound);
     expect(() => recordIosTestEvidenceOwner(args)).toThrow('OWNED_RESOURCE_IDENTITY_CONFLICT');
     expect(existsSync(path)).toBe(true);
   });
