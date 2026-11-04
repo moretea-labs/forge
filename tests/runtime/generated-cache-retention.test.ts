@@ -314,6 +314,52 @@ describe('generated repository cache retention', () => {
     expect(report.budgetExhausted).toBe(true);
   });
 
+  test('records exact physical reclaimed bytes across bounded maintenance rounds without claiming protected evidence', () => {
+    const root = repository();
+    const stale = join(root, '.repo-harness', 'old-run', 'DerivedData');
+    const recent = join(root, '.forge', 'ios', 'DerivedData', 'current');
+    const unknown = join(root, '.repo-harness', 'unverified-review');
+    xcodeCache(stale);
+    xcodeCache(recent);
+    writeFileSync(join(stale, 'Build', 'bytes.bin'), '1234567890');
+    writeFileSync(join(recent, 'Build', 'keep.bin'), 'still in use');
+    mkdirSync(unknown, { recursive: true });
+    writeFileSync(join(unknown, 'review.txt'), 'historical evidence');
+    age(stale);
+    age(join(stale, 'Build'));
+    age(recent);
+    age(join(recent, 'Build'));
+
+    const first = cleanupGeneratedRepositoryCaches(root, {
+      nowMs: Date.parse('2026-11-03T12:00:00Z'), graceMs: 60_000,
+      processCommands: [`xcodebuild -derivedDataPath ${recent}`],
+      maxEntries: 100, maxRemovals: 1,
+    });
+    expect(first.removedPaths).toContain('.repo-harness/old-run/DerivedData/Build');
+    expect(first.reclaimedBytes).toBeGreaterThanOrEqual(10);
+    expect(first.unknownReclaimedByteCount).toBe(0);
+    expect(existsSync(join(stale, 'Build'))).toBe(false);
+    expect(existsSync(join(recent, 'Build', 'keep.bin'))).toBe(true);
+    expect(existsSync(join(unknown, 'review.txt'))).toBe(true);
+
+    const second = cleanupGeneratedRepositoryCaches(root, {
+      nowMs: Date.parse('2026-11-03T12:00:00Z'), graceMs: 60_000,
+      processCommands: [`xcodebuild -derivedDataPath ${recent}`],
+      maxEntries: 100, maxRemovals: 1,
+    });
+    expect(second.reclaimedBytes).toBe(0);
+    expect(second.unknownReclaimedByteCount).toBe(0);
+    expect(second.removedPaths).toEqual([]);
+    expect(existsSync(join(recent, 'Build'))).toBe(true);
+
+    const aggregate = cleanupGeneratedRepositoryCheckoutCaches({
+      canonicalRoot: root, checkouts: [],
+    }, { nowMs: Date.parse('2026-11-03T12:00:00Z'), graceMs: 60_000,
+      processCommands: [`xcodebuild -derivedDataPath ${recent}`], maxEntries: 100 });
+    expect(aggregate.reclaimedBytes).toBe(0);
+    expect(aggregate.unknownReclaimedByteCount).toBe(0);
+  });
+
   test('scans bounded browser artifact roots before high-cardinality cache trees', () => {
     const root = repository();
     const upload = join(root, '.forge', 'browser', 'uploads', 'stale.zip');

@@ -37,6 +37,10 @@ export interface GeneratedCacheRetentionReport {
   inspected: number;
   eligible: number;
   removedPaths: string[];
+  /** Logical file bytes in removed paths with a complete bounded scan; not disk-free delta. */
+  reclaimedBytes: number;
+  /** Successfully removed paths whose size exceeded the bounded measurement. */
+  unknownReclaimedByteCount: number;
   retainedPaths: string[];
   skippedByReason: Record<string, number>;
   errors: string[];
@@ -365,6 +369,8 @@ export function cleanupGeneratedRepositoryCaches(
     inspected: discovered.inspected,
     eligible: 0,
     removedPaths: [],
+    reclaimedBytes: 0,
+    unknownReclaimedByteCount: 0,
     retainedPaths: [],
     skippedByReason: {},
     errors: [],
@@ -415,9 +421,14 @@ export function cleanupGeneratedRepositoryCaches(
         increment(report.skippedByReason, 'retention_grace');
         continue;
       }
+      // Size accounting must never turn cleanup into an unbounded tree walk or
+      // claim exact reclaimed bytes when the scan was truncated.
+      const measured = measureReclaimablePath(candidate.path);
       remainingRemovals -= 1;
       rmSync(candidate.path, { recursive: true, force: true });
       report.removedPaths.push(relative(repoRoot, candidate.path).replace(/\\/g, '/'));
+      if (measured.complete) report.reclaimedBytes += measured.bytes;
+      else report.unknownReclaimedByteCount += 1;
     } catch (error) {
       report.errors.push(`${candidate.kind}:${relative(repoRoot, candidate.path)}: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -470,6 +481,8 @@ export function cleanupGeneratedRepositoryCheckoutCaches(
     inspected: 0,
     eligible: 0,
     removedPaths: [],
+    reclaimedBytes: 0,
+    unknownReclaimedByteCount: 0,
     retainedPaths: [],
     skippedByReason: {},
     errors: [],
@@ -497,6 +510,8 @@ export function cleanupGeneratedRepositoryCheckoutCaches(
     aggregate.inspected += report.inspected;
     aggregate.eligible += report.eligible;
     aggregate.removedPaths.push(...report.removedPaths.map((path) => `${root}:${path}`));
+    aggregate.reclaimedBytes += report.reclaimedBytes;
+    aggregate.unknownReclaimedByteCount += report.unknownReclaimedByteCount;
     aggregate.retainedPaths.push(...report.retainedPaths.map((path) => `${root}:${path}`));
     for (const [reason, count] of Object.entries(report.skippedByReason)) {
       aggregate.skippedByReason[reason] = (aggregate.skippedByReason[reason] ?? 0) + count;
