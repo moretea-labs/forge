@@ -101,8 +101,8 @@ The watchdog cannot launch an Agent, edit a source checkout, generate repair scr
 Build and canary the immutable Recovery release with the public CLI. Installation role is explicit:
 
 - `manual` is the default. It publishes the Recovery artifact/configuration but registers no persistent Recovery Gateway or Watchdog.
-- `gateway` registers only the independently reachable Recovery Gateway.
-- `self-healing` registers Gateway plus Watchdog and is the only profile that pays the autonomous health-monitoring/recovery cost.
+- `gateway` registers the independently reachable Recovery Gateway and runs the existing bounded Recovery watchdog in **publication-only** mode: it may repair the Recovery Gateway/public tunnel, but it must not restart the primary Connector/Runtime or roll back a Runtime release.
+- `self-healing` uses the same Gateway/Watchdog authority and additionally permits the existing bounded primary Connector/Runtime recovery decisions.
 
 ```sh
 forge recovery install \
