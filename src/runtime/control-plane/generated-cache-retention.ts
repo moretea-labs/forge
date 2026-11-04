@@ -13,7 +13,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'pat
 import { repositoryControllerRoot } from '../../effects/controller-home';
 import { measureReclaimablePath } from './lifecycle-retention-metrics';
 import { assertOwnedResourceCleanupTarget, getOwnedResource, listOwnedResources, markOwnedResourceCleaned, recordOwnedResource, type OwnedResource } from '../../../packages/kernel/identity/api/index';
-import { fixedShellWrapperCommand, shellSegments, shellWordsPreservingQuotes } from '../../cli/repositories/command-classifier';
+import { fixedShellWrapperCommand, shellSegments, shellWordsPreservingQuotes } from '../../core/shell-command';
 
 const DEFAULT_GENERATED_CACHE_GRACE_MS = 6 * 60 * 60_000;
 const DEFAULT_BROWSER_UPLOAD_GRACE_MS = 24 * 60 * 60_000;
