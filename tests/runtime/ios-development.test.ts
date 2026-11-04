@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
-import { spawn } from 'child_process';
+import { execFileSync, spawn } from 'child_process';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { isProcessAlive } from '../../src/runtime/shared/process-tree';
@@ -258,6 +258,7 @@ describe('iOS development simulator reliability', () => {
 
   test('iOS xcode_test records exact producer ownership only for a real created result bundle', async () => {
     const repo = repository();
+    execFileSync('git', ['init', '-q'], { cwd: repo.root });
     const controllerHome = join(repo.root, 'controller-home');
     let materializeResult = true;
     setIosDevelopmentHooksForTest({

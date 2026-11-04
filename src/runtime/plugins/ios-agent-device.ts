@@ -9,6 +9,7 @@ import { readJsonFile, writeJsonAtomic } from '../shared/json-files';
 import { resolveTrustedNodeExecutable } from '../shared/trusted-node-executable';
 import { AssistantPluginError, toAssistantPluginError } from './errors';
 import { ensureIosDeviceOwnership, releaseIosDeviceOwnership, withIosDeviceTransientOwnership } from './ios-device-ownership';
+import { acquireExecutionLeases, listActiveLeases, releaseExecutionLeases, renewExecutionLeases } from '../resources/leases/store';
 import {
   interactionAutomationEngine,
   interactionMayOwnTarget,
@@ -811,7 +812,81 @@ function listAgentDeviceInteractions(repoRoot: string): InteractionSessionRecord
     .filter(isAgentDeviceInteraction);
 }
 
-function requireRecord(input: AssistantPluginActionExecutionInput, allowTerminal = false): InteractionSessionRecord {
+const SIMULATOR_TEST_LEASE_RESOURCE = 'host-service:ios-simulator-test';
+const SIMULATOR_LEASE_CLEANUP_GRACE_MS = 30 * 60_000;
+
+function simulatorInteractionLeaseOwner(record: InteractionSessionRecord): string {
+  return `ios-agent-device:${record.interactionId}`;
+}
+
+function simulatorInteractionLeaseTtl(record: InteractionSessionRecord): number {
+  const expiryMs = Date.parse(record.expiresAt);
+  const remainingMs = Number.isFinite(expiryMs) ? expiryMs - hooks.now().getTime() : SESSION_EXPIRY_MS;
+  return Math.max(5_000, remainingMs + SIMULATOR_LEASE_CLEANUP_GRACE_MS);
+}
+
+function simulatorInteractionLeaseRefs(input: AssistantPluginActionExecutionInput, record: InteractionSessionRecord) {
+  const ownerJobId = simulatorInteractionLeaseOwner(record);
+  return listActiveLeases(input.controllerHome, record.owner.repoId)
+    .filter((lease) => lease.ownerJobId === ownerJobId && lease.resourceKey === SIMULATOR_TEST_LEASE_RESOURCE)
+    .map((lease) => ({
+      leaseId: lease.leaseId,
+      fencingToken: lease.fencingToken,
+      repoId: lease.repoId,
+      resourceKey: lease.resourceKey,
+      ownerIdentityDigest: lease.ownerIdentityDigest,
+    }));
+}
+
+function ensureSimulatorInteractionLease(
+  input: AssistantPluginActionExecutionInput,
+  record: InteractionSessionRecord,
+): void {
+  if (record.provider !== SIMULATOR_PROVIDER) return;
+  const ownerJobId = simulatorInteractionLeaseOwner(record);
+  const ttlMs = simulatorInteractionLeaseTtl(record);
+  const existing = simulatorInteractionLeaseRefs(input, record);
+  if (existing.length > 0) {
+    renewExecutionLeases(input.controllerHome, record.owner.repoId, ownerJobId, ttlMs, existing);
+    return;
+  }
+  const acquisition = acquireExecutionLeases(
+    input.controllerHome,
+    record.owner.repoId,
+    ownerJobId,
+    [{ resourceKey: SIMULATOR_TEST_LEASE_RESOURCE, mode: 'write' }],
+    { ttlMs, visibility: 'durable' },
+  );
+  if (!acquisition.acquired) {
+    throw new AssistantPluginError(
+      'PLUGIN_RESOURCE_BUSY',
+      'The selected iOS Simulator is already owned by another Forge XCTest/AgentDevice flow.',
+      {
+        retryable: true,
+        details: {
+          interactionId: record.interactionId,
+          targetId: record.targetId,
+          resourceKey: SIMULATOR_TEST_LEASE_RESOURCE,
+          blockers: acquisition.blockers,
+        },
+      },
+    );
+  }
+}
+
+function releaseSimulatorInteractionLease(
+  input: AssistantPluginActionExecutionInput,
+  record: InteractionSessionRecord,
+): void {
+  if (record.provider !== SIMULATOR_PROVIDER) return;
+  releaseExecutionLeases(
+    input.controllerHome,
+    record.owner.repoId,
+    simulatorInteractionLeaseOwner(record),
+  );
+}
+
+function requireRecord(input: AssistantPluginActionExecutionInput, allowTerminal = false, ensureSimulatorLease = true): InteractionSessionRecord {
   const interactionId = requireString(input.args.interaction_id, 'interaction_id');
   const record = readAgentDeviceInteraction(input.repoRoot, interactionId);
   if (!record) {
@@ -845,13 +920,17 @@ function requireRecord(input: AssistantPluginActionExecutionInput, allowTerminal
         status: 'closing',
         error: { code: 'AGENT_DEVICE_CLEANUP_FAILED', message: 'The expired agent-device session could not be closed; ownership remains fenced.' },
       });
-    if (record.provider === DEVICE_PROVIDER && closed) releaseIosDeviceOwnership(input.controllerHome, record.owner.repoId, interactionId, record.targetId);
+    if (closed) {
+      if (record.provider === DEVICE_PROVIDER) releaseIosDeviceOwnership(input.controllerHome, record.owner.repoId, interactionId, record.targetId);
+      releaseSimulatorInteractionLease(input, record);
+    }
     throw new AssistantPluginError(
       closed ? 'AGENT_DEVICE_SESSION_EXPIRED' : 'AGENT_DEVICE_CLEANUP_FAILED',
       closed ? 'The agent-device session expired and was closed.' : 'The expired agent-device session could not be closed; retry agent_device_close.',
       { retryable: !closed },
     );
   }
+  if (ensureSimulatorLease) ensureSimulatorInteractionLease(input, record);
   if (record.provider === DEVICE_PROVIDER) {
     const ownership = ensureIosDeviceOwnership(input.controllerHome, input.repoId, interactionId, record.targetId);
     if (!ownership.acquired) {
@@ -983,7 +1062,10 @@ function reconcileExpiredSessions(input: AssistantPluginActionExecutionInput): v
         status: 'closing',
         error: { code: 'AGENT_DEVICE_CLEANUP_FAILED', message: 'The expired agent-device session could not be closed; ownership remains fenced.' },
       });
-    if (record.provider === DEVICE_PROVIDER && closed) releaseIosDeviceOwnership(input.controllerHome, record.owner.repoId, record.interactionId, record.targetId);
+    if (closed) {
+      if (record.provider === DEVICE_PROVIDER) releaseIosDeviceOwnership(input.controllerHome, record.owner.repoId, record.interactionId, record.targetId);
+      releaseSimulatorInteractionLease(input, record);
+    }
   }
 }
 
@@ -1003,7 +1085,10 @@ function failSession(input: AssistantPluginActionExecutionInput, record: Interac
       status: 'closing',
       error: { code: 'AGENT_DEVICE_CLEANUP_FAILED', message: `${normalized.message}; cleanup failed and ownership remains fenced.` },
     });
-  if (closed && record.provider === DEVICE_PROVIDER) releaseIosDeviceOwnership(input.controllerHome, record.owner.repoId, record.interactionId, record.targetId);
+  if (closed) {
+    if (record.provider === DEVICE_PROVIDER) releaseIosDeviceOwnership(input.controllerHome, record.owner.repoId, record.interactionId, record.targetId);
+    releaseSimulatorInteractionLease(input, record);
+  }
   if (!closed) {
     throw new AssistantPluginError('AGENT_DEVICE_CLEANUP_FAILED', 'The agent-device action failed and its session could not be closed; retry agent_device_close.', {
       retryable: true,
@@ -2327,6 +2412,7 @@ export async function executeIosAgentDeviceAction(input: AssistantPluginActionEx
     const interactionId = requireString(input.args.interaction_id, 'interaction_id');
     const existing = readAgentDeviceInteraction(input.repoRoot, interactionId);
     if (existing && !isInteractionSessionActive(existing.status)) {
+      releaseSimulatorInteractionLease(input, existing);
       return { provider: 'agent-device', interaction: existing, alreadyClosed: true };
     }
   }
@@ -2394,6 +2480,7 @@ export async function executeIosAgentDeviceAction(input: AssistantPluginActionEx
       if (provider === DEVICE_PROVIDER) {
         releaseIosDeviceOwnership(input.controllerHome, conflict.owner.repoId, conflict.interactionId, conflict.targetId);
       }
+      releaseSimulatorInteractionLease(input, conflict);
       conflict = undefined;
     }
     if (conflict) {
@@ -2449,6 +2536,18 @@ export async function executeIosAgentDeviceAction(input: AssistantPluginActionEx
       expiresAt: new Date(hooks.now().getTime() + SESSION_EXPIRY_MS).toISOString(),
     };
     writeInteractionSession(input.repoRoot, record);
+    try {
+      ensureSimulatorInteractionLease(input, record);
+    } catch (error) {
+      const normalized = toAssistantPluginError(error, {
+        code: 'PLUGIN_RESOURCE_BUSY', message: 'The selected iOS Simulator is busy.', retryable: true,
+      });
+      patchInteractionSession(input.repoRoot, provider, interactionId, {
+        status: 'failed', error: { code: normalized.code, message: normalized.message },
+      });
+      if (selected.kind === 'device') releaseIosDeviceOwnership(input.controllerHome, input.repoId, interactionId, selected.id);
+      throw normalized;
+    }
     writeSigningConfig(input, interactionId, signingFromArgs(input.args));
     const args = ['open', app, '--device', selected.name];
     if (input.args.relaunch === true) args.push('--relaunch');
@@ -2474,7 +2573,7 @@ export async function executeIosAgentDeviceAction(input: AssistantPluginActionEx
     }
   }
 
-  const record = requireRecord(input, input.actionId === 'agent_device_close');
+  const record = requireRecord(input, input.actionId === 'agent_device_close', input.actionId !== 'agent_device_close');
   switch (input.actionId) {
     case 'agent_device_batch': {
       const prepared = prepareAgentDeviceBatch(input.args.steps, record);
@@ -2593,6 +2692,7 @@ export async function executeIosAgentDeviceAction(input: AssistantPluginActionEx
           }
           const closed = patchInteractionSession(input.repoRoot, current.provider, current.interactionId, { status: 'closed' }) ?? current;
           if (current.provider === DEVICE_PROVIDER) releaseIosDeviceOwnership(input.controllerHome, current.owner.repoId, current.interactionId, current.targetId);
+          releaseSimulatorInteractionLease(input, current);
           return {
             provider: 'agent-device',
             interaction: closed,

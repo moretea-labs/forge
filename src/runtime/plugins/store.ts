@@ -604,9 +604,7 @@ function claimsForPluginActionScope(
   // The Process Runtime and iOS plugin must arbitrate the same physical
   // Simulator rather than independent provider-local / repository locks.
   if (pluginId === 'ios' && (
-    ['xcode_test', 'smoke_review', 'launch_simulator', 'capture_screenshot'].includes(action.actionId)
-    || (action.actionId.startsWith('agent_device_')
-      && !['agent_device_status', 'agent_device_doctor', 'agent_device_jd_search'].includes(action.actionId))
+    ['xcode_test', 'smoke_review', 'launch_simulator', 'capture_screenshot', 'agent_device_prepare'].includes(action.actionId)
   )) claims.push({ resourceKey: 'host-service:ios-simulator-test', mode: 'write' });
   return claims;
 }
