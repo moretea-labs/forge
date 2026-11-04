@@ -6580,6 +6580,18 @@ export async function watchdogTick(config: RecoveryConfig, prior: WatchdogState)
     publicTunnelMinimumFailures: configuredRecoveryTunnel(config)?.minimumFailures,
     publicTunnelMinimumFailureDurationMs: configuredRecoveryTunnel(config)?.minimumFailureDurationMs,
   });
+  if (config.installProfile !== 'self-healing'
+    && (decision.action === 'restart_primary_connector'
+      || decision.action === 'restart_primary_runtime'
+      || decision.action === 'rollback')) {
+    const profileDecision: WatchdogDecision = {
+      action: 'degraded',
+      reason: `Recovery install profile ${config.installProfile} permits only Recovery publication self-heal; ${decision.action} requires self-healing`,
+    };
+    state.lastDecision = profileDecision.action;
+    state.lastReason = profileDecision.reason;
+    return { state, decision: profileDecision, verify: verified };
+  }
   state.lastDecision = decision.action;
   state.lastReason = decision.reason;
   if (decision.action === 'repair_public_tunnel') {
