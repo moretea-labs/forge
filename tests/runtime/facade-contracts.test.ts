@@ -93,7 +93,11 @@ describe('handoff and facade contracts', () => {
     });
     const schema = getCoreCapabilityExecutionSchema('repository.git') as {
       executeWith?: string;
-      actions?: Record<string, { argumentsSchema?: { required?: string[] } }>;
+      actions?: Record<string, {
+        readOnly?: boolean;
+        risk?: string;
+        argumentsSchema?: { required?: string[]; properties?: Record<string, unknown> };
+      }>;
     } | undefined;
     expect(schema?.executeWith).toBe('capability_execute');
     expect(Object.keys(schema?.actions ?? {}).sort()).toEqual(['commit_paths', 'delete_remote_branch', 'deliver_work', 'diff_paths', 'discard_work', 'stage_paths']);
