@@ -55,6 +55,23 @@ describe('Swift source redaction preserves type annotations (Issue #280)', () =>
     expect(redacted.redactions).toEqual([]);
   });
 
+  test('preserves ordinary Swift token-returning calls and function-argument token references', () => {
+    const source = [
+      'if let token = observer.pendingTokenIfChanged() {',
+      '    XCTAssertTrue(observer.acknowledge(token: token))',
+      '}',
+      'guard let retryToken = observer.pendingTokenIfChanged() else { return }',
+      'XCTAssertEqual(observer.pendingTokenIfChanged(), retryToken)',
+      'guard let newerToken = observer.pendingTokenIfChanged() else { return }',
+      'XCTAssertTrue(observer.acknowledge(token: retryToken))',
+      'XCTAssertTrue(observer.acknowledge(token: newerToken))',
+    ].join('\n');
+    const result = redactSensitiveText(source);
+    expect(result.changed).toBe(false);
+    expect(result.text).toBe(source);
+    expect(result.redactions).toEqual([]);
+  });
+
   test('does not exempt quoted data-change credentials or standalone awaited token values', () => {
     const input = [
       'sourceDataChangeToken = "synthetic_opaque_secret_value_abc123"',

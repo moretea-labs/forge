@@ -148,6 +148,17 @@ export function redactSensitiveText(input: string): SensitiveTextRedactionResult
         const genericToken = /token$/i.test(key) && !/^(?:token|(?:api|access|refresh|auth|session|bearer|csrf|id|jwt|oauth)[_-]?token)$/i.test(key);
         const sourceCounter = /^[+-]?(?:\d+\.\d*|\.\d+)(?:e[+-]?\d+)?[;)]?$/i.test(rhs);
         const sourceReference = /^token[;)]?$/.test(rhs);
+        // A zero-argument member call is executable source syntax, not a
+        // source-embedded credential literal. Keep the exemption narrow:
+        // require an actual member chain and balanced empty call.
+        const sourceMemberCall = /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)+\(\)[;)]*$/.test(rhs);
+        // Swift argument labels are captured with the opening parenthesis as
+        // the regex boundary. Preserve only a token-shaped identifier value
+        // in that exact call position; object/config assignments at line
+        // start remain redacted.
+        const sourceSwiftTokenArgument = boundary === '('
+          && separator.trim() === ':'
+          && /^(?:token|[A-Za-z_][A-Za-z0-9_]*Token)[;)]*$/.test(rhs);
         // An awaited Swift/JS call is an expression, not a credential value.
         // Require a following call target: a standalone unquoted `token: await`
         // remains redacted, as do all quoted/opaque credential literals.
@@ -161,7 +172,8 @@ export function redactSensitiveText(input: string): SensitiveTextRedactionResult
         const sourceDataChangeCall = genericToken && /DataChangeToken$/.test(key)
           && /^[A-Z][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+\($/.test(rhs);
         const sourceType = separator.trim() === ':' && !typeDefault && /^(?:Double|Float|Int|Int8|Int16|Int32|Int64|Bool|String|Character|CGFloat|Date|UUID)[?!]?[),{;]?$/.test(rhs);
-        if (sourceType || sourceAwaitedCall || sourceDataChangeReference || sourceDataChangeCall
+        if (sourceType || sourceMemberCall || sourceSwiftTokenArgument
+          || sourceAwaitedCall || sourceDataChangeReference || sourceDataChangeCall
           || (genericToken && (sourceCounter || sourceReference))) return matched;
         redactions += 1;
         return `${prefix}[REDACTED]`;
