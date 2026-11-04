@@ -532,6 +532,20 @@ export function getCoreCapabilityExecutionSchema(capabilityId: string): Record<s
           },
         },
       },
+      delete_remote_branch: {
+        readOnly: false,
+        risk: 'destructive_remote',
+        argumentsSchema: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['branch', 'expected_remote_sha'],
+          properties: {
+            branch: { type: 'string', minLength: 1, maxLength: 512 },
+            expected_remote_sha: { type: 'string', pattern: '^[0-9a-fA-F]{40}$' },
+            approval_request_id: { type: 'string', minLength: 1, maxLength: 256 },
+          },
+        },
+      },
       deliver_work: {
         readOnly: false,
         risk: 'local_repo_write',
