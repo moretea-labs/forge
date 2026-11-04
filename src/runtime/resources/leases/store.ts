@@ -200,18 +200,27 @@ function repositorySourceResourceKey(resourceKey: string): boolean {
  * admission below cannot slip a new writer in between check and mutation.
  * Source reads using the no-lease MCP path stay independently responsive.
  */
-function assertRepositoryProcessMutationAvailable(controllerHome: string, repoId: string, owner: string): void {
+function assertRepositoryProcessMutationAvailable(
+  controllerHome: string,
+  repoId: string,
+  owner: string,
+  mutationClaims?: ResourceClaimSpec[],
+): void {
   // This existing global lease mutex also guards managed Process lease publication.
   // Lock ordering is repository -> global; Process only observes the repository lock.
+  // Undefined claims preserve the historical fail-closed repository fence. An
+  // explicit empty claim set means the caller is not mutating repository source.
   const blocker = withControllerLock(
     controllerHome,
     { scope: 'global', resource: 'execution-leases' },
-    `editor-lease-check:${owner}`,
+    'editor-lease-check:' + owner,
     () => listActiveLeases(controllerHome, repoId)
-      .find((lease) => repositorySourceResourceKey(lease.resourceKey)),
+      .find((lease) => repositorySourceResourceKey(lease.resourceKey)
+        && (mutationClaims === undefined || mutationClaims.some((claim) => claimsConflict(claim, lease)))),
   );
   if (blocker) {
-    throw new Error(`REPOSITORY_PROCESS_LEASE_HELD: ${blocker.resourceKey} owned by ${blocker.ownerJobId}; refusing concurrent source mutation`);
+    throw new Error('REPOSITORY_PROCESS_LEASE_HELD: ' + blocker.resourceKey
+      + ' owned by ' + blocker.ownerJobId + '; refusing concurrent source mutation');
   }
 }
 
@@ -221,9 +230,10 @@ export function withRepositoryMutationExclusion<T>(
   owner: string,
   mutate: () => T,
   ttlMs?: number,
+  mutationClaims?: ResourceClaimSpec[],
 ): T {
   return withControllerLock(controllerHome, { scope: 'repository', repoId }, owner, () => {
-    assertRepositoryProcessMutationAvailable(controllerHome, repoId, owner);
+    assertRepositoryProcessMutationAvailable(controllerHome, repoId, owner, mutationClaims);
     return mutate();
   }, ttlMs);
 }
@@ -235,9 +245,10 @@ export async function withRepositoryMutationExclusionAsync<T>(
   owner: string,
   mutate: () => Promise<T>,
   ttlMs?: number,
+  mutationClaims?: ResourceClaimSpec[],
 ): Promise<T> {
   return withControllerLockAsync(controllerHome, { scope: 'repository', repoId }, owner, async () => {
-    assertRepositoryProcessMutationAvailable(controllerHome, repoId, owner);
+    assertRepositoryProcessMutationAvailable(controllerHome, repoId, owner, mutationClaims);
     return await mutate();
   }, ttlMs, 0);
 }
