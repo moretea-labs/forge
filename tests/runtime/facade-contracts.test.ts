@@ -96,7 +96,10 @@ describe('handoff and facade contracts', () => {
       actions?: Record<string, { argumentsSchema?: { required?: string[] } }>;
     } | undefined;
     expect(schema?.executeWith).toBe('capability_execute');
-    expect(Object.keys(schema?.actions ?? {}).sort()).toEqual(['commit_paths', 'deliver_work', 'diff_paths', 'discard_work', 'stage_paths']);
+    expect(Object.keys(schema?.actions ?? {}).sort()).toEqual(['commit_paths', 'delete_remote_branch', 'deliver_work', 'diff_paths', 'discard_work', 'stage_paths']);
+    expect(schema?.actions?.delete_remote_branch).toMatchObject({ readOnly: false, risk: 'destructive_remote' });
+    expect(schema?.actions?.delete_remote_branch?.argumentsSchema?.required).toEqual(['branch', 'expected_remote_sha']);
+    expect(schema?.actions?.delete_remote_branch?.argumentsSchema?.properties).toHaveProperty('approval_request_id');
     expect(schema?.actions?.deliver_work?.argumentsSchema?.required).toEqual(['work_id']);
     expect(schema?.actions?.discard_work?.argumentsSchema?.required).toEqual(['work_id']);
     expect(runtimeToolDefinitions.some((definition) => definition.name === 'work_deliver')).toBe(false);
