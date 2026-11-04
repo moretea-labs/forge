@@ -9,16 +9,98 @@ import { claimsConflict } from '../../src/runtime/resources/claims/conflicts';
 import type { ExecutionLease } from '../../src/runtime/resources/leases/types';
 import { claimsForAssistantPluginAction } from '../../src/runtime/plugins/store';
 import type { AssistantPluginActionDescriptor } from '../../src/runtime/plugins/types';
-import { mkdtempSync, mkdirSync, rmSync, symlinkSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { acquireExecutionLeases, releaseExecutionLeases } from '../../src/runtime/resources/leases/store';
+import { acquireExecutionLeases, releaseExecutionLeases, withRepositoryMutationExclusion } from '../../src/runtime/resources/leases/store';
 
 function lease(resourceKey: string, mode: 'read' | 'write' | 'exclusive'): ExecutionLease {
   return { resourceKey, mode } as ExecutionLease;
 }
 
 describe('Process Runtime fine-grained resource claims', () => {
+  test('Android Gradle build claims stay inside the Android project so iOS source can proceed concurrently (#478)', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-gradle-project-claims-'));
+    const androidRoot = join(root, 'android');
+    try {
+      mkdirSync(androidRoot, { recursive: true });
+      writeFileSync(join(androidRoot, 'settings.gradle.kts'), 'rootProject.name = "fixture"\n');
+      writeFileSync(join(androidRoot, 'gradlew'), '#!/bin/sh\n');
+
+      const direct = claimsForRepositoryCommand(
+        ['./gradlew', ':app:assembleDebug'],
+        'avela',
+        'co1',
+        'main',
+        root,
+        androidRoot,
+      );
+      expect(direct).toContainEqual({ resourceKey: 'path:co1:android', mode: 'write' });
+      expect(direct.some((claim) => claim.resourceKey === 'workspace:co1')).toBe(false);
+      expect(direct.some((claim) => claim.resourceKey.startsWith('build-cache:gradle-project:'))).toBe(true);
+
+      const scripted = claimsForRepositoryCommand(
+        ['bash', 'scripts/run_android_check.sh', 'build'],
+        'avela',
+        'co1',
+        'main',
+        root,
+        root,
+      );
+      expect(scripted).toContainEqual({ resourceKey: 'path:co1:android', mode: 'write' });
+      expect(scripted.some((claim) => claim.resourceKey === 'workspace:co1')).toBe(false);
+
+      const androidLease = lease('path:co1:android', 'write');
+      expect(claimsConflict({ resourceKey: 'path:co1:ios/App.swift', mode: 'write' }, androidLease)).toBe(false);
+      expect(claimsConflict({ resourceKey: 'path:co1:android/app/src/Main.kt', mode: 'write' }, androidLease)).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('repository mutation exclusion uses exact source claims when the caller knows its paths (#478)', () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-path-scoped-editor-'));
+    const held = acquireExecutionLeases(controllerHome, 'repo1', 'android-build', [
+      { resourceKey: 'path:co1:android', mode: 'write' },
+    ], { visibility: 'ephemeral', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false });
+    expect(held.acquired).toBe(true);
+    try {
+      expect(withRepositoryMutationExclusion(
+        controllerHome,
+        'repo1',
+        'ios-edit',
+        () => 'applied',
+        undefined,
+        [{ resourceKey: 'path:co1:ios/App.swift', mode: 'write' }],
+      )).toBe('applied');
+
+      expect(() => withRepositoryMutationExclusion(
+        controllerHome,
+        'repo1',
+        'android-edit',
+        () => 'unreachable',
+        undefined,
+        [{ resourceKey: 'path:co1:android/app/src/Main.kt', mode: 'write' }],
+      )).toThrow('REPOSITORY_PROCESS_LEASE_HELD');
+
+      // Legacy/unknown source mutation remains fail-closed.
+      expect(() => withRepositoryMutationExclusion(
+        controllerHome,
+        'repo1',
+        'unknown-edit',
+        () => 'unreachable',
+      )).toThrow('REPOSITORY_PROCESS_LEASE_HELD');
+    } finally {
+      releaseExecutionLeases(controllerHome, 'repo1', 'android-build', held.leases, {
+        visibility: 'ephemeral',
+        notifyScheduler: false,
+        invalidateProjection: false,
+        emitRuntimeEvent: false,
+      });
+      rmSync(controllerHome, { recursive: true, force: true });
+    }
+  });
+
   test('exact leased remote review-branch deletion does not acquire an unrelated checkout writer (#469)', () => {
     const sha = 'a'.repeat(40);
     const branch = 'ios/onboarding-welcome-review-20261026';

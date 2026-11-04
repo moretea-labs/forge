@@ -52,12 +52,14 @@ import {
   listFastReceipts,
   readFastReceipt,
   routeExecution,
+  extractPatchPaths,
 } from '../../../src/runtime/execution/thin-harness';
 import {
   classifyRawGitCommitScope,
   classifyRepositoryCommandRoute,
   executeRepositoryCommandViaProcessRuntime,
 } from '../../../src/runtime/execution/process-runtime/command-facade';
+import { claimPathWrite } from '../../../src/runtime/execution/process-runtime/resource-claims';
 import { classifyRepositoryCommand } from '../../../src/cli/repositories/command-classifier';
 import { normalizeRepositoryCommand } from '../../../src/cli/repositories/command-normalization';
 import { readRepositoryRange } from '../../../src/cli/repository/inspector';
@@ -979,6 +981,12 @@ export async function callRepositoryTool(
       case 'repository_safe_patch_apply': {
         const repository = resolveRepositorySelectionForClaimedWork(controllerHome, args, repoIdValue, caller);
         const binding = safePatchEditBinding(controllerHome, repository, caller, args);
+        const patchPaths = extractPatchPaths(args.operations);
+        const mutationClaims = args.validation_only === true
+          ? []
+          : patchPaths.length > 0
+            ? patchPaths.map((path) => claimPathWrite(path, repository.activeCheckoutId, repository.repoId))
+            : undefined;
         const applied = withRepositoryMutationExclusion(
           controllerHome,
           repository.repoId,
@@ -1018,6 +1026,7 @@ export async function callRepositoryTool(
             return patchResult;
           },
           60_000,
+          mutationClaims,
         );
         const changedFiles = [
           ...new Set(
