@@ -8,7 +8,7 @@ import type { MultiRepositoryMcpToolContext } from '../../adapters/mcp/multi-rep
 import { ensureControllerHome } from '../../src/effects/controller-home';
 import { addRepositoryCheckout, registerRepository } from '../../src/cli/repositories/registry';
 import { createWorkContract, getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
-import { getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
+import { createPlanSemanticContext, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { readRequirement, updateRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { ensureForgeInstanceIdentity, readForgeInstanceIdentity } from '../../packages/kernel/identity/api/index';
 import { recordCognitiveMemory, type CognitiveWriteAuthorityPort } from '../../packages/kernel/cognition/api/index';
@@ -135,6 +135,64 @@ describe('rh_work Requirement bootstrap', () => {
       remainingWork: ['Review exact HEAD', 'Verify deployed Runtime'],
       acceptedEvidenceRefs: ['https://github.com/example/forge/pull/123'],
     });
+  });
+
+  test('plan_list returns compact discovery rows and leaves detailed semantic content to plan_get (#478)', async () => {
+    const repoRoot = tempRoot('forge-rh-work-plan-list-repo-');
+    const controllerHome = tempRoot('forge-rh-work-plan-list-home-');
+    initRepo(repoRoot);
+    ensureControllerHome(controllerHome);
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'Plan list transport fixture' });
+    const store = { controllerHome, repoId: repository.repoId };
+    const detail = 'semantic-detail-'.padEnd(500, 'x');
+
+    createPlanSemanticContext(store, {
+      planId: 'PLAN-LIST-DETAIL',
+      repoId: repository.repoId,
+      scopeKey: 'plan-list-detail',
+      sourceBasisRevision: 'source-plan-list',
+      goal: 'Keep plan discovery compact while preserving explicit detail retrieval. '.repeat(8),
+      nonGoals: Array.from({ length: 20 }, (_, index) => `non-goal-${index}-${detail}`),
+      assumptions: Array.from({ length: 30 }, (_, index) => `assumption-${index}-${detail}`),
+      resolvedDecisions: Array.from({ length: 30 }, (_, index) => `decision-${index}-${detail}`),
+      stopConditions: Array.from({ length: 20 }, (_, index) => `stop-${index}-${detail}`),
+      replanConditions: Array.from({ length: 20 }, (_, index) => `replan-${index}-${detail}`),
+      integrationStrategy: detail,
+      items: Array.from({ length: 60 }, (_, index) => ({
+        id: `item-${index}`,
+        objective: `objective-${index}-${detail}`,
+        dependencies: index > 0 ? [`item-${index - 1}`] : [],
+      })),
+    });
+
+    const listed = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_work', {
+      operation: 'plan_list',
+      repo_id: repository.repoId,
+      limit: 20,
+    }));
+    expect(listed.status).toBe('ok');
+    expect(listed.data.plans).toHaveLength(1);
+    expect(listed.data.plans[0]).toMatchObject({
+      planId: 'PLAN-LIST-DETAIL',
+      revision: 1,
+      sourceBasisRevision: 'source-plan-list',
+      itemCount: 60,
+    });
+    expect(listed.data.plans[0].goal.length).toBeLessThanOrEqual(240);
+    expect(listed.data.plans[0].assumptions).toBeUndefined();
+    expect(listed.data.plans[0].resolvedDecisions).toBeUndefined();
+    expect(listed.data.plans[0].items).toBeUndefined();
+    expect(JSON.stringify(listed).length).toBeLessThan(5_000);
+
+    const detailed = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_work', {
+      operation: 'plan_get',
+      repo_id: repository.repoId,
+      plan_id: 'PLAN-LIST-DETAIL',
+      detail_level: 'detail',
+    }));
+    expect(detailed.data.plan.assumptions).toHaveLength(30);
+    expect(detailed.data.plan.resolvedDecisions).toHaveLength(30);
+    expect(detailed.data.plan.items).toHaveLength(50);
   });
 
   test('get_contract exposes the complete canonical WorkContract read-only, separate from the thin semantic view', async () => {

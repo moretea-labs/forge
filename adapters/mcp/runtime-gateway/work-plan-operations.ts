@@ -38,10 +38,25 @@ export async function callRhWorkPlanOperation(
   if (!isRhWorkLightweightPlanOperation(operation)) return undefined;
 
   if (operation === 'plan_list') {
-    const plans = listPlanContracts({ ...store, status: 'active', limit: typeof args.limit === 'number' ? args.limit : 20 });
+    const limit = Math.max(1, Math.min(Math.trunc(typeof args.limit === 'number' ? args.limit : 20), 100));
+    const plans = listPlanContracts({ ...store, status: 'active', limit });
+    const summaries = plans.map((plan) => {
+      const semantic = planSemanticView(plan);
+      return {
+        planId: semantic.planId,
+        revision: semantic.revision,
+        semanticScope: semantic.semanticScope,
+        ...(semantic.requirementId ? { requirementId: semantic.requirementId } : {}),
+        ...(semantic.supersededBy ? { supersededBy: semantic.supersededBy } : {}),
+        sourceBasisRevision: semantic.sourceBasisRevision,
+        goal: semantic.goal.slice(0, 240),
+        itemCount: semantic.items.length,
+        updatedAt: semantic.updatedAt,
+      };
+    });
     const facade = buildFacadeResult({
-      summary: `${plans.length} current semantic Plan(s) in this repository.`,
-      data: { plans: plans.map(planSemanticView), bounded: true },
+      summary: `${plans.length} current semantic Plan(s) in this repository; use plan_get for detailed assumptions, decisions, conditions and items.`,
+      data: { plans: summaries, bounded: true, limit, detailOperation: 'plan_get' },
     });
     return result(facade as unknown as Record<string, unknown>);
   }
