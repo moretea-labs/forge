@@ -7,7 +7,7 @@ import { getMcpPolicy } from '../../adapters/mcp/policy';
 import type { MultiRepositoryMcpToolContext } from '../../adapters/mcp/multi-repository';
 import { ensureControllerHome } from '../../src/effects/controller-home';
 import { addRepositoryCheckout, registerRepository } from '../../src/cli/repositories/registry';
-import { createWorkContract, getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { createWorkContract, getWorkContract, reviseWorkSemanticContext } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { createPlanSemanticContext, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { readRequirement, updateRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { ensureForgeInstanceIdentity, readForgeInstanceIdentity } from '../../packages/kernel/identity/api/index';
@@ -193,6 +193,55 @@ describe('rh_work Requirement bootstrap', () => {
     expect(detailed.data.plan.assumptions).toHaveLength(30);
     expect(detailed.data.plan.resolvedDecisions).toHaveLength(30);
     expect(detailed.data.plan.items).toHaveLength(50);
+  });
+
+  test('work list returns compact discovery rows and leaves semantic result refs to get (#478)', async () => {
+    const repoRoot = tempRoot('forge-rh-work-list-repo-');
+    const controllerHome = tempRoot('forge-rh-work-list-home-');
+    initRepo(repoRoot);
+    ensureControllerHome(controllerHome);
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'Work list transport fixture' });
+    const store = { controllerHome, repoId: repository.repoId };
+    const workId = 'WORK-LIST-DETAIL';
+    createWorkContract(store, {
+      workId,
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      objective: 'work-list-objective-'.padEnd(2_000, 'x'),
+      acceptanceCriteria: [],
+      checks: [],
+      constraints: { workspaceMode: 'current' },
+      requestedBy: 'chatgpt',
+      phase: 'verification',
+    });
+    reviseWorkSemanticContext(store, workId, {
+      expectedRevision: 1,
+      resultRefs: Array.from({ length: 100 }, (_, index) => `result-ref-${index}-${'r'.repeat(480)}`),
+    });
+
+    const listed = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_work', {
+      operation: 'list',
+      repo_id: repository.repoId,
+      limit: 20,
+    }));
+    expect(listed.status).toBe('ok');
+    expect(listed.data.works).toHaveLength(1);
+    expect(listed.data.works[0]).toMatchObject({
+      workId,
+      revision: 2,
+      state: 'open',
+      resultRefCount: 100,
+    });
+    expect(listed.data.works[0].objective.length).toBeLessThanOrEqual(240);
+    expect(listed.data.works[0].resultRefs).toBeUndefined();
+    expect(JSON.stringify(listed).length).toBeLessThan(5_000);
+
+    const detailed = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_work', {
+      operation: 'get',
+      repo_id: repository.repoId,
+      work_id: workId,
+    }));
+    expect(detailed.data.work.resultRefs).toHaveLength(100);
   });
 
   test('get_contract exposes the complete canonical WorkContract read-only, separate from the thin semantic view', async () => {
