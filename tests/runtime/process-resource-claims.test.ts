@@ -350,10 +350,16 @@ describe('Process Runtime fine-grained resource claims', () => {
       argumentsSchema: {},
     });
     const testClaims = claimsForCheck('ios-fast-journey', ['bash', 'scripts/run_ios_test_layer.sh', 'fast-journey'], 'avela', 'co1');
-    for (const id of ['xcode_test', 'smoke_review', 'agent_device_open', 'agent_device_batch', 'capture_screenshot']) {
+    for (const id of ['xcode_test', 'smoke_review', 'launch_simulator', 'capture_screenshot', 'agent_device_prepare']) {
       const pluginClaims = claimsForAssistantPluginAction(action(id), repository, 'ios');
       expect(pluginClaims).toContainEqual({ resourceKey: 'host-service:ios-simulator-test', mode: 'write' });
       expect(pluginClaims.some((claim) => testClaims.some((other) => claimsConflict(claim, lease(other.resourceKey, other.mode))))).toBe(true);
+    }
+    // Long-lived AgentDevice sessions keep this same lease after open returns,
+    // so per-command actions must not acquire a second short-lived copy.
+    for (const id of ['agent_device_open', 'agent_device_batch', 'agent_device_snapshot', 'agent_device_close']) {
+      expect(claimsForAssistantPluginAction(action(id), repository, 'ios')
+        .some((claim) => claim.resourceKey === 'host-service:ios-simulator-test')).toBe(false);
     }
     for (const id of ['build', 'xcode_test', 'smoke_review']) {
       const native = claimsForAssistantPluginAction(action(id), repository, 'ios');
