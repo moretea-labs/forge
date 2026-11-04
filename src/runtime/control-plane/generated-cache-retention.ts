@@ -12,7 +12,7 @@ import { homedir } from 'os';
 import { basename, dirname, join, relative, resolve, sep } from 'path';
 import { repositoryControllerRoot } from '../../effects/controller-home';
 import { measureReclaimablePath } from './lifecycle-retention-metrics';
-import { assertOwnedResourceCleanupTarget, getOwnedResource, recordOwnedResource } from '../../../packages/kernel/identity/api/index';
+import { assertOwnedResourceCleanupTarget, getOwnedResource, markOwnedResourceCleaned, recordOwnedResource, type OwnedResource } from '../../../packages/kernel/identity/api/index';
 
 const DEFAULT_GENERATED_CACHE_GRACE_MS = 6 * 60 * 60_000;
 const DEFAULT_BROWSER_UPLOAD_GRACE_MS = 24 * 60 * 60_000;
@@ -573,22 +573,25 @@ export function recordIosTestEvidenceOwner(input: {
   return { recorded: true, resourceId: record.resourceId };
 }
 
-function hasVerifiedIosTestEvidenceOwner(controllerHome: string, repoId: string, path: string): boolean {
+function verifiedIosTestEvidenceOwner(controllerHome: string, repoId: string, path: string): OwnedResource | undefined {
   const resource = getOwnedResource(controllerHome, iosTestEvidenceResourceId(repoId, path));
   if (!resource || resource.provenance.repoId !== repoId
       || !resource.provenance.creator.startsWith('forge:ios.xcode_test:')
-      || resource.retention.intent !== 'persistent_until_explicit_release') return false;
+      || resource.retention.intent !== 'persistent_until_explicit_release') return undefined;
   try {
-    assertOwnedResourceCleanupTarget(controllerHome, {
+    return assertOwnedResourceCleanupTarget(controllerHome, {
       resourceId: resource.resourceId,
       kind: 'temp_dir',
       targetRef: path,
       locator: { kind: 'filesystem_path', value: path },
     });
-    return true;
   } catch {
-    return false;
+    return undefined;
   }
+}
+
+function hasVerifiedIosTestEvidenceOwner(controllerHome: string, repoId: string, path: string): boolean {
+  return Boolean(verifiedIosTestEvidenceOwner(controllerHome, repoId, path));
 }
 
 /**
@@ -702,6 +705,182 @@ export function inspectRepositoryIosTestEvidence(
       directory.closeSync();
     }
   }
+  return report;
+}
+
+export interface IosTestEvidenceRetentionReport extends GeneratedCacheRetentionReport {
+  policyVersion: 'ios-test-evidence-retention-v1';
+  rootsInspected: number;
+  retainedOwnedCount: number;
+  retainedOwnedBytesLowerBound: number;
+  overCapacity: boolean;
+}
+
+/**
+ * Reclaim only exact inode-backed XCTest evidence whose semantic owner has
+ * already been declared releasable by the existing maintenance authority.
+ * Opaque bundles, active Work, and explicitly retained receipts fail closed.
+ */
+export function cleanupReleasableIosTestEvidence(
+  repository: GeneratedCacheRepositoryRootSet,
+  options: Pick<GeneratedCacheRetentionOptions, 'nowMs' | 'maxEntries' | 'maxRemovals' | 'rootStartIndex'> & {
+    owner: { controllerHome: string; repoId: string };
+    releasableWorkIds: ReadonlySet<string>;
+    graceMs?: number;
+    maxAgeMs?: number;
+    maxCount?: number;
+    maxBytes?: number;
+  },
+): IosTestEvidenceRetentionReport {
+  const nowMs = options.nowMs ?? Date.now();
+  const graceMs = Math.max(0, options.graceMs ?? 24 * 60 * 60_000);
+  const maxAgeMs = Math.max(graceMs, options.maxAgeMs ?? 7 * 24 * 60 * 60_000);
+  const maxCount = Math.max(0, Math.floor(options.maxCount ?? 12));
+  const maxBytes = Math.max(0, Math.floor(options.maxBytes ?? 8 * 1024 * 1024 * 1024));
+  let budget = Math.max(1, Math.floor(options.maxEntries ?? DEFAULT_SCAN_BUDGET));
+  let removals = Math.max(0, Math.floor(options.maxRemovals ?? DEFAULT_REMOVAL_BUDGET));
+  const report: IosTestEvidenceRetentionReport = {
+    policyVersion: 'ios-test-evidence-retention-v1',
+    rootsInspected: 0,
+    inspected: 0,
+    eligible: 0,
+    removedPaths: [],
+    reclaimedBytes: 0,
+    unknownReclaimedByteCount: 0,
+    retainedPaths: [],
+    skippedByReason: {},
+    errors: [],
+    budgetExhausted: false,
+    retainedOwnedCount: 0,
+    retainedOwnedBytesLowerBound: 0,
+    overCapacity: false,
+  };
+  const candidates: Array<{ path: string; ageMs: number; bytes: number; resource: OwnedResource }> = [];
+  const roots = [
+    repository.canonicalRoot,
+    ...repository.checkouts
+      .filter((checkout) => checkout.worktree && (checkout.lifecycle ?? 'active') === 'active')
+      .map((checkout) => checkout.localRoot),
+  ].filter((root, index, values) => values.findIndex((item) => canonical(item) === canonical(root)) === index);
+  if (roots.length > 1) {
+    const offset = ((Math.trunc(options.rootStartIndex ?? 0) % roots.length) + roots.length) % roots.length;
+    roots.push(...roots.splice(0, offset));
+  }
+  const skip = (reason: string) => {
+    report.skippedByReason[reason] = (report.skippedByReason[reason] ?? 0) + 1;
+  };
+
+  for (const root of roots) {
+    if (budget <= 0) { report.budgetExhausted = true; break; }
+    const evidenceRoot = join(root, '.forge', 'ios', 'test-results');
+    if (!existsSync(evidenceRoot)) continue;
+    if (hasSymlinkAncestor(root, evidenceRoot) || !pathInside(root, evidenceRoot)) {
+      report.errors.push('untrusted_ios_test_evidence_root');
+      continue;
+    }
+    let directory: ReturnType<typeof opendirSync>;
+    try {
+      directory = opendirSync(evidenceRoot);
+    } catch (error) {
+      report.errors.push('ios_test_evidence_scan_failed:' + (error instanceof Error ? error.message : String(error)));
+      continue;
+    }
+    report.rootsInspected += 1;
+    try {
+      for (;;) {
+        if (budget <= 0) { report.budgetExhausted = true; break; }
+        const entry = directory.readSync();
+        if (!entry) break;
+        budget -= 1;
+        if (!String(entry.name).endsWith('.xcresult')) continue;
+        report.inspected += 1;
+        const path = join(evidenceRoot, String(entry.name));
+        try {
+          const stat = lstatSync(path);
+          if (!entry.isDirectory() || !stat.isDirectory() || stat.isSymbolicLink()) {
+            skip('unverified_owner');
+            report.retainedPaths.push(path);
+            continue;
+          }
+          const resource = verifiedIosTestEvidenceOwner(options.owner.controllerHome, options.owner.repoId, path);
+          if (!resource) {
+            skip('unverified_owner');
+            report.retainedPaths.push(path);
+            continue;
+          }
+          const size = measureReclaimablePath(path, budget);
+          budget = Math.max(0, budget - size.entries);
+          report.retainedOwnedCount += 1;
+          report.retainedOwnedBytesLowerBound += size.bytes;
+          if (!size.complete) {
+            skip('size_incomplete');
+            report.retainedPaths.push(path);
+            continue;
+          }
+          if (resource.status === 'retained') {
+            skip('explicit_retained');
+            report.retainedPaths.push(path);
+            continue;
+          }
+          const workId = resource.provenance.associatedWorkId;
+          if (!workId || !options.releasableWorkIds.has(workId)) {
+            skip(workId ? 'work_not_releasable' : 'work_unattributed');
+            report.retainedPaths.push(path);
+            continue;
+          }
+          const ageMs = Math.max(0, nowMs - stat.mtimeMs);
+          if (ageMs < graceMs) {
+            skip('grace');
+            report.retainedPaths.push(path);
+            continue;
+          }
+          candidates.push({ path, ageMs, bytes: size.bytes, resource });
+        } catch (error) {
+          skip('entry_error');
+          report.errors.push('ios_test_evidence_entry_failed:' + (error instanceof Error ? error.message : String(error)));
+          report.retainedPaths.push(path);
+        }
+      }
+    } finally {
+      directory.closeSync();
+    }
+  }
+
+  candidates.sort((a, b) => b.ageMs - a.ageMs || a.path.localeCompare(b.path));
+  for (const candidate of candidates) {
+    const overCapacity = report.retainedOwnedCount > maxCount || report.retainedOwnedBytesLowerBound > maxBytes;
+    if (!overCapacity && candidate.ageMs < maxAgeMs) {
+      skip('within_policy');
+      report.retainedPaths.push(candidate.path);
+      continue;
+    }
+    if (removals <= 0) {
+      report.budgetExhausted = true;
+      skip('removal_budget');
+      report.retainedPaths.push(candidate.path);
+      continue;
+    }
+    report.eligible += 1;
+    try {
+      const verified = verifiedIosTestEvidenceOwner(options.owner.controllerHome, options.owner.repoId, candidate.path);
+      if (!verified || verified.resourceId !== candidate.resource.resourceId || verified.status === 'retained') {
+        skip('ownership_changed');
+        report.retainedPaths.push(candidate.path);
+        continue;
+      }
+      rmSync(candidate.path, { recursive: true });
+      markOwnedResourceCleaned(options.owner.controllerHome, verified.resourceId, 'forge:ios-test-evidence-retention');
+      report.removedPaths.push(candidate.path);
+      report.reclaimedBytes += candidate.bytes;
+      report.retainedOwnedCount = Math.max(0, report.retainedOwnedCount - 1);
+      report.retainedOwnedBytesLowerBound = Math.max(0, report.retainedOwnedBytesLowerBound - candidate.bytes);
+      removals -= 1;
+    } catch (error) {
+      report.errors.push('ios_test_evidence_cleanup_failed:' + (error instanceof Error ? error.message : String(error)));
+      report.retainedPaths.push(candidate.path);
+    }
+  }
+  report.overCapacity = report.retainedOwnedCount > maxCount || report.retainedOwnedBytesLowerBound > maxBytes;
   return report;
 }
 

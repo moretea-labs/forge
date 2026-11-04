@@ -32,6 +32,7 @@ import { applyControllerHomeMigration } from '../../src/runtime/control-plane/pe
 import { writeWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { assertOwnedResourceCleanupTarget, getOwnedResource, recordOwnedResource } from '../../packages/kernel/identity/api/index';
 import { managedBranchOwnedResourceId, managedBranchOwnedResourceLocator, managedWorkspaceOwnedResourceId } from '../../src/runtime/execution/managed-workspace';
+import { recordIosTestEvidenceOwner } from '../../src/runtime/control-plane/generated-cache-retention';
 import {
   applyExternalFilesystemGrant,
   buildWorkspaceAuthStatus,
@@ -832,6 +833,61 @@ describe('runtime maintenance executor', () => {
     expect(registry.checkouts.find((candidate) => candidate.checkoutId === checkoutId)?.lifecycle ?? 'active').toBe('active');
   });
 
+  it('reclaims old XCTest evidence only after its associated Work is semantically cancelled', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-maintenance-ios-evidence-'));
+    temporaryRoots.push(root);
+    const controllerHome = join(root, 'controller');
+    const repoRoot = join(root, 'repo');
+    mkdirSync(controllerHome, { recursive: true });
+    mkdirSync(repoRoot, { recursive: true });
+    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repoRoot });
+    execFileSync('git', ['config', 'user.email', 'test@example.test'], { cwd: repoRoot });
+    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: repoRoot });
+    writeFileSync(join(repoRoot, 'README.md'), '# fixture\n');
+    execFileSync('git', ['add', 'README.md'], { cwd: repoRoot });
+    execFileSync('git', ['commit', '-qm', 'initial'], { cwd: repoRoot });
+    const repository = { repoId: 'repo-ios-evidence-maintenance', canonicalRoot: repoRoot };
+    createCancelledWork({ controllerHome, repoId: repository.repoId }, {
+      workId: 'work-cancelled-ios-evidence',
+      repoId: repository.repoId,
+      objective: 'cancelled XCTest fixture',
+      acceptanceCriteria: ['cancelled evidence becomes releasable'],
+      allowedPaths: [],
+      forbiddenPaths: [],
+      checks: [],
+      constraints: {},
+      requestedBy: 'chatgpt',
+      phase: 'verification',
+    });
+    const relativeBundle = '.forge/ios/test-results/20261020T120000Z-1-1-CancelledTests.xcresult';
+    const bundle = join(repoRoot, relativeBundle);
+    mkdirSync(bundle, { recursive: true });
+    writeFileSync(join(bundle, 'Info.plist'), 'old cancelled evidence');
+    const old = new Date(Date.now() - 8 * 24 * 60 * 60_000);
+    utimesSync(bundle, old, old);
+    const owner = recordIosTestEvidenceOwner({
+      controllerHome,
+      repoId: repository.repoId,
+      repoRoot,
+      resultBundlePath: relativeBundle,
+      producerRequestId: 'JOB-cancelled-maintenance',
+      associatedWorkId: 'work-cancelled-ios-evidence',
+    });
+    expect(owner.recorded).toBe(true);
+
+    const applied = applyRuntimeMaintenance(repository, controllerHome, {
+      actionId: 'full_maintenance_pass',
+      confirmMaintenance: true,
+      minAgeMinutes: 1,
+      maxCandidates: 50,
+    });
+    expect(applied.iosTestEvidenceGc?.removedPaths).toContain(bundle);
+    expect(applied.iosTestEvidenceGc?.errors).toEqual([]);
+    expect(existsSync(bundle)).toBe(false);
+    expect(getOwnedResource(controllerHome, owner.resourceId!)?.status).toBe('released');
+    expect(applied.iosTestEvidenceInventory?.bundlesObserved).toBe(0);
+  });
+
   it('preserves a dirty legacy remote_effect worktree and leaves placement authority unchanged', () => {
     const { controllerHome, repository, workId, worktree, checkoutId } = legacyRemoteEffectWorktreeFixture(true);
     const scanned = buildRuntimeMaintenanceStatus(repository, controllerHome, { minAgeMinutes: 1, maxCandidates: 50 });
@@ -916,6 +972,9 @@ describe('runtime maintenance executor', () => {
       expect(applied.generatedCacheGc?.retainedPaths.some((path) => path.endsWith(cacheBuildSuffix))).toBe(true);
       expect(existsSync(join(staleCache, 'Build'))).toBe(true);
     }
+    expect(applied.iosTestEvidenceGc).toMatchObject({
+      policyVersion: 'ios-test-evidence-retention-v1', errors: [],
+    });
     expect(applied.iosTestEvidenceInventory).toMatchObject({
       policyVersion: 'ios-test-evidence-inventory-v1', inspectionOnly: true, errors: [],
     });
