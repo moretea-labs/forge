@@ -27,12 +27,34 @@ export function callRhWorkListProjection(
   ]
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
     .slice(0, historyLimit);
+  const compact = (work: Parameters<typeof workSemanticView>[0]) => {
+    const semantic = workSemanticView(work);
+    return {
+      workId: semantic.workId,
+      revision: semantic.revision,
+      semanticScope: semantic.semanticScope,
+      objective: semantic.objective.slice(0, 240),
+      state: semantic.state,
+      ...(semantic.requirementId ? { requirementId: semantic.requirementId } : {}),
+      ...(semantic.requirementRevision ? { requirementRevision: semantic.requirementRevision } : {}),
+      ...(semantic.planId ? { planId: semantic.planId } : {}),
+      ...(semantic.planRevision ? { planRevision: semantic.planRevision } : {}),
+      ...(semantic.semanticParentWorkId ? { semanticParentWorkId: semantic.semanticParentWorkId } : {}),
+      dependencyCount: semantic.dependsOnWorkIds?.length ?? 0,
+      resultRefCount: semantic.resultRefs.length,
+      createdAt: semantic.createdAt,
+      updatedAt: semantic.updatedAt,
+    };
+  };
   return result(buildFacadeResult({
-    summary: `${works.length} current and ${recentHistory.length} recent terminal semantic Work(s) in this repository.`,
+    summary: `${works.length} current and ${recentHistory.length} recent terminal semantic Work(s) in this repository; use get for detailed result refs and objective context.`,
     data: {
-      works: works.map(workSemanticView),
-      recentHistory: recentHistory.map(workSemanticView),
+      works: works.map(compact),
+      recentHistory: recentHistory.map(compact),
       bounded: true,
+      limit,
+      historyLimit,
+      detailOperation: 'get',
     },
   }) as unknown as Record<string, unknown>);
 }
