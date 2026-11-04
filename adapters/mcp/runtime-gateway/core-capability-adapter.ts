@@ -227,6 +227,28 @@ export async function callCoreCapabilityAdapter(
           ...committed,
         }, Boolean(committed.error));
       }
+      case 'delete_remote_branch': {
+        const callerSession = (!ctx.sessionId || !ctx.principalId || !ctx.controllerInstanceId)
+          ? startOrResumeSession(ctx)
+          : undefined;
+        const forwarded = await callRepositoryTool(ctx.controllerHome, 'repository_git_delete_branch', {
+          repo_id: repository.repoId,
+          checkout_id: repository.activeCheckoutId,
+          branch: input.branch,
+          remote: true,
+          expected_remote_sha: input.expected_remote_sha,
+          ...(typeof input.approval_request_id === 'string' && input.approval_request_id.trim()
+            ? { approval_request_id: input.approval_request_id.trim() }
+            : {}),
+        }, {
+          sessionId: callerSession?.sessionId ?? ctx.sessionId,
+          principalId: callerSession?.principalId ?? ctx.principalId,
+          controllerInstanceId: callerSession?.controllerInstanceId ?? ctx.controllerInstanceId,
+        });
+        return forwarded ?? result({
+          error: { code: 'CORE_CAPABILITY_ROUTE_UNAVAILABLE', message: 'Repository remote-branch delete route is unavailable.' },
+        }, true);
+      }
       case 'deliver_work': {
         const sessionId = typeof input.session_id === 'string' && input.session_id.trim()
           ? input.session_id.trim()
