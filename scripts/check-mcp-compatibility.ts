@@ -57,7 +57,9 @@ const EXPECTED_PREFERRED_TOOL_NAME_FINGERPRINT = 'f22e635a213b45fa';
 // 2026-10-29: compose the read-only rh_work get_contract operation with
 // #483 A02 typed Requirement progress CAS fields. Refresh the exact combined
 // schema fingerprint without relaxing the frozen public-contract assertion.
-const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = '6ed619e093dbeeae';
+// 2026-11-05: #478 adds model-authored execute_command mutation_paths so the
+// model owns semantic mutation scope while Forge enforces mechanical claims.
+const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = '259ecf71c5a6f34f';
 
 const policy = runtimePolicy(process.cwd(), {
   profile: 'controller',
