@@ -3259,6 +3259,45 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(tick.state.publicTunnelFailures).toBe(1);
   });
 
+
+  test('gateway profile keeps Recovery publication repair enabled without gaining primary Runtime repair authority', async () => {
+    const home = controllerHome();
+    const activeManifest = manifest(home, 'release-gateway-publication-only', 'artifact-gateway-publication-only');
+    ensureActiveRuntimeRelease(home, activeManifest);
+    const runtime = await runtimeServer();
+    const failedRecoveryPublic = await failingPublicGatewayServer(530);
+    writeMainToken(home);
+    const config = createRecoveryConfig(home, {
+      installProfile: 'gateway',
+      publicMcpUrl: runtime.endpoint,
+      recoveryPublicUrl: failedRecoveryPublic.endpoint,
+      recoveryTunnelService: {
+        platform: 'systemd-user',
+        unitName: '../invalid-recovery-tunnel.service',
+        minimumFailures: 1,
+        minimumFailureDurationMs: 0,
+        cooldownMs: 0,
+      },
+    });
+    startObservedRuntime(
+      home,
+      runtime.endpoint,
+      'release-gateway-publication-only',
+      'artifact-gateway-publication-only',
+      new Date(Date.now() - watchdogRuntimeStartupGraceMs(config) - 1_000).toISOString(),
+    );
+
+    const tick = await watchdogTick(config, { failures: 0, rollbackUsed: false });
+    expect(tick.decision.action).toBe('repair_public_tunnel');
+    expect(tick.publicTunnelRepair).toMatchObject({
+      attempted: false,
+      noOp: true,
+    });
+    expect(tick.primaryConnectorRestart).toBeUndefined();
+    expect(tick.primaryRuntimeRestart).toBeUndefined();
+    expect(tick.primaryRuntimeRecovery).toBeUndefined();
+  });
+
   test('Watchdog cheap healthy ticks use attestation identity without inspecting known-good bundle contents', async () => {
     const home = controllerHome();
     const activeManifest = manifest(home, 'release-watchdog-attested-cheap', 'artifact-watchdog-attested-cheap');
