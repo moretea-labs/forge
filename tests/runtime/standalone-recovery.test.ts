@@ -3655,6 +3655,22 @@ describe('standalone recovery on canonical Runtime', () => {
       primaryConnectorRestartAttempts: 0,
       primaryConnectorMaximumRestartAttempts: 3,
     })).toMatchObject({ action: 'restart_primary_connector' });
+
+    const gatewayTick = await watchdogTick({ ...config, installProfile: 'gateway' }, {
+      failures: 2,
+      firstFailureAt: Date.now() - 6_000,
+      rollbackUsed: false,
+      primaryConnectorFailures: 2,
+      primaryConnectorFirstFailureAt: Date.now() - 6_000,
+      lastFullVerifyAt: Date.now(),
+    });
+    expect(gatewayTick.decision).toMatchObject({
+      action: 'degraded',
+      reason: expect.stringContaining('permits only Recovery publication self-heal'),
+    });
+    expect(gatewayTick.primaryConnectorRestart).toBeUndefined();
+    expect(gatewayTick.primaryRuntimeRestart).toBeUndefined();
+    expect(gatewayTick.primaryRuntimeRecovery).toBeUndefined();
   });
 
   test('does not attest an active release whose immutable Check Runner canary fails', async () => {
