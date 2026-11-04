@@ -74,6 +74,7 @@ import {
   type RuntimeReleaseProvider,
 } from '../release/release-coordinator';
 import { runBoundedChild } from '../shared/bounded-child-supervisor';
+import { readRecoveryOperationLock, recoveryOperationLockOwnerAlive } from './operation-lock';
 import { runtimeAuthorityFreeEnvironment } from '../shared/process-environment';
 
 const RECOVERY_RUNTIME_RELEASE_PROVIDER: RuntimeReleaseProvider<RecoveryConfig> = {
@@ -1162,46 +1163,143 @@ async function startRecoveryDaemon(config: RecoveryConfig): Promise<void> {
 export function createRecoveryToolExecutor(config: RecoveryConfig, options: {
   releasePath?: string;
   runChild?: typeof runBoundedChild;
+  /** Observation budget only; it never shortens the activation child execution budget. */
+  activationObservationMs?: number;
 } = {}): (name: string, args: Record<string, unknown>) => Promise<unknown> {
   // Resolve/verify the immutable executable once at Gateway startup, not by
   // synchronously hashing the Recovery binary on every HTTP tool request.
   const releasePath = options.releasePath ?? readCurrentRecoveryRelease(config.controllerHome)?.releasePath;
   if (!releasePath) throw new Error('RECOVERY_TOOL_EXECUTABLE_UNAVAILABLE');
   const runChild = options.runChild ?? runBoundedChild;
+  const activationObservationMs = Math.max(1, options.activationObservationMs ?? 750);
   let activeStatus = 0;
   let activeHeavy = 0;
+  type ActivationTask = {
+    fingerprint: string;
+    startedAt: string;
+    state: 'running' | 'succeeded' | 'failed';
+    value?: unknown;
+    error?: Error;
+  };
+  const activationTasks = new Map<string, ActivationTask>();
+
+  const activationRunning = (rawRequestId: string, startedAt: string) => ({
+    status: 'running' as const,
+    tool: 'activate_runtime_release',
+    requestId: rawRequestId,
+    recoveryRequestId: `recovery-gateway:${rawRequestId}`,
+    startedAt,
+    identity: recoveryMachineIdentity(config),
+    detail: 'Runtime activation continues under the existing Recovery mutation authority; observation detached before terminal completion.',
+    reconcile: {
+      mode: 'repeat_same_request' as const,
+      tool: 'activate_runtime_release',
+      requestId: rawRequestId,
+    },
+  });
+
+  const executeChild = async (name: string, input: string, status: boolean): Promise<unknown> => {
+    const result = await runChild(join(releasePath, 'forge-recovery'),
+      [RECOVERY_INTERNAL_TOOL_COMMAND, '--controller-home', config.controllerHome], {
+        input,
+        timeoutMs: status ? 10_000 : 15 * 60_000,
+        maxOutputBytes: 1024 * 1024,
+        forwardSignals: false,
+        env: runtimeAuthorityFreeEnvironment(process.env),
+      });
+    if (result.status !== 0 || result.failureCode || result.timedOut) {
+      // The child may have crossed a mutation boundary. Never automatically
+      // retry/re-key a failed observation; the existing lock/journal decides.
+      throw new Error(`RECOVERY_TOOL_OUTCOME_UNKNOWN: ${result.failureCode ?? 'worker failed'}; inspect the existing request before retrying a mutation.`);
+    }
+    let envelope;
+    try { envelope = JSON.parse(result.stdout); }
+    catch { throw new Error('RECOVERY_TOOL_OUTCOME_UNKNOWN: invalid worker response; inspect the existing request before retrying a mutation.'); }
+    if (envelope?.schemaVersion !== 1 || typeof envelope.ok !== 'boolean'
+      || (envelope.ok && !Object.hasOwn(envelope, 'value'))) {
+      throw new Error('RECOVERY_TOOL_OUTCOME_UNKNOWN: invalid worker response; inspect the existing request before retrying a mutation.');
+    }
+    if (!envelope.ok) throw new Error(typeof envelope.error === 'string' ? envelope.error : 'RECOVERY_TOOL_FAILED');
+    return envelope.value;
+  };
+
   return async (name, args) => {
     if (!RECOVERY_TOOLS.some((tool) => tool.name === name)) throw new Error('RECOVERY_TOOL_REQUEST_INVALID');
     const status = name === 'runtime_status' || name === 'list_recovery_history';
+    const input = JSON.stringify({ name, args });
+    if (Buffer.byteLength(input) > 64 * 1024) throw new Error('RECOVERY_REQUEST_TOO_LARGE');
+
+    if (name === 'activate_runtime_release') {
+      const rawRequestId = requestId(args.request_id);
+      if (!rawRequestId) throw new Error('RECOVERY_REQUEST_ID_REQUIRED');
+      const fingerprint = createHash('sha256').update(input).digest('hex');
+      const existing = activationTasks.get(rawRequestId);
+      if (existing) {
+        if (existing.fingerprint !== fingerprint) throw new Error('RECOVERY_REQUEST_ID_CONFLICT: activate_runtime_release arguments changed for the same request_id');
+        if (existing.state === 'succeeded') return existing.value;
+        if (existing.state === 'failed') throw existing.error ?? new Error('RECOVERY_TOOL_FAILED');
+        return activationRunning(rawRequestId, existing.startedAt);
+      }
+
+      const lock = readRecoveryOperationLock(config.controllerHome);
+      if (lock && recoveryOperationLockOwnerAlive(lock)) {
+        if (lock.action === 'activate_runtime_release' && lock.requestId === `recovery-gateway:${rawRequestId}`) {
+          return activationRunning(rawRequestId, lock.acquiredAt);
+        }
+        throw new Error('RECOVERY_BUSY: execution capacity reached; no operation was started.');
+      }
+      if (activeHeavy >= 1) throw new Error('RECOVERY_BUSY: execution capacity reached; no operation was started.');
+
+      activeHeavy += 1;
+      const task: ActivationTask = {
+        fingerprint,
+        startedAt: new Date().toISOString(),
+        state: 'running',
+      };
+      activationTasks.set(rawRequestId, task);
+      while (activationTasks.size > 8) {
+        const removable = Array.from(activationTasks.entries()).find(([, candidate]) => candidate.state !== 'running');
+        if (!removable) break;
+        activationTasks.delete(removable[0]);
+      }
+
+      const execution = executeChild(name, input, false);
+      void execution.then(
+        (value) => {
+          task.state = 'succeeded';
+          task.value = value;
+        },
+        (error) => {
+          task.state = 'failed';
+          task.error = error instanceof Error ? error : new Error(String(error));
+        },
+      ).finally(() => {
+        activeHeavy = Math.max(0, activeHeavy - 1);
+      });
+
+      const observed = await Promise.race([
+        execution.then(
+          (value) => ({ terminal: true as const, value }),
+          (error) => ({ terminal: true as const, error: error instanceof Error ? error : new Error(String(error)) }),
+        ),
+        new Promise<{ terminal: false }>((resolveObservation) => {
+          const timer = setTimeout(() => resolveObservation({ terminal: false }), activationObservationMs);
+          timer.unref?.();
+        }),
+      ]);
+      if (observed.terminal) {
+        if ('error' in observed) throw observed.error;
+        return observed.value;
+      }
+      return activationRunning(rawRequestId, task.startedAt);
+    }
+
     if (status ? activeStatus >= 2 : activeHeavy >= 1) {
       throw new Error('RECOVERY_BUSY: execution capacity reached; no operation was started.');
     }
-    const input = JSON.stringify({ name, args });
-    if (Buffer.byteLength(input) > 64 * 1024) throw new Error('RECOVERY_REQUEST_TOO_LARGE');
     if (status) activeStatus += 1; else activeHeavy += 1;
     try {
-      const result = await runChild(join(releasePath, 'forge-recovery'),
-        [RECOVERY_INTERNAL_TOOL_COMMAND, '--controller-home', config.controllerHome], {
-          input,
-          timeoutMs: status ? 10_000 : 15 * 60_000,
-          maxOutputBytes: 1024 * 1024,
-          forwardSignals: false,
-          env: runtimeAuthorityFreeEnvironment(process.env),
-        });
-      if (result.status !== 0 || result.failureCode || result.timedOut) {
-        // The child may have crossed a mutation boundary. Never automatically
-        // retry/re-key a failed observation; the existing lock/journal decides.
-        throw new Error(`RECOVERY_TOOL_OUTCOME_UNKNOWN: ${result.failureCode ?? 'worker failed'}; inspect the existing request before retrying a mutation.`);
-      }
-      let envelope;
-      try { envelope = JSON.parse(result.stdout); }
-      catch { throw new Error('RECOVERY_TOOL_OUTCOME_UNKNOWN: invalid worker response; inspect the existing request before retrying a mutation.'); }
-      if (envelope?.schemaVersion !== 1 || typeof envelope.ok !== 'boolean'
-        || (envelope.ok && !Object.hasOwn(envelope, 'value'))) {
-        throw new Error('RECOVERY_TOOL_OUTCOME_UNKNOWN: invalid worker response; inspect the existing request before retrying a mutation.');
-      }
-      if (!envelope.ok) throw new Error(typeof envelope.error === 'string' ? envelope.error : 'RECOVERY_TOOL_FAILED');
-      return envelope.value;
+      return await executeChild(name, input, status);
     } finally {
       if (status) activeStatus -= 1; else activeHeavy -= 1;
     }
@@ -1217,7 +1315,7 @@ async function startGateway(config: RecoveryConfig, daemonIdentity?: RecoveryRun
   const executeTool = createRecoveryToolExecutor(config, { releasePath: runtimeIdentity?.releasePath });
   let activeMcpRequests = 0;
   let latestMcpActivityAt: number | undefined;
-  const recentMutations = new Map<string, number[]>();
+  const recentMutations = new Map<string, Array<{ at: number; requestKey: string }>>();
   const oauthCodes = new Map<string, PendingOAuthCode>();
   const oauthClients = new Map<string, OAuthClient>();
   const recoveryTools = RECOVERY_TOOLS.map((tool) => ({
@@ -1230,9 +1328,13 @@ async function startGateway(config: RecoveryConfig, daemonIdentity?: RecoveryRun
     dispatchTool: async (name, args, context) => {
       if (name === 'attest_known_good' || name === 'rollback_previous' || name === 'restart_primary_runtime' || name === 'restart_primary_connector' || name === 'recover_primary_runtime' || name === 'stage_runtime_release' || name === 'activate_runtime_release' || name === 'pin_runtime_release' || name === 'unpin_runtime_release' || name === 'activate_pinned_runtime_release' || name === 'prepare_runtime_release_session' || name === 'verify_runtime_release_session_candidate' || name === 'cutover_runtime_release_session' || name === 'promote_runtime_release_session_known_good' || name === 'migrate_controller_home' || name === 'restart_public_tunnel') {
         const now = Date.now();
-        const window = (recentMutations.get(context.remoteAddress) ?? []).filter((at) => now - at < 60_000);
-        if (window.length >= 3) throw new Error('Recovery mutation rate limit exceeded.');
-        window.push(now);
+        const window = (recentMutations.get(context.remoteAddress) ?? []).filter((entry) => now - entry.at < 60_000);
+        const mutationRequestId = requestId(args.request_id);
+        const requestKey = mutationRequestId ? `${name}:${mutationRequestId}` : `${name}:unkeyed:${now}`;
+        if (!window.some((entry) => entry.requestKey === requestKey)) {
+          if (window.length >= 3) throw new Error('Recovery mutation rate limit exceeded.');
+          window.push({ at: now, requestKey });
+        }
         recentMutations.set(context.remoteAddress, window);
       }
       return await executeTool(name, args);

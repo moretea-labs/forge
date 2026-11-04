@@ -216,6 +216,88 @@ test('Recovery bounds status fan-out and never replays an outcome-unknown tool c
   expect(calls).toBe(2);
 });
 
+test('Recovery detaches Runtime activation observation and same request reconciles without a second child', async () => {
+  const home = controllerHome();
+  let finish!: () => void;
+  let calls = 0;
+  const execute = createRecoveryToolExecutor(createRecoveryConfig(home), {
+    releasePath: home,
+    activationObservationMs: 1,
+    runChild: async () => {
+      calls += 1;
+      await new Promise<void>((done) => { finish = done; });
+      return {
+        status: 0, signal: null, timedOut: false, stderr: '', residualPids: [], remainingPids: [], pidReuseFenced: false,
+        stdout: JSON.stringify({ schemaVersion: 1, ok: true, value: { ok: true, attempted: true, operationId: 'activation-terminal' } }),
+      };
+    },
+  });
+  const args = { request_id: 'activation-detached-request' };
+
+  const first = await execute('activate_runtime_release', args) as { status: string; requestId: string; recoveryRequestId: string };
+  expect(first).toMatchObject({
+    status: 'running',
+    requestId: 'activation-detached-request',
+    recoveryRequestId: 'recovery-gateway:activation-detached-request',
+  });
+  expect(calls).toBe(1);
+  expect(await execute('activate_runtime_release', args)).toMatchObject({
+    status: 'running',
+    requestId: 'activation-detached-request',
+  });
+  expect(calls).toBe(1);
+  await expect(execute('activate_runtime_release', { request_id: 'activation-detached-request', release_path: '/changed' }))
+    .rejects.toThrow('RECOVERY_REQUEST_ID_CONFLICT');
+
+  finish();
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    await Bun.sleep(1);
+    const terminal = await execute('activate_runtime_release', args);
+    if ((terminal as { status?: string }).status !== 'running') {
+      expect(terminal).toMatchObject({ ok: true, attempted: true, operationId: 'activation-terminal' });
+      expect(calls).toBe(1);
+      return;
+    }
+  }
+  throw new Error('activation terminal result did not settle');
+});
+
+test('Recovery reuses the durable activation lock as running evidence after Gateway replacement', async () => {
+  const home = controllerHome();
+  const requestId = 'activation-gateway-replacement';
+  const lock = acquireRecoveryOperationLock({
+    controllerHome: home,
+    action: 'activate_runtime_release',
+    requestId: `recovery-gateway:${requestId}`,
+  });
+  expect(lock.acquired).toBe(true);
+  if (!lock.acquired) throw new Error('fixture activation lock unavailable');
+  let calls = 0;
+  try {
+    const execute = createRecoveryToolExecutor(createRecoveryConfig(home), {
+      releasePath: home,
+      activationObservationMs: 1,
+      runChild: async () => {
+        calls += 1;
+        throw new Error('matching live activation lock must avoid a second child');
+      },
+    });
+    expect(await execute('activate_runtime_release', { request_id: requestId })).toMatchObject({
+      status: 'running',
+      requestId,
+      recoveryRequestId: `recovery-gateway:${requestId}`,
+      startedAt: lock.handle.record.acquiredAt,
+    });
+    expect(calls).toBe(0);
+    await expect(execute('activate_runtime_release', { request_id: 'different-activation-request' }))
+      .rejects.toThrow('RECOVERY_BUSY');
+    expect(calls).toBe(0);
+  } finally {
+    lock.handle.close();
+  }
+});
+
+
 function recoveryMutationIdentityArgs(config: ReturnType<typeof createRecoveryConfig>): Record<string, string> {
   const identity = recoveryMachineIdentity(config);
   return {
@@ -4865,6 +4947,53 @@ describe('standalone recovery on canonical Runtime', () => {
       expect(result.detail).toContain('RUNTIME_RELEASE_ACTIVATION_STALE_BASE');
       expect(commands).toEqual([]);
       expect(readRuntimeReleaseAuthority(home)?.active.releaseId).toBe('release-b');
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+    }
+  });
+
+
+  test('reconciles a stale activation replay when the exact requested candidate is already active', async () => {
+    const home = controllerHome();
+    const previousHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const releaseA = verifiedManifest(home, 'release-replay-a');
+      const candidate = verifiedManifest(home, 'release-replay-candidate');
+      ensureActiveRuntimeRelease(home, releaseA.path);
+      const observed = readRuntimeReleaseAuthority(home)!;
+      publishRuntimeRelease(home, candidate.path, 'prior-activation-with-lost-response');
+      runtimeServiceConfig(home);
+      const paths = forgeRuntimeServicePaths(home);
+      mkdirSync(dirname(paths.installedPlistPath), { recursive: true });
+      writeFileSync(paths.installedPlistPath, '<plist/>');
+      const commands: string[][] = [];
+
+      const result = await activateRuntimeRelease(createRecoveryConfig(home, {
+        primaryRuntimeService: { platform: 'launchd' },
+      }), candidate.path, {
+        platform: 'darwin',
+        currentUid: async () => 501,
+        runCommand: async (name, args) => {
+          commands.push([name, ...args]);
+          return { ok: true, status: 0, stdout: '', stderr: '' };
+        },
+        verifyLocal: async () => healthyVerify(),
+      }, {
+        requestId: 'recovery-gateway:lost-response-replay',
+        expectedAuthorityRevision: observed.revision,
+        expectedActiveReleaseId: observed.active.releaseId,
+      });
+
+      expect(result).toMatchObject({
+        ok: true,
+        attempted: false,
+        noOp: true,
+        detail: expect.stringContaining('stale activation replay reconciled without another mutation'),
+      });
+      expect(commands).toEqual([]);
+      expect(readRuntimeReleaseAuthority(home)?.active.releaseId).toBe('release-replay-candidate');
     } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;

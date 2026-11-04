@@ -146,6 +146,8 @@ Forge deliberately has no blue-green Runtime topology. There is one active whole
 
 Runtime cutover permits a short MCP disconnect. Recovery withdraws admission from the exact old Connector generation; the canonical Runtime gives admitted requests its existing five-second drain, then settles unfinished calls as `MCP_RUNTIME_CUTOVER_OUTCOME_UNKNOWN` before closing sockets. Busy HTTP counters are diagnostic and cannot indefinitely defer the switch. After recovery, reconnect and inspect the original Process/request/effect before retrying a mutation whose result is unknown. A request rejected before admission can be submitted again; interruption never grants automatic replay of an unknown effect.
 
+The Recovery Gateway treats `activate_runtime_release` execution time and caller observation time as separate budgets. It starts the existing isolated Recovery child under the same mutation lock/request identity, observes briefly, and returns a `running` response with the exact request id when activation is still in progress. Repeating the exact request id reconciles the in-process task or the live Recovery operation lock instead of starting a second activation; after a lost terminal response, activation itself reconciles the exact already-active candidate. Same-request reconciliation is not charged as a new mutation in the per-client rate window. This is observation detachment only: no second Job/operation authority or automatic replay is introduced.
+
 No rollout, service installation, or live restart is implied by source changes. Activating a new primary Runtime release still requires separate explicit authorization and exact release evidence.
 
 ## Operator CLI
