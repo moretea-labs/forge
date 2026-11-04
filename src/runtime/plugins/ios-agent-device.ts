@@ -2304,7 +2304,25 @@ export async function executeIosAgentDeviceAction(input: AssistantPluginActionEx
   if (input.deadlineAtMs === undefined && typeof input.timeoutMs === 'number' && Number.isFinite(input.timeoutMs)) {
     input = { ...input, deadlineAtMs: Date.now() + Math.max(1, Math.trunc(input.timeoutMs)) };
   }
-  if (input.actionId === 'agent_device_status') return { provider: 'agent-device', ...await iosAgentDeviceActionStatus(input) };
+  if (input.actionId === 'agent_device_status') {
+    const status = await iosAgentDeviceActionStatus(input);
+    // This is a read-only projection of the canonical repository interaction
+    // records, not a second lease or an assertion of provider Runner ownership.
+    const activeInteractions = listAgentDeviceInteractions(input.repoRoot)
+      .filter((record) => isInteractionSessionActive(record.status))
+      .map((record) => ({
+        interactionId: record.interactionId,
+        provider: record.provider,
+        targetId: record.targetId,
+        status: record.status,
+        owner: {
+          repoId: record.owner.repoId,
+          ...(record.owner.jobId ? { jobId: record.owner.jobId } : {}),
+        },
+        expiresAt: record.expiresAt,
+      }));
+    return { provider: 'agent-device', ...status, activeInteractions };
+  }
   if (input.actionId === 'agent_device_close') {
     const interactionId = requireString(input.args.interaction_id, 'interaction_id');
     const existing = readAgentDeviceInteraction(input.repoRoot, interactionId);

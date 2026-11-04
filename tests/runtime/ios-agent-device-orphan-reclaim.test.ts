@@ -7,7 +7,7 @@ import {
   resetIosAgentDeviceRuntimeHooksForTest,
   setIosAgentDeviceRuntimeHooksForTest,
 } from '../../src/runtime/plugins/ios-agent-device';
-import { readInteractionSession, writeInteractionSession } from '../../src/runtime/plugins/interaction-session';
+import { patchInteractionSession, readInteractionSession, writeInteractionSession } from '../../src/runtime/plugins/interaction-session';
 
 const roots: string[] = [];
 const oldId = 'ios_agent_device_old_simulator';
@@ -79,6 +79,29 @@ afterEach(() => {
 });
 
 describe('iOS agent-device abandoned interaction recovery (Issue #192)', () => {
+  it('reports one scoped active Simulator owner without mutating the provider or leaking app instructions', async () => {
+    const f = fixture();
+    const calls = installMock([{ session: oldSession }]);
+    const status = () => executeIosAgentDeviceAction({
+      controllerHome: f.controllerHome, repoId: 'repo-ios-192', repoRoot: f.repoRoot,
+      pluginId: 'ios', actionId: 'agent_device_status', requestId: 'observe-owner',
+      args: {}, origin: { surface: 'local-ui', actor: 'test' },
+    });
+    const observed = await status();
+    expect(observed.activeInteractions).toEqual([{
+      interactionId: oldId, provider: 'ios-simulator', targetId,
+      status: 'waiting_for_user', owner: { repoId: 'repo-ios-192' },
+      expiresAt: '2026-11-02T09:19:11.000Z',
+    }]);
+    expect(JSON.stringify(observed.activeInteractions)).not.toContain('com.example.medication');
+    expect(calls).not.toContain('session');
+    expect(calls).not.toContain('close');
+    expect(calls).not.toContain('open');
+
+    patchInteractionSession(f.repoRoot, 'ios-simulator', oldId, { status: 'closed' });
+    expect((await status()).activeInteractions).toEqual([]);
+  });
+
   it('reclaims an active Forge record when its scoped provider reports no sessions', async () => {
     const f = fixture();
     const calls = installMock([]);
