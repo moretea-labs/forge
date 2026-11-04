@@ -3244,7 +3244,40 @@ async function activateRuntimeReleaseInternal(
     }
     const expectedRevision = guard.expectedAuthorityRevision;
     const expectedActiveReleaseId = typeof guard.expectedActiveReleaseId === 'string' ? guard.expectedActiveReleaseId.trim() : guard.expectedActiveReleaseId;
-    if (expectedRevision !== undefined && (expectedRevision === null ? current !== undefined : current?.revision !== expectedRevision)) {
+    const authorityRevisionStale = expectedRevision !== undefined
+      && (expectedRevision === null ? current !== undefined : current?.revision !== expectedRevision);
+    const activeReleaseStale = expectedActiveReleaseId !== undefined
+      && (expectedActiveReleaseId === null ? current?.active !== undefined : current?.active.releaseId !== expectedActiveReleaseId);
+    const requestedCandidateAlreadyActive = Boolean(
+      current
+      && current.active.releaseId === candidate.manifest.releaseId
+      && current.active.artifactIdentity === candidate.manifest.artifactIdentity
+      && resolve(current.active.manifestPath) === resolve(candidate.manifestPath),
+    );
+    if ((authorityRevisionStale || activeReleaseStale) && requestedCandidateAlreadyActive) {
+      const verify = await verifyLocal(config);
+      audit(config, 'runtime_release_activation_reconciled_active', {
+        operationId,
+        requestId: lockRequestId,
+        candidateRevision: candidate.manifest.releaseId,
+        expectedAuthorityRevision: expectedRevision,
+        observedAuthorityRevision: current?.revision,
+        expectedActiveReleaseId,
+        observedActiveReleaseId: current?.active.releaseId,
+        ok: verify.ok,
+      });
+      return {
+        ok: verify.ok,
+        attempted: false,
+        noOp: true,
+        detail: verify.ok
+          ? 'requested exact Runtime release is already active after the caller observation; stale activation replay reconciled without another mutation'
+          : 'requested exact Runtime release is already active after the caller observation, but local Runtime verification is not healthy',
+        operationId,
+        verify,
+      } satisfies RuntimeReleaseActivationResult;
+    }
+    if (authorityRevisionStale) {
       const detail = `RUNTIME_RELEASE_ACTIVATION_STALE_BASE: expected authority revision ${expectedRevision}, observed ${current?.revision ?? 'none'}`;
       audit(config, 'runtime_release_activation_stale_base', {
         operationId,
@@ -3257,7 +3290,7 @@ async function activateRuntimeReleaseInternal(
       });
       return { ok: false, attempted: false, noOp: true, detail, operationId } satisfies RuntimeReleaseActivationResult;
     }
-    if (expectedActiveReleaseId !== undefined && (expectedActiveReleaseId === null ? current?.active !== undefined : current?.active.releaseId !== expectedActiveReleaseId)) {
+    if (activeReleaseStale) {
       const detail = `RUNTIME_RELEASE_ACTIVATION_STALE_BASE: expected active release ${expectedActiveReleaseId}, observed ${current?.active.releaseId ?? 'none'}`;
       audit(config, 'runtime_release_activation_stale_base', {
         operationId,
