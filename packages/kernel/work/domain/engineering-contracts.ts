@@ -104,7 +104,8 @@ export type ContextClosureSemanticStatus = 'ready' | 'degraded' | 'unavailable' 
 export interface ContextClosureSkillResolution {
   id: string;
   version?: string;
-  source: 'project_contract';
+  /** Availability source, not proof the invoking assistant read the skill. */
+  source: 'project_contract' | 'repository_skill' | 'user_skill';
   matchedKinds: string[];
 }
 

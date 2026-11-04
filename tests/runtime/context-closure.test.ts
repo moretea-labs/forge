@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { buildContextClosureReceipt, validateRuntimeIssuedContextClosureReceipt } from '../../src/runtime/context/context-closure';
@@ -24,6 +24,12 @@ function pack(sourceRevision: string, files: string[], tests: string[] = []) {
     files: files.map((path) => ({ path })),
     coverage: { relevantTests: tests, inspectedFiles: files },
   };
+}
+
+function skill(root: string, id: string) {
+  const folder = join(root, '.agents', 'skills', id);
+  mkdirSync(folder, { recursive: true });
+  writeFileSync(join(folder, 'SKILL.md'), `---\nname: ${id}\n---\n\nInstructions`);
 }
 
 function projectContract(root: string, input: {
@@ -56,8 +62,10 @@ describe('Context Closure', () => {
     writeFileSync(join(root, 'src/service.ts'), 'export const value = 1;');
     writeFileSync(join(root, 'tests/service.test.ts'), '');
     projectContract(root, { projectId: 'ts-app', skillRefs: ['typescript-engineering@2'] });
+    skill(root, 'typescript-engineering');
     const receipt = buildContextClosureReceipt({
       repoRoot: root,
+      skillHomeDir: join(root, 'no-user-skills'),
       query: 'Change the cross-file protocol ownership contract',
       pack: pack('rev-ts', ['src/service.ts'], ['tests/service.test.ts']),
       semanticProviders: [{ id: 'typescript-language-service', languages: ['typescript'] }],
@@ -77,6 +85,7 @@ describe('Context Closure', () => {
     mkdirSync(join(root, 'Example.xcodeproj'));
     mkdirSync(join(root, 'Sources'));
     writeFileSync(join(root, 'Sources/App.swift'), 'struct App {}');
+    skill(root, 'ios-engineering');
     projectContract(root, {
       projectId: 'ios-app',
       platforms: ['ios'],
@@ -85,6 +94,7 @@ describe('Context Closure', () => {
     });
     const receipt = buildContextClosureReceipt({
       repoRoot: root,
+      skillHomeDir: join(root, 'no-user-skills'),
       query: 'Change cross-file ownership safely',
       pack: pack('rev-ios', ['Sources/App.swift']),
       semanticProviders: [{ id: 'sourcekit-lsp', languages: ['swift'] }],
@@ -107,6 +117,7 @@ describe('Context Closure', () => {
     mkdirSync(join(root, 'Example.xcodeproj'));
     mkdirSync(join(root, 'Sources'));
     writeFileSync(join(root, 'Sources/App.swift'), 'struct App {}');
+    skill(root, 'ios-engineering');
     projectContract(root, {
       projectId: 'ios-evidence-app',
       platforms: ['ios'],
@@ -115,6 +126,7 @@ describe('Context Closure', () => {
     });
     const receipt = buildContextClosureReceipt({
       repoRoot: root,
+      skillHomeDir: join(root, 'no-user-skills'),
       query: 'Change cross-file ownership safely',
       pack: pack('rev-ios-evidence', ['Sources/App.swift']),
       semanticProviders: [{ id: 'sourcekit-lsp', languages: ['swift'] }],
@@ -160,11 +172,55 @@ describe('Context Closure', () => {
     }).skillBindings).toEqual([{ id: 'ios-engineering', kinds: ['swift', 'ios'] }]);
   });
 
+  test('discovers a symlinked installed ios-engineering without a project contract', () => {
+    const root = temp('context-closure-user-skill-');
+    const home = join(root, 'home');
+    mkdirSync(join(root, 'Sources'));
+    writeFileSync(join(root, 'Sources', 'App.swift'), 'struct App {}');
+    const folder = join(home, '.agents', 'skills', 'ios-engineering');
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(join(folder, 'SKILL.md'), '---\\nname: ios-engineering\\n---');
+    mkdirSync(join(home, '.codex', 'skills'), { recursive: true });
+    symlinkSync(folder, join(home, '.codex', 'skills', 'ios-engineering'));
+    const receipt = buildContextClosureReceipt({
+      repoRoot: root,
+      skillHomeDir: home,
+      query: 'Implement a SwiftUI view',
+      pack: pack('rev-installed', ['Sources/App.swift']),
+      semanticNavigation: { requested: 0, results: [], errors: [] },
+      semanticProviders: [],
+    });
+    expect(receipt.projectContractStatus).toBe('missing');
+    expect(receipt.skills.status).toBe('ready');
+    expect(receipt.skills.resolved).toEqual([
+      expect.objectContaining({ id: 'ios-engineering', source: 'user_skill', matchedKinds: ['swift'] }),
+    ]);
+    expect(receipt.readiness.reasonCodes).toContain('project_contract.missing');
+    expect(receipt.readiness.reasonCodes).not.toContain('skill.swift_unresolved');
+  });
+
+  test('uninstalled project skill bindings cannot claim available skills', () => {
+    const root = temp('context-closure-phantom-skill-');
+    projectContract(root, { projectId: 'ios-app', skillBindings: [{ id: 'ios-engineering', kinds: ['swift', 'ios'] }], platforms: ['ios'] });
+    const receipt = buildContextClosureReceipt({
+      repoRoot: root,
+      skillHomeDir: join(root, 'no-user-skills'),
+      query: 'SwiftUI change',
+      pack: pack('rev-phantom', ['Sources/App.swift']),
+      semanticNavigation: { requested: 0, results: [], errors: [] },
+      semanticProviders: [],
+    });
+    expect(receipt.skills.status).toBe('unavailable');
+    expect(receipt.skills.unresolvedKinds).toEqual(['ios', 'swift']);
+    expect(receipt.readiness.reasonCodes).toContain('skill.swift_unresolved');
+  });
+
   test('keeps missing project/skill facts explicit instead of inventing defaults', () => {
     const root = temp('context-closure-missing-');
     writeFileSync(join(root, 'package.json'), '{}');
     const receipt = buildContextClosureReceipt({
       repoRoot: root,
+      skillHomeDir: join(root, 'no-user-skills'),
       query: 'Inspect one local function',
       pack: pack('rev-missing', ['src/value.ts']),
       semanticProviders: [{ id: 'typescript-language-service', languages: ['typescript'] }],
@@ -179,8 +235,10 @@ describe('Context Closure', () => {
   test('accepts semantically identical issued content regardless of object property order but rejects content tampering', () => {
     const root = temp('context-closure-issued-');
     projectContract(root, { projectId: 'issued', skillRefs: ['typescript-engineering'] });
+    skill(root, 'typescript-engineering');
     const issued = buildContextClosureReceipt({
       repoRoot: root,
+      skillHomeDir: join(root, 'no-user-skills'),
       query: 'typescript service implementation',
       pack: pack('revision-issued', ['src/service.ts'], ['tests/service.test.ts']),
       semanticNavigation: { requested: 0, results: [], errors: [] },

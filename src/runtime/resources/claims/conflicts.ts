@@ -56,7 +56,12 @@ function gitIndexCheckoutId(key: string): string | undefined {
 }
 
 function isGitRefKey(key: string): boolean {
-  return key.startsWith('git-ref:') || key.startsWith('git-refs:');
+  return key.startsWith('git-ref:') || key.startsWith('git-refs:') || key.startsWith('remote-ref:');
+}
+
+function scopedRemoteRef(key: string): { repoId: string; remote: string; ref: string } | undefined {
+  const match = /^remote-ref:([^:]+):([^:]+):(refs\/heads\/.+)$/.exec(key);
+  return match ? { repoId: match[1]!, remote: match[2]!, ref: match[3]! } : undefined;
 }
 
 /**
@@ -106,6 +111,24 @@ export function resourceKeysOverlap(leftRaw: string, rightRaw: string): boolean 
   const left = normalizeResourceKey(leftRaw);
   const right = normalizeResourceKey(rightRaw);
   if (left === right) return true;
+
+  // A single exact remote ref is independent from different review refs,
+  // while opaque Git pushes and repo-wide remote mutations stay exclusive.
+  // Do not add workspace/index ownership: deleting a remote ref does not edit
+  // another Checkout's source tree.
+  const leftRemoteRef = scopedRemoteRef(left);
+  const rightRemoteRef = scopedRemoteRef(right);
+  if (leftRemoteRef || rightRemoteRef) {
+    if (leftRemoteRef && rightRemoteRef) {
+      return leftRemoteRef.repoId === rightRemoteRef.repoId
+        && leftRemoteRef.remote === rightRemoteRef.remote
+        && leftRemoteRef.ref === rightRemoteRef.ref;
+    }
+    const exact = leftRemoteRef ?? rightRemoteRef!;
+    const other = leftRemoteRef ? right : left;
+    return other === `remote:${exact.repoId}` || other === `git-refs:${exact.repoId}`
+      || other.startsWith('git-ref:') || other === 'repo-content:*';
+  }
 
   // Explicit Xcode caches also carry a shared read on build-cache:<repo>.
   // Opaque builds retain its write lock; concrete caches serialize by physical

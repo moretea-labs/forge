@@ -37,6 +37,10 @@ export interface GeneratedCacheRetentionReport {
   inspected: number;
   eligible: number;
   removedPaths: string[];
+  /** Logical file bytes in removed paths with a complete bounded scan; not disk-free delta. */
+  reclaimedBytes: number;
+  /** Successfully removed paths whose size exceeded the bounded measurement. */
+  unknownReclaimedByteCount: number;
   retainedPaths: string[];
   skippedByReason: Record<string, number>;
   errors: string[];
@@ -256,15 +260,23 @@ function nestedDerivedDataDirectories(root: string, maxDepth: number, budget: { 
   const found: string[] = [];
   const visit = (dir: string, depth: number, visitRound: number): void => {
     if (depth > maxDepth || budget.remaining <= 0) return;
-    const entries = rotatedEntries(dir, visitRound);
-    // Divide at each level rather than correlating parent/child rotations.
+    // Rotate only traversable directories. Evidence file cardinality must not
+    // consume the cache discovery budget or delay fair selection of siblings.
+    const entries = rotatedEntries(dir, 0).filter((entry) => {
+      const name = String(entry.name);
+      return entry.isDirectory()
+        && !['.git', 'node_modules', 'SourcePackages', 'Logs', ...REBUILDABLE_XCODE_CHILDREN].includes(name)
+        && !name.endsWith('.xcresult');
+    });
+    if (entries.length > 1) {
+      const offset = ((Math.trunc(visitRound) % entries.length) + entries.length) % entries.length;
+      entries.push(...entries.splice(0, offset));
+    }
     const childRound = Math.floor(visitRound / Math.max(1, entries.length));
     for (const entry of entries) {
       if (budget.remaining <= 0) return;
       budget.remaining -= 1;
-      const name = String(entry.name);
-      if (!entry.isDirectory() || ['.git', 'node_modules', 'SourcePackages', 'Logs', ...REBUILDABLE_XCODE_CHILDREN].includes(name) || name.endsWith('.xcresult')) continue;
-      const path = join(dir, name);
+      const path = join(dir, String(entry.name));
       if (isXcodeCacheRoot(path)) found.push(path);
       else visit(path, depth + 1, childRound);
     }
@@ -365,6 +377,8 @@ export function cleanupGeneratedRepositoryCaches(
     inspected: discovered.inspected,
     eligible: 0,
     removedPaths: [],
+    reclaimedBytes: 0,
+    unknownReclaimedByteCount: 0,
     retainedPaths: [],
     skippedByReason: {},
     errors: [],
@@ -415,9 +429,14 @@ export function cleanupGeneratedRepositoryCaches(
         increment(report.skippedByReason, 'retention_grace');
         continue;
       }
+      // Size accounting must never turn cleanup into an unbounded tree walk or
+      // claim exact reclaimed bytes when the scan was truncated.
+      const measured = measureReclaimablePath(candidate.path);
       remainingRemovals -= 1;
       rmSync(candidate.path, { recursive: true, force: true });
       report.removedPaths.push(relative(repoRoot, candidate.path).replace(/\\/g, '/'));
+      if (measured.complete) report.reclaimedBytes += measured.bytes;
+      else report.unknownReclaimedByteCount += 1;
     } catch (error) {
       report.errors.push(`${candidate.kind}:${relative(repoRoot, candidate.path)}: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -470,6 +489,8 @@ export function cleanupGeneratedRepositoryCheckoutCaches(
     inspected: 0,
     eligible: 0,
     removedPaths: [],
+    reclaimedBytes: 0,
+    unknownReclaimedByteCount: 0,
     retainedPaths: [],
     skippedByReason: {},
     errors: [],
@@ -497,6 +518,8 @@ export function cleanupGeneratedRepositoryCheckoutCaches(
     aggregate.inspected += report.inspected;
     aggregate.eligible += report.eligible;
     aggregate.removedPaths.push(...report.removedPaths.map((path) => `${root}:${path}`));
+    aggregate.reclaimedBytes += report.reclaimedBytes;
+    aggregate.unknownReclaimedByteCount += report.unknownReclaimedByteCount;
     aggregate.retainedPaths.push(...report.retainedPaths.map((path) => `${root}:${path}`));
     for (const [reason, count] of Object.entries(report.skippedByReason)) {
       aggregate.skippedByReason[reason] = (aggregate.skippedByReason[reason] ?? 0) + count;

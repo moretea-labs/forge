@@ -221,6 +221,60 @@ describe('generated repository cache retention', () => {
     expect(removed).toContain('.forge/ios/DerivedData-sibling-b/Build');
   });
 
+  test('nested cache discovery ignores non-directory evidence file churn within bounded scan budget (#194)', () => {
+    const root = repository();
+    const noisy = join(root, '.repo-harness', 'a-visual-evidence', 'screenshots');
+    const stale = join(root, '.repo-harness', 'z-owned-review', '.repo-harness', 'ios-derived-cache');
+    const result = join(stale, 'Logs', 'Test', 'must-retain.xcresult');
+    mkdirSync(noisy, { recursive: true });
+    for (let i = 0; i < 100; i++) writeFileSync(join(noisy, `review-${i}.png`), 'review evidence');
+    xcodeCache(stale);
+    mkdirSync(result, { recursive: true });
+    writeFileSync(join(result, 'Info.plist'), 'retained XCTest evidence');
+    age(stale);
+    age(join(stale, 'Build'));
+    const report = cleanupGeneratedRepositoryCaches(root, {
+      nowMs: Date.parse('2026-11-04T06:00:00Z'),
+      graceMs: 60_000,
+      maxEntries: 20,
+      maxRemovals: 1,
+      processCommands: [],
+    });
+    expect(report.removedPaths).toContain('.repo-harness/z-owned-review/.repo-harness/ios-derived-cache/Build');
+    expect(report.reclaimedBytes).toBeGreaterThan(0);
+    expect(report.inspected).toBeLessThan(20);
+    expect(existsSync(join(stale, 'Build'))).toBe(false);
+    expect(existsSync(result)).toBe(true);
+    expect(existsSync(join(noisy, 'review-99.png'))).toBe(true);
+  });
+
+  test('one-entry nested scan rotates Xcode cache buckets independently of review file count (#194)', () => {
+    const root = repository();
+    const harness = join(root, '.repo-harness');
+    const first = join(harness, 'a-older-xcode');
+    const second = join(harness, 'z-older-xcode');
+    xcodeCache(first);
+    xcodeCache(second);
+    age(first);
+    age(second);
+    for (let i = 0; i < 60; i++) writeFileSync(join(harness, `review-${i}.png`), 'protected review artifact');
+
+    const options = {
+      nowMs: Date.parse('2026-11-04T06:00:00Z'),
+      graceMs: 60_000,
+      maxEntries: 1,
+      maxRemovals: 1,
+      processCommands: [] as string[],
+    };
+    const firstRound = cleanupGeneratedRepositoryCaches(root, { ...options, scanStartIndex: 0 });
+    const secondRound = cleanupGeneratedRepositoryCaches(root, { ...options, scanStartIndex: 4 });
+    expect(firstRound.removedPaths).toContain('.repo-harness/a-older-xcode/Build');
+    expect(secondRound.removedPaths).toContain('.repo-harness/z-older-xcode/Build');
+    expect(firstRound.inspected).toBe(1);
+    expect(secondRound.inspected).toBe(1);
+    expect(existsSync(join(harness, 'review-59.png'))).toBe(true);
+  });
+
   test('reclaims stale generated caches from active managed worktrees with one repository budget', () => {
     const canonicalRoot = repository();
     const activeWorktreeRoot = repository();
@@ -312,6 +366,52 @@ describe('generated repository cache retention', () => {
     expect(next.removedPaths.some((path) => path.endsWith('zzz-late/Build'))).toBe(true);
     expect(report.rootsInspected).toBe(1);
     expect(report.budgetExhausted).toBe(true);
+  });
+
+  test('records exact physical reclaimed bytes across bounded maintenance rounds without claiming protected evidence', () => {
+    const root = repository();
+    const stale = join(root, '.repo-harness', 'old-run', 'DerivedData');
+    const recent = join(root, '.forge', 'ios', 'DerivedData', 'current');
+    const unknown = join(root, '.repo-harness', 'unverified-review');
+    xcodeCache(stale);
+    xcodeCache(recent);
+    writeFileSync(join(stale, 'Build', 'bytes.bin'), '1234567890');
+    writeFileSync(join(recent, 'Build', 'keep.bin'), 'still in use');
+    mkdirSync(unknown, { recursive: true });
+    writeFileSync(join(unknown, 'review.txt'), 'historical evidence');
+    age(stale);
+    age(join(stale, 'Build'));
+    age(recent);
+    age(join(recent, 'Build'));
+
+    const first = cleanupGeneratedRepositoryCaches(root, {
+      nowMs: Date.parse('2026-11-03T12:00:00Z'), graceMs: 60_000,
+      processCommands: [`xcodebuild -derivedDataPath ${recent}`],
+      maxEntries: 100, maxRemovals: 1,
+    });
+    expect(first.removedPaths).toContain('.repo-harness/old-run/DerivedData/Build');
+    expect(first.reclaimedBytes).toBeGreaterThanOrEqual(10);
+    expect(first.unknownReclaimedByteCount).toBe(0);
+    expect(existsSync(join(stale, 'Build'))).toBe(false);
+    expect(existsSync(join(recent, 'Build', 'keep.bin'))).toBe(true);
+    expect(existsSync(join(unknown, 'review.txt'))).toBe(true);
+
+    const second = cleanupGeneratedRepositoryCaches(root, {
+      nowMs: Date.parse('2026-11-03T12:00:00Z'), graceMs: 60_000,
+      processCommands: [`xcodebuild -derivedDataPath ${recent}`],
+      maxEntries: 100, maxRemovals: 1,
+    });
+    expect(second.reclaimedBytes).toBe(0);
+    expect(second.unknownReclaimedByteCount).toBe(0);
+    expect(second.removedPaths).toEqual([]);
+    expect(existsSync(join(recent, 'Build'))).toBe(true);
+
+    const aggregate = cleanupGeneratedRepositoryCheckoutCaches({
+      canonicalRoot: root, checkouts: [],
+    }, { nowMs: Date.parse('2026-11-03T12:00:00Z'), graceMs: 60_000,
+      processCommands: [`xcodebuild -derivedDataPath ${recent}`], maxEntries: 100 });
+    expect(aggregate.reclaimedBytes).toBe(0);
+    expect(aggregate.unknownReclaimedByteCount).toBe(0);
   });
 
   test('scans bounded browser artifact roots before high-cardinality cache trees', () => {
