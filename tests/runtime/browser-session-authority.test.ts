@@ -22,6 +22,7 @@ import {
   setMacOsBrowserRuntimeHooksForTest,
 } from '../../src/runtime/plugins/browser-macos-bridge';
 import { AssistantPluginError } from '../../src/runtime/plugins/errors';
+import { resolveBrowserHandoffHostPath, browserHandoffHostAvailable } from '../../src/runtime/plugins/browser-handoff';
 import {
   ensureLegacyBrowserSessionsImported,
   findBrowserSession,
@@ -1538,6 +1539,21 @@ describe('browser session compatibility on Computer target authority', () => {
     })).rejects.toMatchObject({ code: 'PLUGIN_BROWSER_EXTENSION_CONTROL_UNAVAILABLE' });
   });
 
+  test('handoff host resolver refuses an immutable release missing the sidecar before any browser mutation (#212)', () => {
+    const root = fixture().repoA;
+    const entry = join(root, 'release', 'runtime.js');
+    const runtime = join(root, 'release', 'bun');
+    const source = pathToFileURL(join(root, 'release', 'isolated-adapter.js')).href;
+    expect(() => resolveBrowserHandoffHostPath(runtime, entry, source))
+      .toThrow('PLUGIN_BROWSER_HANDOFF_HOST_MISSING');
+    expect(browserHandoffHostAvailable(runtime, entry, source)).toBe(false);
+    const present = join(root, 'release', 'browser-handoff-host.js');
+    mkdirSync(join(root, 'release'), { recursive: true });
+    writeFileSync(present, 'host fixture');
+    expect(resolveBrowserHandoffHostPath(runtime, entry, source)).toBe(present);
+    expect(browserHandoffHostAvailable(runtime, entry, source)).toBe(true);
+  });
+
   test('browser defaults fail closed and declares foreground effects per action', () => {
     const { repoA } = fixture();
     const manifest = buildBrowserPluginManifest(1, undefined, repoA);
@@ -1545,6 +1561,8 @@ describe('browser session compatibility on Computer target authority', () => {
     expect(manifest.actions.find((action) => action.actionId === 'list_sessions')?.foregroundEffect).toBe('none');
     expect(manifest.actions.find((action) => action.actionId === 'open_page')?.foregroundEffect).toBe('possible');
     expect(manifest.actions.find((action) => action.actionId === 'activate_page')?.foregroundEffect).toBe('required');
+    expect(manifest.health.details?.handoffHostReady).toBe(browserHandoffHostAvailable());
+    expect(manifest.health.details?.humanHandoffSupported).toBe(browserHandoffHostAvailable());
     expect(manifest.actions.find((action) => action.actionId === 'request_human_handoff')?.foregroundEffect).toBe('required');
     for (const action of manifest.actions) {
       expect(action.resourceClaims.some((claim) => claim.resource === 'repo-state')).toBe(false);
