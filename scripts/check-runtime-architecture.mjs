@@ -1614,7 +1614,7 @@ requireText('packages/kernel/identity/infrastructure/grant-store.ts', 'isDeepStr
 requireText('src/runtime/plugins/capability-authorization-grants.ts', "constraints: { kind: 'plugin_capability_authorization', pluginId, capabilityId },");
 requireText('adapters/mcp/runtime-gateway/status-inbox-adapter.ts', 'gatewayLatencySummaries(repository.repoId)');
 requireText('src/cli/local-bridge/server.ts', 'withRepositoryMutationExclusionAsync(');
-requireText('src/runtime/resources/leases/store.ts', 'assertRepositoryProcessMutationAvailable(controllerHome, repoId, owner)');
+requireText('src/runtime/resources/leases/store.ts', 'assertRepositoryProcessMutationAvailable(controllerHome, repoId, owner, mutationClaims)');
 forbid('src/cli/local-bridge/server.ts', /\b(?:rollbackEditSession|finalizeEditSession)\s*\(/, 'Local Bridge edit mutations must run off-thread under the existing repository lock');
 forbid(
   'adapters/mcp/tool-mapping/legacy-tool-service.ts',
