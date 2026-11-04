@@ -331,6 +331,13 @@ describe("repository MCP command tools", () => {
     }
   });
 
+  test("exposes model-declared mutation scope as concurrency metadata, not permission", () => {
+    const command = repositoryToolDefinitions.find((tool) => tool.name === "execute_command");
+    const properties = command?.inputSchema.properties as Record<string, { description?: string }> | undefined;
+    expect(properties?.mutation_paths?.description).toContain("model-declared");
+    expect(properties?.mutation_paths?.description).toContain("never grants command permission");
+  });
+
   test("does not override model tool choice for chained terminal reads", async () => {
     const workspace = mkdtempSync(join(tmpdir(), "forge-mcp-fragmented-read-"));
     const controllerHome = join(workspace, "controller-home");

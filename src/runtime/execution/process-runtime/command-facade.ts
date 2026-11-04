@@ -58,6 +58,8 @@ export interface RepositoryCommandProcessInput {
   /** Repository identity is optional: an arbitrary workspace target carries a workspace scope key. */
   repository: RepositoryCommandScopeTarget;
   command: string | readonly string[];
+  /** Model-declared repository-relative paths/directories this command may mutate. */
+  mutationPaths?: readonly string[];
   cwd?: string;
   timeoutMs?: number;
   interactiveWaitMs?: number;
@@ -256,6 +258,7 @@ export function classifyRepositoryCommandRoute(
     workId?: string;
     defaultBranch?: string;
     timeoutMs?: number;
+    mutationPaths?: readonly string[];
   } = {},
 ): { route: RepositoryCommandRoute; reason: string } {
   if (repositoryCommandRecoveryLifecycle(command)) {
@@ -272,15 +275,18 @@ export function classifyRepositoryCommandRoute(
   // Work-bound effects must survive Controller/Runtime rotation with one durable
   // Process identity. Read-only observations can remain ephemeral because they
   // have no ambiguous side effect to reconcile after a restart.
-  if (options.workId?.trim() && classification.risk !== 'readonly') {
+  const hasDeclaredMutationScope = Boolean(options.mutationPaths?.length);
+  if (options.workId?.trim() && (classification.risk !== 'readonly' || hasDeclaredMutationScope)) {
     return { route: 'process_managed', reason: 'work_attributed_effectful_durable' };
   }
-  // Read-only observations remain lease-free. A workspace mutation must
-  // declare its workspace/index/ref resources for its full process lifetime;
-  // the lightweight direct subprocess deliberately owns no leases.
-  // This chooses execution placement, not whether a command is authorized.
-  if (classification.risk === 'readonly') {
+  // Read-only observations remain lease-free unless the model explicitly says
+  // the command mutates source. The declaration affects placement/claims only;
+  // it never grants command authorization.
+  if (classification.risk === 'readonly' && !hasDeclaredMutationScope) {
     return { route: 'process_direct', reason: 'readonly_fast_path' };
+  }
+  if (classification.risk === 'readonly' && hasDeclaredMutationScope) {
+    return { route: 'process_managed', reason: 'model_declared_mutation_scope' };
   }
   if (classification.risk === 'remote_write' || classification.risk === 'destructive') {
     return { route: 'process_managed', reason: 'effectful_command_managed' };
@@ -306,6 +312,7 @@ export async function executeRepositoryCommandViaProcessRuntime(
     workId: input.workId,
     defaultBranch: input.repository.defaultBranch,
     timeoutMs: input.timeoutMs,
+    mutationPaths: input.mutationPaths,
   });
   // Only explicit lifecycle/delivery rejection or a caller-requested durable
   // mode stops here. Ordinary command effects, including remote writes, execute
@@ -360,6 +367,7 @@ export async function executeRepositoryCommandViaProcessRuntime(
       input.repository.defaultBranch,
       input.repository.canonicalRoot,
       cwd,
+      input.mutationPaths,
     ),
     executionIdentity.repositoryId,
     executionIdentity.checkoutId,

@@ -13,49 +13,45 @@ import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { acquireExecutionLeases, releaseExecutionLeases, withRepositoryMutationExclusion } from '../../src/runtime/resources/leases/store';
+import { classifyRepositoryCommandRoute } from '../../src/runtime/execution/process-runtime/command-facade';
 
 function lease(resourceKey: string, mode: 'read' | 'write' | 'exclusive'): ExecutionLease {
   return { resourceKey, mode } as ExecutionLease;
 }
 
 describe('Process Runtime fine-grained resource claims', () => {
-  test('Android Gradle build claims stay inside the Android project so iOS source can proceed concurrently (#478)', () => {
-    const root = mkdtempSync(join(tmpdir(), 'forge-gradle-project-claims-'));
-    const androidRoot = join(root, 'android');
-    try {
-      mkdirSync(androidRoot, { recursive: true });
-      writeFileSync(join(androidRoot, 'settings.gradle.kts'), 'rootProject.name = "fixture"\n');
-      writeFileSync(join(androidRoot, 'gradlew'), '#!/bin/sh\n');
+  test('model-declared mutation paths narrow source claims without platform inference (#478)', () => {
+    const command = ['bash', 'scripts/run_module_check.sh', 'integration'];
+    const inferred = claimsForRepositoryCommand(command, 'repo1', 'co1');
+    expect(inferred).toContainEqual({ resourceKey: 'workspace:co1', mode: 'write' });
 
-      const direct = claimsForRepositoryCommand(
-        ['./gradlew', ':app:assembleDebug'],
-        'avela',
-        'co1',
-        'main',
-        root,
-        androidRoot,
-      );
-      expect(direct).toContainEqual({ resourceKey: 'path:co1:android', mode: 'write' });
-      expect(direct.some((claim) => claim.resourceKey === 'workspace:co1')).toBe(false);
-      expect(direct.some((claim) => claim.resourceKey.startsWith('build-cache:gradle-project:'))).toBe(true);
+    const scoped = claimsForRepositoryCommand(
+      command,
+      'repo1',
+      'co1',
+      'main',
+      undefined,
+      undefined,
+      ['client-a'],
+    );
+    expect(scoped).toContainEqual({ resourceKey: 'path:co1:client-a', mode: 'write' });
+    expect(scoped.some((claim) => claim.resourceKey === 'workspace:co1')).toBe(false);
+    expect(scoped.some((claim) => claim.resourceKey === 'build-cache:repo1')).toBe(false);
 
-      const scripted = claimsForRepositoryCommand(
-        ['bash', 'scripts/run_android_check.sh', 'build'],
-        'avela',
-        'co1',
-        'main',
-        root,
-        root,
-      );
-      expect(scripted).toContainEqual({ resourceKey: 'path:co1:android', mode: 'write' });
-      expect(scripted.some((claim) => claim.resourceKey === 'workspace:co1')).toBe(false);
+    const leaseA = lease('path:co1:client-a', 'write');
+    expect(claimsConflict({ resourceKey: 'path:co1:client-b/File.swift', mode: 'write' }, leaseA)).toBe(false);
+    expect(claimsConflict({ resourceKey: 'path:co1:client-a/src/File.kt', mode: 'write' }, leaseA)).toBe(true);
+  });
 
-      const androidLease = lease('path:co1:android', 'write');
-      expect(claimsConflict({ resourceKey: 'path:co1:ios/App.swift', mode: 'write' }, androidLease)).toBe(false);
-      expect(claimsConflict({ resourceKey: 'path:co1:android/app/src/Main.kt', mode: 'write' }, androidLease)).toBe(true);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
+  test('model-declared mutation scope makes even classifier-readonly commands lease-bearing (#478)', () => {
+    expect(classifyRepositoryCommandRoute(['git', 'status'])).toEqual({
+      route: 'process_direct',
+      reason: 'readonly_fast_path',
+    });
+    expect(classifyRepositoryCommandRoute(['git', 'status'], { mutationPaths: ['client-a'] })).toEqual({
+      route: 'process_managed',
+      reason: 'model_declared_mutation_scope',
+    });
   });
 
   test('repository mutation exclusion uses exact source claims when the caller knows its paths (#478)', () => {

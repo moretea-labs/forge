@@ -269,6 +269,7 @@ export const repositoryToolDefinitions: McpToolDefinition[] = [
     shell_command: { type: 'string', description: 'Host shell only; mutually exclusive with command and requires scope=host.' },
     request_id: { type: 'string', description: 'Stable invocation id for reconnect without duplicate effects.' },
     cwd: { type: 'string', description: 'Optional root-relative working directory.' },
+    mutation_paths: { type: 'array', items: { type: 'string' }, minItems: 1, description: 'Optional model-declared repository-relative paths/directories this command may mutate. Forge converts these to mechanical source-write claims; this narrows concurrency scope but never grants command permission.' },
     workspace_root: { type: 'string', description: 'Absolute existing local directory used as an ephemeral execution root. Mutually exclusive with repo_id/checkout_id; does not register or initialize the directory.' },
     dry_run: { type: 'boolean', description: 'Preview without executing: returns command classification, approval token and Git snapshots for repository/workspace target.' },
     approval_token: { type: 'string', description: 'Exact approval token returned by execute_command(dry_run=true).' },
@@ -1122,10 +1123,17 @@ export async function callRepositoryTool(
           ? { repoId: commandScopeKey, checkoutId: commandTarget.activeCheckoutId }
           : { scopeId: commandScopeKey };
         const explicitWorkId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
+        const mutationPaths = Array.isArray(args.mutation_paths)
+          ? args.mutation_paths.map(String).map((path) => path.trim()).filter(Boolean)
+          : undefined;
+        if (args.mutation_paths !== undefined && (!mutationPaths || mutationPaths.length === 0)) {
+          throw new Error('COMMAND_MUTATION_PATHS_INVALID: mutation_paths must contain at least one repository-relative path');
+        }
         // Work context is optional. Repository mutation safety is decided by
         // Git/Process/Lease and physical-checkout fences, never by an old
         // session's activeWorkId.
         const mutationClassification = classifyRepositoryCommand(args.command as string | string[], commandTarget.defaultBranch);
+        const hasDeclaredMutationScope = Boolean(mutationPaths?.length);
         // Git integration is a capability with its own repository, scope and
         // concurrency checks.  A Work's semantic completion and any optional
         // verification/review evidence never admit or deny this operation.
@@ -1160,10 +1168,11 @@ export async function callRepositoryTool(
           workId: executionIdentity.workId,
           defaultBranch: commandTarget.defaultBranch,
           timeoutMs,
+          mutationPaths,
         });
         const processRequestId = typeof args.request_id === 'string' ? args.request_id.trim() : '';
         if (executionIdentity.workId
-          && mutationClassification.risk !== 'readonly'
+          && (mutationClassification.risk !== 'readonly' || hasDeclaredMutationScope)
           && (routeClass.route === 'process_direct' || routeClass.route === 'process_managed' || routeClass.route === 'durable')
           && !processRequestId) {
           throw new Error(
@@ -1173,7 +1182,7 @@ export async function callRepositoryTool(
         }
         let mutationAuthority: ReturnType<typeof ensureRepositoryMutationWorkHandle> | undefined;
         if (
-          (mutationClassification.risk === 'workspace_write' || mutationClassification.risk === 'destructive')
+          (hasDeclaredMutationScope || mutationClassification.risk === 'workspace_write' || mutationClassification.risk === 'destructive')
           && (routeClass.route === 'process_direct' || routeClass.route === 'process_managed')
         ) {
           if (executionIdentity.workId) {
@@ -1269,6 +1278,7 @@ export async function callRepositoryTool(
                 controllerHome,
                 repository: commandTarget,
                 command: args.command as string | string[],
+                mutationPaths,
                 cwd: typeof args.cwd === 'string' ? args.cwd : undefined,
                 timeoutMs,
                 interactiveWaitMs: returnHandleImmediately

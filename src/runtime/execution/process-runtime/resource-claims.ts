@@ -4,8 +4,8 @@
  */
 
 import type { ResourceClaimSpec } from '../jobs/types';
-import { existsSync, lstatSync, readFileSync, realpathSync } from 'fs';
-import { basename, dirname, isAbsolute, join, relative, resolve } from 'path';
+import { lstatSync, readFileSync, realpathSync } from 'fs';
+import { basename, dirname, isAbsolute, join, resolve } from 'path';
 import type { ControllerCheckEffects, ControllerCheckExecutionAuthority } from '../../../cli/controller/check-runner';
 import {
   classifyRepositoryCommand,
@@ -610,62 +610,6 @@ function exactLeasedRemoteReviewBranchDeletion(
     ? 'refs/heads/' + branch : undefined;
 }
 
-function gradleProjectClaims(
-  command: string | readonly string[],
-  repoId: string,
-  checkoutId?: string,
-  repoRoot?: string,
-  executionCwd: string | undefined = repoRoot,
-): ResourceClaimSpec[] | undefined {
-  const canonical = normalizeRepositoryCommand(command);
-  if (canonical.kind !== 'argv' || !repoRoot || !executionCwd) return undefined;
-
-  const executable = canonical.executable ?? '';
-  const program = basename(executable).toLowerCase();
-  const args = canonical.args ?? [];
-  const scriptIndex = ['bash', 'sh', 'zsh'].includes(program)
-    ? args.findIndex((arg) => /(?:^|\/)run_android_check\.sh$/.test(arg.replace(/\\/g, '/')))
-    : -1;
-  const directRunner = program === 'gradle' || program === 'gradlew';
-  const avelaRunner = scriptIndex >= 0 || program === 'run_android_check.sh';
-  if (!directRunner && !avelaRunner) return undefined;
-
-  let repositoryRoot: string;
-  let projectRoot: string;
-  try {
-    repositoryRoot = realpathSync(repoRoot);
-    projectRoot = avelaRunner ? realpathSync(join(repositoryRoot, 'android')) : realpathSync(executionCwd);
-  } catch {
-    return undefined;
-  }
-
-  const hasSettings = (root: string): boolean =>
-    existsSync(join(root, 'settings.gradle')) || existsSync(join(root, 'settings.gradle.kts'));
-
-  if (directRunner && !hasSettings(projectRoot)) {
-    if (!executable.includes('/') && !executable.includes('\\')) return undefined;
-    try {
-      const candidate = realpathSync(resolve(projectRoot, dirname(executable)));
-      if (!hasSettings(candidate)) return undefined;
-      projectRoot = candidate;
-    } catch {
-      return undefined;
-    }
-  }
-  if (!hasSettings(projectRoot)) return undefined;
-
-  const projectPath = relative(repositoryRoot, projectRoot).replace(/\\/g, '/');
-  if (!projectPath || projectPath === '.' || projectPath.startsWith('../') || isAbsolute(projectPath)) return undefined;
-  const physicalProject = projectRoot.replace(/\\/g, '/').normalize('NFD').toLowerCase();
-
-  return normalizeClaims([
-    // Gradle owns generated files beneath its project root, so serialize Android
-    // edits/builds there without claiming unrelated iOS source in the checkout.
-    claimPathWrite(projectPath, checkoutId, repoId),
-    { resourceKey: 'build-cache:gradle-project:' + physicalProject, mode: 'write' },
-  ]);
-}
-
 /**
  * Classify resource claims for a repository command without taking whole-repo exclusive locks
  * for ordinary readonly / focused validation commands.
@@ -681,10 +625,6 @@ function repositoryCommandClaims(
   const classification = classifyRepositoryCommand(command, defaultBranch);
   const canonical = normalizeRepositoryCommand(command);
   const focused = isFocusedCheckCommand(command);
-  const gradleClaims = gradleProjectClaims(command, repoId, checkoutId, repoRoot, executionCwd);
-  if (gradleClaims) {
-    return normalizeClaims([...gradleClaims, ...validationDeviceClaims(command)]);
-  }
   const explicitXcodeCache = xcodeBuildCacheClaims(command, repoId, executionCwd);
   const cacheClaims = explicitXcodeCache ?? [claimBuildCacheWrite(repoId)];
   const iosSimulatorClaims = iosSimulatorTestCommandClaims(command, repoId, checkoutId, cacheClaims);
@@ -770,6 +710,7 @@ export function claimsForRepositoryCommand(
   defaultBranch?: string,
   repoRoot?: string,
   executionCwd: string | undefined = repoRoot,
+  declaredMutationPaths?: readonly string[],
 ): ResourceClaimSpec[] {
   const canonical = normalizeRepositoryCommand(command);
   let nativeBuild = false;
@@ -784,9 +725,27 @@ export function claimsForRepositoryCommand(
         && !args.some((arg) => ['-list', '-version', '-showsdks', '-showdestinations', '-showBuildSettings', '-help'].includes(arg));
     }
   } else nativeBuild = /\bxcodebuild\b/.test(canonical.shellCommand ?? '');
-  const claims = repositoryCommandClaims(command, repoId, checkoutId, defaultBranch, repoRoot, executionCwd);
-  nativeBuild ||= claims.some((claim) => claim.resourceKey === 'host-service:ios-simulator-test');
-  return normalizeClaims([...claims, ...(nativeBuild ? [claimHostService('ios-build')] : [])]);
+  const inferredClaims = repositoryCommandClaims(command, repoId, checkoutId, defaultBranch, repoRoot, executionCwd);
+  nativeBuild ||= inferredClaims.some((claim) => claim.resourceKey === 'host-service:ios-simulator-test');
+  const nativeBuildClaims = nativeBuild ? [claimHostService('ios-build')] : [];
+
+  if (declaredMutationPaths && declaredMutationPaths.length > 0) {
+    // The model/caller owns semantic scope. Forge only turns the declared
+    // repository-relative write scope into mechanical claims and preserves
+    // independently provable Git/device/exact-cache claims.
+    const declaredSourceClaims = declaredMutationPaths.map((path) => claimPathWrite(path, checkoutId, repoId));
+    const mechanicalClaims = inferredClaims.filter((claim) => {
+      const key = claim.resourceKey;
+      if (key === `build-cache:${repoId}`) return false;
+      return !key.startsWith('workspace:')
+        && !key.startsWith('workspace-read:')
+        && !key.startsWith('path:')
+        && key !== 'repo-content:*';
+    });
+    return normalizeClaims([...mechanicalClaims, ...declaredSourceClaims, ...nativeBuildClaims]);
+  }
+
+  return normalizeClaims([...inferredClaims, ...nativeBuildClaims]);
 }
 
 /**
