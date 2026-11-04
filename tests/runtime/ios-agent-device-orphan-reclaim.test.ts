@@ -37,7 +37,7 @@ function fixture() {
   return { repoRoot, controllerHome };
 }
 
-function installMock(sessions: unknown) {
+function installMock(sessions: unknown, closeResponse: 'already_absent' | 'success' = 'already_absent', now = new Date('2026-11-02T08:38:00.000Z')) {
   const calls: string[] = [];
   const runCommand = (command: string, args: string[]) => {
     calls.push(args[0] ?? '');
@@ -48,14 +48,16 @@ function installMock(sessions: unknown) {
       ] } })
       : action === 'session' ? JSON.stringify({ success: true, data: { sessions } })
       : action === 'open' ? JSON.stringify({ success: true, data: { session: 'new-session' } })
-      : action === 'close' ? JSON.stringify({ success: false, error: { code: 'SESSION_NOT_FOUND' } })
+      : action === 'close' ? (closeResponse === 'success'
+        ? JSON.stringify({ success: true, data: { closed: true } })
+        : JSON.stringify({ success: false, error: { code: 'SESSION_NOT_FOUND' } }))
       : '';
-    const ok = action !== 'help' && action !== 'close';
+    const ok = action !== 'help' && (action !== 'close' || closeResponse === 'success');
     return { ok, status: ok ? 0 : 1, stdout: data, stderr: '', command: [command, ...args] };
   };
   setIosAgentDeviceRuntimeHooksForTest({
     platform: () => 'darwin',
-    now: () => new Date('2026-11-02T08:38:00.000Z'),
+    now: () => now,
     runCommand,
     runCommandAsync: async (command, args) => runCommand(command, args),
   });
@@ -86,6 +88,51 @@ describe('iOS agent-device abandoned interaction recovery (Issue #192)', () => {
     expect(calls).toContain('session');
     expect(calls).toContain('close');
     expect(calls).toContain('open');
+  });
+
+  it('does not claim close succeeded while the provider still owns the Simulator session', async () => {
+    const f = fixture();
+    const calls = installMock([{ session: oldSession }], 'success');
+    const close = () => executeIosAgentDeviceAction({
+      controllerHome: f.controllerHome, repoId: 'repo-ios-192', repoRoot: f.repoRoot,
+      pluginId: 'ios', actionId: 'agent_device_close', requestId: 'close-old',
+      args: { interaction_id: oldId },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    await expect(close()).rejects.toMatchObject({ code: 'AGENT_DEVICE_CLEANUP_UNVERIFIED' });
+    expect(readInteractionSession(f.repoRoot, 'ios-simulator', oldId)?.status).toBe('closing');
+    expect(calls).toContain('close');
+    expect(calls).toContain('session');
+    await expect(open(f)).rejects.toMatchObject({ code: 'PLUGIN_RESOURCE_BUSY' });
+    expect(calls).not.toContain('open');
+
+    // Once the scoped provider can prove absence, retrying the same close
+    // settles this exact interaction rather than creating a second owner.
+    installMock([], 'success');
+    const retried = await close();
+    expect((retried.interaction as { status: string }).status).toBe('closed');
+    expect(readInteractionSession(f.repoRoot, 'ios-simulator', oldId)?.status).toBe('closed');
+  });
+
+  it('retains ownership when an expired interaction has an unconfirmed successful close', async () => {
+    const f = fixture();
+    installMock([{ session: oldSession }], 'success', new Date('2026-11-02T10:38:00.000Z'));
+    await expect(open(f)).rejects.toMatchObject({ code: 'PLUGIN_RESOURCE_BUSY' });
+    expect(readInteractionSession(f.repoRoot, 'ios-simulator', oldId)).toMatchObject({
+      status: 'closing', error: { code: 'AGENT_DEVICE_CLEANUP_FAILED' },
+    });
+  });
+
+  it('fails closed when the provider claims close success but inventory is malformed', async () => {
+    const f = fixture();
+    installMock('unavailable', 'success');
+    await expect(executeIosAgentDeviceAction({
+      controllerHome: f.controllerHome, repoId: 'repo-ios-192', repoRoot: f.repoRoot,
+      pluginId: 'ios', actionId: 'agent_device_close', requestId: 'close-malformed',
+      args: { interaction_id: oldId },
+      origin: { surface: 'local-ui', actor: 'test' },
+    })).rejects.toMatchObject({ code: 'AGENT_DEVICE_CLEANUP_UNVERIFIED' });
+    expect(readInteractionSession(f.repoRoot, 'ios-simulator', oldId)?.status).toBe('closing');
   });
 
   it('never steals an existing provider session', async () => {
