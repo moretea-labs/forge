@@ -9,10 +9,11 @@ import {
   rmSync,
 } from 'fs';
 import { homedir } from 'os';
-import { basename, dirname, join, relative, resolve, sep } from 'path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'path';
 import { repositoryControllerRoot } from '../../effects/controller-home';
 import { measureReclaimablePath } from './lifecycle-retention-metrics';
-import { assertOwnedResourceCleanupTarget, getOwnedResource, markOwnedResourceCleaned, recordOwnedResource, type OwnedResource } from '../../../packages/kernel/identity/api/index';
+import { assertOwnedResourceCleanupTarget, getOwnedResource, listOwnedResources, markOwnedResourceCleaned, recordOwnedResource, type OwnedResource } from '../../../packages/kernel/identity/api/index';
+import { fixedShellWrapperCommand, shellSegments, shellWordsPreservingQuotes } from '../../core/shell-command';
 
 const DEFAULT_GENERATED_CACHE_GRACE_MS = 6 * 60 * 60_000;
 const DEFAULT_BROWSER_UPLOAD_GRACE_MS = 24 * 60 * 60_000;
@@ -538,8 +539,131 @@ export function cleanupGeneratedRepositoryCheckoutCaches(
  * actually creates a result bundle. This is provenance, not deletion approval:
  * XCTest/review evidence remains retained until an explicit release policy.
  */
+type XcodeEvidenceProcessCommand = {
+  kind: 'argv' | 'shell';
+  executable?: string;
+  args?: string[];
+  shellCommand?: string;
+  cwd: string;
+};
+
+function nestedGitMarkerBetween(root: string, target: string): boolean {
+  const repositoryRoot = resolve(root);
+  let current = resolve(dirname(target));
+  if (!pathInside(repositoryRoot, target)) return true;
+  try {
+    while (current !== repositoryRoot) {
+      if (existsSync(join(current, '.git'))) return true;
+      const parent = dirname(current);
+      if (parent === current || !pathInside(repositoryRoot, current)) return true;
+      current = parent;
+    }
+    return existsSync(join(target, '.git'));
+  } catch {
+    return true;
+  }
+}
+
+function trustedIosTestEvidenceTarget(repoRoot: string, target: string): boolean {
+  const repositoryRoot = canonical(repoRoot);
+  const resolvedTarget = canonical(target);
+  if (!basename(resolvedTarget).endsWith('.xcresult')
+      || !pathInside(repositoryRoot, resolvedTarget)
+      || !existsSync(resolvedTarget)
+      || hasSymlinkAncestor(repositoryRoot, resolvedTarget)
+      || containsTrackedFiles(repositoryRoot, resolvedTarget)) return false;
+  try {
+    const stat = lstatSync(resolvedTarget);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) return false;
+  } catch {
+    return false;
+  }
+
+  const canonicalResultRoot = resolve(repositoryRoot, '.forge', 'ios', 'test-results');
+  if (dirname(resolvedTarget) === canonicalResultRoot) return true;
+
+  const repoHarnessRoot = resolve(repositoryRoot, '.repo-harness');
+  return pathInside(repoHarnessRoot, resolvedTarget)
+    && !nestedGitMarkerBetween(repositoryRoot, resolvedTarget);
+}
+
+function literalXcodeResultBundleTarget(command: XcodeEvidenceProcessCommand): string | undefined {
+  let cwd: string;
+  try {
+    cwd = realpathSync(command.cwd);
+  } catch {
+    return undefined;
+  }
+
+  const parseShell = (shell: string): string[] | undefined => {
+    if (/[\`$<>\n\r*?{}]/.test(shell)) return undefined;
+    const segments = shellSegments(shell);
+    if (segments.length === 2) {
+      const cd = shellWordsPreservingQuotes(segments[0]!);
+      if (!shell.includes('&&') || /[;|]/.test(shell) || cd.length !== 2 || cd[0] !== 'cd') return undefined;
+      const nextCwd = cd[1]!;
+      if (nextCwd.startsWith('~') || nextCwd.split(/[\\/]/).includes('..')) return undefined;
+      try {
+        cwd = realpathSync(resolve(cwd, nextCwd));
+      } catch {
+        return undefined;
+      }
+      return shellWordsPreservingQuotes(segments[1]!);
+    }
+    if (segments.length !== 1) return undefined;
+    return shellWordsPreservingQuotes(segments[0]!);
+  };
+
+  let words: string[] | undefined;
+  if (command.kind === 'shell') {
+    if (!command.shellCommand?.trim()) return undefined;
+    words = parseShell(command.shellCommand);
+  } else {
+    const argv = [command.executable ?? '', ...(command.args ?? [])];
+    if (!argv[0]) return undefined;
+    const wrapped = fixedShellWrapperCommand(argv);
+    words = wrapped ? parseShell(wrapped) : argv;
+  }
+  if (!words?.length) return undefined;
+  if (basename(words[0] ?? '').toLowerCase() === 'xcrun' && words[1]?.toLowerCase() === 'xcodebuild') {
+    words = words.slice(1);
+  }
+  if (basename(words[0] ?? '').toLowerCase() !== 'xcodebuild') return undefined;
+
+  const indexes = words.flatMap((word, index) => word === '-resultBundlePath' ? [index] : []);
+  if (indexes.length !== 1) return undefined;
+  const raw = words[indexes[0]! + 1];
+  if (!raw || raw.startsWith('-') || raw.startsWith('~') || /[\0\r\n]/.test(raw)) return undefined;
+  return isAbsolute(raw) ? resolve(raw) : resolve(cwd, raw);
+}
+
+/**
+ * Post-terminal producer hook for Process Runtime. This authenticates only one
+ * literal xcodebuild result path; scripts with substitution/compound effects
+ * remain unowned rather than gaining cleanup authority by inference.
+ */
+export function recordProcessXcodeTestEvidenceOwner(input: {
+  controllerHome: string;
+  repoId: string;
+  repoRoot: string;
+  command: XcodeEvidenceProcessCommand;
+  processId: string;
+  associatedWorkId?: string;
+}): { recorded: boolean; resourceId?: string; reason?: string } {
+  const resultBundlePath = literalXcodeResultBundleTarget(input.command);
+  if (!resultBundlePath) return { recorded: false, reason: 'unsupported_or_dynamic_xcode_result_path' };
+  return recordIosTestEvidenceOwner({
+    controllerHome: input.controllerHome,
+    repoId: input.repoId,
+    repoRoot: input.repoRoot,
+    resultBundlePath,
+    producerRequestId: 'process:' + input.processId,
+    ...(input.associatedWorkId ? { associatedWorkId: input.associatedWorkId } : {}),
+  });
+}
+
 export function iosTestEvidenceResourceId(repoId: string, resultPath: string): string {
-  return 'ios-xcresult-' + createHash('sha256').update(repoId + '\0' + resolve(resultPath)).digest('hex');
+  return 'ios-xcresult-' + createHash('sha256').update(repoId + '\0' + canonical(resultPath)).digest('hex');
 }
 
 export function recordIosTestEvidenceOwner(input: {
@@ -550,15 +674,9 @@ export function recordIosTestEvidenceOwner(input: {
   producerRequestId: string;
   associatedWorkId?: string;
 }): { recorded: boolean; resourceId?: string; reason?: string } {
-  const root = resolve(input.repoRoot, '.forge', 'ios', 'test-results');
-  const target = resolve(input.repoRoot, input.resultBundlePath);
-  if (dirname(target) !== root || !basename(target).endsWith('.xcresult')
-      || !pathInside(root, target) || !existsSync(target)) {
+  const target = canonical(resolve(input.repoRoot, input.resultBundlePath));
+  if (!trustedIosTestEvidenceTarget(input.repoRoot, target)) {
     return { recorded: false, reason: 'missing_or_untrusted_result_path' };
-  }
-  const stat = lstatSync(target);
-  if (!stat.isDirectory() || stat.isSymbolicLink() || hasSymlinkAncestor(input.repoRoot, target)) {
-    return { recorded: false, reason: 'untrusted_result_identity' };
   }
   const record = recordOwnedResource(input.controllerHome, {
     resourceId: iosTestEvidenceResourceId(input.repoId, target),
@@ -574,7 +692,8 @@ export function recordIosTestEvidenceOwner(input: {
 }
 
 function verifiedIosTestEvidenceOwner(controllerHome: string, repoId: string, path: string): OwnedResource | undefined {
-  const resource = getOwnedResource(controllerHome, iosTestEvidenceResourceId(repoId, path));
+  const target = canonical(path);
+  const resource = getOwnedResource(controllerHome, iosTestEvidenceResourceId(repoId, target));
   if (!resource || resource.provenance.repoId !== repoId
       || !resource.provenance.creator.startsWith('forge:ios.xcode_test:')
       || resource.retention.intent !== 'persistent_until_explicit_release') return undefined;
@@ -582,8 +701,8 @@ function verifiedIosTestEvidenceOwner(controllerHome: string, repoId: string, pa
     return assertOwnedResourceCleanupTarget(controllerHome, {
       resourceId: resource.resourceId,
       kind: 'temp_dir',
-      targetRef: path,
-      locator: { kind: 'filesystem_path', value: path },
+      targetRef: target,
+      locator: { kind: 'filesystem_path', value: target },
     });
   } catch {
     return undefined;
@@ -843,6 +962,79 @@ export function cleanupReleasableIosTestEvidence(
       }
     } finally {
       directory.closeSync();
+    }
+  }
+
+  // .repo-harness can contain both active Git worktrees and large test
+  // evidence aggregations. Never recursively infer ownership there. Instead,
+  // consume only exact producer-recorded OwnedResource paths and re-validate
+  // each path against the most-specific active repository root.
+  let ownedEvidenceResources: OwnedResource[] = [];
+  try {
+    ownedEvidenceResources = listOwnedResources(options.owner.controllerHome, {
+      kind: 'temp_dir',
+      repoId: options.owner.repoId,
+    });
+  } catch (error) {
+    report.errors.push('ios_test_evidence_owner_scan_failed:' + (error instanceof Error ? error.message : String(error)));
+  }
+  for (const resource of ownedEvidenceResources) {
+    if (budget <= 0) { report.budgetExhausted = true; break; }
+    if (resource.status === 'released'
+        || !resource.provenance.creator.startsWith('forge:ios.xcode_test:')
+        || resource.retention.intent !== 'persistent_until_explicit_release'
+        || !resource.targetRef.endsWith('.xcresult')) continue;
+    const path = canonical(resource.targetRef);
+    const root = roots
+      .filter((candidateRoot) => pathInside(candidateRoot, path))
+      .sort((left, right) => canonical(right).length - canonical(left).length)[0];
+    if (!root || !pathInside(resolve(root, '.repo-harness'), path)) continue;
+    budget -= 1;
+    report.inspected += 1;
+    try {
+      if (!trustedIosTestEvidenceTarget(root, path)) {
+        skip('unverified_owner');
+        report.retainedPaths.push(path);
+        continue;
+      }
+      const verified = verifiedIosTestEvidenceOwner(options.owner.controllerHome, options.owner.repoId, path);
+      if (!verified || verified.resourceId !== resource.resourceId) {
+        skip('unverified_owner');
+        report.retainedPaths.push(path);
+        continue;
+      }
+      const stat = lstatSync(path);
+      const size = measureReclaimablePath(path, budget);
+      budget = Math.max(0, budget - size.entries);
+      report.retainedOwnedCount += 1;
+      report.retainedOwnedBytesLowerBound += size.bytes;
+      if (!size.complete) {
+        skip('size_incomplete');
+        report.retainedPaths.push(path);
+        continue;
+      }
+      if (verified.status === 'retained') {
+        skip('explicit_retained');
+        report.retainedPaths.push(path);
+        continue;
+      }
+      const workId = verified.provenance.associatedWorkId;
+      if (!workId || !options.releasableWorkIds.has(workId)) {
+        skip(workId ? 'work_not_releasable' : 'work_unattributed');
+        report.retainedPaths.push(path);
+        continue;
+      }
+      const ageMs = Math.max(0, nowMs - stat.mtimeMs);
+      if (ageMs < graceMs) {
+        skip('grace');
+        report.retainedPaths.push(path);
+        continue;
+      }
+      candidates.push({ path, ageMs, bytes: size.bytes, resource: verified });
+    } catch (error) {
+      skip('entry_error');
+      report.errors.push('ios_test_evidence_owned_entry_failed:' + (error instanceof Error ? error.message : String(error)));
+      report.retainedPaths.push(path);
     }
   }
 

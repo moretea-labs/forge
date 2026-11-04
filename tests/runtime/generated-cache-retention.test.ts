@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { execFileSync } from 'child_process';
-import { existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { cleanupControllerHomeBrowserArtifacts, cleanupGeneratedRepositoryCaches, cleanupGeneratedRepositoryCheckoutCaches, cleanupReleasableIosTestEvidence, inspectRepositoryIosTestEvidence, iosTestEvidenceResourceId, recordIosTestEvidenceOwner } from '../../src/runtime/control-plane/generated-cache-retention';
+import { cleanupControllerHomeBrowserArtifacts, cleanupGeneratedRepositoryCaches, cleanupGeneratedRepositoryCheckoutCaches, cleanupReleasableIosTestEvidence, inspectRepositoryIosTestEvidence, iosTestEvidenceResourceId, recordIosTestEvidenceOwner, recordProcessXcodeTestEvidenceOwner } from '../../src/runtime/control-plane/generated-cache-retention';
 import { getOwnedResource, markOwnedResourceRetained } from '../../packages/kernel/identity/api/index';
 
 import { planSchedulerPeriodicMaintenance } from '../../src/runtime/control-plane/global-scheduler/maintenance';
@@ -508,7 +508,7 @@ describe('generated repository cache retention', () => {
     const stored = getOwnedResource(controllerHome, created.resourceId!);
     expect(stored?.provenance.creator).toBe('forge:ios.xcode_test:JOB-exact-1');
     expect(stored?.retention.intent).toBe('persistent_until_explicit_release');
-    expect(stored?.locator).toEqual({ kind: 'filesystem_path', value: path });
+    expect(stored?.locator).toEqual({ kind: 'filesystem_path', value: realpathSync(path) });
     const owned = inspectRepositoryIosTestEvidence({ canonicalRoot: root, checkouts: [] }, {
       owner: { controllerHome, repoId }, maxEntries: 50,
     });
@@ -553,6 +553,86 @@ describe('generated repository cache retention', () => {
     expect(() => recordIosTestEvidenceOwner({ ...args, associatedWorkId: 'work-different' }))
       .toThrow('OWNED_RESOURCE_IDENTITY_CONFLICT');
     expect(existsSync(join(root, resultBundlePath))).toBe(true);
+  });
+
+  test('records literal Process xcodebuild evidence under repo-harness but rejects nested worktrees and dynamic shell paths', () => {
+    const root = repository();
+    const controllerHome = join(root, 'controller-home');
+    const repoId = 'repo-process-xcode-evidence';
+    const raw = join(root, '.repo-harness', 'process-results', 'literal.xcresult');
+    mkdirSync(raw, { recursive: true });
+    writeFileSync(join(raw, 'Info.plist'), 'literal result');
+
+    const recorded = recordProcessXcodeTestEvidenceOwner({
+      controllerHome,
+      repoId,
+      repoRoot: root,
+      command: {
+        kind: 'argv',
+        executable: '/usr/bin/xcrun',
+        args: ['xcodebuild', 'test', '-resultBundlePath', raw],
+        cwd: root,
+      },
+      processId: 'proc-literal-xcode',
+      associatedWorkId: 'work-literal-xcode',
+    });
+    expect(recorded.recorded).toBe(true);
+    expect(getOwnedResource(controllerHome, recorded.resourceId!)?.provenance).toMatchObject({
+      creator: 'forge:ios.xcode_test:process:proc-literal-xcode',
+      associatedWorkId: 'work-literal-xcode',
+      repoId,
+    });
+
+    const rawCanonical = realpathSync(raw);
+    const cleaned = cleanupReleasableIosTestEvidence({ canonicalRoot: root, checkouts: [] }, {
+      owner: { controllerHome, repoId },
+      releasableWorkIds: new Set(['work-literal-xcode']),
+      nowMs: Date.now() + 8 * 24 * 60 * 60_000,
+      graceMs: 1,
+      maxAgeMs: 1,
+      maxCount: 0,
+      maxBytes: 0,
+      maxEntries: 100,
+      maxRemovals: 8,
+    });
+    expect(cleaned.removedPaths).toEqual([rawCanonical]);
+    expect(existsSync(raw)).toBe(false);
+    expect(getOwnedResource(controllerHome, recorded.resourceId!)?.status).toBe('released');
+
+    const nestedWorktree = join(root, '.repo-harness', 'nested-worktree');
+    const nestedResult = join(nestedWorktree, 'results', 'nested.xcresult');
+    mkdirSync(nestedResult, { recursive: true });
+    writeFileSync(join(nestedWorktree, '.git'), 'gitdir: /tmp/foreign-worktree');
+    writeFileSync(join(nestedResult, 'Info.plist'), 'nested result');
+    expect(recordProcessXcodeTestEvidenceOwner({
+      controllerHome,
+      repoId,
+      repoRoot: root,
+      command: {
+        kind: 'argv',
+        executable: 'xcodebuild',
+        args: ['test', '-resultBundlePath', nestedResult],
+        cwd: root,
+      },
+      processId: 'proc-nested-worktree',
+      associatedWorkId: 'work-nested',
+    })).toEqual({ recorded: false, reason: 'missing_or_untrusted_result_path' });
+
+    const dynamic = join(root, '.repo-harness', 'dynamic', 'dynamic.xcresult');
+    mkdirSync(dynamic, { recursive: true });
+    writeFileSync(join(dynamic, 'Info.plist'), 'dynamic result');
+    expect(recordProcessXcodeTestEvidenceOwner({
+      controllerHome,
+      repoId,
+      repoRoot: root,
+      command: {
+        kind: 'shell',
+        shellCommand: 'xcodebuild test -resultBundlePath "$RESULT_BUNDLE"',
+        cwd: root,
+      },
+      processId: 'proc-dynamic-xcode',
+      associatedWorkId: 'work-dynamic',
+    })).toEqual({ recorded: false, reason: 'unsupported_or_dynamic_xcode_result_path' });
   });
 
   test('reclaims only old exact-owner XCTest evidence explicitly released by semantic maintenance', () => {
