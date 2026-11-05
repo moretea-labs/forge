@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { AgentGitReview, type GitDiffReceipt } from './agent-git-review';
+import { AgentGitReview, splitGitDiffFiles, type GitDiffReceipt } from './agent-git-review';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { LocalProviderStatusProjection } from './runtime-client';
@@ -217,6 +217,10 @@ export function LocalConversationSurface({
   const [diffVisible, setDiffVisible] = useState(false);
   const [diffStaged, setDiffStaged] = useState(false);
   const [diffRepoId, setDiffRepoId] = useState<string>();
+  const [diffCheckoutId, setDiffCheckoutId] = useState<string>();
+  const [committing, setCommitting] = useState(false);
+  const [commitError, setCommitError] = useState<string>();
+  const [commitSuccess, setCommitSuccess] = useState<{ threadId: string; head: string }>();
   const [diff, setDiff] = useState<GitDiffReceipt>();
   const [diffLoading, setDiffLoading] = useState(false);
   const [diffError, setDiffError] = useState<string>();
@@ -258,6 +262,8 @@ export function LocalConversationSurface({
     [threads, selectedProvider],
   );
   const selectedThread = activeThreads.find((thread) => thread.id === selectedThreadId) ?? activeThreads[0];
+  const currentThreadIdRef = useRef<string | undefined>(undefined);
+  currentThreadIdRef.current = selectedThread?.id;
   useEffect(() => { transcriptEndRef.current?.scrollIntoView({ block: 'end', behavior: 'smooth' }); },
     [selectedThreadId, selectedThread?.messages.length, sending]);
 
@@ -402,7 +408,8 @@ export function LocalConversationSurface({
   async function toggleDiff(forceRefresh = false, staged = diffStaged) {
     const repoId = selectedThread?.projectRepoId;
     if (!repoId) return;
-    if (diffVisible && !forceRefresh && diffRepoId === repoId) {
+    if (diffVisible && !forceRefresh && diffRepoId === repoId
+      && diffCheckoutId === selectedThread?.checkoutId) {
       diffRequest.current += 1;
       setDiffVisible(false);
       return;
@@ -410,6 +417,7 @@ export function LocalConversationSurface({
     const request = ++diffRequest.current;
     setDiffStaged(staged);
     setDiffRepoId(repoId);
+    setDiffCheckoutId(selectedThread?.checkoutId);
     setDiffVisible(true);
     setDiff(undefined);
     setDiffError(undefined);
@@ -427,6 +435,45 @@ export function LocalConversationSurface({
       if (request === diffRequest.current) setDiffLoading(false);
     }
   }
+
+  const commitReviewedFiles = async (paths: string[], message: string) => {
+    const thread = selectedThread;
+    const reviewed = diff;
+    if (!thread?.projectRepoId || !thread.checkoutId || !reviewed?.patch || !reviewed.head || !reviewed.branch
+      || reviewed.checkoutId !== thread.checkoutId || reviewed.truncated || diffLoading || committing || sending
+      || diffRepoId !== thread.projectRepoId || diffCheckoutId !== thread.checkoutId
+      || paths.length < 1 || paths.length > 32
+      || !paths.every((path) => splitGitDiffFiles(reviewed.patch).some((file) => file.path === path))) return;
+    if (!window.confirm(
+      `通过 Forge 提交以下 ${paths.length} 个文件？\n\n分支：${reviewed.branch}\n检出：${thread.checkoutId}\n\n${paths.join('\n')}\n\n提交说明：${message}\n\n仅提交本地 Git，不推送远端。`
+    )) return;
+    setCommitError(undefined);
+    setCommitSuccess(undefined);
+    setCommitting(true);
+    try {
+      const result = await invoke<{ committed: boolean; head: string; checkoutId: string }>(
+        'commit_agent_git_files', {
+          repoId: thread.projectRepoId, checkoutId: thread.checkoutId,
+          conversationId: thread.id, message, paths, staged: diffStaged,
+          expectedPatch: reviewed.patch, expectedHead: reviewed.head, expectedBranch: reviewed.branch,
+        },
+      );
+      if (!result.committed || result.checkoutId !== thread.checkoutId || !result.head) {
+        throw Error('Forge 未确认 Git 提交结果，请检查仓库历史后再尝试。');
+      }
+      if (currentThreadIdRef.current === thread.id) {
+        setCommitSuccess({ threadId: thread.id, head: result.head });
+        void toggleDiff(true, diffStaged);
+      }
+    } catch (cause) {
+      if (currentThreadIdRef.current === thread.id) {
+        setCommitError('提交未确认：' + (cause instanceof Error ? cause.message : String(cause))
+          + '。请先查看 Git 状态，不要直接重复提交。');
+      }
+    } finally {
+      setCommitting(false);
+    }
+  };
 
   const send = async () => {
     const prompt = draft.trim();
@@ -528,7 +575,7 @@ export function LocalConversationSurface({
             onClick={() => void toggleDiff()}>
             {diffVisible && diffRepoId === selectedThread?.projectRepoId ? '收起变更' : '查看变更'}
           </button>
-          <button className="plain-action" type="button" disabled={sending} onClick={addThread}>新建会话</button>
+          <button className="plain-action" type="button" disabled={sending || committing} onClick={addThread}>新建会话</button>
           {selectedThread && (
             <button className="plain-action" type="button" disabled={sending} onClick={() => {
               updateSelected((thread) => ({ ...thread, archived: true, updatedAt: new Date().toISOString() }));
@@ -651,8 +698,14 @@ export function LocalConversationSurface({
             </div>
           )}
 
-          {diffVisible && diffRepoId === selectedThread.projectRepoId && (
-            <AgentGitReview diff={diff} staged={diffStaged} loading={diffLoading} error={diffError}
+          {diffVisible && diffRepoId === selectedThread.projectRepoId
+            && diffCheckoutId === selectedThread.checkoutId && (
+            <AgentGitReview key={`${selectedThread.id}:${diffStaged}`}
+              diff={diff} staged={diffStaged} loading={diffLoading} error={diffError}
+              canCommit={Boolean(selectedThread.checkoutId) && !sending}
+              committing={committing} commitError={commitError}
+              commitHead={commitSuccess?.threadId === selectedThread.id ? commitSuccess.head : undefined}
+              onCommit={(paths, message) => { void commitReviewedFiles(paths, message); }}
               onStagedChange={(staged) => { void toggleDiff(true, staged); }}
               onRefresh={() => void toggleDiff(true)}
               onClose={() => { diffRequest.current += 1; setDiffVisible(false); }} />

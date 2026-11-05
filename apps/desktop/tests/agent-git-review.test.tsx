@@ -44,7 +44,19 @@ describe('Agent Git diff presentation', () => {
     expect(stagedHtml).toContain('当前没有已暂存的代码变更');
     expect(stagedHtml).toContain('aria-pressed="true"');
   });
-  test('renders file navigation and highlighted patch lines with no write controls', () => {
+  test('commit UI scopes to selected reviewed paths and disables commit until selected', () => {
+    const html = renderToStaticMarkup(createElement(AgentGitReview, {
+      diff: { patch, stat: '', truncated: false }, staged: false, loading: false, canCommit: true,
+      onStagedChange() {}, onRefresh() {}, onClose() {}, onCommit() {},
+    }));
+    expect(html).toContain('选择提交 src/one.ts');
+    expect(html).toContain('选择提交 src/deleted.ts');
+    expect(html).toContain('提交所选文件（0）');
+    expect(html).toContain('只提交勾选的文件，不推送远端');
+    expect(html).toContain('type="submit" disabled');
+  });
+
+  test('renders file navigation and highlighted patch lines without mutation controls unless explicitly enabled', () => {
     const html = renderToStaticMarkup(createElement(AgentGitReview, {
       diff: { patch, stat: 'src/one.ts | 2 +-', truncated: false }, staged: false, loading: false,
       onStagedChange() {}, onRefresh() {}, onClose() {},

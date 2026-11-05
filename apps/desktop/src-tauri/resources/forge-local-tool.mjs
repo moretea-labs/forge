@@ -10,6 +10,7 @@ const tools = Object.freeze({
   patch_plan: { name: 'repository_safe_patch_plan', effect: false },
   apply_patch: { name: 'repository_safe_patch_apply', effect: true },
   run_command: { name: 'execute_command', effect: true },
+  git_commit: { name: 'repository_git_commit', effect: true },
 });
 function requireId(value, label) {
   if (typeof value !== 'string' || !/^[a-zA-Z0-9._:-]{1,256}$/.test(value)) {
@@ -40,11 +41,21 @@ async function run() {
     patch_plan: ['operations','chunk_size'],
     apply_patch: ['operations','purpose','allowed_paths','request_id'],
     run_command: ['command','timeout_ms','max_output_bytes','request_id'],
+    git_commit: ['message','paths','request_id'],
   };
   if (Object.keys(args).some((key) => !keys[input.tool]?.includes(key))) {
     throw Error('LOCAL_FORGE_TOOL_ARGUMENTS_FORBIDDEN');
   }
   if (tool.effect && input.allowEffects !== true) throw Error('LOCAL_FORGE_TOOL_REQUIRES_USER_APPROVAL');
+  if (input.tool === 'git_commit') {
+    if (typeof args.message !== 'string' || !args.message.trim()
+        || args.message.length > 500
+        || !Array.isArray(args.paths) || args.paths.length === 0 || args.paths.length > 32
+        || args.paths.some((part) => typeof part !== 'string' || !part.trim()
+          || part.startsWith('/') || part.split('/').includes('..') || part.includes('\\0'))) {
+      throw Error('LOCAL_FORGE_GIT_COMMIT_ARGUMENTS_INVALID');
+    }
+  }
   if (input.tool === 'run_command') {
     if (!Array.isArray(args.command) || args.command.length === 0 || args.command.length > 24
         || args.command.some((part) => typeof part !== 'string' || part.length > 2048)

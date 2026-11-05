@@ -4,6 +4,11 @@ export interface GitDiffReceipt {
   stat: string;
   patch: string;
   truncated: boolean;
+  head?: string | null;
+  branch?: string | null;
+  checkoutId?: string;
+  nameOnly?: string[];
+  staged?: boolean;
 }
 
 export interface GitDiffFile {
@@ -39,32 +44,45 @@ function lineKind(line: string): string {
 }
 
 export function AgentGitReview({
-  diff, staged, loading, error, onStagedChange, onRefresh, onClose,
+  diff, staged, loading, error, canCommit, committing, commitError, commitHead,
+  onStagedChange, onRefresh, onClose, onCommit,
 }: {
   diff?: GitDiffReceipt;
   staged: boolean;
   loading: boolean;
   error?: string;
+  canCommit?: boolean;
+  committing?: boolean;
+  commitError?: string;
+  commitHead?: string;
   onStagedChange: (staged: boolean) => void;
   onRefresh: () => void;
   onClose: () => void;
+  onCommit?: (paths: string[], message: string) => void;
 }) {
   const [activePath, setActivePath] = useState<string>();
+  const [selectedPaths, setSelectedPaths] = useState<string[]>([]);
+  const [commitMessage, setCommitMessage] = useState('');
   const files = splitGitDiffFiles(diff?.patch ?? '');
+  const reviewedPaths = selectedPaths.filter((path) => files.some((file) => file.path === path));
+  const commitAllowed = canCommit === true && Boolean(diff?.head && diff?.branch) && !committing && !loading && !diff?.truncated
+    && reviewedPaths.length > 0 && reviewedPaths.length <= 32 && Boolean(commitMessage.trim());
   const activeFile = files.find((file) => file.path === activePath) ?? files[0];
 
   return (
     <aside className="local-git-inspector" aria-label="Git 变更审阅">
       <header>
         <strong>Changes</strong>
-        <span className="local-diff-file-count">{files.length} 个文件</span>
+        <span className="local-diff-file-count" title={diff?.branch ?? '未知分支'}>
+          {diff?.branch ? diff.branch.slice(-24) + ' · ' : ''}{files.length} 个文件
+        </span>
         <button className="plain-action" type="button" onClick={onRefresh} disabled={loading}>刷新</button>
-        <button className="plain-action" type="button" onClick={onClose}>关闭</button>
+        <button className="plain-action" type="button" onClick={onClose} disabled={committing}>关闭</button>
       </header>
       <div className="local-diff-modes" role="group" aria-label="Git 变更类型">
-        <button type="button" aria-pressed={!staged} disabled={loading}
+        <button type="button" aria-pressed={!staged} disabled={loading || committing}
           className={!staged ? 'active' : ''} onClick={() => onStagedChange(false)}>未暂存</button>
-        <button type="button" aria-pressed={staged} disabled={loading}
+        <button type="button" aria-pressed={staged} disabled={loading || committing}
           className={staged ? 'active' : ''} onClick={() => onStagedChange(true)}>已暂存</button>
       </div>
       {loading && <div role="status" className="local-diff-status">从 Forge Git 读取变更…</div>}
@@ -76,14 +94,21 @@ export function AgentGitReview({
             <>
               <nav className="local-diff-file-list" aria-label="已修改文件">
                 {files.map((file) => (
-                  <button className={file.path === activeFile?.path ? 'active' : ''} key={file.path}
-                    type="button" aria-pressed={file.path === activeFile?.path}
-                    title={file.path} onClick={() => setActivePath(file.path)}>
-                    <span className="local-diff-file-path">{file.path}</span>
-                    <span className="local-diff-file-counts">
-                      <span>+{file.added}</span><span>−{file.removed}</span>
-                    </span>
-                  </button>
+                  <div className="local-diff-file-entry" key={file.path}>
+                    {onCommit && <input type="checkbox" aria-label={`选择提交 ${file.path}`}
+                      checked={reviewedPaths.includes(file.path)}
+                      disabled={committing || loading || diff?.truncated || !canCommit}
+                      onChange={(event) => setSelectedPaths((current) =>
+                        event.target.checked ? [...current, file.path] : current.filter((path) => path !== file.path))} />}
+                    <button className={file.path === activeFile?.path ? 'active' : ''}
+                      type="button" aria-pressed={file.path === activeFile?.path}
+                      title={file.path} onClick={() => setActivePath(file.path)}>
+                      <span className="local-diff-file-path">{file.path}</span>
+                      <span className="local-diff-file-counts">
+                        <span>+{file.added}</span><span>−{file.removed}</span>
+                      </span>
+                    </button>
+                  </div>
                 ))}
               </nav>
               <div className="local-diff-selected-file" title={activeFile?.path}>{activeFile?.path}</div>
@@ -105,6 +130,22 @@ export function AgentGitReview({
           )}
         </>
       )}
+      {onCommit && <form className="local-diff-commit" onSubmit={(event) => {
+        event.preventDefault();
+        if (commitAllowed) onCommit(reviewedPaths, commitMessage.trim());
+      }}>
+        <label>提交说明
+          <input type="text" maxLength={500} value={commitMessage}
+            placeholder="fix: 修复交互问题" disabled={committing}
+            onChange={(event) => setCommitMessage(event.target.value)} />
+        </label>
+        <small>只提交勾选的文件，不推送远端；内容变更后需重新审阅。</small>
+        <button type="submit" disabled={!commitAllowed}>
+          {committing ? '提交中…' : `提交所选文件（${reviewedPaths.length}）`}
+        </button>
+        {commitError && <small role="alert">{commitError}</small>}
+        {commitHead && <small role="status">Forge 已确认提交：<code>{commitHead.slice(0, 12)}</code></small>}
+      </form>}
     </aside>
   );
 }

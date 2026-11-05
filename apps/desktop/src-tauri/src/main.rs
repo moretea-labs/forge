@@ -785,6 +785,90 @@ async fn read_agent_git_diff(
         .ok_or_else(|| "FORGE_DESKTOP_GIT_DIFF_RESULT_INVALID".into())
 }
 
+fn reviewed_commit_scope_matches(
+    diff: &Value, paths: &[String], expected_patch: &str,
+    expected_head: &str, expected_branch: &str, checkout_id: &str, staged: bool,
+) -> bool {
+    !expected_patch.is_empty() && expected_patch.len() <= 20_000
+        && diff.get("truncated").and_then(Value::as_bool) == Some(false)
+        && diff.get("patch").and_then(Value::as_str) == Some(expected_patch)
+        && diff.get("head").and_then(Value::as_str) == Some(expected_head)
+        && diff.get("branch").and_then(Value::as_str) == Some(expected_branch)
+        && diff.get("checkoutId").and_then(Value::as_str) == Some(checkout_id)
+        && diff.get("staged").and_then(Value::as_bool) == Some(staged)
+        && diff.get("nameOnly").and_then(Value::as_array)
+            .is_some_and(|names| paths.iter().all(|path| names.iter().any(|entry| entry.as_str() == Some(path))))
+}
+
+fn native_commit_paths_valid(paths: &[String], message: &str) -> bool {
+    !paths.is_empty() && paths.len() <= 32 && !message.trim().is_empty()
+        && message.len() <= 500 && !message.contains('\0')
+        && paths.iter().all(|path| {
+            !path.is_empty() && path.len() <= 1024 && !path.starts_with('/')
+                && !path.contains('\0') && !path.split('/').any(|part| part == ".." || part == ".")
+        })
+}
+
+#[tauri::command]
+async fn commit_agent_git_files(
+    app: tauri::AppHandle, repo_id: String, checkout_id: String,
+    message: String, paths: Vec<String>, staged: bool, expected_patch: String,
+    expected_head: String, expected_branch: String, conversation_id: String,
+) -> Result<Value, String> {
+    validate_agent_checkout_binding(Some(&repo_id), Some(&checkout_id), true)?;
+    if !native_commit_paths_valid(&paths, &message) {
+        return Err("FORGE_DESKTOP_GIT_COMMIT_INPUT_INVALID".into());
+    }
+    if expected_head.is_empty() || expected_branch.is_empty()
+        || expected_patch.is_empty() || expected_patch.len() > 20_000 {
+        return Err("FORGE_DESKTOP_GIT_COMMIT_REVIEW_REQUIRED".into());
+    }
+    // Read via Forge again at commit time; a stale/truncated inspection cannot
+    // authorize a different working tree, different file set or changed patch.
+    let current = run_local_forge_tool(
+        app.clone(), repo_id.clone(), Some(checkout_id.clone()),
+        conversation_id.clone(), "git_diff".into(), agent_git_diff_arguments(staged), false,
+    ).await?;
+    let diff = current.pointer("/result/diff")
+        .filter(|value| reviewed_commit_scope_matches(
+            value, &paths, &expected_patch, &expected_head, &expected_branch, &checkout_id, staged,
+        )).ok_or("FORGE_DESKTOP_GIT_COMMIT_REVIEW_STALE")?;
+    if diff.get("nameOnly").and_then(Value::as_array).is_none() {
+        return Err("FORGE_DESKTOP_GIT_COMMIT_REVIEW_REQUIRED".into());
+    }
+    // --only commits the working-tree content of each named file, even when
+    // the UI is reviewing staged changes. Reject mixed index/worktree state
+    // so the commit cannot silently include unreviewed changes in those files.
+    let opposite = run_local_forge_tool(
+        app.clone(), repo_id.clone(), Some(checkout_id.clone()),
+        conversation_id.clone(), "git_diff".into(),
+        json!({"staged": !staged, "paths": paths, "max_bytes": 20000}), false,
+    ).await?;
+    let opposite_diff = opposite.pointer("/result/diff")
+        .ok_or("FORGE_DESKTOP_GIT_COMMIT_OTHER_DIFF_UNKNOWN")?;
+    if opposite_diff.get("truncated").and_then(Value::as_bool) != Some(false)
+        || opposite_diff.get("checkoutId").and_then(Value::as_str) != Some(checkout_id.as_str())
+        || opposite_diff.get("head").and_then(Value::as_str) != Some(expected_head.as_str())
+        || opposite_diff.get("branch").and_then(Value::as_str) != Some(expected_branch.as_str())
+        || opposite_diff.get("staged").and_then(Value::as_bool) != Some(!staged)
+        || opposite_diff.get("nameOnly").and_then(Value::as_array).is_none_or(|names| !names.is_empty()) {
+        return Err("FORGE_DESKTOP_GIT_COMMIT_MIXED_CHANGES_REVIEW_REQUIRED".into());
+    }
+    let result = run_local_forge_tool(
+        app, repo_id.clone(), Some(checkout_id.clone()), conversation_id,
+        "git_commit".into(), json!({"message":message.trim(),"paths":paths}), true,
+    ).await?;
+    if !local_effect_completed("git_commit", &result)
+        || result.pointer("/result/commit/checkoutId").and_then(Value::as_str) != Some(checkout_id.as_str()) {
+        return Err("FORGE_DESKTOP_GIT_COMMIT_UNCONFIRMED_RECONCILE".into());
+    }
+    let after = &result["result"]["commit"]["after"];
+    let head = after.get("head").and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or("FORGE_DESKTOP_GIT_COMMIT_UNCONFIRMED_RECONCILE")?;
+    Ok(json!({"committed":true,"head":head,"branch":after["branch"],"checkoutId":checkout_id}))
+}
+
 fn local_tool_catalog(allow_effects: bool, has_work: bool) -> Vec<Value> {
     let mut tools = vec![
         json!({"type":"function","function":{"name":"read_file","description":"Read bounded lines of a file in the user's selected registered Forge repository. Paths are repo-relative.","parameters":{"type":"object","properties":{"path":{"type":"string"},"start_line":{"type":"integer","minimum":1},"end_line":{"type":"integer","minimum":1}},"required":["path"],"additionalProperties":false}}}),
@@ -803,6 +887,7 @@ fn local_tool_catalog(allow_effects: bool, has_work: bool) -> Vec<Value> {
         tools.extend([
             json!({"type":"function","function":{"name":"apply_patch","description":"Apply typed Forge safe-patch operations to the selected registered repository. Forge owns mutation exclusion, fingerprint validation and evidence.","parameters":{"type":"object","properties":{"purpose":{"type":"string"},"operations":{"type":"array","items":{"type":"object"},"minItems":1,"maxItems":16},"allowed_paths":{"type":"array","items":{"type":"string"}}},"required":["purpose","operations"],"additionalProperties":false}}}),
             json!({"type":"function","function":{"name":"run_command","description":"Execute an argument-array command through Forge's existing authorized Process Runtime and checkout/resource leases. No shell command strings or host scope.","parameters":{"type":"object","properties":{"command":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":24},"timeout_ms":{"type":"integer","minimum":1000,"maximum":60000},"max_output_bytes":{"type":"integer","minimum":1000,"maximum":12000}},"required":["command"],"additionalProperties":false}}}),
+            json!({"type":"function","function":{"name":"git_commit","description":"Commit only explicitly listed repository-relative paths using Forge's canonical structured Git authority. Examine the diff first and supply a nonempty commit message. Never implicitly commit the entire index.","parameters":{"type":"object","properties":{"message":{"type":"string","minLength":1,"maxLength":500},"paths":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":32}},"required":["message","paths"],"additionalProperties":false}}}),
         ]);
     }
     tools
@@ -890,6 +975,7 @@ fn local_effect_completed(name: &str, receipt: &Value) -> bool {
         "run_command" => result.get("status").and_then(Value::as_str) == Some("succeeded")
             && result.get("exitCode").and_then(Value::as_i64) == Some(0),
         "apply_patch" => result.get("status").and_then(Value::as_str) == Some("applied"),
+        "git_commit" => result.pointer("/commit/committed").and_then(Value::as_bool) == Some(true),
         _ => false,
     }
 }
@@ -1278,7 +1364,7 @@ async fn send_local_api_conversation(
                 || !available_tools.iter().any(|tool| tool.pointer("/function/name").and_then(Value::as_str) == Some(&name)) {
                 return Err("FORGE_DESKTOP_API_TOOL_NOT_AUTHORIZED".into());
             }
-            let effectful = matches!(name.as_str(), "apply_patch" | "run_command");
+            let effectful = matches!(name.as_str(), "apply_patch" | "run_command" | "git_commit");
             let effect_request_id = if effectful {
                 let nonce = SystemTime::now().duration_since(UNIX_EPOCH)
                     .unwrap_or_default().as_nanos();
@@ -1377,6 +1463,7 @@ fn main() {
             read_project_work_list,
             read_project_plan_list,
             read_agent_git_diff,
+            commit_agent_git_files,
             read_work_detail,
             read_user_requests,
             read_requirement_detail,
@@ -1405,6 +1492,25 @@ mod tests {
     fn agent_git_inspector_forwards_exact_staged_selection() {
         assert_eq!(agent_git_diff_arguments(false), json!({"max_bytes": 20000, "staged": false}));
         assert_eq!(agent_git_diff_arguments(true), json!({"max_bytes": 20000, "staged": true}));
+    }
+
+    #[test]
+    fn native_commit_requires_explicit_safe_paths() {
+        let review = json!({"patch":"diff --git a/src/lib.rs b/src/lib.rs","head":"abcdef",
+            "branch":"work/task-1","checkoutId":"checkout_a","staged":false,"truncated":false,"nameOnly":["src/lib.rs"]});
+        assert!(reviewed_commit_scope_matches(&review, &["src/lib.rs".into()],
+            "diff --git a/src/lib.rs b/src/lib.rs", "abcdef", "work/task-1", "checkout_a", false));
+        assert!(!reviewed_commit_scope_matches(&review, &["other.rs".into()],
+            "diff --git a/src/lib.rs b/src/lib.rs", "abcdef", "work/task-1", "checkout_a", false));
+        assert!(!reviewed_commit_scope_matches(&review, &["src/lib.rs".into()],
+            "diff --git a/src/lib.rs b/src/lib.rs", "abcdef", "work/task-1", "checkout_b", false));
+        assert!(!reviewed_commit_scope_matches(&review, &["src/lib.rs".into()],
+            "diff --git a/src/lib.rs b/src/lib.rs", "abcdef", "work/task-1", "checkout_a", true));
+        assert!(native_commit_paths_valid(&["src/lib.rs".into()], "fix: update"));
+        assert!(!native_commit_paths_valid(&[], "fix"));
+        assert!(!native_commit_paths_valid(&["src/lib.rs".into()], ""));
+        assert!(!native_commit_paths_valid(&["../outside".into()], "fix"));
+        assert!(!native_commit_paths_valid(&["/tmp/file".into()], "fix"));
     }
 
     #[test]
@@ -1561,6 +1667,15 @@ mod tests {
 
     #[test]
     fn effect_acceptance_is_not_completion() {
+        assert!(local_effect_completed("git_commit", &json!({"ok":true,"result":{
+            "commit":{"committed":true,"checkoutId":"checkout_a","after":{"head":"abc123"}}
+        }})));
+        assert!(!local_effect_completed("git_commit", &json!({"ok":true,"result":{
+            "commit":{"committed":false}
+        }})));
+        assert!(!local_effect_completed("git_commit", &json!({"ok":true,"result":{
+            "accepted":true,"status":"running"
+        }})));
         assert!(local_effect_completed("run_command", &json!({"ok":true,"result":{
             "accepted":true,"status":"succeeded","exitCode":0
         }})));

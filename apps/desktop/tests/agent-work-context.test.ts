@@ -7,6 +7,31 @@ import { ProjectRecordsView } from '../src/project-records-view';
 import { disconnectedProjection } from '../src/runtime-projection';
 
 describe('Forge Desktop Work-bound Agent thread identity', () => {
+  test('direct Git commit requires approval and explicit paths before loading Forge source', async () => {
+    const script = new URL('../src-tauri/resources/forge-local-tool.mjs', import.meta.url).pathname;
+    async function runGitCommit(allowEffects: boolean, paths: string[]) {
+      const runner = Bun.spawn([process.execPath, script], { stdin: 'pipe', stdout: 'pipe' });
+      runner.stdin.write(JSON.stringify({
+        tool: 'git_commit', repoId: 'repo_forge', checkoutId: 'checkout_forge',
+        conversationId: 'conv_1', controllerHome: '/does-not-exist', sourceRoot: '/does-not-exist',
+        allowEffects, arguments: { message: 'fix: test', paths, request_id: 'effect_1' },
+      }));
+      runner.stdin.end();
+      const output = await new Response(runner.stdout).text();
+      expect(await runner.exited).toBe(0);
+      return JSON.parse(output);
+    }
+    expect(await runGitCommit(false, ['src/file.ts'])).toEqual({
+      ok: false, error: 'LOCAL_FORGE_TOOL_REQUIRES_USER_APPROVAL',
+    });
+    expect(await runGitCommit(true, [])).toEqual({
+      ok: false, error: 'LOCAL_FORGE_GIT_COMMIT_ARGUMENTS_INVALID',
+    });
+    expect(await runGitCommit(true, ['../outside'])).toEqual({
+      ok: false, error: 'LOCAL_FORGE_GIT_COMMIT_ARGUMENTS_INVALID',
+    });
+  });
+
   test('direct Forge runner denies mutations without a pinned checkout before touching source', async () => {
     const script = new URL('../src-tauri/resources/forge-local-tool.mjs', import.meta.url).pathname;
     const runner = Bun.spawn([process.execPath, script], { stdin: 'pipe', stdout: 'pipe' });
