@@ -36,17 +36,17 @@ export function ProjectRecordsView({ mode, projection, onSelectWork, onRefresh }
   const [detail, setDetail] = useState<RecordDetail>();
   const [error, setError] = useState<string>();
   const [loading, setLoading] = useState(false);
-  const [planIndex, setPlanIndex] = useState<Array<{ planId: string; goal: string; revision: number }>>([]);
+  const [planIndex, setPlanIndex] = useState<Array<{ planId: string; goal: string; revision: number; requirementId?: string }>>([]);
   const [planIndexError, setPlanIndexError] = useState<string>();
   const revision = useRef(0);
   const repoId = projection.project?.repoId;
 
   useEffect(() => {
-    if (mode !== 'plans' || !repoId) return;
+    if ((mode !== 'plans' && mode !== 'requirements') || !repoId) return;
     let disposed = false;
     setPlanIndex([]);
     setPlanIndexError(undefined);
-    void invoke<{ data?: { plans?: Array<{ planId: string; goal: string; revision: number }> } }>(
+    void invoke<{ data?: { plans?: Array<{ planId: string; goal: string; revision: number; requirementId?: string }> } }>(
       'read_project_plan_list', { repoId },
     ).then((response) => {
       if (!disposed) setPlanIndex(response.data?.plans ?? []);
@@ -66,7 +66,8 @@ export function ProjectRecordsView({ mode, projection, onSelectWork, onRefresh }
   const ids = mode === 'works'
     ? works.map((work) => work.workId)
     : [...new Set([
-      ...(mode === 'plans' ? planIndex.map((plan) => plan.planId) : []),
+      ...(mode === 'plans' ? planIndex.map((plan) => plan.planId)
+        : mode === 'requirements' ? planIndex.flatMap((plan) => plan.requirementId ? [plan.requirementId] : []) : []),
       ...works.flatMap((work) => {
         const id = mode === 'requirements' ? work.requirementId : work.planId;
         return id ? [id] : [];
@@ -134,13 +135,13 @@ export function ProjectRecordsView({ mode, projection, onSelectWork, onRefresh }
               ? '当前及近期 Work · 不是完整历史'
               : mode === 'plans'
                 ? '当前 Plan 从 Forge 按项目查询（最多 100 条），并补充已加载 Work 的引用'
-                : '目前根据已加载 Work 枚举关联 Requirement，非完整需求目录；详情来自 Forge 原始记录'}
+                : '从项目 Plan 与已加载 Work 关联发现 Requirement；无关联的需求暂无法完整枚举'}
           </p>
           <div className="records-split">
             <section className="records-index" aria-label={titles[mode] + ' 列表'}>
               <input aria-label="筛选项目记录" value={query} placeholder="搜索记录或关联工作"
                 onChange={(event) => setQuery(event.target.value)} />
-              {planIndexError && <p role="alert" className="inline-error">Plan 列表读取失败：{planIndexError}</p>}
+              {planIndexError && <p role="alert" className="inline-error">关联 Plan 读取失败：{planIndexError}</p>}
               {filtered.length === 0 && <p className="records-empty">没有加载到匹配记录；不代表项目中不存在记录。</p>}
               {filtered.map((record) => (
                 <button type="button" key={record.id} onClick={() => void openRecord(record.id)}
@@ -179,6 +180,16 @@ export function ProjectRecordsView({ mode, projection, onSelectWork, onRefresh }
                     <strong>计划项</strong>
                     <ul>{(detail.value.items ?? []).map((item) =>
                       <li key={item.id}>{item.objective}</li>)}</ul>
+                  </div>
+                )}
+                {mode === 'requirements' && (
+                  <div className="record-plan-links">
+                    <h3 className="record-related-heading">关联 Plan · {planIndex.filter((plan) => plan.requirementId === selected.id).length}</h3>
+                    {planIndex.filter((plan) => plan.requirementId === selected.id).map((plan) => (
+                      <div className="record-plan-link" key={plan.planId}>
+                        <strong>{plan.goal}</strong><code>{plan.planId}</code>
+                      </div>
+                    ))}
                   </div>
                 )}
                 <h3 className="record-related-heading">关联 Work · {selected.works.length}</h3>
