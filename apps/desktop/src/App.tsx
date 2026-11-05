@@ -1125,10 +1125,13 @@ export function App() {
 
   const bootstrapRuntime = useCallback(async () => {
     if (preview || !tauriRuntimeAvailable()) return;
+    const revision = ++projectLoadRevision.current;
     let catalog;
     try {
       catalog = await readProjects();
+      if (revision !== projectLoadRevision.current) return;
     } catch (cause) {
+      if (revision !== projectLoadRevision.current) return;
       const detail = cause instanceof Error ? cause.message : String(cause);
       setProjection((current) => ({
         ...current,
@@ -1155,6 +1158,7 @@ export function App() {
     setSelectedRepoId(selectedProject.repoId);
     try {
       const workspace = await readProjectWorkspace(selectedProject);
+      if (revision !== projectLoadRevision.current) return;
       setSelectedWorkId(workspace.work?.workId);
       setProjection({
         source: 'runtime',
@@ -1163,6 +1167,7 @@ export function App() {
         ...workspace,
       });
     } catch (cause) {
+      if (revision !== projectLoadRevision.current) return;
       setSelectedWorkId(undefined);
       setProjection({
         ...disconnectedProjection,
@@ -1183,10 +1188,12 @@ export function App() {
 
   const refreshMcp = useCallback(async () => {
     if (preview || !tauriRuntimeAvailable() || mcpRefreshing) return;
+    const revision = ++projectLoadRevision.current;
     setMcpRefreshing(true);
     setMcpRefreshError(null);
     try {
       const catalog = await readProjects();
+      if (revision !== projectLoadRevision.current) return;
       setProjects(catalog.projects);
       const selectedProject = catalog.projects.find((project) => project.repoId === selectedRepoId)
         ?? catalog.projects.find((project) => project.repoId === catalog.preferredRepoId)
@@ -1203,6 +1210,7 @@ export function App() {
         return;
       }
       const workspace = await readProjectWorkspace(selectedProject, selectedWorkId);
+      if (revision !== projectLoadRevision.current) return;
       setSelectedRepoId(selectedProject.repoId);
       setSelectedWorkId(workspace.work?.workId);
       setProjection({
@@ -1212,7 +1220,9 @@ export function App() {
         ...workspace,
       });
     } catch (cause) {
-      setMcpRefreshError(cause instanceof Error ? cause.message : String(cause));
+      if (revision === projectLoadRevision.current) {
+        setMcpRefreshError(cause instanceof Error ? cause.message : String(cause));
+      }
     } finally {
       setMcpRefreshing(false);
     }
@@ -1220,16 +1230,13 @@ export function App() {
 
   const handleSelectProject = useCallback(async (project: ProjectListItemProjection) => {
     setRequestedRecord(undefined);
-    if (activeView === 'assistant') {
-      // Project selection in Agent switches context in a NEW conversation.
-      // Never repoint existing messages or a provider resume session.
-      if (activeAgentRepoId !== project.repoId) {
-        setNewThreadContext({ repoId: project.repoId });
-        setNewThreadRequested(true);
-      }
-    } else if (activeView === 'project') {
-      setActiveView('works');
+    // Project selection from any page changes the next Agent context;
+    // established transcripts retain their original repository identity.
+    if (activeAgentRepoId !== project.repoId) {
+      setNewThreadContext({ repoId: project.repoId });
+      setNewThreadRequested(true);
     }
+    if (activeView === 'project') setActiveView('works');
     await loadProject(project);
   }, [activeView, activeAgentRepoId, loadProject]);
 
@@ -1265,10 +1272,14 @@ export function App() {
     setActiveView('assistant');
   }, []);
   const handleNewThread = useCallback(() => {
+    // Outside Agent, inherit the browsed project. Inside Agent, inherit the
+    // active conversation's repository, not a stale project detail panel.
+    const repoId = activeView === 'assistant'
+      ? activeAgentRepoId ?? selectedRepoId : selectedRepoId ?? activeAgentRepoId;
+    setNewThreadContext(repoId ? { repoId } : undefined);
     setActiveView('assistant');
-    setNewThreadContext(undefined);
     setNewThreadRequested(true);
-  }, []);
+  }, [activeView, activeAgentRepoId, selectedRepoId]);
   const handleNewThreadHandled = useCallback(() => {
     setNewThreadRequested(false);
     setNewThreadContext(undefined);

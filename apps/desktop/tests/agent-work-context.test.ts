@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { advanceLocalToolProgress, createThread, findExistingWorkThread } from '../src/local-conversation';
+import { advanceLocalToolProgress, createThread, findExistingWorkThread, selectThreadRepository } from '../src/local-conversation';
 import { repositoryLabel } from '../src/runtime-client';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -50,6 +50,38 @@ describe('Forge Desktop Work-bound Agent thread identity', () => {
     expect('requirement' in thread).toBe(false);
     expect('plan' in thread).toBe(false);
     expect(createThread('api', undefined, 'work_orphan').workId).toBeUndefined();
+  });
+
+  test('switching Avela to Forge creates a new Agent identity without rewriting history or resume ID', () => {
+    const avela = {
+      ...createThread('codex', 'repo_avela', 'work_avela'),
+      providerSessionId: 'codex-session-avela',
+      messages: [{ id: 'msg1', role: 'user' as const, content: 'build Avela', createdAt: '2026-11-05T00:00:00Z' }],
+    };
+    const switched = selectThreadRepository(avela, 'codex', 'repo_forge');
+    expect(switched.created).toBe(true);
+    expect(switched.thread.projectRepoId).toBe('repo_forge');
+    expect(switched.thread.messages).toEqual([]);
+    expect(switched.thread.workId).toBeUndefined();
+    expect(switched.thread.providerSessionId).toBeUndefined();
+    expect(switched.thread.id).not.toBe(avela.id);
+    expect(avela.projectRepoId).toBe('repo_avela');
+    expect(avela.workId).toBe('work_avela');
+    expect(avela.providerSessionId).toBe('codex-session-avela');
+    expect(avela.messages[0]?.content).toBe('build Avela');
+  });
+
+  test('switching an unsent draft reuses it but clears old Work binding', () => {
+    const empty = createThread('api', 'repo_avela', 'work_avela');
+    const switched = selectThreadRepository(empty, 'api', 'repo_forge');
+    expect(switched.created).toBe(false);
+    expect(switched.thread.id).toBe(empty.id);
+    expect(switched.thread.projectRepoId).toBe('repo_forge');
+    expect(switched.thread.workId).toBeUndefined();
+    expect(empty.projectRepoId).toBe('repo_avela');
+    expect(selectThreadRepository(switched.thread, 'api', 'repo_forge').thread).toBe(switched.thread);
+    const ghostResume = { ...empty, providerSessionId: 'old-resume' };
+    expect(selectThreadRepository(ghostResume, 'api', 'repo_forge').created).toBe(true);
   });
 
   test('keeps one truthful tool row per start and terminal receipt, with a bounded timeline', () => {

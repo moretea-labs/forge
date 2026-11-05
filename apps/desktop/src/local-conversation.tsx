@@ -89,6 +89,23 @@ export function createThread(provider: LocalProviderChoice, projectRepoId?: stri
   };
 }
 
+/** Repository selection may replace an empty draft, never a transcript or resume handle. */
+export function selectThreadRepository(
+  thread: LocalConversationThread, provider: LocalProviderChoice, nextRepoId?: string,
+): { thread: LocalConversationThread; created: boolean } {
+  if (thread.projectRepoId === nextRepoId) return { thread, created: false };
+  if (thread.messages.length > 0 || thread.providerSessionId) {
+    return { thread: createThread(provider, nextRepoId), created: true };
+  }
+  return {
+    thread: {
+      ...thread, projectRepoId: nextRepoId, workId: undefined,
+      providerSessionId: undefined, updatedAt: new Date().toISOString(),
+    },
+    created: false,
+  };
+}
+
 export function findExistingWorkThread(
   threads: LocalConversationThread[], provider: LocalProviderChoice, repoId: string, workId: string,
 ): LocalConversationThread | undefined {
@@ -531,21 +548,13 @@ export function LocalConversationSurface({
                   if (nextRepoId === selectedThread.projectRepoId) return;
                   setAllowEffects(false);
                   setSendError(null);
-                  if (selectedThread.messages.length > 0) {
-                    // Never silently rebind an established transcript (or
-                    // Codex resume handle) to another repository.
-                    const next = createThread(selectedProvider, nextRepoId);
-                    setThreads((current) => [next, ...current]);
-                    setSelectedThreadId(next.id);
+                  const choice = selectThreadRepository(selectedThread, selectedProvider, nextRepoId);
+                  if (choice.created) {
+                    setThreads((current) => [choice.thread, ...current]);
+                    setSelectedThreadId(choice.thread.id);
                     setDraft('');
                   } else {
-                    updateSelected((thread) => ({
-                      ...thread,
-                      projectRepoId: nextRepoId,
-                      workId: undefined,
-                      providerSessionId: undefined,
-                      updatedAt: new Date().toISOString(),
-                    }));
+                    updateSelected(() => choice.thread);
                   }
                 }}
               >
@@ -698,7 +707,7 @@ export function LocalConversationSurface({
             {sendError && <div role="alert" className="composer-error">{sendError}</div>}
             <div className="composer-footer">
               <span className="local-provider-selection">
-                <span>{selectedProject?.name ?? '本地'}</span>
+                <span>{selectedProject?.repository ?? '本地'}</span>
                 <button className="local-provider-switch" type="button" onClick={onOpenSettings}
                   aria-label="切换聊天模型及 API 设置">
                   {apiSelected ? (apiSettings?.model || '兼容 API') : 'Codex CLI'} <span aria-hidden="true">⌄</span>
