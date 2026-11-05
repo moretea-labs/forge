@@ -343,3 +343,57 @@ a { color: #353535; text-decoration: underline; text-underline-offset: 3px; }
 .sidebar-project-heading .sidebar-section-title { margin-top: 18px; margin-bottom: 7px; }
 .sidebar-project-heading button { border: 0; border-radius: 6px; background: transparent; color: #898989; font-size: 16px; padding: 4px 9px; }
 .sidebar-project-heading button:hover { color: #303030; background: rgba(0,0,0,.05); }
+
+/* Work relationships are canonical links, not invented lifecycle progress. */
+.relationship-overview, .work-relations { margin: 22px 0 28px; border-top: 1px solid var(--line); padding-top: 17px; }
+.relationship-heading { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+.relationship-heading strong { color: #373737; font-size: 12.5px; font-weight: 615; }
+.relationship-heading span { color: #929292; font-size: 10px; }
+.relationship-list { display: grid; gap: 17px; }
+.relationship-item { border-bottom: 1px solid #f0f0f0; padding-bottom: 13px; }
+.relationship-item-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+.relation-type { display: inline-block; color: #8d8d8d; font-size: 10px; white-space: nowrap; }
+.relationship-item-head strong { flex: 1; font-size: 11px; color: #4e4e4e; overflow-wrap: anywhere; }
+.relationship-item-head small { font-size: 10px; color: #999; }
+.relation-work-links { display: grid; gap: 4px; padding-left: 24px; }
+.relation-work-link { display: flex; align-items: center; gap: 8px; border: 0; border-radius: 7px; text-align: left; padding: 7px 9px; background: transparent; color: #565656; font-size: 11px; }
+.relation-work-link:hover:not(:disabled) { background: #f5f5f5; }
+.relation-work-link > span:last-child { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.relationship-plan-summary { display: grid; gap: 9px; padding: 13px 0; font-size: 11px; color: #8a8a8a; }
+.relationship-plan-summary > div { display: flex; flex-wrap: wrap; gap: 7px; }
+.relationship-plan-summary code { max-width: 100%; overflow-wrap: anywhere; color: #666; font-size: 10px; }
+.relationship-empty, .relation-limit { color: #999; font-size: 10px; line-height: 1.6; }
+.work-relation-row { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr) 110px; gap: 14px; margin-bottom: 14px; }
+.work-relation-row > div { display: grid; min-width: 0; align-content: start; gap: 8px; }
+.work-relation-row a,.work-relation-row strong { display: block; min-width: 0; font-size: 11px; font-weight: 575; color: #444; line-height: 1.65; overflow-wrap: anywhere; }
+.work-relation-row a:hover { color: #111; }
+.relation-unbound { color: #aaa; font-size: 11px; }
+.related-work-list { padding-top: 14px; margin-top: 10px; border-top: 1px solid #eee; }
+.work-dependencies { display: grid; gap: 8px; border-top: 1px solid #eee; padding-top: 12px; color: #8b8b8b; font-size: 10px; }
+.work-dependencies > div { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; }
+.work-dependencies button { border: 1px solid #e3e3e3; border-radius: 6px; padding: 4px 7px; background: #fafafa; color: #555; font-size: 10px; }
+.work-dependencies button:hover:not(:disabled) { background: #eee; }
+.relation-limit { margin-top: 12px; }
+@media (max-width: 900px) { .work-relation-row { grid-template-columns: repeat(2,minmax(0,1fr)); } }
+
+/* One transcript writer; the sidebar is a read-only conversation index. */
+.sidebar-conversations { max-height: 218px; overflow: auto; scrollbar-width: thin; flex-shrink: 0; }
+.sidebar-conversations .sidebar-section-title { margin-top: 15px; }
+.sidebar-thread-row { min-height: 30px; }
+.sidebar-thread-row .nav-symbol { font-size: 12px; color: #959595; }
+.local-message { width: fit-content; min-width: 0; max-width: 88%; padding: 10px 0; border-radius: 0; }
+.local-message.user { padding: 12px 15px; border-radius: 13px; background: #f5f5f5; }
+.local-message.assistant { width: 100%; max-width: 100%; padding: 13px 0; }
+.local-message-heading { display: flex; align-items: baseline; gap: 12px; margin-bottom: 8px; color: #8f8f8f; font-size: 10px; }
+.local-message-heading strong { color: #656565; font-size: 11px; font-weight: 590; }
+.local-message-heading time { color: #aaa; }
+.local-message-body { color: #393939; font-size: 12.5px; line-height: 1.82; overflow-wrap: anywhere; }
+.local-message-body p { margin: 0 0 12px; white-space: pre-wrap; }
+.local-message-body p:last-child { margin-bottom: 0; }
+.local-code-block { max-width: 100%; margin: 12px 0; border: 1px solid #e8e8e8; border-radius: 10px; background: #f8f8f8; overflow: hidden; }
+.local-code-label { padding: 7px 12px; border-bottom: 1px solid #eaeaea; color: #888; font-size: 10px; }
+.local-code-block pre { margin: 0; padding: 14px; overflow-x: auto; color: #3f3f3f; font: 11.5px/1.65 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre; }
+.local-tool-summary { margin-top: 10px; padding-top: 9px; border-top: 1px solid #eee; color: #929292; font-size: 10px; }
+.local-pending-message { display: flex; gap: 10px; align-items: center; color: #888; font-size: 11px; padding: 8px 0 17px; }
+.local-pending-indicator { width: 7px; height: 7px; border-radius: 50%; background: #999; animation: local-status-pulse 1.25s ease-in-out infinite; }
+@keyframes local-status-pulse { 0%,100% { opacity: .3; } 50% { opacity: 1; } }

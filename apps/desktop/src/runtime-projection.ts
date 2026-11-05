@@ -23,6 +23,8 @@ export interface WorkGraphNodeProjection {
   workId: string;
   objective: string;
   state: WorkSemanticState;
+  requirementId?: string;
+  planId?: string;
   semanticParentWorkId?: string;
   dependsOnWorkIds: string[];
   activity?: string;

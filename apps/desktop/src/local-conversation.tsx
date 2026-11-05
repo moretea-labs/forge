@@ -13,6 +13,7 @@ export interface LocalConversationMessage {
   role: LocalConversationRole;
   content: string;
   createdAt: string;
+  toolActivityCount?: number;
 }
 
 export interface LocalConversationThread {
@@ -30,6 +31,7 @@ export interface LocalConversationThread {
 export interface LocalConversationReply {
   content: string;
   providerSessionId?: string;
+  toolActivityCount?: number;
   messages?: LocalConversationMessage[];
 }
 
@@ -79,6 +81,25 @@ function threadLabel(thread: LocalConversationThread): string {
   return thread.title.trim() || '新会话';
 }
 
+export interface LocalConversationNavItem {
+  id: string;
+  title: string;
+  updatedAt: string;
+  provider: LocalProviderChoice;
+}
+
+function LocalMessageBody({ content }: { content: string }) {
+  const parts = content.split(/(^`{3}[^\n]*\n[\s\S]*?^\s*`{3}\s*$)/gm);
+  return <div className="local-message-body">{parts.map((part, index) => {
+    const block = part.match(/^`{3}([^\n]*)\n([\s\S]*?)\n?\s*`{3}\s*$/);
+    if (block) return <div className="local-code-block" key={index}>
+      <div className="local-code-label">{block[1]?.trim() || '代码'}</div>
+      <pre><code>{block[2]}</code></pre>
+    </div>;
+    return part.trim() ? <p key={index}>{part.trim()}</p> : null;
+  })}</div>;
+}
+
 export function LocalConversationSurface({
   projects,
   provider,
@@ -88,6 +109,9 @@ export function LocalConversationSurface({
   onOpenSettings,
   newThreadRequested,
   onNewThreadHandled,
+  openThreadId,
+  onOpenThreadHandled,
+  onThreadsChange,
   onRefreshProvider,
   onSend,
 }: {
@@ -99,6 +123,9 @@ export function LocalConversationSurface({
   onOpenSettings: () => void;
   newThreadRequested: boolean;
   onNewThreadHandled: () => void;
+  openThreadId?: string;
+  onOpenThreadHandled: () => void;
+  onThreadsChange: (items: LocalConversationNavItem[], selectedId?: string) => void;
   onRefreshProvider: () => Promise<void>;
   onSend?: (input: { thread: LocalConversationThread; prompt: string }) => Promise<LocalConversationReply>;
 }) {
@@ -109,6 +136,7 @@ export function LocalConversationSurface({
   const [sendError, setSendError] = useState<string | null>(null);
   const handledNewThread = useRef(false);
   const initialThreadProvisioned = useRef<LocalProviderChoice | null>(null);
+  const transcriptEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => { persistThreads(threads); }, [threads]);
 
@@ -118,6 +146,26 @@ export function LocalConversationSurface({
     [threads, selectedProvider],
   );
   const selectedThread = activeThreads.find((thread) => thread.id === selectedThreadId) ?? activeThreads[0];
+  useEffect(() => { transcriptEndRef.current?.scrollIntoView({ block: 'end', behavior: 'smooth' }); },
+    [selectedThreadId, selectedThread?.messages.length, sending]);
+
+  useEffect(() => {
+    onThreadsChange(activeThreads.map((thread) => ({
+      id: thread.id, title: threadLabel(thread), updatedAt: thread.updatedAt,
+      provider: thread.provider ?? 'codex',
+    })), selectedThread?.id);
+  }, [activeThreads, selectedThread?.id, onThreadsChange]);
+
+  useEffect(() => {
+    if (!openThreadId) return;
+    if (activeThreads.some((thread) => thread.id === openThreadId)) {
+      setSelectedThreadId(openThreadId);
+      setSendError(null);
+      setDraft('');
+    }
+    onOpenThreadHandled();
+  }, [openThreadId, activeThreads, onOpenThreadHandled]);
+
   const selectedProject = projects.find((project) => project.repoId === selectedThread?.projectRepoId);
   const apiSelected = apiSettings?.provider === 'api';
   const loopbackApi = Boolean(apiSettings && /^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::[0-9]+)?(?:\/|$)/.test(apiSettings.endpoint));
@@ -179,7 +227,10 @@ export function LocalConversationSurface({
     try {
       const reply = await onSend({ thread: pendingThread, prompt });
       const repliedAt = new Date().toISOString();
-      const assistantMessage: LocalConversationMessage = { id: localId('message'), role: 'assistant', content: reply.content, createdAt: repliedAt };
+      const assistantMessage: LocalConversationMessage = {
+        id: localId('message'), role: 'assistant', content: reply.content, createdAt: repliedAt,
+        ...(typeof reply.toolActivityCount === 'number' ? { toolActivityCount: reply.toolActivityCount } : {}),
+      };
       setThreads((current) => current.map((thread) => thread.id === selectedThread.id ? {
         ...thread,
         ...(reply.providerSessionId ? { providerSessionId: reply.providerSessionId } : {}),
@@ -187,7 +238,8 @@ export function LocalConversationSurface({
         messages: [...thread.messages, ...(reply.messages ?? []), assistantMessage],
       } : thread));
     } catch (cause) {
-      setSendError(cause instanceof Error ? cause.message : String(cause));
+      const reason = cause instanceof Error ? cause.message : String(cause);
+      setSendError('本次回复未确认：' + reason + '。若可能涉及工具操作，请先检查 Forge 结果再决定是否重新发送。');
     } finally {
       setSending(false);
     }
@@ -201,15 +253,6 @@ export function LocalConversationSurface({
           <strong>{selectedThread ? threadLabel(selectedThread) : '新建一个会话'}</strong>
         </div>
         <div className="local-toolbar-actions">
-          {selectedThread && (
-            <select
-              aria-label="会话"
-              value={selectedThread.id}
-              onChange={(event) => setSelectedThreadId(event.target.value)}
-            >
-              {activeThreads.map((thread) => <option key={thread.id} value={thread.id}>{threadLabel(thread)}</option>)}
-            </select>
-          )}
           <button className="plain-action" type="button" onClick={addThread}>新建会话</button>
           {selectedThread && (
             <button className="plain-action" type="button" onClick={() => {
@@ -259,11 +302,19 @@ export function LocalConversationSurface({
             {selectedThread.messages.length === 0 ? (
               <div className="local-empty transcript-empty"><p>消息会保存在这个客户端，不会自动创建 Requirement、Plan 或 Work。</p></div>
             ) : selectedThread.messages.map((message) => (
-              <article className={`local-message ${message.role}`} key={message.id}>
-                <span>{message.role === 'user' ? '你' : message.role === 'assistant' ? '助手' : message.role === 'tool' ? '工具' : '系统'}</span>
-                <p>{message.content}</p>
+              <article className={'local-message ' + message.role} key={message.id}>
+                <div className="local-message-heading">
+                  <strong>{message.role === 'user' ? '你' : message.role === 'assistant' ? 'Forge 助手' : message.role === 'tool' ? '工具' : '系统'}</strong>
+                  <time dateTime={message.createdAt}>{new Date(message.createdAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}</time>
+                </div>
+                <LocalMessageBody content={message.content} />
+                {message.role === 'assistant' && typeof message.toolActivityCount === 'number' && message.toolActivityCount > 0 && (
+                  <div className="local-tool-summary">调用 Forge 工具 {message.toolActivityCount} 次 · 当前接口未返回逐条调用记录</div>
+                )}
               </article>
             ))}
+            {sending && <div className="local-pending-message" role="status"><span className="local-pending-indicator" />正在生成回复…</div>}
+            <div ref={transcriptEndRef} />
           </div>
 
           <div className="local-composer">
@@ -275,13 +326,13 @@ export function LocalConversationSurface({
               disabled={sending}
               onChange={(event) => setDraft(event.target.value)}
               onKeyDown={(event) => {
-                if (event.key === 'Enter' && !event.shiftKey) {
+                if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
                   event.preventDefault();
                   void send();
                 }
               }}
             />
-            {sendError && <div className="composer-error">发送失败：{sendError}</div>}
+            {sendError && <div role="alert" className="composer-error">{sendError}</div>}
             <div className="composer-footer">
               <span className="local-provider-selection">
                 <span>{selectedProject?.name ?? '本地'}</span>

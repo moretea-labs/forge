@@ -20,7 +20,7 @@ import {
   tauriRuntimeAvailable,
   type LocalProviderStatusProjection,
 } from './runtime-client';
-import { LocalConversationSurface, type LocalConversationReply, type LocalConversationThread } from './local-conversation';
+import { LocalConversationSurface, type LocalConversationReply, type LocalConversationThread, type LocalConversationNavItem } from './local-conversation';
 import { KnowledgeView } from './knowledge-view';
 import { SettingsView } from './settings-view';
 import { readLocalApiSettings, saveLocalApiSettings, clearLocalApiKey, sendLocalApiConversation, type LocalApiSettings, type LocalProviderChoice } from './local-api';
@@ -114,6 +114,9 @@ function Sidebar({
   onOpenSettings,
   onSelectProject,
   onSelectWork,
+  localThreads,
+  selectedLocalThreadId,
+  onSelectLocalThread,
   onOpenRuntime,
 }: {
   projects: ProjectListItemProjection[];
@@ -133,6 +136,9 @@ function Sidebar({
   onOpenSettings: () => void;
   onSelectProject?: (project: ProjectListItemProjection) => void;
   onSelectWork?: (workId: string) => void;
+  localThreads: LocalConversationNavItem[];
+  selectedLocalThreadId?: string;
+  onSelectLocalThread: (id: string) => void;
   onOpenRuntime?: () => void;
 }) {
   return (
@@ -156,6 +162,19 @@ function Sidebar({
             <span className="nav-symbol" aria-hidden="true">◇</span><span className="nav-label">记忆与知识</span>
           </button>
         </nav>
+        {localThreads.length > 0 && (
+          <section className="sidebar-conversations" aria-label="最近会话">
+            <div className="sidebar-section-title">最近会话</div>
+            {localThreads.slice(0, 10).map((thread) => (
+              <button type="button" key={thread.id}
+                className={'nav-row sidebar-thread-row' + (activeView === 'assistant' && selectedLocalThreadId === thread.id ? ' active' : '')}
+                title={thread.title} onClick={() => onSelectLocalThread(thread.id)}>
+                <span className="nav-symbol" aria-hidden="true">◻</span>
+                <span className="nav-label">{thread.title}</span>
+              </button>
+            ))}
+          </section>
+        )}
         <div className="sidebar-project-heading">
           <div className="sidebar-section-title">项目与工作 · {projects.length}</div>
           <button type="button" title="刷新已注册项目" aria-label="刷新已注册项目" onClick={onRetryProjects}>↻</button>
@@ -239,6 +258,16 @@ function WorkView({
   onSelectWork?: (workId: string) => void;
 }) {
   const work = projection.work;
+  // Current and bounded history only: these links are not an exhaustive
+  // Requirement/Plan portfolio and must not be presented as one.
+  const visibleWorks = [...projection.workGraph.nodes, ...projection.recentWorkHistory];
+  const linkedRequirements = Array.from(new Set(visibleWorks
+    .map((node) => node.requirementId).filter((id): id is string => Boolean(id))));
+  const linkedPlans = Array.from(new Set(visibleWorks
+    .map((node) => node.planId).filter((id): id is string => Boolean(id))));
+  const relatedWorks = work?.requirementId
+    ? visibleWorks.filter((node) => node.requirementId === work.requirementId && node.workId !== work.workId)
+    : [];
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
@@ -250,7 +279,7 @@ function WorkView({
         <main className="main-pane empty-main">
           <div className="empty-copy">
             <h1>选择一个项目</h1>
-            <p>从左侧项目列表进入 MCP 工作区。</p>
+            <p>从左侧选择项目，可查看已登记的 Work、关联需求、计划和验证证据。</p>
           </div>
         </main>
       );
@@ -297,6 +326,45 @@ function WorkView({
               <strong>{projection.runtime.label}</strong>
               <small>{projection.runtime.status === 'connected' ? 'canonical Runtime projection' : projection.runtime.detail}</small>
             </div>
+          </section>
+
+          <section className="relationship-overview" aria-label="项目需求和计划关联">
+            <div className="relationship-heading">
+              <strong>需求与工作关联</strong>
+              <span>从当前及近期 Work 汇总 · 非完整需求目录</span>
+            </div>
+            {linkedRequirements.length > 0 ? (
+              <div className="relationship-list">
+                {linkedRequirements.map((requirementId) => {
+                  const members = visibleWorks.filter((node) => node.requirementId === requirementId);
+                  return (
+                    <div className="relationship-item" key={requirementId}>
+                      <div className="relationship-item-head">
+                        <span className="relation-type">需求</span>
+                        <strong className="mono" title={requirementId}>{requirementId}</strong>
+                        <small>{members.length} 个可见 Work</small>
+                      </div>
+                      <div className="relation-work-links">
+                        {members.map((member) => (
+                          <button className="relation-work-link" type="button" key={member.workId}
+                            onClick={() => onSelectWork?.(member.workId)} disabled={!onSelectWork}
+                            title={member.objective}>
+                            <span className={'work-state-dot ' + member.state} />
+                            <span>{member.objective}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : <p className="relationship-empty">当前加载的 Work 未提供 Requirement 关联，不能推断项目没有需求。</p>}
+            {linkedPlans.length > 0 && (
+              <div className="relationship-plan-summary">
+                <span>关联 Plan · {linkedPlans.length}</span>
+                <div>{linkedPlans.map((id) => <code key={id} title={id}>{id}</code>)}</div>
+              </div>
+            )}
           </section>
 
           <section className="mcp-work-overview" aria-label="Forge Work">
@@ -398,6 +466,45 @@ function WorkView({
           </div>
         </section>
 
+        <section id="work-relations" className="work-relations" aria-label="工作关系">
+          <div className="relationship-heading"><strong>关联与上下文</strong><span>Forge canonical ID，不推断任务完成率</span></div>
+          <div className="work-relation-row">
+            <div><span className="relation-type">Requirement</span>
+              {work.requirementId ? <a href={projection.requirement ? '#work-requirement' : '#work-relations'} title={work.requirementId}>{projection.requirement?.title ?? work.requirementId}</a>
+                : <span className="relation-unbound">未绑定</span>}
+            </div>
+            <div><span className="relation-type">Plan</span>
+              {work.planId ? <a href={projection.plan ? '#work-plan' : '#work-relations'} title={work.planId}>{projection.plan?.goal ?? work.planId}</a>
+                : <span className="relation-unbound">未绑定</span>}
+            </div>
+            <div><span className="relation-type">Work</span><strong>{semanticStateLabel(work.semanticState)} · r{work.revision}</strong></div>
+          </div>
+          {relatedWorks.length > 0 && (
+            <div className="related-work-list">
+              <div className="relationship-heading"><strong>相同 Requirement 下的其他 Work</strong><span>{relatedWorks.length} 个可见</span></div>
+              {relatedWorks.map((node) => (
+                <button className="mcp-work-overview-row" type="button" key={node.workId}
+                  disabled={!onSelectWork} onClick={() => onSelectWork?.(node.workId)}>
+                  <span className={'work-state-dot ' + node.state} />
+                  <span className="mcp-work-overview-copy"><strong>{node.objective}</strong><small>{semanticStateLabel(node.state)}</small></span>
+                  <span className="mono mcp-work-id">{compactId(node.workId)}</span>
+                </button>
+              ))}
+            </div>
+          )}
+          {(work.semanticParentWorkId || work.dependsOnWorkIds.length > 0) && (
+            <div className="work-dependencies">
+              {work.semanticParentWorkId && <div><span>父 Work</span><code>{work.semanticParentWorkId}</code></div>}
+              {work.dependsOnWorkIds.length > 0 && <div><span>依赖 Work</span>
+                {work.dependsOnWorkIds.map((id) => <button key={id} type="button"
+                  disabled={!onSelectWork || !visibleWorks.some((candidate) => candidate.workId === id)}
+                  title={id} onClick={() => onSelectWork?.(id)}>{compactId(id)}</button>)}
+              </div>}
+            </div>
+          )}
+          <p className="relation-limit">仅显示本次加载的 Work 和近期历史；未出现不代表没有其他关联记录。</p>
+        </section>
+
         {work.nextSafeAction && (
           <div className="next-fact"><span>Forge 下一安全动作</span><p>{work.nextSafeAction}</p></div>
         )}
@@ -430,7 +537,7 @@ function WorkView({
         </details>
 
         {projection.requirement && (
-          <details className="detail-section" open>
+          <details id="work-requirement" className="detail-section" open>
             <summary>需求 · {projection.requirement.title}</summary>
             <div className="detail-grid">
               <div><span>状态</span><strong>{projection.requirement.state === 'open' ? '进行中' : projection.requirement.state}</strong></div>
@@ -444,7 +551,7 @@ function WorkView({
         )}
 
         {projection.plan && (
-          <details className="detail-section" open>
+          <details id="work-plan" className="detail-section" open>
             <summary>计划 · r{projection.plan.revision}</summary>
             <p className="detail-text">{projection.plan.goal}</p>
             {projection.plan.items.length > 0 && (
@@ -623,6 +730,9 @@ function AssistantView({
   onOpenKnowledge,
   newThreadRequested,
   onNewThreadHandled,
+  openThreadId,
+  onOpenThreadHandled,
+  onThreadsChange,
   onRefreshProvider,
   onSendLocal,
 }: {
@@ -636,6 +746,9 @@ function AssistantView({
   onOpenKnowledge: () => void;
   newThreadRequested: boolean;
   onNewThreadHandled: () => void;
+  openThreadId?: string;
+  onOpenThreadHandled: () => void;
+  onThreadsChange: (items: LocalConversationNavItem[], selectedId?: string) => void;
   onRefreshProvider: () => Promise<void>;
   onSendLocal: (input: { thread: LocalConversationThread; prompt: string }) => Promise<LocalConversationReply>;
 }) {
@@ -670,6 +783,9 @@ function AssistantView({
           onOpenSettings={onOpenSettings}
           newThreadRequested={newThreadRequested}
           onNewThreadHandled={onNewThreadHandled}
+          openThreadId={openThreadId}
+          onOpenThreadHandled={onOpenThreadHandled}
+          onThreadsChange={onThreadsChange}
           onRefreshProvider={onRefreshProvider}
           onSend={onSendLocal}
         />
@@ -851,6 +967,10 @@ export function App() {
   const [localProviderError, setLocalProviderError] = useState<string | null>(null);
   const [localApiSettings, setLocalApiSettings] = useState<LocalApiSettings | null>(null);
   const [newThreadRequested, setNewThreadRequested] = useState(false);
+  // Read-only sidebar projection; LocalConversationSurface owns the actual threads.
+  const [localThreadNav, setLocalThreadNav] = useState<LocalConversationNavItem[]>([]);
+  const [selectedLocalThreadId, setSelectedLocalThreadId] = useState<string | undefined>();
+  const [openLocalThreadId, setOpenLocalThreadId] = useState<string | undefined>();
   const [localApiLoading, setLocalApiLoading] = useState(false);
   const [localApiError, setLocalApiError] = useState<string | null>(null);
   const [mcpRefreshing, setMcpRefreshing] = useState(false);
@@ -913,7 +1033,7 @@ export function App() {
       prompt,
       repoId: thread.projectRepoId,
     });
-    return { content: result.output, providerSessionId: result.providerSessionId };
+    return { content: result.output, providerSessionId: result.providerSessionId, toolActivityCount: result.toolActivityCount };
   }, []);
 
   const refreshConnection = useCallback(async () => {
@@ -1066,6 +1186,16 @@ export function App() {
     await loadProject(selectedProject, projection.work.workId);
   }, [loadProject, projection, projects]);
 
+  const handleLocalThreadNavigation = useCallback((threads: LocalConversationNavItem[], selectedId?: string) => {
+    setLocalThreadNav(threads);
+    setSelectedLocalThreadId(selectedId);
+  }, []);
+  const handleSelectLocalThread = useCallback((id: string) => {
+    setOpenLocalThreadId(id);
+    setActiveView('assistant');
+  }, []);
+  const handleOpenThreadHandled = useCallback(() => setOpenLocalThreadId(undefined), []);
+
   const handleOpenAssistant = useCallback(() => {
     setActiveView('assistant');
   }, []);
@@ -1188,6 +1318,9 @@ export function App() {
         onOpenSettings={handleOpenSettings}
         onSelectProject={preview ? undefined : handleSelectProject}
         onSelectWork={preview ? undefined : handleSelectWork}
+        localThreads={localThreadNav}
+        selectedLocalThreadId={selectedLocalThreadId}
+        onSelectLocalThread={handleSelectLocalThread}
         onOpenRuntime={preview ? undefined : handleOpenRuntime}
       />
 
@@ -1218,6 +1351,9 @@ export function App() {
           onOpenKnowledge={handleOpenKnowledge}
           newThreadRequested={newThreadRequested}
           onNewThreadHandled={handleNewThreadHandled}
+          openThreadId={openLocalThreadId}
+          onOpenThreadHandled={handleOpenThreadHandled}
+          onThreadsChange={handleLocalThreadNavigation}
           onRefreshProvider={refreshLocalProvider}
           onSendLocal={sendLocal}
         />

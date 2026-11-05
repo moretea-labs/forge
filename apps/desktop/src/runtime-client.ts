@@ -177,6 +177,8 @@ function graphNode(work: RawWorkView): WorkGraphNodeProjection {
     workId: work.workId,
     objective: work.objective,
     state: work.state,
+    ...(work.requirementId ? { requirementId: work.requirementId } : {}),
+    ...(work.planId ? { planId: work.planId } : {}),
     ...(work.semanticParentWorkId ? { semanticParentWorkId: work.semanticParentWorkId } : {}),
     dependsOnWorkIds: work.dependsOnWorkIds ?? [],
   };
