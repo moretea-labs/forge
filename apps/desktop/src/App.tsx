@@ -21,6 +21,9 @@ import {
   type LocalProviderStatusProjection,
 } from './runtime-client';
 import { LocalConversationSurface, type LocalConversationReply, type LocalConversationThread } from './local-conversation';
+import { KnowledgeView } from './knowledge-view';
+import { SettingsView } from './settings-view';
+import { readLocalApiSettings, saveLocalApiSettings, clearLocalApiKey, sendLocalApiConversation, type LocalApiSettings, type LocalProviderChoice } from './local-api';
 import {
   performRecoveryAction,
   readRecoveryStatus,
@@ -28,7 +31,7 @@ import {
   verifyRecoveryRuntime,
 } from './recovery-client';
 
-type AppView = 'assistant' | 'project' | 'runtime';
+type AppView = 'assistant' | 'project' | 'knowledge' | 'settings' | 'runtime';
 
 function previewEnabled(): boolean {
   return new URLSearchParams(window.location.search).get('preview') === '1';
@@ -104,6 +107,8 @@ function Sidebar({
   runtimeStatus,
   onOpenAssistant,
   onOpenMcp,
+  onOpenKnowledge,
+  onOpenSettings,
   onSelectProject,
   onSelectWork,
   onOpenRuntime,
@@ -118,6 +123,8 @@ function Sidebar({
   runtimeStatus: string;
   onOpenAssistant: () => void;
   onOpenMcp: () => void;
+  onOpenKnowledge: () => void;
+  onOpenSettings: () => void;
   onSelectProject?: (project: ProjectListItemProjection) => void;
   onSelectWork?: (workId: string) => void;
   onOpenRuntime?: () => void;
@@ -129,11 +136,11 @@ function Sidebar({
           <span className="brand-glyph" aria-hidden="true">✳</span>
           <span className="brand-copy"><strong>Forge</strong><small>WORKSPACE</small></span>
         </div>
-        <div className="sidebar-section-title nav-section-title">工作空间</div>
-        <button className={activeView === 'assistant' ? 'nav-row active' : 'nav-row'} type="button" onClick={onOpenAssistant}>
-          <span className="nav-symbol" aria-hidden="true">✦</span>
-          <span className="nav-label">助手</span>
-        </button>
+        <div className="sidebar-section-title nav-section-title">工作方式</div>
+        <div className="mode-switch" role="group" aria-label="Local 和 MCP 模式">
+          <button type="button" aria-pressed={activeView === 'assistant'} className={activeView === 'assistant' ? 'active' : ''} onClick={onOpenAssistant}>✦ Local</button>
+          <button type="button" aria-pressed={activeView !== 'assistant'} className={activeView !== 'assistant' ? 'active' : ''} onClick={onOpenMcp}>⌘ MCP</button>
+        </div>
 
         <div className="sidebar-section-title">项目</div>
         <div className="sidebar-list">
@@ -202,6 +209,12 @@ function Sidebar({
       </div>
 
       <div className="sidebar-footer">
+        <button className={activeView === 'knowledge' ? 'nav-row active' : 'nav-row'} type="button" onClick={onOpenKnowledge}>
+          <span className="nav-symbol" aria-hidden="true">◈</span><span className="nav-label">记忆与知识</span>
+        </button>
+        <button className={activeView === 'settings' ? 'nav-row active' : 'nav-row'} type="button" onClick={onOpenSettings}>
+          <span className="nav-symbol" aria-hidden="true">⚙</span><span className="nav-label">设置</span>
+        </button>
         <button className={activeView === 'runtime' ? 'nav-row active' : 'nav-row'} type="button" onClick={onOpenRuntime}>
           <span className={`health-dot ${runtimeStatus}`} />
           <span className="nav-label">运行时</span>
@@ -419,7 +432,7 @@ function WorkView({
         </details>
 
         {projection.requirement && (
-          <details className="detail-section">
+          <details className="detail-section" open>
             <summary>需求 · {projection.requirement.title}</summary>
             <div className="detail-grid">
               <div><span>状态</span><strong>{projection.requirement.state === 'open' ? '进行中' : projection.requirement.state}</strong></div>
@@ -606,6 +619,8 @@ function AssistantView({
   provider,
   providerLoading,
   providerError,
+  apiSettings,
+  onOpenSettings,
   onRefreshProvider,
   onSendLocal,
 }: {
@@ -613,6 +628,8 @@ function AssistantView({
   provider: LocalProviderStatusProjection | null;
   providerLoading: boolean;
   providerError: string | null;
+  apiSettings: LocalApiSettings | null;
+  onOpenSettings: () => void;
   onRefreshProvider: () => Promise<void>;
   onSendLocal: (input: { thread: LocalConversationThread; prompt: string }) => Promise<LocalConversationReply>;
 }) {
@@ -629,6 +646,8 @@ function AssistantView({
           provider={provider}
           providerLoading={providerLoading}
           providerError={providerError}
+          apiSettings={apiSettings}
+          onOpenSettings={onOpenSettings}
           onRefreshProvider={onRefreshProvider}
           onSend={onSendLocal}
         />
@@ -808,6 +827,9 @@ export function App() {
   const [localProvider, setLocalProvider] = useState<LocalProviderStatusProjection | null>(null);
   const [localProviderLoading, setLocalProviderLoading] = useState(false);
   const [localProviderError, setLocalProviderError] = useState<string | null>(null);
+  const [localApiSettings, setLocalApiSettings] = useState<LocalApiSettings | null>(null);
+  const [localApiLoading, setLocalApiLoading] = useState(false);
+  const [localApiError, setLocalApiError] = useState<string | null>(null);
   const [mcpRefreshing, setMcpRefreshing] = useState(false);
   const [mcpRefreshError, setMcpRefreshError] = useState<string | null>(null);
 
@@ -840,7 +862,28 @@ export function App() {
     }
   }, [preview]);
 
+  const refreshLocalApi = useCallback(async () => {
+    if (preview || !tauriRuntimeAvailable()) return;
+    setLocalApiLoading(true); setLocalApiError(null);
+    try { setLocalApiSettings(await readLocalApiSettings()); }
+    catch (cause) { setLocalApiError(cause instanceof Error ? cause.message : String(cause)); }
+    finally { setLocalApiLoading(false); }
+  }, [preview]);
+
+  const saveLocalApi = useCallback(async (input: { provider: LocalProviderChoice; endpoint: string; model: string; apiKey?: string }) => {
+    setLocalApiSettings(await saveLocalApiSettings(input));
+  }, []);
+
+  const clearLocalApi = useCallback(async () => {
+    setLocalApiSettings(await clearLocalApiKey());
+  }, []);
+
   const sendLocal = useCallback(async ({ thread, prompt }: { thread: LocalConversationThread; prompt: string }): Promise<LocalConversationReply> => {
+    if (thread.provider === 'api') {
+      const messages = thread.messages.filter(message => message.role === 'user' || message.role === 'assistant')
+        .slice(-40).map(message => ({ role: message.role as 'user' | 'assistant', content: message.content }));
+      return { content: await sendLocalApiConversation(messages) };
+    }
     const result = await sendLocalConversation({
       conversationId: thread.id,
       providerSessionId: thread.providerSessionId,
@@ -921,6 +964,7 @@ export function App() {
 
   useEffect(() => { void bootstrapRuntime(); }, [bootstrapRuntime]);
   useEffect(() => { void refreshLocalProvider(); }, [refreshLocalProvider]);
+  useEffect(() => { void refreshLocalApi(); }, [refreshLocalApi]);
 
   const refreshMcp = useCallback(async () => {
     if (preview || !tauriRuntimeAvailable() || mcpRefreshing) return;
@@ -987,6 +1031,9 @@ export function App() {
   const handleOpenMcp = useCallback(() => {
     setActiveView('project');
   }, []);
+
+  const handleOpenKnowledge = useCallback(() => setActiveView('knowledge'), []);
+  const handleOpenSettings = useCallback(() => setActiveView('settings'), []);
 
   const handleOpenRuntime = useCallback(async () => {
     setActiveView('runtime');
@@ -1074,6 +1121,8 @@ export function App() {
         runtimeStatus={runtimeStatus}
         onOpenAssistant={handleOpenAssistant}
         onOpenMcp={handleOpenMcp}
+        onOpenKnowledge={handleOpenKnowledge}
+        onOpenSettings={handleOpenSettings}
         onSelectProject={preview ? undefined : handleSelectProject}
         onSelectWork={preview ? undefined : handleSelectWork}
         onOpenRuntime={preview ? undefined : handleOpenRuntime}
@@ -1085,9 +1134,18 @@ export function App() {
           provider={localProvider}
           providerLoading={localProviderLoading}
           providerError={localProviderError}
+          apiSettings={localApiSettings}
+          onOpenSettings={handleOpenSettings}
           onRefreshProvider={refreshLocalProvider}
           onSendLocal={sendLocal}
         />
+      ) : activeView === 'knowledge' ? (
+        <KnowledgeView repoId={selectedRepoId ?? projects[0]?.repoId}
+          workId={selectedWorkId} projectName={projects.find((project) => project.repoId === (selectedRepoId ?? projects[0]?.repoId))?.name} />
+      ) : activeView === 'settings' ? (
+        <SettingsView settings={localApiSettings} loading={localApiLoading} error={localApiError}
+          onRefresh={refreshLocalApi} onSave={saveLocalApi} onClearKey={clearLocalApi}
+          codexStatus={localProvider} codexError={localProviderError} />
       ) : activeView === 'runtime' ? (
         <RuntimeView
           projection={recoveryProjection}

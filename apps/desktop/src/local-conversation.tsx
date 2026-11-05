@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { LocalProviderStatusProjection } from './runtime-client';
 import type { ProjectListItemProjection } from './runtime-projection';
+import type { LocalApiSettings, LocalProviderChoice } from './local-api';
 
 const LOCAL_THREADS_KEY = 'forge.desktop.local-threads.v1';
 const MAX_THREADS = 100;
@@ -19,6 +20,7 @@ export interface LocalConversationThread {
   title: string;
   projectRepoId?: string;
   providerSessionId?: string;
+  provider?: LocalProviderChoice;
   createdAt: string;
   updatedAt: string;
   archived: boolean;
@@ -35,11 +37,12 @@ function localId(prefix: string): string {
   return globalThis.crypto?.randomUUID?.() ?? `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
-function createThread(projectRepoId?: string): LocalConversationThread {
+function createThread(provider: LocalProviderChoice, projectRepoId?: string): LocalConversationThread {
   const timestamp = new Date().toISOString();
   return {
     id: localId('thread'),
     title: '新会话',
+    provider,
     ...(projectRepoId ? { projectRepoId } : {}),
     createdAt: timestamp,
     updatedAt: timestamp,
@@ -81,6 +84,8 @@ export function LocalConversationSurface({
   provider,
   providerLoading,
   providerError,
+  apiSettings,
+  onOpenSettings,
   onRefreshProvider,
   onSend,
 }: {
@@ -88,6 +93,8 @@ export function LocalConversationSurface({
   provider: LocalProviderStatusProjection | null;
   providerLoading: boolean;
   providerError: string | null;
+  apiSettings: LocalApiSettings | null;
+  onOpenSettings: () => void;
   onRefreshProvider: () => Promise<void>;
   onSend?: (input: { thread: LocalConversationThread; prompt: string }) => Promise<LocalConversationReply>;
 }) {
@@ -99,13 +106,20 @@ export function LocalConversationSurface({
 
   useEffect(() => { persistThreads(threads); }, [threads]);
 
-  const activeThreads = useMemo(() => threads.filter((thread) => !thread.archived), [threads]);
+  const selectedProvider: LocalProviderChoice = apiSettings?.provider ?? 'codex';
+  const activeThreads = useMemo(
+    () => threads.filter((thread) => !thread.archived && (thread.provider ?? 'codex') === selectedProvider),
+    [threads, selectedProvider],
+  );
   const selectedThread = activeThreads.find((thread) => thread.id === selectedThreadId) ?? activeThreads[0];
   const selectedProject = projects.find((project) => project.repoId === selectedThread?.projectRepoId);
-  const providerReady = provider?.status === 'ready' && Boolean(onSend);
+  const apiSelected = apiSettings?.provider === 'api';
+  const loopbackApi = Boolean(apiSettings && /^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::[0-9]+)?(?:\/|$)/.test(apiSettings.endpoint));
+  const apiReady = Boolean(apiSettings?.model.trim() && (apiSettings?.hasKey || loopbackApi));
+  const providerReady = (apiSelected ? apiReady : provider?.status === 'ready') && Boolean(onSend);
 
   const addThread = () => {
-    const thread = createThread();
+    const thread = createThread(selectedProvider);
     setThreads((current) => [thread, ...current]);
     setSelectedThreadId(thread.id);
     setDraft('');
@@ -176,13 +190,13 @@ export function LocalConversationSurface({
         </div>
       </div>
 
-      <div className={`local-provider ${provider?.status ?? 'unavailable'}`}>
-        <span className={`health-dot ${provider?.status === 'ready' ? 'connected' : 'degraded'}`} />
+      <div className={'local-provider ' + (apiSelected ? (apiReady ? 'ready' : 'unavailable') : provider?.status ?? 'unavailable')}>
+        <span className={'health-dot ' + (apiSelected ? (apiReady ? 'connected' : 'degraded') : provider?.status === 'ready' ? 'connected' : 'degraded')} />
         <div>
-          <strong>{providerLoading ? '正在读取本地模型连接' : provider?.label ?? '本地模型不可用'}</strong>
-          <p>{providerError ?? provider?.detail ?? '本地会话由 Controller provider adapter 执行；不会为了聊天隐式创建 Work。'}</p>
+          <strong>{apiSelected ? (apiReady ? '兼容 API 已配置' : '兼容 API 尚未配置') : providerLoading ? '正在读取 Codex' : provider?.label ?? 'Codex 不可用'}</strong>
+          <p>{apiSelected ? (apiReady ? '当前模型：' + apiSettings?.model + ' · 独立文本聊天，不使用 Forge MCP 工具' : '请在设置中配置 Endpoint、模型与所需密钥。') : providerError ?? provider?.detail ?? '本地会话通过 Forge Controller 运行 Codex。'}</p>
         </div>
-        <button className="plain-action" type="button" disabled={providerLoading} onClick={() => void onRefreshProvider()}>刷新</button>
+        <button className="plain-action" type="button" disabled={!apiSelected && providerLoading} onClick={() => apiSelected ? onOpenSettings() : void onRefreshProvider()}>{apiSelected ? 'API 设置' : '刷新'}</button>
       </div>
 
       {!selectedThread ? (
@@ -226,7 +240,7 @@ export function LocalConversationSurface({
             <textarea
               rows={3}
               aria-label="本地会话消息"
-              placeholder={providerReady ? '输入消息…' : '本地 provider 接入后即可发送消息'}
+              placeholder={providerReady ? '输入消息…' : apiSelected ? '请先在设置中配置兼容 API' : '连接 Codex CLI 后即可发送消息'}
               value={draft}
               disabled={!providerReady || sending}
               onChange={(event) => setDraft(event.target.value)}
@@ -239,7 +253,7 @@ export function LocalConversationSurface({
             />
             {sendError && <div className="composer-error">发送失败：{sendError}</div>}
             <div className="composer-footer">
-              <span>{selectedProject?.name ?? '本地'} · 客户端会话</span>
+              <span>{selectedProject?.name ?? '本地'} · {apiSelected ? '兼容 API' : 'Codex CLI'}</span>
               <button type="button" disabled={!providerReady || !draft.trim() || sending} onClick={() => void send()}>{sending ? '发送中…' : '发送'}</button>
             </div>
           </div>

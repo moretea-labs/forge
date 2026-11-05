@@ -436,6 +436,33 @@ async fn read_local_provider_status() -> Result<Value, String> {
     })).await
 }
 
+
+#[tauri::command]
+async fn read_project_knowledge(repo_id: String, work_id: Option<String>, query: String) -> Result<Value, String> {
+    if repo_id.trim().is_empty() || repo_id.len() > 256 || query.chars().count() > 160 {
+        return Err("FORGE_DESKTOP_KNOWLEDGE_ARGUMENT_INVALID".to_string());
+    }
+    let mut arguments = json!({
+        "repo_id": repo_id,
+        "operation": "search",
+        "query": "Read bounded Cognitive advisory memory",
+        "search_terms": ["knowledge_query"],
+        "max_files": 1,
+        "max_snippets": 1,
+        "include_learning_recall": false,
+        "knowledge_query": if query.trim().is_empty() { "*" } else { query.trim() },
+        "knowledge_limit": 24
+    });
+    if let Some(work) = work_id.filter(|value| !value.trim().is_empty() && value.len() <= 256) {
+        arguments["work_id"] = json!(work);
+    }
+    let result = call_runtime_tool("rh_context", arguments).await?;
+    let audit = result.pointer("/data/cognitionAudit")
+        .filter(|value| value.get("readonly").and_then(Value::as_bool) == Some(true))
+        .ok_or_else(|| "FORGE_DESKTOP_KNOWLEDGE_UNAVAILABLE".to_string())?;
+    Ok(audit.clone())
+}
+
 #[tauri::command]
 async fn send_local_conversation(
     conversation_id: String,
@@ -484,6 +511,188 @@ async fn repair_connection() -> Result<Value, String> {
     })).await
 }
 
+
+const LOCAL_API_KEYCHAIN_SERVICE: &str = "com.moretea.forge.desktop.api";
+
+fn local_api_config_path() -> Result<PathBuf, String> {
+    let root = dirs::config_dir().ok_or("FORGE_DESKTOP_LOCAL_SETTINGS_DIR_UNAVAILABLE")?;
+    Ok(root.join("com.moretea.forge.desktop").join("local-api.json"))
+}
+
+fn local_api_config() -> Result<Value, String> {
+    let path = local_api_config_path()?;
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(json!({ "provider": "codex", "endpoint": "https://api.openai.com/v1", "model": "" }));
+        }
+        Err(_) => return Err("FORGE_DESKTOP_LOCAL_SETTINGS_READ_FAILED".into()),
+    };
+    serde_json::from_str(&text).map_err(|_| "FORGE_DESKTOP_LOCAL_SETTINGS_INVALID".to_string())
+}
+
+fn validated_local_api_endpoint(endpoint: &str) -> Result<String, String> {
+    let url = reqwest::Url::parse(endpoint.trim()).map_err(|_| "FORGE_DESKTOP_API_ENDPOINT_INVALID")?;
+    let host = url.host_str().ok_or("FORGE_DESKTOP_API_ENDPOINT_INVALID")?;
+    let loopback = matches!(host, "localhost" | "127.0.0.1" | "[::1]");
+    if !(url.scheme() == "https" || (url.scheme() == "http" && loopback))
+        || !url.username().is_empty() || url.password().is_some()
+        || url.query().is_some() || url.fragment().is_some()
+        || endpoint.len() > 500
+    {
+        return Err("FORGE_DESKTOP_API_ENDPOINT_UNSAFE".into());
+    }
+    Ok(url.to_string().trim_end_matches('/').to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn read_local_api_key(endpoint: &str) -> Result<Option<String>, String> {
+    use security_framework::passwords::{generic_password, PasswordOptions};
+    match generic_password(PasswordOptions::new_generic_password(LOCAL_API_KEYCHAIN_SERVICE, endpoint)) {
+        Ok(value) => String::from_utf8(value).map(Some).map_err(|_| "FORGE_DESKTOP_API_KEY_INVALID".to_string()),
+        Err(error) if error.code() == -25300 => Ok(None),
+        Err(_) => Err("FORGE_DESKTOP_API_KEYCHAIN_READ_FAILED".to_string()),
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn read_local_api_key(_endpoint: &str) -> Result<Option<String>, String> {
+    Err("FORGE_DESKTOP_API_KEYCHAIN_UNSUPPORTED".into())
+}
+
+#[cfg(target_os = "macos")]
+fn store_local_api_key(endpoint: &str, secret: &str) -> Result<(), String> {
+    security_framework::passwords::set_generic_password(
+        LOCAL_API_KEYCHAIN_SERVICE, endpoint, secret.as_bytes()
+    ).map_err(|_| "FORGE_DESKTOP_API_KEYCHAIN_WRITE_FAILED".to_string())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn store_local_api_key(_endpoint: &str, _secret: &str) -> Result<(), String> {
+    Err("FORGE_DESKTOP_API_KEYCHAIN_UNSUPPORTED".into())
+}
+
+#[cfg(target_os = "macos")]
+fn delete_local_api_key(endpoint: &str) -> Result<(), String> {
+    match security_framework::passwords::delete_generic_password(
+        LOCAL_API_KEYCHAIN_SERVICE, endpoint
+    ) {
+        Ok(()) => Ok(()),
+        Err(error) if error.code() == -25300 => Ok(()),
+        Err(_) => Err("FORGE_DESKTOP_API_KEYCHAIN_DELETE_FAILED".to_string()),
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn delete_local_api_key(_endpoint: &str) -> Result<(), String> {
+    Err("FORGE_DESKTOP_API_KEYCHAIN_UNSUPPORTED".into())
+}
+
+#[tauri::command]
+fn clear_local_api_key() -> Result<Value, String> {
+    let config = local_api_config()?;
+    let endpoint = validated_local_api_endpoint(
+        config.get("endpoint").and_then(Value::as_str).unwrap_or("")
+    )?;
+    delete_local_api_key(&endpoint)?;
+    read_local_api_settings()
+}
+
+#[tauri::command]
+fn read_local_api_settings() -> Result<Value, String> {
+    let config = local_api_config()?;
+    let provider = config.get("provider").and_then(Value::as_str).unwrap_or("codex");
+    let endpoint = config.get("endpoint").and_then(Value::as_str).unwrap_or("https://api.openai.com/v1");
+    let model = config.get("model").and_then(Value::as_str).unwrap_or("");
+    Ok(json!({
+        "provider": provider,
+        "endpoint": endpoint,
+        "model": model,
+        "hasKey": read_local_api_key(endpoint)?.is_some(),
+    }))
+}
+
+#[tauri::command]
+fn save_local_api_settings(provider: String, endpoint: String, model: String, api_key: Option<String>) -> Result<Value, String> {
+    if provider != "codex" && provider != "api" {
+        return Err("FORGE_DESKTOP_API_PROVIDER_INVALID".into());
+    }
+    let endpoint = validated_local_api_endpoint(&endpoint)?;
+    let model = model.trim();
+    if model.len() > 120 || (provider == "api" && model.is_empty()) {
+        return Err("FORGE_DESKTOP_API_MODEL_INVALID".into());
+    }
+    if let Some(secret) = api_key.filter(|secret| !secret.trim().is_empty()) {
+        if secret.len() > 4096 { return Err("FORGE_DESKTOP_API_KEY_INVALID".into()); }
+        store_local_api_key(&endpoint, &secret)?;
+    }
+    let path = local_api_config_path()?;
+    let parent = path.parent().ok_or("FORGE_DESKTOP_LOCAL_SETTINGS_DIR_UNAVAILABLE")?;
+    fs::create_dir_all(parent).map_err(|_| "FORGE_DESKTOP_LOCAL_SETTINGS_WRITE_FAILED")?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        fs::set_permissions(parent, fs::Permissions::from_mode(0o700))
+            .map_err(|_| "FORGE_DESKTOP_LOCAL_SETTINGS_WRITE_FAILED")?;
+        use std::io::Write;
+        let temp = path.with_extension("json.tmp");
+        let mut file = fs::OpenOptions::new().write(true).truncate(true).create(true)
+            .mode(0o600).open(&temp).map_err(|_| "FORGE_DESKTOP_LOCAL_SETTINGS_WRITE_FAILED")?;
+        file.write_all(json!({ "provider": provider, "endpoint": endpoint, "model": model }).to_string().as_bytes())
+            .map_err(|_| "FORGE_DESKTOP_LOCAL_SETTINGS_WRITE_FAILED")?;
+        fs::rename(&temp, &path).map_err(|_| "FORGE_DESKTOP_LOCAL_SETTINGS_WRITE_FAILED")?;
+    }
+    #[cfg(not(unix))]
+    { return Err("FORGE_DESKTOP_LOCAL_SETTINGS_UNSUPPORTED".into()); }
+    read_local_api_settings()
+}
+
+#[tauri::command]
+async fn send_local_api_conversation(messages: Vec<Value>) -> Result<Value, String> {
+    let config = read_local_api_settings()?;
+    if config.get("provider").and_then(Value::as_str) != Some("api") {
+        return Err("FORGE_DESKTOP_API_PROVIDER_NOT_SELECTED".into());
+    }
+    let endpoint = validated_local_api_endpoint(
+        config.get("endpoint").and_then(Value::as_str).unwrap_or("")
+    )?;
+    let model = config.get("model").and_then(Value::as_str).unwrap_or("").trim();
+    if model.is_empty() { return Err("FORGE_DESKTOP_API_MODEL_INVALID".into()); }
+    if messages.is_empty() || messages.len() > 40 { return Err("FORGE_DESKTOP_API_MESSAGES_INVALID".into()); }
+    let mut total = 0usize;
+    let mut projected = Vec::with_capacity(messages.len());
+    for item in messages {
+        let role = item.get("role").and_then(Value::as_str).unwrap_or("");
+        let content = item.get("content").and_then(Value::as_str).unwrap_or("").trim();
+        if !matches!(role, "user" | "assistant") || content.is_empty() || content.len() > 20_000 {
+            return Err("FORGE_DESKTOP_API_MESSAGES_INVALID".into());
+        }
+        total += content.len();
+        if total > 60_000 { return Err("FORGE_DESKTOP_API_MESSAGES_TOO_LARGE".into()); }
+        projected.push(json!({ "role": role, "content": content }));
+    }
+    let key = read_local_api_key(&endpoint)?;
+    let host = reqwest::Url::parse(&endpoint).map_err(|_| "FORGE_DESKTOP_API_ENDPOINT_INVALID")?;
+    let local = matches!(host.host_str().unwrap_or(""), "localhost" | "127.0.0.1" | "[::1]");
+    if key.is_none() && !local { return Err("FORGE_DESKTOP_API_KEY_MISSING".into()); }
+    let url = format!("{}/chat/completions", endpoint.trim_end_matches('/'));
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .redirect(reqwest::redirect::Policy::none())
+        .build().map_err(|_| "FORGE_DESKTOP_API_CLIENT_FAILED")?;
+    let mut request = client.post(url).json(&json!({ "model": model, "messages": projected, "stream": false }));
+    if let Some(key) = key { if !key.trim().is_empty() { request = request.bearer_auth(key); } }
+    let response = request.send().await.map_err(|_| "FORGE_DESKTOP_API_REQUEST_FAILED")?;
+    if !response.status().is_success() {
+        return Err(format!("FORGE_DESKTOP_API_HTTP_{}", response.status().as_u16()));
+    }
+    let output: Value = response.json().await.map_err(|_| "FORGE_DESKTOP_API_RESPONSE_INVALID")?;
+    let text = output.pointer("/choices/0/message/content").and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or("FORGE_DESKTOP_API_RESPONSE_MISSING")?;
+    Ok(json!({ "output": text }))
+}
+
 fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
@@ -501,7 +710,12 @@ fn main() {
             read_plan_detail,
             continue_work,
             read_local_provider_status,
+            read_project_knowledge,
             send_local_conversation,
+            read_local_api_settings,
+            save_local_api_settings,
+            clear_local_api_key,
+            send_local_api_conversation,
             read_connection_status,
             repair_connection
         ])
@@ -512,6 +726,19 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn restrict_api_endpoints_to_https_or_loopback_http() {
+        assert_eq!(validated_local_api_endpoint("https://api.example.com/v1").unwrap(),
+                   "https://api.example.com/v1");
+        assert_eq!(validated_local_api_endpoint("http://127.0.0.1:11434/v1").unwrap(),
+                   "http://127.0.0.1:11434/v1");
+        assert!(validated_local_api_endpoint("http://api.example.com/v1").is_err());
+        assert!(validated_local_api_endpoint("https://alice:secret@api.example.com/v1").is_err());
+        assert!(validated_local_api_endpoint("https://api.example.com/v1?key=secret").is_err());
+        assert!(validated_local_api_endpoint("https://api.example.com/v1#token").is_err());
+    }
+
 
     #[test]
     fn derives_complete_recovery_mutation_identity_from_status() {

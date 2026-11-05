@@ -208,6 +208,40 @@ export async function sendLocalConversation(input: {
   }
 }
 
+
+export interface KnowledgeAuditProjection {
+  readonly: boolean;
+  advisoryOnly: boolean;
+  scopes: Array<{ kind: string; id: string }>;
+  items: Array<{
+    memory: {
+      id: string;
+      revision: number;
+      canonicalText: string;
+      concepts: string[];
+      facets: string[];
+      confidence: number;
+      scope: { kind: string; id: string };
+      provenance?: { sourceKind?: string; recordedAt?: string };
+    };
+  }>;
+  inspected: number;
+  truncated: boolean;
+  gaps: string[];
+}
+
+export async function readProjectKnowledge(input: {
+  repoId: string;
+  workId?: string;
+  query: string;
+}): Promise<KnowledgeAuditProjection> {
+  try {
+    return await invoke<KnowledgeAuditProjection>('read_project_knowledge', input);
+  } catch (error) {
+    throw localizeRuntimeError(error);
+  }
+}
+
 export async function readConnectionStatus(): Promise<ControllerConnectionProjection> {
   try {
     return await invoke<ControllerConnectionProjection>('read_connection_status');

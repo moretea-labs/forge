@@ -1,0 +1,59 @@
+import { useEffect, useState } from 'react';
+import type { LocalApiSettings, LocalProviderChoice } from './local-api';
+import type { LocalProviderStatusProjection } from './runtime-client';
+type SaveInput = { provider: LocalProviderChoice; endpoint: string; model: string; apiKey?: string };
+export function SettingsView({ settings, loading, error, onRefresh, onSave, onClearKey, codexStatus, codexError }: {
+  settings: LocalApiSettings | null; loading: boolean; error: string | null;
+  onRefresh: () => Promise<void>; onSave: (input: SaveInput) => Promise<void>; onClearKey: () => Promise<void>;
+  codexStatus: LocalProviderStatusProjection | null; codexError: string | null;
+}) {
+  const [provider, setProvider] = useState<LocalProviderChoice>('codex');
+  const [endpoint, setEndpoint] = useState('https://api.openai.com/v1');
+  const [model, setModel] = useState('');
+  const [key, setKey] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+  useEffect(() => { if (settings) { setProvider(settings.provider); setEndpoint(settings.endpoint); setModel(settings.model); } }, [settings]);
+  const currentHasKey = Boolean(settings?.hasKey && endpoint.trim() === settings.endpoint);
+  const clearKey = async () => {
+    if (!currentHasKey || saving || !window.confirm('从 macOS 钥匙串删除此 Endpoint 的 API Key？')) return;
+    setSaving(true); setSaveError(null); setSaved(false);
+    try { await onClearKey(); setKey(''); setSaved(true); }
+    catch (cause) { setSaveError(cause instanceof Error ? cause.message : String(cause)); }
+    finally { setSaving(false); }
+  };
+  const save = async () => {
+    if (saving) return;
+    setSaving(true); setSaveError(null); setSaved(false);
+    try {
+      await onSave({ provider, endpoint: endpoint.trim(), model: model.trim(), ...(key ? { apiKey: key } : {}) });
+      setKey(''); setSaved(true);
+    } catch (cause) { setSaveError(cause instanceof Error ? cause.message : String(cause)); }
+    finally { setSaving(false); }
+  };
+  return <main className="main-pane settings-pane"><div className="content-column narrow-column">
+    <header className="work-hero"><div className="breadcrumb">Forge / 偏好设置</div><h1>设置</h1>
+      <p>本地对话可使用 Codex CLI 或兼容 API。Forge 的工作、需求、计划、知识由原有 Runtime 负责。</p></header>
+    <section className="settings-group">
+      <div className="settings-group-heading"><strong>本地助手</strong><span>对话提供方</span></div>
+      <div className="settings-options" role="group" aria-label="本地助手提供方">
+        <button type="button" className={provider === 'codex' ? 'settings-option selected' : 'settings-option'} onClick={() => { setProvider('codex'); setSaved(false); }}><strong>Codex CLI</strong><small>使用现有登录，支持 Forge MCP 工具</small></button>
+        <button type="button" className={provider === 'api' ? 'settings-option selected' : 'settings-option'} onClick={() => { setProvider('api'); setSaved(false); }}><strong>兼容 API</strong><small>OpenAI-compatible Chat Completions · 仅文本聊天</small></button>
+      </div>
+      {provider === 'codex' ? <div className="settings-readout"><span className={'health-dot ' + (codexStatus?.status === 'ready' ? 'connected' : 'degraded')} /><div><strong>{codexStatus?.label ?? 'Codex 状态未知'}</strong><p>{codexError ?? codexStatus?.detail ?? '通过 Forge Runtime 访问。'}</p></div></div> :
+        <div className="settings-fields">
+          <label><span>API Endpoint</span><input type="url" spellCheck={false} autoComplete="off" value={endpoint} onChange={e => { setEndpoint(e.target.value); setSaved(false); }} placeholder="https://api.example.com/v1" /></label>
+          <label><span>模型 ID</span><input spellCheck={false} autoComplete="off" value={model} onChange={e => { setModel(e.target.value); setSaved(false); }} placeholder="API 提供商的模型名称" /></label>
+          <label><span>API Key</span><input type="password" autoComplete="new-password" value={key} onChange={e => { setKey(e.target.value); setSaved(false); }} placeholder={currentHasKey ? '已保存在钥匙串；留空保持' : '填写密钥，本地服务可留空'} /></label>
+          <p className="settings-hint">允许 HTTPS 或本机 HTTP（localhost/127.0.0.1）。密钥存在 macOS Keychain，不进入 localStorage。API 模式不授予 Forge MCP 工具权限。</p>
+          <div className="settings-secret-state">{currentHasKey ? '钥匙串：已存密钥' : '钥匙串：无密钥'}</div>
+          {currentHasKey && <button className="plain-action settings-remove-secret" type="button" disabled={saving} onClick={() => void clearKey()}>删除此 Endpoint 的密钥</button>}
+        </div>}
+      {error && <p className="inline-error" role="alert">{error}</p>}
+      {saveError && <p className="inline-error" role="alert">{saveError}</p>}
+      <div className="settings-actions"><button type="button" className="plain-action" disabled={loading || saving} onClick={() => void onRefresh()}>重新读取</button><button type="button" className="settings-save" disabled={loading || saving || !settings || (provider === 'api' && (!endpoint.trim() || !model.trim()))} onClick={() => void save()}>{saving ? '保存中…' : '保存设置'}</button>{saved && <span className="settings-saved" role="status">已保存</span>}</div>
+    </section>
+    <section className="settings-group"><div className="settings-group-heading"><strong>模式说明</strong></div><p className="settings-hint">Local：客户端会话，Codex 可以调用 Forge MCP，API 是纯聊天。MCP：浏览项目、Work、Requirement/Plan、知识库和 Runtime，不创建第二套 Authority。</p></section>
+  </div></main>;
+}
