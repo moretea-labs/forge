@@ -514,3 +514,8 @@ a { color: #353535; text-decoration: underline; text-underline-offset: 3px; }
   .local-conversation.with-diff { padding-right: 290px; }
   .local-git-inspector { width: 274px; }
 }
+
+.record-plan-links { margin-top: 20px; }
+.record-plan-link { display: grid; gap: 5px; padding: 9px 4px; border-bottom: 1px solid #f0f0f0; }
+.record-plan-link strong { font-size: 12px; font-weight: 570; color: #454545; line-height: 1.55; }
+.record-plan-link code { font-size: 10px; color: #858585; }
