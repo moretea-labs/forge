@@ -37,6 +37,7 @@
     "macOSPrivateApi": true
   },
   "bundle": {
-    "active": false
+    "active": false,
+    "resources": ["resources/forge-local-tool.mjs"]
   }
 }

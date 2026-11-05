@@ -3,7 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { LocalProviderStatusProjection } from './runtime-client';
 import type { ProjectListItemProjection } from './runtime-projection';
-import type { LocalApiSettings, LocalProviderChoice } from './local-api';
+import type { LocalApiSettings, LocalProviderChoice, LocalApiToolEvent } from './local-api';
 
 const LOCAL_THREADS_KEY = 'forge.desktop.local-threads.v1';
 const MAX_THREADS = 100;
@@ -16,6 +16,7 @@ export interface LocalConversationMessage {
   content: string;
   createdAt: string;
   toolActivityCount?: number;
+  toolEvents?: LocalApiToolEvent[];
 }
 
 export interface LocalConversationThread {
@@ -34,6 +35,7 @@ export interface LocalConversationReply {
   content: string;
   providerSessionId?: string;
   toolActivityCount?: number;
+  toolEvents?: LocalApiToolEvent[];
   messages?: LocalConversationMessage[];
 }
 
@@ -127,13 +129,14 @@ export function LocalConversationSurface({
   onOpenThreadHandled: () => void;
   onThreadsChange: (items: LocalConversationNavItem[], selectedId?: string) => void;
   onRefreshProvider: () => Promise<void>;
-  onSend?: (input: { thread: LocalConversationThread; prompt: string }) => Promise<LocalConversationReply>;
+  onSend?: (input: { thread: LocalConversationThread; prompt: string; allowEffects: boolean }) => Promise<LocalConversationReply>;
 }) {
   const [threads, setThreads] = useState<LocalConversationThread[]>(() => loadThreads());
   const [selectedThreadId, setSelectedThreadId] = useState<string | undefined>(() => loadThreads().find((thread) => !thread.archived)?.id);
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
+  const [allowEffects, setAllowEffects] = useState(false);
   const handledNewThread = useRef(false);
   const initialThreadProvisioned = useRef<LocalProviderChoice | null>(null);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
@@ -216,6 +219,10 @@ export function LocalConversationSurface({
   const send = async () => {
     const prompt = draft.trim();
     if (!selectedThread || !providerReady || !onSend || !prompt || sending) return;
+    const authorizedEffects = apiSelected && allowEffects && Boolean(selectedProject);
+    if (authorizedEffects && !window.confirm(
+      '仅本次回复：允许当前 API 模型通过 Forge 修改所选仓库及执行命令。Forge 原有安全检查仍生效。确认授权？'
+    )) return;
     const createdAt = new Date().toISOString();
     const userMessage: LocalConversationMessage = { id: localId('message'), role: 'user', content: prompt, createdAt };
     const pendingThread: LocalConversationThread = {
@@ -229,11 +236,12 @@ export function LocalConversationSurface({
     setSendError(null);
     setSending(true);
     try {
-      const reply = await onSend({ thread: pendingThread, prompt });
+      const reply = await onSend({ thread: pendingThread, prompt, allowEffects: authorizedEffects });
       const repliedAt = new Date().toISOString();
       const assistantMessage: LocalConversationMessage = {
         id: localId('message'), role: 'assistant', content: reply.content, createdAt: repliedAt,
         ...(typeof reply.toolActivityCount === 'number' ? { toolActivityCount: reply.toolActivityCount } : {}),
+        ...(reply.toolEvents ? { toolEvents: reply.toolEvents } : {}),
       };
       setThreads((current) => current.map((thread) => thread.id === selectedThread.id ? {
         ...thread,
@@ -245,6 +253,7 @@ export function LocalConversationSurface({
       const reason = cause instanceof Error ? cause.message : String(cause);
       setSendError('本次回复未确认：' + reason + '。若可能涉及工具操作，请先检查 Forge 结果再决定是否重新发送。');
     } finally {
+      setAllowEffects(false);
       setSending(false);
     }
   };
@@ -257,9 +266,9 @@ export function LocalConversationSurface({
           <strong>{selectedThread ? threadLabel(selectedThread) : '新建一个会话'}</strong>
         </div>
         <div className="local-toolbar-actions">
-          <button className="plain-action" type="button" onClick={addThread}>新建会话</button>
+          <button className="plain-action" type="button" disabled={sending} onClick={addThread}>新建会话</button>
           {selectedThread && (
-            <button className="plain-action" type="button" onClick={() => {
+            <button className="plain-action" type="button" disabled={sending} onClick={() => {
               updateSelected((thread) => ({ ...thread, archived: true, updatedAt: new Date().toISOString() }));
               setSelectedThreadId(activeThreads.find((thread) => thread.id !== selectedThread.id)?.id);
             }}>归档</button>
@@ -271,7 +280,11 @@ export function LocalConversationSurface({
         <span className={'health-dot ' + (apiSelected ? (apiReady ? 'connected' : 'degraded') : provider?.status === 'ready' ? 'connected' : 'degraded')} />
         <div>
           <strong>{apiSelected ? (apiReady ? '兼容 API 已配置' : '兼容 API 尚未配置') : providerLoading ? '正在读取 Codex' : provider?.label ?? 'Codex 不可用'}</strong>
-          <p>{apiSelected ? (apiReady ? '当前模型：' + apiSettings?.model + ' · 独立文本聊天，不使用 Forge MCP 工具' : '请在设置中配置 Endpoint、模型与所需密钥。') : providerError ?? provider?.detail ?? '本地会话通过 Forge Controller 运行 Codex。'}</p>
+          <p>{apiSelected ? (apiReady
+              ? '模型：' + apiSettings?.model + ' · ' + (apiSettings?.apiProtocol === 'anthropic' ? 'Claude Messages' : 'OpenAI Chat Completions')
+                + ' · 本地直接调用 Forge 工具'
+              : '请在设置中配置 Endpoint、模型与所需密钥。')
+              : providerError ?? provider?.detail ?? '本地会话通过 Forge Controller 运行 Codex。'}</p>
         </div>
         <button className="plain-action" type="button" disabled={!apiSelected && providerLoading} onClick={() => apiSelected ? onOpenSettings() : void onRefreshProvider()}>{apiSelected ? 'API 设置' : '刷新'}</button>
       </div>
@@ -289,17 +302,34 @@ export function LocalConversationSurface({
               <span>项目上下文</span>
               <select
                 value={selectedThread.projectRepoId ?? ''}
-                onChange={(event) => updateSelected((thread) => ({
-                  ...thread,
-                  ...(event.target.value ? { projectRepoId: event.target.value } : { projectRepoId: undefined }),
-                  updatedAt: new Date().toISOString(),
-                }))}
+                disabled={sending}
+                onChange={(event) => {
+                  const nextRepoId = event.target.value || undefined;
+                  if (nextRepoId === selectedThread.projectRepoId) return;
+                  setAllowEffects(false);
+                  setSendError(null);
+                  if (selectedThread.messages.length > 0) {
+                    // Never silently rebind an established transcript (or
+                    // Codex resume handle) to another repository.
+                    const next = createThread(selectedProvider, nextRepoId);
+                    setThreads((current) => [next, ...current]);
+                    setSelectedThreadId(next.id);
+                    setDraft('');
+                  } else {
+                    updateSelected((thread) => ({
+                      ...thread,
+                      projectRepoId: nextRepoId,
+                      providerSessionId: undefined,
+                      updatedAt: new Date().toISOString(),
+                    }));
+                  }
+                }}
               >
-                <option value="">不附加项目</option>
+                <option value="">不附加项目（纯对话）</option>
                 {projects.map((project) => <option key={project.repoId} value={project.repoId}>{project.name}</option>)}
               </select>
             </label>
-            <span>{selectedProject ? `仅引用 ${selectedProject.name} 的 canonical repository identity` : '此会话不绑定项目'}</span>
+            <span>{selectedProject ? '仓库工具仅作用于 ' + selectedProject.name : '选择项目后启用仓库工具'}</span>
           </div>
 
           <div className="local-transcript">
@@ -313,7 +343,15 @@ export function LocalConversationSurface({
                 </div>
                 <LocalMessageBody content={message.content} />
                 {message.role === 'assistant' && typeof message.toolActivityCount === 'number' && message.toolActivityCount > 0 && (
-                  <div className="local-tool-summary">调用 Forge 工具 {message.toolActivityCount} 次 · 当前接口未返回逐条调用记录</div>
+                  <details className="local-tool-summary">
+                    <summary>Forge 工具执行 · {message.toolActivityCount} 次</summary>
+                    {message.toolEvents?.length ? message.toolEvents.map((event, index) => (
+                      <div className="local-tool-event" key={index}>
+                        <span>{event.name}{event.requestId && <code title="Forge 操作请求标识"> · {event.requestId}</code>}</span>
+                        <strong>{event.ok ? '已执行' : '失败'}</strong>
+                      </div>
+                    )) : <p>当前提供方仅返回调用次数，未提供逐项执行记录。</p>}
+                  </details>
                 )}
               </article>
             ))}
@@ -336,6 +374,13 @@ export function LocalConversationSurface({
                 }
               }}
             />
+            {apiSelected && selectedProject && (
+              <label className="local-tool-permission">
+                <input type="checkbox" disabled={sending} checked={allowEffects}
+                  onChange={(event) => setAllowEffects(event.target.checked)} />
+                本次允许修改文件及执行命令（发送时确认）
+              </label>
+            )}
             {sendError && <div role="alert" className="composer-error">{sendError}</div>}
             <div className="composer-footer">
               <span className="local-provider-selection">

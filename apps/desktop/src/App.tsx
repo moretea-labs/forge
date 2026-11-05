@@ -750,7 +750,7 @@ function AssistantView({
   onOpenThreadHandled: () => void;
   onThreadsChange: (items: LocalConversationNavItem[], selectedId?: string) => void;
   onRefreshProvider: () => Promise<void>;
-  onSendLocal: (input: { thread: LocalConversationThread; prompt: string }) => Promise<LocalConversationReply>;
+  onSendLocal: (input: { thread: LocalConversationThread; prompt: string; allowEffects: boolean }) => Promise<LocalConversationReply>;
 }) {
   return (
     <main className="main-pane assistant-pane">
@@ -1013,7 +1013,7 @@ export function App() {
     finally { setLocalApiLoading(false); }
   }, [preview]);
 
-  const saveLocalApi = useCallback(async (input: { provider: LocalProviderChoice; endpoint: string; model: string; apiKey?: string }) => {
+  const saveLocalApi = useCallback(async (input: { provider: LocalProviderChoice; endpoint: string; model: string; apiProtocol: 'openai' | 'anthropic'; apiKey?: string }) => {
     setLocalApiSettings(await saveLocalApiSettings(input));
   }, []);
 
@@ -1021,11 +1021,15 @@ export function App() {
     setLocalApiSettings(await clearLocalApiKey());
   }, []);
 
-  const sendLocal = useCallback(async ({ thread, prompt }: { thread: LocalConversationThread; prompt: string }): Promise<LocalConversationReply> => {
+  const sendLocal = useCallback(async ({ thread, prompt, allowEffects }: { thread: LocalConversationThread; prompt: string; allowEffects: boolean }): Promise<LocalConversationReply> => {
     if (thread.provider === 'api') {
       const messages = thread.messages.filter(message => message.role === 'user' || message.role === 'assistant')
         .slice(-40).map(message => ({ role: message.role as 'user' | 'assistant', content: message.content }));
-      return { content: await sendLocalApiConversation(messages) };
+      const reply = await sendLocalApiConversation({
+        messages, repoId: thread.projectRepoId, conversationId: thread.id,
+        allowEffects,
+      });
+      return { content: reply.output, toolActivityCount: reply.toolActivityCount, toolEvents: reply.toolEvents };
     }
     const result = await sendLocalConversation({
       conversationId: thread.id,

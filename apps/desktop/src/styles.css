@@ -417,3 +417,13 @@ a { color: #353535; text-decoration: underline; text-underline-offset: 3px; }
 .local-message-body th { background: #f7f7f7; font-weight: 605; }
 .local-message-body a { text-decoration-color: #ababab; text-underline-offset: 3px; }
 .local-message-body hr { border: 0; border-top: 1px solid #e7e7e7; margin: 18px 0; }
+
+.settings-fields select { width: 100%; min-width: 0; height: 40px; padding: 0 12px; border: 1px solid #dedede; border-radius: 8px; color: #333; background: #fff; font-size: 12px; }
+.settings-fields select:focus { border-color: #aaa; outline: 2px solid #ddd; }
+
+.local-tool-permission { display: flex; align-items: center; gap: 8px; padding: 1px 16px 8px; color: #838383; font-size: 10.5px; }
+.local-tool-permission input { accent-color: #494949; width: 14px; height: 14px; margin: 0; }
+.local-tool-summary summary { cursor: pointer; }
+.local-tool-summary .local-tool-event { display: flex; justify-content: space-between; gap: 12px; padding: 5px 0; }
+.local-tool-summary .local-tool-event strong { font-weight: 570; color: #696969; }
+.local-tool-summary p { margin-top: 7px; font-size: 10px; }
