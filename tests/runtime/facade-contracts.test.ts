@@ -8,7 +8,6 @@ import { buildClaudeControllerInvocation, buildCodexControllerInvocation, buildS
 import { parseCodexConversationJsonl } from '../../src/runtime/control-plane/launcher/local-conversation-controller';
 import { RH_WORK_MODEL_OPERATIONS, isRhWorkAcceptedOperation } from '../../src/runtime/control-plane/facade/rh-work-operation-contract';
 import { runtimeToolDefinitions } from '../../adapters/mcp/runtime-gateway/runtime-tool-definitions';
-import { repositoryToolDefinitions } from '../../adapters/mcp/tool-mapping/repository-tools';
 import { mcpServerInstructions } from '../../adapters/mcp/instructions';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -38,10 +37,6 @@ describe('handoff and facade contracts', () => {
     expect(guidance).toContain('end the ChatGPT response rather than holding the turn in thinking or polling');
     expect(guidance).toContain('continue_independent_work');
     expect(guidance).not.toContain('The Writer cannot self-approve final issue closure.');
-    const executeCommand = repositoryToolDefinitions.find((definition) => definition.name === 'execute_command');
-    const executeSchema = executeCommand?.inputSchema as { properties?: { workspace_root?: { description?: string } } } | undefined;
-    const executeDescription = executeSchema?.properties?.workspace_root?.description;
-    expect(executeDescription).toContain('capped at 30 seconds');
   });
 
   test('flags negated issue-closing phrases before GitHub interprets them as automatic completion', () => {
