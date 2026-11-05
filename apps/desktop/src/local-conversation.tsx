@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import type { LocalProviderStatusProjection } from './runtime-client';
 import type { ProjectListItemProjection } from './runtime-projection';
 import type { LocalApiSettings, LocalProviderChoice } from './local-api';
@@ -89,15 +91,13 @@ export interface LocalConversationNavItem {
 }
 
 function LocalMessageBody({ content }: { content: string }) {
-  const parts = content.split(/(^`{3}[^\n]*\n[\s\S]*?^\s*`{3}\s*$)/gm);
-  return <div className="local-message-body">{parts.map((part, index) => {
-    const block = part.match(/^`{3}([^\n]*)\n([\s\S]*?)\n?\s*`{3}\s*$/);
-    if (block) return <div className="local-code-block" key={index}>
-      <div className="local-code-label">{block[1]?.trim() || '代码'}</div>
-      <pre><code>{block[2]}</code></pre>
-    </div>;
-    return part.trim() ? <p key={index}>{part.trim()}</p> : null;
-  })}</div>;
+  return (
+    <div className="local-message-body">
+      <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
+        a: ({ href, children }) => <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>,
+      }}>{content}</ReactMarkdown>
+    </div>
+  );
 }
 
 export function LocalConversationSurface({
@@ -150,10 +150,14 @@ export function LocalConversationSurface({
     [selectedThreadId, selectedThread?.messages.length, sending]);
 
   useEffect(() => {
-    onThreadsChange(activeThreads.map((thread) => ({
+    // Empty drafts are not history. Keep them in the single local owner until
+    // a first user message makes the thread a real conversation.
+    const history = activeThreads.filter((thread) => thread.messages.length > 0)
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+    onThreadsChange(history.map((thread) => ({
       id: thread.id, title: threadLabel(thread), updatedAt: thread.updatedAt,
       provider: thread.provider ?? 'codex',
-    })), selectedThread?.id);
+    })), selectedThread?.messages.length ? selectedThread.id : undefined);
   }, [activeThreads, selectedThread?.id, onThreadsChange]);
 
   useEffect(() => {

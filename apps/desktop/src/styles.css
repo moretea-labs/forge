@@ -397,3 +397,23 @@ a { color: #353535; text-decoration: underline; text-underline-offset: 3px; }
 .local-pending-message { display: flex; gap: 10px; align-items: center; color: #888; font-size: 11px; padding: 8px 0 17px; }
 .local-pending-indicator { width: 7px; height: 7px; border-radius: 50%; background: #999; animation: local-status-pulse 1.25s ease-in-out infinite; }
 @keyframes local-status-pulse { 0%,100% { opacity: .3; } 50% { opacity: 1; } }
+
+/* Markdown is parsed by react-markdown/remark-gfm; no raw HTML is executed. */
+.local-message-body h1,.local-message-body h2,.local-message-body h3 { margin: 22px 0 9px; color: #303030; font-size: 15px; font-weight: 640; line-height: 1.45; }
+.local-message-body h1:first-child,.local-message-body h2:first-child,.local-message-body h3:first-child { margin-top: 0; }
+.local-message-body h2 { font-size: 14px; }
+.local-message-body h3 { font-size: 13px; }
+.local-message-body p { white-space: normal; margin-bottom: 11px; }
+.local-message-body ul,.local-message-body ol { padding-left: 24px; margin: 8px 0 15px; }
+.local-message-body li { margin-bottom: 6px; }
+.local-message-body li p { margin: 0; }
+.local-message-body li input[type='checkbox'] { margin-right: 7px; }
+.local-message-body pre { max-width: 100%; margin: 14px 0; overflow-x: auto; border: 1px solid #e8e8e8; border-radius: 10px; padding: 14px; background: #f8f8f8; font: 11.5px/1.65 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.local-message-body code { font: 11px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; background: #f3f3f3; border-radius: 4px; padding: 2px 5px; }
+.local-message-body pre code { padding: 0; border-radius: 0; background: none; font: inherit; }
+.local-message-body blockquote { border-left: 3px solid #dedede; padding-left: 13px; margin: 12px 0; color: #737373; }
+.local-message-body table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; margin: 14px 0; font-size: 11.5px; }
+.local-message-body th,.local-message-body td { padding: 8px 11px; border: 1px solid #e8e8e8; text-align: left; }
+.local-message-body th { background: #f7f7f7; font-weight: 605; }
+.local-message-body a { text-decoration-color: #ababab; text-underline-offset: 3px; }
+.local-message-body hr { border: 0; border-top: 1px solid #e7e7e7; margin: 18px 0; }
