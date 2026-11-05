@@ -637,6 +637,10 @@
       "module": "repository",
       "resource": "git-worktree"
     },
+    "tests/runtime/repository-git-facade-contract.test.ts": {
+      "module": "repository",
+      "resource": "pure"
+    },
     "tests/runtime/repository-work-admission.test.ts": {
       "module": "routing",
       "resource": "pure"
