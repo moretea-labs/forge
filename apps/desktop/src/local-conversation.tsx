@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { LocalProviderStatusProjection } from './runtime-client';
@@ -137,6 +138,12 @@ export function LocalConversationSurface({
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const [allowEffects, setAllowEffects] = useState(false);
+  const [diffVisible, setDiffVisible] = useState(false);
+  const [diffRepoId, setDiffRepoId] = useState<string>();
+  const [diff, setDiff] = useState<{ stat: string; patch: string; truncated: boolean }>();
+  const [diffLoading, setDiffLoading] = useState(false);
+  const [diffError, setDiffError] = useState<string>();
+  const diffRequest = useRef(0);
   const handledNewThread = useRef(false);
   const initialThreadProvisioned = useRef<LocalProviderChoice | null>(null);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
@@ -216,6 +223,34 @@ export function LocalConversationSurface({
     setThreads((current) => current.map((thread) => thread.id === selectedThread.id ? updater(thread) : thread));
   };
 
+  async function toggleDiff(forceRefresh = false) {
+    const repoId = selectedThread?.projectRepoId;
+    if (!repoId) return;
+    if (diffVisible && !forceRefresh && diffRepoId === repoId) {
+      diffRequest.current += 1;
+      setDiffVisible(false);
+      return;
+    }
+    const request = ++diffRequest.current;
+    setDiffRepoId(repoId);
+    setDiffVisible(true);
+    setDiff(undefined);
+    setDiffError(undefined);
+    setDiffLoading(true);
+    try {
+      const response = await invoke<{ stat: string; patch: string; truncated: boolean }>(
+        'read_agent_git_diff', { repoId },
+      );
+      if (request === diffRequest.current) setDiff(response);
+    } catch (cause) {
+      if (request === diffRequest.current) {
+        setDiffError(cause instanceof Error ? cause.message : String(cause));
+      }
+    } finally {
+      if (request === diffRequest.current) setDiffLoading(false);
+    }
+  }
+
   const send = async () => {
     const prompt = draft.trim();
     if (!selectedThread || !providerReady || !onSend || !prompt || sending) return;
@@ -259,13 +294,19 @@ export function LocalConversationSurface({
   };
 
   return (
-    <section className="local-conversation" aria-label="本地会话">
+    <section className={'local-conversation' + (diffVisible && diffRepoId === selectedThread?.projectRepoId ? ' with-diff' : '')} aria-label="本地会话">
       <div className="local-toolbar">
         <div>
           <span className="breadcrumb">本地会话</span>
           <strong>{selectedThread ? threadLabel(selectedThread) : '新建一个会话'}</strong>
         </div>
         <div className="local-toolbar-actions">
+          <button className="plain-action" type="button"
+            disabled={!selectedThread?.projectRepoId || sending}
+            aria-expanded={diffVisible && diffRepoId === selectedThread?.projectRepoId}
+            onClick={() => void toggleDiff()}>
+            {diffVisible && diffRepoId === selectedThread?.projectRepoId ? '收起变更' : '查看变更'}
+          </button>
           <button className="plain-action" type="button" disabled={sending} onClick={addThread}>新建会话</button>
           {selectedThread && (
             <button className="plain-action" type="button" disabled={sending} onClick={() => {
@@ -331,6 +372,30 @@ export function LocalConversationSurface({
             </label>
             <span>{selectedProject ? '仓库工具仅作用于 ' + selectedProject.name : '选择项目后启用仓库工具'}</span>
           </div>
+
+          {diffVisible && diffRepoId === selectedThread.projectRepoId && (
+            <aside className="local-git-inspector" aria-label="Git 变更审阅">
+              <header>
+                <strong>Changes</strong>
+                <button className="plain-action" type="button" onClick={() => void toggleDiff(true)}>刷新</button>
+                <button className="plain-action" type="button" onClick={() => {
+                  diffRequest.current += 1;
+                  setDiffVisible(false);
+                }}>关闭</button>
+              </header>
+              <p>来自所选项目 Forge Git authority 的只读 Diff</p>
+              {diffLoading && <div role="status" className="local-diff-status">正在读取变更…</div>}
+              {diffError && <p role="alert" className="inline-error">变更读取失败：{diffError}</p>}
+              {!diffLoading && !diffError && diff && (
+                <>
+                  {diff.stat && <pre className="local-diff-stat">{diff.stat}</pre>}
+                  {diff.patch ? <pre className="local-diff-patch">{diff.patch}</pre>
+                    : <div className="local-diff-status">当前没有未提交的 Git Diff</div>}
+                  {diff.truncated && <span className="local-diff-status">输出已截断，请按文件查看完整变更。</span>}
+                </>
+              )}
+            </aside>
+          )}
 
           <div className="local-transcript">
             {selectedThread.messages.length === 0 ? (
