@@ -58,6 +58,52 @@ No client retry loop or inferred recovery lifecycle is introduced. The UI may ow
 
 Controller and remote-transport setup is projected separately through the typed `controller.connection` capability. That facade derives product-safe status from the existing setup-profile authority (`readSetupProfile`, `resolveControllerGuidance`, and `resolveTunnelGuidance`) and does not persist a second connection model. Its only automatic mutation, `repair_connector`, delegates to the existing `runMcpSetupChatgpt` owner for the Forge-managed loopback Connector. OpenAI Secure Tunnel, Cloudflare, Tailscale, client installation, login, tunnel identity, and other external prerequisites remain explicit setup requirements rather than being silently repaired by the desktop client. Tauri and the webview never read or write setup files directly.
 
+## 2026-11-05 product priority and navigation correction
+
+**Product order:** (1) Agent desktop first; (2) MCP as the separately managed
+external service integration; (3) project-scoped Requirement, Plan, Work,
+Evidence and Cognitive records as Forge's differentiator. Record browsing and
+relationship navigation must be usable without opening or changing a chat.
+
+The default main pane belongs to the active Agent thread: provider, attached
+repository, permission, messages, tool outcomes and input. Project registry
+selection lives in one compact searchable sidebar picker, not an always-open
+catalog of all registered repositories; Work is never nested under a project
+conversation in navigation. The independent main navigation has **Work,
+Requirement and Plan** record browsers, plus Knowledge and Settings. Selecting
+a Work opens its canonical execution/evidence detail; selecting a Requirement
+or Plan reads its canonical detail command and displays explicit related Work
+links. This is a navigation projection only, not a new semantic lifecycle or
+duplicated Work record store.
+
+Current scope is intentionally honest: the Work index uses the Runtime's
+bounded current/recent history; Plan index uses canonical `rh_work plan_list`
+(up to 100 active records); Requirement discovery is limited to Requirement IDs
+reachable from the loaded Work slice until the existing Forge Requirement
+authority offers a repository-scoped, paged inventory. Empty loaded results
+do **not** mean no project Requirements exist. Detail records are always read
+on demand from `rh_work requirement_get` and `plan_get`. Do not create a
+client-side database or infer Requirement completion from a message or an
+unrelated Work status.
+
+**Codex experience parity remains a target, not an achieved status.** The
+installed Desktop currently has chat, native OpenAI/Claude tool calls and
+basic Work inspection. It still needs live execution events, cancel/steer and
+continuation ergonomics, command approval detail, an independently reviewable
+Git Diff/patch inspector, worktree selection and isolation, long-running
+parallel task coordination, and explicit checks/evidence. True Codex **Cloud**
+parity further requires a separately provisioned, persistent remote sandbox
+environment and remote task handoff: a local API tool loop cannot provide
+cloud persistence by merely changing a mode label. Add these only against
+existing Forge Source/Process/Work and environment owners; never build a
+second agent coordinator or Git authority inside the WebView.
+
+**Current validation limitation:** development source can be reviewed and CI
+can run from GitHub while the Mac Forge tunnel is disconnected; no Mac native
+snapshot or WebView interaction claim follows from CI alone. Runtime release
+activation, automatic rollback and recovery cutover remain outside the
+Desktop code-development permission.
+
 ## macOS presentation model
 
 The macOS client uses the system-owned decorated window. The webview must not draw duplicate traffic-light controls or treat an application toolbar as a synthetic title bar. Window close/minimize/zoom chrome remains owned by macOS/Tauri.
