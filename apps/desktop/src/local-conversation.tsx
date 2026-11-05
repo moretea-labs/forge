@@ -208,6 +208,7 @@ export function LocalConversationSurface({
   const [sendError, setSendError] = useState<string | null>(null);
   const [allowEffects, setAllowEffects] = useState(false);
   const [diffVisible, setDiffVisible] = useState(false);
+  const [diffStaged, setDiffStaged] = useState(false);
   const [diffRepoId, setDiffRepoId] = useState<string>();
   const [diff, setDiff] = useState<GitDiffReceipt>();
   const [diffLoading, setDiffLoading] = useState(false);
@@ -378,7 +379,7 @@ export function LocalConversationSurface({
     setThreads((current) => current.map((thread) => thread.id === selectedThread.id ? updater(thread) : thread));
   };
 
-  async function toggleDiff(forceRefresh = false) {
+  async function toggleDiff(forceRefresh = false, staged = diffStaged) {
     const repoId = selectedThread?.projectRepoId;
     if (!repoId) return;
     if (diffVisible && !forceRefresh && diffRepoId === repoId) {
@@ -387,6 +388,7 @@ export function LocalConversationSurface({
       return;
     }
     const request = ++diffRequest.current;
+    setDiffStaged(staged);
     setDiffRepoId(repoId);
     setDiffVisible(true);
     setDiff(undefined);
@@ -394,7 +396,7 @@ export function LocalConversationSurface({
     setDiffLoading(true);
     try {
       const response = await invoke<GitDiffReceipt>(
-        'read_agent_git_diff', { repoId },
+        'read_agent_git_diff', { repoId, staged },
       );
       if (request === diffRequest.current) setDiff(response);
     } catch (cause) {
@@ -626,7 +628,8 @@ export function LocalConversationSurface({
           )}
 
           {diffVisible && diffRepoId === selectedThread.projectRepoId && (
-            <AgentGitReview diff={diff} loading={diffLoading} error={diffError}
+            <AgentGitReview diff={diff} staged={diffStaged} loading={diffLoading} error={diffError}
+              onStagedChange={(staged) => { void toggleDiff(true, staged); }}
               onRefresh={() => void toggleDiff(true)}
               onClose={() => { diffRequest.current += 1; setDiffVisible(false); }} />
           )}
@@ -686,12 +689,12 @@ export function LocalConversationSurface({
             <textarea
               rows={3}
               aria-label="本地会话消息"
-              placeholder={providerReady ? '描述任务或提出问题…' : '先写下任务，配置模型或恢复连接后发送…'}
+              placeholder={sending ? '可先写下一条消息，当前回复结束后再发送…'
+                : providerReady ? '描述任务或提出问题…' : '先写下任务，配置模型或恢复连接后发送…'}
               value={draft}
-              disabled={sending}
               onChange={(event) => setDraft(event.target.value)}
               onKeyDown={(event) => {
-                if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+                if (!sending && event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
                   event.preventDefault();
                   void send();
                 }

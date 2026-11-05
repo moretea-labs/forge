@@ -39,11 +39,13 @@ function lineKind(line: string): string {
 }
 
 export function AgentGitReview({
-  diff, loading, error, onRefresh, onClose,
+  diff, staged, loading, error, onStagedChange, onRefresh, onClose,
 }: {
   diff?: GitDiffReceipt;
+  staged: boolean;
   loading: boolean;
   error?: string;
+  onStagedChange: (staged: boolean) => void;
   onRefresh: () => void;
   onClose: () => void;
 }) {
@@ -59,6 +61,12 @@ export function AgentGitReview({
         <button className="plain-action" type="button" onClick={onRefresh} disabled={loading}>刷新</button>
         <button className="plain-action" type="button" onClick={onClose}>关闭</button>
       </header>
+      <div className="local-diff-modes" role="group" aria-label="Git 变更类型">
+        <button type="button" aria-pressed={!staged} disabled={loading}
+          className={!staged ? 'active' : ''} onClick={() => onStagedChange(false)}>未暂存</button>
+        <button type="button" aria-pressed={staged} disabled={loading}
+          className={staged ? 'active' : ''} onClick={() => onStagedChange(true)}>已暂存</button>
+      </div>
       {loading && <div role="status" className="local-diff-status">从 Forge Git 读取变更…</div>}
       {error && <p role="alert" className="inline-error">读取失败：{error}</p>}
       {!loading && !error && diff && (
@@ -90,7 +98,7 @@ export function AgentGitReview({
           ) : diff.patch ? (
             <pre className="local-diff-patch">{diff.patch}</pre>
           ) : (
-            <div className="local-diff-status">当前没有可审阅的未提交代码变更。</div>
+            <div className="local-diff-status">{staged ? '当前没有已暂存的代码变更。' : '当前没有未暂存的代码变更。'}</div>
           )}
           {!diff.truncated && !files.length && diff.stat && (
             <pre className="local-diff-stat">{diff.stat}</pre>

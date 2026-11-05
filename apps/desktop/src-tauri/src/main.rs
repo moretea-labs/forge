@@ -760,15 +760,19 @@ fn save_local_api_settings(provider: String, endpoint: String, model: String, ap
 
 
 
+fn agent_git_diff_arguments(staged: bool) -> Value {
+    json!({ "max_bytes": 20000, "staged": staged })
+}
+
 #[tauri::command]
-async fn read_agent_git_diff(app: tauri::AppHandle, repo_id: String) -> Result<Value, String> {
+async fn read_agent_git_diff(app: tauri::AppHandle, repo_id: String, staged: Option<bool>) -> Result<Value, String> {
     if repo_id.trim().is_empty() { return Err("FORGE_DESKTOP_REPOSITORY_REQUIRED".into()); }
     let receipt = run_local_forge_tool(
         app,
         repo_id,
         "desktop-git-inspector".to_string(),
         "git_diff".to_string(),
-        json!({ "max_bytes": 20000 }),
+        agent_git_diff_arguments(staged.unwrap_or(false)),
         false,
     ).await?;
     if receipt.get("ok").and_then(Value::as_bool) != Some(true) {
@@ -1374,6 +1378,12 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn agent_git_inspector_forwards_exact_staged_selection() {
+        assert_eq!(agent_git_diff_arguments(false), json!({"max_bytes": 20000, "staged": false}));
+        assert_eq!(agent_git_diff_arguments(true), json!({"max_bytes": 20000, "staged": true}));
+    }
+
     #[test]
     fn parse_mcp_json_and_sse_replies() {
         let reply = json!({"jsonrpc":"2.0", "id":1, "result":{"ok":true}});

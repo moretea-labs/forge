@@ -31,16 +31,23 @@ describe('Agent Git diff presentation', () => {
   test('empty and truncated responses do not invent changed files', () => {
     expect(splitGitDiffFiles('')).toEqual([]);
     const html = renderToStaticMarkup(createElement(AgentGitReview, {
-      diff: { patch: '', stat: '', truncated: true }, loading: false,
-      onRefresh() {}, onClose() {},
+      diff: { patch: '', stat: '', truncated: true }, staged: false, loading: false,
+      onStagedChange() {}, onRefresh() {}, onClose() {},
     }));
     expect(html).toContain('仅展示 Forge 返回的部分 Diff');
-    expect(html).toContain('没有可审阅的未提交代码变更');
+    expect(html).toContain('当前没有未暂存的代码变更');
+    expect(html).toContain('aria-label="Git 变更类型"');
+    const stagedHtml = renderToStaticMarkup(createElement(AgentGitReview, {
+      diff: { patch: '', stat: '', truncated: false }, staged: true, loading: false,
+      onStagedChange() {}, onRefresh() {}, onClose() {},
+    }));
+    expect(stagedHtml).toContain('当前没有已暂存的代码变更');
+    expect(stagedHtml).toContain('aria-pressed="true"');
   });
   test('renders file navigation and highlighted patch lines with no write controls', () => {
     const html = renderToStaticMarkup(createElement(AgentGitReview, {
-      diff: { patch, stat: 'src/one.ts | 2 +-', truncated: false }, loading: false,
-      onRefresh() {}, onClose() {},
+      diff: { patch, stat: 'src/one.ts | 2 +-', truncated: false }, staged: false, loading: false,
+      onStagedChange() {}, onRefresh() {}, onClose() {},
     }));
     expect(html).toContain('aria-label="已修改文件"');
     expect(html).toContain('src/one.ts');
