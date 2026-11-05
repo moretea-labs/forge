@@ -740,6 +740,25 @@ fn save_local_api_settings(provider: String, endpoint: String, model: String, ap
 }
 
 
+
+#[tauri::command]
+async fn read_agent_git_diff(app: tauri::AppHandle, repo_id: String) -> Result<Value, String> {
+    if repo_id.trim().is_empty() { return Err("FORGE_DESKTOP_REPOSITORY_REQUIRED".into()); }
+    let receipt = run_local_forge_tool(
+        app,
+        repo_id,
+        "desktop-git-inspector".to_string(),
+        "git_diff".to_string(),
+        json!({ "max_bytes": 20000 }),
+        false,
+    ).await?;
+    if receipt.get("ok").and_then(Value::as_bool) != Some(true) {
+        return Err("FORGE_DESKTOP_GIT_DIFF_FAILED".into());
+    }
+    receipt.pointer("/result/diff").cloned()
+        .ok_or_else(|| "FORGE_DESKTOP_GIT_DIFF_RESULT_INVALID".into())
+}
+
 fn local_tool_catalog(allow_effects: bool) -> Vec<Value> {
     let mut tools = vec![
         json!({"type":"function","function":{"name":"read_file","description":"Read bounded lines of a file in the user's selected registered Forge repository. Paths are repo-relative.","parameters":{"type":"object","properties":{"path":{"type":"string"},"start_line":{"type":"integer","minimum":1},"end_line":{"type":"integer","minimum":1}},"required":["path"],"additionalProperties":false}}}),
@@ -1086,6 +1105,7 @@ fn main() {
             read_project_repository,
             read_project_work_list,
             read_project_plan_list,
+            read_agent_git_diff,
             read_work_detail,
             read_user_requests,
             read_requirement_detail,
