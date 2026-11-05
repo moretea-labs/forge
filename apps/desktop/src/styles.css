@@ -575,3 +575,17 @@ a { color: #353535; text-decoration: underline; text-underline-offset: 3px; }
 .work-service-continuation > p { padding: 1px 12px; margin: 0 0 8px;
   color: #868686; font-size: 11px; }
 .work-service-continuation .composer-wrap { border: 0; padding: 2px 8px 12px; }
+
+.local-tool-progress-list { display: grid; gap: 2px; margin: 8px 0 0 18px;
+  border-left: 1px solid #e3e4e5; padding-left: 12px; }
+.local-tool-progress-row { display: flex; gap: 12px; align-items: center;
+  justify-content: space-between; font: 10.5px/1.7 -apple-system,BlinkMacSystemFont,sans-serif; color: #777; }
+.local-tool-progress-row > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.local-tool-progress-row > small { font-size: 10px; color: #969696; white-space: nowrap; }
+.local-tool-progress-row.completed > small { color: #507e60; }
+.local-tool-progress-row.failed > small { color: #a75c5c; }
+
+.local-pending-message:has(.local-pending-content) { align-items: flex-start; }
+.local-pending-message:has(.local-pending-content) .local-pending-indicator { margin-top: 5px; flex-shrink: 0; }
+.local-pending-content { display: flex; flex: 1; flex-direction: column; min-width: 0; gap: 1px; }
+.local-tool-progress-list { margin-left: 0; }

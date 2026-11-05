@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { createThread, findExistingWorkThread } from '../src/local-conversation';
+import { advanceLocalToolProgress, createThread, findExistingWorkThread } from '../src/local-conversation';
 
 describe('Forge Desktop Work-bound Agent thread identity', () => {
   test('new threads store only repository/Work foreign keys, no semantic duplicates', () => {
@@ -11,6 +11,26 @@ describe('Forge Desktop Work-bound Agent thread identity', () => {
     expect('requirement' in thread).toBe(false);
     expect('plan' in thread).toBe(false);
     expect(createThread('api', undefined, 'work_orphan').workId).toBeUndefined();
+  });
+
+  test('keeps one truthful tool row per start and terminal receipt, with a bounded timeline', () => {
+    const start = { conversationId: 'thread1', name: 'run_command', phase: 'started' as const, requestId: 'effect-123' };
+    const finish = { ...start, phase: 'completed' as const };
+    const running = advanceLocalToolProgress([], start);
+    expect(running).toHaveLength(1);
+    expect(running[0]?.phase).toBe('started');
+    const completed = advanceLocalToolProgress(running, finish);
+    expect(completed).toHaveLength(1);
+    expect(completed[0]).toEqual(finish);
+    // Another operation's completion is never attributed to this one.
+    const different = { ...finish, requestId: 'effect-456' };
+    expect(advanceLocalToolProgress(running, different)).toHaveLength(2);
+    const recent = Array.from({ length: 15 }, (_, index) => ({
+      conversationId: 'thread1', name: 'read_file', phase: 'started' as const,
+      requestId: 'r' + index,
+    })).reduce(advanceLocalToolProgress, [] as ReturnType<typeof advanceLocalToolProgress>);
+    expect(recent).toHaveLength(12);
+    expect(recent[0]?.requestId).toBe('r3');
   });
 
   test('resumes latest active same-project, same-Work and same-provider thread only', () => {

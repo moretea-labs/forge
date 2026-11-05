@@ -13,6 +13,32 @@ const MAX_THREADS = 100;
 
 export type LocalConversationRole = 'user' | 'assistant' | 'tool' | 'system';
 
+export interface LocalToolProgress {
+  conversationId: string;
+  name: string;
+  phase: 'started' | 'completed' | 'failed';
+  requestId?: string;
+}
+
+/** Append each start; reconcile its matching completion without inventing success. */
+export function advanceLocalToolProgress(
+  events: LocalToolProgress[], event: LocalToolProgress,
+): LocalToolProgress[] {
+  if (event.phase === 'started') return [...events, event].slice(-12);
+  let index = -1;
+  for (let cursor = events.length - 1; cursor >= 0; cursor -= 1) {
+    const entry = events[cursor];
+    if (entry && entry.conversationId === event.conversationId
+      && entry.name === event.name && entry.phase === 'started'
+      && (!event.requestId || entry.requestId === event.requestId)) {
+      index = cursor;
+      break;
+    }
+  }
+  if (index < 0) return [...events, event].slice(-12);
+  return events.map((entry, cursor) => cursor === index ? event : entry);
+}
+
 export interface LocalConversationMessage {
   id: string;
   role: LocalConversationRole;
@@ -161,7 +187,7 @@ export function LocalConversationSurface({
   const [sending, setSending] = useState(false);
   const [sendingThreadId, setSendingThreadId] = useState<string>();
   const [cancelRequested, setCancelRequested] = useState(false);
-  const [liveTool, setLiveTool] = useState<{ conversationId: string; name: string; phase: 'started' | 'completed' | 'failed' }>();
+  const [toolProgress, setToolProgress] = useState<LocalToolProgress[]>([]);
   const [sendError, setSendError] = useState<string | null>(null);
   const [allowEffects, setAllowEffects] = useState(false);
   const [diffVisible, setDiffVisible] = useState(false);
@@ -176,6 +202,7 @@ export function LocalConversationSurface({
     requirementId?: string; planId?: string;
   }>();
   const [workDetailError, setWorkDetailError] = useState<string>();
+  const sendingThreadRef = useRef<string | undefined>(undefined);
   const diffRequest = useRef(0);
   const handledNewThread = useRef(false);
   const initialThreadProvisioned = useRef<LocalProviderChoice | null>(null);
@@ -189,9 +216,11 @@ export function LocalConversationSurface({
   useEffect(() => {
     let stopped = false;
     let unsubscribe: (() => void) | undefined;
-    void listen<{ conversationId: string; name: string; phase: 'started' | 'completed' | 'failed' }>(
+    void listen<LocalToolProgress>(
       'forge-agent-tool-progress', (event) => {
-        if (!stopped) setLiveTool(event.payload);
+        if (!stopped && event.payload.conversationId === sendingThreadRef.current) {
+          setToolProgress((current) => advanceLocalToolProgress(current, event.payload));
+        }
       },
     ).then((unlisten) => { if (stopped) unlisten(); else unsubscribe = unlisten; })
       .catch(() => { /* Codex CLI or browser-only preview has no native tool events. */ });
@@ -377,9 +406,10 @@ export function LocalConversationSurface({
     setThreads((current) => current.map((thread) => thread.id === selectedThread.id ? pendingThread : thread));
     setDraft('');
     setSendError(null);
+    sendingThreadRef.current = selectedThread.id;
     setSendingThreadId(selectedThread.id);
     setCancelRequested(false);
-    setLiveTool(undefined);
+    setToolProgress([]);
     setSending(true);
     try {
       const reply = await onSend({ thread: pendingThread, prompt, allowEffects: authorizedEffects });
@@ -401,6 +431,9 @@ export function LocalConversationSurface({
         || reason.includes('LOCAL_CONVERSATION_CANCELLED_RECONCILE');
       if (cancelled) {
         const cancelledAt = new Date().toISOString();
+        const exactEffectId = reason.match(
+          /FORGE_DESKTOP_API_TURN_CANCELLED_AFTER_TOOL:([a-zA-Z0-9._:-]+)/,
+        )?.[1];
         setThreads((current) => current.map((thread) => thread.id === selectedThread.id ? {
           ...thread,
           updatedAt: cancelledAt,
@@ -408,6 +441,7 @@ export function LocalConversationSurface({
             id: localId('message'), role: 'system', createdAt: cancelledAt,
             content: reason.includes('_AFTER_TOOL:') || reason.includes('CANCELLED_RECONCILE')
               ? '已停止等待模型继续执行。已有 Forge 工具可能已经完成；请核对当前仓库与操作请求记录。'
+                + (exactEffectId ? '\n\nForge 操作请求 ID：\`' + exactEffectId + '\`' : '')
               : '已停止此次模型回复；已发送的远端请求可能仍会计费。',
           }],
         } : thread));
@@ -417,7 +451,8 @@ export function LocalConversationSurface({
       }
     } finally {
       setAllowEffects(false);
-      setLiveTool(undefined);
+      sendingThreadRef.current = undefined;
+      setToolProgress([]);
       setSendingThreadId(undefined);
       setCancelRequested(false);
       setSending(false);
@@ -610,12 +645,23 @@ export function LocalConversationSurface({
             {sending && sendingThreadId === selectedThread.id && (
               <div className="local-pending-message" role="status">
                 <span className="local-pending-indicator" />
-                {cancelRequested ? '已请求停止；如果 Forge 工具正在运行，将在收到结果后结束…'
-                  : liveTool?.conversationId === selectedThread.id
-                  ? liveTool.phase === 'started' ? '正在执行 Forge 工具 · ' + liveTool.name
-                    : liveTool.phase === 'completed' ? '工具已完成 · ' + liveTool.name + ' · 正在整理回复'
-                      : '工具调用失败 · ' + liveTool.name + ' · 请核对执行结果'
-                  : 'Agent 正在处理请求…'}
+                <div className="local-pending-content">
+                <span>{cancelRequested ? '已请求停止；如果 Forge 工具正在运行，将在收到结果后结束…'
+                  : toolProgress.some((event) => event.phase === 'started')
+                    ? 'Agent 正在使用 Forge 工具…'
+                    : toolProgress.length > 0 ? '工具调用已返回，正在整理回复…'
+                    : 'Agent 正在处理请求…'}</span>
+                {toolProgress.length > 0 && (
+                  <div className="local-tool-progress-list" aria-label="本轮 Forge 工具进度">
+                    {toolProgress.slice(-6).map((event, index) => (
+                      <div className={'local-tool-progress-row ' + event.phase} key={index}>
+                        <span>{event.name}</span>
+                        <small>{event.phase === 'started' ? '执行中' : event.phase === 'completed' ? '已完成' : '失败'}</small>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                </div>
               </div>
             )}
             <div ref={transcriptEndRef} />
@@ -655,7 +701,7 @@ export function LocalConversationSurface({
               {sending && sendingThreadId === selectedThread.id
                 && (apiSelected || provider?.cancellable === true) && (
                 <button className="local-stop-button" type="button" onClick={() => void cancelTurn()}
-                  aria-label="请求停止当前 API Agent" disabled={cancelRequested}>
+                  aria-label="请求停止当前 Agent 回复" disabled={cancelRequested}>
                   {cancelRequested ? '停止中' : '停止'}
                 </button>
               )}
