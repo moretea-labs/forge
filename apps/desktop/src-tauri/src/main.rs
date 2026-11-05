@@ -4,7 +4,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{env, fs, path::{Path, PathBuf}, time::{SystemTime, UNIX_EPOCH}};
 
-const MCP_PROTOCOL_VERSION: &str = "2026-07-28";
+const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -117,59 +117,133 @@ fn request_id(prefix: &str) -> String {
     format!("forge-desktop-{prefix}-{}-{millis}", std::process::id())
 }
 
-async fn call_stateless_mcp_tool(
+fn parse_mcp_payload(body: &str, content_type: &str, error_prefix: &str) -> Result<Value, String> {
+    let source = if content_type.contains("text/event-stream") {
+        body.lines()
+            .filter_map(|line| line.strip_prefix("data:").map(str::trim))
+            .find(|data| !data.is_empty() && *data != "[DONE]")
+            .ok_or_else(|| format!("{error_prefix}_RESPONSE_INVALID"))?
+    } else {
+        body.trim()
+    };
+    serde_json::from_str(source).map_err(|_| format!("{error_prefix}_RESPONSE_INVALID"))
+}
+
+async fn read_mcp_payload(response: reqwest::Response, error_prefix: &str) -> Result<Value, String> {
+    let content_type = response.headers()
+        .get("content-type").and_then(|value| value.to_str().ok())
+        .unwrap_or("").to_string();
+    let payload = response.bytes().await
+        .map_err(|_| format!("{error_prefix}_RESPONSE_INVALID"))?;
+    if payload.len() > 8 * 1024 * 1024 {
+        return Err(format!("{error_prefix}_RESPONSE_TOO_LARGE"));
+    }
+    let body = std::str::from_utf8(&payload)
+        .map_err(|_| format!("{error_prefix}_RESPONSE_INVALID"))?;
+    parse_mcp_payload(body, &content_type, error_prefix)
+}
+
+async fn call_mcp_tool(
     endpoint: &str,
     token: &str,
     name: &str,
     arguments: Value,
     error_prefix: &str,
 ) -> Result<Value, String> {
-    let meta = json!({
-        "io.modelcontextprotocol/protocolVersion": MCP_PROTOCOL_VERSION,
-        "io.modelcontextprotocol/clientInfo": { "name": "forge-desktop", "version": env!("CARGO_PKG_VERSION") },
-        "io.modelcontextprotocol/clientCapabilities": {}
-    });
-    let body = json!({
-        "jsonrpc": "2.0",
-        "id": request_id("mcp"),
-        "method": "tools/call",
-        "params": { "name": name, "arguments": arguments, "_meta": meta }
-    });
-    let response = reqwest::Client::new()
-        .post(endpoint)
-        .header("Authorization", format!("Bearer {token}"))
-        .header("Content-Type", "application/json")
-        .header("Accept", "application/json, text/event-stream")
-        .header("MCP-Protocol-Version", MCP_PROTOCOL_VERSION)
-        .header("MCP-Method", "tools/call")
-        .json(&body)
-        .send()
-        .await
-        .map_err(|_| format!("{error_prefix}_UNREACHABLE"))?;
-    if !response.status().is_success() {
-        return Err(format!("{error_prefix}_HTTP_{}", response.status().as_u16()));
-    }
-    let rpc: Value = response.json().await
-        .map_err(|_| format!("{error_prefix}_RESPONSE_INVALID"))?;
-    if let Some(error) = rpc.get("error") {
-        let code = error.get("code").and_then(Value::as_i64).unwrap_or_default();
-        return Err(format!("{error_prefix}_RPC_ERROR:{code}"));
-    }
-    let result = rpc.get("result").cloned().ok_or_else(|| format!("{error_prefix}_RESULT_MISSING"))?;
-    if result.get("isError").and_then(Value::as_bool) == Some(true) {
-        if let Some(code) = result.get("structuredContent").and_then(|value| value.pointer("/error/code")).and_then(Value::as_str) {
-            return Err(code.to_string());
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(90))
+        .redirect(reqwest::redirect::Policy::none())
+        .build().map_err(|_| format!("{error_prefix}_CLIENT_FAILED"))?;
+    let post = |body: Value, version: &str, session: Option<&str>| {
+        let mut request = client.post(endpoint)
+            .bearer_auth(token)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/event-stream")
+            .header("MCP-Protocol-Version", version)
+            .json(&body);
+        if let Some(session) = session {
+            request = request.header("Mcp-Session-Id", session);
         }
-        return Err(format!("{error_prefix}_TOOL_FAILED"));
+        request
+    };
+    let initialized = post(json!({
+        "jsonrpc": "2.0",
+        "id": request_id("mcp-init"),
+        "method": "initialize",
+        "params": {
+            "protocolVersion": MCP_PROTOCOL_VERSION,
+            "capabilities": {},
+            "clientInfo": { "name": "forge-desktop", "version": env!("CARGO_PKG_VERSION") }
+        }
+    }), MCP_PROTOCOL_VERSION, None).send().await
+        .map_err(|_| format!("{error_prefix}_UNREACHABLE"))?;
+    let session_id = initialized.headers()
+        .get("mcp-session-id").and_then(|value| value.to_str().ok())
+        .filter(|value| !value.trim().is_empty()).map(str::to_owned);
+    let initialized_status = initialized.status();
+    let operation = async {
+        if !initialized_status.is_success() {
+            return Err(format!("{error_prefix}_HTTP_{}", initialized_status.as_u16()));
+        }
+        let reply = read_mcp_payload(initialized, error_prefix).await?;
+        if let Some(error) = reply.get("error") {
+            return Err(format!("{error_prefix}_INITIALIZE_RPC_ERROR:{}", error.get("code").and_then(Value::as_i64).unwrap_or_default()));
+        }
+        let negotiated_version = reply.pointer("/result/protocolVersion")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("{error_prefix}_PROTOCOL_VERSION_MISSING"))?;
+        if !matches!(negotiated_version, "2025-11-25" | "2025-06-18") {
+            return Err(format!("{error_prefix}_PROTOCOL_VERSION_UNSUPPORTED"));
+        }
+        let notified = post(json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized"
+        }), negotiated_version, session_id.as_deref()).send().await
+            .map_err(|_| format!("{error_prefix}_UNREACHABLE"))?;
+        if !notified.status().is_success() {
+            return Err(format!("{error_prefix}_INITIALIZED_HTTP_{}", notified.status().as_u16()));
+        }
+        let response = post(json!({
+            "jsonrpc": "2.0",
+            "id": request_id("mcp-tool"),
+            "method": "tools/call",
+            "params": { "name": name, "arguments": arguments }
+        }), negotiated_version, session_id.as_deref()).send().await
+            .map_err(|_| format!("{error_prefix}_UNREACHABLE"))?;
+        if !response.status().is_success() {
+            return Err(format!("{error_prefix}_HTTP_{}", response.status().as_u16()));
+        }
+        let rpc = read_mcp_payload(response, error_prefix).await?;
+        if let Some(error) = rpc.get("error") {
+            let code = error.get("code").and_then(Value::as_i64).unwrap_or_default();
+            return Err(format!("{error_prefix}_RPC_ERROR:{code}"));
+        }
+        let result = rpc.get("result").ok_or_else(|| format!("{error_prefix}_RESULT_MISSING"))?;
+        if result.get("isError").and_then(Value::as_bool) == Some(true) {
+            if let Some(code) = result.pointer("/structuredContent/error/code").and_then(Value::as_str) {
+                return Err(code.to_string());
+            }
+            return Err(format!("{error_prefix}_TOOL_FAILED"));
+        }
+        if let Some(structured) = result.get("structuredContent") {
+            return Ok(structured.clone());
+        }
+        let text = result.get("content").and_then(Value::as_array)
+            .and_then(|items| items.iter().find(|item| item.get("type").and_then(Value::as_str) == Some("text")))
+            .and_then(|item| item.get("text")).and_then(Value::as_str)
+            .ok_or_else(|| format!("{error_prefix}_STRUCTURED_CONTENT_MISSING"))?;
+        serde_json::from_str(text).map_err(|_| format!("{error_prefix}_TOOL_RESULT_INVALID"))
+    }.await;
+
+    // Runtime owns MCP sessions. Always end the transient transport session,
+    // including after an RPC/projection error; none is retained by the client.
+    if let Some(session_id) = session_id {
+        let _ = client.delete(endpoint).bearer_auth(token)
+            .header("Mcp-Session-Id", session_id)
+            .header("MCP-Protocol-Version", MCP_PROTOCOL_VERSION)
+            .send().await;
     }
-    if let Some(structured) = result.get("structuredContent") {
-        return Ok(structured.clone());
-    }
-    let text = result.get("content").and_then(Value::as_array)
-        .and_then(|items| items.iter().find(|item| item.get("type").and_then(Value::as_str) == Some("text")))
-        .and_then(|item| item.get("text")).and_then(Value::as_str)
-        .ok_or_else(|| format!("{error_prefix}_STRUCTURED_CONTENT_MISSING"))?;
-    serde_json::from_str(text).map_err(|_| format!("{error_prefix}_TOOL_RESULT_INVALID"))
+    operation
 }
 
 async fn call_runtime_tool(name: &str, arguments: Value) -> Result<Value, String> {
@@ -182,12 +256,12 @@ async fn call_runtime_tool(name: &str, arguments: Value) -> Result<Value, String
     }
     let host = if config.host == "::1" { "[::1]" } else { config.host.as_str() };
     let endpoint = format!("http://{host}:{}/mcp", config.port);
-    call_stateless_mcp_tool(&endpoint, token, name, arguments, "FORGE_DESKTOP_RUNTIME").await
+    call_mcp_tool(&endpoint, token, name, arguments, "FORGE_DESKTOP_RUNTIME").await
 }
 
 async fn call_recovery_tool(name: &str, arguments: Value) -> Result<Value, String> {
     let connection = recovery_connection()?;
-    call_stateless_mcp_tool(&connection.endpoint, &connection.token, name, arguments, "FORGE_DESKTOP_RECOVERY").await
+    call_mcp_tool(&connection.endpoint, &connection.token, name, arguments, "FORGE_DESKTOP_RECOVERY").await
 }
 
 fn recovery_mutation_arguments(status: &Value, action_prefix: &str) -> Result<Value, String> {
@@ -726,6 +800,16 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn parse_mcp_json_and_sse_replies() {
+        let reply = json!({"jsonrpc":"2.0", "id":1, "result":{"ok":true}});
+        let encoded = reply.to_string();
+        assert_eq!(parse_mcp_payload(&encoded, "application/json", "TEST").unwrap(), reply);
+        let event = format!("event: message\ndata: {}\n\n", encoded);
+        assert_eq!(parse_mcp_payload(&event, "text/event-stream", "TEST").unwrap(), reply);
+        assert!(parse_mcp_payload("event: heartbeat\n\n", "text/event-stream", "TEST").is_err());
+    }
+
 
     #[test]
     fn restrict_api_endpoints_to_https_or_loopback_http() {

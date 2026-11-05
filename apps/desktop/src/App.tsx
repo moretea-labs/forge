@@ -105,9 +105,11 @@ function Sidebar({
   activeView,
   runtimeLabel,
   runtimeStatus,
+  runtimeDetail,
+  onRetryProjects,
   onOpenAssistant,
   onNewThread,
-  onOpenMcp,
+  onOpenProjects,
   onOpenKnowledge,
   onOpenSettings,
   onSelectProject,
@@ -122,9 +124,11 @@ function Sidebar({
   activeView: AppView;
   runtimeLabel: string;
   runtimeStatus: string;
+  runtimeDetail: string;
+  onRetryProjects: () => void;
   onOpenAssistant: () => void;
   onNewThread: () => void;
-  onOpenMcp: () => void;
+  onOpenProjects: () => void;
   onOpenKnowledge: () => void;
   onOpenSettings: () => void;
   onSelectProject?: (project: ProjectListItemProjection) => void;
@@ -142,15 +146,28 @@ function Sidebar({
           <button className="nav-row sidebar-new-thread" type="button" onClick={onNewThread}>
             <span className="nav-symbol" aria-hidden="true">✎</span><span className="nav-label">新会话</span><span className="sidebar-keyboard">⌘N</span>
           </button>
-          <button className={activeView === 'project' ? 'nav-row active' : 'nav-row'} type="button" onClick={onOpenMcp}>
+          <button className={activeView === 'assistant' ? 'nav-row active' : 'nav-row'} type="button" onClick={onOpenAssistant}>
+            <span className="nav-symbol" aria-hidden="true">◷</span><span className="nav-label">会话</span>
+          </button>
+          <button className={activeView === 'project' ? 'nav-row active' : 'nav-row'} type="button" onClick={onOpenProjects}>
             <span className="nav-symbol" aria-hidden="true">▤</span><span className="nav-label">项目工作台</span>
           </button>
           <button className={activeView === 'knowledge' ? 'nav-row active' : 'nav-row'} type="button" onClick={onOpenKnowledge}>
             <span className="nav-symbol" aria-hidden="true">◇</span><span className="nav-label">记忆与知识</span>
           </button>
         </nav>
-        <div className="sidebar-section-title">项目与工作</div>
+        <div className="sidebar-project-heading">
+          <div className="sidebar-section-title">项目与工作 · {projects.length}</div>
+          <button type="button" title="刷新已注册项目" aria-label="刷新已注册项目" onClick={onRetryProjects}>↻</button>
+        </div>
         <div className="sidebar-list sidebar-projects">
+          {projects.length === 0 && (
+            <div className="sidebar-project-error" role="status">
+              <strong>{runtimeStatus === 'connected' ? '还没有注册项目' : '项目目录未加载'}</strong>
+              <span>{runtimeStatus === 'connected' ? '可使用 Forge 注册本地仓库' : runtimeDetail}</span>
+              <button type="button" className="plain-action" onClick={onRetryProjects}>重新读取项目</button>
+            </div>
+          )}
           {projects.map((project) => (
             <div className="sidebar-project-group" key={project.repoId}>
               <button className={activeView === 'project' && project.repoId === selectedRepoId ? 'nav-row project-row active' : 'nav-row project-row'}
@@ -193,16 +210,12 @@ function Sidebar({
       </div>
 
       <div className="sidebar-footer">
-        <div className="mode-switch" role="group" aria-label="本地与 MCP 模式">
-          <button type="button" aria-pressed={activeView === 'assistant'} className={activeView === 'assistant' ? 'active' : ''} onClick={onOpenAssistant}>Local</button>
-          <button type="button" aria-pressed={activeView === 'project'} className={activeView === 'project' ? 'active' : ''} onClick={onOpenMcp}>MCP</button>
-        </div>
         <button className={activeView === 'settings' ? 'nav-row active' : 'nav-row'} type="button" onClick={onOpenSettings}>
           <span className="nav-symbol" aria-hidden="true">⚙</span><span className="nav-label">设置</span>
         </button>
         <button className={activeView === 'runtime' ? 'nav-row active' : 'nav-row'} type="button" onClick={onOpenRuntime}>
           <span className={`health-dot ${runtimeStatus}`} />
-          <span className="nav-label">运行时</span>
+          <span className="nav-label">MCP 服务与运行时</span>
           <span className="runtime-mini-label">{runtimeLabel}</span>
         </button>
       </div>
@@ -251,7 +264,7 @@ function WorkView({
             <p>{project.repository}</p>
           </header>
 
-          <div className="mcp-overview-status" aria-label="MCP 工作区状态">
+          <div className="mcp-overview-status" aria-label="Forge 工作区状态">
             <div><span className={`health-dot ${projection.runtime.status}`} /><strong>项目工作区</strong></div>
             <div className="mcp-status-actions">
               <span>{projection.runtime.label}</span>
@@ -263,7 +276,7 @@ function WorkView({
 
           {refreshError && <div className="inline-error mcp-refresh-error">刷新失败：{refreshError}</div>}
 
-          <section className="mcp-summary-grid" aria-label="MCP 操作概览">
+          <section className="mcp-summary-grid" aria-label="Forge 工作概览">
             <div className="mcp-summary-card">
               <span>Repository</span>
               <strong>{project.dirty ? '有未提交修改' : '工作区干净'}</strong>
@@ -286,7 +299,7 @@ function WorkView({
             </div>
           </section>
 
-          <section className="mcp-work-overview" aria-label="MCP Work">
+          <section className="mcp-work-overview" aria-label="Forge Work">
             <div className="mcp-work-overview-heading">
               <div><strong>Work</strong><span>canonical rh_work projection</span></div>
               <span>{projection.workGraph.nodes.length} 个当前节点</span>
@@ -362,7 +375,7 @@ function WorkView({
           <p>{work.objective}</p>
         </div>
 
-        <section className="mcp-summary-grid work-summary-grid" aria-label="MCP Work 操作概览">
+        <section className="mcp-summary-grid work-summary-grid" aria-label="Forge Work 操作概览">
           <div className="mcp-summary-card">
             <span>Work</span>
             <strong>{semanticStateLabel(work.semanticState)} · r{work.revision}</strong>
@@ -606,7 +619,7 @@ function AssistantView({
   providerError,
   apiSettings,
   onOpenSettings,
-  onOpenMcp,
+  onOpenProjects,
   onOpenKnowledge,
   newThreadRequested,
   onNewThreadHandled,
@@ -619,7 +632,7 @@ function AssistantView({
   providerError: string | null;
   apiSettings: LocalApiSettings | null;
   onOpenSettings: () => void;
-  onOpenMcp: () => void;
+  onOpenProjects: () => void;
   onOpenKnowledge: () => void;
   newThreadRequested: boolean;
   onNewThreadHandled: () => void;
@@ -634,7 +647,7 @@ function AssistantView({
           <h1>开始一个任务</h1>
           <p>选择项目，描述目标，Forge 会沿现有工作与能力边界执行。</p>
           <div className="assistant-starters" aria-label="Forge 快捷任务">
-            <button className="assistant-starter" type="button" onClick={onOpenMcp}>
+            <button className="assistant-starter" type="button" onClick={onOpenProjects}>
               <span aria-hidden="true" className="assistant-starter-symbol">▤</span>
               <strong>继续项目工作</strong><small>查看当前 Work 与执行记录</small>
             </button>
@@ -939,21 +952,36 @@ export function App() {
 
   const bootstrapRuntime = useCallback(async () => {
     if (preview || !tauriRuntimeAvailable()) return;
+    let catalog;
     try {
-      const catalog = await readProjects();
-      setProjects(catalog.projects);
-      const selectedProject = catalog.projects.find((project) => project.repoId === catalog.preferredRepoId) ?? catalog.projects[0];
-      if (!selectedProject) {
-        setProjection({
-          ...disconnectedProjection,
-          source: 'runtime',
-          runtime: { status: 'connected', label: '运行时已连接', detail: '当前没有已注册项目。' },
-          projects: [],
-        });
-        return;
-      }
+      catalog = await readProjects();
+    } catch (cause) {
+      const detail = cause instanceof Error ? cause.message : String(cause);
+      setProjection((current) => ({
+        ...current,
+        runtime: { status: 'degraded', label: '项目目录读取失败', detail },
+      }));
+      void Promise.all([refreshRecovery(), refreshConnection()]);
+      return;
+    }
+    setProjects(catalog.projects);
+    const selectedProject = catalog.projects.find((project) => project.repoId === catalog.preferredRepoId) ?? catalog.projects[0];
+    if (!selectedProject) {
+      setSelectedRepoId(undefined);
+      setSelectedWorkId(undefined);
+      setProjection({
+        ...disconnectedProjection,
+        source: 'runtime',
+        runtime: { status: 'connected', label: '运行时已连接', detail: '当前没有已注册项目。' },
+        projects: [],
+      });
+      return;
+    }
+    // The registered catalog has independent authority from the selected Work projection.
+    // A single bad/missing checkout must never erase the registered repository list.
+    setSelectedRepoId(selectedProject.repoId);
+    try {
       const workspace = await readProjectWorkspace(selectedProject);
-      setSelectedRepoId(selectedProject.repoId);
       setSelectedWorkId(workspace.work?.workId);
       setProjection({
         source: 'runtime',
@@ -962,12 +990,17 @@ export function App() {
         ...workspace,
       });
     } catch (cause) {
+      setSelectedWorkId(undefined);
       setProjection({
         ...disconnectedProjection,
-        runtime: { status: 'degraded', label: '运行时不可用', detail: cause instanceof Error ? cause.message : String(cause) },
+        source: 'runtime',
+        projects: catalog.projects,
+        runtime: {
+          status: 'degraded',
+          label: '项目目录已加载，详情读取失败',
+          detail: cause instanceof Error ? cause.message : String(cause),
+        },
       });
-      // A degraded Runtime is a status, not permission to take over the Local UI.
-      void Promise.all([refreshRecovery(), refreshConnection()]);
     }
   }, [preview, refreshConnection, refreshRecovery]);
 
@@ -1044,7 +1077,7 @@ export function App() {
     setNewThreadRequested(false);
   }, []);
 
-  const handleOpenMcp = useCallback(() => {
+  const handleOpenProjects = useCallback(() => {
     setActiveView('project');
   }, []);
 
@@ -1146,9 +1179,11 @@ export function App() {
         activeView={activeView}
         runtimeLabel={runtimeLabel}
         runtimeStatus={runtimeStatus}
+        runtimeDetail={projection.runtime.detail}
+        onRetryProjects={() => { void bootstrapRuntime(); }}
         onOpenAssistant={handleOpenAssistant}
         onNewThread={handleNewThread}
-        onOpenMcp={handleOpenMcp}
+        onOpenProjects={handleOpenProjects}
         onOpenKnowledge={handleOpenKnowledge}
         onOpenSettings={handleOpenSettings}
         onSelectProject={preview ? undefined : handleSelectProject}
@@ -1179,7 +1214,7 @@ export function App() {
           providerError={localProviderError}
           apiSettings={localApiSettings}
           onOpenSettings={handleOpenSettings}
-          onOpenMcp={handleOpenMcp}
+          onOpenProjects={handleOpenProjects}
           onOpenKnowledge={handleOpenKnowledge}
           newThreadRequested={newThreadRequested}
           onNewThreadHandled={handleNewThreadHandled}

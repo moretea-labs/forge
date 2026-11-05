@@ -54,6 +54,6 @@ export function SettingsView({ settings, loading, error, onRefresh, onSave, onCl
       {saveError && <p className="inline-error" role="alert">{saveError}</p>}
       <div className="settings-actions"><button type="button" className="plain-action" disabled={loading || saving} onClick={() => void onRefresh()}>重新读取</button><button type="button" className="settings-save" disabled={loading || saving || !settings || (provider === 'api' && (!endpoint.trim() || !model.trim()))} onClick={() => void save()}>{saving ? '保存中…' : '保存设置'}</button>{saved && <span className="settings-saved" role="status">已保存</span>}</div>
     </section>
-    <section className="settings-group"><div className="settings-group-heading"><strong>模式说明</strong></div><p className="settings-hint">Local：客户端会话，Codex 可以调用 Forge MCP，API 是纯聊天。MCP：浏览项目、Work、Requirement/Plan、知识库和 Runtime，不创建第二套 Authority。</p></section>
+    <section className="settings-group"><div className="settings-group-heading"><strong>执行提供方与 MCP 服务</strong></div><p className="settings-hint">桌面应用是 Forge 的本地工作入口，所有已注册项目、Requirement、Plan、Work、Memory 始终可见，与聊天模型选择无关。Codex CLI 使用已授权的 Forge 工具；当前兼容 API 仅支持普通文本对话，尚不具备执行 Forge Work 的工具调用。MCP 是向 ChatGPT 等外部客户端开放 Forge 能力的服务接口，连接状态可在左下角「MCP 服务与运行时」查看，不属于聊天模式切换。</p></section>
   </div></main>;
 }
