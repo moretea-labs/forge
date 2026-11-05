@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { LocalProviderStatusProjection } from './runtime-client';
 import type { ProjectListItemProjection } from './runtime-projection';
 import type { LocalApiSettings, LocalProviderChoice } from './local-api';
@@ -86,6 +86,8 @@ export function LocalConversationSurface({
   providerError,
   apiSettings,
   onOpenSettings,
+  newThreadRequested,
+  onNewThreadHandled,
   onRefreshProvider,
   onSend,
 }: {
@@ -95,6 +97,8 @@ export function LocalConversationSurface({
   providerError: string | null;
   apiSettings: LocalApiSettings | null;
   onOpenSettings: () => void;
+  newThreadRequested: boolean;
+  onNewThreadHandled: () => void;
   onRefreshProvider: () => Promise<void>;
   onSend?: (input: { thread: LocalConversationThread; prompt: string }) => Promise<LocalConversationReply>;
 }) {
@@ -103,6 +107,8 @@ export function LocalConversationSurface({
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
+  const handledNewThread = useRef(false);
+  const initialThreadProvisioned = useRef<LocalProviderChoice | null>(null);
 
   useEffect(() => { persistThreads(threads); }, [threads]);
 
@@ -125,6 +131,30 @@ export function LocalConversationSurface({
     setDraft('');
     setSendError(null);
   };
+
+  useEffect(() => {
+    if (!newThreadRequested) {
+      handledNewThread.current = false;
+      return;
+    }
+    if (handledNewThread.current) return;
+    handledNewThread.current = true;
+    const thread = createThread(selectedProvider);
+    setThreads((current) => [thread, ...current]);
+    setSelectedThreadId(thread.id);
+    setDraft('');
+    setSendError(null);
+    onNewThreadHandled();
+  }, [newThreadRequested, selectedProvider, onNewThreadHandled]);
+
+  useEffect(() => {
+    if (newThreadRequested || activeThreads.length > 0 || initialThreadProvisioned.current === selectedProvider) return;
+    initialThreadProvisioned.current = selectedProvider;
+    const thread = createThread(selectedProvider);
+    setThreads((current) => current.some((entry) => !entry.archived && (entry.provider ?? 'codex') === selectedProvider)
+      ? current : [thread, ...current]);
+    setSelectedThreadId(thread.id);
+  }, [activeThreads.length, selectedProvider, newThreadRequested]);
 
   const updateSelected = (updater: (thread: LocalConversationThread) => LocalConversationThread) => {
     if (!selectedThread) return;
@@ -240,9 +270,9 @@ export function LocalConversationSurface({
             <textarea
               rows={3}
               aria-label="本地会话消息"
-              placeholder={providerReady ? '输入消息…' : apiSelected ? '请先在设置中配置兼容 API' : '连接 Codex CLI 后即可发送消息'}
+              placeholder={providerReady ? '描述任务或提出问题…' : '先写下任务，配置模型或恢复连接后发送…'}
               value={draft}
-              disabled={!providerReady || sending}
+              disabled={sending}
               onChange={(event) => setDraft(event.target.value)}
               onKeyDown={(event) => {
                 if (event.key === 'Enter' && !event.shiftKey) {
@@ -253,8 +283,17 @@ export function LocalConversationSurface({
             />
             {sendError && <div className="composer-error">发送失败：{sendError}</div>}
             <div className="composer-footer">
-              <span>{selectedProject?.name ?? '本地'} · {apiSelected ? '兼容 API' : 'Codex CLI'}</span>
-              <button type="button" disabled={!providerReady || !draft.trim() || sending} onClick={() => void send()}>{sending ? '发送中…' : '发送'}</button>
+              <span className="local-provider-selection">
+                <span>{selectedProject?.name ?? '本地'}</span>
+                <button className="local-provider-switch" type="button" onClick={onOpenSettings}
+                  aria-label="切换聊天模型及 API 设置">
+                  {apiSelected ? (apiSettings?.model || '兼容 API') : 'Codex CLI'} <span aria-hidden="true">⌄</span>
+                </button>
+              </span>
+              <button className="local-send-button" type="button" aria-label={sending ? '正在发送' : '发送消息'}
+                disabled={!providerReady || !draft.trim() || sending} onClick={() => void send()}>
+                <span aria-hidden="true">{sending ? '…' : '↑'}</span>
+              </button>
             </div>
           </div>
         </>

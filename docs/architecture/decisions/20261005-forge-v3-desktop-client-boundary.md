@@ -50,7 +50,7 @@ Local Codex sessions start in a read-only provider sandbox; Repository/Runtime m
 
 ## Runtime and Recovery surface
 
-The Runtime screen must remain usable when Canonical Runtime is unavailable. The native Tauri adapter therefore has a second narrow transport path to the already-authoritative Standalone Recovery Gateway at its configured loopback MCP endpoint. It reads the Recovery configuration and bearer token only inside the native process; Recovery credentials are never projected into the webview.
+The Runtime screen must remain usable when Canonical Runtime is unavailable. Bootstrap failure updates the Runtime status but never navigates away from an active Local chat or Settings view; a user explicitly opens Runtime/Recovery when desired. The native Tauri adapter therefore has a second narrow transport path to the already-authoritative Standalone Recovery Gateway at its configured loopback MCP endpoint. It reads the Recovery configuration and bearer token only inside the native process; Recovery credentials are never projected into the webview.
 
 This is not a fallback Runtime and does not start, stop, repair, or roll back any process directly. Readiness and diagnostics call Recovery's `runtime_status` and `verify_stable_runtime`. Explicit user mutations are limited to named Recovery tools such as `restart_primary_runtime` and `recover_primary_runtime`. Before a mutation, the adapter re-reads `runtime_status` and hydrates the exact host/platform/ControllerHome/Recovery-release/target-Runtime fencing identity exposed by Recovery itself; Standalone Recovery remains the authority that validates or rejects the operation.
 

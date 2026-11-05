@@ -106,6 +106,7 @@ function Sidebar({
   runtimeLabel,
   runtimeStatus,
   onOpenAssistant,
+  onNewThread,
   onOpenMcp,
   onOpenKnowledge,
   onOpenSettings,
@@ -122,6 +123,7 @@ function Sidebar({
   runtimeLabel: string;
   runtimeStatus: string;
   onOpenAssistant: () => void;
+  onNewThread: () => void;
   onOpenMcp: () => void;
   onOpenKnowledge: () => void;
   onOpenSettings: () => void;
@@ -132,86 +134,69 @@ function Sidebar({
   return (
     <aside className="sidebar">
       <div className="sidebar-main">
-        <div className="sidebar-brand" aria-label="Forge 工作台">
-          <span className="brand-glyph" aria-hidden="true">✳</span>
-          <span className="brand-copy"><strong>Forge</strong><small>WORKSPACE</small></span>
+        <div className="sidebar-brand" aria-label="Forge">
+          <span className="sidebar-app-name">Forge</span>
+          <span className="sidebar-app-subtitle">工作空间</span>
         </div>
-        <div className="sidebar-section-title nav-section-title">工作方式</div>
-        <div className="mode-switch" role="group" aria-label="Local 和 MCP 模式">
-          <button type="button" aria-pressed={activeView === 'assistant'} className={activeView === 'assistant' ? 'active' : ''} onClick={onOpenAssistant}>✦ Local</button>
-          <button type="button" aria-pressed={activeView !== 'assistant'} className={activeView !== 'assistant' ? 'active' : ''} onClick={onOpenMcp}>⌘ MCP</button>
-        </div>
-
-        <div className="sidebar-section-title">项目</div>
-        <div className="sidebar-list">
+        <nav className="sidebar-primary" aria-label="工作区导航">
+          <button className="nav-row sidebar-new-thread" type="button" onClick={onNewThread}>
+            <span className="nav-symbol" aria-hidden="true">✎</span><span className="nav-label">新会话</span><span className="sidebar-keyboard">⌘N</span>
+          </button>
+          <button className={activeView === 'project' ? 'nav-row active' : 'nav-row'} type="button" onClick={onOpenMcp}>
+            <span className="nav-symbol" aria-hidden="true">▤</span><span className="nav-label">项目工作台</span>
+          </button>
+          <button className={activeView === 'knowledge' ? 'nav-row active' : 'nav-row'} type="button" onClick={onOpenKnowledge}>
+            <span className="nav-symbol" aria-hidden="true">◇</span><span className="nav-label">记忆与知识</span>
+          </button>
+        </nav>
+        <div className="sidebar-section-title">项目与工作</div>
+        <div className="sidebar-list sidebar-projects">
           {projects.map((project) => (
-            <button
-              key={project.repoId}
-              className={activeView === 'project' && project.repoId === selectedRepoId ? 'nav-row active' : 'nav-row'}
-              type="button"
-              title={project.repository}
-              onClick={() => onSelectProject?.(project)}
-            >
-              <span className="project-dot" aria-hidden="true" />
-              <span className="nav-label">{project.name}</span>
-            </button>
+            <div className="sidebar-project-group" key={project.repoId}>
+              <button className={activeView === 'project' && project.repoId === selectedRepoId ? 'nav-row project-row active' : 'nav-row project-row'}
+                type="button" title={project.repository} onClick={() => onSelectProject?.(project)}>
+                <span className="project-folder" aria-hidden="true">▱</span>
+                <span className="nav-label">{project.name}</span>
+                {project.repoId === selectedRepoId && <span className="project-caret" aria-hidden="true">⌄</span>}
+              </button>
+              {project.repoId === selectedRepoId && workNodes.length > 0 && (
+                <div className="sidebar-project-threads" aria-label={project.name + ' 工作'}>
+                  {workNodes.map((work) => (
+                    <button key={work.workId} className={work.workId === selectedWorkId && activeView === 'project' ? 'work-row active' : 'work-row'}
+                      type="button" onClick={() => onSelectWork?.(work.workId)} title={work.objective}>
+                      <span className={'work-state-dot ' + work.state} aria-hidden="true" />
+                      <span className="work-row-copy">
+                        <strong>{work.objective}</strong>
+                        <span>{semanticStateLabel(work.state)}</span>
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
+              {project.repoId === selectedRepoId && recentWorkNodes.length > 0 && (
+                <details className="sidebar-history">
+                  <summary>历史工作 · {recentWorkNodes.length}</summary>
+                  <div className="sidebar-list history-work-list">
+                    {recentWorkNodes.map((work) => (
+                      <button key={work.workId} className={work.workId === selectedWorkId && activeView === 'project' ? 'work-row active' : 'work-row'}
+                        type="button" onClick={() => onSelectWork?.(work.workId)} title={work.objective}>
+                        <span className={'work-state-dot ' + work.state} aria-hidden="true" />
+                        <span className="work-row-copy"><strong>{work.objective}</strong><span>{semanticStateLabel(work.state)}</span></span>
+                      </button>
+                    ))}
+                  </div>
+                </details>
+              )}
+            </div>
           ))}
         </div>
-
-        {activeView === 'project' && (workNodes.length > 0 || recentWorkNodes.length > 0) && (
-          <>
-            {workNodes.length > 0 && (
-              <>
-                <div className="sidebar-section-title work-section-title">工作</div>
-                <div className="sidebar-list work-list">
-                  {workNodes.map((work) => (
-                    <button
-                      key={work.workId}
-                      className={work.workId === selectedWorkId ? 'work-row active' : 'work-row'}
-                      type="button"
-                      onClick={() => onSelectWork?.(work.workId)}
-                      title={work.objective}
-                    >
-                      <span className={`work-state-dot ${work.state}`} aria-hidden="true" />
-                      <span className="work-row-copy">
-                        <strong>{work.objective}</strong>
-                        <span>{semanticStateLabel(work.state)}</span>
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              </>
-            )}
-            {recentWorkNodes.length > 0 && (
-              <details className="sidebar-history">
-                <summary>历史 · {recentWorkNodes.length}</summary>
-                <div className="sidebar-list history-work-list">
-                  {recentWorkNodes.map((work) => (
-                    <button
-                      key={work.workId}
-                      className={work.workId === selectedWorkId ? 'work-row active' : 'work-row'}
-                      type="button"
-                      onClick={() => onSelectWork?.(work.workId)}
-                      title={work.objective}
-                    >
-                      <span className={`work-state-dot ${work.state}`} aria-hidden="true" />
-                      <span className="work-row-copy">
-                        <strong>{work.objective}</strong>
-                        <span>{semanticStateLabel(work.state)}</span>
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              </details>
-            )}
-          </>
-        )}
       </div>
 
       <div className="sidebar-footer">
-        <button className={activeView === 'knowledge' ? 'nav-row active' : 'nav-row'} type="button" onClick={onOpenKnowledge}>
-          <span className="nav-symbol" aria-hidden="true">◈</span><span className="nav-label">记忆与知识</span>
-        </button>
+        <div className="mode-switch" role="group" aria-label="本地与 MCP 模式">
+          <button type="button" aria-pressed={activeView === 'assistant'} className={activeView === 'assistant' ? 'active' : ''} onClick={onOpenAssistant}>Local</button>
+          <button type="button" aria-pressed={activeView === 'project'} className={activeView === 'project' ? 'active' : ''} onClick={onOpenMcp}>MCP</button>
+        </div>
         <button className={activeView === 'settings' ? 'nav-row active' : 'nav-row'} type="button" onClick={onOpenSettings}>
           <span className="nav-symbol" aria-hidden="true">⚙</span><span className="nav-label">设置</span>
         </button>
@@ -621,6 +606,10 @@ function AssistantView({
   providerError,
   apiSettings,
   onOpenSettings,
+  onOpenMcp,
+  onOpenKnowledge,
+  newThreadRequested,
+  onNewThreadHandled,
   onRefreshProvider,
   onSendLocal,
 }: {
@@ -630,6 +619,10 @@ function AssistantView({
   providerError: string | null;
   apiSettings: LocalApiSettings | null;
   onOpenSettings: () => void;
+  onOpenMcp: () => void;
+  onOpenKnowledge: () => void;
+  newThreadRequested: boolean;
+  onNewThreadHandled: () => void;
   onRefreshProvider: () => Promise<void>;
   onSendLocal: (input: { thread: LocalConversationThread; prompt: string }) => Promise<LocalConversationReply>;
 }) {
@@ -638,8 +631,22 @@ function AssistantView({
       <div className="content-column assistant-content">
         <header className="work-hero assistant-hero">
           <div className="breadcrumb">Forge</div>
-          <h1>从一个想法开始。</h1>
-          <p>与本地助手交流，或从侧边栏选择项目，继续已有的工作。</p>
+          <h1>开始一个任务</h1>
+          <p>选择项目，描述目标，Forge 会沿现有工作与能力边界执行。</p>
+          <div className="assistant-starters" aria-label="Forge 快捷任务">
+            <button className="assistant-starter" type="button" onClick={onOpenMcp}>
+              <span aria-hidden="true" className="assistant-starter-symbol">▤</span>
+              <strong>继续项目工作</strong><small>查看当前 Work 与执行记录</small>
+            </button>
+            <button className="assistant-starter" type="button" onClick={onOpenKnowledge}>
+              <span aria-hidden="true" className="assistant-starter-symbol">◇</span>
+              <strong>浏览项目知识</strong><small>检索 Forge 的记忆与经验</small>
+            </button>
+            <button className="assistant-starter" type="button" onClick={onOpenSettings}>
+              <span aria-hidden="true" className="assistant-starter-symbol">⚙</span>
+              <strong>配置聊天模型</strong><small>Codex CLI 或兼容 API</small>
+            </button>
+          </div>
         </header>
         <LocalConversationSurface
           projects={projects}
@@ -648,6 +655,8 @@ function AssistantView({
           providerError={providerError}
           apiSettings={apiSettings}
           onOpenSettings={onOpenSettings}
+          newThreadRequested={newThreadRequested}
+          onNewThreadHandled={onNewThreadHandled}
           onRefreshProvider={onRefreshProvider}
           onSend={onSendLocal}
         />
@@ -815,7 +824,7 @@ export function App() {
   const [projects, setProjects] = useState<ProjectListItemProjection[]>(preview ? [...designPreviewProjection.projects] : []);
   const [selectedRepoId, setSelectedRepoId] = useState<string | undefined>(preview ? designPreviewProjection.project?.repoId : undefined);
   const [selectedWorkId, setSelectedWorkId] = useState<string | undefined>(preview ? designPreviewProjection.work?.workId : undefined);
-  const [activeView, setActiveView] = useState<AppView>('project');
+  const [activeView, setActiveView] = useState<AppView>(preview ? 'project' : 'assistant');
   const [recoveryProjection, setRecoveryProjection] = useState<RuntimeRecoveryProjection | null>(null);
   const [recoveryLoading, setRecoveryLoading] = useState(false);
   const [recoveryError, setRecoveryError] = useState<string | null>(null);
@@ -828,6 +837,7 @@ export function App() {
   const [localProviderLoading, setLocalProviderLoading] = useState(false);
   const [localProviderError, setLocalProviderError] = useState<string | null>(null);
   const [localApiSettings, setLocalApiSettings] = useState<LocalApiSettings | null>(null);
+  const [newThreadRequested, setNewThreadRequested] = useState(false);
   const [localApiLoading, setLocalApiLoading] = useState(false);
   const [localApiError, setLocalApiError] = useState<string | null>(null);
   const [mcpRefreshing, setMcpRefreshing] = useState(false);
@@ -940,7 +950,6 @@ export function App() {
           runtime: { status: 'connected', label: '运行时已连接', detail: '当前没有已注册项目。' },
           projects: [],
         });
-        setActiveView('assistant');
         return;
       }
       const workspace = await readProjectWorkspace(selectedProject);
@@ -957,7 +966,7 @@ export function App() {
         ...disconnectedProjection,
         runtime: { status: 'degraded', label: '运行时不可用', detail: cause instanceof Error ? cause.message : String(cause) },
       });
-      setActiveView('runtime');
+      // A degraded Runtime is a status, not permission to take over the Local UI.
       void Promise.all([refreshRecovery(), refreshConnection()]);
     }
   }, [preview, refreshConnection, refreshRecovery]);
@@ -1027,10 +1036,28 @@ export function App() {
   const handleOpenAssistant = useCallback(() => {
     setActiveView('assistant');
   }, []);
+  const handleNewThread = useCallback(() => {
+    setActiveView('assistant');
+    setNewThreadRequested(true);
+  }, []);
+  const handleNewThreadHandled = useCallback(() => {
+    setNewThreadRequested(false);
+  }, []);
 
   const handleOpenMcp = useCallback(() => {
     setActiveView('project');
   }, []);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'n') {
+        event.preventDefault();
+        handleNewThread();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [handleNewThread]);
 
   const handleOpenKnowledge = useCallback(() => setActiveView('knowledge'), []);
   const handleOpenSettings = useCallback(() => setActiveView('settings'), []);
@@ -1112,14 +1139,15 @@ export function App() {
     <div className="app-shell">
       <Sidebar
         projects={projects}
-        workNodes={activeView === 'project' ? projection.workGraph.nodes : []}
-        recentWorkNodes={activeView === 'project' ? projection.recentWorkHistory : []}
+        workNodes={projection.workGraph.nodes}
+        recentWorkNodes={projection.recentWorkHistory}
         selectedRepoId={selectedRepoId}
         selectedWorkId={selectedWorkId}
         activeView={activeView}
         runtimeLabel={runtimeLabel}
         runtimeStatus={runtimeStatus}
         onOpenAssistant={handleOpenAssistant}
+        onNewThread={handleNewThread}
         onOpenMcp={handleOpenMcp}
         onOpenKnowledge={handleOpenKnowledge}
         onOpenSettings={handleOpenSettings}
@@ -1127,6 +1155,21 @@ export function App() {
         onSelectWork={preview ? undefined : handleSelectWork}
         onOpenRuntime={preview ? undefined : handleOpenRuntime}
       />
+
+      <div className="workspace-region">
+        <header className="workspace-topbar">
+          <div className="workspace-topbar-title" data-tauri-drag-region>
+            <strong>{activeView === 'assistant' ? '本地会话'
+              : activeView === 'project' ? projection.work?.title ?? projection.project?.name ?? '项目'
+              : activeView === 'knowledge' ? '记忆与知识'
+              : activeView === 'settings' ? '设置' : '运行时与恢复'}</strong>
+            {activeView === 'project' && projection.project?.branch && <span className="workspace-topbar-branch">{projection.project.branch}</span>}
+          </div>
+          <button className="workspace-topbar-health" type="button" onClick={() => void handleOpenRuntime()} title="查看 Forge Runtime 与连接状态">
+            <span className={'health-dot ' + runtimeStatus} aria-hidden="true" />
+            <span>{runtimeLabel}</span>
+          </button>
+        </header>
 
       {activeView === 'assistant' ? (
         <AssistantView
@@ -1136,6 +1179,10 @@ export function App() {
           providerError={localProviderError}
           apiSettings={localApiSettings}
           onOpenSettings={handleOpenSettings}
+          onOpenMcp={handleOpenMcp}
+          onOpenKnowledge={handleOpenKnowledge}
+          newThreadRequested={newThreadRequested}
+          onNewThreadHandled={handleNewThreadHandled}
           onRefreshProvider={refreshLocalProvider}
           onSendLocal={sendLocal}
         />
@@ -1173,6 +1220,7 @@ export function App() {
           onSelectWork={preview ? undefined : (workId) => { void handleSelectWork(workId); }}
         />
       )}
+      </div>
     </div>
   );
 }
