@@ -2,7 +2,7 @@
 
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use std::{env, fs, path::{Path, PathBuf}, time::{SystemTime, UNIX_EPOCH}};
 
 const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
@@ -1053,13 +1053,26 @@ async fn send_local_api_conversation(
                 args["request_id"] = Value::String(id.clone());
                 Some(id)
             } else { None };
-            let result = run_local_forge_tool(
+            let _ = app.emit("forge-agent-tool-progress", json!({
+                "conversationId": conversation_id, "name": name, "phase": "started",
+                "requestId": effect_request_id,
+            }));
+            let result = match run_local_forge_tool(
                 app.clone(), repo_id.clone().unwrap_or_default(),
                 conversation_id.clone(), name.clone(), args, allow_effects
-            ).await.map_err(|error| if effectful {
-                format!("FORGE_DESKTOP_LOCAL_EFFECT_RECONCILIATION_REQUIRED:{}:{}",
-                    effect_request_id.as_deref().unwrap_or("unknown"), error)
-            } else { error })?;
+            ).await {
+                Ok(receipt) => receipt,
+                Err(error) => {
+                    let _ = app.emit("forge-agent-tool-progress", json!({
+                        "conversationId": conversation_id, "name": name, "phase": "failed",
+                        "requestId": effect_request_id,
+                    }));
+                    return Err(if effectful {
+                        format!("FORGE_DESKTOP_LOCAL_EFFECT_RECONCILIATION_REQUIRED:{}:{}",
+                            effect_request_id.as_deref().unwrap_or("unknown"), error)
+                    } else { error });
+                }
+            };
             let ok = if effectful {
                 local_effect_completed(&name, &result)
             } else {
@@ -1067,6 +1080,11 @@ async fn send_local_api_conversation(
             };
             tool_events.push(json!({ "name": name, "ok": ok,
                 "requestId": effect_request_id }));
+            let _ = app.emit("forge-agent-tool-progress", json!({
+                "conversationId": conversation_id, "name": name,
+                "phase": if ok { "completed" } else { "failed" },
+                "requestId": effect_request_id,
+            }));
             total_calls += 1;
             // A real tool result is the only source of truth sent back to the model.
             let serialized = result.to_string();

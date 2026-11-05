@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
+import { AgentGitReview, type GitDiffReceipt } from './agent-git-review';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { LocalProviderStatusProjection } from './runtime-client';
@@ -138,11 +140,13 @@ export function LocalConversationSurface({
   const [selectedThreadId, setSelectedThreadId] = useState<string | undefined>(() => loadThreads().find((thread) => !thread.archived)?.id);
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
+  const [sendingThreadId, setSendingThreadId] = useState<string>();
+  const [liveTool, setLiveTool] = useState<{ conversationId: string; name: string; phase: 'started' | 'completed' | 'failed' }>();
   const [sendError, setSendError] = useState<string | null>(null);
   const [allowEffects, setAllowEffects] = useState(false);
   const [diffVisible, setDiffVisible] = useState(false);
   const [diffRepoId, setDiffRepoId] = useState<string>();
-  const [diff, setDiff] = useState<{ stat: string; patch: string; truncated: boolean }>();
+  const [diff, setDiff] = useState<GitDiffReceipt>();
   const [diffLoading, setDiffLoading] = useState(false);
   const [diffError, setDiffError] = useState<string>();
   const diffRequest = useRef(0);
@@ -151,6 +155,21 @@ export function LocalConversationSurface({
   const transcriptEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => { persistThreads(threads); }, [threads]);
+
+  // Pure observation from the native agent's existing tool loop. Events never
+  // authorize effects or persist another transcript; completed receipts still
+  // come only from the native command response.
+  useEffect(() => {
+    let stopped = false;
+    let unsubscribe: (() => void) | undefined;
+    void listen<{ conversationId: string; name: string; phase: 'started' | 'completed' | 'failed' }>(
+      'forge-agent-tool-progress', (event) => {
+        if (!stopped) setLiveTool(event.payload);
+      },
+    ).then((unlisten) => { if (stopped) unlisten(); else unsubscribe = unlisten; })
+      .catch(() => { /* Codex CLI or browser-only preview has no native tool events. */ });
+    return () => { stopped = true; unsubscribe?.(); };
+  }, []);
 
   const selectedProvider: LocalProviderChoice = apiSettings?.provider ?? 'codex';
   const activeThreads = useMemo(
@@ -240,7 +259,7 @@ export function LocalConversationSurface({
     setDiffError(undefined);
     setDiffLoading(true);
     try {
-      const response = await invoke<{ stat: string; patch: string; truncated: boolean }>(
+      const response = await invoke<GitDiffReceipt>(
         'read_agent_git_diff', { repoId },
       );
       if (request === diffRequest.current) setDiff(response);
@@ -271,6 +290,8 @@ export function LocalConversationSurface({
     setThreads((current) => current.map((thread) => thread.id === selectedThread.id ? pendingThread : thread));
     setDraft('');
     setSendError(null);
+    setSendingThreadId(selectedThread.id);
+    setLiveTool(undefined);
     setSending(true);
     try {
       const reply = await onSend({ thread: pendingThread, prompt, allowEffects: authorizedEffects });
@@ -291,6 +312,8 @@ export function LocalConversationSurface({
       setSendError('本次回复未确认：' + reason + '。若可能涉及工具操作，请先检查 Forge 结果再决定是否重新发送。');
     } finally {
       setAllowEffects(false);
+      setLiveTool(undefined);
+      setSendingThreadId(undefined);
       setSending(false);
     }
   };
@@ -304,7 +327,7 @@ export function LocalConversationSurface({
         </div>
         <div className="local-toolbar-actions">
           <button className="plain-action" type="button"
-            disabled={!selectedThread?.projectRepoId || sending}
+            disabled={!selectedThread?.projectRepoId}
             aria-expanded={diffVisible && diffRepoId === selectedThread?.projectRepoId}
             onClick={() => void toggleDiff()}>
             {diffVisible && diffRepoId === selectedThread?.projectRepoId ? '收起变更' : '查看变更'}
@@ -376,27 +399,9 @@ export function LocalConversationSurface({
           </div>
 
           {diffVisible && diffRepoId === selectedThread.projectRepoId && (
-            <aside className="local-git-inspector" aria-label="Git 变更审阅">
-              <header>
-                <strong>Changes</strong>
-                <button className="plain-action" type="button" onClick={() => void toggleDiff(true)}>刷新</button>
-                <button className="plain-action" type="button" onClick={() => {
-                  diffRequest.current += 1;
-                  setDiffVisible(false);
-                }}>关闭</button>
-              </header>
-              <p>来自所选项目 Forge Git authority 的只读 Diff</p>
-              {diffLoading && <div role="status" className="local-diff-status">正在读取变更…</div>}
-              {diffError && <p role="alert" className="inline-error">变更读取失败：{diffError}</p>}
-              {!diffLoading && !diffError && diff && (
-                <>
-                  {diff.stat && <pre className="local-diff-stat">{diff.stat}</pre>}
-                  {diff.patch ? <pre className="local-diff-patch">{diff.patch}</pre>
-                    : <div className="local-diff-status">当前没有未提交的 Git Diff</div>}
-                  {diff.truncated && <span className="local-diff-status">输出已截断，请按文件查看完整变更。</span>}
-                </>
-              )}
-            </aside>
+            <AgentGitReview diff={diff} loading={diffLoading} error={diffError}
+              onRefresh={() => void toggleDiff(true)}
+              onClose={() => { diffRequest.current += 1; setDiffVisible(false); }} />
           )}
 
           <div className="local-transcript">
@@ -425,7 +430,16 @@ export function LocalConversationSurface({
                 )}
               </article>
             ))}
-            {sending && <div className="local-pending-message" role="status"><span className="local-pending-indicator" />正在生成回复…</div>}
+            {sending && sendingThreadId === selectedThread.id && (
+              <div className="local-pending-message" role="status">
+                <span className="local-pending-indicator" />
+                {liveTool?.conversationId === selectedThread.id
+                  ? liveTool.phase === 'started' ? '正在执行 Forge 工具 · ' + liveTool.name
+                    : liveTool.phase === 'completed' ? '工具已完成 · ' + liveTool.name + ' · 正在整理回复'
+                      : '工具调用失败 · ' + liveTool.name + ' · 请核对执行结果'
+                  : 'Agent 正在处理请求…'}
+              </div>
+            )}
             <div ref={transcriptEndRef} />
           </div>
 

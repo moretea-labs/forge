@@ -42,7 +42,7 @@ The shipped desktop UI is Chinese-first. Domain IDs, repository names, user-auth
 
 ## Local conversation boundary
 
-Local Thread is client-owned interaction data, not a Forge semantic lifecycle record. Recent-chat navigation in the sidebar is a read-only presentation projection from the existing LocalConversationSurface; the surface alone writes the bounded transcript and provider-specific metadata. The UI renders user/assistant text with safe GitHub-flavored Markdown (without raw HTML), timestamps and a truthful tool-activity count when provided; it does not fabricate tool-call records or imply streaming support before the provider API returns them. Sidebar history excludes unsent empty drafts but does not delete them from the one local transcript owner. An unknown send outcome remains visible and is not automatically retried. It persists a bounded transcript, provider choice (Codex or API), presentation metadata and an optional canonical repository id. Provider-specific threads stay separate: Codex session IDs must not be reused by API conversations. Requirement, Plan, Work, Runtime and connection records are not persisted as client-owned facts.
+Local Thread is client-owned interaction data, not a Forge semantic lifecycle record. Recent-chat navigation in the sidebar is a read-only presentation projection from the existing LocalConversationSurface; the surface alone writes the bounded transcript and provider-specific metadata. The UI renders user/assistant text with safe GitHub-flavored Markdown (without raw HTML), timestamps and truthful tool activity. Native OpenAI/Claude tool calls now emit bounded per-conversation start/completed/failed UI events from the same execution loop; these are presentation-only and never replace the terminal Forge tool receipt. The current provider responses are not token-streamed and Codex CLI events are not implied. Sidebar history excludes unsent empty drafts but does not delete them from the one local transcript owner. An unknown send outcome remains visible and is not automatically retried. It persists a bounded transcript, provider choice (Codex or API), presentation metadata and an optional canonical repository id. Provider-specific threads stay separate: Codex session IDs must not be reused by API conversations. Requirement, Plan, Work, Runtime and connection records are not persisted as client-owned facts.
 
 Current Kernel `ControllerSession` / `ControllerRound` contracts are Work-bound. Local chat does not manufacture Work to obtain session binding. Codex uses the canonical `controller.local_conversation` capability, installed Codex CLI login, and an invocation-scoped Forge MCP principal; it may request Forge tools within existing authorization. The optional API provider supports OpenAI-compatible Chat Completions and native Anthropic Messages, including the providers\u0027 own structured tool-calling protocols. It never silently borrows Codex credentials, fabricates a Work session, or treats external MCP server transport as an execution mode. The native API model requests bounded tools; a one-shot local Bun adapter invokes the existing Forge repository tool owner directly in the disposable local child process, not via MCP HTTP or an independent filesystem/Process authority.
 
@@ -105,6 +105,17 @@ environment and remote task handoff: a local API tool loop cannot provide
 cloud persistence by merely changing a mode label. Add these only against
 existing Forge Source/Process/Work and environment owners; never build a
 second agent coordinator or Git authority inside the WebView.
+
+The optional Agent Git inspector reads the canonical selected repository's bounded
+\`git_diff\` receipt (including \`stat\`, \`patch\`, \`truncated\`). Its per-file
+navigation and line coloring are pure client presentation; it neither edits
+Git nor invents a file status. It remains closed by default, with an overlay
+rather than squeezed chat composer in compact windows. The local API provider
+emits only conversation ID, tool name and phase during execution; no model
+arguments, credentials or source contents are broadcast as events. Unit
+fixtures cover file splitting, deleted files, patch line coloring and bounded
+receipts. Native CI compilation is not a substitute for unlocked macOS
+WebView interactive screenshot acceptance.
 
 **Current validation limitation:** development source can be reviewed and CI
 can run from GitHub while the Mac Forge tunnel is disconnected; no Mac native
