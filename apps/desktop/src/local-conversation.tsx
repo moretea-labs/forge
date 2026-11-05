@@ -94,6 +94,21 @@ export function createThread(
   };
 }
 
+/** Checkout switching never rebinds established messages or provider sessions. */
+export function selectThreadCheckout(
+  thread: LocalConversationThread, provider: LocalProviderChoice, checkoutId: string,
+): { thread: LocalConversationThread; created: boolean } {
+  if (thread.checkoutId === checkoutId) return { thread, created: false };
+  if (thread.messages.length > 0 || thread.providerSessionId) {
+    return { thread: createThread(provider, thread.projectRepoId, undefined, checkoutId), created: true };
+  }
+  return {
+    thread: { ...thread, checkoutId, workId: undefined, providerSessionId: undefined,
+      updatedAt: new Date().toISOString() },
+    created: false,
+  };
+}
+
 /** Repository selection may replace an empty draft, never a transcript or resume handle. */
 export function selectThreadRepository(
   thread: LocalConversationThread, provider: LocalProviderChoice, nextRepoId?: string,
@@ -224,6 +239,11 @@ export function LocalConversationSurface({
   const [diff, setDiff] = useState<GitDiffReceipt>();
   const [diffLoading, setDiffLoading] = useState(false);
   const [diffError, setDiffError] = useState<string>();
+  const [checkoutIndex, setCheckoutIndex] = useState<Array<{
+    checkoutId: string; branch?: string; path?: string; active: boolean;
+  }>>([]);
+  const [checkoutLoading, setCheckoutLoading] = useState(false);
+  const [checkoutError, setCheckoutError] = useState<string>();
   const [workIndex, setWorkIndex] = useState<Array<{ workId: string; objective: string; state: string }>>([]);
   const [workIndexError, setWorkIndexError] = useState<string>();
   const [workDetail, setWorkDetail] = useState<{
@@ -304,6 +324,33 @@ export function LocalConversationSurface({
   }, [selectedThread?.id, selectedThread?.checkoutId, selectedThread?.messages.length,
     selectedThread?.providerSessionId, selectedProject?.checkoutId]);
 
+  // One canonical Repository Registry read; no desktop worktree authority.
+  useEffect(() => {
+    if (!selectedRepoId) {
+      setCheckoutIndex([]); setCheckoutError(undefined); setCheckoutLoading(false);
+      return;
+    }
+    let active = true;
+    setCheckoutLoading(true);
+    setCheckoutIndex([]);
+    setCheckoutError(undefined);
+    void invoke<{ repository?: { checkouts?: Array<{
+      checkoutId: string; branch?: string; path?: string; active?: boolean; lifecycle?: string;
+    }> } }>('read_project_repository', { repoId: selectedRepoId }).then((response) => {
+      if (!active) return;
+      if (!Array.isArray(response.repository?.checkouts)) throw Error('Forge 未返回检出目录');
+      setCheckoutIndex(response.repository.checkouts.filter((checkout) =>
+        checkout.checkoutId && checkout.lifecycle === 'active'
+      ).map((checkout) => ({
+        checkoutId: checkout.checkoutId, branch: checkout.branch,
+        path: checkout.path, active: checkout.active === true,
+      })));
+    }).catch((cause: unknown) => {
+      if (active) setCheckoutError(cause instanceof Error ? cause.message : String(cause));
+    }).finally(() => { if (active) setCheckoutLoading(false); });
+    return () => { active = false; };
+  }, [selectedRepoId]);
+
   useEffect(() => {
     if (!selectedRepoId) { setWorkIndex([]); setWorkIndexError(undefined); return; }
     let active = true;
@@ -344,17 +391,21 @@ export function LocalConversationSurface({
   }, [selectedRepoId, selectedWorkId]);
 
   const projectBindingReady = !selectedRepoId || Boolean(selectedProject);
+  const checkoutBindingReady = !selectedRepoId || Boolean(selectedThread?.checkoutId
+    && checkoutIndex.some((checkout) => checkout.checkoutId === selectedThread.checkoutId));
   const workBindingReady = !selectedWorkId
     || (workDetail?.repoId === selectedRepoId && workDetail?.workId === selectedWorkId);
   const apiSelected = apiSettings?.provider === 'api';
   const loopbackApi = Boolean(apiSettings && /^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::[0-9]+)?(?:\/|$)/.test(apiSettings.endpoint));
   const apiReady = Boolean(apiSettings?.model.trim() && (apiSettings?.hasKey || loopbackApi));
   const providerReady = (apiSelected ? apiReady : provider?.status === 'ready')
-    && Boolean(onSend) && projectBindingReady && workBindingReady;
+    && Boolean(onSend) && projectBindingReady && checkoutBindingReady && workBindingReady;
 
   const addThread = () => {
-    const thread = createThread(selectedProvider, defaultProjectRepoId, undefined,
-      projects.find((project) => project.repoId === defaultProjectRepoId)?.checkoutId);
+    const repoId = selectedThread?.projectRepoId ?? defaultProjectRepoId;
+    const checkoutId = selectedThread?.checkoutId
+      ?? projects.find((project) => project.repoId === repoId)?.checkoutId;
+    const thread = createThread(selectedProvider, repoId, undefined, checkoutId);
     setThreads((current) => [thread, ...current]);
     setSelectedThreadId(thread.id);
     setDraft('');
@@ -407,7 +458,7 @@ export function LocalConversationSurface({
 
   async function toggleDiff(forceRefresh = false, staged = diffStaged) {
     const repoId = selectedThread?.projectRepoId;
-    if (!repoId) return;
+    if (!repoId || !checkoutBindingReady) return;
     if (diffVisible && !forceRefresh && diffRepoId === repoId
       && diffCheckoutId === selectedThread?.checkoutId) {
       diffRequest.current += 1;
@@ -478,7 +529,7 @@ export function LocalConversationSurface({
   const send = async () => {
     const prompt = draft.trim();
     if (!selectedThread || !providerReady || !onSend || !prompt || sending) return;
-    const authorizedEffects = apiSelected && allowEffects && Boolean(selectedProject && selectedThread.checkoutId);
+    const authorizedEffects = apiSelected && allowEffects && Boolean(selectedProject && checkoutBindingReady);
     if (authorizedEffects && !window.confirm(
       '仅本次回复：允许当前 API 模型通过 Forge 修改所选仓库及执行命令。Forge 原有安全检查仍生效。确认授权？'
     )) return;
@@ -570,14 +621,14 @@ export function LocalConversationSurface({
         </div>
         <div className="local-toolbar-actions">
           <button className="plain-action" type="button"
-            disabled={!selectedThread?.projectRepoId}
+            disabled={!selectedThread?.projectRepoId || !checkoutBindingReady || committing}
             aria-expanded={diffVisible && diffRepoId === selectedThread?.projectRepoId}
             onClick={() => void toggleDiff()}>
             {diffVisible && diffRepoId === selectedThread?.projectRepoId ? '收起变更' : '查看变更'}
           </button>
           <button className="plain-action" type="button" disabled={sending || committing} onClick={addThread}>新建会话</button>
           {selectedThread && (
-            <button className="plain-action" type="button" disabled={sending} onClick={() => {
+            <button className="plain-action" type="button" disabled={sending || committing} onClick={() => {
               updateSelected((thread) => ({ ...thread, archived: true, updatedAt: new Date().toISOString() }));
               setSelectedThreadId(activeThreads.find((thread) => thread.id !== selectedThread.id)?.id);
             }}>归档</button>
@@ -611,7 +662,7 @@ export function LocalConversationSurface({
               <span>项目上下文</span>
               <select
                 value={selectedThread.projectRepoId ?? ''}
-                disabled={sending}
+                disabled={sending || committing}
                 onChange={(event) => {
                   const nextRepoId = event.target.value || undefined;
                   if (nextRepoId === selectedThread.projectRepoId) return;
@@ -635,18 +686,43 @@ export function LocalConversationSurface({
                   </option>)}
               </select>
             </label>
-            <span title={selectedThread.checkoutId ?? '未固定检出'}>
-              {selectedProject
-                ? '仓库：' + selectedProject.repository + (selectedThread.checkoutId
-                  ? ' · 检出 ' + selectedThread.checkoutId.slice(0, 12) : ' · 未固定检出（只读）')
-                : '选择项目后启用仓库工具'}
-            </span>
+            {selectedRepoId && <label>
+              <span>执行 Checkout / 分支</span>
+              <select aria-label="Agent 执行的 Git Checkout" value={selectedThread.checkoutId ?? ''}
+                disabled={sending || committing || checkoutLoading || !!checkoutError || checkoutIndex.length === 0}
+                onChange={(event) => {
+                  const nextId = event.target.value;
+                  if (!checkoutIndex.some((checkout) => checkout.checkoutId === nextId)) return;
+                  const choice = selectThreadCheckout(selectedThread, selectedProvider, nextId);
+                  if (choice.created) {
+                    setThreads((current) => [choice.thread, ...current]);
+                    setSelectedThreadId(choice.thread.id);
+                    setDraft('');
+                  } else {
+                    updateSelected(() => choice.thread);
+                  }
+                  setAllowEffects(false); setSendError(null); setDiffVisible(false);
+                  setCommitSuccess(undefined); setCommitError(undefined);
+                }}>
+                {!checkoutBindingReady && <option value={selectedThread.checkoutId ?? ''}>
+                  {checkoutLoading ? '正在读取 Forge 检出目录…' : '未核实的历史检出（只读）'}
+                </option>}
+                {checkoutIndex.map((checkout) => (
+                  <option key={checkout.checkoutId} value={checkout.checkoutId}
+                    title={checkout.path ?? checkout.checkoutId}>
+                    {checkout.branch || 'Detached HEAD'} · {checkout.checkoutId.slice(0, 10)}
+                    {checkout.active ? '（默认）' : ''}
+                  </option>
+                ))}
+              </select>
+            </label>}
+            {checkoutError && <small role="alert">Checkout 目录读取失败：{checkoutError}</small>}
           </div>
           {selectedRepoId && (
             <div className="local-work-context">
               <label>
                 <span>关联已有 Work（可选）</span>
-                <select aria-label="会话关联的 Forge Work" value={selectedWorkId ?? ''} disabled={sending}
+                <select aria-label="会话关联的 Forge Work" value={selectedWorkId ?? ''} disabled={sending || committing}
                   onChange={(event) => {
                     const nextWorkId = event.target.value || undefined;
                     if (nextWorkId === selectedWorkId) return;
@@ -691,6 +767,7 @@ export function LocalConversationSurface({
                 </div>
               )}
               {!projectBindingReady && <small role="alert">此会话引用的项目已不在当前注册目录中，请选择有效项目。</small>}
+              {!checkoutBindingReady && <small role="status">此会话未绑定当前可核实的 Forge Checkout，已禁止执行。</small>}
               {workIndexError && <small role="status">Work 目录读取失败：{workIndexError}</small>}
               {selectedWorkId && !workBindingReady && (
                 <small role="alert">{workDetailError ?? '正在核对 Forge Work 与项目归属…'}</small>
@@ -702,7 +779,7 @@ export function LocalConversationSurface({
             && diffCheckoutId === selectedThread.checkoutId && (
             <AgentGitReview key={`${selectedThread.id}:${diffStaged}`}
               diff={diff} staged={diffStaged} loading={diffLoading} error={diffError}
-              canCommit={Boolean(selectedThread.checkoutId) && !sending}
+              canCommit={checkoutBindingReady && !sending}
               committing={committing} commitError={commitError}
               commitHead={commitSuccess?.threadId === selectedThread.id ? commitSuccess.head : undefined}
               onCommit={(paths, message) => { void commitReviewedFiles(paths, message); }}
@@ -779,8 +856,8 @@ export function LocalConversationSurface({
             />
             {apiSelected && selectedProject && (
               <label className="local-tool-permission">
-                <input type="checkbox" disabled={sending || !selectedThread.checkoutId}
-                  checked={allowEffects && Boolean(selectedThread.checkoutId)}
+                <input type="checkbox" disabled={sending || !checkoutBindingReady}
+                  checked={allowEffects && checkoutBindingReady}
                   onChange={(event) => setAllowEffects(event.target.checked)} />
                 本次允许修改文件及执行命令（发送时确认）
               </label>

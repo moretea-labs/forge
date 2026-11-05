@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { advanceLocalToolProgress, createThread, findExistingWorkThread, selectThreadRepository } from '../src/local-conversation';
+import { advanceLocalToolProgress, createThread, findExistingWorkThread, selectThreadCheckout, selectThreadRepository } from '../src/local-conversation';
 import { repositoryLabel } from '../src/runtime-client';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -114,6 +114,37 @@ describe('Forge Desktop Work-bound Agent thread identity', () => {
     const bounded = selectThreadRepository(avela, 'codex', 'repo_forge', 'checkout_forge');
     expect(bounded.thread.checkoutId).toBe('checkout_forge');
     expect(avela.checkoutId).toBeUndefined();
+  });
+
+  test('checkout switching preserves historical transcript and provider session in its original identity', () => {
+    const original = {
+      ...createThread('api', 'repo_forge', 'work_a', 'checkout_main'),
+      providerSessionId: 'provider-session-1',
+      messages: [{ id: 'msg-1', role: 'user' as const, content: 'run tests', createdAt: '2026-11-05T00:00:00Z' }],
+    };
+    const switchResult = selectThreadCheckout(original, 'api', 'checkout_worktree');
+    expect(switchResult.created).toBe(true);
+    expect(switchResult.thread.checkoutId).toBe('checkout_worktree');
+    expect(switchResult.thread.projectRepoId).toBe('repo_forge');
+    expect(switchResult.thread.messages).toHaveLength(0);
+    expect(switchResult.thread.workId).toBeUndefined();
+    expect(switchResult.thread.providerSessionId).toBeUndefined();
+    expect(switchResult.thread.id).not.toBe(original.id);
+    expect(original.checkoutId).toBe('checkout_main');
+    expect(original.workId).toBe('work_a');
+    expect(original.providerSessionId).toBe('provider-session-1');
+    expect(original.messages[0]?.content).toBe('run tests');
+  });
+
+  test('checkout switching replaces only empty draft and drops stale Work link', () => {
+    const draft = createThread('api', 'repo_forge', 'work_a', 'checkout_main');
+    const switched = selectThreadCheckout(draft, 'api', 'checkout_worktree');
+    expect(switched.created).toBe(false);
+    expect(switched.thread.id).toBe(draft.id);
+    expect(switched.thread.checkoutId).toBe('checkout_worktree');
+    expect(switched.thread.workId).toBeUndefined();
+    expect(draft.checkoutId).toBe('checkout_main');
+    expect(selectThreadCheckout(switched.thread, 'api', 'checkout_worktree').thread).toBe(switched.thread);
   });
 
   test('switching an unsent draft reuses it but clears old Work binding', () => {
