@@ -164,7 +164,7 @@ export function LocalConversationSurface({
 }: {
   projects: ProjectListItemProjection[];
   defaultProjectRepoId?: string;
-  newThreadContext?: { repoId: string; workId: string };
+  newThreadContext?: { repoId: string; workId?: string };
   onOpenWork?: (repoId: string, workId: string) => void;
   onOpenRecord?: (repoId: string, mode: 'requirements' | 'plans', id: string) => void;
   provider: LocalProviderStatusProjection | null;
@@ -176,7 +176,7 @@ export function LocalConversationSurface({
   onNewThreadHandled: () => void;
   openThreadId?: string;
   onOpenThreadHandled: () => void;
-  onThreadsChange: (items: LocalConversationNavItem[], selectedId?: string) => void;
+  onThreadsChange: (items: LocalConversationNavItem[], selectedId?: string, activeRepoId?: string) => void;
   onRefreshProvider: () => Promise<void>;
   onSend?: (input: { thread: LocalConversationThread; prompt: string; allowEffects: boolean }) => Promise<LocalConversationReply>;
   onCancel?: (thread: LocalConversationThread) => Promise<void>;
@@ -244,8 +244,9 @@ export function LocalConversationSurface({
     onThreadsChange(history.map((thread) => ({
       id: thread.id, title: threadLabel(thread), updatedAt: thread.updatedAt,
       provider: thread.provider ?? 'codex',
-    })), selectedThread?.messages.length ? selectedThread.id : undefined);
-  }, [activeThreads, selectedThread?.id, onThreadsChange]);
+    })), selectedThread?.messages.length ? selectedThread.id : undefined,
+      selectedThread?.projectRepoId);
+  }, [activeThreads, selectedThread?.id, selectedThread?.projectRepoId, onThreadsChange]);
 
   useEffect(() => {
     if (!openThreadId) return;
@@ -326,7 +327,7 @@ export function LocalConversationSurface({
     handledNewThread.current = true;
     // Re-enter an existing Work-bound Agent thread rather than manufacturing
     // multiple local transcripts for the same ongoing work.
-    const existing = newThreadContext
+    const existing = newThreadContext?.workId
       ? findExistingWorkThread(threads, selectedProvider, newThreadContext.repoId, newThreadContext.workId)
       : undefined;
     if (existing) {
@@ -549,10 +550,15 @@ export function LocalConversationSurface({
                 }}
               >
                 <option value="">不附加项目（纯对话）</option>
-                {projects.map((project) => <option key={project.repoId} value={project.repoId}>{project.name}</option>)}
+                {projects.map((project) =>
+                  <option key={project.repoId} value={project.repoId}>
+                    {project.name} · {project.repository}
+                  </option>)}
               </select>
             </label>
-            <span>{selectedProject ? '仓库工具仅作用于 ' + selectedProject.name : '选择项目后启用仓库工具'}</span>
+            <span>{selectedProject
+              ? '仓库工具仅作用于 ' + selectedProject.repository
+              : '选择项目后启用仓库工具'}</span>
           </div>
           {selectedRepoId && (
             <div className="local-work-context">

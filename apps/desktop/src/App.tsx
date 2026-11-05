@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   designPreviewProjection,
   disconnectedProjection,
@@ -761,7 +761,7 @@ function AssistantView({
 }: {
   projects: ProjectListItemProjection[];
   defaultProjectRepoId?: string;
-  newThreadContext?: { repoId: string; workId: string };
+  newThreadContext?: { repoId: string; workId?: string };
   onOpenWork: (repoId: string, workId: string) => void;
   onOpenRecord: (repoId: string, mode: 'requirements' | 'plans', id: string) => void;
   provider: LocalProviderStatusProjection | null;
@@ -775,7 +775,7 @@ function AssistantView({
   onNewThreadHandled: () => void;
   openThreadId?: string;
   onOpenThreadHandled: () => void;
-  onThreadsChange: (items: LocalConversationNavItem[], selectedId?: string) => void;
+  onThreadsChange: (items: LocalConversationNavItem[], selectedId?: string, activeRepoId?: string) => void;
   onRefreshProvider: () => Promise<void>;
   onSendLocal: (input: { thread: LocalConversationThread; prompt: string; allowEffects: boolean }) => Promise<LocalConversationReply>;
   onCancelLocal: (thread: LocalConversationThread) => Promise<void>;
@@ -973,6 +973,7 @@ export function App() {
   const [projects, setProjects] = useState<ProjectListItemProjection[]>(preview ? [...designPreviewProjection.projects] : []);
   const [selectedRepoId, setSelectedRepoId] = useState<string | undefined>(preview ? designPreviewProjection.project?.repoId : undefined);
   const [selectedWorkId, setSelectedWorkId] = useState<string | undefined>(preview ? designPreviewProjection.work?.workId : undefined);
+  const projectLoadRevision = useRef(0);
   const [activeView, setActiveView] = useState<AppView>(preview ? 'project' : 'assistant');
   const [requestedRecord, setRequestedRecord] = useState<{
     mode: 'requirements' | 'plans'; id: string;
@@ -990,10 +991,12 @@ export function App() {
   const [localProviderError, setLocalProviderError] = useState<string | null>(null);
   const [localApiSettings, setLocalApiSettings] = useState<LocalApiSettings | null>(null);
   const [newThreadRequested, setNewThreadRequested] = useState(false);
-  const [newThreadContext, setNewThreadContext] = useState<{ repoId: string; workId: string }>();
+  const [newThreadContext, setNewThreadContext] = useState<{ repoId: string; workId?: string }>();
   // Read-only sidebar projection; LocalConversationSurface owns the actual threads.
   const [localThreadNav, setLocalThreadNav] = useState<LocalConversationNavItem[]>([]);
   const [selectedLocalThreadId, setSelectedLocalThreadId] = useState<string | undefined>();
+  // Read-only projection of the Agent owner's selected thread repository.
+  const [activeAgentRepoId, setActiveAgentRepoId] = useState<string | undefined>();
   const [openLocalThreadId, setOpenLocalThreadId] = useState<string | undefined>();
   const [localApiLoading, setLocalApiLoading] = useState(false);
   const [localApiError, setLocalApiError] = useState<string | null>(null);
@@ -1082,9 +1085,23 @@ export function App() {
 
   const loadProject = useCallback(async (project: ProjectListItemProjection, workId?: string) => {
     if (preview || !tauriRuntimeAvailable()) return;
+    const revision = ++projectLoadRevision.current;
+    setSelectedRepoId(project.repoId);
+    setSelectedWorkId(undefined);
+    // A stale Work/Requirement from another repository is never displayed
+    // while the newly selected project is being fetched.
+    setProjection({
+      ...disconnectedProjection,
+      source: 'runtime',
+      projects,
+      runtime: {
+        status: 'connecting', label: '正在加载项目',
+        detail: '正在从 Forge 读取 ' + project.name + ' 的项目记录。',
+      },
+    });
     try {
       const workspace = await readProjectWorkspace(project, workId);
-      setSelectedRepoId(project.repoId);
+      if (revision !== projectLoadRevision.current) return;
       setSelectedWorkId(workspace.work?.workId);
       setProjection({
         source: 'runtime',
@@ -1093,10 +1110,16 @@ export function App() {
         ...workspace,
       });
     } catch (cause) {
-      setProjection((current) => ({
-        ...current,
-        runtime: { status: 'degraded', label: '运行时读取异常', detail: cause instanceof Error ? cause.message : String(cause) },
-      }));
+      if (revision !== projectLoadRevision.current) return;
+      setProjection({
+        ...disconnectedProjection,
+        source: 'runtime',
+        projects,
+        runtime: {
+          status: 'degraded', label: '项目详情读取失败',
+          detail: project.name + '：' + (cause instanceof Error ? cause.message : String(cause)),
+        },
+      });
     }
   }, [preview, projects]);
 
@@ -1196,10 +1219,19 @@ export function App() {
   }, [mcpRefreshing, preview, selectedRepoId, selectedWorkId]);
 
   const handleSelectProject = useCallback(async (project: ProjectListItemProjection) => {
-    setActiveView('works');
-    setSelectedWorkId(undefined);
+    setRequestedRecord(undefined);
+    if (activeView === 'assistant') {
+      // Project selection in Agent switches context in a NEW conversation.
+      // Never repoint existing messages or a provider resume session.
+      if (activeAgentRepoId !== project.repoId) {
+        setNewThreadContext({ repoId: project.repoId });
+        setNewThreadRequested(true);
+      }
+    } else if (activeView === 'project') {
+      setActiveView('works');
+    }
     await loadProject(project);
-  }, [loadProject]);
+  }, [activeView, activeAgentRepoId, loadProject]);
 
   const handleSelectWork = useCallback(async (workId: string) => {
     const project = projects.find((candidate) => candidate.repoId === selectedRepoId);
@@ -1216,9 +1248,12 @@ export function App() {
     await loadProject(selectedProject, projection.work.workId);
   }, [loadProject, projection, projects]);
 
-  const handleLocalThreadNavigation = useCallback((threads: LocalConversationNavItem[], selectedId?: string) => {
+  const handleLocalThreadNavigation = useCallback((
+    threads: LocalConversationNavItem[], selectedId?: string, activeRepoId?: string,
+  ) => {
     setLocalThreadNav(threads);
     setSelectedLocalThreadId(selectedId);
+    setActiveAgentRepoId(activeRepoId);
   }, []);
   const handleSelectLocalThread = useCallback((id: string) => {
     setOpenLocalThreadId(id);
@@ -1244,15 +1279,19 @@ export function App() {
     setNewThreadRequested(true);
   }, []);
 
-  const handleOpenProjects = useCallback(() => setActiveView('works'), []);
-  const handleOpenRequirements = useCallback(() => {
+  const openProjectSection = useCallback((section: 'works' | 'requirements' | 'plans' | 'knowledge') => {
+    // When leaving Agent for project assets, browse the Agent's actual repo,
+    // not a different workspace that happened to be loaded earlier.
+    if (activeView === 'assistant' && activeAgentRepoId && activeAgentRepoId !== selectedRepoId) {
+      const project = projects.find((entry) => entry.repoId === activeAgentRepoId);
+      if (project) void loadProject(project);
+    }
     setRequestedRecord(undefined);
-    setActiveView('requirements');
-  }, []);
-  const handleOpenPlans = useCallback(() => {
-    setRequestedRecord(undefined);
-    setActiveView('plans');
-  }, []);
+    setActiveView(section);
+  }, [activeView, activeAgentRepoId, selectedRepoId, projects, loadProject]);
+  const handleOpenProjects = useCallback(() => openProjectSection('works'), [openProjectSection]);
+  const handleOpenRequirements = useCallback(() => openProjectSection('requirements'), [openProjectSection]);
+  const handleOpenPlans = useCallback(() => openProjectSection('plans'), [openProjectSection]);
   const handleNavigateRecord = useCallback((mode: 'requirements' | 'plans', id: string) => {
     setRequestedRecord({ mode, id });
     setActiveView(mode);
@@ -1284,7 +1323,7 @@ export function App() {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [handleNewThread]);
 
-  const handleOpenKnowledge = useCallback(() => setActiveView('knowledge'), []);
+  const handleOpenKnowledge = useCallback(() => openProjectSection('knowledge'), [openProjectSection]);
   const handleOpenSettings = useCallback(() => setActiveView('settings'), []);
 
   const handleOpenRuntime = useCallback(async () => {
@@ -1364,7 +1403,7 @@ export function App() {
     <div className="app-shell">
       <Sidebar
         projects={projects}
-        selectedRepoId={selectedRepoId}
+        selectedRepoId={activeView === 'assistant' ? activeAgentRepoId : selectedRepoId}
         activeView={activeView}
         runtimeLabel={runtimeLabel}
         runtimeStatus={runtimeStatus}
@@ -1408,7 +1447,7 @@ export function App() {
       <div className="agent-view-preserved" hidden={activeView !== 'assistant'}>
         <AssistantView
           projects={projects}
-          defaultProjectRepoId={selectedRepoId}
+          defaultProjectRepoId={activeAgentRepoId ?? selectedRepoId}
           newThreadContext={newThreadContext}
           onOpenWork={(repoId, workId) => { void handleOpenWorkFromAgent(repoId, workId); }}
           onOpenRecord={(repoId, mode, id) => { void handleOpenRecordFromAgent(repoId, mode, id); }}

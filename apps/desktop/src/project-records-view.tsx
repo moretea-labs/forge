@@ -143,7 +143,11 @@ export function ProjectRecordsView({
         <p>{explanations[mode]}</p>
       </header>
       {!projection.project ? (
-        <div className="records-empty">从左侧选择已注册项目，再查看项目资产。</div>
+        <div className="records-empty" role="status">
+          {projection.runtime.status === 'degraded' || projection.runtime.status === 'connecting'
+            ? projection.runtime.detail
+            : '从左侧选择已注册项目，再查看项目资产。'}
+        </div>
       ) : (
         <>
           <div className="records-context">

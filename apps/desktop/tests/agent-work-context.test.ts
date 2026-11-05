@@ -1,8 +1,29 @@
 import { describe, expect, test } from 'bun:test';
 import { advanceLocalToolProgress, createThread, findExistingWorkThread } from '../src/local-conversation';
 import { repositoryLabel } from '../src/runtime-client';
+import { createElement } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { ProjectRecordsView } from '../src/project-records-view';
+import { disconnectedProjection } from '../src/runtime-projection';
 
 describe('Forge Desktop Work-bound Agent thread identity', () => {
+  test('failed project read reports the selected project failure rather than showing stale records', () => {
+    const html = renderToStaticMarkup(createElement(ProjectRecordsView, {
+      mode: 'works',
+      projection: {
+        ...disconnectedProjection,
+        source: 'runtime',
+        runtime: { status: 'degraded', label: '项目详情读取失败', detail: 'yaozhunshi：Forge 返回了错误' },
+      },
+      onSelectWork() {},
+      onNavigateRecord() {},
+      async onRefresh() {},
+    }));
+    expect(html).toContain('yaozhunshi：Forge 返回了错误');
+    expect(html).not.toContain('从左侧选择已注册项目');
+    expect(html).not.toContain('相同 Requirement 下的其他 Work');
+  });
+
   test('disambiguates misleading registry display names using actual repository identity', () => {
     const design = {
       repoId: 'repo_design', displayName: 'Avela',

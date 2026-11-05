@@ -100,7 +100,14 @@ the picker always renders the actual repository directory basename (or GitHub
 owner/repo), keeps the full localRoot as a tooltip/search term, and never infers
 project identity from a friendly name alone. For example, the historical Avela
 label on repo-harness-design must not be confused with the registered
-yaozhunshi repository named Avela Yi Fu Yao. Registry facts are unchanged. The independent main navigation has **Work,
+yaozhunshi repository named Avela Yi Fu Yao. Registry facts are unchanged. Agent navigation projects the *selected
+thread's* repository into the left project switcher; Work/Plan/Requirement/
+Knowledge navigation from Agent loads that same repo, even if the background
+project workspace had a different selection. Explicit project switching from
+Agent creates a new conversation rather than reassigning prior messages. An
+in-flight project load clears old repository semantic records immediately and
+uses the latest request revision; a failed load displays its error rather than
+the previous project's Work. The independent main navigation has **Work,
 Requirement and Plan** record browsers, plus Knowledge and Settings. Selecting
 a Work opens its canonical execution/evidence detail; selecting a Requirement
 or Plan reads its canonical detail command and displays explicit related Work
