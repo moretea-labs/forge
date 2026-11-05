@@ -8,8 +8,9 @@ import { buildClaudeControllerInvocation, buildCodexControllerInvocation, buildS
 import { parseCodexConversationJsonl } from '../../src/runtime/control-plane/launcher/local-conversation-controller';
 import { RH_WORK_MODEL_OPERATIONS, isRhWorkAcceptedOperation } from '../../src/runtime/control-plane/facade/rh-work-operation-contract';
 import { runtimeToolDefinitions } from '../../adapters/mcp/runtime-gateway/runtime-tool-definitions';
+import { repositoryToolDefinitions } from '../../adapters/mcp/tool-mapping/repository-tools';
 import { mcpServerInstructions } from '../../adapters/mcp/instructions';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { normalizeRhWorkInputWireMigration } from '../../adapters/mcp/runtime-gateway/work-input-wire-migration';
@@ -23,14 +24,24 @@ import {
 } from '../../src/runtime/control-plane/facade/types';
 
 describe('handoff and facade contracts', () => {
-  test('Controller MCP instructions require progressive cross-entry discovery and independent requirement close review', () => {
+  test('Controller MCP instructions align GitHub progress authority and prevent unbounded ChatGPT waits', () => {
     const guidance = mcpServerInstructions('controller');
     expect(guidance).toContain('Progressive source discovery');
     expect(guidance).toContain('unmodified entry points');
-    expect(guidance).toContain('independent acceptance review');
-    expect(guidance).toContain('Requirement remains open');
+    expect(guidance).toContain('Independent review is optional');
+    expect(guidance).toContain('a green check or merged PR alone is insufficient');
     expect(guidance).toContain('source-language search terms');
     expect(guidance).toContain('no fixed search quota');
+    expect(guidance).toContain('Forge source uses GitHub Issue/Project');
+    const repositoryGuidance = readFileSync(join(import.meta.dir, '../../AGENTS.md'), 'utf8');
+    expect(repositoryGuidance).toContain('then end the ChatGPT response rather than holding the turn in');
+    expect(guidance).toContain('end the ChatGPT response rather than holding the turn in thinking or polling');
+    expect(guidance).toContain('continue_independent_work');
+    expect(guidance).not.toContain('The Writer cannot self-approve final issue closure.');
+    const executeCommand = repositoryToolDefinitions.find((definition) => definition.name === 'execute_command');
+    const executeSchema = executeCommand?.inputSchema as { properties?: { workspace_root?: { description?: string } } } | undefined;
+    const executeDescription = executeSchema?.properties?.workspace_root?.description;
+    expect(executeDescription).toContain('capped at 30 seconds');
   });
 
   test('flags negated issue-closing phrases before GitHub interprets them as automatic completion', () => {
