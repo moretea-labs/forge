@@ -18,7 +18,7 @@ import {
 import { recoverControllerAuthority } from '../../../src/runtime/control-plane/execution/controller-authority-recovery';
 import { authenticatedFacadeControllerIdentity, runtimeIdentitySnapshot } from './controller-authority-adapter';
 import { readControllerConnectionSnapshot, repairControllerConnection } from '../../../src/runtime/control-plane/facade/controller-connection';
-import { readLocalConversationProviderStatus, sendLocalConversation } from '../../../src/runtime/control-plane/launcher/local-conversation-controller';
+import { cancelLocalConversation, readLocalConversationProviderStatus, sendLocalConversation } from '../../../src/runtime/control-plane/launcher/local-conversation-controller';
 
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
@@ -43,6 +43,7 @@ export async function callCoreCapabilityAdapter(
     }
     if (capabilityId === 'controller.local_conversation') {
       if (action === 'status') return result({ ...readLocalConversationProviderStatus() });
+      if (action === 'cancel') return result(cancelLocalConversation(String(input.conversation_id ?? '')));
       if (action === 'send') {
         const conversationId = typeof input.conversation_id === 'string' ? input.conversation_id.trim() : '';
         const prompt = typeof input.prompt === 'string' ? input.prompt.trim() : '';

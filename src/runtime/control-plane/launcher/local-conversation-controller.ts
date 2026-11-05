@@ -1,4 +1,4 @@
-import { spawn } from 'child_process';
+import { spawn, type ChildProcess } from 'child_process';
 import { mkdirSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -15,6 +15,25 @@ const LOCAL_CONVERSATION_MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
 const LOCAL_CONVERSATION_MAX_PROMPT_CHARS = 20_000;
 const LOCAL_CONVERSATION_ID = /^[A-Za-z0-9._:-]{1,160}$/;
 
+// Transient process handles live only in the existing local conversation
+// owner. Nothing in this map is durable Work or provider session authority.
+const activeLocalTurns = new Map<string, { child: ChildProcess; cancelRequested: boolean }>();
+
+export function cancelLocalConversation(conversationId: string): {
+  conversationId: string; status: 'requested' | 'not_active';
+} {
+  if (!LOCAL_CONVERSATION_ID.test(conversationId)) throw Error('LOCAL_CONVERSATION_ID_INVALID');
+  const turn = activeLocalTurns.get(conversationId);
+  if (!turn) return { conversationId, status: 'not_active' };
+  if (!turn.cancelRequested) {
+    if (!turn.child.kill('SIGTERM')) return { conversationId, status: 'not_active' };
+    turn.cancelRequested = true;
+  }
+  // Signalling is not proof that a Forge MCP effect was rolled back.
+  return { conversationId, status: 'requested' };
+}
+
+
 export interface LocalConversationProviderStatus {
   provider: 'codex';
   status: 'ready' | 'not_configured' | 'unavailable';
@@ -22,6 +41,7 @@ export interface LocalConversationProviderStatus {
   detail: string;
   streaming: boolean;
   tools: boolean;
+  cancellable: boolean;
 }
 
 export interface LocalConversationSendInput {
@@ -128,6 +148,7 @@ export function readLocalConversationProviderStatus(cwd: string = process.cwd())
       detail: '使用 Codex CLI 的现有登录；Forge 操作通过当前 Runtime MCP capability 执行。',
       streaming: false,
       tools: true,
+      cancellable: true,
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -139,23 +160,30 @@ export function readLocalConversationProviderStatus(cwd: string = process.cwd())
       detail: missing ? '安装并登录 Codex CLI 后即可使用本地会话。' : message,
       streaming: false,
       tools: false,
+      cancellable: true,
     };
   }
 }
 
-function runCodexConversation(
+export function runCodexConversation(
   executable: string,
   args: string[],
   env: NodeJS.ProcessEnv,
   cwd: string,
   timeoutMs: number,
+  conversationId: string,
 ): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
+    if (activeLocalTurns.has(conversationId)) {
+      throw Error('LOCAL_CONVERSATION_ALREADY_RUNNING');
+    }
     const child = spawn(executable, args, {
       cwd,
       env,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
+    const active = { child, cancelRequested: false };
+    activeLocalTurns.set(conversationId, active);
     let stdout = '';
     let stderr = '';
     let settled = false;
@@ -178,9 +206,14 @@ function runCodexConversation(
     child.stderr?.on('data', (chunk) => { stderr = append(stderr, chunk, 'stderr'); });
     child.once('error', (error) => fail(new Error(`LOCAL_CONVERSATION_PROVIDER_START_FAILED: ${error.message}`)));
     child.once('close', (code, signal) => {
+      if (activeLocalTurns.get(conversationId) === active) activeLocalTurns.delete(conversationId);
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      if (active.cancelRequested) {
+        reject(new Error('LOCAL_CONVERSATION_CANCELLED_RECONCILE: Codex stopped; any in-flight Forge tool needs independent outcome verification.'));
+        return;
+      }
       if (code !== 0) {
         const detail = redactProcessOutput(stderr.trim() || stdout.trim()).replace(/\s+/g, ' ').slice(0, 1200);
         reject(new Error(`LOCAL_CONVERSATION_PROVIDER_FAILED: code=${String(code ?? 'null')} signal=${signal ?? 'none'}${detail ? `; ${detail}` : ''}`));
@@ -223,6 +256,7 @@ export async function sendLocalConversation(input: LocalConversationSendInput): 
     launcherProcessEnvironment(bootstrap.env),
     cwd,
     boundedTimeout(input.timeoutMs),
+    conversationId,
   );
   const parsed = parseCodexConversationJsonl(completed.stdout);
   const resolvedProviderSessionId = parsed.providerSessionId ?? providerSessionId;

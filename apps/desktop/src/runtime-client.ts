@@ -139,6 +139,7 @@ export interface LocalProviderStatusProjection {
   detail: string;
   streaming: boolean;
   tools: boolean;
+  cancellable?: boolean;
 }
 
 export interface LocalConversationSendProjection {
@@ -190,6 +191,11 @@ export async function readLocalProviderStatus(): Promise<LocalProviderStatusProj
   } catch (error) {
     throw localizeRuntimeError(error);
   }
+}
+
+export async function cancelLocalConversation(conversationId: string): Promise<void> {
+  const receipt = await invoke<{ requested: boolean }>('cancel_local_conversation', { conversationId });
+  if (receipt.requested !== true) throw Error('FORGE_DESKTOP_LOCAL_CONVERSATION_CANCEL_UNCONFIRMED');
 }
 
 export async function sendLocalConversation(input: {

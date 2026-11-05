@@ -3,7 +3,7 @@
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tauri::{Emitter, Manager};
-use std::{env, fs, path::{Path, PathBuf}, time::{SystemTime, UNIX_EPOCH}};
+use std::{collections::HashMap, env, fs, path::{Path, PathBuf}, sync::Mutex, time::{SystemTime, UNIX_EPOCH}};
 
 const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
 
@@ -578,6 +578,24 @@ async fn send_local_conversation(
 }
 
 #[tauri::command]
+async fn cancel_local_conversation(conversation_id: String) -> Result<Value, String> {
+    if conversation_id.is_empty() || conversation_id.len() > 160
+        || !conversation_id.chars().all(|character| character.is_ascii_alphanumeric() || "._:-".contains(character)) {
+        return Err("FORGE_DESKTOP_CONVERSATION_INVALID".into());
+    }
+    let receipt = call_runtime_tool("capability_execute", json!({
+        "capability_id": "controller.local_conversation",
+        "action": "cancel",
+        "arguments": { "conversation_id": conversation_id },
+        "request_id": request_id("local-conversation-cancel"),
+    })).await?;
+    if receipt.get("status").and_then(Value::as_str) != Some("requested") {
+        return Err("FORGE_DESKTOP_LOCAL_CONVERSATION_NOT_ACTIVE".into());
+    }
+    Ok(json!({"requested":true,"conversationId":conversation_id}))
+}
+
+#[tauri::command]
 async fn read_connection_status() -> Result<Value, String> {
     call_runtime_tool("capability_execute", json!({
         "capability_id": "controller.connection",
@@ -894,6 +912,35 @@ fn provider_tool_calls(protocol: &str, output: &Value) -> Result<Vec<(String, St
     Ok(requests)
 }
 
+// One transient cancel handle per active native API conversation. This is
+// execution control only: Forge remains the sole Process / repository owner.
+#[derive(Default)]
+struct LocalApiTurnRegistry(Mutex<HashMap<String, tokio::sync::watch::Sender<bool>>>);
+
+struct LocalApiTurnRegistration {
+    app: tauri::AppHandle,
+    conversation_id: String,
+}
+impl Drop for LocalApiTurnRegistration {
+    fn drop(&mut self) {
+        if let Ok(mut turns) = self.app.state::<LocalApiTurnRegistry>().0.lock() {
+            turns.remove(&self.conversation_id);
+        }
+    }
+}
+
+#[tauri::command]
+async fn cancel_local_api_conversation(
+    app: tauri::AppHandle, conversation_id: String,
+) -> Result<Value, String> {
+    let registry = app.state::<LocalApiTurnRegistry>();
+    let turns = registry.0.lock().map_err(|_| "FORGE_DESKTOP_API_TURN_REGISTRY_FAILED")?;
+    let sender = turns.get(&conversation_id)
+        .ok_or("FORGE_DESKTOP_API_TURN_NOT_ACTIVE")?;
+    sender.send(true).map_err(|_| "FORGE_DESKTOP_API_TURN_NOT_ACTIVE")?;
+    Ok(json!({"requested":true,"conversationId":conversation_id}))
+}
+
 async fn request_local_api_round(
     client: &reqwest::Client,
     endpoint: &str,
@@ -928,11 +975,34 @@ async fn request_local_api_round(
     serde_json::from_slice(&bytes).map_err(|_| "FORGE_DESKTOP_API_RESPONSE_INVALID".into())
 }
 
+async fn request_local_api_round_cancellable(
+    client: &reqwest::Client,
+    endpoint: &str,
+    protocol: &str,
+    key: Option<&str>,
+    body: &Value,
+    cancellation: &mut tokio::sync::watch::Receiver<bool>,
+) -> Result<Value, String> {
+    if *cancellation.borrow() { return Err("FORGE_DESKTOP_API_TURN_CANCELLED".into()); }
+    tokio::select! {
+        biased;
+        changed = cancellation.changed() => {
+            if changed.is_ok() && *cancellation.borrow() {
+                Err("FORGE_DESKTOP_API_TURN_CANCELLED".into())
+            } else {
+                Err("FORGE_DESKTOP_API_CANCEL_CHANNEL_CLOSED".into())
+            }
+        }
+        value = request_local_api_round(client, endpoint, protocol, key, body) => value,
+    }
+}
+
 #[tauri::command]
 async fn send_local_api_conversation(
     app: tauri::AppHandle,
     messages: Vec<Value>,
     repo_id: Option<String>,
+    work_id: Option<String>,
     conversation_id: String,
     allow_effects: bool,
 ) -> Result<Value, String> {
@@ -953,6 +1023,12 @@ async fn send_local_api_conversation(
     let repo_id = repo_id.filter(|value| !value.trim().is_empty());
     if repo_id.as_ref().is_some_and(|value| value.len() > 256) {
         return Err("FORGE_DESKTOP_API_REPOSITORY_INVALID".into());
+    }
+    let work_id = work_id.filter(|value| !value.trim().is_empty());
+    if work_id.as_ref().is_some_and(|value| value.len() > 256 || !value.chars().all(
+        |character| character.is_ascii_alphanumeric() || "._:-".contains(character)
+    )) || (work_id.is_some() && repo_id.is_none()) {
+        return Err("FORGE_DESKTOP_API_WORK_BINDING_INVALID".into());
     }
     let mut total = 0usize;
     let mut history = Vec::with_capacity(messages.len() + 15);
@@ -984,9 +1060,52 @@ async fn send_local_api_conversation(
     } else {
         "You are the Forge Desktop assistant. No Forge project is attached: tools are disabled. Do not invent repository changes or imply that you ran a command. Ask the user to attach a project to work on files.".to_string()
     };
+    let (cancel_sender, mut cancel_receiver) = tokio::sync::watch::channel(false);
+    {
+        let registry = app.state::<LocalApiTurnRegistry>();
+        let mut turns = registry.0.lock().map_err(|_| "FORGE_DESKTOP_API_TURN_REGISTRY_FAILED")?;
+        if turns.contains_key(&conversation_id) {
+            return Err("FORGE_DESKTOP_API_TURN_ALREADY_RUNNING".into());
+        }
+        turns.insert(conversation_id.clone(), cancel_sender);
+    }
+    let _registration = LocalApiTurnRegistration {
+        app: app.clone(), conversation_id: conversation_id.clone(),
+    };
+    let system_instruction = if let (Some(repo_id), Some(work_id)) = (&repo_id, &work_id) {
+        // Authoritative read at the actual send boundary. A forged UI Work id
+        // cannot become a semantic task in the model's system instruction.
+        let receipt = tokio::select! {
+            result = call_runtime_tool("rh_work", json!({
+                "repo_id": repo_id,
+                "operation": "get",
+                "work_id": work_id,
+                "detail_level": "summary",
+                "request_id": request_id("agent-read-bound-work"),
+            })) => result?,
+            changed = cancel_receiver.changed() => {
+                if changed.is_ok() && *cancel_receiver.borrow() {
+                    return Err("FORGE_DESKTOP_API_TURN_CANCELLED".into());
+                }
+                return Err("FORGE_DESKTOP_API_CANCEL_CHANNEL_CLOSED".into());
+            }
+        };
+        let work = receipt.pointer("/data/work")
+            .filter(|value| value.get("workId").and_then(Value::as_str) == Some(work_id))
+            .ok_or("FORGE_DESKTOP_API_BOUND_WORK_NOT_FOUND")?;
+        let objective = work.get("objective").and_then(Value::as_str)
+            .unwrap_or("").chars().take(1000).collect::<String>();
+        let requirement = work.get("requirementId").and_then(Value::as_str).unwrap_or("unbound");
+        let plan = work.get("planId").and_then(Value::as_str).unwrap_or("unbound");
+        let state = work.get("state").and_then(Value::as_str).unwrap_or("unknown");
+        format!("{system_instruction} Canonical Forge Work {work_id} (state={state}, requirement={requirement}, plan={plan}); objective: {objective}. The linked Work is existing, not newly created. Neither model text nor a completed tool call changes Work/Requirement/Plan lifecycle. This API tool catalog cannot mutate semantic Work: report required lifecycle changes rather than claiming to have persisted them.")
+    } else { system_instruction };
     let mut tool_events: Vec<Value> = Vec::new();
     let mut total_calls = 0usize;
     for _round in 0..6 {
+        if *cancel_receiver.borrow() {
+            return Err("FORGE_DESKTOP_API_TURN_CANCELLED".into());
+        }
         let provider_body = if protocol == "anthropic" {
             let tools: Vec<Value> = available_tools.iter().map(|tool| json!({
                 "name": tool.pointer("/function/name"),
@@ -1009,8 +1128,11 @@ async fn send_local_api_conversation(
             if !available_tools.is_empty() { body["tools"] = Value::Array(available_tools.clone()); }
             body
         };
-        let output = request_local_api_round(
-            &client, &endpoint, protocol, key.as_deref(), &provider_body
+        // Cancel only the in-flight *model request*, never a started Forge
+        // repository effect. Requests may already have reached a provider.
+        let output = request_local_api_round_cancellable(
+            &client, &endpoint, protocol, key.as_deref(), &provider_body,
+            &mut cancel_receiver,
         ).await?;
         let requests = provider_tool_calls(protocol, &output)?;
         if protocol == "anthropic" {
@@ -1041,6 +1163,9 @@ async fn send_local_api_conversation(
         }
         let mut tool_results = Vec::new();
         for (id, name, mut args) in requests {
+            if *cancel_receiver.borrow() {
+                return Err("FORGE_DESKTOP_API_TURN_CANCELLED".into());
+            }
             if id.is_empty() || name.is_empty() || !args.is_object()
                 || !available_tools.iter().any(|tool| tool.pointer("/function/name").and_then(Value::as_str) == Some(&name)) {
                 return Err("FORGE_DESKTOP_API_TOOL_NOT_AUTHORIZED".into());
@@ -1078,6 +1203,14 @@ async fn send_local_api_conversation(
             } else {
                 result.get("ok").and_then(Value::as_bool) == Some(true)
             };
+            // A cancel that arrives during a Forge tool must wait for the tool
+            // receipt. Never report the effect itself as rolled back.
+            if *cancel_receiver.borrow() {
+                return Err(if effectful {
+                    format!("FORGE_DESKTOP_API_TURN_CANCELLED_AFTER_TOOL:{}",
+                        effect_request_id.as_deref().unwrap_or("unknown"))
+                } else { "FORGE_DESKTOP_API_TURN_CANCELLED".into() });
+            }
             tool_events.push(json!({ "name": name, "ok": ok,
                 "requestId": effect_request_id }));
             let _ = app.emit("forge-agent-tool-progress", json!({
@@ -1113,6 +1246,7 @@ async fn send_local_api_conversation(
 
 fn main() {
     tauri::Builder::default()
+        .manage(LocalApiTurnRegistry::default())
         .invoke_handler(tauri::generate_handler![
             read_recovery_status,
             read_recovery_history,
@@ -1132,10 +1266,12 @@ fn main() {
             read_local_provider_status,
             read_project_knowledge,
             send_local_conversation,
+            cancel_local_conversation,
             read_local_api_settings,
             save_local_api_settings,
             clear_local_api_key,
             send_local_api_conversation,
+            cancel_local_api_conversation,
             read_connection_status,
             repair_connection
         ])
@@ -1253,6 +1389,40 @@ mod tests {
         let broken = json!({"choices":[{"message":{"tool_calls":[{"id":"bad",
             "function":{"name":"read_file","arguments":"{"}}]}}]});
         assert!(provider_tool_calls("openai", &broken).is_err());
+    }
+
+    #[test]
+    fn model_http_wait_cancels_without_claiming_a_tool_was_cancelled() {
+        use std::{io::Read, net::TcpListener, thread, time::Duration};
+        let listener = TcpListener::bind("127.0.0.1:0").expect("mock socket");
+        let port = listener.local_addr().expect("mock port").port();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().expect("request accepted");
+            socket.set_read_timeout(Some(Duration::from_secs(3))).expect("timeout");
+            let mut buf = [0u8; 2048];
+            let received = socket.read(&mut buf).expect("request headers");
+            assert!(received > 0);
+            // Simulate an API provider that would not reply promptly.
+            thread::sleep(Duration::from_millis(300));
+        });
+        let result = tauri::async_runtime::block_on(async {
+            let (tx, mut cancellation) = tokio::sync::watch::channel(false);
+            let cancel = tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                tx.send(true).expect("cancel receiver active");
+            });
+            let client = reqwest::Client::builder().timeout(Duration::from_secs(3))
+                .build().expect("client");
+            let result = request_local_api_round_cancellable(
+                &client, &format!("http://127.0.0.1:{port}/v1"), "openai", None,
+                &json!({"model":"test-model","messages":[{"role":"user","content":"test"}]}),
+                &mut cancellation,
+            ).await;
+            cancel.await.expect("cancel delivered");
+            result
+        });
+        assert_eq!(result.unwrap_err(), "FORGE_DESKTOP_API_TURN_CANCELLED");
+        server.join().expect("server joined");
     }
 
     #[test]

@@ -17,6 +17,7 @@ import {
   readProjectWorkspace,
   repairConnection,
   sendLocalConversation,
+  cancelLocalConversation,
   tauriRuntimeAvailable,
   type LocalProviderStatusProjection,
 } from './runtime-client';
@@ -24,7 +25,7 @@ import { LocalConversationSurface, type LocalConversationReply, type LocalConver
 import { ProjectRecordsView } from './project-records-view';
 import { KnowledgeView } from './knowledge-view';
 import { SettingsView } from './settings-view';
-import { readLocalApiSettings, saveLocalApiSettings, clearLocalApiKey, sendLocalApiConversation, type LocalApiSettings, type LocalProviderChoice } from './local-api';
+import { readLocalApiSettings, saveLocalApiSettings, clearLocalApiKey, sendLocalApiConversation, cancelLocalApiConversation, type LocalApiSettings, type LocalProviderChoice } from './local-api';
 import {
   performRecoveryAction,
   readRecoveryStatus,
@@ -240,6 +241,7 @@ function WorkView({
   onContinue,
   onSelectWork,
   onNavigateRecord,
+  onStartAgentForWork,
 }: {
   projection: ForgeDesktopProjection;
   refreshing: boolean;
@@ -248,6 +250,7 @@ function WorkView({
   onContinue?: (prompt: string) => Promise<void>;
   onSelectWork?: (workId: string) => void;
   onNavigateRecord?: (mode: 'requirements' | 'plans', id: string) => void;
+  onStartAgentForWork?: (repoId: string, workId: string) => void;
 }) {
   const work = projection.work;
   // Current and bounded history only: these links are not an exhaustive
@@ -424,9 +427,16 @@ function WorkView({
             <h1>{work.title}</h1>
             {work.continuationPrompt && <p>{work.continuationPrompt}</p>}
           </div>
-          <button className="plain-action" type="button" disabled={!onRefresh || refreshing} onClick={() => void onRefresh?.()}>
-            {refreshing ? '刷新中…' : '刷新'}
-          </button>
+          <div className="work-hero-actions">
+            {projection.project && <button type="button" className="work-agent-action"
+              onClick={() => onStartAgentForWork?.(projection.project!.repoId, work.workId)}
+              disabled={!onStartAgentForWork}>
+              在 Agent 中继续
+            </button>}
+            <button className="plain-action" type="button" disabled={!onRefresh || refreshing} onClick={() => void onRefresh?.()}>
+              {refreshing ? '刷新中…' : '刷新'}
+            </button>
+          </div>
         </header>
 
         {refreshError && <div className="inline-error mcp-refresh-error">刷新失败：{refreshError}</div>}
@@ -678,10 +688,13 @@ function WorkView({
         </details>
       </div>
 
-      <div className="composer-wrap">
-        <div className="composer">
+      <details className="work-service-continuation">
+        <summary>通过 Forge 工作流继续此 Work（高级）</summary>
+        <p>这是已有 Work 的服务端执行入口，不是本地 Agent 聊天。日常任务建议使用上方“在 Agent 中继续”。</p>
+        <div className="composer-wrap">
+          <div className="composer">
           <textarea
-            aria-label="从当前工作启动会话"
+            aria-label="继续现有 Forge Work"
             placeholder="描述你想推进的工作…"
             rows={3}
             value={draft}
@@ -707,10 +720,11 @@ function WorkView({
                   setSending(false);
                 }
               }}
-            >{sending ? '启动中…' : '启动会话'}</button>
+            >{sending ? '提交中…' : '提交到 Forge 工作流'}</button>
+          </div>
           </div>
         </div>
-      </div>
+      </details>
     </main>
   );
 }
@@ -718,6 +732,9 @@ function WorkView({
 function AssistantView({
   projects,
   defaultProjectRepoId,
+  newThreadContext,
+  onOpenWork,
+  onOpenRecord,
   provider,
   providerLoading,
   providerError,
@@ -732,9 +749,13 @@ function AssistantView({
   onThreadsChange,
   onRefreshProvider,
   onSendLocal,
+  onCancelLocal,
 }: {
   projects: ProjectListItemProjection[];
   defaultProjectRepoId?: string;
+  newThreadContext?: { repoId: string; workId: string };
+  onOpenWork: (repoId: string, workId: string) => void;
+  onOpenRecord: (repoId: string, mode: 'requirements' | 'plans', id: string) => void;
   provider: LocalProviderStatusProjection | null;
   providerLoading: boolean;
   providerError: string | null;
@@ -749,6 +770,7 @@ function AssistantView({
   onThreadsChange: (items: LocalConversationNavItem[], selectedId?: string) => void;
   onRefreshProvider: () => Promise<void>;
   onSendLocal: (input: { thread: LocalConversationThread; prompt: string; allowEffects: boolean }) => Promise<LocalConversationReply>;
+  onCancelLocal: (thread: LocalConversationThread) => Promise<void>;
 }) {
   return (
     <main className="main-pane assistant-pane">
@@ -762,6 +784,9 @@ function AssistantView({
         <LocalConversationSurface
           projects={projects}
           defaultProjectRepoId={defaultProjectRepoId}
+          newThreadContext={newThreadContext}
+          onOpenWork={onOpenWork}
+          onOpenRecord={onOpenRecord}
           provider={provider}
           providerLoading={providerLoading}
           providerError={providerError}
@@ -774,6 +799,7 @@ function AssistantView({
           onThreadsChange={onThreadsChange}
           onRefreshProvider={onRefreshProvider}
           onSend={onSendLocal}
+          onCancel={onCancelLocal}
         />
       </div>
     </main>
@@ -956,6 +982,7 @@ export function App() {
   const [localProviderError, setLocalProviderError] = useState<string | null>(null);
   const [localApiSettings, setLocalApiSettings] = useState<LocalApiSettings | null>(null);
   const [newThreadRequested, setNewThreadRequested] = useState(false);
+  const [newThreadContext, setNewThreadContext] = useState<{ repoId: string; workId: string }>();
   // Read-only sidebar projection; LocalConversationSurface owns the actual threads.
   const [localThreadNav, setLocalThreadNav] = useState<LocalConversationNavItem[]>([]);
   const [selectedLocalThreadId, setSelectedLocalThreadId] = useState<string | undefined>();
@@ -1015,15 +1042,17 @@ export function App() {
       const messages = thread.messages.filter(message => message.role === 'user' || message.role === 'assistant')
         .slice(-40).map(message => ({ role: message.role as 'user' | 'assistant', content: message.content }));
       const reply = await sendLocalApiConversation({
-        messages, repoId: thread.projectRepoId, conversationId: thread.id,
-        allowEffects,
+        messages, repoId: thread.projectRepoId, workId: thread.workId,
+        conversationId: thread.id, allowEffects,
       });
       return { content: reply.output, toolActivityCount: reply.toolActivityCount, toolEvents: reply.toolEvents };
     }
     const result = await sendLocalConversation({
       conversationId: thread.id,
       providerSessionId: thread.providerSessionId,
-      prompt,
+      prompt: thread.workId
+        ? '[Attached existing Forge Work: ' + thread.workId + '. Retrieve its current Requirement, Plan, and Work state from Forge before deciding actions. Do not create duplicate Work or claim completion without canonical evidence.]\n\n' + prompt
+        : prompt,
       repoId: thread.projectRepoId,
     });
     return { content: result.output, providerSessionId: result.providerSessionId, toolActivityCount: result.toolActivityCount };
@@ -1194,10 +1223,17 @@ export function App() {
   }, []);
   const handleNewThread = useCallback(() => {
     setActiveView('assistant');
+    setNewThreadContext(undefined);
     setNewThreadRequested(true);
   }, []);
   const handleNewThreadHandled = useCallback(() => {
     setNewThreadRequested(false);
+    setNewThreadContext(undefined);
+  }, []);
+  const handleStartAgentForWork = useCallback((repoId: string, workId: string) => {
+    setNewThreadContext({ repoId, workId });
+    setActiveView('assistant');
+    setNewThreadRequested(true);
   }, []);
 
   const handleOpenProjects = useCallback(() => setActiveView('works'), []);
@@ -1213,6 +1249,21 @@ export function App() {
     setRequestedRecord({ mode, id });
     setActiveView(mode);
   }, []);
+  const handleOpenWorkFromAgent = useCallback(async (repoId: string, workId: string) => {
+    const project = projects.find((entry) => entry.repoId === repoId);
+    if (!project) return;
+    await loadProject(project, workId);
+    setActiveView('project');
+  }, [loadProject, projects]);
+  const handleOpenRecordFromAgent = useCallback(async (
+    repoId: string, mode: 'requirements' | 'plans', id: string,
+  ) => {
+    const project = projects.find((entry) => entry.repoId === repoId);
+    if (!project) return;
+    await loadProject(project);
+    setRequestedRecord({ mode, id });
+    setActiveView(mode);
+  }, [loadProject, projects]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -1350,6 +1401,9 @@ export function App() {
         <AssistantView
           projects={projects}
           defaultProjectRepoId={selectedRepoId}
+          newThreadContext={newThreadContext}
+          onOpenWork={(repoId, workId) => { void handleOpenWorkFromAgent(repoId, workId); }}
+          onOpenRecord={(repoId, mode, id) => { void handleOpenRecordFromAgent(repoId, mode, id); }}
           provider={localProvider}
           providerLoading={localProviderLoading}
           providerError={localProviderError}
@@ -1364,6 +1418,10 @@ export function App() {
           onThreadsChange={handleLocalThreadNavigation}
           onRefreshProvider={refreshLocalProvider}
           onSendLocal={sendLocal}
+          onCancelLocal={async (thread) => {
+            if (thread.provider === 'api') await cancelLocalApiConversation(thread.id);
+            else await cancelLocalConversation(thread.id);
+          }}
         />
       </div>
       {activeView === 'assistant' ? null : activeView === 'requirements' || activeView === 'plans' || activeView === 'works' ? (
@@ -1405,6 +1463,7 @@ export function App() {
           onRefresh={preview ? undefined : refreshMcp}
           onContinue={preview ? undefined : handleContinue}
           onNavigateRecord={handleNavigateRecord}
+          onStartAgentForWork={handleStartAgentForWork}
           onSelectWork={preview ? undefined : (workId) => { void handleSelectWork(workId); }}
         />
       )}

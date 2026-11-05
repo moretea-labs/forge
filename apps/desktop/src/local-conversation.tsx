@@ -26,6 +26,8 @@ export interface LocalConversationThread {
   id: string;
   title: string;
   projectRepoId?: string;
+  // Conversation-local foreign key; Forge remains the sole Work authority.
+  workId?: string;
   providerSessionId?: string;
   provider?: LocalProviderChoice;
   createdAt: string;
@@ -46,18 +48,27 @@ function localId(prefix: string): string {
   return globalThis.crypto?.randomUUID?.() ?? `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
-function createThread(provider: LocalProviderChoice, projectRepoId?: string): LocalConversationThread {
+export function createThread(provider: LocalProviderChoice, projectRepoId?: string, workId?: string): LocalConversationThread {
   const timestamp = new Date().toISOString();
   return {
     id: localId('thread'),
     title: '新会话',
     provider,
     ...(projectRepoId ? { projectRepoId } : {}),
+    ...(projectRepoId && workId ? { workId } : {}),
     createdAt: timestamp,
     updatedAt: timestamp,
     archived: false,
     messages: [],
   };
+}
+
+export function findExistingWorkThread(
+  threads: LocalConversationThread[], provider: LocalProviderChoice, repoId: string, workId: string,
+): LocalConversationThread | undefined {
+  return threads.filter((thread) => !thread.archived && (thread.provider ?? 'codex') === provider
+    && thread.projectRepoId === repoId && thread.workId === workId)
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
 }
 
 function loadThreads(): LocalConversationThread[] {
@@ -108,6 +119,9 @@ function LocalMessageBody({ content }: { content: string }) {
 export function LocalConversationSurface({
   projects,
   defaultProjectRepoId,
+  newThreadContext,
+  onOpenWork,
+  onOpenRecord,
   provider,
   providerLoading,
   providerError,
@@ -120,9 +134,13 @@ export function LocalConversationSurface({
   onThreadsChange,
   onRefreshProvider,
   onSend,
+  onCancel,
 }: {
   projects: ProjectListItemProjection[];
   defaultProjectRepoId?: string;
+  newThreadContext?: { repoId: string; workId: string };
+  onOpenWork?: (repoId: string, workId: string) => void;
+  onOpenRecord?: (repoId: string, mode: 'requirements' | 'plans', id: string) => void;
   provider: LocalProviderStatusProjection | null;
   providerLoading: boolean;
   providerError: string | null;
@@ -135,12 +153,14 @@ export function LocalConversationSurface({
   onThreadsChange: (items: LocalConversationNavItem[], selectedId?: string) => void;
   onRefreshProvider: () => Promise<void>;
   onSend?: (input: { thread: LocalConversationThread; prompt: string; allowEffects: boolean }) => Promise<LocalConversationReply>;
+  onCancel?: (thread: LocalConversationThread) => Promise<void>;
 }) {
   const [threads, setThreads] = useState<LocalConversationThread[]>(() => loadThreads());
   const [selectedThreadId, setSelectedThreadId] = useState<string | undefined>(() => loadThreads().find((thread) => !thread.archived)?.id);
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
   const [sendingThreadId, setSendingThreadId] = useState<string>();
+  const [cancelRequested, setCancelRequested] = useState(false);
   const [liveTool, setLiveTool] = useState<{ conversationId: string; name: string; phase: 'started' | 'completed' | 'failed' }>();
   const [sendError, setSendError] = useState<string | null>(null);
   const [allowEffects, setAllowEffects] = useState(false);
@@ -149,6 +169,13 @@ export function LocalConversationSurface({
   const [diff, setDiff] = useState<GitDiffReceipt>();
   const [diffLoading, setDiffLoading] = useState(false);
   const [diffError, setDiffError] = useState<string>();
+  const [workIndex, setWorkIndex] = useState<Array<{ workId: string; objective: string; state: string }>>([]);
+  const [workIndexError, setWorkIndexError] = useState<string>();
+  const [workDetail, setWorkDetail] = useState<{
+    repoId: string; workId: string; objective: string; state: string;
+    requirementId?: string; planId?: string;
+  }>();
+  const [workDetailError, setWorkDetailError] = useState<string>();
   const diffRequest = useRef(0);
   const handledNewThread = useRef(false);
   const initialThreadProvisioned = useRef<LocalProviderChoice | null>(null);
@@ -202,10 +229,56 @@ export function LocalConversationSurface({
   }, [openThreadId, activeThreads, onOpenThreadHandled]);
 
   const selectedProject = projects.find((project) => project.repoId === selectedThread?.projectRepoId);
+  const selectedRepoId = selectedThread?.projectRepoId;
+  const selectedWorkId = selectedThread?.workId;
+
+  useEffect(() => {
+    if (!selectedRepoId) { setWorkIndex([]); setWorkIndexError(undefined); return; }
+    let active = true;
+    setWorkIndex([]);
+    setWorkIndexError(undefined);
+    void invoke<{ data?: {
+      works?: Array<{ workId: string; objective: string; state: string }>;
+      recentHistory?: Array<{ workId: string; objective: string; state: string }>;
+    } }>('read_project_work_list', { repoId: selectedRepoId }).then((response) => {
+      if (!active) return;
+      const rows = [...(response.data?.works ?? []), ...(response.data?.recentHistory ?? [])];
+      setWorkIndex([...new Map(rows.map((work) => [work.workId, work] as const)).values()]);
+    }).catch((cause: unknown) => {
+      if (active) setWorkIndexError(cause instanceof Error ? cause.message : String(cause));
+    });
+    return () => { active = false; };
+  }, [selectedRepoId]);
+
+  useEffect(() => {
+    if (!selectedRepoId || !selectedWorkId) {
+      setWorkDetail(undefined); setWorkDetailError(undefined);
+      return;
+    }
+    let active = true;
+    setWorkDetail(undefined); setWorkDetailError(undefined);
+    void invoke<{ data?: { work?: {
+      workId: string; objective: string; state: string; requirementId?: string; planId?: string;
+    } } }>('read_work_detail', { repoId: selectedRepoId, workId: selectedWorkId })
+      .then((response) => {
+        if (!active) return;
+        const work = response.data?.work;
+        if (!work || work.workId !== selectedWorkId) throw Error('Forge 未确认当前 Work 的归属');
+        setWorkDetail({ ...work, repoId: selectedRepoId });
+      }).catch((cause: unknown) => {
+        if (active) setWorkDetailError(cause instanceof Error ? cause.message : String(cause));
+      });
+    return () => { active = false; };
+  }, [selectedRepoId, selectedWorkId]);
+
+  const projectBindingReady = !selectedRepoId || Boolean(selectedProject);
+  const workBindingReady = !selectedWorkId
+    || (workDetail?.repoId === selectedRepoId && workDetail?.workId === selectedWorkId);
   const apiSelected = apiSettings?.provider === 'api';
   const loopbackApi = Boolean(apiSettings && /^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::[0-9]+)?(?:\/|$)/.test(apiSettings.endpoint));
   const apiReady = Boolean(apiSettings?.model.trim() && (apiSettings?.hasKey || loopbackApi));
-  const providerReady = (apiSelected ? apiReady : provider?.status === 'ready') && Boolean(onSend);
+  const providerReady = (apiSelected ? apiReady : provider?.status === 'ready')
+    && Boolean(onSend) && projectBindingReady && workBindingReady;
 
   const addThread = () => {
     const thread = createThread(selectedProvider, defaultProjectRepoId);
@@ -222,13 +295,27 @@ export function LocalConversationSurface({
     }
     if (handledNewThread.current) return;
     handledNewThread.current = true;
-    const thread = createThread(selectedProvider, defaultProjectRepoId);
-    setThreads((current) => [thread, ...current]);
-    setSelectedThreadId(thread.id);
-    setDraft('');
+    // Re-enter an existing Work-bound Agent thread rather than manufacturing
+    // multiple local transcripts for the same ongoing work.
+    const existing = newThreadContext
+      ? findExistingWorkThread(threads, selectedProvider, newThreadContext.repoId, newThreadContext.workId)
+      : undefined;
+    if (existing) {
+      setSelectedThreadId(existing.id);
+      if (existing.id !== selectedThreadId) setDraft('');
+    } else {
+      const thread = createThread(
+        selectedProvider, newThreadContext?.repoId ?? defaultProjectRepoId,
+        newThreadContext?.workId,
+      );
+      setThreads((current) => [thread, ...current]);
+      setSelectedThreadId(thread.id);
+      setDraft('');
+    }
     setSendError(null);
     onNewThreadHandled();
-  }, [newThreadRequested, selectedProvider, defaultProjectRepoId, onNewThreadHandled]);
+  }, [newThreadRequested, selectedProvider, defaultProjectRepoId, newThreadContext,
+    onNewThreadHandled, threads, selectedThreadId]);
 
   useEffect(() => {
     if (newThreadRequested || activeThreads.length > 0 || initialThreadProvisioned.current === selectedProvider) return;
@@ -291,6 +378,7 @@ export function LocalConversationSurface({
     setDraft('');
     setSendError(null);
     setSendingThreadId(selectedThread.id);
+    setCancelRequested(false);
     setLiveTool(undefined);
     setSending(true);
     try {
@@ -309,12 +397,45 @@ export function LocalConversationSurface({
       } : thread));
     } catch (cause) {
       const reason = cause instanceof Error ? cause.message : String(cause);
-      setSendError('本次回复未确认：' + reason + '。若可能涉及工具操作，请先检查 Forge 结果再决定是否重新发送。');
+      const cancelled = reason.includes('FORGE_DESKTOP_API_TURN_CANCELLED')
+        || reason.includes('LOCAL_CONVERSATION_CANCELLED_RECONCILE');
+      if (cancelled) {
+        const cancelledAt = new Date().toISOString();
+        setThreads((current) => current.map((thread) => thread.id === selectedThread.id ? {
+          ...thread,
+          updatedAt: cancelledAt,
+          messages: [...thread.messages, {
+            id: localId('message'), role: 'system', createdAt: cancelledAt,
+            content: reason.includes('_AFTER_TOOL:') || reason.includes('CANCELLED_RECONCILE')
+              ? '已停止等待模型继续执行。已有 Forge 工具可能已经完成；请核对当前仓库与操作请求记录。'
+              : '已停止此次模型回复；已发送的远端请求可能仍会计费。',
+          }],
+        } : thread));
+        setSendError(null);
+      } else {
+        setSendError('本次回复未确认：' + reason + '。若可能涉及工具操作，请先检查 Forge 结果再决定是否重新发送。');
+      }
     } finally {
       setAllowEffects(false);
       setLiveTool(undefined);
       setSendingThreadId(undefined);
+      setCancelRequested(false);
       setSending(false);
+    }
+  };
+
+  const cancelTurn = async () => {
+    if (!(apiSelected || provider?.cancellable === true) || !sending || !selectedThread
+      || sendingThreadId !== selectedThread.id || !onCancel || cancelRequested) return;
+    setCancelRequested(true);
+    setSendError(null);
+    try {
+      await onCancel(selectedThread);
+    } catch (cause) {
+      // No success claim: the turn may have completed in the time between
+      // clicking and the native cancel request.
+      setCancelRequested(false);
+      setSendError('未确认停止：' + (cause instanceof Error ? cause.message : String(cause)));
     }
   };
 
@@ -385,6 +506,7 @@ export function LocalConversationSurface({
                     updateSelected((thread) => ({
                       ...thread,
                       projectRepoId: nextRepoId,
+                      workId: undefined,
                       providerSessionId: undefined,
                       updatedAt: new Date().toISOString(),
                     }));
@@ -397,6 +519,61 @@ export function LocalConversationSurface({
             </label>
             <span>{selectedProject ? '仓库工具仅作用于 ' + selectedProject.name : '选择项目后启用仓库工具'}</span>
           </div>
+          {selectedRepoId && (
+            <div className="local-work-context">
+              <label>
+                <span>关联已有 Work（可选）</span>
+                <select aria-label="会话关联的 Forge Work" value={selectedWorkId ?? ''} disabled={sending}
+                  onChange={(event) => {
+                    const nextWorkId = event.target.value || undefined;
+                    if (nextWorkId === selectedWorkId) return;
+                    if (selectedThread.messages.length > 0) {
+                      // A Work switch never silently rebinds existing Agent output.
+                      const next = createThread(selectedProvider, selectedRepoId, nextWorkId);
+                      setThreads((current) => [next, ...current]);
+                      setSelectedThreadId(next.id);
+                      setDraft('');
+                    } else {
+                      updateSelected((thread) => ({
+                        ...thread, workId: nextWorkId, providerSessionId: undefined,
+                        updatedAt: new Date().toISOString(),
+                      }));
+                    }
+                    setSendError(null);
+                  }}>
+                  <option value="">不关联 Work</option>
+                  {selectedWorkId && !workIndex.some((work) => work.workId === selectedWorkId) && (
+                    <option value={selectedWorkId}>{selectedWorkId} · 当前列表以外</option>
+                  )}
+                  {workIndex.map((work) => (
+                    <option value={work.workId} key={work.workId}>
+                      {work.state === 'open' ? '进行中' : '历史'} · {work.objective.slice(0, 72)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {selectedWorkId && workBindingReady && workDetail && (
+                <div className="local-work-links">
+                  <button type="button" onClick={() => onOpenWork?.(selectedRepoId, workDetail.workId)}>
+                    查看 Work
+                  </button>
+                  {workDetail.requirementId && <button type="button"
+                    onClick={() => onOpenRecord?.(selectedRepoId, 'requirements', workDetail.requirementId!)}>
+                    Requirement
+                  </button>}
+                  {workDetail.planId && <button type="button"
+                    onClick={() => onOpenRecord?.(selectedRepoId, 'plans', workDetail.planId!)}>
+                    Plan
+                  </button>}
+                </div>
+              )}
+              {!projectBindingReady && <small role="alert">此会话引用的项目已不在当前注册目录中，请选择有效项目。</small>}
+              {workIndexError && <small role="status">Work 目录读取失败：{workIndexError}</small>}
+              {selectedWorkId && !workBindingReady && (
+                <small role="alert">{workDetailError ?? '正在核对 Forge Work 与项目归属…'}</small>
+              )}
+            </div>
+          )}
 
           {diffVisible && diffRepoId === selectedThread.projectRepoId && (
             <AgentGitReview diff={diff} loading={diffLoading} error={diffError}
@@ -433,7 +610,8 @@ export function LocalConversationSurface({
             {sending && sendingThreadId === selectedThread.id && (
               <div className="local-pending-message" role="status">
                 <span className="local-pending-indicator" />
-                {liveTool?.conversationId === selectedThread.id
+                {cancelRequested ? '已请求停止；如果 Forge 工具正在运行，将在收到结果后结束…'
+                  : liveTool?.conversationId === selectedThread.id
                   ? liveTool.phase === 'started' ? '正在执行 Forge 工具 · ' + liveTool.name
                     : liveTool.phase === 'completed' ? '工具已完成 · ' + liveTool.name + ' · 正在整理回复'
                       : '工具调用失败 · ' + liveTool.name + ' · 请核对执行结果'
@@ -474,6 +652,13 @@ export function LocalConversationSurface({
                   {apiSelected ? (apiSettings?.model || '兼容 API') : 'Codex CLI'} <span aria-hidden="true">⌄</span>
                 </button>
               </span>
+              {sending && sendingThreadId === selectedThread.id
+                && (apiSelected || provider?.cancellable === true) && (
+                <button className="local-stop-button" type="button" onClick={() => void cancelTurn()}
+                  aria-label="请求停止当前 API Agent" disabled={cancelRequested}>
+                  {cancelRequested ? '停止中' : '停止'}
+                </button>
+              )}
               <button className="local-send-button" type="button" aria-label={sending ? '正在发送' : '发送消息'}
                 disabled={!providerReady || !draft.trim() || sending} onClick={() => void send()}>
                 <span aria-hidden="true">{sending ? '…' : '↑'}</span>

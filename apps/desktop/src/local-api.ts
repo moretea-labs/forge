@@ -23,6 +23,11 @@ export const saveLocalApiSettings = (input: {
 export const sendLocalApiConversation = (input: {
   messages: Array<{ role: 'user' | 'assistant'; content: string }>;
   repoId?: string;
+  workId?: string;
   conversationId: string;
   allowEffects: boolean;
 }): Promise<LocalApiConversationResponse> => invoke('send_local_api_conversation', input);
+
+export const cancelLocalApiConversation = (conversationId: string):
+  Promise<{ requested: boolean; conversationId: string }> =>
+  invoke('cancel_local_api_conversation', { conversationId });

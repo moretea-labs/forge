@@ -9,7 +9,7 @@
     "build": "npm run check:type && npm run build:web",
     "build:web": "vite build",
     "check:type": "tsc --noEmit",
-    "test:ui": "bun test ./tests/agent-git-review.test.tsx",
+    "test:ui": "bun test ./tests/agent-git-review.test.tsx ./tests/agent-work-context.test.ts",
     "check": "npm run check:type && npm run build:web && cargo check --manifest-path src-tauri/Cargo.toml",
     "tauri": "tauri"
   },
