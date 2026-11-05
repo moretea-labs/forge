@@ -589,3 +589,12 @@ a { color: #353535; text-decoration: underline; text-underline-offset: 3px; }
 .local-pending-message:has(.local-pending-content) .local-pending-indicator { margin-top: 5px; flex-shrink: 0; }
 .local-pending-content { display: flex; flex: 1; flex-direction: column; min-width: 0; gap: 1px; }
 .local-tool-progress-list { margin-left: 0; }
+
+/* Registry display names are not unique repository identities. */
+.project-picker-identity { display: grid; gap: 2px; flex: 1; min-width: 0; }
+.project-picker-identity .nav-label { display: block; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; }
+.project-picker-identity small { display: block; font-size: 10px; line-height: 1.2;
+  color: #93979b; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sidebar-project-picker { min-height: 43px; }
+.sidebar-project-picker-panel .project-row { align-items: center; min-height: 43px; }

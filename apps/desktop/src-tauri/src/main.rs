@@ -360,6 +360,7 @@ async fn read_projects() -> Result<Value, String> {
         .map(|items| items.iter().map(|repository| json!({
             "repoId": repository.get("repoId").and_then(Value::as_str),
             "displayName": repository.get("displayName").and_then(Value::as_str),
+            "localRoot": repository.get("localRoot").and_then(Value::as_str),
             "checkoutId": repository.get("checkoutId").and_then(Value::as_str),
             "remoteUrl": repository.get("remoteUrl").and_then(Value::as_str),
             "defaultBranch": repository.get("defaultBranch").and_then(Value::as_str)
@@ -777,13 +778,20 @@ async fn read_agent_git_diff(app: tauri::AppHandle, repo_id: String) -> Result<V
         .ok_or_else(|| "FORGE_DESKTOP_GIT_DIFF_RESULT_INVALID".into())
 }
 
-fn local_tool_catalog(allow_effects: bool) -> Vec<Value> {
+fn local_tool_catalog(allow_effects: bool, has_work: bool) -> Vec<Value> {
     let mut tools = vec![
         json!({"type":"function","function":{"name":"read_file","description":"Read bounded lines of a file in the user's selected registered Forge repository. Paths are repo-relative.","parameters":{"type":"object","properties":{"path":{"type":"string"},"start_line":{"type":"integer","minimum":1},"end_line":{"type":"integer","minimum":1}},"required":["path"],"additionalProperties":false}}}),
         json!({"type":"function","function":{"name":"git_status","description":"Read actual Git status of the selected Forge project, not a cached model guess.","parameters":{"type":"object","properties":{},"additionalProperties":false}}}),
         json!({"type":"function","function":{"name":"git_diff","description":"Inspect a bounded Git diff in the selected repository.","parameters":{"type":"object","properties":{"paths":{"type":"array","items":{"type":"string"}},"staged":{"type":"boolean"},"max_bytes":{"type":"integer","minimum":100,"maximum":16000}},"additionalProperties":false}}}),
         json!({"type":"function","function":{"name":"patch_plan","description":"Review the preconditions and affected paths of proposed canonical Forge edit operations before applying anything.","parameters":{"type":"object","properties":{"operations":{"type":"array","items":{"type":"object"}}},"required":["operations"],"additionalProperties":false}}}),
     ];
+    if has_work {
+        tools.push(json!({"type":"function","function":{
+            "name":"read_work_context",
+            "description":"Read current canonical Forge Work, linked Requirement acceptance criteria, Plan items and recent Work result references. Only the current verified Work can be read. This tool does not mutate semantic records.",
+            "parameters":{"type":"object","properties":{},"additionalProperties":false}
+        }}));
+    }
     if allow_effects {
         tools.extend([
             json!({"type":"function","function":{"name":"apply_patch","description":"Apply typed Forge safe-patch operations to the selected registered repository. Forge owns mutation exclusion, fingerprint validation and evidence.","parameters":{"type":"object","properties":{"purpose":{"type":"string"},"operations":{"type":"array","items":{"type":"object"},"minItems":1,"maxItems":16},"allowed_paths":{"type":"array","items":{"type":"string"}}},"required":["purpose","operations"],"additionalProperties":false}}}),
@@ -791,6 +799,79 @@ fn local_tool_catalog(allow_effects: bool) -> Vec<Value> {
         ]);
     }
     tools
+}
+
+fn bounded_semantic_string(value: &Value, field: &str, max_chars: usize) -> String {
+    value.get(field).and_then(Value::as_str).unwrap_or("").chars().take(max_chars).collect()
+}
+
+async fn read_bound_work_context(repo_id: &str, work_id: &str) -> Result<Value, String> {
+    // The Work link is fixed by the selected native conversation, never by
+    // model arguments. The canonical Runtime owns all three semantic records.
+    let receipt = call_runtime_tool("rh_work", json!({
+        "repo_id": repo_id, "operation":"get", "work_id":work_id,
+        "detail_level":"summary", "request_id":request_id("agent-refresh-bound-work"),
+    })).await?;
+    let work = receipt.pointer("/data/work")
+        .filter(|record| record.get("workId").and_then(Value::as_str) == Some(work_id))
+        .ok_or("FORGE_DESKTOP_BOUND_WORK_MISSING")?;
+    let requirement_id = work.get("requirementId").and_then(Value::as_str);
+    let plan_id = work.get("planId").and_then(Value::as_str);
+    let recent_refs: Vec<Value> = work.get("resultRefs").and_then(Value::as_array)
+        .map(|values| values.iter().rev().take(8).rev().map(|value| {
+            Value::String(value.as_str().unwrap_or("").chars().take(220).collect())
+        }).collect()).unwrap_or_default();
+
+    let mut requirement = Value::Null;
+    if let Some(id) = requirement_id {
+        let response = call_runtime_tool("rh_work", json!({
+            "repo_id":repo_id, "operation":"requirement_get", "requirement_id":id,
+            "detail_level":"summary", "request_id":request_id("agent-refresh-bound-requirement"),
+        })).await?;
+        let record = response.pointer("/data/requirement")
+            .filter(|record| record.get("requirementId").and_then(Value::as_str) == Some(id))
+            .ok_or("FORGE_DESKTOP_BOUND_REQUIREMENT_MISSING")?;
+        requirement = json!({
+            "requirementId":id,
+            "revision":record["revision"],
+            "state":record["state"],
+            "title":bounded_semantic_string(record,"title",240),
+            "outcomeStatement":bounded_semantic_string(record,"outcomeStatement",1500),
+            "acceptanceCriteria":record.get("acceptanceCriteria").and_then(Value::as_array)
+                .map(|list| list.iter().take(12).map(|item| {
+                    Value::String(item.as_str().unwrap_or("").chars().take(350).collect())
+                }).collect::<Vec<_>>()).unwrap_or_default(),
+        });
+    }
+    let mut plan = Value::Null;
+    if let Some(id) = plan_id {
+        let response = call_runtime_tool("rh_work", json!({
+            "repo_id":repo_id, "operation":"plan_get", "plan_id":id,
+            "detail_level":"summary", "request_id":request_id("agent-refresh-bound-plan"),
+        })).await?;
+        let record = response.pointer("/data/plan")
+            .filter(|record| record.get("planId").and_then(Value::as_str) == Some(id)
+                && (requirement_id.is_none() || record.get("requirementId").and_then(Value::as_str) == requirement_id))
+            .ok_or("FORGE_DESKTOP_BOUND_PLAN_MISSING_OR_MISMATCH")?;
+        plan = json!({
+            "planId":id, "revision":record["revision"],
+            "requirementId":record["requirementId"],
+            "goal":bounded_semantic_string(record,"goal",1500),
+            "items":record.get("items").and_then(Value::as_array)
+                .map(|list| list.iter().take(16).map(|item| json!({
+                    "id":bounded_semantic_string(item,"id",80),
+                    "objective":bounded_semantic_string(item,"objective",300),
+                })).collect::<Vec<_>>()).unwrap_or_default(),
+        });
+    }
+    Ok(json!({"ok":true,"result":{
+        "source":"Forge canonical rh_work (read-only)",
+        "work":{"workId":work_id,"revision":work["revision"],"state":work["state"],
+            "objective":bounded_semantic_string(work,"objective",1500),
+            "requirementId":requirement_id,"planId":plan_id,
+            "recentResultRefs":recent_refs},
+        "requirement":requirement,"plan":plan,
+    }}))
 }
 
 fn local_effect_completed(name: &str, receipt: &Value) -> bool {
@@ -1054,7 +1135,7 @@ async fn send_local_api_conversation(
         .timeout(std::time::Duration::from_secs(120))
         .redirect(reqwest::redirect::Policy::none())
         .build().map_err(|_| "FORGE_DESKTOP_API_CLIENT_FAILED")?;
-    let available_tools = if repo_id.is_some() { local_tool_catalog(allow_effects) } else { Vec::new() };
+    let available_tools = if repo_id.is_some() { local_tool_catalog(allow_effects, work_id.is_some()) } else { Vec::new() };
     let system_instruction = if let Some(id) = repo_id.as_ref() {
         format!("You are the Forge Desktop local API agent working in registered repository {id}. Use the supplied tools for real facts and repository operations. All calls execute through the existing Forge repository authority in the local process, not MCP HTTP. Never invent a file, command result, Requirement, Plan or Work lifecycle. Tools with effects are available only when the user has approved effects for this turn. Never claim an operation succeeded unless its tool result confirms it.")
     } else {
@@ -1182,10 +1263,21 @@ async fn send_local_api_conversation(
                 "conversationId": conversation_id, "name": name, "phase": "started",
                 "requestId": effect_request_id,
             }));
-            let result = match run_local_forge_tool(
-                app.clone(), repo_id.clone().unwrap_or_default(),
-                conversation_id.clone(), name.clone(), args, allow_effects
-            ).await {
+            let tool_result = if name == "read_work_context" {
+                if args.as_object().is_none_or(|items| !items.is_empty()) {
+                    Err("FORGE_DESKTOP_BOUND_WORK_TOOL_ARGUMENTS_INVALID".into())
+                } else if let (Some(repo_id), Some(work_id)) = (&repo_id, &work_id) {
+                    read_bound_work_context(repo_id, work_id).await
+                } else {
+                    Err("FORGE_DESKTOP_BOUND_WORK_REQUIRED".into())
+                }
+            } else {
+                run_local_forge_tool(
+                    app.clone(), repo_id.clone().unwrap_or_default(),
+                    conversation_id.clone(), name.clone(), args, allow_effects
+                ).await
+            };
+            let result = match tool_result {
                 Ok(receipt) => receipt,
                 Err(error) => {
                     let _ = app.emit("forge-agent-tool-progress", json!({
@@ -1446,7 +1538,7 @@ mod tests {
 
     #[test]
     fn local_tool_catalog_requires_user_grant_for_effects() {
-        let readonly = local_tool_catalog(false);
+        let readonly = local_tool_catalog(false, false);
         let names = |items: Vec<Value>| items.iter().filter_map(|item|
             item.pointer("/function/name").and_then(Value::as_str).map(str::to_owned)
         ).collect::<Vec<_>>();
@@ -1455,9 +1547,27 @@ mod tests {
         assert!(readonly_names.contains(&"git_status".to_string()));
         assert!(!readonly_names.contains(&"run_command".to_string()));
         assert!(!readonly_names.contains(&"apply_patch".to_string()));
-        let with_permission = names(local_tool_catalog(true));
+        let with_permission = names(local_tool_catalog(true, false));
         assert!(with_permission.contains(&"run_command".to_string()));
         assert!(with_permission.contains(&"apply_patch".to_string()));
+    }
+
+    #[test]
+    fn semantic_work_tool_is_readonly_and_appears_only_when_thread_has_work() {
+        let unbound = local_tool_catalog(false, false);
+        let bound = local_tool_catalog(false, true);
+        let bound_with_effects = local_tool_catalog(true, true);
+        fn find(tools: &[Value]) -> Option<&Value> {
+            tools.iter().find(|tool|
+                tool.pointer("/function/name").and_then(Value::as_str) == Some("read_work_context"))
+        }
+        assert!(find(&unbound).is_none(), "no semantic tool on unbound chat");
+        assert!(find(&bound).is_some(), "verified Work can be read without effects grant");
+        assert!(find(&bound_with_effects).is_some());
+        assert_eq!(find(&bound).unwrap()["function"]["parameters"], json!({
+            "type":"object","properties":{},"additionalProperties":false
+        }), "model cannot override Work or repository identity through arguments");
+        assert_eq!(bounded_semantic_string(&json!({"goal":"abcdef"}), "goal", 3), "abc");
     }
 
     #[test]

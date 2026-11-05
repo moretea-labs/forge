@@ -142,7 +142,9 @@ function Sidebar({
   const [showProjectPicker, setShowProjectPicker] = useState(false);
   const [projectQuery, setProjectQuery] = useState('');
   const activeProject = projects.find((project) => project.repoId === selectedRepoId);
-  const matchingProjects = projects.filter((project) => (project.name + ' ' + project.repository).toLowerCase().includes(projectQuery.toLowerCase().trim()));
+  const matchingProjects = projects.filter((project) =>
+    (project.name + ' ' + project.repository + ' ' + (project.localRoot ?? ''))
+      .toLowerCase().includes(projectQuery.toLowerCase().trim()));
   return (
     <aside className="sidebar">
       <div className="sidebar-main">
@@ -185,10 +187,13 @@ function Sidebar({
         )}
         <div className="sidebar-project-heading">
           <button className="sidebar-project-picker" type="button" aria-expanded={showProjectPicker}
-            title={activeProject?.repository ?? '选择已注册项目'}
+            title={activeProject?.localRoot ?? activeProject?.repository ?? '选择已注册项目'}
             onClick={() => setShowProjectPicker((expanded) => !expanded)}>
             <span className="project-folder" aria-hidden="true">▱</span>
-            <span className="nav-label">{activeProject?.name ?? '选择项目'}</span>
+            <span className="project-picker-identity">
+              <span className="nav-label">{activeProject?.name ?? '选择项目'}</span>
+              {activeProject?.repository && <small>{activeProject.repository}</small>}
+            </span>
             <span className="project-caret" aria-hidden="true">{showProjectPicker ? '⌃' : '⌄'}</span>
           </button>
           <button type="button" title="刷新已注册项目" aria-label="刷新已注册项目" onClick={onRetryProjects}>↻</button>
@@ -207,10 +212,13 @@ function Sidebar({
               )}
               {matchingProjects.map((project) => (
                 <button className={project.repoId === selectedRepoId ? 'nav-row project-row active' : 'nav-row project-row'}
-                  key={project.repoId} type="button" title={project.repository}
+                  key={project.repoId} type="button" title={project.localRoot ?? project.repository}
                   onClick={() => { onSelectProject?.(project); setShowProjectPicker(false); }}>
                   <span className="project-folder" aria-hidden="true">▱</span>
-                  <span className="nav-label">{project.name}</span>
+                  <span className="project-picker-identity">
+                    <span className="nav-label">{project.name}</span>
+                    <small>{project.repository}</small>
+                  </span>
                 </button>
               ))}
               {projects.length > 0 && matchingProjects.length === 0 && <p className="sidebar-project-error">未找到匹配项目</p>}

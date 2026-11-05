@@ -15,6 +15,7 @@ import type {
 interface RawRepository {
   repoId: string;
   displayName: string;
+  localRoot?: string;
   checkoutId?: string;
   remoteUrl?: string;
   defaultBranch?: string;
@@ -155,9 +156,12 @@ export function tauriRuntimeAvailable(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 }
 
-function repositoryLabel(repository: RawRepository): string {
+export function repositoryLabel(repository: RawRepository): string {
   const remote = repository.remoteUrl?.trim();
-  if (!remote) return repository.displayName;
+  if (!remote) {
+    const parts = repository.localRoot?.replace(/\\/g, '/').split('/').filter(Boolean) ?? [];
+    return parts[parts.length - 1] ?? repository.displayName;
+  }
   const github = remote.match(/github\.com[/:]([^/]+\/[^/.]+)(?:\.git)?$/i);
   return github?.[1] ?? repository.displayName;
 }
@@ -275,6 +279,7 @@ export async function readProjects(): Promise<ProjectCatalogProjection> {
       repoId: repository.repoId,
       name: repository.displayName,
       repository: repositoryLabel(repository),
+      ...(repository.localRoot ? { localRoot: repository.localRoot } : {}),
       ...(repository.checkoutId ? { checkoutId: repository.checkoutId } : {}),
       ...(repository.defaultBranch ? { defaultBranch: repository.defaultBranch } : {}),
     }));

@@ -1,7 +1,25 @@
 import { describe, expect, test } from 'bun:test';
 import { advanceLocalToolProgress, createThread, findExistingWorkThread } from '../src/local-conversation';
+import { repositoryLabel } from '../src/runtime-client';
 
 describe('Forge Desktop Work-bound Agent thread identity', () => {
+  test('disambiguates misleading registry display names using actual repository identity', () => {
+    const design = {
+      repoId: 'repo_design', displayName: 'Avela',
+      localRoot: '/Users/greyson/DevProjects/repo-harness-design',
+    };
+    expect(repositoryLabel(design)).toBe('repo-harness-design');
+    expect(repositoryLabel({
+      repoId: 'repo_avela', displayName: 'Avela Yi Fu Yao',
+      localRoot: '/Users/greyson/DevProjects/yaozhunshi',
+    })).toBe('yaozhunshi');
+    expect(repositoryLabel({
+      repoId: 'repo_forge', displayName: 'Forge',
+      remoteUrl: 'https://github.com/moretea-labs/forge.git',
+    })).toBe('moretea-labs/forge');
+    expect(repositoryLabel({ repoId: 'repo_unlocated', displayName: 'Legacy' })).toBe('Legacy');
+  });
+
   test('new threads store only repository/Work foreign keys, no semantic duplicates', () => {
     const thread = createThread('api', 'repo_a', 'work_existing_1');
     expect(thread.projectRepoId).toBe('repo_a');

@@ -15,6 +15,7 @@ export interface ProjectListItemProjection {
   repoId: string;
   name: string;
   repository: string;
+  localRoot?: string;
   checkoutId?: string;
   defaultBranch?: string;
 }
