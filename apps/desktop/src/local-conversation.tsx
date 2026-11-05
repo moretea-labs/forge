@@ -105,6 +105,7 @@ function LocalMessageBody({ content }: { content: string }) {
 
 export function LocalConversationSurface({
   projects,
+  defaultProjectRepoId,
   provider,
   providerLoading,
   providerError,
@@ -119,6 +120,7 @@ export function LocalConversationSurface({
   onSend,
 }: {
   projects: ProjectListItemProjection[];
+  defaultProjectRepoId?: string;
   provider: LocalProviderStatusProjection | null;
   providerLoading: boolean;
   providerError: string | null;
@@ -187,7 +189,7 @@ export function LocalConversationSurface({
   const providerReady = (apiSelected ? apiReady : provider?.status === 'ready') && Boolean(onSend);
 
   const addThread = () => {
-    const thread = createThread(selectedProvider);
+    const thread = createThread(selectedProvider, defaultProjectRepoId);
     setThreads((current) => [thread, ...current]);
     setSelectedThreadId(thread.id);
     setDraft('');
@@ -201,22 +203,22 @@ export function LocalConversationSurface({
     }
     if (handledNewThread.current) return;
     handledNewThread.current = true;
-    const thread = createThread(selectedProvider);
+    const thread = createThread(selectedProvider, defaultProjectRepoId);
     setThreads((current) => [thread, ...current]);
     setSelectedThreadId(thread.id);
     setDraft('');
     setSendError(null);
     onNewThreadHandled();
-  }, [newThreadRequested, selectedProvider, onNewThreadHandled]);
+  }, [newThreadRequested, selectedProvider, defaultProjectRepoId, onNewThreadHandled]);
 
   useEffect(() => {
     if (newThreadRequested || activeThreads.length > 0 || initialThreadProvisioned.current === selectedProvider) return;
     initialThreadProvisioned.current = selectedProvider;
-    const thread = createThread(selectedProvider);
+    const thread = createThread(selectedProvider, defaultProjectRepoId);
     setThreads((current) => current.some((entry) => !entry.archived && (entry.provider ?? 'codex') === selectedProvider)
       ? current : [thread, ...current]);
     setSelectedThreadId(thread.id);
-  }, [activeThreads.length, selectedProvider, newThreadRequested]);
+  }, [activeThreads.length, selectedProvider, defaultProjectRepoId, newThreadRequested]);
 
   const updateSelected = (updater: (thread: LocalConversationThread) => LocalConversationThread) => {
     if (!selectedThread) return;
@@ -399,7 +401,10 @@ export function LocalConversationSurface({
 
           <div className="local-transcript">
             {selectedThread.messages.length === 0 ? (
-              <div className="local-empty transcript-empty"><p>消息会保存在这个客户端，不会自动创建 Requirement、Plan 或 Work。</p></div>
+              <div className="local-empty transcript-empty">
+                <strong>让 Forge 完成一个任务</strong>
+                <p>选择项目，描述目标。Agent 可读取代码、使用工具，并在会话中保留结果。</p>
+              </div>
             ) : selectedThread.messages.map((message) => (
               <article className={'local-message ' + message.role} key={message.id}>
                 <div className="local-message-heading">

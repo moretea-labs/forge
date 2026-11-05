@@ -215,7 +215,7 @@ function Sidebar({
               {projects.length > 0 && matchingProjects.length === 0 && <p className="sidebar-project-error">未找到匹配项目</p>}
             </div>
           </div>
-        )
+        )}
       </div>
 
       <div className="sidebar-footer">
@@ -239,6 +239,7 @@ function WorkView({
   onRefresh,
   onContinue,
   onSelectWork,
+  onNavigateRecord,
 }: {
   projection: ForgeDesktopProjection;
   refreshing: boolean;
@@ -246,6 +247,7 @@ function WorkView({
   onRefresh?: () => Promise<void>;
   onContinue?: (prompt: string) => Promise<void>;
   onSelectWork?: (workId: string) => void;
+  onNavigateRecord?: (mode: 'requirements' | 'plans', id: string) => void;
 }) {
   const work = projection.work;
   // Current and bounded history only: these links are not an exhaustive
@@ -460,11 +462,15 @@ function WorkView({
           <div className="relationship-heading"><strong>关联与上下文</strong><span>Forge canonical ID，不推断任务完成率</span></div>
           <div className="work-relation-row">
             <div><span className="relation-type">Requirement</span>
-              {work.requirementId ? <a href={projection.requirement ? '#work-requirement' : '#work-relations'} title={work.requirementId}>{projection.requirement?.title ?? work.requirementId}</a>
+              {work.requirementId ? <button className="record-deep-link" type="button"
+                onClick={() => onNavigateRecord?.('requirements', work.requirementId!)}
+                title={work.requirementId}>{projection.requirement?.title ?? work.requirementId}</button>
                 : <span className="relation-unbound">未绑定</span>}
             </div>
             <div><span className="relation-type">Plan</span>
-              {work.planId ? <a href={projection.plan ? '#work-plan' : '#work-relations'} title={work.planId}>{projection.plan?.goal ?? work.planId}</a>
+              {work.planId ? <button className="record-deep-link" type="button"
+                onClick={() => onNavigateRecord?.('plans', work.planId!)}
+                title={work.planId}>{projection.plan?.goal ?? work.planId}</button>
                 : <span className="relation-unbound">未绑定</span>}
             </div>
             <div><span className="relation-type">Work</span><strong>{semanticStateLabel(work.semanticState)} · r{work.revision}</strong></div>
@@ -527,7 +533,7 @@ function WorkView({
         </details>
 
         {projection.requirement && (
-          <details id="work-requirement" className="detail-section" open>
+          <details id="work-requirement" className="detail-section">
             <summary>需求 · {projection.requirement.title}</summary>
             <div className="detail-grid">
               <div><span>状态</span><strong>{projection.requirement.state === 'open' ? '进行中' : projection.requirement.state}</strong></div>
@@ -541,7 +547,7 @@ function WorkView({
         )}
 
         {projection.plan && (
-          <details id="work-plan" className="detail-section" open>
+          <details id="work-plan" className="detail-section">
             <summary>计划 · r{projection.plan.revision}</summary>
             <p className="detail-text">{projection.plan.goal}</p>
             {projection.plan.items.length > 0 && (
@@ -711,6 +717,7 @@ function WorkView({
 
 function AssistantView({
   projects,
+  defaultProjectRepoId,
   provider,
   providerLoading,
   providerError,
@@ -727,6 +734,7 @@ function AssistantView({
   onSendLocal,
 }: {
   projects: ProjectListItemProjection[];
+  defaultProjectRepoId?: string;
   provider: LocalProviderStatusProjection | null;
   providerLoading: boolean;
   providerError: string | null;
@@ -753,6 +761,7 @@ function AssistantView({
         </div>
         <LocalConversationSurface
           projects={projects}
+          defaultProjectRepoId={defaultProjectRepoId}
           provider={provider}
           providerLoading={providerLoading}
           providerError={providerError}
@@ -931,6 +940,9 @@ export function App() {
   const [selectedRepoId, setSelectedRepoId] = useState<string | undefined>(preview ? designPreviewProjection.project?.repoId : undefined);
   const [selectedWorkId, setSelectedWorkId] = useState<string | undefined>(preview ? designPreviewProjection.work?.workId : undefined);
   const [activeView, setActiveView] = useState<AppView>(preview ? 'project' : 'assistant');
+  const [requestedRecord, setRequestedRecord] = useState<{
+    mode: 'requirements' | 'plans'; id: string;
+  }>();
   const [recoveryProjection, setRecoveryProjection] = useState<RuntimeRecoveryProjection | null>(null);
   const [recoveryLoading, setRecoveryLoading] = useState(false);
   const [recoveryError, setRecoveryError] = useState<string | null>(null);
@@ -1189,8 +1201,18 @@ export function App() {
   }, []);
 
   const handleOpenProjects = useCallback(() => setActiveView('works'), []);
-  const handleOpenRequirements = useCallback(() => setActiveView('requirements'), []);
-  const handleOpenPlans = useCallback(() => setActiveView('plans'), []);
+  const handleOpenRequirements = useCallback(() => {
+    setRequestedRecord(undefined);
+    setActiveView('requirements');
+  }, []);
+  const handleOpenPlans = useCallback(() => {
+    setRequestedRecord(undefined);
+    setActiveView('plans');
+  }, []);
+  const handleNavigateRecord = useCallback((mode: 'requirements' | 'plans', id: string) => {
+    setRequestedRecord({ mode, id });
+    setActiveView(mode);
+  }, []);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -1321,9 +1343,13 @@ export function App() {
           </button>
         </header>
 
-      {activeView === 'assistant' ? (
+      {/* Keep the one transcript owner mounted while viewing independent
+          Requirement/Plan/Work assets. In-flight Agent replies must not vanish
+          when the user navigates away from the conversation. */}
+      <div className="agent-view-preserved" hidden={activeView !== 'assistant'}>
         <AssistantView
           projects={projects}
+          defaultProjectRepoId={selectedRepoId}
           provider={localProvider}
           providerLoading={localProviderLoading}
           providerError={localProviderError}
@@ -1339,9 +1365,12 @@ export function App() {
           onRefreshProvider={refreshLocalProvider}
           onSendLocal={sendLocal}
         />
-      ) : activeView === 'requirements' || activeView === 'plans' || activeView === 'works' ? (
+      </div>
+      {activeView === 'assistant' ? null : activeView === 'requirements' || activeView === 'plans' || activeView === 'works' ? (
         <ProjectRecordsView key={(selectedRepoId ?? 'none') + ':' + activeView}
           mode={activeView} projection={projection}
+          requestedRecordId={requestedRecord?.mode === activeView ? requestedRecord.id : undefined}
+          onNavigateRecord={handleNavigateRecord}
           onSelectWork={(workId) => { void handleSelectWork(workId); }}
           onRefresh={refreshMcp} />
       ) : activeView === 'knowledge' ? (
@@ -1375,6 +1404,7 @@ export function App() {
           refreshError={mcpRefreshError}
           onRefresh={preview ? undefined : refreshMcp}
           onContinue={preview ? undefined : handleContinue}
+          onNavigateRecord={handleNavigateRecord}
           onSelectWork={preview ? undefined : (workId) => { void handleSelectWork(workId); }}
         />
       )}

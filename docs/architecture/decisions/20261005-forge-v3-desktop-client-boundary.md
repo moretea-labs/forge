@@ -63,7 +63,12 @@ Controller and remote-transport setup is projected separately through the typed 
 **Product order:** (1) Agent desktop first; (2) MCP as the separately managed
 external service integration; (3) project-scoped Requirement, Plan, Work,
 Evidence and Cognitive records as Forge's differentiator. Record browsing and
-relationship navigation must be usable without opening or changing a chat.
+relationship navigation must be usable without opening or changing a chat. The single
+LocalConversationSurface stays mounted when a user switches to Requirements,
+Plans, Works, Knowledge or Settings: navigation must not discard an in-flight
+Agent reply, unsent draft or provider continuation identity. New conversations
+may inherit the selected registered project, but existing threads are never
+silently rebound across projects.
 
 The default main pane belongs to the active Agent thread: provider, attached
 repository, permission, messages, tool outcomes and input. Project registry
@@ -73,14 +78,17 @@ conversation in navigation. The independent main navigation has **Work,
 Requirement and Plan** record browsers, plus Knowledge and Settings. Selecting
 a Work opens its canonical execution/evidence detail; selecting a Requirement
 or Plan reads its canonical detail command and displays explicit related Work
-links. This is a navigation projection only, not a new semantic lifecycle or
+links, and Plan-backed Requirements can be opened from their canonical
+Plan/Work relations without first opening a conversation. Record links navigate
+between dedicated pages rather than only scrolling to a section inside Work.
+This is a navigation projection only, not a new semantic lifecycle or
 duplicated Work record store.
 
 Current scope is intentionally honest: the Work index uses the Runtime's
 bounded current/recent history; Plan index uses canonical `rh_work plan_list`
 (up to 100 active records); Requirement discovery is limited to Requirement IDs
-reachable from the loaded Work slice until the existing Forge Requirement
-authority offers a repository-scoped, paged inventory. Empty loaded results
+reachable from the project-scoped Plan index or the loaded Work slice until
+the existing Forge Requirement authority offers a repository-scoped, paged inventory. Empty loaded results
 do **not** mean no project Requirements exist. Detail records are always read
 on demand from `rh_work requirement_get` and `plan_get`. Do not create a
 client-side database or infer Requirement completion from a message or an

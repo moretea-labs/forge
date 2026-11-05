@@ -25,28 +25,38 @@ function workState(state: WorkSemanticState): string {
  * The index is explicitly bounded by the loaded Work inventory until Forge
  * offers a project-wide Requirement/Plan index.
  */
-export function ProjectRecordsView({ mode, projection, onSelectWork, onRefresh }: {
+export function ProjectRecordsView({
+  mode, projection, onSelectWork, onRefresh, requestedRecordId, onNavigateRecord,
+}: {
   mode: RecordMode;
   projection: ForgeDesktopProjection;
   onSelectWork: (workId: string) => void;
   onRefresh: () => Promise<void>;
+  requestedRecordId?: string;
+  onNavigateRecord: (mode: 'requirements' | 'plans', id: string) => void;
 }) {
   const [query, setQuery] = useState('');
   const [selectedId, setSelectedId] = useState<string>();
   const [detail, setDetail] = useState<RecordDetail>();
   const [error, setError] = useState<string>();
   const [loading, setLoading] = useState(false);
-  const [planIndex, setPlanIndex] = useState<Array<{ planId: string; goal: string; revision: number; requirementId?: string }>>([]);
+  const [planIndex, setPlanIndex] = useState<Array<{
+    planId: string; goal: string; revision: number; requirementId?: string;
+  }>>([]);
   const [planIndexError, setPlanIndexError] = useState<string>();
+  const [refreshEpoch, setRefreshEpoch] = useState(0);
   const revision = useRef(0);
+  const requestedRef = useRef<string | undefined>(undefined);
   const repoId = projection.project?.repoId;
 
   useEffect(() => {
-    if ((mode !== 'plans' && mode !== 'requirements') || !repoId) return;
+    if (mode === 'works' || !repoId) return;
     let disposed = false;
     setPlanIndex([]);
     setPlanIndexError(undefined);
-    void invoke<{ data?: { plans?: Array<{ planId: string; goal: string; revision: number; requirementId?: string }> } }>(
+    void invoke<{ data?: { plans?: Array<{
+      planId: string; goal: string; revision: number; requirementId?: string;
+    }> } }>(
       'read_project_plan_list', { repoId },
     ).then((response) => {
       if (!disposed) setPlanIndex(response.data?.plans ?? []);
@@ -54,7 +64,7 @@ export function ProjectRecordsView({ mode, projection, onSelectWork, onRefresh }
       if (!disposed) setPlanIndexError(cause instanceof Error ? cause.message : String(cause));
     });
     return () => { disposed = true; };
-  }, [mode, repoId]);
+  }, [mode, repoId, refreshEpoch]);
   const titles = { requirements: 'Requirements', plans: 'Plans', works: 'Works' };
   const explanations = {
     requirements: '需求目标、验收条件和关联工作',
@@ -66,8 +76,9 @@ export function ProjectRecordsView({ mode, projection, onSelectWork, onRefresh }
   const ids = mode === 'works'
     ? works.map((work) => work.workId)
     : [...new Set([
+      ...(requestedRecordId ? [requestedRecordId] : []),
       ...(mode === 'plans' ? planIndex.map((plan) => plan.planId)
-        : mode === 'requirements' ? planIndex.flatMap((plan) => plan.requirementId ? [plan.requirementId] : []) : []),
+        : planIndex.flatMap((plan) => plan.requirementId ? [plan.requirementId] : [])),
       ...works.flatMap((work) => {
         const id = mode === 'requirements' ? work.requirementId : work.planId;
         return id ? [id] : [];
@@ -83,6 +94,16 @@ export function ProjectRecordsView({ mode, projection, onSelectWork, onRefresh }
       + record.works.map((work) => work.objective).join(' '))
       .toLowerCase().includes(query.toLowerCase().trim()));
   const selected = records.find((record) => record.id === selectedId);
+  const relatedPlans = mode === 'requirements' && selected
+    ? planIndex.filter((plan) => plan.requirementId === selected.id) : [];
+
+  useEffect(() => {
+    if (!requestedRecordId || !repoId || mode === 'works') return;
+    const key = repoId + ':' + mode + ':' + requestedRecordId;
+    if (requestedRef.current === key) return;
+    requestedRef.current = key;
+    void openRecord(requestedRecordId);
+  }, [requestedRecordId, repoId, mode]);
 
   async function openRecord(id: string) {
     if (mode === 'works') { onSelectWork(id); return; }
@@ -128,14 +149,19 @@ export function ProjectRecordsView({ mode, projection, onSelectWork, onRefresh }
           <div className="records-context">
             <strong>{projection.project.name}</strong>
             <span>{projection.project.branch}</span>
-            <button className="plain-action" type="button" onClick={() => void onRefresh()}>刷新</button>
+            <button className="plain-action" type="button" onClick={() => {
+              void onRefresh().then(
+                () => setRefreshEpoch((value) => value + 1),
+                (cause: unknown) => setPlanIndexError(cause instanceof Error ? cause.message : String(cause)),
+              );
+            }}>刷新</button>
           </div>
           <p className="records-coverage">
             {mode === 'works'
               ? '当前及近期 Work · 不是完整历史'
               : mode === 'plans'
-                ? '当前 Plan 从 Forge 按项目查询（最多 100 条），并补充已加载 Work 的引用'
-                : '从项目 Plan 与已加载 Work 关联发现 Requirement；无关联的需求暂无法完整枚举'}
+                ? '当前 Plan 来自 Forge 按项目查询（最多 100 条），并显示相关 Work'
+                : 'Requirement 从本项目的 Plan 和已加载 Work 关联发现，非完整 Controller 级需求目录'}
           </p>
           <div className="records-split">
             <section className="records-index" aria-label={titles[mode] + ' 列表'}>
@@ -176,19 +202,27 @@ export function ProjectRecordsView({ mode, projection, onSelectWork, onRefresh }
                   <div className="record-fields">
                     <span>Plan · r{detail.value.revision}</span>
                     <h3>{detail.value.goal}</h3>
-                    {detail.value.requirementId && <p>Requirement · <code>{detail.value.requirementId}</code></p>}
+                    {detail.value.requirementId && (
+                      <button type="button" className="record-deep-link"
+                        onClick={() => onNavigateRecord('requirements', detail.value.requirementId!)}>
+                        Requirement · {detail.value.requirementId}
+                      </button>
+                    )}
                     <strong>计划项</strong>
                     <ul>{(detail.value.items ?? []).map((item) =>
                       <li key={item.id}>{item.objective}</li>)}</ul>
                   </div>
                 )}
-                {mode === 'requirements' && (
-                  <div className="record-plan-links">
-                    <h3 className="record-related-heading">关联 Plan · {planIndex.filter((plan) => plan.requirementId === selected.id).length}</h3>
-                    {planIndex.filter((plan) => plan.requirementId === selected.id).map((plan) => (
-                      <div className="record-plan-link" key={plan.planId}>
-                        <strong>{plan.goal}</strong><code>{plan.planId}</code>
-                      </div>
+                {relatedPlans.length > 0 && (
+                  <div className="record-related-plans">
+                    <h3 className="record-related-heading">关联 Plan · {relatedPlans.length}</h3>
+                    {relatedPlans.map((plan) => (
+                      <button key={plan.planId} type="button" className="record-work-link"
+                        onClick={() => onNavigateRecord('plans', plan.planId)}>
+                        <span className="record-plan-icon" aria-hidden="true">≡</span>
+                        <span>{plan.goal}</span>
+                        <small>r{plan.revision}</small>
+                      </button>
                     ))}
                   </div>
                 )}
