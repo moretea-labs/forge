@@ -52,6 +52,8 @@ export interface LocalConversationThread {
   id: string;
   title: string;
   projectRepoId?: string;
+  // Exact registered checkout identity, fixed for an established transcript.
+  checkoutId?: string;
   // Conversation-local foreign key; Forge remains the sole Work authority.
   workId?: string;
   providerSessionId?: string;
@@ -74,13 +76,16 @@ function localId(prefix: string): string {
   return globalThis.crypto?.randomUUID?.() ?? `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
-export function createThread(provider: LocalProviderChoice, projectRepoId?: string, workId?: string): LocalConversationThread {
+export function createThread(
+  provider: LocalProviderChoice, projectRepoId?: string, workId?: string, checkoutId?: string,
+): LocalConversationThread {
   const timestamp = new Date().toISOString();
   return {
     id: localId('thread'),
     title: '新会话',
     provider,
     ...(projectRepoId ? { projectRepoId } : {}),
+    ...(projectRepoId && checkoutId ? { checkoutId } : {}),
     ...(projectRepoId && workId ? { workId } : {}),
     createdAt: timestamp,
     updatedAt: timestamp,
@@ -92,14 +97,15 @@ export function createThread(provider: LocalProviderChoice, projectRepoId?: stri
 /** Repository selection may replace an empty draft, never a transcript or resume handle. */
 export function selectThreadRepository(
   thread: LocalConversationThread, provider: LocalProviderChoice, nextRepoId?: string,
+  nextCheckoutId?: string,
 ): { thread: LocalConversationThread; created: boolean } {
   if (thread.projectRepoId === nextRepoId) return { thread, created: false };
   if (thread.messages.length > 0 || thread.providerSessionId) {
-    return { thread: createThread(provider, nextRepoId), created: true };
+    return { thread: createThread(provider, nextRepoId, undefined, nextCheckoutId), created: true };
   }
   return {
     thread: {
-      ...thread, projectRepoId: nextRepoId, workId: undefined,
+      ...thread, projectRepoId: nextRepoId, checkoutId: nextCheckoutId, workId: undefined,
       providerSessionId: undefined, updatedAt: new Date().toISOString(),
     },
     created: false,
@@ -108,9 +114,10 @@ export function selectThreadRepository(
 
 export function findExistingWorkThread(
   threads: LocalConversationThread[], provider: LocalProviderChoice, repoId: string, workId: string,
+  checkoutId?: string,
 ): LocalConversationThread | undefined {
   return threads.filter((thread) => !thread.archived && (thread.provider ?? 'codex') === provider
-    && thread.projectRepoId === repoId && thread.workId === workId)
+    && thread.projectRepoId === repoId && thread.checkoutId === checkoutId && thread.workId === workId)
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
 }
 
@@ -280,6 +287,17 @@ export function LocalConversationSurface({
   const selectedRepoId = selectedThread?.projectRepoId;
   const selectedWorkId = selectedThread?.workId;
 
+  // Catalog load may complete after an empty draft was first created.
+  // Never rewrite a conversation with messages or a provider resume handle.
+  useEffect(() => {
+    if (!selectedThread || !selectedProject?.checkoutId || selectedThread.checkoutId
+      || selectedThread.messages.length || selectedThread.providerSessionId) return;
+    setThreads((current) => current.map((thread) =>
+      thread.id === selectedThread.id && !thread.messages.length && !thread.providerSessionId
+        ? { ...thread, checkoutId: selectedProject.checkoutId } : thread));
+  }, [selectedThread?.id, selectedThread?.checkoutId, selectedThread?.messages.length,
+    selectedThread?.providerSessionId, selectedProject?.checkoutId]);
+
   useEffect(() => {
     if (!selectedRepoId) { setWorkIndex([]); setWorkIndexError(undefined); return; }
     let active = true;
@@ -329,7 +347,8 @@ export function LocalConversationSurface({
     && Boolean(onSend) && projectBindingReady && workBindingReady;
 
   const addThread = () => {
-    const thread = createThread(selectedProvider, defaultProjectRepoId);
+    const thread = createThread(selectedProvider, defaultProjectRepoId, undefined,
+      projects.find((project) => project.repoId === defaultProjectRepoId)?.checkoutId);
     setThreads((current) => [thread, ...current]);
     setSelectedThreadId(thread.id);
     setDraft('');
@@ -346,16 +365,16 @@ export function LocalConversationSurface({
     // Re-enter an existing Work-bound Agent thread rather than manufacturing
     // multiple local transcripts for the same ongoing work.
     const existing = newThreadContext?.workId
-      ? findExistingWorkThread(threads, selectedProvider, newThreadContext.repoId, newThreadContext.workId)
+      ? findExistingWorkThread(threads, selectedProvider, newThreadContext.repoId, newThreadContext.workId,
+        projects.find((project) => project.repoId === newThreadContext.repoId)?.checkoutId)
       : undefined;
     if (existing) {
       setSelectedThreadId(existing.id);
       if (existing.id !== selectedThreadId) setDraft('');
     } else {
-      const thread = createThread(
-        selectedProvider, newThreadContext?.repoId ?? defaultProjectRepoId,
-        newThreadContext?.workId,
-      );
+      const repoId = newThreadContext?.repoId ?? defaultProjectRepoId;
+      const thread = createThread(selectedProvider, repoId, newThreadContext?.workId,
+        projects.find((project) => project.repoId === repoId)?.checkoutId);
       setThreads((current) => [thread, ...current]);
       setSelectedThreadId(thread.id);
       setDraft('');
@@ -368,7 +387,8 @@ export function LocalConversationSurface({
   useEffect(() => {
     if (newThreadRequested || activeThreads.length > 0 || initialThreadProvisioned.current === selectedProvider) return;
     initialThreadProvisioned.current = selectedProvider;
-    const thread = createThread(selectedProvider, defaultProjectRepoId);
+    const thread = createThread(selectedProvider, defaultProjectRepoId, undefined,
+      projects.find((project) => project.repoId === defaultProjectRepoId)?.checkoutId);
     setThreads((current) => current.some((entry) => !entry.archived && (entry.provider ?? 'codex') === selectedProvider)
       ? current : [thread, ...current]);
     setSelectedThreadId(thread.id);
@@ -396,7 +416,7 @@ export function LocalConversationSurface({
     setDiffLoading(true);
     try {
       const response = await invoke<GitDiffReceipt>(
-        'read_agent_git_diff', { repoId, staged },
+        'read_agent_git_diff', { repoId, checkoutId: selectedThread?.checkoutId, staged },
       );
       if (request === diffRequest.current) setDiff(response);
     } catch (cause) {
@@ -411,7 +431,7 @@ export function LocalConversationSurface({
   const send = async () => {
     const prompt = draft.trim();
     if (!selectedThread || !providerReady || !onSend || !prompt || sending) return;
-    const authorizedEffects = apiSelected && allowEffects && Boolean(selectedProject);
+    const authorizedEffects = apiSelected && allowEffects && Boolean(selectedProject && selectedThread.checkoutId);
     if (authorizedEffects && !window.confirm(
       '仅本次回复：允许当前 API 模型通过 Forge 修改所选仓库及执行命令。Forge 原有安全检查仍生效。确认授权？'
     )) return;
@@ -550,7 +570,8 @@ export function LocalConversationSurface({
                   if (nextRepoId === selectedThread.projectRepoId) return;
                   setAllowEffects(false);
                   setSendError(null);
-                  const choice = selectThreadRepository(selectedThread, selectedProvider, nextRepoId);
+                  const choice = selectThreadRepository(selectedThread, selectedProvider, nextRepoId,
+                    projects.find((project) => project.repoId === nextRepoId)?.checkoutId);
                   if (choice.created) {
                     setThreads((current) => [choice.thread, ...current]);
                     setSelectedThreadId(choice.thread.id);
@@ -567,9 +588,12 @@ export function LocalConversationSurface({
                   </option>)}
               </select>
             </label>
-            <span>{selectedProject
-              ? '仓库工具仅作用于 ' + selectedProject.repository
-              : '选择项目后启用仓库工具'}</span>
+            <span title={selectedThread.checkoutId ?? '未固定检出'}>
+              {selectedProject
+                ? '仓库：' + selectedProject.repository + (selectedThread.checkoutId
+                  ? ' · 检出 ' + selectedThread.checkoutId.slice(0, 12) : ' · 未固定检出（只读）')
+                : '选择项目后启用仓库工具'}
+            </span>
           </div>
           {selectedRepoId && (
             <div className="local-work-context">
@@ -581,7 +605,7 @@ export function LocalConversationSurface({
                     if (nextWorkId === selectedWorkId) return;
                     if (selectedThread.messages.length > 0) {
                       // A Work switch never silently rebinds existing Agent output.
-                      const next = createThread(selectedProvider, selectedRepoId, nextWorkId);
+                      const next = createThread(selectedProvider, selectedRepoId, nextWorkId, selectedThread.checkoutId);
                       setThreads((current) => [next, ...current]);
                       setSelectedThreadId(next.id);
                       setDraft('');
@@ -702,10 +726,14 @@ export function LocalConversationSurface({
             />
             {apiSelected && selectedProject && (
               <label className="local-tool-permission">
-                <input type="checkbox" disabled={sending} checked={allowEffects}
+                <input type="checkbox" disabled={sending || !selectedThread.checkoutId}
+                  checked={allowEffects && Boolean(selectedThread.checkoutId)}
                   onChange={(event) => setAllowEffects(event.target.checked)} />
                 本次允许修改文件及执行命令（发送时确认）
               </label>
+            )}
+            {apiSelected && selectedRepoId && !selectedThread.checkoutId && selectedThread.messages.length > 0 && (
+              <small role="status">此历史会话未固定检出身份，因此禁止仓库写操作；请新建会话绑定当前检出。</small>
             )}
             {sendError && <div role="alert" className="composer-error">{sendError}</div>}
             <div className="composer-footer">

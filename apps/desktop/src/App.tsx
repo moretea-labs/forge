@@ -1053,7 +1053,7 @@ export function App() {
       const messages = thread.messages.filter(message => message.role === 'user' || message.role === 'assistant')
         .slice(-40).map(message => ({ role: message.role as 'user' | 'assistant', content: message.content }));
       const reply = await sendLocalApiConversation({
-        messages, repoId: thread.projectRepoId, workId: thread.workId,
+        messages, repoId: thread.projectRepoId, checkoutId: thread.checkoutId, workId: thread.workId,
         conversationId: thread.id, allowEffects,
       });
       return { content: reply.output, toolActivityCount: reply.toolActivityCount, toolEvents: reply.toolEvents };

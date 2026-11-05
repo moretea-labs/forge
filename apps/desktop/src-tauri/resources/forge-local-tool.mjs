@@ -25,6 +25,8 @@ async function run() {
   const tool = tools[input.tool];
   if (tool.effect && input.allowEffects !== true) throw Error('LOCAL_FORGE_TOOL_REQUIRES_USER_APPROVAL');
   const repoId = requireId(input.repoId, 'REPOSITORY');
+  const checkoutId = input.checkoutId == null ? undefined : requireId(input.checkoutId, 'CHECKOUT');
+  if (tool.effect && !checkoutId) throw Error('LOCAL_FORGE_EFFECT_CHECKOUT_REQUIRED');
   const conversationId = requireId(input.conversationId, 'CONVERSATION');
   const controllerHome = resolve(String(input.controllerHome ?? ''));
   const sourceRoot = resolve(String(input.sourceRoot ?? ''));
@@ -56,7 +58,7 @@ async function run() {
   // Call the existing canonical Repository tool owner directly in this process.
   // Nothing is sent to MCP HTTP and there is no second filesystem writer.
   const result = await callRepositoryTool(controllerHome, tool.name, {
-    ...args, repo_id: repoId,
+    ...args, repo_id: repoId, ...(checkoutId ? { checkout_id: checkoutId } : {}),
   }, {
     principalId: 'forge-desktop-local-api',
     sessionId: 'desktop-api:' + conversationId,

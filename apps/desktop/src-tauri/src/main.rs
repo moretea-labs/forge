@@ -765,11 +765,14 @@ fn agent_git_diff_arguments(staged: bool) -> Value {
 }
 
 #[tauri::command]
-async fn read_agent_git_diff(app: tauri::AppHandle, repo_id: String, staged: Option<bool>) -> Result<Value, String> {
+async fn read_agent_git_diff(
+    app: tauri::AppHandle, repo_id: String, checkout_id: Option<String>, staged: Option<bool>,
+) -> Result<Value, String> {
     if repo_id.trim().is_empty() { return Err("FORGE_DESKTOP_REPOSITORY_REQUIRED".into()); }
     let receipt = run_local_forge_tool(
         app,
         repo_id,
+        checkout_id,
         "desktop-git-inspector".to_string(),
         "git_diff".to_string(),
         agent_git_diff_arguments(staged.unwrap_or(false)),
@@ -894,6 +897,7 @@ fn local_effect_completed(name: &str, receipt: &Value) -> bool {
 async fn run_local_forge_tool(
     app: tauri::AppHandle,
     repo_id: String,
+    checkout_id: Option<String>,
     conversation_id: String,
     tool_name: String,
     arguments: Value,
@@ -926,6 +930,7 @@ async fn run_local_forge_tool(
             "controllerHome": home.to_string_lossy(),
             "sourceRoot": source_root,
             "repoId": repo_id,
+            "checkoutId": checkout_id,
             "conversationId": conversation_id,
             "tool": tool_name,
             "arguments": arguments,
@@ -1082,11 +1087,26 @@ async fn request_local_api_round_cancellable(
     }
 }
 
+fn validate_agent_checkout_binding(
+    repo_id: Option<&str>, checkout_id: Option<&str>, allow_effects: bool,
+) -> Result<(), String> {
+    if checkout_id.is_some_and(|id| id.len() > 256 || id.is_empty()
+        || !id.chars().all(|c| c.is_ascii_alphanumeric() || "._:-".contains(c)))
+        || (checkout_id.is_some() && repo_id.is_none()) {
+        return Err("FORGE_DESKTOP_API_CHECKOUT_INVALID".into());
+    }
+    if allow_effects && (repo_id.is_none() || checkout_id.is_none()) {
+        return Err("FORGE_DESKTOP_API_EFFECT_CHECKOUT_REQUIRED".into());
+    }
+    Ok(())
+}
+
 #[tauri::command]
 async fn send_local_api_conversation(
     app: tauri::AppHandle,
     messages: Vec<Value>,
     repo_id: Option<String>,
+    checkout_id: Option<String>,
     work_id: Option<String>,
     conversation_id: String,
     allow_effects: bool,
@@ -1109,6 +1129,8 @@ async fn send_local_api_conversation(
     if repo_id.as_ref().is_some_and(|value| value.len() > 256) {
         return Err("FORGE_DESKTOP_API_REPOSITORY_INVALID".into());
     }
+    let checkout_id = checkout_id.filter(|value| !value.trim().is_empty());
+    validate_agent_checkout_binding(repo_id.as_deref(), checkout_id.as_deref(), allow_effects)?;
     let work_id = work_id.filter(|value| !value.trim().is_empty());
     if work_id.as_ref().is_some_and(|value| value.len() > 256 || !value.chars().all(
         |character| character.is_ascii_alphanumeric() || "._:-".contains(character)
@@ -1141,7 +1163,8 @@ async fn send_local_api_conversation(
         .build().map_err(|_| "FORGE_DESKTOP_API_CLIENT_FAILED")?;
     let available_tools = if repo_id.is_some() { local_tool_catalog(allow_effects, work_id.is_some()) } else { Vec::new() };
     let system_instruction = if let Some(id) = repo_id.as_ref() {
-        format!("You are the Forge Desktop local API agent working in registered repository {id}. Use the supplied tools for real facts and repository operations. All calls execute through the existing Forge repository authority in the local process, not MCP HTTP. Never invent a file, command result, Requirement, Plan or Work lifecycle. Tools with effects are available only when the user has approved effects for this turn. Never claim an operation succeeded unless its tool result confirms it.")
+        let checkout = checkout_id.as_deref().unwrap_or("unbound (read-only)");
+        format!("You are the Forge Desktop local API agent working in registered repository {id}, checkout {checkout}. Use the supplied tools for real facts and repository operations. All calls execute through the existing Forge repository authority in the local process, not MCP HTTP. Never invent a file, command result, Requirement, Plan or Work lifecycle. Tools with effects require a pinned checkout and the user's approval for this turn. Never claim an operation succeeded unless its tool result confirms it.")
     } else {
         "You are the Forge Desktop assistant. No Forge project is attached: tools are disabled. Do not invent repository changes or imply that you ran a command. Ask the user to attach a project to work on files.".to_string()
     };
@@ -1277,7 +1300,7 @@ async fn send_local_api_conversation(
                 }
             } else {
                 run_local_forge_tool(
-                    app.clone(), repo_id.clone().unwrap_or_default(),
+                    app.clone(), repo_id.clone().unwrap_or_default(), checkout_id.clone(),
                     conversation_id.clone(), name.clone(), args, allow_effects
                 ).await
             };
@@ -1382,6 +1405,15 @@ mod tests {
     fn agent_git_inspector_forwards_exact_staged_selection() {
         assert_eq!(agent_git_diff_arguments(false), json!({"max_bytes": 20000, "staged": false}));
         assert_eq!(agent_git_diff_arguments(true), json!({"max_bytes": 20000, "staged": true}));
+    }
+
+    #[test]
+    fn api_effects_require_exact_valid_checkout_binding() {
+        assert!(validate_agent_checkout_binding(Some("repo_a"), Some("checkout_1"), true).is_ok());
+        assert!(validate_agent_checkout_binding(Some("repo_a"), None, false).is_ok());
+        assert!(validate_agent_checkout_binding(Some("repo_a"), None, true).is_err());
+        assert!(validate_agent_checkout_binding(None, Some("checkout_1"), false).is_err());
+        assert!(validate_agent_checkout_binding(Some("repo_a"), Some("../other"), true).is_err());
     }
 
     #[test]

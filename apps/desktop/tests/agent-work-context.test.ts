@@ -7,6 +7,22 @@ import { ProjectRecordsView } from '../src/project-records-view';
 import { disconnectedProjection } from '../src/runtime-projection';
 
 describe('Forge Desktop Work-bound Agent thread identity', () => {
+  test('direct Forge runner denies mutations without a pinned checkout before touching source', async () => {
+    const script = new URL('../src-tauri/resources/forge-local-tool.mjs', import.meta.url).pathname;
+    const runner = Bun.spawn([process.execPath, script], { stdin: 'pipe', stdout: 'pipe' });
+    runner.stdin.write(JSON.stringify({
+      tool: 'run_command', repoId: 'repo_forge', conversationId: 'conv_1',
+      controllerHome: '/does-not-exist', sourceRoot: '/does-not-exist',
+      allowEffects: true, arguments: { command: ['git', 'status'] },
+    }));
+    runner.stdin.end();
+    const output = await new Response(runner.stdout).text();
+    expect(await runner.exited).toBe(0);
+    expect(JSON.parse(output)).toEqual({
+      ok: false, error: 'LOCAL_FORGE_EFFECT_CHECKOUT_REQUIRED',
+    });
+  });
+
   test('failed project read reports the selected project failure rather than showing stale records', () => {
     const html = renderToStaticMarkup(createElement(ProjectRecordsView, {
       mode: 'works',
@@ -41,10 +57,11 @@ describe('Forge Desktop Work-bound Agent thread identity', () => {
     expect(repositoryLabel({ repoId: 'repo_unlocated', displayName: 'Legacy' })).toBe('Legacy');
   });
 
-  test('new threads store only repository/Work foreign keys, no semantic duplicates', () => {
-    const thread = createThread('api', 'repo_a', 'work_existing_1');
+  test('new threads store only repository/Work/Checkout foreign keys, no semantic duplicates', () => {
+    const thread = createThread('api', 'repo_a', 'work_existing_1', 'checkout_a');
     expect(thread.projectRepoId).toBe('repo_a');
     expect(thread.workId).toBe('work_existing_1');
+    expect(thread.checkoutId).toBe('checkout_a');
     expect(thread.messages).toEqual([]);
     expect(thread.provider).toBe('api');
     expect('requirement' in thread).toBe(false);
@@ -69,6 +86,9 @@ describe('Forge Desktop Work-bound Agent thread identity', () => {
     expect(avela.workId).toBe('work_avela');
     expect(avela.providerSessionId).toBe('codex-session-avela');
     expect(avela.messages[0]?.content).toBe('build Avela');
+    const bounded = selectThreadRepository(avela, 'codex', 'repo_forge', 'checkout_forge');
+    expect(bounded.thread.checkoutId).toBe('checkout_forge');
+    expect(avela.checkoutId).toBeUndefined();
   });
 
   test('switching an unsent draft reuses it but clears old Work binding', () => {
@@ -82,6 +102,9 @@ describe('Forge Desktop Work-bound Agent thread identity', () => {
     expect(selectThreadRepository(switched.thread, 'api', 'repo_forge').thread).toBe(switched.thread);
     const ghostResume = { ...empty, providerSessionId: 'old-resume' };
     expect(selectThreadRepository(ghostResume, 'api', 'repo_forge').created).toBe(true);
+    const pinned = selectThreadRepository(empty, 'api', 'repo_forge', 'checkout_forge');
+    expect(pinned.thread.checkoutId).toBe('checkout_forge');
+    expect(empty.checkoutId).toBeUndefined();
   });
 
   test('keeps one truthful tool row per start and terminal receipt, with a bounded timeline', () => {
@@ -113,6 +136,11 @@ describe('Forge Desktop Work-bound Agent thread identity', () => {
     const archived = { ...createThread('api', 'repo_a', 'work_1'), archived: true, updatedAt: '2026-11-06T00:00:00Z' };
     const threads = [older, otherProject, archived, otherWork, current, otherProvider];
     expect(findExistingWorkThread(threads, 'api', 'repo_a', 'work_1')?.id).toBe(current.id);
+    const otherCheckout = createThread('api', 'repo_a', 'work_1', 'checkout_2');
+    expect(findExistingWorkThread([...threads, otherCheckout], 'api', 'repo_a', 'work_1', 'checkout_2')?.id)
+      .toBe(otherCheckout.id);
+    expect(findExistingWorkThread([...threads, otherCheckout], 'api', 'repo_a', 'work_1', 'checkout_1'))
+      .toBeUndefined();
     expect(findExistingWorkThread(threads, 'codex', 'repo_a', 'work_1')?.id).toBe(otherProvider.id);
     expect(findExistingWorkThread(threads, 'api', 'repo_c', 'work_1')).toBeUndefined();
     expect(findExistingWorkThread(threads, 'api', 'repo_a', 'work_not_registered')).toBeUndefined();

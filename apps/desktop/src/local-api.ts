@@ -23,6 +23,7 @@ export const saveLocalApiSettings = (input: {
 export const sendLocalApiConversation = (input: {
   messages: Array<{ role: 'user' | 'assistant'; content: string }>;
   repoId?: string;
+  checkoutId?: string;
   workId?: string;
   conversationId: string;
   allowEffects: boolean;
