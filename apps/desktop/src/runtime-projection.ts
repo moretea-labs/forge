@@ -1,26 +1,6 @@
 export type RuntimeConnectionStatus = 'not_connected' | 'connecting' | 'connected' | 'degraded';
 export type ProjectionSource = 'runtime' | 'disconnected' | 'design_preview';
-export type AutomaticContinuationStatus = 'registered' | 'unbound' | 'running' | 'waiting' | 'needs_user' | 'completed' | 'stopped' | 'switching_conversation';
 export type WorkSemanticState = 'open' | 'completed' | 'cancelled';
-
-export interface AutomaticContinuationTaskProjection {
-  taskId: string;
-  workId?: string;
-  title: string;
-  objective: string;
-  status: AutomaticContinuationStatus;
-  statusLabel: string;
-  detail: string;
-  conversation: {
-    conversationId: string;
-    conversationUrl: string;
-    title?: string;
-  } | null;
-  nextAction?: string;
-  repoId?: string;
-  requirementId?: string;
-  createdAt?: string;
-}
 
 export interface UserRequestProjection {
   requestId: string;
@@ -250,7 +230,6 @@ export interface ForgeDesktopProjection {
   requirement: ProjectRequirementProjection | null;
   plan: ProjectPlanProjection | null;
   userRequests: UserRequestProjection[];
-  automaticContinuations: AutomaticContinuationTaskProjection[];
 }
 
 /**
@@ -272,7 +251,6 @@ export const disconnectedProjection = Object.freeze<ForgeDesktopProjection>({
   requirement: null,
   plan: null,
   userRequests: [],
-  automaticContinuations: [],
 });
 
 /**
@@ -312,7 +290,7 @@ export const designPreviewProjection = Object.freeze<ForgeDesktopProjection>({
     nodes: [
       { workId: 'work-ia', objective: '冻结 MCP-first 信息架构', state: 'completed', dependsOnWorkIds: [] },
       { workId: 'work-foundation', objective: '完成桌面客户端基础壳层', state: 'completed', semanticParentWorkId: 'work-ia', dependsOnWorkIds: [] },
-      { workId: 'work-mcp', objective: '接通项目、Work 与自动推进的 Runtime 投影', state: 'open', semanticParentWorkId: 'work-ia', dependsOnWorkIds: ['work-foundation'] },
+      { workId: 'work-mcp', objective: '接通项目与 Work 的 Runtime 投影', state: 'open', semanticParentWorkId: 'work-ia', dependsOnWorkIds: ['work-foundation'] },
       { workId: 'work-recovery', objective: '补齐运行时与恢复界面', state: 'open', semanticParentWorkId: 'work-ia', dependsOnWorkIds: [] },
     ],
   },
@@ -323,11 +301,11 @@ export const designPreviewProjection = Object.freeze<ForgeDesktopProjection>({
   work: {
     workId: 'work-mcp',
     revision: 3,
-    title: '接通项目、Work 与自动推进的 Runtime 投影',
+    title: '接通项目与 Work 的 Runtime 投影',
     objective: '围绕 Forge canonical projection 完成项目工作台，不在客户端复制 Work 生命周期或图权威。',
     semanticState: 'open',
     relationLabel: '当前工作',
-    continuationPrompt: '项目列表、Work 选择、依赖关系与会话继续全部通过现有 MCP 权威读取和执行。',
+    continuationPrompt: '项目列表、Work 选择与依赖关系使用现有 Forge 权威。',
     nextSafeAction: '继续把 Forge canonical facts 投影到当前工作面。',
     semanticParentWorkId: 'work-ia',
     dependsOnWorkIds: ['work-foundation'],
@@ -379,39 +357,8 @@ export const designPreviewProjection = Object.freeze<ForgeDesktopProjection>({
       updatedAt: '2026-10-06T03:40:00.000Z',
     },
   ],
-  automaticContinuations: [
-    {
-      taskId: 'forge:repo-preview:work:work-mcp',
-      workId: 'work-mcp',
-      title: '自动推进',
-      objective: '继续 Forge V3 客户端开发，直到形成可审查交付或明确需要用户处理的阻塞。',
-      status: 'registered',
-      statusLabel: '任务已登记',
-      detail: '监督器列表不包含执行状态；正式客户端不推断正在运行。',
-      conversation: {
-        conversationId: '00000000-0000-4000-8000-000000000001',
-        conversationUrl: 'https://chatgpt.com/c/00000000-0000-4000-8000-000000000001',
-        title: 'Forge V3 客户端开发',
-      },
-      nextAction: '继续当前会话，或显式切换到新的 ChatGPT 会话。',
-      repoId: 'repo-preview-forge',
-      requirementId: 'REQ-forge-v3-desktop-client-20260930',
-      createdAt: '2026-10-01T14:09:52.665Z',
-    },
-  ],
 });
 
 export interface ForgeRuntimeProjectionPort {
   readProjection(): Promise<ForgeDesktopProjection>;
-}
-
-export interface ForgeRuntimeCommandPort {
-  switchAutomaticContinuationConversation(input: {
-    taskId: string;
-    expectedConversationId: string;
-    reason: string;
-  }): Promise<{
-    taskId: string;
-    status: 'switching_to_fresh_conversation' | 'unchanged';
-  }>;
 }

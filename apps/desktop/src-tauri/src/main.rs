@@ -266,16 +266,6 @@ async fn perform_recovery_action(action: String) -> Result<Value, String> {
 }
 
 #[tauri::command]
-async fn read_automatic_continuations() -> Result<Value, String> {
-    call_runtime_tool("capability_execute", json!({
-        "capability_id": "controller.workflow_supervisor",
-        "action": "list",
-        "arguments": { "active_only": true },
-        "request_id": request_id("continuations-list")
-    })).await
-}
-
-#[tauri::command]
 async fn read_projects() -> Result<Value, String> {
     let config = runtime_config()?;
     let result = call_runtime_tool("repository_list", json!({
@@ -437,28 +427,6 @@ async fn continue_work(repo_id: String, work_id: String, prompt: String) -> Resu
 }
 
 #[tauri::command]
-async fn switch_automatic_continuation_conversation(
-    task_id: String,
-    expected_conversation_id: String,
-    reason: String,
-) -> Result<Value, String> {
-    if task_id.trim().is_empty() || expected_conversation_id.trim().is_empty() || reason.trim().is_empty() {
-        return Err("FORGE_DESKTOP_CONVERSATION_SWITCH_ARGUMENT_REQUIRED".to_string());
-    }
-    call_runtime_tool("capability_execute", json!({
-        "capability_id": "controller.workflow_supervisor",
-        "action": "switch_to_fresh_conversation",
-        "arguments": {
-            "task_id": task_id,
-            "expected_conversation_id": expected_conversation_id,
-            "reason": reason,
-            "authorized_by": "forge-desktop"
-        },
-        "request_id": request_id("conversation-switch")
-    })).await
-}
-
-#[tauri::command]
 async fn read_local_provider_status() -> Result<Value, String> {
     call_runtime_tool("capability_execute", json!({
         "capability_id": "controller.local_conversation",
@@ -532,12 +500,10 @@ fn main() {
             read_requirement_detail,
             read_plan_detail,
             continue_work,
-            read_automatic_continuations,
             read_local_provider_status,
             send_local_conversation,
             read_connection_status,
-            repair_connection,
-            switch_automatic_continuation_conversation
+            repair_connection
         ])
         .run(tauri::generate_context!())
         .expect("error while running Forge desktop");

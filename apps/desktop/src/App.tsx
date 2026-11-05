@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   designPreviewProjection,
   disconnectedProjection,
-  type AutomaticContinuationTaskProjection,
   type ControllerConnectionProjection,
   type ForgeDesktopProjection,
   type ProjectListItemProjection,
@@ -12,14 +11,12 @@ import {
 } from './runtime-projection';
 import {
   continueWork,
-  readAutomaticContinuations,
   readConnectionStatus,
   readLocalProviderStatus,
   readProjects,
   readProjectWorkspace,
   repairConnection,
   sendLocalConversation,
-  switchAutomaticContinuationConversation,
   tauriRuntimeAvailable,
   type LocalProviderStatusProjection,
 } from './runtime-client';
@@ -96,13 +93,6 @@ function phaseEvidenceStateLabel(state: string): string {
   return labels[state] ?? state;
 }
 
-function statusTone(status: AutomaticContinuationTaskProjection['status']): string {
-  if (status === 'needs_user') return 'attention';
-  if (status === 'completed' || status === 'stopped' || status === 'registered' || status === 'unbound') return 'quiet';
-  if (status === 'switching_conversation') return 'switching';
-  return 'live';
-}
-
 function Sidebar({
   projects,
   workNodes,
@@ -135,14 +125,14 @@ function Sidebar({
   return (
     <aside className="sidebar">
       <div className="sidebar-main">
-        <div className="mode-switch" role="group" aria-label="Forge 工作模式">
-          <button className={activeView === 'assistant' ? 'active' : ''} type="button" onClick={onOpenAssistant}>Local</button>
-          <button className={activeView !== 'assistant' ? 'active' : ''} type="button" onClick={onOpenMcp}>MCP</button>
+        <div className="sidebar-brand" aria-label="Forge 工作台">
+          <span className="brand-glyph" aria-hidden="true">✳</span>
+          <span className="brand-copy"><strong>Forge</strong><small>WORKSPACE</small></span>
         </div>
-
+        <div className="sidebar-section-title nav-section-title">工作空间</div>
         <button className={activeView === 'assistant' ? 'nav-row active' : 'nav-row'} type="button" onClick={onOpenAssistant}>
-          <span className="nav-symbol">✦</span>
-          <span>助手</span>
+          <span className="nav-symbol" aria-hidden="true">✦</span>
+          <span className="nav-label">助手</span>
         </button>
 
         <div className="sidebar-section-title">项目</div>
@@ -222,85 +212,18 @@ function Sidebar({
   );
 }
 
-function AutomaticContinuationRow({
-  task,
-  preview,
-  onSwitch,
-}: {
-  task: AutomaticContinuationTaskProjection;
-  preview: boolean;
-  onSwitch?: (task: AutomaticContinuationTaskProjection) => Promise<void>;
-}) {
-  const [switching, setSwitching] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const conversation = task.conversation;
-  const canSwitch = Boolean(conversation) && !['completed', 'stopped', 'switching_conversation'].includes(task.status);
-
-  return (
-    <div className="continuation-row">
-      <div className="continuation-main">
-        <div className="continuation-title-row">
-          <span className={`status-dot ${statusTone(task.status)}`} />
-          <strong>自动推进</strong>
-          <span className="subtle-label">{task.statusLabel}</span>
-        </div>
-        <p>{task.objective}</p>
-        {conversation ? (
-          <a className="conversation-link" href={conversation.conversationUrl} target="_blank" rel="noreferrer">
-            打开绑定会话
-          </a>
-        ) : <span className="subtle-label">尚未绑定精确会话</span>}
-      </div>
-      <div className="continuation-actions">
-        <button
-          className="plain-action"
-          type="button"
-          disabled={!canSwitch || switching || (!preview && !onSwitch)}
-          onClick={async () => {
-            if (preview || !onSwitch) return;
-            setError(null);
-            setSwitching(true);
-            try { await onSwitch(task); }
-            catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
-            finally { setSwitching(false); }
-          }}
-        >
-          {switching ? '切换中…' : '切换到新会话'}
-        </button>
-      </div>
-      {error && <div className="inline-error">{error}</div>}
-      <details className="compact-details">
-        <summary>任务详情</summary>
-        <dl>
-          <div><dt>任务</dt><dd className="mono">{task.taskId}</dd></div>
-          {task.workId && <div><dt>工作</dt><dd className="mono">{task.workId}</dd></div>}
-          {task.repoId && <div><dt>项目</dt><dd className="mono">{task.repoId}</dd></div>}
-          {task.requirementId && <div><dt>需求</dt><dd className="mono">{task.requirementId}</dd></div>}
-          {conversation && <div><dt>会话</dt><dd className="mono">{conversation.conversationId}</dd></div>}
-          {task.createdAt && <div><dt>创建</dt><dd>{new Date(task.createdAt).toLocaleString('zh-CN')}</dd></div>}
-          <div><dt>状态</dt><dd>{task.detail}</dd></div>
-        </dl>
-      </details>
-    </div>
-  );
-}
-
 function WorkView({
   projection,
-  preview,
   refreshing,
   refreshError,
   onRefresh,
-  onSwitch,
   onContinue,
   onSelectWork,
 }: {
   projection: ForgeDesktopProjection;
-  preview: boolean;
   refreshing: boolean;
   refreshError: string | null;
   onRefresh?: () => Promise<void>;
-  onSwitch?: (task: AutomaticContinuationTaskProjection) => Promise<void>;
   onContinue?: (prompt: string) => Promise<void>;
   onSelectWork?: (workId: string) => void;
 }) {
@@ -325,17 +248,17 @@ function WorkView({
       <main className="main-pane work-pane">
         <div className="content-column">
           <header className="work-hero mcp-project-hero">
-            <div className="breadcrumb">MCP / Repository</div>
+            <div className="breadcrumb">项目 / Repository</div>
             <h1>{project.name}</h1>
             <p>{project.repository}</p>
           </header>
 
           <div className="mcp-overview-status" aria-label="MCP 工作区状态">
-            <div><span className={`health-dot ${projection.runtime.status}`} /><strong>MCP Workspace</strong></div>
+            <div><span className={`health-dot ${projection.runtime.status}`} /><strong>项目工作区</strong></div>
             <div className="mcp-status-actions">
               <span>{projection.runtime.label}</span>
               <button className="plain-action" type="button" disabled={!onRefresh || refreshing} onClick={() => void onRefresh?.()}>
-                {refreshing ? '刷新中…' : '刷新 MCP'}
+                {refreshing ? '刷新中…' : '刷新'}
               </button>
             </div>
           </div>
@@ -421,27 +344,21 @@ function WorkView({
     );
   }
 
-  const continuations = projection.automaticContinuations.filter((task) => !task.workId || task.workId === work.workId);
-
   return (
     <main className="main-pane work-pane">
       <div className="content-column">
         <header className="work-hero mcp-work-hero">
           <div className="mcp-work-hero-copy">
-            <div className="breadcrumb">MCP / {projection.project?.name ?? '项目'} / {semanticStateLabel(work.semanticState)}</div>
+            <div className="breadcrumb">项目 / {projection.project?.name ?? '项目'} / {semanticStateLabel(work.semanticState)}</div>
             <h1>{work.title}</h1>
             {work.continuationPrompt && <p>{work.continuationPrompt}</p>}
           </div>
           <button className="plain-action" type="button" disabled={!onRefresh || refreshing} onClick={() => void onRefresh?.()}>
-            {refreshing ? '刷新中…' : '刷新 MCP'}
+            {refreshing ? '刷新中…' : '刷新'}
           </button>
         </header>
 
         {refreshError && <div className="inline-error mcp-refresh-error">刷新失败：{refreshError}</div>}
-
-        {continuations.map((task) => (
-          <AutomaticContinuationRow key={task.taskId} task={task} preview={preview} onSwitch={onSwitch} />
-        ))}
 
         <div className="work-body-copy">
           <p>{work.objective}</p>
@@ -650,8 +567,8 @@ function WorkView({
       <div className="composer-wrap">
         <div className="composer">
           <textarea
-            aria-label="向当前工作发送指令"
-            placeholder="告诉 ChatGPT 接下来要做什么…"
+            aria-label="从当前工作启动会话"
+            placeholder="描述你想推进的工作…"
             rows={3}
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
@@ -676,7 +593,7 @@ function WorkView({
                   setSending(false);
                 }
               }}
-            >{sending ? '发送中…' : '继续'}</button>
+            >{sending ? '启动中…' : '启动会话'}</button>
           </div>
         </div>
       </div>
@@ -685,23 +602,17 @@ function WorkView({
 }
 
 function AssistantView({
-  tasks,
   projects,
   provider,
   providerLoading,
   providerError,
-  preview,
-  onSwitch,
   onRefreshProvider,
   onSendLocal,
 }: {
-  tasks: AutomaticContinuationTaskProjection[];
   projects: ProjectListItemProjection[];
   provider: LocalProviderStatusProjection | null;
   providerLoading: boolean;
   providerError: string | null;
-  preview: boolean;
-  onSwitch?: (task: AutomaticContinuationTaskProjection) => Promise<void>;
   onRefreshProvider: () => Promise<void>;
   onSendLocal: (input: { thread: LocalConversationThread; prompt: string }) => Promise<LocalConversationReply>;
 }) {
@@ -710,8 +621,8 @@ function AssistantView({
       <div className="content-column assistant-content">
         <header className="work-hero assistant-hero">
           <div className="breadcrumb">Forge</div>
-          <h1>助手</h1>
-          <p>本地会话属于桌面客户端；需要长期执行的工作仍由 Forge 的 canonical Work 与 Controller authority 承担。</p>
+          <h1>从一个想法开始。</h1>
+          <p>与本地助手交流，或从侧边栏选择项目，继续已有的工作。</p>
         </header>
         <LocalConversationSurface
           projects={projects}
@@ -721,14 +632,6 @@ function AssistantView({
           onRefreshProvider={onRefreshProvider}
           onSend={onSendLocal}
         />
-        <section className="assistant-automation" aria-label="自动推进">
-          <div className="assistant-section-heading"><strong>自动推进</strong><span>canonical Workflow Supervisor</span></div>
-          {tasks.length > 0 ? tasks.map((task) => (
-            <AutomaticContinuationRow key={task.taskId} task={task} preview={preview} onSwitch={onSwitch} />
-          )) : (
-            <div className="empty-copy inline-empty"><p>当前没有活动的自动推进任务。</p></div>
-          )}
-        </section>
       </div>
     </main>
   );
@@ -964,10 +867,7 @@ export function App() {
   const loadProject = useCallback(async (project: ProjectListItemProjection, workId?: string) => {
     if (preview || !tauriRuntimeAvailable()) return;
     try {
-      const [workspace, automaticContinuations] = await Promise.all([
-        readProjectWorkspace(project, workId),
-        readAutomaticContinuations(),
-      ]);
+      const workspace = await readProjectWorkspace(project, workId);
       setSelectedRepoId(project.repoId);
       setSelectedWorkId(workspace.work?.workId);
       setProjection({
@@ -975,7 +875,6 @@ export function App() {
         runtime: { status: 'connected', label: '运行时已连接', detail: '当前数据来自 Forge Runtime。' },
         projects,
         ...workspace,
-        automaticContinuations,
       });
     } catch (cause) {
       setProjection((current) => ({
@@ -988,7 +887,7 @@ export function App() {
   const bootstrapRuntime = useCallback(async () => {
     if (preview || !tauriRuntimeAvailable()) return;
     try {
-      const [catalog, automaticContinuations] = await Promise.all([readProjects(), readAutomaticContinuations()]);
+      const catalog = await readProjects();
       setProjects(catalog.projects);
       const selectedProject = catalog.projects.find((project) => project.repoId === catalog.preferredRepoId) ?? catalog.projects[0];
       if (!selectedProject) {
@@ -997,7 +896,6 @@ export function App() {
           source: 'runtime',
           runtime: { status: 'connected', label: '运行时已连接', detail: '当前没有已注册项目。' },
           projects: [],
-          automaticContinuations,
         });
         setActiveView('assistant');
         return;
@@ -1010,7 +908,6 @@ export function App() {
         runtime: { status: 'connected', label: '运行时已连接', detail: '当前数据来自 Forge Runtime。' },
         projects: catalog.projects,
         ...workspace,
-        automaticContinuations,
       });
     } catch (cause) {
       setProjection({
@@ -1030,7 +927,7 @@ export function App() {
     setMcpRefreshing(true);
     setMcpRefreshError(null);
     try {
-      const [catalog, automaticContinuations] = await Promise.all([readProjects(), readAutomaticContinuations()]);
+      const catalog = await readProjects();
       setProjects(catalog.projects);
       const selectedProject = catalog.projects.find((project) => project.repoId === selectedRepoId)
         ?? catalog.projects.find((project) => project.repoId === catalog.preferredRepoId)
@@ -1043,7 +940,6 @@ export function App() {
           source: 'runtime',
           runtime: { status: 'connected', label: '运行时已连接', detail: '当前没有已注册项目。' },
           projects: [],
-          automaticContinuations,
         });
         return;
       }
@@ -1055,7 +951,6 @@ export function App() {
         runtime: { status: 'connected', label: '运行时已连接', detail: '刚刚从 Forge Runtime 重新读取。' },
         projects: catalog.projects,
         ...workspace,
-        automaticContinuations,
       });
     } catch (cause) {
       setMcpRefreshError(cause instanceof Error ? cause.message : String(cause));
@@ -1076,12 +971,6 @@ export function App() {
     setActiveView('project');
     await loadProject(project, workId);
   }, [loadProject, projects, selectedRepoId]);
-
-  const handleSwitch = useCallback(async (task: AutomaticContinuationTaskProjection) => {
-    await switchAutomaticContinuationConversation(task);
-    const project = projects.find((candidate) => candidate.repoId === selectedRepoId);
-    if (project) await loadProject(project, selectedWorkId);
-  }, [loadProject, projects, selectedRepoId, selectedWorkId]);
 
   const handleContinue = useCallback(async (prompt: string) => {
     if (!projection.project || !projection.work) return;
@@ -1192,13 +1081,10 @@ export function App() {
 
       {activeView === 'assistant' ? (
         <AssistantView
-          tasks={projection.automaticContinuations}
           projects={projects}
           provider={localProvider}
           providerLoading={localProviderLoading}
           providerError={localProviderError}
-          preview={preview}
-          onSwitch={preview ? undefined : handleSwitch}
           onRefreshProvider={refreshLocalProvider}
           onSendLocal={sendLocal}
         />
@@ -1222,11 +1108,9 @@ export function App() {
       ) : (
         <WorkView
           projection={projection}
-          preview={preview}
           refreshing={mcpRefreshing}
           refreshError={mcpRefreshError}
           onRefresh={preview ? undefined : refreshMcp}
-          onSwitch={preview ? undefined : handleSwitch}
           onContinue={preview ? undefined : handleContinue}
           onSelectWork={preview ? undefined : (workId) => { void handleSelectWork(workId); }}
         />
