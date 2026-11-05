@@ -427,3 +427,68 @@ a { color: #353535; text-decoration: underline; text-underline-offset: 3px; }
 .local-tool-summary .local-tool-event { display: flex; justify-content: space-between; gap: 12px; padding: 5px 0; }
 .local-tool-summary .local-tool-event strong { font-weight: 570; color: #696969; }
 .local-tool-summary p { margin-top: 7px; font-size: 10px; }
+
+/* Agent-first shell: project selection is contextual, not a permanent list of all registries. */
+.sidebar-project-picker { display: flex; align-items: center; min-width: 0; flex: 1; gap: 9px;
+  padding: 8px 9px; border: 0; border-radius: 8px; background: rgba(255,255,255,.22);
+  font-size: 12px; font-weight: 600; color: #404040; text-align: left; }
+.sidebar-project-picker .nav-label { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.sidebar-project-picker .project-caret { color: #8a8a8a; font-size: 11px; }
+.sidebar-project-picker:hover { background: rgba(255,255,255,.5); }
+.sidebar-project-picker-panel { min-height: 0; display: grid; gap: 8px; padding: 6px 4px 8px; }
+.sidebar-project-picker-panel > input, .records-index > input { box-sizing: border-box; width: 100%;
+  min-width: 0; border: 1px solid rgba(0,0,0,.1); border-radius: 9px; background: rgba(255,255,255,.86);
+  color: #3d3d3d; outline: 0; font-size: 12px; padding: 9px 11px; }
+.sidebar-project-picker-panel > input:focus, .records-index > input:focus { border-color: #8f959b; }
+.sidebar-project-picker-panel .sidebar-projects { overflow: auto; max-height: min(290px, 35vh); padding: 0 2px; }
+.sidebar-project-picker-panel .sidebar-project-group { margin: 0; }
+.sidebar-conversations { max-height: min(360px, 38vh); }
+.sidebar-thread-row .nav-label { font-size: 12px; }
+.agent-context-strip { display: flex; gap: 14px; align-items: center; padding: 4px 0 10px;
+  flex-wrap: wrap; color: #898989; font-size: 11px; }
+.agent-context-strip > span { color: #575757; font-size: 12px; font-weight: 600; margin-right: auto; }
+.agent-context-strip button { border: none; background: transparent; color: #737373; padding: 6px 2px;
+  font-size: 11px; border-radius: 4px; }
+.agent-context-strip button:hover { color: #272727; text-decoration: underline; }
+.assistant-content { padding-top: 24px; }
+.local-message-body { font-size: 13px; line-height: 1.75; }
+
+/* Requirement, Plan and Work have distinct project-scoped list/detail pages. */
+.records-pane { padding: 28px 32px 40px; display: flex; flex-direction: column; min-height: 0; }
+.records-heading { flex: 0 0 auto; }
+.records-heading h1 { margin: 10px 0 5px; font-weight: 640; font-size: 24px; line-height: 1.3; color: #292929; }
+.records-heading p { margin: 0; font-size: 12px; line-height: 1.6; color: #888; }
+.records-context { display: flex; align-items: center; gap: 12px; border-bottom: 1px solid #ebebeb;
+  padding: 18px 0 12px; color: #777; font-size: 11px; }
+.records-context strong { font-size: 12px; color: #424242; }
+.records-context span { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.records-coverage { color: #999; font-size: 10.5px; margin: 12px 0 16px; }
+.records-split { min-height: 270px; flex: 1; display: grid; grid-template-columns: minmax(210px, 34%) minmax(0,1fr);
+  border: 1px solid #e9e9e9; border-radius: 12px; overflow: hidden; background: #fff; }
+.records-index { min-width: 0; padding: 12px; border-right: 1px solid #e9e9e9; overflow: auto; }
+.records-index > input { margin-bottom: 10px; }
+.record-row { display: grid; width: 100%; gap: 7px; border: 0; border-radius: 8px; background: none;
+  padding: 12px 11px; text-align: left; cursor: pointer; }
+.record-row:hover, .record-row.active { background: #f3f4f5; }
+.record-row strong { color: #444; font-size: 12px; line-height: 1.5; font-weight: 585;
+  overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
+.record-row small { color: #929292; font-size: 10.5px; }
+.records-detail { min-width: 0; overflow: auto; padding: 22px 26px; color: #494949; font-size: 12px; }
+.records-detail h2 { font-size: 17px; line-height: 1.5; color: #333; font-weight: 625; overflow-wrap: anywhere; }
+.records-detail code { font: 10.5px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;
+  color: #777; overflow-wrap: anywhere; }
+.records-empty { font-size: 12px; color: #9b9b9b; line-height: 1.7; padding: 18px 6px; }
+.record-fields { display: grid; gap: 8px; margin-top: 18px; line-height: 1.7; }
+.record-fields h3 { font-size: 14px; line-height: 1.5; color: #3b3b3b; margin: 4px 0; }
+.record-fields p { margin: 0; white-space: pre-wrap; }
+.record-fields > strong { margin-top: 12px; }
+.record-fields ul { padding-left: 22px; margin: 2px 0; }
+.record-fields li { margin: 7px 0; }
+.record-related-heading { border-top: 1px solid #ededed; padding-top: 16px; margin-top: 25px; font-size: 12px; }
+.record-work-link { display: flex; width: 100%; align-items: center; gap: 9px;
+  border: 0; border-radius: 7px; background: transparent; text-align: left; padding: 11px 6px; }
+.record-work-link:hover { background: #f5f5f5; }
+.record-work-link > span:nth-child(2) { min-width: 0; flex: 1; color: #424242; font-size: 11.5px;
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.record-work-link small { white-space: nowrap; color: #8a8a8a; font-size: 10px; }
+@media (max-width: 1000px) { .records-pane { padding: 18px 20px; } .records-split { grid-template-columns: 40% minmax(0,1fr); } .records-detail { padding: 17px; } }
