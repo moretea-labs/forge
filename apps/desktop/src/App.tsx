@@ -21,6 +21,7 @@ import {
   type LocalProviderStatusProjection,
 } from './runtime-client';
 import { LocalConversationSurface, type LocalConversationReply, type LocalConversationThread, type LocalConversationNavItem } from './local-conversation';
+import { ProjectRecordsView } from './project-records-view';
 import { KnowledgeView } from './knowledge-view';
 import { SettingsView } from './settings-view';
 import { readLocalApiSettings, saveLocalApiSettings, clearLocalApiKey, sendLocalApiConversation, type LocalApiSettings, type LocalProviderChoice } from './local-api';
@@ -31,7 +32,7 @@ import {
   verifyRecoveryRuntime,
 } from './recovery-client';
 
-type AppView = 'assistant' | 'project' | 'knowledge' | 'settings' | 'runtime';
+type AppView = 'assistant' | 'project' | 'requirements' | 'plans' | 'works' | 'knowledge' | 'settings' | 'runtime';
 
 function previewEnabled(): boolean {
   return new URLSearchParams(window.location.search).get('preview') === '1';
@@ -98,10 +99,7 @@ function phaseEvidenceStateLabel(state: string): string {
 
 function Sidebar({
   projects,
-  workNodes,
-  recentWorkNodes,
   selectedRepoId,
-  selectedWorkId,
   activeView,
   runtimeLabel,
   runtimeStatus,
@@ -110,20 +108,18 @@ function Sidebar({
   onOpenAssistant,
   onNewThread,
   onOpenProjects,
+  onOpenRequirements,
+  onOpenPlans,
   onOpenKnowledge,
   onOpenSettings,
   onSelectProject,
-  onSelectWork,
   localThreads,
   selectedLocalThreadId,
   onSelectLocalThread,
   onOpenRuntime,
 }: {
   projects: ProjectListItemProjection[];
-  workNodes: WorkGraphNodeProjection[];
-  recentWorkNodes: WorkGraphNodeProjection[];
   selectedRepoId?: string;
-  selectedWorkId?: string;
   activeView: AppView;
   runtimeLabel: string;
   runtimeStatus: string;
@@ -132,15 +128,20 @@ function Sidebar({
   onOpenAssistant: () => void;
   onNewThread: () => void;
   onOpenProjects: () => void;
+  onOpenRequirements: () => void;
+  onOpenPlans: () => void;
   onOpenKnowledge: () => void;
   onOpenSettings: () => void;
   onSelectProject?: (project: ProjectListItemProjection) => void;
-  onSelectWork?: (workId: string) => void;
   localThreads: LocalConversationNavItem[];
   selectedLocalThreadId?: string;
   onSelectLocalThread: (id: string) => void;
   onOpenRuntime?: () => void;
 }) {
+  const [showProjectPicker, setShowProjectPicker] = useState(false);
+  const [projectQuery, setProjectQuery] = useState('');
+  const activeProject = projects.find((project) => project.repoId === selectedRepoId);
+  const matchingProjects = projects.filter((project) => (project.name + ' ' + project.repository).toLowerCase().includes(projectQuery.toLowerCase().trim()));
   return (
     <aside className="sidebar">
       <div className="sidebar-main">
@@ -155,8 +156,14 @@ function Sidebar({
           <button className={activeView === 'assistant' ? 'nav-row active' : 'nav-row'} type="button" onClick={onOpenAssistant}>
             <span className="nav-symbol" aria-hidden="true">◷</span><span className="nav-label">会话</span>
           </button>
-          <button className={activeView === 'project' ? 'nav-row active' : 'nav-row'} type="button" onClick={onOpenProjects}>
-            <span className="nav-symbol" aria-hidden="true">▤</span><span className="nav-label">项目工作台</span>
+          <button className={activeView === 'works' || activeView === 'project' ? 'nav-row active' : 'nav-row'} type="button" onClick={onOpenProjects}>
+            <span className="nav-symbol" aria-hidden="true">▤</span><span className="nav-label">Work · 工作</span>
+          </button>
+          <button className={activeView === 'requirements' ? 'nav-row active' : 'nav-row'} type="button" onClick={onOpenRequirements}>
+            <span className="nav-symbol" aria-hidden="true">◇</span><span className="nav-label">Requirement · 需求</span>
+          </button>
+          <button className={activeView === 'plans' ? 'nav-row active' : 'nav-row'} type="button" onClick={onOpenPlans}>
+            <span className="nav-symbol" aria-hidden="true">≡</span><span className="nav-label">Plan · 计划</span>
           </button>
           <button className={activeView === 'knowledge' ? 'nav-row active' : 'nav-row'} type="button" onClick={onOpenKnowledge}>
             <span className="nav-symbol" aria-hidden="true">◇</span><span className="nav-label">记忆与知识</span>
@@ -176,56 +183,39 @@ function Sidebar({
           </section>
         )}
         <div className="sidebar-project-heading">
-          <div className="sidebar-section-title">项目与工作 · {projects.length}</div>
+          <button className="sidebar-project-picker" type="button" aria-expanded={showProjectPicker}
+            title={activeProject?.repository ?? '选择已注册项目'}
+            onClick={() => setShowProjectPicker((expanded) => !expanded)}>
+            <span className="project-folder" aria-hidden="true">▱</span>
+            <span className="nav-label">{activeProject?.name ?? '选择项目'}</span>
+            <span className="project-caret" aria-hidden="true">{showProjectPicker ? '⌃' : '⌄'}</span>
+          </button>
           <button type="button" title="刷新已注册项目" aria-label="刷新已注册项目" onClick={onRetryProjects}>↻</button>
         </div>
-        <div className="sidebar-list sidebar-projects">
-          {projects.length === 0 && (
-            <div className="sidebar-project-error" role="status">
-              <strong>{runtimeStatus === 'connected' ? '还没有注册项目' : '项目目录未加载'}</strong>
-              <span>{runtimeStatus === 'connected' ? '可使用 Forge 注册本地仓库' : runtimeDetail}</span>
-              <button type="button" className="plain-action" onClick={onRetryProjects}>重新读取项目</button>
-            </div>
-          )}
-          {projects.map((project) => (
-            <div className="sidebar-project-group" key={project.repoId}>
-              <button className={activeView === 'project' && project.repoId === selectedRepoId ? 'nav-row project-row active' : 'nav-row project-row'}
-                type="button" title={project.repository} onClick={() => onSelectProject?.(project)}>
-                <span className="project-folder" aria-hidden="true">▱</span>
-                <span className="nav-label">{project.name}</span>
-                {project.repoId === selectedRepoId && <span className="project-caret" aria-hidden="true">⌄</span>}
-              </button>
-              {project.repoId === selectedRepoId && workNodes.length > 0 && (
-                <div className="sidebar-project-threads" aria-label={project.name + ' 工作'}>
-                  {workNodes.map((work) => (
-                    <button key={work.workId} className={work.workId === selectedWorkId && activeView === 'project' ? 'work-row active' : 'work-row'}
-                      type="button" onClick={() => onSelectWork?.(work.workId)} title={work.objective}>
-                      <span className={'work-state-dot ' + work.state} aria-hidden="true" />
-                      <span className="work-row-copy">
-                        <strong>{work.objective}</strong>
-                        <span>{semanticStateLabel(work.state)}</span>
-                      </span>
-                    </button>
-                  ))}
+        {showProjectPicker && (
+          <div className="sidebar-project-picker-panel">
+            <input aria-label="搜索已注册项目" placeholder={'搜索 ' + projects.length + ' 个项目'}
+              value={projectQuery} onChange={(event) => setProjectQuery(event.target.value)} />
+            <div className="sidebar-list sidebar-projects">
+              {projects.length === 0 && (
+                <div className="sidebar-project-error" role="status">
+                  <strong>{runtimeStatus === 'connected' ? '尚无已注册项目' : '项目目录读取失败'}</strong>
+                  <span>{runtimeDetail}</span>
+                  <button type="button" className="plain-action" onClick={onRetryProjects}>重新读取</button>
                 </div>
               )}
-              {project.repoId === selectedRepoId && recentWorkNodes.length > 0 && (
-                <details className="sidebar-history">
-                  <summary>历史工作 · {recentWorkNodes.length}</summary>
-                  <div className="sidebar-list history-work-list">
-                    {recentWorkNodes.map((work) => (
-                      <button key={work.workId} className={work.workId === selectedWorkId && activeView === 'project' ? 'work-row active' : 'work-row'}
-                        type="button" onClick={() => onSelectWork?.(work.workId)} title={work.objective}>
-                        <span className={'work-state-dot ' + work.state} aria-hidden="true" />
-                        <span className="work-row-copy"><strong>{work.objective}</strong><span>{semanticStateLabel(work.state)}</span></span>
-                      </button>
-                    ))}
-                  </div>
-                </details>
-              )}
+              {matchingProjects.map((project) => (
+                <button className={project.repoId === selectedRepoId ? 'nav-row project-row active' : 'nav-row project-row'}
+                  key={project.repoId} type="button" title={project.repository}
+                  onClick={() => { onSelectProject?.(project); setShowProjectPicker(false); }}>
+                  <span className="project-folder" aria-hidden="true">▱</span>
+                  <span className="nav-label">{project.name}</span>
+                </button>
+              ))}
+              {projects.length > 0 && matchingProjects.length === 0 && <p className="sidebar-project-error">未找到匹配项目</p>}
             </div>
-          ))}
-        </div>
+          </div>
+        )
       </div>
 
       <div className="sidebar-footer">
@@ -755,25 +745,12 @@ function AssistantView({
   return (
     <main className="main-pane assistant-pane">
       <div className="content-column assistant-content">
-        <header className="work-hero assistant-hero">
-          <div className="breadcrumb">Forge</div>
-          <h1>开始一个任务</h1>
-          <p>选择项目，描述目标，Forge 会沿现有工作与能力边界执行。</p>
-          <div className="assistant-starters" aria-label="Forge 快捷任务">
-            <button className="assistant-starter" type="button" onClick={onOpenProjects}>
-              <span aria-hidden="true" className="assistant-starter-symbol">▤</span>
-              <strong>继续项目工作</strong><small>查看当前 Work 与执行记录</small>
-            </button>
-            <button className="assistant-starter" type="button" onClick={onOpenKnowledge}>
-              <span aria-hidden="true" className="assistant-starter-symbol">◇</span>
-              <strong>浏览项目知识</strong><small>检索 Forge 的记忆与经验</small>
-            </button>
-            <button className="assistant-starter" type="button" onClick={onOpenSettings}>
-              <span aria-hidden="true" className="assistant-starter-symbol">⚙</span>
-              <strong>配置聊天模型</strong><small>Codex CLI 或兼容 API</small>
-            </button>
-          </div>
-        </header>
+        <div className="agent-context-strip">
+          <span>Agent · 本地执行</span>
+          <button type="button" onClick={onOpenProjects}>查看 Work</button>
+          <button type="button" onClick={onOpenKnowledge}>项目知识</button>
+          <button type="button" onClick={onOpenSettings}>模型与授权</button>
+        </div>
         <LocalConversationSurface
           projects={projects}
           provider={provider}
@@ -1170,7 +1147,7 @@ export function App() {
   }, [mcpRefreshing, preview, selectedRepoId, selectedWorkId]);
 
   const handleSelectProject = useCallback(async (project: ProjectListItemProjection) => {
-    setActiveView('project');
+    setActiveView('works');
     setSelectedWorkId(undefined);
     await loadProject(project);
   }, [loadProject]);
@@ -1211,9 +1188,9 @@ export function App() {
     setNewThreadRequested(false);
   }, []);
 
-  const handleOpenProjects = useCallback(() => {
-    setActiveView('project');
-  }, []);
+  const handleOpenProjects = useCallback(() => setActiveView('works'), []);
+  const handleOpenRequirements = useCallback(() => setActiveView('requirements'), []);
+  const handleOpenPlans = useCallback(() => setActiveView('plans'), []);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -1306,10 +1283,7 @@ export function App() {
     <div className="app-shell">
       <Sidebar
         projects={projects}
-        workNodes={projection.workGraph.nodes}
-        recentWorkNodes={projection.recentWorkHistory}
         selectedRepoId={selectedRepoId}
-        selectedWorkId={selectedWorkId}
         activeView={activeView}
         runtimeLabel={runtimeLabel}
         runtimeStatus={runtimeStatus}
@@ -1318,10 +1292,11 @@ export function App() {
         onOpenAssistant={handleOpenAssistant}
         onNewThread={handleNewThread}
         onOpenProjects={handleOpenProjects}
+        onOpenRequirements={handleOpenRequirements}
+        onOpenPlans={handleOpenPlans}
         onOpenKnowledge={handleOpenKnowledge}
         onOpenSettings={handleOpenSettings}
         onSelectProject={preview ? undefined : handleSelectProject}
-        onSelectWork={preview ? undefined : handleSelectWork}
         localThreads={localThreadNav}
         selectedLocalThreadId={selectedLocalThreadId}
         onSelectLocalThread={handleSelectLocalThread}
@@ -1332,7 +1307,10 @@ export function App() {
         <header className="workspace-topbar">
           <div className="workspace-topbar-title" data-tauri-drag-region>
             <strong>{activeView === 'assistant' ? '本地会话'
-              : activeView === 'project' ? projection.work?.title ?? projection.project?.name ?? '项目'
+              : activeView === 'project' ? projection.work?.title ?? 'Work 详情'
+              : activeView === 'requirements' ? 'Requirements'
+              : activeView === 'plans' ? 'Plans'
+              : activeView === 'works' ? 'Works'
               : activeView === 'knowledge' ? '记忆与知识'
               : activeView === 'settings' ? '设置' : '运行时与恢复'}</strong>
             {activeView === 'project' && projection.project?.branch && <span className="workspace-topbar-branch">{projection.project.branch}</span>}
@@ -1361,6 +1339,11 @@ export function App() {
           onRefreshProvider={refreshLocalProvider}
           onSendLocal={sendLocal}
         />
+      ) : activeView === 'requirements' || activeView === 'plans' || activeView === 'works' ? (
+        <ProjectRecordsView key={(selectedRepoId ?? 'none') + ':' + activeView}
+          mode={activeView} projection={projection}
+          onSelectWork={(workId) => { void handleSelectWork(workId); }}
+          onRefresh={refreshMcp} />
       ) : activeView === 'knowledge' ? (
         <KnowledgeView repoId={selectedRepoId ?? projects[0]?.repoId}
           workId={selectedWorkId} projectName={projects.find((project) => project.repoId === (selectedRepoId ?? projects[0]?.repoId))?.name} />
