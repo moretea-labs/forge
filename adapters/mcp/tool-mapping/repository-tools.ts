@@ -260,7 +260,7 @@ export const repositoryToolDefinitions: McpToolDefinition[] = [
     validation_only: { type: 'boolean', description: 'When true, do not edit. Reconcile/reuse the existing session validation Processes identified by session_id/check_ids/validation_request_id.' },
     apply_mode: { type: 'string', enum: ['sync', 'async'], description: 'Defaults to sync for interactive development. Set async only for a separately durable operation.' },
   }),
-  definition('execute_command', 'Single terminal entry. Registered repository commands use Process Runtime handles; workspace_root targets are bounded direct execution (maximum 30 seconds, no durable handle). No Work or Plan required; host scope requires the existing process:exec Grant.', {
+  definition('execute_command', 'Single terminal entry. Repository and authorized workspace commands need no Work or Plan. Explicit scope=host uses the existing ForgeInstance process:exec Grant. Process Runtime owns execution, process handles and timeouts; Git ownership checks remain mechanical.', {
     repo_id: repoId,
     checkout_id: { type: 'string', description: 'Optional checkout identity for repositories with multiple local clones.' },
     work_id: { type: 'string', description: 'Optional Work provenance; ordinary commands never require a Work. Work-attributed effects require a stable request_id.' },
@@ -270,13 +270,13 @@ export const repositoryToolDefinitions: McpToolDefinition[] = [
     request_id: { type: 'string', description: 'Stable invocation id for reconnect without duplicate effects.' },
     cwd: { type: 'string', description: 'Optional root-relative working directory.' },
     mutation_paths: { type: 'array', items: { type: 'string' }, minItems: 1, description: 'Optional model-declared repository-relative paths/directories this command may mutate. Forge converts these to mechanical source-write claims; this narrows concurrency scope but never grants command permission.' },
-    workspace_root: { type: 'string', description: 'Absolute existing directory used as an ephemeral execution root. Mutually exclusive with repo_id/checkout_id; direct commands are capped at 30 seconds with no durable Process handle. Use a registered repository checkout for longer operations.' },
+    workspace_root: { type: 'string', description: 'Absolute existing local directory used as an ephemeral execution root. Mutually exclusive with repo_id/checkout_id; does not register or initialize the directory.' },
     dry_run: { type: 'boolean', description: 'Preview without executing: returns command classification, approval token and Git snapshots for repository/workspace target.' },
     approval_token: { type: 'string', description: 'Exact approval token returned by execute_command(dry_run=true).' },
     approval_request_id: { type: 'string', description: 'Resolved approvalRequestId returned by approval_resolve.' },
-    timeout_ms: { type: 'number', description: 'Optional execution timeout in milliseconds; workspace_root direct execution is capped at 30000ms even if a larger budget is requested.' },
+    timeout_ms: { type: 'number', description: 'Optional execution timeout in milliseconds.' },
     max_output_bytes: { type: 'number', minimum: 1024, maximum: 1048576, description: 'Captured output limit 1024–1048576 bytes.' },
-    interactive_wait_ms: { type: 'number', description: 'Optional short attachment window for registered repositories; long commands there return a handle. workspace_root direct execution never returns a Process handle.' },
+    interactive_wait_ms: { type: 'number', description: 'Optional short attachment window; long-running processes return a handle.' },
   }),
 
   // Thin Harness V1 is exposed through repository_workbench operations to keep the stable tool surface bounded.
