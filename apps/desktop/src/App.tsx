@@ -783,12 +783,6 @@ function AssistantView({
   return (
     <main className="main-pane assistant-pane">
       <div className="content-column assistant-content">
-        <div className="agent-context-strip">
-          <span>Agent · 本地执行</span>
-          <button type="button" onClick={onOpenProjects}>查看 Work</button>
-          <button type="button" onClick={onOpenKnowledge}>项目知识</button>
-          <button type="button" onClick={onOpenSettings}>模型与授权</button>
-        </div>
         <LocalConversationSurface
           projects={projects}
           defaultProjectRepoId={defaultProjectRepoId}
@@ -800,6 +794,8 @@ function AssistantView({
           providerError={providerError}
           apiSettings={apiSettings}
           onOpenSettings={onOpenSettings}
+          onOpenProjects={onOpenProjects}
+          onOpenKnowledge={onOpenKnowledge}
           newThreadRequested={newThreadRequested}
           onNewThreadHandled={onNewThreadHandled}
           openThreadId={openThreadId}

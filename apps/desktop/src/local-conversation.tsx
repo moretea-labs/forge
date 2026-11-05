@@ -171,6 +171,28 @@ export interface LocalConversationNavItem {
   provider: LocalProviderChoice;
 }
 
+type AgentControlIconName = 'plus' | 'diff' | 'more' | 'folder' | 'branch' | 'work'
+  | 'settings' | 'shield' | 'arrow' | 'stop' | 'chevron' | 'book' | 'refresh';
+
+function AgentControlIcon({ name }: { name: AgentControlIconName }) {
+  return <svg aria-hidden="true" focusable="false" width="17" height="17" viewBox="0 0 24 24"
+    fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+    {name === 'plus' && <path d="M12 5v14M5 12h14" />}
+    {name === 'diff' && <><rect x="3.5" y="4" width="17" height="16" rx="2" /><path d="M11 4v16M6.5 9h2.5M7.75 7.75v2.5M14 10h4M14 15h4" /></>}
+    {name === 'more' && <><circle cx="5" cy="12" r="1" /><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /></>}
+    {name === 'folder' && <path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v10H3z" />}
+    {name === 'branch' && <><circle cx="6" cy="4" r="2" /><circle cx="18" cy="7" r="2" /><circle cx="6" cy="20" r="2" /><path d="M6 6v12M18 9c0 5-12 0-12 7" /></>}
+    {name === 'work' && <><rect x="4" y="4" width="16" height="16" rx="3" /><path d="m8 12 3 3 5-6" /></>}
+    {name === 'settings' && <><path d="M4 7h16M4 17h16" /><circle cx="9" cy="7" r="2" fill="currentColor" stroke="none" /><circle cx="16" cy="17" r="2" fill="currentColor" stroke="none" /></>}
+    {name === 'shield' && <><path d="m12 2 8 4v6c0 5-3.5 8-8 10-4.5-2-8-5-8-10V6z" /><path d="m9 12 2 2 4-4" /></>}
+    {name === 'arrow' && <path d="M12 19V5m-6 6 6-6 6 6" />}
+    {name === 'stop' && <rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor" stroke="none" />}
+    {name === 'chevron' && <path d="m7 10 5 5 5-5" />}
+    {name === 'book' && <><path d="M12 6c-3-2-6-2-9-1v14c3-1 6-1 9 1 3-2 6-2 9-1V5c-3-1-6-1-9 1z" /><path d="M12 6v14" /></>}
+    {name === 'refresh' && <><path d="M20 7v5h-5M4 17v-5h5" /><path d="M5.5 9A7 7 0 0 1 18 7l2 5M4 12l2 5a7 7 0 0 0 12.5-2" /></>}
+  </svg>;
+}
+
 function LocalMessageBody({ content }: { content: string }) {
   return (
     <div className="local-message-body">
@@ -192,6 +214,8 @@ export function LocalConversationSurface({
   providerError,
   apiSettings,
   onOpenSettings,
+  onOpenProjects,
+  onOpenKnowledge,
   newThreadRequested,
   onNewThreadHandled,
   openThreadId,
@@ -211,6 +235,8 @@ export function LocalConversationSurface({
   providerError: string | null;
   apiSettings: LocalApiSettings | null;
   onOpenSettings: () => void;
+  onOpenProjects: () => void;
+  onOpenKnowledge: () => void;
   newThreadRequested: boolean;
   onNewThreadHandled: () => void;
   openThreadId?: string;
@@ -256,8 +282,32 @@ export function LocalConversationSurface({
   const handledNewThread = useRef(false);
   const initialThreadProvisioned = useRef<LocalProviderChoice | null>(null);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
+  const surfaceRef = useRef<HTMLElement>(null);
 
   useEffect(() => { persistThreads(threads); }, [threads]);
+
+  // Native details menus use outside-click and Escape dismissal. Choices
+  // still go through the existing conversation and Forge owners.
+  useEffect(() => {
+    const dismiss = (keep?: Element | null) => {
+      surfaceRef.current?.querySelectorAll<HTMLDetailsElement>(
+        'details.agent-context-menu[open],details.agent-header-menu[open]',
+      ).forEach((menu) => { if (menu !== keep) menu.open = false; });
+    };
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target instanceof Element ? event.target : null;
+      dismiss(target?.closest('details.agent-context-menu,details.agent-header-menu'));
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') dismiss();
+    };
+    document.addEventListener('pointerdown', onPointerDown, true);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown, true);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, []);
 
   // Pure observation from the native agent's existing tool loop. Events never
   // authorize effects or persist another transcript; completed receipts still
@@ -456,6 +506,59 @@ export function LocalConversationSurface({
     setThreads((current) => current.map((thread) => thread.id === selectedThread.id ? updater(thread) : thread));
   };
 
+  const changeProject = (nextRepoId?: string) => {
+    if (!selectedThread || sending || committing || nextRepoId === selectedThread.projectRepoId) return;
+    const choice = selectThreadRepository(selectedThread, selectedProvider, nextRepoId,
+      projects.find((project) => project.repoId === nextRepoId)?.checkoutId);
+    if (choice.created) {
+      setThreads((current) => [choice.thread, ...current]);
+      setSelectedThreadId(choice.thread.id);
+      setDraft('');
+    } else updateSelected(() => choice.thread);
+    setAllowEffects(false);
+    setSendError(null);
+    diffRequest.current += 1;
+    setDiffVisible(false);
+  };
+
+  const changeCheckout = (nextId: string) => {
+    if (!selectedThread || sending || committing
+      || !checkoutIndex.some((checkout) => checkout.checkoutId === nextId)) return;
+    const choice = selectThreadCheckout(selectedThread, selectedProvider, nextId);
+    if (choice.created) {
+      setThreads((current) => [choice.thread, ...current]);
+      setSelectedThreadId(choice.thread.id);
+      setDraft('');
+    } else updateSelected(() => choice.thread);
+    setAllowEffects(false);
+    setSendError(null);
+    diffRequest.current += 1;
+    setDiffVisible(false);
+    setCommitSuccess(undefined);
+    setCommitError(undefined);
+  };
+
+  const changeWork = (nextWorkId?: string) => {
+    if (!selectedThread || !selectedRepoId || sending || committing || nextWorkId === selectedWorkId) return;
+    if (selectedThread.messages.length || selectedThread.providerSessionId) {
+      const next = createThread(selectedProvider, selectedRepoId, nextWorkId, selectedThread.checkoutId);
+      setThreads((current) => [next, ...current]);
+      setSelectedThreadId(next.id);
+      setDraft('');
+    } else updateSelected((thread) => ({
+      ...thread, workId: nextWorkId, providerSessionId: undefined,
+      updatedAt: new Date().toISOString(),
+    }));
+    setAllowEffects(false);
+    setSendError(null);
+  };
+
+  const archiveThread = () => {
+    if (!selectedThread || sending || committing) return;
+    updateSelected((thread) => ({ ...thread, archived: true, updatedAt: new Date().toISOString() }));
+    setSelectedThreadId(activeThreads.find((thread) => thread.id !== selectedThread.id)?.id);
+  };
+
   async function toggleDiff(forceRefresh = false, staged = diffStaged) {
     const repoId = selectedThread?.projectRepoId;
     if (!repoId || !checkoutBindingReady) return;
@@ -613,40 +716,49 @@ export function LocalConversationSurface({
   };
 
   return (
-    <section className={'local-conversation' + (diffVisible && diffRepoId === selectedThread?.projectRepoId ? ' with-diff' : '')} aria-label="本地会话">
-      <div className="local-toolbar">
-        <div>
-          <span className="breadcrumb">本地会话</span>
-          <strong>{selectedThread ? threadLabel(selectedThread) : '新建一个会话'}</strong>
+    <section ref={surfaceRef} className={'local-conversation' + (diffVisible && diffRepoId === selectedThread?.projectRepoId ? ' with-diff' : '')} aria-label="本地会话">
+      <div className="local-toolbar agent-chat-header">
+        <div className="agent-chat-heading">
+          <strong title={selectedThread ? threadLabel(selectedThread) : '新会话'}>
+            {selectedThread ? threadLabel(selectedThread) : '新会话'}
+          </strong>
+          <span title={selectedProject?.repository ?? '未附加项目'}>
+            {selectedProject?.repository ?? '独立对话'}
+            {checkoutIndex.find((item) => item.checkoutId === selectedThread?.checkoutId)?.branch
+              ? ' / ' + checkoutIndex.find((item) => item.checkoutId === selectedThread?.checkoutId)?.branch : ''}
+          </span>
         </div>
-        <div className="local-toolbar-actions">
-          <button className="plain-action" type="button"
-            disabled={!selectedThread?.projectRepoId || !checkoutBindingReady || committing}
+        <div className="agent-chat-header-actions">
+          <span className="agent-provider-indicator"
+            title={apiSelected ? (apiReady ? `API · ${apiSettings?.model}` : 'API 尚未配置')
+              : providerError ?? provider?.detail ?? 'Codex CLI 状态待确认'}>
+            <span className={'health-dot ' + ((apiSelected ? apiReady : provider?.status === 'ready')
+              ? 'connected' : 'degraded')} aria-hidden="true" />
+            <span>{apiSelected ? (apiReady ? 'API' : '未配置')
+              : providerLoading ? '检测中' : provider?.status === 'ready' ? 'Codex' : '未连接'}</span>
+          </span>
+          <button className="agent-icon-button" type="button" disabled={!selectedThread?.projectRepoId || !checkoutBindingReady || committing}
+            title={diffVisible ? '收起 Git 变更' : '查看 Git 变更'}
+            aria-label={diffVisible ? '收起 Git 变更' : '查看 Git 变更'}
             aria-expanded={diffVisible && diffRepoId === selectedThread?.projectRepoId}
-            onClick={() => void toggleDiff()}>
-            {diffVisible && diffRepoId === selectedThread?.projectRepoId ? '收起变更' : '查看变更'}
-          </button>
-          <button className="plain-action" type="button" disabled={sending || committing} onClick={addThread}>新建会话</button>
-          {selectedThread && (
-            <button className="plain-action" type="button" disabled={sending || committing} onClick={() => {
-              updateSelected((thread) => ({ ...thread, archived: true, updatedAt: new Date().toISOString() }));
-              setSelectedThreadId(activeThreads.find((thread) => thread.id !== selectedThread.id)?.id);
-            }}>归档</button>
-          )}
+            onClick={() => void toggleDiff()}><AgentControlIcon name="diff" /></button>
+          <button className="agent-icon-button" type="button" title="新建会话" aria-label="新建会话"
+            disabled={sending || committing} onClick={addThread}><AgentControlIcon name="plus" /></button>
+          <details className="agent-header-menu">
+            <summary title="更多会话操作" aria-label="更多会话操作"><AgentControlIcon name="more" /></summary>
+            <div className="agent-header-menu-panel" role="group" aria-label="会话操作">
+              <button type="button" onClick={onOpenProjects}><AgentControlIcon name="work" /> Work 与项目</button>
+              <button type="button" onClick={onOpenKnowledge}><AgentControlIcon name="book" /> 项目知识</button>
+              <button type="button" onClick={onOpenSettings}><AgentControlIcon name="settings" /> 模型与授权</button>
+              <button type="button" disabled={!apiSelected && providerLoading}
+                onClick={() => apiSelected ? onOpenSettings() : void onRefreshProvider()}>
+                <AgentControlIcon name="refresh" /> {apiSelected ? 'API 配置' : '刷新 Codex 连接'}
+              </button>
+              {selectedThread && <button type="button" disabled={sending || committing}
+                onClick={archiveThread}>归档当前会话</button>}
+            </div>
+          </details>
         </div>
-      </div>
-
-      <div className={'local-provider ' + (apiSelected ? (apiReady ? 'ready' : 'unavailable') : provider?.status ?? 'unavailable')}>
-        <span className={'health-dot ' + (apiSelected ? (apiReady ? 'connected' : 'degraded') : provider?.status === 'ready' ? 'connected' : 'degraded')} />
-        <div>
-          <strong>{apiSelected ? (apiReady ? '兼容 API 已配置' : '兼容 API 尚未配置') : providerLoading ? '正在读取 Codex' : provider?.label ?? 'Codex 不可用'}</strong>
-          <p>{apiSelected ? (apiReady
-              ? '模型：' + apiSettings?.model + ' · ' + (apiSettings?.apiProtocol === 'anthropic' ? 'Claude Messages' : 'OpenAI Chat Completions')
-                + ' · 本地直接调用 Forge 工具'
-              : '请在设置中配置 Endpoint、模型与所需密钥。')
-              : providerError ?? provider?.detail ?? '本地会话通过 Forge Controller 运行 Codex。'}</p>
-        </div>
-        <button className="plain-action" type="button" disabled={!apiSelected && providerLoading} onClick={() => apiSelected ? onOpenSettings() : void onRefreshProvider()}>{apiSelected ? 'API 设置' : '刷新'}</button>
       </div>
 
       {!selectedThread ? (
@@ -657,124 +769,6 @@ export function LocalConversationSurface({
         </div>
       ) : (
         <>
-          <div className="local-context-row">
-            <label>
-              <span>项目上下文</span>
-              <select
-                value={selectedThread.projectRepoId ?? ''}
-                disabled={sending || committing}
-                onChange={(event) => {
-                  const nextRepoId = event.target.value || undefined;
-                  if (nextRepoId === selectedThread.projectRepoId) return;
-                  setAllowEffects(false);
-                  setSendError(null);
-                  const choice = selectThreadRepository(selectedThread, selectedProvider, nextRepoId,
-                    projects.find((project) => project.repoId === nextRepoId)?.checkoutId);
-                  if (choice.created) {
-                    setThreads((current) => [choice.thread, ...current]);
-                    setSelectedThreadId(choice.thread.id);
-                    setDraft('');
-                  } else {
-                    updateSelected(() => choice.thread);
-                  }
-                }}
-              >
-                <option value="">不附加项目（纯对话）</option>
-                {projects.map((project) =>
-                  <option key={project.repoId} value={project.repoId}>
-                    {project.name} · {project.repository}
-                  </option>)}
-              </select>
-            </label>
-            {selectedRepoId && <label>
-              <span>执行 Checkout / 分支</span>
-              <select aria-label="Agent 执行的 Git Checkout" value={selectedThread.checkoutId ?? ''}
-                disabled={sending || committing || checkoutLoading || !!checkoutError || checkoutIndex.length === 0}
-                onChange={(event) => {
-                  const nextId = event.target.value;
-                  if (!checkoutIndex.some((checkout) => checkout.checkoutId === nextId)) return;
-                  const choice = selectThreadCheckout(selectedThread, selectedProvider, nextId);
-                  if (choice.created) {
-                    setThreads((current) => [choice.thread, ...current]);
-                    setSelectedThreadId(choice.thread.id);
-                    setDraft('');
-                  } else {
-                    updateSelected(() => choice.thread);
-                  }
-                  setAllowEffects(false); setSendError(null); setDiffVisible(false);
-                  setCommitSuccess(undefined); setCommitError(undefined);
-                }}>
-                {!checkoutBindingReady && <option value={selectedThread.checkoutId ?? ''}>
-                  {checkoutLoading ? '正在读取 Forge 检出目录…' : '未核实的历史检出（只读）'}
-                </option>}
-                {checkoutIndex.map((checkout) => (
-                  <option key={checkout.checkoutId} value={checkout.checkoutId}
-                    title={checkout.path ?? checkout.checkoutId}>
-                    {checkout.branch || 'Detached HEAD'} · {checkout.checkoutId.slice(0, 10)}
-                    {checkout.active ? '（默认）' : ''}
-                  </option>
-                ))}
-              </select>
-            </label>}
-            {checkoutError && <small role="alert">Checkout 目录读取失败：{checkoutError}</small>}
-          </div>
-          {selectedRepoId && (
-            <div className="local-work-context">
-              <label>
-                <span>关联已有 Work（可选）</span>
-                <select aria-label="会话关联的 Forge Work" value={selectedWorkId ?? ''} disabled={sending || committing}
-                  onChange={(event) => {
-                    const nextWorkId = event.target.value || undefined;
-                    if (nextWorkId === selectedWorkId) return;
-                    if (selectedThread.messages.length > 0) {
-                      // A Work switch never silently rebinds existing Agent output.
-                      const next = createThread(selectedProvider, selectedRepoId, nextWorkId, selectedThread.checkoutId);
-                      setThreads((current) => [next, ...current]);
-                      setSelectedThreadId(next.id);
-                      setDraft('');
-                    } else {
-                      updateSelected((thread) => ({
-                        ...thread, workId: nextWorkId, providerSessionId: undefined,
-                        updatedAt: new Date().toISOString(),
-                      }));
-                    }
-                    setSendError(null);
-                  }}>
-                  <option value="">不关联 Work</option>
-                  {selectedWorkId && !workIndex.some((work) => work.workId === selectedWorkId) && (
-                    <option value={selectedWorkId}>{selectedWorkId} · 当前列表以外</option>
-                  )}
-                  {workIndex.map((work) => (
-                    <option value={work.workId} key={work.workId}>
-                      {work.state === 'open' ? '进行中' : '历史'} · {work.objective.slice(0, 72)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              {selectedWorkId && workBindingReady && workDetail && (
-                <div className="local-work-links">
-                  <button type="button" onClick={() => onOpenWork?.(selectedRepoId, workDetail.workId)}>
-                    查看 Work
-                  </button>
-                  {workDetail.requirementId && <button type="button"
-                    onClick={() => onOpenRecord?.(selectedRepoId, 'requirements', workDetail.requirementId!)}>
-                    Requirement
-                  </button>}
-                  {workDetail.planId && <button type="button"
-                    onClick={() => onOpenRecord?.(selectedRepoId, 'plans', workDetail.planId!)}>
-                    Plan
-                  </button>}
-                </div>
-              )}
-              {!projectBindingReady && <small role="alert">此会话引用的项目已不在当前注册目录中，请选择有效项目。</small>}
-              {!checkoutBindingReady && <small role="status">此会话未绑定当前可核实的 Forge Checkout，已禁止执行。</small>}
-              {workIndexError && <small role="status">Work 目录读取失败：{workIndexError}</small>}
-              {selectedWorkId && !workBindingReady && (
-                <small role="alert">{workDetailError ?? '正在核对 Forge Work 与项目归属…'}</small>
-              )}
-            </div>
-          )}
-
           {diffVisible && diffRepoId === selectedThread.projectRepoId
             && diffCheckoutId === selectedThread.checkoutId && (
             <AgentGitReview key={`${selectedThread.id}:${diffStaged}`}
@@ -839,12 +833,12 @@ export function LocalConversationSurface({
             <div ref={transcriptEndRef} />
           </div>
 
-          <div className="local-composer">
+          <div className="local-composer agent-chat-composer">
             <textarea
-              rows={3}
+              rows={2}
               aria-label="本地会话消息"
-              placeholder={sending ? '可先写下一条消息，当前回复结束后再发送…'
-                : providerReady ? '描述任务或提出问题…' : '先写下任务，配置模型或恢复连接后发送…'}
+              placeholder={sending ? '可以先编写下一条消息…'
+                : providerReady ? '向 Forge 描述任务或提出问题…' : '配置模型或选择有效项目后开始…'}
               value={draft}
               onChange={(event) => setDraft(event.target.value)}
               onKeyDown={(event) => {
@@ -854,37 +848,147 @@ export function LocalConversationSurface({
                 }
               }}
             />
-            {apiSelected && selectedProject && (
-              <label className="local-tool-permission">
-                <input type="checkbox" disabled={sending || !checkoutBindingReady}
-                  checked={allowEffects && checkoutBindingReady}
-                  onChange={(event) => setAllowEffects(event.target.checked)} />
-                本次允许修改文件及执行命令（发送时确认）
-              </label>
+            {(sendError || (!checkoutBindingReady && selectedRepoId)
+              || (selectedWorkId && !workBindingReady) || !projectBindingReady
+              || (!providerReady && !providerLoading && !sending)) && (
+              <div className="agent-composer-notice" role={sendError ? 'alert' : 'status'}>
+                {sendError
+                  ?? (!projectBindingReady ? '项目已不在 Forge 注册目录中，请重新选择'
+                    : !checkoutBindingReady && selectedRepoId ? 'Checkout 未核实，暂时禁止执行'
+                    : selectedWorkId && !workBindingReady ? workDetailError ?? '正在核对 Work 归属…'
+                    : apiSelected ? '请配置可用的 API 模型与密钥'
+                    : providerError ?? 'Codex CLI 尚未就绪')}
+              </div>
             )}
-            {apiSelected && selectedRepoId && !selectedThread.checkoutId && selectedThread.messages.length > 0 && (
-              <small role="status">此历史会话未固定检出身份，因此禁止仓库写操作；请新建会话绑定当前检出。</small>
-            )}
-            {sendError && <div role="alert" className="composer-error">{sendError}</div>}
-            <div className="composer-footer">
-              <span className="local-provider-selection">
-                <span>{selectedProject?.repository ?? '本地'}</span>
-                <button className="local-provider-switch" type="button" onClick={onOpenSettings}
-                  aria-label="切换聊天模型及 API 设置">
-                  {apiSelected ? (apiSettings?.model || '兼容 API') : 'Codex CLI'} <span aria-hidden="true">⌄</span>
+            <div className="agent-composer-toolbar">
+              <div className="agent-composer-context">
+                <details className="agent-context-menu">
+                  <summary title="选择项目" aria-label="选择项目">
+                    <AgentControlIcon name="folder" />
+                    <span>{selectedProject?.repository ?? '项目'}</span>
+                    <AgentControlIcon name="chevron" />
+                  </summary>
+                  <div className="agent-context-panel">
+                    <label>项目
+                      <select aria-label="Agent 项目上下文" value={selectedThread.projectRepoId ?? ''}
+                        disabled={sending || committing}
+                        onChange={(event) => {
+                          changeProject(event.target.value || undefined);
+                          event.currentTarget.closest('details')?.removeAttribute('open');
+                        }}>
+                        <option value="">不附加项目（纯对话）</option>
+                        {projects.map((project) => <option key={project.repoId} value={project.repoId}>
+                          {project.name} · {project.repository}
+                        </option>)}
+                      </select>
+                    </label>
+                    <small>已存在的会话不会被重新绑定到另一个项目。</small>
+                    {!projectBindingReady && <small role="alert">当前项目已不在 Forge 注册目录</small>}
+                  </div>
+                </details>
+                {selectedRepoId && <details className="agent-context-menu">
+                  <summary title="选择执行分支和 Checkout" aria-label="选择执行分支和 Checkout">
+                    <AgentControlIcon name="branch" />
+                    <span>{checkoutIndex.find((entry) => entry.checkoutId === selectedThread.checkoutId)?.branch
+                      ?? (checkoutLoading ? '读取分支…' : '检出')}</span>
+                    <AgentControlIcon name="chevron" />
+                  </summary>
+                  <div className="agent-context-panel">
+                    <label>Forge 已注册 Checkout
+                      <select aria-label="Agent 执行的 Git Checkout" value={selectedThread.checkoutId ?? ''}
+                        disabled={sending || committing || checkoutLoading || !!checkoutError || !checkoutIndex.length}
+                        onChange={(event) => {
+                          changeCheckout(event.target.value);
+                          event.currentTarget.closest('details')?.removeAttribute('open');
+                        }}>
+                        {!checkoutBindingReady && <option value={selectedThread.checkoutId ?? ''}>
+                          {checkoutLoading ? '正在读取 Forge 检出目录…' : '未核实的历史检出（只读）'}
+                        </option>}
+                        {checkoutIndex.map((checkout) => <option value={checkout.checkoutId}
+                          key={checkout.checkoutId} title={checkout.path ?? checkout.checkoutId}>
+                          {checkout.branch || 'Detached HEAD'} · {checkout.checkoutId.slice(0, 10)}
+                          {checkout.active ? '（默认）' : ''}
+                        </option>)}
+                      </select>
+                    </label>
+                    {checkoutError && <small role="alert">检出目录读取失败：{checkoutError}</small>}
+                    <small title={selectedThread.checkoutId}>切换 Checkout 将保留原会话历史，新的操作使用独立会话。</small>
+                  </div>
+                </details>}
+                {selectedRepoId && <details className="agent-context-menu">
+                  <summary title="关联 Forge Work" aria-label="关联 Forge Work">
+                    <AgentControlIcon name="work" />
+                    <span>{selectedWorkId ? (workDetail?.objective.slice(0, 18) ?? '已关联 Work') : 'Work'}</span>
+                    <AgentControlIcon name="chevron" />
+                  </summary>
+                  <div className="agent-context-panel">
+                    <label>关联已有 Work（可选）
+                      <select aria-label="会话关联的 Forge Work" value={selectedWorkId ?? ''}
+                        disabled={sending || committing}
+                        onChange={(event) => {
+                          changeWork(event.target.value || undefined);
+                          event.currentTarget.closest('details')?.removeAttribute('open');
+                        }}>
+                        <option value="">不关联 Work</option>
+                        {selectedWorkId && !workIndex.some((work) => work.workId === selectedWorkId) && (
+                          <option value={selectedWorkId}>{selectedWorkId} · 当前列表以外</option>
+                        )}
+                        {workIndex.map((work) => <option value={work.workId} key={work.workId}>
+                          {work.state === 'open' ? '进行中' : '历史'} · {work.objective.slice(0, 72)}
+                        </option>)}
+                      </select>
+                    </label>
+                    {selectedWorkId && workBindingReady && workDetail && <div className="agent-context-work-links">
+                      <button type="button" onClick={() => onOpenWork?.(selectedRepoId, workDetail.workId)}>
+                        查看 Work
+                      </button>
+                      {workDetail.requirementId && <button type="button"
+                        onClick={() => onOpenRecord?.(selectedRepoId, 'requirements', workDetail.requirementId!)}>
+                        Requirement
+                      </button>}
+                      {workDetail.planId && <button type="button"
+                        onClick={() => onOpenRecord?.(selectedRepoId, 'plans', workDetail.planId!)}>
+                        Plan
+                      </button>}
+                    </div>}
+                    {workIndexError && <small role="status">Work 列表读取失败：{workIndexError}</small>}
+                    {selectedWorkId && !workBindingReady && <small role="alert">
+                      {workDetailError ?? '正在核对 Forge Work 与项目归属…'}
+                    </small>}
+                  </div>
+                </details>}
+              </div>
+              <div className="agent-composer-utilities">
+                <button type="button" className="agent-model-control" title="选择模型与 API 设置"
+                  aria-label="选择模型与 API 设置" onClick={onOpenSettings}>
+                  <AgentControlIcon name="settings" />
+                  <span>{apiSelected ? (apiSettings?.model || '兼容 API') : 'Codex'}</span>
+                  <AgentControlIcon name="chevron" />
                 </button>
-              </span>
-              {sending && sendingThreadId === selectedThread.id
-                && (apiSelected || provider?.cancellable === true) && (
-                <button className="local-stop-button" type="button" onClick={() => void cancelTurn()}
-                  aria-label="请求停止当前 Agent 回复" disabled={cancelRequested}>
-                  {cancelRequested ? '停止中' : '停止'}
+                {apiSelected && selectedProject && <button type="button"
+                  className={'agent-icon-button agent-permission-control' + (allowEffects && checkoutBindingReady ? ' active' : '')}
+                  title={allowEffects && checkoutBindingReady ? '已允许本轮仓库写入，发送时仍会再次确认' : '允许本轮编辑文件和执行命令'}
+                  aria-label="允许本轮编辑文件和执行命令"
+                  aria-pressed={allowEffects && checkoutBindingReady}
+                  disabled={sending || !checkoutBindingReady}
+                  onClick={() => setAllowEffects((current) => !current)}>
+                  <AgentControlIcon name="shield" />
+                </button>}
+                {sending && sendingThreadId === selectedThread.id
+                  && (apiSelected || provider?.cancellable === true) && (
+                  <button type="button" className="agent-icon-button agent-stop-control"
+                    title={cancelRequested ? '正在请求停止' : '停止本轮回复'}
+                    aria-label="请求停止当前 Agent 回复"
+                    disabled={cancelRequested} onClick={() => void cancelTurn()}>
+                    <AgentControlIcon name="stop" />
+                  </button>
+                )}
+                <button className="local-send-button" type="button"
+                  aria-label={sending ? '正在发送' : '发送消息'} title="发送消息（Enter）"
+                  disabled={!providerReady || !draft.trim() || sending} onClick={() => void send()}>
+                  <AgentControlIcon name="arrow" />
                 </button>
-              )}
-              <button className="local-send-button" type="button" aria-label={sending ? '正在发送' : '发送消息'}
-                disabled={!providerReady || !draft.trim() || sending} onClick={() => void send()}>
-                <span aria-hidden="true">{sending ? '…' : '↑'}</span>
-              </button>
+              </div>
             </div>
           </div>
         </>

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { advanceLocalToolProgress, createThread, findExistingWorkThread, selectThreadCheckout, selectThreadRepository } from '../src/local-conversation';
+import { advanceLocalToolProgress, createThread, findExistingWorkThread, LocalConversationSurface, selectThreadCheckout, selectThreadRepository } from '../src/local-conversation';
 import { repositoryLabel } from '../src/runtime-client';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -7,6 +7,44 @@ import { ProjectRecordsView } from '../src/project-records-view';
 import { disconnectedProjection } from '../src/runtime-projection';
 
 describe('Forge Desktop Work-bound Agent thread identity', () => {
+  test('Agent transcript is free of permanent project, Work and model toolbars', () => {
+    const originalStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+    const thread = createThread('api', 'repo_forge', 'work_1', 'checkout_main');
+    Object.defineProperty(globalThis, 'localStorage', {
+      configurable: true,
+      value: { getItem: () => JSON.stringify([thread]), setItem() {} },
+    });
+    try {
+      const html = renderToStaticMarkup(createElement(LocalConversationSurface, {
+        projects: [{ repoId: 'repo_forge', name: 'Forge', repository: 'moretea-labs/forge', checkoutId: 'checkout_main' }],
+        defaultProjectRepoId: 'repo_forge',
+        provider: { status: 'ready', label: 'Codex', detail: 'ready', streaming: false, tools: true },
+        providerLoading: false, providerError: null,
+        apiSettings: { provider: 'api', endpoint: 'http://127.0.0.1:1234', model: 'test-model', apiProtocol: 'openai', hasKey: true },
+        onOpenSettings() {}, onOpenProjects() {}, onOpenKnowledge() {}, onOpenWork() {}, onOpenRecord() {},
+        newThreadRequested: false, onNewThreadHandled() {}, onOpenThreadHandled() {}, onThreadsChange() {},
+        async onRefreshProvider() {}, async onSend() { return { content: 'ok' }; },
+      }));
+      expect(html).toContain('class="local-toolbar agent-chat-header"');
+      expect(html).toContain('aria-label="查看 Git 变更"');
+      expect(html).toContain('aria-label="新建会话"');
+      expect(html).toContain('aria-label="更多会话操作"');
+      expect(html).toContain('class="local-composer agent-chat-composer"');
+      expect(html).toContain('aria-label="Agent 项目上下文"');
+      expect(html).toContain('aria-label="Agent 执行的 Git Checkout"');
+      expect(html).toContain('aria-label="会话关联的 Forge Work"');
+      expect(html).toContain('aria-label="允许本轮编辑文件和执行命令"');
+      expect(html).toContain('aria-label="发送消息"');
+      expect(html).not.toContain('class="local-context-row"');
+      expect(html).not.toContain('class="local-work-context"');
+      expect(html).not.toContain('class="local-provider ');
+      expect(html.indexOf('class="local-transcript"')).toBeLessThan(html.indexOf('class="local-composer agent-chat-composer"'));
+    } finally {
+      if (originalStorage) Object.defineProperty(globalThis, 'localStorage', originalStorage);
+      else delete (globalThis as { localStorage?: Storage }).localStorage;
+    }
+  });
+
   test('direct Git commit requires approval and explicit paths before loading Forge source', async () => {
     const script = new URL('../src-tauri/resources/forge-local-tool.mjs', import.meta.url).pathname;
     async function runGitCommit(allowEffects: boolean, paths: string[]) {
