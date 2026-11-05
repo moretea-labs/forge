@@ -89,11 +89,11 @@ export const processToolDefinitions: McpToolDefinition[] = [
   ),
   definition(
     'process_wait',
-    'Bounded dependency attachment for an existing lightweight or durable process, only when the next decision requires its result. Never use for periodic polling; a running result means continue independent work or report pending acceptance. Attaching never re-executes the command.',
+    'Explicit dependency synchronization for one lightweight or durable process. Call only when the next decision or acceptance boundary is blocked on this exact result; do not use as periodic polling. Waits never re-execute the command.',
     {
       repo_id: repoIdProp,
       process_id: processIdProp,
-      timeout_ms: { type: 'number', description: 'Requested wait in milliseconds (default 15000); each attachment is capped at 5000ms and returns a running handle when not terminal.' },
+      timeout_ms: { type: 'number', description: 'Max wait milliseconds (default 15000).' },
     },
     ['process_id'],
     true,
