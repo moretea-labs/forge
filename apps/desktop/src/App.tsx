@@ -1,8 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   designPreviewProjection,
   disconnectedProjection,
-  type AutomaticContinuationTaskProjection,
   type ControllerConnectionProjection,
   type ForgeDesktopProjection,
   type ProjectListItemProjection,
@@ -12,18 +11,23 @@ import {
 } from './runtime-projection';
 import {
   continueWork,
-  readAutomaticContinuations,
   readConnectionStatus,
   readLocalProviderStatus,
   readProjects,
   readProjectWorkspace,
   repairConnection,
   sendLocalConversation,
-  switchAutomaticContinuationConversation,
+  cancelLocalConversation,
   tauriRuntimeAvailable,
   type LocalProviderStatusProjection,
 } from './runtime-client';
-import { LocalConversationSurface, type LocalConversationReply, type LocalConversationThread } from './local-conversation';
+import { LocalConversationSurface, type LocalConversationReply, type LocalConversationThread, type LocalConversationNavItem } from './local-conversation';
+import { ForgeIcon } from './ui-icons';
+import forgeAppIcon from '../src-tauri/icons/128x128.png';
+import { ProjectRecordsView } from './project-records-view';
+import { KnowledgeView } from './knowledge-view';
+import { SettingsView } from './settings-view';
+import { readLocalApiSettings, saveLocalApiSettings, clearLocalApiKey, sendLocalApiConversation, cancelLocalApiConversation, type LocalApiSettings, type LocalProviderChoice } from './local-api';
 import {
   performRecoveryAction,
   readRecoveryStatus,
@@ -31,7 +35,14 @@ import {
   verifyRecoveryRuntime,
 } from './recovery-client';
 
-type AppView = 'assistant' | 'project' | 'runtime';
+type AppView = 'assistant' | 'project' | 'requirements' | 'plans' | 'works' | 'knowledge' | 'settings' | 'runtime';
+
+export function sidebarToggleShortcut(
+  event: Pick<KeyboardEvent, 'key' | 'metaKey' | 'ctrlKey' | 'altKey' | 'shiftKey'>,
+): boolean {
+  return event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey
+    && event.key.toLowerCase() === 'b';
+}
 
 function previewEnabled(): boolean {
   return new URLSearchParams(window.location.search).get('preview') === '1';
@@ -96,125 +107,288 @@ function phaseEvidenceStateLabel(state: string): string {
   return labels[state] ?? state;
 }
 
-function statusTone(status: AutomaticContinuationTaskProjection['status']): string {
-  if (status === 'needs_user') return 'attention';
-  if (status === 'completed' || status === 'stopped' || status === 'registered' || status === 'unbound') return 'quiet';
-  if (status === 'switching_conversation') return 'switching';
-  return 'live';
-}
-
-function Sidebar({
+export function Sidebar({
   projects,
-  workNodes,
-  recentWorkNodes,
   selectedRepoId,
-  selectedWorkId,
   activeView,
   runtimeLabel,
   runtimeStatus,
+  runtimeDetail,
+  onRetryProjects,
   onOpenAssistant,
-  onOpenMcp,
+  onNewThread,
+  onNewProjectThread,
+  onOpenProjects,
+  onOpenRequirements,
+  onOpenPlans,
+  onOpenKnowledge,
+  onOpenSettings,
   onSelectProject,
-  onSelectWork,
+  localThreads,
+  selectedLocalThreadId,
+  onSelectLocalThread,
   onOpenRuntime,
 }: {
   projects: ProjectListItemProjection[];
-  workNodes: WorkGraphNodeProjection[];
-  recentWorkNodes: WorkGraphNodeProjection[];
   selectedRepoId?: string;
-  selectedWorkId?: string;
   activeView: AppView;
   runtimeLabel: string;
   runtimeStatus: string;
+  runtimeDetail: string;
+  onRetryProjects: () => void;
   onOpenAssistant: () => void;
-  onOpenMcp: () => void;
+  onNewThread: () => void;
+  onNewProjectThread: (repoId: string) => void;
+  onOpenProjects: () => void;
+  onOpenRequirements: () => void;
+  onOpenPlans: () => void;
+  onOpenKnowledge: () => void;
+  onOpenSettings: () => void;
   onSelectProject?: (project: ProjectListItemProjection) => void;
-  onSelectWork?: (workId: string) => void;
+  localThreads: LocalConversationNavItem[];
+  selectedLocalThreadId?: string;
+  onSelectLocalThread: (id: string) => void;
   onOpenRuntime?: () => void;
 }) {
+  const [showProjectPicker, setShowProjectPicker] = useState(false);
+  const [projectQuery, setProjectQuery] = useState('');
+  const projectPickerRef = useRef<HTMLDivElement>(null);
+  const projectSearchRef = useRef<HTMLInputElement>(null);
+  const [conversationSearchOpen, setConversationSearchOpen] = useState(false);
+  const [conversationQuery, setConversationQuery] = useState('');
+  const conversationSearchRef = useRef<HTMLInputElement>(null);
+  // Accessibility and keyboard routing do not necessarily emit outside pointer
+  // events; dismiss the project selector when leaving the current view.
+  useEffect(() => {
+    setShowProjectPicker(false);
+    setProjectQuery('');
+  }, [activeView]);
+  const shownThreads = conversationSearchOpen
+    ? localThreads.filter((thread) => {
+      const project = projects.find((entry) => entry.repoId === thread.projectRepoId);
+      return (thread.title + ' ' + (project?.repository ?? '') + ' ' + (project?.name ?? ''))
+        .toLocaleLowerCase().includes(conversationQuery.trim().toLocaleLowerCase());
+    })
+    : localThreads;
+  // One read-only grouping of the existing conversation index. The repository
+  // and Work remain owned by Forge and each individual Agent thread.
+  const conversationGroups = new Map<string, LocalConversationNavItem[]>();
+  for (const thread of shownThreads) {
+    const repoId = thread.projectRepoId ?? '';
+    const group = conversationGroups.get(repoId) ?? [];
+    group.push(thread);
+    conversationGroups.set(repoId, group);
+  }
+
+  useEffect(() => {
+    if (conversationSearchOpen) conversationSearchRef.current?.focus();
+  }, [conversationSearchOpen]);
+  useEffect(() => {
+    const onSearchShortcut = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey
+        && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        setConversationSearchOpen(true);
+      } else if (event.key === 'Escape' && conversationSearchOpen
+        && event.target instanceof Element && event.target.closest('.sidebar-conversations')) {
+        event.preventDefault();
+        setConversationSearchOpen(false);
+        setConversationQuery('');
+      }
+    };
+    window.addEventListener('keydown', onSearchShortcut);
+    return () => window.removeEventListener('keydown', onSearchShortcut);
+  }, [conversationSearchOpen]);
+  // The project picker is a compact overlay; opening it must not displace
+  // conversation navigation or require another state owner.
+  useEffect(() => {
+    if (!showProjectPicker) return;
+    projectSearchRef.current?.focus({ preventScroll: true });
+    const onPointerDown = (event: PointerEvent) => {
+      if (event.target instanceof Node && !projectPickerRef.current?.contains(event.target)) {
+        setShowProjectPicker(false);
+        setProjectQuery('');
+      }
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopPropagation();
+      setShowProjectPicker(false);
+      setProjectQuery('');
+      projectPickerRef.current?.querySelector<HTMLButtonElement>('.sidebar-project-picker')
+        ?.focus({ preventScroll: true });
+    };
+    document.addEventListener('pointerdown', onPointerDown, true);
+    document.addEventListener('keydown', onKeyDown, true);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown, true);
+      document.removeEventListener('keydown', onKeyDown, true);
+    };
+  }, [showProjectPicker]);
+  const activeProject = projects.find((project) => project.repoId === selectedRepoId);
+  const matchingProjects = projects.filter((project) =>
+    (project.name + ' ' + project.repository + ' ' + (project.localRoot ?? ''))
+      .toLowerCase().includes(projectQuery.toLowerCase().trim()));
   return (
-    <aside className="sidebar">
+    <aside id="forge-sidebar" className="sidebar">
       <div className="sidebar-main">
-        <div className="mode-switch" role="group" aria-label="Forge 工作模式">
-          <button className={activeView === 'assistant' ? 'active' : ''} type="button" onClick={onOpenAssistant}>Local</button>
-          <button className={activeView !== 'assistant' ? 'active' : ''} type="button" onClick={onOpenMcp}>MCP</button>
+        <div className="sidebar-brand" aria-label="Forge">
+          <img className="sidebar-brand-icon" src={forgeAppIcon} alt="" />
+          <span className="sidebar-app-name">Forge</span>
+          <span className="sidebar-app-subtitle">工作空间</span>
         </div>
-
-        <button className={activeView === 'assistant' ? 'nav-row active' : 'nav-row'} type="button" onClick={onOpenAssistant}>
-          <span className="nav-symbol">✦</span>
-          <span>助手</span>
-        </button>
-
-        <div className="sidebar-section-title">项目</div>
-        <div className="sidebar-list">
-          {projects.map((project) => (
-            <button
-              key={project.repoId}
-              className={activeView === 'project' && project.repoId === selectedRepoId ? 'nav-row active' : 'nav-row'}
-              type="button"
-              title={project.repository}
-              onClick={() => onSelectProject?.(project)}
-            >
-              <span className="project-dot" aria-hidden="true" />
-              <span className="nav-label">{project.name}</span>
-            </button>
-          ))}
-        </div>
-
-        {activeView === 'project' && (workNodes.length > 0 || recentWorkNodes.length > 0) && (
-          <>
-            {workNodes.length > 0 && (
-              <>
-                <div className="sidebar-section-title work-section-title">工作</div>
-                <div className="sidebar-list work-list">
-                  {workNodes.map((work) => (
-                    <button
-                      key={work.workId}
-                      className={work.workId === selectedWorkId ? 'work-row active' : 'work-row'}
-                      type="button"
-                      onClick={() => onSelectWork?.(work.workId)}
-                      title={work.objective}
-                    >
-                      <span className={`work-state-dot ${work.state}`} aria-hidden="true" />
-                      <span className="work-row-copy">
-                        <strong>{work.objective}</strong>
-                        <span>{semanticStateLabel(work.state)}</span>
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              </>
+        <nav className="sidebar-primary" aria-label="工作区导航">
+          <button className="nav-row sidebar-new-thread" type="button" onClick={onNewThread}>
+            <span className="nav-symbol"><ForgeIcon name="new-thread" /></span><span className="nav-label">新会话</span><span className="sidebar-keyboard">⌘N</span>
+          </button>
+          <button className={activeView === 'assistant' ? 'nav-row active' : 'nav-row'} type="button" onClick={onOpenAssistant}>
+            <span className="nav-symbol"><ForgeIcon name="conversations" /></span><span className="nav-label">会话</span>
+          </button>
+          <button className={activeView === 'works' || activeView === 'project' ? 'nav-row active' : 'nav-row'} type="button" onClick={onOpenProjects}>
+            <span className="nav-symbol"><ForgeIcon name="work" /></span><span className="nav-label">Work · 工作</span>
+          </button>
+          <button className={activeView === 'requirements' ? 'nav-row active' : 'nav-row'} type="button" onClick={onOpenRequirements}>
+            <span className="nav-symbol"><ForgeIcon name="requirement" /></span><span className="nav-label">Requirement · 需求</span>
+          </button>
+          <button className={activeView === 'plans' ? 'nav-row active' : 'nav-row'} type="button" onClick={onOpenPlans}>
+            <span className="nav-symbol"><ForgeIcon name="plan" /></span><span className="nav-label">Plan · 计划</span>
+          </button>
+          <button className={activeView === 'knowledge' ? 'nav-row active' : 'nav-row'} type="button" onClick={onOpenKnowledge}>
+            <span className="nav-symbol"><ForgeIcon name="knowledge" /></span><span className="nav-label">记忆与知识</span>
+          </button>
+        </nav>
+        {(localThreads.length > 0 || conversationSearchOpen) && (
+          <section className="sidebar-conversations" aria-label="最近会话">
+            <div className="sidebar-conversation-heading">
+              <div className="sidebar-section-title">最近会话</div>
+              <button type="button" className="sidebar-search-toggle"
+                aria-label={conversationSearchOpen ? '关闭会话搜索' : '搜索会话'}
+                aria-expanded={conversationSearchOpen} aria-keyshortcuts="Meta+K Control+K"
+                title="搜索会话 (⌘K)"
+                onClick={() => {
+                  setConversationSearchOpen((open) => !open);
+                  if (conversationSearchOpen) setConversationQuery('');
+                }}>
+                <ForgeIcon name={conversationSearchOpen ? 'close' : 'search'} size={15} />
+              </button>
+            </div>
+            {conversationSearchOpen && (
+              <input ref={conversationSearchRef} className="sidebar-conversation-search"
+                type="search" aria-label="搜索会话标题" placeholder="搜索全部会话…"
+                value={conversationQuery} onChange={(event) => setConversationQuery(event.target.value)} />
             )}
-            {recentWorkNodes.length > 0 && (
-              <details className="sidebar-history">
-                <summary>历史 · {recentWorkNodes.length}</summary>
-                <div className="sidebar-list history-work-list">
-                  {recentWorkNodes.map((work) => (
-                    <button
-                      key={work.workId}
-                      className={work.workId === selectedWorkId ? 'work-row active' : 'work-row'}
-                      type="button"
-                      onClick={() => onSelectWork?.(work.workId)}
-                      title={work.objective}
-                    >
-                      <span className={`work-state-dot ${work.state}`} aria-hidden="true" />
-                      <span className="work-row-copy">
-                        <strong>{work.objective}</strong>
-                        <span>{semanticStateLabel(work.state)}</span>
-                      </span>
-                    </button>
-                  ))}
+            {[...conversationGroups].map(([repoId, items]) => {
+              const project = projects.find((entry) => entry.repoId === repoId);
+              const projectName = project?.repository.split('/').at(-1) ?? (repoId ? '历史项目' : '独立会话');
+              return <div className="sidebar-project-conversations" key={repoId || 'unbound'}>
+                <div className="sidebar-thread-project-heading">
+                  <span title={project?.repository ?? (repoId || '未绑定仓库')}>
+                    <ForgeIcon name={repoId ? 'project' : 'conversation'} size={13} />
+                    {projectName}
+                  </span>
+                  {repoId && project && <button type="button"
+                    aria-label={`在 ${projectName} 中新建会话`}
+                    title={`在 ${projectName} 中新建会话`}
+                    onClick={() => onNewProjectThread(repoId)}>
+                    <ForgeIcon name="plus" size={14} />
+                  </button>}
                 </div>
-              </details>
+                {items.map((thread) => (
+                  <button type="button" key={thread.id}
+                    className={'nav-row sidebar-thread-row'
+                      + (activeView === 'assistant' && selectedLocalThreadId === thread.id ? ' active' : '')}
+                    title={thread.title + ' · ' + (thread.provider === 'api' ? '兼容 API' : 'Codex CLI')} onClick={() => {
+                      onSelectLocalThread(thread.id);
+                      setConversationSearchOpen(false);
+                      setConversationQuery('');
+                    }}>
+                    <span className="nav-symbol"><ForgeIcon name={thread.draft ? 'draft' : 'conversation'} /></span>
+                    <span className="nav-label">{thread.title}</span>
+                    {thread.running && <span className="sidebar-turn-running" role="status" title="Agent 运行中" />}
+                    {thread.provider === 'api' && <span className="sidebar-thread-provider" title="兼容 API 会话">API</span>}
+                    {thread.draft && <span className="sidebar-draft-indicator">草稿</span>}
+                  </button>
+                ))}
+              </div>;
+            })}
+            {conversationSearchOpen && shownThreads.length === 0 && (
+              <p className="sidebar-search-empty" role="status">没有匹配的会话</p>
             )}
-          </>
+          </section>
         )}
+        <div className="sidebar-project-popover" ref={projectPickerRef}>
+          <div className="sidebar-project-heading">
+          <button className="sidebar-project-picker" type="button" aria-expanded={showProjectPicker}
+            aria-controls={showProjectPicker ? 'sidebar-project-options' : undefined}
+            title={activeProject?.localRoot ?? activeProject?.repository ?? '选择已注册项目'}
+            onClick={() => setShowProjectPicker((expanded) => !expanded)}>
+            <span className="project-folder"><ForgeIcon name="project" /></span>
+            <span className="project-picker-identity">
+              <span className="nav-label">{activeProject?.repository.split('/').at(-1) ?? '选择项目'}</span>
+              {activeProject?.repository && <small title={activeProject.localRoot ?? activeProject.repository}>
+                {activeProject.name} · {activeProject.repository}
+              </small>}
+            </span>
+            <span className={'project-caret' + (showProjectPicker ? ' expanded' : '')}><ForgeIcon name="chevron" size={15} /></span>
+          </button>
+          <button type="button" title="刷新已注册项目" aria-label="刷新已注册项目" onClick={onRetryProjects}><ForgeIcon name="refresh" size={16} /></button>
+        </div>
+        {showProjectPicker && (
+          <div id="sidebar-project-options" className="sidebar-project-picker-panel"
+            role="region" aria-label="选择项目">
+            <input ref={projectSearchRef} aria-label="搜索已注册项目" placeholder={'搜索 ' + projects.length + ' 个项目'}
+              value={projectQuery} onChange={(event) => setProjectQuery(event.target.value)} />
+            <div className="sidebar-list sidebar-projects">
+              {projects.length === 0 && (
+                <div className="sidebar-project-error" role="status">
+                  <strong>{runtimeStatus === 'connected' ? '尚无已注册项目' : '项目目录读取失败'}</strong>
+                  <span>{runtimeDetail}</span>
+                  <button type="button" className="plain-action" onClick={onRetryProjects}>重新读取</button>
+                </div>
+              )}
+              {matchingProjects.map((project) => (
+                <div className="sidebar-picker-project-row" key={project.repoId}>
+                  <button className={project.repoId === selectedRepoId ? 'nav-row project-row active' : 'nav-row project-row'}
+                    type="button" title={project.localRoot ?? project.repository}
+                    onClick={() => {
+                      onSelectProject?.(project);
+                      setShowProjectPicker(false);
+                      setProjectQuery('');
+                    }}>
+                    <span className="project-folder"><ForgeIcon name="project" /></span>
+                    <span className="project-picker-identity">
+                      <span className="nav-label">{project.repository.split('/').at(-1) ?? project.name}</span>
+                      <small>{project.name} · {project.repository}</small>
+                    </span>
+                  </button>
+                  <button className="sidebar-picker-project-agent" type="button"
+                    aria-label={`在 ${project.repository} 中新建 Agent 会话`}
+                    title="新建此项目的 Agent 会话"
+                    onClick={() => {
+                      onNewProjectThread(project.repoId);
+                      setShowProjectPicker(false);
+                      setProjectQuery('');
+                    }}>
+                    <ForgeIcon name="plus" size={16} />
+                  </button>
+                </div>
+              ))}
+              {projects.length > 0 && matchingProjects.length === 0 && <p className="sidebar-project-error">未找到匹配项目</p>}
+            </div>
+          </div>
+        )}
+        </div>
       </div>
 
       <div className="sidebar-footer">
+        <button className={activeView === 'settings' ? 'nav-row active' : 'nav-row'} type="button" onClick={onOpenSettings}>
+          <span className="nav-symbol"><ForgeIcon name="settings" /></span><span className="nav-label">设置</span>
+        </button>
         <button className={activeView === 'runtime' ? 'nav-row active' : 'nav-row'} type="button" onClick={onOpenRuntime}>
+          <span className="nav-symbol"><ForgeIcon name="runtime" /></span>
+          <span className="nav-label">MCP 服务与运行时</span>
           <span className={`health-dot ${runtimeStatus}`} />
-          <span className="nav-label">运行时</span>
           <span className="runtime-mini-label">{runtimeLabel}</span>
         </button>
       </div>
@@ -222,89 +396,36 @@ function Sidebar({
   );
 }
 
-function AutomaticContinuationRow({
-  task,
-  preview,
-  onSwitch,
-}: {
-  task: AutomaticContinuationTaskProjection;
-  preview: boolean;
-  onSwitch?: (task: AutomaticContinuationTaskProjection) => Promise<void>;
-}) {
-  const [switching, setSwitching] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const conversation = task.conversation;
-  const canSwitch = Boolean(conversation) && !['completed', 'stopped', 'switching_conversation'].includes(task.status);
-
-  return (
-    <div className="continuation-row">
-      <div className="continuation-main">
-        <div className="continuation-title-row">
-          <span className={`status-dot ${statusTone(task.status)}`} />
-          <strong>自动推进</strong>
-          <span className="subtle-label">{task.statusLabel}</span>
-        </div>
-        <p>{task.objective}</p>
-        {conversation ? (
-          <a className="conversation-link" href={conversation.conversationUrl} target="_blank" rel="noreferrer">
-            打开绑定会话
-          </a>
-        ) : <span className="subtle-label">尚未绑定精确会话</span>}
-      </div>
-      <div className="continuation-actions">
-        <button
-          className="plain-action"
-          type="button"
-          disabled={!canSwitch || switching || (!preview && !onSwitch)}
-          onClick={async () => {
-            if (preview || !onSwitch) return;
-            setError(null);
-            setSwitching(true);
-            try { await onSwitch(task); }
-            catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
-            finally { setSwitching(false); }
-          }}
-        >
-          {switching ? '切换中…' : '切换到新会话'}
-        </button>
-      </div>
-      {error && <div className="inline-error">{error}</div>}
-      <details className="compact-details">
-        <summary>任务详情</summary>
-        <dl>
-          <div><dt>任务</dt><dd className="mono">{task.taskId}</dd></div>
-          {task.workId && <div><dt>工作</dt><dd className="mono">{task.workId}</dd></div>}
-          {task.repoId && <div><dt>项目</dt><dd className="mono">{task.repoId}</dd></div>}
-          {task.requirementId && <div><dt>需求</dt><dd className="mono">{task.requirementId}</dd></div>}
-          {conversation && <div><dt>会话</dt><dd className="mono">{conversation.conversationId}</dd></div>}
-          {task.createdAt && <div><dt>创建</dt><dd>{new Date(task.createdAt).toLocaleString('zh-CN')}</dd></div>}
-          <div><dt>状态</dt><dd>{task.detail}</dd></div>
-        </dl>
-      </details>
-    </div>
-  );
-}
-
 function WorkView({
   projection,
-  preview,
   refreshing,
   refreshError,
   onRefresh,
-  onSwitch,
   onContinue,
   onSelectWork,
+  onNavigateRecord,
+  onStartAgentForWork,
 }: {
   projection: ForgeDesktopProjection;
-  preview: boolean;
   refreshing: boolean;
   refreshError: string | null;
   onRefresh?: () => Promise<void>;
-  onSwitch?: (task: AutomaticContinuationTaskProjection) => Promise<void>;
   onContinue?: (prompt: string) => Promise<void>;
   onSelectWork?: (workId: string) => void;
+  onNavigateRecord?: (mode: 'requirements' | 'plans', id: string) => void;
+  onStartAgentForWork?: (repoId: string, workId: string) => void;
 }) {
   const work = projection.work;
+  // Current and bounded history only: these links are not an exhaustive
+  // Requirement/Plan portfolio and must not be presented as one.
+  const visibleWorks = [...projection.workGraph.nodes, ...projection.recentWorkHistory];
+  const linkedRequirements = Array.from(new Set(visibleWorks
+    .map((node) => node.requirementId).filter((id): id is string => Boolean(id))));
+  const linkedPlans = Array.from(new Set(visibleWorks
+    .map((node) => node.planId).filter((id): id is string => Boolean(id))));
+  const relatedWorks = work?.requirementId
+    ? visibleWorks.filter((node) => node.requirementId === work.requirementId && node.workId !== work.workId)
+    : [];
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
@@ -316,7 +437,7 @@ function WorkView({
         <main className="main-pane empty-main">
           <div className="empty-copy">
             <h1>选择一个项目</h1>
-            <p>从左侧项目列表进入 MCP 工作区。</p>
+            <p>从左侧选择项目，可查看已登记的 Work、关联需求、计划和验证证据。</p>
           </div>
         </main>
       );
@@ -325,24 +446,24 @@ function WorkView({
       <main className="main-pane work-pane">
         <div className="content-column">
           <header className="work-hero mcp-project-hero">
-            <div className="breadcrumb">MCP / Repository</div>
+            <div className="breadcrumb">项目 / Repository</div>
             <h1>{project.name}</h1>
             <p>{project.repository}</p>
           </header>
 
-          <div className="mcp-overview-status" aria-label="MCP 工作区状态">
-            <div><span className={`health-dot ${projection.runtime.status}`} /><strong>MCP Workspace</strong></div>
+          <div className="mcp-overview-status" aria-label="Forge 工作区状态">
+            <div><span className={`health-dot ${projection.runtime.status}`} /><strong>项目工作区</strong></div>
             <div className="mcp-status-actions">
               <span>{projection.runtime.label}</span>
               <button className="plain-action" type="button" disabled={!onRefresh || refreshing} onClick={() => void onRefresh?.()}>
-                {refreshing ? '刷新中…' : '刷新 MCP'}
+                {refreshing ? '刷新中…' : '刷新'}
               </button>
             </div>
           </div>
 
           {refreshError && <div className="inline-error mcp-refresh-error">刷新失败：{refreshError}</div>}
 
-          <section className="mcp-summary-grid" aria-label="MCP 操作概览">
+          <section className="mcp-summary-grid" aria-label="Forge 工作概览">
             <div className="mcp-summary-card">
               <span>Repository</span>
               <strong>{project.dirty ? '有未提交修改' : '工作区干净'}</strong>
@@ -365,7 +486,46 @@ function WorkView({
             </div>
           </section>
 
-          <section className="mcp-work-overview" aria-label="MCP Work">
+          <section className="relationship-overview" aria-label="项目需求和计划关联">
+            <div className="relationship-heading">
+              <strong>需求与工作关联</strong>
+              <span>从当前及近期 Work 汇总 · 非完整需求目录</span>
+            </div>
+            {linkedRequirements.length > 0 ? (
+              <div className="relationship-list">
+                {linkedRequirements.map((requirementId) => {
+                  const members = visibleWorks.filter((node) => node.requirementId === requirementId);
+                  return (
+                    <div className="relationship-item" key={requirementId}>
+                      <div className="relationship-item-head">
+                        <span className="relation-type">需求</span>
+                        <strong className="mono" title={requirementId}>{requirementId}</strong>
+                        <small>{members.length} 个可见 Work</small>
+                      </div>
+                      <div className="relation-work-links">
+                        {members.map((member) => (
+                          <button className="relation-work-link" type="button" key={member.workId}
+                            onClick={() => onSelectWork?.(member.workId)} disabled={!onSelectWork}
+                            title={member.objective}>
+                            <span className={'work-state-dot ' + member.state} />
+                            <span>{member.objective}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : <p className="relationship-empty">当前加载的 Work 未提供 Requirement 关联，不能推断项目没有需求。</p>}
+            {linkedPlans.length > 0 && (
+              <div className="relationship-plan-summary">
+                <span>关联 Plan · {linkedPlans.length}</span>
+                <div>{linkedPlans.map((id) => <code key={id} title={id}>{id}</code>)}</div>
+              </div>
+            )}
+          </section>
+
+          <section className="mcp-work-overview" aria-label="Forge Work">
             <div className="mcp-work-overview-heading">
               <div><strong>Work</strong><span>canonical rh_work projection</span></div>
               <span>{projection.workGraph.nodes.length} 个当前节点</span>
@@ -421,33 +581,34 @@ function WorkView({
     );
   }
 
-  const continuations = projection.automaticContinuations.filter((task) => !task.workId || task.workId === work.workId);
-
   return (
     <main className="main-pane work-pane">
       <div className="content-column">
         <header className="work-hero mcp-work-hero">
           <div className="mcp-work-hero-copy">
-            <div className="breadcrumb">MCP / {projection.project?.name ?? '项目'} / {semanticStateLabel(work.semanticState)}</div>
+            <div className="breadcrumb">项目 / {projection.project?.name ?? '项目'} / {semanticStateLabel(work.semanticState)}</div>
             <h1>{work.title}</h1>
             {work.continuationPrompt && <p>{work.continuationPrompt}</p>}
           </div>
-          <button className="plain-action" type="button" disabled={!onRefresh || refreshing} onClick={() => void onRefresh?.()}>
-            {refreshing ? '刷新中…' : '刷新 MCP'}
-          </button>
+          <div className="work-hero-actions">
+            {projection.project && <button type="button" className="work-agent-action"
+              onClick={() => onStartAgentForWork?.(projection.project!.repoId, work.workId)}
+              disabled={!onStartAgentForWork}>
+              在 Agent 中继续
+            </button>}
+            <button className="plain-action" type="button" disabled={!onRefresh || refreshing} onClick={() => void onRefresh?.()}>
+              {refreshing ? '刷新中…' : '刷新'}
+            </button>
+          </div>
         </header>
 
         {refreshError && <div className="inline-error mcp-refresh-error">刷新失败：{refreshError}</div>}
-
-        {continuations.map((task) => (
-          <AutomaticContinuationRow key={task.taskId} task={task} preview={preview} onSwitch={onSwitch} />
-        ))}
 
         <div className="work-body-copy">
           <p>{work.objective}</p>
         </div>
 
-        <section className="mcp-summary-grid work-summary-grid" aria-label="MCP Work 操作概览">
+        <section className="mcp-summary-grid work-summary-grid" aria-label="Forge Work 操作概览">
           <div className="mcp-summary-card">
             <span>Work</span>
             <strong>{semanticStateLabel(work.semanticState)} · r{work.revision}</strong>
@@ -468,6 +629,49 @@ function WorkView({
             <strong>{projection.project?.dirty ? '有未提交修改' : '工作区干净'}</strong>
             <small>{projection.project?.branch ?? '未知分支'} · {projection.project?.sourceRevision ? compactId(projection.project.sourceRevision) : '未知版本'}</small>
           </div>
+        </section>
+
+        <section id="work-relations" className="work-relations" aria-label="工作关系">
+          <div className="relationship-heading"><strong>关联与上下文</strong><span>Forge canonical ID，不推断任务完成率</span></div>
+          <div className="work-relation-row">
+            <div><span className="relation-type">Requirement</span>
+              {work.requirementId ? <button className="record-deep-link" type="button"
+                onClick={() => onNavigateRecord?.('requirements', work.requirementId!)}
+                title={work.requirementId}>{projection.requirement?.title ?? work.requirementId}</button>
+                : <span className="relation-unbound">未绑定</span>}
+            </div>
+            <div><span className="relation-type">Plan</span>
+              {work.planId ? <button className="record-deep-link" type="button"
+                onClick={() => onNavigateRecord?.('plans', work.planId!)}
+                title={work.planId}>{projection.plan?.goal ?? work.planId}</button>
+                : <span className="relation-unbound">未绑定</span>}
+            </div>
+            <div><span className="relation-type">Work</span><strong>{semanticStateLabel(work.semanticState)} · r{work.revision}</strong></div>
+          </div>
+          {relatedWorks.length > 0 && (
+            <div className="related-work-list">
+              <div className="relationship-heading"><strong>相同 Requirement 下的其他 Work</strong><span>{relatedWorks.length} 个可见</span></div>
+              {relatedWorks.map((node) => (
+                <button className="mcp-work-overview-row" type="button" key={node.workId}
+                  disabled={!onSelectWork} onClick={() => onSelectWork?.(node.workId)}>
+                  <span className={'work-state-dot ' + node.state} />
+                  <span className="mcp-work-overview-copy"><strong>{node.objective}</strong><small>{semanticStateLabel(node.state)}</small></span>
+                  <span className="mono mcp-work-id">{compactId(node.workId)}</span>
+                </button>
+              ))}
+            </div>
+          )}
+          {(work.semanticParentWorkId || work.dependsOnWorkIds.length > 0) && (
+            <div className="work-dependencies">
+              {work.semanticParentWorkId && <div><span>父 Work</span><code>{work.semanticParentWorkId}</code></div>}
+              {work.dependsOnWorkIds.length > 0 && <div><span>依赖 Work</span>
+                {work.dependsOnWorkIds.map((id) => <button key={id} type="button"
+                  disabled={!onSelectWork || !visibleWorks.some((candidate) => candidate.workId === id)}
+                  title={id} onClick={() => onSelectWork?.(id)}>{compactId(id)}</button>)}
+              </div>}
+            </div>
+          )}
+          <p className="relation-limit">仅显示本次加载的 Work 和近期历史；未出现不代表没有其他关联记录。</p>
         </section>
 
         {work.nextSafeAction && (
@@ -502,7 +706,7 @@ function WorkView({
         </details>
 
         {projection.requirement && (
-          <details className="detail-section">
+          <details id="work-requirement" className="detail-section">
             <summary>需求 · {projection.requirement.title}</summary>
             <div className="detail-grid">
               <div><span>状态</span><strong>{projection.requirement.state === 'open' ? '进行中' : projection.requirement.state}</strong></div>
@@ -516,7 +720,7 @@ function WorkView({
         )}
 
         {projection.plan && (
-          <details className="detail-section" open>
+          <details id="work-plan" className="detail-section">
             <summary>计划 · r{projection.plan.revision}</summary>
             <p className="detail-text">{projection.plan.goal}</p>
             {projection.plan.items.length > 0 && (
@@ -647,11 +851,14 @@ function WorkView({
         </details>
       </div>
 
-      <div className="composer-wrap">
-        <div className="composer">
+      <details className="work-service-continuation">
+        <summary>通过 Forge 工作流继续此 Work（高级）</summary>
+        <p>这是已有 Work 的服务端执行入口，不是本地 Agent 聊天。日常任务建议使用上方“在 Agent 中继续”。</p>
+        <div className="composer-wrap">
+          <div className="composer">
           <textarea
-            aria-label="向当前工作发送指令"
-            placeholder="告诉 ChatGPT 接下来要做什么…"
+            aria-label="继续现有 Forge Work"
+            placeholder="描述你想推进的工作…"
             rows={3}
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
@@ -676,65 +883,89 @@ function WorkView({
                   setSending(false);
                 }
               }}
-            >{sending ? '发送中…' : '继续'}</button>
+            >{sending ? '提交中…' : '提交到 Forge 工作流'}</button>
+          </div>
           </div>
         </div>
-      </div>
+      </details>
     </main>
   );
 }
 
 function AssistantView({
-  tasks,
   projects,
+  defaultProjectRepoId,
+  newThreadContext,
+  onOpenWork,
+  onOpenRecord,
   provider,
   providerLoading,
   providerError,
-  preview,
-  onSwitch,
+  apiSettings,
+  onOpenSettings,
+  onOpenProjects,
+  onOpenKnowledge,
+  newThreadRequested,
+  onNewThreadHandled,
+  openThreadId,
+  onOpenThreadHandled,
+  onThreadsChange,
   onRefreshProvider,
   onSendLocal,
+  onCancelLocal,
 }: {
-  tasks: AutomaticContinuationTaskProjection[];
   projects: ProjectListItemProjection[];
+  defaultProjectRepoId?: string;
+  newThreadContext?: { repoId: string; workId?: string };
+  onOpenWork: (repoId: string, workId: string) => void;
+  onOpenRecord: (repoId: string, mode: 'requirements' | 'plans', id: string) => void;
   provider: LocalProviderStatusProjection | null;
   providerLoading: boolean;
   providerError: string | null;
-  preview: boolean;
-  onSwitch?: (task: AutomaticContinuationTaskProjection) => Promise<void>;
+  apiSettings: LocalApiSettings | null;
+  onOpenSettings: () => void;
+  onOpenProjects: () => void;
+  onOpenKnowledge: () => void;
+  newThreadRequested: boolean;
+  onNewThreadHandled: () => void;
+  openThreadId?: string;
+  onOpenThreadHandled: () => void;
+  onThreadsChange: (items: LocalConversationNavItem[], selectedId?: string, activeRepoId?: string) => void;
   onRefreshProvider: () => Promise<void>;
-  onSendLocal: (input: { thread: LocalConversationThread; prompt: string }) => Promise<LocalConversationReply>;
+  onSendLocal: (input: { thread: LocalConversationThread; prompt: string; allowEffects: boolean }) => Promise<LocalConversationReply>;
+  onCancelLocal: (thread: LocalConversationThread) => Promise<void>;
 }) {
   return (
     <main className="main-pane assistant-pane">
       <div className="content-column assistant-content">
-        <header className="work-hero assistant-hero">
-          <div className="breadcrumb">Forge</div>
-          <h1>助手</h1>
-          <p>本地会话属于桌面客户端；需要长期执行的工作仍由 Forge 的 canonical Work 与 Controller authority 承担。</p>
-        </header>
         <LocalConversationSurface
           projects={projects}
+          defaultProjectRepoId={defaultProjectRepoId}
+          newThreadContext={newThreadContext}
+          onOpenWork={onOpenWork}
+          onOpenRecord={onOpenRecord}
           provider={provider}
           providerLoading={providerLoading}
           providerError={providerError}
+          apiSettings={apiSettings}
+          onOpenSettings={onOpenSettings}
+          onOpenProjects={onOpenProjects}
+          onOpenKnowledge={onOpenKnowledge}
+          newThreadRequested={newThreadRequested}
+          onNewThreadHandled={onNewThreadHandled}
+          openThreadId={openThreadId}
+          onOpenThreadHandled={onOpenThreadHandled}
+          onThreadsChange={onThreadsChange}
           onRefreshProvider={onRefreshProvider}
           onSend={onSendLocal}
+          onCancel={onCancelLocal}
         />
-        <section className="assistant-automation" aria-label="自动推进">
-          <div className="assistant-section-heading"><strong>自动推进</strong><span>canonical Workflow Supervisor</span></div>
-          {tasks.length > 0 ? tasks.map((task) => (
-            <AutomaticContinuationRow key={task.taskId} task={task} preview={preview} onSwitch={onSwitch} />
-          )) : (
-            <div className="empty-copy inline-empty"><p>当前没有活动的自动推进任务。</p></div>
-          )}
-        </section>
       </div>
     </main>
   );
 }
 
-function RuntimeView({
+export function RuntimeView({
   projection,
   loading,
   error,
@@ -749,6 +980,7 @@ function RuntimeView({
   onRecover,
   onRefreshConnection,
   onRepairConnection,
+  onOpenSettings,
 }: {
   projection: RuntimeRecoveryProjection | null;
   loading: boolean;
@@ -764,6 +996,7 @@ function RuntimeView({
   onRecover: () => Promise<void>;
   onRefreshConnection: () => Promise<void>;
   onRepairConnection: () => Promise<void>;
+  onOpenSettings: () => void;
 }) {
   const disabled = loading || action !== null || !projection?.recovery.available;
   const runtimeRunning = projection?.runtime.running === true;
@@ -774,14 +1007,21 @@ function RuntimeView({
     <main className="main-pane runtime-pane">
       <div className="content-column narrow-column">
         <header className="work-hero">
-          <div className="breadcrumb">系统</div>
-          <h1>运行时与恢复</h1>
-          <p>状态来自独立恢复服务；客户端不接管运行时生命周期。</p>
+          <div className="breadcrumb">Forge / 连接</div>
+          <h1>MCP 服务与连接</h1>
+          <p>外部 ChatGPT/MCP 服务使用 Forge 的现有控制器连接；本地 Codex 或 API 模型独立配置。</p>
         </header>
+        <div className="runtime-mode-note">
+          <ForgeIcon name="runtime" size={18} />
+          <span>这是服务状态与连接管理，不是第二个 Agent 或项目执行环境。</span>
+          <button type="button" className="plain-action" onClick={onOpenSettings}>Agent 设置</button>
+        </div>
 
         {error && <div className="inline-error standalone-error">{error}</div>}
 
-        <section className="runtime-summary">
+        <div className="runtime-connectivity">
+        <section className="runtime-summary runtime-connection-card">
+          <div className="runtime-card-kicker"><ForgeIcon name="terminal" size={16} /> 本地运行时</div>
           <div className="runtime-primary-row">
             <span className={`health-dot ${projection?.runtime.ready ? 'connected' : projection?.recovery.available ? 'degraded' : 'not_connected'}`} />
             <div>
@@ -792,21 +1032,34 @@ function RuntimeView({
           <div className="runtime-actions">
             <button className="plain-action" type="button" disabled={loading || action !== null} onClick={() => void onRefresh()}>刷新</button>
             <button className="plain-action" type="button" disabled={disabled} onClick={() => void onDiagnose()}>{action === 'diagnose' ? '诊断中…' : '诊断'}</button>
-            <button className="plain-action" type="button" disabled={disabled} onClick={() => void onRestart()}>{action === 'restart' ? restartPendingLabel : restartLabel}</button>
-            {!runtimeReady && projection?.recovery.available && (
-              <button className="plain-action" type="button" disabled={disabled} onClick={() => void onRecover()}>{action === 'recover' ? '恢复中…' : '深度恢复'}</button>
-            )}
           </div>
+          <details className="runtime-advanced-actions">
+            <summary>高级维护操作</summary>
+            <p>可能中断当前 Agent 会话或改变运行时状态，仅在明确需要时操作。</p>
+            <button className="plain-action" type="button" disabled={disabled} onClick={() => void onRestart()}>
+              {action === 'restart' ? restartPendingLabel : restartLabel}
+            </button>
+            {!runtimeReady && projection?.recovery.available && (
+              <button className="plain-action" type="button" disabled={disabled} onClick={() => void onRecover()}>
+                {action === 'recover' ? '恢复中…' : '深度恢复'}
+              </button>
+            )}
+          </details>
         </section>
 
         {connectionError && <div className="inline-error standalone-error">连接读取失败：{connectionError}</div>}
 
-        <section className="runtime-summary" aria-label="Forge 连接">
+        <section className="runtime-summary runtime-connection-card" aria-label="Forge 连接">
+          <div className="runtime-card-kicker"><ForgeIcon name="runtime" size={16} /> MCP / 控制器连接</div>
           <div className="runtime-primary-row">
             <span className={`health-dot ${connectionError ? 'degraded' : connection?.ready ? 'connected' : connection?.configured ? 'degraded' : 'not_connected'}`} />
             <div>
-              <strong>{connectionError ? '连接状态读取失败' : connection?.ready ? '控制器连接已就绪' : connection?.configured ? '控制器连接需要处理' : connectionLoading ? '正在读取连接状态' : '连接尚未配置'}</strong>
-              <p>{connection?.controller.detail ?? '连接状态来自 Forge setup authority；客户端不保存配置副本。'}</p>
+              <strong>{connectionError ? '连接状态读取失败' : connection?.ready ? 'MCP 连接已就绪' : connection?.configured
+                ? connection.controller.ready ? '远程传输需要处理' : '控制器配置需要处理'
+                : connectionLoading ? '正在读取连接状态' : '连接尚未配置'}</strong>
+              <p>{connection && !connection.controller.ready ? connection.controller.detail
+                : connection && !connection.tunnel.ready ? connection.tunnel.detail
+                : connection?.controller.detail ?? '连接状态来自 Forge setup authority；客户端不保存配置副本。'}</p>
             </div>
           </div>
           <div className="runtime-actions">
@@ -818,9 +1071,10 @@ function RuntimeView({
             )}
           </div>
         </section>
+        </div>
 
         {connection && (
-          <details className="detail-section" open>
+          <details className="detail-section">
             <summary>连接详情</summary>
             <div className="detail-grid">
               <div><span>主控制器</span><strong>{connection.profile?.primaryController ?? '未配置'}</strong></div>
@@ -842,7 +1096,7 @@ function RuntimeView({
           </details>
         )}
 
-        <details className="detail-section" open>
+        <details className="detail-section">
           <summary>状态详情</summary>
           <div className="detail-grid">
             <div><span>进程 ID</span><strong>{projection?.runtime.pid ?? '未知'}</strong></div>
@@ -870,7 +1124,7 @@ function RuntimeView({
         )}
 
         {projection?.diagnostics && (
-          <details className="detail-section" open>
+          <details className="detail-section">
             <summary>诊断 · {projection.diagnostics.passed} 通过 / {projection.diagnostics.failed} 异常</summary>
             <div className="diagnostic-list simple-diagnostics">
               {projection.diagnostics.probes.map((probe) => (
@@ -887,13 +1141,55 @@ function RuntimeView({
   );
 }
 
+/** Only context for the model, never repository or checkout authorization.
+ * Forge tools remain the authority for exact target verification and effects. */
+export function codexBoundPrompt(thread: LocalConversationThread, prompt: string): string {
+  const notes: string[] = [];
+  if (thread.projectRepoId) {
+    notes.push('[Forge Desktop conversation context: selected repo_id='
+      + thread.projectRepoId + '; selected checkout_id=' + (thread.checkoutId ?? 'unbound')
+      + '. Codex runs in an isolated temporary directory, not this checkout. '
+      + 'Use Forge MCP capabilities to inspect the registered repository and its checkout. '
+      + 'Before any effect verify that the exact repo_id AND checkout_id are supported by the chosen tool. '
+      + 'If a tool cannot target the selected checkout, do not mutate or run a repository command. '
+      + 'Never treat the temporary process directory as this project.]');
+  }
+  if (thread.workId) {
+    notes.push('[Attached existing Forge Work: ' + thread.workId
+      + '. Retrieve its current Requirement, Plan, and Work from Forge before deciding actions. '
+      + 'Do not create duplicate Work or claim completion without canonical evidence.]');
+  }
+  return notes.length ? notes.join('\n') + '\n\n' + prompt : prompt;
+}
+
 export function App() {
   const preview = useMemo(previewEnabled, []);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try { return localStorage.getItem('forge.desktop.sidebar-collapsed.v1') === 'true'; }
+    catch { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('forge.desktop.sidebar-collapsed.v1', String(sidebarCollapsed)); }
+    catch { /* Browser preview may not permit storage; the toggle still works. */ }
+  }, [sidebarCollapsed]);
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!sidebarToggleShortcut(event)) return;
+      event.preventDefault();
+      setSidebarCollapsed((current) => !current);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
   const [projection, setProjection] = useState<ForgeDesktopProjection>(preview ? designPreviewProjection : disconnectedProjection);
   const [projects, setProjects] = useState<ProjectListItemProjection[]>(preview ? [...designPreviewProjection.projects] : []);
   const [selectedRepoId, setSelectedRepoId] = useState<string | undefined>(preview ? designPreviewProjection.project?.repoId : undefined);
   const [selectedWorkId, setSelectedWorkId] = useState<string | undefined>(preview ? designPreviewProjection.work?.workId : undefined);
-  const [activeView, setActiveView] = useState<AppView>('project');
+  const projectLoadRevision = useRef(0);
+  const [activeView, setActiveView] = useState<AppView>(preview ? 'project' : 'assistant');
+  const [requestedRecord, setRequestedRecord] = useState<{
+    mode: 'requirements' | 'plans'; id: string;
+  }>();
   const [recoveryProjection, setRecoveryProjection] = useState<RuntimeRecoveryProjection | null>(null);
   const [recoveryLoading, setRecoveryLoading] = useState(false);
   const [recoveryError, setRecoveryError] = useState<string | null>(null);
@@ -905,6 +1201,17 @@ export function App() {
   const [localProvider, setLocalProvider] = useState<LocalProviderStatusProjection | null>(null);
   const [localProviderLoading, setLocalProviderLoading] = useState(false);
   const [localProviderError, setLocalProviderError] = useState<string | null>(null);
+  const [localApiSettings, setLocalApiSettings] = useState<LocalApiSettings | null>(null);
+  const [newThreadRequested, setNewThreadRequested] = useState(false);
+  const [newThreadContext, setNewThreadContext] = useState<{ repoId: string; workId?: string }>();
+  // Read-only sidebar projection; LocalConversationSurface owns the actual threads.
+  const [localThreadNav, setLocalThreadNav] = useState<LocalConversationNavItem[]>([]);
+  const [selectedLocalThreadId, setSelectedLocalThreadId] = useState<string | undefined>();
+  // Read-only projection of the Agent owner's selected thread repository.
+  const [activeAgentRepoId, setActiveAgentRepoId] = useState<string | undefined>();
+  const [openLocalThreadId, setOpenLocalThreadId] = useState<string | undefined>();
+  const [localApiLoading, setLocalApiLoading] = useState(false);
+  const [localApiError, setLocalApiError] = useState<string | null>(null);
   const [mcpRefreshing, setMcpRefreshing] = useState(false);
   const [mcpRefreshError, setMcpRefreshError] = useState<string | null>(null);
 
@@ -937,14 +1244,39 @@ export function App() {
     }
   }, [preview]);
 
-  const sendLocal = useCallback(async ({ thread, prompt }: { thread: LocalConversationThread; prompt: string }): Promise<LocalConversationReply> => {
+  const refreshLocalApi = useCallback(async () => {
+    if (preview || !tauriRuntimeAvailable()) return;
+    setLocalApiLoading(true); setLocalApiError(null);
+    try { setLocalApiSettings(await readLocalApiSettings()); }
+    catch (cause) { setLocalApiError(cause instanceof Error ? cause.message : String(cause)); }
+    finally { setLocalApiLoading(false); }
+  }, [preview]);
+
+  const saveLocalApi = useCallback(async (input: { provider: LocalProviderChoice; endpoint: string; model: string; apiProtocol: 'openai' | 'anthropic'; apiKey?: string }) => {
+    setLocalApiSettings(await saveLocalApiSettings(input));
+  }, []);
+
+  const clearLocalApi = useCallback(async () => {
+    setLocalApiSettings(await clearLocalApiKey());
+  }, []);
+
+  const sendLocal = useCallback(async ({ thread, prompt, allowEffects }: { thread: LocalConversationThread; prompt: string; allowEffects: boolean }): Promise<LocalConversationReply> => {
+    if (thread.provider === 'api') {
+      const messages = thread.messages.filter(message => message.role === 'user' || message.role === 'assistant')
+        .slice(-40).map(message => ({ role: message.role as 'user' | 'assistant', content: message.content }));
+      const reply = await sendLocalApiConversation({
+        messages, repoId: thread.projectRepoId, checkoutId: thread.checkoutId, workId: thread.workId,
+        conversationId: thread.id, allowEffects,
+      });
+      return { content: reply.output, toolActivityCount: reply.toolActivityCount, toolEvents: reply.toolEvents };
+    }
     const result = await sendLocalConversation({
       conversationId: thread.id,
       providerSessionId: thread.providerSessionId,
-      prompt,
+      prompt: codexBoundPrompt(thread, prompt),
       repoId: thread.projectRepoId,
     });
-    return { content: result.output, providerSessionId: result.providerSessionId };
+    return { content: result.output, providerSessionId: result.providerSessionId, toolActivityCount: result.toolActivityCount };
   }, []);
 
   const refreshConnection = useCallback(async () => {
@@ -963,74 +1295,115 @@ export function App() {
 
   const loadProject = useCallback(async (project: ProjectListItemProjection, workId?: string) => {
     if (preview || !tauriRuntimeAvailable()) return;
+    const revision = ++projectLoadRevision.current;
+    setSelectedRepoId(project.repoId);
+    setSelectedWorkId(undefined);
+    // A stale Work/Requirement from another repository is never displayed
+    // while the newly selected project is being fetched.
+    setProjection({
+      ...disconnectedProjection,
+      source: 'runtime',
+      projects,
+      runtime: {
+        status: 'connecting', label: '正在加载项目',
+        detail: '正在从 Forge 读取 ' + project.name + ' 的项目记录。',
+      },
+    });
     try {
-      const [workspace, automaticContinuations] = await Promise.all([
-        readProjectWorkspace(project, workId),
-        readAutomaticContinuations(),
-      ]);
-      setSelectedRepoId(project.repoId);
+      const workspace = await readProjectWorkspace(project, workId);
+      if (revision !== projectLoadRevision.current) return;
       setSelectedWorkId(workspace.work?.workId);
       setProjection({
         source: 'runtime',
         runtime: { status: 'connected', label: '运行时已连接', detail: '当前数据来自 Forge Runtime。' },
         projects,
         ...workspace,
-        automaticContinuations,
       });
     } catch (cause) {
-      setProjection((current) => ({
-        ...current,
-        runtime: { status: 'degraded', label: '运行时读取异常', detail: cause instanceof Error ? cause.message : String(cause) },
-      }));
+      if (revision !== projectLoadRevision.current) return;
+      setProjection({
+        ...disconnectedProjection,
+        source: 'runtime',
+        projects,
+        runtime: {
+          status: 'degraded', label: '项目详情读取失败',
+          detail: project.name + '：' + (cause instanceof Error ? cause.message : String(cause)),
+        },
+      });
     }
   }, [preview, projects]);
 
   const bootstrapRuntime = useCallback(async () => {
     if (preview || !tauriRuntimeAvailable()) return;
+    const revision = ++projectLoadRevision.current;
+    let catalog;
     try {
-      const [catalog, automaticContinuations] = await Promise.all([readProjects(), readAutomaticContinuations()]);
-      setProjects(catalog.projects);
-      const selectedProject = catalog.projects.find((project) => project.repoId === catalog.preferredRepoId) ?? catalog.projects[0];
-      if (!selectedProject) {
-        setProjection({
-          ...disconnectedProjection,
-          source: 'runtime',
-          runtime: { status: 'connected', label: '运行时已连接', detail: '当前没有已注册项目。' },
-          projects: [],
-          automaticContinuations,
-        });
-        setActiveView('assistant');
-        return;
-      }
+      catalog = await readProjects();
+      if (revision !== projectLoadRevision.current) return;
+    } catch (cause) {
+      if (revision !== projectLoadRevision.current) return;
+      const detail = cause instanceof Error ? cause.message : String(cause);
+      setProjection((current) => ({
+        ...current,
+        runtime: { status: 'degraded', label: '项目目录读取失败', detail },
+      }));
+      void Promise.all([refreshRecovery(), refreshConnection()]);
+      return;
+    }
+    setProjects(catalog.projects);
+    const selectedProject = catalog.projects.find((project) => project.repoId === catalog.preferredRepoId) ?? catalog.projects[0];
+    if (!selectedProject) {
+      setSelectedRepoId(undefined);
+      setSelectedWorkId(undefined);
+      setProjection({
+        ...disconnectedProjection,
+        source: 'runtime',
+        runtime: { status: 'connected', label: '运行时已连接', detail: '当前没有已注册项目。' },
+        projects: [],
+      });
+      return;
+    }
+    // The registered catalog has independent authority from the selected Work projection.
+    // A single bad/missing checkout must never erase the registered repository list.
+    setSelectedRepoId(selectedProject.repoId);
+    try {
       const workspace = await readProjectWorkspace(selectedProject);
-      setSelectedRepoId(selectedProject.repoId);
+      if (revision !== projectLoadRevision.current) return;
       setSelectedWorkId(workspace.work?.workId);
       setProjection({
         source: 'runtime',
         runtime: { status: 'connected', label: '运行时已连接', detail: '当前数据来自 Forge Runtime。' },
         projects: catalog.projects,
         ...workspace,
-        automaticContinuations,
       });
     } catch (cause) {
+      if (revision !== projectLoadRevision.current) return;
+      setSelectedWorkId(undefined);
       setProjection({
         ...disconnectedProjection,
-        runtime: { status: 'degraded', label: '运行时不可用', detail: cause instanceof Error ? cause.message : String(cause) },
+        source: 'runtime',
+        projects: catalog.projects,
+        runtime: {
+          status: 'degraded',
+          label: '项目目录已加载，详情读取失败',
+          detail: cause instanceof Error ? cause.message : String(cause),
+        },
       });
-      setActiveView('runtime');
-      void Promise.all([refreshRecovery(), refreshConnection()]);
     }
   }, [preview, refreshConnection, refreshRecovery]);
 
   useEffect(() => { void bootstrapRuntime(); }, [bootstrapRuntime]);
   useEffect(() => { void refreshLocalProvider(); }, [refreshLocalProvider]);
+  useEffect(() => { void refreshLocalApi(); }, [refreshLocalApi]);
 
   const refreshMcp = useCallback(async () => {
     if (preview || !tauriRuntimeAvailable() || mcpRefreshing) return;
+    const revision = ++projectLoadRevision.current;
     setMcpRefreshing(true);
     setMcpRefreshError(null);
     try {
-      const [catalog, automaticContinuations] = await Promise.all([readProjects(), readAutomaticContinuations()]);
+      const catalog = await readProjects();
+      if (revision !== projectLoadRevision.current) return;
       setProjects(catalog.projects);
       const selectedProject = catalog.projects.find((project) => project.repoId === selectedRepoId)
         ?? catalog.projects.find((project) => project.repoId === catalog.preferredRepoId)
@@ -1043,11 +1416,11 @@ export function App() {
           source: 'runtime',
           runtime: { status: 'connected', label: '运行时已连接', detail: '当前没有已注册项目。' },
           projects: [],
-          automaticContinuations,
         });
         return;
       }
       const workspace = await readProjectWorkspace(selectedProject, selectedWorkId);
+      if (revision !== projectLoadRevision.current) return;
       setSelectedRepoId(selectedProject.repoId);
       setSelectedWorkId(workspace.work?.workId);
       setProjection({
@@ -1055,20 +1428,27 @@ export function App() {
         runtime: { status: 'connected', label: '运行时已连接', detail: '刚刚从 Forge Runtime 重新读取。' },
         projects: catalog.projects,
         ...workspace,
-        automaticContinuations,
       });
     } catch (cause) {
-      setMcpRefreshError(cause instanceof Error ? cause.message : String(cause));
+      if (revision === projectLoadRevision.current) {
+        setMcpRefreshError(cause instanceof Error ? cause.message : String(cause));
+      }
     } finally {
       setMcpRefreshing(false);
     }
   }, [mcpRefreshing, preview, selectedRepoId, selectedWorkId]);
 
   const handleSelectProject = useCallback(async (project: ProjectListItemProjection) => {
-    setActiveView('project');
-    setSelectedWorkId(undefined);
+    setRequestedRecord(undefined);
+    // Project selection from any page changes the next Agent context;
+    // established transcripts retain their original repository identity.
+    if (activeAgentRepoId !== project.repoId) {
+      setNewThreadContext({ repoId: project.repoId });
+      setNewThreadRequested(true);
+    }
+    if (activeView === 'project') setActiveView('works');
     await loadProject(project);
-  }, [loadProject]);
+  }, [activeView, activeAgentRepoId, loadProject]);
 
   const handleSelectWork = useCallback(async (workId: string) => {
     const project = projects.find((candidate) => candidate.repoId === selectedRepoId);
@@ -1076,12 +1456,6 @@ export function App() {
     setActiveView('project');
     await loadProject(project, workId);
   }, [loadProject, projects, selectedRepoId]);
-
-  const handleSwitch = useCallback(async (task: AutomaticContinuationTaskProjection) => {
-    await switchAutomaticContinuationConversation(task);
-    const project = projects.find((candidate) => candidate.repoId === selectedRepoId);
-    if (project) await loadProject(project, selectedWorkId);
-  }, [loadProject, projects, selectedRepoId, selectedWorkId]);
 
   const handleContinue = useCallback(async (prompt: string) => {
     if (!projection.project || !projection.work) return;
@@ -1091,13 +1465,98 @@ export function App() {
     await loadProject(selectedProject, projection.work.workId);
   }, [loadProject, projection, projects]);
 
+  const handleLocalThreadNavigation = useCallback((
+    threads: LocalConversationNavItem[], selectedId?: string, activeRepoId?: string,
+  ) => {
+    setLocalThreadNav(threads);
+    setSelectedLocalThreadId(selectedId);
+    setActiveAgentRepoId(activeRepoId);
+  }, []);
+  const handleSelectLocalThread = useCallback((id: string) => {
+    setOpenLocalThreadId(id);
+    setActiveView('assistant');
+  }, []);
+  const handleOpenThreadHandled = useCallback(() => setOpenLocalThreadId(undefined), []);
+
   const handleOpenAssistant = useCallback(() => {
     setActiveView('assistant');
   }, []);
-
-  const handleOpenMcp = useCallback(() => {
-    setActiveView('project');
+  const handleNewThread = useCallback(() => {
+    // Outside Agent, inherit the browsed project. Inside Agent, inherit the
+    // active conversation's repository, not a stale project detail panel.
+    const repoId = activeView === 'assistant'
+      ? activeAgentRepoId ?? selectedRepoId : selectedRepoId ?? activeAgentRepoId;
+    setNewThreadContext(repoId ? { repoId } : undefined);
+    setActiveView('assistant');
+    setNewThreadRequested(true);
+  }, [activeView, activeAgentRepoId, selectedRepoId]);
+  const handleNewProjectThread = useCallback((repoId: string) => {
+    if (!projects.some((project) => project.repoId === repoId)) return;
+    setNewThreadContext({ repoId });
+    setActiveView('assistant');
+    setNewThreadRequested(true);
+  }, [projects]);
+  const handleNewThreadHandled = useCallback(() => {
+    setNewThreadRequested(false);
+    setNewThreadContext(undefined);
   }, []);
+  const handleStartAgentForWork = useCallback((repoId: string, workId: string) => {
+    setNewThreadContext({ repoId, workId });
+    setActiveView('assistant');
+    setNewThreadRequested(true);
+  }, []);
+
+  const openProjectSection = useCallback((section: 'works' | 'requirements' | 'plans' | 'knowledge') => {
+    // When leaving Agent for project assets, browse the Agent's actual repo,
+    // not a different workspace that happened to be loaded earlier.
+    if (activeView === 'assistant' && activeAgentRepoId && activeAgentRepoId !== selectedRepoId) {
+      const project = projects.find((entry) => entry.repoId === activeAgentRepoId);
+      if (project) void loadProject(project);
+    }
+    setRequestedRecord(undefined);
+    setActiveView(section);
+  }, [activeView, activeAgentRepoId, selectedRepoId, projects, loadProject]);
+  const handleOpenProjects = useCallback(() => openProjectSection('works'), [openProjectSection]);
+  const handleOpenRequirements = useCallback(() => openProjectSection('requirements'), [openProjectSection]);
+  const handleOpenPlans = useCallback(() => openProjectSection('plans'), [openProjectSection]);
+  const handleNavigateRecord = useCallback((mode: 'requirements' | 'plans', id: string) => {
+    setRequestedRecord({ mode, id });
+    setActiveView(mode);
+  }, []);
+  const handleOpenWorkFromAgent = useCallback(async (repoId: string, workId: string) => {
+    const project = projects.find((entry) => entry.repoId === repoId);
+    if (!project) return;
+    await loadProject(project, workId);
+    setActiveView('project');
+  }, [loadProject, projects]);
+  const handleOpenRecordFromAgent = useCallback(async (
+    repoId: string, mode: 'requirements' | 'plans', id: string,
+  ) => {
+    const project = projects.find((entry) => entry.repoId === repoId);
+    if (!project) return;
+    await loadProject(project);
+    setRequestedRecord({ mode, id });
+    setActiveView(mode);
+  }, [loadProject, projects]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'n') {
+        event.preventDefault();
+        handleNewThread();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [handleNewThread]);
+
+  const handleOpenKnowledge = useCallback(() => openProjectSection('knowledge'), [openProjectSection]);
+  const handleOpenSettings = useCallback(() => {
+    setActiveView('settings');
+    // A settings visit reads current connection/provider state from the existing
+    // authorities; it never copies or changes their configuration.
+    void Promise.all([refreshLocalProvider(), refreshConnection()]);
+  }, [refreshLocalProvider, refreshConnection]);
 
   const handleOpenRuntime = useCallback(async () => {
     setActiveView('runtime');
@@ -1173,35 +1632,102 @@ export function App() {
     : projection.runtime.label;
 
   return (
-    <div className="app-shell">
+    <div className={'app-shell' + (sidebarCollapsed ? ' sidebar-collapsed' : '')}>
       <Sidebar
         projects={projects}
-        workNodes={activeView === 'project' ? projection.workGraph.nodes : []}
-        recentWorkNodes={activeView === 'project' ? projection.recentWorkHistory : []}
-        selectedRepoId={selectedRepoId}
-        selectedWorkId={selectedWorkId}
+        selectedRepoId={activeView === 'assistant' ? activeAgentRepoId : selectedRepoId}
         activeView={activeView}
         runtimeLabel={runtimeLabel}
         runtimeStatus={runtimeStatus}
+        runtimeDetail={projection.runtime.detail}
+        onRetryProjects={() => { void bootstrapRuntime(); }}
         onOpenAssistant={handleOpenAssistant}
-        onOpenMcp={handleOpenMcp}
+        onNewThread={handleNewThread}
+        onNewProjectThread={handleNewProjectThread}
+        onOpenProjects={handleOpenProjects}
+        onOpenRequirements={handleOpenRequirements}
+        onOpenPlans={handleOpenPlans}
+        onOpenKnowledge={handleOpenKnowledge}
+        onOpenSettings={handleOpenSettings}
         onSelectProject={preview ? undefined : handleSelectProject}
-        onSelectWork={preview ? undefined : handleSelectWork}
+        localThreads={localThreadNav}
+        selectedLocalThreadId={selectedLocalThreadId}
+        onSelectLocalThread={handleSelectLocalThread}
         onOpenRuntime={preview ? undefined : handleOpenRuntime}
       />
 
-      {activeView === 'assistant' ? (
+      <div className="workspace-region">
+        <header className="workspace-topbar">
+          <button className="workspace-sidebar-toggle" type="button"
+            aria-controls="forge-sidebar" aria-expanded={!sidebarCollapsed}
+            aria-label={sidebarCollapsed ? '显示侧栏' : '隐藏侧栏'}
+            title={sidebarCollapsed ? '显示侧栏 (⌘B)' : '隐藏侧栏 (⌘B)'}
+            onClick={() => setSidebarCollapsed((current) => !current)}>
+            <ForgeIcon name={sidebarCollapsed ? 'sidebar-show' : 'sidebar-hide'} size={18} />
+          </button>
+          <div className="workspace-topbar-title" data-tauri-drag-region>
+            <strong>{activeView === 'assistant' ? '本地会话'
+              : activeView === 'project' ? projection.work?.title ?? 'Work 详情'
+              : activeView === 'requirements' ? 'Requirements'
+              : activeView === 'plans' ? 'Plans'
+              : activeView === 'works' ? 'Works'
+              : activeView === 'knowledge' ? '记忆与知识'
+              : activeView === 'settings' ? '设置' : 'MCP 服务与连接'}</strong>
+            {activeView === 'project' && projection.project?.branch && <span className="workspace-topbar-branch">{projection.project.branch}</span>}
+          </div>
+          <button className="workspace-topbar-health" type="button" onClick={() => void handleOpenRuntime()} title="查看 Forge Runtime 与连接状态">
+            <span className={'health-dot ' + runtimeStatus} aria-hidden="true" />
+            <span>{runtimeLabel}</span>
+          </button>
+        </header>
+
+      {/* Keep the one transcript owner mounted while viewing independent
+          Requirement/Plan/Work assets. In-flight Agent replies must not vanish
+          when the user navigates away from the conversation. */}
+      <div className="agent-view-preserved" hidden={activeView !== 'assistant'}>
         <AssistantView
-          tasks={projection.automaticContinuations}
           projects={projects}
+          defaultProjectRepoId={activeAgentRepoId ?? selectedRepoId}
+          newThreadContext={newThreadContext}
+          onOpenWork={(repoId, workId) => { void handleOpenWorkFromAgent(repoId, workId); }}
+          onOpenRecord={(repoId, mode, id) => { void handleOpenRecordFromAgent(repoId, mode, id); }}
           provider={localProvider}
           providerLoading={localProviderLoading}
           providerError={localProviderError}
-          preview={preview}
-          onSwitch={preview ? undefined : handleSwitch}
+          apiSettings={localApiSettings}
+          onOpenSettings={handleOpenSettings}
+          onOpenProjects={handleOpenProjects}
+          onOpenKnowledge={handleOpenKnowledge}
+          newThreadRequested={newThreadRequested}
+          onNewThreadHandled={handleNewThreadHandled}
+          openThreadId={openLocalThreadId}
+          onOpenThreadHandled={handleOpenThreadHandled}
+          onThreadsChange={handleLocalThreadNavigation}
           onRefreshProvider={refreshLocalProvider}
           onSendLocal={sendLocal}
+          onCancelLocal={async (thread) => {
+            if (thread.provider === 'api') await cancelLocalApiConversation(thread.id);
+            else await cancelLocalConversation(thread.id);
+          }}
         />
+      </div>
+      {activeView === 'assistant' ? null : activeView === 'requirements' || activeView === 'plans' || activeView === 'works' ? (
+        <ProjectRecordsView key={(selectedRepoId ?? 'none') + ':' + activeView}
+          mode={activeView} projection={projection}
+          requestedRecordId={requestedRecord?.mode === activeView ? requestedRecord.id : undefined}
+          onNavigateRecord={handleNavigateRecord}
+          onSelectWork={(workId) => { void handleSelectWork(workId); }}
+          onRefresh={refreshMcp} />
+      ) : activeView === 'knowledge' ? (
+        <KnowledgeView repoId={selectedRepoId ?? projects[0]?.repoId}
+          workId={selectedWorkId} projectName={projects.find((project) => project.repoId === (selectedRepoId ?? projects[0]?.repoId))?.name} />
+      ) : activeView === 'settings' ? (
+        <SettingsView settings={localApiSettings} loading={localApiLoading} error={localApiError}
+          onRefresh={refreshLocalApi} onSave={saveLocalApi} onClearKey={clearLocalApi}
+          codexStatus={localProvider} codexError={localProviderError}
+          onRefreshCodex={refreshLocalProvider}
+          onOpenMcp={() => { void handleOpenRuntime(); }}
+          mcpReady={connectionProjection?.ready ?? null} />
       ) : activeView === 'runtime' ? (
         <RuntimeView
           projection={recoveryProjection}
@@ -1218,19 +1744,21 @@ export function App() {
           onRecover={handleRecoverRuntime}
           onRefreshConnection={refreshConnection}
           onRepairConnection={handleRepairConnection}
+          onOpenSettings={handleOpenSettings}
         />
       ) : (
         <WorkView
           projection={projection}
-          preview={preview}
           refreshing={mcpRefreshing}
           refreshError={mcpRefreshError}
           onRefresh={preview ? undefined : refreshMcp}
-          onSwitch={preview ? undefined : handleSwitch}
           onContinue={preview ? undefined : handleContinue}
+          onNavigateRecord={handleNavigateRecord}
+          onStartAgentForWork={handleStartAgentForWork}
           onSelectWork={preview ? undefined : (workId) => { void handleSelectWork(workId); }}
         />
       )}
+      </div>
     </div>
   );
 }

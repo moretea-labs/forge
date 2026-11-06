@@ -19,14 +19,26 @@
         "minWidth": 980,
         "minHeight": 680,
         "resizable": true,
-        "fullscreen": false
+        "fullscreen": false,
+        "transparent": true,
+        "titleBarStyle": "Overlay",
+        "windowEffects": {
+          "effects": [
+            "liquidGlassRegular",
+            "sidebar"
+          ],
+          "radius": 24
+        }
       }
     ],
     "security": {
       "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src ipc: http://ipc.localhost"
-    }
+    },
+    "macOSPrivateApi": true
   },
   "bundle": {
-    "active": false
+    "active": false,
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns"],
+    "resources": ["resources/forge-local-tool.mjs"]
   }
 }

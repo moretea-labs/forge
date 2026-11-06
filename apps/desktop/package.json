@@ -6,16 +6,21 @@
   "scripts": {
     "dev": "tauri dev",
     "dev:web": "vite --host 127.0.0.1 --port 1420",
+    "bundle:mac:local": "tauri build --bundles app --config '{\"bundle\":{\"active\":true}}' --no-sign --ci && codesign --force --deep --sign - src-tauri/target/release/bundle/macos/Forge.app && codesign --verify --deep --strict src-tauri/target/release/bundle/macos/Forge.app",
     "build": "npm run check:type && npm run build:web",
     "build:web": "vite build",
     "check:type": "tsc --noEmit",
+    "test:ui": "bun test ./tests/agent-git-review.test.tsx ./tests/agent-work-context.test.ts",
     "check": "npm run check:type && npm run build:web && cargo check --manifest-path src-tauri/Cargo.toml",
     "tauri": "tauri"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.1",
+    "lucide-react": "1.69.0",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.2.0",

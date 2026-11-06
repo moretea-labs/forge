@@ -1,6 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
 import type {
-  AutomaticContinuationTaskProjection,
   ControllerConnectionProjection,
   ForgeDesktopProjection,
   ProjectListItemProjection,
@@ -13,23 +12,10 @@ import type {
   WorkSemanticState,
 } from './runtime-projection';
 
-interface RawSupervisorTask {
-  taskId: string;
-  conversationId: string;
-  conversationUrl: string;
-  objective: string;
-  completionContract?: Record<string, unknown>;
-  continuationPolicy?: Record<string, unknown>;
-  createdAt?: string;
-}
-
-interface SupervisorListResult {
-  tasks?: RawSupervisorTask[];
-}
-
 interface RawRepository {
   repoId: string;
   displayName: string;
+  localRoot?: string;
   checkoutId?: string;
   remoteUrl?: string;
   defaultBranch?: string;
@@ -154,6 +140,7 @@ export interface LocalProviderStatusProjection {
   detail: string;
   streaming: boolean;
   tools: boolean;
+  cancellable?: boolean;
 }
 
 export interface LocalConversationSendProjection {
@@ -169,14 +156,12 @@ export function tauriRuntimeAvailable(): boolean {
   return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 }
 
-function textField(record: Record<string, unknown> | undefined, key: string): string | undefined {
-  const value = record?.[key];
-  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
-}
-
-function repositoryLabel(repository: RawRepository): string {
+export function repositoryLabel(repository: RawRepository): string {
   const remote = repository.remoteUrl?.trim();
-  if (!remote) return repository.displayName;
+  if (!remote) {
+    const parts = repository.localRoot?.replace(/\\/g, '/').split('/').filter(Boolean) ?? [];
+    return parts[parts.length - 1] ?? repository.displayName;
+  }
   const github = remote.match(/github\.com[/:]([^/]+\/[^/.]+)(?:\.git)?$/i);
   return github?.[1] ?? repository.displayName;
 }
@@ -188,38 +173,8 @@ function localizeRuntimeError(error: unknown): Error {
     FORGE_DESKTOP_RUNTIME_CONFIG_INVALID: 'Forge 运行时配置无法读取。',
     FORGE_DESKTOP_RUNTIME_UNREACHABLE: 'Forge 运行时当前不可达。',
     FORGE_DESKTOP_RUNTIME_TOKEN_UNAVAILABLE: 'Forge 运行时认证信息不可用。',
-    AUTOMATIC_CONTINUATION_EXACT_CONVERSATION_REQUIRED: '当前自动推进任务尚未绑定可切换的精确会话。',
   };
   return new Error(messages[raw] ?? raw);
-}
-
-function projectTask(task: RawSupervisorTask): AutomaticContinuationTaskProjection {
-  const unbound = task.conversationId.startsWith('bootstrap:');
-  const workId = textField(task.completionContract, 'work_id') ?? textField(task.continuationPolicy, 'work_id');
-  const repoId = textField(task.completionContract, 'repo_id') ?? textField(task.continuationPolicy, 'repo_id');
-  const requirementId = textField(task.completionContract, 'requirement_id');
-  const exactConversation = !unbound && /\/c\//.test(task.conversationUrl);
-  return {
-    taskId: task.taskId,
-    ...(workId ? { workId } : {}),
-    title: workId ? '自动推进' : '独立自动推进',
-    objective: task.objective,
-    status: unbound ? 'unbound' : 'registered',
-    statusLabel: unbound ? '尚未绑定会话' : '任务已登记',
-    detail: unbound
-      ? '监督器尚未提供精确会话绑定；无法据此判断是否正在切换或发送。'
-      : '此列表证明任务已登记，不包含实时执行状态。',
-    conversation: exactConversation ? {
-      conversationId: task.conversationId,
-      conversationUrl: task.conversationUrl,
-    } : null,
-    nextAction: unbound
-      ? '通过监督器检查精确会话绑定和下一轮执行事实。'
-      : '查看已绑定会话，或通过监督器显式迁移会话。',
-    ...(repoId ? { repoId } : {}),
-    ...(requirementId ? { requirementId } : {}),
-    ...(task.createdAt ? { createdAt: task.createdAt } : {}),
-  };
 }
 
 function graphNode(work: RawWorkView): WorkGraphNodeProjection {
@@ -227,6 +182,8 @@ function graphNode(work: RawWorkView): WorkGraphNodeProjection {
     workId: work.workId,
     objective: work.objective,
     state: work.state,
+    ...(work.requirementId ? { requirementId: work.requirementId } : {}),
+    ...(work.planId ? { planId: work.planId } : {}),
     ...(work.semanticParentWorkId ? { semanticParentWorkId: work.semanticParentWorkId } : {}),
     dependsOnWorkIds: work.dependsOnWorkIds ?? [],
   };
@@ -238,6 +195,11 @@ export async function readLocalProviderStatus(): Promise<LocalProviderStatusProj
   } catch (error) {
     throw localizeRuntimeError(error);
   }
+}
+
+export async function cancelLocalConversation(conversationId: string): Promise<void> {
+  const receipt = await invoke<{ requested: boolean }>('cancel_local_conversation', { conversationId });
+  if (receipt.requested !== true) throw Error('FORGE_DESKTOP_LOCAL_CONVERSATION_CANCEL_UNCONFIRMED');
 }
 
 export async function sendLocalConversation(input: {
@@ -253,6 +215,40 @@ export async function sendLocalConversation(input: {
       prompt: input.prompt,
       repoId: input.repoId,
     });
+  } catch (error) {
+    throw localizeRuntimeError(error);
+  }
+}
+
+
+export interface KnowledgeAuditProjection {
+  readonly: boolean;
+  advisoryOnly: boolean;
+  scopes: Array<{ kind: string; id: string }>;
+  items: Array<{
+    memory: {
+      id: string;
+      revision: number;
+      canonicalText: string;
+      concepts: string[];
+      facets: string[];
+      confidence: number;
+      scope: { kind: string; id: string };
+      provenance?: { sourceKind?: string; recordedAt?: string };
+    };
+  }>;
+  inspected: number;
+  truncated: boolean;
+  gaps: string[];
+}
+
+export async function readProjectKnowledge(input: {
+  repoId: string;
+  workId?: string;
+  query: string;
+}): Promise<KnowledgeAuditProjection> {
+  try {
+    return await invoke<KnowledgeAuditProjection>('read_project_knowledge', input);
   } catch (error) {
     throw localizeRuntimeError(error);
   }
@@ -283,6 +279,7 @@ export async function readProjects(): Promise<ProjectCatalogProjection> {
       repoId: repository.repoId,
       name: repository.displayName,
       repository: repositoryLabel(repository),
+      ...(repository.localRoot ? { localRoot: repository.localRoot } : {}),
       ...(repository.checkoutId ? { checkoutId: repository.checkoutId } : {}),
       ...(repository.defaultBranch ? { defaultBranch: repository.defaultBranch } : {}),
     }));
@@ -290,15 +287,6 @@ export async function readProjects(): Promise<ProjectCatalogProjection> {
       projects,
       ...(result.preferredRepoId ? { preferredRepoId: result.preferredRepoId } : {}),
     };
-  } catch (error) {
-    throw localizeRuntimeError(error);
-  }
-}
-
-export async function readAutomaticContinuations(): Promise<AutomaticContinuationTaskProjection[]> {
-  try {
-    const result = await invoke<SupervisorListResult>('read_automatic_continuations');
-    return (result.tasks ?? []).map(projectTask);
   } catch (error) {
     throw localizeRuntimeError(error);
   }
@@ -434,19 +422,6 @@ export async function readProjectWorkspace(
 export async function continueWork(repoId: string, workId: string, prompt: string): Promise<void> {
   try {
     await invoke('continue_work', { repoId, workId, prompt });
-  } catch (error) {
-    throw localizeRuntimeError(error);
-  }
-}
-
-export async function switchAutomaticContinuationConversation(task: AutomaticContinuationTaskProjection): Promise<void> {
-  if (!task.conversation) throw localizeRuntimeError(new Error('AUTOMATIC_CONTINUATION_EXACT_CONVERSATION_REQUIRED'));
-  try {
-    await invoke('switch_automatic_continuation_conversation', {
-      taskId: task.taskId,
-      expectedConversationId: task.conversation.conversationId,
-      reason: '用户从 Forge 桌面客户端显式要求切换到新的会话。',
-    });
   } catch (error) {
     throw localizeRuntimeError(error);
   }

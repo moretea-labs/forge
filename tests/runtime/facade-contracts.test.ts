@@ -5,7 +5,7 @@ import { evaluatePolicyGate } from '../../src/runtime/control-plane/facade/polic
 import { buildFacadeResult } from '../../src/runtime/control-plane/facade/facade-result';
 import { allowedFacadeOperations, validateSuggestedNextActions } from '../../src/runtime/control-plane/facade/suggested-actions';
 import { buildClaudeControllerInvocation, buildCodexControllerInvocation, buildSuperControllerInvocation, type ThinLauncherRequest } from '../../src/runtime/control-plane/launcher/thin-launcher';
-import { parseCodexConversationJsonl } from '../../src/runtime/control-plane/launcher/local-conversation-controller';
+import { cancelLocalConversation, parseCodexConversationJsonl, readLocalConversationProviderStatus, runCodexConversation } from '../../src/runtime/control-plane/launcher/local-conversation-controller';
 import { RH_WORK_MODEL_OPERATIONS, isRhWorkAcceptedOperation } from '../../src/runtime/control-plane/facade/rh-work-operation-contract';
 import { runtimeToolDefinitions } from '../../adapters/mcp/runtime-gateway/runtime-tool-definitions';
 import { mcpServerInstructions } from '../../adapters/mcp/instructions';
@@ -23,6 +23,19 @@ import {
 } from '../../src/runtime/control-plane/facade/types';
 
 describe('handoff and facade contracts', () => {
+  test('Codex status is an asynchronous bounded probe with conservative ready semantics', async () => {
+    const pending = readLocalConversationProviderStatus();
+    expect(pending).toBeInstanceOf(Promise);
+    const provider = await pending;
+    expect(provider.provider).toBe('codex');
+    expect(['ready', 'not_configured', 'unavailable']).toContain(provider.status);
+    if (provider.status !== 'ready') {
+      expect(provider.tools).toBe(false);
+    } else {
+      expect(provider.tools).toBe(true);
+    }
+  });
+
   test('Controller MCP instructions align GitHub progress authority and prevent unbounded ChatGPT waits', () => {
     const guidance = mcpServerInstructions('controller');
     expect(guidance).toContain('Progressive source discovery');
@@ -162,10 +175,28 @@ describe('handoff and facade contracts', () => {
       actions?: Record<string, { readOnly?: boolean; risk?: string; argumentsSchema?: { required?: string[] } }>;
     } | undefined;
     expect(schema?.executeWith).toBe('capability_execute');
-    expect(Object.keys(schema?.actions ?? {}).sort()).toEqual(['send', 'status']);
+    expect(Object.keys(schema?.actions ?? {}).sort()).toEqual(['cancel', 'send', 'status']);
+    expect(schema?.actions?.cancel).toMatchObject({ readOnly: false, risk: 'workspace_write' });
+    expect(schema?.actions?.cancel?.argumentsSchema?.required).toEqual(['conversation_id']);
+    expect(cancelLocalConversation('unregistered-local-id')).toMatchObject({
+      status: 'not_active',
+    });
+    expect(() => cancelLocalConversation('invalid id')).toThrow('LOCAL_CONVERSATION_ID_INVALID');
     expect(schema?.actions?.status).toMatchObject({ readOnly: true, risk: 'readonly' });
     expect(schema?.actions?.send?.argumentsSchema?.required).toEqual(['conversation_id', 'prompt']);
     expect(FACADE_TOOLS).toHaveLength(6);
+  });
+
+  test('cancel stops the exact locally owned Codex process and releases its handle', async () => {
+    const conversationId = 'test-local-stop-' + crypto.randomUUID();
+    const running = runCodexConversation(
+      process.execPath, ['-e', 'setTimeout(() => {}, 10000)'],
+      process.env, process.cwd(), 5000, conversationId,
+    );
+    // The launcher registers the process synchronously before it awaits exit.
+    expect(cancelLocalConversation(conversationId)).toMatchObject({ status: 'requested' });
+    await expect(running).rejects.toThrow('LOCAL_CONVERSATION_CANCELLED_RECONCILE');
+    expect(cancelLocalConversation(conversationId)).toMatchObject({ status: 'not_active' });
   });
 
   test('exposes exact Work validation through capability_execute without widening the top-level facade', () => {
@@ -730,8 +761,10 @@ describe('Thin Launcher external Controller invocation', () => {
       prompt: 'local question',
       mcpBootstrap: bootstrap,
       sandbox: 'read-only',
+      args: ['--skip-git-repo-check'],
       json: true,
     });
+    expect(local.args).toContain('--skip-git-repo-check');
     expect(local.args).toContain('read-only');
     expect(local.args).toContain('--json');
     expect(local.args).not.toContain('workspace-write');
@@ -741,8 +774,10 @@ describe('Thin Launcher external Controller invocation', () => {
       mcpBootstrap: bootstrap,
       sandbox: 'read-only',
       resumeSessionId: '01a1102c-2c50-76d3-ae32-478a4b24788b',
+      args: ['--skip-git-repo-check'],
       json: true,
     });
+    expect(resumed.args).toContain('--skip-git-repo-check');
     expect(resumed.args).toContain('resume');
     expect(resumed.args).toContain('01a1102c-2c50-76d3-ae32-478a4b24788b');
     expect(resumed.args).not.toContain('workspace-write');

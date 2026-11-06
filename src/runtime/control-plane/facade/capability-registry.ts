@@ -377,6 +377,14 @@ export function getCoreCapabilityExecutionSchema(capabilityId: string): Record<s
           risk: 'readonly',
           argumentsSchema: { type: 'object', additionalProperties: false, properties: {} },
         },
+        cancel: {
+          readOnly: false,
+          risk: 'workspace_write',
+          argumentsSchema: { type: 'object', additionalProperties: false,
+            required: ['conversation_id'], properties: {
+              conversation_id: { type: 'string', minLength: 1, maxLength: 160 },
+            } },
+        },
         send: {
           readOnly: false,
           risk: 'workspace_write',
