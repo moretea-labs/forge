@@ -102,6 +102,7 @@ export function ProjectRecordsView({
       + record.works.map((work) => work.objective).join(' '))
       .toLowerCase().includes(query.toLowerCase().trim()));
   const selected = records.find((record) => record.id === selectedId);
+  const selectedWork = mode === 'works' ? selected?.works[0] : undefined;
   const firstRecordId = records[0]?.id;
   const relatedPlans = mode === 'requirements' && selected
     ? planIndex.filter((plan) => plan.requirementId === selected.id) : [];
@@ -129,7 +130,7 @@ export function ProjectRecordsView({
   }, [repoId, mode, firstRecordId, selectedId, requestedRecordId]);
 
   async function openRecord(id: string) {
-    if (mode === 'works') { onSelectWork(id); return; }
+    if (mode === 'works') { setSelectedId(id); return; }
     const repoId = projection.project?.repoId;
     if (!repoId) return;
     const request = ++revision.current;
@@ -205,7 +206,8 @@ export function ProjectRecordsView({
               {filtered.length === 0 && <p className="records-empty">没有加载到匹配记录；不代表项目中不存在记录。</p>}
               {filtered.map((record) => (
                 <button type="button" key={record.id} onClick={() => void openRecord(record.id)}
-                  className={record.id === selectedId ? 'record-row active' : 'record-row'}>
+                  className={record.id === selectedId ? 'record-row active' : 'record-row'}
+                  aria-pressed={record.id === selectedId}>
                   <strong>{mode === 'works' ? record.works[0]?.objective ?? record.id
                     : mode === 'plans' ? planIndex.find((plan) => plan.planId === record.id)?.goal ?? record.id
                     : record.id}</strong>
@@ -220,6 +222,30 @@ export function ProjectRecordsView({
                 <div className="breadcrumb">{mode === 'works' ? 'Work' : mode === 'plans' ? 'Plan' : 'Requirement'}</div>
                 <h2>{mode === 'works' ? selected.works[0]?.objective : selected.id}</h2>
                 <code>{selected.id}</code>
+                {selectedWork && (
+                  <div className="record-fields">
+                    <span>状态 · {workState(selectedWork.state)}</span>
+                    {selectedWork.activity && <p>{selectedWork.activity}</p>}
+                    {selectedWork.nextSafeAction && <>
+                      <strong>下一步</strong>
+                      <p>{selectedWork.nextSafeAction}</p>
+                    </>}
+                    {selectedWork.requirementId && (
+                      <button type="button" className="record-deep-link"
+                        onClick={() => onNavigateRecord('requirements', selectedWork.requirementId!)}>
+                        Requirement · {selectedWork.requirementId}
+                      </button>
+                    )}
+                    {selectedWork.planId && (
+                      <button type="button" className="record-deep-link"
+                        onClick={() => onNavigateRecord('plans', selectedWork.planId!)}>
+                        Plan · {selectedWork.planId}
+                      </button>
+                    )}
+                    <button className="record-open-work" type="button"
+                      onClick={() => onSelectWork(selectedWork.workId)}>打开完整 Work 详情</button>
+                  </div>
+                )}
                 {preview && mode !== 'works' && <p role="status" className="records-coverage">界面预览不读取 Forge 详情；关联 Work 来自当前预览数据。</p>}
                 {loading && <p role="status">正在读取 Forge 记录…</p>}
                 {error && <p role="alert" className="inline-error">详情读取失败：{error}</p>}
@@ -261,8 +287,8 @@ export function ProjectRecordsView({
                     ))}
                   </div>
                 )}
-                <h3 className="record-related-heading">关联 Work · {selected.works.length}</h3>
-                {selected.works.map((work: WorkGraphNodeProjection) => (
+                {mode !== 'works' && <h3 className="record-related-heading">关联 Work · {selected.works.length}</h3>}
+                {mode !== 'works' && selected.works.map((work: WorkGraphNodeProjection) => (
                   <button key={work.workId} className="record-work-link" type="button"
                     onClick={() => onSelectWork(work.workId)}>
                     <span className={'work-state-dot ' + work.state} />

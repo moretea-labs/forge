@@ -108,3 +108,7 @@ Installed preview policy: retain **only** `~/Applications/Forge.app` for the cli
 ### First-record selection in project assets
 
 With A+C's split Work/Requirement/Plan layout, a populated left list and an empty right pane wastes most of the viewport. The first available record is now selected automatically **once** when opening a populated page. An explicit cross-page deep link takes precedence. In the Work index this selects the row **without** triggering Work navigation; Requirement/Plan load the one canonical detail through the existing IPC only in the native app. Browser preview continues using the known Work relations without any native commands. No new selected-record store or API authority was introduced.
+
+### Work master/detail navigation acceptance (2026-11-07)
+
+The A+C Work index is a **real master/detail pane**: selecting a Work row remains in the index, updates the right detail pane and exposes its actual Forge projection state, activity, next safe action and linked Requirement/Plan IDs when available. A clearly named **打开完整 Work 详情** button enters the existing full Work surface. There is no duplicate Work store, no fabricated metadata and no implicit navigation on list selection. The split pane reuses existing records and CSS tokens.

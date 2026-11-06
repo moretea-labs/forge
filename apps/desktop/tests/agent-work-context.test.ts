@@ -734,3 +734,17 @@ describe('Mac Agent navigation and local transcript deletion', () => {
     expect(source).toContain('delete next[deletedId]');
   });
 });
+
+
+describe('Work master-detail layout behavior', () => {
+  test('keeps Work list selection local and requires explicit navigation to full Work', () => {
+    const source = readFileSync(new URL('../src/project-records-view.tsx', import.meta.url), 'utf8');
+    expect(source).toContain("if (mode === 'works') { setSelectedId(id); return; }");
+    expect(source).not.toContain("if (mode === 'works') { onSelectWork(id); return; }");
+    expect(source).toContain('aria-pressed={record.id === selectedId}');
+    expect(source).toContain('打开完整 Work 详情');
+    expect(source).toContain('onSelectWork(selectedWork.workId)');
+    expect(source).toContain('onNavigateRecord(\'requirements\', selectedWork.requirementId!)');
+    expect(source).toContain('onNavigateRecord(\'plans\', selectedWork.planId!)');
+  });
+});

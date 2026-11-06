@@ -1193,3 +1193,20 @@ a { color: #353535; text-decoration: underline; text-underline-offset: 3px; }
   min-height: 0;
   max-height: min(300px, calc(var(--radix-popover-content-available-height) - 72px));
 }
+
+/* Work master/detail: keep row selection in-place; full Work navigation is explicit. */
+.record-row:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+.record-open-work {
+  justify-self: start;
+  margin-top: 12px;
+  padding: 9px 13px;
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-weight: 620;
+  cursor: pointer;
+}
+.record-open-work:hover { background: var(--surface-muted); }
+.record-open-work:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
