@@ -4632,7 +4632,7 @@ export async function bootAndVerifyConfiguredRuntimeReleaseSessionCandidate(
       return {
         ok: true as const,
         attempted: true,
-        detail: 'Candidate B booted in isolation, survived a Recovery restart canary, passed MCP/Scheduler/Supervisor/Controller canaries, and is cutover-eligible; Stable A remains active',
+        detail: 'Candidate B booted in isolation, survived a Recovery restart canary, passed MCP/Scheduler/Controller canaries, and is cutover-eligible; Stable A remains active',
         releaseSession: session,
       };
     } catch (error) {

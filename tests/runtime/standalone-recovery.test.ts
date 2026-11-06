@@ -2281,7 +2281,7 @@ test('ReleaseSession preparation builds the isolated immutable candidate without
     sessionId: progressed.sessionId,
     expectedRevision: progressed.revision,
     phase: 'candidate_verified',
-    receipts: ['recovery', 'mcp', 'scheduler', 'supervisor', 'controller'].map((id) => ({ id, kind: 'candidate_canary' as const, summary: id })),
+    receipts: ['recovery', 'mcp', 'scheduler', 'controller'].map((id) => ({ id, kind: 'candidate_canary' as const, summary: id })),
   });
   progressed = advanceReleaseSession({ controllerHome: home, sessionId: progressed.sessionId, expectedRevision: progressed.revision, phase: 'cutover_eligible' });
   let repeatedStageCalls = 0;
@@ -2915,7 +2915,7 @@ describe('standalone recovery on canonical Runtime', () => {
       sessionId,
       expectedRevision: session.revision,
       phase: 'candidate_verified',
-      receipts: ['recovery', 'mcp', 'scheduler', 'supervisor', 'controller'].map((id) => ({ id, kind: 'candidate_canary' as const, summary: id })),
+      receipts: ['recovery', 'mcp', 'scheduler', 'controller'].map((id) => ({ id, kind: 'candidate_canary' as const, summary: id })),
     });
     session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'cutover_eligible' });
     session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'cutover_attempting' });
@@ -3038,7 +3038,7 @@ describe('standalone recovery on canonical Runtime', () => {
       let session = createReleaseSession({ controllerHome: home, sessionId, stable, stableRelease, candidate, sourceRevision: candidateRelease.sourceCommit });
       session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'built', candidateRelease });
       session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'candidate_booted' });
-      session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'candidate_verified', receipts: ['recovery', 'mcp', 'scheduler', 'supervisor', 'controller'].map((id) => ({ id, kind: 'candidate_canary' as const, summary: id })) });
+      session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'candidate_verified', receipts: ['recovery', 'mcp', 'scheduler', 'controller'].map((id) => ({ id, kind: 'candidate_canary' as const, summary: id })) });
       session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'cutover_eligible' });
       session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'cutover_attempting' });
       const rollback = cutoverAuthority.previous!;
@@ -3142,7 +3142,7 @@ describe('standalone recovery on canonical Runtime', () => {
       let session = createReleaseSession({ controllerHome: home, sessionId, stable, stableRelease, candidate, sourceRevision: candidateRelease.sourceCommit });
       session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'built', candidateRelease });
       session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'candidate_booted' });
-      session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'candidate_verified', receipts: ['recovery', 'mcp', 'scheduler', 'supervisor', 'controller'].map((id) => ({ id, kind: 'candidate_canary' as const, summary: id })) });
+      session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'candidate_verified', receipts: ['recovery', 'mcp', 'scheduler', 'controller'].map((id) => ({ id, kind: 'candidate_canary' as const, summary: id })) });
       session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'cutover_eligible' });
       session = advanceReleaseSession({ controllerHome: home, sessionId, expectedRevision: session.revision, phase: 'cutover_attempting' });
       const rollback = cutoverAuthority.previous!;

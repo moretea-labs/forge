@@ -29,7 +29,8 @@ describe('Recovery ReleaseSession', () => {
     expect(() => advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'static_verified' })).toThrow('RELEASE_SESSION_STATIC_VERIFIED_LEGACY_ONLY');
     session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'candidate_booted' });
     expect(() => advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'candidate_verified' })).toThrow('RELEASE_SESSION_CANDIDATE_CANARIES_INCOMPLETE');
-    session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'candidate_verified', receipts: ['recovery', 'mcp', 'scheduler', 'supervisor', 'controller'].map((id) => ({ id, kind: 'candidate_canary' as const, summary: id })) });
+    expect(() => advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'candidate_verified', receipts: ['recovery', 'mcp', 'scheduler'].map((id) => ({ id, kind: 'candidate_canary' as const, summary: id })) })).toThrow('RELEASE_SESSION_CANDIDATE_CANARIES_INCOMPLETE');
+    session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'candidate_verified', receipts: ['recovery', 'mcp', 'scheduler', 'controller'].map((id) => ({ id, kind: 'candidate_canary' as const, summary: id })) });
     session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'cutover_eligible' });
     expect(readReleaseSession(home, session.sessionId)).toMatchObject({ phase: 'cutover_eligible', revision: session.revision });
     session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'cutover_attempting' });
@@ -44,7 +45,7 @@ describe('Recovery ReleaseSession', () => {
     let session = createReleaseSession({ controllerHome: home, sessionId: candidate.sessionId, stable, stableRelease, candidate, sourceRevision: 'abc123' });
     session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'built', candidateRelease });
     session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'candidate_booted' });
-    session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'candidate_verified', receipts: ['recovery', 'mcp', 'scheduler', 'supervisor', 'controller'].map((id) => ({ id, kind: 'candidate_canary' as const, summary: id })) });
+    session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'candidate_verified', receipts: ['recovery', 'mcp', 'scheduler', 'controller'].map((id) => ({ id, kind: 'candidate_canary' as const, summary: id })) });
     session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'cutover_eligible' });
     session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'cutover_attempting' });
     const rollbackRelease = {
@@ -252,7 +253,7 @@ describe('Recovery ReleaseSession', () => {
     let session = createReleaseSession({ controllerHome: home, sessionId: candidate.sessionId, stable, stableRelease, candidate, sourceRevision: 'abc123' });
     session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'built', candidateRelease });
     session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'candidate_booted' });
-    session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'candidate_verified', receipts: ['recovery', 'mcp', 'scheduler', 'supervisor', 'controller'].map((id) => ({ id, kind: 'candidate_canary' as const, summary: id })) });
+    session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'candidate_verified', receipts: ['recovery', 'mcp', 'scheduler', 'controller'].map((id) => ({ id, kind: 'candidate_canary' as const, summary: id })) });
     session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'cutover_eligible' });
     session = advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'cutover_attempting' });
     session = recordReleaseSessionTransaction({
@@ -344,7 +345,7 @@ describe('Recovery ReleaseSession', () => {
     let predecessor = createReleaseSession({ controllerHome: home, sessionId: candidate.sessionId, stable, stableRelease, candidate, sourceRevision: 'abc123' });
     predecessor = advanceReleaseSession({ controllerHome: home, sessionId: predecessor.sessionId, expectedRevision: predecessor.revision, phase: 'built', candidateRelease });
     predecessor = advanceReleaseSession({ controllerHome: home, sessionId: predecessor.sessionId, expectedRevision: predecessor.revision, phase: 'candidate_booted' });
-    predecessor = advanceReleaseSession({ controllerHome: home, sessionId: predecessor.sessionId, expectedRevision: predecessor.revision, phase: 'candidate_verified', receipts: ['recovery', 'mcp', 'scheduler', 'supervisor', 'controller'].map((id) => ({ id, kind: 'candidate_canary' as const, summary: id })) });
+    predecessor = advanceReleaseSession({ controllerHome: home, sessionId: predecessor.sessionId, expectedRevision: predecessor.revision, phase: 'candidate_verified', receipts: ['recovery', 'mcp', 'scheduler', 'controller'].map((id) => ({ id, kind: 'candidate_canary' as const, summary: id })) });
     predecessor = advanceReleaseSession({ controllerHome: home, sessionId: predecessor.sessionId, expectedRevision: predecessor.revision, phase: 'cutover_eligible' });
     predecessor = advanceReleaseSession({ controllerHome: home, sessionId: predecessor.sessionId, expectedRevision: predecessor.revision, phase: 'cutover_attempting' });
     predecessor = recordReleaseSessionTransaction({
@@ -510,7 +511,7 @@ describe('Recovery ReleaseSession', () => {
           sessionId,
           expectedRevision: session.revision,
           phase: 'candidate_verified',
-          receipts: ['recovery', 'mcp', 'scheduler', 'supervisor', 'controller'].map((id) => ({ id, kind: 'candidate_canary' as const, summary: id })),
+          receipts: ['recovery', 'mcp', 'scheduler', 'controller'].map((id) => ({ id, kind: 'candidate_canary' as const, summary: id })),
         });
         return { ok: true, attempted: true, detail: 'candidate', releaseSession: session };
       },

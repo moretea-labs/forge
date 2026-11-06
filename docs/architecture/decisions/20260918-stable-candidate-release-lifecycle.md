@@ -16,7 +16,8 @@ Stable A (fixed known-good package Runtime)
 Candidate B (one isolated Controller Home)
   copied SQLite snapshot + independent token/config/port/service label
   portable immutable release materialized once and tree-hashed
-  all candidate canaries on the exact artifact later promoted to A
+  Recovery restart, MCP, Scheduler and Controller canaries on the exact artifact later promoted to A
+  (retired Supervisor is not a separate canary)
 
 ReleaseSession (release domain)
   sole durable normal-release lifecycle authority

@@ -232,20 +232,13 @@ describe('ReleaseSession candidate retention integration', () => {
       phase: 'built',
       candidateRelease: retiredRelease,
     });
-    retired = advanceReleaseSession({
-      controllerHome: home,
-      sessionId: retired.sessionId,
-      expectedRevision: retired.revision,
-      phase: 'static_verified',
-      receipts: ['type', 'runtime_architecture', 'architecture_sync', 'bootstrap'].map((id) => ({ id, kind: 'static_gate' as const, summary: id })),
-    });
     retired = advanceReleaseSession({ controllerHome: home, sessionId: retired.sessionId, expectedRevision: retired.revision, phase: 'candidate_booted' });
     retired = advanceReleaseSession({
       controllerHome: home,
       sessionId: retired.sessionId,
       expectedRevision: retired.revision,
       phase: 'candidate_verified',
-      receipts: ['recovery', 'mcp', 'scheduler', 'supervisor', 'controller'].map((id) => ({ id, kind: 'candidate_canary' as const, summary: id })),
+      receipts: ['recovery', 'mcp', 'scheduler', 'controller'].map((id) => ({ id, kind: 'candidate_canary' as const, summary: id })),
     });
     retired = advanceReleaseSession({ controllerHome: home, sessionId: retired.sessionId, expectedRevision: retired.revision, phase: 'cutover_eligible' });
     retired = advanceReleaseSession({ controllerHome: home, sessionId: retired.sessionId, expectedRevision: retired.revision, phase: 'cutover_attempting' });

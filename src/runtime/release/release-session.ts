@@ -122,7 +122,8 @@ export function releaseSessionAcceptanceTimedOut(
 }
 
 /** Proof may arrive after prolonged soak; it must still follow cutover. */
-const REQUIRED_CANDIDATE_CANARIES = new Set(['recovery', 'mcp', 'scheduler', 'supervisor', 'controller']);
+// Supervisor continuation was retired; require only the canaries actually produced by Candidate B.
+const REQUIRED_CANDIDATE_CANARIES = new Set(['recovery', 'mcp', 'scheduler', 'controller']);
 
 function sessionPath(controllerHome: string, sessionId: string): string {
   return join(resolve(controllerHome), 'recovery', 'state', 'release-sessions', `${sessionId}.json`);
