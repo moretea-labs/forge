@@ -8,15 +8,14 @@
     "macOS 系统标题栏拥有窗口 chrome；不在 WebView 重复绘制 traffic lights",
     "轻量侧栏 + 单主工作区，不使用常驻右侧检查器",
     "当前工作与绑定会话优先；Work/Plan/Evidence/Repository 关键状态先用紧凑 operational summary 投影，详细 ID、历史与原始 evidence refs 再按需 disclosure",
-    "关键事实只能来自 canonical Runtime/Supervisor/Requirement/Plan/Work/Repository 投影，客户端不得推断或复制 authority",
+    "关键事实只能来自 canonical Runtime/Requirement/Plan/Work/Repository 投影，客户端不得推断或复制 authority",
     "运行时机械事实不占用当前工作主视图",
-    "自动推进任务显示 exact conversation link；切换新会话只能调用 canonical Supervisor migration",
     "显式刷新 MCP 只重读当前 canonical projections；失败保留旧投影并展示瞬态错误，不创建轮询/重试 authority"
   ],
   "nodes": [
     {
       "id": "sidebar",
-      "component": "MacSidebar",
+      "component": "PrimarySidebar",
       "props": {
         "active": "项目",
         "assistantLabel": "助手",
@@ -34,7 +33,7 @@
     },
     {
       "id": "work-header",
-      "component": "FocusedWorkHeader",
+      "component": "WorkDetailHeader",
       "props": {
         "title": "交付 MCP 助手与项目",
         "workId": "work-mcp",
@@ -47,7 +46,7 @@
     },
     {
       "id": "forge-facts",
-      "component": "ForgeFactStrip",
+      "component": "CurrentFocusCard",
       "props": {
         "facts": [
           "Work semantic state + semantic revision",
@@ -65,10 +64,13 @@
     },
     {
       "id": "needs-user",
-      "component": "InlineUserRequestProjection",
+      "component": "UserRequestCard",
       "props": {
         "visibility": "only-when-exact-current-work-has-pending-request",
-        "content": ["title", "summary"],
+        "content": [
+          "title",
+          "summary"
+        ],
         "mutatesInbox": false,
         "noGlobalInboxDump": true
       }
@@ -96,47 +98,18 @@
       }
     },
     {
-      "id": "automatic-continuation",
-      "component": "AutomaticContinuationRow",
-      "props": {
-        "taskId": "forge:repo-forge:work:work-mcp",
-        "workId": "work-mcp",
-        "objective": "继续所选工作，直到完成交付或出现明确的用户阻塞。",
-        "status": "推进中",
-        "detail": "自动推进监督器负责外层推进轮次。",
-        "conversationId": "精确 ChatGPT 会话 ID",
-        "conversationUrl": "权威 ChatGPT 会话 URL",
-        "nextAction": "默认继续同一个精确会话，除非用户显式切换。",
-        "switchActionState": "不存在未决 provider outcome 阻塞迁移时可用"
-      },
-      "interactionPatternId": "automatic-continuation-inspection",
-      "interactions": [
-        {
-          "event": "open_conversation",
-          "actions": [
-            {
-              "type": "emit_design_action",
-              "actionId": "open-automatic-continuation-conversation"
-            }
-          ]
-        },
-        {
-          "event": "switch_conversation",
-          "actions": [
-            {
-              "type": "emit_design_action",
-              "actionId": "switch-automatic-continuation-conversation"
-            }
-          ]
-        }
-      ]
-    },
-    {
       "id": "execution-evidence",
-      "component": "WorkExecutionEvidence",
+      "component": "EvidencePanel",
       "props": {
         "source": "canonical WorkContract detail projection",
-        "facts": ["phase", "dispatchState", "evidenceState", "workKind", "verification records", "evidence refs"],
+        "facts": [
+          "phase",
+          "dispatchState",
+          "evidenceState",
+          "workKind",
+          "verification records",
+          "evidence refs"
+        ],
         "receiptProjection": "bounded product-safe fields only; show receipt id/status/runtimeStatus/reusedExecution/timing and evidence title/summary/identity, with no artifactPath/local filesystem leakage",
         "collapsedByDefault": false,
         "neverChangesSemanticState": true,
@@ -145,9 +118,12 @@
     },
     {
       "id": "semantic-history",
-      "component": "SemanticRevisionHistory",
+      "component": "HistoryTimeline",
       "props": {
-        "sources": ["Work revisionHistory", "Plan revisionHistory"],
+        "sources": [
+          "Work revisionHistory",
+          "Plan revisionHistory"
+        ],
         "presentation": "collapsed disclosure with revision, authored state/status, recordedAt, objective/goal and bounded counts",
         "currentRevisionDuplicated": false,
         "clientComputedProgress": false

@@ -126,7 +126,7 @@ _ops/
 .env.*
 !.env.example
 # OS metadata
-.design-harness/tokens.json
+# Forge Design palette tokens are versioned design assets, not credentials.
 # External references
 # Operations
 # Local operations state

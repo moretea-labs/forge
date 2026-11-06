@@ -23,6 +23,7 @@ import {
 } from './runtime-client';
 import { LocalConversationSurface, type LocalConversationReply, type LocalConversationThread, type LocalConversationNavItem } from './local-conversation';
 import { ForgeIcon } from './ui-icons';
+import { desktopThemeStyle } from './design-tokens';
 import forgeAppIcon from '../src-tauri/icons/128x128.png';
 import { ProjectRecordsView } from './project-records-view';
 import { KnowledgeView } from './knowledge-view';
@@ -1633,7 +1634,7 @@ export function App() {
     : projection.runtime.label;
 
   return (
-    <div className={'app-shell' + (sidebarCollapsed ? ' sidebar-collapsed' : '')}>
+    <div className={'app-shell' + (sidebarCollapsed ? ' sidebar-collapsed' : '')} style={desktopThemeStyle}>
       <Sidebar
         projects={projects}
         selectedRepoId={activeView === 'assistant' ? activeAgentRepoId : selectedRepoId}
