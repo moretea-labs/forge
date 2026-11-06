@@ -144,6 +144,14 @@ async fn read_mcp_payload(response: reqwest::Response, error_prefix: &str) -> Re
     parse_mcp_payload(body, &content_type, error_prefix)
 }
 
+fn mcp_tool_timeout(name: &str, arguments: &Value) -> std::time::Duration {
+    let seconds = if name == "capability_execute"
+        && arguments.get("capability_id").and_then(Value::as_str) == Some("controller.local_conversation")
+        && arguments.get("action").and_then(Value::as_str) == Some("send")
+    { 600 } else { 90 };
+    std::time::Duration::from_secs(seconds)
+}
+
 async fn call_mcp_tool(
     endpoint: &str,
     token: &str,
@@ -151,6 +159,7 @@ async fn call_mcp_tool(
     arguments: Value,
     error_prefix: &str,
 ) -> Result<Value, String> {
+    let tool_timeout = mcp_tool_timeout(name, &arguments);
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(90))
         .redirect(reqwest::redirect::Policy::none())
@@ -209,7 +218,7 @@ async fn call_mcp_tool(
             "id": request_id("mcp-tool"),
             "method": "tools/call",
             "params": { "name": name, "arguments": arguments }
-        }), negotiated_version, session_id.as_deref()).send().await
+        }), negotiated_version, session_id.as_deref()).timeout(tool_timeout).send().await
             .map_err(|_| format!("{error_prefix}_UNREACHABLE"))?;
         if !response.status().is_success() {
             return Err(format!("{error_prefix}_HTTP_{}", response.status().as_u16()));
@@ -1490,6 +1499,15 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn mcp_timeout_only_extends_local_conversation_send() {
+        let send = json!({"capability_id": "controller.local_conversation", "action": "send"});
+        assert_eq!(mcp_tool_timeout("capability_execute", &send).as_secs(), 600);
+        assert_eq!(mcp_tool_timeout("other", &send).as_secs(), 90);
+        assert_eq!(mcp_tool_timeout("capability_execute", &json!({"capability_id": "other", "action": "send"})).as_secs(), 90);
+        assert_eq!(mcp_tool_timeout("capability_execute", &json!({"capability_id": "controller.local_conversation", "action": "cancel"})).as_secs(), 90);
+        assert_eq!(mcp_tool_timeout("capability_execute", &json!({})).as_secs(), 90);
+    }
     #[test]
     fn agent_git_inspector_forwards_exact_staged_selection() {
         assert_eq!(agent_git_diff_arguments(false), json!({"max_bytes": 20000, "staged": false}));
