@@ -8,12 +8,12 @@ Authority: [`../CURRENT.md`](../CURRENT.md)
 
 Forge V3 introduces a fresh cross-platform desktop client under `apps/desktop`. The client is a presentation and interaction adapter over the existing Forge Runtime and Controller authorities; it is not a second control plane and does not reuse the retired Local Bridge web frontend as product architecture.
 
-The initial macOS shell exposes two explicit interaction modes without creating a new domain state machine: Local for client-owned conversation interaction, and MCP for Projects/Work plus Runtime/Recovery operations. A lightweight sidebar selects mode, repository scope and Work; the single main surface shows either the Local conversation or the MCP repository/work surface and immediate actions. Plan, evidence, IDs and mechanical Runtime facts are disclosed on demand rather than occupying a permanent inspector. These surfaces are views over canonical Runtime facts rather than independent client state machines.
+The current macOS product is **Agent-first**: one local coding conversation and tool activity surface is primary, with a single sidebar to navigate independently to Project Requirement, Plan, Work, Knowledge, settings and Runtime/Recovery views. MCP is a separate outward integration/service, **not** a local execution mode or a second set of screens. Plan, evidence, IDs and mechanical Runtime facts are disclosed on demand rather than occupying a permanent inspector. These are typed projections of canonical Forge facts, not client-owned lifecycle state machines.
 
 ## Authority boundary
 
-- Requirement, Plan, Work, ControllerSession/ControllerRound, Scheduler, Workflow Supervisor, repository/worktree identity, connections and Runtime/Recovery lifecycle remain authoritative in their existing Forge owners.
-- The desktop client may own only transient presentation state such as selected navigation, active inspector tab, draft text, window geometry and replaceable transport handles.
+- Requirement, Plan, Work, ControllerSession/ControllerRound, Scheduler, repository/worktree identity, connections and Runtime/Recovery lifecycle remain authoritative in their existing Forge owners. The retired Workflow Supervisor/automatic continuation is not a new Client feature.
+- The desktop client may own only transient presentation state such as selected navigation, optional Git detail, draft text, window geometry and replaceable transport handles, plus actual local conversation data. It does not become the source of Requirement/Plan/Work truth.
 - The client must not persist a mirrored Requirement/Plan/Work database, infer semantic completion from UI state, or create a client-side scheduler/retry authority.
 - Runtime reads enter through typed projection/query contracts. Runtime mutations enter through existing typed Runtime/Controller capabilities and preserve their CAS, effect, authorization and outcome-unknown semantics.
 - Tauri owns desktop shell mechanics only. Starting or closing the UI must not mint another Forge Runtime, Recovery, Scheduler or Supervisor authority.
@@ -24,7 +24,7 @@ The initial macOS shell exposes two explicit interaction modes without creating 
 
 `apps/desktop/src/runtime-projection.ts` defines the projection-facing client boundary. Its bootstrap value is presentation-only and intentionally says `Runtime not connected`; no fake Requirement, Plan, Work or connection facts are synthesized before Runtime integration lands.
 
-`apps/desktop/src-tauri` is the fresh Tauri 2 shell. The macOS window uses Tauri native Liquid Glass with a titlebar overlay; WebView surfaces retain readable contrast and support reduced transparency. Native glass currently depends on `macos-private-api` and must be reassessed before Mac App Store distribution. It does not add a second window-service authority.
+`apps/desktop/src-tauri` is the single Tauri 2/Wry native shell; macOS owns window chrome. The current window is opaque with a native visible titlebar while bundled WKWebView first-paint behavior is under diagnosis. Original reference-led light materials are confined to CSS surfaces, with no full-window Liquid Glass overlay. Tauri 2.12.1 no longer requires the `macos-private-api` switch for transparency/fullscreen; it is not enabled solely for UI styling. The native shell remains an IPC adapter, not another Forge instance.
 
 ## Runtime transport
 
@@ -173,3 +173,13 @@ This foundation is acceptable when:
 3. the UI can render without manufacturing semantic domain data;
 4. project source authority includes `apps/**` so future engineering checks and context retrieval treat the client as first-class source;
 5. subsequent Runtime bootstrap work can replace the disconnected projection through a typed client adapter without migrating client-owned semantic data, because none exists.
+
+## 2026-11-06 implementation clarification — thin UI and mature interaction primitives
+
+- **Rendering:** React 19 + TypeScript/Vite own the one UI tree. `App.tsx` composes navigation and the selected product surface; `local-conversation.tsx` alone owns actual client-local transcripts and drafts; `project-records-view.tsx`, `runtime-client.ts`, `runtime-projection.ts` and `recovery-client.ts` present typed Forge facts. Do not create Redux/Zustand stores or duplicate canonical owners to reduce file size.
+- **Native adapter:** Tauri 2/Rust owns only window mechanics, limited IPC, local OS credentials and provider-process transport. Every Forge semantic read/write must still go through the existing canonical Runtime/Controller capability; do not copy the database into React or add generic filesystem execution APIs.
+- **Design:** `.design-harness/tokens.json` is the single design-token authority consumed by the renderer; `docs/design/forge-macos-field-guide.md` records visual references and real render acceptance. Existing Forge Design validates these assets. Do not add a second Better Design plugin or a full preset UI theme.
+- **Component boundary:** native HTML input/button/textarea remain default. Adopt **Radix Popover** only for the project picker because it provides focus restoration, Escape/outside dismissal, viewport collision and a portal; the renderer retains only `showProjectPicker` and query selection, and Forge Registry remains the source for project options. Further framework adoption requires a measured accessibility/interaction defect; no blanket component rewrite.
+- **First-paint diagnostic:** The bundled macOS WKWebView can stay white while the accessibility tree is live. Controlled probes showed React renders without CSS and the identical complete CSS renders after the initial unstyled frame. The existing stylesheet is deferred two animation frames; this remains a **candidate fix**, not accepted until an unlocked foreground native window is visibly readable and usable. The client never restarts or reconfigures the frozen Forge Runtime to cure UI paint.
+- **Verification:** Use focused TypeScript/UI/Cargo checks plus 1440×900 and 800×560 browser interaction for changes to affected components, and separately operate the **installed native app** (window visible, project picker search/select, Escape, Agent input/send/cancel against the permitted test provider) before accepting the macOS client. A process, compile check or AX tree alone is not evidence of painted native pixels.
+- **One delivery line:** Continue [Issue #592](https://github.com/moretea-labs/forge/issues/592), its canonical Requirement/Plan/Work and existing client branch; no duplicate Issue or Work for design and fix stages. Source code commits do not authorize Forge Runtime upgrade/activation.

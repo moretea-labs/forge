@@ -1181,3 +1181,26 @@ html, body, #root { background: #fbfaf8; }
   .sidebar-thread-row,
   .sidebar-project-picker { transition: none; }
 }
+
+/* Radix owns the project popover's position, viewport collision, dismiss and
+   focus restoration. Forge retains visual tokens and project-selection state. */
+.sidebar-project-picker-panel[data-state] {
+  position: relative;
+  left: auto;
+  right: auto;
+  bottom: auto;
+  width: var(--radix-popover-trigger-width);
+  max-width: min(340px, calc(100vw - 24px));
+  max-height: min(400px, var(--radix-popover-content-available-height));
+  min-width: 0;
+  z-index: 40;
+  background: #fffefd;
+  border-color: var(--line);
+  box-shadow: var(--shadow-popover);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+.sidebar-project-picker-panel[data-state] .sidebar-projects {
+  min-height: 0;
+  max-height: min(300px, calc(var(--radix-popover-content-available-height) - 72px));
+}

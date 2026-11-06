@@ -23,6 +23,7 @@ import {
 } from './runtime-client';
 import { LocalConversationSurface, type LocalConversationReply, type LocalConversationThread, type LocalConversationNavItem } from './local-conversation';
 import { ForgeIcon } from './ui-icons';
+import * as Popover from '@radix-ui/react-popover';
 import { desktopThemeStyle } from './design-tokens';
 import forgeAppIcon from '../src-tauri/icons/128x128.png';
 import { ProjectRecordsView } from './project-records-view';
@@ -153,7 +154,6 @@ export function Sidebar({
 }) {
   const [showProjectPicker, setShowProjectPicker] = useState(false);
   const [projectQuery, setProjectQuery] = useState('');
-  const projectPickerRef = useRef<HTMLDivElement>(null);
   const projectSearchRef = useRef<HTMLInputElement>(null);
   const [conversationSearchOpen, setConversationSearchOpen] = useState(false);
   const [conversationQuery, setConversationQuery] = useState('');
@@ -200,33 +200,6 @@ export function Sidebar({
     window.addEventListener('keydown', onSearchShortcut);
     return () => window.removeEventListener('keydown', onSearchShortcut);
   }, [conversationSearchOpen]);
-  // The project picker is a compact overlay; opening it must not displace
-  // conversation navigation or require another state owner.
-  useEffect(() => {
-    if (!showProjectPicker) return;
-    projectSearchRef.current?.focus({ preventScroll: true });
-    const onPointerDown = (event: PointerEvent) => {
-      if (event.target instanceof Node && !projectPickerRef.current?.contains(event.target)) {
-        setShowProjectPicker(false);
-        setProjectQuery('');
-      }
-    };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
-      event.preventDefault();
-      event.stopPropagation();
-      setShowProjectPicker(false);
-      setProjectQuery('');
-      projectPickerRef.current?.querySelector<HTMLButtonElement>('.sidebar-project-picker')
-        ?.focus({ preventScroll: true });
-    };
-    document.addEventListener('pointerdown', onPointerDown, true);
-    document.addEventListener('keydown', onKeyDown, true);
-    return () => {
-      document.removeEventListener('pointerdown', onPointerDown, true);
-      document.removeEventListener('keydown', onKeyDown, true);
-    };
-  }, [showProjectPicker]);
   const activeProject = projects.find((project) => project.repoId === selectedRepoId);
   const matchingProjects = projects.filter((project) =>
     (project.name + ' ' + project.repository + ' ' + (project.localRoot ?? ''))
@@ -317,12 +290,15 @@ export function Sidebar({
             )}
           </section>
         )}
-        <div className="sidebar-project-popover" ref={projectPickerRef}>
+        <div className="sidebar-project-popover">
+          <Popover.Root open={showProjectPicker} onOpenChange={(open) => {
+            setShowProjectPicker(open);
+            if (!open) setProjectQuery('');
+          }}>
           <div className="sidebar-project-heading">
-          <button className="sidebar-project-picker" type="button" aria-expanded={showProjectPicker}
-            aria-controls={showProjectPicker ? 'sidebar-project-options' : undefined}
-            title={activeProject?.localRoot ?? activeProject?.repository ?? '选择已注册项目'}
-            onClick={() => setShowProjectPicker((expanded) => !expanded)}>
+          <Popover.Trigger asChild>
+          <button className="sidebar-project-picker" type="button"
+            title={activeProject?.localRoot ?? activeProject?.repository ?? '选择已注册项目'}>
             <span className="project-folder"><ForgeIcon name="project" /></span>
             <span className="project-picker-identity">
               <span className="nav-label">{activeProject?.repository.split('/').at(-1) ?? '选择项目'}</span>
@@ -332,11 +308,16 @@ export function Sidebar({
             </span>
             <span className={'project-caret' + (showProjectPicker ? ' expanded' : '')}><ForgeIcon name="chevron" size={15} /></span>
           </button>
+          </Popover.Trigger>
           <button type="button" title="刷新已注册项目" aria-label="刷新已注册项目" onClick={onRetryProjects}><ForgeIcon name="refresh" size={16} /></button>
         </div>
-        {showProjectPicker && (
-          <div id="sidebar-project-options" className="sidebar-project-picker-panel"
-            role="region" aria-label="选择项目">
+        <Popover.Portal>
+          <Popover.Content className="sidebar-project-picker-panel" aria-label="选择项目"
+            side="top" align="start" sideOffset={8} collisionPadding={12}
+            onOpenAutoFocus={(event) => {
+              event.preventDefault();
+              projectSearchRef.current?.focus({ preventScroll: true });
+            }}>
             <input ref={projectSearchRef} aria-label="搜索已注册项目" placeholder={'搜索 ' + projects.length + ' 个项目'}
               value={projectQuery} onChange={(event) => setProjectQuery(event.target.value)} />
             <div className="sidebar-list sidebar-projects">
@@ -376,8 +357,9 @@ export function Sidebar({
               ))}
               {projects.length > 0 && matchingProjects.length === 0 && <p className="sidebar-project-error">未找到匹配项目</p>}
             </div>
-          </div>
-        )}
+          </Popover.Content>
+        </Popover.Portal>
+        </Popover.Root>
         </div>
       </div>
 

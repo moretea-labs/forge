@@ -636,3 +636,27 @@ describe('macOS WebKit first-frame rendering regression', () => {
     expect(entry).toContain('FORGE_DESKTOP_STYLESHEET_LOAD_FAILED');
   });
 });
+
+
+describe('Forge project picker native interactions', () => {
+  test('delegates the single project popup focus and collision handling to Radix', () => {
+    const source = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+    expect(source).toContain("from '@radix-ui/react-popover'");
+    expect(source).toContain('<Popover.Trigger asChild>');
+    expect(source).toContain('<Popover.Content');
+    expect(source).toContain('collisionPadding={12}');
+    expect(source).not.toContain('projectPickerRef');
+    expect(source).not.toContain("document.addEventListener('pointerdown', onPointerDown, true)");
+  });
+});
+
+
+describe('Tauri shell boundary', () => {
+  test('does not opt into obsolete macOS private UI switches for ordinary window chrome', () => {
+    const config = JSON.parse(readFileSync(new URL('../src-tauri/tauri.conf.json', import.meta.url), 'utf8'));
+    const cargo = readFileSync(new URL('../src-tauri/Cargo.toml', import.meta.url), 'utf8');
+    expect(config.app.macOSPrivateApi).toBeUndefined();
+    expect(cargo).not.toContain('features = ["macos-private-api"]');
+    expect(config.app.windows[0].titleBarStyle).toBe('Visible');
+  });
+});

@@ -69,3 +69,9 @@ On macOS 27.0, the full Tauri/Wry ForgeClient UI was present in the Accessibilit
 - The **identical complete stylesheet** renders correctly when enabled **after the WebView's initial unstyled frame** using a temporary native CSS-toggle test app.
 
 The app now schedules the *existing* stylesheet import after two animation frames in `src/main.tsx` (single root, single stylesheet). Verify the generated production HTML does not eagerly include a stylesheet link, and verify a cold-launched installed native app visibly shows the sidebar, conversation and composer. This workaround should be removed only after a native regression test establishes that eager CSS no longer stalls WKWebView. Do not treat Chromium/web-only screenshots or Accessibility tree presence as native-render acceptance. Native probe code and test bundles live in temporary paths and must not ship.
+
+## Reference interaction implementation: project selector
+
+Use `@radix-ui/react-popover` **only** where custom menu mechanics create actual native-desktop UX bugs. The project picker now uses Radix Trigger/Portal/Content for anchor placement, Escape/outside dismissal and focus restoration; Forge still supplies Registry project data and the UI retains its single existing selected-project state. No second token/theme system, no project CRUD facade and no extra Provider.
+
+Browser interaction evidence (2026-11-06): 1440×900 and 800×560 both pass bounded portal placement, search focus, Escape-to-trigger focus restoration, outside dismissal and zero page exceptions. Native Mac locked foreground acceptance remains a separate blocker.
