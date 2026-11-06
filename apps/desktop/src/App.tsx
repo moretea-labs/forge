@@ -1275,6 +1275,7 @@ export function App() {
       providerSessionId: thread.providerSessionId,
       prompt: codexBoundPrompt(thread, prompt),
       repoId: thread.projectRepoId,
+      checkoutId: thread.checkoutId,
     });
     return { content: result.output, providerSessionId: result.providerSessionId, toolActivityCount: result.toolActivityCount };
   }, []);

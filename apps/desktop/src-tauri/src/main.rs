@@ -565,10 +565,25 @@ async fn send_local_conversation(
     provider_session_id: Option<String>,
     prompt: String,
     repo_id: Option<String>,
+    checkout_id: Option<String>,
+) -> Result<Value, String> {
+    let request = local_conversation_request(conversation_id, provider_session_id, prompt, repo_id, checkout_id)?;
+    call_runtime_tool("capability_execute", request).await
+}
+
+fn local_conversation_request(
+    conversation_id: String, provider_session_id: Option<String>, prompt: String,
+    repo_id: Option<String>, checkout_id: Option<String>,
 ) -> Result<Value, String> {
     if conversation_id.trim().is_empty() || prompt.trim().is_empty() {
         return Err("FORGE_DESKTOP_LOCAL_CONVERSATION_ARGUMENT_REQUIRED".to_string());
     }
+    if repo_id.as_ref().is_some_and(|value| value.trim().is_empty())
+        || checkout_id.as_ref().is_some_and(|value| value.trim().is_empty())
+        || repo_id.is_some() != checkout_id.is_some() {
+        return Err("FORGE_DESKTOP_LOCAL_CONVERSATION_CHECKOUT_REQUIRED".into());
+    }
+    validate_agent_checkout_binding(repo_id.as_deref(), checkout_id.as_deref(), false)?;
     let mut request = json!({
         "capability_id": "controller.local_conversation",
         "action": "send",
@@ -581,10 +596,9 @@ async fn send_local_conversation(
     if let Some(provider_session_id) = provider_session_id.filter(|value| !value.trim().is_empty()) {
         request["arguments"]["provider_session_id"] = Value::String(provider_session_id);
     }
-    if let Some(repo_id) = repo_id.filter(|value| !value.trim().is_empty()) {
-        request["repo_id"] = Value::String(repo_id);
-    }
-    call_runtime_tool("capability_execute", request).await
+    if let Some(repo_id) = repo_id { request["repo_id"] = Value::String(repo_id); }
+    if let Some(checkout_id) = checkout_id { request["checkout_id"] = Value::String(checkout_id); }
+    Ok(request)
 }
 
 #[tauri::command]
@@ -1499,6 +1513,20 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn local_conversation_binds_checkout_or_rejects_incomplete_context() {
+        let build = |repo: Option<&str>, checkout: Option<&str>| local_conversation_request(
+            "conversation".into(), None, "hello".into(), repo.map(str::to_owned), checkout.map(str::to_owned));
+        let bound = build(Some("repo_a"), Some("checkout_b")).unwrap();
+        assert_eq!(bound["repo_id"], "repo_a");
+        assert_eq!(bound["checkout_id"], "checkout_b");
+        let unbound = build(None, None).unwrap();
+        assert!(unbound.get("repo_id").is_none() && unbound.get("checkout_id").is_none());
+        assert!(build(Some("repo_a"), None).is_err());
+        assert!(build(None, Some("checkout_b")).is_err());
+        assert!(build(Some(" "), Some(" ")).is_err());
+        assert!(build(Some("repo_a"), Some("../invalid")).is_err());
+    }
     #[test]
     fn mcp_timeout_only_extends_local_conversation_send() {
         let send = json!({"capability_id": "controller.local_conversation", "action": "send"});

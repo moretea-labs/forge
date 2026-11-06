@@ -15,6 +15,13 @@ const MAX_THREADS = 100;
 
 export type LocalConversationRole = 'user' | 'assistant' | 'tool' | 'system';
 
+export function localPendingCopy(provider: LocalProviderChoice, cancelRequested: boolean, toolProgress: LocalToolProgress[]): string {
+  if (cancelRequested) return '已请求停止；如果 Forge 工具正在运行，将在收到结果后结束…';
+  if (provider === 'codex') return 'Codex CLI 正在处理请求；运行期间不提供工具进度；支持时可使用停止。';
+  if (toolProgress.some((event) => event.phase === 'started')) return 'Agent 正在使用 Forge 工具…';
+  return toolProgress.length > 0 ? '工具调用已返回，正在整理回复…' : 'Agent 正在处理请求…';
+}
+
 export interface LocalToolProgress {
   conversationId: string;
   name: string;
@@ -981,11 +988,7 @@ export function LocalConversationSurface({
               <div className="local-pending-message" role="status">
                 <span className="local-pending-indicator" />
                 <div className="local-pending-content">
-                <span>{cancelRequested ? '已请求停止；如果 Forge 工具正在运行，将在收到结果后结束…'
-                  : toolProgress.some((event) => event.phase === 'started')
-                    ? 'Agent 正在使用 Forge 工具…'
-                    : toolProgress.length > 0 ? '工具调用已返回，正在整理回复…'
-                    : 'Agent 正在处理请求…'}</span>
+                <span>{localPendingCopy(selectedThreadProvider, cancelRequested, toolProgress)}</span>
                 {toolProgress.length > 0 && (
                   <details className="agent-tool-activity" aria-label="本轮 Forge 工具进度">
                     <summary>

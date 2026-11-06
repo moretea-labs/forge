@@ -207,6 +207,7 @@ export async function sendLocalConversation(input: {
   providerSessionId?: string;
   prompt: string;
   repoId?: string;
+  checkoutId?: string;
 }): Promise<LocalConversationSendProjection> {
   try {
     return await invoke<LocalConversationSendProjection>('send_local_conversation', {
@@ -214,6 +215,7 @@ export async function sendLocalConversation(input: {
       providerSessionId: input.providerSessionId,
       prompt: input.prompt,
       repoId: input.repoId,
+      checkoutId: input.checkoutId,
     });
   } catch (error) {
     throw localizeRuntimeError(error);
