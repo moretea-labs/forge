@@ -8,7 +8,7 @@ import { repositoryLabel } from '../src/runtime-client';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { ProjectRecordsView } from '../src/project-records-view';
-import { disconnectedProjection } from '../src/runtime-projection';
+import { designPreviewProjection, disconnectedProjection } from '../src/runtime-projection';
 
 describe('Forge Desktop Work-bound Agent thread identity', () => {
   test('context options select directly, close and return focus, with keyboard navigation', () => {
@@ -676,5 +676,20 @@ describe('approved A workspace + C rail design contract', () => {
     expect(styles).toContain('background: var(--glass)');
     expect(styles).toContain('background: var(--canvas)');
     expect(app).toContain('className="sidebar-project-picker-panel" style={desktopThemeStyle}');
+  });
+});
+
+
+describe('Project asset browser-only preview boundary', () => {
+  test('Requirement preview labels its limited Work projection and does not claim native Plan access', () => {
+    const html = renderToStaticMarkup(createElement(ProjectRecordsView, {
+      mode: 'requirements', preview: true, projection: designPreviewProjection,
+      onSelectWork() {}, onNavigateRecord() {}, async onRefresh() {},
+    }));
+    expect(html).toContain('界面预览：只展示已加载 Work');
+    expect(html).toContain('REQ-forge-v3-desktop-client-20260930');
+    expect(html).toContain('disabled');
+    expect(html).not.toContain('关联 Plan 读取失败');
+    expect(html).not.toContain('来自 Forge 按项目查询');
   });
 });

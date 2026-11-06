@@ -1696,7 +1696,7 @@ export function App() {
       </div>
       {activeView === 'assistant' ? null : activeView === 'requirements' || activeView === 'plans' || activeView === 'works' ? (
         <ProjectRecordsView key={(selectedRepoId ?? 'none') + ':' + activeView}
-          mode={activeView} projection={projection}
+          mode={activeView} projection={projection} preview={preview}
           requestedRecordId={requestedRecord?.mode === activeView ? requestedRecord.id : undefined}
           onNavigateRecord={handleNavigateRecord}
           onSelectWork={(workId) => { void handleSelectWork(workId); }}

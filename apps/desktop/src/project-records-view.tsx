@@ -27,9 +27,10 @@ function workState(state: WorkSemanticState): string {
  * offers a project-wide Requirement/Plan index.
  */
 export function ProjectRecordsView({
-  mode, projection, onSelectWork, onRefresh, requestedRecordId, onNavigateRecord,
+  mode, projection, onSelectWork, onRefresh, requestedRecordId, onNavigateRecord, preview = false,
 }: {
   mode: RecordMode;
+  preview?: boolean;
   projection: ForgeDesktopProjection;
   onSelectWork: (workId: string) => void;
   onRefresh: () => Promise<void>;
@@ -51,7 +52,8 @@ export function ProjectRecordsView({
   const repoId = projection.project?.repoId;
 
   useEffect(() => {
-    if (mode === 'works' || !repoId) return;
+    // Explicit design preview cannot load canonical Forge data over native IPC.
+    if (preview || mode === 'works' || !repoId) return;
     let disposed = false;
     setPlanIndex([]);
     setPlanIndexError(undefined);
@@ -65,15 +67,20 @@ export function ProjectRecordsView({
       if (!disposed) setPlanIndexError(cause instanceof Error ? cause.message : String(cause));
     });
     return () => { disposed = true; };
-  }, [mode, repoId, refreshEpoch]);
+  }, [mode, repoId, refreshEpoch, preview]);
   const titles = { requirements: 'Requirements', plans: 'Plans', works: 'Works' };
   const explanations = {
     requirements: '需求目标、验收条件和关联工作',
     plans: '实施方案、计划项和关联工作',
     works: '执行任务、状态和验证证据',
   };
-  const works = [...new Map([...projection.workGraph.nodes, ...projection.recentWorkHistory]
-    .map((work) => [work.workId, work] as const)).values()];
+  // The selected Work detail can contain Requirement/Plan links not present in
+  // the bounded Work graph. Treat it as the newest projection of that same Work.
+  const works: WorkGraphNodeProjection[] = [...new Map([
+    ...projection.workGraph.nodes,
+    ...projection.recentWorkHistory,
+    ...(projection.work ? [{ ...projection.work, state: projection.work.semanticState }] : []),
+  ].map((work) => [work.workId, work] as const)).values()];
   const ids = mode === 'works'
     ? works.map((work) => work.workId)
     : [...new Set([
@@ -114,6 +121,11 @@ export function ProjectRecordsView({
     setSelectedId(id);
     setDetail(undefined);
     setError(undefined);
+    if (preview) {
+      // Only the Work relationships already in the preview projection are known.
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     try {
       if (mode === 'requirements') {
@@ -154,7 +166,8 @@ export function ProjectRecordsView({
           <div className="records-context">
             <strong>{projection.project.name}</strong>
             <span>{projection.project.branch}</span>
-            <button className="plain-action" type="button" onClick={() => {
+            <button className="plain-action" type="button" disabled={preview}
+              title={preview ? '预览模式不连接 Forge Runtime' : '刷新项目记录'} onClick={() => {
               void onRefresh().then(
                 () => setRefreshEpoch((value) => value + 1),
                 (cause: unknown) => setPlanIndexError(cause instanceof Error ? cause.message : String(cause)),
@@ -162,7 +175,8 @@ export function ProjectRecordsView({
             }}>刷新</button>
           </div>
           <p className="records-coverage">
-            {mode === 'works'
+            {preview ? '界面预览：只展示已加载 Work 的关联标识；完整记录需要在 Forge 客户端读取'
+              : mode === 'works'
               ? '当前及近期 Work · 不是完整历史'
               : mode === 'plans'
                 ? '当前 Plan 来自 Forge 按项目查询（最多 100 条），并显示相关 Work'
@@ -191,6 +205,7 @@ export function ProjectRecordsView({
                 <div className="breadcrumb">{mode === 'works' ? 'Work' : mode === 'plans' ? 'Plan' : 'Requirement'}</div>
                 <h2>{mode === 'works' ? selected.works[0]?.objective : selected.id}</h2>
                 <code>{selected.id}</code>
+                {preview && mode !== 'works' && <p role="status" className="records-coverage">界面预览不读取 Forge 详情；关联 Work 来自当前预览数据。</p>}
                 {loading && <p role="status">正在读取 Forge 记录…</p>}
                 {error && <p role="alert" className="inline-error">详情读取失败：{error}</p>}
                 {detail?.kind === 'requirements' && mode === 'requirements' && (

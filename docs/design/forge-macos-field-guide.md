@@ -83,3 +83,10 @@ Browser interaction evidence (2026-11-06): 1440×900 and 800×560 both pass boun
 - Functional layout: 246px sidebar (228px at <=1080px and 207px at <=900px), pinned New Thread/Search, independently navigable Work/Requirement/Plan/Knowledge, grouped actual threads, one bottom project picker and Runtime/Settings footer. The Agent conversation owns the main surface; Git detail is on demand rather than a permanent explorer.
 - Single style authority: .design-harness/tokens.json v0.3.0 supplies colors to the app shell and Radix portal. The rail is #F0F1F4, canvas #FFFDFB and composer #FFFFFF; styles.css implements spacing/geometry, not a competing palette.
 - Browser QA: 1440x900, 1100x760 and 800x560 checked computed colors, no horizontal overflow, bounded project popover, search autofocus, Escape close/focus restoration and zero JS errors. Installed WKWebView visual paint/Agent execution still require independent validation.
+
+### Project-asset detail acceptance — A+C
+
+- Verified the actual **Work**, **Requirement** and **Plan** list/detail surfaces at 1440×900 and 800×560, not only an empty Agent conversation. All retain the chosen sidebar width, no horizontal overflow, and zero browser JavaScript errors.
+- `?preview=1` is explicitly a browser-only design fixture. It must never invoke native Tauri `read_project_plan_list` or `read_requirement_detail` commands. Its records are bounded to the existing Work graph, recent history and the currently selected Work projection; the preview labels the limited coverage and disables native refresh.
+- The **selected Work** can contain real Requirement/Plan identifiers even when the bounded Work graph omits them. Merge the selected Work into the same read-only record index by Work ID, rather than inventing a second Requirement/Plan store or duplicating the preview fixture. Runtime mode continues to read canonical detail via existing IPC.
+- These observations validate browser rendering and navigation only. Native installed-app paint, real Agent send/stop and source-aware Work detail remain separate acceptance items under Issue #592.
