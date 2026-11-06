@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { advanceLocalToolProgress, createThread, findExistingWorkThread, LocalConversationSurface, selectThreadCheckout, selectThreadRepository, shouldSubmitComposerKey, transcriptIsNearBottom } from '../src/local-conversation';
+import { advanceLocalToolProgress, createThread, findExistingWorkThread, localConversationNavItems, LocalConversationSurface, selectThreadCheckout, selectThreadRepository, shouldSubmitComposerKey, transcriptIsNearBottom } from '../src/local-conversation';
 import { repositoryLabel } from '../src/runtime-client';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -7,6 +7,64 @@ import { ProjectRecordsView } from '../src/project-records-view';
 import { disconnectedProjection } from '../src/runtime-projection';
 
 describe('Forge Desktop Work-bound Agent thread identity', () => {
+  test('unsent drafts remain discoverable without mutating transcript history', () => {
+    const empty = createThread('codex', 'repo_forge', undefined, 'checkout_forge');
+    const draft = { ...createThread('codex', 'repo_forge', undefined, 'checkout_forge'),
+      updatedAt: '2026-11-06T08:10:00Z' };
+    const sent = { ...createThread('codex', 'repo_forge', undefined, 'checkout_forge'),
+      title: 'Existing result', updatedAt: '2026-11-06T08:00:00Z',
+      messages: [{ id: 'message', role: 'user' as const, content: 'Existing result',
+        createdAt: '2026-11-06T08:00:00Z' }] };
+    const archived = { ...createThread('codex', 'repo_forge'), archived: true };
+    const texts = { [empty.id]: '   ', [draft.id]: 'Unsent prompt remains editable',
+      [archived.id]: 'Should never appear' };
+    const items = localConversationNavItems([empty, sent, draft, archived], texts);
+    expect(items.map((item) => item.id)).toEqual([draft.id, sent.id]);
+    expect(items[0]).toMatchObject({
+      id: draft.id, title: 'Unsent prompt remains editable', provider: 'codex', draft: true,
+    });
+    expect(items[1]).toMatchObject({ id: sent.id, title: 'Existing result', provider: 'codex' });
+    expect(items[1]?.draft).toBeUndefined();
+    expect(draft.messages).toEqual([]);
+  });
+
+  test('reopening the client restores an unsent conversation draft from its own storage key', () => {
+    const originalStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+    const thread = createThread('codex', 'repo_forge', undefined, 'checkout_forge');
+    const unfinished = 'Can we continue from the earlier note?';
+    Object.defineProperty(globalThis, 'localStorage', {
+      configurable: true,
+      value: {
+        getItem(key: string) {
+          if (key === 'forge.desktop.local-threads.v1') return JSON.stringify([thread]);
+          if (key === 'forge.desktop.local-drafts.v1') {
+            return JSON.stringify({ [thread.id]: unfinished });
+          }
+          return null;
+        },
+        setItem() {},
+      },
+    });
+    try {
+      const html = renderToStaticMarkup(createElement(LocalConversationSurface, {
+        projects: [{ repoId: 'repo_forge', name: 'Forge',
+          repository: 'moretea-labs/forge', checkoutId: 'checkout_forge' }],
+        defaultProjectRepoId: 'repo_forge',
+        provider: { status: 'ready', label: 'Codex', detail: 'Ready', streaming: false, tools: true },
+        providerLoading: false, providerError: null, apiSettings: null,
+        onOpenSettings() {}, onOpenProjects() {}, onOpenKnowledge() {},
+        newThreadRequested: false, onNewThreadHandled() {}, onOpenThreadHandled() {},
+        onThreadsChange() {}, async onRefreshProvider() {}, async onSend() { return { content: 'ok' }; },
+      }));
+      expect(html).toContain('<textarea');
+      expect(html).toContain(unfinished);
+      expect(html).not.toContain('class="local-message user"');
+    } finally {
+      if (originalStorage) Object.defineProperty(globalThis, 'localStorage', originalStorage);
+      else delete (globalThis as { localStorage?: Storage }).localStorage;
+    }
+  });
+
   test('transcript only follows new output while reading the bottom', () => {
     expect(transcriptIsNearBottom(1000, 800, 200)).toBe(true);
     expect(transcriptIsNearBottom(1000, 705, 200)).toBe(true);

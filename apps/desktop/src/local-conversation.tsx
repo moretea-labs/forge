@@ -9,6 +9,7 @@ import type { ProjectListItemProjection } from './runtime-projection';
 import type { LocalApiSettings, LocalProviderChoice, LocalApiToolEvent } from './local-api';
 
 const LOCAL_THREADS_KEY = 'forge.desktop.local-threads.v1';
+const LOCAL_DRAFTS_KEY = 'forge.desktop.local-drafts.v1';
 const MAX_THREADS = 100;
 
 export type LocalConversationRole = 'user' | 'assistant' | 'tool' | 'system';
@@ -174,6 +175,20 @@ function persistThreads(threads: LocalConversationThread[]): void {
   localStorage.setItem(LOCAL_THREADS_KEY, JSON.stringify(threads.slice(0, MAX_THREADS)));
 }
 
+// Drafts belong only to their conversation ID. Keep them separate from the
+// transcript so typing does not rewrite up to 100 complete message histories.
+function loadDrafts(): Record<string, string> {
+  try {
+    const value = JSON.parse(localStorage.getItem(LOCAL_DRAFTS_KEY) ?? '{}') as unknown;
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+    return Object.fromEntries(Object.entries(value)
+      .filter(([id, draft]) => id.length <= 160 && typeof draft === 'string')
+      .slice(0, MAX_THREADS)) as Record<string, string>;
+  } catch {
+    return {};
+  }
+}
+
 function threadLabel(thread: LocalConversationThread): string {
   return thread.title.trim() || '新会话';
 }
@@ -183,6 +198,23 @@ export interface LocalConversationNavItem {
   title: string;
   updatedAt: string;
   provider: LocalProviderChoice;
+  draft?: boolean;
+}
+
+/** The existing sidebar is the navigation authority for sent and unsent threads. */
+export function localConversationNavItems(
+  threads: LocalConversationThread[], drafts: Record<string, string>,
+): LocalConversationNavItem[] {
+  return threads.filter((thread) => !thread.archived
+    && (thread.messages.length > 0 || Boolean(drafts[thread.id]?.trim())))
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+    .map((thread) => ({
+      id: thread.id,
+      title: thread.messages.length ? threadLabel(thread) : drafts[thread.id]!.trim().slice(0, 52),
+      updatedAt: thread.updatedAt,
+      provider: thread.provider ?? 'codex',
+      ...(thread.messages.length ? {} : { draft: true }),
+    }));
 }
 
 type AgentControlIconName = 'plus' | 'diff' | 'more' | 'folder' | 'branch' | 'work'
@@ -275,7 +307,7 @@ export function LocalConversationSurface({
 }) {
   const [threads, setThreads] = useState<LocalConversationThread[]>(() => loadThreads());
   const [selectedThreadId, setSelectedThreadId] = useState<string | undefined>(() => loadThreads().find((thread) => !thread.archived)?.id);
-  const [draft, setDraft] = useState('');
+  const [drafts, setDrafts] = useState<Record<string, string>>(loadDrafts);
   const [sending, setSending] = useState(false);
   const [sendingThreadId, setSendingThreadId] = useState<string>();
   const [cancelRequested, setCancelRequested] = useState(false);
@@ -315,6 +347,7 @@ export function LocalConversationSurface({
   const surfaceRef = useRef<HTMLElement>(null);
 
   useEffect(() => { persistThreads(threads); }, [threads]);
+  useEffect(() => { localStorage.setItem(LOCAL_DRAFTS_KEY, JSON.stringify(drafts)); }, [drafts]);
 
   // The native details controls remain the only menu owner. Outside clicks,
   // keyboard Escape and navigation close them without a separate menu state.
@@ -363,6 +396,7 @@ export function LocalConversationSurface({
     [threads, selectedProvider],
   );
   const selectedThread = activeThreads.find((thread) => thread.id === selectedThreadId) ?? activeThreads[0];
+  const draft = selectedThread ? drafts[selectedThread.id] ?? '' : '';
   const currentThreadIdRef = useRef<string | undefined>(undefined);
   currentThreadIdRef.current = selectedThread?.id;
   // Preserve history-reading position when a response or tool event arrives.
@@ -395,21 +429,16 @@ export function LocalConversationSurface({
   useEffect(() => {
     // Empty drafts are not history. Keep them in the single local owner until
     // a first user message makes the thread a real conversation.
-    const history = activeThreads.filter((thread) => thread.messages.length > 0)
-      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
-    onThreadsChange(history.map((thread) => ({
-      id: thread.id, title: threadLabel(thread), updatedAt: thread.updatedAt,
-      provider: thread.provider ?? 'codex',
-    })), selectedThread?.messages.length ? selectedThread.id : undefined,
-      selectedThread?.projectRepoId);
-  }, [activeThreads, selectedThread?.id, selectedThread?.projectRepoId, onThreadsChange]);
+    const items = localConversationNavItems(activeThreads, drafts);
+    onThreadsChange(items, items.some((item) => item.id === selectedThread?.id)
+      ? selectedThread?.id : undefined, selectedThread?.projectRepoId);
+  }, [activeThreads, drafts, selectedThread?.id, selectedThread?.projectRepoId, onThreadsChange]);
 
   useEffect(() => {
     if (!openThreadId) return;
     if (activeThreads.some((thread) => thread.id === openThreadId)) {
       setSelectedThreadId(openThreadId);
       setSendError(null);
-      setDraft('');
     }
     onOpenThreadHandled();
   }, [openThreadId, activeThreads, onOpenThreadHandled]);
@@ -518,7 +547,6 @@ export function LocalConversationSurface({
     const thread = createThread(selectedProvider, repoId, undefined, checkoutId);
     setThreads((current) => [thread, ...current]);
     setSelectedThreadId(thread.id);
-    setDraft('');
     setSendError(null);
   };
 
@@ -537,14 +565,12 @@ export function LocalConversationSurface({
       : undefined;
     if (existing) {
       setSelectedThreadId(existing.id);
-      if (existing.id !== selectedThreadId) setDraft('');
     } else {
       const repoId = newThreadContext?.repoId ?? defaultProjectRepoId;
       const thread = createThread(selectedProvider, repoId, newThreadContext?.workId,
         projects.find((project) => project.repoId === repoId)?.checkoutId);
       setThreads((current) => [thread, ...current]);
       setSelectedThreadId(thread.id);
-      setDraft('');
     }
     setSendError(null);
     onNewThreadHandled();
@@ -573,8 +599,8 @@ export function LocalConversationSurface({
     if (choice.created) {
       setThreads((current) => [choice.thread, ...current]);
       setSelectedThreadId(choice.thread.id);
-      // The unsent prompt is local draft text, not part of the old transcript.
-      // Preserve it when choosing the execution context for the next turn.
+      setDrafts((current) => ({ ...current,
+        [choice.thread.id]: current[selectedThread.id] ?? '' }));
     } else updateSelected(() => choice.thread);
     setAllowEffects(false);
     setSendError(null);
@@ -589,8 +615,8 @@ export function LocalConversationSurface({
     if (choice.created) {
       setThreads((current) => [choice.thread, ...current]);
       setSelectedThreadId(choice.thread.id);
-      // The unsent prompt is local draft text, not part of the old transcript.
-      // Preserve it when choosing the execution context for the next turn.
+      setDrafts((current) => ({ ...current,
+        [choice.thread.id]: current[selectedThread.id] ?? '' }));
     } else updateSelected(() => choice.thread);
     setAllowEffects(false);
     setSendError(null);
@@ -606,6 +632,7 @@ export function LocalConversationSurface({
       const next = createThread(selectedProvider, selectedRepoId, nextWorkId, selectedThread.checkoutId);
       setThreads((current) => [next, ...current]);
       setSelectedThreadId(next.id);
+      setDrafts((current) => ({ ...current, [next.id]: current[selectedThread.id] ?? '' }));
     } else updateSelected((thread) => ({
       ...thread, workId: nextWorkId, providerSessionId: undefined,
       updatedAt: new Date().toISOString(),
@@ -617,6 +644,11 @@ export function LocalConversationSurface({
   const archiveThread = () => {
     if (!selectedThread || sending || committing) return;
     updateSelected((thread) => ({ ...thread, archived: true, updatedAt: new Date().toISOString() }));
+    setDrafts((current) => {
+      const next = { ...current };
+      delete next[selectedThread.id];
+      return next;
+    });
     setSelectedThreadId(activeThreads.find((thread) => thread.id !== selectedThread.id)?.id);
   };
 
@@ -708,7 +740,7 @@ export function LocalConversationSurface({
       messages: [...selectedThread.messages, userMessage],
     };
     setThreads((current) => current.map((thread) => thread.id === selectedThread.id ? pendingThread : thread));
-    setDraft('');
+    setDrafts((current) => ({ ...current, [selectedThread.id]: '' }));
     setSendError(null);
     sendingThreadRef.current = selectedThread.id;
     setSendingThreadId(selectedThread.id);
@@ -927,7 +959,11 @@ export function LocalConversationSurface({
                 : committing ? 'Git 提交中，可先写下一条消息…'
                 : providerReady ? '向 Forge 描述任务或提出问题…' : '配置模型或选择有效项目后开始…'}
               value={draft}
-              onChange={(event) => setDraft(event.target.value)}
+              onChange={(event) => {
+                const threadId = selectedThread.id;
+                const value = event.target.value;
+                setDrafts((current) => ({ ...current, [threadId]: value }));
+              }}
               onKeyDown={(event) => {
                 if (shouldSubmitComposerKey(event.nativeEvent, sending || committing)) {
                   event.preventDefault();

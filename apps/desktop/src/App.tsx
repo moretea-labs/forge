@@ -179,8 +179,9 @@ function Sidebar({
               <button type="button" key={thread.id}
                 className={'nav-row sidebar-thread-row' + (activeView === 'assistant' && selectedLocalThreadId === thread.id ? ' active' : '')}
                 title={thread.title} onClick={() => onSelectLocalThread(thread.id)}>
-                <span className="nav-symbol" aria-hidden="true">◻</span>
+                <span className="nav-symbol" aria-hidden="true">{thread.draft ? '✎' : '◻'}</span>
                 <span className="nav-label">{thread.title}</span>
+                {thread.draft && <span className="sidebar-draft-indicator">草稿</span>}
               </button>
             ))}
           </section>

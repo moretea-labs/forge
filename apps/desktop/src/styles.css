@@ -754,3 +754,6 @@ a { color: #353535; text-decoration: underline; text-underline-offset: 3px; }
    Otherwise their controls can appear without opening the menu. */
 .agent-header-menu:not([open]) > .agent-header-menu-panel,
 .agent-context-menu:not([open]) > .agent-context-panel { display: none; }
+
+.sidebar-draft-indicator { flex: 0 0 auto; font-size: 9px; color: #929ba7;
+  font-weight: 500; letter-spacing: .01em; }
