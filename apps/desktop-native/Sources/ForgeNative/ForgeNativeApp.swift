@@ -6,10 +6,11 @@ private enum ForgePalette {
     static let ink = Color(red:0.16,green:0.18,blue:0.17)
     static let secondary = Color(red:0.45,green:0.47,blue:0.46)
     static let accent = Color(red:0.25,green:0.31,blue:0.26)
-    static let selection = Color(red:0.89,green:0.91,blue:0.87).opacity(0.84)
+    static let selection = Color(red:0.89,green:0.91,blue:0.87).opacity(0.78)
     static let userBubble = Color(red:0.945,green:0.949,blue:0.938)
-    static let composer = Color.white.opacity(0.78)
-    static let line = Color.primary.opacity(0.075)
+    static let raisedSurface = Color.white.opacity(0.90)
+    static let softFill = Color.primary.opacity(0.045)
+    static let composer = Color.white.opacity(0.76)
 }
 
 @main
@@ -96,24 +97,31 @@ private struct ForgeWorkspaceView: View {
 
             Button(action:model.newThread) {
                 HStack(spacing:10) {
-                    Image(systemName:"square.and.pencil").frame(width:17)
+                    Image(systemName:"plus")
+                        .font(.system(size:10,weight:.semibold))
+                        .frame(width:21,height:21)
+                        .background(ForgePalette.accent.opacity(0.09),
+                                    in:RoundedRectangle(cornerRadius:7,style:.continuous))
                     Text("新会话")
                     Spacer()
                     Text("⌘N").font(.system(size:10)).foregroundStyle(.tertiary)
                 }
-                .font(.system(size:12,weight:.medium)).padding(.horizontal,11)
-                .frame(height:38)
-                .background(.white,in:RoundedRectangle(cornerRadius:10))
-                .overlay(RoundedRectangle(cornerRadius:10).stroke(ForgePalette.line))
+                .font(.system(size:12,weight:.medium)).padding(.horizontal,10)
+                .frame(height:40)
+                .background(ForgePalette.raisedSurface,
+                            in:RoundedRectangle(cornerRadius:13,style:.continuous))
+                .shadow(color:Color.black.opacity(0.035),radius:7,y:2)
             }
-            .buttonStyle(.plain).padding(.horizontal,11).padding(.bottom,6)
+            .buttonStyle(.plain).padding(.horizontal,10).padding(.bottom,6)
 
             Button {
                 model.show(.agent)
                 model.showSearch.toggle()
             } label: {
                 HStack(spacing:10) {
-                    Image(systemName:"magnifyingglass").frame(width:17)
+                    Image(systemName:"magnifyingglass")
+                        .symbolRenderingMode(.hierarchical)
+                        .frame(width:17)
                     Text("搜索会话")
                     Spacer()
                     Text("⌘K").font(.system(size:10)).foregroundStyle(.tertiary)
@@ -124,9 +132,13 @@ private struct ForgeWorkspaceView: View {
 
             if model.showSearch {
                 TextField("搜索标题或消息",text:$model.search)
-                    .textFieldStyle(.roundedBorder)
+                    .textFieldStyle(.plain)
                     .font(.system(size:12))
-                    .padding(.horizontal,13).padding(.vertical,7)
+                    .padding(.horizontal,11)
+                    .frame(height:34)
+                    .background(ForgePalette.softFill,
+                                in:RoundedRectangle(cornerRadius:11,style:.continuous))
+                    .padding(.horizontal,12).padding(.vertical,7)
             }
 
             sectionLabel("工作空间").padding(.top,19)
@@ -134,15 +146,16 @@ private struct ForgeWorkspaceView: View {
                 navigationRow(section)
             }
 
-            Rectangle().fill(ForgePalette.line).frame(height:1)
-                .padding(.horizontal,13).padding(.top,17).padding(.bottom,7)
-            sectionLabel("最近会话").padding(.bottom,4)
+            sectionLabel("最近会话")
+                .padding(.top,21)
+                .padding(.bottom,4)
             ScrollView {
                 LazyVStack(alignment:.leading,spacing:2) {
                     ForEach(model.visibleThreads) { thread in
                         Button { model.selectThread(thread.id) } label: {
                             HStack(spacing:8) {
-                                Image(systemName:"text.bubble")
+                                Image(systemName:"bubble.left")
+                                    .symbolRenderingMode(.hierarchical)
                                     .font(.system(size:11))
                                     .frame(width:17)
                                 Text(thread.title)
@@ -153,7 +166,8 @@ private struct ForgeWorkspaceView: View {
                             .frame(maxWidth:.infinity,alignment:.leading)
                             .padding(.horizontal,10).frame(height:34)
                             .background(model.selectedThreadId == thread.id && model.page == .agent
-                                ? ForgePalette.selection : .clear,in:RoundedRectangle(cornerRadius:9))
+                                ? ForgePalette.selection : .clear,
+                                in:RoundedRectangle(cornerRadius:11,style:.continuous))
                             .contentShape(Rectangle())
                         }.buttonStyle(.plain)
                             .contextMenu {
@@ -164,7 +178,6 @@ private struct ForgeWorkspaceView: View {
             }.scrollIndicators(.hidden)
             Spacer(minLength:5)
 
-            Rectangle().fill(ForgePalette.line).frame(height:1).padding(.horizontal,13)
             Menu {
                 ForEach(model.projects) { project in
                     Button {
@@ -181,7 +194,11 @@ private struct ForgeWorkspaceView: View {
                 Button("刷新项目") { Task { await model.refresh() } }
             } label: {
                 HStack(spacing:9) {
-                    Image(systemName:"folder").font(.system(size:14)).frame(width:20)
+                    Image(systemName:"folder.fill")
+                        .symbolRenderingMode(.hierarchical)
+                        .font(.system(size:13))
+                        .foregroundStyle(ForgePalette.secondary)
+                        .frame(width:20)
                     VStack(alignment:.leading,spacing:2) {
                         Text(model.project?.label ?? "选择项目").font(.system(size:12,weight:.semibold))
                             .lineLimit(1)
@@ -191,9 +208,11 @@ private struct ForgeWorkspaceView: View {
                     Spacer()
                     Image(systemName:"chevron.up.chevron.down").font(.system(size:10))
                 }
-                .padding(.horizontal,12).frame(height:52)
+                .padding(.horizontal,11).frame(height:50)
+                .background(ForgePalette.softFill,
+                            in:RoundedRectangle(cornerRadius:13,style:.continuous))
                 .contentShape(Rectangle())
-            }.menuStyle(.borderlessButton).padding(.horizontal,8).padding(.top,4)
+            }.menuStyle(.borderlessButton).padding(.horizontal,10).padding(.top,5)
             navigationRow(.settings).padding(.bottom,11)
         }
         .foregroundStyle(ForgePalette.ink)
@@ -202,23 +221,27 @@ private struct ForgeWorkspaceView: View {
 
     private func sectionLabel(_ name: String) -> some View {
         Text(name.uppercased())
-            .font(.system(size:10,weight:.semibold))
-            .tracking(0.6)
-            .foregroundStyle(ForgePalette.secondary)
+            .font(.system(size:9.5,weight:.semibold))
+            .tracking(0.55)
+            .foregroundStyle(ForgePalette.secondary.opacity(0.88))
             .padding(.horizontal,21).padding(.bottom,7)
     }
 
     private func navigationRow(_ section: NativePage) -> some View {
         Button { model.show(section) } label: {
             HStack(spacing:10) {
-                Image(systemName:section.symbol).font(.system(size:13)).frame(width:18)
+                Image(systemName:section.symbol)
+                    .symbolRenderingMode(.hierarchical)
+                    .font(.system(size:12.5,weight:model.page == section ? .semibold : .regular))
+                    .foregroundStyle(model.page == section ? ForgePalette.ink : ForgePalette.secondary)
+                    .frame(width:18)
                 Text(section.rawValue).font(.system(size:12,weight:model.page == section ? .semibold : .regular))
                 Spacer()
             }
             .padding(.horizontal,12)
-            .frame(height:35)
+            .frame(height:36)
             .background(model.page == section ? ForgePalette.selection : .clear,
-                        in:RoundedRectangle(cornerRadius:9))
+                        in:RoundedRectangle(cornerRadius:11,style:.continuous))
             .contentShape(Rectangle())
         }.buttonStyle(.plain).padding(.horizontal,10)
     }
@@ -234,14 +257,19 @@ private struct ForgeWorkspaceView: View {
                 }
                 .font(.system(size:11))
                 .foregroundStyle(Color(red:0.58,green:0.26,blue:0.24))
-                .padding(10)
-                .frame(maxWidth:.infinity)
-                .background(Color(red:0.99,green:0.95,blue:0.93))
+                .padding(.horizontal,12).frame(height:38)
+                .background(Color(red:0.99,green:0.95,blue:0.93),
+                            in:RoundedRectangle(cornerRadius:11,style:.continuous))
+                .padding(.horizontal,14).padding(.top,8)
             }
             HStack(spacing:9) {
                 Image(systemName:model.page.symbol)
-                    .font(.system(size:12,weight:.semibold))
+                    .symbolRenderingMode(.hierarchical)
+                    .font(.system(size:11.5,weight:.semibold))
                     .foregroundStyle(ForgePalette.secondary)
+                    .frame(width:25,height:25)
+                    .background(ForgePalette.softFill,
+                                in:RoundedRectangle(cornerRadius:8,style:.continuous))
                 Text(model.page.rawValue)
                     .font(.system(size:13,weight:.semibold))
                 Spacer()
@@ -251,11 +279,16 @@ private struct ForgeWorkspaceView: View {
                         .foregroundStyle(ForgePalette.secondary)
                 }
                 Button { Task { await model.refresh() } } label: {
-                    Image(systemName:"arrow.clockwise").font(.system(size:12))
-                }.buttonStyle(.borderless).help("刷新真实 Forge 状态")
+                    Image(systemName:"arrow.clockwise")
+                        .font(.system(size:11.5,weight:.medium))
+                        .frame(width:27,height:27)
+                        .background(ForgePalette.softFill,in:Circle())
+                }.buttonStyle(.plain).help("刷新真实 Forge 状态")
             }
-            .padding(.horizontal,25).frame(height:44)
-            Divider().overlay(ForgePalette.line)
+            .padding(.horizontal,22).frame(height:48)
+            .background(.ultraThinMaterial)
+            .shadow(color:Color.black.opacity(0.025),radius:5,y:2)
+            .zIndex(1)
             switch model.page {
             case .agent: AgentPane(model:model)
             case .work,.requirement,.plan: RecordsPane(model:model)
@@ -272,7 +305,6 @@ private struct ForgeWorkspaceView: View {
 
 private struct AgentPane: View {
     @ObservedObject var model: NativeWorkspace
-    @FocusState private var composerFocused: Bool
 
     var body: some View {
         VStack(spacing:0) {
@@ -351,12 +383,12 @@ private struct AgentPane: View {
                     .font(.system(size:13))
                     .foregroundStyle(ForgePalette.ink)
                     .scrollContentBackground(.hidden)
-                    .focused($composerFocused)
                     .frame(minHeight:56,maxHeight:105)
                     .padding(.horizontal,12).padding(.top,10)
                     .accessibilityLabel("Agent 消息")
                 HStack(spacing:9) {
-                    Label(model.project?.label ?? "未选择项目",systemImage:"folder")
+                    Label(model.project?.label ?? "未选择项目",systemImage:"folder.fill")
+                        .symbolRenderingMode(.hierarchical)
                         .font(.system(size:10.5))
                         .foregroundStyle(ForgePalette.secondary)
                         .lineLimit(1)
@@ -365,27 +397,33 @@ private struct AgentPane: View {
                     Text("⌘↵").font(.system(size:10)).foregroundStyle(.tertiary)
                     if model.busy {
                         Button { Task { await model.cancel() } } label: {
-                            Image(systemName:"stop.fill").font(.system(size:10))
-                                .frame(width:28,height:27)
-                        }.buttonStyle(.bordered).help("请求停止 Agent")
+                            Image(systemName:"stop.fill")
+                                .font(.system(size:9,weight:.semibold))
+                                .frame(width:29,height:29)
+                                .background(ForgePalette.softFill,in:Circle())
+                        }.buttonStyle(.plain).help("请求停止 Agent")
                     } else {
+                        let sendDisabled = model.draft.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty
                         Button { Task { await model.send() } } label: {
-                            Image(systemName:"arrow.up").font(.system(size:12,weight:.semibold))
-                                .frame(width:28,height:27)
+                            Image(systemName:"arrow.up")
+                                .font(.system(size:11,weight:.bold))
+                                .foregroundStyle(.white)
+                                .frame(width:29,height:29)
+                                .background(ForgePalette.accent,in:Circle())
+                                .opacity(sendDisabled ? 0.34 : 1)
                         }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(model.draft.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty)
+                        .buttonStyle(.plain)
+                        .disabled(sendDisabled)
                         .keyboardShortcut(.return,modifiers:.command)
                         .help("发送消息")
                     }
                 }.padding(.horizontal,13).padding(.bottom,11)
             }
             .background(ForgePalette.composer,
-                        in:RoundedRectangle(cornerRadius:16,style:.continuous))
+                        in:RoundedRectangle(cornerRadius:19,style:.continuous))
             .background(.ultraThinMaterial,
-                        in:RoundedRectangle(cornerRadius:16,style:.continuous))
-            .overlay(RoundedRectangle(cornerRadius:16,style:.continuous).stroke(ForgePalette.line))
-            .shadow(color:Color.black.opacity(0.055),radius:16,y:6)
+                        in:RoundedRectangle(cornerRadius:19,style:.continuous))
+            .shadow(color:Color.black.opacity(0.060),radius:18,y:7)
             .frame(maxWidth:760)
             .padding(.horizontal,30).padding(.bottom,20)
             .frame(maxWidth:.infinity)
@@ -398,13 +436,13 @@ private struct RecordsPane: View {
     @ObservedObject var model: NativeWorkspace
 
     var body: some View {
-        HStack(spacing:0) {
+        HStack(spacing:12) {
             ScrollView {
                 LazyVStack(alignment:.leading,spacing:5) {
                     Text("\(model.records.count) 项")
-                        .font(.system(size:11))
+                        .font(.system(size:10.5,weight:.medium))
                         .foregroundStyle(ForgePalette.secondary)
-                        .padding(.bottom,13)
+                        .padding(.horizontal,3).padding(.bottom,9)
                     ForEach(model.records) { item in
                         Button {
                             Task { await model.openRecord(item.id) }
@@ -418,42 +456,65 @@ private struct RecordsPane: View {
                                     Text(item.state)
                                 }.font(.system(size:10)).foregroundStyle(ForgePalette.secondary)
                             }
-                            .padding(12)
+                            .padding(.horizontal,11).padding(.vertical,10)
                             .frame(maxWidth:.infinity,alignment:.leading)
                             .background(item.id == model.selectedRecord ?
                                 ForgePalette.selection : .clear,
-                                in:RoundedRectangle(cornerRadius:10))
+                                in:RoundedRectangle(cornerRadius:12,style:.continuous))
                         }.buttonStyle(.plain)
                     }
-                }.padding(14)
+                }.padding(11)
             }
-            .frame(width:305)
-            .background(.ultraThinMaterial)
-            Divider()
+            .frame(width:300)
+            .background(.ultraThinMaterial,
+                        in:RoundedRectangle(cornerRadius:16,style:.continuous))
+            .padding(.leading,12).padding(.vertical,12)
+
             ScrollView {
                 VStack(alignment:.leading,spacing:17) {
                     if let selected = model.records.first(where:{$0.id == model.selectedRecord}) {
-                        Text(selected.title).font(.system(size:20,weight:.medium))
-                        Text(selected.id).font(.system(size:11,design:.monospaced))
-                            .foregroundStyle(ForgePalette.secondary)
+                        HStack(alignment:.top,spacing:12) {
+                            VStack(alignment:.leading,spacing:7) {
+                                Text(selected.title).font(.system(size:20,weight:.medium))
+                                Text(selected.id).font(.system(size:11,design:.monospaced))
+                                    .foregroundStyle(ForgePalette.secondary)
+                            }
+                            Spacer()
+                            Text(selected.state)
+                                .font(.system(size:10,weight:.medium))
+                                .foregroundStyle(ForgePalette.secondary)
+                                .padding(.horizontal,9).frame(height:24)
+                                .background(ForgePalette.softFill,
+                                            in:Capsule())
+                        }
                     } else {
-                        Image(systemName:"doc.text.magnifyingglass")
-                            .font(.system(size:24)).foregroundStyle(ForgePalette.secondary)
-                        Text("选择左侧记录以查看详情")
-                            .font(.system(size:14)).foregroundStyle(ForgePalette.secondary)
+                        VStack(alignment:.leading,spacing:11) {
+                            Image(systemName:"doc.text.magnifyingglass")
+                                .symbolRenderingMode(.hierarchical)
+                                .font(.system(size:21))
+                                .foregroundStyle(ForgePalette.secondary)
+                                .frame(width:42,height:42)
+                                .background(ForgePalette.softFill,
+                                            in:RoundedRectangle(cornerRadius:13,style:.continuous))
+                            Text("选择左侧记录以查看详情")
+                                .font(.system(size:14)).foregroundStyle(ForgePalette.secondary)
+                        }.padding(.top,16)
                     }
                     if !model.detail.isEmpty {
-                        Divider()
                         Text(model.detail)
                             .font(.system(size:11,design:.monospaced))
                             .textSelection(.enabled)
+                            .padding(16)
+                            .frame(maxWidth:.infinity,alignment:.leading)
+                            .background(ForgePalette.softFill,
+                                        in:RoundedRectangle(cornerRadius:15,style:.continuous))
                     }
                 }
-                .frame(maxWidth:780,alignment:.leading)
+                .frame(maxWidth:790,alignment:.leading)
                 .frame(maxWidth:.infinity,alignment:.leading)
-                .padding(26)
+                .padding(.horizontal,22).padding(.vertical,24)
             }
-        }.background(.white)
+        }.background(ForgePalette.canvas)
     }
 }
 
@@ -464,12 +525,20 @@ private struct KnowledgePane: View {
             Text("知识库搜索").font(.system(size:21,weight:.medium))
             Text("基于所选 Forge 项目的现有知识能力，不维护第二份搜索索引。")
                 .font(.system(size:12)).foregroundStyle(ForgePalette.secondary)
-            HStack {
+            HStack(spacing:9) {
                 TextField("输入搜索内容",text:$model.knowledgeQuery)
-                    .textFieldStyle(.roundedBorder)
+                    .textFieldStyle(.plain)
+                    .padding(.horizontal,12)
+                    .frame(height:38)
+                    .background(ForgePalette.softFill,
+                                in:RoundedRectangle(cornerRadius:12,style:.continuous))
                     .onSubmit { Task { await model.searchKnowledge() } }
-                Button("搜索") { Task { await model.searchKnowledge() } }
-                    .disabled(model.knowledgeQuery.isEmpty)
+                Button { Task { await model.searchKnowledge() } } label: {
+                    Label("搜索",systemImage:"magnifyingglass")
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.regular)
+                .disabled(model.knowledgeQuery.isEmpty)
             }
             ScrollView {
                 Text(model.detail).font(.system(size:12,design:.monospaced))
@@ -494,17 +563,25 @@ private struct TextDetailPane: View {
                         Text(subtitle).font(.system(size:12)).foregroundStyle(ForgePalette.secondary)
                     }
                     Spacer()
-                    Button("刷新",action:refresh)
+                    Button(action:refresh) {
+                        Label("刷新",systemImage:"arrow.clockwise")
+                    }
+                    .buttonStyle(.bordered)
                 }
-                Divider()
-                if text.isEmpty {
-                    Text("暂无数据。请刷新以读取真实 Forge 状态。")
-                        .font(.system(size:12)).foregroundStyle(ForgePalette.secondary)
-                } else {
-                    Text(text)
-                        .font(.system(size:12,design:.monospaced))
-                        .textSelection(.enabled)
+                Group {
+                    if text.isEmpty {
+                        Text("暂无数据。请刷新以读取真实 Forge 状态。")
+                            .font(.system(size:12)).foregroundStyle(ForgePalette.secondary)
+                    } else {
+                        Text(text)
+                            .font(.system(size:12,design:.monospaced))
+                            .textSelection(.enabled)
+                    }
                 }
+                .padding(17)
+                .frame(maxWidth:.infinity,alignment:.leading)
+                .background(ForgePalette.softFill,
+                            in:RoundedRectangle(cornerRadius:15,style:.continuous))
             }.frame(maxWidth:850,alignment:.leading)
                 .frame(maxWidth:.infinity,alignment:.leading)
                 .padding(30)
