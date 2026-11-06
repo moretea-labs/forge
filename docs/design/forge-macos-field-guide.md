@@ -59,3 +59,13 @@ Before calling a screen complete, validate the Forge Design project; run Desktop
 **Licensing note:** These sources are visual references. Do not copy source art, avatars, logos, proprietary icons or screenshots into the app; use Forge's own code, data and icon family.
 
 **Saved evidence:** [1440×900 browser preview](./previews/forgeclient-agent-web-preview-1440.png) and [800×560 browser preview](./previews/forgeclient-agent-web-preview-800.png). Both were captured from the real Tauri/React frontend with an explicit `?preview=1` fixture, not from the installed macOS WKWebView. Full native window visibility remains **unverified / white-screen blocker** on the current macOS 27 host; no promotion to acceptance based on Accessibility nodes or web previews.
+
+## Native WKWebView first-frame white-screen investigation (2026-11-06)
+
+On macOS 27.0, the full Tauri/Wry ForgeClient UI was present in the Accessibility tree but its window painted blank. Removing glass effects, changing titlebar style, ad-hoc entitlements, Vite asset path changes and a clean Cargo build did not resolve it. Two independent controlled native experiments established:
+- Pure AppKit WKWebView renders a red test page.
+- The ForgeClient's own Tauri 2/Wry/Rust main program renders a red test page.
+- The entire Forge React application renders natively **without its stylesheet**.
+- The **identical complete stylesheet** renders correctly when enabled **after the WebView's initial unstyled frame** using a temporary native CSS-toggle test app.
+
+The app now schedules the *existing* stylesheet import after two animation frames in `src/main.tsx` (single root, single stylesheet). Verify the generated production HTML does not eagerly include a stylesheet link, and verify a cold-launched installed native app visibly shows the sidebar, conversation and composer. This workaround should be removed only after a native regression test establishes that eager CSS no longer stalls WKWebView. Do not treat Chromium/web-only screenshots or Accessibility tree presence as native-render acceptance. Native probe code and test bundles live in temporary paths and must not ship.

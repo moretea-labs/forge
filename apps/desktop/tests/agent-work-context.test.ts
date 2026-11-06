@@ -625,3 +625,14 @@ describe('Packaged macOS web resources', () => {
     expect(entry).not.toContain('forge-native-paint-probe');
   });
 });
+
+
+describe('macOS WebKit first-frame rendering regression', () => {
+  test('boots the existing React UI before activating its full stylesheet', () => {
+    const entry = readFileSync(new URL('../src/main.tsx', import.meta.url), 'utf8');
+    expect(entry).not.toContain("import './styles.css';");
+    expect(entry).toContain("import('./styles.css')");
+    expect(entry).toContain('requestAnimationFrame(() => requestAnimationFrame(');
+    expect(entry).toContain('FORGE_DESKTOP_STYLESHEET_LOAD_FAILED');
+  });
+});
