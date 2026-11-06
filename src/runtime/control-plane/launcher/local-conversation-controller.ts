@@ -1,4 +1,4 @@
-import { spawn, spawnSync, type ChildProcess } from 'child_process';
+import { execFile, spawn, type ChildProcess } from 'child_process';
 import { mkdirSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -138,19 +138,23 @@ function conversationPrompt(prompt: string, repoId?: string): string {
   ].join('\n');
 }
 
-export function readLocalConversationProviderStatus(cwd: string = process.cwd()): LocalConversationProviderStatus {
+export async function readLocalConversationProviderStatus(
+  cwd: string = process.cwd(),
+): Promise<LocalConversationProviderStatus> {
   try {
     const executable = resolveLauncherExecutable({ controllerType: 'codex', cwd });
-    const login = spawnSync(executable, ['login', 'status'], {
-      cwd, env: launcherProcessEnvironment(process.env),
-      stdio: 'ignore', timeout: 4_000,
+    const loginConfirmed = await new Promise<boolean>((resolve) => {
+      execFile(executable, ['login', 'status'], {
+        cwd, env: launcherProcessEnvironment(process.env),
+        timeout: 4_000, maxBuffer: 8 * 1024,
+      }, (error) => resolve(!error));
     });
-    if (login.error || login.status !== 0) {
+    if (!loginConfirmed) {
       return {
         provider: 'codex',
         status: 'not_configured',
-        label: 'Codex 尚未登录',
-        detail: 'Codex CLI 已安装。请在终端执行 codex login 后重新检查连接。',
+        label: 'Codex 登录状态未确认',
+        detail: 'Codex CLI 已安装，但登录检查未通过。请运行 codex login，再刷新连接状态。',
         streaming: false,
         tools: false,
         cancellable: true,

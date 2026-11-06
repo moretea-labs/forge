@@ -42,7 +42,7 @@ export async function callCoreCapabilityAdapter(
       return result({ error: { code: 'CORE_CAPABILITY_ACTION_UNSUPPORTED', message: `Unsupported controller.connection action: ${action || '<empty>'}` } }, true);
     }
     if (capabilityId === 'controller.local_conversation') {
-      if (action === 'status') return result({ ...readLocalConversationProviderStatus() });
+      if (action === 'status') return result({ ...await readLocalConversationProviderStatus() });
       if (action === 'cancel') return result(cancelLocalConversation(String(input.conversation_id ?? '')));
       if (action === 'send') {
         const conversationId = typeof input.conversation_id === 'string' ? input.conversation_id.trim() : '';

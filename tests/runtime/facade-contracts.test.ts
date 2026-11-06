@@ -5,7 +5,7 @@ import { evaluatePolicyGate } from '../../src/runtime/control-plane/facade/polic
 import { buildFacadeResult } from '../../src/runtime/control-plane/facade/facade-result';
 import { allowedFacadeOperations, validateSuggestedNextActions } from '../../src/runtime/control-plane/facade/suggested-actions';
 import { buildClaudeControllerInvocation, buildCodexControllerInvocation, buildSuperControllerInvocation, type ThinLauncherRequest } from '../../src/runtime/control-plane/launcher/thin-launcher';
-import { cancelLocalConversation, parseCodexConversationJsonl, runCodexConversation } from '../../src/runtime/control-plane/launcher/local-conversation-controller';
+import { cancelLocalConversation, parseCodexConversationJsonl, readLocalConversationProviderStatus, runCodexConversation } from '../../src/runtime/control-plane/launcher/local-conversation-controller';
 import { RH_WORK_MODEL_OPERATIONS, isRhWorkAcceptedOperation } from '../../src/runtime/control-plane/facade/rh-work-operation-contract';
 import { runtimeToolDefinitions } from '../../adapters/mcp/runtime-gateway/runtime-tool-definitions';
 import { mcpServerInstructions } from '../../adapters/mcp/instructions';
@@ -23,6 +23,19 @@ import {
 } from '../../src/runtime/control-plane/facade/types';
 
 describe('handoff and facade contracts', () => {
+  test('Codex status is an asynchronous bounded probe with conservative ready semantics', async () => {
+    const pending = readLocalConversationProviderStatus();
+    expect(pending).toBeInstanceOf(Promise);
+    const provider = await pending;
+    expect(provider.provider).toBe('codex');
+    expect(['ready', 'not_configured', 'unavailable']).toContain(provider.status);
+    if (provider.status !== 'ready') {
+      expect(provider.tools).toBe(false);
+    } else {
+      expect(provider.tools).toBe(true);
+    }
+  });
+
   test('Controller MCP instructions require progressive cross-entry discovery and independent requirement close review', () => {
     const guidance = mcpServerInstructions('controller');
     expect(guidance).toContain('Progressive source discovery');
