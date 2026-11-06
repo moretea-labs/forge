@@ -20,6 +20,11 @@ export interface LocalToolProgress {
   requestId?: string;
 }
 
+/** Geometry-based following avoids moving the viewport while reading earlier messages. */
+export function transcriptIsNearBottom(scrollHeight: number, scrollTop: number, clientHeight: number): boolean {
+  return scrollHeight - scrollTop - clientHeight < 96;
+}
+
 /** Append each start; reconcile its matching completion without inventing success. */
 export function advanceLocalToolProgress(
   events: LocalToolProgress[], event: LocalToolProgress,
@@ -281,7 +286,9 @@ export function LocalConversationSurface({
   const diffRequest = useRef(0);
   const handledNewThread = useRef(false);
   const initialThreadProvisioned = useRef<LocalProviderChoice | null>(null);
-  const transcriptEndRef = useRef<HTMLDivElement>(null);
+  const transcriptRef = useRef<HTMLDivElement>(null);
+  const composerTextRef = useRef<HTMLTextAreaElement>(null);
+  const [followLatest, setFollowLatest] = useState(true);
   const surfaceRef = useRef<HTMLElement>(null);
 
   useEffect(() => { persistThreads(threads); }, [threads]);
@@ -334,8 +341,24 @@ export function LocalConversationSurface({
   const selectedThread = activeThreads.find((thread) => thread.id === selectedThreadId) ?? activeThreads[0];
   const currentThreadIdRef = useRef<string | undefined>(undefined);
   currentThreadIdRef.current = selectedThread?.id;
-  useEffect(() => { transcriptEndRef.current?.scrollIntoView({ block: 'end', behavior: 'smooth' }); },
-    [selectedThreadId, selectedThread?.messages.length, sending]);
+  // Preserve history-reading position when a response or tool event arrives.
+  // Only the active thread switch forces the transcript to its latest entry.
+  useEffect(() => {
+    setFollowLatest(true);
+    const viewport = transcriptRef.current;
+    if (viewport) viewport.scrollTop = viewport.scrollHeight;
+  }, [selectedThread?.id]);
+  useEffect(() => {
+    const viewport = transcriptRef.current;
+    if (viewport && followLatest) viewport.scrollTop = viewport.scrollHeight;
+  }, [selectedThread?.messages.length, sending, toolProgress.length, followLatest]);
+  useEffect(() => {
+    const textarea = composerTextRef.current;
+    if (!textarea) return;
+    textarea.style.height = 'auto';
+    textarea.style.height = Math.min(textarea.scrollHeight, 192) + 'px';
+    textarea.style.overflowY = textarea.scrollHeight > 192 ? 'auto' : 'hidden';
+  }, [draft]);
 
   useEffect(() => {
     // Empty drafts are not history. Keep them in the single local owner until
@@ -513,7 +536,8 @@ export function LocalConversationSurface({
     if (choice.created) {
       setThreads((current) => [choice.thread, ...current]);
       setSelectedThreadId(choice.thread.id);
-      setDraft('');
+      // The unsent prompt is local draft text, not part of the old transcript.
+      // Preserve it when choosing the execution context for the next turn.
     } else updateSelected(() => choice.thread);
     setAllowEffects(false);
     setSendError(null);
@@ -528,7 +552,8 @@ export function LocalConversationSurface({
     if (choice.created) {
       setThreads((current) => [choice.thread, ...current]);
       setSelectedThreadId(choice.thread.id);
-      setDraft('');
+      // The unsent prompt is local draft text, not part of the old transcript.
+      // Preserve it when choosing the execution context for the next turn.
     } else updateSelected(() => choice.thread);
     setAllowEffects(false);
     setSendError(null);
@@ -544,7 +569,6 @@ export function LocalConversationSurface({
       const next = createThread(selectedProvider, selectedRepoId, nextWorkId, selectedThread.checkoutId);
       setThreads((current) => [next, ...current]);
       setSelectedThreadId(next.id);
-      setDraft('');
     } else updateSelected((thread) => ({
       ...thread, workId: nextWorkId, providerSessionId: undefined,
       updatedAt: new Date().toISOString(),
@@ -750,10 +774,10 @@ export function LocalConversationSurface({
               <button type="button" onClick={onOpenProjects}><AgentControlIcon name="work" /> Work 与项目</button>
               <button type="button" onClick={onOpenKnowledge}><AgentControlIcon name="book" /> 项目知识</button>
               <button type="button" onClick={onOpenSettings}><AgentControlIcon name="settings" /> 模型与授权</button>
-              <button type="button" disabled={!apiSelected && providerLoading}
-                onClick={() => apiSelected ? onOpenSettings() : void onRefreshProvider()}>
-                <AgentControlIcon name="refresh" /> {apiSelected ? 'API 配置' : '刷新 Codex 连接'}
-              </button>
+              {!apiSelected && <button type="button" disabled={providerLoading}
+                onClick={() => void onRefreshProvider()}>
+                <AgentControlIcon name="refresh" /> 刷新 Codex 连接
+              </button>}
               {selectedThread && <button type="button" disabled={sending || committing}
                 onClick={archiveThread}>归档当前会话</button>}
             </div>
@@ -782,7 +806,12 @@ export function LocalConversationSurface({
               onClose={() => { diffRequest.current += 1; setDiffVisible(false); }} />
           )}
 
-          <div className="local-transcript">
+          <div className="local-transcript" ref={transcriptRef} onScroll={(event) => {
+            const viewport = event.currentTarget;
+            setFollowLatest(transcriptIsNearBottom(
+              viewport.scrollHeight, viewport.scrollTop, viewport.clientHeight,
+            ));
+          }}>
             {selectedThread.messages.length === 0 ? (
               <div className="local-empty transcript-empty">
                 <strong>让 Forge 完成一个任务</strong>
@@ -818,23 +847,39 @@ export function LocalConversationSurface({
                     : toolProgress.length > 0 ? '工具调用已返回，正在整理回复…'
                     : 'Agent 正在处理请求…'}</span>
                 {toolProgress.length > 0 && (
-                  <div className="local-tool-progress-list" aria-label="本轮 Forge 工具进度">
-                    {toolProgress.slice(-6).map((event, index) => (
-                      <div className={'local-tool-progress-row ' + event.phase} key={index}>
-                        <span>{event.name}</span>
-                        <small>{event.phase === 'started' ? '执行中' : event.phase === 'completed' ? '已完成' : '失败'}</small>
-                      </div>
-                    ))}
-                  </div>
+                  <details className="agent-tool-activity" aria-label="本轮 Forge 工具进度">
+                    <summary>
+                      {toolProgress.some((event) => event.phase === 'failed') ? '有工具执行失败' : '工具调用记录'}
+                      <span>{toolProgress.length} 项 · 展开详情</span>
+                    </summary>
+                    <div className="local-tool-progress-list">
+                      {toolProgress.slice(-6).map((event, index) => (
+                        <div className={'local-tool-progress-row ' + event.phase} key={index}>
+                          <span>{event.name}</span>
+                          <small>{event.phase === 'started' ? '执行中' : event.phase === 'completed' ? '已完成' : '失败'}</small>
+                        </div>
+                      ))}
+                    </div>
+                  </details>
                 )}
                 </div>
               </div>
             )}
-            <div ref={transcriptEndRef} />
           </div>
+          {!followLatest && selectedThread.messages.length > 0 && (
+            <button className="agent-jump-latest" type="button"
+              onClick={() => {
+                const viewport = transcriptRef.current;
+                if (viewport) viewport.scrollTop = viewport.scrollHeight;
+                setFollowLatest(true);
+              }}>
+              跳转到最新消息 ↓
+            </button>
+          )}
 
           <div className="local-composer agent-chat-composer">
             <textarea
+              ref={composerTextRef}
               rows={2}
               aria-label="本地会话消息"
               placeholder={sending ? '可以先编写下一条消息…'
@@ -974,20 +1019,23 @@ export function LocalConversationSurface({
                   onClick={() => setAllowEffects((current) => !current)}>
                   <AgentControlIcon name="shield" />
                 </button>}
-                {sending && sendingThreadId === selectedThread.id
-                  && (apiSelected || provider?.cancellable === true) && (
-                  <button type="button" className="agent-icon-button agent-stop-control"
-                    title={cancelRequested ? '正在请求停止' : '停止本轮回复'}
-                    aria-label="请求停止当前 Agent 回复"
-                    disabled={cancelRequested} onClick={() => void cancelTurn()}>
+                {sending && sendingThreadId === selectedThread.id ? (
+                  <button className="local-send-button agent-stop-control" type="button"
+                    aria-label={cancelRequested ? '已请求停止' : '请求停止当前 Agent 回复'}
+                    title={apiSelected || provider?.cancellable === true
+                      ? cancelRequested ? '正在等待停止确认' : '停止本轮回复'
+                      : '当前模型提供方不支持停止'}
+                    disabled={cancelRequested || !onCancel || (!apiSelected && provider?.cancellable !== true)}
+                    onClick={() => void cancelTurn()}>
                     <AgentControlIcon name="stop" />
                   </button>
+                ) : (
+                  <button className="local-send-button" type="button"
+                    aria-label="发送消息" title="发送消息（Enter）"
+                    disabled={!providerReady || !draft.trim() || sending} onClick={() => void send()}>
+                    <AgentControlIcon name="arrow" />
+                  </button>
                 )}
-                <button className="local-send-button" type="button"
-                  aria-label={sending ? '正在发送' : '发送消息'} title="发送消息（Enter）"
-                  disabled={!providerReady || !draft.trim() || sending} onClick={() => void send()}>
-                  <AgentControlIcon name="arrow" />
-                </button>
               </div>
             </div>
           </div>

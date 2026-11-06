@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { advanceLocalToolProgress, createThread, findExistingWorkThread, LocalConversationSurface, selectThreadCheckout, selectThreadRepository } from '../src/local-conversation';
+import { advanceLocalToolProgress, createThread, findExistingWorkThread, LocalConversationSurface, selectThreadCheckout, selectThreadRepository, transcriptIsNearBottom } from '../src/local-conversation';
 import { repositoryLabel } from '../src/runtime-client';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -7,6 +7,14 @@ import { ProjectRecordsView } from '../src/project-records-view';
 import { disconnectedProjection } from '../src/runtime-projection';
 
 describe('Forge Desktop Work-bound Agent thread identity', () => {
+  test('transcript only follows new output while reading the bottom', () => {
+    expect(transcriptIsNearBottom(1000, 800, 200)).toBe(true);
+    expect(transcriptIsNearBottom(1000, 705, 200)).toBe(true);
+    expect(transcriptIsNearBottom(1000, 700, 200)).toBe(false);
+    expect(transcriptIsNearBottom(1000, 300, 200)).toBe(false);
+    expect(transcriptIsNearBottom(200, 0, 400)).toBe(true);
+  });
+
   test('Agent transcript is free of permanent project, Work and model toolbars', () => {
     const originalStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
     const thread = createThread('api', 'repo_forge', 'work_1', 'checkout_main');
@@ -35,6 +43,8 @@ describe('Forge Desktop Work-bound Agent thread identity', () => {
       expect(html).toContain('aria-label="会话关联的 Forge Work"');
       expect(html).toContain('aria-label="允许本轮编辑文件和执行命令"');
       expect(html).toContain('aria-label="发送消息"');
+      expect((html.match(/class="local-send-button"/g) ?? [])).toHaveLength(1);
+      expect(html).not.toContain('aria-label="请求停止当前 Agent 回复"');
       expect(html).not.toContain('class="local-context-row"');
       expect(html).not.toContain('class="local-work-context"');
       expect(html).not.toContain('class="local-provider ');

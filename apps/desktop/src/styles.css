@@ -692,3 +692,48 @@ a { color: #353535; text-decoration: underline; text-underline-offset: 3px; }
   .local-conversation .agent-chat-composer,.agent-header-menu-panel,.agent-context-panel {
     background: #fbfbfc; -webkit-backdrop-filter: none; backdrop-filter: none; }
 }
+
+/* Long transcripts preserve their reading position; users can explicitly resume following. */
+.agent-jump-latest {
+  position: relative; align-self: center; z-index: 2; margin: -36px 0 8px;
+  padding: 7px 13px; border: 1px solid rgba(85,95,110,.16); border-radius: 20px;
+  background: rgba(250,251,253,.97); box-shadow: 0 5px 18px rgba(25,35,50,.1);
+  color: #515d69; font-size: 11px;
+}
+.agent-jump-latest:hover { background: #f1f3f5; }
+.agent-chat-composer textarea { box-sizing: border-box; resize: none; overflow-y: hidden; }
+@media (max-width: 1080px) {
+  /* The overlay must sit ABOVE the composer or the commit/close actions are hidden. */
+  .local-conversation.with-diff .local-git-inspector { z-index: 24; }
+}
+
+@media (max-width: 950px) {
+  /* At compact widths project/checkout remain discoverable by icon and tooltip. */
+  .agent-composer-context .agent-context-menu > summary { max-width: 96px; }
+  .agent-composer-context .agent-context-menu > summary span { max-width: 52px; }
+  .agent-composer-context .agent-context-menu:last-child > summary span { display: none; }
+  .agent-composer-context .agent-context-menu:last-child > summary svg:last-child { display: none; }
+  .agent-context-panel { width: min(270px, calc(100vw - 270px)); }
+}
+.agent-composer-utilities .local-send-button.agent-stop-control { background: #665b5b; color: #fff; }
+.agent-composer-utilities .local-send-button.agent-stop-control:hover:not(:disabled) { background: #785d5d; }
+
+/* Tool progress stays one line in the transcript until explicitly inspected. */
+.agent-tool-activity { margin-top: 7px; color: #7c858e; font-size: 10.5px; }
+.agent-tool-activity summary { display: flex; align-items: center; gap: 12px; cursor: pointer; }
+.agent-tool-activity summary > span { color: #a0a6ac; font-size: 10px; }
+.agent-tool-activity[open] summary { margin-bottom: 7px; }
+
+/* A new chat keeps its introduction immediately above the task composer. */
+.local-conversation:has(.transcript-empty) .local-transcript {
+  flex: 0 0 auto; min-height: 0; overflow: visible; padding: 0 4px 12px; margin-top: auto;
+}
+.local-conversation:has(.transcript-empty) .transcript-empty {
+  min-height: 96px; gap: 8px; padding: 0 12px;
+}
+.local-conversation:has(.transcript-empty) .agent-chat-composer { margin-bottom: auto; }
+.local-conversation:has(.transcript-empty) .transcript-empty p { max-width: 400px; }
+@media (max-height: 660px) {
+  .local-conversation:has(.transcript-empty) .local-transcript { margin-top: 12px; }
+  .local-conversation:has(.transcript-empty) .agent-chat-composer { margin-bottom: 0; }
+}

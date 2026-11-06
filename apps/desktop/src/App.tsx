@@ -191,8 +191,10 @@ function Sidebar({
             onClick={() => setShowProjectPicker((expanded) => !expanded)}>
             <span className="project-folder" aria-hidden="true">▱</span>
             <span className="project-picker-identity">
-              <span className="nav-label">{activeProject?.name ?? '选择项目'}</span>
-              {activeProject?.repository && <small>{activeProject.repository}</small>}
+              <span className="nav-label">{activeProject?.repository.split('/').at(-1) ?? '选择项目'}</span>
+              {activeProject?.repository && <small title={activeProject.localRoot ?? activeProject.repository}>
+                {activeProject.name} · {activeProject.repository}
+              </small>}
             </span>
             <span className="project-caret" aria-hidden="true">{showProjectPicker ? '⌃' : '⌄'}</span>
           </button>
@@ -216,8 +218,8 @@ function Sidebar({
                   onClick={() => { onSelectProject?.(project); setShowProjectPicker(false); }}>
                   <span className="project-folder" aria-hidden="true">▱</span>
                   <span className="project-picker-identity">
-                    <span className="nav-label">{project.name}</span>
-                    <small>{project.repository}</small>
+                    <span className="nav-label">{project.repository.split('/').at(-1) ?? project.name}</span>
+                    <small>{project.name} · {project.repository}</small>
                   </span>
                 </button>
               ))}
