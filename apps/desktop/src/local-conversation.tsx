@@ -427,12 +427,12 @@ export function LocalConversationSurface({
     return () => { stopped = true; unsubscribe?.(); };
   }, []);
 
-  const selectedProvider: LocalProviderChoice = apiSettings?.provider ?? 'codex';
-  const activeThreads = useMemo(
-    () => threads.filter((thread) => !thread.archived && (thread.provider ?? 'codex') === selectedProvider),
-    [threads, selectedProvider],
-  );
+  // Settings determine the provider for NEW sessions only. Existing Codex/API
+  // conversations retain their own provider, history, checkout and resume ID.
+  const defaultProvider: LocalProviderChoice = apiSettings?.provider ?? 'codex';
+  const activeThreads = useMemo(() => threads.filter((thread) => !thread.archived), [threads]);
   const selectedThread = activeThreads.find((thread) => thread.id === selectedThreadId) ?? activeThreads[0];
+  const selectedThreadProvider: LocalProviderChoice = selectedThread?.provider ?? 'codex';
   const sending = Boolean(selectedThread && pendingTurns[selectedThread.id]);
   const selectedCheckoutTurnPending = Boolean(selectedThread?.projectRepoId && selectedThread.checkoutId
     && threads.some((thread) => pendingTurns[thread.id]
@@ -583,9 +583,14 @@ export function LocalConversationSurface({
     && checkoutIndex.some((checkout) => checkout.checkoutId === selectedThread.checkoutId));
   const workBindingReady = !selectedWorkId
     || (workDetail?.repoId === selectedRepoId && workDetail?.workId === selectedWorkId);
-  const apiSelected = apiSettings?.provider === 'api';
+  const apiSelected = selectedThreadProvider === 'api';
   const loopbackApi = Boolean(apiSettings && /^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::[0-9]+)?(?:\/|$)/.test(apiSettings.endpoint));
-  const apiReady = Boolean(apiSettings?.model.trim() && (apiSettings?.hasKey || loopbackApi));
+  // When Codex is the new-session default, the settings read deliberately
+  // does not query the API Keychain. A historical API thread can still send:
+  // the native API command checks the exact saved secret at execution time.
+  const apiCredentialDeferred = apiSelected && apiSettings?.provider !== 'api' && !loopbackApi;
+  const apiReady = Boolean(apiSettings?.model.trim()
+    && (apiSettings?.hasKey || loopbackApi || apiCredentialDeferred));
   const providerReady = (apiSelected ? apiReady : provider?.status === 'ready')
     && Boolean(onSend) && projectBindingReady && checkoutBindingReady && workBindingReady;
 
@@ -593,7 +598,7 @@ export function LocalConversationSurface({
     const repoId = selectedThread?.projectRepoId ?? defaultProjectRepoId;
     const checkoutId = selectedThread?.checkoutId
       ?? projects.find((project) => project.repoId === repoId)?.checkoutId;
-    const thread = createThread(selectedProvider, repoId, undefined, checkoutId);
+    const thread = createThread(defaultProvider, repoId, undefined, checkoutId);
     setThreads((current) => [thread, ...current]);
     setSelectedThreadId(thread.id);
     setSendError(null);
@@ -609,32 +614,32 @@ export function LocalConversationSurface({
     // Re-enter an existing Work-bound Agent thread rather than manufacturing
     // multiple local transcripts for the same ongoing work.
     const existing = newThreadContext?.workId
-      ? findExistingWorkThread(threads, selectedProvider, newThreadContext.repoId, newThreadContext.workId,
+      ? findExistingWorkThread(threads, defaultProvider, newThreadContext.repoId, newThreadContext.workId,
         projects.find((project) => project.repoId === newThreadContext.repoId)?.checkoutId)
       : undefined;
     if (existing) {
       setSelectedThreadId(existing.id);
     } else {
       const repoId = newThreadContext?.repoId ?? defaultProjectRepoId;
-      const thread = createThread(selectedProvider, repoId, newThreadContext?.workId,
+      const thread = createThread(defaultProvider, repoId, newThreadContext?.workId,
         projects.find((project) => project.repoId === repoId)?.checkoutId);
       setThreads((current) => [thread, ...current]);
       setSelectedThreadId(thread.id);
     }
     setSendError(null);
     onNewThreadHandled();
-  }, [newThreadRequested, selectedProvider, defaultProjectRepoId, newThreadContext,
+  }, [newThreadRequested, defaultProvider, defaultProjectRepoId, newThreadContext,
     onNewThreadHandled, threads, selectedThreadId]);
 
   useEffect(() => {
-    if (newThreadRequested || activeThreads.length > 0 || initialThreadProvisioned.current === selectedProvider) return;
-    initialThreadProvisioned.current = selectedProvider;
-    const thread = createThread(selectedProvider, defaultProjectRepoId, undefined,
+    if (newThreadRequested || activeThreads.length > 0 || initialThreadProvisioned.current === defaultProvider) return;
+    initialThreadProvisioned.current = defaultProvider;
+    const thread = createThread(defaultProvider, defaultProjectRepoId, undefined,
       projects.find((project) => project.repoId === defaultProjectRepoId)?.checkoutId);
-    setThreads((current) => current.some((entry) => !entry.archived && (entry.provider ?? 'codex') === selectedProvider)
+    setThreads((current) => current.some((entry) => !entry.archived)
       ? current : [thread, ...current]);
     setSelectedThreadId(thread.id);
-  }, [activeThreads.length, selectedProvider, defaultProjectRepoId, newThreadRequested]);
+  }, [activeThreads.length, defaultProvider, defaultProjectRepoId, newThreadRequested]);
 
   const updateSelected = (updater: (thread: LocalConversationThread) => LocalConversationThread) => {
     if (!selectedThread) return;
@@ -643,7 +648,7 @@ export function LocalConversationSurface({
 
   const changeProject = (nextRepoId?: string) => {
     if (!selectedThread || sending || committing || nextRepoId === selectedThread.projectRepoId) return;
-    const choice = selectThreadRepository(selectedThread, selectedProvider, nextRepoId,
+    const choice = selectThreadRepository(selectedThread, selectedThreadProvider, nextRepoId,
       projects.find((project) => project.repoId === nextRepoId)?.checkoutId);
     if (choice.created) {
       setThreads((current) => [choice.thread, ...current]);
@@ -660,7 +665,7 @@ export function LocalConversationSurface({
   const changeCheckout = (nextId: string) => {
     if (!selectedThread || sending || committing
       || !checkoutIndex.some((checkout) => checkout.checkoutId === nextId)) return;
-    const choice = selectThreadCheckout(selectedThread, selectedProvider, nextId);
+    const choice = selectThreadCheckout(selectedThread, selectedThreadProvider, nextId);
     if (choice.created) {
       setThreads((current) => [choice.thread, ...current]);
       setSelectedThreadId(choice.thread.id);
@@ -678,7 +683,7 @@ export function LocalConversationSurface({
   const changeWork = (nextWorkId?: string) => {
     if (!selectedThread || !selectedRepoId || sending || committing || nextWorkId === selectedWorkId) return;
     if (selectedThread.messages.length || selectedThread.providerSessionId) {
-      const next = createThread(selectedProvider, selectedRepoId, nextWorkId, selectedThread.checkoutId);
+      const next = createThread(selectedThreadProvider, selectedRepoId, nextWorkId, selectedThread.checkoutId);
       setThreads((current) => [next, ...current]);
       setSelectedThreadId(next.id);
       setDrafts((current) => ({ ...current, [next.id]: current[selectedThread.id] ?? '' }));
@@ -875,9 +880,11 @@ export function LocalConversationSurface({
         </div>
         <div className="agent-chat-header-actions">
           <span className="agent-provider-indicator"
-            title={apiSelected ? (apiReady ? `API · ${apiSettings?.model}` : 'API 尚未配置')
+            title={apiSelected ? (apiReady
+              ? `API · ${apiSettings?.model}${apiCredentialDeferred ? ' · 发送时校验钥匙串' : ''}`
+              : 'API 尚未配置')
               : providerError ?? provider?.detail ?? 'Codex CLI 状态待确认'}>
-            <span className={'health-dot ' + ((apiSelected ? apiReady : provider?.status === 'ready')
+            <span className={'health-dot ' + ((apiSelected ? (apiReady && !apiCredentialDeferred) : provider?.status === 'ready')
               ? 'connected' : 'degraded')} aria-hidden="true" />
             <span>{apiSelected ? (apiReady ? 'API' : '未配置')
               : providerLoading ? '检测中' : provider?.status === 'ready' ? 'Codex' : '未连接'}</span>
@@ -1142,7 +1149,8 @@ export function LocalConversationSurface({
                 </details>}
               </div>
               <div className="agent-composer-utilities">
-                <button type="button" className="agent-model-control" title="选择模型与 API 设置"
+                <button type="button" className="agent-model-control"
+                  title="配置新会话默认模型；当前会话的执行引擎保持不变"
                   aria-label="选择模型与 API 设置" onClick={onOpenSettings}>
                   <AgentControlIcon name="settings" />
                   <span>{apiSelected ? (apiSettings?.model || '兼容 API') : 'Codex'}</span>

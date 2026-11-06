@@ -298,7 +298,7 @@ export function Sidebar({
                   <button type="button" key={thread.id}
                     className={'nav-row sidebar-thread-row'
                       + (activeView === 'assistant' && selectedLocalThreadId === thread.id ? ' active' : '')}
-                    title={thread.title} onClick={() => {
+                    title={thread.title + ' · ' + (thread.provider === 'api' ? '兼容 API' : 'Codex CLI')} onClick={() => {
                       onSelectLocalThread(thread.id);
                       setConversationSearchOpen(false);
                       setConversationQuery('');
@@ -306,6 +306,7 @@ export function Sidebar({
                     <span className="nav-symbol"><ForgeIcon name={thread.draft ? 'draft' : 'conversation'} /></span>
                     <span className="nav-label">{thread.title}</span>
                     {thread.running && <span className="sidebar-turn-running" role="status" title="Agent 运行中" />}
+                    {thread.provider === 'api' && <span className="sidebar-thread-provider" title="兼容 API 会话">API</span>}
                     {thread.draft && <span className="sidebar-draft-indicator">草稿</span>}
                   </button>
                 ))}

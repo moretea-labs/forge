@@ -1199,10 +1199,10 @@ async fn send_local_api_conversation(
     conversation_id: String,
     allow_effects: bool,
 ) -> Result<Value, String> {
+    // The saved provider is a default for new sessions, not a prohibition on
+    // continuing an existing API conversation. Every API request still checks
+    // the configured endpoint, model, Keychain secret and Forge authorization.
     let config = read_local_api_settings()?;
-    if config.get("provider").and_then(Value::as_str) != Some("api") {
-        return Err("FORGE_DESKTOP_API_PROVIDER_NOT_SELECTED".into());
-    }
     let endpoint = validated_local_api_endpoint(config.get("endpoint").and_then(Value::as_str).unwrap_or(""))?;
     let model = config.get("model").and_then(Value::as_str).unwrap_or("").trim();
     if model.is_empty() { return Err("FORGE_DESKTOP_API_MODEL_INVALID".into()); }

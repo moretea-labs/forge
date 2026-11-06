@@ -66,6 +66,55 @@ describe('Forge Desktop Work-bound Agent thread identity', () => {
     expect((html.match(/sidebar-turn-running/g) ?? [])).toHaveLength(1);
   });
 
+  test('new provider defaults never hide older pinned Codex/API conversations', () => {
+    const codex = { ...createThread('codex', 'repo_one', undefined, 'checkout_one'),
+      title: 'Codex task', messages: [{ id: 'c1', role: 'user' as const,
+        content: 'Continue Codex task', createdAt: '2026-11-06T08:00:00Z' }] };
+    const api = { ...createThread('api', 'repo_two', undefined, 'checkout_two'),
+      title: 'API task', messages: [{ id: 'a1', role: 'user' as const,
+        content: 'Continue API task', createdAt: '2026-11-06T08:01:00Z' }] };
+    const originalStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+    const projects = [
+      { repoId: 'repo_one', name: 'One', repository: 'example/one', checkoutId: 'checkout_one' },
+      { repoId: 'repo_two', name: 'Two', repository: 'example/two', checkoutId: 'checkout_two' },
+    ];
+    const renderHistory = (threads: typeof codex[], defaultProvider: 'codex' | 'api') => {
+      Object.defineProperty(globalThis, 'localStorage', {
+        configurable: true, value: {
+          getItem(key: string) {
+            return key === 'forge.desktop.local-threads.v1' ? JSON.stringify(threads) : '{}';
+          }, setItem() {},
+        },
+      });
+      return renderToStaticMarkup(createElement(LocalConversationSurface, {
+        projects, defaultProjectRepoId: 'repo_one', newThreadRequested: false,
+        provider: { status: 'ready', label: 'Codex', detail: 'Connected', streaming: false, tools: true },
+        providerLoading: false, providerError: null,
+        apiSettings: { provider: defaultProvider, endpoint: 'https://api.example.com/v1',
+          model: 'test-model', apiProtocol: 'openai', hasKey: false },
+        onOpenSettings() {}, onOpenProjects() {}, onOpenKnowledge() {},
+        onNewThreadHandled() {}, onOpenThreadHandled() {},
+        onThreadsChange() {}, async onRefreshProvider() {},
+        async onSend() { return { content: 'confirmed' }; },
+      }));
+    };
+    try {
+      const oldCodexWithApiDefault = renderHistory([codex, api], 'api');
+      expect(oldCodexWithApiDefault).toContain('Continue Codex task');
+      expect(oldCodexWithApiDefault).toContain('title="Connected"');
+      expect(oldCodexWithApiDefault).not.toContain('API 尚未配置');
+      const oldApiWithCodexDefault = renderHistory([api, codex], 'codex');
+      expect(oldApiWithCodexDefault).toContain('Continue API task');
+      expect(oldApiWithCodexDefault).toContain('发送时校验钥匙串');
+      expect(oldApiWithCodexDefault).toContain('允许本轮编辑文件和执行命令');
+      const nav = localConversationNavItems([codex, api], {});
+      expect(nav.map((item) => item.provider).sort()).toEqual(['api', 'codex']);
+    } finally {
+      if (originalStorage) Object.defineProperty(globalThis, 'localStorage', originalStorage);
+      else delete (globalThis as { localStorage?: Storage }).localStorage;
+    }
+  });
+
   test('Codex setup and MCP connection are separate app settings, without duplicating authority', () => {
     const html = renderToStaticMarkup(createElement(SettingsView, {
       settings: { provider: 'codex', endpoint: 'https://api.openai.com/v1',

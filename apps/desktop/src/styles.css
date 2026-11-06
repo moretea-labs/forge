@@ -378,6 +378,9 @@ a { color: #353535; text-decoration: underline; text-underline-offset: 3px; }
 .sidebar-turn-running { width: 6px; height: 6px; flex: 0 0 6px;
   border-radius: 50%; background: #6099bc; animation: local-status-pulse 1.25s ease-in-out infinite; }
 .sidebar-thread-row { min-height: 30px; }
+.sidebar-thread-provider { flex: 0 0 auto; font-size: 9px; font-weight: 600;
+  letter-spacing: .02em; color: #74758a; padding: 2px 4px;
+  border-radius: 4px; background: rgba(105,108,130,.08); }
 .sidebar-thread-row .nav-symbol { color: #9397a2; }
 .sidebar-thread-row.active .nav-symbol { color: #6856b4; }
 .local-message { width: fit-content; min-width: 0; max-width: 88%; padding: 10px 0; border-radius: 0; }
