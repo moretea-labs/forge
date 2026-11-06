@@ -107,7 +107,7 @@ function phaseEvidenceStateLabel(state: string): string {
   return labels[state] ?? state;
 }
 
-function Sidebar({
+export function Sidebar({
   projects,
   selectedRepoId,
   activeView,
@@ -117,6 +117,7 @@ function Sidebar({
   onRetryProjects,
   onOpenAssistant,
   onNewThread,
+  onNewProjectThread,
   onOpenProjects,
   onOpenRequirements,
   onOpenPlans,
@@ -137,6 +138,7 @@ function Sidebar({
   onRetryProjects: () => void;
   onOpenAssistant: () => void;
   onNewThread: () => void;
+  onNewProjectThread: (repoId: string) => void;
   onOpenProjects: () => void;
   onOpenRequirements: () => void;
   onOpenPlans: () => void;
@@ -156,9 +158,21 @@ function Sidebar({
   const [conversationQuery, setConversationQuery] = useState('');
   const conversationSearchRef = useRef<HTMLInputElement>(null);
   const shownThreads = conversationSearchOpen
-    ? localThreads.filter((thread) => thread.title.toLocaleLowerCase()
-      .includes(conversationQuery.trim().toLocaleLowerCase()))
-    : localThreads.slice(0, 10);
+    ? localThreads.filter((thread) => {
+      const project = projects.find((entry) => entry.repoId === thread.projectRepoId);
+      return (thread.title + ' ' + (project?.repository ?? '') + ' ' + (project?.name ?? ''))
+        .toLocaleLowerCase().includes(conversationQuery.trim().toLocaleLowerCase());
+    })
+    : localThreads;
+  // One read-only grouping of the existing conversation index. The repository
+  // and Work remain owned by Forge and each individual Agent thread.
+  const conversationGroups = new Map<string, LocalConversationNavItem[]>();
+  for (const thread of shownThreads) {
+    const repoId = thread.projectRepoId ?? '';
+    const group = conversationGroups.get(repoId) ?? [];
+    group.push(thread);
+    conversationGroups.set(repoId, group);
+  }
 
   useEffect(() => {
     if (conversationSearchOpen) conversationSearchRef.current?.focus();
@@ -258,19 +272,39 @@ function Sidebar({
                 type="search" aria-label="搜索会话标题" placeholder="搜索全部会话…"
                 value={conversationQuery} onChange={(event) => setConversationQuery(event.target.value)} />
             )}
-            {shownThreads.map((thread) => (
-              <button type="button" key={thread.id}
-                className={'nav-row sidebar-thread-row' + (activeView === 'assistant' && selectedLocalThreadId === thread.id ? ' active' : '')}
-                title={thread.title} onClick={() => {
-                  onSelectLocalThread(thread.id);
-                  setConversationSearchOpen(false);
-                  setConversationQuery('');
-                }}>
-                <span className="nav-symbol"><ForgeIcon name={thread.draft ? 'draft' : 'conversation'} /></span>
-                <span className="nav-label">{thread.title}</span>
-                {thread.draft && <span className="sidebar-draft-indicator">草稿</span>}
-              </button>
-            ))}
+            {[...conversationGroups].map(([repoId, items]) => {
+              const project = projects.find((entry) => entry.repoId === repoId);
+              const projectName = project?.repository.split('/').at(-1) ?? (repoId ? '历史项目' : '独立会话');
+              return <div className="sidebar-project-conversations" key={repoId || 'unbound'}>
+                <div className="sidebar-thread-project-heading">
+                  <span title={project?.repository ?? (repoId || '未绑定仓库')}>
+                    <ForgeIcon name={repoId ? 'project' : 'conversation'} size={13} />
+                    {projectName}
+                  </span>
+                  {repoId && project && <button type="button"
+                    aria-label={`在 ${projectName} 中新建会话`}
+                    title={`在 ${projectName} 中新建会话`}
+                    onClick={() => onNewProjectThread(repoId)}>
+                    <ForgeIcon name="plus" size={14} />
+                  </button>}
+                </div>
+                {items.map((thread) => (
+                  <button type="button" key={thread.id}
+                    className={'nav-row sidebar-thread-row'
+                      + (activeView === 'assistant' && selectedLocalThreadId === thread.id ? ' active' : '')}
+                    title={thread.title} onClick={() => {
+                      onSelectLocalThread(thread.id);
+                      setConversationSearchOpen(false);
+                      setConversationQuery('');
+                    }}>
+                    <span className="nav-symbol"><ForgeIcon name={thread.draft ? 'draft' : 'conversation'} /></span>
+                    <span className="nav-label">{thread.title}</span>
+                    {thread.running && <span className="sidebar-turn-running" role="status" title="Agent 运行中" />}
+                    {thread.draft && <span className="sidebar-draft-indicator">草稿</span>}
+                  </button>
+                ))}
+              </div>;
+            })}
             {conversationSearchOpen && shownThreads.length === 0 && (
               <p className="sidebar-search-empty" role="status">没有匹配的会话</p>
             )}
@@ -307,19 +341,31 @@ function Sidebar({
                 </div>
               )}
               {matchingProjects.map((project) => (
-                <button className={project.repoId === selectedRepoId ? 'nav-row project-row active' : 'nav-row project-row'}
-                  key={project.repoId} type="button" title={project.localRoot ?? project.repository}
-                  onClick={() => {
-                    onSelectProject?.(project);
-                    setShowProjectPicker(false);
-                    setProjectQuery('');
-                  }}>
-                  <span className="project-folder"><ForgeIcon name="project" /></span>
-                  <span className="project-picker-identity">
-                    <span className="nav-label">{project.repository.split('/').at(-1) ?? project.name}</span>
-                    <small>{project.name} · {project.repository}</small>
-                  </span>
-                </button>
+                <div className="sidebar-picker-project-row" key={project.repoId}>
+                  <button className={project.repoId === selectedRepoId ? 'nav-row project-row active' : 'nav-row project-row'}
+                    type="button" title={project.localRoot ?? project.repository}
+                    onClick={() => {
+                      onSelectProject?.(project);
+                      setShowProjectPicker(false);
+                      setProjectQuery('');
+                    }}>
+                    <span className="project-folder"><ForgeIcon name="project" /></span>
+                    <span className="project-picker-identity">
+                      <span className="nav-label">{project.repository.split('/').at(-1) ?? project.name}</span>
+                      <small>{project.name} · {project.repository}</small>
+                    </span>
+                  </button>
+                  <button className="sidebar-picker-project-agent" type="button"
+                    aria-label={`在 ${project.repository} 中新建 Agent 会话`}
+                    title="新建此项目的 Agent 会话"
+                    onClick={() => {
+                      onNewProjectThread(project.repoId);
+                      setShowProjectPicker(false);
+                      setProjectQuery('');
+                    }}>
+                    <ForgeIcon name="plus" size={16} />
+                  </button>
+                </div>
               ))}
               {projects.length > 0 && matchingProjects.length === 0 && <p className="sidebar-project-error">未找到匹配项目</p>}
             </div>
@@ -912,7 +958,7 @@ function AssistantView({
   );
 }
 
-function RuntimeView({
+export function RuntimeView({
   projection,
   loading,
   error,
@@ -927,6 +973,7 @@ function RuntimeView({
   onRecover,
   onRefreshConnection,
   onRepairConnection,
+  onOpenSettings,
 }: {
   projection: RuntimeRecoveryProjection | null;
   loading: boolean;
@@ -942,6 +989,7 @@ function RuntimeView({
   onRecover: () => Promise<void>;
   onRefreshConnection: () => Promise<void>;
   onRepairConnection: () => Promise<void>;
+  onOpenSettings: () => void;
 }) {
   const disabled = loading || action !== null || !projection?.recovery.available;
   const runtimeRunning = projection?.runtime.running === true;
@@ -952,14 +1000,21 @@ function RuntimeView({
     <main className="main-pane runtime-pane">
       <div className="content-column narrow-column">
         <header className="work-hero">
-          <div className="breadcrumb">系统</div>
-          <h1>运行时与恢复</h1>
-          <p>状态来自独立恢复服务；客户端不接管运行时生命周期。</p>
+          <div className="breadcrumb">Forge / 连接</div>
+          <h1>MCP 服务与连接</h1>
+          <p>外部 ChatGPT/MCP 服务使用 Forge 的现有控制器连接；本地 Codex 或 API 模型独立配置。</p>
         </header>
+        <div className="runtime-mode-note">
+          <ForgeIcon name="runtime" size={18} />
+          <span>这是服务状态与连接管理，不是第二个 Agent 或项目执行环境。</span>
+          <button type="button" className="plain-action" onClick={onOpenSettings}>Agent 设置</button>
+        </div>
 
         {error && <div className="inline-error standalone-error">{error}</div>}
 
-        <section className="runtime-summary">
+        <div className="runtime-connectivity">
+        <section className="runtime-summary runtime-connection-card">
+          <div className="runtime-card-kicker"><ForgeIcon name="terminal" size={16} /> 本地运行时</div>
           <div className="runtime-primary-row">
             <span className={`health-dot ${projection?.runtime.ready ? 'connected' : projection?.recovery.available ? 'degraded' : 'not_connected'}`} />
             <div>
@@ -970,16 +1025,25 @@ function RuntimeView({
           <div className="runtime-actions">
             <button className="plain-action" type="button" disabled={loading || action !== null} onClick={() => void onRefresh()}>刷新</button>
             <button className="plain-action" type="button" disabled={disabled} onClick={() => void onDiagnose()}>{action === 'diagnose' ? '诊断中…' : '诊断'}</button>
-            <button className="plain-action" type="button" disabled={disabled} onClick={() => void onRestart()}>{action === 'restart' ? restartPendingLabel : restartLabel}</button>
-            {!runtimeReady && projection?.recovery.available && (
-              <button className="plain-action" type="button" disabled={disabled} onClick={() => void onRecover()}>{action === 'recover' ? '恢复中…' : '深度恢复'}</button>
-            )}
           </div>
+          <details className="runtime-advanced-actions">
+            <summary>高级维护操作</summary>
+            <p>可能中断当前 Agent 会话或改变运行时状态，仅在明确需要时操作。</p>
+            <button className="plain-action" type="button" disabled={disabled} onClick={() => void onRestart()}>
+              {action === 'restart' ? restartPendingLabel : restartLabel}
+            </button>
+            {!runtimeReady && projection?.recovery.available && (
+              <button className="plain-action" type="button" disabled={disabled} onClick={() => void onRecover()}>
+                {action === 'recover' ? '恢复中…' : '深度恢复'}
+              </button>
+            )}
+          </details>
         </section>
 
         {connectionError && <div className="inline-error standalone-error">连接读取失败：{connectionError}</div>}
 
-        <section className="runtime-summary" aria-label="Forge 连接">
+        <section className="runtime-summary runtime-connection-card" aria-label="Forge 连接">
+          <div className="runtime-card-kicker"><ForgeIcon name="runtime" size={16} /> MCP / 控制器连接</div>
           <div className="runtime-primary-row">
             <span className={`health-dot ${connectionError ? 'degraded' : connection?.ready ? 'connected' : connection?.configured ? 'degraded' : 'not_connected'}`} />
             <div>
@@ -996,9 +1060,10 @@ function RuntimeView({
             )}
           </div>
         </section>
+        </div>
 
         {connection && (
-          <details className="detail-section" open>
+          <details className="detail-section">
             <summary>连接详情</summary>
             <div className="detail-grid">
               <div><span>主控制器</span><strong>{connection.profile?.primaryController ?? '未配置'}</strong></div>
@@ -1020,7 +1085,7 @@ function RuntimeView({
           </details>
         )}
 
-        <details className="detail-section" open>
+        <details className="detail-section">
           <summary>状态详情</summary>
           <div className="detail-grid">
             <div><span>进程 ID</span><strong>{projection?.runtime.pid ?? '未知'}</strong></div>
@@ -1048,7 +1113,7 @@ function RuntimeView({
         )}
 
         {projection?.diagnostics && (
-          <details className="detail-section" open>
+          <details className="detail-section">
             <summary>诊断 · {projection.diagnostics.passed} 通过 / {projection.diagnostics.failed} 异常</summary>
             <div className="diagnostic-list simple-diagnostics">
               {projection.diagnostics.probes.map((probe) => (
@@ -1063,6 +1128,27 @@ function RuntimeView({
       </div>
     </main>
   );
+}
+
+/** Only context for the model, never repository or checkout authorization.
+ * Forge tools remain the authority for exact target verification and effects. */
+export function codexBoundPrompt(thread: LocalConversationThread, prompt: string): string {
+  const notes: string[] = [];
+  if (thread.projectRepoId) {
+    notes.push('[Forge Desktop conversation context: selected repo_id='
+      + thread.projectRepoId + '; selected checkout_id=' + (thread.checkoutId ?? 'unbound')
+      + '. Codex runs in an isolated temporary directory, not this checkout. '
+      + 'Use Forge MCP capabilities to inspect the registered repository and its checkout. '
+      + 'Before any effect verify that the exact repo_id AND checkout_id are supported by the chosen tool. '
+      + 'If a tool cannot target the selected checkout, do not mutate or run a repository command. '
+      + 'Never treat the temporary process directory as this project.]');
+  }
+  if (thread.workId) {
+    notes.push('[Attached existing Forge Work: ' + thread.workId
+      + '. Retrieve its current Requirement, Plan, and Work from Forge before deciding actions. '
+      + 'Do not create duplicate Work or claim completion without canonical evidence.]');
+  }
+  return notes.length ? notes.join('\n') + '\n\n' + prompt : prompt;
 }
 
 export function App() {
@@ -1176,9 +1262,7 @@ export function App() {
     const result = await sendLocalConversation({
       conversationId: thread.id,
       providerSessionId: thread.providerSessionId,
-      prompt: thread.workId
-        ? '[Attached existing Forge Work: ' + thread.workId + '. Retrieve its current Requirement, Plan, and Work state from Forge before deciding actions. Do not create duplicate Work or claim completion without canonical evidence.]\n\n' + prompt
-        : prompt,
+      prompt: codexBoundPrompt(thread, prompt),
       repoId: thread.projectRepoId,
     });
     return { content: result.output, providerSessionId: result.providerSessionId, toolActivityCount: result.toolActivityCount };
@@ -1395,6 +1479,12 @@ export function App() {
     setActiveView('assistant');
     setNewThreadRequested(true);
   }, [activeView, activeAgentRepoId, selectedRepoId]);
+  const handleNewProjectThread = useCallback((repoId: string) => {
+    if (!projects.some((project) => project.repoId === repoId)) return;
+    setNewThreadContext({ repoId });
+    setActiveView('assistant');
+    setNewThreadRequested(true);
+  }, [projects]);
   const handleNewThreadHandled = useCallback(() => {
     setNewThreadRequested(false);
     setNewThreadContext(undefined);
@@ -1450,7 +1540,12 @@ export function App() {
   }, [handleNewThread]);
 
   const handleOpenKnowledge = useCallback(() => openProjectSection('knowledge'), [openProjectSection]);
-  const handleOpenSettings = useCallback(() => setActiveView('settings'), []);
+  const handleOpenSettings = useCallback(() => {
+    setActiveView('settings');
+    // A settings visit reads current connection/provider state from the existing
+    // authorities; it never copies or changes their configuration.
+    void Promise.all([refreshLocalProvider(), refreshConnection()]);
+  }, [refreshLocalProvider, refreshConnection]);
 
   const handleOpenRuntime = useCallback(async () => {
     setActiveView('runtime');
@@ -1537,6 +1632,7 @@ export function App() {
         onRetryProjects={() => { void bootstrapRuntime(); }}
         onOpenAssistant={handleOpenAssistant}
         onNewThread={handleNewThread}
+        onNewProjectThread={handleNewProjectThread}
         onOpenProjects={handleOpenProjects}
         onOpenRequirements={handleOpenRequirements}
         onOpenPlans={handleOpenPlans}
@@ -1565,7 +1661,7 @@ export function App() {
               : activeView === 'plans' ? 'Plans'
               : activeView === 'works' ? 'Works'
               : activeView === 'knowledge' ? '记忆与知识'
-              : activeView === 'settings' ? '设置' : '运行时与恢复'}</strong>
+              : activeView === 'settings' ? '设置' : 'MCP 服务与连接'}</strong>
             {activeView === 'project' && projection.project?.branch && <span className="workspace-topbar-branch">{projection.project.branch}</span>}
           </div>
           <button className="workspace-topbar-health" type="button" onClick={() => void handleOpenRuntime()} title="查看 Forge Runtime 与连接状态">
@@ -1617,7 +1713,10 @@ export function App() {
       ) : activeView === 'settings' ? (
         <SettingsView settings={localApiSettings} loading={localApiLoading} error={localApiError}
           onRefresh={refreshLocalApi} onSave={saveLocalApi} onClearKey={clearLocalApi}
-          codexStatus={localProvider} codexError={localProviderError} />
+          codexStatus={localProvider} codexError={localProviderError}
+          onRefreshCodex={refreshLocalProvider}
+          onOpenMcp={() => { void handleOpenRuntime(); }}
+          mcpReady={connectionProjection?.ready ?? null} />
       ) : activeView === 'runtime' ? (
         <RuntimeView
           projection={recoveryProjection}
@@ -1634,6 +1733,7 @@ export function App() {
           onRecover={handleRecoverRuntime}
           onRefreshConnection={refreshConnection}
           onRepairConnection={handleRepairConnection}
+          onOpenSettings={handleOpenSettings}
         />
       ) : (
         <WorkView

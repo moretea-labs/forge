@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'bun:test';
 import { advanceLocalToolProgress, createThread, findExistingWorkThread, localConversationNavItems, LocalConversationSurface, LocalMessageBody, selectThreadCheckout, selectThreadRepository, shouldSubmitComposerKey, transcriptIsNearBottom } from '../src/local-conversation';
 import { ForgeIcon } from '../src/ui-icons';
-import { sidebarToggleShortcut } from '../src/App';
+import { RuntimeView, Sidebar, codexBoundPrompt, sidebarToggleShortcut } from '../src/App';
+import { SettingsView } from '../src/settings-view';
 import { readFileSync } from 'node:fs';
 import { repositoryLabel } from '../src/runtime-client';
 import { createElement } from 'react';
@@ -10,6 +11,98 @@ import { ProjectRecordsView } from '../src/project-records-view';
 import { disconnectedProjection } from '../src/runtime-projection';
 
 describe('Forge Desktop Work-bound Agent thread identity', () => {
+  test('Codex gets exact selected project, checkout and linked Work without claiming checkout authority', () => {
+    const thread = createThread('codex', 'repo_forge', 'work_record', 'checkout_forge');
+    const prompt = codexBoundPrompt(thread, 'Please implement the plan.');
+    expect(prompt).toContain('selected repo_id=repo_forge');
+    expect(prompt).toContain('selected checkout_id=checkout_forge');
+    expect(prompt).toContain('Attached existing Forge Work: work_record');
+    expect(prompt).toContain('verify that the exact repo_id AND checkout_id');
+    expect(prompt).toContain('If a tool cannot target the selected checkout, do not mutate');
+    expect(prompt).toContain('Please implement the plan.');
+    const unbound = createThread('codex');
+    expect(codexBoundPrompt(unbound, 'Hello')).toBe('Hello');
+  });
+
+  test('independent repository conversations retain their own running status and sidebar groups', () => {
+    const first = { ...createThread('codex', 'repo_one', 'work_one', 'checkout_one'),
+      title: 'Implement feature A', messages: [{
+        id: 'one', role: 'user' as const, content: 'Implement feature A',
+        createdAt: '2026-11-06T08:00:00Z',
+      }] };
+    const second = { ...createThread('codex', 'repo_two', 'work_two', 'checkout_two'),
+      title: 'Review feature B', messages: [{
+        id: 'two', role: 'user' as const, content: 'Review feature B',
+        createdAt: '2026-11-06T08:02:00Z',
+      }] };
+    const nav = localConversationNavItems([first, second], {}, new Set([first.id]));
+    expect(nav).toHaveLength(2);
+    expect(nav.find((item) => item.id === first.id)).toMatchObject({
+      projectRepoId: 'repo_one', workId: 'work_one', running: true,
+    });
+    expect(nav.find((item) => item.id === second.id)).toMatchObject({
+      projectRepoId: 'repo_two', workId: 'work_two',
+    });
+    expect(nav.find((item) => item.id === second.id)?.running).toBeUndefined();
+    const projects = [
+      { repoId: 'repo_one', name: 'Project A', repository: 'example/project-a', checkoutId: 'checkout_one' },
+      { repoId: 'repo_two', name: 'Project B', repository: 'example/project-b', checkoutId: 'checkout_two' },
+    ];
+    const html = renderToStaticMarkup(createElement(Sidebar, {
+      projects, selectedRepoId: 'repo_one', activeView: 'assistant',
+      runtimeLabel: 'Ready', runtimeStatus: 'connected', runtimeDetail: '',
+      onRetryProjects() {}, onOpenAssistant() {}, onNewThread() {}, onNewProjectThread() {},
+      onOpenProjects() {}, onOpenRequirements() {}, onOpenPlans() {},
+      onOpenKnowledge() {}, onOpenSettings() {}, onSelectProject() {},
+      localThreads: nav, selectedLocalThreadId: first.id, onSelectLocalThread() {},
+    }));
+    expect(html).toContain('project-a');
+    expect(html).toContain('project-b');
+    expect(html).toContain('Implement feature A');
+    expect(html).toContain('Review feature B');
+    expect(html).toContain('在 project-a 中新建会话');
+    expect(html).toContain('在 project-b 中新建会话');
+    expect((html.match(/sidebar-project-conversations/g) ?? [])).toHaveLength(2);
+    expect((html.match(/sidebar-turn-running/g) ?? [])).toHaveLength(1);
+  });
+
+  test('Codex setup and MCP connection are separate app settings, without duplicating authority', () => {
+    const html = renderToStaticMarkup(createElement(SettingsView, {
+      settings: { provider: 'codex', endpoint: 'https://api.openai.com/v1',
+        model: '', apiProtocol: 'openai', hasKey: false },
+      loading: false, error: null, mcpReady: true,
+      codexStatus: { provider: 'codex', status: 'ready', label: 'Codex 已连接',
+        detail: 'Logged in', streaming: false, tools: true },
+      codexError: null, async onRefresh() {}, async onSave() {},
+      async onClearKey() {}, async onRefreshCodex() {}, onOpenMcp() {},
+    }));
+    expect(html).toContain('Agent 与连接');
+    expect(html).toContain('aria-pressed="true"');
+    expect(html).toContain('Codex 已连接');
+    expect(html).toContain('重新检查 Codex');
+    expect(html).toContain('外部 MCP 服务');
+    expect(html).toContain('查看连接');
+    expect(html).toContain('Forge 控制器连接已就绪');
+    expect(html).not.toContain('aria-label="API 协议"');
+  });
+
+  test('MCP connection status is first-class and runtime lifecycle is behind disclosure', () => {
+    const html = renderToStaticMarkup(createElement(RuntimeView, {
+      projection: null, loading: false, error: null, action: null,
+      connection: null, connectionLoading: false, connectionError: null,
+      connectionAction: null,
+      async onRefresh() {}, async onDiagnose() {}, async onRestart() {},
+      async onRecover() {}, async onRefreshConnection() {},
+      async onRepairConnection() {}, onOpenSettings() {},
+    }));
+    expect(html).toContain('MCP 服务与连接');
+    expect(html).toContain('MCP / 控制器连接');
+    expect(html).toContain('高级维护操作');
+    expect(html).toContain('<details class="runtime-advanced-actions">');
+    expect(html).not.toContain('<details class="runtime-advanced-actions" open');
+    expect(html).toContain('Agent 设置');
+  });
+
   test('sidebar uses Cmd+B without hijacking text input modifiers', () => {
     const press = (values: Partial<KeyboardEvent> = {}) => ({
       key: 'b', metaKey: false, ctrlKey: false, shiftKey: false, altKey: false,

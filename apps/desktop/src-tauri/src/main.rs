@@ -715,7 +715,9 @@ fn read_local_api_settings() -> Result<Value, String> {
         "endpoint": endpoint,
         "model": model,
         "apiProtocol": api_protocol,
-        "hasKey": read_local_api_key(endpoint)?.is_some(),
+        // The Codex CLI uses its existing login; never access Keychain just
+        // to display Codex settings. API credentials are scoped to API mode.
+        "hasKey": if provider == "api" { read_local_api_key(endpoint)?.is_some() } else { false },
     }))
 }
 

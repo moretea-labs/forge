@@ -742,8 +742,10 @@ describe('Thin Launcher external Controller invocation', () => {
       prompt: 'local question',
       mcpBootstrap: bootstrap,
       sandbox: 'read-only',
+      args: ['--skip-git-repo-check'],
       json: true,
     });
+    expect(local.args).toContain('--skip-git-repo-check');
     expect(local.args).toContain('read-only');
     expect(local.args).toContain('--json');
     expect(local.args).not.toContain('workspace-write');
@@ -753,8 +755,10 @@ describe('Thin Launcher external Controller invocation', () => {
       mcpBootstrap: bootstrap,
       sandbox: 'read-only',
       resumeSessionId: '01a1102c-2c50-76d3-ae32-478a4b24788b',
+      args: ['--skip-git-repo-check'],
       json: true,
     });
+    expect(resumed.args).toContain('--skip-git-repo-check');
     expect(resumed.args).toContain('resume');
     expect(resumed.args).toContain('01a1102c-2c50-76d3-ae32-478a4b24788b');
     expect(resumed.args).not.toContain('workspace-write');

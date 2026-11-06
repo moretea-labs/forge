@@ -247,6 +247,10 @@ export async function sendLocalConversation(input: LocalConversationSendInput): 
     prompt: conversationPrompt(prompt, repoId),
     mcpBootstrap: bootstrap,
     sandbox: 'read-only',
+    // The isolated local-conversation cwd is intentionally not a Git checkout.
+    // Only this local Agent entry opts out of Codex's repo presence check.
+    // Forge MCP tools still validate the registered repo/checkout independently.
+    args: ['--skip-git-repo-check'],
     resumeSessionId: providerSessionId,
     json: true,
   });

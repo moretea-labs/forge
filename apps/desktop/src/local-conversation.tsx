@@ -199,12 +199,16 @@ export interface LocalConversationNavItem {
   title: string;
   updatedAt: string;
   provider: LocalProviderChoice;
+  projectRepoId?: string;
+  workId?: string;
+  running?: boolean;
   draft?: boolean;
 }
 
 /** The existing sidebar is the navigation authority for sent and unsent threads. */
 export function localConversationNavItems(
   threads: LocalConversationThread[], drafts: Record<string, string>,
+  runningIds: ReadonlySet<string> = new Set(),
 ): LocalConversationNavItem[] {
   return threads.filter((thread) => !thread.archived
     && (thread.messages.length > 0 || Boolean(drafts[thread.id]?.trim())))
@@ -214,6 +218,9 @@ export function localConversationNavItems(
       title: thread.messages.length ? threadLabel(thread) : drafts[thread.id]!.trim().slice(0, 52),
       updatedAt: thread.updatedAt,
       provider: thread.provider ?? 'codex',
+      ...(thread.projectRepoId ? { projectRepoId: thread.projectRepoId } : {}),
+      ...(thread.workId ? { workId: thread.workId } : {}),
+      ...(runningIds.has(thread.id) ? { running: true } : {}),
       ...(thread.messages.length ? {} : { draft: true }),
     }));
 }
@@ -325,11 +332,13 @@ export function LocalConversationSurface({
   const [threads, setThreads] = useState<LocalConversationThread[]>(() => loadThreads());
   const [selectedThreadId, setSelectedThreadId] = useState<string | undefined>(() => loadThreads().find((thread) => !thread.archived)?.id);
   const [drafts, setDrafts] = useState<Record<string, string>>(loadDrafts);
-  const [sending, setSending] = useState(false);
-  const [sendingThreadId, setSendingThreadId] = useState<string>();
-  const [cancelRequested, setCancelRequested] = useState(false);
-  const [toolProgress, setToolProgress] = useState<LocalToolProgress[]>([]);
-  const [sendError, setSendError] = useState<string | null>(null);
+  // Each conversation owns one in-flight turn. Independent repositories can
+  // progress together; Forge remains responsible for checkout/process locks.
+  const [pendingTurns, setPendingTurns] = useState<Record<string, {
+    cancelRequested: boolean; toolProgress: LocalToolProgress[];
+  }>>({});
+  const pendingTurnIds = useRef(new Set<string>());
+  const [sendErrors, setSendErrors] = useState<Record<string, string | null>>({});
   const [allowEffects, setAllowEffects] = useState(false);
   const [diffVisible, setDiffVisible] = useState(false);
   const [diffStaged, setDiffStaged] = useState(false);
@@ -354,7 +363,6 @@ export function LocalConversationSurface({
     requirementId?: string; planId?: string;
   }>();
   const [workDetailError, setWorkDetailError] = useState<string>();
-  const sendingThreadRef = useRef<string | undefined>(undefined);
   const diffRequest = useRef(0);
   const handledNewThread = useRef(false);
   const initialThreadProvisioned = useRef<LocalProviderChoice | null>(null);
@@ -405,9 +413,14 @@ export function LocalConversationSurface({
     let unsubscribe: (() => void) | undefined;
     void listen<LocalToolProgress>(
       'forge-agent-tool-progress', (event) => {
-        if (!stopped && event.payload.conversationId === sendingThreadRef.current) {
-          setToolProgress((current) => advanceLocalToolProgress(current, event.payload));
-        }
+        const id = event.payload.conversationId;
+        if (stopped || !pendingTurnIds.current.has(id)) return;
+        setPendingTurns((current) => {
+          const turn = current[id];
+          return turn ? { ...current, [id]: {
+            ...turn, toolProgress: advanceLocalToolProgress(turn.toolProgress, event.payload),
+          } } : current;
+        });
       },
     ).then((unlisten) => { if (stopped) unlisten(); else unsubscribe = unlisten; })
       .catch(() => { /* Codex CLI or browser-only preview has no native tool events. */ });
@@ -420,6 +433,18 @@ export function LocalConversationSurface({
     [threads, selectedProvider],
   );
   const selectedThread = activeThreads.find((thread) => thread.id === selectedThreadId) ?? activeThreads[0];
+  const sending = Boolean(selectedThread && pendingTurns[selectedThread.id]);
+  const selectedCheckoutTurnPending = Boolean(selectedThread?.projectRepoId && selectedThread.checkoutId
+    && threads.some((thread) => pendingTurns[thread.id]
+      && thread.projectRepoId === selectedThread.projectRepoId
+      && thread.checkoutId === selectedThread.checkoutId));
+  const toolProgress = selectedThread ? pendingTurns[selectedThread.id]?.toolProgress ?? [] : [];
+  const cancelRequested = Boolean(selectedThread && pendingTurns[selectedThread.id]?.cancelRequested);
+  const sendError = selectedThread ? sendErrors[selectedThread.id] ?? null : null;
+  const setSendError = (value: string | null) => {
+    if (!selectedThread) return;
+    setSendErrors((current) => ({ ...current, [selectedThread.id]: value }));
+  };
   const draft = selectedThread ? drafts[selectedThread.id] ?? '' : '';
   const currentThreadIdRef = useRef<string | undefined>(undefined);
   currentThreadIdRef.current = selectedThread?.id;
@@ -453,16 +478,16 @@ export function LocalConversationSurface({
   useEffect(() => {
     // Empty drafts are not history. Keep them in the single local owner until
     // a first user message makes the thread a real conversation.
-    const items = localConversationNavItems(activeThreads, drafts);
+    const items = localConversationNavItems(activeThreads, drafts, new Set(Object.keys(pendingTurns)));
     onThreadsChange(items, items.some((item) => item.id === selectedThread?.id)
       ? selectedThread?.id : undefined, selectedThread?.projectRepoId);
-  }, [activeThreads, drafts, selectedThread?.id, selectedThread?.projectRepoId, onThreadsChange]);
+  }, [activeThreads, drafts, pendingTurns, selectedThread?.id, selectedThread?.projectRepoId, onThreadsChange]);
 
   useEffect(() => {
     if (!openThreadId) return;
     if (activeThreads.some((thread) => thread.id === openThreadId)) {
+      // A conversation's unconfirmed error must remain visible on return.
       setSelectedThreadId(openThreadId);
-      setSendError(null);
     }
     onOpenThreadHandled();
   }, [openThreadId, activeThreads, onOpenThreadHandled]);
@@ -712,7 +737,7 @@ export function LocalConversationSurface({
     const thread = selectedThread;
     const reviewed = diff;
     if (!thread?.projectRepoId || !thread.checkoutId || !reviewed?.patch || !reviewed.head || !reviewed.branch
-      || reviewed.checkoutId !== thread.checkoutId || reviewed.truncated || diffLoading || committing || sending
+      || reviewed.checkoutId !== thread.checkoutId || reviewed.truncated || diffLoading || committing || selectedCheckoutTurnPending
       || diffRepoId !== thread.projectRepoId || diffCheckoutId !== thread.checkoutId
       || diffThreadId !== thread.id
       || paths.length < 1 || paths.length > 32
@@ -750,7 +775,8 @@ export function LocalConversationSurface({
 
   const send = async () => {
     const prompt = draft.trim();
-    if (!selectedThread || !providerReady || !onSend || !prompt || sending || committing) return;
+    if (!selectedThread || !providerReady || !onSend || !prompt || sending || committing
+      || pendingTurnIds.current.has(selectedThread.id)) return;
     const authorizedEffects = apiSelected && allowEffects && Boolean(selectedProject && checkoutBindingReady);
     if (authorizedEffects && !window.confirm(
       '仅本次回复：允许当前 API 模型通过 Forge 修改所选仓库及执行命令。Forge 原有安全检查仍生效。确认授权？'
@@ -766,11 +792,10 @@ export function LocalConversationSurface({
     setThreads((current) => current.map((thread) => thread.id === selectedThread.id ? pendingThread : thread));
     setDrafts((current) => ({ ...current, [selectedThread.id]: '' }));
     setSendError(null);
-    sendingThreadRef.current = selectedThread.id;
-    setSendingThreadId(selectedThread.id);
-    setCancelRequested(false);
-    setToolProgress([]);
-    setSending(true);
+    pendingTurnIds.current.add(selectedThread.id);
+    setPendingTurns((current) => ({
+      ...current, [selectedThread.id]: { cancelRequested: false, toolProgress: [] },
+    }));
     try {
       const reply = await onSend({ thread: pendingThread, prompt, allowEffects: authorizedEffects });
       const repliedAt = new Date().toISOString();
@@ -810,26 +835,32 @@ export function LocalConversationSurface({
         setSendError('本次回复未确认：' + reason + '。若可能涉及工具操作，请先检查 Forge 结果再决定是否重新发送。');
       }
     } finally {
-      setAllowEffects(false);
-      sendingThreadRef.current = undefined;
-      setToolProgress([]);
-      setSendingThreadId(undefined);
-      setCancelRequested(false);
-      setSending(false);
+      if (currentThreadIdRef.current === selectedThread.id) setAllowEffects(false);
+      pendingTurnIds.current.delete(selectedThread.id);
+      setPendingTurns((current) => {
+        const next = { ...current };
+        delete next[selectedThread.id];
+        return next;
+      });
     }
   };
 
   const cancelTurn = async () => {
     if (!(apiSelected || provider?.cancellable === true) || !sending || !selectedThread
-      || sendingThreadId !== selectedThread.id || !onCancel || cancelRequested) return;
-    setCancelRequested(true);
+      || !onCancel || cancelRequested) return;
+    const id = selectedThread.id;
+    setPendingTurns((current) => current[id] ? {
+      ...current, [id]: { ...current[id], cancelRequested: true },
+    } : current);
     setSendError(null);
     try {
       await onCancel(selectedThread);
     } catch (cause) {
       // No success claim: the turn may have completed in the time between
       // clicking and the native cancel request.
-      setCancelRequested(false);
+      setPendingTurns((current) => current[id] ? {
+        ...current, [id]: { ...current[id], cancelRequested: false },
+      } : current);
       setSendError('未确认停止：' + (cause instanceof Error ? cause.message : String(cause)));
     }
   };
@@ -894,7 +925,7 @@ export function LocalConversationSurface({
             && diffCheckoutId === selectedThread.checkoutId && (
             <AgentGitReview key={`${selectedThread.id}:${diffStaged}`}
               diff={diff} staged={diffStaged} loading={diffLoading} error={diffError}
-              canCommit={checkoutBindingReady && !sending && !committing}
+              canCommit={checkoutBindingReady && !selectedCheckoutTurnPending && !committing}
               committing={committing} commitError={commitError}
               commitHead={commitSuccess?.threadId === selectedThread.id ? commitSuccess.head : undefined}
               onCommit={(paths, message) => { void commitReviewedFiles(paths, message); }}
@@ -939,7 +970,7 @@ export function LocalConversationSurface({
                 )}
               </article>
             ))}
-            {sending && sendingThreadId === selectedThread.id && (
+            {sending && (
               <div className="local-pending-message" role="status">
                 <span className="local-pending-indicator" />
                 <div className="local-pending-content">
@@ -1126,7 +1157,7 @@ export function LocalConversationSurface({
                   onClick={() => setAllowEffects((current) => !current)}>
                   <AgentControlIcon name="shield" />
                 </button>}
-                {sending && sendingThreadId === selectedThread.id ? (
+                {sending ? (
                   <button className="local-send-button agent-stop-control" type="button"
                     aria-label={cancelRequested ? '已请求停止' : '请求停止当前 Agent 回复'}
                     title={apiSelected || provider?.cancellable === true

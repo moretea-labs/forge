@@ -2,7 +2,7 @@ import {
   ArrowUp, BookOpen, Check, ChevronDown, ClipboardList, Copy, Ellipsis, FilePenLine,
   Folder, FolderGit2, GitBranch, GitCompareArrows, ListTodo, MessageSquare,
   MessagesSquare, PanelLeftClose, PanelLeftOpen, Plus, RefreshCw, Server, Settings2, ShieldCheck, Square,
-  SquarePen, Workflow, Search, X, type LucideIcon,
+  SquarePen, Workflow, Search, Terminal, X, type LucideIcon,
 } from 'lucide-react';
 
 /**
@@ -19,6 +19,7 @@ const icons = {
   'knowledge': BookOpen,
   'project': FolderGit2,
   'runtime': Server,
+  'terminal': Terminal,
   'plus': Plus,
   'diff': GitCompareArrows,
   'more': Ellipsis,
