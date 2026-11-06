@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod native_bridge;
+
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tauri::{Emitter, Manager};
@@ -1475,6 +1477,9 @@ async fn send_local_api_conversation(
 
 
 fn main() {
+    if std::env::args().nth(1).as_deref() == Some("--native-bridge") {
+        std::process::exit(native_bridge::run());
+    }
     tauri::Builder::default()
         .manage(LocalApiTurnRegistry::default())
         .invoke_handler(tauri::generate_handler![

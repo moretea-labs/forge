@@ -112,3 +112,12 @@ With A+C's split Work/Requirement/Plan layout, a populated left list and an empt
 ### Work master/detail navigation acceptance (2026-11-07)
 
 The A+C Work index is a **real master/detail pane**: selecting a Work row remains in the index, updates the right detail pane and exposes its actual Forge projection state, activity, next safe action and linked Requirement/Plan IDs when available. A clearly named **打开完整 Work 详情** button enters the existing full Work surface. There is no duplicate Work store, no fabricated metadata and no implicit navigation on list selection. The split pane reuses existing records and CSS tokens.
+
+
+### Native SwiftUI installed-preview authority — 2026-11-07
+
+The installed client has one canonical UI path: `apps/desktop-native` (SwiftUI). `~/Applications/Forge.app/Contents/MacOS/Forge` is the foreground product process. The packaged `forge-desktop` binary is an allowlisted one-shot bridge helper only; it is not a second GUI or lifecycle owner. React/Tauri remains a bounded design/development fixture while callers migrate and must not be installed alongside the native client.
+
+Use `bash apps/desktop-native/install-preview.sh` to rebuild, ad-hoc sign, replace and open the single preview. The installer removes the historical `ForgeCSSStartupProbe` and `ForgeBootstrapProbe` bundles/processes but does not modify Forge Runtime or Forge Desktop Operator.
+
+Native acceptance requires all of: Swift tests, Swift release build, Rust bridge check/build, valid app signature, exactly one installed Forge client process, and real desktop observation of the launched SwiftUI window. Compilation or browser preview alone is insufficient.
