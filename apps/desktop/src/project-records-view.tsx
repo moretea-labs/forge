@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import type { ForgeDesktopProjection, WorkGraphNodeProjection, WorkSemanticState } from './runtime-projection';
+import { ForgeIcon } from './ui-icons';
 
 export type RecordMode = 'requirements' | 'plans' | 'works';
 
@@ -223,7 +224,7 @@ export function ProjectRecordsView({
                     {relatedPlans.map((plan) => (
                       <button key={plan.planId} type="button" className="record-work-link"
                         onClick={() => onNavigateRecord('plans', plan.planId)}>
-                        <span className="record-plan-icon" aria-hidden="true">≡</span>
+                        <span className="record-plan-icon"><ForgeIcon name="plan" size={16} /></span>
                         <span>{plan.goal}</span>
                         <small>r{plan.revision}</small>
                       </button>

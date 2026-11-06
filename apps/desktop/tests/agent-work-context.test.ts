@@ -1,5 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { advanceLocalToolProgress, createThread, findExistingWorkThread, localConversationNavItems, LocalConversationSurface, selectThreadCheckout, selectThreadRepository, shouldSubmitComposerKey, transcriptIsNearBottom } from '../src/local-conversation';
+import { ForgeIcon } from '../src/ui-icons';
+import { readFileSync } from 'node:fs';
 import { repositoryLabel } from '../src/runtime-client';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -7,6 +9,35 @@ import { ProjectRecordsView } from '../src/project-records-view';
 import { disconnectedProjection } from '../src/runtime-projection';
 
 describe('Forge Desktop Work-bound Agent thread identity', () => {
+  test('sidebar, project and Agent actions share purposeful Lucide SVG glyphs', () => {
+    for (const name of [
+      'new-thread', 'conversations', 'work', 'requirement', 'plan', 'knowledge',
+      'project', 'conversation', 'draft', 'settings', 'runtime',
+      'plus', 'diff', 'more', 'folder', 'branch', 'shield', 'arrow', 'stop',
+    ] as const) {
+      const markup = renderToStaticMarkup(createElement(ForgeIcon, { name }));
+      expect(markup).toContain('class="lucide');
+      expect(markup).toContain('aria-hidden="true"');
+      expect(markup).toContain('stroke-width="1.75"');
+      expect(markup).not.toContain('<text');
+    }
+    expect(renderToStaticMarkup(createElement(ForgeIcon, { name: 'requirement' })))
+      .not.toEqual(renderToStaticMarkup(createElement(ForgeIcon, { name: 'knowledge' })));
+  });
+
+  test('native app icon has real source-size PNGs and Finder/Dock icon family', () => {
+    const dir = new URL('../src-tauri/icons/', import.meta.url);
+    for (const [file, width] of [
+      ['icon.png', 1024], ['32x32.png', 32], ['128x128.png', 128], ['128x128@2x.png', 256],
+    ] as const) {
+      const png = readFileSync(new URL(file, dir));
+      expect(png.subarray(0, 8)).toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+      expect(png.readUInt32BE(16)).toBe(width);
+      expect(png.readUInt32BE(20)).toBe(width);
+    }
+    expect(readFileSync(new URL('icon.icns', dir)).toString('ascii', 0, 4)).toBe('icns');
+  });
+
   test('unsent drafts remain discoverable without mutating transcript history', () => {
     const empty = createThread('codex', 'repo_forge', undefined, 'checkout_forge');
     const draft = { ...createThread('codex', 'repo_forge', undefined, 'checkout_forge'),

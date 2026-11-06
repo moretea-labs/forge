@@ -7,6 +7,7 @@ import remarkGfm from 'remark-gfm';
 import type { LocalProviderStatusProjection } from './runtime-client';
 import type { ProjectListItemProjection } from './runtime-projection';
 import type { LocalApiSettings, LocalProviderChoice, LocalApiToolEvent } from './local-api';
+import { ForgeIcon as AgentControlIcon } from './ui-icons';
 
 const LOCAL_THREADS_KEY = 'forge.desktop.local-threads.v1';
 const LOCAL_DRAFTS_KEY = 'forge.desktop.local-drafts.v1';
@@ -215,28 +216,6 @@ export function localConversationNavItems(
       provider: thread.provider ?? 'codex',
       ...(thread.messages.length ? {} : { draft: true }),
     }));
-}
-
-type AgentControlIconName = 'plus' | 'diff' | 'more' | 'folder' | 'branch' | 'work'
-  | 'settings' | 'shield' | 'arrow' | 'stop' | 'chevron' | 'book' | 'refresh';
-
-function AgentControlIcon({ name }: { name: AgentControlIconName }) {
-  return <svg aria-hidden="true" focusable="false" width="17" height="17" viewBox="0 0 24 24"
-    fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-    {name === 'plus' && <path d="M12 5v14M5 12h14" />}
-    {name === 'diff' && <><rect x="3.5" y="4" width="17" height="16" rx="2" /><path d="M11 4v16M6.5 9h2.5M7.75 7.75v2.5M14 10h4M14 15h4" /></>}
-    {name === 'more' && <><circle cx="5" cy="12" r="1" /><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /></>}
-    {name === 'folder' && <path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v10H3z" />}
-    {name === 'branch' && <><circle cx="6" cy="4" r="2" /><circle cx="18" cy="7" r="2" /><circle cx="6" cy="20" r="2" /><path d="M6 6v12M18 9c0 5-12 0-12 7" /></>}
-    {name === 'work' && <><rect x="4" y="4" width="16" height="16" rx="3" /><path d="m8 12 3 3 5-6" /></>}
-    {name === 'settings' && <><path d="M4 7h16M4 17h16" /><circle cx="9" cy="7" r="2" fill="currentColor" stroke="none" /><circle cx="16" cy="17" r="2" fill="currentColor" stroke="none" /></>}
-    {name === 'shield' && <><path d="m12 2 8 4v6c0 5-3.5 8-8 10-4.5-2-8-5-8-10V6z" /><path d="m9 12 2 2 4-4" /></>}
-    {name === 'arrow' && <path d="M12 19V5m-6 6 6-6 6 6" />}
-    {name === 'stop' && <rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor" stroke="none" />}
-    {name === 'chevron' && <path d="m7 10 5 5 5-5" />}
-    {name === 'book' && <><path d="M12 6c-3-2-6-2-9-1v14c3-1 6-1 9 1 3-2 6-2 9-1V5c-3-1-6-1-9 1z" /><path d="M12 6v14" /></>}
-    {name === 'refresh' && <><path d="M20 7v5h-5M4 17v-5h5" /><path d="M5.5 9A7 7 0 0 1 18 7l2 5M4 12l2 5a7 7 0 0 0 12.5-2" /></>}
-  </svg>;
 }
 
 function closeAgentMenus(root: HTMLElement | null, keep: Element | null = null): HTMLDetailsElement | undefined {

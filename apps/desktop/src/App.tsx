@@ -22,6 +22,8 @@ import {
   type LocalProviderStatusProjection,
 } from './runtime-client';
 import { LocalConversationSurface, type LocalConversationReply, type LocalConversationThread, type LocalConversationNavItem } from './local-conversation';
+import { ForgeIcon } from './ui-icons';
+import forgeAppIcon from '../src-tauri/icons/128x128.png';
 import { ProjectRecordsView } from './project-records-view';
 import { KnowledgeView } from './knowledge-view';
 import { SettingsView } from './settings-view';
@@ -149,27 +151,28 @@ function Sidebar({
     <aside className="sidebar">
       <div className="sidebar-main">
         <div className="sidebar-brand" aria-label="Forge">
+          <img className="sidebar-brand-icon" src={forgeAppIcon} alt="" />
           <span className="sidebar-app-name">Forge</span>
           <span className="sidebar-app-subtitle">工作空间</span>
         </div>
         <nav className="sidebar-primary" aria-label="工作区导航">
           <button className="nav-row sidebar-new-thread" type="button" onClick={onNewThread}>
-            <span className="nav-symbol" aria-hidden="true">✎</span><span className="nav-label">新会话</span><span className="sidebar-keyboard">⌘N</span>
+            <span className="nav-symbol"><ForgeIcon name="new-thread" /></span><span className="nav-label">新会话</span><span className="sidebar-keyboard">⌘N</span>
           </button>
           <button className={activeView === 'assistant' ? 'nav-row active' : 'nav-row'} type="button" onClick={onOpenAssistant}>
-            <span className="nav-symbol" aria-hidden="true">◷</span><span className="nav-label">会话</span>
+            <span className="nav-symbol"><ForgeIcon name="conversations" /></span><span className="nav-label">会话</span>
           </button>
           <button className={activeView === 'works' || activeView === 'project' ? 'nav-row active' : 'nav-row'} type="button" onClick={onOpenProjects}>
-            <span className="nav-symbol" aria-hidden="true">▤</span><span className="nav-label">Work · 工作</span>
+            <span className="nav-symbol"><ForgeIcon name="work" /></span><span className="nav-label">Work · 工作</span>
           </button>
           <button className={activeView === 'requirements' ? 'nav-row active' : 'nav-row'} type="button" onClick={onOpenRequirements}>
-            <span className="nav-symbol" aria-hidden="true">◇</span><span className="nav-label">Requirement · 需求</span>
+            <span className="nav-symbol"><ForgeIcon name="requirement" /></span><span className="nav-label">Requirement · 需求</span>
           </button>
           <button className={activeView === 'plans' ? 'nav-row active' : 'nav-row'} type="button" onClick={onOpenPlans}>
-            <span className="nav-symbol" aria-hidden="true">≡</span><span className="nav-label">Plan · 计划</span>
+            <span className="nav-symbol"><ForgeIcon name="plan" /></span><span className="nav-label">Plan · 计划</span>
           </button>
           <button className={activeView === 'knowledge' ? 'nav-row active' : 'nav-row'} type="button" onClick={onOpenKnowledge}>
-            <span className="nav-symbol" aria-hidden="true">◇</span><span className="nav-label">记忆与知识</span>
+            <span className="nav-symbol"><ForgeIcon name="knowledge" /></span><span className="nav-label">记忆与知识</span>
           </button>
         </nav>
         {localThreads.length > 0 && (
@@ -179,7 +182,7 @@ function Sidebar({
               <button type="button" key={thread.id}
                 className={'nav-row sidebar-thread-row' + (activeView === 'assistant' && selectedLocalThreadId === thread.id ? ' active' : '')}
                 title={thread.title} onClick={() => onSelectLocalThread(thread.id)}>
-                <span className="nav-symbol" aria-hidden="true">{thread.draft ? '✎' : '◻'}</span>
+                <span className="nav-symbol"><ForgeIcon name={thread.draft ? 'draft' : 'conversation'} /></span>
                 <span className="nav-label">{thread.title}</span>
                 {thread.draft && <span className="sidebar-draft-indicator">草稿</span>}
               </button>
@@ -190,16 +193,16 @@ function Sidebar({
           <button className="sidebar-project-picker" type="button" aria-expanded={showProjectPicker}
             title={activeProject?.localRoot ?? activeProject?.repository ?? '选择已注册项目'}
             onClick={() => setShowProjectPicker((expanded) => !expanded)}>
-            <span className="project-folder" aria-hidden="true">▱</span>
+            <span className="project-folder"><ForgeIcon name="project" /></span>
             <span className="project-picker-identity">
               <span className="nav-label">{activeProject?.repository.split('/').at(-1) ?? '选择项目'}</span>
               {activeProject?.repository && <small title={activeProject.localRoot ?? activeProject.repository}>
                 {activeProject.name} · {activeProject.repository}
               </small>}
             </span>
-            <span className="project-caret" aria-hidden="true">{showProjectPicker ? '⌃' : '⌄'}</span>
+            <span className={'project-caret' + (showProjectPicker ? ' expanded' : '')}><ForgeIcon name="chevron" size={15} /></span>
           </button>
-          <button type="button" title="刷新已注册项目" aria-label="刷新已注册项目" onClick={onRetryProjects}>↻</button>
+          <button type="button" title="刷新已注册项目" aria-label="刷新已注册项目" onClick={onRetryProjects}><ForgeIcon name="refresh" size={16} /></button>
         </div>
         {showProjectPicker && (
           <div className="sidebar-project-picker-panel">
@@ -217,7 +220,7 @@ function Sidebar({
                 <button className={project.repoId === selectedRepoId ? 'nav-row project-row active' : 'nav-row project-row'}
                   key={project.repoId} type="button" title={project.localRoot ?? project.repository}
                   onClick={() => { onSelectProject?.(project); setShowProjectPicker(false); }}>
-                  <span className="project-folder" aria-hidden="true">▱</span>
+                  <span className="project-folder"><ForgeIcon name="project" /></span>
                   <span className="project-picker-identity">
                     <span className="nav-label">{project.repository.split('/').at(-1) ?? project.name}</span>
                     <small>{project.name} · {project.repository}</small>
@@ -232,11 +235,12 @@ function Sidebar({
 
       <div className="sidebar-footer">
         <button className={activeView === 'settings' ? 'nav-row active' : 'nav-row'} type="button" onClick={onOpenSettings}>
-          <span className="nav-symbol" aria-hidden="true">⚙</span><span className="nav-label">设置</span>
+          <span className="nav-symbol"><ForgeIcon name="settings" /></span><span className="nav-label">设置</span>
         </button>
         <button className={activeView === 'runtime' ? 'nav-row active' : 'nav-row'} type="button" onClick={onOpenRuntime}>
-          <span className={`health-dot ${runtimeStatus}`} />
+          <span className="nav-symbol"><ForgeIcon name="runtime" /></span>
           <span className="nav-label">MCP 服务与运行时</span>
+          <span className={`health-dot ${runtimeStatus}`} />
           <span className="runtime-mini-label">{runtimeLabel}</span>
         </button>
       </div>
