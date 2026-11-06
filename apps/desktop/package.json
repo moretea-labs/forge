@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "tauri dev",
     "dev:web": "vite --host 127.0.0.1 --port 1420",
+    "bundle:mac:local": "tauri build --bundles app --config '{\"bundle\":{\"active\":true}}' --no-sign --ci && codesign --force --deep --sign - src-tauri/target/release/bundle/macos/Forge.app && codesign --verify --deep --strict src-tauri/target/release/bundle/macos/Forge.app",
     "build": "npm run check:type && npm run build:web",
     "build:web": "vite build",
     "check:type": "tsc --noEmit",
