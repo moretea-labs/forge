@@ -25,6 +25,15 @@ export function transcriptIsNearBottom(scrollHeight: number, scrollTop: number, 
   return scrollHeight - scrollTop - clientHeight < 96;
 }
 
+/** Enter submits; Shift/Option+Enter inserts text and IME confirmation never submits. */
+export function shouldSubmitComposerKey(
+  event: Pick<KeyboardEvent, 'key' | 'shiftKey' | 'altKey' | 'isComposing' | 'keyCode'>,
+  busy: boolean,
+): boolean {
+  return !busy && event.key === 'Enter' && !event.shiftKey && !event.altKey
+    && !event.isComposing && event.keyCode !== 229;
+}
+
 /** Append each start; reconcile its matching completion without inventing success. */
 export function advanceLocalToolProgress(
   events: LocalToolProgress[], event: LocalToolProgress,
@@ -198,6 +207,19 @@ function AgentControlIcon({ name }: { name: AgentControlIconName }) {
   </svg>;
 }
 
+function closeAgentMenus(root: HTMLElement | null, keep: Element | null = null): HTMLDetailsElement | undefined {
+  let lastClosed: HTMLDetailsElement | undefined;
+  root?.querySelectorAll<HTMLDetailsElement>(
+    'details.agent-context-menu[open], details.agent-header-menu[open]',
+  ).forEach((menu) => {
+    if (menu !== keep) {
+      menu.open = false;
+      lastClosed = menu;
+    }
+  });
+  return lastClosed;
+}
+
 function LocalMessageBody({ content }: { content: string }) {
   return (
     <div className="local-message-body">
@@ -264,6 +286,7 @@ export function LocalConversationSurface({
   const [diffStaged, setDiffStaged] = useState(false);
   const [diffRepoId, setDiffRepoId] = useState<string>();
   const [diffCheckoutId, setDiffCheckoutId] = useState<string>();
+  const [diffThreadId, setDiffThreadId] = useState<string>();
   const [committing, setCommitting] = useState(false);
   const [commitError, setCommitError] = useState<string>();
   const [commitSuccess, setCommitSuccess] = useState<{ threadId: string; head: string }>();
@@ -293,20 +316,21 @@ export function LocalConversationSurface({
 
   useEffect(() => { persistThreads(threads); }, [threads]);
 
-  // Native details menus use outside-click and Escape dismissal. Choices
-  // still go through the existing conversation and Forge owners.
+  // The native details controls remain the only menu owner. Outside clicks,
+  // keyboard Escape and navigation close them without a separate menu state.
   useEffect(() => {
-    const dismiss = (keep?: Element | null) => {
-      surfaceRef.current?.querySelectorAll<HTMLDetailsElement>(
-        'details.agent-context-menu[open],details.agent-header-menu[open]',
-      ).forEach((menu) => { if (menu !== keep) menu.open = false; });
-    };
     const onPointerDown = (event: PointerEvent) => {
       const target = event.target instanceof Element ? event.target : null;
-      dismiss(target?.closest('details.agent-context-menu,details.agent-header-menu'));
+      closeAgentMenus(surfaceRef.current,
+        target?.closest('details.agent-context-menu,details.agent-header-menu') ?? null);
     };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') dismiss();
+      if (event.key !== 'Escape') return;
+      const closed = closeAgentMenus(surfaceRef.current);
+      if (!closed) return;
+      event.preventDefault();
+      event.stopPropagation();
+      closed.querySelector<HTMLElement>('summary')?.focus({ preventScroll: true });
     };
     document.addEventListener('pointerdown', onPointerDown, true);
     document.addEventListener('keydown', onKeyDown);
@@ -347,6 +371,14 @@ export function LocalConversationSurface({
     setFollowLatest(true);
     const viewport = transcriptRef.current;
     if (viewport) viewport.scrollTop = viewport.scrollHeight;
+    // A different transcript must not reuse another thread's Git review.
+    diffRequest.current += 1;
+    setDiffVisible(false);
+    closeAgentMenus(surfaceRef.current);
+    // Focus the task entry only when this Agent view is actually visible.
+    if (surfaceRef.current?.getClientRects().length) {
+      composerTextRef.current?.focus({ preventScroll: true });
+    }
   }, [selectedThread?.id]);
   useEffect(() => {
     const viewport = transcriptRef.current;
@@ -385,6 +417,11 @@ export function LocalConversationSurface({
   const selectedProject = projects.find((project) => project.repoId === selectedThread?.projectRepoId);
   const selectedRepoId = selectedThread?.projectRepoId;
   const selectedWorkId = selectedThread?.workId;
+
+  // An effect permission is for exactly one conversation context. It must not
+  // carry into a different thread, Work, repository or registered checkout.
+  useEffect(() => { setAllowEffects(false); },
+    [selectedThread?.id, selectedRepoId, selectedThread?.checkoutId, selectedWorkId]);
 
   // Catalog load may complete after an empty draft was first created.
   // Never rewrite a conversation with messages or a provider resume handle.
@@ -585,9 +622,9 @@ export function LocalConversationSurface({
 
   async function toggleDiff(forceRefresh = false, staged = diffStaged) {
     const repoId = selectedThread?.projectRepoId;
-    if (!repoId || !checkoutBindingReady) return;
+    if (!repoId || !checkoutBindingReady || !selectedThread) return;
     if (diffVisible && !forceRefresh && diffRepoId === repoId
-      && diffCheckoutId === selectedThread?.checkoutId) {
+      && diffCheckoutId === selectedThread.checkoutId && diffThreadId === selectedThread.id) {
       diffRequest.current += 1;
       setDiffVisible(false);
       return;
@@ -595,7 +632,8 @@ export function LocalConversationSurface({
     const request = ++diffRequest.current;
     setDiffStaged(staged);
     setDiffRepoId(repoId);
-    setDiffCheckoutId(selectedThread?.checkoutId);
+    setDiffCheckoutId(selectedThread.checkoutId);
+    setDiffThreadId(selectedThread.id);
     setDiffVisible(true);
     setDiff(undefined);
     setDiffError(undefined);
@@ -620,6 +658,7 @@ export function LocalConversationSurface({
     if (!thread?.projectRepoId || !thread.checkoutId || !reviewed?.patch || !reviewed.head || !reviewed.branch
       || reviewed.checkoutId !== thread.checkoutId || reviewed.truncated || diffLoading || committing || sending
       || diffRepoId !== thread.projectRepoId || diffCheckoutId !== thread.checkoutId
+      || diffThreadId !== thread.id
       || paths.length < 1 || paths.length > 32
       || !paths.every((path) => splitGitDiffFiles(reviewed.patch).some((file) => file.path === path))) return;
     if (!window.confirm(
@@ -655,7 +694,7 @@ export function LocalConversationSurface({
 
   const send = async () => {
     const prompt = draft.trim();
-    if (!selectedThread || !providerReady || !onSend || !prompt || sending) return;
+    if (!selectedThread || !providerReady || !onSend || !prompt || sending || committing) return;
     const authorizedEffects = apiSelected && allowEffects && Boolean(selectedProject && checkoutBindingReady);
     if (authorizedEffects && !window.confirm(
       '仅本次回复：允许当前 API 模型通过 Forge 修改所选仓库及执行命令。Forge 原有安全检查仍生效。确认授权？'
@@ -740,17 +779,12 @@ export function LocalConversationSurface({
   };
 
   return (
-    <section ref={surfaceRef} className={'local-conversation' + (diffVisible && diffRepoId === selectedThread?.projectRepoId ? ' with-diff' : '')} aria-label="本地会话">
+    <section ref={surfaceRef} className={'local-conversation' + (diffVisible && diffThreadId === selectedThread?.id ? ' with-diff' : '')} aria-label="本地会话">
       <div className="local-toolbar agent-chat-header">
         <div className="agent-chat-heading">
           <strong title={selectedThread ? threadLabel(selectedThread) : '新会话'}>
             {selectedThread ? threadLabel(selectedThread) : '新会话'}
           </strong>
-          <span title={selectedProject?.repository ?? '未附加项目'}>
-            {selectedProject?.repository ?? '独立对话'}
-            {checkoutIndex.find((item) => item.checkoutId === selectedThread?.checkoutId)?.branch
-              ? ' / ' + checkoutIndex.find((item) => item.checkoutId === selectedThread?.checkoutId)?.branch : ''}
-          </span>
         </div>
         <div className="agent-chat-header-actions">
           <span className="agent-provider-indicator"
@@ -762,24 +796,30 @@ export function LocalConversationSurface({
               : providerLoading ? '检测中' : provider?.status === 'ready' ? 'Codex' : '未连接'}</span>
           </span>
           <button className="agent-icon-button" type="button" disabled={!selectedThread?.projectRepoId || !checkoutBindingReady || committing}
-            title={diffVisible ? '收起 Git 变更' : '查看 Git 变更'}
-            aria-label={diffVisible ? '收起 Git 变更' : '查看 Git 变更'}
-            aria-expanded={diffVisible && diffRepoId === selectedThread?.projectRepoId}
+            title={diffVisible && diffThreadId === selectedThread?.id ? '收起 Git 变更' : '查看 Git 变更'}
+            aria-label={diffVisible && diffThreadId === selectedThread?.id ? '收起 Git 变更' : '查看 Git 变更'}
+            aria-expanded={diffVisible && diffThreadId === selectedThread?.id}
             onClick={() => void toggleDiff()}><AgentControlIcon name="diff" /></button>
           <button className="agent-icon-button" type="button" title="新建会话" aria-label="新建会话"
             disabled={sending || committing} onClick={addThread}><AgentControlIcon name="plus" /></button>
-          <details className="agent-header-menu">
+          <details className="agent-header-menu" name="agent-chat-controls">
             <summary title="更多会话操作" aria-label="更多会话操作"><AgentControlIcon name="more" /></summary>
             <div className="agent-header-menu-panel" role="group" aria-label="会话操作">
-              <button type="button" onClick={onOpenProjects}><AgentControlIcon name="work" /> Work 与项目</button>
-              <button type="button" onClick={onOpenKnowledge}><AgentControlIcon name="book" /> 项目知识</button>
-              <button type="button" onClick={onOpenSettings}><AgentControlIcon name="settings" /> 模型与授权</button>
+              <button type="button" onClick={() => { closeAgentMenus(surfaceRef.current); onOpenProjects(); }}>
+                <AgentControlIcon name="work" /> Work 与项目
+              </button>
+              <button type="button" onClick={() => { closeAgentMenus(surfaceRef.current); onOpenKnowledge(); }}>
+                <AgentControlIcon name="book" /> 项目知识
+              </button>
+              <button type="button" onClick={() => { closeAgentMenus(surfaceRef.current); onOpenSettings(); }}>
+                <AgentControlIcon name="settings" /> 模型与授权
+              </button>
               {!apiSelected && <button type="button" disabled={providerLoading}
-                onClick={() => void onRefreshProvider()}>
+                onClick={() => { closeAgentMenus(surfaceRef.current); void onRefreshProvider(); }}>
                 <AgentControlIcon name="refresh" /> 刷新 Codex 连接
               </button>}
               {selectedThread && <button type="button" disabled={sending || committing}
-                onClick={archiveThread}>归档当前会话</button>}
+                onClick={() => { closeAgentMenus(surfaceRef.current); archiveThread(); }}>归档当前会话</button>}
             </div>
           </details>
         </div>
@@ -793,11 +833,12 @@ export function LocalConversationSurface({
         </div>
       ) : (
         <>
-          {diffVisible && diffRepoId === selectedThread.projectRepoId
+          {diffVisible && diffThreadId === selectedThread.id
+            && diffRepoId === selectedThread.projectRepoId
             && diffCheckoutId === selectedThread.checkoutId && (
             <AgentGitReview key={`${selectedThread.id}:${diffStaged}`}
               diff={diff} staged={diffStaged} loading={diffLoading} error={diffError}
-              canCommit={checkoutBindingReady && !sending}
+              canCommit={checkoutBindingReady && !sending && !committing}
               committing={committing} commitError={commitError}
               commitHead={commitSuccess?.threadId === selectedThread.id ? commitSuccess.head : undefined}
               onCommit={(paths, message) => { void commitReviewedFiles(paths, message); }}
@@ -883,11 +924,12 @@ export function LocalConversationSurface({
               rows={2}
               aria-label="本地会话消息"
               placeholder={sending ? '可以先编写下一条消息…'
+                : committing ? 'Git 提交中，可先写下一条消息…'
                 : providerReady ? '向 Forge 描述任务或提出问题…' : '配置模型或选择有效项目后开始…'}
               value={draft}
               onChange={(event) => setDraft(event.target.value)}
               onKeyDown={(event) => {
-                if (!sending && event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+                if (shouldSubmitComposerKey(event.nativeEvent, sending || committing)) {
                   event.preventDefault();
                   void send();
                 }
@@ -907,7 +949,7 @@ export function LocalConversationSurface({
             )}
             <div className="agent-composer-toolbar">
               <div className="agent-composer-context">
-                <details className="agent-context-menu">
+                <details className="agent-context-menu" name="agent-chat-controls">
                   <summary title="选择项目" aria-label="选择项目">
                     <AgentControlIcon name="folder" />
                     <span>{selectedProject?.repository ?? '项目'}</span>
@@ -931,7 +973,7 @@ export function LocalConversationSurface({
                     {!projectBindingReady && <small role="alert">当前项目已不在 Forge 注册目录</small>}
                   </div>
                 </details>
-                {selectedRepoId && <details className="agent-context-menu">
+                {selectedRepoId && <details className="agent-context-menu" name="agent-chat-controls">
                   <summary title="选择执行分支和 Checkout" aria-label="选择执行分支和 Checkout">
                     <AgentControlIcon name="branch" />
                     <span>{checkoutIndex.find((entry) => entry.checkoutId === selectedThread.checkoutId)?.branch
@@ -960,7 +1002,7 @@ export function LocalConversationSurface({
                     <small title={selectedThread.checkoutId}>切换 Checkout 将保留原会话历史，新的操作使用独立会话。</small>
                   </div>
                 </details>}
-                {selectedRepoId && <details className="agent-context-menu">
+                {selectedRepoId && <details className="agent-context-menu" name="agent-chat-controls">
                   <summary title="关联 Forge Work" aria-label="关联 Forge Work">
                     <AgentControlIcon name="work" />
                     <span>{selectedWorkId ? (workDetail?.objective.slice(0, 18) ?? '已关联 Work') : 'Work'}</span>
@@ -1031,8 +1073,9 @@ export function LocalConversationSurface({
                   </button>
                 ) : (
                   <button className="local-send-button" type="button"
-                    aria-label="发送消息" title="发送消息（Enter）"
-                    disabled={!providerReady || !draft.trim() || sending} onClick={() => void send()}>
+                    aria-label={committing ? 'Git 提交中，暂不可发送' : '发送消息'}
+                    title={committing ? '等待 Git 提交结束后发送' : '发送消息（Enter）'}
+                    disabled={!providerReady || !draft.trim() || sending || committing} onClick={() => void send()}>
                     <AgentControlIcon name="arrow" />
                   </button>
                 )}

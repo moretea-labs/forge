@@ -737,3 +737,20 @@ a { color: #353535; text-decoration: underline; text-underline-offset: 3px; }
   .local-conversation:has(.transcript-empty) .local-transcript { margin-top: 12px; }
   .local-conversation:has(.transcript-empty) .agent-chat-composer { margin-bottom: 0; }
 }
+
+/* Header actions outrank the narrow Git overlay; open menus cannot hide behind it. */
+.agent-header-menu { z-index: 40; }
+.agent-header-menu > summary:focus-visible,.agent-context-menu > summary:focus-visible {
+  outline: 2px solid #747f90; outline-offset: 2px;
+}
+/* One-line session header; repository/branch identity remains next to the composer. */
+.agent-chat-heading { justify-content: center; }
+.agent-chat-header .agent-chat-heading > strong { font-size: 12.5px; }
+@media (max-width: 900px) {
+  .agent-chat-header .agent-provider-indicator { padding: 3px 4px; }
+}
+
+/* Closed popovers must not override Chromium/WebKit <details> hiding.
+   Otherwise their controls can appear without opening the menu. */
+.agent-header-menu:not([open]) > .agent-header-menu-panel,
+.agent-context-menu:not([open]) > .agent-context-panel { display: none; }

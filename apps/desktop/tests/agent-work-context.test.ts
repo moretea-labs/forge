@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { advanceLocalToolProgress, createThread, findExistingWorkThread, LocalConversationSurface, selectThreadCheckout, selectThreadRepository, transcriptIsNearBottom } from '../src/local-conversation';
+import { advanceLocalToolProgress, createThread, findExistingWorkThread, LocalConversationSurface, selectThreadCheckout, selectThreadRepository, shouldSubmitComposerKey, transcriptIsNearBottom } from '../src/local-conversation';
 import { repositoryLabel } from '../src/runtime-client';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -13,6 +13,20 @@ describe('Forge Desktop Work-bound Agent thread identity', () => {
     expect(transcriptIsNearBottom(1000, 700, 200)).toBe(false);
     expect(transcriptIsNearBottom(1000, 300, 200)).toBe(false);
     expect(transcriptIsNearBottom(200, 0, 400)).toBe(true);
+  });
+
+  test('IME confirmation, newline modifiers and busy Agent turns cannot submit from Enter', () => {
+    const press = (values: Partial<KeyboardEvent> = {}) => ({
+      key: 'Enter', shiftKey: false, altKey: false, isComposing: false,
+      keyCode: 13, ...values,
+    }) as Pick<KeyboardEvent, 'key' | 'shiftKey' | 'altKey' | 'isComposing' | 'keyCode'>;
+    expect(shouldSubmitComposerKey(press(), false)).toBe(true);
+    expect(shouldSubmitComposerKey(press(), true)).toBe(false);
+    expect(shouldSubmitComposerKey(press({ shiftKey: true }), false)).toBe(false);
+    expect(shouldSubmitComposerKey(press({ altKey: true }), false)).toBe(false);
+    expect(shouldSubmitComposerKey(press({ isComposing: true }), false)).toBe(false);
+    expect(shouldSubmitComposerKey(press({ keyCode: 229 }), false)).toBe(false);
+    expect(shouldSubmitComposerKey(press({ key: 'a' }), false)).toBe(false);
   });
 
   test('Agent transcript is free of permanent project, Work and model toolbars', () => {
@@ -37,6 +51,7 @@ describe('Forge Desktop Work-bound Agent thread identity', () => {
       expect(html).toContain('aria-label="查看 Git 变更"');
       expect(html).toContain('aria-label="新建会话"');
       expect(html).toContain('aria-label="更多会话操作"');
+      expect((html.match(/name="agent-chat-controls"/g) ?? [])).toHaveLength(4);
       expect(html).toContain('class="local-composer agent-chat-composer"');
       expect(html).toContain('aria-label="Agent 项目上下文"');
       expect(html).toContain('aria-label="Agent 执行的 Git Checkout"');
