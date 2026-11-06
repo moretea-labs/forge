@@ -68,7 +68,7 @@ export function ProjectRecordsView({
     });
     return () => { disposed = true; };
   }, [mode, repoId, refreshEpoch, preview]);
-  const titles = { requirements: 'Requirements', plans: 'Plans', works: 'Works' };
+  const titles = { requirements: '需求', plans: '计划', works: '工作' };
   const explanations = {
     requirements: '需求目标、验收条件和关联工作',
     plans: '实施方案、计划项和关联工作',
@@ -102,6 +102,7 @@ export function ProjectRecordsView({
       + record.works.map((work) => work.objective).join(' '))
       .toLowerCase().includes(query.toLowerCase().trim()));
   const selected = records.find((record) => record.id === selectedId);
+  const firstRecordId = records[0]?.id;
   const relatedPlans = mode === 'requirements' && selected
     ? planIndex.filter((plan) => plan.requirementId === selected.id) : [];
 
@@ -112,6 +113,20 @@ export function ProjectRecordsView({
     requestedRef.current = key;
     void openRecord(requestedRecordId);
   }, [requestedRecordId, repoId, mode]);
+
+  // A populated list should open with a meaningful detail pane. Explicit
+  // cross-page deep links always win, and Work stays on its own list surface.
+  useEffect(() => {
+    if (!repoId || !firstRecordId || selectedId || requestedRecordId) return;
+    const key = repoId + ':' + mode + ':' + firstRecordId;
+    if (requestedRef.current === key) return;
+    requestedRef.current = key;
+    if (mode === 'works') {
+      setSelectedId(firstRecordId);
+    } else {
+      void openRecord(firstRecordId);
+    }
+  }, [repoId, mode, firstRecordId, selectedId, requestedRecordId]);
 
   async function openRecord(id: string) {
     if (mode === 'works') { onSelectWork(id); return; }
