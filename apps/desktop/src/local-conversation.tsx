@@ -245,6 +245,42 @@ function closeAgentMenus(root: HTMLElement | null, keep: Element | null = null):
   return lastClosed;
 }
 
+type ContextOption = { value: string; label: string; title?: string; disabled?: boolean };
+
+/** Native buttons keep Tab/Enter/Space behavior; arrows move among available choices. */
+export function contextOptionIndex(key: string, index: number, count: number): number | undefined {
+  if (!count) return undefined;
+  if (key === 'ArrowDown' || key === 'ArrowRight') return (index + 1) % count;
+  if (key === 'ArrowUp' || key === 'ArrowLeft') return (index + count - 1) % count;
+  if (key === 'Home') return 0;
+  if (key === 'End') return count - 1;
+  return undefined;
+}
+
+export function ContextOptionList({ label, options, value, disabled, onSelect }: {
+  label: string; options: ContextOption[]; value: string; disabled?: boolean;
+  onSelect: (value: string) => void;
+}) {
+  return <div className="agent-context-options" role="group" aria-label={label}
+    onKeyDown={(event) => {
+      const buttons = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('button:not(:disabled)'));
+      const index = buttons.indexOf(event.target as HTMLButtonElement);
+      if (index < 0) return;
+      const next = contextOptionIndex(event.key, index, buttons.length);
+      if (next !== undefined) { event.preventDefault(); buttons[next]?.focus(); }
+    }}>
+    {options.map((option) => <button type="button" aria-pressed={option.value === value}
+      key={option.value} title={option.title} disabled={disabled || option.disabled}
+      onClick={(event) => {
+        const menu = event.currentTarget.closest('details');
+        if (menu) { menu.open = false; menu.querySelector<HTMLElement>('summary')?.focus({ preventScroll: true }); }
+        onSelect(option.value);
+      }}>
+      <span>{option.label}</span><span className="agent-context-check" aria-hidden="true">{option.value === value ? '✓' : ''}</span>
+    </button>)}
+  </div>;
+}
+
 function CopyTextAction({ text, label }: { text: string; label: string }) {
   const [state, setState] = useState<'idle' | 'copied' | 'failed'>('idle');
   const copy = async () => {
@@ -404,9 +440,16 @@ export function LocalConversationSurface({
         composerTextRef.current?.focus({ preventScroll: true });
       }
     };
+    const onFocusIn = (event: FocusEvent) => {
+      const target = event.target instanceof Element ? event.target : null;
+      closeAgentMenus(surfaceRef.current,
+        target?.closest('details.agent-context-menu,details.agent-header-menu') ?? null);
+    };
+    document.addEventListener('focusin', onFocusIn);
     document.addEventListener('pointerdown', onPointerDown, true);
     document.addEventListener('keydown', onKeyDown);
     return () => {
+      document.removeEventListener('focusin', onFocusIn);
       document.removeEventListener('pointerdown', onPointerDown, true);
       document.removeEventListener('keydown', onKeyDown);
     };
@@ -1062,19 +1105,10 @@ export function LocalConversationSurface({
                     <AgentControlIcon name="chevron" />
                   </summary>
                   <div className="agent-context-panel">
-                    <label>项目
-                      <select aria-label="Agent 项目上下文" value={selectedThread.projectRepoId ?? ''}
-                        disabled={sending || committing}
-                        onChange={(event) => {
-                          changeProject(event.target.value || undefined);
-                          event.currentTarget.closest('details')?.removeAttribute('open');
-                        }}>
-                        <option value="">不附加项目（纯对话）</option>
-                        {projects.map((project) => <option key={project.repoId} value={project.repoId}>
-                          {project.name} · {project.repository}
-                        </option>)}
-                      </select>
-                    </label>
+                    <ContextOptionList label="Agent 项目上下文" value={selectedThread.projectRepoId ?? ''}
+                      disabled={sending || committing} onSelect={(value) => changeProject(value || undefined)}
+                      options={[{ value: '', label: '不附加项目（纯对话）' },
+                        ...projects.map((project) => ({ value: project.repoId, label: `${project.name} · ${project.repository}` }))]} />
                     <small>已存在的会话不会被重新绑定到另一个项目。</small>
                     {!projectBindingReady && <small role="alert">当前项目已不在 Forge 注册目录</small>}
                   </div>
@@ -1087,23 +1121,15 @@ export function LocalConversationSurface({
                     <AgentControlIcon name="chevron" />
                   </summary>
                   <div className="agent-context-panel">
-                    <label>Forge 已注册 Checkout
-                      <select aria-label="Agent 执行的 Git Checkout" value={selectedThread.checkoutId ?? ''}
-                        disabled={sending || committing || checkoutLoading || !!checkoutError || !checkoutIndex.length}
-                        onChange={(event) => {
-                          changeCheckout(event.target.value);
-                          event.currentTarget.closest('details')?.removeAttribute('open');
-                        }}>
-                        {!checkoutBindingReady && <option value={selectedThread.checkoutId ?? ''}>
-                          {checkoutLoading ? '正在读取 Forge 检出目录…' : '未核实的历史检出（只读）'}
-                        </option>}
-                        {checkoutIndex.map((checkout) => <option value={checkout.checkoutId}
-                          key={checkout.checkoutId} title={checkout.path ?? checkout.checkoutId}>
-                          {checkout.branch || 'Detached HEAD'} · {checkout.checkoutId.slice(0, 10)}
-                          {checkout.active ? '（默认）' : ''}
-                        </option>)}
-                      </select>
-                    </label>
+                    <ContextOptionList label="Agent 执行的 Git Checkout" value={selectedThread.checkoutId ?? ''}
+                      disabled={sending || committing || checkoutLoading || !!checkoutError || !checkoutIndex.length}
+                      onSelect={changeCheckout} options={[
+                        ...(!checkoutBindingReady ? [{ value: selectedThread.checkoutId ?? '',
+                          label: checkoutLoading ? '正在读取 Forge 检出目录…' : '未核实的历史检出（只读）', disabled: true }] : []),
+                        ...checkoutIndex.filter((checkout) => checkoutBindingReady || checkout.checkoutId !== selectedThread.checkoutId)
+                          .map((checkout) => ({ value: checkout.checkoutId, title: checkout.path ?? checkout.checkoutId,
+                            label: `${checkout.branch || 'Detached HEAD'} · ${checkout.checkoutId.slice(0, 10)}${checkout.active ? '（默认）' : ''}` })),
+                      ]} />
                     {checkoutError && <small role="alert">检出目录读取失败：{checkoutError}</small>}
                     <small title={selectedThread.checkoutId}>切换 Checkout 将保留原会话历史，新的操作使用独立会话。</small>
                   </div>
@@ -1115,22 +1141,14 @@ export function LocalConversationSurface({
                     <AgentControlIcon name="chevron" />
                   </summary>
                   <div className="agent-context-panel">
-                    <label>关联已有 Work（可选）
-                      <select aria-label="会话关联的 Forge Work" value={selectedWorkId ?? ''}
-                        disabled={sending || committing}
-                        onChange={(event) => {
-                          changeWork(event.target.value || undefined);
-                          event.currentTarget.closest('details')?.removeAttribute('open');
-                        }}>
-                        <option value="">不关联 Work</option>
-                        {selectedWorkId && !workIndex.some((work) => work.workId === selectedWorkId) && (
-                          <option value={selectedWorkId}>{selectedWorkId} · 当前列表以外</option>
-                        )}
-                        {workIndex.map((work) => <option value={work.workId} key={work.workId}>
-                          {work.state === 'open' ? '进行中' : '历史'} · {work.objective.slice(0, 72)}
-                        </option>)}
-                      </select>
-                    </label>
+                    <ContextOptionList label="会话关联的 Forge Work" value={selectedWorkId ?? ''}
+                      disabled={sending || committing} onSelect={(value) => changeWork(value || undefined)} options={[
+                        { value: '', label: '不关联 Work' },
+                        ...(selectedWorkId && !workIndex.some((work) => work.workId === selectedWorkId)
+                          ? [{ value: selectedWorkId, label: `${selectedWorkId} · 当前列表以外` }] : []),
+                        ...workIndex.map((work) => ({ value: work.workId,
+                          label: `${work.state === 'open' ? '进行中' : '历史'} · ${work.objective.slice(0, 72)}` })),
+                      ]} />
                     {selectedWorkId && workBindingReady && workDetail && <div className="agent-context-work-links">
                       <button type="button" onClick={() => onOpenWork?.(selectedRepoId, workDetail.workId)}>
                         查看 Work

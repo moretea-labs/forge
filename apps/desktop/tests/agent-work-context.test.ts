@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { localPendingCopy, advanceLocalToolProgress, createThread, findExistingWorkThread, localConversationNavItems, LocalConversationSurface, LocalMessageBody, selectThreadCheckout, selectThreadRepository, shouldSubmitComposerKey, transcriptIsNearBottom } from '../src/local-conversation';
+import { ContextOptionList, contextOptionIndex, localPendingCopy, advanceLocalToolProgress, createThread, findExistingWorkThread, localConversationNavItems, LocalConversationSurface, LocalMessageBody, selectThreadCheckout, selectThreadRepository, shouldSubmitComposerKey, transcriptIsNearBottom } from '../src/local-conversation';
 import { ForgeIcon } from '../src/ui-icons';
 import { RuntimeView, Sidebar, codexBoundPrompt, sidebarToggleShortcut } from '../src/App';
 import { SettingsView } from '../src/settings-view';
@@ -11,6 +11,31 @@ import { ProjectRecordsView } from '../src/project-records-view';
 import { disconnectedProjection } from '../src/runtime-projection';
 
 describe('Forge Desktop Work-bound Agent thread identity', () => {
+  test('context options select directly, close and return focus, with keyboard navigation', () => {
+    const selected: string[] = [];
+    const list = ContextOptionList({ label: 'Project', value: 'a', options: [
+      { value: 'a', label: 'Current' }, { value: 'b', label: 'Other' },
+    ], onSelect: (value) => selected.push(value) });
+    const html = renderToStaticMarkup(list);
+    expect(html).toContain('aria-label="Project"');
+    expect(html).toContain('aria-pressed="true"');
+    expect(html).toContain('aria-pressed="false"');
+    expect(html).not.toContain('<select');
+    let focused = false;
+    const menu = { open: true, querySelector: () => ({ focus: () => { focused = true; } }) };
+    const buttons = list.props.children as Array<{ props: { onClick: (event: unknown) => void } }>;
+    buttons[1]!.props.onClick({ currentTarget: { closest: () => menu } });
+    expect(selected).toEqual(['b']);
+    expect(menu.open).toBe(false);
+    expect(focused).toBe(true);
+    expect(contextOptionIndex('ArrowDown', 1, 2)).toBe(0);
+    expect(contextOptionIndex('ArrowUp', 0, 2)).toBe(1);
+    expect(contextOptionIndex('Home', 1, 2)).toBe(0);
+    expect(contextOptionIndex('End', 0, 2)).toBe(1);
+    expect(contextOptionIndex('Tab', 0, 2)).toBeUndefined();
+    expect(contextOptionIndex('End', 0, 0)).toBeUndefined();
+  });
+
   test('Codex pending copy describes absent progress and preserves cancellation status', () => {
     expect(localPendingCopy('codex', false, [])).toContain('不提供工具进度');
     expect(localPendingCopy('codex', false, [])).toContain('停止');
