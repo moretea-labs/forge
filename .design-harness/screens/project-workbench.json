@@ -15,17 +15,19 @@
     "工作选择放在侧栏，当前与最近终态历史都直接来自 rh_work(list) canonical semantic Work；历史默认折叠，不得从 rh_status 的机械活动摘要反推 Work 列表",
     "工作是唯一执行/进度节点；计划只作为按需上下文，不显示计划百分比或计划步骤状态",
     "运行时与恢复是独立主页面，不常驻右侧检查器",
-    "自动推进任务展示绑定会话与切换新会话动作，详细 ID 与机械状态按需展开",
     "MCP 提供显式刷新动作，一次性重读 canonical projections；刷新失败保留上一次成功投影并显示局部错误，不把读取失败改写为 Runtime health"
   ],
   "nodes": [
     {
       "id": "sidebar",
-      "component": "MacSidebar",
+      "component": "PrimarySidebar",
       "props": {
         "active": "项目",
         "mode": "mcp",
-        "modeSwitch": ["local", "mcp"],
+        "modeSwitch": [
+          "local",
+          "mcp"
+        ],
         "assistantLabel": "助手",
         "projects": [
           "forge",

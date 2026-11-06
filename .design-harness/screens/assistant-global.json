@@ -2,67 +2,103 @@
   "schemaVersion": 1,
   "id": "assistant-global",
   "name": "全局助手",
-  "goal": "以简洁任务列表展示 Forge 实例级自动推进工作，直接打开绑定会话或显式切换新会话，不把它们伪装成项目。",
-  "primaryAction": "open-automatic-continuation-conversation",
+  "goal": "本地编码 Agent 会话、真实工具活动和单一输入框主导内容，项目/checkout/Work 仅作为上下文。",
+  "primaryAction": "send-agent-message",
   "constraints": [
-    "助手与项目同级",
-    "macOS 系统标题栏拥有窗口 chrome，默认只有轻量侧栏与单主工作区",
-    "助手主区优先展示活动自动推进任务与绑定会话，不常驻检查器或机械状态",
-    "Supervisor 任务详情可按需展示其权威 repo/requirement/createdAt 绑定，不由客户端推断",
-    "不得要求每个实例级任务都有项目、需求或计划",
-    "切换新会话只能调用 canonical Supervisor migration"
+    "macOS 拥有原生标题栏，侧栏可收起；默认不显示常驻右侧检查器。",
+    "不出现 Local/MCP 模式切换与退役 Supervisor 自动续跑功能。",
+    "项目、checkout 切换不重写现有会话历史，明确模型请求作用域。",
+    "工具进度必须来自真实 provider；未知不能伪装成完成。",
+    "弹出菜单支持 Escape 关闭并返回焦点，Arrow/Home/End 快速选择。"
   ],
   "nodes": [
     {
       "id": "sidebar",
-      "component": "MacSidebar",
+      "component": "PrimarySidebar",
       "props": {
-        "active": "助手",
-        "assistantLabel": "助手",
-        "projects": ["forge", "Avela", "Knowledge"],
-        "selectedProject": "",
-        "runtimePlacement": "sidebar-footer",
+        "active": "会话",
+        "projects": [
+          "forge",
+          "Avela"
+        ],
         "collapsed": false
       }
     },
     {
-      "id": "automatic-continuations",
-      "component": "AutomaticContinuationList",
+      "id": "thread-index",
+      "component": "ConversationIndex",
       "props": {
-        "headline": "助手",
-        "body": "查看跨项目自动推进任务，打开对应会话或继续处理。",
-        "tasks": [
-          {
-            "title": "Forge 每日发布摘要",
-            "status": "推进中",
-            "conversationLink": "权威 ChatGPT 会话 URL",
-            "repoId": "Supervisor completion/continuation contract 中的 repo_id（如存在）",
-            "requirementId": "Supervisor completion contract 中的 requirement_id（如存在）",
-            "createdAt": "Supervisor 权威创建时间",
-            "actions": ["打开绑定会话", "切换到新会话"]
-          },
-          {
-            "title": "跨项目推广台账",
-            "status": "等待中",
-            "conversationLink": "权威 ChatGPT 会话 URL",
-            "actions": ["打开绑定会话", "切换到新会话"]
-          }
+        "threads": [
+          "最近会话",
+          "当前项目会话"
         ],
-        "detailsCollapsedByDefault": true,
-        "emptyMessage": "当前没有活动的自动推进任务。"
-      },
-      "interactions": [
-        {"event": "open_conversation", "actions": [{"type": "emit_design_action", "actionId": "open-automatic-continuation-conversation"}]},
-        {"event": "switch_conversation", "actions": [{"type": "emit_design_action", "actionId": "switch-automatic-continuation-conversation"}]}
-      ]
+        "query": "",
+        "projectGroups": true
+      }
+    },
+    {
+      "id": "transcript",
+      "component": "ConversationTranscript",
+      "props": {
+        "thread": "所选本地 Agent 会话",
+        "turns": [
+          "用户消息",
+          "助手回复与真实工具活动"
+        ],
+        "inFlight": false
+      }
+    },
+    {
+      "id": "composer",
+      "component": "AgentComposer",
+      "props": {
+        "placeholder": "描述需要实现或检查的工作…",
+        "scopeLabel": "项目 · checkout · Work",
+        "shortcut": "⌘↵"
+      }
     }
   ],
   "initialStateId": "ready",
   "states": [
-    {"id": "ready", "name": "助手就绪", "meaning": "活动自动推进任务及其精确会话绑定可直接检查。", "primaryAction": "open-automatic-continuation-conversation"},
-    {"id": "empty", "name": "暂无自动推进任务", "meaning": "当前没有活动自动推进任务。"},
-    {"id": "loading", "name": "正在加载助手任务", "meaning": "正在读取 Supervisor 权威投影。"}
+    {
+      "id": "ready",
+      "name": "会话就绪",
+      "meaning": "可查看当前会话与目标上下文，允许发送真实请求。",
+      "primaryAction": "send-agent-message"
+    },
+    {
+      "id": "empty",
+      "name": "新会话",
+      "meaning": "唯一输入框，明确当前目标项目。",
+      "primaryAction": "send-agent-message"
+    },
+    {
+      "id": "loading",
+      "name": "读取中",
+      "meaning": "不将未知/加载中伪装为空结果。"
+    },
+    {
+      "id": "running",
+      "name": "Agent 正在处理",
+      "meaning": "真实运行状态与可用停止操作，不伪造工具进度。"
+    }
   ],
-  "viewport": {"kind": "desktop", "platform": "macos", "preset": "macbook-14", "width": 1440, "height": 960, "safeTop": 0, "safeBottom": 0},
-  "quality": {"requiredStateIds": ["ready", "empty", "loading"], "minimumHitTarget": 36}
+  "viewport": {
+    "kind": "desktop",
+    "platform": "macos",
+    "preset": "macbook-14",
+    "width": 1440,
+    "height": 960,
+    "safeTop": 0,
+    "safeBottom": 0
+  },
+  "quality": {
+    "requiredStateIds": [
+      "ready",
+      "empty",
+      "loading",
+      "running"
+    ],
+    "minimumHitTarget": 36
+  }
 }

@@ -5,7 +5,7 @@
   "storageVersion": "1.2.0",
   "designSystem": {
     "name": "Forge Glass Day",
-    "version": "0.1.0"
+    "version": "0.2.0"
   },
-  "activeScreenId": "project-workbench"
+  "activeScreenId": "assistant-global"
 }
