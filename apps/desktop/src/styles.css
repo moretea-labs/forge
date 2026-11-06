@@ -390,8 +390,10 @@ a { color: #353535; text-decoration: underline; text-underline-offset: 3px; }
   background: rgba(90,100,120,.09); color: #383f48; }
 .agent-copy-action > small { color: #61806a; font-size: 10px; white-space: nowrap; }
 .agent-copy-action > small[role="alert"] { color: #ad5b55; }
-.local-message-actions { display: flex; justify-content: flex-end; min-height: 27px;
-  margin-top: 4px; opacity: 0; transition: opacity .14s ease; }
+.local-message.assistant { position: relative; }
+.local-message.assistant .local-message-heading { padding-right: 39px; }
+.local-message-actions { position: absolute; top: 6px; right: 2px;
+  opacity: 0; transition: opacity .14s ease; }
 .local-message.assistant:hover .local-message-actions,
 .local-message.assistant:focus-within .local-message-actions { opacity: 1; }
 @media (hover: none) { .local-message-actions { opacity: 1; } }

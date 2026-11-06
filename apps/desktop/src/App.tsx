@@ -279,6 +279,7 @@ function Sidebar({
         <div className="sidebar-project-popover" ref={projectPickerRef}>
           <div className="sidebar-project-heading">
           <button className="sidebar-project-picker" type="button" aria-expanded={showProjectPicker}
+            aria-controls={showProjectPicker ? 'sidebar-project-options' : undefined}
             title={activeProject?.localRoot ?? activeProject?.repository ?? '选择已注册项目'}
             onClick={() => setShowProjectPicker((expanded) => !expanded)}>
             <span className="project-folder"><ForgeIcon name="project" /></span>
@@ -293,7 +294,8 @@ function Sidebar({
           <button type="button" title="刷新已注册项目" aria-label="刷新已注册项目" onClick={onRetryProjects}><ForgeIcon name="refresh" size={16} /></button>
         </div>
         {showProjectPicker && (
-          <div className="sidebar-project-picker-panel" role="region" aria-label="选择项目">
+          <div id="sidebar-project-options" className="sidebar-project-picker-panel"
+            role="region" aria-label="选择项目">
             <input ref={projectSearchRef} aria-label="搜索已注册项目" placeholder={'搜索 ' + projects.length + ' 个项目'}
               value={projectQuery} onChange={(event) => setProjectQuery(event.target.value)} />
             <div className="sidebar-list sidebar-projects">
