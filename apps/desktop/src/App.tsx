@@ -157,6 +157,12 @@ export function Sidebar({
   const [conversationSearchOpen, setConversationSearchOpen] = useState(false);
   const [conversationQuery, setConversationQuery] = useState('');
   const conversationSearchRef = useRef<HTMLInputElement>(null);
+  // Accessibility and keyboard routing do not necessarily emit outside pointer
+  // events; dismiss the project selector when leaving the current view.
+  useEffect(() => {
+    setShowProjectPicker(false);
+    setProjectQuery('');
+  }, [activeView]);
   const shownThreads = conversationSearchOpen
     ? localThreads.filter((thread) => {
       const project = projects.find((entry) => entry.repoId === thread.projectRepoId);
@@ -1047,8 +1053,12 @@ export function RuntimeView({
           <div className="runtime-primary-row">
             <span className={`health-dot ${connectionError ? 'degraded' : connection?.ready ? 'connected' : connection?.configured ? 'degraded' : 'not_connected'}`} />
             <div>
-              <strong>{connectionError ? '连接状态读取失败' : connection?.ready ? '控制器连接已就绪' : connection?.configured ? '控制器连接需要处理' : connectionLoading ? '正在读取连接状态' : '连接尚未配置'}</strong>
-              <p>{connection?.controller.detail ?? '连接状态来自 Forge setup authority；客户端不保存配置副本。'}</p>
+              <strong>{connectionError ? '连接状态读取失败' : connection?.ready ? 'MCP 连接已就绪' : connection?.configured
+                ? connection.controller.ready ? '远程传输需要处理' : '控制器配置需要处理'
+                : connectionLoading ? '正在读取连接状态' : '连接尚未配置'}</strong>
+              <p>{connection && !connection.controller.ready ? connection.controller.detail
+                : connection && !connection.tunnel.ready ? connection.tunnel.detail
+                : connection?.controller.detail ?? '连接状态来自 Forge setup authority；客户端不保存配置副本。'}</p>
             </div>
           </div>
           <div className="runtime-actions">

@@ -103,6 +103,31 @@ describe('Forge Desktop Work-bound Agent thread identity', () => {
     expect(html).toContain('Agent 设置');
   });
 
+  test('MCP status distinguishes a ready controller from a failing remote tunnel', () => {
+    const html = renderToStaticMarkup(createElement(RuntimeView, {
+      projection: null, loading: false, error: null, action: null,
+      connection: {
+        schemaVersion: 1, configured: true, ready: false,
+        controller: {
+          ready: true, title: 'Controller configured',
+          detail: 'Controller endpoints match the setup profile.',
+        },
+        tunnel: {
+          ready: false, provider: 'cloudflare', title: 'Remote tunnel unavailable',
+          detail: 'Configure the remote tunnel to reach ChatGPT.',
+        },
+        repair: { available: false, action: 'repair_connector', label: 'Refresh Forge Connector' },
+      },
+      connectionLoading: false, connectionError: null, connectionAction: null,
+      async onRefresh() {}, async onDiagnose() {}, async onRestart() {},
+      async onRecover() {}, async onRefreshConnection() {},
+      async onRepairConnection() {}, onOpenSettings() {},
+    }));
+    expect(html).toContain('远程传输需要处理');
+    expect(html).toContain('Configure the remote tunnel to reach ChatGPT.');
+    expect(html).not.toContain('控制器配置需要处理');
+  });
+
   test('sidebar uses Cmd+B without hijacking text input modifiers', () => {
     const press = (values: Partial<KeyboardEvent> = {}) => ({
       key: 'b', metaKey: false, ctrlKey: false, shiftKey: false, altKey: false,
