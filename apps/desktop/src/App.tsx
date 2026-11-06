@@ -37,6 +37,13 @@ import {
 
 type AppView = 'assistant' | 'project' | 'requirements' | 'plans' | 'works' | 'knowledge' | 'settings' | 'runtime';
 
+export function sidebarToggleShortcut(
+  event: Pick<KeyboardEvent, 'key' | 'metaKey' | 'ctrlKey' | 'altKey' | 'shiftKey'>,
+): boolean {
+  return event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey
+    && event.key.toLowerCase() === 'b';
+}
+
 function previewEnabled(): boolean {
   return new URLSearchParams(window.location.search).get('preview') === '1';
 }
@@ -143,6 +150,8 @@ function Sidebar({
 }) {
   const [showProjectPicker, setShowProjectPicker] = useState(false);
   const [projectQuery, setProjectQuery] = useState('');
+  const projectPickerRef = useRef<HTMLDivElement>(null);
+  const projectSearchRef = useRef<HTMLInputElement>(null);
   const [conversationSearchOpen, setConversationSearchOpen] = useState(false);
   const [conversationQuery, setConversationQuery] = useState('');
   const conversationSearchRef = useRef<HTMLInputElement>(null);
@@ -170,12 +179,39 @@ function Sidebar({
     window.addEventListener('keydown', onSearchShortcut);
     return () => window.removeEventListener('keydown', onSearchShortcut);
   }, [conversationSearchOpen]);
+  // The project picker is a compact overlay; opening it must not displace
+  // conversation navigation or require another state owner.
+  useEffect(() => {
+    if (!showProjectPicker) return;
+    projectSearchRef.current?.focus({ preventScroll: true });
+    const onPointerDown = (event: PointerEvent) => {
+      if (event.target instanceof Node && !projectPickerRef.current?.contains(event.target)) {
+        setShowProjectPicker(false);
+        setProjectQuery('');
+      }
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopPropagation();
+      setShowProjectPicker(false);
+      setProjectQuery('');
+      projectPickerRef.current?.querySelector<HTMLButtonElement>('.sidebar-project-picker')
+        ?.focus({ preventScroll: true });
+    };
+    document.addEventListener('pointerdown', onPointerDown, true);
+    document.addEventListener('keydown', onKeyDown, true);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown, true);
+      document.removeEventListener('keydown', onKeyDown, true);
+    };
+  }, [showProjectPicker]);
   const activeProject = projects.find((project) => project.repoId === selectedRepoId);
   const matchingProjects = projects.filter((project) =>
     (project.name + ' ' + project.repository + ' ' + (project.localRoot ?? ''))
       .toLowerCase().includes(projectQuery.toLowerCase().trim()));
   return (
-    <aside className="sidebar">
+    <aside id="forge-sidebar" className="sidebar">
       <div className="sidebar-main">
         <div className="sidebar-brand" aria-label="Forge">
           <img className="sidebar-brand-icon" src={forgeAppIcon} alt="" />
@@ -240,7 +276,8 @@ function Sidebar({
             )}
           </section>
         )}
-        <div className="sidebar-project-heading">
+        <div className="sidebar-project-popover" ref={projectPickerRef}>
+          <div className="sidebar-project-heading">
           <button className="sidebar-project-picker" type="button" aria-expanded={showProjectPicker}
             title={activeProject?.localRoot ?? activeProject?.repository ?? '选择已注册项目'}
             onClick={() => setShowProjectPicker((expanded) => !expanded)}>
@@ -256,8 +293,8 @@ function Sidebar({
           <button type="button" title="刷新已注册项目" aria-label="刷新已注册项目" onClick={onRetryProjects}><ForgeIcon name="refresh" size={16} /></button>
         </div>
         {showProjectPicker && (
-          <div className="sidebar-project-picker-panel">
-            <input aria-label="搜索已注册项目" placeholder={'搜索 ' + projects.length + ' 个项目'}
+          <div className="sidebar-project-picker-panel" role="region" aria-label="选择项目">
+            <input ref={projectSearchRef} aria-label="搜索已注册项目" placeholder={'搜索 ' + projects.length + ' 个项目'}
               value={projectQuery} onChange={(event) => setProjectQuery(event.target.value)} />
             <div className="sidebar-list sidebar-projects">
               {projects.length === 0 && (
@@ -270,7 +307,11 @@ function Sidebar({
               {matchingProjects.map((project) => (
                 <button className={project.repoId === selectedRepoId ? 'nav-row project-row active' : 'nav-row project-row'}
                   key={project.repoId} type="button" title={project.localRoot ?? project.repository}
-                  onClick={() => { onSelectProject?.(project); setShowProjectPicker(false); }}>
+                  onClick={() => {
+                    onSelectProject?.(project);
+                    setShowProjectPicker(false);
+                    setProjectQuery('');
+                  }}>
                   <span className="project-folder"><ForgeIcon name="project" /></span>
                   <span className="project-picker-identity">
                     <span className="nav-label">{project.repository.split('/').at(-1) ?? project.name}</span>
@@ -282,6 +323,7 @@ function Sidebar({
             </div>
           </div>
         )}
+        </div>
       </div>
 
       <div className="sidebar-footer">
@@ -1023,6 +1065,23 @@ function RuntimeView({
 
 export function App() {
   const preview = useMemo(previewEnabled, []);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try { return localStorage.getItem('forge.desktop.sidebar-collapsed.v1') === 'true'; }
+    catch { return false; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem('forge.desktop.sidebar-collapsed.v1', String(sidebarCollapsed)); }
+    catch { /* Browser preview may not permit storage; the toggle still works. */ }
+  }, [sidebarCollapsed]);
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!sidebarToggleShortcut(event)) return;
+      event.preventDefault();
+      setSidebarCollapsed((current) => !current);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
   const [projection, setProjection] = useState<ForgeDesktopProjection>(preview ? designPreviewProjection : disconnectedProjection);
   const [projects, setProjects] = useState<ProjectListItemProjection[]>(preview ? [...designPreviewProjection.projects] : []);
   const [selectedRepoId, setSelectedRepoId] = useState<string | undefined>(preview ? designPreviewProjection.project?.repoId : undefined);
@@ -1465,7 +1524,7 @@ export function App() {
     : projection.runtime.label;
 
   return (
-    <div className="app-shell">
+    <div className={'app-shell' + (sidebarCollapsed ? ' sidebar-collapsed' : '')}>
       <Sidebar
         projects={projects}
         selectedRepoId={activeView === 'assistant' ? activeAgentRepoId : selectedRepoId}
@@ -1490,6 +1549,13 @@ export function App() {
 
       <div className="workspace-region">
         <header className="workspace-topbar">
+          <button className="workspace-sidebar-toggle" type="button"
+            aria-controls="forge-sidebar" aria-expanded={!sidebarCollapsed}
+            aria-label={sidebarCollapsed ? '显示侧栏' : '隐藏侧栏'}
+            title={sidebarCollapsed ? '显示侧栏 (⌘B)' : '隐藏侧栏 (⌘B)'}
+            onClick={() => setSidebarCollapsed((current) => !current)}>
+            <ForgeIcon name={sidebarCollapsed ? 'sidebar-show' : 'sidebar-hide'} size={18} />
+          </button>
           <div className="workspace-topbar-title" data-tauri-drag-region>
             <strong>{activeView === 'assistant' ? '本地会话'
               : activeView === 'project' ? projection.work?.title ?? 'Work 详情'

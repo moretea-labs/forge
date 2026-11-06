@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { isValidElement, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { AgentGitReview, splitGitDiffFiles, type GitDiffReceipt } from './agent-git-review';
@@ -231,14 +231,52 @@ function closeAgentMenus(root: HTMLElement | null, keep: Element | null = null):
   return lastClosed;
 }
 
-function LocalMessageBody({ content }: { content: string }) {
-  return (
-    <div className="local-message-body">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
-        a: ({ href, children }) => <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>,
-      }}>{content}</ReactMarkdown>
+function CopyTextAction({ text, label }: { text: string; label: string }) {
+  const [state, setState] = useState<'idle' | 'copied' | 'failed'>('idle');
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setState('copied');
+    } catch {
+      setState('failed');
+    }
+  };
+  return <span className="agent-copy-action">
+    <button type="button" aria-label={label} title={label} disabled={!text}
+      onClick={() => void copy()}>
+      <AgentControlIcon name={state === 'copied' ? 'check' : 'copy'} size={15} />
+    </button>
+    {state === 'copied' && <small role="status">已复制</small>}
+    {state === 'failed' && <small role="alert">复制不可用，请手动选中文本</small>}
+  </span>;
+}
+
+function textOfMarkdown(node: ReactNode): string {
+  if (typeof node === 'string' || typeof node === 'number') return String(node);
+  if (Array.isArray(node)) return node.map(textOfMarkdown).join('');
+  return isValidElement<{ children?: ReactNode }>(node) ? textOfMarkdown(node.props.children) : '';
+}
+
+function MarkdownCodeBlock({ children }: { children?: ReactNode }) {
+  const source = textOfMarkdown(children);
+  const language = isValidElement<{ className?: string }>(children)
+    ? children.props.className?.match(/language-([\w+-]+)/)?.[1] : undefined;
+  return <div className="local-code-block">
+    <div className="local-code-label">
+      <span>{language ?? '代码'}</span>
+      <CopyTextAction text={source} label="复制代码" />
     </div>
-  );
+    <pre>{children}</pre>
+  </div>;
+}
+
+export function LocalMessageBody({ content }: { content: string }) {
+  return <div className="local-message-body">
+    <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
+      a: ({ href, children }) => <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>,
+      pre: ({ children }) => <MarkdownCodeBlock>{children}</MarkdownCodeBlock>,
+    }}>{content}</ReactMarkdown>
+  </div>;
 }
 
 export function LocalConversationSurface({
@@ -339,10 +377,17 @@ export function LocalConversationSurface({
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
       const closed = closeAgentMenus(surfaceRef.current);
-      if (!closed) return;
-      event.preventDefault();
-      event.stopPropagation();
-      closed.querySelector<HTMLElement>('summary')?.focus({ preventScroll: true });
+      if (closed) {
+        event.preventDefault();
+        event.stopPropagation();
+        closed.querySelector<HTMLElement>('summary')?.focus({ preventScroll: true });
+      } else if (diffVisible && !committing) {
+        diffRequest.current += 1;
+        setDiffVisible(false);
+        event.preventDefault();
+        event.stopPropagation();
+        composerTextRef.current?.focus({ preventScroll: true });
+      }
     };
     document.addEventListener('pointerdown', onPointerDown, true);
     document.addEventListener('keydown', onKeyDown);
@@ -350,7 +395,7 @@ export function LocalConversationSurface({
       document.removeEventListener('pointerdown', onPointerDown, true);
       document.removeEventListener('keydown', onKeyDown);
     };
-  }, []);
+  }, [diffVisible, committing]);
 
   // Pure observation from the native agent's existing tool loop. Events never
   // authorize effects or persist another transcript; completed receipts still
@@ -876,6 +921,11 @@ export function LocalConversationSurface({
                   <time dateTime={message.createdAt}>{new Date(message.createdAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}</time>
                 </div>
                 <LocalMessageBody content={message.content} />
+                {message.role === 'assistant' && message.content.trim() && (
+                  <div className="local-message-actions">
+                    <CopyTextAction text={message.content} label="复制回复" />
+                  </div>
+                )}
                 {message.role === 'assistant' && typeof message.toolActivityCount === 'number' && message.toolActivityCount > 0 && (
                   <details className="local-tool-summary">
                     <summary>Forge 工具执行 · {message.toolActivityCount} 次</summary>

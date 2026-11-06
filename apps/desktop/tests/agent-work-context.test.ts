@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
-import { advanceLocalToolProgress, createThread, findExistingWorkThread, localConversationNavItems, LocalConversationSurface, selectThreadCheckout, selectThreadRepository, shouldSubmitComposerKey, transcriptIsNearBottom } from '../src/local-conversation';
+import { advanceLocalToolProgress, createThread, findExistingWorkThread, localConversationNavItems, LocalConversationSurface, LocalMessageBody, selectThreadCheckout, selectThreadRepository, shouldSubmitComposerKey, transcriptIsNearBottom } from '../src/local-conversation';
 import { ForgeIcon } from '../src/ui-icons';
+import { sidebarToggleShortcut } from '../src/App';
 import { readFileSync } from 'node:fs';
 import { repositoryLabel } from '../src/runtime-client';
 import { createElement } from 'react';
@@ -9,6 +10,36 @@ import { ProjectRecordsView } from '../src/project-records-view';
 import { disconnectedProjection } from '../src/runtime-projection';
 
 describe('Forge Desktop Work-bound Agent thread identity', () => {
+  test('sidebar uses Cmd+B without hijacking text input modifiers', () => {
+    const press = (values: Partial<KeyboardEvent> = {}) => ({
+      key: 'b', metaKey: false, ctrlKey: false, shiftKey: false, altKey: false,
+      ...values,
+    }) as Pick<KeyboardEvent, 'key' | 'metaKey' | 'ctrlKey' | 'shiftKey' | 'altKey'>;
+    expect(sidebarToggleShortcut(press({ metaKey: true }))).toBe(true);
+    expect(sidebarToggleShortcut(press({ ctrlKey: true, key: 'B' }))).toBe(false);
+    expect(sidebarToggleShortcut(press({ ctrlKey: true, metaKey: true }))).toBe(false);
+    expect(sidebarToggleShortcut(press({ shiftKey: true, metaKey: true }))).toBe(false);
+    expect(sidebarToggleShortcut(press({ altKey: true, metaKey: true }))).toBe(false);
+    expect(sidebarToggleShortcut(press({ key: 'n', metaKey: true }))).toBe(false);
+    expect(sidebarToggleShortcut(press())).toBe(false);
+    expect(renderToStaticMarkup(createElement(ForgeIcon, { name: 'sidebar-show' })))
+      .not.toEqual(renderToStaticMarkup(createElement(ForgeIcon, { name: 'sidebar-hide' })));
+  });
+
+  test('fenced code shows language and one copy action without a permanent message toolbar', () => {
+    const fenced = ['Before', '', '```typescript', 'const ready = true;', '```', '', 'After'].join('\n');
+    const html = renderToStaticMarkup(createElement(LocalMessageBody, { content: fenced }));
+    expect(html).toContain('class="local-code-block"');
+    expect(html).toContain('aria-label="复制代码"');
+    expect(html).toContain('<span>typescript</span>');
+    expect(html).toContain('<pre><code class="language-typescript">const ready = true;');
+    expect((html.match(/aria-label="复制代码"/g) ?? [])).toHaveLength(1);
+    expect(html).not.toContain('local-message-actions');
+    const inline = renderToStaticMarkup(createElement(LocalMessageBody, { content: 'Use `npm test`.' }));
+    expect(inline).toContain('<code>npm test</code>');
+    expect(inline).not.toContain('aria-label="复制代码"');
+  });
+
   test('sidebar, project and Agent actions share purposeful Lucide SVG glyphs', () => {
     for (const name of [
       'new-thread', 'conversations', 'work', 'requirement', 'plan', 'knowledge',
