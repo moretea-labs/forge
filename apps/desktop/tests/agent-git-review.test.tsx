@@ -37,6 +37,10 @@ describe('Agent Git diff presentation', () => {
     expect(html).toContain('仅展示 Forge 返回的部分 Diff');
     expect(html).toContain('当前没有未暂存的代码变更');
     expect(html).toContain('aria-label="Git 变更类型"');
+    expect(html).toContain('aria-label="刷新 Git 变更"');
+    expect(html).toContain('aria-label="关闭 Git 面板"');
+    expect(html).toContain('lucide-refresh-cw');
+    expect(html).toContain('lucide-x');
     const stagedHtml = renderToStaticMarkup(createElement(AgentGitReview, {
       diff: { patch: '', stat: '', truncated: false }, staged: true, loading: false,
       onStagedChange() {}, onRefresh() {}, onClose() {},

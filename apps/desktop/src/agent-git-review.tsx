@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { ForgeIcon } from './ui-icons';
 
 export interface GitDiffReceipt {
   stat: string;
@@ -72,12 +73,18 @@ export function AgentGitReview({
   return (
     <aside className="local-git-inspector" aria-label="Git 变更审阅">
       <header>
-        <strong>Changes</strong>
+        <strong>Git 变更</strong>
         <span className="local-diff-file-count" title={diff?.branch ?? '未知分支'}>
           {diff?.branch ? diff.branch.slice(-24) + ' · ' : ''}{files.length} 个文件
         </span>
-        <button className="plain-action" type="button" onClick={onRefresh} disabled={loading}>刷新</button>
-        <button className="plain-action" type="button" onClick={onClose} disabled={committing}>关闭</button>
+        <div className="local-diff-header-actions">
+          <button className="agent-icon-button" type="button" onClick={onRefresh}
+            aria-label="刷新 Git 变更" title="刷新 Git 变更"
+            disabled={loading || committing}><ForgeIcon name="refresh" size={16} /></button>
+          <button className="agent-icon-button" type="button" onClick={onClose}
+            aria-label="关闭 Git 面板" title="关闭 Git 面板"
+            disabled={committing}><ForgeIcon name="close" size={16} /></button>
+        </div>
       </header>
       <div className="local-diff-modes" role="group" aria-label="Git 变更类型">
         <button type="button" aria-pressed={!staged} disabled={loading || committing}

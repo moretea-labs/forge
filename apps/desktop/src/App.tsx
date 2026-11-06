@@ -143,6 +143,33 @@ function Sidebar({
 }) {
   const [showProjectPicker, setShowProjectPicker] = useState(false);
   const [projectQuery, setProjectQuery] = useState('');
+  const [conversationSearchOpen, setConversationSearchOpen] = useState(false);
+  const [conversationQuery, setConversationQuery] = useState('');
+  const conversationSearchRef = useRef<HTMLInputElement>(null);
+  const shownThreads = conversationSearchOpen
+    ? localThreads.filter((thread) => thread.title.toLocaleLowerCase()
+      .includes(conversationQuery.trim().toLocaleLowerCase()))
+    : localThreads.slice(0, 10);
+
+  useEffect(() => {
+    if (conversationSearchOpen) conversationSearchRef.current?.focus();
+  }, [conversationSearchOpen]);
+  useEffect(() => {
+    const onSearchShortcut = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey
+        && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        setConversationSearchOpen(true);
+      } else if (event.key === 'Escape' && conversationSearchOpen
+        && event.target instanceof Element && event.target.closest('.sidebar-conversations')) {
+        event.preventDefault();
+        setConversationSearchOpen(false);
+        setConversationQuery('');
+      }
+    };
+    window.addEventListener('keydown', onSearchShortcut);
+    return () => window.removeEventListener('keydown', onSearchShortcut);
+  }, [conversationSearchOpen]);
   const activeProject = projects.find((project) => project.repoId === selectedRepoId);
   const matchingProjects = projects.filter((project) =>
     (project.name + ' ' + project.repository + ' ' + (project.localRoot ?? ''))
@@ -175,18 +202,42 @@ function Sidebar({
             <span className="nav-symbol"><ForgeIcon name="knowledge" /></span><span className="nav-label">记忆与知识</span>
           </button>
         </nav>
-        {localThreads.length > 0 && (
+        {(localThreads.length > 0 || conversationSearchOpen) && (
           <section className="sidebar-conversations" aria-label="最近会话">
-            <div className="sidebar-section-title">最近会话</div>
-            {localThreads.slice(0, 10).map((thread) => (
+            <div className="sidebar-conversation-heading">
+              <div className="sidebar-section-title">最近会话</div>
+              <button type="button" className="sidebar-search-toggle"
+                aria-label={conversationSearchOpen ? '关闭会话搜索' : '搜索会话'}
+                aria-expanded={conversationSearchOpen} aria-keyshortcuts="Meta+K Control+K"
+                title="搜索会话 (⌘K)"
+                onClick={() => {
+                  setConversationSearchOpen((open) => !open);
+                  if (conversationSearchOpen) setConversationQuery('');
+                }}>
+                <ForgeIcon name={conversationSearchOpen ? 'close' : 'search'} size={15} />
+              </button>
+            </div>
+            {conversationSearchOpen && (
+              <input ref={conversationSearchRef} className="sidebar-conversation-search"
+                type="search" aria-label="搜索会话标题" placeholder="搜索全部会话…"
+                value={conversationQuery} onChange={(event) => setConversationQuery(event.target.value)} />
+            )}
+            {shownThreads.map((thread) => (
               <button type="button" key={thread.id}
                 className={'nav-row sidebar-thread-row' + (activeView === 'assistant' && selectedLocalThreadId === thread.id ? ' active' : '')}
-                title={thread.title} onClick={() => onSelectLocalThread(thread.id)}>
+                title={thread.title} onClick={() => {
+                  onSelectLocalThread(thread.id);
+                  setConversationSearchOpen(false);
+                  setConversationQuery('');
+                }}>
                 <span className="nav-symbol"><ForgeIcon name={thread.draft ? 'draft' : 'conversation'} /></span>
                 <span className="nav-label">{thread.title}</span>
                 {thread.draft && <span className="sidebar-draft-indicator">草稿</span>}
               </button>
             ))}
+            {conversationSearchOpen && shownThreads.length === 0 && (
+              <p className="sidebar-search-empty" role="status">没有匹配的会话</p>
+            )}
           </section>
         )}
         <div className="sidebar-project-heading">

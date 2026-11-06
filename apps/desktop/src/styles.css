@@ -348,7 +348,20 @@ a { color: #353535; text-decoration: underline; text-underline-offset: 3px; }
 
 /* One transcript writer; the sidebar is a read-only conversation index. */
 .sidebar-conversations { max-height: 218px; overflow: auto; scrollbar-width: thin; flex-shrink: 0; }
-.sidebar-conversations .sidebar-section-title { margin-top: 15px; }
+.sidebar-conversations .sidebar-section-title { margin: 0; }
+.sidebar-conversation-heading { display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 6px 5px 8px; }
+.sidebar-search-toggle { display: inline-grid; place-items: center;
+  width: 28px; height: 28px; border: 0; border-radius: 8px;
+  background: transparent; color: #8b919a; }
+.sidebar-search-toggle:hover, .sidebar-search-toggle[aria-expanded="true"] {
+  color: #6856b4; background: rgba(103,86,184,.09); }
+.sidebar-conversation-search { box-sizing: border-box; display: block; width: calc(100% - 14px);
+  margin: 4px 7px 8px; padding: 8px 10px; border: 1px solid rgba(85,95,110,.2);
+  border-radius: 9px; background: rgba(255,255,255,.86);
+  color: #30343a; font-size: 11.5px; }
+.sidebar-conversation-search:focus-visible { border-color: #8c7aca; }
+.sidebar-search-empty { margin: 8px 10px 12px; color: #9497a0; font-size: 11px; }
 .sidebar-thread-row { min-height: 30px; }
 .sidebar-thread-row .nav-symbol { color: #9397a2; }
 .sidebar-thread-row.active .nav-symbol { color: #6856b4; }
@@ -502,7 +515,13 @@ a { color: #353535; text-decoration: underline; text-underline-offset: 3px; }
 
 /* Optional Git review: file selection + diff lines, never a second Git authority. */
 .local-git-inspector { gap: 0; background: rgba(253,253,253,.94); backdrop-filter: blur(22px) saturate(125%); }
-.local-diff-file-count { color: #919191; font-size: 10px; white-space: nowrap; }
+.local-diff-file-count { color: #919191; font-size: 10px; white-space: nowrap;
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.local-diff-header-actions { display: inline-flex; flex: 0 0 auto; gap: 2px; margin-left: auto; }
+.local-git-inspector > header .agent-icon-button { display: inline-grid; place-items: center;
+  padding: 0; width: 28px; height: 28px; min-height: 28px; color: #747982; }
+.local-git-inspector > header .agent-icon-button:hover:not(:disabled) {
+  color: #343b44; background: rgba(90,100,115,.08); }
 .local-diff-warning { margin: 0; padding: 9px 12px; border-bottom: 1px solid #eaeaea;
   background: #f8f5eb; color: #7b6845; font-size: 10.5px; line-height: 1.5; }
 .local-diff-file-list { display: grid; min-height: 0; max-height: 35%; flex: 0 1 auto;

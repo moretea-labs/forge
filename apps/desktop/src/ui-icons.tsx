@@ -2,7 +2,7 @@ import {
   ArrowUp, BookOpen, ChevronDown, ClipboardList, Ellipsis, FilePenLine,
   Folder, FolderGit2, GitBranch, GitCompareArrows, ListTodo, MessageSquare,
   MessagesSquare, Plus, RefreshCw, Server, Settings2, ShieldCheck, Square,
-  SquarePen, Workflow, type LucideIcon,
+  SquarePen, Workflow, Search, X, type LucideIcon,
 } from 'lucide-react';
 
 /**
@@ -32,6 +32,8 @@ const icons = {
   'chevron': ChevronDown,
   'book': BookOpen,
   'refresh': RefreshCw,
+  'search': Search,
+  'close': X,
 } satisfies Record<string, LucideIcon>;
 
 export type ForgeIconName = keyof typeof icons;
