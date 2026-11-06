@@ -312,7 +312,7 @@ export function Sidebar({
           <button type="button" title="刷新已注册项目" aria-label="刷新已注册项目" onClick={onRetryProjects}><ForgeIcon name="refresh" size={16} /></button>
         </div>
         <Popover.Portal>
-          <Popover.Content className="sidebar-project-picker-panel" aria-label="选择项目"
+          <Popover.Content className="sidebar-project-picker-panel" style={desktopThemeStyle} aria-label="选择项目"
             side="top" align="start" sideOffset={8} collisionPadding={12}
             onOpenAutoFocus={(event) => {
               event.preventDefault();

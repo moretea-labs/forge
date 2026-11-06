@@ -39,7 +39,7 @@ Before calling a screen complete, validate the Forge Design project; run Desktop
 
 **Source of the primary layout:** [Minimal Agent Desktop UI — Code with AI Agents (Lukas Horak / PLATFORM, Dribbble)](https://dribbble.com/shots/27163958-Minimal-Agent-Desktop-UI-Code-with-AI-Agents). A visual design reference, **not** an executable component library or claim of native behavior.
 
-**Secondary actual Mac product:** [GlassCode](https://glasscode.app/) for thread grouping and low-chrome composer. CollectUI's [mac-app category](https://collectui.com/designs/mac-app-ui-design-inspiration) currently has no published examples, so it is *not* evidence for a specific screen.
+**User-approved sidebar reference (C):** [ShioriCode](https://www.shiori.ai/code) for its cool light-gray navigation rail, restrained active states, thread grouping and bottom project control. A / PLATFORM remains the primary work area reference. CollectUI's [mac-app category](https://collectui.com/designs/mac-app-ui-design-inspiration) currently has no published examples, so it is *not* evidence for a specific screen.
 
 | Reference characteristic | Actual implementation contract | Source |
 | --- | --- | --- |
@@ -52,13 +52,13 @@ Before calling a screen complete, validate the Forge Design project; run Desktop
 | Quiet composer | Single off-white 16px-radius composer, modest shadow, grouped real model/repository/work selectors, no permanent decorative control rails | `.agent-chat-composer` |
 | Platform robustness | Standard native titlebar as an isolation step while WKWebView blank-window issue is investigated; do not restore native full-window Liquid Glass until actual frontmost window is visibly interactive | `tauri.conf.json` |
 
-**Trade-off:** The selected reference gains clarity and information density, at the cost of decorative translucency. This is appropriate for a continuously used coding workspace. The GlassCode influence is limited to coherent session grouping and composer placement; avoid importing its blue/gradient materials.
+**Trade-off:** A provides a focused warm-white Agent canvas; C contributes the cool light-gray sidebar. Keep the original Forge hierarchy and on-demand Git inspector; no imported reference assets, blue gradients or extra full component framework.
 
 **Visual acceptance:** Capture the *actual screen/window* and compare 1440×900 plus 800×560, with and without sidebar, first new thread, open project dropdown, and a selected Requirement/Plan/Work record. Confirm no horizontal overflow, no cut-off menu, real focus/hover/Escape and readable 13px body. Source tests or Accessibility trees alone do not establish that macOS WebKit has painted its foreground window. White or gray window is a release blocker.
 
 **Licensing note:** These sources are visual references. Do not copy source art, avatars, logos, proprietary icons or screenshots into the app; use Forge's own code, data and icon family.
 
-**Saved evidence:** [1440×900 browser preview](./previews/forgeclient-agent-web-preview-1440.png) and [800×560 browser preview](./previews/forgeclient-agent-web-preview-800.png). Both were captured from the real Tauri/React frontend with an explicit `?preview=1` fixture, not from the installed macOS WKWebView. Full native window visibility remains **unverified / white-screen blocker** on the current macOS 27 host; no promotion to acceptance based on Accessibility nodes or web previews.
+**Saved evidence:** [1440×900 browser preview](./previews/forgeclient-agent-web-preview-1440.png) and [800×560 browser preview](./previews/forgeclient-agent-web-preview-800.png) represent the approved A+C browser preview. They are not evidence that the installed WKWebView paints correctly or that a real Agent run completed.
 
 ## Native WKWebView first-frame white-screen investigation (2026-11-06)
 
@@ -75,3 +75,11 @@ The app now schedules the *existing* stylesheet import after two animation frame
 Use `@radix-ui/react-popover` **only** where custom menu mechanics create actual native-desktop UX bugs. The project picker now uses Radix Trigger/Portal/Content for anchor placement, Escape/outside dismissal and focus restoration; Forge still supplies Registry project data and the UI retains its single existing selected-project state. No second token/theme system, no project CRUD facade and no extra Provider.
 
 Browser interaction evidence (2026-11-06): 1440×900 and 800×560 both pass bounded portal placement, search focus, Escape-to-trigger focus restoration, outside dismissal and zero page exceptions. Native Mac locked foreground acceptance remains a separate blocker.
+
+## Approved A+C light design — 2026-11-06
+
+- A / workspace: [PLATFORM Minimal Agent](https://dribbble.com/shots/27163958-Minimal-Agent-Desktop-UI-Code-with-AI-Agents) sets the warm-white content canvas, 54px context toolbar, spacious transcript, focused composer and optional Git/code pane. [The related chat design](https://dribbble.com/shots/27160331-Minimal-Agent-Desktop-UI) informs Agent empty and populated threads.
+- C / navigation: [ShioriCode](https://www.shiori.ai/code) sets a **cool light-gray sidebar** (#F0F1F4), low-chrome separators and neutral selected states. No reference logos, blue accents or proprietary artwork.
+- Functional layout: 246px sidebar (228px at <=1080px and 207px at <=900px), pinned New Thread/Search, independently navigable Work/Requirement/Plan/Knowledge, grouped actual threads, one bottom project picker and Runtime/Settings footer. The Agent conversation owns the main surface; Git detail is on demand rather than a permanent explorer.
+- Single style authority: .design-harness/tokens.json v0.3.0 supplies colors to the app shell and Radix portal. The rail is #F0F1F4, canvas #FFFDFB and composer #FFFFFF; styles.css implements spacing/geometry, not a competing palette.
+- Browser QA: 1440x900, 1100x760 and 800x560 checked computed colors, no horizontal overflow, bounded project popover, search autofocus, Escape close/focus restoration and zero JS errors. Installed WKWebView visual paint/Agent execution still require independent validation.

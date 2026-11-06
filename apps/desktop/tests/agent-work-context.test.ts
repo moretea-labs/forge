@@ -660,3 +660,21 @@ describe('Tauri shell boundary', () => {
     expect(config.app.windows[0].titleBarStyle).toBe('Visible');
   });
 });
+
+describe('approved A workspace + C rail design contract', () => {
+  test('shares one Forge Design palette between app shell and project popup', () => {
+    const tokens = JSON.parse(readFileSync(new URL('../../../.design-harness/tokens.json', import.meta.url), 'utf8'));
+    const project = JSON.parse(readFileSync(new URL('../../../.design-harness/project.json', import.meta.url), 'utf8'));
+    const variables = readFileSync(new URL('../src/design-tokens.ts', import.meta.url), 'utf8');
+    const styles = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8');
+    const app = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+    expect(project.designSystem.version).toBe(tokens.meta.version);
+    expect(tokens.color.sidebarGlass).toBe('#F0F1F4');
+    expect(tokens.color.canvas).toBe('#FFFDFB');
+    expect(tokens.color.composerGlass).toBe('#FFFFFF');
+    expect(variables).toContain("'--surface-muted': designTokens.color.surfaceMuted");
+    expect(styles).toContain('background: var(--glass)');
+    expect(styles).toContain('background: var(--canvas)');
+    expect(app).toContain('className="sidebar-project-picker-panel" style={desktopThemeStyle}');
+  });
+});
