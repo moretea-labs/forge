@@ -20,15 +20,8 @@
         "minHeight": 680,
         "resizable": true,
         "fullscreen": false,
-        "transparent": true,
-        "titleBarStyle": "Overlay",
-        "windowEffects": {
-          "effects": [
-            "liquidGlassRegular",
-            "sidebar"
-          ],
-          "radius": 24
-        }
+        "transparent": false,
+        "titleBarStyle": "Visible"
       }
     ],
     "security": {

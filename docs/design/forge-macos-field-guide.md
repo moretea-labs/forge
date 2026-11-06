@@ -34,3 +34,28 @@ Reviewed: 2026-11-06 · [ForgeClient Issue #592](https://github.com/moretea-labs
 ## Validation contract
 
 Before calling a screen complete, validate the Forge Design project; run Desktop UI tests + TypeScript/Vite/Cargo; render and interact at a wide and compact Mac viewport; inspect focus, Escape, keyboard, disabled state and reduced motion. Source CI or Chrome preview is **not** proof of real native WKWebView interaction or live Agent E2E.
+
+## Reference-led implementation: selected screen 2026-11-06
+
+**Source of the primary layout:** [Minimal Agent Desktop UI — Code with AI Agents (Lukas Horak / PLATFORM, Dribbble)](https://dribbble.com/shots/27163958-Minimal-Agent-Desktop-UI-Code-with-AI-Agents). A visual design reference, **not** an executable component library or claim of native behavior.
+
+**Secondary actual Mac product:** [GlassCode](https://glasscode.app/) for thread grouping and low-chrome composer. CollectUI's [mac-app category](https://collectui.com/designs/mac-app-ui-design-inspiration) currently has no published examples, so it is *not* evidence for a specific screen.
+
+| Reference characteristic | Actual implementation contract | Source |
+| --- | --- | --- |
+| Deliberate narrow left rail, light quiet material | 246px navigation; neutral gray-cream rail, no layered glass panels; active selection filled, not bordered | `App.tsx` `Sidebar`; `styles.css` `.sidebar` |
+| Top actions separated from destinations | Fixed New Thread and Search; labeled Workspace section; project-scoped Requirement/Plan/Work/Knowledge beneath | `Sidebar` |
+| Recent project conversations | One real local thread index, grouped by repository; no new store; search operates over this same index | `Sidebar` |
+| Stable current project placement | Existing project selector near bottom of rail, with actual registered repos and no fabricated project data | `.sidebar-project-popover` |
+| Native-feeling reading workspace | One uninterrupted opaque working canvas and a quiet 54px context toolbar; no additional fake macOS window chrome | `.workspace-region` |
+| Conversation and tools are the task, not UI decor | Chat transcript primary; contextual diff as opt-in pane; existing real send/cancel semantics untouched | `LocalConversationSurface` |
+| Quiet composer | Single off-white 16px-radius composer, modest shadow, grouped real model/repository/work selectors, no permanent decorative control rails | `.agent-chat-composer` |
+| Platform robustness | Standard native titlebar as an isolation step while WKWebView blank-window issue is investigated; do not restore native full-window Liquid Glass until actual frontmost window is visibly interactive | `tauri.conf.json` |
+
+**Trade-off:** The selected reference gains clarity and information density, at the cost of decorative translucency. This is appropriate for a continuously used coding workspace. The GlassCode influence is limited to coherent session grouping and composer placement; avoid importing its blue/gradient materials.
+
+**Visual acceptance:** Capture the *actual screen/window* and compare 1440×900 plus 800×560, with and without sidebar, first new thread, open project dropdown, and a selected Requirement/Plan/Work record. Confirm no horizontal overflow, no cut-off menu, real focus/hover/Escape and readable 13px body. Source tests or Accessibility trees alone do not establish that macOS WebKit has painted its foreground window. White or gray window is a release blocker.
+
+**Licensing note:** These sources are visual references. Do not copy source art, avatars, logos, proprietary icons or screenshots into the app; use Forge's own code, data and icon family.
+
+**Saved evidence:** [1440×900 browser preview](./previews/forgeclient-agent-web-preview-1440.png) and [800×560 browser preview](./previews/forgeclient-agent-web-preview-800.png). Both were captured from the real Tauri/React frontend with an explicit `?preview=1` fixture, not from the installed macOS WKWebView. Full native window visibility remains **unverified / white-screen blocker** on the current macOS 27 host; no promotion to acceptance based on Accessibility nodes or web previews.

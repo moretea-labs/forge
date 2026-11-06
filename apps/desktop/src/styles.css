@@ -943,3 +943,241 @@ a { color: #353535; text-decoration: underline; text-underline-offset: 3px; }
   border: 0; border-radius: var(--radius-control); color: #787f8e; background: transparent; }
 .sidebar-picker-project-agent:hover,.sidebar-picker-project-agent:focus-visible {
   color: #574e91; background: rgba(102,90,173,.10); }
+
+/* Forge V3 — reference-led macOS Agent workspace (Dribbble Minimal Agent Desktop).
+ * Source of palette truth: .design-harness/tokens.json. This section implements
+ * the actual navigation/content/composer geometry, not a second theme registry.
+ * The screenshot-inspired treatment is original to Forge; no third-party assets. */
+:root { background: #fbfaf8; }
+html, body, #root { background: #fbfaf8; }
+.app-shell {
+  --sidebar-width: 246px;
+  background: #f6f5f2;
+  color: var(--ink);
+}
+.sidebar {
+  padding: 18px 12px 12px;
+  border-right: 1px solid var(--line);
+  background: #f6f5f2;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+.sidebar-brand {
+  min-height: 54px;
+  padding: 7px 10px 17px;
+  gap: 10px;
+}
+.sidebar-brand-icon { width: 24px; height: 24px; }
+.sidebar-app-name { color: #323633; font-size: 13.5px; font-weight: 665; letter-spacing: -.025em; }
+.sidebar-app-subtitle { display: none; }
+.sidebar-primary { gap: 3px; }
+.sidebar-primary > .nav-row {
+  min-height: 37px;
+  padding: 7px 10px;
+  color: #545a55;
+  border-radius: 10px;
+  font-size: 12.5px;
+  letter-spacing: -.005em;
+}
+.sidebar-primary > .nav-row:hover:not(:disabled) { background: rgba(55,64,54,.06); }
+.sidebar-primary > .nav-row.active {
+  background: var(--accent-soft);
+  color: #2d3430;
+  font-weight: 645;
+}
+.sidebar-primary > .nav-row.active .nav-symbol { color: var(--accent); }
+.sidebar-primary .sidebar-new-thread {
+  margin: 0 0 2px;
+  background: #fff;
+  border: 1px solid #e6e3dc;
+  box-shadow: 0 1px 2px rgba(45,50,42,.025);
+  color: #303631;
+  font-weight: 605;
+}
+.sidebar-primary .sidebar-new-thread:hover:not(:disabled) {
+  background: #fff;
+  border-color: #d8d5cc;
+  box-shadow: 0 1px 5px rgba(40,46,38,.055);
+}
+.sidebar-quick-search { color: #6b706a !important; }
+.sidebar-primary .sidebar-destinations-heading {
+  margin: 21px 10px 6px;
+  padding: 0;
+  font-size: 10px;
+  letter-spacing: .055em;
+  font-weight: 645;
+  text-transform: uppercase;
+  color: #969994;
+}
+.sidebar-conversations {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+  margin: 16px 0 5px;
+  padding-top: 11px;
+  border-top: 1px solid #e8e5de;
+  overflow-y: auto;
+}
+.sidebar-conversation-heading { flex: 0 0 auto; padding: 0 3px; }
+.sidebar-conversation-heading .sidebar-section-title {
+  margin: 0 7px 10px;
+  color: #92968e;
+  letter-spacing: .04em;
+  font-size: 10px;
+  font-weight: 640;
+}
+.sidebar-project-conversations { margin: 0 0 14px; }
+.sidebar-thread-project-heading {
+  margin: 5px 5px 5px;
+  padding: 0 3px;
+  color: #757a74;
+}
+.sidebar-thread-row {
+  min-height: 33px;
+  padding: 7px 9px;
+  border-radius: 9px;
+}
+.sidebar-thread-row .nav-label { font-size: 12px; }
+.sidebar-thread-row.active { background: var(--accent-soft); color: #303731; }
+.sidebar-thread-row:hover:not(:disabled) { background: var(--hover); }
+.sidebar-keyboard { font-size: 10px; color: #989c96; }
+.sidebar-project-popover {
+  flex: 0 0 auto;
+  margin-top: auto;
+  padding: 9px 0 1px;
+  border-top: 1px solid #e8e5de;
+}
+.sidebar-project-heading { padding: 1px 0 0; }
+.sidebar-project-picker {
+  min-height: 42px;
+  padding: 6px 10px;
+  background: transparent;
+  color: #424940;
+  font-size: 12px;
+}
+.sidebar-project-picker:hover { background: rgba(255,255,255,.68); }
+.sidebar-footer {
+  flex: 0 0 auto;
+  gap: 2px;
+  margin: 0;
+  padding: 7px 0 0;
+  border-top: 1px solid #e8e5de;
+}
+.sidebar-footer > .nav-row {
+  min-height: 36px;
+  padding: 7px 10px;
+  border-radius: 10px;
+  color: #676d66;
+  font-size: 12px;
+}
+.sidebar-footer > .nav-row.active { background: var(--accent-soft); color: #303731; }
+.workspace-region {
+  background: #fff;
+  border-radius: 0;
+}
+.workspace-topbar {
+  display: flex;
+  height: 54px;
+  min-height: 54px;
+  align-items: center;
+  gap: 14px;
+  padding: 0 25px;
+  background: #fff;
+  border-bottom: 1px solid #efeeeb;
+}
+.workspace-topbar-title { align-items: center; gap: 12px; }
+.workspace-topbar-title strong {
+  max-width: 65%;
+  color: #343935;
+  font-size: 12.5px;
+  font-weight: 640;
+}
+.workspace-topbar-branch { color: #979c95; font-size: 10px; }
+.workspace-topbar-health { padding: 6px 9px; font-size: 10.5px; color: #747b73; }
+.workspace-topbar-health:hover { background: #f6f5f2; }
+.main-pane { background: #fff; }
+.assistant-content {
+  width: min(860px, calc(100% - 94px));
+  max-width: 100%;
+  padding: 20px 0 18px;
+}
+.local-conversation { gap: 0; }
+.agent-chat-header {
+  min-height: 42px;
+  padding: 0 2px 12px;
+  border-bottom: 1px solid #f0efec;
+  align-items: center;
+}
+.agent-chat-header .agent-chat-heading > strong { font-size: 13px; font-weight: 650; color: #383e39; }
+.agent-chat-heading > span { color: #979c96; }
+.agent-icon-button, .agent-header-menu > summary { border-radius: 9px; color: #747c73; }
+.agent-icon-button:hover:not(:disabled), .agent-header-menu > summary:hover { color: #343b35; background: #f5f4f1; }
+.local-conversation .local-transcript {
+  padding: 23px 9px 22px;
+  scrollbar-color: #deded8 transparent;
+}
+.local-conversation .local-message.user {
+  border-radius: 13px;
+  background: #f5f4f1;
+}
+.local-conversation .local-message.assistant { padding: 13px 1px; }
+.local-message-body { color: #353c35; font-size: 13px; line-height: 1.76; }
+.local-message-heading { color: #8c918c; }
+.local-conversation .agent-chat-composer {
+  width: min(780px,100%);
+  margin-inline: auto;
+  border: 1px solid #e3e1db;
+  border-radius: 16px;
+  background: #fffefd;
+  box-shadow: 0 5px 20px rgba(44,50,42,.05), 0 1px 3px rgba(44,50,42,.035);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+.local-conversation .agent-chat-composer:focus-within {
+  border-color: #b1b9ad;
+  box-shadow: 0 5px 20px rgba(44,50,42,.06), 0 0 0 3px rgba(74,92,75,.055);
+}
+.agent-chat-composer textarea { padding: 15px 16px 9px; font-size: 13px; line-height: 1.6; }
+.agent-chat-composer .agent-composer-toolbar { padding: 6px 9px 9px; gap: 5px 8px; }
+.agent-context-menu > summary, .agent-model-control { border-radius: 9px; color: #717970; }
+.agent-context-menu > summary:hover, .agent-model-control:hover { background: #f3f3f0; color: #3b433b; }
+.agent-context-panel, .agent-header-menu-panel, .sidebar-project-picker-panel {
+  border: 1px solid #e4e3de;
+  background: #fffefd;
+  border-radius: 14px;
+  box-shadow: 0 12px 32px rgba(40,47,39,.095), 0 2px 6px rgba(40,47,39,.035);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+.local-git-inspector {
+  border: 0;
+  border-left: 1px solid #eae8e2;
+  border-radius: 0;
+  background: #fdfcfb;
+}
+.local-git-inspector > header { border-bottom-color: #ebe9e4; }
+.records-pane { padding: 25px 31px 35px; }
+.records-split { border-radius: 13px; border: 1px solid #eceae6; }
+.records-index { background: #f8f7f5; }
+.record-row:hover, .record-row.active { background: #eceae5; }
+.workspace-sidebar-toggle { color: #737b72; border-radius: 9px; }
+.workspace-sidebar-toggle:hover { background: #f5f4f1; color: #303832; }
+.app-shell.sidebar-collapsed .workspace-topbar { padding-left: 25px; }
+@media (max-width: 1080px) {
+  .app-shell { --sidebar-width: 228px; }
+  .assistant-content { width: calc(100% - 66px); }
+}
+@media (max-width: 900px) {
+  .app-shell { --sidebar-width: 207px; }
+  .sidebar { padding-inline: 8px; }
+  .workspace-topbar { padding-inline: 16px; }
+  .assistant-content { width: calc(100% - 36px); padding-top: 12px; }
+  .records-pane { padding: 18px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-primary .nav-row,
+  .sidebar-thread-row,
+  .sidebar-project-picker { transition: none; }
+}

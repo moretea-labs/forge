@@ -103,6 +103,14 @@ describe('Forge Desktop Work-bound Agent thread identity', () => {
     expect(html).toContain('在 project-b 中新建会话');
     expect((html.match(/sidebar-project-conversations/g) ?? [])).toHaveLength(2);
     expect((html.match(/sidebar-turn-running/g) ?? [])).toHaveLength(1);
+    // The reference-led shell has one fixed search action before the project
+    // destinations, one existing thread index and explicit active navigation.
+    expect(html).toContain('sidebar-quick-search');
+    expect(html).toContain('sidebar-destinations-heading');
+    expect(html.indexOf('sidebar-new-thread')).toBeLessThan(html.indexOf('sidebar-quick-search'));
+    expect(html.indexOf('sidebar-quick-search')).toBeLessThan(html.indexOf('sidebar-destinations-heading'));
+    expect((html.match(/aria-label="搜索会话"/g) ?? [])).toHaveLength(1);
+    expect(html).toContain('aria-current="page"');
   });
 
   test('new provider defaults never hide older pinned Codex/API conversations', () => {
@@ -589,5 +597,31 @@ describe('Forge Desktop Work-bound Agent thread identity', () => {
     expect(findExistingWorkThread(threads, 'codex', 'repo_a', 'work_1')?.id).toBe(otherProvider.id);
     expect(findExistingWorkThread(threads, 'api', 'repo_c', 'work_1')).toBeUndefined();
     expect(findExistingWorkThread(threads, 'api', 'repo_a', 'work_not_registered')).toBeUndefined();
+  });
+});
+
+
+describe('Native macOS app launch surface', () => {
+  test('does not overlay WKWebView with an unreparented full-window Liquid Glass view', () => {
+    const config = JSON.parse(readFileSync(new URL('../src-tauri/tauri.conf.json', import.meta.url), 'utf8'));
+    const window = config.app.windows.find((entry: { label: string }) => entry.label === 'main');
+    expect(window).toBeDefined();
+    expect(window.transparent).toBe(false);
+    expect(window.titleBarStyle).toBe('Visible');
+    // CSS owns the sidebar material. A native NSGlassEffectView needs the
+    // actual WKWebView as contentView; configuring a separate full-window
+    // overlay made the native Forge window render solid gray on macOS.
+    expect(window.windowEffects).toBeUndefined();
+
+  });
+});
+
+
+describe('Packaged macOS web resources', () => {
+  test('uses relative Vite assets for Tauri custom-protocol WebViews', () => {
+    const viteConfig = readFileSync(new URL('../vite.config.ts', import.meta.url), 'utf8');
+    expect(viteConfig).toContain("base: './'");
+    const entry = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+    expect(entry).not.toContain('forge-native-paint-probe');
   });
 });

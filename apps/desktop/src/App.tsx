@@ -243,19 +243,27 @@ export function Sidebar({
           <button className="nav-row sidebar-new-thread" type="button" onClick={onNewThread}>
             <span className="nav-symbol"><ForgeIcon name="new-thread" /></span><span className="nav-label">新会话</span><span className="sidebar-keyboard">⌘N</span>
           </button>
-          <button className={activeView === 'assistant' ? 'nav-row active' : 'nav-row'} type="button" onClick={onOpenAssistant}>
+          <button className="nav-row sidebar-quick-search" type="button"
+            aria-label={conversationSearchOpen ? '关闭会话搜索' : '搜索会话'} title="搜索会话 (⌘K)"
+            aria-expanded={conversationSearchOpen} aria-keyshortcuts="Meta+K Control+K"
+            onClick={() => { onOpenAssistant(); setConversationSearchOpen((open) => !open); setConversationQuery(''); }}>
+            <span className="nav-symbol"><ForgeIcon name="search" /></span>
+            <span className="nav-label">搜索会话</span><span className="sidebar-keyboard">⌘K</span>
+          </button>
+          <div className="sidebar-section-title sidebar-destinations-heading">工作空间</div>
+          <button className={activeView === 'assistant' ? 'nav-row active' : 'nav-row'} type="button" aria-current={activeView === 'assistant' ? 'page' : undefined} onClick={onOpenAssistant}>
             <span className="nav-symbol"><ForgeIcon name="conversations" /></span><span className="nav-label">会话</span>
           </button>
-          <button className={activeView === 'works' || activeView === 'project' ? 'nav-row active' : 'nav-row'} type="button" onClick={onOpenProjects}>
+          <button className={activeView === 'works' || activeView === 'project' ? 'nav-row active' : 'nav-row'} type="button" aria-current={activeView === 'works' || activeView === 'project' ? 'page' : undefined} onClick={onOpenProjects}>
             <span className="nav-symbol"><ForgeIcon name="work" /></span><span className="nav-label">Work · 工作</span>
           </button>
-          <button className={activeView === 'requirements' ? 'nav-row active' : 'nav-row'} type="button" onClick={onOpenRequirements}>
+          <button className={activeView === 'requirements' ? 'nav-row active' : 'nav-row'} type="button" aria-current={activeView === 'requirements' ? 'page' : undefined} onClick={onOpenRequirements}>
             <span className="nav-symbol"><ForgeIcon name="requirement" /></span><span className="nav-label">Requirement · 需求</span>
           </button>
-          <button className={activeView === 'plans' ? 'nav-row active' : 'nav-row'} type="button" onClick={onOpenPlans}>
+          <button className={activeView === 'plans' ? 'nav-row active' : 'nav-row'} type="button" aria-current={activeView === 'plans' ? 'page' : undefined} onClick={onOpenPlans}>
             <span className="nav-symbol"><ForgeIcon name="plan" /></span><span className="nav-label">Plan · 计划</span>
           </button>
-          <button className={activeView === 'knowledge' ? 'nav-row active' : 'nav-row'} type="button" onClick={onOpenKnowledge}>
+          <button className={activeView === 'knowledge' ? 'nav-row active' : 'nav-row'} type="button" aria-current={activeView === 'knowledge' ? 'page' : undefined} onClick={onOpenKnowledge}>
             <span className="nav-symbol"><ForgeIcon name="knowledge" /></span><span className="nav-label">记忆与知识</span>
           </button>
         </nav>
@@ -263,16 +271,7 @@ export function Sidebar({
           <section className="sidebar-conversations" aria-label="最近会话">
             <div className="sidebar-conversation-heading">
               <div className="sidebar-section-title">最近会话</div>
-              <button type="button" className="sidebar-search-toggle"
-                aria-label={conversationSearchOpen ? '关闭会话搜索' : '搜索会话'}
-                aria-expanded={conversationSearchOpen} aria-keyshortcuts="Meta+K Control+K"
-                title="搜索会话 (⌘K)"
-                onClick={() => {
-                  setConversationSearchOpen((open) => !open);
-                  if (conversationSearchOpen) setConversationQuery('');
-                }}>
-                <ForgeIcon name={conversationSearchOpen ? 'close' : 'search'} size={15} />
-              </button>
+
             </div>
             {conversationSearchOpen && (
               <input ref={conversationSearchRef} className="sidebar-conversation-search"
