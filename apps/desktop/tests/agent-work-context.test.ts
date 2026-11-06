@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { advanceLocalToolProgress, createThread, findExistingWorkThread, localConversationNavItems, LocalConversationSurface, LocalMessageBody, selectThreadCheckout, selectThreadRepository, shouldSubmitComposerKey, transcriptIsNearBottom } from '../src/local-conversation';
+import { localPendingCopy, advanceLocalToolProgress, createThread, findExistingWorkThread, localConversationNavItems, LocalConversationSurface, LocalMessageBody, selectThreadCheckout, selectThreadRepository, shouldSubmitComposerKey, transcriptIsNearBottom } from '../src/local-conversation';
 import { ForgeIcon } from '../src/ui-icons';
 import { RuntimeView, Sidebar, codexBoundPrompt, sidebarToggleShortcut } from '../src/App';
 import { SettingsView } from '../src/settings-view';
@@ -11,6 +11,20 @@ import { ProjectRecordsView } from '../src/project-records-view';
 import { disconnectedProjection } from '../src/runtime-projection';
 
 describe('Forge Desktop Work-bound Agent thread identity', () => {
+  test('Codex pending copy describes absent progress and preserves cancellation status', () => {
+    expect(localPendingCopy('codex', false, [])).toContain('不提供工具进度');
+    expect(localPendingCopy('codex', false, [])).toContain('停止');
+    expect(localPendingCopy('codex', true, [])).toContain('已请求停止');
+    expect(localPendingCopy('api', false, [])).toBe('Agent 正在处理请求…');
+  });
+
+  test('Codex send passes the thread checkout through the Tauri client', () => {
+    const app = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+    const client = readFileSync(new URL('../src/runtime-client.ts', import.meta.url), 'utf8');
+    expect(app).toMatch(/sendLocalConversation\(\{[\s\S]*?repoId: thread.projectRepoId,\s*checkoutId: thread.checkoutId/);
+    expect(client).toMatch(/'send_local_conversation',[\s\S]*?repoId: input.repoId,\s*checkoutId: input.checkoutId/);
+  });
+
   test('Codex gets exact selected project, checkout and linked Work without claiming checkout authority', () => {
     const thread = createThread('codex', 'repo_forge', 'work_record', 'checkout_forge');
     const prompt = codexBoundPrompt(thread, 'Please implement the plan.');
