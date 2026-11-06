@@ -16,7 +16,11 @@ createRoot(root).render(
 // reproduces this with eager CSS and displays the identical styles when
 // loaded after the initial frame. Keep one stylesheet and one React root.
 requestAnimationFrame(() => requestAnimationFrame(() => {
-  void import('./styles.css').catch((error) => {
+  void import('./styles.css').then(() => {
+    requestAnimationFrame(() => document.getElementById('forge-first-paint')?.remove());
+  }).catch((error) => {
+    const indicator = document.getElementById('forge-first-paint');
+    if (indicator) indicator.textContent = 'Forge 界面样式加载失败';
     console.error('FORGE_DESKTOP_STYLESHEET_LOAD_FAILED', error);
   });
 }));

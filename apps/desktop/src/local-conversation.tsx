@@ -745,15 +745,24 @@ export function LocalConversationSurface({
     setSendError(null);
   };
 
-  const archiveThread = () => {
+  const deleteThread = () => {
     if (!selectedThread || sending || committing) return;
-    updateSelected((thread) => ({ ...thread, archived: true, updatedAt: new Date().toISOString() }));
+    const deletedId = selectedThread.id;
+    // Delete, rather than hide an archived copy: local transcript has no
+    // separate persistence owner and should not accumulate invisible history.
+    setThreads((current) => current.filter((thread) => thread.id !== deletedId));
     setDrafts((current) => {
       const next = { ...current };
-      delete next[selectedThread.id];
+      delete next[deletedId];
       return next;
     });
-    setSelectedThreadId(activeThreads.find((thread) => thread.id !== selectedThread.id)?.id);
+    setSendErrors((current) => {
+      const next = { ...current };
+      delete next[deletedId];
+      return next;
+    });
+    setSelectedThreadId(activeThreads.find((thread) => thread.id !== deletedId)?.id);
+    setAllowEffects(false);
   };
 
   async function toggleDiff(forceRefresh = false, staged = diffStaged) {
@@ -963,7 +972,7 @@ export function LocalConversationSurface({
                 <AgentControlIcon name="refresh" /> 刷新 Codex 连接
               </button>}
               {selectedThread && <button type="button" disabled={sending || committing}
-                onClick={() => { closeAgentMenus(surfaceRef.current); archiveThread(); }}>归档当前会话</button>}
+                onClick={() => { closeAgentMenus(surfaceRef.current); deleteThread(); }}>删除当前会话</button>}
             </div>
           </details>
         </div>

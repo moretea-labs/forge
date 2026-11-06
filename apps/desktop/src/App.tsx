@@ -46,6 +46,18 @@ export function sidebarToggleShortcut(
     && event.key.toLowerCase() === 'b';
 }
 
+/** One Mac navigation map. The sidebar owns presentation only, never Work facts. */
+export function sidebarDestinationShortcut(
+  event: Pick<KeyboardEvent, 'key' | 'metaKey' | 'ctrlKey' | 'altKey' | 'shiftKey'>,
+): 'assistant' | 'works' | 'requirements' | 'plans' | 'knowledge' | 'settings' | null {
+  if (!event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return null;
+  const destinations: Record<string, 'assistant' | 'works' | 'requirements' | 'plans' | 'knowledge' | 'settings'> = {
+    '1': 'assistant', '2': 'works', '3': 'requirements', '4': 'plans',
+    '5': 'knowledge', ',': 'settings',
+  };
+  return destinations[event.key] ?? null;
+}
+
 function previewEnabled(): boolean {
   return new URLSearchParams(window.location.search).get('preview') === '1';
 }
@@ -186,6 +198,22 @@ export function Sidebar({
   }, [conversationSearchOpen]);
   useEffect(() => {
     const onSearchShortcut = (event: KeyboardEvent) => {
+      const destination = sidebarDestinationShortcut(event);
+      if (destination) {
+        event.preventDefault();
+        const actions = {
+          assistant: onOpenAssistant,
+          works: onOpenProjects,
+          requirements: onOpenRequirements,
+          plans: onOpenPlans,
+          knowledge: onOpenKnowledge,
+          settings: onOpenSettings,
+        };
+        actions[destination]();
+        setConversationSearchOpen(false);
+        setConversationQuery('');
+        return;
+      }
       if ((event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey
         && event.key.toLowerCase() === 'k') {
         event.preventDefault();
@@ -199,7 +227,8 @@ export function Sidebar({
     };
     window.addEventListener('keydown', onSearchShortcut);
     return () => window.removeEventListener('keydown', onSearchShortcut);
-  }, [conversationSearchOpen]);
+  }, [conversationSearchOpen, onOpenAssistant, onOpenProjects, onOpenRequirements,
+    onOpenPlans, onOpenKnowledge, onOpenSettings]);
   const activeProject = projects.find((project) => project.repoId === selectedRepoId);
   const matchingProjects = projects.filter((project) =>
     (project.name + ' ' + project.repository + ' ' + (project.localRoot ?? ''))
@@ -224,19 +253,19 @@ export function Sidebar({
             <span className="nav-label">搜索会话</span><span className="sidebar-keyboard">⌘K</span>
           </button>
           <div className="sidebar-section-title sidebar-destinations-heading">工作空间</div>
-          <button className={activeView === 'assistant' ? 'nav-row active' : 'nav-row'} type="button" aria-current={activeView === 'assistant' ? 'page' : undefined} onClick={onOpenAssistant}>
+          <button className={activeView === 'assistant' ? 'nav-row active' : 'nav-row'} type="button" aria-current={activeView === 'assistant' ? 'page' : undefined} aria-keyshortcuts="Meta+1" title="会话 (⌘1)" onClick={onOpenAssistant}>
             <span className="nav-symbol"><ForgeIcon name="conversations" /></span><span className="nav-label">会话</span>
           </button>
-          <button className={activeView === 'works' || activeView === 'project' ? 'nav-row active' : 'nav-row'} type="button" aria-current={activeView === 'works' || activeView === 'project' ? 'page' : undefined} onClick={onOpenProjects}>
+          <button className={activeView === 'works' || activeView === 'project' ? 'nav-row active' : 'nav-row'} type="button" aria-current={activeView === 'works' || activeView === 'project' ? 'page' : undefined} aria-keyshortcuts="Meta+2" title="Work (⌘2)" onClick={onOpenProjects}>
             <span className="nav-symbol"><ForgeIcon name="work" /></span><span className="nav-label">Work · 工作</span>
           </button>
-          <button className={activeView === 'requirements' ? 'nav-row active' : 'nav-row'} type="button" aria-current={activeView === 'requirements' ? 'page' : undefined} onClick={onOpenRequirements}>
+          <button className={activeView === 'requirements' ? 'nav-row active' : 'nav-row'} type="button" aria-current={activeView === 'requirements' ? 'page' : undefined} aria-keyshortcuts="Meta+3" title="Requirement (⌘3)" onClick={onOpenRequirements}>
             <span className="nav-symbol"><ForgeIcon name="requirement" /></span><span className="nav-label">Requirement · 需求</span>
           </button>
-          <button className={activeView === 'plans' ? 'nav-row active' : 'nav-row'} type="button" aria-current={activeView === 'plans' ? 'page' : undefined} onClick={onOpenPlans}>
+          <button className={activeView === 'plans' ? 'nav-row active' : 'nav-row'} type="button" aria-current={activeView === 'plans' ? 'page' : undefined} aria-keyshortcuts="Meta+4" title="Plan (⌘4)" onClick={onOpenPlans}>
             <span className="nav-symbol"><ForgeIcon name="plan" /></span><span className="nav-label">Plan · 计划</span>
           </button>
-          <button className={activeView === 'knowledge' ? 'nav-row active' : 'nav-row'} type="button" aria-current={activeView === 'knowledge' ? 'page' : undefined} onClick={onOpenKnowledge}>
+          <button className={activeView === 'knowledge' ? 'nav-row active' : 'nav-row'} type="button" aria-current={activeView === 'knowledge' ? 'page' : undefined} aria-keyshortcuts="Meta+5" title="知识 (⌘5)" onClick={onOpenKnowledge}>
             <span className="nav-symbol"><ForgeIcon name="knowledge" /></span><span className="nav-label">记忆与知识</span>
           </button>
         </nav>
@@ -364,7 +393,7 @@ export function Sidebar({
       </div>
 
       <div className="sidebar-footer">
-        <button className={activeView === 'settings' ? 'nav-row active' : 'nav-row'} type="button" onClick={onOpenSettings}>
+        <button className={activeView === 'settings' ? 'nav-row active' : 'nav-row'} type="button" aria-keyshortcuts="Meta+," title="设置 (⌘,)" onClick={onOpenSettings}>
           <span className="nav-symbol"><ForgeIcon name="settings" /></span><span className="nav-label">设置</span>
         </button>
         <button className={activeView === 'runtime' ? 'nav-row active' : 'nav-row'} type="button" onClick={onOpenRuntime}>
@@ -1649,11 +1678,11 @@ export function App() {
             <ForgeIcon name={sidebarCollapsed ? 'sidebar-show' : 'sidebar-hide'} size={18} />
           </button>
           <div className="workspace-topbar-title" data-tauri-drag-region>
-            <strong>{activeView === 'assistant' ? '本地会话'
+            <strong>{activeView === 'assistant' ? '会话'
               : activeView === 'project' ? projection.work?.title ?? 'Work 详情'
-              : activeView === 'requirements' ? 'Requirements'
-              : activeView === 'plans' ? 'Plans'
-              : activeView === 'works' ? 'Works'
+              : activeView === 'requirements' ? '需求'
+              : activeView === 'plans' ? '计划'
+              : activeView === 'works' ? '工作'
               : activeView === 'knowledge' ? '记忆与知识'
               : activeView === 'settings' ? '设置' : 'MCP 服务与连接'}</strong>
             {activeView === 'project' && projection.project?.branch && <span className="workspace-topbar-branch">{projection.project.branch}</span>}

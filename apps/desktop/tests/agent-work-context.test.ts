@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { ContextOptionList, contextOptionIndex, localPendingCopy, advanceLocalToolProgress, createThread, findExistingWorkThread, localConversationNavItems, LocalConversationSurface, LocalMessageBody, selectThreadCheckout, selectThreadRepository, shouldSubmitComposerKey, transcriptIsNearBottom } from '../src/local-conversation';
 import { ForgeIcon } from '../src/ui-icons';
-import { RuntimeView, Sidebar, codexBoundPrompt, sidebarToggleShortcut } from '../src/App';
+import { RuntimeView, Sidebar, codexBoundPrompt, sidebarToggleShortcut, sidebarDestinationShortcut } from '../src/App';
 import { SettingsView } from '../src/settings-view';
 import { readFileSync } from 'node:fs';
 import { repositoryLabel } from '../src/runtime-client';
@@ -691,5 +691,46 @@ describe('Project asset browser-only preview boundary', () => {
     expect(html).toContain('disabled');
     expect(html).not.toContain('关联 Plan 读取失败');
     expect(html).not.toContain('来自 Forge 按项目查询');
+  });
+});
+
+
+describe('Forge native first-frame boot surface', () => {
+  test('has visible static content before React then removes it only after existing CSS loads', () => {
+    const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+    const entry = readFileSync(new URL('../src/main.tsx', import.meta.url), 'utf8');
+    expect(html).toContain('id="forge-first-paint" role="status"');
+    expect(html).toContain('Forge 正在启动…');
+    expect(entry).toContain("import('./styles.css').then(");
+    expect(entry).toContain("getElementById('forge-first-paint')?.remove()");
+    expect(entry).toContain('Forge 界面样式加载失败');
+    expect(html).not.toContain('setTimeout');
+  });
+});
+
+
+describe('Mac Agent navigation and local transcript deletion', () => {
+  test('native sidebar navigation uses one established shortcut map', () => {
+    const key = (value: string, overrides: Record<string, boolean> = {}) => ({
+      key: value, metaKey: true, ctrlKey: false, altKey: false, shiftKey: false, ...overrides,
+    });
+    expect(sidebarDestinationShortcut(key('1'))).toBe('assistant');
+    expect(sidebarDestinationShortcut(key('2'))).toBe('works');
+    expect(sidebarDestinationShortcut(key('3'))).toBe('requirements');
+    expect(sidebarDestinationShortcut(key('4'))).toBe('plans');
+    expect(sidebarDestinationShortcut(key('5'))).toBe('knowledge');
+    expect(sidebarDestinationShortcut(key(','))).toBe('settings');
+    expect(sidebarDestinationShortcut(key('2', { shiftKey: true }))).toBeNull();
+    expect(sidebarDestinationShortcut(key('2', { ctrlKey: true }))).toBeNull();
+    expect(sidebarDestinationShortcut(key('2', { metaKey: false }))).toBeNull();
+    expect(sidebarDestinationShortcut(key('k'))).toBeNull();
+  });
+
+  test('deleting a local conversation removes its record and draft instead of retaining a hidden archive', () => {
+    const source = readFileSync(new URL('../src/local-conversation.tsx', import.meta.url), 'utf8');
+    expect(source).toContain('删除当前会话');
+    expect(source).not.toContain('归档当前会话');
+    expect(source).toContain('current.filter((thread) => thread.id !== deletedId)');
+    expect(source).toContain('delete next[deletedId]');
   });
 });

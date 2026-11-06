@@ -1,13 +1,29 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="light" />
     <link rel="icon" type="image/png" href="./src-tauri/icons/32x32.png" />
     <title>Forge</title>
+    <!-- The native WKWebView needs a paintable initial document on this macOS
+         host. This is only a first-frame indicator, not another application UI. -->
+    <style>
+      #forge-first-paint {
+        position: fixed;
+        top: 72px;
+        left: 40px;
+        padding: 11px 15px;
+        z-index: 1;
+        border-radius: 10px;
+        background: #f0f1f4;
+        color: #727781;
+        font: 13px -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+      }
+    </style>
   </head>
   <body>
+    <div id="forge-first-paint" role="status">Forge 正在启动…</div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

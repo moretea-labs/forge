@@ -90,3 +90,17 @@ Browser interaction evidence (2026-11-06): 1440×900 and 800×560 both pass boun
 - `?preview=1` is explicitly a browser-only design fixture. It must never invoke native Tauri `read_project_plan_list` or `read_requirement_detail` commands. Its records are bounded to the existing Work graph, recent history and the currently selected Work projection; the preview labels the limited coverage and disables native refresh.
 - The **selected Work** can contain real Requirement/Plan identifiers even when the bounded Work graph omits them. Merge the selected Work into the same read-only record index by Work ID, rather than inventing a second Requirement/Plan store or duplicating the preview fixture. Runtime mode continues to read canonical detail via existing IPC.
 - These observations validate browser rendering and navigation only. Native installed-app paint, real Agent send/stop and source-aware Work detail remain separate acceptance items under Issue #592.
+
+### Native first-frame bootstrap candidate (2026-11-06)
+
+The installed Forge.app can still be blank while the same React/Tauri frontend in the separately signed `ForgeBootstrapProbe` (with a paintable initial HTML document) renders. To test the narrowest possible change, `apps/desktop/index.html` now supplies one static, visible "Forge 正在启动…" element, and `src/main.tsx` removes it once the **existing** CSS chunk has loaded. On CSS failure, it reports a visible error instead of disappearing. This is neither a second React root nor an alternative data/Agent authority. **Do not mark the native fix accepted based on compilation alone**: a correctly signed production bundle with the original `com.moretea.forge.desktop` identifier must be cold-launched, visually inspected and operated.
+
+### Agent desktop control acceptance — 2026-11-06
+
+The A+C UI now uses one macOS keyboard destination map: `⌘1` Agent, `⌘2` Work, `⌘3` Requirement, `⌘4` Plan, `⌘5` Knowledge, `⌘,` Settings. Existing `⌘B` sidebar toggle, `⌘K` conversation search and `⌘N` new conversation remain separate and preserved. Sidebar options and workspace titles share concise Chinese labels.
+
+Local Agent conversations use **Delete** instead of a misleading Archive action: the selected thread and draft are removed from the single localStorage owner rather than kept as invisible history. This does **not** modify Forge's canonical Work/Requirement/Plan, Agent provider sessions on the server, or the registered project catalog.
+
+Real Chromium interaction checked at 1440×900 and 800×560: all six destination shortcuts opened their expected surfaces; deleting one of two seeded local threads left one thread and its own draft, with zero page errors. A separate browser-context test seeded localStorage only once, refreshed the page and confirmed that deleted thread remained absent and the other draft persisted; `⌘N` created a new thread and focused the composer. The earlier apparent reappearance on reload was caused by the test bootstrap reseeding on every navigation, not a product defect.
+
+Installed preview policy: retain **only** `~/Applications/Forge.app` for the client and `Forge Desktop Operator.app` as the separate development tool. Archived historical WebKit storage snapshots and duplicate test apps were removed after native rendering recovered with the original Bundle ID. The installed client's current native app must still be smoke-tested for new source changes before claiming a new preview release.
