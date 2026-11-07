@@ -120,14 +120,19 @@ export function inspectRuntimeOwnership(controllerHome: string): RuntimeOwnershi
   // Schema-v2 owners carry OS-process identity. Once present, raw PID liveness
   // is insufficient because a stopped Runtime PID may be reused by another
   // process before Recovery reconciles durable ownership.
-  const ownerAlive = runtimeOwnerIsAlive(owner);
-  // A coherent incarnation is the same Runtime owner epoch, so inherit the
-  // stronger owner identity result instead of re-introducing PID-only liveness.
+  const ownerAlive = Boolean(owner && (
+    owner.processStartTime && owner.executableFingerprint
+      ? runtimeOwnerProcessIdentityMatches(owner)
+      : isProcessAlive(owner.pid)
+  ));
+  // RuntimeOwner is the liveness authority whenever it exists. An incoherent
+  // incarnation is historical fencing evidence, not a second process-liveness
+  // authority: its PID may already have been reused by an unrelated process.
   // Incarnation-only legacy evidence remains conservative because it has no
   // independent process identity fields.
   const incarnationAlive = Boolean(incarnation && (
-    coherent
-      ? ownerAlive
+    owner
+      ? coherent && ownerAlive
       : isProcessAlive(incarnation.pid)
   ));
   return { owner, incarnation, ownerAlive, incarnationAlive, coherent };
@@ -140,14 +145,6 @@ export function runtimeOwnerProcessIdentityMatches(record: RuntimeOwnerRecord | 
     processStartTime: record.processStartTime,
     executableFingerprint: record.executableFingerprint,
   }, record.pid).matches;
-}
-
-/** Canonical Runtime-owner liveness. Schema-v2 identity outranks raw PID reuse. */
-export function runtimeOwnerIsAlive(record: RuntimeOwnerRecord | undefined): boolean {
-  if (!record) return false;
-  return record.processStartTime && record.executableFingerprint
-    ? runtimeOwnerProcessIdentityMatches(record)
-    : isProcessAlive(record.pid);
 }
 
 /**
@@ -163,18 +160,7 @@ export function reconcileStoppedRuntimeOwnership(controllerHome: string): {
   staleOwnerPath?: string;
 } {
   const inspection = inspectRuntimeOwnership(controllerHome);
-  const stronglyIdentifiedDeadOwner = Boolean(
-    inspection.owner
-    && inspection.owner.schemaVersion === 2
-    && inspection.owner.processStartTime
-    && inspection.owner.executableFingerprint
-    && !inspection.ownerAlive
-  );
-  // This function is called only after the service manager and Runtime listener
-  // are proven stopped. At that boundary a schema-v2 owner whose exact OS
-  // identity is dead is authoritative; an incoherent legacy incarnation may
-  // retain a reused PID solely to preserve monotonic fencing history.
-  if (inspection.ownerAlive || (inspection.incarnationAlive && !stronglyIdentifiedDeadOwner)) {
+  if (inspection.ownerAlive || inspection.incarnationAlive) {
     return {
       ok: false,
       changed: false,
@@ -340,9 +326,14 @@ export function acquireRuntimeOwnership(
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== 'EEXIST') throw error;
       const current = readOwnerPath(path);
-      if (current && isProcessAlive(current.pid)) {
+      const currentAlive = Boolean(current && (
+        current.processStartTime && current.executableFingerprint
+          ? runtimeOwnerProcessIdentityMatches(current)
+          : isProcessAlive(current.pid)
+      ));
+      if (currentAlive) {
         throw new Error(
-          `RUNTIME_OWNERSHIP_CONFLICT: controller home is owned by ${current.runtimeInstanceId} pid=${current.pid}`,
+          `RUNTIME_OWNERSHIP_CONFLICT: controller home is owned by ${current!.runtimeInstanceId} pid=${current!.pid}`,
         );
       }
       minimumGeneration = Math.max(
