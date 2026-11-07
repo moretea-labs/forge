@@ -537,6 +537,45 @@ final class NativeWorkspace: ObservableObject {
             self.error = error.localizedDescription
         }
     }
+    static func reviewedChangesAreRestorable(
+        _ changes: AgentGitDiff, repoId: String?, checkoutId: String?
+    ) -> Bool {
+        guard let repoId, let checkoutId else { return false }
+        return changes.repoId == repoId && changes.checkoutId == checkoutId
+            && !changes.staged && !changes.truncated
+            && !changes.nameOnly.isEmpty && !changes.patch.isEmpty
+            && !changes.head.isEmpty && !changes.branch.isEmpty
+    }
+
+    func restoreAgentChanges(_ changes: AgentGitDiff) async -> Bool {
+        guard Self.reviewedChangesAreRestorable(changes,repoId:repoId,checkoutId:checkoutId),
+              let repoId, let checkoutId else {
+            self.error = "当前 Changes 不是完整可放弃的未暂存复查快照。"
+            return false
+        }
+        changesLoading = true
+        do {
+            _ = try await ForgeBridge.request("restore_agent_git_files",[
+                "repoId":repoId,
+                "checkoutId":checkoutId,
+                "paths":changes.nameOnly,
+                "expectedPatch":changes.patch,
+                "expectedHead":changes.head,
+                "expectedBranch":changes.branch
+            ])
+            self.error = nil
+            agentChanges = nil
+            changesLoading = false
+            await refreshAgentChanges()
+            return true
+        } catch {
+            changesLoading = false
+            self.error = error.localizedDescription
+            await refreshAgentChanges()
+            return false
+        }
+    }
+
     func commitAgentChanges(_ changes: AgentGitDiff, message: String) async -> Bool {
         guard let repoId, let checkoutId,
               changes.repoId == repoId, changes.checkoutId == checkoutId,

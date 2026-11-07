@@ -561,6 +561,22 @@ export function getCoreCapabilityExecutionSchema(capabilityId: string): Record<s
           },
         },
       },
+      restore_paths: {
+        readOnly: false,
+        risk: 'destructive',
+        argumentsSchema: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['paths', 'expected_head', 'expected_branch', 'expected_patch', 'confirm_authorization'],
+          properties: {
+            paths: { type: 'array', minItems: 1, maxItems: 128, items: { type: 'string' } },
+            expected_head: { type: 'string', minLength: 1, maxLength: 128 },
+            expected_branch: { type: 'string', minLength: 1, maxLength: 512 },
+            expected_patch: { type: 'string', minLength: 1, maxLength: 20000 },
+            confirm_authorization: { type: 'boolean', const: true },
+          },
+        },
+      },
       delete_remote_branch: {
         readOnly: false,
         risk: 'destructive_remote',

@@ -120,7 +120,9 @@ describe('handoff and facade contracts', () => {
       }>;
     } | undefined;
     expect(schema?.executeWith).toBe('capability_execute');
-    expect(Object.keys(schema?.actions ?? {}).sort()).toEqual(['commit_paths', 'delete_remote_branch', 'deliver_work', 'diff_paths', 'discard_work', 'stage_paths']);
+    expect(Object.keys(schema?.actions ?? {}).sort()).toEqual(['commit_paths', 'delete_remote_branch', 'deliver_work', 'diff_paths', 'discard_work', 'restore_paths', 'stage_paths']);
+    expect(schema?.actions?.restore_paths).toMatchObject({ readOnly: false, risk: 'destructive' });
+    expect(schema?.actions?.restore_paths?.argumentsSchema?.required).toEqual(['paths', 'expected_head', 'expected_branch', 'expected_patch', 'confirm_authorization']);
     expect(schema?.actions?.delete_remote_branch).toMatchObject({ readOnly: false, risk: 'destructive_remote' });
     expect(schema?.actions?.delete_remote_branch?.argumentsSchema?.required).toEqual(['branch', 'expected_remote_sha']);
     expect(schema?.actions?.delete_remote_branch?.argumentsSchema?.properties).toHaveProperty('approval_request_id');

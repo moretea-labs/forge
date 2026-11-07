@@ -1,7 +1,7 @@
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 import { callRepositoryTool } from '../tool-mapping/repository-tools';
-import { commitSelectedPaths, selectedPathDiff, stageSelectedPaths } from '../../../src/cli/repositories/selected-path-actions';
+import { commitSelectedPaths, restoreSelectedPaths, selectedPathDiff, stageSelectedPaths } from '../../../src/cli/repositories/selected-path-actions';
 import { deliverWork } from '../../../src/runtime/control-plane/execution/work-delivery-service';
 import { discardManagedWork } from '../../../src/runtime/control-plane/execution/work-terminal-cleanup';
 import { validateWork } from '../../../src/runtime/control-plane/execution/work-operation-service';
@@ -241,6 +241,20 @@ export async function callCoreCapabilityAdapter(
           checkoutId: repository.activeCheckoutId,
           ...committed,
         }, Boolean(committed.error));
+      }
+      case 'restore_paths': {
+        const restored = restoreSelectedPaths(ctx.controllerHome, repository, {
+          paths: input.paths,
+          expectedHead: input.expected_head,
+          expectedBranch: input.expected_branch,
+          expectedPatch: input.expected_patch,
+          confirmAuthorization: input.confirm_authorization,
+        });
+        return result({
+          repoId: repository.repoId,
+          checkoutId: repository.activeCheckoutId,
+          ...restored,
+        }, Boolean(restored.error));
       }
       case 'delete_remote_branch': {
         const forwarded = await callRepositoryTool(ctx.controllerHome, 'repository_git_delete_branch', {

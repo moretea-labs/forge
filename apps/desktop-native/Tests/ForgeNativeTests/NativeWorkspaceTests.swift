@@ -7,6 +7,7 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertTrue(ForgeBridge.allowed.contains("read_local_provider_models"))
         XCTAssertTrue(ForgeBridge.allowed.contains("read_agent_git_diff"))
         XCTAssertTrue(ForgeBridge.allowed.contains("commit_agent_git_files"))
+        XCTAssertTrue(ForgeBridge.allowed.contains("restore_agent_git_files"))
         XCTAssertTrue(ForgeBridge.allowed.contains("read_local_conversation_activity"))
         XCTAssertFalse(ForgeBridge.allowed.contains("execute_command"))
         XCTAssertFalse(ForgeBridge.allowed.contains("perform_recovery_action"))
@@ -44,6 +45,37 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertNil(message.contextPaths)
         XCTAssertNil(message.toolActivityCount)
         XCTAssertNil(message.activityEvents)
+    }
+
+    @MainActor
+    func testReviewedChangesRestoreGuardRejectsStagedTruncatedAndWrongCheckout() {
+        let valid = AgentGitDiff(
+            repoId:"repo_a", checkoutId:"checkout_a", branch:"work/a", head:"abcdef",
+            staged:false, paths:["a"], nameOnly:["a"], stat:"1 file changed",
+            patch:"diff --git a/a b/a\n", truncated:false
+        )
+        let staged = AgentGitDiff(
+            repoId:"repo_a", checkoutId:"checkout_a", branch:"work/a", head:"abcdef",
+            staged:true, paths:["a"], nameOnly:["a"], stat:"1 file changed",
+            patch:"diff --git a/a b/a\n", truncated:false
+        )
+        let truncated = AgentGitDiff(
+            repoId:"repo_a", checkoutId:"checkout_a", branch:"work/a", head:"abcdef",
+            staged:false, paths:["a"], nameOnly:["a"], stat:"1 file changed",
+            patch:"diff --git a/a b/a\n", truncated:true
+        )
+        XCTAssertTrue(NativeWorkspace.reviewedChangesAreRestorable(
+            valid,repoId:"repo_a",checkoutId:"checkout_a"
+        ))
+        XCTAssertFalse(NativeWorkspace.reviewedChangesAreRestorable(
+            staged,repoId:"repo_a",checkoutId:"checkout_a"
+        ))
+        XCTAssertFalse(NativeWorkspace.reviewedChangesAreRestorable(
+            truncated,repoId:"repo_a",checkoutId:"checkout_a"
+        ))
+        XCTAssertFalse(NativeWorkspace.reviewedChangesAreRestorable(
+            valid,repoId:"repo_a",checkoutId:"checkout_b"
+        ))
     }
 
     @MainActor

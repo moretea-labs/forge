@@ -955,13 +955,16 @@ fn reviewed_commit_scope_matches(
             .is_some_and(|names| paths.iter().all(|path| names.iter().any(|entry| entry.as_str() == Some(path))))
 }
 
+fn native_reviewed_paths_valid(paths: &[String]) -> bool {
+    !paths.is_empty() && paths.len() <= 32 && paths.iter().all(|path| {
+        !path.is_empty() && path.len() <= 1024 && !path.starts_with('/')
+            && !path.contains('\0') && !path.split('/').any(|part| part == ".." || part == ".")
+    })
+}
+
 fn native_commit_paths_valid(paths: &[String], message: &str) -> bool {
-    !paths.is_empty() && paths.len() <= 32 && !message.trim().is_empty()
+    native_reviewed_paths_valid(paths) && !message.trim().is_empty()
         && message.len() <= 500 && !message.contains('\0')
-        && paths.iter().all(|path| {
-            !path.is_empty() && path.len() <= 1024 && !path.starts_with('/')
-                && !path.contains('\0') && !path.split('/').any(|part| part == ".." || part == ".")
-        })
 }
 
 fn reviewed_commit_head(result: &Value, checkout_id: &str) -> Option<String> {
@@ -1033,6 +1036,45 @@ async fn commit_reviewed_agent_git_files(
         "branch": result.pointer("/commit/after/branch").cloned().unwrap_or(Value::Null),
         "checkoutId": checkout_id
     }))
+}
+
+async fn restore_reviewed_agent_git_files(
+    repo_id: String,
+    checkout_id: String,
+    paths: Vec<String>,
+    expected_patch: String,
+    expected_head: String,
+    expected_branch: String,
+) -> Result<Value, String> {
+    validate_agent_checkout_binding(Some(&repo_id), Some(&checkout_id), true)?;
+    if !native_reviewed_paths_valid(&paths) {
+        return Err("FORGE_DESKTOP_GIT_RESTORE_INPUT_INVALID".into());
+    }
+    if expected_head.is_empty() || expected_branch.is_empty()
+        || expected_patch.is_empty() || expected_patch.len() > 20_000 {
+        return Err("FORGE_DESKTOP_GIT_RESTORE_REVIEW_REQUIRED".into());
+    }
+
+    let result = call_runtime_tool("capability_execute", json!({
+        "repo_id": repo_id,
+        "checkout_id": checkout_id,
+        "capability_id": "repository.git",
+        "action": "restore_paths",
+        "arguments": {
+            "paths": paths,
+            "expected_head": expected_head,
+            "expected_branch": expected_branch,
+            "expected_patch": expected_patch,
+            "confirm_authorization": true
+        },
+        "request_id": request_id("desktop-reviewed-git-restore")
+    })).await?;
+    if result.get("checkoutId").and_then(Value::as_str) != Some(checkout_id.as_str())
+        || result.get("error").is_some()
+        || result.pointer("/execution/ok").and_then(Value::as_bool) != Some(true) {
+        return Err("FORGE_DESKTOP_GIT_RESTORE_UNCONFIRMED".into());
+    }
+    Ok(json!({"restored":true,"checkoutId":checkout_id}))
 }
 
 #[tauri::command]
@@ -1738,6 +1780,10 @@ mod tests {
             "diff --git a/src/lib.rs b/src/lib.rs", "abcdef", "work/task-1", "checkout_b", false));
         assert!(!reviewed_commit_scope_matches(&review, &["src/lib.rs".into()],
             "diff --git a/src/lib.rs b/src/lib.rs", "abcdef", "work/task-1", "checkout_a", true));
+        assert!(native_reviewed_paths_valid(&["src/lib.rs".into()]));
+        assert!(!native_reviewed_paths_valid(&[]));
+        assert!(!native_reviewed_paths_valid(&["../outside".into()]));
+        assert!(!native_reviewed_paths_valid(&["/tmp/file".into()]));
         assert!(native_commit_paths_valid(&["src/lib.rs".into()], "fix: update"));
         assert!(!native_commit_paths_valid(&[], "fix"));
         assert!(!native_commit_paths_valid(&["src/lib.rs".into()], ""));

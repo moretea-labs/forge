@@ -1001,6 +1001,7 @@ private struct AgentChangesPane: View {
     @ObservedObject var model: NativeWorkspace
     @Binding var isPresented: Bool
     @State private var commitMessage = ""
+    @State private var restoreSnapshot: AgentGitDiff?
 
     var body: some View {
         VStack(alignment:.leading,spacing:0) {
@@ -1139,6 +1140,19 @@ private struct AgentChangesPane: View {
                                         .foregroundStyle(.tertiary)
                                         .lineLimit(2)
                                     Spacer(minLength:8)
+                                    Button(role:.destructive) {
+                                        restoreSnapshot = changes
+                                    } label: {
+                                        Label("Discard",systemImage:"arrow.uturn.backward.circle")
+                                            .font(.system(size:11,weight:.semibold))
+                                            .padding(.horizontal,9)
+                                            .frame(height:29)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .foregroundStyle(.red)
+                                    .disabled(model.changesLoading || changes.staged
+                                              || changes.truncated || changes.patch.isEmpty)
+                                    .help("放弃当前已复查的 tracked / unstaged 改动")
                                     Button {
                                         let snapshot = changes
                                         let message = commitMessage
@@ -1183,6 +1197,19 @@ private struct AgentChangesPane: View {
         .background(.ultraThinMaterial,
                     in:RoundedRectangle(cornerRadius:16,style:.continuous))
         .shadow(color:Color.black.opacity(0.12),radius:22,y:8)
+        .alert("放弃已审查改动？",isPresented:Binding(
+            get:{ restoreSnapshot != nil },
+            set:{ if !$0 { restoreSnapshot = nil } }
+        )) {
+            Button("取消",role:.cancel) { restoreSnapshot = nil }
+            Button("放弃改动",role:.destructive) {
+                guard let snapshot = restoreSnapshot else { return }
+                restoreSnapshot = nil
+                Task { _ = await model.restoreAgentChanges(snapshot) }
+            }
+        } message: {
+            Text("只恢复当前已审查的 tracked / unstaged 文件。staged、untracked 或已变化的 patch 会被拒绝。")
+        }
         .accessibilityElement(children:.contain)
         .accessibilityLabel("Agent Changes")
     }

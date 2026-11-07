@@ -91,6 +91,15 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
                 required(args, "expectedHead")?,
                 required(args, "expectedBranch")?,
             ).await,
+        "restore_agent_git_files" =>
+            restore_reviewed_agent_git_files(
+                required(args, "repoId")?,
+                required(args, "checkoutId")?,
+                required_strings(args, "paths", 32)?,
+                required_bounded(args, "expectedPatch", 20_000)?,
+                required(args, "expectedHead")?,
+                required(args, "expectedBranch")?,
+            ).await,
         "read_local_api_settings" => read_local_api_settings(),
         "send_local_conversation" =>
             send_local_conversation(
