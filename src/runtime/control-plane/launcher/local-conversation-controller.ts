@@ -13,9 +13,19 @@ import {
 const LOCAL_CONVERSATION_TIMEOUT_MS = 5 * 60_000;
 const LOCAL_CONVERSATION_MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
 const LOCAL_CONVERSATION_MAX_PROMPT_CHARS = 20_000;
+const LOCAL_CONVERSATION_ACTIVITY_EVENT_LIMIT = 30;
 const LOCAL_CONVERSATION_ID = /^[A-Za-z0-9._:-]{1,160}$/;
 
 export type LocalConversationActivityPhase = 'starting' | 'thinking' | 'tool' | 'responding' | 'finishing';
+export type LocalConversationActivityEventStatus = 'active' | 'completed';
+
+export interface LocalConversationActivityEvent {
+  phase: LocalConversationActivityPhase;
+  label: string;
+  status: LocalConversationActivityEventStatus;
+  startedAt: string;
+  completedAt?: string;
+}
 
 export interface LocalConversationActivitySnapshot {
   conversationId: string;
@@ -25,6 +35,7 @@ export interface LocalConversationActivitySnapshot {
   lastActivity?: string;
   startedAt?: string;
   updatedAt?: string;
+  events: LocalConversationActivityEvent[];
 }
 
 interface ActiveLocalTurn {
@@ -42,8 +53,8 @@ export function readLocalConversationActivity(conversationId: string): LocalConv
   if (!LOCAL_CONVERSATION_ID.test(conversationId)) throw Error('LOCAL_CONVERSATION_ID_INVALID');
   const active = activeLocalTurns.get(conversationId);
   return active
-    ? { ...active.activity }
-    : { conversationId, status: 'idle', toolActivityCount: 0 };
+    ? { ...active.activity, events: active.activity.events.map((event) => ({ ...event })) }
+    : { conversationId, status: 'idle', toolActivityCount: 0, events: [] };
 }
 
 export function cancelLocalConversation(conversationId: string): {
@@ -176,6 +187,42 @@ function activityLabel(itemType: string, item: Record<string, unknown>): string 
   return 'Agent 正在工作';
 }
 
+function recordActivityEvent(
+  active: ActiveLocalTurn,
+  phase: LocalConversationActivityPhase,
+  label: string,
+  status: LocalConversationActivityEventStatus,
+  now: string,
+): void {
+  const events = active.activity.events;
+  if (status === 'completed') {
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const existing = events[index]!;
+      if (existing.status === 'active' && existing.phase === phase && existing.label === label) {
+        existing.status = 'completed';
+        existing.completedAt = now;
+        return;
+      }
+    }
+  }
+  for (const existing of events) {
+    if (existing.status === 'active') {
+      existing.status = 'completed';
+      existing.completedAt = now;
+    }
+  }
+  events.push({
+    phase,
+    label,
+    status,
+    startedAt: now,
+    ...(status === 'completed' ? { completedAt: now } : {}),
+  });
+  if (events.length > LOCAL_CONVERSATION_ACTIVITY_EVENT_LIMIT) {
+    events.splice(0, events.length - LOCAL_CONVERSATION_ACTIVITY_EVENT_LIMIT);
+  }
+}
+
 function applyActivityLine(active: ActiveLocalTurn, line: string): void {
   const trimmed = line.trim();
   if (!trimmed.startsWith('{')) return;
@@ -184,34 +231,40 @@ function applyActivityLine(active: ActiveLocalTurn, line: string): void {
   if (!event) return;
   const type = typeof event.type === 'string' ? event.type : '';
   const now = new Date().toISOString();
-  const update = (phase: LocalConversationActivityPhase, lastActivity: string) => {
+  const update = (
+    phase: LocalConversationActivityPhase,
+    lastActivity: string,
+    status: LocalConversationActivityEventStatus,
+  ) => {
     active.activity.phase = phase;
     active.activity.lastActivity = lastActivity;
     active.activity.updatedAt = now;
+    recordActivityEvent(active, phase, lastActivity, status, now);
   };
   if (type === 'thread.started' && typeof event.thread_id === 'string' && event.thread_id.trim()) {
-    update('thinking', '会话已启动');
+    update('thinking', '会话已启动', 'completed');
     return;
   }
   if (type === 'turn.started') {
-    update('thinking', '正在推理');
+    update('thinking', '正在推理', 'active');
     return;
   }
   if (type === 'turn.completed') {
-    update('finishing', '正在完成');
+    update('finishing', '正在完成', 'completed');
     return;
   }
   if (type !== 'item.started' && type !== 'item.completed') return;
   const item = record(event.item);
   if (!item) return;
   const itemType = typeof item.type === 'string' ? item.type : '';
+  const status: LocalConversationActivityEventStatus = type === 'item.completed' ? 'completed' : 'active';
   if (itemType === 'agent_message') {
-    update('responding', '正在生成回复');
+    update('responding', '正在生成回复', status);
     return;
   }
   if (['mcp_tool_call', 'command_execution', 'file_change', 'web_search'].includes(itemType)) {
     if (type === 'item.completed') active.activity.toolActivityCount += 1;
-    update('tool', activityLabel(itemType, item));
+    update('tool', activityLabel(itemType, item), status);
   }
 }
 
@@ -374,6 +427,12 @@ export function runCodexConversation(
         lastActivity: '正在启动 Codex',
         startedAt: now,
         updatedAt: now,
+        events: [{
+          phase: 'starting',
+          label: '正在启动 Codex',
+          status: 'active',
+          startedAt: now,
+        }],
       },
     };
     activeLocalTurns.set(conversationId, active);

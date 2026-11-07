@@ -42,6 +42,15 @@ struct AgentGitDiff: Codable {
     let truncated: Bool
 }
 
+struct AgentLiveActivityEvent: Codable, Identifiable {
+    let phase: String
+    let label: String
+    let status: String
+    let startedAt: String
+    let completedAt: String?
+    var id: String { "\(startedAt)|\(phase)|\(label)" }
+}
+
 struct AgentLiveActivity: Codable {
     let conversationId: String
     let status: String
@@ -50,6 +59,12 @@ struct AgentLiveActivity: Codable {
     let lastActivity: String?
     let startedAt: String?
     let updatedAt: String?
+    let events: [AgentLiveActivityEvent]?
+
+    var recentPriorEvents: [AgentLiveActivityEvent] {
+        guard let events, events.count > 1 else { return [] }
+        return Array(events.dropLast().suffix(4))
+    }
 }
 
 struct ChatMessage: Codable, Identifiable {
@@ -382,7 +397,8 @@ final class NativeWorkspace: ObservableObject {
         }
         liveActivity = AgentLiveActivity(
             conversationId:id, status:"running", phase:"starting",
-            toolActivityCount:0, lastActivity:"正在启动 Codex", startedAt:nil, updatedAt:nil
+            toolActivityCount:0, lastActivity:"正在启动 Codex", startedAt:nil, updatedAt:nil,
+            events:[]
         )
         let activityMonitor = Task { [weak self] in
             while !Task.isCancelled {

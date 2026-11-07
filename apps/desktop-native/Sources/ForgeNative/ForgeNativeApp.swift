@@ -372,16 +372,38 @@ private struct AgentPane: View {
                             }
                         }
                         if model.busy {
-                            HStack(spacing:8) {
-                                ProgressView().controlSize(.small)
-                                Text(model.liveActivity?.lastActivity ?? "Agent 正在处理请求…")
-                                    .lineLimit(1)
-                                if let count = model.liveActivity?.toolActivityCount, count > 0 {
-                                    Text("· \(count) 次工具")
-                                        .foregroundStyle(.tertiary)
+                            VStack(alignment:.leading,spacing:7) {
+                                HStack(spacing:8) {
+                                    ProgressView().controlSize(.small)
+                                    Text(model.liveActivity?.lastActivity ?? "Agent 正在处理请求…")
+                                        .lineLimit(1)
+                                    if let count = model.liveActivity?.toolActivityCount, count > 0 {
+                                        Text("· \(count) 次工具")
+                                            .foregroundStyle(.tertiary)
+                                    }
+                                }
+                                .font(.system(size:12,weight:.medium))
+
+                                ForEach(model.liveActivity?.recentPriorEvents ?? []) { event in
+                                    HStack(spacing:7) {
+                                        Image(systemName:activityIcon(event.phase))
+                                            .font(.system(size:9.5,weight:.medium))
+                                            .frame(width:12)
+                                            .foregroundStyle(.tertiary)
+                                        Text(event.label)
+                                            .lineLimit(1)
+                                        Spacer(minLength:8)
+                                        Image(systemName:event.status == "completed" ? "checkmark" : "circle.fill")
+                                            .font(.system(size:event.status == "completed" ? 8 : 5,weight:.semibold))
+                                            .foregroundStyle(.tertiary)
+                                    }
+                                    .font(.system(size:10.5,weight:.regular))
+                                    .foregroundStyle(ForgePalette.secondary)
                                 }
                             }
-                            .font(.system(size:12,weight:.medium))
+                            .padding(.horizontal,11).padding(.vertical,9)
+                            .background(ForgePalette.softFill,
+                                        in:RoundedRectangle(cornerRadius:11,style:.continuous))
                             .foregroundStyle(ForgePalette.secondary)
                             .id("pending")
                         }
@@ -579,6 +601,16 @@ private struct AgentPane: View {
             }
         }
         .animation(.easeOut(duration:0.18),value:showChanges)
+    }
+
+    private func activityIcon(_ phase: String) -> String {
+        switch phase {
+        case "tool": return "hammer"
+        case "responding": return "text.bubble"
+        case "finishing": return "checkmark.circle"
+        case "thinking": return "brain.head.profile"
+        default: return "bolt"
+        }
     }
 
     private func reasoningLabel(_ effort: String) -> String {

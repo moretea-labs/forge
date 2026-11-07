@@ -64,3 +64,22 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(item.label, "moretea-labs/forge")
     }
 }
+
+
+extension NativeWorkspaceTests {
+    func testLiveActivityTimelineDecodesAndRemainsBackwardCompatible() throws {
+        let current = Data("""
+        {"conversationId":"c1","status":"running","phase":"tool","toolActivityCount":1,"lastActivity":"正在使用 forge.rh_status","events":[{"phase":"thinking","label":"正在推理","status":"completed","startedAt":"2026-11-07T00:00:00.000Z","completedAt":"2026-11-07T00:00:01.000Z"},{"phase":"tool","label":"正在使用 forge.rh_status","status":"active","startedAt":"2026-11-07T00:00:01.000Z"}]}
+        """.utf8)
+        let activity = try JSONDecoder().decode(AgentLiveActivity.self, from: current)
+        XCTAssertEqual(activity.events?.count, 2)
+        XCTAssertEqual(activity.recentPriorEvents.map(\.label), ["正在推理"])
+
+        let legacy = Data("""
+        {"conversationId":"c2","status":"running","phase":"thinking","toolActivityCount":0,"lastActivity":"正在推理"}
+        """.utf8)
+        let legacyActivity = try JSONDecoder().decode(AgentLiveActivity.self, from: legacy)
+        XCTAssertNil(legacyActivity.events)
+        XCTAssertTrue(legacyActivity.recentPriorEvents.isEmpty)
+    }
+}

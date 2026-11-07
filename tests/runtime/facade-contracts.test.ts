@@ -187,7 +187,7 @@ describe('handoff and facade contracts', () => {
     expect(schema?.actions?.activity).toMatchObject({ readOnly: true, risk: 'readonly' });
     expect(schema?.actions?.activity?.argumentsSchema?.required).toEqual(['conversation_id']);
     expect(readLocalConversationActivity('unregistered-local-id')).toEqual({
-      conversationId: 'unregistered-local-id', status: 'idle', toolActivityCount: 0,
+      conversationId: 'unregistered-local-id', status: 'idle', toolActivityCount: 0, events: [],
     });
     expect(schema?.actions?.send?.argumentsSchema?.required).toEqual(['conversation_id', 'prompt']);
     expect(FACADE_TOOLS).toHaveLength(6);
@@ -215,15 +215,29 @@ describe('handoff and facade contracts', () => {
     expect(() => parseCodexModelCatalog('not-json')).toThrow('LOCAL_CONVERSATION_MODEL_CATALOG_INVALID');
   });
 
-  test('cancel stops the exact locally owned Codex process and releases its handle', async () => {
+  test('cancel stops the exact locally owned Codex process and keeps live activity bounded', async () => {
     const conversationId = 'test-local-stop-' + crypto.randomUUID();
+    const script = [
+      "console.log(JSON.stringify({type:'thread.started',thread_id:'thread-test'}));",
+      "console.log(JSON.stringify({type:'turn.started'}));",
+      "for(let i=0;i<35;i++) console.log(JSON.stringify({type:'item.completed',item:{type:'mcp_tool_call',name:'forge.tool.'+i}}));",
+      "setTimeout(() => {}, 10000);",
+    ].join('');
     const running = runCodexConversation(
-      process.execPath, ['-e', 'setTimeout(() => {}, 10000)'],
+      process.execPath, ['-e', script],
       process.env, process.cwd(), 5000, conversationId,
     );
-    // The launcher registers the process synchronously before it awaits exit.
-    expect(readLocalConversationActivity(conversationId)).toMatchObject({
-      conversationId, status: 'running', phase: 'starting', toolActivityCount: 0,
+    let activity = readLocalConversationActivity(conversationId);
+    for (let attempt = 0; attempt < 50 && activity.toolActivityCount < 35; attempt += 1) {
+      await Bun.sleep(10);
+      activity = readLocalConversationActivity(conversationId);
+    }
+    expect(activity).toMatchObject({
+      conversationId, status: 'running', phase: 'tool', toolActivityCount: 35,
+    });
+    expect(activity.events).toHaveLength(30);
+    expect(activity.events.at(-1)).toMatchObject({
+      phase: 'tool', label: '正在使用 forge.tool.34', status: 'completed',
     });
     expect(cancelLocalConversation(conversationId)).toMatchObject({ status: 'requested' });
     await expect(running).rejects.toThrow('LOCAL_CONVERSATION_CANCELLED_RECONCILE');
