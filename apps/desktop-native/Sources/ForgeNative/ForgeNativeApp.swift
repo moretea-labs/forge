@@ -84,19 +84,6 @@ private struct ForgeWorkspaceView: View {
                 }.foregroundStyle(ForgePalette.secondary)
             }
         }
-        .alert("重命名会话",isPresented:Binding(
-            get:{ renameThreadId != nil },
-            set:{ if !$0 { renameThreadId = nil } }
-        )) {
-            TextField("会话名称",text:$renameThreadTitle)
-            Button("取消",role:.cancel) { renameThreadId = nil }
-            Button("保存") {
-                if let id = renameThreadId { model.renameThread(id,to:renameThreadTitle) }
-                renameThreadId = nil
-            }
-        } message: {
-            Text("名称仅用于本地会话列表。")
-        }
     }
 
     private var sidebar: some View {
@@ -143,6 +130,7 @@ private struct ForgeWorkspaceView: View {
             Button {
                 model.show(.agent)
                 model.showSearch.toggle()
+                if !model.showSearch { model.search = "" }
             } label: {
                 HStack(spacing:10) {
                     Image(systemName:"magnifyingglass")
@@ -151,20 +139,39 @@ private struct ForgeWorkspaceView: View {
                     Text("搜索会话")
                     Spacer()
                     Text("⌘K").font(.system(size:10)).foregroundStyle(.tertiary)
-                }.font(.system(size:12)).padding(.horizontal,12).frame(height:35)
-                    .contentShape(Rectangle())
+                }
+                .font(.system(size:12)).padding(.horizontal,12).frame(height:35)
+                .background(model.showSearch ? ForgePalette.softFill : .clear,
+                            in:RoundedRectangle(cornerRadius:10,style:.continuous))
+                .contentShape(Rectangle())
             }.buttonStyle(.plain).foregroundStyle(ForgePalette.secondary)
                 .padding(.horizontal,10)
 
             if model.showSearch {
-                TextField("搜索标题或消息",text:$model.search)
-                    .textFieldStyle(.plain)
-                    .font(.system(size:12))
-                    .padding(.horizontal,11)
-                    .frame(height:34)
-                    .background(ForgePalette.softFill,
-                                in:RoundedRectangle(cornerRadius:11,style:.continuous))
-                    .padding(.horizontal,12).padding(.vertical,7)
+                HStack(spacing:7) {
+                    Image(systemName:"magnifyingglass")
+                        .font(.system(size:10.5))
+                        .foregroundStyle(ForgePalette.secondary.opacity(0.8))
+                    TextField("搜索标题或消息",text:$model.search)
+                        .textFieldStyle(.plain)
+                        .font(.system(size:12))
+                    if !model.search.isEmpty {
+                        Button { model.search = "" } label: {
+                            Image(systemName:"xmark.circle.fill")
+                                .font(.system(size:11))
+                                .foregroundStyle(ForgePalette.secondary.opacity(0.72))
+                        }
+                        .buttonStyle(.plain)
+                        .help("清除搜索")
+                    }
+                }
+                .padding(.horizontal,10)
+                .frame(height:34)
+                .background(ForgePalette.raisedSurface,
+                            in:RoundedRectangle(cornerRadius:11,style:.continuous))
+                .overlay(RoundedRectangle(cornerRadius:11,style:.continuous)
+                    .stroke(Color.black.opacity(0.055),lineWidth:0.7))
+                .padding(.horizontal,12).padding(.vertical,7)
             }
 
             sectionLabel("工作空间").padding(.top,19)
@@ -177,8 +184,12 @@ private struct ForgeWorkspaceView: View {
                 .padding(.bottom,4)
             ScrollView {
                 LazyVStack(alignment:.leading,spacing:2) {
-                    ForEach(model.visibleThreads) { thread in
-                        threadRow(thread)
+                    if model.visibleThreads.isEmpty {
+                        threadListEmptyState
+                    } else {
+                        ForEach(model.visibleThreads) { thread in
+                            threadRow(thread)
+                        }
                     }
                 }.padding(.horizontal,10)
             }.scrollIndicators(.hidden)
@@ -249,6 +260,12 @@ private struct ForgeWorkspaceView: View {
             }
             .buttonStyle(.plain)
             .disabled(model.busy && !running)
+            .popover(isPresented:Binding(
+                get:{ renameThreadId == thread.id },
+                set:{ if !$0 && renameThreadId == thread.id { renameThreadId = nil } }
+            ),arrowEdge:.trailing) {
+                renameEditor(thread)
+            }
 
             Button {
                 guard !running else { return }
@@ -296,6 +313,62 @@ private struct ForgeWorkspaceView: View {
             Button("删除会话…",role:.destructive) { deleteThreadId = thread.id }
                 .disabled(running)
         }
+    }
+
+    private var threadListEmptyState: some View {
+        let searching = !model.search.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty
+        return VStack(spacing:7) {
+            Image(systemName:searching ? "magnifyingglass" : "bubble.left.and.bubble.right")
+                .font(.system(size:15))
+                .foregroundStyle(ForgePalette.secondary.opacity(0.68))
+            Text(searching ? "没有匹配的会话" : "暂无会话")
+                .font(.system(size:11,weight:.medium))
+                .foregroundStyle(ForgePalette.secondary)
+            if searching {
+                Button("清除搜索") { model.search = "" }
+                    .buttonStyle(.plain)
+                    .font(.system(size:10.5,weight:.medium))
+                    .foregroundStyle(ForgePalette.accent)
+            }
+        }
+        .frame(maxWidth:.infinity)
+        .padding(.vertical,18)
+    }
+
+    private func renameEditor(_ thread: ChatThread) -> some View {
+        VStack(alignment:.leading,spacing:11) {
+            HStack(spacing:8) {
+                Image(systemName:"pencil")
+                    .font(.system(size:11.5,weight:.semibold))
+                    .foregroundStyle(ForgePalette.secondary)
+                Text("重命名会话")
+                    .font(.system(size:13,weight:.semibold))
+            }
+            TextField("会话名称",text:$renameThreadTitle)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size:12))
+                .onSubmit {
+                    guard !renameThreadTitle.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty else { return }
+                    model.renameThread(thread.id,to:renameThreadTitle)
+                    renameThreadId = nil
+                }
+            Text("名称仅用于本地会话列表。")
+                .font(.system(size:10.5))
+                .foregroundStyle(ForgePalette.secondary)
+            HStack(spacing:8) {
+                Spacer()
+                Button("取消") { renameThreadId = nil }
+                    .keyboardShortcut(.cancelAction)
+                Button("保存") {
+                    model.renameThread(thread.id,to:renameThreadTitle)
+                    renameThreadId = nil
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(renameThreadTitle.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(14)
+        .frame(width:270)
     }
 
     private func deleteConfirmation(_ thread: ChatThread) -> some View {
