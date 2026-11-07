@@ -6,7 +6,6 @@ import { spawn, spawnSync } from 'child_process';
 import { executionIdentityForRepository, executionIdentityFromCoordinates } from '../../src/runtime/control-plane/execution/execution-identity';
 import {
   __resetLiveMonitorsForTests,
-  DEFAULT_WORK_CHECK_LEASE_WAIT_MS,
   cancelProcess,
   claimProcessCheckExecution,
   claimProcessInvocation,
@@ -89,7 +88,6 @@ import { rebuildRepositoryProjection } from '../../src/runtime/projections/mater
 import { rotateRuntimeGeneration } from '../../src/runtime/control-plane/runtime-generation';
 import { iosTestEvidenceResourceId } from '../../src/runtime/control-plane/generated-cache-retention';
 import { getOwnedResource } from '../../packages/kernel/identity/api/index';
-import { seedHistoricalWorkContract } from '../helpers/historical-work-contract';
 
 const roots: string[] = [];
 const FORGE_ROOT = join(import.meta.dir, '../..');
@@ -194,27 +192,6 @@ function fixture() {
   return { root, controllerHome, repoRoot, repository };
 }
 
-function createFixtureWork(
-  fx: ReturnType<typeof fixture>,
-  workId: string,
-  workKind: 'repository_change' | 'local_effect' = 'repository_change',
-): void {
-  seedHistoricalWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
-    workId,
-    repoId: fx.repository.repoId,
-    checkoutId: fx.repository.activeCheckoutId,
-    workKind,
-    objective: `Process Runtime fixture ${workId}.`,
-    acceptanceCriteria: [],
-    allowedPaths: ['**'],
-    forbiddenPaths: [],
-    checks: [],
-    constraints: { workspaceMode: 'current' },
-    requestedBy: 'chatgpt',
-    dispatchState: 'running',
-  });
-}
-
 describe('Unified Process Runtime', () => {
   test('resolves immutable process runner from FORGE_RELEASE_PATH when execPath is the stable mirror', () => {
     const root = mkdtempSync(join(tmpdir(), 'process-runner-release-path-'));
@@ -260,8 +237,6 @@ describe('Unified Process Runtime', () => {
   test('terminal Process Runtime registers exact literal xcodebuild result ownership under repo-harness', async () => {
     const fx = fixture();
     const runtime = bindCanonicalRuntime(fx.controllerHome);
-    const workId = 'WORK-XCODE-RESULT-OWNER';
-    createFixtureWork(fx, workId);
     const fakeBin = join(fx.root, 'bin');
     const fakeXcodebuild = join(fakeBin, 'xcodebuild');
     const resultBundle = join(fx.repoRoot, '.repo-harness', 'process-runtime', 'managed.xcresult');
@@ -274,8 +249,7 @@ describe('Unified Process Runtime', () => {
         controllerHome: fx.controllerHome,
         repoId: fx.repository.repoId,
         checkoutId: fx.repository.activeCheckoutId,
-        workId,
-        executionIdentity: executionIdentityForRepository(fx.repository, { workId }),
+        executionIdentity: executionIdentityForRepository(fx.repository),
         command: {
           kind: 'argv',
           executable: fakeXcodebuild,
@@ -296,7 +270,6 @@ describe('Unified Process Runtime', () => {
         targetRef: realpathSync(resultBundle),
         provenance: {
           creator: `forge:ios.xcode_test:process:${handle.processId}`,
-          associatedWorkId: workId,
           repoId: fx.repository.repoId,
         },
         retention: { intent: 'persistent_until_explicit_release' },
@@ -629,7 +602,6 @@ describe('Unified Process Runtime', () => {
       processId,
       repoId: fx.repository.repoId,
       checkoutId: 'checkout-source',
-      workId: 'work-source',
       commandId: 'command-source',
       controllerHome: fx.controllerHome,
       status: 'succeeded',
@@ -666,7 +638,6 @@ describe('Unified Process Runtime', () => {
     const shared = processCheckCompletionReceipt(record, {
       repoId: fx.repository.repoId,
       checkoutId: 'checkout-consumer',
-      workId: 'work-consumer',
       executionSessionId: 'consumer-session',
       checkId: 'shared-check',
       requestId: 'consumer-request',
@@ -683,7 +654,6 @@ describe('Unified Process Runtime', () => {
     expect(shared).toMatchObject({
       checkoutId: 'checkout-consumer',
       sourceCheckoutId: 'checkout-source',
-      workId: 'work-consumer',
       executionSessionId: 'consumer-session',
       requestId: 'consumer-request',
       processId,
@@ -1278,119 +1248,23 @@ describe('run_check Process Runtime facade', () => {
   test('semantic scope is physical Check scope, not consumer or transport identity', () => {
     const checkoutScope = persistedCheckSemanticScopeKey({ checkoutId: 'checkout-a' }, 'checkout');
     expect(checkoutScope).toBe('checkout:checkout-a');
-    expect(persistedCheckSemanticScopeKey({ checkoutId: 'checkout-a', workId: 'work-a', verificationBinding: { executionSessionId: 'session-a' } }, 'checkout')).toBe(checkoutScope); expect(persistedCheckSemanticScopeKey({ checkoutId: 'checkout-a', workId: 'work-b', verificationBinding: { editSessionId: 'edit-b', editRevision: 2 } }, 'checkout')).toBe(checkoutScope);
-    expect(persistedCheckSemanticScopeKey({ checkoutId: 'checkout-b' }, 'checkout')).not.toBe(checkoutScope); expect(persistedCheckSemanticScopeKey({ checkoutId: 'checkout-a', workId: 'work-a' }, 'repository')).toBe('repository');
+    expect(persistedCheckSemanticScopeKey({ checkoutId: 'checkout-a', verificationBinding: { executionSessionId: 'session-a' } }, 'checkout')).toBe(checkoutScope);
+    expect(persistedCheckSemanticScopeKey({ checkoutId: 'checkout-a', verificationBinding: { editSessionId: 'edit-b', editRevision: 2 } }, 'checkout')).toBe(checkoutScope);
+    expect(persistedCheckSemanticScopeKey({ checkoutId: 'checkout-b' }, 'checkout')).not.toBe(checkoutScope);
+    expect(persistedCheckSemanticScopeKey({ checkoutId: 'checkout-a' }, 'repository')).toBe('repository');
   });
-
-  test('reuses identical Check Process evidence across Edit Session and Work consumers', async () => {
+  test('reuses identical Check Process evidence across Edit Session consumers', async () => {
     const fx = fixture();
-    createFixtureWork(fx, 'work-a');
     const common = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId, repoRoot: fx.repoRoot, executionIdentity: executionIdentityForRepository(fx.repository), checkId: 'quick-ok', interactiveWaitMs: 5_000 };
-    const edit = await runPersistedCheckViaProcessRuntime({ ...common, requestId: 'edit-check', commandId: 'edit-check', verificationBinding: { editSessionId: 'edit-a', editRevision: 1 } });
-    const work = await runPersistedCheckViaProcessRuntime({ ...common, requestId: 'work-check', commandId: 'work-check', workId: 'work-a', verificationBinding: { executionSessionId: 'session-a' } });
-    const repeat = await runPersistedCheckViaProcessRuntime({ ...common, requestId: 'work-check-repeat', commandId: 'work-check-repeat', workId: 'work-a', verificationBinding: { executionSessionId: 'session-b' } });
-    expect(edit.process?.completed).toBe(true); expect(work.process?.completed).toBe(true);
-    expect(work.process?.processId).toBe(edit.process?.processId); expect(work.process?.semanticDeduplicated).toBe(true);
-    expect(repeat.process?.processId).toBe(work.process?.processId); expect(repeat.process?.semanticDeduplicated).toBe(true);
+    const first = await runPersistedCheckViaProcessRuntime({ ...common, requestId: 'edit-check-a', commandId: 'edit-check-a', verificationBinding: { editSessionId: 'edit-a', editRevision: 1 } });
+    const second = await runPersistedCheckViaProcessRuntime({ ...common, requestId: 'edit-check-b', commandId: 'edit-check-b', verificationBinding: { editSessionId: 'edit-b', editRevision: 1 } });
+    expect(first.process?.completed).toBe(true);
+    expect(second.process?.completed).toBe(true);
+    expect(second.process?.processId).toBe(first.process?.processId);
+    expect(second.process?.semanticDeduplicated).toBe(true);
   });
-
-  test('self-hosting Work verification executes candidate snapshot Check Runner semantics and preserves structured failure evidence', async () => {
-    const fx = fixture();
-    const selfHostRoot = join(fx.root, 'self-host-forge');
-    const clone = spawnSync('git', ['clone', '--quiet', '--shared', '--', FORGE_ROOT, selfHostRoot], { encoding: 'utf8' });
-    expect(clone.status).toBe(0);
-    spawnSync('git', ['-C', selfHostRoot, 'config', 'user.name', 'Test'], { encoding: 'utf8' });
-    spawnSync('git', ['-C', selfHostRoot, 'config', 'user.email', 'test@example.com'], { encoding: 'utf8' });
-    if (existsSync(join(FORGE_ROOT, 'node_modules'))) {
-      symlinkSync(join(FORGE_ROOT, 'node_modules'), join(selfHostRoot, 'node_modules'), 'dir');
-    }
-    const packagePath = join(selfHostRoot, 'package.json');
-    const packageJson = JSON.parse(readFileSync(packagePath, 'utf8')) as { scripts?: Record<string, string> };
-    packageJson.scripts = { ...(packageJson.scripts ?? {}), 'test:full': 'node scripts/forge216-candidate-check.mjs' };
-    writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
-    const fixtureScript = join(selfHostRoot, 'scripts', 'forge216-candidate-check.mjs');
-    writeFileSync(fixtureScript, `import { writeFileSync } from 'node:fs';\nconst path = process.env.FORGE_CHECK_STRUCTURED_RESULT_PATH;\nif (!path) process.exit(12);\nwriteFileSync(path, JSON.stringify({ schemaVersion: 1, producer: 'test-governance', gate: 'full', status: 'failed', failures: 1, failureClasses: ['source'], failureDetails: [{ file: 'tests/candidate-only.test.ts', failureClass: 'source', failureCode: 'TEST_SOURCE_ASSERTION_FAILED', attempts: 1, durationMs: 1 }], failureDetailsTruncated: false, contaminated: false }, null, 2));\nprocess.exit(1);\n`);
-    spawnSync('git', ['-C', selfHostRoot, 'add', 'package.json', 'scripts/forge216-candidate-check.mjs'], { encoding: 'utf8' });
-    const commit = spawnSync('git', ['-C', selfHostRoot, 'commit', '-m', 'candidate check semantics'], { encoding: 'utf8' });
-    expect(commit.status).toBe(0);
-
-    const repository = registerRepository({ path: selfHostRoot, controllerHome: fx.controllerHome, displayName: 'self-host-forge' });
-    const head = spawnSync('git', ['-C', selfHostRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
-    rotateRuntimeGeneration(fx.controllerHome, {
-      repoId: 'repo_immutable_release_fixture',
-      checkoutId: repository.activeCheckoutId,
-      sourceRepositoryId: repository.repoId,
-      repoRoot: selfHostRoot,
-      canonicalRoot: selfHostRoot,
-      branch: 'main',
-      commit: head,
-      defaultBranch: 'main',
-      defaultBranchCommit: head,
-      dirty: false,
-      observedAt: new Date().toISOString(),
-    });
-    const workId = 'work-self-host-candidate-runner';
-    seedHistoricalWorkContract({ controllerHome: fx.controllerHome, repoId: repository.repoId }, {
-      workId,
-      repoId: repository.repoId,
-      checkoutId: repository.activeCheckoutId,
-      workKind: 'repository_change',
-      objective: 'Prove candidate snapshot Check Runner semantics.',
-      acceptanceCriteria: [],
-      allowedPaths: ['**'],
-      forbiddenPaths: [],
-      checks: [],
-      constraints: { workspaceMode: 'current' },
-      requestedBy: 'chatgpt',
-      dispatchState: 'running',
-    });
-
-    const result = await runPersistedCheckViaProcessRuntime({
-      controllerHome: fx.controllerHome,
-      repoId: repository.repoId,
-      checkoutId: repository.activeCheckoutId,
-      repoRoot: selfHostRoot,
-      executionIdentity: executionIdentityForRepository(repository),
-      checkId: 'package:test:full',
-      requestId: 'self-host-candidate-runner',
-      commandId: 'self-host-candidate-runner',
-      workId,
-      verificationBinding: { executionSessionId: 'session-self-host-candidate-runner' },
-      verificationSnapshot: { workId, allowedPaths: [], forbiddenPaths: [] },
-      interactiveWaitMs: 10_000,
-    });
-    expect(result.process).toMatchObject({ completed: true, ok: false, status: 'failed' });
-    const record = getProcessRecord(fx.controllerHome, repository.repoId, result.process!.processId);
-    expect(record).toBeDefined();
-    expect(record?.command.kind).toBe('argv');
-    if (record?.command.kind === 'argv') {
-      const args = record.command.args ?? [];
-      expect(args[0]).toContain('/verification-snapshots/');
-      expect(args[0]).toEndWith('/src/runtime/execution/process-runtime/check-runner-sidecar.ts');
-      expect(record.command.executable).not.toContain('/runtime/releases/');
-    }
-    const receipt = readPersistedCheckResultReceipt(record?.origin?.checkResultReceiptPath);
-    expect(receipt).toMatchObject({
-      checkId: 'package:test:full',
-      failureClass: 'acceptance_failure',
-      failureEvidence: {
-        gate: 'full',
-        failureClasses: ['source'],
-        failureDetails: [{ file: 'tests/candidate-only.test.ts', failureCode: 'TEST_SOURCE_ASSERTION_FAILED' }],
-      },
-    });
-    expect(classifyPersistedCheckTerminalEvidence(record!, 'package:test:full')).toMatchObject({
-      state: 'matched',
-      failureClass: 'acceptance_failure',
-      failureEvidence: {
-        failureDetails: [{ file: 'tests/candidate-only.test.ts', failureCode: 'TEST_SOURCE_ASSERTION_FAILED' }],
-      },
-    });
-  });
-
   test('structured check failure remains acceptance failure evidence', async () => {
     const fx = fixture();
-    createFixtureWork(fx, 'work-quick-fail');
     const result = await runPersistedCheckViaProcessRuntime({
       controllerHome: fx.controllerHome,
       repoId: fx.repository.repoId,
@@ -1400,7 +1274,6 @@ describe('run_check Process Runtime facade', () => {
       checkId: 'quick-fail',
       requestId: 'quick-fail-acceptance',
       commandId: 'quick-fail-acceptance',
-      workId: 'work-quick-fail',
       verificationBinding: { executionSessionId: 'session-quick-fail' },
       interactiveWaitMs: 5_000,
     });
@@ -1443,7 +1316,6 @@ describe('run_check Process Runtime facade', () => {
     writeFileSync(checksPath, JSON.stringify(checks, null, 2));
     spawnSync('git', ['-C', fx.repoRoot, 'add', '.forge/checks.json'], { encoding: 'utf8' });
     spawnSync('git', ['-C', fx.repoRoot, 'commit', '-m', 'add structured governed check'], { encoding: 'utf8' });
-    createFixtureWork(fx, 'work-structured-governed-fail');
 
     const result = await runPersistedCheckViaProcessRuntime({
       controllerHome: fx.controllerHome,
@@ -1454,7 +1326,6 @@ describe('run_check Process Runtime facade', () => {
       checkId: 'package:test:full',
       requestId: 'structured-governed-fail',
       commandId: 'structured-governed-fail',
-      workId: 'work-structured-governed-fail',
       verificationBinding: { executionSessionId: 'session-structured-governed-fail' },
       interactiveWaitMs: 5_000,
     });
@@ -1502,7 +1373,6 @@ describe('run_check Process Runtime facade', () => {
     writeFileSync(checksPath, JSON.stringify(checks, null, 2));
     spawnSync('git', ['-C', fx.repoRoot, 'add', '.forge/checks.json'], { encoding: 'utf8' });
     spawnSync('git', ['-C', fx.repoRoot, 'commit', '-m', 'add signalled structured check'], { encoding: 'utf8' });
-    createFixtureWork(fx, 'work-structured-signal-fail');
 
     const result = await runPersistedCheckViaProcessRuntime({
       controllerHome: fx.controllerHome,
@@ -1513,7 +1383,6 @@ describe('run_check Process Runtime facade', () => {
       checkId: 'package:test:full',
       requestId: 'structured-signal-fail',
       commandId: 'structured-signal-fail',
-      workId: 'work-structured-signal-fail',
       verificationBinding: { executionSessionId: 'session-structured-signal-fail' },
       interactiveWaitMs: 5_000,
     });
@@ -2292,9 +2161,9 @@ describe('command classifier safe shell combinations', () => {
     expect(classifyRepositoryCommandRoute(['forge', 'recovery', 'status']).route).not.toBe('reject');
     expect(classifyRepositoryCommandRoute(['bun', 'bin/forge.mjs', 'recovery', 'verify']).route).not.toBe('reject');
     expect(classifyRepositoryCommandRoute(['git', 'status', '--short'])).toEqual({ route: 'process_direct', reason: 'readonly_fast_path' });
-    expect(classifyRepositoryCommandRoute(['git', 'status', '--short'], { workId: 'work-readonly' })).toEqual({ route: 'process_direct', reason: 'readonly_fast_path' });
-    expect(classifyRepositoryCommandRoute(['touch', 'marker.txt'], { workId: 'work-effectful' })).toEqual({ route: 'process_managed', reason: 'work_attributed_effectful_durable' });
-    expect(classifyRepositoryCommandRoute(['bash', '-lc', 'printf work > marker.txt'], { workId: 'work-shell-effectful' })).toEqual({ route: 'process_managed', reason: 'work_attributed_effectful_durable' });
+    expect(classifyRepositoryCommandRoute(['git', 'status', '--short'])).toEqual({ route: 'process_direct', reason: 'readonly_fast_path' });
+    expect(classifyRepositoryCommandRoute(['touch', 'marker.txt'])).toEqual({ route: 'process_managed', reason: 'workspace_write_requires_process_lease' });
+    expect(classifyRepositoryCommandRoute(['bash', '-lc', 'printf work > marker.txt'])).toEqual({ route: 'process_managed', reason: 'workspace_write_requires_process_lease' });
     expect(classifyRepositoryCommandRoute(['echo', 'forge recovery activate-runtime'])).not.toEqual({ route: 'reject', reason: 'standalone_recovery_lifecycle_required' });
   });
 
@@ -2510,8 +2379,6 @@ describe('Process Runtime real lease contention', () => {
 
   test('Homebrew host-only Work can overlap an independent repository write', async () => {
     const fx = fixture();
-    createFixtureWork(fx, 'work-host-package', 'local_effect');
-    createFixtureWork(fx, 'work-independent-repository-write');
     const hostClaims = claimsForRepositoryCommand(
       ['brew', 'install', 'jmeter'],
       fx.repository.repoId,
@@ -2524,7 +2391,6 @@ describe('Process Runtime real lease contention', () => {
       repoId: fx.repository.repoId,
       checkoutId: fx.repository.activeCheckoutId,
       executionIdentity: executionIdentityForRepository(fx.repository),
-      workId: 'work-host-package',
       command: {
         kind: 'argv',
         executable: 'node',
@@ -2540,7 +2406,6 @@ describe('Process Runtime real lease contention', () => {
     expect(listActiveLeases(fx.controllerHome, fx.repository.repoId)).toContainEqual(expect.objectContaining({
       ownerJobId: `process:${hostWork.processId}`,
       resourceKey: 'host-service:package-manager:homebrew',
-      workId: 'work-host-package',
     }));
 
     const repositoryWriteClaims = claimsForRepositoryCommand(
@@ -2553,7 +2418,6 @@ describe('Process Runtime real lease contention', () => {
       repoId: fx.repository.repoId,
       checkoutId: fx.repository.activeCheckoutId,
       executionIdentity: executionIdentityForRepository(fx.repository),
-      workId: 'work-independent-repository-write',
       command: {
         kind: 'argv',
         executable: 'node',
@@ -2752,19 +2616,14 @@ describe('Process Runtime real lease contention', () => {
     expect((await waitForProcess(fx.controllerHome, fx.repository.repoId, holder.processId, { timeoutMs: 10_000 })).ok).toBe(true);
   }, 55_000);
 
-  test('cross-Work build-cache checks serialize within the bounded verification budget and still expose true admission timeout', async () => {
-    expect(DEFAULT_WORK_CHECK_LEASE_WAIT_MS).toBe(30_000);
+  test('build-cache checks serialize within the bounded verification budget and still expose true admission timeout', async () => {
     const fx = fixture();
-    createFixtureWork(fx, 'work-build-cache-holder');
-    createFixtureWork(fx, 'work-build-cache-short-budget');
-    createFixtureWork(fx, 'work-build-cache-waiter');
     const buildCacheClaim = { resourceKey: `build-cache:${fx.repository.repoId}`, mode: 'write' as const };
     const holder = await spawnManagedProcess({
       controllerHome: fx.controllerHome,
       repoId: fx.repository.repoId,
       checkoutId: fx.repository.activeCheckoutId,
       executionIdentity: executionIdentityForRepository(fx.repository),
-      workId: 'work-build-cache-holder',
       origin: { surface: 'check', checkId: 'build-cache-holder' },
       command: {
         kind: 'argv',
@@ -2781,7 +2640,6 @@ describe('Process Runtime real lease contention', () => {
     expect(listActiveLeases(fx.controllerHome, fx.repository.repoId)).toContainEqual(expect.objectContaining({
       ownerJobId: `process:${holder.processId}`,
       resourceKey: buildCacheClaim.resourceKey,
-      workId: 'work-build-cache-holder',
     }));
 
     const boundedOut = await spawnManagedProcess({
@@ -2789,7 +2647,6 @@ describe('Process Runtime real lease contention', () => {
       repoId: fx.repository.repoId,
       checkoutId: fx.repository.activeCheckoutId,
       executionIdentity: executionIdentityForRepository(fx.repository),
-      workId: 'work-build-cache-short-budget',
       origin: { surface: 'check', checkId: 'build-cache-short-budget' },
       command: {
         kind: 'argv',
@@ -2817,7 +2674,6 @@ describe('Process Runtime real lease contention', () => {
       repoId: fx.repository.repoId,
       checkoutId: fx.repository.activeCheckoutId,
       executionIdentity: executionIdentityForRepository(fx.repository),
-      workId: 'work-build-cache-waiter',
       origin: { surface: 'check', checkId: 'build-cache-waiter' },
       command: {
         kind: 'argv',
@@ -2838,20 +2694,17 @@ describe('Process Runtime real lease contention', () => {
   test('missing and terminal Process lease owners are unknown and never joinable', async () => {
     const fx = fixture();
     bindCanonicalRuntime(fx.controllerHome);
-    createFixtureWork(fx, 'work-lease-owner-safety');
     const claim = {
       resourceKey: `workspace:${fx.repository.activeCheckoutId}`,
       mode: 'write' as const,
       repoId: fx.repository.repoId,
       checkoutId: fx.repository.activeCheckoutId,
-      workId: 'work-lease-owner-safety',
     };
     const terminal = await spawnManagedProcess({
       controllerHome: fx.controllerHome,
       repoId: fx.repository.repoId,
       checkoutId: fx.repository.activeCheckoutId,
       executionIdentity: executionIdentityForRepository(fx.repository),
-      workId: 'work-lease-owner-safety',
       command: { kind: 'argv', executable: 'node', args: ['-e', 'process.exit(0)'], cwd: fx.repoRoot },
       resourceClaims: [],
       timeoutMs: 10_000,
@@ -2873,7 +2726,6 @@ describe('Process Runtime real lease contention', () => {
           repoId: fx.repository.repoId,
           checkoutId: fx.repository.activeCheckoutId,
           executionIdentity: executionIdentityForRepository(fx.repository),
-          workId: 'work-lease-owner-safety',
           command: { kind: 'argv', executable: 'node', args: ['-e', 'process.stdout.write("must-not-run")'], cwd: fx.repoRoot },
           resourceClaims: [claim],
           timeoutMs: 10_000,
@@ -2893,7 +2745,6 @@ describe('Process Runtime real lease contention', () => {
 
   test('write claim blocks concurrent write; multiple reads may run', async () => {
     const fx = fixture();
-    createFixtureWork(fx, 'work-lease-a');
     const claims = claimsForRepositoryCommand(['git', 'status'], fx.repository.repoId, fx.repository.activeCheckoutId);
     // First long-running managed process holds workspace read (and any path claims).
     const first = await spawnManagedProcess({
@@ -2901,7 +2752,6 @@ describe('Process Runtime real lease contention', () => {
       repoId: fx.repository.repoId,
       checkoutId: fx.repository.activeCheckoutId,
       executionIdentity: executionIdentityForRepository(fx.repository),
-      workId: 'work-lease-a',
       command: {
         kind: 'argv',
         executable: 'node',
@@ -2921,17 +2771,14 @@ describe('Process Runtime real lease contention', () => {
       mode: 'write',
       repoId: fx.repository.repoId,
       checkoutId: fx.repository.activeCheckoutId,
-      workId: 'work-lease-a',
     });
     expect(record?.leaseRefs?.[0]).toMatchObject({
       repoId: fx.repository.repoId,
       checkoutId: fx.repository.activeCheckoutId,
-      workId: 'work-lease-a',
     });
     const active = listActiveLeases(fx.controllerHome, fx.repository.repoId);
     expect(active.some((lease) => lease.ownerJobId === `process:${first.processId}`
-      && lease.checkoutId === fx.repository.activeCheckoutId
-      && lease.workId === 'work-lease-a')).toBe(true);
+      && lease.checkoutId === fx.repository.activeCheckoutId)).toBe(true);
 
     // Concurrent write must not spawn (lease conflict before runner).
     const blocked = await spawnManagedProcess({
@@ -2963,7 +2810,6 @@ describe('Process Runtime real lease contention', () => {
       controllerHome: fx.controllerHome, repoId: fx.repository.repoId,
       checkoutId: fx.repository.activeCheckoutId,
       executionIdentity: executionIdentityForRepository(fx.repository),
-      workId: 'work-lease-a',
       command: { kind: 'argv', executable: 'node', args: ['-e', 'process.stdout.write("must-not-run")'], cwd: fx.repoRoot },
       resourceClaims: [{ resourceKey: `workspace:${fx.repository.activeCheckoutId}`, mode: 'write' }],
       timeoutMs: 10_000,
@@ -2985,7 +2831,7 @@ describe('Process Runtime real lease contention', () => {
     const next = await spawnManagedProcess({
       controllerHome: fx.controllerHome, repoId: fx.repository.repoId,
       checkoutId: fx.repository.activeCheckoutId,
-      executionIdentity: executionIdentityForRepository(fx.repository), workId: 'work-lease-a',
+      executionIdentity: executionIdentityForRepository(fx.repository),
       command: { kind: 'argv', executable: 'node', args: ['-e', 'process.stdout.write("next-action")'], cwd: fx.repoRoot },
       resourceClaims: [{ resourceKey: `workspace:${fx.repository.activeCheckoutId}`, mode: 'write' }],
       timeoutMs: 10_000,
@@ -3033,13 +2879,11 @@ describe('Process Runtime real lease contention', () => {
 
   test('lease release is exactly once across recover and complete', async () => {
     const fx = fixture();
-    createFixtureWork(fx, 'work-release-once');
     const handle = await spawnManagedProcess({
       controllerHome: fx.controllerHome,
       repoId: fx.repository.repoId,
       checkoutId: fx.repository.activeCheckoutId,
       executionIdentity: executionIdentityForRepository(fx.repository),
-      workId: 'work-release-once',
       command: {
         kind: 'argv',
         executable: 'node',
@@ -3056,7 +2900,6 @@ describe('Process Runtime real lease contention', () => {
     expect(record?.leaseRefs?.[0]).toMatchObject({
       repoId: fx.repository.repoId,
       checkoutId: fx.repository.activeCheckoutId,
-      workId: 'work-release-once',
     });
     // Re-release via recovery must not throw / leave leases.
     const recovery = recoverManagedProcesses(fx.controllerHome, fx.repository.repoId);
@@ -3191,7 +3034,6 @@ describe('Process Runtime real lease contention', () => {
         mode: 'write',
         repoId: fx.repository.repoId,
         checkoutId: fx.repository.activeCheckoutId,
-        workId: 'work-terminal-old-generation',
       }],
       { ttlMs: 30_000, visibility: 'ephemeral', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false },
     );
@@ -3201,19 +3043,17 @@ describe('Process Runtime real lease contention', () => {
       processId,
       repoId: fx.repository.repoId,
       checkoutId: fx.repository.activeCheckoutId,
-      workId: 'work-terminal-old-generation',
       controllerHome: fx.controllerHome,
       status: 'running',
       route: 'managed',
       command: { kind: 'argv', executable: 'node', args: ['-e', 'process.exit(0)'], cwd: fx.repoRoot },
-      resourceClaims: [{ resourceKey, mode: 'write', repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId, workId: 'work-terminal-old-generation' }],
+      resourceClaims: [{ resourceKey, mode: 'write', repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId }],
       leaseRefs: acquired.leases.map((lease) => ({
         leaseId: lease.leaseId,
         resourceKey: lease.resourceKey,
         fencingToken: lease.fencingToken,
         repoId: lease.repoId,
         checkoutId: lease.checkoutId,
-        workId: lease.workId,
       })),
       interactiveWaitMs: 0,
       timeoutMs: 30_000,
@@ -4013,8 +3853,6 @@ describe('process MCP live surface', () => {
 
   test('process_get and process_wait expose the exact same-Work Process lease join target', async () => {
     const fx = fixture();
-    const workId = 'work-process-mcp-same-work-join';
-    createFixtureWork(fx, workId);
     const marker = join(fx.root, 'blocked-mutation.txt');
     const resourceClaims = [{ resourceKey: `workspace:${fx.repository.activeCheckoutId}`, mode: 'write' as const }];
     const first = await spawnManagedProcess({
@@ -4022,7 +3860,6 @@ describe('process MCP live surface', () => {
       repoId: fx.repository.repoId,
       checkoutId: fx.repository.activeCheckoutId,
       executionIdentity: executionIdentityForRepository(fx.repository),
-      workId,
       command: {
         kind: 'argv',
         executable: 'node',
@@ -4041,7 +3878,6 @@ describe('process MCP live surface', () => {
       repoId: fx.repository.repoId,
       checkoutId: fx.repository.activeCheckoutId,
       executionIdentity: executionIdentityForRepository(fx.repository),
-      workId,
       command: {
         kind: 'argv',
         executable: 'node',
@@ -4054,7 +3890,6 @@ describe('process MCP live surface', () => {
     });
     expect(blocked).toMatchObject({ completed: true, ok: false, concurrencyWait: {
       source: 'resource_lease',
-      blockingWorkId: workId,
       blockingProcessId: first.processId,
       blockingOwnerRelation: 'same_work_same_checkout',
     } });
@@ -4071,7 +3906,6 @@ describe('process MCP live surface', () => {
     expect(got?.isError).not.toBe(true);
     expect((got?.structuredContent as { process?: { concurrencyWait?: unknown } })?.process?.concurrencyWait).toMatchObject({
       source: 'resource_lease',
-      blockingWorkId: workId,
       blockingProcessId: first.processId,
       blockingOwnerRelation: 'same_work_same_checkout',
     });
@@ -4084,7 +3918,6 @@ describe('process MCP live surface', () => {
     expect(waited?.isError).not.toBe(true);
     expect((waited?.structuredContent as { process?: { concurrencyWait?: unknown } })?.process?.concurrencyWait).toMatchObject({
       source: 'resource_lease',
-      blockingWorkId: workId,
       blockingProcessId: first.processId,
       blockingOwnerRelation: 'same_work_same_checkout',
     });
@@ -4095,7 +3928,6 @@ describe('process MCP live surface', () => {
       repoId: fx.repository.repoId,
       checkoutId: fx.repository.activeCheckoutId,
       executionIdentity: executionIdentityForRepository(fx.repository),
-      workId,
       command: {
         kind: 'argv',
         executable: 'node',
