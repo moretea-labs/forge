@@ -9,7 +9,6 @@ export * from './suggested-actions';
 export * from './capability-registry';
 export * from './policy-gate';
 export * from './check-normalization';
-export * from './codex-delegation';
 export * from './self-healing-loop';
 export * from './operation-digest';
 export * from './requirement-authority';
