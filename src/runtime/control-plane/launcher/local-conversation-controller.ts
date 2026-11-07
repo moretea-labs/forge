@@ -186,8 +186,21 @@ export function parseCodexConversationJsonl(stdout: string): ParsedCodexConversa
 }
 
 function activityLabel(itemType: string, item: Record<string, unknown>): string {
-  const name = typeof item.name === 'string' ? item.name.trim().slice(0, 80) : '';
-  if (itemType === 'mcp_tool_call') return name ? `正在使用 ${name}` : '正在使用 Forge 工具';
+  const field = (...keys: string[]): string => {
+    for (const key of keys) {
+      const value = item[key];
+      if (typeof value === 'string' && value.trim()) return value.trim().slice(0, 80);
+    }
+    return '';
+  };
+  if (itemType === 'mcp_tool_call') {
+    const tool = field('tool', 'tool_name', 'name');
+    const server = field('server', 'server_name');
+    const display = tool
+      ? (server && !tool.startsWith(`${server}.`) ? `${server} · ${tool}` : tool)
+      : server;
+    return display ? `正在使用 ${display}` : '正在使用 Forge 工具';
+  }
   if (itemType === 'command_execution') return '正在执行命令';
   if (itemType === 'file_change') return '正在修改文件';
   if (itemType === 'web_search') return '正在搜索';

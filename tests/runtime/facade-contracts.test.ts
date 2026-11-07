@@ -241,8 +241,8 @@ describe('handoff and facade contracts', () => {
     const script = [
       "console.log(JSON.stringify({type:'thread.started',thread_id:'thread-complete'}));",
       "console.log(JSON.stringify({type:'turn.started'}));",
-      "console.log(JSON.stringify({type:'item.started',item:{type:'mcp_tool_call',name:'forge.rh_status'}}));",
-      "console.log(JSON.stringify({type:'item.completed',item:{type:'mcp_tool_call',name:'forge.rh_status'}}));",
+      "console.log(JSON.stringify({type:'item.started',item:{type:'mcp_tool_call',server:'forge',tool:'rh_status'}}));",
+      "console.log(JSON.stringify({type:'item.completed',item:{type:'mcp_tool_call',server:'forge',tool:'rh_status'}}));",
       "console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:'done'}}));",
       "console.log(JSON.stringify({type:'turn.completed'}));",
     ].join('');
@@ -256,7 +256,7 @@ describe('handoff and facade contracts', () => {
     expect(completed.activity.toolActivityCount).toBe(1);
     expect(completed.activity.events.filter((event) => event.phase === 'tool')).toEqual([
       expect.objectContaining({
-        phase: 'tool', label: '正在使用 forge.rh_status', status: 'completed',
+        phase: 'tool', label: '正在使用 forge · rh_status', status: 'completed',
       }),
     ]);
   });
@@ -884,7 +884,7 @@ describe('Thin Launcher external Controller invocation', () => {
 
     expect(parseCodexConversationJsonl([
       JSON.stringify({ type: 'thread.started', thread_id: 'thread-1' }),
-      JSON.stringify({ type: 'item.completed', item: { type: 'mcp_tool_call', name: 'forge.rh_status' } }),
+      JSON.stringify({ type: 'item.completed', item: { type: 'mcp_tool_call', server: 'forge', tool: 'rh_status' } }),
       JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'done' } }),
     ].join('\n'))).toEqual({ providerSessionId: 'thread-1', output: 'done', toolActivityCount: 1 });
 
