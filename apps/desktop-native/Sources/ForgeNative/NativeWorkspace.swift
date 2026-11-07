@@ -990,7 +990,9 @@ final class NativeWorkspace: ObservableObject {
             knowledgeResult = nil
             return
         }
+        guard !knowledgeLoading else { return }
         knowledgeLoading = true
+        knowledgeResult = nil
         defer { knowledgeLoading = false }
         do {
             let value = try await ForgeBridge.request("read_project_knowledge",[
