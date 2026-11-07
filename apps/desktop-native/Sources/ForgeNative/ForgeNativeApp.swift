@@ -53,6 +53,8 @@ struct ForgeNativeApp: App {
 private struct ForgeWorkspaceView: View {
     @ObservedObject var model: NativeWorkspace
     @State private var visibility: NavigationSplitViewVisibility = .all
+    @State private var renameThreadId: String?
+    @State private var renameThreadTitle = ""
 
     var body: some View {
         NavigationSplitView(columnVisibility:$visibility) {
@@ -77,6 +79,19 @@ private struct ForgeWorkspaceView: View {
                     Text(model.connection).font(.system(size:11))
                 }.foregroundStyle(ForgePalette.secondary)
             }
+        }
+        .alert("重命名会话",isPresented:Binding(
+            get:{ renameThreadId != nil },
+            set:{ if !$0 { renameThreadId = nil } }
+        )) {
+            TextField("会话名称",text:$renameThreadTitle)
+            Button("取消",role:.cancel) { renameThreadId = nil }
+            Button("保存") {
+                if let id = renameThreadId { model.renameThread(id,to:renameThreadTitle) }
+                renameThreadId = nil
+            }
+        } message: {
+            Text("名称仅用于本地会话列表。")
         }
     }
 
@@ -174,6 +189,12 @@ private struct ForgeWorkspaceView: View {
                             .contentShape(Rectangle())
                         }.buttonStyle(.plain)
                             .contextMenu {
+                                Button {
+                                    renameThreadId = thread.id
+                                    renameThreadTitle = thread.title
+                                } label: {
+                                    Label("重命名",systemImage:"pencil")
+                                }
                                 Button("删除会话",role:.destructive) { model.deleteThread(thread.id) }
                             }
                     }

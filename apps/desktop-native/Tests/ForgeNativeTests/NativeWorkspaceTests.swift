@@ -43,6 +43,28 @@ final class NativeWorkspaceTests: XCTestCase {
     }
 
     @MainActor
+    func testThreadRenamePersistsWithoutChangingConversationBinding() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = folder.appendingPathComponent("conversations.json")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let model = NativeWorkspace(store: store)
+        let id = model.threads[0].id
+        model.threads[0].repoId = "repo_a"
+        model.threads[0].checkoutId = "checkout_a"
+        model.threads[0].providerSessionId = "session_a"
+
+        model.renameThread(id,to:"  Agent lifecycle polish  ")
+
+        XCTAssertEqual(model.threads[0].title,"Agent lifecycle polish")
+        XCTAssertEqual(model.threads[0].repoId,"repo_a")
+        XCTAssertEqual(model.threads[0].checkoutId,"checkout_a")
+        XCTAssertEqual(model.threads[0].providerSessionId,"session_a")
+        let restored = NativeWorkspace(store:store)
+        XCTAssertEqual(restored.threads.first?.title,"Agent lifecycle polish")
+        XCTAssertEqual(restored.threads.first?.providerSessionId,"session_a")
+    }
+
+    @MainActor
     func testSelectingThreadRestoresItsBoundProjectContext() {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let store = folder.appendingPathComponent("conversations.json")

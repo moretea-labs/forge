@@ -277,6 +277,13 @@ final class NativeWorkspace: ObservableObject {
         threads[index].updatedAt = Date()
         persist()
     }
+    func renameThread(_ id: String, to title: String) {
+        let title = title.trimmingCharacters(in:.whitespacesAndNewlines)
+        guard !title.isEmpty, let index = threads.firstIndex(where: { $0.id == id }) else { return }
+        threads[index].title = String(title.prefix(80))
+        threads[index].updatedAt = Date()
+        persist()
+    }
     func deleteThread(_ id: String) {
         guard !busy || selectedThreadId != id else {
             self.error = "请先停止正在运行的会话。"
