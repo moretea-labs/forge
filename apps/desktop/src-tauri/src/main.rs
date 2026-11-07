@@ -996,10 +996,11 @@ async fn commit_reviewed_agent_git_files(
         return Err("FORGE_DESKTOP_GIT_COMMIT_REVIEW_REQUIRED".into());
     }
 
-    // Re-read through Forge at commit time; a stale or truncated inspection
-    // cannot authorize a different patch, HEAD, branch, checkout or file set.
+    // Re-read the exact reviewed paths through Forge at commit time; a stale
+    // or truncated inspection cannot authorize a different patch, HEAD,
+    // branch, checkout or file set.
     let current = read_agent_git_diff_runtime(
-        &repo_id, Some(&checkout_id), staged, None
+        &repo_id, Some(&checkout_id), staged, Some(&paths)
     ).await?;
     if !reviewed_commit_scope_matches(
         &current, &paths, &expected_patch, &expected_head, &expected_branch, &checkout_id, staged,

@@ -79,6 +79,29 @@ final class NativeWorkspaceTests: XCTestCase {
     }
 
     @MainActor
+    func testReviewedChangesPathScopeRequiresExactUntruncatedFileSet() {
+        let focused = AgentGitDiff(
+            repoId:"repo_a", checkoutId:"checkout_a", branch:"work/a", head:"abcdef",
+            staged:false, paths:["a"], nameOnly:["a"], stat:"1 file changed",
+            patch:"diff --git a/a b/a\n", truncated:false
+        )
+        let multi = AgentGitDiff(
+            repoId:"repo_a", checkoutId:"checkout_a", branch:"work/a", head:"abcdef",
+            staged:false, paths:["a","b"], nameOnly:["a","b"], stat:"2 files changed",
+            patch:"diff --git a/a b/a\ndiff --git a/b b/b\n", truncated:false
+        )
+        let truncated = AgentGitDiff(
+            repoId:"repo_a", checkoutId:"checkout_a", branch:"work/a", head:"abcdef",
+            staged:false, paths:["a"], nameOnly:["a"], stat:"1 file changed",
+            patch:"diff --git a/a b/a\n", truncated:true
+        )
+        XCTAssertTrue(NativeWorkspace.reviewedChangesMatchPaths(focused,paths:["a"]))
+        XCTAssertTrue(NativeWorkspace.reviewedChangesMatchPaths(multi,paths:["b","a"]))
+        XCTAssertFalse(NativeWorkspace.reviewedChangesMatchPaths(multi,paths:["a"]))
+        XCTAssertFalse(NativeWorkspace.reviewedChangesMatchPaths(truncated,paths:["a"]))
+    }
+
+    @MainActor
     func testAgentWorkAssociationUsesExistingWorkReferenceOnly() {
         let records = NativeWorkspace.workRecords([
             "data":[

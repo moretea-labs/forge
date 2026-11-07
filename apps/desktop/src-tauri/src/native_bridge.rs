@@ -75,9 +75,15 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
         "read_agent_git_diff" => {
             let repo_id = required(args, "repoId")?;
             let checkout_id = required(args, "checkoutId")?;
+            let paths = if args.get("paths").is_some() {
+                Some(required_strings(args, "paths", 32)?)
+            } else {
+                None
+            };
             read_agent_git_diff_runtime(
                 &repo_id, Some(&checkout_id),
-                args.get("staged").and_then(Value::as_bool).unwrap_or(false), None,
+                args.get("staged").and_then(Value::as_bool).unwrap_or(false),
+                paths.as_deref(),
             ).await
         },
         "commit_agent_git_files" =>

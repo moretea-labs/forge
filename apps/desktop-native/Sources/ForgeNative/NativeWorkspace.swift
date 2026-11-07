@@ -518,23 +518,55 @@ final class NativeWorkspace: ObservableObject {
             // Live activity is advisory UI only; the authoritative send result owns completion/errors.
         }
     }
-    func refreshAgentChanges() async {
+    private func loadAgentChanges(paths: [String]? = nil) async throws -> AgentGitDiff {
         guard let repoId, let checkoutId else {
+            throw NSError(domain:"ForgeNative",code:1,userInfo:[
+                NSLocalizedDescriptionKey:"当前会话未绑定 repository / checkout。"
+            ])
+        }
+        var arguments: [String:Any] = [
+            "repoId":repoId,
+            "checkoutId":checkoutId,
+            "staged":false
+        ]
+        if let paths, !paths.isEmpty { arguments["paths"] = paths }
+        let value = try await ForgeBridge.request("read_agent_git_diff",arguments)
+        let bytes = try JSONSerialization.data(withJSONObject:value)
+        return try JSONDecoder().decode(AgentGitDiff.self, from:bytes)
+    }
+
+    func refreshAgentChanges() async {
+        guard repoId != nil, checkoutId != nil else {
             agentChanges = nil
             return
         }
         changesLoading = true
         defer { changesLoading = false }
         do {
-            let value = try await ForgeBridge.request("read_agent_git_diff",[
-                "repoId":repoId,
-                "checkoutId":checkoutId,
-                "staged":false
-            ])
-            let bytes = try JSONSerialization.data(withJSONObject:value)
-            agentChanges = try JSONDecoder().decode(AgentGitDiff.self, from:bytes)
+            agentChanges = try await loadAgentChanges()
         } catch {
             self.error = error.localizedDescription
+        }
+    }
+
+    static func reviewedChangesMatchPaths(_ changes: AgentGitDiff, paths: [String]) -> Bool {
+        let requested = Set(paths.filter { !$0.isEmpty })
+        return !requested.isEmpty && !changes.truncated
+            && Set(changes.nameOnly) == requested
+            && !changes.patch.isEmpty
+    }
+
+    func reviewAgentChanges(paths: [String]) async -> AgentGitDiff? {
+        do {
+            let changes = try await loadAgentChanges(paths:paths)
+            guard Self.reviewedChangesMatchPaths(changes,paths:paths) else {
+                self.error = "当前文件复查快照与请求范围不一致。"
+                return nil
+            }
+            return changes
+        } catch {
+            self.error = error.localizedDescription
+            return nil
         }
     }
     static func reviewedChangesAreRestorable(

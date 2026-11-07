@@ -1002,6 +1002,9 @@ private struct AgentChangesPane: View {
     @Binding var isPresented: Bool
     @State private var commitMessage = ""
     @State private var restoreSnapshot: AgentGitDiff?
+    @State private var focusedPath: String?
+    @State private var focusedChanges: AgentGitDiff?
+    @State private var focusedLoading = false
 
     var body: some View {
         VStack(alignment:.leading,spacing:0) {
@@ -1019,6 +1022,8 @@ private struct AgentChangesPane: View {
                 }
                 Spacer()
                 Button {
+                    focusedPath = nil
+                    focusedChanges = nil
                     Task { await model.refreshAgentChanges() }
                 } label: {
                     Image(systemName:"arrow.clockwise")
@@ -1054,6 +1059,7 @@ private struct AgentChangesPane: View {
                 }
                 .frame(maxWidth:.infinity,maxHeight:.infinity)
             } else if let changes = model.agentChanges {
+                let reviewed = focusedChanges ?? changes
                 ScrollView {
                     VStack(alignment:.leading,spacing:14) {
                         VStack(alignment:.leading,spacing:4) {
@@ -1078,41 +1084,85 @@ private struct AgentChangesPane: View {
                             .padding(.vertical,48)
                         } else {
                             VStack(alignment:.leading,spacing:6) {
-                                ForEach(changes.nameOnly,id:\.self) { path in
+                                Button {
+                                    focusedPath = nil
+                                    focusedChanges = nil
+                                } label: {
                                     HStack(spacing:7) {
-                                        Image(systemName:"doc")
+                                        Image(systemName:"rectangle.stack")
                                             .font(.system(size:10))
-                                            .foregroundStyle(ForgePalette.secondary)
-                                        Text(path)
-                                            .font(.system(size:10.5))
-                                            .lineLimit(1)
-                                            .truncationMode(.middle)
+                                        Text("All changes")
+                                            .font(.system(size:10.5,weight:.medium))
                                         Spacer(minLength:0)
+                                        Text("\(changes.nameOnly.count)")
+                                            .font(.system(size:9.5))
+                                            .foregroundStyle(.tertiary)
                                     }
                                     .padding(.horizontal,9)
                                     .frame(height:29)
-                                    .background(ForgePalette.softFill,
+                                    .background(focusedPath == nil ? ForgePalette.selectionStrong : ForgePalette.softFill,
                                                 in:RoundedRectangle(cornerRadius:8,style:.continuous))
+                                }
+                                .buttonStyle(.plain)
+
+                                ForEach(changes.nameOnly,id:\.self) { path in
+                                    Button {
+                                        Task {
+                                            focusedLoading = true
+                                            let snapshot = await model.reviewAgentChanges(paths:[path])
+                                            focusedLoading = false
+                                            if let snapshot {
+                                                focusedPath = path
+                                                focusedChanges = snapshot
+                                            }
+                                        }
+                                    } label: {
+                                        HStack(spacing:7) {
+                                            Image(systemName:"doc")
+                                                .font(.system(size:10))
+                                                .foregroundStyle(ForgePalette.secondary)
+                                            Text(path)
+                                                .font(.system(size:10.5))
+                                                .lineLimit(1)
+                                                .truncationMode(.middle)
+                                            Spacer(minLength:0)
+                                        }
+                                        .padding(.horizontal,9)
+                                        .frame(height:29)
+                                        .background(focusedPath == path ? ForgePalette.selectionStrong : ForgePalette.softFill,
+                                                    in:RoundedRectangle(cornerRadius:8,style:.continuous))
+                                    }
+                                    .buttonStyle(.plain)
+                                    .disabled(focusedLoading)
                                 }
                             }
 
-                            if !changes.stat.isEmpty {
-                                Text(changes.stat)
+                            if focusedLoading {
+                                HStack(spacing:7) {
+                                    ProgressView().controlSize(.small)
+                                    Text("读取文件 diff…")
+                                        .font(.system(size:10.5))
+                                        .foregroundStyle(ForgePalette.secondary)
+                                }
+                            } else if !reviewed.stat.isEmpty {
+                                Text(reviewed.stat)
                                     .font(.system(size:10.5,design:.monospaced))
                                     .foregroundStyle(ForgePalette.secondary)
                                     .textSelection(.enabled)
                             }
 
-                            Text(changes.patch)
-                                .font(.system(size:10.5,design:.monospaced))
-                                .lineSpacing(3)
-                                .textSelection(.enabled)
-                                .frame(maxWidth:.infinity,alignment:.leading)
-                                .padding(11)
-                                .background(ForgePalette.softFill,
-                                            in:RoundedRectangle(cornerRadius:10,style:.continuous))
+                            if !focusedLoading {
+                                Text(reviewed.patch)
+                                    .font(.system(size:10.5,design:.monospaced))
+                                    .lineSpacing(3)
+                                    .textSelection(.enabled)
+                                    .frame(maxWidth:.infinity,alignment:.leading)
+                                    .padding(11)
+                                    .background(ForgePalette.softFill,
+                                                in:RoundedRectangle(cornerRadius:10,style:.continuous))
+                            }
 
-                            if changes.truncated {
+                            if reviewed.truncated {
                                 Label("Diff 已按 20 KB 上限截断，不能提交",systemImage:"exclamationmark.triangle")
                                     .font(.system(size:10.5))
                                     .foregroundStyle(ForgePalette.secondary)
@@ -1123,7 +1173,7 @@ private struct AgentChangesPane: View {
                                     Label("Commit reviewed changes",systemImage:"checkmark.seal")
                                         .font(.system(size:11,weight:.semibold))
                                     Spacer()
-                                    Text("\(changes.nameOnly.count) files")
+                                    Text(focusedPath ?? "\(reviewed.nameOnly.count) files")
                                         .font(.system(size:10))
                                         .foregroundStyle(.tertiary)
                                 }
@@ -1141,7 +1191,7 @@ private struct AgentChangesPane: View {
                                         .lineLimit(2)
                                     Spacer(minLength:8)
                                     Button(role:.destructive) {
-                                        restoreSnapshot = changes
+                                        restoreSnapshot = reviewed
                                     } label: {
                                         Label("Discard",systemImage:"arrow.uturn.backward.circle")
                                             .font(.system(size:11,weight:.semibold))
@@ -1150,15 +1200,17 @@ private struct AgentChangesPane: View {
                                     }
                                     .buttonStyle(.plain)
                                     .foregroundStyle(.red)
-                                    .disabled(model.changesLoading || changes.staged
-                                              || changes.truncated || changes.patch.isEmpty)
+                                    .disabled(model.changesLoading || focusedLoading || reviewed.staged
+                                              || reviewed.truncated || reviewed.patch.isEmpty)
                                     .help("放弃当前已复查的 tracked / unstaged 改动")
                                     Button {
-                                        let snapshot = changes
+                                        let snapshot = reviewed
                                         let message = commitMessage
                                         Task {
                                             if await model.commitAgentChanges(snapshot,message:message) {
                                                 commitMessage = ""
+                                                focusedPath = nil
+                                                focusedChanges = nil
                                             }
                                         }
                                     } label: {
@@ -1170,8 +1222,8 @@ private struct AgentChangesPane: View {
                                                         in:RoundedRectangle(cornerRadius:8,style:.continuous))
                                     }
                                     .buttonStyle(.plain)
-                                    .disabled(model.changesLoading || changes.truncated
-                                              || changes.patch.isEmpty
+                                    .disabled(model.changesLoading || focusedLoading || reviewed.truncated
+                                              || reviewed.patch.isEmpty
                                               || commitMessage.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty)
                                 }
                             }
@@ -1205,7 +1257,12 @@ private struct AgentChangesPane: View {
             Button("放弃改动",role:.destructive) {
                 guard let snapshot = restoreSnapshot else { return }
                 restoreSnapshot = nil
-                Task { _ = await model.restoreAgentChanges(snapshot) }
+                Task {
+                    if await model.restoreAgentChanges(snapshot) {
+                        focusedPath = nil
+                        focusedChanges = nil
+                    }
+                }
             }
         } message: {
             Text("只恢复当前已审查的 tracked / unstaged 文件。staged、untracked 或已变化的 patch 会被拒绝。")
