@@ -130,9 +130,7 @@ function consolidationAuthority(input: {
     assertMemoryWrite(memory) {
       if (!sameScope(memory.scope, input.scope)
         || !memory.id.startsWith('consolidated:')
-        || memory.provenance.sourceKind !== 'system'
-        || memory.provenance.sourceWorkId
-        || memory.provenance.sourceRoundId) {
+        || memory.provenance.sourceKind !== 'system') {
         throw new Error('COGNITION_AUTOMATIC_CONSOLIDATION_AUTHORITY_INVALID');
       }
     },
@@ -167,8 +165,6 @@ function associationAuthority(input: {
     },
     assertEdgeWrite(edge) {
       if (!sameScope(edge.scope, input.scope)
-        || edge.sourceWorkId
-        || edge.sourceRoundId
         || !sourceIds.has(edge.fromId)
         || !relatedIds.has(edge.toId)
         || !allowedRelations.has(edge.relation)) {

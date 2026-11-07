@@ -42,6 +42,8 @@ export interface AuthorizationRequestRecord {
   repositoryId: string;
   sessionId?: string;
   principalId?: string;
+  /** Historical read-only provenance from pre-#483 approval records. New requests never write this field. */
+  workId?: string;
   goalId?: string;
   command?: string | string[];
   approvalToken?: string;
@@ -157,7 +159,7 @@ function requestDecision(context: AuthorizationContext, reason: string): Authori
 
 export function decideAuthorization(context: AuthorizationContext): AuthorizationDecision {
   if (context.risk === 'secret_access') return { decision: 'deny', reason: 'Credential, keychain, token, and raw secret access is always denied.' };
-  if (!scopeMatches(context)) return requestDecision(context, 'The operation is outside the active repository, checkout, or Goal scope.');
+  if (!scopeMatches(context)) return requestDecision(context, 'The operation is outside the active repository, checkout/worktree, or Goal scope.');
   if (['outside_repository', 'destructive'].includes(context.risk)) {
     return context.approvedByUser ? { decision: 'allow', source: 'user_confirmation', reason: 'The user explicitly confirmed the scoped catastrophic operation.' } : requestDecision(context, `Explicit user confirmation is required for ${context.risk}.`);
   }

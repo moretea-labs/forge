@@ -231,7 +231,6 @@ export function historicalVerificationEvidenceAtRevision(
       if (
         !receipt
         || receipt.repoId !== expected.repoId
-        || receipt.workId !== expected.workId
         || receipt.checkId !== expected.checkId
         || (expected.checkoutId !== undefined && receipt.checkoutId !== expected.checkoutId)
       ) {

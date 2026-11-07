@@ -1343,10 +1343,10 @@ export async function startLocalBridgeServer(
         String(request.params.handoffId ?? ""),
         "user",
       );
-      response.status(result.continued ? 200 : 409).json({
+      response.status(200).json({
         ...result,
-        phase: result.continued ? "succeeded" : "needs_attention",
-        statusLabel: result.continued ? "已完成" : "需要处理",
+        phase: 'succeeded',
+        statusLabel: '已记录决定',
       });
     } catch (error) {
       response.status(400).json({ error: errorMessage(error) });
@@ -2263,9 +2263,9 @@ export async function startLocalBridgeServer(
     // providers, mutate Task state, or create Runs/Jobs from this route.
     response.status(410).json({
       error: "AGENT_RUN_RETIRED",
-      message: "Kernel-managed Agent Run retry is disabled. Start a new explicit Run/Process or use the Work-free local conversation / launcher capability with the canonical Issue, Requirement, Plan and repository context.",
+      message: "Kernel-managed Agent Run retry is retired. Continue from the current Requirement/Plan and explicit repository/checkout through Process Runtime.",
       migration: {
-        path: ["Issue/Requirement/Plan", "Run/Process", "Work-free launcher or local conversation"],
+        path: ["Requirement/Plan", "repository/checkout", "Process Runtime"],
       },
     });
   });

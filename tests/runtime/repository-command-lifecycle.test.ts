@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
+import { seedHistoricalWorkHandle } from '../helpers/historical-work-handle';
 import { spawn, spawnSync, type ChildProcess } from 'child_process';
 import { closeSync, existsSync, mkdtempSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
@@ -23,6 +24,7 @@ import { commitSelectedPaths, restoreSelectedPaths, selectedPathDiff } from '../
 import { acquireControllerLock, releaseControllerLock } from '../../src/cli/repositories/locks';
 import { persistControllerAccessMode } from '../../adapters/mcp/access-mode';
 import { executionIdentityForRepository } from '../../src/runtime/control-plane/execution/execution-identity';
+import { readWorkHandle, WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { classifyRepositoryCommandRoute, executeRepositoryCommandViaProcessRuntime, waitRepositoryCommandProcess } from '../../src/runtime/execution/process-runtime/command-facade';
 import { listProcessRecords } from '../../src/runtime/execution/process-runtime/store';
@@ -183,6 +185,21 @@ describe('structured registered worktree cleanup (#41)', () => {
     expect(existsSync(fx.linked)).toBe(false);
   });
 
+  test('retains historical WorkHandle checkout identity even when no OwnedResource metadata exists', () => {
+    const fx = fixture();
+    const previous = seedWorkHandle(fx.controllerHome, fx.repository, 'work-old-checkout-identity');
+    seedHistoricalWorkHandle(fx.controllerHome, {
+      ...previous,
+      checkoutId: fx.target.checkoutId,
+      worktreePath: fx.linked,
+      managedWorktree: true,
+      branch: 'legacy-work-source',
+    });
+    expect(() => fx.cleanup()).toThrow('GIT_WORKTREE_LEGACY_WORK_HANDLE_PROTECTED');
+    expect(existsSync(fx.linked)).toBe(true);
+    expect(fx.current().checkouts.find((item) => item.checkoutId === fx.target.checkoutId)?.lifecycle).toBe('active');
+  });
+
   test('does not delete an explicitly Forge-owned linked worktree, even if its HEAD is merged and tree is clean', () => {
     const fx = fixture();
     recordOwnedResource(fx.controllerHome, {
@@ -207,6 +224,50 @@ test('macOS temporary repository and Controller Home aliases are accepted consis
   const registered = seedRepo(controllerHome, repoRoot);
   expect(registered.canonicalRoot).toBe(realpathSync(repoRoot));
 });
+
+function seedWorkHandle(controllerHome: string, repository: ReturnType<typeof seedRepo>, workId: string): WorkHandleState {
+  const now = new Date().toISOString();
+  const head = gitOutput(repository.canonicalRoot, ['rev-parse', 'HEAD']);
+  seedHistoricalWorkContract({ controllerHome, repoId: repository.repoId }, {
+    workId,
+    repoId: repository.repoId,
+    checkoutId: repository.activeCheckoutId,
+    workKind: 'repository_change',
+    objective: `Execute repository command lifecycle fixture for ${workId}.`,
+    acceptanceCriteria: [],
+    allowedPaths: ['**'],
+    forbiddenPaths: [],
+    checks: [],
+    constraints: { workspaceMode: 'current' },
+    requestedBy: 'chatgpt',
+    dispatchState: 'running',
+  });
+  return seedHistoricalWorkHandle(controllerHome, {
+    schemaVersion: 1,
+    workId,
+    sessionId: `session-${workId}`,
+    principalId: 'principal-test',
+    repositoryId: repository.repoId,
+    checkoutId: repository.activeCheckoutId,
+    worktreePath: repository.canonicalRoot,
+    branch: 'main',
+    managedWorktree: false,
+    baseCommit: head,
+    deliveryBaseCommit: head,
+    expectedHead: head,
+    permissionSnapshotVersion: 1,
+    state: 'editing',
+    createdAt: now,
+    updatedAt: now,
+    finalization: {
+      validation: 'pending',
+      commit: 'pending',
+      merge: 'pending',
+      branchCleanup: 'pending',
+      worktreeCleanup: 'pending',
+    },
+  });
+}
 
 function listLocalJobIds(repoRoot: string): string[] {
   const jobsDir = join(repoRoot, '.ai/harness/local-jobs');
@@ -517,6 +578,30 @@ describe('repository command execution lifecycle', () => {
     expect(result.after?.mutationEvidence).toBe('observed');
     expect(result.repositoryChanged).toBe(true);
     expect(result.changedPaths).toContain('marker.txt');
+  });
+
+  test('ordinary readonly command stays on the direct path without semantic attribution', async () => {
+    const controllerHome = tempRoot('forge-cmd-work-read-home-');
+    const repoRoot = tempRoot('forge-cmd-work-read-repo-');
+    const repository = seedRepo(controllerHome, repoRoot);
+    persistControllerAccessMode(controllerHome, 'full_access');
+    const processCount = listProcessRecords(controllerHome, repository.repoId).length;
+    const result = await executeRepositoryCommandViaProcessRuntime({
+      controllerHome,
+      repository,
+      command: ['git', 'status', '--short'],
+      timeoutMs: 10_000,
+      executionIdentity: executionIdentityForRepository(repository),
+    });
+    expect(result).toMatchObject({
+      route: 'process_direct',
+      reason: 'readonly_fast_path',
+      ok: true,
+      executionMetrics: { lane: 'ephemeral_direct', durableWrites: 0, leaseOperations: 0 },
+    });
+    expect(result.process).toBeUndefined();
+    expect(listProcessRecords(controllerHome, repository.repoId)).toHaveLength(processCount);
+    expect(listActiveLeases(controllerHome, repository.repoId)).toHaveLength(0);
   });
 
   test('local shell and inline workspace writes use Process leases rather than unclaimed lightweight subprocesses', async () => {

@@ -16,6 +16,7 @@ import {
   type CliRuntimeTarget,
 } from '../../../cli/runtime-invocation';
 import { readRuntimeGeneration, resolveControllerRuntimeSourceRoot } from '../../control-plane/runtime-generation';
+import { resolveBunExecutable } from '../../shared/process-environment';
 import {
   checkRequiresDurableWorkflow,
   processCheckSemanticScopeKey,
@@ -28,7 +29,6 @@ import { getProcessHandle, spawnWithQueuedAdmission } from './runtime';
 import { getProcessRecord, getProcessRequestBinding } from './store';
 import { allocatePersistedCheckResultReceiptPath } from './check-result';
 import { durationAwareInteractiveWaitMs } from './interactive-admission';
-
 
 const PERSISTED_CHECK_SOURCE_ENTRY = 'src/runtime/execution/process-runtime/check-runner-sidecar.ts';
 const PERSISTED_CHECK_NODE_LOADER = 'src/runtime/shared/node-ts-loader.mjs';
@@ -127,9 +127,8 @@ export function resolvePersistedCheckProcessInvocation(
 
 /**
  * Run a registered check through Process Runtime while keeping check-runner
- * evidence authoritative. Ordinary repositories and live-runtime certification
- * use the active immutable Runtime runner. Process/lease/receipt authority
- * remains in the active Runtime; source identity is fenced by checkout and check fingerprints.
+ * evidence authoritative. Repository source under test is the explicitly
+ * selected checkout; Process/lease/receipt authority remains in the active Runtime.
  */
 export async function runPersistedCheckViaProcessRuntime(
   input: RunCheckFacadeInput,
@@ -171,8 +170,8 @@ export async function runPersistedCheckViaProcessRuntime(
       };
     }
   }
-  // Check-definition authority belongs to the canonical repository. Freeze the exact
-  // registered definition before executing the check.
+  // Freeze the exact registered check definition before execution. Source-under-test
+  // identity comes from the explicitly selected repository/checkout, not Work.
   const check = listControllerChecks(input.repoRoot).find((entry) => entry.id === input.checkId);
   if (!check) {
     return {
@@ -197,7 +196,7 @@ export async function runPersistedCheckViaProcessRuntime(
       check,
       durable: {
         reason: 'multi_phase_or_release_check_requires_durable_workflow',
-        suggestedOperation: 'Run this check through the durable verification workflow.',
+        suggestedOperation: 'Run this check through the explicit release/durable verification workflow.',
       },
       durableSideEffects: emptyEffects,
     };
@@ -252,14 +251,13 @@ export async function runPersistedCheckViaProcessRuntime(
     checkSnapshot,
     liveExecutionStateFingerprint,
   );
-  const runnerStateFingerprint = liveExecutionStateFingerprint;
   // Freeze the same exact EditSession input for both Process reuse and the
   // Check Runner's own success cache; a fresh Process alone is insufficient.
   const editInputFingerprint = input.verificationBinding?.editSessionId
     ? input.requestSemanticFingerprint?.trim() : undefined;
   const executionStateFingerprint = editInputFingerprint
-    ? createHash('sha256').update(JSON.stringify({ runnerStateFingerprint: runnerStateFingerprint ?? '', editInputFingerprint })).digest('hex').slice(0, 24)
-    : runnerStateFingerprint;
+    ? createHash('sha256').update(JSON.stringify({ liveExecutionStateFingerprint: liveExecutionStateFingerprint ?? '', editInputFingerprint })).digest('hex').slice(0, 24)
+    : liveExecutionStateFingerprint;
   const semanticCheck = editInputFingerprint
     ? controllerCheckExecutionIdentity(
         executionRoot,
@@ -303,10 +301,12 @@ export async function runPersistedCheckViaProcessRuntime(
     Buffer.from(JSON.stringify(checkSnapshot)).toString('base64url'),
     '--result-receipt',
     checkResultReceiptPath,
-    ...(executionStateFingerprint ? ['--execution-state-fingerprint', executionStateFingerprint] : []),
+    ...(executionStateFingerprint ? ['--execution-state-fingerprint', executionStateFingerprint] : [])
   ];
   const invocation = resolvePersistedCheckProcessInvocation(cliTarget, checkArgs);
-  const handle = await spawnWithQueuedAdmission({
+  let handle;
+  try {
+    handle = await spawnWithQueuedAdmission({
     controllerHome: input.controllerHome,
     repoId: executionIdentity.repositoryId,
     checkoutId: executionIdentity.checkoutId,
@@ -338,6 +338,9 @@ export async function runPersistedCheckViaProcessRuntime(
     },
     signal: input.signal,
   }, usesLiveDevice);
+  } catch (error) {
+    throw error;
+  }
 
   const mode: CheckExecutionMode = handle.completed ? 'direct' : 'managed';
   return {

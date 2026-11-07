@@ -348,13 +348,14 @@ export function assertEditSessionDurableBinding(
   }
 }
 
-function validateSessionBinding(session: EditSession, binding: EditSessionBinding | undefined): EditSession {
+function assertBoundEditSession(
+  session: EditSession,
+  binding: EditSessionBinding | undefined,
+): EditSession {
   assertEditSessionDurableBinding(session, binding);
-  // Historical extra fields are ignored. Current mutation authority is
-  // repository/checkout/principal plus source fingerprints.
+  // Current mutation authority is repository/checkout/principal plus source fingerprints.
   return session;
 }
-
 function now(): string {
   return new Date().toISOString();
 }
@@ -709,7 +710,7 @@ export function adoptEditSessionSuccessorHead(repoRoot: string, sessionId: strin
   const previousBaseRevision = session.baseRevision?.trim();
   const successorRevision = gitRevision(repoRoot)?.trim();
   if (!previousBaseRevision || !successorRevision) throw new Error('EDIT_SESSION_SUCCESSOR_HEAD_REVISION_REQUIRED');
-  if (previousBaseRevision === successorRevision) return validateSessionBinding(session, input.binding);
+  if (previousBaseRevision === successorRevision) return assertBoundEditSession(session, input.binding);
 
   const committedPaths = committedChangedPathsBetween(repoRoot, previousBaseRevision, successorRevision);
   const tracked = new Set(sessionTrackedPaths(session));
@@ -722,7 +723,7 @@ export function adoptEditSessionSuccessorHead(repoRoot: string, sessionId: strin
     throw new Error(`EDIT_SESSION_SUCCESSOR_HEAD_CONTENT_DRIFT: ${mismatches.join(',')}`);
   }
 
-  session = validateSessionBinding(session, input.binding);
+  session = assertBoundEditSession(session, input.binding);
   const revision = session.currentRevision + 1;
   const revisionPatch = '';
   const absoluteRevisionPatch = revisionPatchPath(repoRoot, session.sessionId, revision);
@@ -1336,8 +1337,8 @@ function editSessionDirectoryBytes(path: string): { bytes: number; complete: boo
 
 /**
  * Physically reclaim terminal EditSession artifacts after their own terminal
- * state and retention policy allow it.
- * The repository-relative path may be the runtime-storage compatibility link.
+ * state and retention policy allow it. The repository-relative path may be the
+ * runtime-storage compatibility link.
  */
 export function cleanupTerminalEditSessionRecords(repoRoot: string, input: {
   nowMs?: number;
@@ -1476,7 +1477,7 @@ export function applyEditOperations(repoRoot: string, policy: McpPolicy, session
   }
   const uniquePaths = new Set(operations.map((operation) => operation.path));
   if (uniquePaths.size !== operations.length) throw new Error('each path may appear only once per patch batch');
-  session = validateSessionBinding(session, options.binding);
+  session = assertBoundEditSession(session, options.binding);
   if (session.baseRevision && gitRevision(repoRoot) !== session.baseRevision) throw new Error('EDIT_SESSION_BASE_REVISION_CHANGED');
   if (session.workspaceFingerprint && workspaceFingerprint(repoRoot) !== session.workspaceFingerprint) throw new Error('EDIT_SESSION_WORKSPACE_FINGERPRINT_CHANGED');
   try {
@@ -1962,7 +1963,7 @@ export function finalizeEditSession(repoRoot: string, sessionId: string, input: 
   binding?: EditSessionBinding;
 } = {}): EditSession {
   let session = getEditSession(repoRoot, sessionId);
-  session = validateSessionBinding(session, input.binding);
+  session = assertBoundEditSession(session, input.binding);
   const baseRevisionChanged = Boolean(session.baseRevision && gitRevision(repoRoot) !== session.baseRevision);
   const workspaceFingerprintChanged = Boolean(session.workspaceFingerprint && workspaceFingerprint(repoRoot) !== session.workspaceFingerprint);
   if (session.assurance?.approvalRequired && input.approvalConfirmed !== true) throw new Error('EDIT_SESSION_APPROVAL_REQUIRED');

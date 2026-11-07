@@ -612,7 +612,7 @@ export function repositoryGitFinishWorkflow(controllerHome: string, repository: 
   if (preserveDirtyTargetInPlace) {
     const requested = new Set(requestedPreservedDirtyPaths);
     if (requested.size !== currentDirtyPaths.length || currentDirtyPaths.some((path) => !requested.has(path))) {
-      return { repoId: repository.repoId, checkoutId: repository.activeCheckoutId, featureBranch, targetBranch, before, steps, after: before, completed: false, error: { code: 'GIT_DIRTY_TARGET_OWNERSHIP_MISMATCH', message: 'The exact current dirty target paths no longer match the Work-owned preservation set; retry ownership inspection before integration.' } };
+      return { repoId: repository.repoId, checkoutId: repository.activeCheckoutId, featureBranch, targetBranch, before, steps, after: before, completed: false, error: { code: 'GIT_DIRTY_TARGET_OWNERSHIP_MISMATCH', message: 'The exact current dirty target paths no longer match the explicitly preserved set; retry source inspection before integration.' } };
     }
     const candidateDiff = runGit(repository, ['diff', '--name-only', `${targetBranch}..${featureBranch}`], 128 * 1024);
     if (!candidateDiff.ok) {
@@ -631,7 +631,7 @@ export function repositoryGitFinishWorkflow(controllerHome: string, repository: 
         return true;
       });
       if (!equivalent) {
-        return { repoId: repository.repoId, checkoutId: repository.activeCheckoutId, featureBranch, targetBranch, before, steps, after: before, completed: false, error: { code: 'GIT_DIRTY_TARGET_PATH_CONFLICT', message: `Work-owned dirty target path(s) overlap the integration candidate: ${overlapping.join(', ')}` } };
+        return { repoId: repository.repoId, checkoutId: repository.activeCheckoutId, featureBranch, targetBranch, before, steps, after: before, completed: false, error: { code: 'GIT_DIRTY_TARGET_PATH_CONFLICT', message: `Preserved dirty target path(s) overlap the integration candidate: ${overlapping.join(', ')}` } };
       }
       equivalentOverlappingDirtyPaths = overlapping;
     }

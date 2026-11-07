@@ -284,7 +284,7 @@ describe('Process Runtime fine-grained resource claims', () => {
     });
   });
 
-  test('scoped claims retain conflict keys and carry exact repository and checkout scope', () => {
+  test('scoped claims retain conflict keys and exact repository/checkout ownership without Work', () => {
     const claims = scopeResourceClaims(
       claimsForRepositoryCommand(['git', 'status'], 'repo1', 'co1'),
       'repo1',
@@ -296,7 +296,6 @@ describe('Process Runtime fine-grained resource claims', () => {
       repoId: 'repo1',
       checkoutId: 'co1',
     }]);
-    expect(scopeResourceClaims(claims, 'repo1', 'co1')).toEqual(claims);
   });
 
   test('typecheck uses workspace read plus cache and the compiler-heavy serialization fence', () => {

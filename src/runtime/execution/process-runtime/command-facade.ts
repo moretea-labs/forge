@@ -314,7 +314,7 @@ export async function executeRepositoryCommandViaProcessRuntime(
       durableSideEffects: emptyEffects,
       suggestedOperation: decision.reason === 'standalone_recovery_lifecycle_required'
         ? 'Use the standalone Forge Recovery connector for canonical Runtime/connector lifecycle operations.'
-        : 'execute_command via Durable Work / Local Job',
+        : 'execute_command via the explicit durable/release workflow',
       externalEffect: decision.route === 'durable'
         ? {
             outcome: 'not_started',
@@ -407,7 +407,7 @@ export async function executeRepositoryCommandViaProcessRuntime(
         interactiveWaitMs,
         timeoutMs,
         maxOutputBytes: input.maxOutputBytes,
-            commandId: input.commandId ?? input.requestId,
+        commandId: input.commandId ?? input.requestId,
         ...(input.principalId ? { principalId: input.principalId } : {}),
         deferStart: deferLongPreparation,
         reuseActiveEquivalent: deferLongPreparation,

@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSy
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawn, spawnSync } from 'child_process';
-import { executionIdentityForRepository, executionIdentityFromCoordinates } from '../../src/runtime/control-plane/execution/execution-identity';
+import { executionIdentityForRepository } from '../../src/runtime/control-plane/execution/execution-identity';
 import {
   __resetLiveMonitorsForTests,
   cancelProcess,
@@ -237,7 +237,6 @@ describe('Unified Process Runtime', () => {
   test('terminal Process Runtime registers exact literal xcodebuild result ownership under repo-harness', async () => {
     const fx = fixture();
     const runtime = bindCanonicalRuntime(fx.controllerHome);
-    const workId = 'WORK-XCODE-RESULT-OWNER';
     const fakeBin = join(fx.root, 'bin');
     const fakeXcodebuild = join(fakeBin, 'xcodebuild');
     const resultBundle = join(fx.repoRoot, '.repo-harness', 'process-runtime', 'managed.xcresult');
@@ -948,11 +947,12 @@ describe('Unified Process Runtime', () => {
       controllerHome,
       repoId: target.workspaceId,
       checkoutId: target.checkoutId,
-      executionIdentity: executionIdentityFromCoordinates({
+      executionIdentity: Object.freeze({
+        schemaVersion: 1 as const,
         repositoryId: target.workspaceId,
         checkoutId: target.checkoutId,
         canonicalRoot: target.canonicalRoot,
-        authority: 'ephemeral_workspace',
+        authority: 'ephemeral_workspace' as const,
       }),
       command: {
         kind: 'argv',
@@ -1249,21 +1249,21 @@ describe('run_check Process Runtime facade', () => {
   test('semantic scope is physical Check scope, not consumer or transport identity', () => {
     const checkoutScope = persistedCheckSemanticScopeKey({ checkoutId: 'checkout-a' }, 'checkout');
     expect(checkoutScope).toBe('checkout:checkout-a');
-    expect(persistedCheckSemanticScopeKey({ checkoutId: 'checkout-a', verificationBinding: { executionSessionId: 'session-a' } }, 'checkout')).toBe(checkoutScope); expect(persistedCheckSemanticScopeKey({ checkoutId: 'checkout-a', verificationBinding: { editSessionId: 'edit-b', editRevision: 2 } }, 'checkout')).toBe(checkoutScope);
-    expect(persistedCheckSemanticScopeKey({ checkoutId: 'checkout-b' }, 'checkout')).not.toBe(checkoutScope); expect(persistedCheckSemanticScopeKey({ checkoutId: 'checkout-a' }, 'repository')).toBe('repository');
+    expect(persistedCheckSemanticScopeKey({ checkoutId: 'checkout-a', verificationBinding: { executionSessionId: 'session-a' } }, 'checkout')).toBe(checkoutScope);
+    expect(persistedCheckSemanticScopeKey({ checkoutId: 'checkout-a', verificationBinding: { editSessionId: 'edit-b', editRevision: 2 } }, 'checkout')).toBe(checkoutScope);
+    expect(persistedCheckSemanticScopeKey({ checkoutId: 'checkout-b' }, 'checkout')).not.toBe(checkoutScope);
+    expect(persistedCheckSemanticScopeKey({ checkoutId: 'checkout-a' }, 'repository')).toBe('repository');
   });
-
-  test('reuses identical Check Process evidence across Edit Session and Work consumers', async () => {
+  test('reuses identical Check Process evidence across Edit Session consumers', async () => {
     const fx = fixture();
     const common = { controllerHome: fx.controllerHome, repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId, repoRoot: fx.repoRoot, executionIdentity: executionIdentityForRepository(fx.repository), checkId: 'quick-ok', interactiveWaitMs: 5_000 };
-    const edit = await runPersistedCheckViaProcessRuntime({ ...common, requestId: 'edit-check', commandId: 'edit-check', verificationBinding: { editSessionId: 'edit-a', editRevision: 1 } });
-    const work = await runPersistedCheckViaProcessRuntime({ ...common, requestId: 'work-check', commandId: 'work-check', verificationBinding: { executionSessionId: 'session-a' } });
-    const repeat = await runPersistedCheckViaProcessRuntime({ ...common, requestId: 'work-check-repeat', commandId: 'work-check-repeat', verificationBinding: { executionSessionId: 'session-b' } });
-    expect(edit.process?.completed).toBe(true); expect(work.process?.completed).toBe(true);
-    expect(work.process?.processId).toBe(edit.process?.processId); expect(work.process?.semanticDeduplicated).toBe(true);
-    expect(repeat.process?.processId).toBe(work.process?.processId); expect(repeat.process?.semanticDeduplicated).toBe(true);
+    const first = await runPersistedCheckViaProcessRuntime({ ...common, requestId: 'edit-check-a', commandId: 'edit-check-a', verificationBinding: { editSessionId: 'edit-a', editRevision: 1 } });
+    const second = await runPersistedCheckViaProcessRuntime({ ...common, requestId: 'edit-check-b', commandId: 'edit-check-b', verificationBinding: { editSessionId: 'edit-b', editRevision: 1 } });
+    expect(first.process?.completed).toBe(true);
+    expect(second.process?.completed).toBe(true);
+    expect(second.process?.processId).toBe(first.process?.processId);
+    expect(second.process?.semanticDeduplicated).toBe(true);
   });
-
   test('structured check failure remains acceptance failure evidence', async () => {
     const fx = fixture();
     const result = await runPersistedCheckViaProcessRuntime({
@@ -2601,6 +2601,81 @@ describe('Process Runtime real lease contention', () => {
     expect((await waitForProcess(fx.controllerHome, fx.repository.repoId, holder.processId, { timeoutMs: 10_000 })).ok).toBe(true);
   }, 55_000);
 
+  test('build-cache checks serialize within the bounded verification budget and still expose true admission timeout', async () => {
+    const fx = fixture();
+    const buildCacheClaim = { resourceKey: `build-cache:${fx.repository.repoId}`, mode: 'write' as const };
+    const holder = await spawnManagedProcess({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
+      origin: { surface: 'check', checkId: 'build-cache-holder' },
+      command: {
+        kind: 'argv',
+        executable: 'node',
+        args: ['-e', 'setTimeout(() => process.exit(0), 700)'],
+        cwd: fx.repoRoot,
+      },
+      resourceClaims: [buildCacheClaim],
+      interactiveWaitMs: 0,
+      timeoutMs: 10_000,
+      returnHandleImmediately: true,
+    });
+    expect(holder.completed).toBe(false);
+    expect(listActiveLeases(fx.controllerHome, fx.repository.repoId)).toContainEqual(expect.objectContaining({
+      ownerJobId: `process:${holder.processId}`,
+      resourceKey: buildCacheClaim.resourceKey,
+    }));
+
+    const boundedOut = await spawnManagedProcess({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
+      origin: { surface: 'check', checkId: 'build-cache-short-budget' },
+      command: {
+        kind: 'argv',
+        executable: 'node',
+        args: ['-e', 'process.exit(0)'],
+        cwd: fx.repoRoot,
+      },
+      resourceClaims: [buildCacheClaim],
+      leaseWaitMs: 100,
+      interactiveWaitMs: 1_000,
+      timeoutMs: 10_000,
+    });
+    expect(boundedOut.completed).toBe(true);
+    expect(boundedOut.ok).not.toBe(true);
+    expect(String(boundedOut.stderr ?? '')).toContain('PROCESS_LEASE_CONFLICT');
+    const boundedRecord = getProcessRecord(fx.controllerHome, fx.repository.repoId, boundedOut.processId);
+    expect(boundedRecord).toBeDefined();
+    expect(classifyPersistedCheckTerminalEvidence(boundedRecord!, 'package:check:task')).toMatchObject({
+      state: 'process_runtime_failed_before_result',
+      infrastructureReason: expect.stringContaining('PROCESS_LEASE_CONFLICT'),
+    });
+
+    const serialized = await spawnManagedProcess({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
+      origin: { surface: 'check', checkId: 'build-cache-waiter' },
+      command: {
+        kind: 'argv',
+        executable: 'node',
+        args: ['-e', 'process.exit(0)'],
+        cwd: fx.repoRoot,
+      },
+      resourceClaims: [buildCacheClaim],
+      leaseWaitMs: 2_000,
+      interactiveWaitMs: 2_000,
+      timeoutMs: 10_000,
+    });
+    expect(serialized).toMatchObject({ completed: true, ok: true, status: 'succeeded' });
+    expect(await waitForProcess(fx.controllerHome, fx.repository.repoId, holder.processId, { timeoutMs: 5_000 }))
+      .toMatchObject({ completed: true, ok: true, status: 'succeeded' });
+  });
+
   test('missing and terminal Process lease owners are unknown and never joinable', async () => {
     const fx = fixture();
     bindCanonicalRuntime(fx.controllerHome);
@@ -2688,8 +2763,7 @@ describe('Process Runtime real lease contention', () => {
     });
     const active = listActiveLeases(fx.controllerHome, fx.repository.repoId);
     expect(active.some((lease) => lease.ownerJobId === `process:${first.processId}`
-      && lease.checkoutId === fx.repository.activeCheckoutId
-)).toBe(true);
+      && lease.checkoutId === fx.repository.activeCheckoutId)).toBe(true);
 
     // Concurrent write must not spawn (lease conflict before runner).
     const blocked = await spawnManagedProcess({
@@ -2712,13 +2786,12 @@ describe('Process Runtime real lease contention', () => {
     expect(String(blocked.stderr ?? '') + String(blocked.stdout ?? '')).toMatch(/PROCESS_LEASE_CONFLICT|resource busy/i);
     expect(blocked.concurrencyWait).toMatchObject({
       source: 'resource_lease',
-      blockerCode: 'resource_claim_conflict',
+      blockingWorkId: 'work-lease-a',
       blockingProcessId: first.processId,
-      blockingOwnerRelation: 'process_owner',
-      disposition: 'wait',
+      blockingOwnerRelation: 'other_work_or_checkout',
     });
 
-    const blockedAgain = await spawnManagedProcess({
+    const sameWorkDenied = await spawnManagedProcess({
       controllerHome: fx.controllerHome, repoId: fx.repository.repoId,
       checkoutId: fx.repository.activeCheckoutId,
       executionIdentity: executionIdentityForRepository(fx.repository),
@@ -2726,14 +2799,13 @@ describe('Process Runtime real lease contention', () => {
       resourceClaims: [{ resourceKey: `workspace:${fx.repository.activeCheckoutId}`, mode: 'write' }],
       timeoutMs: 10_000,
     });
-    expect(blockedAgain).toMatchObject({ completed: true, ok: false, concurrencyWait: {
-      source: 'resource_lease',
-      blockerCode: 'resource_claim_conflict',
-      blockingProcessId: first.processId,
-      blockingOwnerRelation: 'process_owner',
-      disposition: 'wait',
+    expect(sameWorkDenied).toMatchObject({ completed: true, ok: false, concurrencyWait: {
+      source: 'resource_lease', blockingWorkId: 'work-lease-a',
+      blockingProcessId: first.processId, blockingOwnerRelation: 'same_work_same_checkout',
     } });
-    expect(blockedAgain.stdout).not.toContain('must-not-run');
+    expect(sameWorkDenied.stdout).not.toContain('must-not-run');
+    const { getWorkContract } = await import('../../src/runtime/control-plane/facade/work-contract-store');
+    expect(getWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, 'work-lease-a')?.executionConcurrency).toBeUndefined();
 
     // Parallel reads against a different resource key (or after release) — hold write finished.
     await waitForProcess(fx.controllerHome, fx.repository.repoId, first.processId, { timeoutMs: 10_000 });
@@ -2947,7 +3019,7 @@ describe('Process Runtime real lease contention', () => {
         mode: 'write',
         repoId: fx.repository.repoId,
         checkoutId: fx.repository.activeCheckoutId,
-        }],
+      }],
       { ttlMs: 30_000, visibility: 'ephemeral', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false },
     );
     expect(acquired.acquired).toBe(true);
@@ -3764,7 +3836,7 @@ describe('process MCP live surface', () => {
     expect(String((logs?.structuredContent as { stdout?: string })?.stdout ?? '')).toContain('mcp-ok');
   });
 
-  test('process_get and process_wait expose the exact Process lease join target', async () => {
+  test('process_get and process_wait expose the exact same-Work Process lease join target', async () => {
     const fx = fixture();
     const marker = join(fx.root, 'blocked-mutation.txt');
     const resourceClaims = [{ resourceKey: `workspace:${fx.repository.activeCheckoutId}`, mode: 'write' as const }];
@@ -3804,7 +3876,7 @@ describe('process MCP live surface', () => {
     expect(blocked).toMatchObject({ completed: true, ok: false, concurrencyWait: {
       source: 'resource_lease',
       blockingProcessId: first.processId,
-      blockingOwnerRelation: 'process_owner',
+      blockingOwnerRelation: 'same_work_same_checkout',
     } });
     expect(existsSync(marker)).toBe(false);
 
@@ -3820,7 +3892,7 @@ describe('process MCP live surface', () => {
     expect((got?.structuredContent as { process?: { concurrencyWait?: unknown } })?.process?.concurrencyWait).toMatchObject({
       source: 'resource_lease',
       blockingProcessId: first.processId,
-      blockingOwnerRelation: 'process_owner',
+      blockingOwnerRelation: 'same_work_same_checkout',
     });
 
     const waited = await callProcessTool(ctx, 'process_wait', {
@@ -3832,7 +3904,7 @@ describe('process MCP live surface', () => {
     expect((waited?.structuredContent as { process?: { concurrencyWait?: unknown } })?.process?.concurrencyWait).toMatchObject({
       source: 'resource_lease',
       blockingProcessId: first.processId,
-      blockingOwnerRelation: 'process_owner',
+      blockingOwnerRelation: 'same_work_same_checkout',
     });
 
     await waitForProcess(fx.controllerHome, fx.repository.repoId, first.processId, { timeoutMs: 10_000 });

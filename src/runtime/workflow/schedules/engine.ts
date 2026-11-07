@@ -53,7 +53,12 @@ export function retiredScheduleReason(schedule: RepositorySchedule): string | un
   if (RETIRED_AUTONOMOUS_CONTINUATION_OPERATIONS.has(schedule.action.operation)) {
     return 'RETIRED_AUTONOMOUS_CONTINUATION_SCHEDULE';
   }
-  if (typeof schedule.action.arguments?.work_id === 'string' && schedule.action.arguments.work_id.trim()) {
+  // A historical work_id must never become a current Schedule veto. Current
+  // deterministic operations are owned by their typed operation contract and
+  // ignore legacy Work provenance; only legacy/non-current actions remain retired.
+  if (!isDeterministicSchedule(schedule)
+    && typeof schedule.action.arguments?.work_id === 'string'
+    && schedule.action.arguments.work_id.trim()) {
     return 'RETIRED_WORK_BOUND_SCHEDULE';
   }
   if (schedule.action.operation === 'chatgpt_browser_prompt') return 'RETIRED_WORK_FREE_PROMPT_SCHEDULE';

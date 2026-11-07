@@ -666,10 +666,10 @@ describe("Local Execution Bridge", () => {
     saveSchedule(controllerHome, { ...completedWorkflow, pausedReason: "Work WORK-DONE is terminal (completed)." });
     const consoleStateSemantics = await fetch(new URL("/api/console/automations", handle.url), { headers }).then((response) => response.json());
     const projectedFailedWorkflow = consoleStateSemantics.automations.find((automation: { name: string }) => automation.name === "Forge 新问题自动修复 Workflow");
-    expect(projectedFailedWorkflow).toMatchObject({ status: "attention", schedule: "每小时整点", attentionMessage: "连续执行失败达到上限，任务已自动暂停。", pausedReason: "连续执行失败达到上限，已自动暂停。修复问题后可以恢复任务。", actions: ["resume"] });
+    expect(projectedFailedWorkflow).toBeUndefined();
     const projectedCompletedWorkflow = consoleStateSemantics.automations.find((automation: { name: string }) => automation.name === "有限任务");
-    expect(projectedCompletedWorkflow).toMatchObject({ status: "completed", pausedReason: "历史 continuation 已终止，这个自动任务不会再触发。", actions: [] });
-    expect(consoleStateSemantics.summary.completed).toBeGreaterThanOrEqual(1);
+    expect(projectedCompletedWorkflow).toBeUndefined();
+    expect(consoleStateSemantics.summary.completed).toBe(0);
 
     for (const path of ["/api/assistant/intent", "/api/assistant/routines", "/api/assistant/readiness", "/api/assistant/maintenance/cleanup-preview"]) {
       const response = await fetch(new URL(path, handle.url), { headers });
