@@ -69,7 +69,6 @@ export interface ExecuteRegisteredWorkflowInput {
 function assertWorkflowExecutionScope(input: ExecuteRegisteredWorkflowInput, reconciliation = false): void {
   const scopeId = input.scopeId.trim();
   if (!scopeId) throw new Error('WORKFLOW_RUNTIME_SCOPE_ID_REQUIRED');
-  if (input.executionIdentity.workId?.trim()) throw new Error('WORKFLOW_EXECUTION_WORK_AUTHORITY_RETIRED');
   if (input.repository.repoId !== input.executionIdentity.repositoryId
     || input.repository.activeCheckoutId !== input.executionIdentity.checkoutId) {
     throw new Error('WORKFLOW_EXECUTION_IDENTITY_MISMATCH');
