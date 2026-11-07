@@ -1046,6 +1046,12 @@ requireText('packages/kernel/scheduler/infrastructure/schedule-store.ts', "sched
 requireText('packages/kernel/scheduler/infrastructure/schedule-store.ts', 'const schedule: RepositorySchedule = { ...candidate, policy: boundedSchedulePolicy(candidate) };');
 requireText('packages/kernel/scheduler/infrastructure/schedule-store.ts', 'policy: boundedSchedulePolicy(candidate),');
 requireText('src/cli/local-bridge/console-automations.ts', "schedule.action.operation === 'external_controller_wake' || schedule.action.operation === 'controller_progression'");
+requireText('src/cli/local-bridge/console-automations.ts', "RETIRED_WORK_BOUND_SCHEDULE_READ_ONLY");
+forbid(
+  'src/cli/local-bridge/console-automations.ts',
+  /getWorkContract|semanticState|phaseEvidence/,
+  'Local Bridge may display historical Work ids but must not derive current automation state or actions from Work lifecycle state',
+);
 requireText('tests/runtime/rh-work-scheduler-adapter.test.ts', "cronDue('0 8 * * *', Date.parse('2026-10-17T00:00:00.000Z'), 'Asia/Shanghai')");
 requireText('tests/runtime/rh-work-scheduler-adapter.test.ts', "cronDue('0 8 * * *', Date.parse('2026-10-18T00:00:00.000Z'), 'Asia/Shanghai')");
 requireText('src/runtime/workflow/schedules/engine.ts', 'schedule.action.operation === CONTROLLER_PROGRESSION_OPERATION');
