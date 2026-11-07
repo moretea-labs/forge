@@ -2082,8 +2082,16 @@ private struct RuntimePane: View {
                 connectionCard
                 if let diagnostics = model.runtimeDiagnostics {
                     VStack(alignment:.leading,spacing:12) {
-                        HStack {
-                            Text("诊断").font(.system(size:12,weight:.semibold))
+                        HStack(alignment:.top) {
+                            VStack(alignment:.leading,spacing:3) {
+                                Text("上次诊断").font(.system(size:12,weight:.semibold))
+                                if let checkedAt = diagnostics.checkedAt, !checkedAt.isEmpty {
+                                    Text(checkedAt)
+                                        .font(.system(size:9.5,design:.monospaced))
+                                        .foregroundStyle(.tertiary)
+                                        .textSelection(.enabled)
+                                }
+                            }
                             Spacer()
                             Text("\(diagnostics.passed) 通过 · \(diagnostics.failed) 失败")
                                 .font(.system(size:10.5,weight:.medium))

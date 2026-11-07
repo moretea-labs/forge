@@ -258,6 +258,7 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(connection?.tunnel.ready,false)
         XCTAssertEqual(connection?.repairAvailable,true)
         XCTAssertEqual(connection?.repairLabel,"Refresh Forge Connector")
+        XCTAssertNil(NativeWorkspace.controllerConnectionDetail(["unexpected":true]))
     }
 
     func testKnowledgeProjectionDecodesCanonicalReadOnlyAudit() {

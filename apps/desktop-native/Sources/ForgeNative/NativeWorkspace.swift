@@ -798,15 +798,17 @@ final class NativeWorkspace: ObservableObject {
         defer { runtimeLoading = false; connectionLoading = false }
         var failures: [String] = []
         do {
-            runtimeStatus = Self.runtimeStatusDetail(try await ForgeBridge.request("read_recovery_status"))
+            let value = try await ForgeBridge.request("read_recovery_status")
+            runtimeStatus = Self.runtimeStatusDetail(value)
         } catch {
             runtimeStatus = nil
             failures.append("Runtime：\(error.localizedDescription)")
         }
         do {
             let value = try await ForgeBridge.request("read_connection_status")
-            connectionStatus = Self.controllerConnectionDetail(value)
-            connection = connectionStatus?.ready == true ? "已连接" : "未就绪"
+            guard let parsed = Self.controllerConnectionDetail(value) else { throw ForgeBridgeError.invalidResponse }
+            connectionStatus = parsed
+            connection = parsed.ready ? "已连接" : "未就绪"
         } catch {
             connectionStatus = nil
             connection = "未就绪"
@@ -820,7 +822,8 @@ final class NativeWorkspace: ObservableObject {
         runtimeLoading = true
         defer { runtimeLoading = false }
         do {
-            runtimeDiagnostics = Self.runtimeDiagnosticsDetail(try await ForgeBridge.request("verify_recovery_runtime"))
+            let value = try await ForgeBridge.request("verify_recovery_runtime")
+            runtimeDiagnostics = Self.runtimeDiagnosticsDetail(value)
             error = nil
         } catch { self.error = error.localizedDescription }
     }
