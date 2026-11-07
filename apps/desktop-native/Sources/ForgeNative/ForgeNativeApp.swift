@@ -307,6 +307,7 @@ private struct ForgeWorkspaceView: View {
 
 private struct AgentPane: View {
     @ObservedObject var model: NativeWorkspace
+    @State private var showChanges = false
 
     var body: some View {
         VStack(spacing:0) {
@@ -353,10 +354,17 @@ private struct AgentPane: View {
                                         .font(.system(size:17))
                                         .padding(.top,1)
                                         .accessibilityHidden(true)
-                                    Text(message.text)
-                                        .font(.system(size:13))
-                                        .lineSpacing(6)
-                                        .textSelection(.enabled)
+                                    VStack(alignment:.leading,spacing:7) {
+                                        Text(message.text)
+                                            .font(.system(size:13))
+                                            .lineSpacing(6)
+                                            .textSelection(.enabled)
+                                        if let count = message.toolActivityCount, count > 0 {
+                                            Label("\(count) 次工具调用",systemImage:"hammer")
+                                                .font(.system(size:10.5,weight:.medium))
+                                                .foregroundStyle(ForgePalette.secondary)
+                                        }
+                                    }
                                     Spacer(minLength:56)
                                 }
                                 .frame(maxWidth:.infinity,alignment:.leading)
@@ -491,6 +499,28 @@ private struct AgentPane: View {
                     .disabled(model.selectedReasoningOptions.isEmpty || model.busy)
                     .help("当前模型的推理强度")
 
+                    Button {
+                        withAnimation(.easeOut(duration:0.18)) { showChanges.toggle() }
+                        if showChanges {
+                            Task { await model.refreshAgentChanges() }
+                        }
+                    } label: {
+                        HStack(spacing:5) {
+                            Image(systemName:"doc.text.magnifyingglass")
+                                .font(.system(size:9.5,weight:.medium))
+                            Text(model.changedFileCount > 0 ? "Changes \(model.changedFileCount)" : "Changes")
+                        }
+                        .font(.system(size:10.5,weight:.medium))
+                        .foregroundStyle(showChanges ? ForgePalette.ink : ForgePalette.secondary)
+                        .padding(.horizontal,8)
+                        .frame(height:25)
+                        .background(showChanges ? ForgePalette.selectionStrong : ForgePalette.softFill,
+                                    in:RoundedRectangle(cornerRadius:8,style:.continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(model.checkoutId == nil)
+                    .help("查看当前 checkout 的未提交改动")
+
                     Circle()
                         .fill(model.provider.contains("已连接") ? Color.green : Color.orange)
                         .frame(width:6,height:6)
@@ -531,6 +561,16 @@ private struct AgentPane: View {
             .frame(maxWidth:.infinity)
         }
         .background(ForgePalette.canvas)
+        .overlay(alignment:.trailing) {
+            if showChanges {
+                AgentChangesPane(model:model,isPresented:$showChanges)
+                    .frame(width:390)
+                    .padding(.vertical,10)
+                    .padding(.trailing,10)
+                    .transition(.move(edge:.trailing).combined(with:.opacity))
+            }
+        }
+        .animation(.easeOut(duration:0.18),value:showChanges)
     }
 
     private func reasoningLabel(_ effort: String) -> String {
@@ -544,6 +584,148 @@ private struct AgentPane: View {
         case "": return "Reasoning"
         default: return effort
         }
+    }
+}
+
+private struct AgentChangesPane: View {
+    @ObservedObject var model: NativeWorkspace
+    @Binding var isPresented: Bool
+
+    var body: some View {
+        VStack(alignment:.leading,spacing:0) {
+            HStack(spacing:9) {
+                Image(systemName:"doc.text.magnifyingglass")
+                    .symbolRenderingMode(.hierarchical)
+                    .foregroundStyle(ForgePalette.accent)
+                Text("Changes")
+                    .font(.system(size:13,weight:.semibold))
+                if model.changedFileCount > 0 {
+                    Text("\(model.changedFileCount)")
+                        .font(.system(size:10,weight:.semibold))
+                        .padding(.horizontal,7).padding(.vertical,3)
+                        .background(ForgePalette.selectionStrong,in:Capsule())
+                }
+                Spacer()
+                Button {
+                    Task { await model.refreshAgentChanges() }
+                } label: {
+                    Image(systemName:"arrow.clockwise")
+                        .font(.system(size:11,weight:.medium))
+                        .frame(width:25,height:25)
+                        .background(ForgePalette.softFill,
+                                    in:RoundedRectangle(cornerRadius:8,style:.continuous))
+                }
+                .buttonStyle(.plain)
+                .disabled(model.changesLoading)
+                .help("刷新改动")
+
+                Button {
+                    withAnimation(.easeOut(duration:0.16)) { isPresented = false }
+                } label: {
+                    Image(systemName:"xmark")
+                        .font(.system(size:10,weight:.semibold))
+                        .frame(width:25,height:25)
+                        .background(ForgePalette.softFill,
+                                    in:RoundedRectangle(cornerRadius:8,style:.continuous))
+                }
+                .buttonStyle(.plain)
+                .help("关闭 Changes")
+            }
+            .padding(14)
+
+            if model.changesLoading {
+                VStack(spacing:9) {
+                    ProgressView().controlSize(.small)
+                    Text("读取当前 checkout…")
+                        .font(.system(size:11))
+                        .foregroundStyle(ForgePalette.secondary)
+                }
+                .frame(maxWidth:.infinity,maxHeight:.infinity)
+            } else if let changes = model.agentChanges {
+                ScrollView {
+                    VStack(alignment:.leading,spacing:14) {
+                        VStack(alignment:.leading,spacing:4) {
+                            Text(changes.branch)
+                                .font(.system(size:11,weight:.semibold))
+                                .lineLimit(1)
+                            Text(String(changes.head.prefix(10)))
+                                .font(.system(size:10,design:.monospaced))
+                                .foregroundStyle(.tertiary)
+                        }
+
+                        if changes.nameOnly.isEmpty {
+                            VStack(spacing:10) {
+                                Image(systemName:"checkmark.circle")
+                                    .font(.system(size:24,weight:.light))
+                                    .foregroundStyle(ForgePalette.secondary)
+                                Text("工作区没有未提交改动")
+                                    .font(.system(size:12,weight:.medium))
+                                    .foregroundStyle(ForgePalette.secondary)
+                            }
+                            .frame(maxWidth:.infinity)
+                            .padding(.vertical,48)
+                        } else {
+                            VStack(alignment:.leading,spacing:6) {
+                                ForEach(changes.nameOnly,id:\.self) { path in
+                                    HStack(spacing:7) {
+                                        Image(systemName:"doc")
+                                            .font(.system(size:10))
+                                            .foregroundStyle(ForgePalette.secondary)
+                                        Text(path)
+                                            .font(.system(size:10.5))
+                                            .lineLimit(1)
+                                            .truncationMode(.middle)
+                                        Spacer(minLength:0)
+                                    }
+                                    .padding(.horizontal,9)
+                                    .frame(height:29)
+                                    .background(ForgePalette.softFill,
+                                                in:RoundedRectangle(cornerRadius:8,style:.continuous))
+                                }
+                            }
+
+                            if !changes.stat.isEmpty {
+                                Text(changes.stat)
+                                    .font(.system(size:10.5,design:.monospaced))
+                                    .foregroundStyle(ForgePalette.secondary)
+                                    .textSelection(.enabled)
+                            }
+
+                            Text(changes.patch)
+                                .font(.system(size:10.5,design:.monospaced))
+                                .lineSpacing(3)
+                                .textSelection(.enabled)
+                                .frame(maxWidth:.infinity,alignment:.leading)
+                                .padding(11)
+                                .background(ForgePalette.softFill,
+                                            in:RoundedRectangle(cornerRadius:10,style:.continuous))
+
+                            if changes.truncated {
+                                Label("Diff 已按 20 KB 上限截断",systemImage:"exclamationmark.triangle")
+                                    .font(.system(size:10.5))
+                                    .foregroundStyle(ForgePalette.secondary)
+                            }
+                        }
+                    }
+                    .padding(.horizontal,14).padding(.bottom,14)
+                }
+            } else {
+                VStack(spacing:10) {
+                    Image(systemName:"doc.text.magnifyingglass")
+                        .font(.system(size:24,weight:.light))
+                        .foregroundStyle(ForgePalette.secondary)
+                    Text("打开 Changes 后读取当前 checkout")
+                        .font(.system(size:11))
+                        .foregroundStyle(ForgePalette.secondary)
+                }
+                .frame(maxWidth:.infinity,maxHeight:.infinity)
+            }
+        }
+        .background(.ultraThinMaterial,
+                    in:RoundedRectangle(cornerRadius:16,style:.continuous))
+        .shadow(color:Color.black.opacity(0.12),radius:22,y:8)
+        .accessibilityElement(children:.contain)
+        .accessibilityLabel("Agent Changes")
     }
 }
 

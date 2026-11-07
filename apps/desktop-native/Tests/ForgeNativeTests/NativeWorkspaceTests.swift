@@ -5,6 +5,7 @@ final class NativeWorkspaceTests: XCTestCase {
     func testBridgeAllowlistExcludesGenericCommandsAndRecoveryMutations() {
         XCTAssertTrue(ForgeBridge.allowed.contains("send_local_conversation"))
         XCTAssertTrue(ForgeBridge.allowed.contains("read_local_provider_models"))
+        XCTAssertTrue(ForgeBridge.allowed.contains("read_agent_git_diff"))
         XCTAssertFalse(ForgeBridge.allowed.contains("execute_command"))
         XCTAssertFalse(ForgeBridge.allowed.contains("perform_recovery_action"))
     }
@@ -27,6 +28,15 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertNil(restored.threads.first?.checkoutId)
         XCTAssertEqual(restored.threads.first?.model, "gpt-6.1-sol")
         XCTAssertEqual(restored.threads.first?.reasoningEffort, "high")
+    }
+
+    func testLegacyMessageDecodesWithoutToolActivity() throws {
+        let data = #"{"id":"m1","role":"assistant","text":"done","createdAt":0}"#.data(using:.utf8)!
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .secondsSince1970
+        let message = try decoder.decode(ChatMessage.self,from:data)
+        XCTAssertEqual(message.text,"done")
+        XCTAssertNil(message.toolActivityCount)
     }
 
     @MainActor

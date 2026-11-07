@@ -14,6 +14,25 @@ fn required(arguments: &Value, field: &str) -> Result<String, String> {
     Ok(value.to_owned())
 }
 
+async fn read_native_agent_git_diff(
+    repo_id: String,
+    checkout_id: String,
+    staged: bool,
+) -> Result<Value, String> {
+    if repo_id.trim().is_empty() || checkout_id.trim().is_empty() {
+        return Err("FORGE_NATIVE_BRIDGE_GIT_CONTEXT_REQUIRED".into());
+    }
+    let result = call_runtime_tool("repository_git_diff", json!({
+        "repo_id": repo_id,
+        "checkout_id": checkout_id,
+        "staged": staged,
+        "max_bytes": 20_000,
+        "request_id": request_id("native-agent-git-diff")
+    })).await?;
+    result.get("diff").cloned()
+        .ok_or_else(|| "FORGE_NATIVE_BRIDGE_GIT_DIFF_INVALID".into())
+}
+
 async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
     match operation {
         "read_projects" => read_projects().await,
@@ -41,6 +60,12 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
         "read_connection_status" => read_connection_status().await,
         "read_local_provider_status" => read_local_provider_status().await,
         "read_local_provider_models" => read_local_provider_models().await,
+        "read_agent_git_diff" =>
+            read_native_agent_git_diff(
+                required(args, "repoId")?,
+                required(args, "checkoutId")?,
+                args.get("staged").and_then(Value::as_bool).unwrap_or(false),
+            ).await,
         "read_local_api_settings" => read_local_api_settings(),
         "send_local_conversation" =>
             send_local_conversation(

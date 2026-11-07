@@ -29,10 +29,24 @@ struct AgentModelOption: Codable, Identifiable {
     var id: String { slug }
 }
 
+struct AgentGitDiff: Codable {
+    let repoId: String
+    let checkoutId: String
+    let branch: String
+    let head: String
+    let staged: Bool
+    let paths: [String]
+    let nameOnly: [String]
+    let stat: String
+    let patch: String
+    let truncated: Bool
+}
+
 struct ChatMessage: Codable, Identifiable {
     var id = UUID().uuidString
     let role: String
     let text: String
+    var toolActivityCount: Int?
     var createdAt = Date()
 }
 struct ChatThread: Codable, Identifiable {
@@ -90,6 +104,8 @@ final class NativeWorkspace: ObservableObject {
     @Published var busy = false
     @Published var provider = "未检测"
     @Published private(set) var agentModels: [AgentModelOption] = []
+    @Published var agentChanges: AgentGitDiff?
+    @Published var changesLoading = false
     @Published var connection = "未检测"
     @Published var error: String?
     @Published var records: [ForgeRecord] = []
@@ -127,6 +143,7 @@ final class NativeWorkspace: ObservableObject {
     var selectedReasoningOptions: [AgentReasoningOption] {
         selectedAgentModel?.supportedReasoningLevels ?? []
     }
+    var changedFileCount: Int { agentChanges?.nameOnly.count ?? 0 }
     var visibleThreads: [ChatThread] {
         let needle = search.trimmingCharacters(in: .whitespacesAndNewlines)
         return threads.filter { t in
@@ -146,6 +163,7 @@ final class NativeWorkspace: ObservableObject {
         selectedThreadId = item.id
         page = .agent
         draft = ""
+        agentChanges = nil
         persist()
     }
     func selectThread(_ id: String) {
@@ -153,6 +171,7 @@ final class NativeWorkspace: ObservableObject {
         selectedThreadId = id
         page = .agent
         draft = ""
+        agentChanges = nil
         if let boundRepoId = item.repoId {
             repoId = boundRepoId
             checkoutId = item.checkoutId
@@ -292,6 +311,25 @@ final class NativeWorkspace: ObservableObject {
         guard let repoId else { return }
         await loadRaw("read_project_knowledge",["repoId":repoId,"query":knowledgeQuery])
     }
+    func refreshAgentChanges() async {
+        guard let repoId, let checkoutId else {
+            agentChanges = nil
+            return
+        }
+        changesLoading = true
+        defer { changesLoading = false }
+        do {
+            let value = try await ForgeBridge.request("read_agent_git_diff",[
+                "repoId":repoId,
+                "checkoutId":checkoutId,
+                "staged":false
+            ])
+            let bytes = try JSONSerialization.data(withJSONObject:value)
+            agentChanges = try JSONDecoder().decode(AgentGitDiff.self, from:bytes)
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
     func send() async {
         let prompt = draft.trimmingCharacters(in:.whitespacesAndNewlines)
         guard !prompt.isEmpty, !busy, let id = selectedThreadId,
@@ -324,12 +362,16 @@ final class NativeWorkspace: ObservableObject {
             let response = try await ForgeBridge.request("send_local_conversation",args)
             guard let current = threads.firstIndex(where:{$0.id == id}) else { return }
             let answer = response["output"] as? String ?? ""
-            threads[current].messages.append(ChatMessage(role:"assistant",text:answer))
+            let toolActivityCount = response["toolActivityCount"] as? Int
+            threads[current].messages.append(ChatMessage(
+                role:"assistant", text:answer, toolActivityCount:toolActivityCount
+            ))
             threads[current].providerSessionId = response["providerSessionId"] as? String ??
                 threads[current].providerSessionId
             threads[current].updatedAt = Date()
             persist()
             error = nil
+            await refreshAgentChanges()
         } catch {
             // Message retained, but no fabricated success or automatic retry.
             self.self.error = error.localizedDescription
