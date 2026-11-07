@@ -30,7 +30,6 @@ export interface WorkContinuationSnapshot {
   }>;
   reconciliations: Array<Pick<WorkReconciliationRecord,
     'reconciliationId' | 'outcome' | 'method' | 'originalExpectedRevision' | 'observedTargetRevision' | 'reachable' | 'reviewer' | 'reviewedAt'>>;
-  continuationPrompt?: string;
   reconciliationRequired: boolean;
   nextSafeAction: string;
 }
@@ -41,19 +40,20 @@ function boundedText(value: string | undefined, maximum: number): string | undef
 }
 
 function nextSafeAction(contract: WorkContract, reconciliationRequired: boolean): string {
-  if (reconciliationRequired) return 'Inspect the recorded reconciliation and decide whether to accept, reject, or supersede it; do not infer completion.';
-  if (contract.evidenceState === 'stale' || contract.evidenceState === 'contradictory') return 'Re-run required validation against the current bound revision before finalization.';
-  if (contract.semanticState === 'completed') return 'Read retained result/evidence references; no further mutation is implied.';
-  if (contract.semanticState === 'cancelled') return 'This Work is cancelled and cannot be reopened; create an explicit successor Work if the objective must continue.';
-  if (contract.dispatchState === 'running' || contract.dispatchState === 'launching' || contract.dispatchState === 'claimed') return 'Inspect the bound Work and its durable process/check evidence; do not resubmit the same request ID.';
-  if (contract.evidenceState === 'failed' || contract.phaseEvidence[contract.phase].state === 'failed') return 'Inspect failure evidence and choose an explicit repair, reconciliation, or stop action.';
-  return 'Execute the next authorized step within this Work scope; inspect existing writer and process conflicts before mutating shared resources.';
+  const currentOwner = 'Resolve the current Requirement/Plan/Issue and selected Git checkout/Process/Check facts before continuing; historical Work is read-only.';
+  if (reconciliationRequired) return `Historical reconciliation requires interpretation only. ${currentOwner}`;
+  if (contract.semanticState === 'completed' || contract.semanticState === 'cancelled') {
+    return `Read retained result/evidence references for provenance only. ${currentOwner}`;
+  }
+  if (contract.evidenceState === 'failed' || contract.evidenceState === 'stale' || contract.evidenceState === 'contradictory') {
+    return `Read the historical failure/validation evidence; do not re-run or finalize through Work. ${currentOwner}`;
+  }
+  return currentOwner;
 }
 
 /**
- * Redacted, bounded state needed by a fresh controller session. This is a
- * projection only: it never changes semantic state or interprets a reconciliation
- * as completion.
+ * Redacted, bounded historical Work projection. It never changes semantic state,
+ * emits a continuation prompt, or authorizes successor/repair/finalize actions.
  */
 export function buildWorkContinuationSnapshot(contract: WorkContract): WorkContinuationSnapshot {
   const reconciliations = (contract.reconciliations ?? []).slice(0, 5).map((record) => ({
@@ -97,7 +97,6 @@ export function buildWorkContinuationSnapshot(contract: WorkContract): WorkConti
       staleReason: boundedText(record.staleReason, 240),
     })),
     reconciliations,
-    continuationPrompt: boundedText(contract.continuationPrompt, 500),
     reconciliationRequired,
     nextSafeAction: nextSafeAction(contract, reconciliationRequired),
   };
