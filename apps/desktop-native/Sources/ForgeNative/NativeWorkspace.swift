@@ -222,6 +222,40 @@ struct ControllerConnectionDetail {
     let repairAvailable: Bool
     let repairLabel: String
 }
+struct KnowledgeScopeDetail: Codable {
+    let kind: String
+    let id: String
+}
+
+struct KnowledgeProvenanceDetail: Codable {
+    let sourceKind: String?
+    let recordedAt: String?
+}
+
+struct KnowledgeMemoryDetail: Codable, Identifiable {
+    let id: String
+    let revision: Int
+    let canonicalText: String
+    let concepts: [String]
+    let facets: [String]
+    let confidence: Double
+    let scope: KnowledgeScopeDetail
+    let provenance: KnowledgeProvenanceDetail?
+}
+
+struct KnowledgeItemDetail: Codable {
+    let memory: KnowledgeMemoryDetail
+}
+
+struct KnowledgeAuditDetail: Codable {
+    let readonly: Bool
+    let advisoryOnly: Bool
+    let scopes: [KnowledgeScopeDetail]
+    let items: [KnowledgeItemDetail]
+    let inspected: Int
+    let truncated: Bool
+    let gaps: [String]
+}
 enum NativePage: String, CaseIterable, Identifiable {
     case agent = "会话", requirement = "Requirement", plan = "Plan",
          knowledge = "知识库", runtime = "Runtime", settings = "设置"
@@ -280,6 +314,8 @@ final class NativeWorkspace: ObservableObject {
     @Published var connectionStatus: ControllerConnectionDetail?
     @Published var connectionLoading = false
     @Published var knowledgeQuery = ""
+    @Published var knowledgeResult: KnowledgeAuditDetail?
+    @Published var knowledgeLoading = false
     @Published var settings = ""
     let store: URL
 
@@ -493,6 +529,10 @@ final class NativeWorkspace: ObservableObject {
     func loadPage() async {
         if page == .runtime {
             await loadRuntimePage()
+            return
+        }
+        if page == .knowledge {
+            await searchKnowledge()
             return
         }
         if page == .settings {
@@ -726,9 +766,30 @@ final class NativeWorkspace: ObservableObject {
         await loadPage()
         await openRecord(id)
     }
+    nonisolated static func knowledgeAuditDetail(_ result: [String:Any]) -> KnowledgeAuditDetail? {
+        guard JSONSerialization.isValidJSONObject(result),
+              let bytes = try? JSONSerialization.data(withJSONObject:result) else { return nil }
+        return try? JSONDecoder().decode(KnowledgeAuditDetail.self,from:bytes)
+    }
+
     func searchKnowledge() async {
-        guard let repoId else { return }
-        await loadRaw("read_project_knowledge",["repoId":repoId,"query":knowledgeQuery])
+        guard let repoId else {
+            knowledgeResult = nil
+            return
+        }
+        knowledgeLoading = true
+        defer { knowledgeLoading = false }
+        do {
+            let value = try await ForgeBridge.request("read_project_knowledge",[
+                "repoId":repoId,"query":knowledgeQuery
+            ])
+            guard let parsed = Self.knowledgeAuditDetail(value) else { throw ForgeBridgeError.invalidResponse }
+            knowledgeResult = parsed
+            error = nil
+        } catch {
+            knowledgeResult = nil
+            self.error = error.localizedDescription
+        }
     }
     func refreshLiveActivity(conversationId: String) async {
         do {

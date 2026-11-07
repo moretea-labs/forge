@@ -175,6 +175,25 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(connection?.repairLabel,"Refresh Forge Connector")
     }
 
+    func testKnowledgeProjectionDecodesCanonicalReadOnlyAudit() {
+        let result = NativeWorkspace.knowledgeAuditDetail([
+            "readonly":true,"advisoryOnly":true,
+            "scopes":[["kind":"project","id":"repo-a"]],
+            "items":[["memory":[
+                "id":"mem-a","revision":2,"canonicalText":"Keep one authority",
+                "concepts":["authority"],"facets":["architecture"],"confidence":0.9,
+                "scope":["kind":"project","id":"repo-a"],
+                "provenance":["sourceKind":"learning","recordedAt":"2026-11-07T00:00:00Z"]
+            ]]],
+            "inspected":4,"truncated":false,"gaps":[]
+        ])
+        XCTAssertEqual(result?.readonly,true)
+        XCTAssertEqual(result?.advisoryOnly,true)
+        XCTAssertEqual(result?.inspected,4)
+        XCTAssertEqual(result?.items.first?.memory.canonicalText,"Keep one authority")
+        XCTAssertEqual(result?.items.first?.memory.scope.kind,"project")
+    }
+
     @MainActor
     func testThreadRenamePersistsWithoutChangingConversationBinding() {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

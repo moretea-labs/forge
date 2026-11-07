@@ -1559,31 +1559,102 @@ private struct RuntimePane: View {
 private struct KnowledgePane: View {
     @ObservedObject var model: NativeWorkspace
     var body: some View {
-        VStack(alignment:.leading,spacing:18) {
-            Text("知识库搜索").font(.system(size:21,weight:.medium))
-            Text("基于所选 Forge 项目的现有知识能力，不维护第二份搜索索引。")
-                .font(.system(size:12)).foregroundStyle(ForgePalette.secondary)
-            HStack(spacing:9) {
-                TextField("输入搜索内容",text:$model.knowledgeQuery)
-                    .textFieldStyle(.plain)
-                    .padding(.horizontal,12)
-                    .frame(height:38)
-                    .background(ForgePalette.softFill,
-                                in:RoundedRectangle(cornerRadius:12,style:.continuous))
-                    .onSubmit { Task { await model.searchKnowledge() } }
-                Button { Task { await model.searchKnowledge() } } label: {
-                    Label("搜索",systemImage:"magnifyingglass")
+        ScrollView {
+            VStack(alignment:.leading,spacing:18) {
+                VStack(alignment:.leading,spacing:6) {
+                    Text("记忆与知识").font(.system(size:21,weight:.medium))
+                    Text("读取当前 Forge 项目/工作空间的 Cognitive 记录；结果只读、仅供参考，不更改 Requirement、Plan 或执行授权。")
+                        .font(.system(size:12)).foregroundStyle(ForgePalette.secondary)
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.regular)
-                .disabled(model.knowledgeQuery.isEmpty)
+                HStack(spacing:9) {
+                    TextField("搜索经验、概念、技术决策…",text:$model.knowledgeQuery)
+                        .textFieldStyle(.plain)
+                        .padding(.horizontal,12)
+                        .frame(height:38)
+                        .background(ForgePalette.softFill,
+                                    in:RoundedRectangle(cornerRadius:12,style:.continuous))
+                        .onSubmit { Task { await model.searchKnowledge() } }
+                    Button { Task { await model.searchKnowledge() } } label: {
+                        if model.knowledgeLoading { ProgressView().controlSize(.small) }
+                        else { Label("检索",systemImage:"magnifyingglass") }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.regular)
+                    .disabled(model.knowledgeLoading || model.repoId == nil)
+                }
+                HStack {
+                    Text(model.project.map { "项目：\($0.label)" } ?? "未选择项目")
+                    Spacer()
+                    if let result = model.knowledgeResult {
+                        Text("已检索 \(result.inspected) 条 · 返回 \(result.items.count) 条")
+                    } else {
+                        Text("Forge Cognitive · 只读")
+                    }
+                }
+                .font(.system(size:10.5)).foregroundStyle(.tertiary)
+
+                if model.repoId == nil {
+                    knowledgeEmpty("先选择已注册的 Forge 项目，以限定知识检索范围。")
+                } else if let result = model.knowledgeResult, result.items.isEmpty {
+                    knowledgeEmpty("当前没有匹配的记忆记录。")
+                } else if let result = model.knowledgeResult {
+                    LazyVStack(alignment:.leading,spacing:10) {
+                        ForEach(result.items.map(\.memory)) { memory in
+                            VStack(alignment:.leading,spacing:10) {
+                                HStack(spacing:8) {
+                                    Text(scopeLabel(memory.scope.kind))
+                                        .font(.system(size:9.5,weight:.semibold))
+                                        .padding(.horizontal,7).frame(height:21)
+                                        .background(ForgePalette.selection,in:Capsule())
+                                    Text(memory.provenance?.sourceKind ?? "Cognitive")
+                                    Spacer()
+                                    Text("r\(memory.revision)")
+                                }
+                                .font(.system(size:9.5)).foregroundStyle(ForgePalette.secondary)
+                                Text(memory.canonicalText)
+                                    .font(.system(size:12.5)).lineSpacing(4).textSelection(.enabled)
+                                if !memory.concepts.isEmpty {
+                                    HStack(spacing:6) {
+                                        ForEach(Array(memory.concepts.prefix(6)),id:\.self) { concept in
+                                            Text(concept).font(.system(size:9.5))
+                                                .padding(.horizontal,7).frame(height:22)
+                                                .background(ForgePalette.softFill,in:Capsule())
+                                        }
+                                    }
+                                }
+                                Text("\(memory.scope.kind) / \(memory.scope.id) · \(memory.id)")
+                                    .font(.system(size:9,design:.monospaced)).foregroundStyle(.tertiary)
+                                    .textSelection(.enabled)
+                            }
+                            .padding(14)
+                            .frame(maxWidth:.infinity,alignment:.leading)
+                            .background(ForgePalette.softFill,in:RoundedRectangle(cornerRadius:14,style:.continuous))
+                        }
+                    }
+                    if result.truncated {
+                        Label("结果已达到单次上限，可输入关键词缩小范围。",systemImage:"info.circle")
+                            .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
+                    }
+                    if !result.gaps.isEmpty {
+                        Label("部分范围不可达：\(result.gaps.joined(separator:"、"))",systemImage:"exclamationmark.triangle")
+                            .font(.system(size:10.5)).foregroundStyle(.orange)
+                    }
+                }
             }
-            ScrollView {
-                Text(model.detail).font(.system(size:12,design:.monospaced))
-                    .textSelection(.enabled).frame(maxWidth:.infinity,alignment:.leading)
-            }
-            Spacer()
-        }.padding(28).frame(maxWidth:.infinity,maxHeight:.infinity,alignment:.topLeading)
+            .frame(maxWidth:850,alignment:.leading)
+            .frame(maxWidth:.infinity,alignment:.leading)
+            .padding(28)
+        }
+    }
+
+    private func knowledgeEmpty(_ message:String) -> some View {
+        Text(message).font(.system(size:12)).foregroundStyle(ForgePalette.secondary)
+            .padding(18).frame(maxWidth:.infinity,alignment:.leading)
+            .background(ForgePalette.softFill,in:RoundedRectangle(cornerRadius:14,style:.continuous))
+    }
+
+    private func scopeLabel(_ kind:String) -> String {
+        switch kind { case "project": return "项目"; case "workspace": return "工作空间"; default: return kind }
     }
 }
 
