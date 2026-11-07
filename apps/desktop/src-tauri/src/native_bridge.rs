@@ -200,18 +200,22 @@ pub fn run_api_turn() -> i32 {
     };
 
     let (cancel_sender, mut cancel_receiver) = tokio::sync::watch::channel(false);
+    let cancel_reader = cancel_sender.clone();
     std::thread::spawn(move || {
         let stdin = std::io::stdin();
         for line in stdin.lock().lines() {
             let Ok(line) = line else { break; };
             let Ok(value) = serde_json::from_str::<Value>(&line) else { continue; };
             if value.get("action").and_then(Value::as_str) == Some("cancel") {
-                let _ = cancel_sender.send(true);
+                let _ = cancel_reader.send(true);
                 break;
             }
         }
     });
 
+    // Keep one sender owned by the turn itself. EOF on the parent pipe means
+    // "no more control frames", not "cancel channel failed".
+    let _cancel_channel_lifetime = cancel_sender;
     let host = NativeApiHost;
     let result = tauri::async_runtime::block_on(run_local_api_turn(
         &host,
