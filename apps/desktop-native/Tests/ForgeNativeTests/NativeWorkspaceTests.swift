@@ -341,6 +341,24 @@ final class NativeWorkspaceTests: XCTestCase {
     }
 
     @MainActor
+    func testConversationSearchToggleOwnsNavigationAndClearSemantics() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        model.page = .settings
+        model.search = "provider"
+
+        model.toggleConversationSearch()
+        XCTAssertEqual(model.page,.agent)
+        XCTAssertTrue(model.showSearch)
+        XCTAssertEqual(model.search,"provider")
+
+        model.toggleConversationSearch()
+        XCTAssertFalse(model.showSearch)
+        XCTAssertEqual(model.search,"")
+    }
+
+    @MainActor
     func testThreadDeleteOnlyRemovesLocalTargetAndKeepsSelectionDeterministic() {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at:folder) }

@@ -37,8 +37,7 @@ struct ForgeNativeApp: App {
             }
             CommandMenu("导航") {
                 Button("搜索会话") {
-                    workspace.show(.agent)
-                    workspace.showSearch.toggle()
+                    workspace.toggleConversationSearch()
                 }.keyboardShortcut("k")
                 Divider()
                 Button("显示会话") { workspace.show(.agent) }.keyboardShortcut("1")
@@ -59,6 +58,7 @@ private struct ForgeWorkspaceView: View {
     @State private var renameThreadTitle = ""
     @State private var hoveredThreadId: String?
     @State private var deleteThreadId: String?
+    @FocusState private var sidebarSearchFocused: Bool
 
     var body: some View {
         NavigationSplitView(columnVisibility:$visibility) {
@@ -83,6 +83,9 @@ private struct ForgeWorkspaceView: View {
                     Text(model.connection).font(.system(size:11))
                 }.foregroundStyle(ForgePalette.secondary)
             }
+        }
+        .onChange(of:model.showSearch) { visible in
+            sidebarSearchFocused = visible
         }
     }
 
@@ -128,9 +131,7 @@ private struct ForgeWorkspaceView: View {
             .padding(.horizontal,10).padding(.bottom,6)
 
             Button {
-                model.show(.agent)
-                model.showSearch.toggle()
-                if !model.showSearch { model.search = "" }
+                model.toggleConversationSearch()
             } label: {
                 HStack(spacing:10) {
                     Image(systemName:"magnifyingglass")
@@ -153,6 +154,7 @@ private struct ForgeWorkspaceView: View {
                         .font(.system(size:10.5))
                         .foregroundStyle(ForgePalette.secondary.opacity(0.8))
                     TextField("搜索标题或消息",text:$model.search)
+                        .focused($sidebarSearchFocused)
                         .textFieldStyle(.plain)
                         .font(.system(size:12))
                     if !model.search.isEmpty {

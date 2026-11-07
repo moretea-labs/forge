@@ -568,6 +568,11 @@ final class NativeWorkspace: ObservableObject {
         self.page = page
         if page != .agent { Task { await loadPage() } }
     }
+    func toggleConversationSearch() {
+        show(.agent)
+        showSearch.toggle()
+        if !showSearch { search = "" }
+    }
 
     func refresh() async {
         do {
