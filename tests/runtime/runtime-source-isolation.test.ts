@@ -1133,8 +1133,6 @@ printf '{"ok":true}\\n'
       provenance: {
         sourceKind: 'controller',
         sourceId: 'controller-learning:audit',
-        sourceWorkId: 'work-audit-source',
-        sourceRoundId: 'round-audit-source',
         recordedAt: '2026-09-21T00:00:00.000Z',
         evidenceRefs: ['E-AUDIT'],
       },
