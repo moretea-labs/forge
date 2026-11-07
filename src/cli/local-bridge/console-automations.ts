@@ -1,5 +1,4 @@
 import type { RepositoryRecord } from '../repositories/types';
-import { getWorkContract } from '../../runtime/control-plane/facade';
 import { evaluateSchedule } from '../../runtime/workflow/schedules/engine';
 import { getSchedule, listOccurrences, listSchedules, saveSchedule } from '../../../packages/kernel/scheduler/api/index';
 import type { RepositorySchedule, ScheduleOccurrence } from '../../../packages/kernel/scheduler/api/index';
@@ -31,7 +30,6 @@ export interface ConsoleAutomationView {
   live?: boolean;
   targetLabel?: string;
   boundWorkId?: string;
-  boundWorkObjective?: string;
   observationStatus?: RepositorySchedule['lastObservationStatus'];
   observationAt?: string;
   failureCount?: number;
@@ -204,37 +202,35 @@ function scheduleNeedsAttention(schedule: RepositorySchedule): boolean {
   return Boolean(schedule.pausedReason && /(?:fail|error|auth|login|block|attention|maximum)/i.test(schedule.pausedReason));
 }
 
-function scheduleStatus(schedule: RepositorySchedule, workState?: string): ConsoleAutomationView['status'] {
-  if (workState === 'completed' || /is terminal \(completed\)/i.test(schedule.pausedReason ?? '')) return 'completed';
-  if (workState === 'cancelled') return 'paused';
+function retiredWorkSchedule(schedule: RepositorySchedule): boolean {
+  const operation = schedule.action.operation;
+  return operation === 'external_controller_wake'
+    || operation === 'controller_progression'
+    || (typeof schedule.action.arguments?.work_id === 'string' && schedule.action.arguments.work_id.trim().length > 0);
+}
+
+function scheduleStatus(schedule: RepositorySchedule): ConsoleAutomationView['status'] {
+  if (retiredWorkSchedule(schedule)) return 'disabled';
   if (schedule.enabled) return scheduleNeedsAttention(schedule) ? 'attention' : 'enabled';
   return scheduleNeedsAttention(schedule) ? 'attention' : 'paused';
 }
 
-function workBinding(controllerHome: string, repoId: string, schedule: RepositorySchedule): { id?: string; objective?: string; state?: string; failed?: boolean } {
+function historicalWorkBinding(schedule: RepositorySchedule): { id?: string } {
   const value = schedule.action.arguments?.work_id;
   const workId = typeof value === 'string' && value.trim() ? value.trim() : undefined;
-  if (!workId) return {};
-  const work = getWorkContract({ controllerHome, repoId }, workId);
-  return {
-    id: workId,
-    objective: work?.objective,
-    state: work?.semanticState,
-    failed: work ? work.evidenceState === 'failed' || work.phaseEvidence[work.phase].state === 'failed' : false,
-  };
+  return workId ? { id: workId } : {};
 }
 
-function displayPauseReason(schedule: RepositorySchedule, workState?: string): string | undefined {
-  if (workState === 'completed' || /is terminal \(completed\)/i.test(schedule.pausedReason ?? '')) return '关联工作已经完成，这个自动任务不会再触发。';
+function displayPauseReason(schedule: RepositorySchedule): string | undefined {
+  if (retiredWorkSchedule(schedule)) return '历史 Work 绑定自动任务已退役，仅供查看，不能恢复或执行。';
   if (schedule.lastObservationStatus === 'auth_required') return '目标登录状态已失效，完成重新登录后即可恢复。';
   if (schedule.consecutiveFailures >= schedule.policy.maxFailures || /maximum consecutive failures/i.test(schedule.pausedReason ?? '')) return '连续执行失败达到上限，已自动暂停。修复问题后可以恢复任务。';
   if (/canary completed/i.test(schedule.pausedReason ?? '')) return '验收任务已经完成。';
   return schedule.pausedReason;
 }
 
-function attentionMessage(schedule: RepositorySchedule, workFailed = false): string | undefined {
+function attentionMessage(schedule: RepositorySchedule): string | undefined {
   if (schedule.lastObservationStatus === 'auth_required') return '需要重新登录后才能继续自动执行。';
-  if (workFailed) return '关联工作执行失败，需要检查失败原因后再恢复。';
   if (schedule.consecutiveFailures >= schedule.policy.maxFailures) return '连续执行失败达到上限，任务已自动暂停。';
   return undefined;
 }
@@ -252,7 +248,8 @@ export function listConsoleAutomations(controllerHome: string, repositories: Rep
       const occurrences = listOccurrences(controllerHome, repository.repoId, schedule.scheduleId, 8);
       const last = occurrences[0];
       const mode = scheduleMode(schedule);
-      const work = workBinding(controllerHome, repository.repoId, schedule);
+      const work = historicalWorkBinding(schedule);
+      const retired = retiredWorkSchedule(schedule);
       const executionProfile = chatgptExecutionProfile(schedule, mode);
       items.push({
         id: schedule.scheduleId,
@@ -261,7 +258,7 @@ export function listConsoleAutomations(controllerHome: string, repositories: Rep
         repositoryName: repository.displayName,
         name: schedule.name,
         summary: scheduleSummary(mode),
-        status: scheduleStatus(schedule, work.state),
+        status: scheduleStatus(schedule),
         schedule: triggerLabel(schedule),
         timezone: schedule.trigger.timezone,
         delivery: scheduleDelivery(schedule, mode),
@@ -270,7 +267,6 @@ export function listConsoleAutomations(controllerHome: string, repositories: Rep
         live: !schedule.policy.shadowMode,
         targetLabel: scheduleTarget(schedule, mode),
         boundWorkId: work.id,
-        boundWorkObjective: work.objective,
         observationStatus: schedule.lastObservationStatus,
         observationAt: schedule.lastObservationAt,
         failureCount: schedule.consecutiveFailures,
@@ -279,10 +275,10 @@ export function listConsoleAutomations(controllerHome: string, repositories: Rep
         lastRunAt: last?.updatedAt ?? schedule.lastTriggeredAt,
         lastResult: observationResult(schedule, last),
         nextRunHint: nextScheduleHint(schedule),
-        pausedReason: displayPauseReason(schedule, work.state),
-        attentionMessage: attentionMessage(schedule, work.failed),
+        pausedReason: displayPauseReason(schedule),
+        attentionMessage: attentionMessage(schedule),
         history: occurrenceHistory(occurrences),
-        actions: scheduleStatus(schedule, work.state) === 'completed' ? [] : schedule.enabled ? ['run', 'pause'] : ['resume'],
+        actions: retired ? [] : schedule.enabled ? ['run', 'pause'] : ['resume'],
       });
     }
 
@@ -314,6 +310,7 @@ export async function applyConsoleAutomationAction(
     const schedule = getSchedule(controllerHome, repoId, id);
     if (schedule.action.operation === 'chatgpt_browser_prompt') throw new Error('RETIRED_WORK_FREE_PROMPT_SCHEDULE');
     if (schedule.action.operation === 'assistant_routine_execute') throw new Error('RETIRED_PERSONAL_ASSISTANT_SCHEDULE');
+    if (retiredWorkSchedule(schedule)) throw new Error('RETIRED_WORK_BOUND_SCHEDULE_READ_ONLY');
     if (action === 'pause') return saveSchedule(controllerHome, { ...schedule, enabled: false, pausedReason: undefined });
     if (action === 'resume') return saveSchedule(controllerHome, { ...schedule, enabled: true, pausedReason: undefined, consecutiveFailures: 0, consecutiveNoops: 0, nextEligibleAt: undefined });
     if (action === 'run') return evaluateSchedule(controllerHome, schedule, true, { source: 'manual' });
