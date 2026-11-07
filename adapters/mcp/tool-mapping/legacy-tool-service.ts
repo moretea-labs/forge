@@ -559,7 +559,6 @@ export function buildMcpToolDefinitions(
           type: "object",
           properties: {
             purpose: { type: "string" },
-            work_id: { type: "string", description: "Optional existing WorkContract. Omit for a Work-independent direct-edit transaction." },
             issue_id: { type: "string" },
             task_id: { type: "string" },
             allowed_paths: { type: "array", items: { type: "string" } },
@@ -1118,8 +1117,13 @@ export async function callMcpTool(
         const controllerHome = resolveRepoPreferredControllerHome(ctx.repoRoot);
         const allowedPaths = stringList(args.allowed_paths);
         const checks = stringList(args.checks);
-        // EditSession identity is repository/checkout/principal only. Legacy
-        // work_id input is ignored here and cannot become edit ownership.
+        const explicitWorkId = typeof args.work_id === "string" ? args.work_id.trim() : "";
+        if (explicitWorkId) {
+          return errorResult(
+            "WORK_MUTATION_AUTHORITY_RETIRED",
+            `Work ${explicitWorkId} cannot own or select a direct-edit session; use repository/checkout/principal identity.`,
+          );
+        }
         const editRepository = resolveRepositorySelection({
           repoId,
           checkoutId: identity.checkoutId,

@@ -18,6 +18,16 @@ describe('mcp policy and paths', () => {
     expect(names).toContain('get_local_job');
   });
 
+  test('direct edit schema does not advertise retired Work authority', () => {
+    const definitions = buildMcpToolDefinitions(getMcpPolicy('controller'));
+    const beginEdit = definitions.find((tool) => tool.name === 'begin_edit_session');
+    expect(beginEdit).toBeDefined();
+    const properties = (beginEdit?.inputSchema as { properties?: Record<string, unknown> } | undefined)?.properties ?? {};
+    expect(properties).not.toHaveProperty('work_id');
+    expect(properties).toHaveProperty('purpose');
+    expect(properties).toHaveProperty('allowed_paths');
+  });
+
   test('matches forge workflow globs without matching sibling paths', () => {
     expect(globMatches('plans/**', 'plans/prds/example.prd.md')).toBe(true);
     expect(globMatches('plans/plan-*.md', 'plans/plan-test.md')).toBe(true);
