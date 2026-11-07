@@ -23,7 +23,7 @@ import { recordOwnedResource } from '../../packages/kernel/identity/api/index';
 import { commitSelectedPaths } from '../../src/cli/repositories/selected-path-actions';
 import { acquireControllerLock, releaseControllerLock } from '../../src/cli/repositories/locks';
 import { persistControllerAccessMode } from '../../adapters/mcp/access-mode';
-import { executionIdentityForRepository, executionIdentityForWork } from '../../src/runtime/control-plane/execution/execution-identity';
+import { executionIdentityForRepository } from '../../src/runtime/control-plane/execution/execution-identity';
 import { readWorkHandle, WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { classifyRepositoryCommandRoute, executeRepositoryCommandViaProcessRuntime, waitRepositoryCommandProcess } from '../../src/runtime/execution/process-runtime/command-facade';
