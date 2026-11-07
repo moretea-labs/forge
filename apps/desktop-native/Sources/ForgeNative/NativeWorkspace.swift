@@ -320,6 +320,7 @@ final class NativeWorkspace: ObservableObject {
     private var activeApiTurn: ForgeApiTurn?
     private var activeTurnProvider: String?
     @Published var provider = "未检测"
+    @Published private(set) var localProviderReady = false
     @Published var imageInputAvailable = false
     @Published var allowApiEffects = false
     @Published var pendingImageURLs: [URL] = []
@@ -374,6 +375,9 @@ final class NativeWorkspace: ObservableObject {
         guard let settings = localApiSettings else { return false }
         return !settings.endpoint.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty
             && !settings.model.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty
+    }
+    var selectedProviderReady: Bool {
+        selectedProvider == "api" ? apiProfileReady : localProviderReady
     }
     var selectedProviderSupportsImages: Bool {
         selectedProvider == "codex" && imageInputAvailable
@@ -574,6 +578,16 @@ final class NativeWorkspace: ObservableObject {
         if !showSearch { search = "" }
     }
 
+    nonisolated static func localProviderStatusReady(_ status:[String:Any]) -> Bool {
+        status["status"] as? String == "ready"
+    }
+
+    private func applyLocalProviderStatus(_ status:[String:Any]) {
+        provider = status["label"] as? String ?? status["status"] as? String ?? "Codex 不可用"
+        localProviderReady = Self.localProviderStatusReady(status)
+        imageInputAvailable = status["imageInput"] as? Bool == true
+    }
+
     func refresh() async {
         do {
             let result = try await ForgeBridge.request("read_projects")
@@ -582,9 +596,13 @@ final class NativeWorkspace: ObservableObject {
             projects = try JSONDecoder().decode([ForgeProject].self, from: bytes)
             // Agent repository context is owned by the selected ChatThread. Do not
             // fabricate a binding from preferredRepoId for an unbound conversation.
-            let status = try? await ForgeBridge.request("read_local_provider_status")
-            provider = status?["label"] as? String ?? status?["status"] as? String ?? "Codex 不可用"
-            imageInputAvailable = status?["imageInput"] as? Bool == true
+            if let status = try? await ForgeBridge.request("read_local_provider_status") {
+                applyLocalProviderStatus(status)
+            } else {
+                provider = "Codex 不可用"
+                localProviderReady = false
+                imageInputAvailable = false
+            }
             if !selectedProviderSupportsImages { pendingImageURLs = [] }
             if let settingsValue = try? await ForgeBridge.request("read_local_api_settings"),
                let parsed = Self.localApiSettingsDetail(settingsValue) {
@@ -823,8 +841,7 @@ final class NativeWorkspace: ObservableObject {
             async let statusRequest = ForgeBridge.request("read_local_provider_status")
             async let settingsRequest = ForgeBridge.request("read_local_api_settings")
             let (status, settingsValue) = try await (statusRequest, settingsRequest)
-            provider = status["label"] as? String ?? status["status"] as? String ?? "Codex 不可用"
-            imageInputAvailable = status["imageInput"] as? Bool == true
+            applyLocalProviderStatus(status)
             guard let parsed = Self.localApiSettingsDetail(settingsValue) else { throw ForgeBridgeError.invalidResponse }
             localApiSettings = parsed
             error = nil
@@ -1294,6 +1311,10 @@ final class NativeWorkspace: ObservableObject {
         }
         if turnProvider == "api" && !apiProfileReady {
             self.error = "兼容 API 尚未配置 Endpoint 与模型。"
+            return
+        }
+        if turnProvider == "codex" && !localProviderReady {
+            self.error = "Codex Provider 尚未就绪，请刷新状态后重试。"
             return
         }
         if item.repoId != nil && item.checkoutId == nil {

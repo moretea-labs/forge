@@ -206,6 +206,16 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(plan?.nonGoals,["No Work lifecycle"])
     }
 
+    func testLocalProviderReadinessUsesCanonicalStatusField() {
+        XCTAssertTrue(NativeWorkspace.localProviderStatusReady([
+            "status":"ready","label":"localized provider label"
+        ]))
+        XCTAssertFalse(NativeWorkspace.localProviderStatusReady([
+            "status":"unavailable","label":"Codex 已连接"
+        ]))
+        XCTAssertFalse(NativeWorkspace.localProviderStatusReady([:]))
+    }
+
     func testRuntimeAndConnectionProjectionsUseCanonicalAuthorityFields() {
         let runtime = NativeWorkspace.runtimeStatusDetail([
             "running":true,"ready":true,"stale":false,

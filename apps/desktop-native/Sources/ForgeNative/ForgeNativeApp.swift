@@ -449,39 +449,34 @@ private struct ForgeWorkspaceView: View {
                             in:RoundedRectangle(cornerRadius:11,style:.continuous))
                 .padding(.horizontal,14).padding(.top,8)
             }
-            HStack(spacing:9) {
-                Image(systemName:model.page.symbol)
-                    .symbolRenderingMode(.hierarchical)
-                    .font(.system(size:11.5,weight:.semibold))
-                    .foregroundStyle(ForgePalette.secondary)
-                    .frame(width:25,height:25)
-                    .background(ForgePalette.softFill,
-                                in:RoundedRectangle(cornerRadius:8,style:.continuous))
-                Text(model.page.rawValue)
-                    .font(.system(size:13,weight:.semibold))
-                Spacer()
-                if model.page == .agent, let thread = model.thread {
-                    Label(thread.checkoutId == nil ? "未绑定" : (model.checkoutBranch ?? "Checkout"),
-                          systemImage:"point.3.connected.trianglepath.dotted")
-                        .font(.system(size:10))
+            if model.page != .agent {
+                HStack(spacing:9) {
+                    Image(systemName:model.page.symbol)
+                        .symbolRenderingMode(.hierarchical)
+                        .font(.system(size:11.5,weight:.semibold))
                         .foregroundStyle(ForgePalette.secondary)
-                        .lineLimit(1)
+                        .frame(width:25,height:25)
+                        .background(ForgePalette.softFill,
+                                    in:RoundedRectangle(cornerRadius:8,style:.continuous))
+                    Text(model.page.rawValue)
+                        .font(.system(size:13,weight:.semibold))
+                    Spacer()
+                    Button { Task { await model.refresh() } } label: {
+                        Image(systemName:"arrow.clockwise")
+                            .font(.system(size:11.5,weight:.medium))
+                            .frame(width:27,height:27)
+                            .background(ForgePalette.softFill,in:Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("刷新真实 Forge 状态")
+                    .accessibilityLabel("刷新当前页面")
+                    .accessibilityIdentifier("app.refresh")
                 }
-                Button { Task { await model.refresh() } } label: {
-                    Image(systemName:"arrow.clockwise")
-                        .font(.system(size:11.5,weight:.medium))
-                        .frame(width:27,height:27)
-                        .background(ForgePalette.softFill,in:Circle())
-                }
-                .buttonStyle(.plain)
-                .help("刷新真实 Forge 状态")
-                .accessibilityLabel("刷新当前页面")
-                .accessibilityIdentifier("app.refresh")
+                .padding(.horizontal,22).frame(height:48)
+                .background(.ultraThinMaterial)
+                .shadow(color:Color.black.opacity(0.025),radius:5,y:2)
+                .zIndex(1)
             }
-            .padding(.horizontal,22).frame(height:48)
-            .background(.ultraThinMaterial)
-            .shadow(color:Color.black.opacity(0.025),radius:5,y:2)
-            .zIndex(1)
             switch model.page {
             case .agent: AgentPane(model:model)
             case .requirement,.plan: RecordsPane(model:model)
@@ -523,7 +518,7 @@ private struct AgentPane: View {
                                 VStack(spacing:7) {
                                     Text("把结果交给 Forge")
                                         .font(.system(size:24,weight:.medium)).tracking(-0.45)
-                                    Text("当前项目、checkout 与 Forge 语义记录保持为真实上下文；Agent 负责执行，Requirement / Plan 仍是唯一语义事实。")
+                                    Text(agentEmptyStateDescription)
                                         .font(.system(size:12))
                                         .foregroundStyle(ForgePalette.secondary)
                                         .multilineTextAlignment(.center)
@@ -846,17 +841,13 @@ private struct AgentPane: View {
                     .accessibilityIdentifier("agent.changes")
 
                     Circle()
-                        .fill(model.selectedProvider == "api"
-                              ? (model.apiProfileReady ? Color.green : Color.red)
-                              : (model.provider.contains("已连接") ? Color.green : Color.orange))
+                        .fill(model.selectedProviderReady ? Color.green : Color.orange)
                         .frame(width:6,height:6)
                         .help(model.selectedProvider == "api"
                               ? (model.apiProfileReady ? "兼容 API profile 已就绪" : "兼容 API profile 未完成")
                               : model.provider)
                         .accessibilityLabel("Provider 状态")
-                        .accessibilityValue(model.selectedProvider == "api"
-                                            ? (model.apiProfileReady ? "API 已就绪" : "API 未完成配置")
-                                            : model.provider)
+                        .accessibilityValue(model.selectedProviderReady ? "已就绪" : "未就绪")
                     Spacer()
                     Text("⌘↵").font(.system(size:10)).foregroundStyle(.tertiary)
                     if model.busy {
@@ -874,7 +865,7 @@ private struct AgentPane: View {
                         .accessibilityIdentifier("agent.cancel")
                     } else {
                         let sendDisabled = model.draft.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty
-                            || (model.selectedProvider == "api" && !model.apiProfileReady)
+                            || !model.selectedProviderReady
                             || (model.thread?.repoId != nil && model.thread?.checkoutId == nil)
                         Button { Task { await model.send() } } label: {
                             Image(systemName:"arrow.up")
@@ -934,6 +925,43 @@ private struct AgentPane: View {
         }
     }
 
+    private var agentEmptyStateDescription: String {
+        if model.checkoutId == nil {
+            return "先选择带有 active checkout 的项目，再让 Forge 审查改动、定位问题或实施 Requirement / Plan。"
+        }
+        return "当前项目与 checkout 是执行上下文；Requirement / Plan 保持为可浏览的唯一语义事实。"
+    }
+
+    private var agentWorkspaceStatusLabel: String {
+        if model.busy { return "执行中" }
+        if !model.selectedProviderReady {
+            return model.selectedProvider == "api" ? "API 未配置" : "Codex 未就绪"
+        }
+        if model.thread?.repoId != nil && model.thread?.checkoutId == nil { return "缺 checkout" }
+        if model.thread?.repoId == nil { return "未绑定项目" }
+        return "可执行"
+    }
+
+    private var agentWorkspaceStatusColor: Color {
+        if model.busy { return ForgePalette.accent }
+        if !model.selectedProviderReady || (model.thread?.repoId != nil && model.thread?.checkoutId == nil) {
+            return Color.orange
+        }
+        return model.thread?.repoId == nil ? Color.secondary : Color.green
+    }
+
+    private var agentWorkspaceStatusDetail: String {
+        if model.busy { return model.liveActivity?.lastActivity ?? "Agent 正在执行" }
+        if !model.selectedProviderReady {
+            return model.selectedProvider == "api" ? "兼容 API Endpoint / 模型尚未就绪" : model.provider
+        }
+        if model.thread?.repoId != nil && model.thread?.checkoutId == nil {
+            return "当前会话绑定了项目，但没有有效 checkout；请选择项目后新建会话。"
+        }
+        if model.thread?.repoId == nil { return "当前会话可以对话，但没有项目/checkout 执行上下文。" }
+        return "当前 Provider、项目与 checkout 均可用于执行。"
+    }
+
     private var agentWorkspaceBar: some View {
         HStack(spacing:10) {
             HStack(spacing:7) {
@@ -976,12 +1004,24 @@ private struct AgentPane: View {
 
             HStack(spacing:6) {
                 Circle()
-                    .fill(model.busy ? ForgePalette.accent : Color.green)
+                    .fill(agentWorkspaceStatusColor)
                     .frame(width:6,height:6)
-                Text(model.busy ? "执行中" : "就绪")
+                Text(agentWorkspaceStatusLabel)
                     .font(.system(size:10.5,weight:.medium))
                     .foregroundStyle(ForgePalette.secondary)
             }
+            .help(agentWorkspaceStatusDetail)
+
+            Button { Task { await model.refresh() } } label: {
+                Image(systemName:"arrow.clockwise")
+                    .font(.system(size:10.5,weight:.medium))
+                    .frame(width:25,height:25)
+                    .background(ForgePalette.softFill,in:Circle())
+            }
+            .buttonStyle(.plain)
+            .help("刷新 Agent 上下文与 Provider 状态")
+            .accessibilityLabel("刷新 Agent 状态")
+            .accessibilityIdentifier("agent.workspace-refresh")
         }
         .padding(.horizontal,18)
         .frame(height:43)
@@ -1033,18 +1073,19 @@ private struct AgentPane: View {
                 .stroke(Color.black.opacity(0.055),lineWidth:0.7))
         }
         .buttonStyle(.plain)
-        .disabled(model.busy)
+        .disabled(model.busy || model.checkoutId == nil)
+        .help(model.checkoutId == nil ? "先选择带有 active checkout 的项目" : title)
     }
 
     private func activityTrailRow(_ event: AgentLiveActivityEvent) -> some View {
         HStack(alignment:.top,spacing:8) {
             ZStack {
                 Circle()
-                    .fill(event.status == "completed" ? Color.green.opacity(0.11) : ForgePalette.softFill)
+                    .fill(activityStatusColor(event).opacity(event.status == "running" ? 0.07 : 0.11))
                     .frame(width:21,height:21)
-                Image(systemName:event.status == "completed" ? "checkmark" : activityIcon(event.phase))
+                Image(systemName:activityStatusIcon(event))
                     .font(.system(size:8.5,weight:.semibold))
-                    .foregroundStyle(event.status == "completed" ? Color.green : ForgePalette.secondary)
+                    .foregroundStyle(activityStatusColor(event))
             }
             VStack(alignment:.leading,spacing:2) {
                 Text(event.label)
@@ -1059,6 +1100,27 @@ private struct AgentPane: View {
                 }
             }
             Spacer(minLength:8)
+            if event.status == "failed" {
+                Text("失败")
+                    .font(.system(size:9.5,weight:.semibold))
+                    .foregroundStyle(Color.red)
+            }
+        }
+    }
+
+    private func activityStatusColor(_ event: AgentLiveActivityEvent) -> Color {
+        switch event.status {
+        case "completed": return Color.green
+        case "failed": return Color.red
+        default: return ForgePalette.secondary
+        }
+    }
+
+    private func activityStatusIcon(_ event: AgentLiveActivityEvent) -> String {
+        switch event.status {
+        case "completed": return "checkmark"
+        case "failed": return "exclamationmark"
+        default: return activityIcon(event.phase)
         }
     }
 
