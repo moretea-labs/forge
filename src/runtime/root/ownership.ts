@@ -125,13 +125,14 @@ export function inspectRuntimeOwnership(controllerHome: string): RuntimeOwnershi
       ? runtimeOwnerProcessIdentityMatches(owner)
       : isProcessAlive(owner.pid)
   ));
-  // A coherent incarnation is the same Runtime owner epoch, so inherit the
-  // stronger owner identity result instead of re-introducing PID-only liveness.
+  // RuntimeOwner is the liveness authority whenever it exists. An incoherent
+  // incarnation is historical fencing evidence, not a second process-liveness
+  // authority: its PID may already have been reused by an unrelated process.
   // Incarnation-only legacy evidence remains conservative because it has no
   // independent process identity fields.
   const incarnationAlive = Boolean(incarnation && (
-    coherent
-      ? ownerAlive
+    owner
+      ? coherent && ownerAlive
       : isProcessAlive(incarnation.pid)
   ));
   return { owner, incarnation, ownerAlive, incarnationAlive, coherent };
@@ -325,9 +326,14 @@ export function acquireRuntimeOwnership(
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== 'EEXIST') throw error;
       const current = readOwnerPath(path);
-      if (current && isProcessAlive(current.pid)) {
+      const currentAlive = Boolean(current && (
+        current.processStartTime && current.executableFingerprint
+          ? runtimeOwnerProcessIdentityMatches(current)
+          : isProcessAlive(current.pid)
+      ));
+      if (currentAlive) {
         throw new Error(
-          `RUNTIME_OWNERSHIP_CONFLICT: controller home is owned by ${current.runtimeInstanceId} pid=${current.pid}`,
+          `RUNTIME_OWNERSHIP_CONFLICT: controller home is owned by ${current!.runtimeInstanceId} pid=${current!.pid}`,
         );
       }
       minimumGeneration = Math.max(
