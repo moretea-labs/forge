@@ -601,7 +601,7 @@ export function repositoryGitCommit(controllerHome: string, repository: Reposito
   };
 }
 
-export function repositoryGitFinishWorkflow(controllerHome: string, repository: RepositoryRecord, input: { targetBranch?: unknown; featureBranch?: unknown; deleteBranch?: unknown; noFf?: unknown; preserveDirtyTargetPaths?: unknown; authorizationDecision?: AuthorizationDecision; sessionId?: string; principalId?: string; workId?: string; goalId?: string }): RepositoryGitFinishResult {
+export function repositoryGitFinishWorkflow(controllerHome: string, repository: RepositoryRecord, input: { targetBranch?: unknown; featureBranch?: unknown; deleteBranch?: unknown; noFf?: unknown; preserveDirtyTargetPaths?: unknown; authorizationDecision?: AuthorizationDecision; sessionId?: string; principalId?: string; goalId?: string }): RepositoryGitFinishResult {
   const before = repositoryGitStatus(repository);
   const featureBranch = assertSafeBranchName(input.featureBranch ?? before.branch);
   const targetBranch = assertSafeBranchName(input.targetBranch ?? repository.defaultBranch ?? 'main');
@@ -614,7 +614,7 @@ export function repositoryGitFinishWorkflow(controllerHome: string, repository: 
   if (preserveDirtyTargetInPlace) {
     const requested = new Set(requestedPreservedDirtyPaths);
     if (requested.size !== currentDirtyPaths.length || currentDirtyPaths.some((path) => !requested.has(path))) {
-      return { repoId: repository.repoId, checkoutId: repository.activeCheckoutId, featureBranch, targetBranch, before, steps, after: before, completed: false, error: { code: 'GIT_DIRTY_TARGET_OWNERSHIP_MISMATCH', message: 'The exact current dirty target paths no longer match the Work-owned preservation set; retry ownership inspection before integration.' } };
+      return { repoId: repository.repoId, checkoutId: repository.activeCheckoutId, featureBranch, targetBranch, before, steps, after: before, completed: false, error: { code: 'GIT_DIRTY_TARGET_OWNERSHIP_MISMATCH', message: 'The exact current dirty target paths no longer match the explicitly preserved set; retry source inspection before integration.' } };
     }
     const candidateDiff = runGit(repository, ['diff', '--name-only', `${targetBranch}..${featureBranch}`], 128 * 1024);
     if (!candidateDiff.ok) {
@@ -633,7 +633,7 @@ export function repositoryGitFinishWorkflow(controllerHome: string, repository: 
         return true;
       });
       if (!equivalent) {
-        return { repoId: repository.repoId, checkoutId: repository.activeCheckoutId, featureBranch, targetBranch, before, steps, after: before, completed: false, error: { code: 'GIT_DIRTY_TARGET_PATH_CONFLICT', message: `Work-owned dirty target path(s) overlap the integration candidate: ${overlapping.join(', ')}` } };
+        return { repoId: repository.repoId, checkoutId: repository.activeCheckoutId, featureBranch, targetBranch, before, steps, after: before, completed: false, error: { code: 'GIT_DIRTY_TARGET_PATH_CONFLICT', message: `Preserved dirty target path(s) overlap the integration candidate: ${overlapping.join(', ')}` } };
       }
       equivalentOverlappingDirtyPaths = overlapping;
     }
@@ -653,7 +653,7 @@ export function repositoryGitFinishWorkflow(controllerHome: string, repository: 
   const finishAuthorization = 'explicit_user_request' as const;
   let equivalentOverlapStashRef: string | null = null;
   if (equivalentOverlappingDirtyPaths.length > 0) {
-    const stash = executeRepositoryGitCommand(controllerHome, repository, { args: ['stash', 'push', '-m', `forge-finish-equivalent:${input.workId ?? featureBranch}`, '--', ...equivalentOverlappingDirtyPaths], authorization: finishAuthorization, ...input });
+    const stash = executeRepositoryGitCommand(controllerHome, repository, { args: ['stash', 'push', '-m', `forge-finish-equivalent:${featureBranch}`, '--', ...equivalentOverlappingDirtyPaths], authorization: finishAuthorization, ...input });
     steps.push({ name: 'stash_equivalent_target_overlap', execution: stash });
     if (stash.status !== 'executed' || stash.ok !== true) {
       return { repoId: repository.repoId, checkoutId: repository.activeCheckoutId, featureBranch, targetBranch, before, steps, after: repositoryGitStatus(repository), completed: false, error: { code: 'GIT_EQUIVALENT_TARGET_STASH_FAILED', message: stash.stderr || 'Unable to preserve candidate-equivalent dirty target paths before integration.' } };
@@ -677,7 +677,7 @@ export function repositoryGitFinishWorkflow(controllerHome: string, repository: 
   };
   let stashRef: string | null = null;
   if (protectTrackedChanges) {
-    const stash = executeRepositoryGitCommand(controllerHome, repository, { args: ['stash', 'push', '-m', `forge-finish:${input.workId ?? featureBranch}`], authorization: finishAuthorization, ...input });
+    const stash = executeRepositoryGitCommand(controllerHome, repository, { args: ['stash', 'push', '-m', `forge-finish:${featureBranch}`], authorization: finishAuthorization, ...input });
     steps.push({ name: 'stash_target_changes', execution: stash });
     if (stash.status !== 'executed' || stash.ok !== true) return { repoId: repository.repoId, checkoutId: repository.activeCheckoutId, featureBranch, targetBranch, before, steps, after: repositoryGitStatus(repository), completed: false, error: { code: 'GIT_STASH_LOCAL_CHANGES_FAILED', message: stash.stderr || 'git stash push failed' } };
     stashRef = gitText(repository, ['rev-parse', 'refs/stash']);
