@@ -801,6 +801,13 @@ fn local_api_endpoint_ready(endpoint: &str, has_key: bool) -> bool {
     loopback || has_key
 }
 
+fn validate_local_api_default_endpoint(provider: &str, endpoint: &str, has_key: bool) -> Result<(), String> {
+    if provider == "api" && !local_api_endpoint_ready(endpoint, has_key) {
+        return Err("FORGE_DESKTOP_API_KEY_MISSING".into());
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn read_local_api_settings() -> Result<Value, String> {
     let config = local_api_config()?;
@@ -836,8 +843,13 @@ fn save_local_api_settings(provider: String, endpoint: String, model: String, ap
     if model.len() > 120 || (provider == "api" && model.is_empty()) {
         return Err("FORGE_DESKTOP_API_MODEL_INVALID".into());
     }
-    if let Some(secret) = api_key.filter(|secret| !secret.trim().is_empty()) {
-        if secret.len() > 4096 { return Err("FORGE_DESKTOP_API_KEY_INVALID".into()); }
+    let api_key = api_key.filter(|secret| !secret.trim().is_empty());
+    if api_key.as_ref().is_some_and(|secret| secret.len() > 4096) {
+        return Err("FORGE_DESKTOP_API_KEY_INVALID".into());
+    }
+    let has_key = api_key.is_some() || read_local_api_key(&endpoint)?.is_some();
+    validate_local_api_default_endpoint(&provider, &endpoint, has_key)?;
+    if let Some(secret) = api_key {
         store_local_api_key(&endpoint, &secret)?;
     }
     let path = local_api_config_path()?;
@@ -2006,6 +2018,14 @@ mod tests {
             tool.pointer("/function/name").and_then(Value::as_str)
         ).collect::<Vec<_>>();
         assert!(!names.contains(&"read_work_context"));
+    }
+
+    #[test]
+    fn api_default_provider_requires_ready_endpoint_but_codex_allows_backup_profile() {
+        assert!(validate_local_api_default_endpoint("api", "https://api.example.com/v1", false).is_err());
+        assert!(validate_local_api_default_endpoint("api", "https://api.example.com/v1", true).is_ok());
+        assert!(validate_local_api_default_endpoint("api", "http://127.0.0.1:11434/v1", false).is_ok());
+        assert!(validate_local_api_default_endpoint("codex", "https://api.example.com/v1", false).is_ok());
     }
 
     #[test]

@@ -479,7 +479,7 @@ final class NativeWorkspace: ObservableObject {
               let index = threads.firstIndex(where:{$0.id == selectedThreadId}),
               threads[index].messages.isEmpty else { return }
         if value == "api" && !apiProfileReady {
-            self.error = "请先在设置中完成 API Endpoint 与模型配置。"
+            self.error = "请先在设置中完成可用的 API Endpoint、必要的 API Key 与模型配置。"
             return
         }
         threads[index].provider = value
@@ -917,7 +917,10 @@ final class NativeWorkspace: ObservableObject {
             error = nil
             return true
         } catch {
-            self.error = error.localizedDescription
+            let message = error.localizedDescription
+            self.error = message == "FORGE_DESKTOP_API_KEY_MISSING"
+                ? "远程 API Endpoint 需要 API Key；本机 loopback Endpoint 可留空。"
+                : message
             return false
         }
     }
@@ -1383,7 +1386,7 @@ final class NativeWorkspace: ObservableObject {
             return
         }
         if turnProvider == "api" && !selectedProviderReady {
-            self.error = "兼容 API 尚未配置 Endpoint 或当前会话模型。"
+            self.error = "兼容 API 尚未就绪；请检查 Endpoint、必要的 API Key 与当前会话模型。"
             return
         }
         if turnProvider == "codex" && !localProviderReady {

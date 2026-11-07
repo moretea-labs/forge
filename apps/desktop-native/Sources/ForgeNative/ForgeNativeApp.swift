@@ -889,7 +889,7 @@ private struct AgentPane: View {
     private var agentWorkspaceStatusDetail: String {
         if model.busy { return model.liveActivity?.lastActivity ?? "Agent 正在执行" }
         if !model.selectedProviderReady {
-            return model.selectedProvider == "api" ? "兼容 API Endpoint / 模型尚未就绪" : model.provider
+            return model.selectedProvider == "api" ? "兼容 API 配置尚未就绪；请检查 Endpoint、必要的 API Key 与模型" : model.provider
         }
         if model.thread?.repoId != nil && model.thread?.checkoutId == nil {
             return "当前会话绑定了项目，但没有有效 checkout；请选择项目后新建会话。"
@@ -2436,7 +2436,7 @@ private struct SettingsPane: View {
                     .padding(13)
                     .background(ForgePalette.canvas,in:RoundedRectangle(cornerRadius:12,style:.continuous))
 
-                    Text("API Key 只写入 macOS Keychain；JSON 配置只保存 Provider、Endpoint、模型与协议。新会话读取默认 Provider，已有会话继续使用自己的 Provider。写操作授权仍只对下一次 API 发送有效。")
+                    Text("API Key 只写入 macOS Keychain；远程 Endpoint 需要 Key，本机 loopback Endpoint 可留空。JSON 配置只保存 Provider、Endpoint、模型与协议。新会话读取默认 Provider，已有会话继续使用自己的 Provider。写操作授权仍只对下一次 API 发送有效。")
                         .font(.system(size:10.5)).foregroundStyle(.tertiary).lineSpacing(3)
                 }
                 .padding(16)
