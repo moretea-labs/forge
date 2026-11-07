@@ -394,9 +394,7 @@ function describeHandoffDecision(item: HandoffItem): HandoffCardViewModel['decis
   const reason = item.creationReason;
   const isApproval = reason === 'policy_approval_required' || reason === 'destructive_action_requires_confirmation';
   const approvalAction = item.approvalAction;
-  const canApproveAndContinue = isApproval
-    && (item.status === 'pending' || item.status === 'acknowledged')
-    && approvalAction?.operation === 'start';
+  const canApproveAndContinue = false;
   if (isApproval) {
     const destructive = reason === 'destructive_action_requires_confirmation' || approvalAction?.risk === 'destructive';
     const payload = approvalAction?.payload ?? {};
@@ -409,21 +407,19 @@ function describeHandoffDecision(item: HandoffItem): HandoffCardViewModel['decis
       type: 'approval',
       typeLabel: destructive ? '高风险操作审批' : '执行授权',
       requestedAction: approvalAction?.operation === 'start' && objective
-        ? `创建任务并继续处理：“${objective.slice(0, 240)}”`
+        ? `历史任务创建请求：“${objective.slice(0, 240)}”`
         : item.blockingDecision || item.summary,
       necessityLabel: '必须确认',
       necessityExplanation: destructive
         ? '此操作包含高风险或潜在不可逆副作用，系统不能替你默认同意。'
         : '当前安全策略要求显式授权；缩小范围或改为只读预览后可避免本次审批。',
       impact: approvalAction?.operation === 'start'
-        ? `批准后会创建正式任务。${scopeSummary}。`
-        : '当前审批没有保存可安全重放的具体动作，因此不能自动续跑。',
-      afterApproval: canApproveAndContinue
-        ? '系统会记录批准、立即创建任务并打开任务详情；接下来会明确显示继续、委派、验证或收尾动作，不代表任务已经完成。'
-        : '只会记录你的决定，不会自动执行。请按人工继续提示处理，或重新提交范围明确的任务。',
+        ? `这是退役 Work 生命周期留下的历史审批。${scopeSummary}。当前只能记录决定，不会创建或续跑 Work。`
+        : '当前审批没有可执行的现行动作，只能记录决定。',
+      afterApproval: '只会记录你的决定，不会自动执行或恢复 Work。需要继续时请从 Requirement/Plan 与当前 repository/checkout 发起现行操作。',
       ifRejected: '相关操作保持未执行；你可以缩小范围、改成预览、补充信息或取消。',
       canApproveAndContinue,
-      primaryActionLabel: canApproveAndContinue ? '批准并创建任务' : '仅记录决定',
+      primaryActionLabel: '仅记录决定',
     };
   }
   if (reason === 'missing_authorization') {
@@ -989,42 +985,6 @@ export function setConsoleAccessPolicy(
   };
 }
 
-export function startConsoleWork(
-  _ctx: ConsoleFacadeContext,
-  _input: {
-    objective: string;
-    acceptanceCriteria?: string[];
-    allowedPaths?: string[];
-    forbiddenPaths?: string[];
-    scopeClear?: boolean;
-    requiresApproval?: boolean;
-    destructive?: boolean;
-    accessMode?: AccessMode;
-    workspaceMode?: 'current' | 'isolated' | 'auto';
-    approvalConfirmed?: boolean;
-    checkIds?: string[];
-  },
-): FacadeResult {
-  return buildFacadeResult({
-    status: 'blocked',
-    summary: 'WORK_LIFECYCLE_RETIRED: Local Bridge can no longer create Work. Use Requirement/Plan plus repository Run/Job/edit capabilities.',
-    data: { workLifecycleRetired: true, replacementAuthorities: ['requirement', 'plan', 'github_issue', 'run', 'job', 'repository'] },
-    suggestedNextActions: [],
-  });
-}
-
-export async function verifyConsoleWork(
-  _ctx: ConsoleFacadeContext,
-  _input: { workId: string; checkId?: string; simulate?: boolean; checkFailed?: boolean; infrastructureFailed?: boolean },
-): Promise<FacadeResult> {
-  return buildFacadeResult({
-    status: 'blocked',
-    summary: 'WORK_LIFECYCLE_RETIRED: Work-bound verification is retired. Run checks directly against the selected repository/checkout.',
-    data: { workLifecycleRetired: true },
-    suggestedNextActions: [],
-  });
-}
-
 export function repairConsole(
   ctx: ConsoleFacadeContext,
   input: {
@@ -1097,52 +1057,22 @@ export async function approveConsoleHandoff(ctx: ConsoleFacadeContext, handoffId
   const item = getHandoffItem(store(ctx), handoffId);
   if (!item) throw new Error(`handoff not found: ${handoffId}`);
   const decision = describeHandoffDecision(item);
-  if (decision.type !== 'approval') throw new Error('该事项不是审批，不能使用“批准并继续”。');
-  if (!item.approvalAction || item.approvalAction.operation !== 'start') {
-    throw new Error('该审批项没有保存可安全重放的任务创建动作，请仅记录决定并按人工提示处理。');
-  }
+  if (decision.type !== 'approval') throw new Error('该事项不是审批，不能使用批准操作。');
   if (item.status !== 'pending' && item.status !== 'acknowledged') {
     throw new Error(`该审批已处理（${item.status}）。`);
   }
-
-  const payload = item.approvalAction.payload;
-  const strings = (value: unknown): string[] | undefined => Array.isArray(value) ? value.map(String) : undefined;
-  const actionResult = startConsoleWork(ctx, {
-    objective: typeof payload.objective === 'string' ? payload.objective : '',
-    acceptanceCriteria: strings(payload.acceptanceCriteria),
-    allowedPaths: strings(payload.allowedPaths),
-    forbiddenPaths: strings(payload.forbiddenPaths),
-    scopeClear: payload.scopeClear !== false,
-    requiresApproval: payload.requiresApproval === true,
-    destructive: payload.destructive === true,
-    accessMode: isAccessMode(payload.accessMode) ? payload.accessMode : undefined,
-    workspaceMode: payload.workspaceMode === 'current' || payload.workspaceMode === 'isolated' || payload.workspaceMode === 'auto'
-      ? payload.workspaceMode
-      : undefined,
-    approvalConfirmed: true,
-    checkIds: strings(payload.checkIds),
-  });
-
-  if (actionResult.status !== 'ok') {
-    return {
-      item: mapHandoffCard(item),
-      actionResult,
-      continued: false,
-      summary: `批准已收到，但后续动作未成功：${actionResult.summary}`,
-    };
-  }
   const resolved = resolveHandoffItem(store(ctx), handoffId, {
-    decision: `approved: ${item.approvalAction.label}`,
+    decision: item.approvalAction?.operation === 'start'
+      ? `approved_historical_work_request: ${item.approvalAction.label}`
+      : `approved_decision_only: ${item.blockingDecision || item.summary}`,
     resolver,
   });
   return {
     item: mapHandoffCard(resolved),
-    actionResult,
-    continued: true,
-    summary: '已批准并创建任务，页面将进入任务详情并显示后续动作。',
+    continued: false,
+    summary: '已记录批准决定；历史 Work 创建/续跑动作已退役，未执行任何任务创建。',
   };
 }
-
 export function dismissConsoleHandoff(ctx: ConsoleFacadeContext, handoffId: string, decision = 'dismissed', resolver = 'user') {
   return mapHandoffCard(dismissHandoffItem(store(ctx), handoffId, { decision, resolver }));
 }
