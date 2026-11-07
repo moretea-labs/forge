@@ -443,18 +443,36 @@ final class NativeWorkspaceTests: XCTestCase {
         let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
         let first = model.selectedThreadId!
         model.threads[0].repoId = "repo_a"
+        model.threads[0].checkoutId = "checkout_a"
         model.threads[0].providerSessionId = "session_a"
         model.newThread()
         let selected = model.selectedThreadId!
+        model.threads[0].repoId = "repo_b"
+        model.threads[0].checkoutId = "checkout_b"
 
         model.deleteThread(first)
         XCTAssertEqual(model.threads.count,1)
         XCTAssertEqual(model.selectedThreadId,selected)
         XCTAssertEqual(model.threads[0].id,selected)
 
+        model.draft = "stale draft"
+        model.agentChanges = AgentGitDiff(
+            repoId:"repo_b",checkoutId:"checkout_b",branch:"main",head:"abc",
+            staged:false,paths:[],nameOnly:["A.swift"],
+            stat:"",patch:"diff",truncated:false,untracked:[]
+        )
+        model.threads.append(ChatThread(repoId:"repo_c",checkoutId:"checkout_c"))
+        let fallback = model.threads.last!.id
         model.deleteThread(selected)
+        XCTAssertEqual(model.selectedThreadId,fallback)
+        XCTAssertEqual(model.repoId,"repo_c")
+        XCTAssertEqual(model.checkoutId,"checkout_c")
+        XCTAssertEqual(model.draft,"")
+        XCTAssertNil(model.agentChanges)
+
+        model.deleteThread(fallback)
         XCTAssertEqual(model.threads.count,1)
-        XCTAssertNotEqual(model.selectedThreadId,selected)
+        XCTAssertNotEqual(model.selectedThreadId,fallback)
         XCTAssertTrue(model.threads[0].messages.isEmpty)
     }
 

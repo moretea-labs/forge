@@ -526,9 +526,16 @@ final class NativeWorkspace: ObservableObject {
             self.error = "请先停止正在运行的会话。"
             return
         }
+        let removedSelectedThread = selectedThreadId == id
         threads.removeAll { $0.id == id }
-        if selectedThreadId == id { selectedThreadId = threads.first?.id }
-        if threads.isEmpty { newThread() } else { persist() }
+        if threads.isEmpty {
+            newThread()
+        } else {
+            if removedSelectedThread, let nextThreadId = threads.first?.id {
+                selectThread(nextThreadId)
+            }
+            persist()
+        }
     }
 
     func reeditMessage(_ message: ChatMessage) {
