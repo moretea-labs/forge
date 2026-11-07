@@ -1208,7 +1208,6 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
     toResourceClaimSpecs(input.resourceClaims ?? []),
     input.repoId,
     input.checkoutId,
-    undefined,
   ));
 
   const runtimeClaim = getRuntimeWriteClaim();
