@@ -1506,7 +1506,11 @@ private struct RecordsPane: View {
                             .background(item.id == model.selectedRecord ?
                                 ForgePalette.selection : .clear,
                                 in:RoundedRectangle(cornerRadius:12,style:.continuous))
-                        }.buttonStyle(.plain)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(item.title)
+                        .accessibilityValue("\(item.id) · \(item.state)")
+                        .accessibilityIdentifier("semantic.record.\(item.id)")
                     }
                 }.padding(11)
             }
@@ -1605,6 +1609,9 @@ private struct RecordsPane: View {
                         .background(ForgePalette.softFill,in:RoundedRectangle(cornerRadius:9,style:.continuous))
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel("打开 Requirement")
+                    .accessibilityValue(requirementId)
+                    .accessibilityIdentifier("semantic.open-requirement")
                 }
                 if !plan.items.isEmpty {
                     semanticSection("计划项") {
