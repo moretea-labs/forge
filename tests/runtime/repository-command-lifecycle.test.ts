@@ -537,7 +537,7 @@ describe('repository command execution lifecycle', () => {
     expect(result.changedPaths).toContain('marker.txt');
   });
 
-  test('Work identity does not upgrade an ordinary readonly command into Process Runtime', async () => {
+  test('ordinary readonly command stays on the direct path without semantic attribution', async () => {
     const controllerHome = tempRoot('forge-cmd-work-read-home-');
     const repoRoot = tempRoot('forge-cmd-work-read-repo-');
     const repository = seedRepo(controllerHome, repoRoot);
@@ -548,8 +548,7 @@ describe('repository command execution lifecycle', () => {
       repository,
       command: ['git', 'status', '--short'],
       timeoutMs: 10_000,
-      workId: 'work-readonly-continuity',
-      executionIdentity: executionIdentityForRepository(repository, { workId: 'work-readonly-continuity' }),
+      executionIdentity: executionIdentityForRepository(repository),
     });
     expect(result).toMatchObject({
       route: 'process_direct',
