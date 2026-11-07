@@ -77,7 +77,7 @@ import {
   RECOVERY_WATCHDOG_MAX_TICK_AGE_MS,
 } from '../../src/runtime/standalone-recovery/watchdog-heartbeat';
 import { inspectControlPlaneDatabase } from '../../src/runtime/control-plane/persistence/sqlite-store';
-import { acquireRuntimeOwnership, inspectRuntimeOwnership, runtimeIncarnationPath, runtimeOwnerPath, type RuntimeOwnershipHandle } from '../../src/runtime/root/ownership';
+import { acquireRuntimeOwnership, inspectRuntimeOwnership, reconcileStoppedRuntimeOwnership, runtimeIncarnationPath, runtimeOwnerPath, type RuntimeOwnershipHandle } from '../../src/runtime/root/ownership';
 import {
   ensureActiveRuntimeRelease,
   publishRuntimeRelease,
@@ -86,7 +86,7 @@ import {
   rollbackRuntimeReleaseWithResult,
 } from '../../src/runtime/root/release-store';
 import { advanceReleaseSession, createReleaseSession, readReleaseSession, recordReleaseSessionTransaction } from '../../src/runtime/release/release-session';
-import { readRuntimeStatusSnapshot, writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
+import { observeRuntimeStatus, readRuntimeStatusSnapshot, writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 import { ensureForgeRuntimeLaunchAgentContract, forgeRuntimeServicePaths } from '../../src/runtime/root/service';
 import { systemdUserUnitPath } from '../../src/cli/controller/systemd-user';
 import {
@@ -355,6 +355,50 @@ test('Runtime ownership liveness rejects a reused live PID when schema-v2 proces
   });
 });
 
+test('stopped Runtime reconciliation ignores only an incoherent reused incarnation PID after a strong owner is proven dead', () => {
+  const home = mkdtempSync(join(tmpdir(), 'forge-runtime-owner-incoherent-pid-reuse-'));
+  roots.push(home);
+  mkdirSync(join(home, 'runtime'), { recursive: true });
+  writeFileSync(runtimeOwnerPath(home), JSON.stringify({
+    schemaVersion: 2,
+    runtimeInstanceId: 'runtime-dead-owner',
+    pid: process.pid,
+    acquiredAt: '2026-09-20T00:00:00.000Z',
+    fencingGeneration: 10,
+    processStartTime: 'stale-runtime-start-time',
+    executableFingerprint: 'stale-runtime-executable',
+  }, null, 2));
+  writeFileSync(runtimeIncarnationPath(home), JSON.stringify({
+    schemaVersion: 1,
+    controllerHome: home,
+    runtimeInstanceId: 'runtime-older-incarnation',
+    pid: process.pid,
+    fencingGeneration: 9,
+    activatedAt: '2026-09-19T00:00:00.000Z',
+  }, null, 2));
+
+  expect(inspectRuntimeOwnership(home)).toMatchObject({
+    coherent: false,
+    ownerAlive: false,
+    incarnationAlive: true,
+  });
+  expect(observeRuntimeStatus(home)).toMatchObject({
+    running: false,
+    ready: false,
+    reasonCodes: ['RUNTIME_NOT_RUNNING'],
+  });
+
+  const reconciled = reconcileStoppedRuntimeOwnership(home);
+  expect(reconciled).toMatchObject({
+    ok: true,
+    changed: true,
+    detail: 'dead Runtime owner evidence was fenced out after service shutdown',
+  });
+  expect(existsSync(runtimeOwnerPath(home))).toBe(false);
+  expect(reconciled.staleOwnerPath && existsSync(reconciled.staleOwnerPath)).toBe(true);
+  expect(readFileSync(runtimeIncarnationPath(home), 'utf8')).toContain('"fencingGeneration": 9');
+});
+
 test('Runtime ownership liveness still reports an exact live schema-v2 owner', () => {
   const home = mkdtempSync(join(tmpdir(), 'forge-runtime-owner-exact-live-'));
   roots.push(home);
@@ -363,6 +407,11 @@ test('Runtime ownership liveness still reports an exact live schema-v2 owner', (
 
   expect(inspectRuntimeOwnership(home)).toMatchObject({
     ownerAlive: true,
+  });
+  expect(reconcileStoppedRuntimeOwnership(home)).toMatchObject({
+    ok: false,
+    changed: false,
+    detail: 'RUNTIME_OWNERSHIP_STILL_LIVE',
   });
 });
 
