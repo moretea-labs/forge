@@ -82,7 +82,7 @@ test('adopts a non-overlapping successor HEAD in the same durable edit session a
     const adopted = adoptEditSessionSuccessorHead(fx.repoRoot, session.sessionId, { binding });
     expect(adopted.baseRevision).toBe(successor);
     expect(adopted.currentRevision).toBe(2);
-    expect(adopted.workId).toBeUndefined();
+    expect('workId' in adopted).toBe(false);
     expect(adopted.repoId).toBe(fx.repository.repoId);
     expect(adopted.checkoutId).toBe(fx.repository.activeCheckoutId);
     expect(adopted.controllerInstanceId).toBeUndefined();
@@ -117,7 +117,7 @@ test('adopts a non-overlapping successor HEAD in the same durable edit session a
     });
     expect(second.status).toBe('applied');
     expect(second.recoveredSession).toMatchObject({ previousSessionId: session.sessionId, newSessionId: session.sessionId });
-    expect(second.session.workId).toBeUndefined();
+    expect('workId' in second.session).toBe(false);
     expect(second.session.baseRevision).toBe(successor);
     expect(second.session.currentRevision).toBe(3);
     expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toBe('export const value = 3;\n');
@@ -302,13 +302,11 @@ describe('edit session durable identity continuity', () => {
     }], { binding });
 
     expect(applied).toMatchObject({ status: 'dirty', currentRevision: 1 });
-    expect(applied.workId).toBeUndefined();
     expect(applied.controllerInstanceId).toBeUndefined();
     expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toBe('export const value = 2;\n');
 
     const finalized = finalizeEditSession(fx.repoRoot, session.sessionId, { binding });
     expect(finalized).toMatchObject({ status: 'finalized', currentRevision: 1 });
-    expect(finalized.workId).toBeUndefined();
     expect(finalized.controllerInstanceId).toBeUndefined();
   });
 
@@ -352,7 +350,6 @@ describe('edit session durable identity continuity', () => {
       replacements: [{ oldText: 'value = 1', newText: 'value = 2' }],
     }], { binding });
     expect(applied.status).toBe('dirty');
-    expect(applied.workId).toBeUndefined();
     expect(applied.controllerInstanceId).toBeUndefined();
   });
 });

@@ -26,7 +26,6 @@ function registerSchedulerFailure(input: {
   message: string;
   observationId: string;
   repoId?: string;
-  workId?: string;
   atMs?: number;
 }): void {
   try {
@@ -39,7 +38,6 @@ function registerSchedulerFailure(input: {
         message: input.message,
         at: new Date(input.atMs ?? Date.now()).toISOString(),
         repoId: input.repoId,
-        workId: input.workId,
       },
     });
   } catch {

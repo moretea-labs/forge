@@ -26,7 +26,7 @@ import { repositoryGitRemoveWorktree } from '../../../src/cli/repositories/struc
 import { buildControllerWorkbench } from '../../../src/cli/repositories/workbench';
 import { applySafePatch, buildSafePatchPlan } from '../../../src/cli/repositories/safe-patch';
 import { EDIT_OPERATION_INPUT_SCHEMA } from '../../../src/cli/editing/edit-operation-contract';
-import { getEditSession, getEditSessionDiff, type EditSessionBinding } from '../../../src/cli/editing/edit-session';
+import { getEditSessionDiff, type EditSessionBinding } from '../../../src/cli/editing/edit-session';
 import { buildSyncOperationDigest, classifyUserFacingError } from '../../../src/runtime/control-plane/facade/operation-digest';
 import {
   repositoryGitCommit,
@@ -315,12 +315,6 @@ function safePatchEditBinding(
   if (explicitWorkId) {
     throw new Error(`WORK_MUTATION_AUTHORITY_RETIRED: ${explicitWorkId}; omit work_id and use repository/checkout/EditSession/resource authorities directly`);
   }
-  const sessionId = typeof args.session_id === 'string' ? args.session_id.trim() : '';
-  if (sessionId) {
-    // Existing edit sessions may carry historical Work provenance. That field
-    // is never promoted back into mutation authority after Work retirement.
-    void getEditSession(repository.canonicalRoot, sessionId).workId;
-  }
   return undefined;
 }
 
@@ -360,7 +354,7 @@ interface HistoricalReadOnlyWorkContext {
   workId: string;
   state: WorkContract['semanticState'];
   mode: 'historical_read_only_observation';
-  attribution: 'not_active_work';
+  attribution: 'historical_only';
 }
 
 function historicalReadOnlyWorkContext(
@@ -378,7 +372,7 @@ function historicalReadOnlyWorkContext(
     workId: work.workId,
     state: work.semanticState,
     mode: 'historical_read_only_observation',
-    attribution: 'not_active_work',
+    attribution: 'historical_only',
   };
 }
 

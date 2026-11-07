@@ -162,7 +162,7 @@ export function buildControllerOperationalPlan(repoRoot: string, ledger: TaskLed
     },
     guiInteraction: {
       source: "controller-console-interaction-model",
-      primaryPanels: ["Needs Attention", "Current Work", "Context Pack", "Diff Review", "Validation", "Recovery"],
+      primaryPanels: ["Needs Attention", "Current Run", "Context Pack", "Diff Review", "Validation", "Recovery"],
       primaryActions: ["Continue", "Review Diff", "Run Targeted Checks", "Accept", "Request Changes", "Retry", "Clean Safe Artifacts"],
       hiddenByDefault: ["raw run ids", "lease internals", "projection fingerprints", "scheduler queues"],
     },
@@ -185,7 +185,7 @@ export function buildControllerOperationalPlan(repoRoot: string, ledger: TaskLed
     },
     branchWorktreeCleanup: {
       source: "safe-workspace-cleanup-policy",
-      safeToAutoClean: !dirty && ledger.status.kind !== "active_work",
+      safeToAutoClean: !dirty && ledger.status.kind !== "active_run",
       requiredBeforeCleanup: ["clean git status", "no active local worker", "terminal run state", "no unique unmerged commits"],
       protectedCases: ["dirty main workspace", "waiting_for_user runs", "unmerged worktree branch", "unknown ownership metadata"],
     },

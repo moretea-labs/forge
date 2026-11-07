@@ -1213,6 +1213,7 @@ async function executePluginReadDirectInScope(
   scope: PluginActionScopeContext,
   request: AssistantPluginActionRequest,
 ): Promise<{ manifest: AssistantPluginManifest; action: AssistantPluginActionDescriptor; result: Record<string, unknown>; receipt: PluginActionReceipt }> {
+  if (request.workId || request.workRepoId) throw new Error('WORK_PLUGIN_RECEIPT_AUTHORITY_RETIRED');
   const manifest = scope.kind === 'controller'
     ? getControllerPluginManifest(controllerHome, request.pluginId)
     : getAssistantPluginManifestForAction(controllerHome, scope.repository!, request);
@@ -1693,6 +1694,7 @@ async function submitPluginAction(
   receipt: PluginActionReceipt;
   authorization?: PluginActionAuthorizationEvidence;
 }> {
+  if (request.workId || request.workRepoId) throw new Error('WORK_PLUGIN_RECEIPT_AUTHORITY_RETIRED');
   const adapter = resolvePluginAdapter(controllerHome, request.pluginId);
   if (!adapter) throw new Error(`PLUGIN_NOT_FOUND: ${request.pluginId}`);
   const manifest = scope.kind === 'controller'

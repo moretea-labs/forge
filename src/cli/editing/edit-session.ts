@@ -93,7 +93,6 @@ export interface EditSession {
   sessionId: string;
   issueId?: string;
   taskId?: string;
-  workId?: string;
   repoId?: string;
   checkoutId?: string;
   principalId?: string;
@@ -133,8 +132,6 @@ export interface EditSession {
 export interface EditSessionSummary {
   sessionId: string;
   purpose: string;
-  /** Historical compatibility projection; never current edit ownership authority. */
-  workId?: string;
   status: EditSessionStatus;
   issueId?: string;
   taskId?: string;
@@ -356,6 +353,7 @@ function assertBoundEditSession(
   binding: EditSessionBinding | undefined,
 ): EditSession {
   assertEditSessionDurableBinding(session, binding);
+  // Current mutation authority is repository/checkout/principal plus source fingerprints.
   return session;
 }
 function now(): string {
@@ -418,7 +416,6 @@ function normalizeStoredSession(value: Partial<EditSession> & { sessionId: strin
     sessionId: value.sessionId,
     issueId: value.issueId,
     taskId: value.taskId,
-    workId: value.workId,
     repoId: value.repoId,
     checkoutId: value.checkoutId,
     principalId: value.principalId,
@@ -1181,7 +1178,6 @@ function sessionSummary(session: EditSession): EditSessionSummary {
   return {
     sessionId: session.sessionId,
     purpose: session.purpose,
-    workId: session.workId,
     status: session.status,
     issueId: session.issueId,
     taskId: session.taskId,
@@ -1340,10 +1336,9 @@ function editSessionDirectoryBytes(path: string): { bytes: number; complete: boo
 }
 
 /**
- * Physically reclaim terminal EditSession artifacts after terminality and
- * retention are proven. The repository-relative path may be the runtime-storage
- * compatibility link; deletion follows the existing Controller Home binding
- * instead of creating a second persistence root.
+ * Physically reclaim terminal EditSession artifacts after their own terminal
+ * state and retention policy allow it. The repository-relative path may be the
+ * runtime-storage compatibility link.
  */
 export function cleanupTerminalEditSessionRecords(repoRoot: string, input: {
   nowMs?: number;

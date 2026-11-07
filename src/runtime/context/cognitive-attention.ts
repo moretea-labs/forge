@@ -1,4 +1,3 @@
-import { getWorkContract } from '../../../packages/kernel/work/api/index';
 import type { ScopeRef } from '../../../packages/kernel/identity/api/index';
 import {
   memoryAddressKey,
@@ -11,7 +10,6 @@ import {
   activateCognitiveMemory,
   readCognitiveUsageFeedback,
 } from '../control-plane/persistence/cognition-store';
-import { cognitiveScopesForWork } from '../control-plane/persistence/experience-store';
 
 /**
  * Usage truth comes only from explicit direct learning_feedback observations.
@@ -74,35 +72,6 @@ export function resolveCognitiveAttention(input: {
   });
 }
 
-export function resolveCognitiveAttentionForWork(input: {
-  controllerHome: string;
-  repoId: string;
-  workId: string;
-  query?: string;
-  now?: string;
-  maxItems?: number;
-  maxBytes?: number;
-}): ActivationPack | undefined {
-  const work = getWorkContract({ controllerHome: input.controllerHome, repoId: input.repoId }, input.workId);
-  if (!work) return undefined;
-  const scopes = cognitiveScopesForWork(work, input.controllerHome);
-  const projectId = scopes.find(scope => scope.kind === 'project')?.id;
-  return resolveCognitiveAttention({
-    controllerHome: input.controllerHome,
-    scopes,
-    query: input.query?.trim() || work.objective,
-    now: input.now ?? new Date().toISOString(),
-    maxItems: input.maxItems,
-    maxBytes: input.maxBytes,
-    usageFeedback: cognitiveUsageFeedbackForContext({
-      controllerHome: input.controllerHome,
-      repoId: input.repoId,
-      scopes,
-      ...(projectId ? { projectId } : {}),
-    }),
-  });
-}
-
 /** Compact model-facing projection; no project knowledge, lifecycle facts, or execution authority. */
 export function renderCognitiveAttention(pack: ActivationPack | undefined): string | undefined {
   if (!pack || (pack.items.length === 0 && pack.gaps.length === 0)) return undefined;
@@ -118,24 +87,4 @@ export function renderCognitiveAttention(pack: ActivationPack | undefined): stri
     })),
     gaps: pack.gaps,
   });
-}
-
-/**
- * Advisory cognition must never block the task boundary it annotates.
- * Unexpected read failures remain visible as a bounded gap rather than becoming a retry authority.
- */
-export function renderCognitiveAttentionForWork(input: Parameters<typeof resolveCognitiveAttentionForWork>[0]): string | undefined {
-  try {
-    return renderCognitiveAttention(resolveCognitiveAttentionForWork(input));
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    const code = /^([A-Z][A-Z0-9_]+)(?::|$)/.exec(message)?.[1] ?? 'COGNITION_ATTENTION_UNAVAILABLE';
-    return JSON.stringify({
-      schemaVersion: 1,
-      advisoryOnly: true,
-      items: [],
-      gaps: ['cognition_unavailable'],
-      diagnostic: code,
-    });
-  }
 }

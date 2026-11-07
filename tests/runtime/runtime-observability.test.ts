@@ -97,9 +97,9 @@ function ledgerWithRunningTask(): TaskLedgerProjection {
     issueCount: 1,
     archivedIssueCount: 0,
     status: {
-      kind: 'active_work',
+      kind: 'active_run',
       severity: 'info',
-      label: 'Work in progress',
+      label: 'Run in progress',
       reason: 'fixture',
       nextAction: 'fixture',
     },
