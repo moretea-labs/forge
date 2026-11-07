@@ -30,7 +30,6 @@ import {
   buildFacadeResult,
   buildSyncOperationDigest,
   classifyUserFacingError,
-  delegateToCodexCerebellum,
   dismissHandoffItem,
   getHandoffItem,
   getWorkContract,
@@ -1024,21 +1023,6 @@ export async function verifyConsoleWork(
     data: { workLifecycleRetired: true },
     suggestedNextActions: [],
   });
-}
-
-export function delegateConsoleWork(
-  ctx: ConsoleFacadeContext,
-  input: { workId?: string; target?: 'codex' | 'grok' | 'claude'; objective?: string; available?: boolean },
-): FacadeResult {
-  return delegateToCodexCerebellum(
-    { repoId: ctx.repository.repoId },
-    {
-      target: input.target ?? 'codex',
-      objective: input.objective || '请协助完成当前任务',
-      available: input.available,
-      codexAvailable: input.available,
-    },
-  );
 }
 
 export function repairConsole(
