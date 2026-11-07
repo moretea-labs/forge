@@ -703,7 +703,6 @@ const required = [
   'packages/kernel/work/api/index.ts',
   'packages/kernel/controller/domain/types.ts',
   'packages/kernel/controller/api/index.ts',
-  'src/runtime/control-plane/execution/work-evidence-policy.ts',
   'src/runtime/control-plane/execution/session-execution-support.ts',
   'src/runtime/control-plane/execution/session-repository-binding.ts',
   'src/runtime/evidence/process-check-execution.ts',
@@ -1887,7 +1886,7 @@ for (const requiredEdge of [
 }
 
 const b7LifecycleOwnerMarkers = new Map([
-  ['WorkContract transition authority', ['packages/kernel/work/domain/state-machine.ts']],
+  ['Historical Work row validation compatibility', ['packages/kernel/work/domain/state-machine.ts']],
   ['Schedule occurrence authority', ['packages/kernel/scheduler/infrastructure/schedule-store.ts']],
   ['Forge instance identity authority', ['packages/kernel/identity/infrastructure/identity-store.ts']],
 ]);
@@ -1961,12 +1960,12 @@ requireText('adapters/mcp/runtime-gateway/work-semantic-operations.ts', "const R
 forbid('src/runtime/control-plane/facade/rh-work-operation-contract.ts', /'start'|'revise'|'complete'|'outcome_record'|'experience_record'/, 'retired Work lifecycle/write vocabulary must not remain in the accepted rh_work ABI');
 requireText('adapters/mcp/runtime-gateway/work-semantic-operations.ts', "if (operation === 'get_contract') {");
 requireText('adapters/mcp/runtime-gateway/work-adapter.ts', "operation === 'get_contract'");
-for (const path of [
+forbid(
   'packages/kernel/work/domain/state-machine.ts',
-  'src/runtime/control-plane/execution/work-evidence-policy.ts',
-]) {
-  forbid(path, /READ_ONLY_REVIEW_CLEAN_SCOPE|cleanReadOnlyReviewEvidence|READ_ONLY_REVIEW_FINDINGS_BLOCK/, 'read-only review findings must not gate terminal completion');
-}
+  /READ_ONLY_REVIEW_CLEAN_SCOPE|cleanReadOnlyReviewEvidence|READ_ONLY_REVIEW_FINDINGS_BLOCK/,
+  'historical Work validation must never restore read-only review gates',
+);
+requireMissing('src/runtime/control-plane/execution/work-evidence-policy.ts');
 // Work is historical read-only compatibility data. Requirement/Plan/Run/Git
 // own current mutable state; no Work lifecycle writer may return.
 const retiredWorkBusinessWriter = /\b(?:writeWorkContractStore|createWorkSemanticContext|createWorkContract|acceptSubmittedWorkContract|supersedeWorkContract|reviseWorkSemanticContext|updateWorkContract|updateWorkContractPlacementAtomically|updateWorkContractPlacement|promoteWorkToRepositoryChange|recordWorkEvidenceState|activateWorkContract|failWorkContract|cancelWorkContract|recordCancelledWorkCleanupCompleted|recordWorkScopeEvidence|transitionWorkContractPhase|recordWorkImplementationReview|appendWorkEvidence|appendWorkHandoffRef|appendVerificationRecord|recordWorkCompletionReceipt)\b/;
@@ -1981,10 +1980,10 @@ forbid(
   /writeControlPlaneRecord(?:WithinTransaction)?|mutateControlPlaneRecord|withControlPlaneTransaction/,
   'historical Work rows must not have a production writer',
 );
-// Controller de-authority: ordinary Work/capability execution is fenced by
-// semantic CAS plus concrete target/resource/effect owners, never by a
-// Work-wide ControllerSession lease. Explicit autonomous-continuation round
-// operations retain their narrow dispatch/effect authority until Slice 4.
+// Controller de-authority: current capability execution is fenced by semantic
+// Requirement/Plan CAS plus concrete target/resource/effect owners, never by a
+// Work-wide ControllerSession lease. Historical Work/Controller records remain
+// read-only compatibility evidence only.
 forbid(
   'packages/kernel/work/domain/state-machine.ts',
   /WORK_PHASE_EVIDENCE_|WORK_COMPLETION_PHASE_/,
@@ -2073,7 +2072,7 @@ for (const path of [
   'adapters/mcp/runtime-gateway/work-learning-operations.ts',
   'src/runtime/control-plane/persistence/experience-store.ts',
 ]) {
-  forbid(path, /assertFacadeControllerRoundAuthority|controllerSessionAuthorityMatches|getControllerSession|EXPERIENCE_CONTROLLER_NOT_OWNER|EXPERIENCE_ROUND_AUTHORITY_MISMATCH|EXPERIENCE_CLAIM_AUTHORITY_MISMATCH/, 'advisory learning writes must use Work provenance and evidence, not Controller ownership');
+  forbid(path, /assertFacadeControllerRoundAuthority|controllerSessionAuthorityMatches|getControllerSession|EXPERIENCE_CONTROLLER_NOT_OWNER|EXPERIENCE_ROUND_AUTHORITY_MISMATCH|EXPERIENCE_CLAIM_AUTHORITY_MISMATCH/, 'advisory learning writes must use lifecycle-neutral provenance/evidence, not retired Work or Controller ownership');
 }
 forbid(
   'src/cli/commands/brain-assistant.ts',
