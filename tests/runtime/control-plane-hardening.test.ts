@@ -9,7 +9,6 @@ import { operationReceiptMatchesJobOwnership, type OperationReceipt } from '../.
 import { TERMINAL_JOB_STATUSES, type ExecutionJob } from '../../src/runtime/execution/jobs/types';
 import { createProcessRecord } from '../../src/runtime/execution/process-runtime/store';
 import type { ManagedProcessRecord } from '../../src/runtime/execution/process-runtime/types';
-import { workHasActiveExecution } from '../../src/runtime/execution/work-activity';
 import { acquireRuntimeOwnership } from '../../src/runtime/root/ownership';
 import { forgeRuntimeServicePaths } from '../../src/runtime/root/service';
 import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
