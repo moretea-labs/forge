@@ -47,14 +47,11 @@ import {
 import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { callRepositoryTool } from '../../adapters/mcp/tool-mapping/repository-tools';
-import {
-  createWorkContract,
-  recordWorkCompletionReceipt,
-  recordWorkImplementationReview,
-  transitionWorkContractPhase,
-} from '../../src/runtime/control-plane/facade/work-contract-store';
-import { implementationReviewChangedPathDigest, reviseWorkSemanticContext } from '../../packages/kernel/work/api/index';
+import { implementationReviewChangedPathDigest } from '../../packages/kernel/work/api/index';
 import { cognitionReadPort } from '../../src/runtime/control-plane/persistence/cognition-store';
+import { ensureForgeInstanceIdentity } from '../../packages/kernel/identity/api/index';
+import { writeProjectIdentity, writeProjectPlacement, writeWorkspaceIdentity } from '../../src/runtime/control-plane/workspace/workspace-store';
+import { seedHistoricalWorkContract } from '../helpers/historical-work-contract';
 
 describe('MCP ordinary tool cognition settlement', () => {
   test('exposes and settles model-authored learning after a successful repository tool outcome', async () => {
@@ -69,20 +66,21 @@ describe('MCP ordinary tool cognition settlement', () => {
     runPostFinalizeGit(repoRoot, ['add', 'README.md']);
     runPostFinalizeGit(repoRoot, ['commit', '-m', 'init']);
     const repository = registerRepository({ path: repoRoot, controllerHome, defaultBranch: 'main' });
-    const workId = 'WORK-MCP-COGNITION-SETTLEMENT';
-    createWorkContract({ controllerHome, repoId: repository.repoId }, {
-      workId,
-      repoId: repository.repoId,
-      checkoutId: repository.activeCheckoutId,
-      objective: 'Prove ordinary repository work can settle reusable cognition.',
-      acceptanceCriteria: ['successful repository outcome persists model-authored learning'],
-      allowedPaths: [],
-      forbiddenPaths: [],
-      checks: [],
-      constraints: {},
-      requestedBy: 'chatgpt',
-      dispatchState: 'running',
+    const instance = ensureForgeInstanceIdentity({
+      controllerHome,
+      preferredInstanceId: 'forge-mcp-cognition-settlement',
+      label: 'MCP Cognition Settlement Test',
     });
+    const workspaceId = 'workspace-mcp-cognition-settlement';
+    const projectId = 'project-mcp-cognition-settlement';
+    writeWorkspaceIdentity({ controllerHome, value: { workspaceId, title: 'MCP Cognition Settlement Workspace' } });
+    writeProjectIdentity({ controllerHome, value: { projectId, workspaceId, displayName: 'MCP Cognition Settlement Project' } });
+    writeProjectPlacement({ controllerHome, value: {
+      projectId,
+      forgeInstanceId: instance.instanceId,
+      repositoryId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+    } });
 
     const context = {
       ...createMcpToolContext({ controllerHome, profile: 'controller' }),
@@ -106,15 +104,13 @@ describe('MCP ordinary tool cognition settlement', () => {
         arguments: {
           repo_id: repository.repoId,
           path: 'README.md',
-          work_id: workId,
           cognition_settlement: {
-            work_id: workId,
-            learning_signals: [{
-              scope_kind: 'work',
+              learning_signals: [{
+              scope_kind: 'project',
               kind: 'principle',
               valence: 'positive',
               summary: 'Ordinary repository outcomes can settle reusable learning without a separate learning lifecycle.',
-              concepts: ['mcp.cognition.settlement', 'ordinary-work'],
+              concepts: ['mcp.cognition.settlement', 'ordinary-repository'],
               facets: ['architecture'],
               admission_source: 'controller_observation',
               portability: 'local',
@@ -130,12 +126,12 @@ describe('MCP ordinary tool cognition settlement', () => {
         cognitionSettlement: { recorded: true, storedMemoryIds: [expect.any(String)] },
       });
       const stored = cognitionReadPort(controllerHome).exactByConcept(
-        [{ schemaVersion: 1, kind: 'work', id: workId }],
+        [{ schemaVersion: 1, kind: 'project', id: projectId }],
         ['mcp.cognition.settlement'],
         4,
       );
       expect(stored).toHaveLength(1);
-      expect(stored[0]?.provenance.sourceWorkId).toBe(workId);
+      expect(stored[0]?.provenance.sourceWorkId).toBeUndefined();
       expect(stored[0]?.provenance.sourceRoundId).toBeUndefined();
     } finally {
       await client.close();
@@ -1012,7 +1008,8 @@ function postFinalizeAttributionFixture() {
   const repository = registerRepository({ path: repoRoot, controllerHome, defaultBranch: 'main' });
   const workId = 'WORK-POST-FINALIZE-READONLY';
   const principalId = 'principal-post-finalize';
-  createWorkContract({ controllerHome, repoId: repository.repoId }, {
+  const recordedAt = '2026-08-28T00:18:00.000Z';
+  seedHistoricalWorkContract({ controllerHome, repoId: repository.repoId }, {
     workId,
     repoId: repository.repoId,
     checkoutId: repository.activeCheckoutId,
@@ -1020,56 +1017,30 @@ function postFinalizeAttributionFixture() {
     controllerInstanceId: 'runtime-post-finalize',
     objective: 'Exercise post-finalize readonly attribution.',
     acceptanceCriteria: ['readonly observation remains attributable after lifecycle close'],
-    allowedPaths: [],
-    forbiddenPaths: [],
     checks: [],
     constraints: {},
     requestedBy: 'chatgpt',
     workKind: 'completed_no_change',
-    dispatchState: 'running',
-  });
-  transitionWorkContractPhase({ controllerHome, repoId: repository.repoId }, workId, {
-    phase: 'verification',
-    state: 'satisfied',
-    summary: 'No-change fixture verification is complete before implementation review.',
-  });
-  const recordedAt = '2026-08-28T00:18:00.000Z';
-  recordWorkImplementationReview({ controllerHome, repoId: repository.repoId }, workId, {
-    schemaVersion: 1,
-    reviewId: 'REV-post-finalize-readonly',
-    workId,
-    reviewerPrincipalId: principalId,
-    decision: 'approved',
-    rationale: 'The exact no-change completion candidate was reviewed before closing the Work lifecycle.',
-    findings: [],
-    sourceRevision: targetRevision,
-    workspaceFingerprint: 'post-finalize-no-change-content',
-    verificationWorkspaceFingerprint: 'post-finalize-no-change-verification',
-    changedPaths: [],
-    changedPathDigest: implementationReviewChangedPathDigest([]),
-    acceptanceCriteriaSummary: 'readonly observation remains attributable after lifecycle close',
-    verificationEvidence: [],
-    architectureEvidence: [],
-    recordedAt,
-  });
-  recordWorkCompletionReceipt({ controllerHome, repoId: repository.repoId }, workId, {
-    schemaVersion: 1,
-    receiptId: 'receipt-post-finalize-readonly',
-    source: 'controller_work',
-    issueId: 'post-finalize-attribution',
-    taskId: workId,
-    workId,
-    targetBranch: 'main',
-    targetRevision,
-    changedPaths: [],
-    delivery: { kind: 'no_change', status: 'integrated', strategy: 'no_change', reachable: true, recordedAt },
-    cleanup: { status: 'complete', warnings: [], blockers: [], recordedAt },
-    verifiedAt: recordedAt,
-    recordedAt,
-  }, 'completed_no_change', 'completed_no_change');
-  reviseWorkSemanticContext({ controllerHome, repoId: repository.repoId }, workId, {
-    expectedRevision: 1,
-    state: 'completed',
+    dispatchState: 'terminal',
+    semanticState: 'completed',
+    semanticRevision: 2,
+    phase: 'cleanup',
+    completionOutcome: 'completed_no_change',
+    completionReceipt: {
+      schemaVersion: 1,
+      receiptId: 'receipt-post-finalize-readonly',
+      source: 'controller_work',
+      issueId: 'post-finalize-attribution',
+      taskId: workId,
+      workId,
+      targetBranch: 'main',
+      targetRevision,
+      changedPaths: [],
+      delivery: { kind: 'no_change', status: 'integrated', strategy: 'no_change', reachable: true, recordedAt },
+      cleanup: { status: 'complete', warnings: [], blockers: [], recordedAt },
+      verifiedAt: recordedAt,
+      recordedAt,
+    },
   });
   return {
     root,
@@ -1137,7 +1108,7 @@ describe('MCP terminal Work command context', () => {
           request_id: `post-finalize-${command[0]}`,
         }, fx.caller);
         expect(response?.isError).toBe(true);
-        expect(JSON.stringify(response?.structuredContent ?? response)).toContain('WORK_ATTRIBUTION_INVALID');
+        expect(JSON.stringify(response?.structuredContent ?? response)).toContain('WORK_MUTATION_AUTHORITY_RETIRED');
       }
       expect(existsSync(mutationPath)).toBe(false);
     } finally {

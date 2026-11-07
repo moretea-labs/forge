@@ -1,6 +1,4 @@
-import { getControllerSession, releaseObservedControllerSession } from '../../../../packages/kernel/controller/api/index';
 import { listUserRequests } from '../../../../packages/kernel/identity/api/index';
-import { getWorkContract, semanticWorkState } from '../../../../packages/kernel/work/api/index';
 import type { HandoffItem } from './types';
 import {
   acknowledgeHandoffItem,
@@ -19,7 +17,6 @@ export interface HandoffInboxApplicationInput {
   store: HandoffInboxStoreOptions & { controllerHome: string; repoId: string };
   handoffId?: string;
   limit?: number;
-  workId?: string;
   title?: string;
   reason?: string;
   summary?: string;
@@ -30,7 +27,6 @@ export interface HandoffInboxApplicationInput {
   recommendedContinuationPrompt?: string;
   decision?: string;
   resolver?: string;
-  controllerIdentity?: { principalId?: string; sessionId?: string };
 }
 
 export type HandoffInboxApplicationRunner = (
@@ -39,20 +35,17 @@ export type HandoffInboxApplicationRunner = (
 
 export interface HandoffAttentionResolver {
   userRequestIsPending(requestId: string): boolean | undefined;
-  owningWorkIsOpen?(workId: string): boolean | undefined;
 }
 
 /**
- * Project durable Inbox history into current attention. Unknown lifecycle state
- * remains visible; only canonical terminal/disabled authority can suppress an
- * old pending record. Persistence is never mutated by this projection.
+ * Project durable Inbox history into current attention. UserRequest status is
+ * the only current attention authority; legacy Work linkage is provenance only.
+ * Persistence is never mutated by this projection.
  */
 export function handoffRequiresAttention(item: HandoffItem, resolver: HandoffAttentionResolver): boolean {
   if (item.status !== 'pending') return false;
   const requestId = item.canonicalUserRequestId?.trim();
   if (!requestId) return false;
-  const workId = item.workId?.trim();
-  if (workId && resolver.owningWorkIsOpen?.(workId) === false) return false;
   return resolver.userRequestIsPending(requestId) === true;
 }
 
@@ -64,10 +57,6 @@ export function listHandoffAttentionItems(
   const pendingRequests = new Set(listUserRequests(store.controllerHome, 'pending').map((request) => request.requestId));
   const resolver: HandoffAttentionResolver = {
     userRequestIsPending: (requestId) => pendingRequests.has(requestId),
-    owningWorkIsOpen: (workId) => {
-      const work = getWorkContract(store, workId);
-      return work ? semanticWorkState(work) === 'open' : undefined;
-    },
   };
   const boundedLimit = Math.max(1, Math.min(Math.trunc(limit), 100));
   return candidates.filter((item) => handoffRequiresAttention(item, resolver)).slice(0, boundedLimit);
@@ -108,13 +97,12 @@ export async function runHandoffInboxApplication(input: HandoffInboxApplicationI
   const item = createHandoffItem(store, {
     id,
     repoId: store.repoId,
-    workId: input.workId,
     title: input.title ?? 'Controller handoff',
     severity: 'needs_review',
     creationReason: 'ambiguous_outcome',
     reason: input.reason ?? 'ChatGPT or user judgement is required before continuing.',
     summary: input.summary ?? 'A bounded controller handoff was recorded.',
-    currentState: { repoId: store.repoId, statusSummary: 'pending decision', workId: input.workId },
+    currentState: { repoId: store.repoId, statusSummary: 'pending decision' },
     attemptedActions: input.attemptedActions ?? [],
     evidenceRefs: [],
     blockingDecision: input.blockingDecision,
@@ -123,18 +111,5 @@ export async function runHandoffInboxApplication(input: HandoffInboxApplicationI
     recommendedContinuationPrompt: input.recommendedContinuationPrompt,
     suggestedNextActions: [],
   });
-  let ownershipReleased = false;
-  const principalId = input.controllerIdentity?.principalId?.trim();
-  const sessionId = input.controllerIdentity?.sessionId?.trim();
-  if (item.workId && principalId && sessionId) {
-    const owner = getControllerSession(store, item.workId);
-    if (owner && owner.controllerId === principalId && owner.sessionId === sessionId) {
-      ownershipReleased = releaseObservedControllerSession(store, {
-        workId: item.workId,
-        actor: `handoff-create:${principalId}`,
-        owner,
-      }).allowed;
-    }
-  }
-  return { operation, item, ownershipReleased };
+  return { operation, item, ownershipReleased: false };
 }

@@ -1,11 +1,9 @@
-import { randomUUID } from 'crypto';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { scopedOperationRoot } from '../../../effects/controller-home';
 import { readJsonFile, sanitizeFileComponent } from '../../shared/json-files';
 import type { ProcessCheckExecutionIdentity } from '../../evidence/process-check-execution';
-import { listControlPlaneRecords, listControlPlaneRecordsWithinTransaction, mutateControlPlaneRecord, readControlPlaneRecordWithinTransaction, readOrImportControlPlaneRecord, writeControlPlaneRecord, writeControlPlaneRecordWithinTransaction } from '../persistence/sqlite-store';
-import { updateWorkContractPlacementAtomically } from '../../../../packages/kernel/work/api/index';
+import { listControlPlaneRecords, readOrImportControlPlaneRecord } from '../persistence/sqlite-store';
 
 export const WORK_HANDLE_STATES = [
   'prepared',
@@ -125,36 +123,9 @@ export interface WorkValidationRunState {
   }>;
 }
 
-interface WorkValidationIndex {
-  schemaVersion: 1;
-  updatedAt: string;
-  workIds: string[];
-}
-
-const WORK_VALIDATION_INDEX_NAMESPACE = 'execution_work_validation_index';
-const WORK_VALIDATION_INDEX_KEY = 'v1';
-
-function normalizedWorkIds(values: readonly string[]): string[] {
-  return [...new Set(values.filter((value) => typeof value === 'string' && value.length > 0))].sort();
-}
-
-function isValidationPending(handle: Pick<WorkHandleState, 'state' | 'validationRun'>): boolean {
-  return handle.state === 'validating' && Boolean(handle.validationRun);
-}
-
-function readValidationIndex(controllerHome: string, repositoryId: string): WorkValidationIndex | undefined {
-  return readOrImportControlPlaneRecord<WorkValidationIndex>(controllerHome, {
-    namespace: WORK_VALIDATION_INDEX_NAMESPACE,
-    scope: repositoryId,
-    key: WORK_VALIDATION_INDEX_KEY,
-    schemaVersion: 1,
-    readLegacy: () => undefined,
-  })?.value;
-}
-
 export interface WorkHandleState {
   schemaVersion: 1;
-  /** SQLite envelope revision used for compare-and-swap lifecycle writes. */
+  /** Historical SQLite envelope revision retained for read compatibility. */
   recordRevision?: number;
   workId: string;
   sessionId: string;
@@ -211,12 +182,6 @@ export interface WorkHandleState {
   cleanupReceipt?: WorkCleanupReceipt;
 }
 
-export function workDeliveryBaseRevision(
-  handle: Pick<WorkHandleState, 'baseCommit' | 'deliveryBaseCommit'>,
-): string | undefined {
-  return handle.deliveryBaseCommit?.trim() || handle.baseCommit?.trim() || undefined;
-}
-
 export function resolveWorkDeliveryTargetBranch(
   handle: Pick<WorkHandleState, 'workId' | 'deliveryTargetBranch'>,
   repositoryDefaultBranch?: string,
@@ -237,14 +202,6 @@ export function resolveWorkDeliveryTargetBranch(
 
 function workHandlePath(controllerHome: string, handle: Pick<WorkHandleState, 'repositoryId' | 'workId'>): string {
   return join(scopedOperationRoot(controllerHome, handle.repositoryId), 'work-handles', `${sanitizeFileComponent(handle.workId)}.json`);
-}
-
-function now(): string {
-  return new Date().toISOString();
-}
-
-export function newWorkId(): string {
-  return `work_${randomUUID().replace(/-/g, '')}`;
 }
 
 export function readWorkHandle(controllerHome: string, repositoryId: string, workId: string): WorkHandleState | undefined {
@@ -271,13 +228,9 @@ export function listWorkHandles(controllerHome: string, repositoryId: string, li
 }
 
 /**
- * List WorkHandles with fail-closed behavior when the SQLite hard cap (5000) is
- * reached. Safety-critical authority/cleanup/recovery operations must use this
- * instead of listWorkHandles to prevent incomplete inventory from authorizing
- * mutations, granting ownership, or inferring resource cleanup completion.
- *
- * Advisory/status projections that intentionally accept bounded results should
- * continue using listWorkHandles with an explicit limit.
+ * List historical WorkHandles with fail-closed behavior when the SQLite hard cap (5000) is
+ * reached. Cleanup/recovery readers use this only to avoid acting on incomplete legacy inventory.
+ * This function grants no Work lifecycle or repository mutation authority.
  */
 export function listWorkHandlesFailClosed(
   controllerHome: string,
@@ -291,225 +244,4 @@ export function listWorkHandlesFailClosed(
     throw new Error('WORK_HANDLE_OWNERSHIP_SCAN_INCOMPLETE');
   }
   return handles;
-}
-
-function replaceValidationIndex(
-  controllerHome: string,
-  repositoryId: string,
-  workIds: readonly string[],
-  action: string,
-): WorkValidationIndex {
-  return mutateControlPlaneRecord<WorkValidationIndex>(controllerHome, {
-    namespace: WORK_VALIDATION_INDEX_NAMESPACE,
-    scope: repositoryId,
-    key: WORK_VALIDATION_INDEX_KEY,
-    schemaVersion: 1,
-    action,
-    mutate: () => ({
-      schemaVersion: 1,
-      updatedAt: now(),
-      workIds: normalizedWorkIds(workIds),
-    }),
-  }).value;
-}
-
-function rebuildValidationIndex(controllerHome: string, repositoryId: string): WorkValidationIndex {
-  const workIds = listWorkHandlesFailClosed(controllerHome, repositoryId)
-    .filter(isValidationPending)
-    .map((handle) => handle.workId);
-  return replaceValidationIndex(
-    controllerHome,
-    repositoryId,
-    workIds,
-    'work_validation_index_rebuild',
-  );
-}
-
-function ensureValidationIndex(controllerHome: string, repositoryId: string): WorkValidationIndex {
-  return readValidationIndex(controllerHome, repositoryId) ?? rebuildValidationIndex(controllerHome, repositoryId);
-}
-
-function updateValidationIndexMembership(
-  controllerHome: string,
-  repositoryId: string,
-  workId: string,
-  validating: boolean,
-): void {
-  const existing = readValidationIndex(controllerHome, repositoryId);
-  // The index describes pending validation membership, not WorkHandle activity.
-  // Other lifecycle writes do not change its membership or need an index CAS.
-  if (existing && existing.workIds.includes(workId) === validating) return;
-  if (!existing) {
-    // The WorkHandle write is already durable. Rebuild once from authoritative
-    // handles so legacy repositories establish an exact index without a scan
-    // on every scheduler tick.
-    rebuildValidationIndex(controllerHome, repositoryId);
-    return;
-  }
-  mutateControlPlaneRecord<WorkValidationIndex>(controllerHome, {
-    namespace: WORK_VALIDATION_INDEX_NAMESPACE,
-    scope: repositoryId,
-    key: WORK_VALIDATION_INDEX_KEY,
-    schemaVersion: 1,
-    action: 'work_validation_index_update',
-    mutate: (current) => {
-      const base = current?.value ?? existing;
-      const workIds = new Set(base.workIds);
-      if (validating) workIds.add(workId); else workIds.delete(workId);
-      return { schemaVersion: 1, updatedAt: now(), workIds: [...workIds].sort() };
-    },
-  });
-}
-
-export function listValidatingWorkHandles(
-  controllerHome: string,
-  repositoryId: string,
-  limit = 500,
-): WorkHandleState[] {
-  const boundedLimit = Math.max(1, Math.min(Math.trunc(limit), 5_000));
-  const index = ensureValidationIndex(controllerHome, repositoryId);
-  const handles: WorkHandleState[] = [];
-  const staleIds: string[] = [];
-  for (const workId of index.workIds.slice(0, boundedLimit)) {
-    const handle = readWorkHandle(controllerHome, repositoryId, workId);
-    if (!handle || !isValidationPending(handle)) {
-      staleIds.push(workId);
-      continue;
-    }
-    handles.push(handle);
-  }
-  if (staleIds.length > 0) {
-    const stale = new Set(staleIds);
-    replaceValidationIndex(
-      controllerHome,
-      repositoryId,
-      index.workIds.filter((workId) => !stale.has(workId)),
-      'work_validation_index_reconcile',
-    );
-  }
-  return handles;
-}
-
-export function writeWorkHandle(controllerHome: string, handle: WorkHandleState): WorkHandleState {
-  const { recordRevision, ...persistedHandle } = handle;
-  const updated: Omit<WorkHandleState, 'recordRevision'> = { ...persistedHandle, updatedAt: now() };
-  const record = writeControlPlaneRecord(controllerHome, {
-    namespace: 'execution_work_handle',
-    scope: updated.repositoryId,
-    key: sanitizeFileComponent(updated.workId),
-    schemaVersion: updated.schemaVersion,
-    value: updated,
-    action: 'work_handle_write',
-    ...(recordRevision !== undefined ? { expectedRevision: recordRevision } : {}),
-  });
-  updateValidationIndexMembership(
-    controllerHome,
-    record.value.repositoryId,
-    record.value.workId,
-    isValidationPending(record.value),
-  );
-  return { ...record.value, recordRevision: record.revision };
-}
-
-/**
- * Atomically rebind the one existing execution handle and its Kernel Work
- * placement. The application service already proved exact Git ancestry and
- * clean exclusive target; this store owns only the two-record CAS mutation.
- */
-export function relocateWorkHandlePlacementAtomically(
-  controllerHome: string,
-  prior: WorkHandleState,
-  target: { checkoutId: string; root: string; branch: string; head: string },
-): WorkHandleState {
-  const moved: WorkHandleState = {
-    ...prior, checkoutId: target.checkoutId, worktreePath: target.root, branch: target.branch,
-    expectedHead: target.head, managedWorktree: true,
-    validationRun: undefined, validatedInputFingerprint: undefined,
-    finalization: { validation: 'pending', commit: 'pending', merge: 'pending', branchCleanup: 'pending', worktreeCleanup: 'pending' },
-  };
-  updateWorkContractPlacementAtomically({ controllerHome, repoId: prior.repositoryId }, prior.workId, {
-    checkoutId: target.checkoutId,
-    worktreeRef: target.root,
-    executionPlacement: { schemaVersion: 1, repositoryId: prior.repositoryId, checkoutId: target.checkoutId },
-    worktreePolicy: { required: true, reason: 'Explicit identity-preserving managed checkout relocation', ref: target.root },
-  }, (database, updatedContract) => {
-    if (updatedContract.checkoutId !== moved.checkoutId) throw new Error('WORK_RELOCATION_TRANSACTION_CONTRACT_MISMATCH');
-    const row = readControlPlaneRecordWithinTransaction<WorkHandleState>(
-      database, 'execution_work_handle', prior.repositoryId, prior.workId,
-    );
-    if (!row || row.revision !== prior.recordRevision || row.value.checkoutId !== prior.checkoutId
-        || row.value.expectedHead !== prior.expectedHead) {
-      throw new Error('WORK_RELOCATION_HANDLE_CAS_CONFLICT');
-    }
-    const scannedHandles = listControlPlaneRecordsWithinTransaction<WorkHandleState>(database, {
-      namespace: 'execution_work_handle', scope: prior.repositoryId, limit: 5000,
-    });
-    if (scannedHandles.length === 5000) throw new Error('WORK_HANDLE_OWNERSHIP_SCAN_INCOMPLETE');
-    const competing = scannedHandles.some((entry) => entry.value.workId !== prior.workId && entry.value.checkoutId === target.checkoutId
-      && entry.value.state !== 'cleaned');
-    if (competing) throw new Error('WORK_RELOCATION_TARGET_OWNED');
-    const { recordRevision: _revision, ...persisted } = moved;
-    writeControlPlaneRecordWithinTransaction(database, {
-      namespace: 'execution_work_handle', scope: prior.repositoryId, key: prior.workId,
-      schemaVersion: 1, expectedRevision: row.revision,
-      value: { ...persisted, updatedAt: new Date().toISOString() },
-      action: 'work_handle_checkout_relocated',
-    });
-  });
-  const refreshed = readWorkHandle(controllerHome, prior.repositoryId, prior.workId);
-  if (!refreshed || refreshed.checkoutId !== target.checkoutId) throw new Error('WORK_RELOCATION_COMMIT_NOT_VERIFIED');
-  return refreshed;
-}
-
-/**
- * Refresh legacy controller identity fields as provenance only. Repository
- * mutation authority remains WorkHandle CAS plus concrete checkout/resource fences.
- */
-export function rebindWorkHandleControllerIdentity(
-  controllerHome: string,
-  handle: WorkHandleState,
-  identity: { principalId: string; sessionId: string },
-): WorkHandleState {
-  if (handle.principalId === identity.principalId && handle.sessionId === identity.sessionId) return handle;
-  return writeWorkHandle(controllerHome, {
-    ...handle,
-    principalId: identity.principalId,
-    sessionId: identity.sessionId,
-  });
-}
-
-const TRANSITIONS: Record<WorkHandleStateName, readonly WorkHandleStateName[]> = {
-  prepared: ['editing', 'validating', 'committed', 'failed', 'failed_terminal_cleanup'],
-  editing: ['validating', 'committed', 'merged', 'failed', 'failed_terminal_cleanup'],
-  validating: ['editing', 'committed', 'merged', 'failed', 'failed_terminal_cleanup'],
-  committed: ['validating', 'merged', 'cleaned', 'failed', 'failed_terminal_cleanup'],
-  merged: ['cleaned', 'failed', 'failed_terminal_cleanup'],
-  failed_terminal_cleanup: ['failed_terminal_cleanup', 'cleaned'],
-  cleaned: [],
-  failed: ['validating', 'editing', 'committed', 'merged', 'cleaned', 'failed_terminal_cleanup'],
-};
-
-export function transitionWorkHandle(
-  controllerHome: string,
-  handle: WorkHandleState,
-  nextState: WorkHandleStateName,
-  patch: Partial<Pick<WorkHandleState, 'failureReason' | 'deliveryBaseCommit' | 'expectedHead' | 'finalization' | 'validationRun' | 'validatedInputFingerprint' | 'cleanupReceipt'>> = {},
-): WorkHandleState {
-  if (handle.state !== nextState && !TRANSITIONS[handle.state].includes(nextState)) {
-    throw new Error(`WORK_HANDLE_LIFECYCLE_INVALID: cannot transition ${handle.state} -> ${nextState}`);
-  }
-  return writeWorkHandle(controllerHome, {
-    ...handle,
-    ...patch,
-    state: nextState,
-    ...(nextState === 'failed' && !patch.failureReason ? { failureReason: handle.failureReason ?? 'work handle failed' } : {}),
-  });
-}
-
-export function markWorkHandleFailed(controllerHome: string, handle: WorkHandleState, reason: string): WorkHandleState {
-  return writeWorkHandle(controllerHome, {
-    ...handle,
-    state: 'failed',
-    failureReason: reason.slice(0, 1_000),
-  });
 }

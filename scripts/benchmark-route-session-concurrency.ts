@@ -11,10 +11,6 @@ import {
 import { createMcpToolContext } from '../adapters/mcp/server';
 import { callMultiRepositoryTool } from '../adapters/mcp/multi-repository';
 import { callRuntimeTool } from '../adapters/mcp/runtime-gateway/runtime-tools';
-import { createWorkContract } from '../src/runtime/control-plane/facade/work-contract-store';
-import { createRequirement } from '../src/runtime/control-plane/persistence/requirement-store';
-import { startGoalWorkloop } from '../src/runtime/control-plane/facade/goal-workloop';
-import { withPrimaryWorkAdmissionLockAsync } from '../src/runtime/control-plane/facade/semantic-admission';
 import { executionIdentityForRepository } from '../src/runtime/control-plane/execution/execution-identity';
 import { acquireRuntimeOwnership } from '../src/runtime/root/ownership';
 import { ensureActiveRuntimeRelease } from '../src/runtime/root/release-store';
@@ -48,30 +44,6 @@ interface Sample {
   phases: Phases;
   outcome: Outcome;
   metrics?: Record<string, number>;
-}
-
-interface SemanticAdmissionWorkerResult {
-  index: number;
-  requirementId: string;
-  status: string;
-  decision: string;
-  created: boolean;
-  authorityWorkId?: string;
-  criticalSectionMs: number;
-  criticalSectionCpuMs: number;
-  totalAdmissionMs: number;
-}
-
-interface SemanticAdmissionBurstResult {
-  controllers: number;
-  createdAuthorities: number;
-  uniqueAuthorityCount: number;
-  deterministicResolutions: number;
-  criticalSectionP50Ms: number;
-  criticalSectionP95Ms: number;
-  criticalSectionCpuP95Ms: number;
-  totalAdmissionP95Ms: number;
-  success: boolean;
 }
 
 function phases(): Phases {
@@ -210,131 +182,6 @@ function cliValue(name: string): string | undefined {
   return index >= 0 ? process.argv[index + 1]?.trim() : undefined;
 }
 
-async function semanticAdmissionWorker(): Promise<void> {
-  const controllerHome = cliValue('--controller-home');
-  const repoId = cliValue('--repo-id');
-  const storeRoot = cliValue('--store-root');
-  const requirementId = cliValue('--requirement-id');
-  const mode = cliValue('--semantic-mode');
-  const index = Number(cliValue('--worker-index'));
-  const startAt = Number(cliValue('--start-at'));
-  if (!controllerHome || !repoId || !storeRoot || !requirementId || !['same', 'independent'].includes(mode ?? '') || !Number.isFinite(index) || !Number.isFinite(startAt)) {
-    throw new Error('semantic admission worker arguments are incomplete');
-  }
-  const delayMs = Math.max(0, startAt - Date.now());
-  if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));
-  let criticalSectionMs = 0;
-  let criticalSectionCpuMs = 0;
-  const started = performance.now();
-  const facade = await withPrimaryWorkAdmissionLockAsync({ controllerHome, repoId }, () => {
-    const entered = performance.now();
-    const cpuEntered = process.cpuUsage();
-    const value = startGoalWorkloop({
-      workStore: { controllerHome, repoId },
-      handoffStore: { root: join(storeRoot, 'handoff') },
-      repoId,
-      checkoutId: `semantic-${mode}-${index}`,
-      principalId: `semantic-principal-${index}`,
-      controllerInstanceId: `semantic-controller-${index}`,
-      sourceRevision: 'semantic-admission-benchmark',
-      semanticAdmissionLocked: true,
-    }, {
-      objective: mode === 'same'
-        ? 'Own the semantic admission benchmark requirement'
-        : `Own independent semantic admission requirement ${index}`,
-      requirementId,
-      requestedBy: 'chatgpt',
-      request: {
-        scopeClear: true,
-        mutation: true,
-        requiresRecovery: true,
-        risk: 'local_repo_write',
-      },
-    });
-    criticalSectionMs = elapsed(entered);
-    const cpuElapsed = process.cpuUsage(cpuEntered);
-    criticalSectionCpuMs = (cpuElapsed.user + cpuElapsed.system) / 1_000;
-    return value;
-  });
-  const data = facade.data && typeof facade.data === 'object' ? facade.data as Record<string, unknown> : {};
-  const work = data.work && typeof data.work === 'object' ? data.work as Record<string, unknown> : undefined;
-  const recommendedWork = data.recommendedWork && typeof data.recommendedWork === 'object' ? data.recommendedWork as Record<string, unknown> : undefined;
-  const candidates = Array.isArray(data.candidates) ? data.candidates as Record<string, unknown>[] : [];
-  const authorityWorkId = [work?.workId, recommendedWork?.workId, candidates[0]?.workId]
-    .find((value): value is string => typeof value === 'string' && value.length > 0);
-  const result: SemanticAdmissionWorkerResult = {
-    index,
-    requirementId,
-    status: facade.status,
-    decision: typeof data.admissionDecision === 'string'
-      ? data.admissionDecision
-      : data.workContractCreated === true ? 'create_new' : 'unknown',
-    created: data.workContractCreated === true,
-    ...(authorityWorkId ? { authorityWorkId } : {}),
-    criticalSectionMs: Math.round(criticalSectionMs * 1000) / 1000,
-    criticalSectionCpuMs: Math.round(criticalSectionCpuMs * 1000) / 1000,
-    totalAdmissionMs: Math.round(elapsed(started) * 1000) / 1000,
-  };
-  process.stdout.write(`${JSON.stringify(result)}\n`);
-}
-
-async function runSemanticAdmissionBurst(input: {
-  controllerHome: string;
-  repoId: string;
-  storeRoot: string;
-  mode: 'same' | 'independent';
-  controllers?: number;
-}): Promise<SemanticAdmissionBurstResult> {
-  const controllers = input.controllers ?? 32;
-  mkdirSync(input.storeRoot, { recursive: true });
-  const startAt = Date.now() + 1_500;
-  const scriptPath = process.argv[1]!;
-  const children = Array.from({ length: controllers }, (_, index) => {
-    const requirementId = input.mode === 'same'
-      ? 'REQ-semantic-admission-benchmark-shared'
-      : `REQ-semantic-admission-benchmark-${index}`;
-    return Bun.spawn([
-      process.execPath,
-      scriptPath,
-      '--semantic-admission-worker',
-      '--controller-home', input.controllerHome,
-      '--repo-id', input.repoId,
-      '--store-root', input.storeRoot,
-      '--requirement-id', requirementId,
-      '--semantic-mode', input.mode,
-      '--worker-index', String(index),
-      '--start-at', String(startAt),
-    ], { stdout: 'pipe', stderr: 'pipe' });
-  });
-  const rows = await Promise.all(children.map(async (child) => {
-    const [stdout, stderr, exitCode] = await Promise.all([
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
-      child.exited,
-    ]);
-    if (exitCode !== 0) throw new Error(`semantic admission worker failed (${exitCode}): ${stderr || stdout}`);
-    return JSON.parse(stdout.trim()) as SemanticAdmissionWorkerResult;
-  }));
-  const createdAuthorities = rows.filter((row) => row.created).length;
-  const authorityIds = new Set(rows.map((row) => row.authorityWorkId).filter((value): value is string => Boolean(value)));
-  const deterministicResolutions = rows.filter((row) => row.created || row.decision === 'reuse_existing' || row.decision === 'resolution_required').length;
-  const criticalValues = rows.map((row) => row.criticalSectionMs);
-  const success = input.mode === 'same'
-    ? createdAuthorities === 1 && authorityIds.size === 1 && deterministicResolutions === controllers
-    : createdAuthorities === controllers && authorityIds.size === controllers && deterministicResolutions === controllers;
-  return {
-    controllers,
-    createdAuthorities,
-    uniqueAuthorityCount: authorityIds.size,
-    deterministicResolutions,
-    criticalSectionP50Ms: percentile(criticalValues, 0.50),
-    criticalSectionP95Ms: percentile(criticalValues, 0.95),
-    criticalSectionCpuP95Ms: percentile(rows.map((row) => row.criticalSectionCpuMs), 0.95),
-    totalAdmissionP95Ms: percentile(rows.map((row) => row.totalAdmissionMs), 0.95),
-    success,
-  };
-}
-
 async function main(): Promise<void> {
   const iterationsIndex = process.argv.indexOf('--iterations');
   const outputIndex = process.argv.indexOf('--output');
@@ -347,38 +194,6 @@ async function main(): Promise<void> {
     const first = repositoryFixture(root, controllerHome, 'repository-a');
     const second = repositoryFixture(root, controllerHome, 'repository-b');
     const firstIsolated = worktreeFixture(root, controllerHome, first);
-    createRequirement({ controllerHome }, {
-      requirementId: 'REQ-semantic-admission-benchmark-shared',
-      title: 'Semantic admission benchmark shared authority',
-      outcomeStatement: 'Measure deterministic concurrent admission for one shared Requirement authority.',
-    });
-    for (let index = 0; index < 32; index += 1) {
-      createRequirement({ controllerHome }, {
-        requirementId: `REQ-semantic-admission-benchmark-${index}`,
-        title: `Semantic admission benchmark independent authority ${index}`,
-        outcomeStatement: 'Measure deterministic concurrent admission for an independent Requirement authority.',
-      });
-    }
-    const sameAuthorityAdmission = await runSemanticAdmissionBurst({ controllerHome, repoId: first.repository.repoId, storeRoot: join(root, 'semantic-same-authority'), mode: 'same' });
-    const independentRequirementAdmission = await runSemanticAdmissionBurst({ controllerHome, repoId: first.repository.repoId, storeRoot: join(root, 'semantic-independent-requirements'), mode: 'independent' });
-    const semanticAdmissionCriticalWallP95Ms = Math.max(sameAuthorityAdmission.criticalSectionP95Ms, independentRequirementAdmission.criticalSectionP95Ms);
-    const semanticAdmissionCriticalCpuP95Ms = Math.max(sameAuthorityAdmission.criticalSectionCpuP95Ms, independentRequirementAdmission.criticalSectionCpuP95Ms);
-    const semanticAdmission = {
-      sameAuthority: sameAuthorityAdmission,
-      independentRequirements: independentRequirementAdmission,
-      acceptance: {
-        minimumControllers: 32,
-        criticalSectionCpuP95ThresholdMs: 10,
-        criticalSectionCpuP95TargetMs: 5,
-        criticalSectionWallP95GuardrailMs: 100,
-        observedCriticalSectionCpuP95Ms: semanticAdmissionCriticalCpuP95Ms,
-        observedCriticalSectionWallP95Ms: semanticAdmissionCriticalWallP95Ms,
-        passed: sameAuthorityAdmission.success
-          && independentRequirementAdmission.success
-          && semanticAdmissionCriticalCpuP95Ms <= 10
-          && semanticAdmissionCriticalWallP95Ms <= 100,
-      },
-    };
     const results = new Map<string, Sample[]>();
     const run = async (name: string, operation: () => Promise<Sample>) => {
       results.set(name, [...(results.get(name) ?? []), await guarded(operation)]);
@@ -432,26 +247,6 @@ async function main(): Promise<void> {
         timing.storageTimeMs = elapsed(storageStarted);
         timing.wallClockMs = elapsed(started);
         return { phases: timing, outcome: value.isError ? 'failed' : 'success' };
-      });
-
-      await run('work_prepare', async () => {
-        const timing = phases();
-        const started = performance.now();
-        const storageStarted = performance.now();
-        createWorkContract({ controllerHome, repoId: first.repository.repoId }, {
-          workId: `BENCH-WORK-${index}`,
-          repoId: first.repository.repoId,
-          objective: 'Measure durable Work preparation.',
-          acceptanceCriteria: ['Prepared'],
-          allowedPaths: [],
-          forbiddenPaths: [],
-          checks: [],
-          constraints: {},
-          requestedBy: 'chatgpt',
-        });
-        timing.storageTimeMs = elapsed(storageStarted);
-        timing.wallClockMs = elapsed(started);
-        return { phases: timing, outcome: 'success' };
       });
 
       await run('direct_edit_claim', async () => {
@@ -886,9 +681,7 @@ async function main(): Promise<void> {
         sameCheckoutContention: 'leaseWaitMs is the bounded end-to-end admission time for the conflicting second Process, including identity/persistence work around the Lease decision.',
         checkIdentity: 'The cache identity is derived from repository-scoped storage plus content revision, check definition digest, environment/toolchain fingerprint, timeout contract, and reuse scope. Session and request ids are subscribers, not cache-key inputs.',
         checkCacheMetrics: 'physicalExecutions/logicalSubscribers/coalesced/cacheHits/invalidations/crossCheckoutReuses are summed across measured iterations.',
-        semanticAdmission: 'Two 32-process bursts share one repository-scoped semantic admission lock: one contends for a single Requirement authority and one admits 32 independent Requirement identities. Critical-section latency measures only canonical ownership resolution and persistence inside the lock.',
       },
-      semanticAdmission,
       scenarios: Object.fromEntries([...results].map(([name, samples]) => [name, summarize(samples)])),
     };
     const serialized = `${JSON.stringify(report, null, 2)}\n`;
@@ -897,15 +690,10 @@ async function main(): Promise<void> {
       writeFileSync(outputPath, serialized);
     }
     process.stdout.write(serialized);
-    if (!semanticAdmission.acceptance.passed) process.exitCode = 1;
   } finally {
     clearRuntimeWriteClaimForTests();
     rmSync(root, { recursive: true, force: true });
   }
 }
 
-if (process.argv.includes('--semantic-admission-worker')) {
-  await semanticAdmissionWorker();
-} else {
-  await main();
-}
+await main();

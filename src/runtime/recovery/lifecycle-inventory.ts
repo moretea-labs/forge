@@ -24,7 +24,7 @@ export type RuntimeLifecycleClosureStatus = (typeof RUNTIME_LIFECYCLE_CLOSURE_ST
 export interface RuntimeLifecycleClassDefinition {
   id: string;
   owner: string;
-  scope: 'controller' | 'repository' | 'work' | 'process' | 'session' | 'provider';
+  scope: 'controller' | 'repository' | 'work' | 'process' | 'session' | 'provider' | 'resource';
   dataClass: RuntimeLifecycleDataClass;
   storage: string;
   terminalCondition: string;
@@ -69,7 +69,7 @@ export const RUNTIME_LIFECYCLE_INVENTORY: readonly RuntimeLifecycleClassDefiniti
     retentionCapacity: 'SQLite stores one current semantic row per workId plus bounded revision history. Retry, delivery, provider recovery and resource cleanup do not manufacture successor Work identities.',
     cleanupAuthority: 'OwnedResource/process/worktree domains clean up their own physical resources. Cleanup and delivery never rewrite semantic Work completion.',
     recoverySemantics: 'Recovery resumes mechanical operations around the same retained Work when appropriate; it never infers semantic completion/cancellation/reopen from physical evidence.',
-    closureStatus: 'existing_bounded', evidencePaths: ['packages/kernel/work/api/index.ts','src/runtime/control-plane/execution/work-terminal-cleanup.ts','tests/runtime/repository-work-admission.test.ts'],
+    closureStatus: 'existing_bounded', evidencePaths: ['packages/kernel/work/api/index.ts','src/runtime/control-plane/execution/work-handle-history.ts'],
   }),
   lifecycle({
     id: 'process_record_log', owner: 'Process Runtime', scope: 'process', dataClass: 'execution_authority',
@@ -102,24 +102,14 @@ export const RUNTIME_LIFECYCLE_INVENTORY: readonly RuntimeLifecycleClassDefiniti
     closureStatus: 'existing_bounded', evidencePaths: ['src/runtime/execution/process-runtime/check-receipt.ts','src/runtime/execution/process-runtime/gc.ts','src/runtime/execution/process-runtime/check-result-retention.ts','packages/kernel/work/api/index.ts','tests/runtime/check-result-retention.test.ts'],
   }),
   lifecycle({
-    id: 'controller_round', owner: 'Kernel autonomous-continuation mechanics', scope: 'work', dataClass: 'execution_authority',
-    storage: 'Controller Home SQLite controller-round relay records',
-    terminalCondition: 'One explicit continuation attempt reaches a mechanical disposition/dispatch boundary; no disposition changes Requirement, Plan or Work semantic state.',
-    activeProtection: 'Relay scope, claim generation, stable provider-effect identity and opaque authority fence only continuation dispatch/recovery mechanics.',
-    retentionCapacity: 'controller_round_relay uses one current row per continuation scope/work and revision-updates it; audit/effect evidence records history without creating a parallel semantic authority.',
-    cleanupAuthority: 'Controller continuation mechanics own relay retention; session leases and provider/browser artifacts remain separate concrete-resource/effect domains.',
-    recoverySemantics: 'Transport/session replacement and ambiguous provider effect reconcile against the same fenced continuation/effect identity; outcome_unknown is never blind-replayed and recovery never fabricates semantic progress.',
-    closureStatus: 'existing_bounded', evidencePaths: ['packages/kernel/controller/api/index.ts','tests/runtime/autonomous-continuation-lifecycle.test.ts'],
-  }),
-  lifecycle({
-    id: 'controller_session_lease', owner: 'Kernel ControllerSession / resource lease authority', scope: 'session', dataClass: 'execution_authority',
-    storage: 'Controller Home ControllerSession authority plus repository-scoped active resource lease files.',
-    terminalCondition: 'Controller ownership is explicitly released/replaced, expires or is fenced by terminalization; resource leases expire or are released by their exact owner/terminal Process.',
-    activeProtection: 'Principal/controller type/Runtime instance/claim-generation fencing protects Controller ownership; resource key, owner identity and fencing token protect each live resource lease.',
-    retentionCapacity: 'ControllerSession ownership is capped at one hour, claim persistence drops expired sessions and release removes active ownership immediately. Resource leases default to 30 seconds with a five-second minimum; every active-lease read/acquire physically reaps expired or malformed files without truncating the live authoritative set, and periodic Runtime maintenance traverses that same active view.',
-    cleanupAuthority: 'ControllerSession claim/release/terminalization owns session expiry; the resource Lease store owns expiry/release under the repository Controller lock, while centralized Runtime maintenance invokes the same active-lease view rather than introducing a second lease authority.',
-    recoverySemantics: 'Expired/replaced Controller transports or resource leases cannot strand permanent Work ownership; claim generation and exact fencing tokens fail closed, while retained Controller identity remains audit/recovery evidence rather than an active lease.',
-    closureStatus: 'existing_bounded', evidencePaths: ['packages/kernel/controller/api/index.ts','src/runtime/resources/leases/store.ts','src/runtime/control-plane/runtime-cleanup.ts','tests/runtime/controller-session-store.test.ts','tests/runtime/work-execution-concurrency.test.ts','tests/runtime/process-runtime.test.ts'],
+    id: 'resource_lease', owner: 'Runtime ResourceLease authority', scope: 'resource', dataClass: 'execution_authority',
+    storage: 'Repository-scoped active resource lease files.',
+    terminalCondition: 'A lease expires or is released by its exact fenced owner/terminal Process.',
+    activeProtection: 'Resource key, owner identity and fencing token protect each live resource lease; no Work or Controller lifecycle participates.',
+    retentionCapacity: 'Resource leases default to 30 seconds with a five-second minimum; every active-lease read/acquire physically reaps expired or malformed files without truncating the live authoritative set.',
+    cleanupAuthority: 'The ResourceLease store owns expiry/release under the repository Controller lock; centralized Runtime maintenance invokes the same active view and introduces no second lease authority.',
+    recoverySemantics: 'Expired resource leases cannot strand task ownership because task ownership does not exist here; a successor must reacquire the exact resource and receive a new fencing token.',
+    closureStatus: 'existing_bounded', evidencePaths: ['src/runtime/resources/leases/store.ts','src/runtime/control-plane/runtime-cleanup.ts','tests/runtime/process-runtime.test.ts'],
   }),
   lifecycle({
     id: 'scheduler_occurrence_history', owner: 'Kernel Scheduler authority', scope: 'repository', dataClass: 'execution_authority',

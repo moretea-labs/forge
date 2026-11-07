@@ -9,7 +9,8 @@ import {
 } from '../domain/workflow-asset';
 
 export interface WorkflowRunBinding {
-  workId: string;
+  /** Persistence/idempotency scope such as project:<id>, requirement:<id>, or repository:<id>. */
+  scopeId: string;
   runId: string;
 }
 
@@ -260,7 +261,7 @@ export async function executeWorkflow(
 ): Promise<WorkflowRunResult> {
   const asset = validateWorkflowAsset(input.asset);
   const binding = {
-    workId: requiredText(input.binding.workId, 'WORKFLOW_RUN_WORK_ID_REQUIRED'),
+    scopeId: requiredText(input.binding.scopeId, 'WORKFLOW_RUN_SCOPE_ID_REQUIRED'),
     runId: requiredText(input.binding.runId, 'WORKFLOW_RUN_ID_REQUIRED'),
   };
   const inputs = validateWorkflowRunInputs(asset, input.inputs);

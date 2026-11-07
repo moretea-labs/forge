@@ -4,42 +4,24 @@ import {
   cognitiveTerms,
   consolidateMemories,
   inferMemoryAssociation,
-  memoryDraftFromLearningSignal,
   recordCognitiveMemory,
   recordCognitiveMemoryEdge,
   type CognitiveWriteAuthorityPort,
   type LearningSignal,
   type MemoryUnit,
-  type MemoryUnitDraft,
 } from '../../../packages/kernel/cognition/api/index';
-import { getControllerRoundRelay } from '../../../packages/kernel/controller/api/index';
-import { getWorkContract, type WorkContract } from '../../../packages/kernel/work/api/index';
-import {
-  canonicalWorkflowEvidenceAvailable,
-  cognitiveScopesForWork,
-  experienceScopesForWork,
-} from '../control-plane/persistence/experience-store';
 import {
   cognitionMemoryStore,
   cognitionReadPort,
 } from '../control-plane/persistence/cognition-store';
 
-export interface AutomaticControllerLearningResult {
-  storedMemoryIds: string[];
-  consolidatedMemoryIds: string[];
-  promotedMemoryIds: string[];
-  requirementCandidateIds: string[];
-  skipped: string[];
-}
-
-export type ControllerLearningScopeKind = 'work' | 'requirement' | 'project' | 'workspace';
+export type ControllerLearningScopeKind = 'requirement' | 'project' | 'workspace';
 export type ControllerLearningAdmissionSource = 'explicit_human' | 'controller_observation' | 'system_inference';
 
 /**
  * Model-authored semantic draft only. Identity, time and source provenance are
- * intentionally absent. Forge derives them at the persistence boundary: exact
- * Work/ControllerRound lineage for round-close learning, or non-lifecycle controller
- * provenance for direct project/workspace advisory learning.
+ * intentionally absent. Forge derives them at the persistence boundary from
+ * direct non-lifecycle controller provenance and Project/Requirement/Workspace scope.
  */
 export interface ControllerLearningSignalDraft {
   scopeKind: ControllerLearningScopeKind;
@@ -66,7 +48,7 @@ export const CONTROLLER_LEARNING_SIGNAL_ENVELOPE_MAX_ITEMS = 32;
 const CONTROLLER_LEARNING_KIND = /^[a-z0-9][a-z0-9._:-]{0,63}$/i;
 const CONTROLLER_LEARNING_VALENCES: readonly LearningSignal['valence'][] = ['positive', 'negative', 'neutral'];
 const CONTROLLER_LEARNING_ADMISSION_SOURCES: readonly ControllerLearningAdmissionSource[] = ['explicit_human', 'controller_observation', 'system_inference'];
-const CONTROLLER_LEARNING_SCOPE_KINDS: readonly ControllerLearningScopeKind[] = ['work', 'requirement', 'project', 'workspace'];
+const CONTROLLER_LEARNING_SCOPE_KINDS: readonly ControllerLearningScopeKind[] = ['requirement', 'project', 'workspace'];
 
 function boundedScore(value: unknown, label: string): number {
   if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 1) {
@@ -135,67 +117,6 @@ function sameScope(left: ScopeRef, right: ScopeRef): boolean {
   return left.kind === right.kind && left.id === right.id;
 }
 
-function controllerLearningScope(work: WorkContract, controllerHome: string, kind: ControllerLearningScopeKind): ScopeRef | undefined {
-  const scopes = kind === 'workspace' ? cognitiveScopesForWork(work, controllerHome) : experienceScopesForWork(work, controllerHome);
-  return scopes.find(scope => scope.kind === kind);
-}
-
-function normalizedConcepts(values: readonly string[]): string[] {
-  return [...new Set(values.map(value => value.trim()).filter(Boolean).map(value => value.slice(0, 256)))].slice(0, 64);
-}
-
-function signalId(prefix: string, identity: string): string {
-  return `auto:${prefix}:${createHash('sha256').update(identity).digest('hex').slice(0, 32)}`;
-}
-
-function sourceRoundObserved(input: { controllerHome: string; repoId: string; workId: string; sourceRoundId: string }): boolean {
-  const relay = getControllerRoundRelay({ controllerHome: input.controllerHome, repoId: input.repoId }, input.workId);
-  return Boolean(relay?.observationWindow?.some(observation => observation.roundRef === input.sourceRoundId));
-}
-
-function roundDerivedAuthority(input: {
-  controllerHome: string;
-  repoId: string;
-  work: WorkContract;
-  sourceRoundId: string;
-}): CognitiveWriteAuthorityPort {
-  const allowedScopes = experienceScopesForWork(input.work, input.controllerHome);
-  const workspaceScopes = cognitiveScopesForWork(input.work, input.controllerHome).filter(scope => scope.kind === 'workspace');
-  const localScopeAllowed = (scope: ScopeRef) => allowedScopes.some(candidate => sameScope(candidate, scope));
-  const scopeAllowed = (memory: MemoryUnit) => localScopeAllowed(memory.scope)
-    || workspaceScopes.some(candidate => sameScope(candidate, memory.scope))
-      && memory.facets.includes('portability.portable');
-  return {
-    assertMemoryWrite(memory) {
-      if (memory.provenance.sourceWorkId !== input.work.workId
-        || memory.provenance.sourceRoundId !== input.sourceRoundId
-        || !scopeAllowed(memory)
-        || !sourceRoundObserved({
-          controllerHome: input.controllerHome,
-          repoId: input.repoId,
-          workId: input.work.workId,
-          sourceRoundId: input.sourceRoundId,
-        })) {
-        throw new Error('COGNITION_AUTOMATIC_LEARNING_ROUND_AUTHORITY_INVALID');
-      }
-    },
-    assertEdgeWrite() {
-      throw new Error('COGNITION_AUTOMATIC_LEARNING_EDGE_NOT_ALLOWED');
-    },
-    evidenceAvailable(ref, scope, sourceWorkId) {
-      const scopeReadable = localScopeAllowed(scope) || workspaceScopes.some(candidate => sameScope(candidate, scope));
-      return sourceWorkId === input.work.workId
-        && scopeReadable
-        && canonicalWorkflowEvidenceAvailable(
-          { controllerHome: input.controllerHome, repoId: input.repoId },
-          ref,
-          scope,
-          sourceWorkId,
-        );
-    },
-  };
-}
-
 function consolidationAuthority(input: {
   scope: ScopeRef;
   sourceMemories: readonly MemoryUnit[];
@@ -232,9 +153,6 @@ function associationAuthority(input: {
   scope: ScopeRef;
   sourceMemories: readonly MemoryUnit[];
   relatedMemories: readonly MemoryUnit[];
-  sourceWorkId?: string;
-  sourceRoundId?: string;
-  sourceAuthorityValid?: () => boolean;
 }): CognitiveWriteAuthorityPort {
   const sourceIds = new Set(input.sourceMemories.map(memory => memory.id));
   const relatedIds = new Set(input.relatedMemories.map(memory => memory.id));
@@ -249,12 +167,11 @@ function associationAuthority(input: {
     },
     assertEdgeWrite(edge) {
       if (!sameScope(edge.scope, input.scope)
-        || edge.sourceWorkId !== input.sourceWorkId
-        || edge.sourceRoundId !== input.sourceRoundId
+        || edge.sourceWorkId
+        || edge.sourceRoundId
         || !sourceIds.has(edge.fromId)
         || !relatedIds.has(edge.toId)
-        || !allowedRelations.has(edge.relation)
-        || (input.sourceAuthorityValid && !input.sourceAuthorityValid())) {
+        || !allowedRelations.has(edge.relation)) {
         throw new Error('COGNITION_AUTOMATIC_ASSOCIATION_AUTHORITY_INVALID');
       }
     },
@@ -280,9 +197,6 @@ export function associateStoredMemories(input: {
   controllerHome: string;
   memories: readonly MemoryUnit[];
   now: string;
-  sourceWorkId?: string;
-  sourceRoundId?: string;
-  sourceAuthorityValid?: () => boolean;
 }): number {
   const store = cognitionMemoryStore(input.controllerHome);
   const currentIds = new Set(input.memories.map(memory => memory.id));
@@ -341,9 +255,6 @@ export function associateStoredMemories(input: {
       scope,
       sourceMemories,
       relatedMemories,
-      ...(input.sourceWorkId ? { sourceWorkId: input.sourceWorkId } : {}),
-      ...(input.sourceRoundId ? { sourceRoundId: input.sourceRoundId } : {}),
-      ...(input.sourceAuthorityValid ? { sourceAuthorityValid: input.sourceAuthorityValid } : {}),
     });
     for (const draft of group) {
       const key = createHash('sha256')
@@ -358,8 +269,6 @@ export function associateStoredMemories(input: {
         relation: draft.relation,
         weight: draft.weight,
         evidenceRefs: draft.evidenceRefs,
-        ...(input.sourceWorkId ? { sourceWorkId: input.sourceWorkId } : {}),
-        ...(input.sourceRoundId ? { sourceRoundId: input.sourceRoundId } : {}),
         recordedAt: input.now,
       });
     }
@@ -370,63 +279,6 @@ export function associateStoredMemories(input: {
 export interface ConsolidatedLearning {
   memory: MemoryUnit;
   supportingMemories: MemoryUnit[];
-}
-
-function persistDraft(
-  controllerHome: string,
-  authority: CognitiveWriteAuthorityPort,
-  draft: MemoryUnitDraft,
-): MemoryUnit {
-  const store = cognitionMemoryStore(controllerHome);
-  const existing = store.read(draft.scope, draft.id);
-  if (existing) return existing;
-  return recordCognitiveMemory(store, authority, draft);
-}
-
-function controllerLearningDraft(input: {
-  signal: ControllerLearningSignalDraft;
-  work: WorkContract;
-  scope: ScopeRef;
-  sourceRoundId: string;
-  observedAt: string;
-}): MemoryUnitDraft {
-  const concepts = normalizedConcepts(input.signal.concepts);
-  const facets = [...new Set(input.signal.facets.map(value => value.trim()).filter(Boolean))].slice(0, 12);
-  const semanticIdentity = JSON.stringify({
-    sourceRoundId: input.sourceRoundId,
-    scope: `${input.scope.kind}:${input.scope.id}`,
-    kind: input.signal.kind,
-    valence: input.signal.valence,
-    summary: input.signal.summary,
-    concepts: [...concepts].sort(),
-    admissionSource: input.signal.admissionSource,
-    portability: input.signal.portability,
-  });
-  const id = signalId('controller', semanticIdentity);
-  const learning: LearningSignal = {
-    schemaVersion: 1,
-    id,
-    scope: input.scope,
-    kind: input.signal.kind,
-    valence: input.signal.valence,
-    summary: input.signal.summary,
-    concepts,
-    facets,
-    admissionSource: input.signal.admissionSource,
-    portability: input.signal.portability,
-    salience: input.signal.salience,
-    confidence: input.signal.confidence,
-    utility: input.signal.utility,
-    sourceKind: 'controller',
-    sourceId: `controller-learning:${id.slice(id.lastIndexOf(':') + 1)}`,
-    sourceWorkId: input.work.workId,
-    sourceRoundId: input.sourceRoundId,
-    observedAt: input.observedAt,
-    evidenceRefs: input.signal.evidenceRefs,
-    counterEvidenceRefs: input.signal.counterEvidenceRefs,
-    ...(input.signal.expiresAt ? { expiresAt: input.signal.expiresAt } : {}),
-  };
-  return memoryDraftFromLearningSignal(learning);
 }
 
 export function consolidateAffectedMemories(
@@ -473,93 +325,4 @@ export function consolidateAffectedMemories(
     recordCognitiveMemoryEdge(store, authority, draft);
   }
   return [...persisted.values()];
-}
-
-/**
- * Persist only semantic learning explicitly authored by the model for one closed
- * ControllerRound. The historical name is retained as an internal compatibility
- * surface; Forge no longer turns machine quality/blocker/adjustment facts into
- * lessons, scores, cross-project guidance, or Requirement candidates.
- */
-export function persistAutomaticControllerRoundLearning(input: {
-  controllerHome: string;
-  repoId: string;
-  workId: string;
-  sourceRoundId: string;
-  controllerSignals?: readonly ControllerLearningSignalDraft[];
-  now?: string;
-}): AutomaticControllerLearningResult {
-  const work = getWorkContract({ controllerHome: input.controllerHome, repoId: input.repoId }, input.workId);
-  if (!work) throw new Error('COGNITION_AUTOMATIC_LEARNING_WORK_NOT_FOUND');
-  if (!sourceRoundObserved(input)) throw new Error('COGNITION_AUTOMATIC_LEARNING_ROUND_NOT_CLOSED');
-
-  if ((input.controllerSignals?.length ?? 0) > CONTROLLER_LEARNING_SIGNAL_ENVELOPE_MAX_ITEMS) {
-    throw new Error('COGNITION_CONTROLLER_LEARNING_SIGNALS_INVALID');
-  }
-  const observedAt = input.now ?? new Date().toISOString();
-  const authority = roundDerivedAuthority({
-    controllerHome: input.controllerHome,
-    repoId: input.repoId,
-    work,
-    sourceRoundId: input.sourceRoundId,
-  });
-  const stored: MemoryUnit[] = [];
-  const skipped: string[] = [];
-
-  for (const signal of input.controllerSignals ?? []) {
-    const signalScope = controllerLearningScope(work, input.controllerHome, signal.scopeKind);
-    if (!signalScope) {
-      skipped.push(`controller:${signal.kind}:scope_unavailable:${signal.scopeKind}`);
-      continue;
-    }
-    const refs = [...new Set(signal.evidenceRefs)].slice(0, 16);
-    const counterRefs = [...new Set(signal.counterEvidenceRefs)].slice(0, 16);
-    const evidenceAvailable = [...refs, ...counterRefs].every(ref => canonicalWorkflowEvidenceAvailable(
-      { controllerHome: input.controllerHome, repoId: input.repoId },
-      ref,
-      signalScope,
-      work.workId,
-    ));
-    if (!evidenceAvailable) {
-      skipped.push(`controller:${signal.kind}:evidence_unavailable`);
-      continue;
-    }
-    stored.push(persistDraft(input.controllerHome, authority, controllerLearningDraft({
-      signal: { ...signal, evidenceRefs: refs, counterEvidenceRefs: counterRefs },
-      work,
-      scope: signalScope,
-      sourceRoundId: input.sourceRoundId,
-      observedAt,
-    })));
-  }
-
-  associateStoredMemories({
-    controllerHome: input.controllerHome,
-    sourceWorkId: work.workId,
-    sourceRoundId: input.sourceRoundId,
-    sourceAuthorityValid: () => sourceRoundObserved({
-      controllerHome: input.controllerHome,
-      repoId: input.repoId,
-      workId: work.workId,
-      sourceRoundId: input.sourceRoundId,
-    }),
-    memories: stored,
-    now: observedAt,
-  });
-  const storedScopes = [...new Map(stored.map(memory => [
-    `${memory.scope.kind}:${memory.scope.id}`,
-    memory.scope,
-  ] as const)).values()];
-  const consolidated = storedScopes.flatMap(scope =>
-    consolidateAffectedMemories(input.controllerHome, scope, stored, observedAt));
-
-  return {
-    storedMemoryIds: [...new Set(stored.map(memory => memory.id))],
-    consolidatedMemoryIds: [...new Set(consolidated.map(candidate => candidate.memory.id))],
-    // Cross-project promotion and Requirement admission are semantic decisions.
-    // The model may request those explicitly; Forge does not infer them from tags.
-    promotedMemoryIds: [],
-    requirementCandidateIds: [],
-    skipped,
-  };
 }

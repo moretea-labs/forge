@@ -19,8 +19,8 @@ import {
   reviseRequirementSemantic,
   updateRequirement,
 } from '../../src/runtime/control-plane/persistence/requirement-store';
-import { createWorkContract, recordWorkCompletionReceipt, recordWorkImplementationReview, transitionWorkContractPhase } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { implementationReviewChangedPathDigest } from '../../packages/kernel/work/domain/implementation-review';
+import { seedHistoricalWorkContract } from '../helpers/historical-work-contract';
 
 const homes: string[] = [];
 afterEach(() => {
@@ -341,109 +341,6 @@ describe('Goal authority convergence', () => {
       expectedRevision: 2,
       supersededBy: 'PLAN-SUCCESSOR-C',
     })).toThrow('PLAN_SUCCESSOR_IMMUTABLE');
-  });
-
-  test('keeps Work delivery evidence separate from authored Plan and Requirement progress', () => {
-    const controllerHome = home();
-    const repoId = 'repo-goal-authority';
-    const requirementId = 'REQ-GOAL-AUTHORITY';
-    const planId = 'PLAN-GOAL-AUTHORITY';
-    const workId = 'work-goal-authority';
-    activateRequirement(controllerHome, requirementId);
-    const planOptions = { controllerHome, repoId, now: () => '2026-09-05T00:00:00.000Z' };
-
-    createPlanContract(planOptions, {
-      planId,
-      repoId,
-      requirementId,
-      scopeKey: 'goal-authority',
-      sourceRevision: 'rev-a',
-      goal: 'Deliver one source-changing slice then require semantic acceptance.',
-      steps: [{
-        id: 'step-a',
-        objective: 'Advance source A to B.',
-        dependencies: [],
-        authoritativeFiles: ['src/example.ts'],
-        allowedPaths: ['src/**'],
-        forbiddenPaths: [],
-        checks: ['package:check:type'],
-        acceptanceCriteria: ['Controller reviews the exact delivered result.'],
-      }],
-    });
-    createWorkContract({ controllerHome, repoId }, {
-      workId,
-      repoId,
-      requirementId,
-      planId,
-      planStepId: 'step-a',
-      planSourceRevision: 'rev-a',
-      workKind: 'completed_no_change',
-      objective: 'Advance source A to B.',
-      acceptanceCriteria: ['Controller reviews the exact delivered result.'],
-      allowedPaths: ['src/**'],
-      forbiddenPaths: [],
-      checks: ['package:check:type'],
-      constraints: {},
-      requestedBy: 'chatgpt',
-      dispatchState: 'running',
-      baseRevision: 'rev-a',
-    });
-    const recordedAt = '2026-09-05T00:00:00.000Z';
-    transitionWorkContractPhase({ controllerHome, repoId }, workId, { phase: 'verification', state: 'satisfied', summary: 'Exact no-change delivery verified.' });
-    recordWorkImplementationReview({ controllerHome, repoId }, workId, {
-      schemaVersion: 1,
-      reviewId: 'REV-goal-authority',
-      workId,
-      reviewerPrincipalId: 'controller-a',
-      reviewerControllerSessionId: 'transport-goal-authority',
-      decision: 'approved',
-      rationale: 'Exact delivered evidence reviewed before completion.',
-      findings: [],
-      sourceRevision: 'rev-b',
-      workspaceFingerprint: `${workId}:content`,
-      verificationWorkspaceFingerprint: `${workId}:verification`,
-      changedPaths: [],
-      changedPathDigest: implementationReviewChangedPathDigest([]),
-      acceptanceCriteriaSummary: 'Controller reviews the exact delivered result.',
-      verificationEvidence: [],
-      architectureEvidence: [],
-      recordedAt,
-    });
-    const completed = recordWorkCompletionReceipt({ controllerHome, repoId }, workId, {
-      schemaVersion: 1,
-      receiptId: `receipt-${workId}`,
-      source: 'controller_work',
-      issueId: workId,
-      taskId: workId,
-      workId,
-      targetBranch: 'main',
-      targetRevision: 'rev-b',
-      changedPaths: [],
-      delivery: { kind: 'no_change', status: 'integrated', strategy: 'no_change', reachable: true, recordedAt },
-      cleanup: { status: 'complete', warnings: [], blockers: [], recordedAt },
-      verifiedAt: recordedAt,
-      recordedAt,
-    }, 'completed_no_change');
-    expect(completed).toMatchObject({ semanticState: 'open', completionOutcome: 'completed_no_change' });
-
-    // Work evidence advances nothing authored: the Plan item and Requirement stay
-    // exactly as the model left them.
-    const plan = getPlanContract(planOptions, planId)!;
-    expect(plan.status).toBe('draft');
-    expect(plan.steps[0]).toMatchObject({ id: 'step-a', status: 'pending' });
-    expect(plan.steps[0]?.workId).toBeUndefined();
-    expect(readRequirement({ controllerHome }, requirementId)!.value.state).toBe('active');
-
-    // Physical Work evidence does not change authored Requirement semantics.
-    // Only revisioned Requirement CAS may do so.
-    const currentRequirement = requirementSemanticView(readRequirement({ controllerHome }, requirementId)!.value);
-    const explicitlyCompleted = reviseRequirementSemantic({ controllerHome }, requirementId, {
-      expectedRevision: currentRequirement.revision,
-      state: 'completed',
-      remainingWork: [],
-      acceptedEvidenceRefs: ['review:work-evidence-independent'],
-    });
-    expect(requirementSemanticView(explicitlyCompleted).state).toBe('completed');
   });
 
   test('terminal Requirement rejects new Plan admission', () => {

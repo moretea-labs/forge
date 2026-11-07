@@ -266,8 +266,6 @@ export interface CommandCenterViewModel {
   readiness: SystemReadinessViewModel;
   currentRepository?: RepositoryCardViewModel;
   repositories: RepositoryCardViewModel[];
-  currentWork?: WorkSummaryViewModel;
-  recentWork: WorkSummaryViewModel[];
   handoffs: HandoffCardViewModel[];
   /** Assistant/plugin capabilities available to the controller (not the primary workflow). */
   pluginSummary: PluginSummaryViewModel;

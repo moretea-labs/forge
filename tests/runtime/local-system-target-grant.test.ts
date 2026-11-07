@@ -1192,7 +1192,6 @@ describe('local_system target adapter', () => {
     // effect receipt, and the strong-confirmation authorization is its evidence.
     expect(submitted.receipt).toMatchObject({ status: 'succeeded', pluginId: 'local_system', actionId: 'execute_project_script' });
     expect(submitted.authorization).toMatchObject({ source: 'strong_confirmation' });
-    expect(submitted.workId).toBeUndefined();
     expect(getWorkContractByRequestId(controllerHome, 'target-project-script-confirmed')).toBeUndefined();
   });
 
@@ -1295,7 +1294,6 @@ describe('local_system target adapter', () => {
     );
     expect(existsSync(join(root, 'generated'))).toBe(true);
     expect(submitted.receipt).toMatchObject({ status: 'succeeded', actionId: 'create_directory' });
-    expect(submitted.workId).toBeUndefined();
     expect(getWorkContractByRequestId(controllerHome, requestId)).toBeUndefined();
   });
 });

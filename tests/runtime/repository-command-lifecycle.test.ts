@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
+import { seedHistoricalWorkHandle } from '../helpers/historical-work-handle';
 import { spawn, spawnSync, type ChildProcess } from 'child_process';
 import { closeSync, existsSync, mkdtempSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
@@ -23,12 +24,8 @@ import { commitSelectedPaths } from '../../src/cli/repositories/selected-path-ac
 import { acquireControllerLock, releaseControllerLock } from '../../src/cli/repositories/locks';
 import { persistControllerAccessMode } from '../../adapters/mcp/access-mode';
 import { executionIdentityForRepository, executionIdentityForWork } from '../../src/runtime/control-plane/execution/execution-identity';
-import { readWorkHandle, transitionWorkHandle, writeWorkHandle, type WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
-import { assertCanonicalRepositoryMutationWorkHandleAvailable } from '../../src/runtime/control-plane/execution/work-handle-authority';
-import { settleWorkHandleExpectedHeadAfterRepositoryCommand } from '../../src/runtime/control-plane/execution/work-head-settlement';
-import { pushExactWorkRemoteDelivery } from '../../src/runtime/control-plane/execution/work-remote-delivery';
-import { cancelWorkContract, createWorkContract, getWorkContract, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
-import { startGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
+import { readWorkHandle, WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
+import { getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { classifyRepositoryCommandRoute, executeRepositoryCommandViaProcessRuntime, waitRepositoryCommandProcess } from '../../src/runtime/execution/process-runtime/command-facade';
 import { listProcessRecords } from '../../src/runtime/execution/process-runtime/store';
 import { getExecutionJob, updateExecutionJob } from '../../src/runtime/execution/jobs/store';
@@ -39,6 +36,7 @@ import { acquireRuntimeOwnership } from '../../src/runtime/root/ownership';
 import { terminateProcessTree } from '../../src/runtime/shared/process-tree';
 import { terminateProcessesByCommand, waitForNoProcessesByCommand } from './process-hygiene';
 import { trustedEngineeringEvidence } from '../helpers/engineering-evidence';
+import { seedHistoricalWorkContract } from '../helpers/historical-work-contract';
 
 const roots: string[] = [];
 const tracked: ChildProcess[] = [];
@@ -190,7 +188,7 @@ describe('structured registered worktree cleanup (#41)', () => {
   test('retains historical WorkHandle checkout identity even when no OwnedResource metadata exists', () => {
     const fx = fixture();
     const previous = seedWorkHandle(fx.controllerHome, fx.repository, 'work-old-checkout-identity');
-    writeWorkHandle(fx.controllerHome, {
+    seedHistoricalWorkHandle(fx.controllerHome, {
       ...previous,
       checkoutId: fx.target.checkoutId,
       worktreePath: fx.linked,
@@ -230,7 +228,7 @@ test('macOS temporary repository and Controller Home aliases are accepted consis
 function seedWorkHandle(controllerHome: string, repository: ReturnType<typeof seedRepo>, workId: string): WorkHandleState {
   const now = new Date().toISOString();
   const head = gitOutput(repository.canonicalRoot, ['rev-parse', 'HEAD']);
-  createWorkContract({ controllerHome, repoId: repository.repoId }, {
+  seedHistoricalWorkContract({ controllerHome, repoId: repository.repoId }, {
     workId,
     repoId: repository.repoId,
     checkoutId: repository.activeCheckoutId,
@@ -244,7 +242,7 @@ function seedWorkHandle(controllerHome: string, repository: ReturnType<typeof se
     requestedBy: 'chatgpt',
     dispatchState: 'running',
   });
-  return writeWorkHandle(controllerHome, {
+  return seedHistoricalWorkHandle(controllerHome, {
     schemaVersion: 1,
     workId,
     sessionId: `session-${workId}`,
@@ -287,71 +285,6 @@ afterEach(async () => {
 });
 
 describe('repository command execution lifecycle', () => {
-  test('separates open semantic Work from canonical mutation ownership after its physical source is absorbed', () => {
-    const controllerHome = tempRoot('forge-orphan-workhandle-home-');
-    const repoRoot = tempRoot('forge-orphan-workhandle-repo-');
-    const repository = seedRepo(controllerHome, repoRoot);
-    const workId = 'work-orphan-owner';
-    const now = new Date().toISOString();
-    const head = gitOutput(repository.canonicalRoot, ['rev-parse', 'HEAD']);
-    writeWorkHandle(controllerHome, {
-      schemaVersion: 1,
-      workId,
-      sessionId: 'session-orphan-owner',
-      principalId: 'principal-test',
-      repositoryId: repository.repoId,
-      checkoutId: repository.activeCheckoutId,
-      worktreePath: repository.canonicalRoot,
-      branch: 'main',
-      managedWorktree: false,
-      baseCommit: head,
-      deliveryBaseCommit: head,
-      expectedHead: head,
-      permissionSnapshotVersion: 1,
-      state: 'editing',
-      createdAt: now,
-      updatedAt: now,
-      finalization: { validation: 'pending', commit: 'pending', merge: 'pending', branchCleanup: 'pending', worktreeCleanup: 'pending' },
-    });
-
-    expect(() => assertCanonicalRepositoryMutationWorkHandleAvailable({
-      controllerHome, repositoryId: repository.repoId, checkoutId: repository.activeCheckoutId, workId: 'work-new-owner',
-    })).not.toThrow();
-
-    createWorkContract({ controllerHome, repoId: repository.repoId }, {
-      workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId, workKind: 'repository_change',
-      objective: 'Keep the canonical checkout owned while semantic Work is open.', acceptanceCriteria: [], allowedPaths: ['**'], forbiddenPaths: [], checks: [],
-      constraints: { workspaceMode: 'current' }, requestedBy: 'chatgpt',
-    });
-    // The semantic Work stays open, but its only recorded source revision is
-    // already the clean canonical HEAD and there is no lease/process ownership.
-    expect(() => assertCanonicalRepositoryMutationWorkHandleAvailable({
-      controllerHome, repositoryId: repository.repoId, checkoutId: repository.activeCheckoutId, workId: 'work-new-owner',
-    })).not.toThrow();
-
-    // Without expectedHead, baseline ancestry and a same-name archive ref cannot
-    // prove the historical source tip was absorbed. Retain the physical fence.
-    const absorbedHandle = readWorkHandle(controllerHome, repository.repoId, workId)!;
-    writeWorkHandle(controllerHome, { ...absorbedHandle, expectedHead: undefined });
-    git(repository.canonicalRoot, ['branch', `archive/${workId}-20261029`, head]);
-    expect(() => assertCanonicalRepositoryMutationWorkHandleAvailable({
-      controllerHome, repositoryId: repository.repoId, checkoutId: repository.activeCheckoutId, workId: 'work-new-owner',
-    })).toThrow('WORK_CANONICAL_MUTATION_OWNED');
-
-    // A real unabsorbed candidate remains authoritative even though it lives
-    // only in WorkHandle metadata.
-    git(repository.canonicalRoot, ['checkout', '-b', 'owner-unabsorbed']);
-    writeFileSync(join(repository.canonicalRoot, 'owner-only.txt'), 'unique owner source\n');
-    git(repository.canonicalRoot, ['add', 'owner-only.txt']);
-    git(repository.canonicalRoot, ['commit', '-m', 'unique owner source']);
-    const uniqueHead = gitOutput(repository.canonicalRoot, ['rev-parse', 'HEAD']);
-    git(repository.canonicalRoot, ['checkout', 'main']);
-    const existing = readWorkHandle(controllerHome, repository.repoId, workId)!;
-    writeWorkHandle(controllerHome, { ...existing, expectedHead: uniqueHead });
-    expect(() => assertCanonicalRepositoryMutationWorkHandleAvailable({
-      controllerHome, repositoryId: repository.repoId, checkoutId: repository.activeCheckoutId, workId: 'work-new-owner',
-    })).toThrow('WORK_CANONICAL_MUTATION_OWNED');
-  });
   test('accepts explicit long timeouts up to the shared agent maximum and rejects above it', () => {
     const controllerHome = tempRoot('forge-cmd-timeout-home-');
     const repoRoot = tempRoot('forge-cmd-timeout-repo-');
@@ -430,132 +363,6 @@ describe('repository command execution lifecycle', () => {
     } finally {
       owner.release();
     }
-  });
-
-  test('settles WorkHandle expectedHead after a successful Work-attributed git commit', async () => {
-    const controllerHome = tempRoot('forge-cmd-work-head-home-');
-    const repoRoot = tempRoot('forge-cmd-work-head-repo-');
-    const repository = seedRepo(controllerHome, repoRoot);
-    const handle = seedWorkHandle(controllerHome, repository, 'work-head-sync');
-    const previousHead = handle.expectedHead;
-    writeFileSync(join(repoRoot, 'README.md'), 'changed by work\n');
-
-    const execution = await executeRepositoryCommandViaProcessRuntime({
-      controllerHome,
-      repository,
-      command: ['git', 'commit', '--only', '-m', 'work head sync', '--', 'README.md'],
-      timeoutMs: 10_000,
-      workId: handle.workId,
-      executionIdentity: executionIdentityForWork(repository, handle),
-    });
-    const terminal = execution.process?.completed
-      ? execution.process
-      : execution.process
-        ? await waitRepositoryCommandProcess(controllerHome, repository.repoId, execution.process.processId, { timeoutMs: 10_000 })
-        : undefined;
-    expect(terminal?.ok ?? execution.ok).toBe(true);
-    const currentHead = gitOutput(repoRoot, ['rev-parse', 'HEAD']);
-    expect(currentHead).not.toBe(previousHead);
-    expect(readWorkHandle(controllerHome, repository.repoId, handle.workId)?.expectedHead).toBe(currentHead);
-  });
-
-  test('treats a concurrent lifecycle writer that already settled the exact HEAD as converged', () => {
-    const controllerHome = tempRoot('forge-cmd-work-head-converged-home-');
-    const repoRoot = tempRoot('forge-cmd-work-head-converged-repo-');
-    const repository = seedRepo(controllerHome, repoRoot);
-    const handle = seedWorkHandle(controllerHome, repository, 'work-head-converged');
-    const executionIdentity = executionIdentityForWork(repository, handle);
-    writeFileSync(join(repoRoot, 'README.md'), 'settled by concurrent writer\n');
-    git(repoRoot, ['commit', '--only', '-m', 'concurrent settlement', '--', 'README.md']);
-    const currentHead = gitOutput(repoRoot, ['rev-parse', 'HEAD']);
-    transitionWorkHandle(controllerHome, handle, handle.state, { expectedHead: currentHead });
-
-    expect(settleWorkHandleExpectedHeadAfterRepositoryCommand({
-      controllerHome,
-      repository,
-      executionIdentity,
-      workId: handle.workId,
-      ok: true,
-      cancelled: false,
-      timedOut: false,
-    })).toMatchObject({ settled: true, reason: 'settled', previousHead: handle.expectedHead, currentHead });
-    expect(readWorkHandle(controllerHome, repository.repoId, handle.workId)?.expectedHead).toBe(currentHead);
-  });
-
-  test('settles WorkHandle expectedHead when a durable Work process completes after the caller returns', async () => {
-    const controllerHome = tempRoot('forge-cmd-work-head-async-home-');
-    const repoRoot = tempRoot('forge-cmd-work-head-async-repo-');
-    const repository = seedRepo(controllerHome, repoRoot);
-    const handle = seedWorkHandle(controllerHome, repository, 'work-head-async');
-    writeFileSync(join(repoRoot, 'README.md'), 'changed asynchronously\n');
-    writeFileSync(join(repoRoot, 'commit-later.sh'), "#!/usr/bin/env bash\nsleep 0.15\ngit commit --only -m 'work head async' -- README.md\n");
-
-    const execution = await executeRepositoryCommandViaProcessRuntime({
-      controllerHome,
-      repository,
-      command: ['bash', 'commit-later.sh'],
-      timeoutMs: 10_000,
-      interactiveWaitMs: 0,
-      returnHandleImmediately: true,
-      workId: handle.workId,
-      executionIdentity: executionIdentityForWork(repository, handle),
-    });
-    expect(execution.route).toBe('process_managed');
-    expect(execution.process?.completed).toBe(false);
-    expect(execution.process?.processId).not.toStartWith('lightweight:');
-    expect(execution.executionMetrics).toMatchObject({ lane: 'durable_process' });
-    const terminal = await waitRepositoryCommandProcess(controllerHome, repository.repoId, execution.process!.processId, { timeoutMs: 10_000 });
-    expect(terminal).toMatchObject({ completed: true, ok: true });
-    expect(readWorkHandle(controllerHome, repository.repoId, handle.workId)?.expectedHead).toBe(gitOutput(repoRoot, ['rev-parse', 'HEAD']));
-  });
-
-  test('does not settle WorkHandle expectedHead after a failed command or branch drift', async () => {
-    const controllerHome = tempRoot('forge-cmd-work-head-fence-home-');
-    const repoRoot = tempRoot('forge-cmd-work-head-fence-repo-');
-    const repository = seedRepo(controllerHome, repoRoot);
-    const failed = seedWorkHandle(controllerHome, repository, 'work-head-failed');
-    const failedHead = failed.expectedHead;
-    writeFileSync(join(repoRoot, 'README.md'), 'commit then fail\n');
-    writeFileSync(join(repoRoot, 'commit-then-fail.sh'), "#!/usr/bin/env bash\ngit commit --only -m 'commit then fail' -- README.md\nexit 1\n");
-
-    const failedExecution = await executeRepositoryCommandViaProcessRuntime({
-      controllerHome,
-      repository,
-      command: ['bash', 'commit-then-fail.sh'],
-      timeoutMs: 10_000,
-      workId: failed.workId,
-      executionIdentity: executionIdentityForWork(repository, failed),
-    });
-    const failedTerminal = failedExecution.process?.completed
-      ? failedExecution.process
-      : failedExecution.process
-        ? await waitRepositoryCommandProcess(controllerHome, repository.repoId, failedExecution.process.processId, { timeoutMs: 10_000 })
-        : undefined;
-    expect(failedTerminal?.ok ?? failedExecution.ok).toBe(false);
-    expect(readWorkHandle(controllerHome, repository.repoId, failed.workId)?.expectedHead).toBe(failedHead);
-
-    // Branch drift is asserted in its own checkout: two concurrent Works that both
-    // declare the shared canonical checkout are intentionally serialized by the
-    // shared mutation lane, and this case is about head settlement, not lane waiting.
-    const driftControllerHome = tempRoot('forge-cmd-work-head-drift-home-');
-    const driftRepoRoot = tempRoot('forge-cmd-work-head-drift-repo-');
-    const driftRepository = seedRepo(driftControllerHome, driftRepoRoot);
-    const drift = seedWorkHandle(driftControllerHome, driftRepository, 'work-head-branch-drift');
-    const driftExecution = await executeRepositoryCommandViaProcessRuntime({
-      controllerHome: driftControllerHome,
-      repository: driftRepository,
-      command: ['git', 'switch', '-c', 'drift-branch'],
-      timeoutMs: 10_000,
-      workId: drift.workId,
-      executionIdentity: executionIdentityForWork(driftRepository, drift),
-    });
-    const driftTerminal = driftExecution.process?.completed
-      ? driftExecution.process
-      : driftExecution.process
-        ? await waitRepositoryCommandProcess(driftControllerHome, driftRepository.repoId, driftExecution.process.processId, { timeoutMs: 10_000 })
-        : undefined;
-    expect(driftTerminal?.ok ?? driftExecution.ok).toBe(true);
-    expect(readWorkHandle(driftControllerHome, driftRepository.repoId, drift.workId)?.expectedHead).toBe(drift.expectedHead);
   });
 
   test('raw git commits derive staged-index scope while widening forms stay blocked and selected-path commits isolate unrelated staged work', async () => {
@@ -886,138 +693,5 @@ describe('repository command execution lifecycle', () => {
     }
   });
 
-  test('keeps repository-change Work identity when source work also requests remote delivery', () => {
-    const controllerHome = tempRoot('forge-work-remote-kind-home-');
-    const repoRoot = tempRoot('forge-work-remote-kind-repo-');
-    const repository = seedRepo(controllerHome, repoRoot);
-    const started = startGoalWorkloop({
-      workStore: { controllerHome, repoId: repository.repoId },
-      handoffStore: { controllerHome, repoId: repository.repoId },
-      repoId: repository.repoId,
-      checkoutId: repository.activeCheckoutId,
-      sourceRevision: gitOutput(repoRoot, ['rev-parse', 'HEAD']),
-    }, {
-      objective: 'Modify source and deliver the exact integrated revision to origin.',
-      acceptanceCriteria: ['Repository change remains authoritative through remote delivery.'],
-      allowedPaths: ['src/**'],
-      initialLikelyPaths: ['src/example.ts'],
-      forbiddenPaths: [],
-      checks: [],
-      workKind: 'repository_change',
-      verifiedEngineeringEvidence: trustedEngineeringEvidence(gitOutput(repoRoot, ['rev-parse', 'HEAD'])),
-      request: { scopeClear: true, mutation: true, // Source-changing Work must carry concrete repository-change evidence;
-        // allowed/likely paths are policy/discovery hints and are not ownership proof.
-        requiresExternalEffect: true, remoteWrite: true, risk: 'remote_write', requiresRecovery: false, requiresApproval: false },
-    });
-    const workId = String((started.data as { work?: { workId?: string } }).work?.workId ?? '');
-    expect(workId).toBeTruthy();
-    expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)?.workKind).toBe('repository_change');
-  });
-
-  test('pushes the exact Work delivery revision without carrying later unrelated local commits', async () => {
-    const controllerHome = tempRoot('forge-work-remote-delivery-home-');
-    const repoRoot = tempRoot('forge-work-remote-delivery-repo-');
-    const remoteRoot = tempRoot('forge-work-remote-delivery-remote-');
-    const repository = seedRepo(controllerHome, repoRoot);
-    persistControllerAccessMode(controllerHome, 'full_access');
-    git(remoteRoot, ['init', '--bare']);
-    git(repoRoot, ['remote', 'add', 'origin', remoteRoot]);
-    git(repoRoot, ['push', 'origin', 'HEAD:refs/heads/main']);
-    const remoteBase = gitOutput(remoteRoot, ['rev-parse', 'refs/heads/main']);
-
-    writeFileSync(join(repoRoot, 'delivery.txt'), 'delivery\n');
-    git(repoRoot, ['add', 'delivery.txt']);
-    git(repoRoot, ['commit', '-m', 'delivery']);
-    const deliveryRevision = gitOutput(repoRoot, ['rev-parse', 'HEAD']);
-    writeFileSync(join(repoRoot, 'later.txt'), 'unrelated later local commit\n');
-    git(repoRoot, ['add', 'later.txt']);
-    git(repoRoot, ['commit', '-m', 'later unrelated']);
-    const laterRevision = gitOutput(repoRoot, ['rev-parse', 'HEAD']);
-
-    const workId = 'WORK-REMOTE-DELIVERY-EXACT';
-    createWorkContract({ controllerHome, repoId: repository.repoId }, {
-      workId,
-      repoId: repository.repoId,
-      checkoutId: repository.activeCheckoutId,
-      objective: 'Push exactly the delivered revision before terminalization.',
-      acceptanceCriteria: ['Only the exact delivery revision reaches origin/main.'],
-      constraints: {},
-      allowedPaths: ['**/*'],
-      forbiddenPaths: [],
-      checks: [],
-      requestedBy: 'chatgpt',
-      dispatchState: 'running',
-    });
-
-    const delivered = await pushExactWorkRemoteDelivery({
-      controllerHome,
-      repository,
-      workId,
-      targetBranch: 'main',
-      targetRevision: deliveryRevision,
-      timeoutMs: 10_000,
-    });
-    expect(delivered).toMatchObject({
-      targetRevision: deliveryRevision,
-      remoteRevisionBefore: remoteBase,
-      remoteRevisionAfter: deliveryRevision,
-      pushed: true,
-    });
-    expect(gitOutput(remoteRoot, ['rev-parse', 'refs/heads/main'])).toBe(deliveryRevision);
-    expect(gitOutput(repoRoot, ['rev-parse', 'HEAD'])).toBe(laterRevision);
-
-    const replay = await pushExactWorkRemoteDelivery({
-      controllerHome,
-      repository,
-      workId,
-      targetBranch: 'main',
-      targetRevision: deliveryRevision,
-      timeoutMs: 10_000,
-    });
-    expect(replay.pushed).toBe(false);
-    expect(replay.remoteRevisionAfter).toBe(deliveryRevision);
-  });
-
-  test('terminal Work cannot be reused as authority for a post-finalize remote push', async () => {
-    const controllerHome = tempRoot('forge-work-remote-terminal-home-');
-    const repoRoot = tempRoot('forge-work-remote-terminal-repo-');
-    const remoteRoot = tempRoot('forge-work-remote-terminal-remote-');
-    const repository = seedRepo(controllerHome, repoRoot);
-    persistControllerAccessMode(controllerHome, 'full_access');
-    git(remoteRoot, ['init', '--bare']);
-    git(repoRoot, ['remote', 'add', 'origin', remoteRoot]);
-    git(repoRoot, ['push', 'origin', 'HEAD:refs/heads/main']);
-    const remoteBase = gitOutput(remoteRoot, ['rev-parse', 'refs/heads/main']);
-
-    writeFileSync(join(repoRoot, 'terminal-delivery.txt'), 'must not be pushed by terminal Work\n');
-    git(repoRoot, ['add', 'terminal-delivery.txt']);
-    git(repoRoot, ['commit', '-m', 'terminal delivery']);
-    const deliveryRevision = gitOutput(repoRoot, ['rev-parse', 'HEAD']);
-    const workId = 'WORK-REMOTE-DELIVERY-TERMINAL';
-    createWorkContract({ controllerHome, repoId: repository.repoId }, {
-      workId,
-      repoId: repository.repoId,
-      checkoutId: repository.activeCheckoutId,
-      objective: 'Fence post-finalize remote delivery.',
-      acceptanceCriteria: ['Terminal Work cannot mutate origin.'],
-      constraints: {},
-      allowedPaths: ['**/*'],
-      forbiddenPaths: [],
-      checks: [],
-      requestedBy: 'chatgpt',
-      dispatchState: 'running',
-    });
-    cancelWorkContract({ controllerHome, repoId: repository.repoId }, workId, { summary: 'Explicitly terminalize the Work before proving remote delivery is fenced.' });
-
-    await expect(pushExactWorkRemoteDelivery({
-      controllerHome,
-      repository,
-      workId,
-      targetBranch: 'main',
-      targetRevision: deliveryRevision,
-      timeoutMs: 10_000,
-    })).rejects.toThrow(`WORK_REMOTE_DELIVERY_ACTIVE_AUTHORITY_REQUIRED: ${workId}`);
-    expect(gitOutput(remoteRoot, ['rev-parse', 'refs/heads/main'])).toBe(remoteBase);
-  });
 
 });

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { ContextOptionList, contextOptionIndex, localPendingCopy, advanceLocalToolProgress, createThread, findExistingWorkThread, localConversationNavItems, LocalConversationSurface, LocalMessageBody, selectThreadCheckout, selectThreadRepository, shouldSubmitComposerKey, transcriptIsNearBottom } from '../src/local-conversation';
+import { ContextOptionList, contextOptionIndex, localPendingCopy, advanceLocalToolProgress, createThread, localConversationNavItems, LocalConversationSurface, LocalMessageBody, selectThreadCheckout, selectThreadRepository, shouldSubmitComposerKey, transcriptIsNearBottom } from '../src/local-conversation';
 import { ForgeIcon } from '../src/ui-icons';
 import { RuntimeView, Sidebar, codexBoundPrompt, sidebarToggleShortcut } from '../src/App';
 import { SettingsView } from '../src/settings-view';
@@ -10,7 +10,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { ProjectRecordsView } from '../src/project-records-view';
 import { disconnectedProjection } from '../src/runtime-projection';
 
-describe('Forge Desktop Work-bound Agent thread identity', () => {
+describe('Forge Desktop Agent thread identity', () => {
   test('context options select directly, close and return focus, with keyboard navigation', () => {
     const selected: string[] = [];
     const list = ContextOptionList({ label: 'Project', value: 'a', options: [
@@ -50,12 +50,12 @@ describe('Forge Desktop Work-bound Agent thread identity', () => {
     expect(client).toMatch(/'send_local_conversation',[\s\S]*?repoId: input.repoId,\s*checkoutId: input.checkoutId/);
   });
 
-  test('Codex gets exact selected project, checkout and linked Work without claiming checkout authority', () => {
-    const thread = createThread('codex', 'repo_forge', 'work_record', 'checkout_forge');
+  test('Codex gets exact selected project and checkout without lifecycle binding', () => {
+    const thread = createThread('codex', 'repo_forge', 'checkout_forge');
     const prompt = codexBoundPrompt(thread, 'Please implement the plan.');
     expect(prompt).toContain('selected repo_id=repo_forge');
     expect(prompt).toContain('selected checkout_id=checkout_forge');
-    expect(prompt).toContain('Attached existing Forge Work: work_record');
+    expect(prompt).not.toContain('Forge Work');
     expect(prompt).toContain('verify that the exact repo_id AND checkout_id');
     expect(prompt).toContain('If a tool cannot target the selected checkout, do not mutate');
     expect(prompt).toContain('Please implement the plan.');
@@ -64,12 +64,12 @@ describe('Forge Desktop Work-bound Agent thread identity', () => {
   });
 
   test('independent repository conversations retain their own running status and sidebar groups', () => {
-    const first = { ...createThread('codex', 'repo_one', 'work_one', 'checkout_one'),
+    const first = { ...createThread('codex', 'repo_one', 'checkout_one'),
       title: 'Implement feature A', messages: [{
         id: 'one', role: 'user' as const, content: 'Implement feature A',
         createdAt: '2026-11-06T08:00:00Z',
       }] };
-    const second = { ...createThread('codex', 'repo_two', 'work_two', 'checkout_two'),
+    const second = { ...createThread('codex', 'repo_two', 'checkout_two'),
       title: 'Review feature B', messages: [{
         id: 'two', role: 'user' as const, content: 'Review feature B',
         createdAt: '2026-11-06T08:02:00Z',
@@ -77,10 +77,10 @@ describe('Forge Desktop Work-bound Agent thread identity', () => {
     const nav = localConversationNavItems([first, second], {}, new Set([first.id]));
     expect(nav).toHaveLength(2);
     expect(nav.find((item) => item.id === first.id)).toMatchObject({
-      projectRepoId: 'repo_one', workId: 'work_one', running: true,
+      projectRepoId: 'repo_one', running: true,
     });
     expect(nav.find((item) => item.id === second.id)).toMatchObject({
-      projectRepoId: 'repo_two', workId: 'work_two',
+      projectRepoId: 'repo_two',
     });
     expect(nav.find((item) => item.id === second.id)?.running).toBeUndefined();
     const projects = [
@@ -106,10 +106,10 @@ describe('Forge Desktop Work-bound Agent thread identity', () => {
   });
 
   test('new provider defaults never hide older pinned Codex/API conversations', () => {
-    const codex = { ...createThread('codex', 'repo_one', undefined, 'checkout_one'),
+    const codex = { ...createThread('codex', 'repo_one', 'checkout_one'),
       title: 'Codex task', messages: [{ id: 'c1', role: 'user' as const,
         content: 'Continue Codex task', createdAt: '2026-11-06T08:00:00Z' }] };
-    const api = { ...createThread('api', 'repo_two', undefined, 'checkout_two'),
+    const api = { ...createThread('api', 'repo_two', 'checkout_two'),
       title: 'API task', messages: [{ id: 'a1', role: 'user' as const,
         content: 'Continue API task', createdAt: '2026-11-06T08:01:00Z' }] };
     const originalStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
@@ -276,10 +276,10 @@ describe('Forge Desktop Work-bound Agent thread identity', () => {
   });
 
   test('unsent drafts remain discoverable without mutating transcript history', () => {
-    const empty = createThread('codex', 'repo_forge', undefined, 'checkout_forge');
-    const draft = { ...createThread('codex', 'repo_forge', undefined, 'checkout_forge'),
+    const empty = createThread('codex', 'repo_forge', 'checkout_forge');
+    const draft = { ...createThread('codex', 'repo_forge', 'checkout_forge'),
       updatedAt: '2026-11-06T08:10:00Z' };
-    const sent = { ...createThread('codex', 'repo_forge', undefined, 'checkout_forge'),
+    const sent = { ...createThread('codex', 'repo_forge', 'checkout_forge'),
       title: 'Existing result', updatedAt: '2026-11-06T08:00:00Z',
       messages: [{ id: 'message', role: 'user' as const, content: 'Existing result',
         createdAt: '2026-11-06T08:00:00Z' }] };
@@ -298,7 +298,7 @@ describe('Forge Desktop Work-bound Agent thread identity', () => {
 
   test('reopening the client restores an unsent conversation draft from its own storage key', () => {
     const originalStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
-    const thread = createThread('codex', 'repo_forge', undefined, 'checkout_forge');
+    const thread = createThread('codex', 'repo_forge', 'checkout_forge');
     const unfinished = 'Can we continue from the earlier note?';
     Object.defineProperty(globalThis, 'localStorage', {
       configurable: true,
@@ -355,9 +355,9 @@ describe('Forge Desktop Work-bound Agent thread identity', () => {
     expect(shouldSubmitComposerKey(press({ key: 'a' }), false)).toBe(false);
   });
 
-  test('Agent transcript is free of permanent project, Work and model toolbars', () => {
+  test('Agent transcript is free of permanent lifecycle and model toolbars', () => {
     const originalStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
-    const thread = createThread('api', 'repo_forge', 'work_1', 'checkout_main');
+    const thread = createThread('api', 'repo_forge', 'checkout_main');
     Object.defineProperty(globalThis, 'localStorage', {
       configurable: true,
       value: { getItem: () => JSON.stringify([thread]), setItem() {} },
@@ -377,11 +377,11 @@ describe('Forge Desktop Work-bound Agent thread identity', () => {
       expect(html).toContain('aria-label="查看 Git 变更"');
       expect(html).toContain('aria-label="新建会话"');
       expect(html).toContain('aria-label="更多会话操作"');
-      expect((html.match(/name="agent-chat-controls"/g) ?? [])).toHaveLength(4);
+      expect((html.match(/name="agent-chat-controls"/g) ?? [])).toHaveLength(3);
       expect(html).toContain('class="local-composer agent-chat-composer"');
       expect(html).toContain('aria-label="Agent 项目上下文"');
       expect(html).toContain('aria-label="Agent 执行的 Git Checkout"');
-      expect(html).toContain('aria-label="会话关联的 Forge Work"');
+      expect(html).not.toContain('aria-label="会话关联的 Forge Work"');
       expect(html).toContain('aria-label="允许本轮编辑文件和执行命令"');
       expect(html).toContain('aria-label="发送消息"');
       expect((html.match(/class="local-send-button"/g) ?? [])).toHaveLength(1);
@@ -471,21 +471,19 @@ describe('Forge Desktop Work-bound Agent thread identity', () => {
     expect(repositoryLabel({ repoId: 'repo_unlocated', displayName: 'Legacy' })).toBe('Legacy');
   });
 
-  test('new threads store only repository/Work/Checkout foreign keys, no semantic duplicates', () => {
-    const thread = createThread('api', 'repo_a', 'work_existing_1', 'checkout_a');
+  test('new threads store only repository and checkout foreign keys, no semantic duplicates', () => {
+    const thread = createThread('api', 'repo_a', 'checkout_a');
     expect(thread.projectRepoId).toBe('repo_a');
-    expect(thread.workId).toBe('work_existing_1');
     expect(thread.checkoutId).toBe('checkout_a');
     expect(thread.messages).toEqual([]);
     expect(thread.provider).toBe('api');
     expect('requirement' in thread).toBe(false);
     expect('plan' in thread).toBe(false);
-    expect(createThread('api', undefined, 'work_orphan').workId).toBeUndefined();
   });
 
   test('switching Avela to Forge creates a new Agent identity without rewriting history or resume ID', () => {
     const avela = {
-      ...createThread('codex', 'repo_avela', 'work_avela'),
+      ...createThread('codex', 'repo_avela'),
       providerSessionId: 'codex-session-avela',
       messages: [{ id: 'msg1', role: 'user' as const, content: 'build Avela', createdAt: '2026-11-05T00:00:00Z' }],
     };
@@ -493,11 +491,9 @@ describe('Forge Desktop Work-bound Agent thread identity', () => {
     expect(switched.created).toBe(true);
     expect(switched.thread.projectRepoId).toBe('repo_forge');
     expect(switched.thread.messages).toEqual([]);
-    expect(switched.thread.workId).toBeUndefined();
     expect(switched.thread.providerSessionId).toBeUndefined();
     expect(switched.thread.id).not.toBe(avela.id);
     expect(avela.projectRepoId).toBe('repo_avela');
-    expect(avela.workId).toBe('work_avela');
     expect(avela.providerSessionId).toBe('codex-session-avela');
     expect(avela.messages[0]?.content).toBe('build Avela');
     const bounded = selectThreadRepository(avela, 'codex', 'repo_forge', 'checkout_forge');
@@ -507,7 +503,7 @@ describe('Forge Desktop Work-bound Agent thread identity', () => {
 
   test('checkout switching preserves historical transcript and provider session in its original identity', () => {
     const original = {
-      ...createThread('api', 'repo_forge', 'work_a', 'checkout_main'),
+      ...createThread('api', 'repo_forge', 'checkout_main'),
       providerSessionId: 'provider-session-1',
       messages: [{ id: 'msg-1', role: 'user' as const, content: 'run tests', createdAt: '2026-11-05T00:00:00Z' }],
     };
@@ -516,33 +512,29 @@ describe('Forge Desktop Work-bound Agent thread identity', () => {
     expect(switchResult.thread.checkoutId).toBe('checkout_worktree');
     expect(switchResult.thread.projectRepoId).toBe('repo_forge');
     expect(switchResult.thread.messages).toHaveLength(0);
-    expect(switchResult.thread.workId).toBeUndefined();
     expect(switchResult.thread.providerSessionId).toBeUndefined();
     expect(switchResult.thread.id).not.toBe(original.id);
     expect(original.checkoutId).toBe('checkout_main');
-    expect(original.workId).toBe('work_a');
     expect(original.providerSessionId).toBe('provider-session-1');
     expect(original.messages[0]?.content).toBe('run tests');
   });
 
-  test('checkout switching replaces only empty draft and drops stale Work link', () => {
-    const draft = createThread('api', 'repo_forge', 'work_a', 'checkout_main');
+  test('checkout switching replaces only the checkout on an empty draft', () => {
+    const draft = createThread('api', 'repo_forge', 'checkout_main');
     const switched = selectThreadCheckout(draft, 'api', 'checkout_worktree');
     expect(switched.created).toBe(false);
     expect(switched.thread.id).toBe(draft.id);
     expect(switched.thread.checkoutId).toBe('checkout_worktree');
-    expect(switched.thread.workId).toBeUndefined();
     expect(draft.checkoutId).toBe('checkout_main');
     expect(selectThreadCheckout(switched.thread, 'api', 'checkout_worktree').thread).toBe(switched.thread);
   });
 
-  test('switching an unsent draft reuses it but clears old Work binding', () => {
-    const empty = createThread('api', 'repo_avela', 'work_avela');
+  test('switching an unsent draft reuses it without carrying stale repository context', () => {
+    const empty = createThread('api', 'repo_avela');
     const switched = selectThreadRepository(empty, 'api', 'repo_forge');
     expect(switched.created).toBe(false);
     expect(switched.thread.id).toBe(empty.id);
     expect(switched.thread.projectRepoId).toBe('repo_forge');
-    expect(switched.thread.workId).toBeUndefined();
     expect(empty.projectRepoId).toBe('repo_avela');
     expect(selectThreadRepository(switched.thread, 'api', 'repo_forge').thread).toBe(switched.thread);
     const ghostResume = { ...empty, providerSessionId: 'old-resume' };
@@ -572,22 +564,5 @@ describe('Forge Desktop Work-bound Agent thread identity', () => {
     expect(recent[0]?.requestId).toBe('r3');
   });
 
-  test('resumes latest active same-project, same-Work and same-provider thread only', () => {
-    const older = { ...createThread('api', 'repo_a', 'work_1'), updatedAt: '2026-11-01T00:00:00Z' };
-    const current = { ...createThread('api', 'repo_a', 'work_1'), updatedAt: '2026-11-05T00:00:00Z' };
-    const otherProject = createThread('api', 'repo_b', 'work_1');
-    const otherWork = createThread('api', 'repo_a', 'work_2');
-    const otherProvider = createThread('codex', 'repo_a', 'work_1');
-    const archived = { ...createThread('api', 'repo_a', 'work_1'), archived: true, updatedAt: '2026-11-06T00:00:00Z' };
-    const threads = [older, otherProject, archived, otherWork, current, otherProvider];
-    expect(findExistingWorkThread(threads, 'api', 'repo_a', 'work_1')?.id).toBe(current.id);
-    const otherCheckout = createThread('api', 'repo_a', 'work_1', 'checkout_2');
-    expect(findExistingWorkThread([...threads, otherCheckout], 'api', 'repo_a', 'work_1', 'checkout_2')?.id)
-      .toBe(otherCheckout.id);
-    expect(findExistingWorkThread([...threads, otherCheckout], 'api', 'repo_a', 'work_1', 'checkout_1'))
-      .toBeUndefined();
-    expect(findExistingWorkThread(threads, 'codex', 'repo_a', 'work_1')?.id).toBe(otherProvider.id);
-    expect(findExistingWorkThread(threads, 'api', 'repo_c', 'work_1')).toBeUndefined();
-    expect(findExistingWorkThread(threads, 'api', 'repo_a', 'work_not_registered')).toBeUndefined();
-  });
+
 });

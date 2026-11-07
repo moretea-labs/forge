@@ -6,7 +6,7 @@ import {
   scheduledBrowserProbeManagedRehydrateIntent,
   scheduledBrowserProbeNavigationAction,
 } from '../../src/runtime/workflow/schedules/browser-probe';
-import { createWorkContinuationSchedule } from '../../src/runtime/workflow/schedules/work-continuation';
+import { createBrowserObservationSchedule } from '../../src/runtime/workflow/schedules/work-continuation';
 
 describe('scheduled browser probe primitives', () => {
   test('forwards only normalized exact interactive grant references into scheduled browser actions', () => {
@@ -68,8 +68,8 @@ describe('scheduled browser probe primitives', () => {
     expect(scheduledBrowserProbeManagedRehydrateIntent(undefined)).toEqual({});
   });
 
-  test('rejects non-ChatGPT standalone keepalive before creating any Work or schedule state', () => {
-    expect(() => createWorkContinuationSchedule('/tmp/unused-controller-home', 'repo-test', {
+  test('rejects non-ChatGPT standalone keepalive before creating schedule state', () => {
+    expect(() => createBrowserObservationSchedule('/tmp/unused-controller-home', 'repo-test', {
       scheduleMode: 'browser_keepalive',
       controllerType: 'codex',
       triggerType: 'manual',

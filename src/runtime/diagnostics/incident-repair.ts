@@ -4,19 +4,16 @@ import { dirname, join, resolve } from 'path';
 import { spawnSync } from 'child_process';
 import { listRepositories, selectRepositoryCheckout } from '../../cli/repositories/registry';
 import { repositoryControllerRoot } from '../../effects/controller-home';
-import { withControllerLock } from '../../cli/repositories/locks';
 import type { RepositoryRecord } from '../../cli/repositories/types';
 import { loadRuntimeReleaseManifest } from '../root/release-manifest';
 import { readRuntimeReleaseAuthority } from '../root/release-store';
 import { appendRuntimeEvent, type RuntimeEntityEvent } from '../evidence/event-ledger';
 import { listReleaseSessions } from '../release/release-session';
-import { appendWorkEvidence, createWorkSemanticContext, getWorkContract, listWorkContracts } from '../../../packages/kernel/work/api/index';
 import { recentMcpIncidents, type McpIncident } from './mcp-timing';
 
 const RECURRENCE_WINDOW_MS = 30 * 60_000;
 const RECURRENCE_THRESHOLD = 3;
 const INCIDENT_TAIL_BYTES = 256 * 1024;
-const INCIDENT_WORK_PREFIX = 'forge-incident-repair';
 const ACTIONABLE_FAILURE_EVENT = 'forge_actionable_failure_observed';
 
 export interface ForgeIncidentRepairClassification {
@@ -299,16 +296,6 @@ export function resolveRuntimeSourceRepairRepository(
   return selectRepositoryCheckout(sourceRepository, sourceRepository.activeCheckoutId);
 }
 
-function requestBase(fingerprint: string): string {
-  return `${INCIDENT_WORK_PREFIX}:${fingerprint}`;
-}
-
-function requestGeneration(requestId: string | undefined, base: string): number | undefined {
-  if (!requestId?.startsWith(`${base}:g`)) return undefined;
-  const value = Number.parseInt(requestId.slice(`${base}:g`.length), 10);
-  return Number.isFinite(value) && value > 0 ? value : undefined;
-}
-
 function incidentEvidence(incident: PersistedMcpIncident, rootCode: string, ordinal: number) {
   return {
     evidenceId: `MCPINC-${incident.traceId}`.slice(0, 160),
@@ -360,76 +347,19 @@ function registerRecurringForgeRepair(input: {
     };
   }
 
-  const base = requestBase(classification.fingerprint);
-  const lockResource = `incident-repair-${classification.fingerprint}`;
-  return withControllerLock(input.controllerHome, { scope: 'global', resource: lockResource }, lockResource, () => {
-    const store = { controllerHome: input.controllerHome, repoId: repairRepository.repoId };
-    const matching = listWorkContracts({ ...store, state: 'all', limit: 500 })
-      .filter((work) => requestGeneration(work.requestId, base) !== undefined)
-      .sort((left, right) => (requestGeneration(left.requestId, base) ?? 0) - (requestGeneration(right.requestId, base) ?? 0));
-    const active = [...matching].reverse().find((work) => work.semanticState === 'open');
-    const recentEvidence = input.evidence.slice(-RECURRENCE_THRESHOLD);
-
-    if (active) {
-      for (const evidence of recentEvidence) {
-        if (evidence.evidenceId && active.evidenceRefs.some((entry) => entry.evidenceId === evidence.evidenceId)) continue;
-        appendWorkEvidence(store, active.workId, evidence);
-      }
-      return {
-        eligible: true, recurrent: true, occurrenceCount: input.occurrenceCount,
-        fingerprint: classification.fingerprint, rootCode: classification.rootCode,
-        repairRepoId: repairRepository.repoId, workId: active.workId, reusedExistingWork: true,
-        reason: 'reused active canonical incident-repair Work; no automatic Controller continuation',
-      };
-    }
-
-    const predecessor = matching.at(-1);
-    const generation = (predecessor ? (requestGeneration(predecessor.requestId, base) ?? 0) : 0) + 1;
-    const requestId = `${base}:g${generation}`;
-    const head = gitHead(repairRepository.canonicalRoot);
-    if (!head) return {
-      eligible: true, recurrent: true, occurrenceCount: input.occurrenceCount,
-      fingerprint: classification.fingerprint, rootCode: classification.rootCode,
-      repairRepoId: repairRepository.repoId, reason: 'repair repository HEAD could not be proven',
-    };
-
-    try {
-      createWorkSemanticContext(store, {
-        workId: `work-incident-${classification.fingerprint}-g${generation}`,
-        objective: `Repair recurrent Forge infrastructure incident ${classification.rootCode} automatically registered after ${input.occurrenceCount} occurrences within ${RECURRENCE_WINDOW_MS / 60_000} minutes.`,
-        requestId,
-        requestedBy: 'system',
-      });
-    } catch (error) {
-      return {
-        eligible: true, recurrent: true, occurrenceCount: input.occurrenceCount,
-        fingerprint: classification.fingerprint, rootCode: classification.rootCode,
-        repairRepoId: repairRepository.repoId,
-        reason: `semantic Work creation failed: ${error instanceof Error ? error.message : String(error)}`,
-      };
-    }
-
-    const created = listWorkContracts({ ...store, state: 'all', limit: 500 }).find((work) => work.requestId === requestId);
-    if (!created) return {
-      eligible: true, recurrent: true, occurrenceCount: input.occurrenceCount,
-      fingerprint: classification.fingerprint, rootCode: classification.rootCode,
-      repairRepoId: repairRepository.repoId,
-      reason: 'canonical Work admission succeeded without a request-bound readable Work',
-    };
-
-    if (predecessor) appendWorkEvidence(store, created.workId, {
-      title: 'incident repair predecessor',
-      summary: `Recurrent root ${classification.rootCode} created successor generation ${generation} after terminal Work ${predecessor.workId} (${predecessor.semanticState}).`,
-      detailLevel: 'summary',
-    });
-    for (const evidence of recentEvidence) appendWorkEvidence(store, created.workId, evidence);
-    return {
-      eligible: true, recurrent: true, occurrenceCount: input.occurrenceCount,
-      fingerprint: classification.fingerprint, rootCode: classification.rootCode,
-      repairRepoId: repairRepository.repoId, workId: created.workId, reusedExistingWork: false,
-      reason: 'created canonical recurrent-incident repair Work; no automatic Controller continuation',
-    };
-  }, 10_000);
+  // Recurrence remains observable, but incident detection no longer promotes
+  // infrastructure evidence into a Work lifecycle. The repair repository is
+  // routing context only; Issue/Requirement/Run owners decide follow-up.
+  void input.evidence;
+  return {
+    eligible: true,
+    recurrent: true,
+    occurrenceCount: input.occurrenceCount,
+    fingerprint: classification.fingerprint,
+    rootCode: classification.rootCode,
+    repairRepoId: repairRepository.repoId,
+    reason: 'recurrent Forge incident recorded; automatic Work promotion is retired and follow-up belongs to Issue/Requirement/Run authorities',
+  };
 }
 
 export function maybeRegisterMcpIncidentRepair(input: {

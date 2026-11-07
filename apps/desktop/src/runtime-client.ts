@@ -2,14 +2,9 @@ import { invoke } from '@tauri-apps/api/core';
 import type {
   ControllerConnectionProjection,
   ForgeDesktopProjection,
-  ProjectListItemProjection,
-  ProjectPlanProjection,
   ProjectCheckoutProjection,
-  ProjectRequirementProjection,
+  ProjectListItemProjection,
   UserRequestProjection,
-  WorkExecutionEvidenceProjection,
-  WorkGraphNodeProjection,
-  WorkSemanticState,
 } from './runtime-projection';
 
 interface RawRepository {
@@ -26,36 +21,6 @@ interface ProjectListResult {
   preferredRepoId?: string | null;
 }
 
-interface RawPlanSummary {
-  planId: string;
-  revision: number;
-  requirementId?: string;
-  goal: string;
-  updatedAt?: string;
-  recordedAt?: string;
-  items?: Array<{ id: string; objective: string }>;
-}
-
-interface RawRequirement {
-  requirementId: string;
-  revision: number;
-  title: string;
-  outcomeStatement: string;
-  state: string;
-  acceptanceCriteria?: string[];
-  updatedAt?: string;
-}
-
-interface RawRequirementDetailResult {
-  data?: { requirement?: RawRequirement };
-}
-
-interface RawPlanDetailResult {
-  data?: {
-    plan?: RawPlanSummary;
-  };
-}
-
 interface RawUserRequest {
   requestId: string;
   kind: 'user_action_request' | 'user_decision_request';
@@ -63,7 +28,7 @@ interface RawUserRequest {
   summary: string;
   actionRequired: 'login' | 'grant_permission' | 'confirm_destructive' | 'product_decision';
   status: string;
-  targetScope?: { repoId?: string; workId?: string };
+  targetScope?: { repoId?: string };
   updatedAt?: string;
 }
 
@@ -91,40 +56,6 @@ interface RawProjectRepositoryResult {
       lifecycle?: 'active' | 'archived' | 'removed';
       active?: boolean;
     }>;
-  };
-}
-
-interface RawWorkListResult {
-  data?: {
-    works?: RawWorkView[];
-    recentHistory?: RawWorkView[];
-    bounded?: boolean;
-  };
-}
-
-interface RawWorkView {
-  workId: string;
-  revision?: number;
-  objective: string;
-  state: WorkSemanticState;
-  semanticParentWorkId?: string;
-  dependsOnWorkIds?: string[];
-  requirementId?: string;
-  planId?: string;
-  resultRefs?: string[];
-  updatedAt?: string;
-  recordedAt?: string;
-}
-
-interface RawWorkDetailResult {
-  data?: {
-    work?: RawWorkView;
-    executionEvidence?: WorkExecutionEvidenceProjection;
-    continuation?: {
-      continuationPrompt?: string;
-      nextSafeAction?: string;
-      reconciliationRequired?: boolean;
-    };
   };
 }
 
@@ -172,21 +103,9 @@ function localizeRuntimeError(error: unknown): Error {
     FORGE_DESKTOP_RUNTIME_CONFIG_UNAVAILABLE: '未找到 Forge 运行时配置。',
     FORGE_DESKTOP_RUNTIME_CONFIG_INVALID: 'Forge 运行时配置无法读取。',
     FORGE_DESKTOP_RUNTIME_UNREACHABLE: 'Forge 运行时当前不可达。',
-    FORGE_DESKTOP_RUNTIME_TOKEN_UNAVAILABLE: 'Forge 运行时认证信息不可用。',
+    FORGE_DESKTOP_RUNTIME_TOKEN_UNAVAILABLE: 'Forge Runtime 访问凭据不可用。',
   };
   return new Error(messages[raw] ?? raw);
-}
-
-function graphNode(work: RawWorkView): WorkGraphNodeProjection {
-  return {
-    workId: work.workId,
-    objective: work.objective,
-    state: work.state,
-    ...(work.requirementId ? { requirementId: work.requirementId } : {}),
-    ...(work.planId ? { planId: work.planId } : {}),
-    ...(work.semanticParentWorkId ? { semanticParentWorkId: work.semanticParentWorkId } : {}),
-    dependsOnWorkIds: work.dependsOnWorkIds ?? [],
-  };
 }
 
 export async function readLocalProviderStatus(): Promise<LocalProviderStatusProjection> {
@@ -222,7 +141,6 @@ export async function sendLocalConversation(input: {
   }
 }
 
-
 export interface KnowledgeAuditProjection {
   readonly: boolean;
   advisoryOnly: boolean;
@@ -246,7 +164,6 @@ export interface KnowledgeAuditProjection {
 
 export async function readProjectKnowledge(input: {
   repoId: string;
-  workId?: string;
   query: string;
 }): Promise<KnowledgeAuditProjection> {
   try {
@@ -296,87 +213,39 @@ export async function readProjects(): Promise<ProjectCatalogProjection> {
 
 export async function readProjectWorkspace(
   project: ProjectListItemProjection,
-  selectedWorkId?: string,
-): Promise<Pick<ForgeDesktopProjection, 'project' | 'workGraph' | 'recentWorkHistory' | 'work' | 'requirement' | 'plan' | 'userRequests'>> {
+): Promise<Pick<ForgeDesktopProjection, 'project' | 'requirement' | 'plan' | 'userRequests'>> {
   try {
-    const [overview, repositoryDetail, workList] = await Promise.all([
+    const [overview, repositoryDetail, userRequestResult] = await Promise.all([
       invoke<RawProjectOverviewResult>('read_project_overview', { repoId: project.repoId }),
       invoke<RawProjectRepositoryResult>('read_project_repository', { repoId: project.repoId }),
-      invoke<RawWorkListResult>('read_project_work_list', { repoId: project.repoId }),
+      invoke<RawUserRequestListResult>('read_user_requests'),
     ]);
     const repositoryState = overview.data?.repositoryState;
     const repository = repositoryDetail.repository;
     if (!repository?.activeCheckoutId || !Array.isArray(repository.checkouts)) {
       throw new Error('FORGE_DESKTOP_REPOSITORY_DETAIL_INVALID');
     }
-    const checkouts: ProjectCheckoutProjection[] = repository.checkouts.map((checkout) => ({
-      checkoutId: checkout.checkoutId ?? '未知检出',
-      path: checkout.path ?? '未知路径',
-      ...(checkout.branch ? { branch: checkout.branch } : {}),
-      kind: checkout.worktree ? 'worktree' : 'primary',
-      lifecycle: checkout.lifecycle ?? 'active',
-      active: checkout.active === true,
+    const checkouts: ProjectCheckoutProjection[] = repository.checkouts.map((entry) => ({
+      checkoutId: entry.checkoutId ?? '未知检出',
+      path: entry.path ?? '未知路径',
+      ...(entry.branch ? { branch: entry.branch } : {}),
+      kind: entry.worktree ? 'worktree' : 'primary',
+      lifecycle: entry.lifecycle ?? 'active',
+      active: entry.active === true,
     }));
-    const activeCheckout = checkouts.find((checkout) => checkout.active)
-      ?? checkouts.find((checkout) => checkout.checkoutId === repository.activeCheckoutId);
+    const activeCheckout = checkouts.find((entry) => entry.active)
+      ?? checkouts.find((entry) => entry.checkoutId === repository.activeCheckoutId);
     if (!activeCheckout) throw new Error('FORGE_DESKTOP_REPOSITORY_ACTIVE_CHECKOUT_MISSING');
-    const activeWork = workList.data?.works ?? [];
-    const targetWorkId = selectedWorkId;
-
-    let detail: RawWorkDetailResult | undefined;
-    if (targetWorkId) {
-      detail = await invoke<RawWorkDetailResult>('read_work_detail', { repoId: project.repoId, workId: targetWorkId });
-    }
-
-    const selectedWork = detail?.data?.work;
-    const nodes = new Map<string, WorkGraphNodeProjection>();
-    for (const work of activeWork) nodes.set(work.workId, graphNode(work));
-    if (selectedWork) nodes.set(selectedWork.workId, graphNode(selectedWork));
-    const recentWorkHistory = (workList.data?.recentHistory ?? [])
-      .filter((work) => !nodes.has(work.workId))
-      .map(graphNode);
-
-    const [requirementDetail, planDetail, userRequestResult] = await Promise.all([
-      selectedWork?.requirementId
-        ? invoke<RawRequirementDetailResult>('read_requirement_detail', { repoId: project.repoId, requirementId: selectedWork.requirementId })
-        : Promise.resolve(undefined),
-      selectedWork?.planId
-        ? invoke<RawPlanDetailResult>('read_plan_detail', { repoId: project.repoId, planId: selectedWork.planId })
-        : Promise.resolve(undefined),
-      invoke<RawUserRequestListResult>('read_user_requests'),
-    ]);
-    const rawRequirement = requirementDetail?.data?.requirement;
-    const requirement: ProjectRequirementProjection | null = rawRequirement ? {
-      requirementId: rawRequirement.requirementId,
-      revision: rawRequirement.revision,
-      title: rawRequirement.title,
-      outcomeStatement: rawRequirement.outcomeStatement,
-      state: rawRequirement.state,
-      acceptanceCriteria: rawRequirement.acceptanceCriteria ?? [],
-      ...(rawRequirement.updatedAt ? { updatedAt: rawRequirement.updatedAt } : {}),
-    } : null;
-    const userRequests: UserRequestProjection[] = selectedWork
-      ? (userRequestResult.data?.items ?? [])
-        .filter((item) => item.status === 'pending' && item.targetScope?.workId === selectedWork.workId)
-        .map((item) => ({
-          requestId: item.requestId,
-          kind: item.kind,
-          title: item.title,
-          summary: item.summary,
-          actionRequired: item.actionRequired,
-          ...(item.updatedAt ? { updatedAt: item.updatedAt } : {}),
-        }))
-      : [];
-    const selectedPlan = planDetail?.data?.plan;
-    const plan: ProjectPlanProjection | null = selectedPlan ? {
-      planId: selectedPlan.planId,
-      revision: selectedPlan.revision,
-      goal: selectedPlan.goal,
-      ...(selectedPlan.requirementId ? { requirementId: selectedPlan.requirementId } : {}),
-      ...(selectedPlan.updatedAt ? { updatedAt: selectedPlan.updatedAt } : {}),
-      items: selectedPlan.items ?? [],
-    } : null;
-
+    const userRequests: UserRequestProjection[] = (userRequestResult.data?.items ?? [])
+      .filter((item) => item.status === 'pending' && item.targetScope?.repoId === project.repoId)
+      .map((item) => ({
+        requestId: item.requestId,
+        kind: item.kind,
+        title: item.title,
+        summary: item.summary,
+        actionRequired: item.actionRequired,
+        ...(item.updatedAt ? { updatedAt: item.updatedAt } : {}),
+      }));
     return {
       project: {
         repoId: project.repoId,
@@ -393,37 +262,10 @@ export async function readProjectWorkspace(
         sourceRevision: repositoryState?.head ?? '未知版本',
         dirty: Boolean(repositoryState?.dirty),
       },
-      workGraph: { nodes: [...nodes.values()] },
-      recentWorkHistory,
-      work: selectedWork ? {
-        workId: selectedWork.workId,
-        revision: selectedWork.revision ?? 1,
-        title: selectedWork.objective,
-        objective: selectedWork.objective,
-        semanticState: selectedWork.state,
-        relationLabel: selectedWork.semanticParentWorkId ? '子工作' : '当前工作',
-        ...(detail?.data?.continuation?.continuationPrompt ? { continuationPrompt: detail.data.continuation.continuationPrompt } : {}),
-        ...(detail?.data?.continuation?.nextSafeAction ? { nextSafeAction: detail.data.continuation.nextSafeAction } : {}),
-        ...(selectedWork.semanticParentWorkId ? { semanticParentWorkId: selectedWork.semanticParentWorkId } : {}),
-        dependsOnWorkIds: selectedWork.dependsOnWorkIds ?? [],
-        ...(selectedWork.requirementId ? { requirementId: selectedWork.requirementId } : {}),
-        ...(selectedWork.planId ? { planId: selectedWork.planId } : {}),
-        ...(selectedWork.updatedAt ? { updatedAt: selectedWork.updatedAt } : {}),
-        resultRefs: selectedWork.resultRefs ?? [],
-        ...(detail?.data?.executionEvidence ? { executionEvidence: detail.data.executionEvidence } : {}),
-      } : null,
-      requirement,
-      plan,
+      requirement: null,
+      plan: null,
       userRequests,
     };
-  } catch (error) {
-    throw localizeRuntimeError(error);
-  }
-}
-
-export async function continueWork(repoId: string, workId: string, prompt: string): Promise<void> {
-  try {
-    await invoke('continue_work', { repoId, workId, prompt });
   } catch (error) {
     throw localizeRuntimeError(error);
   }

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { readProjectKnowledge, tauriRuntimeAvailable, type KnowledgeAuditProjection } from './runtime-client';
 
-export function KnowledgeView({ repoId, workId, projectName }: { repoId?: string; workId?: string; projectName?: string }) {
+export function KnowledgeView({ repoId, projectName }: { repoId?: string; projectName?: string }) {
   const [query, setQuery] = useState('');
   const [result, setResult] = useState<KnowledgeAuditProjection | null>(null);
   const [loading, setLoading] = useState(false);
@@ -9,10 +9,10 @@ export function KnowledgeView({ repoId, workId, projectName }: { repoId?: string
   const search = useCallback(async (term: string) => {
     if (!repoId || !tauriRuntimeAvailable()) return;
     setLoading(true); setError(null);
-    try { setResult(await readProjectKnowledge({ repoId, workId, query: term })); }
+    try { setResult(await readProjectKnowledge({ repoId, query: term })); }
     catch (cause) { setResult(null); setError(cause instanceof Error ? cause.message : String(cause)); }
     finally { setLoading(false); }
-  }, [repoId, workId]);
+  }, [repoId]);
   useEffect(() => { void search(''); }, [search]);
   return <main className="main-pane knowledge-pane"><div className="content-column">
     <header className="work-hero"><div className="breadcrumb">Forge / Cognitive</div><h1>记忆与知识</h1>

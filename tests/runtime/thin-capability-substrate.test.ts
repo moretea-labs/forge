@@ -29,14 +29,9 @@ import {
   getScheduleDefinition,
   getScheduleRuntimeState,
 } from '../../packages/kernel/scheduler/api/index';
-import {
-  createWorkContract,
-  getWorkContract,
-  isCurrentWorkContract,
-  reviseWorkSemanticContext,
-  workSemanticView,
-} from '../../packages/kernel/work/api/index';
+import { getWorkContract, isCurrentWorkContract, workSemanticView } from '../../packages/kernel/work/api/index';
 import { callRhWorkSemanticOperation } from '../../adapters/mcp/runtime-gateway/work-semantic-operations';
+import { seedHistoricalWorkContract } from '../helpers/historical-work-contract';
 const roots: string[] = [];
 afterEach(() => {
 });  while (roots.length > 0) rmSync(roots.pop()!, { recursive: true, force: true });
@@ -367,52 +362,6 @@ describe('Thin capability substrate', () => {
     const persisted = JSON.parse(readFileSync(path, 'utf8')) as { requests: Array<{ status: string }> };
     expect(persisted.requests).toHaveLength(2);
     expect(persisted.requests.every((request) => request.status === 'resolved')).toBe(true);
-  });
-
-  test('Step 5 & 2: complete records semantic decision and enables finalization without verify/review gates', async () => {
-    const controllerHome = tempHome();
-    const repoId = 'repo-work-complete-test';
-    const store = { controllerHome, repoId };
-    const workId = 'work-thin-complete-1';
-
-    createWorkContract(store, {
-      workId,
-      repoId,
-      objective: 'Implement thin feature.',
-      acceptanceCriteria: ['Must be thin and clean'],
-      allowedPaths: [], forbiddenPaths: [], checks: [],
-      constraints: {},
-      requestedBy: 'chatgpt',
-      dispatchState: 'running',
-    });
-
-    const initial = getWorkContract(store, workId)!;
-    expect(isCurrentWorkContract(initial)).toBe(true);
-
-    // Call complete directly via rh_work semantic operations
-    const completeResult = await callRhWorkSemanticOperation(store, 'complete', {
-      work_id: workId,
-      expected_revision: 1,
-      work_result_refs: ['git:commit:12345678', 'doc:summary:complete'],
-    });
-
-    expect(completeResult?.isError).toBeFalsy();
-    const completedWork = getWorkContract(store, workId)!;
-    expect(workSemanticView(completedWork).state).toBe('completed');
-    expect(completedWork.semanticState).toBe('completed');
-    expect(isCurrentWorkContract(completedWork)).toBe(false);
-    expect(workSemanticView(completedWork).resultRefs).toEqual(['git:commit:12345678', 'doc:summary:complete']);
-
-    expect(completedWork.completionReceipt).toBeUndefined();
-
-    // Terminal semantic decisions are monotonic. If later evidence shows the
-    // same root cause remains open, the model creates an explicit successor Work
-    // and preserves this terminal audit record.
-    expect(() => reviseWorkSemanticContext(store, workId, {
-      expectedRevision: 2,
-      state: 'open',
-      resultRefs: ['reason:acceptance-still-open'],
-    })).toThrow(`WORK_SEMANTIC_REOPEN_FORBIDDEN:${workId}:completed`);
   });
 
 

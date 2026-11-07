@@ -11,7 +11,6 @@ import {
   listGitHubWorkflowRuns,
   listGitHubWorkflows,
 } from '../../cli/github/github';
-import { syncGitHubSemanticRelease } from '../../cli/github/semantic-projection';
 import type {
   AssistantPluginActionDescriptor,
   AssistantPluginActionExecutionInput,
@@ -73,7 +72,7 @@ function githubCapabilities(): AssistantPluginCapability[] {
       title: 'Issue Sync',
       description: 'Mirror controller issues and task metadata into GitHub issues.',
       scopes: ['github:issues:write', 'controller:issues:write'],
-      actions: ['configure', 'publish_issue', 'refresh_issue', 'close_issue', 'sync_semantic_release'],
+      actions: ['configure', 'publish_issue', 'refresh_issue', 'close_issue'],
     },
     {
       capabilityId: 'project-sync',
@@ -145,22 +144,6 @@ function githubActions(projectConfigured: boolean): AssistantPluginActionDescrip
         required: ['issue_id'],
         additionalProperties: false,
       },
-    },
-    {
-      actionId: 'sync_semantic_release',
-      title: 'Sync semantic release to GitHub',
-      description: 'Idempotently project one root semantic release Work and explicitly linked child Works from Forge into GitHub Issues without changing Forge semantics.',
-      readOnly: false,
-      risk: 'remote_write',
-      confirmation: 'authorization',
-      defaultTimeoutMs: 120_000,
-      cancellable: true,
-      idempotent: true,
-      scopes: projectConfigured ? ['github:issues:write', 'github:projects:write'] : ['github:issues:write'],
-      resourceClaims: [{ resource: 'remote', mode: 'exclusive' }],
-      argumentsSchema: { type: 'object', required: ['release_work_id'], properties: {
-        release_work_id: { type: 'string', minLength: 1, maxLength: 200 },
-      }, additionalProperties: false },
     },
     {
       actionId: 'refresh_issue',
@@ -360,16 +343,6 @@ export async function executeGitHubPluginAction(input: AssistantPluginActionExec
     }
     case 'publish_issue':
       return { issue: publishIssueWithGitHubPlugin(input.repoRoot, String(input.args.issue_id ?? '').trim()) };
-    case 'sync_semantic_release': {
-      const config = loadGitHubPluginConfig(input.repoRoot);
-      if (!config.enabled || !getGitHubPluginStatus(input.repoRoot).ready) throw new Error('GITHUB_SEMANTIC_PLUGIN_NOT_READY');
-      return { ...syncGitHubSemanticRelease(input.repoRoot, {
-        releaseWorkId: String(input.args.release_work_id ?? '').trim(),
-        repository: config.repository,
-        projectOwner: config.projectOwner,
-        projectNumber: config.projectNumber,
-      }) };
-    }
     case 'refresh_issue':
       return refreshIssueWithGitHubPlugin(input.repoRoot, String(input.args.issue_id ?? '').trim()) as Record<string, unknown>;
     case 'list_workflows': {

@@ -35,7 +35,6 @@ import type { ProcessHandle, ProcessCommandSpec } from './types';
 import { DEFAULT_INTERACTIVE_WAIT_MS } from './types';
 import { durationAwareInteractiveWaitMs } from './interactive-admission';
 import { assertExecutionIdentity, type ResolvedExecutionIdentity } from '../../control-plane/execution/execution-identity';
-import { settleWorkHandleExpectedHeadAfterRepositoryCommand } from '../../control-plane/execution/work-head-settlement';
 import {
   cancelLightweightProcess,
   getLightweightProcessHandle,
@@ -423,28 +422,6 @@ export async function executeRepositoryCommandViaProcessRuntime(
         ...(input.principalId ? { principalId: input.principalId } : {}),
         deferStart: deferLongPreparation,
         reuseActiveEquivalent: deferLongPreparation,
-        onCompleted: (result) => {
-          // A terminal child exit is sufficient to close the Process, but not to
-          // advance Work mutation authority when post-execution repository
-          // evidence is unavailable. Finalization must keep failing closed until
-          // a later authoritative repository inspection proves the new HEAD.
-          if (result.evidenceError) return;
-          const settlement = settleWorkHandleExpectedHeadAfterRepositoryCommand({
-            controllerHome: input.controllerHome,
-            repository: input.repository,
-            executionIdentity,
-            workId: input.workId,
-            ok: result.ok,
-            cancelled: result.cancelled,
-            timedOut: result.timedOut,
-          });
-          if (!settlement.settled && settlement.reason === 'concurrent_lifecycle_write') {
-            result.evidenceError = {
-              code: 'WORK_HEAD_SETTLEMENT_UNRESOLVED',
-              message: `Work ${input.workId ?? 'unknown'} repository command succeeded, but expectedHead settlement remained contested after bounded retry (${settlement.previousHead ?? 'unknown'} -> ${settlement.currentHead ?? 'unknown'}).`,
-            };
-          }
-        },
       });
       const handle = lightweight.handle;
       return {

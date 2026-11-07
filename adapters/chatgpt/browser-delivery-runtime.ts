@@ -888,7 +888,7 @@ export async function closeChatgptAutomationTabAfterDispatch(
     }, Math.min(timeoutMs ?? 15_000, 15_000));
     const closed = authorizationGrantRefs.length > 0
       ? await withChatgptBrowserActionOrigin(
-          { surface: 'schedule', actor: 'chatgpt-work-continuation' },
+          { surface: 'schedule', actor: 'chatgpt-provider-delivery' },
           closePage,
           new Set(authorizationGrantRefs),
         )
@@ -906,29 +906,6 @@ export async function closeChatgptAutomationTabAfterDispatch(
       },
     };
   }
-}
-
-/**
- * Settles the browser resource for one completed Work-bound ChatGPT round.
- * Conversation identity is durable in the Work binding and intentionally
- * survives this ephemeral tab/session cleanup. Browser ownership policy keeps
- * user-owned native tabs intact.
- */
-export async function settleWorkChatgptAutomationTab(input: {
-  controllerHome: string;
-  workId: string;
-  browserSessionId: string;
-  timeoutMs?: number;
-  authorizationGrantRefs?: readonly string[];
-}): Promise<{ status: ChatgptAutomationTabCleanupStatus; error?: { code: string; message: string } }> {
-  if (input.browserSessionId.startsWith('forge-chatgpt-bridge-')) return { status: 'session_closed' };
-  return closeChatgptAutomationTabAfterDispatch(
-    input.controllerHome,
-    input.workId,
-    input.browserSessionId,
-    input.timeoutMs,
-    input.authorizationGrantRefs,
-  );
 }
 
 export function isChatgptConversationUrl(value: string): boolean {

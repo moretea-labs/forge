@@ -26,12 +26,8 @@ import {
   resolveLegacyWorkContractIdentity,
   ExecutionIdentityError,
 } from '../../src/runtime/control-plane/execution/execution-identity';
-import { resolveWorkDeliveryTargetBranch, writeWorkHandle, type WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
-import { assertManagedRepositoryMutationAuthority, ensureRepositoryWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-authority';
-import { createWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { resolveWorkDeliveryTargetBranch, WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { spawnManagedProcess } from '../../src/runtime/execution/process-runtime';
-import { startExecutionSession } from '../../src/runtime/control-plane/execution/session-store';
-import { currentPermissionSnapshotVersion, validateWorkHandle, WorkHandleValidationError } from '../../src/runtime/control-plane/execution/validation';
 
 const roots: string[] = [];
 
@@ -106,95 +102,7 @@ function sampleHandle(input: {
 }
 
 describe('execution identity pre-spawn guard', () => {
-  test('emits typed WORK_HANDLE_HEAD_CHANGED when mutation identity drifts', () => {
-    const fx = dualRepoFixture();
-    const identity = { sessionId: 'sess-test', principalId: 'principal-test', controllerInstanceId: 'instance-test' };
-    startExecutionSession(fx.controllerHome, {
-      ...identity,
-      permissionSnapshotVersion: currentPermissionSnapshotVersion(fx.controllerHome, fx.repoA.repoId),
-    });
-    const handle = {
-      ...sampleHandle({
-        workId: 'work-typed-head-drift',
-        repositoryId: fx.repoA.repoId,
-        checkoutId: fx.repoA.activeCheckoutId,
-        worktreePath: fx.repoARoot,
-        branch: 'main',
-        expectedHead: fx.headA,
-      }),
-      permissionSnapshotVersion: currentPermissionSnapshotVersion(fx.controllerHome, fx.repoA.repoId),
-    };
 
-    writeFileSync(join(fx.repoARoot, 'advance.txt'), 'advance\n');
-    spawnSync('git', ['-C', fx.repoARoot, 'add', 'advance.txt'], { encoding: 'utf8' });
-    spawnSync('git', ['-C', fx.repoARoot, 'commit', '-m', 'advance'], { encoding: 'utf8' });
-
-    let observed: unknown;
-    try {
-      validateWorkHandle(fx.controllerHome, handle, identity, 'full', 'execute');
-    } catch (error) {
-      observed = error;
-    }
-    expect(observed).toBeInstanceOf(WorkHandleValidationError);
-    expect((observed as WorkHandleValidationError).code).toBe('WORK_HANDLE_HEAD_CHANGED');
-  });
-
-  test('inspection accepts a managed Work-owned descendant HEAD without weakening execute authority', () => {
-    const fx = dualRepoFixture();
-    const identity = { sessionId: 'sess-managed-inspect', principalId: 'principal-test', controllerInstanceId: 'instance-test' };
-    startExecutionSession(fx.controllerHome, {
-      ...identity,
-      permissionSnapshotVersion: currentPermissionSnapshotVersion(fx.controllerHome, fx.repoA.repoId),
-    });
-    const handle = {
-      ...sampleHandle({
-        workId: 'work-managed-inspect-descendant',
-        repositoryId: fx.repoA.repoId,
-        checkoutId: fx.repoA.activeCheckoutId,
-        worktreePath: fx.repoARoot,
-        branch: 'main',
-        expectedHead: fx.headA,
-      }),
-      managedWorktree: true,
-      permissionSnapshotVersion: currentPermissionSnapshotVersion(fx.controllerHome, fx.repoA.repoId),
-    };
-
-    writeFileSync(join(fx.repoARoot, 'work-owned.txt'), 'work owned\n');
-    spawnSync('git', ['-C', fx.repoARoot, 'add', 'work-owned.txt'], { encoding: 'utf8' });
-    spawnSync('git', ['-C', fx.repoARoot, 'commit', '-m', 'work-owned descendant'], { encoding: 'utf8' });
-    const descendantHead = spawnSync('git', ['-C', fx.repoARoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout.trim();
-
-    const inspected = validateWorkHandle(fx.controllerHome, handle, identity, 'cheap', 'inspect');
-    expect(inspected.currentHead).toBe(descendantHead);
-    expect(inspected.warnings.some((warning) => warning.includes('Work-owned descendant commits'))).toBe(true);
-    expect(() => validateWorkHandle(fx.controllerHome, handle, identity, 'cheap', 'execute')).toThrow(/WORK_HANDLE_HEAD_CHANGED/);
-  });
-
-  test('inspection still rejects a managed non-descendant HEAD', () => {
-    const fx = dualRepoFixture();
-    const identity = { sessionId: 'sess-managed-inspect-unrelated', principalId: 'principal-test', controllerInstanceId: 'instance-test' };
-    startExecutionSession(fx.controllerHome, {
-      ...identity,
-      permissionSnapshotVersion: currentPermissionSnapshotVersion(fx.controllerHome, fx.repoA.repoId),
-    });
-    const handle = {
-      ...sampleHandle({
-        workId: 'work-managed-inspect-unrelated',
-        repositoryId: fx.repoA.repoId,
-        checkoutId: fx.repoA.activeCheckoutId,
-        worktreePath: fx.repoARoot,
-        branch: 'main',
-        expectedHead: fx.headA,
-      }),
-      managedWorktree: true,
-      permissionSnapshotVersion: currentPermissionSnapshotVersion(fx.controllerHome, fx.repoA.repoId),
-    };
-    const tree = spawnSync('git', ['-C', fx.repoARoot, 'rev-parse', `${fx.headA}^{tree}`], { encoding: 'utf8' }).stdout.trim();
-    const unrelatedHead = spawnSync('git', ['-C', fx.repoARoot, 'commit-tree', tree, '-m', 'unrelated root'], { encoding: 'utf8' }).stdout.trim();
-    spawnSync('git', ['-C', fx.repoARoot, 'reset', '--hard', unrelatedHead], { encoding: 'utf8' });
-
-    expect(() => validateWorkHandle(fx.controllerHome, handle, identity, 'cheap', 'inspect')).toThrow(/WORK_HANDLE_HEAD_CHANGED/);
-  });
 
   test('rejects explicit checkout A when cwd routes into repo B', () => {
     const fx = dualRepoFixture();
@@ -724,94 +632,7 @@ describe('execution identity pre-spawn guard', () => {
 
 });
 
-
-describe('managed Work mutation authority', () => {
-  test('rejects mutation after the durable handle leaves editable state', () => {
-    const fx = dualRepoFixture();
-    const handle = {
-      ...sampleHandle({
-        workId: 'work-managed-committed-mutation',
-        repositoryId: fx.repoA.repoId,
-        checkoutId: fx.repoA.activeCheckoutId,
-        worktreePath: fx.repoARoot,
-        branch: 'main',
-        expectedHead: fx.headA,
-      }),
-      managedWorktree: true,
-      state: 'committed' as const,
-    };
-    expect(() => assertManagedRepositoryMutationAuthority({ repository: fx.repoA, handle }))
-      .toThrow(/WORK_REPOSITORY_MUTATION_LIFECYCLE_INVALID/);
-  });
-
-  test('rejects managed mutation when repository history moved away from durable expectedHead', () => {
-    const fx = dualRepoFixture();
-    const handle = {
-      ...sampleHandle({
-        workId: 'work-managed-head-drift-mutation',
-        repositoryId: fx.repoA.repoId,
-        checkoutId: fx.repoA.activeCheckoutId,
-        worktreePath: fx.repoARoot,
-        branch: 'main',
-        expectedHead: fx.headA,
-      }),
-      managedWorktree: true,
-    };
-    writeFileSync(join(fx.repoARoot, 'drift.txt'), 'drift\n');
-    spawnSync('git', ['-C', fx.repoARoot, 'add', 'drift.txt'], { encoding: 'utf8' });
-    spawnSync('git', ['-C', fx.repoARoot, 'commit', '-m', 'drift'], { encoding: 'utf8' });
-    expect(() => assertManagedRepositoryMutationAuthority({ repository: fx.repoA, handle }))
-      .toThrow(/WORK_REPOSITORY_MUTATION_HEAD_CHANGED/);
-  });
-
-  test('keeps prepared managed mutation authority valid while branch and HEAD still match', () => {
-    const fx = dualRepoFixture();
-    const handle = {
-      ...sampleHandle({
-        workId: 'work-managed-valid-mutation',
-        repositoryId: fx.repoA.repoId,
-        checkoutId: fx.repoA.activeCheckoutId,
-        worktreePath: fx.repoARoot,
-        branch: 'main',
-        expectedHead: fx.headA,
-      }),
-      managedWorktree: true,
-    };
-    expect(() => assertManagedRepositoryMutationAuthority({ repository: fx.repoA, handle })).not.toThrow();
-  });
-});
-
 describe('repository Work delivery target authority', () => {
-  test('materializes the exact non-default source branch as the durable delivery target', () => {
-    const fx = dualRepoFixture();
-    const branch = 'kernel-v2/architecture';
-    const checkout = spawnSync('git', ['-C', fx.repoARoot, 'checkout', '-b', branch], { encoding: 'utf8' });
-    expect(checkout.status).toBe(0);
-    const workId = 'work-non-default-delivery-target';
-    createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repoA.repoId }, {
-      workId,
-      repoId: fx.repoA.repoId,
-      checkoutId: fx.repoA.activeCheckoutId,
-      baseRevision: fx.headA,
-      objective: 'Preserve non-default source delivery branch.',
-      acceptanceCriteria: ['Delivery target remains exact.'],
-      allowedPaths: [],
-      forbiddenPaths: [],
-      checks: [],
-      constraints: {},
-      requestedBy: 'chatgpt',
-      workKind: 'repository_change',
-      dispatchState: 'running',
-      phase: 'implementation',
-    });
-    const handle = ensureRepositoryWorkHandle({
-      controllerHome: fx.controllerHome,
-      repository: fx.repoA,
-      workId,
-      identity: { sessionId: 'session-target-binding', principalId: 'principal-target-binding' },
-    });
-    expect(handle?.deliveryTargetBranch).toBe(branch);
-  });
 
   test('uses the bound target, accepts an explicit match, rejects explicit rebinding, and preserves legacy fallback', () => {
     const repository = { defaultBranch: 'main' };

@@ -1,5 +1,4 @@
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
-import { getWorkContract, listWorkContracts } from '../../../packages/kernel/work/api/index';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 import { collectRuntimePerformanceDiagnostics } from '../../../src/runtime/diagnostics/performance';
 import { listControllerChecks } from '../../../src/cli/controller/check-runner';
@@ -13,7 +12,6 @@ import {
   repairDraftPlanContractAsync,
   runSelfHealingLoop,
   summarizePlanContract,
-  summarizeWorkContract,
 } from '../../../src/runtime/control-plane/facade';
 import { result } from './result-adapter';
 import { selected } from './shared-adapter';
@@ -84,7 +82,6 @@ export async function runFacadeRepair(
   const elevatedRepair = args.destructive === true || args.remote_write === true || args.remote_effect === true;
   const planId = typeof args.plan_id === 'string' ? args.plan_id.trim() : '';
   const planStepId = typeof args.plan_step_id === 'string' ? args.plan_step_id.trim() : '';
-  const exactWorkId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
 
   if (planId && !planStepId) {
     const plan = getPlanContract(store, planId);
@@ -179,17 +176,14 @@ export async function runFacadeRepair(
       const facade = buildFacadeResult({ status: 'not_found', summary: !plan ? `PlanContract ${planId} not found.` : `PLAN_STEP_NOT_FOUND: ${planStepId}`, data: { operation: repairOperation, dryRun, planId, planStepId, repaired: false } });
       return result(facade as unknown as Record<string, unknown>, true);
     }
-    const boundWork = step.workId ? getWorkContract(store, step.workId) : undefined;
     const facade = buildFacadeResult({
-      summary: `PLAN_STEP_AUTHORED_FACT: ${planId}/${planStepId} is ${step.status}${boundWork ? ` and records terminal-or-active Work ${boundWork.workId} (${boundWork.semanticState})` : ''}. Repair does not mutate model-authored Plan progress; revise the stable Plan explicitly with expected_revision when this fact should change it.`,
+      summary: `PLAN_STEP_AUTHORED_FACT: ${planId}/${planStepId} is ${step.status}. Repair does not mutate model-authored Plan progress; revise the stable Plan explicitly with expected_revision when this fact should change it.`,
       data: {
         operation: repairOperation,
         dryRun,
         planId,
         planStepId,
         planItemStatus: step.status,
-        recordedWorkId: step.workId ?? null,
-        ...(boundWork ? { workState: boundWork.semanticState } : {}),
         repaired: false,
         repairRequired: false,
         compatibilityNoop: true,
@@ -208,7 +202,6 @@ export async function runFacadeRepair(
     repairOperation === 'repair'
     && !dryRun
     && !elevatedRepair
-    && !exactWorkId
     && maintenanceSnapshot
     && maintenanceSnapshot.candidates.length > 0
   ) {
@@ -288,7 +281,6 @@ export async function runFacadeRepair(
       operation: repairOperation,
       dryRun,
       approvalConfirmed: args.approval_confirmed === true,
-      workId: typeof args.work_id === 'string' ? args.work_id : undefined,
       chatgptPullFailed: args.chatgpt_pull_failed === true,
       destructive: args.destructive === true,
       remoteEffect: args.remote_write === true || args.remote_effect === true,

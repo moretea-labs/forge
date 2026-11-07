@@ -209,15 +209,6 @@ export interface HandoffInboxStore {
   items: HandoffItem[];
 }
 
-// Kernel V2: Controller session contracts are owned by packages/kernel/controller/domain.
-export type {
-  ControllerType,
-  ControllerSession,
-  ControllerSessionStore,
-  ControllerBinding,
-  ControllerLease,
-  ControllerRoundContext,
-} from '../../../../packages/kernel/controller/domain/types';
 export interface PlanSemanticItem {
   id: string;
   objective: string;

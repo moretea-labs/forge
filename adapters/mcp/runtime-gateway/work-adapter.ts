@@ -2,13 +2,6 @@ import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contra
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 import { SEMANTIC_SCOPE_KEY } from '../../../src/effects/controller-home';
 import { listControllerChecks } from '../../../src/cli/controller/check-runner';
-import { repositoryGitStatus } from '../../../src/cli/repositories/structured-git';
-import { getWorkContract, updateWorkContract, workSemanticView } from '../../../packages/kernel/work/api/index';
-import { updateRepositoryWorkPlacement } from '../../../src/runtime/control-plane/facade/repository-work-admission';
-import { ensureRepositoryWorkHandle } from '../../../src/runtime/control-plane/execution/work-handle-authority';
-import { readWorkHandle } from '../../../src/runtime/control-plane/execution/work-handle-store';
-import { ensureManagedWorkspace } from '../../../src/runtime/execution/managed-workspace';
-import { ensureRepositoryProjectOnboarding } from '../../../src/runtime/control-plane/workspace/project-onboarding';
 import { buildFacadeResult } from '../../../src/runtime/control-plane/facade';
 import { isRhWorkAcceptedOperation } from '../../../src/runtime/control-plane/facade/rh-work-operation-contract';
 import { findControlPlaneRecordsByKey, readControlPlaneRecord } from '../../../src/runtime/control-plane/persistence/sqlite-store';
@@ -18,7 +11,7 @@ import { invalidFacadeOperation } from './status-inbox-adapter';
 import { normalizeRhWorkInputWireMigration } from './work-input-wire-migration';
 import { callRhWorkScheduleAdapter, isRhWorkScheduleOperation } from './scheduler-adapter';
 import { callRhWorkRequirementOperation, isRhWorkRequirementOperation } from './work-requirement-operations';
-import { buildWorkSemanticFacadeResult, callRhWorkSemanticOperation, semanticWorkId } from './work-semantic-operations';
+import { callRhWorkSemanticOperation } from './work-semantic-operations';
 import { callRhWorkListProjection } from './work-list-projection';
 import {
   callRhWorkPlanCreateOperation,
@@ -29,7 +22,6 @@ import { callRhWorkWorkflowOperation } from './work-workflow-operations';
 import { callRhWorkLearningOperation } from './work-learning-operations';
 import { callRhWorkControllerOperation } from './work-controller-operations';
 import { runFacadeRepair } from './work-repair-adapter';
-import { authenticatedFacadeControllerIdentity } from './controller-authority-adapter';
 
 export { runFacadeRepair };
 export { runtimeIdentitySnapshot } from './controller-authority-adapter';
@@ -43,136 +35,8 @@ export function contextText(value: unknown, maxChars: number): string | undefine
   return value.length <= maxChars ? value : `${value.slice(0, Math.max(0, maxChars - 3))}...`;
 }
 
-function boundedStringList(value: unknown, limit: number): string[] {
-  return Array.isArray(value)
-    ? value.map(String).map((entry) => entry.trim()).filter(Boolean).slice(0, limit)
-    : [];
-}
-
-function repositoryBoundStartRequested(args: Record<string, unknown>): boolean {
-  return typeof args.repo_id === 'string' && args.repo_id.trim().length > 0;
-}
-
-async function callRepositoryBoundStart(
-  ctx: MultiRepositoryMcpToolContext,
-  repository: ReturnType<typeof selected>,
-  args: Record<string, unknown>,
-): Promise<CallToolResult> {
-  const store = { controllerHome: ctx.controllerHome, repoId: repository.repoId };
-  const workId = semanticWorkId(store, args);
-  const rawConstraints = contextRecord(args.constraints);
-  // Only explicit isolation needs a managed worktree; the default/auto path
-  // shares the selected checkout just like work_prepare. Freeze this choice
-  // in the initial Work creation, not after the semantic Work has been written.
-  const requestedWorkspaceMode: 'current' | 'isolated' = rawConstraints.workspace_mode === 'isolated' ? 'isolated' : 'current';
-  const semanticStart = await callRhWorkSemanticOperation(store, 'start', { ...args, work_id: workId }, requestedWorkspaceMode);
-  if (!semanticStart) {
-    return result(buildFacadeResult({
-      status: 'blocked',
-      summary: `WORK_REPOSITORY_ADMISSION_SEMANTIC_START_UNAVAILABLE: ${workId}`,
-      data: { workId, repoId: repository.repoId },
-    }) as unknown as Record<string, unknown>, true);
-  }
-  if (semanticStart.isError) return semanticStart;
-  let contract = getWorkContract(store, workId);
-  if (!contract) {
-    return result(buildFacadeResult({
-      status: 'blocked',
-      summary: `WORK_REPOSITORY_ADMISSION_SEMANTIC_CONTEXT_MISSING: ${workId}`,
-      data: { workId, repoId: repository.repoId },
-    }) as unknown as Record<string, unknown>, true);
-  }
-
-  try {
-    const existingHandle = readWorkHandle(ctx.controllerHome, repository.repoId, workId);
-    if (existingHandle) {
-      const existingWorkspaceMode = existingHandle.managedWorktree ? 'isolated' : 'current';
-      if (existingWorkspaceMode !== requestedWorkspaceMode) {
-        throw new Error(`WORK_REPOSITORY_ADMISSION_PLACEMENT_CONFLICT: ${workId}; existing=${existingWorkspaceMode}; requested=${requestedWorkspaceMode}`);
-      }
-    }
-    const sourceStatus = repositoryGitStatus(repository);
-    const requestedSourceRevision = typeof args.source_revision === 'string' ? args.source_revision.trim() : '';
-    if (requestedSourceRevision && sourceStatus.head && requestedWorkspaceMode !== 'isolated' && requestedSourceRevision !== sourceStatus.head) {
-      throw new Error(`WORK_SOURCE_REVISION_MISMATCH: expected ${requestedSourceRevision}, found ${sourceStatus.head}`);
-    }
-    const requiresIsolatedWorkspace = requestedWorkspaceMode === 'isolated';
-    let checkoutId = repository.activeCheckoutId;
-    let worktreeRef: string | undefined;
-    let baseRevision = sourceStatus.head ?? undefined;
-    if (requiresIsolatedWorkspace) {
-      const workspace = ensureManagedWorkspace(ctx.controllerHome, repository, {
-        requestId: workId,
-        title: String(args.objective ?? workId),
-        ...(requestedSourceRevision ? { baseRef: requestedSourceRevision } : {}),
-        prepareDependencies: args.needs_dependencies === true,
-      });
-      if (!workspace.managed || !workspace.checkoutId || !workspace.root) throw new Error('MANAGED_WORKSPACE_NOT_MATERIALIZED');
-      checkoutId = workspace.checkoutId;
-      worktreeRef = workspace.root;
-      baseRevision = workspace.baseRevision ?? baseRevision;
-    }
-
-    const constraints = {
-      ...contract.constraints,
-      workspaceMode: requestedWorkspaceMode,
-      ...(rawConstraints.allow_commit === false ? { allowCommit: false } : rawConstraints.allow_commit === true ? { allowCommit: true } : {}),
-      ...(rawConstraints.allow_merge === false ? { allowMerge: false } : rawConstraints.allow_merge === true ? { allowMerge: true } : {}),
-      ...(rawConstraints.allow_cleanup === false ? { allowCleanup: false } : rawConstraints.allow_cleanup === true ? { allowCleanup: true } : {}),
-    };
-    contract = updateRepositoryWorkPlacement(store, workId, {
-      kind: requiresIsolatedWorkspace ? 'materialize' : 'bind_current',
-      expectedCheckoutId: contract.checkoutId,
-      expectedWorktreeRef: contract.worktreeRef,
-      checkoutId,
-      ...(worktreeRef ? { worktreeRef } : {}),
-      ...(baseRevision ? { baseRevision } : {}),
-      constraints,
-      worktreePolicy: {
-        required: requiresIsolatedWorkspace,
-        reason: requiresIsolatedWorkspace
-          ? 'Caller explicitly selected an isolated managed workspace.'
-          : 'Caller explicitly selected the current registered checkout.',
-      },
-    });
-    contract = updateWorkContract(store, workId, {
-      acceptanceCriteria: boundedStringList(args.acceptance_criteria, 20),
-      checks: boundedStringList(args.check_ids, 30),
-    });
-    const identity = authenticatedFacadeControllerIdentity(ctx, args);
-    const handle = ensureRepositoryWorkHandle({
-      controllerHome: ctx.controllerHome,
-      repository,
-      workId,
-      checkoutId,
-      identity: { sessionId: identity.sessionId, principalId: identity.principalId },
-    });
-    if (!handle) throw new Error(`WORK_REPOSITORY_ADMISSION_HANDLE_REQUIRED: ${workId}`);
-    const projectOnboarding = ensureRepositoryProjectOnboarding({
-      controllerHome: ctx.controllerHome,
-      repository,
-      sourceRevision: baseRevision,
-    });
-    return result(buildWorkSemanticFacadeResult({
-      summary: `Work ${workId} admitted to repository execution on checkout ${checkoutId}.`,
-      data: {
-        work: workSemanticView(contract),
-        deduplicated: Boolean(contextRecord(semanticStart.structuredContent).data && contextRecord(contextRecord(semanticStart.structuredContent).data).deduplicated),
-        projectOnboarding,
-        executionHandle: { workId: handle.workId, checkoutId: handle.checkoutId, managedWorktree: handle.managedWorktree, state: handle.state },
-      },
-    }) as unknown as Record<string, unknown>);
-  } catch (error) {
-    return result(buildFacadeResult({
-      status: 'blocked',
-      summary: `WORK_REPOSITORY_ADMISSION_FAILED: ${error instanceof Error ? error.message : String(error)}`,
-      data: { workId, repoId: repository.repoId, canonicalWorkRetained: true },
-    }) as unknown as Record<string, unknown>, true);
-  }
-}
-
 function semanticStableSpec(operation: string) {
-  if (operation === 'get' || operation === 'get_contract' || operation === 'revise' || operation === 'complete') {
+  if (operation === 'get' || operation === 'get_contract') {
     return { namespace: 'work_contract', idField: 'work_id', kind: 'work' as const };
   }
   if (operation === 'plan_get' || operation === 'plan_revise') {
@@ -193,7 +57,7 @@ async function routeStableSemanticOperation(
   if (!id) {
     return result(buildFacadeResult({
       status: 'not_found',
-      summary: `${spec.kind === 'work' ? 'Work' : 'Plan'} stable id is required.`,
+      summary: `${spec.kind === 'work' ? 'Historical Work' : 'Plan'} stable id is required.`,
       data: {},
     }) as unknown as Record<string, unknown>, true);
   }
@@ -207,7 +71,7 @@ async function routeStableSemanticOperation(
     if (!exact) {
       return result(buildFacadeResult({
         status: 'not_found',
-        summary: `${spec.kind === 'work' ? 'Work' : 'Plan'} ${id} not found in repository ${explicitRepoId}.`,
+        summary: `${spec.kind === 'work' ? 'Historical Work' : 'Plan'} ${id} not found in repository ${explicitRepoId}.`,
         data: spec.kind === 'work' ? { workId: id, repoId: explicitRepoId } : { planId: id, repoId: explicitRepoId },
       }) as unknown as Record<string, unknown>, true);
     }
@@ -229,7 +93,7 @@ async function routeStableSemanticOperation(
     if (matches.length === 0) {
       return result(buildFacadeResult({
         status: 'not_found',
-        summary: `${spec.kind === 'work' ? 'Work' : 'Plan'} ${id} not found.`,
+        summary: `${spec.kind === 'work' ? 'Historical Work' : 'Plan'} ${id} not found.`,
         data: spec.kind === 'work' ? { workId: id } : { planId: id },
       }) as unknown as Record<string, unknown>, true);
     }
@@ -250,11 +114,9 @@ async function routeStableSemanticOperation(
 }
 
 /**
- * Thin rh_work router.
- *
- * Work is semantic context only. Repository execution, checks, review, Git
- * delivery and cleanup are separate capabilities and never re-enter a Work
- * lifecycle here.
+ * rh_work remains a compatibility namespace for durable Requirement/Plan,
+ * schedule/workflow and historical Work reads. Work lifecycle writes are
+ * retired; ordinary execution and validation use direct domain capabilities.
  */
 export async function callWorkAdapter(
   ctx: MultiRepositoryMcpToolContext,
@@ -284,17 +146,7 @@ export async function callWorkAdapter(
   const repositoryOptionalPlan = await callRhWorkPlanCreateWithoutRepository(ctx, operation, args);
   if (repositoryOptionalPlan) return repositoryOptionalPlan;
 
-  if (operation === 'start' && !repositoryBoundStartRequested(args)) {
-    const semanticStart = await callRhWorkSemanticOperation(
-      { controllerHome: ctx.controllerHome, scopeKey: SEMANTIC_SCOPE_KEY },
-      operation,
-      args,
-    );
-    if (semanticStart) return semanticStart;
-  }
-
   const repository = selected(ctx, args);
-  if (operation === 'start') return callRepositoryBoundStart(ctx, repository, args);
   const store = { controllerHome: ctx.controllerHome, repoId: repository.repoId };
 
   const workList = callRhWorkListProjection(store, operation, args);
@@ -328,7 +180,10 @@ export async function callWorkAdapter(
   });
   if (planCreate) return planCreate;
 
-  if (operation === 'repair') return runFacadeRepair(ctx, repository, args);
+  if (operation === 'repair') {
+    if (typeof args.work_id === 'string' && args.work_id.trim()) return invalidFacadeOperation('rh_work', 'repair_with_work_id');
+    return runFacadeRepair(ctx, repository, args);
+  }
 
   return invalidFacadeOperation('rh_work', operation);
 }

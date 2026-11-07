@@ -18,7 +18,6 @@ export interface ExecutionSessionContext {
   principalId: string;
   activeRepositoryId?: string;
   activeCheckoutId?: string;
-  activeWorkId?: string;
   permissionSnapshotVersion: number;
   capabilitySnapshotVersion?: number;
   goalDelegation?: GoalDelegation;
@@ -28,6 +27,13 @@ export interface ExecutionSessionContext {
   lastValidatedAt?: string;
   invalidatedAt?: string;
   invalidationReason?: string;
+}
+
+type LegacyExecutionSessionContext = ExecutionSessionContext & { activeWorkId?: unknown };
+
+function normalizeExecutionSession(value: LegacyExecutionSessionContext): ExecutionSessionContext {
+  const { activeWorkId: _retiredWorkFocus, ...session } = value;
+  return session;
 }
 
 export interface SessionIdentity {
@@ -66,14 +72,15 @@ export function peekExecutionSession(controllerHome: string, sessionId: string):
   const normalizedSessionId = sessionId.trim();
   if (!normalizedSessionId) return undefined;
   const path = sessionPath(controllerHome, normalizedSessionId);
-  const session = readOrImportControlPlaneRecord<ExecutionSessionContext>(controllerHome, {
+  const stored = readOrImportControlPlaneRecord<LegacyExecutionSessionContext>(controllerHome, {
     namespace: 'execution_session',
     scope: 'controller',
     key: sanitizeFileComponent(normalizedSessionId),
     schemaVersion: 1,
     readLegacy: () => existsSync(path) ? readJsonFile<ExecutionSessionContext>(path) : undefined,
   })?.value;
-  if (!session) return undefined;
+  if (!stored) return undefined;
+  const session = normalizeExecutionSession(stored);
   return session.sessionId === normalizedSessionId ? session : undefined;
 }
 
@@ -90,15 +97,16 @@ export function peekExecutionSessionWithinTransaction(
 ): ExecutionSessionContext | undefined {
   const normalizedSessionId = sessionId.trim();
   if (!normalizedSessionId) return undefined;
-  const stored = readControlPlaneRecordWithinTransaction<ExecutionSessionContext>(
+  const stored = readControlPlaneRecordWithinTransaction<LegacyExecutionSessionContext>(
     database,
     'execution_session',
     'controller',
     sanitizeFileComponent(normalizedSessionId),
   )?.value;
   const legacyPath = sessionPath(controllerHome, normalizedSessionId);
-  const session = stored ?? (existsSync(legacyPath) ? readJsonFile<ExecutionSessionContext>(legacyPath) : undefined);
-  if (!session) return undefined;
+  const raw = stored ?? (existsSync(legacyPath) ? readJsonFile<LegacyExecutionSessionContext>(legacyPath) : undefined);
+  if (!raw) return undefined;
+  const session = normalizeExecutionSession(raw);
   return session.sessionId === normalizedSessionId ? session : undefined;
 }
 
@@ -106,14 +114,15 @@ export function readExecutionSession(controllerHome: string, identity: SessionId
   const sessionId = identity.sessionId?.trim();
   if (!sessionId) return undefined;
   const path = sessionPath(controllerHome, sessionId);
-  const session = readOrImportControlPlaneRecord<ExecutionSessionContext>(controllerHome, {
+  const stored = readOrImportControlPlaneRecord<LegacyExecutionSessionContext>(controllerHome, {
     namespace: 'execution_session',
     scope: 'controller',
     key: sanitizeFileComponent(sessionId),
     schemaVersion: 1,
     readLegacy: () => existsSync(path) ? readJsonFile<ExecutionSessionContext>(path) : undefined,
   })?.value;
-  if (!session) return undefined;
+  if (!stored) return undefined;
+  const session = normalizeExecutionSession(stored);
   if (session.sessionId !== sessionId) throw new Error('SESSION_IDENTITY_MISMATCH');
   if (session.principalId !== normalizedPrincipal(identity.principalId)) throw new Error('SESSION_PRINCIPAL_MISMATCH');
   if (session.invalidatedAt) throw new Error(`SESSION_INVALIDATED: ${session.invalidationReason ?? 'session is no longer valid'}`);
@@ -172,7 +181,7 @@ export function startExecutionSession(
 
 export function requireExecutionSession(controllerHome: string, identity: SessionIdentity): ExecutionSessionContext {
   const session = readExecutionSession(controllerHome, identity);
-  if (!session) throw new Error('SESSION_NOT_FOUND: call session_start before using session/work tools');
+  if (!session) throw new Error('SESSION_NOT_FOUND: call session_start before using session tools');
   return session;
 }
 

@@ -9,12 +9,6 @@ import { inspectControlPlaneDatabase } from '../../src/runtime/control-plane/per
 import { loadRuntimeReleaseManifest } from '../../src/runtime/root/release-manifest';
 import { ensureActiveRuntimeRelease } from '../../src/runtime/root/release-store';
 import { readRuntimeGeneration } from '../../src/runtime/control-plane/runtime-generation';
-import {
-  acceptSubmittedWorkContract,
-  cancelWorkContract,
-  createWorkContract,
-  updateWorkContract,
-} from '../../src/runtime/control-plane/facade/work-contract-store';
 import { acquireRuntimeOwnership } from '../../src/runtime/root/ownership';
 import { RuntimeReadinessState } from '../../src/runtime/root/readiness';
 import {

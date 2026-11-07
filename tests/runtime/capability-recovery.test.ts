@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, spyOn } from 'bun:test';
+import { seedHistoricalWorkHandle } from '../helpers/historical-work-handle';
 import { execFileSync } from 'child_process';
 import { createHash } from 'crypto';
 import { existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'fs';
@@ -24,12 +25,10 @@ import { applyEditOperations, beginEditSession, getEditSession } from '../../src
 import { addRepositoryCheckout, getRepository, registerRepository } from '../../src/cli/repositories/registry';
 import { ensureRepositoryRuntimeStorageBinding } from '../../src/cli/repositories/runtime-storage';
 import { getMcpPolicy } from '../../adapters/mcp/policy';
-import { cancelWorkContract, createWorkContract, getWorkContract, recordWorkImplementationReview, transitionWorkContractPhase } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { implementationReviewChangedPathDigest } from '../../packages/kernel/work/domain/implementation-review';
 import { createPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
-import { claimControllerSession, releaseControllerSession } from '../../packages/kernel/controller/api/index';
 import { applyControllerHomeMigration } from '../../src/runtime/control-plane/persistence/controller-home-migration';
-import { writeWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { assertOwnedResourceCleanupTarget, getOwnedResource, recordOwnedResource } from '../../packages/kernel/identity/api/index';
 import { managedBranchOwnedResourceId, managedBranchOwnedResourceLocator, managedWorkspaceOwnedResourceId } from '../../src/runtime/execution/managed-workspace';
 import { recordIosTestEvidenceOwner } from '../../src/runtime/control-plane/generated-cache-retention';
@@ -40,6 +39,7 @@ import {
   previewExternalFilesystemGrant,
   readExternalFilesystemSnapshot,
 } from '../../src/runtime/safe-tooling';
+import { replaceHistoricalWorkContract, seedHistoricalWorkContract } from '../helpers/historical-work-contract';
 
 const temporaryRoots: string[] = [];
 
@@ -48,11 +48,10 @@ afterEach(() => {
 });
 
 function createCancelledWork(
-  options: Parameters<typeof createWorkContract>[0],
-  input: Parameters<typeof createWorkContract>[1],
+  options: Parameters<typeof seedHistoricalWorkContract>[0],
+  input: Parameters<typeof seedHistoricalWorkContract>[1],
 ) {
-  const created = createWorkContract(options, input);
-  return cancelWorkContract(options, created.workId, { summary: 'test fixture semantic cancellation' });
+  return seedHistoricalWorkContract(options, { ...input, semanticState: 'cancelled' });
 }
 
 describe('capability recovery classifier', () => {
@@ -271,17 +270,17 @@ describe('authorized recovery actions', () => {
 
 describe('runtime maintenance executor', () => {
   function advanceWorkToCleanup(store: { controllerHome: string; repoId: string; now?: () => string }, workId: string): void {
-    transitionWorkContractPhase(store, workId, { phase: 'verification', state: 'satisfied', summary: 'Implementation explicitly accepted before cleanup.' });
-    const recordedAt = store.now?.() ?? '2026-01-01T00:00:00.000Z';
-    recordWorkImplementationReview(store, workId, {
-      schemaVersion: 1, reviewId: `review-${workId}`, workId,
-      reviewerPrincipalId: 'principal-maintenance-test', reviewerControllerSessionId: 'controller-maintenance-test',
-      decision: 'approved', rationale: 'Fixture explicitly approves the exact no-change implementation before delivery.', findings: [],
-      sourceRevision: 'maintenance-fixture-source', workspaceFingerprint: `${workId}:workspace`, verificationWorkspaceFingerprint: `${workId}:verification`,
-      changedPaths: [], changedPathDigest: implementationReviewChangedPathDigest([]), acceptanceCriteriaSummary: 'Maintenance lifecycle fixture is ready for delivery.',
-      verificationEvidence: [], architectureEvidence: [], recordedAt,
+    replaceHistoricalWorkContract(store, {
+      workId,
+      phase: 'cleanup',
+      phaseEvidence: {
+        implementation: { state: 'satisfied', source: 'recorded', summary: 'Historical fixture implementation complete.', evidenceRefs: [], recordedAt: store.now?.() ?? '2026-01-01T00:00:00.000Z' },
+        verification: { state: 'satisfied', source: 'recorded', summary: 'Historical fixture verification complete.', evidenceRefs: [], recordedAt: store.now?.() ?? '2026-01-01T00:00:00.000Z' },
+        review: { state: 'satisfied', source: 'recorded', summary: 'Historical fixture review complete.', evidenceRefs: [], recordedAt: store.now?.() ?? '2026-01-01T00:00:00.000Z' },
+        delivery: { state: 'satisfied', source: 'recorded', summary: 'Historical fixture delivery complete.', evidenceRefs: [], recordedAt: store.now?.() ?? '2026-01-01T00:00:00.000Z' },
+        cleanup: { state: 'satisfied', source: 'recorded', summary: 'Historical fixture cleanup state.', evidenceRefs: [], recordedAt: store.now?.() ?? '2026-01-01T00:00:00.000Z' },
+      },
     });
-    transitionWorkContractPhase(store, workId, { phase: 'cleanup', state: 'satisfied', summary: 'Delivery explicitly accepted; only cleanup remains.' });
   }
   function tempRepo() {
     const root = mkdtempSync(join(tmpdir(), 'forge-maintenance-test-'));
@@ -311,7 +310,7 @@ describe('runtime maintenance executor', () => {
     const baseRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).trim();
     mkdirSync(join(root, '.forge', 'controller', 'managed-worktrees', repoId), { recursive: true });
     execFileSync('git', ['worktree', 'add', '-q', '-b', `work/${source}`, worktree, 'HEAD'], { cwd: repoRoot });
-    createWorkContract({ controllerHome, repoId, now: () => '2026-01-01T00:00:00.000Z' }, {
+    seedHistoricalWorkContract({ controllerHome, repoId, now: () => '2026-01-01T00:00:00.000Z' }, {
       workId,
       repoId,
       objective: `stale managed ${source} work`,
@@ -366,7 +365,7 @@ describe('runtime maintenance executor', () => {
     if (!checkout) throw new Error('legacy remote effect fixture checkout missing');
     const registeredWorktree = checkout.canonicalRoot;
     const workId = 'work-legacy-remote-effect-placement';
-    createWorkContract({ controllerHome, repoId: registered.repoId, now: () => '2026-01-01T00:00:00.000Z' }, {
+    seedHistoricalWorkContract({ controllerHome, repoId: registered.repoId, now: () => '2026-01-01T00:00:00.000Z' }, {
       workId, repoId: registered.repoId, workKind: 'remote_effect',
       objective: 'continue an external browser task without repository mutation',
       acceptanceCriteria: ['remote receipt exists'], allowedPaths: [], forbiddenPaths: [], checks: [],
@@ -390,7 +389,7 @@ describe('runtime maintenance executor', () => {
     const expectedHead = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: worktree, encoding: 'utf8' }).trim();
     const branch = execFileSync('git', ['branch', '--show-current'], { cwd: worktree, encoding: 'utf8' }).trim();
     const baseCommit = execFileSync('git', ['merge-base', 'main', expectedHead], { cwd: repository.canonicalRoot, encoding: 'utf8' }).trim();
-    writeWorkHandle(controllerHome, {
+    seedHistoricalWorkHandle(controllerHome, {
       schemaVersion: 1,
       workId,
       workContractId: workId,
@@ -442,7 +441,7 @@ describe('runtime maintenance executor', () => {
     const requestedWorkState = input.workStatus ?? 'cancelled';
     const workId = input.contractFree ? undefined : input.createWork === false ? 'work-missing' : `work-${requestedWorkState}`;
     if (input.createWork !== false && workId) {
-      createWorkContract({ controllerHome, repoId }, {
+      seedHistoricalWorkContract({ controllerHome, repoId }, {
         workId,
         repoId,
         checkoutId,
@@ -454,10 +453,8 @@ describe('runtime maintenance executor', () => {
         constraints: { workspaceMode: 'current' },
         requestedBy: 'chatgpt',
         ...(requestedWorkState === 'running' ? { dispatchState: 'running' as const } : {}),
+        ...(requestedWorkState === 'cancelled' ? { semanticState: 'cancelled' as const } : {}),
       });
-      if (requestedWorkState === 'cancelled') {
-        cancelWorkContract({ controllerHome, repoId }, workId, { summary: 'Fixture explicitly terminalizes stale Work.' });
-      }
     }
     const binding = { workId, repoId, checkoutId, principalId: 'principal-test', controllerInstanceId: 'controller-instance-test' };
     const session = beginEditSession(repoRoot, {
@@ -478,116 +475,6 @@ describe('runtime maintenance executor', () => {
     };
   }
 
-  it('blocks false healthy readiness for retained Work left in a migrated Controller Home', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'forge-maintenance-retained-migration-'));
-    temporaryRoots.push(root);
-    const sourceHome = join(root, 'source-controller');
-    const controllerHome = join(root, 'current-controller');
-    const repoRoot = join(root, 'repo');
-    const retainedWorktree = join(root, '.forge', 'managed-worktrees', 'legacy-controller', 'repo-retained', 'work-retained');
-    mkdirSync(repoRoot, { recursive: true });
-    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repoRoot });
-    execFileSync('git', ['config', 'user.email', 'test@example.test'], { cwd: repoRoot });
-    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: repoRoot });
-    writeFileSync(join(repoRoot, 'README.md'), '# retained\n');
-    execFileSync('git', ['add', 'README.md'], { cwd: repoRoot });
-    execFileSync('git', ['commit', '-qm', 'initial'], { cwd: repoRoot });
-    mkdirSync(join(root, '.forge', 'managed-worktrees', 'legacy-controller', 'repo-retained'), { recursive: true });
-    execFileSync('git', ['worktree', 'add', '-q', '-b', 'work/retained', retainedWorktree, 'HEAD'], { cwd: repoRoot });
-    writeFileSync(join(retainedWorktree, 'preserved.txt'), 'implementation in progress\n');
-
-    createWorkContract({ controllerHome: sourceHome, repoId: 'repo-retained' }, {
-      workId: 'work-retained-migrated', repoId: 'repo-retained', objective: 'Preserved implementation that must remain reviewable after Controller Home migration.',
-      acceptanceCriteria: ['preserve implementation'], allowedPaths: ['**'], forbiddenPaths: [], checks: [],
-      constraints: {}, requestedBy: 'user',
-      checkoutId: 'checkout-retained', worktreeRef: retainedWorktree,
-      continuationPrompt: 'Resume preserved implementation after migration.',
-    });
-    cancelWorkContract({ controllerHome: sourceHome, repoId: 'repo-retained' }, 'work-retained-migrated', { summary: 'Historical fixture is terminal before Controller Home migration.' });
-    await applyControllerHomeMigration({ sourceHome, destinationHome: controllerHome });
-
-    const status = buildRuntimeMaintenanceStatus({ repoId: 'repo-retained', canonicalRoot: repoRoot }, controllerHome, { minAgeMinutes: 0, maxCandidates: 50 });
-    expect(status.readyForExecution).toBe(false);
-    expect(status.summary.retainedMigratedWork).toBe(1);
-    expect(status.candidates).toContainEqual(expect.objectContaining({
-      kind: 'retained_migrated_work',
-      id: 'work-retained-migrated',
-      path: retainedWorktree,
-      status: 'cancelled',
-      safe: false,
-      ownershipStatus: 'explicit',
-      disposition: 'resume_or_supersede_review',
-      continuationPrompt: 'Resume preserved implementation after migration.',
-    }));
-    expect(readFileSync(join(retainedWorktree, 'preserved.txt'), 'utf8')).toBe('implementation in progress\n');
-  });
-
-  it('does not block readiness for a migrated terminal Work whose worktreeRef is only an old repository root', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'forge-maintenance-retained-repo-root-'));
-    temporaryRoots.push(root);
-    const sourceHome = join(root, 'source-controller');
-    const controllerHome = join(root, 'current-controller');
-    const repoRoot = join(root, 'repo');
-    const oldRepositoryRoot = join(root, 'retired-repository-root');
-    mkdirSync(repoRoot, { recursive: true });
-    mkdirSync(oldRepositoryRoot, { recursive: true });
-    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repoRoot });
-    execFileSync('git', ['config', 'user.email', 'test@example.test'], { cwd: repoRoot });
-    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: repoRoot });
-    writeFileSync(join(repoRoot, 'README.md'), '# current\n');
-    execFileSync('git', ['add', 'README.md'], { cwd: repoRoot });
-    execFileSync('git', ['commit', '-qm', 'initial'], { cwd: repoRoot });
-
-    createWorkContract({ controllerHome: sourceHome, repoId: 'repo-retained-root' }, {
-      workId: 'work-retained-repository-root', repoId: 'repo-retained-root', objective: 'Historical terminal Work whose legacy worktreeRef was the repository root.',
-      acceptanceCriteria: [], allowedPaths: ['**'], forbiddenPaths: [], checks: [],
-      constraints: {}, requestedBy: 'user',
-      checkoutId: 'checkout-retained-root', worktreeRef: oldRepositoryRoot,
-    });
-    cancelWorkContract({ controllerHome: sourceHome, repoId: 'repo-retained-root' }, 'work-retained-repository-root', { summary: 'Historical fixture is terminal before Controller Home migration.' });
-    await applyControllerHomeMigration({ sourceHome, destinationHome: controllerHome });
-
-    const status = buildRuntimeMaintenanceStatus({ repoId: 'repo-retained-root', canonicalRoot: repoRoot }, controllerHome, { minAgeMinutes: 0, maxCandidates: 50 });
-    expect(status.summary.retainedMigratedWork).toBe(0);
-    expect(status.candidates).not.toContainEqual(expect.objectContaining({
-      kind: 'retained_migrated_work',
-      id: 'work-retained-repository-root',
-    }));
-  });
-
-  it('does not block readiness for an empty legacy managed-worktree directory with no Git marker', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'forge-maintenance-empty-managed-residue-'));
-    temporaryRoots.push(root);
-    const sourceHome = join(root, 'source-controller');
-    const controllerHome = join(root, 'current-controller');
-    const repoRoot = join(root, 'repo');
-    const emptyManagedResidue = join(root, '.repo-harness', 'managed-worktrees', 'legacy-controller', 'repo-retained', 'campaign-empty');
-    mkdirSync(repoRoot, { recursive: true });
-    mkdirSync(emptyManagedResidue, { recursive: true });
-    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repoRoot });
-    execFileSync('git', ['config', 'user.email', 'test@example.test'], { cwd: repoRoot });
-    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: repoRoot });
-    writeFileSync(join(repoRoot, 'README.md'), '# current\n');
-    execFileSync('git', ['add', 'README.md'], { cwd: repoRoot });
-    execFileSync('git', ['commit', '-qm', 'initial'], { cwd: repoRoot });
-
-    createWorkContract({ controllerHome: sourceHome, repoId: 'repo-empty-managed-residue' }, {
-      workId: 'work-empty-managed-residue', repoId: 'repo-empty-managed-residue', objective: 'Historical Work whose managed directory is already empty and detached from Git.',
-      acceptanceCriteria: [], allowedPaths: ['**'], forbiddenPaths: [], checks: [],
-      constraints: {}, requestedBy: 'user',
-      checkoutId: 'checkout-empty-residue', worktreeRef: emptyManagedResidue,
-    });
-    cancelWorkContract({ controllerHome: sourceHome, repoId: 'repo-empty-managed-residue' }, 'work-empty-managed-residue', { summary: 'Historical fixture is terminal before Controller Home migration.' });
-    await applyControllerHomeMigration({ sourceHome, destinationHome: controllerHome });
-
-    const status = buildRuntimeMaintenanceStatus({ repoId: 'repo-empty-managed-residue', canonicalRoot: repoRoot }, controllerHome, { minAgeMinutes: 0, maxCandidates: 50 });
-    expect(status.summary.retainedMigratedWork).toBe(0);
-    expect(status.candidates).not.toContainEqual(expect.objectContaining({
-      kind: 'retained_migrated_work',
-      id: 'work-empty-managed-residue',
-    }));
-  });
-
   it('does not flag a current Work-owned managed worktree as unowned lifecycle debt', () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-maintenance-owned-worktree-'));
     temporaryRoots.push(root);
@@ -603,7 +490,7 @@ describe('runtime maintenance executor', () => {
     execFileSync('git', ['commit', '-qm', 'initial'], { cwd: repoRoot });
     mkdirSync(join(root, '.forge', 'managed-worktrees', 'current-controller', 'repo-owned'), { recursive: true });
     execFileSync('git', ['worktree', 'add', '-q', '-b', 'work/owned', worktree, 'HEAD'], { cwd: repoRoot });
-    createWorkContract({ controllerHome, repoId: 'repo-owned' }, {
+    seedHistoricalWorkContract({ controllerHome, repoId: 'repo-owned' }, {
       workId: 'work-owned-current', repoId: 'repo-owned', objective: 'Current owned worktree',
       acceptanceCriteria: [], allowedPaths: ['**'], forbiddenPaths: [], checks: [], constraints: {},
       requestedBy: 'user', dispatchState: 'running', checkoutId: 'checkout-owned', worktreeRef: worktree,
@@ -921,7 +808,7 @@ describe('runtime maintenance executor', () => {
     execFileSync('git', ['commit', '-qm', 'initial'], { cwd: repoRoot });
     const repository = { repoId: 'repo-stale-work', canonicalRoot: repoRoot };
     const oldAt = '2026-01-01T00:00:00.000Z';
-    const work = createWorkContract({ controllerHome, repoId: repository.repoId, now: () => oldAt }, {
+    const work = seedHistoricalWorkContract({ controllerHome, repoId: repository.repoId, now: () => oldAt }, {
       workId: 'work-stale-ready',
       repoId: repository.repoId,
       objective: 'legacy ready work',
@@ -978,7 +865,6 @@ describe('runtime maintenance executor', () => {
     expect(applied.iosTestEvidenceInventory).toMatchObject({
       policyVersion: 'ios-test-evidence-inventory-v1', inspectionOnly: true, errors: [],
     });
-    expect(applied.cleanupArtifactGc).toBeDefined();
     expect(applied.applied).toContainEqual(expect.objectContaining({
       kind: 'stale_work_contract',
       id: 'work-stale-ready',
@@ -1153,7 +1039,7 @@ describe('runtime maintenance executor', () => {
   it('uses an identity-matched durable WorkHandle head to reconcile an already-removed managed worktree', () => {
     const { controllerHome, repository, workId, worktree } = staleManagedWorkFixture('clean');
     const expectedHead = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repository.canonicalRoot, encoding: 'utf8' }).trim();
-    writeWorkHandle(controllerHome, {
+    seedHistoricalWorkHandle(controllerHome, {
       schemaVersion: 1,
       workId,
       workContractId: workId,
@@ -1282,50 +1168,6 @@ describe('runtime maintenance executor', () => {
     expect(readFileSync(join(worktree, 'late-write.txt'), 'utf8')).toBe('written after maintenance scan\n');
   });
 
-  it('does not let a late Controller claim become semantic cancellation authority for stale Work', () => {
-    const root = mkdtempSync(join(tmpdir(), 'forge-maintenance-work-apply-authority-'));
-    temporaryRoots.push(root);
-    const controllerHome = join(root, 'controller');
-    const repoRoot = join(root, 'repo');
-    mkdirSync(controllerHome, { recursive: true });
-    mkdirSync(repoRoot, { recursive: true });
-    const repository = { repoId: 'repo-work-apply-authority', canonicalRoot: repoRoot };
-    const oldAt = '2026-01-01T00:00:00.000Z';
-    const store = { controllerHome, repoId: repository.repoId, now: () => oldAt };
-    createWorkContract(store, {
-      workId: 'work-stale-then-claimed', repoId: repository.repoId, objective: 'stale before controller reclaim',
-      acceptanceCriteria: ['preserve late authority'], allowedPaths: [], forbiddenPaths: [], checks: [],
-      constraints: {}, requestedBy: 'chatgpt', phase: 'verification',
-    });
-    advanceWorkToCleanup(store, 'work-stale-then-claimed');
-
-    const scanned = buildRuntimeMaintenanceStatus(repository, controllerHome, { minAgeMinutes: 1, maxCandidates: 50 });
-    const candidate = scanned.candidates.find((entry) => entry.kind === 'stale_work_contract' && entry.id === 'work-stale-then-claimed');
-    expect(candidate).toBeTruthy();
-
-    claimControllerSession({ controllerHome, repoId: repository.repoId }, {
-      workId: 'work-stale-then-claimed', controllerId: 'controller-late', controllerType: 'chatgpt', sessionId: 'mcp-late',
-      principalId: 'principal-late', controllerInstanceId: 'runtime-late', leaseMs: 60_000,
-    });
-    const whileClaimed = applyStaleWorkContractMaintenanceCandidate(repository, controllerHome, candidate!);
-    expect(whileClaimed).toMatchObject({
-      applied: false,
-      result: 'work_semantic_completion_required',
-      disposition: 'semantic_completion_required',
-    });
-    expect(getWorkContract({ controllerHome, repoId: repository.repoId }, 'work-stale-then-claimed')).toMatchObject({
-      semanticState: 'open',
-    });
-
-    releaseControllerSession({ controllerHome, repoId: repository.repoId }, 'work-stale-then-claimed', 'controller-late');
-    const afterRelease = applyStaleWorkContractMaintenanceCandidate(repository, controllerHome, candidate!);
-    expect(afterRelease).toMatchObject({
-      applied: false,
-      result: 'work_semantic_completion_required',
-      disposition: 'semantic_completion_required',
-    });
-    expect(getWorkContract({ controllerHome, repoId: repository.repoId }, 'work-stale-then-claimed')?.semanticState).toBe('open');
-  });
 
   it('does not classify an old Work as stale while an active Plan still owns it', () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-maintenance-plan-authority-'));
@@ -1336,7 +1178,7 @@ describe('runtime maintenance executor', () => {
     mkdirSync(repoRoot, { recursive: true });
     const repository = { repoId: 'repo-plan-owned-work', canonicalRoot: repoRoot };
     const oldAt = '2026-01-01T00:00:00.000Z';
-    createWorkContract({ controllerHome, repoId: repository.repoId, now: () => oldAt }, {
+    seedHistoricalWorkContract({ controllerHome, repoId: repository.repoId, now: () => oldAt }, {
       workId: 'work-plan-owned', repoId: repository.repoId, objective: 'authoritative old work',
       planId: 'PLAN-owned', planStepId: 'step-a', planSourceRevision: 'revision-a',
       acceptanceCriteria: ['finish plan'], allowedPaths: [], forbiddenPaths: [], checks: [],
@@ -1353,37 +1195,6 @@ describe('runtime maintenance executor', () => {
     expect(getWorkContract({ controllerHome, repoId: repository.repoId }, 'work-plan-owned')?.semanticState).toBe('open');
   });
 
-  it('never treats a live Controller lease as semantic Work lifecycle authority', () => {
-    const root = mkdtempSync(join(tmpdir(), 'forge-maintenance-controller-authority-'));
-    temporaryRoots.push(root);
-    const controllerHome = join(root, 'controller');
-    const repoRoot = join(root, 'repo');
-    mkdirSync(controllerHome, { recursive: true });
-    mkdirSync(repoRoot, { recursive: true });
-    const repository = { repoId: 'repo-controller-owned-work', canonicalRoot: repoRoot };
-    const oldAt = '2026-01-01T00:00:00.000Z';
-    const store = { controllerHome, repoId: repository.repoId, now: () => oldAt };
-    createWorkContract(store, {
-      workId: 'work-controller-owned', repoId: repository.repoId, objective: 'controller-owned old work',
-      acceptanceCriteria: ['preserve ownership'], allowedPaths: [], forbiddenPaths: [], checks: [],
-      constraints: {}, requestedBy: 'chatgpt', phase: 'verification',
-    });
-    advanceWorkToCleanup(store, 'work-controller-owned');
-    claimControllerSession({ controllerHome, repoId: repository.repoId }, {
-      workId: 'work-controller-owned', controllerId: 'controller-a', controllerType: 'chatgpt', sessionId: 'mcp-a',
-      principalId: 'principal-a', controllerInstanceId: 'runtime-a', leaseMs: 60_000,
-    });
-
-    const active = buildRuntimeMaintenanceStatus(repository, controllerHome, { minAgeMinutes: 1, maxCandidates: 50 });
-    expect(active.candidates).toContainEqual(expect.objectContaining({
-      kind: 'stale_work_contract', id: 'work-controller-owned', safe: false, disposition: 'semantic_completion_required',
-    }));
-    releaseControllerSession({ controllerHome, repoId: repository.repoId }, 'work-controller-owned', 'controller-a');
-    const released = buildRuntimeMaintenanceStatus(repository, controllerHome, { minAgeMinutes: 1, maxCandidates: 50 });
-    expect(released.candidates).toContainEqual(expect.objectContaining({
-      kind: 'stale_work_contract', id: 'work-controller-owned', safe: false, disposition: 'semantic_completion_required',
-    }));
-  });
 
   it('keeps maintenance discovery read-only and reconciles committed Direct Edit metadata only during explicit maintenance', () => {
     const fx = editFixture();
@@ -1443,25 +1254,6 @@ describe('runtime maintenance executor', () => {
     expect(getEditSession(fx.repoRoot, fx.sessionId).status).toBe('finalized');
   });
 
-  it('does not use a Controller lease to hide an old Edit Session maintenance observation', () => {
-    const fx = editFixture({ workStatus: 'running' });
-    claimControllerSession({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
-      workId: 'work-running', controllerId: 'controller-edit-owner', controllerType: 'chatgpt', sessionId: 'mcp-edit-owner',
-      principalId: 'principal-edit-owner', controllerInstanceId: 'runtime-edit-owner', leaseMs: 60_000,
-    });
-
-    const active = buildRuntimeMaintenanceStatus(fx.repository, fx.controllerHome, { minAgeMinutes: 0, maxCandidates: 50 });
-    expect(active.candidates).toContainEqual(expect.objectContaining({ kind: 'stale_edit_session', id: fx.sessionId, safe: false }));
-
-    releaseControllerSession({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, 'work-running', 'controller-edit-owner');
-    const released = buildRuntimeMaintenanceStatus(fx.repository, fx.controllerHome, { minAgeMinutes: 0, maxCandidates: 50 });
-    expect(released.candidates).toContainEqual(expect.objectContaining({ kind: 'stale_edit_session', id: fx.sessionId, safe: false }));
-    const applied = applyRuntimeMaintenance(fx.repository, fx.controllerHome, {
-      actionId: 'full_maintenance_pass', confirmMaintenance: true, minAgeMinutes: 0, maxCandidates: 50,
-    });
-    expect(applied.applied.some((candidate) => candidate.id === fx.sessionId && candidate.applied)).toBe(false);
-    expect(getEditSession(fx.repoRoot, fx.sessionId).status).toBe('dirty');
-  });
 
   it('keeps missing Work ownership as an unsafe stale Edit Session candidate', () => {
     const fx = editFixture({ createWork: false });

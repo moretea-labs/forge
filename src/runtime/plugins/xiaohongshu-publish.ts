@@ -51,7 +51,7 @@ export function buildXiaohongshuPublishRecipe(args: Record<string, unknown>): Re
     execution: {
       tool: 'rh_work',
       operation: 'workflow_execute',
-      requiredRuntimeFields: ['work_id', 'workflow_run_id', 'controller_authority_id', 'relay_scope_id'],
+      requiredRuntimeFields: ['workflow_run_id'],
       workflow_id: asset.workflowId,
       workflow_inputs: translated.inputs,
     },
@@ -79,7 +79,7 @@ export async function executeXiaohongshuPluginAction(input: AssistantPluginActio
     status: recipe.generationRequired === true ? 'generation_required' : 'workflow_required',
     next: recipe.generationRequired === true
       ? 'Generate one or more image files and request the same compatibility translation with image_paths.'
-      : 'Execute the returned Workflow through rh_work workflow_execute under the exact claimed Work/controller authority.',
+      : 'Execute the returned Workflow through rh_work workflow_execute with the exact repository/checkout and workflow_run_id.',
   };
 }
 

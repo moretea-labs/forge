@@ -20,11 +20,9 @@ import { isTerminalSemanticWorkState, readWorkContractStore } from '../../../pac
 import { assertOwnedResourceCleanupTarget, listOwnedResources, markOwnedResourceCleaned, type OwnedResource } from '../../../packages/kernel/identity/api/index';
 import { appendJsonLine, readJsonFile, writeJsonAtomic } from '../shared/json-files';
 import { cleanupControllerReleaseHistory } from './release-retention';
-import { cleanupWorkPreservationArtifacts } from './cleanup-artifact-retention';
 import { cleanupRetiredRepositoryNamespaces } from './repository-namespace-retention';
 import { maintainControlPlaneDatabase, type ControlPlaneDatabaseMaintenanceReport } from './persistence/sqlite-store';
 import { cleanupExpiredExperiences } from './persistence/experience-store';
-import { reconcileOwnerlessWorkAuthorities } from './execution/work-authority-reconciler';
 import {
   measureReclaimablePath,
   RUNTIME_LIFECYCLE_RETENTION_POLICY_VERSION,
@@ -270,7 +268,6 @@ export interface RuntimeCleanupReport {
   removedWorktrees: string[];
   migratedDependencyPaths: string[];
   removedTemporaryPaths: string[];
-  removedCleanupArtifactPaths: string[];
   removedReleasePaths: string[];
   releaseSessionCandidates: ReleaseSessionCandidateRetentionReport;
   removedScheduleOccurrencePaths: string[];
@@ -279,8 +276,6 @@ export interface RuntimeCleanupReport {
   removedRepositoryNamespacePaths: string[];
   /** Physical SQLite checkpoint/compaction receipt; row lifecycle remains domain-owned. */
   sqliteMaintenance?: ControlPlaneDatabaseMaintenanceReport;
-  /** Work retired only after exact per-Work liveness proved no durable continuation owner remains. */
-  retiredOwnerlessWorkAuthorities: string[];
   skippedActiveWorktrees: string[];
   inspectedPaths: number;
   budgetExhausted: boolean;
@@ -1086,13 +1081,12 @@ function shouldPersistCleanupAudit(report: RuntimeCleanupReport): boolean {
     || report.removedWorktrees.length
     || report.migratedDependencyPaths.length
     || report.removedTemporaryPaths.length
-    || report.removedCleanupArtifactPaths.length
     || report.removedReleasePaths.length
     || report.releaseSessionCandidates.removedPaths.length
     || report.removedRepositoryNamespacePaths.length
     || report.sqliteMaintenance?.vacuumed
     || report.sqliteMaintenance?.skippedReason === 'database_busy'
-    || report.retiredOwnerlessWorkAuthorities.length,
+,
   );
   if (hadMutations || report.errors.length) return true;
   // Startup/manual may record defensive skips (live PID protected, budget).
@@ -1126,23 +1120,6 @@ export function cleanupControllerRuntimeState(
   const removalCycleSequence = Math.floor(sequence / REMOVAL_PHASES.length);
   const removalPhases = cleanupRemovalPhaseOrder(options.reason ?? 'manual', sequence);
   const periodic = (options.reason ?? 'manual') === 'periodic';
-  const retiredOwnerlessWorkAuthorities: string[] = [];
-  if (!periodic || removalPhases.includes('repository_namespaces')) try {
-    for (const repository of listRepositories(home, { includeRemoved: true })) {
-      const ownerless = reconcileOwnerlessWorkAuthorities({
-        controllerHome: home,
-        repoId: repository.repoId,
-        nowMs,
-        graceMs: options.ownerlessWorkAuthorityGraceMs,
-      });
-      retiredOwnerlessWorkAuthorities.push(...ownerless.workIds.map((workId) => `${repository.repoId}:${workId}`));
-      Object.entries(ownerless.skippedByReason).forEach(([key, value]) => {
-        skippedByReason[`ownerless_work_${key}`] = (skippedByReason[`ownerless_work_${key}`] ?? 0) + value;
-      });
-    }
-  } catch (error) {
-    errors.push(errorText('Work authority reconciliation', error));
-  }
   const pidFiles = cleanupDaemonPidFile(home, nowIso, options, errors, removalBudget);
   const references: WorktreeReferences = (!periodic || removalPhases.includes('worktrees'))
     ? collectReferencedWorktrees(home, referenceBudget, errors, nowMs)
@@ -1150,7 +1127,6 @@ export function cleanupControllerRuntimeState(
   let worktrees: ReturnType<typeof cleanupOrphanWorktrees> | undefined;
   let dependencyCleanup: ReturnType<typeof cleanupManagedWorktreeDependencyCopies> | undefined;
   let temporaryCleanup: ReturnType<typeof cleanupTemporaryStatePaths> | undefined;
-  let artifactRetention: ReturnType<typeof cleanupWorkPreservationArtifacts> | undefined;
   let releaseRetention: ReturnType<typeof cleanupControllerReleaseHistory> | undefined;
   let releaseSessionCandidates: ReleaseSessionCandidateRetentionReport | undefined;
   let repositoryNamespaceRetention: ReturnType<typeof cleanupRetiredRepositoryNamespaces> | undefined;
@@ -1194,19 +1170,6 @@ export function cleanupControllerRuntimeState(
           removalBudget.remaining -= removed;
         } catch (error) { errors.push(`experience-retention: ${error instanceof Error ? error.message : 'failed'}`); }
       }
-      artifactRetention = cleanupWorkPreservationArtifacts(home, {
-        nowMs,
-        graceMs: options.cleanupArtifactRetentionGraceMs,
-        maxEntries,
-        maxRemovals: removalBudget.remaining,
-        scanSequence: removalCycleSequence,
-      });
-      removalBudget.remaining = Math.max(0, removalBudget.remaining - artifactRetention.attempted);
-      if (artifactRetention.budgetExhausted) removalBudget.exhausted = true;
-      Object.entries(artifactRetention.skippedByReason).forEach(([key, value]) => {
-        skippedByReason[`cleanup_artifact_${key}`] = (skippedByReason[`cleanup_artifact_${key}`] ?? 0) + value;
-      });
-      errors.push(...artifactRetention.errors.map((error) => `cleanup-artifact ${error}`));
       continue;
     }
     if (phase === 'scheduler') {
@@ -1328,16 +1291,14 @@ export function cleanupControllerRuntimeState(
     worktrees ??= { removed: [], skippedActive: [], skippedByReason: {}, reclaim: emptyReclaimMetrics() } as ReturnType<typeof cleanupOrphanWorktrees>;
     dependencyCleanup ??= { migrated: [], skippedByReason: {} } as ReturnType<typeof cleanupManagedWorktreeDependencyCopies>;
     temporaryCleanup ??= { removed: [], reclaim: emptyReclaimMetrics() } as ReturnType<typeof cleanupTemporaryStatePaths>;
-    artifactRetention ??= { removedPaths: [], attempted: 0, budgetExhausted: false, skippedByReason: {}, errors: [], inspected: 0, eligible: 0, retained: 0, skipped: 0, reclaimedBytes: 0, unknownReclaimedByteCount: 0 } as ReturnType<typeof cleanupWorkPreservationArtifacts>;
     repositoryNamespaceRetention ??= { policyVersion: 'repository-namespace-retention-v1', removedPaths: [], attempted: 0, budgetExhausted: false, skippedByReason: {}, errors: [], inspected: 0, eligible: 0, retained: 0, reclaimedBytes: 0, unknownReclaimedByteCount: 0 } as ReturnType<typeof cleanupRetiredRepositoryNamespaces>;
     releaseRetention ??= { removedPaths: [], removedBackupPaths: [], attempted: 0, budgetExhausted: false, skippedByReason: {}, errors: [], inspected: 0, eligible: 0, retained: 0, skipped: 0, reclaimedBytes: 0, unknownReclaimedByteCount: 0, reclaimedBackupBytes: 0, unknownReclaimedBackupByteCount: 0 } as ReturnType<typeof cleanupControllerReleaseHistory>;
     releaseSessionCandidates ??= emptyReleaseSessionCandidateRetentionReport();
   }
-  if (!worktrees || !dependencyCleanup || !temporaryCleanup || !artifactRetention || !repositoryNamespaceRetention || !releaseRetention || !releaseSessionCandidates) {
+  if (!worktrees || !dependencyCleanup || !temporaryCleanup || !repositoryNamespaceRetention || !releaseRetention || !releaseSessionCandidates) {
     throw new Error('RUNTIME_CLEANUP_PHASE_INCOMPLETE');
   }
   const removedTemporaryPaths = temporaryCleanup.removed.sort();
-  const removedCleanupArtifactPaths = artifactRetention.removedPaths.sort();
   const removedReleasePaths = releaseRetention.removedPaths.sort();
   const removedScheduleOccurrencePaths = schedulerHistory.removedOccurrencePaths.sort();
   const removedScheduleDecisionPaths = schedulerHistory.removedDecisionPaths.sort();
@@ -1387,7 +1348,7 @@ export function cleanupControllerRuntimeState(
   } catch (error) {
     errors.push(errorText('SQLite orphan retention', error));
   }
-  const inspectedPaths = referenceBudget.inspected + worktreeBudget.inspected + dependencyBudget.inspected + tempBudget.inspected + schedulerBudget.inspected + editSessionBudget.inspected + artifactRetention.inspected + repositoryNamespaceRetention.inspected + releaseRetention.inspected + releaseSessionCandidates.inspected;
+  const inspectedPaths = referenceBudget.inspected + worktreeBudget.inspected + dependencyBudget.inspected + tempBudget.inspected + schedulerBudget.inspected + editSessionBudget.inspected + repositoryNamespaceRetention.inspected + releaseRetention.inspected + releaseSessionCandidates.inspected;
   const budgetExhausted = referenceBudget.exhausted || worktreeBudget.exhausted || dependencyBudget.exhausted || tempBudget.exhausted || schedulerBudget.exhausted || editSessionBudget.exhausted || removalBudget.exhausted || releaseSessionCandidates.truncated;
   if (pidFiles.skipped.length > 0 && removalBudget.exhausted) skippedByReason.cleanup_budget_exhausted = (skippedByReason.cleanup_budget_exhausted ?? 0) + pidFiles.skipped.length;
   if (pidFiles.skipped.length > 0 && !removalBudget.exhausted) skippedByReason.active_owner = (skippedByReason.active_owner ?? 0) + pidFiles.skipped.length;
@@ -1401,11 +1362,6 @@ export function cleanupControllerRuntimeState(
       count: pidFiles.removed.length + removedTemporaryPaths.length,
       bytes: pidFiles.reclaim.reclaimedBytes + temporaryCleanup.reclaim.reclaimedBytes,
       unknownByteCount: pidFiles.reclaim.unknownReclaimedByteCount + temporaryCleanup.reclaim.unknownReclaimedByteCount,
-    },
-    work: {
-      count: removedCleanupArtifactPaths.length,
-      bytes: artifactRetention.reclaimedBytes,
-      unknownByteCount: artifactRetention.unknownReclaimedByteCount,
     },
     release_artifact: {
       count: Math.max(0, removedReleasePaths.length - releaseRetention.removedBackupPaths.length),
@@ -1458,8 +1414,8 @@ export function cleanupControllerRuntimeState(
     reclaimedBytes: Object.values(physicalReclaimedByClass).reduce((total, entry) => total + entry.bytes, 0),
     unknownReclaimedByteCount: Object.values(physicalReclaimedByClass).reduce((total, entry) => total + entry.unknownByteCount, 0),
     reclaimedByClass: physicalReclaimedByClass,
-    logicalRetiredCount: retiredOwnerlessWorkAuthorities.length,
-    logicalRetiredByClass: { work: retiredOwnerlessWorkAuthorities.length },
+    logicalRetiredCount: 0,
+    logicalRetiredByClass: {},
     protectedActiveCount: Object.values(protectedByReason).reduce((total, count) => total + count, 0),
     protectedByReason,
     blockerReasons,
@@ -1473,7 +1429,6 @@ export function cleanupControllerRuntimeState(
     removedWorktrees: worktrees.removed.sort(),
     migratedDependencyPaths: dependencyCleanup.migrated.sort(),
     removedTemporaryPaths,
-    removedCleanupArtifactPaths,
     removedReleasePaths,
     releaseSessionCandidates,
     removedScheduleOccurrencePaths,
@@ -1481,7 +1436,6 @@ export function cleanupControllerRuntimeState(
     removedEditSessionPaths,
     removedRepositoryNamespacePaths,
     sqliteMaintenance,
-    retiredOwnerlessWorkAuthorities: retiredOwnerlessWorkAuthorities.sort(),
     skippedActiveWorktrees: worktrees.skippedActive.sort(),
     inspectedPaths,
     budgetExhausted,
@@ -1490,11 +1444,11 @@ export function cleanupControllerRuntimeState(
     lifecycleMetrics,
     cycle: {
       scanned: inspectedPaths,
-      eligible: retiredOwnerlessWorkAuthorities.length + pidFiles.removed.length + worktrees.removed.length + dependencyCleanup.migrated.length + removedTemporaryPaths.length + artifactRetention.eligible + schedulerHistory.eligible + editSessionHistory.eligible + repositoryNamespaceRetention.eligible + releaseRetention.eligible + releaseSessionCandidates.eligible,
-      attempted: retiredOwnerlessWorkAuthorities.length + pidFiles.removed.length + worktrees.removed.length + dependencyCleanup.migrated.length + removedTemporaryPaths.length + artifactRetention.attempted + schedulerHistory.attempted + editSessionHistory.attempted + repositoryNamespaceRetention.attempted + releaseRetention.attempted + releaseSessionCandidates.attempted + errors.length,
-      removed: retiredOwnerlessWorkAuthorities.length + pidFiles.removed.length + worktrees.removed.length + dependencyCleanup.migrated.length + removedTemporaryPaths.length + removedCleanupArtifactPaths.length + removedScheduleOccurrencePaths.length + removedScheduleDecisionPaths.length + removedEditSessionPaths.length + removedRepositoryNamespacePaths.length + removedReleasePaths.length + releaseSessionCandidates.removedPaths.length,
-      retained: pidFiles.skipped.length + worktrees.skippedActive.length + artifactRetention.retained + schedulerHistory.retained + editSessionHistory.retained + repositoryNamespaceRetention.retained + releaseRetention.retained + releaseSessionCandidates.retainedCount,
-      skipped: Math.max(0, inspectedPaths - pidFiles.removed.length - worktrees.removed.length - dependencyCleanup.migrated.length - removedTemporaryPaths.length - removedCleanupArtifactPaths.length - removedScheduleOccurrencePaths.length - removedScheduleDecisionPaths.length - removedEditSessionPaths.length - removedRepositoryNamespacePaths.length - removedReleasePaths.length - releaseSessionCandidates.removedPaths.length - errors.length),
+      eligible: pidFiles.removed.length + worktrees.removed.length + dependencyCleanup.migrated.length + removedTemporaryPaths.length + schedulerHistory.eligible + editSessionHistory.eligible + repositoryNamespaceRetention.eligible + releaseRetention.eligible + releaseSessionCandidates.eligible,
+      attempted: pidFiles.removed.length + worktrees.removed.length + dependencyCleanup.migrated.length + removedTemporaryPaths.length + schedulerHistory.attempted + editSessionHistory.attempted + repositoryNamespaceRetention.attempted + releaseRetention.attempted + releaseSessionCandidates.attempted + errors.length,
+      removed: pidFiles.removed.length + worktrees.removed.length + dependencyCleanup.migrated.length + removedTemporaryPaths.length + removedScheduleOccurrencePaths.length + removedScheduleDecisionPaths.length + removedEditSessionPaths.length + removedRepositoryNamespacePaths.length + removedReleasePaths.length + releaseSessionCandidates.removedPaths.length,
+      retained: pidFiles.skipped.length + worktrees.skippedActive.length + schedulerHistory.retained + editSessionHistory.retained + repositoryNamespaceRetention.retained + releaseRetention.retained + releaseSessionCandidates.retainedCount,
+      skipped: Math.max(0, inspectedPaths - pidFiles.removed.length - worktrees.removed.length - dependencyCleanup.migrated.length - removedTemporaryPaths.length - removedScheduleOccurrencePaths.length - removedScheduleDecisionPaths.length - removedEditSessionPaths.length - removedRepositoryNamespacePaths.length - removedReleasePaths.length - releaseSessionCandidates.removedPaths.length - errors.length),
       failed: errors.length,
       truncated: budgetExhausted,
       budgetExhausted,

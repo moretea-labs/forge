@@ -1,5 +1,4 @@
 import { getWorkContract } from '../../../packages/kernel/work/api/index';
-import { listCurrentControllerRoundRelays } from '../../../packages/kernel/controller/api/index';
 import type { ScopeRef } from '../../../packages/kernel/identity/api/index';
 import {
   memoryAddressKey,
@@ -15,8 +14,8 @@ import {
 import { cognitiveScopesForWork } from '../control-plane/persistence/experience-store';
 
 /**
- * Canonical usage truth remains ControllerRound observationWindow plus direct usage observations.
- * This function only derives a bounded retrieval projection; it owns no usage lifecycle.
+ * Usage truth comes only from explicit direct learning_feedback observations.
+ * Historical Work/ControllerRound data never grants or synthesizes current feedback.
  */
 export function cognitiveUsageFeedbackForContext(input: {
   controllerHome: string;
@@ -26,39 +25,6 @@ export function cognitiveUsageFeedbackForContext(input: {
 }): CognitiveUsageFeedback[] {
   const allowedScopes = new Set(input.scopes.map(scope => `${scope.kind}:${scope.id}`));
   const feedback = new Map<string, CognitiveUsageFeedback>();
-  const seen = new Set<string>();
-
-  for (const relay of listCurrentControllerRoundRelays({ controllerHome: input.controllerHome, repoId: input.repoId }, 100)) {
-    for (const observation of (relay.observationWindow ?? []).slice(-8)) {
-      if (input.projectId && observation.assistantContext?.projectId !== input.projectId) continue;
-      const delivered = new Set((observation.assistantContext?.items ?? [])
-        .filter(item => item.kind === 'knowledge')
-        .map(item => item.itemId));
-      for (const usage of observation.assistantContextUsage ?? []) {
-        if (usage.kind !== 'knowledge' || !delivered.has(usage.itemId)) continue;
-        const address = parseMemoryAddressKey(usage.itemId);
-        if (!address || !allowedScopes.has(`${address.scope.kind}:${address.scope.id}`)) continue;
-        const observationKey = `${observation.roundRef}:${usage.kind}:${usage.itemId}`;
-        if (seen.has(observationKey)) continue;
-        seen.add(observationKey);
-        const key = memoryAddressKey(address);
-        const current = feedback.get(key) ?? {
-          address,
-          usedCount: 0,
-          rejectedCount: 0,
-          conflictCount: 0,
-          staleCount: 0,
-        };
-        if (usage.decision === 'used') current.usedCount += 1;
-        else {
-          current.rejectedCount += 1;
-          if (usage.rejectionKind === 'stale') current.staleCount += 1;
-          else if (usage.rejectionKind === 'contradicted') current.conflictCount += 1;
-        }
-        feedback.set(key, current);
-      }
-    }
-  }
 
   for (const direct of readCognitiveUsageFeedback(input.controllerHome, input.scopes)) {
     const key = memoryAddressKey(direct.address);

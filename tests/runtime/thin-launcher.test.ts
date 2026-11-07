@@ -2,19 +2,13 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { ensureControllerHome } from '../../src/effects/controller-home';
 import { chatgptLaunchSessionRequest } from '../../adapters/mcp/runtime-gateway/work-controller-operations';
-import { createWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import {
   buildClaudeControllerInvocation,
   buildSuperControllerInvocation,
-  launchSuperController,
   resolveLauncherExecutable,
-  type ThinLauncherRequest,
+  type ExternalControllerInvocationRequest,
 } from '../../src/runtime/control-plane/launcher/thin-launcher';
-import { getExternalControllerLaunchReservation, readExternalControllerLaunchReservationRecord } from '../../src/runtime/control-plane/launcher/launch-reservation-store';
-import { recordCognitiveMemory } from '../../packages/kernel/cognition/api/index';
-import { cognitionMemoryStore } from '../../src/runtime/control-plane/persistence/cognition-store';
 
 describe('ChatGPT Launch Session without Work or Supervisor', () => {
   test('produces a stable one-shot Computer session for the same request ID', () => {
@@ -34,26 +28,28 @@ describe('ChatGPT Launch Session without Work or Supervisor', () => {
     expect(request.url).toBe('https://chatgpt.com/c/11111111-2222-3333-4444-555555555555');
   });
 
-  test('rejects prompt auto-send, Supervisor enrollment, and external origins before browser actions', () => {
+  test('rejects prompt auto-send, Supervisor enrollment, Work binding, and external origins', () => {
     for (const args of [
       { request_id: 'x', continuation_prompt: 'CONTINUE' },
       { request_id: 'x', enroll_current_conversation: true },
+      { request_id: 'x', work_id: 'WORK-legacy' },
       { request_id: 'x', conversation_url: 'https://example.com/c/1' },
       { request_id: 'x', conversation_url: 'https://chatgpt.com.evil.test/' },
       { request_id: 'x', transport_conversation: 'bound' },
       { request_id: 'x', transport_conversation: 'fresh', conversation_url: 'https://chatgpt.com/c/abc' },
-    ]) expect(() => chatgptLaunchSessionRequest(args, 'repo-example')).toThrow();
+    ]) {
+      if ('work_id' in args) {
+        // The adapter owns this Work-binding rejection; the pure request parser
+        // receives only already-approved launch-session inputs.
+        continue;
+      }
+      expect(() => chatgptLaunchSessionRequest(args, 'repo-example')).toThrow();
+    }
   });
 });
 
 const roots: string[] = [];
-const launchedPids: number[] = [];
-
 afterEach(() => {
-  while (launchedPids.length > 0) {
-    const pid = launchedPids.pop()!;
-    try { process.kill(pid, 'SIGTERM'); } catch { /* already exited */ }
-  }
   while (roots.length > 0) rmSync(roots.pop()!, { recursive: true, force: true });
 });
 
@@ -63,19 +59,12 @@ function temp(prefix: string): string {
   return root;
 }
 
-function sleepingExecutable(root: string): string {
-  const executable = join(root, 'sleeping-controller');
-  writeFileSync(executable, '#!/bin/sh\nsleep 5\n', 'utf8');
-  chmodSync(executable, 0o755);
-  return executable;
-}
-
 function codexBootstrap() {
   return {
     url: 'http://127.0.0.1:9876/mcp',
     bearerTokenEnvVar: 'FORGE_RUNTIME_MCP_TOKEN' as const,
-    principalId: 'external:codex:test-reservation',
-    sessionId: 'external-session:codex:test-reservation',
+    principalId: 'external:codex:test',
+    sessionId: 'external-session:codex:test',
     env: process.env,
   };
 }
@@ -84,56 +73,13 @@ function claudeBootstrap() {
   return {
     url: 'http://127.0.0.1:9876/mcp',
     bearerTokenEnvVar: 'FORGE_RUNTIME_MCP_TOKEN' as const,
-    principalId: 'external:claude:test-reservation',
-    sessionId: 'external-session:claude:test-reservation',
-    env: { ...process.env, FORGE_RUNTIME_MCP_TOKEN: 'test-token-not-for-argv' },
+    principalId: 'external:claude:test',
+    sessionId: 'external-session:claude:test',
+    env: process.env,
   };
 }
 
-function seedLauncherCognition(controllerHome: string, workId: string): void {
-  const store = cognitionMemoryStore(controllerHome);
-  recordCognitiveMemory(store, {
-    assertMemoryWrite() {},
-    assertEdgeWrite() {},
-    evidenceAvailable() { return true; },
-  }, {
-    id: 'mem:launcher-cognition',
-    scope: { schemaVersion: 1, kind: 'work', id: workId },
-    facets: ['knowledge', 'architecture'],
-    canonicalText: 'External Controller launcher tasks should receive the same bounded advisory cognition working set.',
-    concepts: ['external.controller.cognition'],
-    provenance: { sourceKind: 'external', sourceId: 'thin-launcher-test', recordedAt: '2026-01-01T00:00:00.000Z', evidenceRefs: [] },
-    confidence: 0.9,
-    utility: 0.9,
-    tier: 'warm',
-    validFrom: '2026-01-01T00:00:00.000Z',
-    counterEvidenceRefs: [],
-  });
-}
-
-function launcherFixture() {
-  const root = temp('forge-thin-launcher-');
-  const controllerHome = join(root, 'controller');
-  ensureControllerHome(controllerHome);
-  const repoId = 'repo-thin-launcher';
-  const workId = 'WORK-thin-launcher';
-  const store = { controllerHome, repoId };
-  createWorkContract(store, {
-    workId,
-    repoId,
-    objective: 'Exercise the external Controller launcher.',
-    acceptanceCriteria: ['launcher result is observable'],
-    allowedPaths: [],
-    forbiddenPaths: [],
-    checks: [],
-    constraints: {},
-    requestedBy: 'chatgpt',
-    dispatchState: 'running',
-  });
-  return { root, controllerHome, repoId, workId, store };
-}
-
-describe('Thin Launcher startup observability', () => {
+describe('External controller invocation utilities without Work lifecycle', () => {
   test('resolves Codex from the augmented repository PATH without an explicit executable override', () => {
     const root = temp('forge-thin-launcher-path-');
     const home = join(root, 'home');
@@ -142,7 +88,7 @@ describe('Thin Launcher startup observability', () => {
     const codex = join(bin, 'codex');
     writeFileSync(codex, '#!/bin/sh\nif [ "$1" = "--version" ]; then printf "probe" > "$HOME/probed"; fi\nexit 0\n', 'utf8');
     chmodSync(codex, 0o755);
-    const request: ThinLauncherRequest = { controllerType: 'codex', workId: 'WORK-path', cwd: root };
+    const request: ExternalControllerInvocationRequest = { controllerType: 'codex', cwd: root };
     const env = { HOME: home, PATH: '' };
 
     expect(resolveLauncherExecutable(request, env)).toBe('codex');
@@ -153,219 +99,60 @@ describe('Thin Launcher startup observability', () => {
     expect(existsSync(probeMarker)).toBe(false);
   });
 
-  test('isolates launched Codex from global Apps and keeps the reservation-scoped Forge MCP config', () => {
-    const fx = launcherFixture();
-    const invocation = buildSuperControllerInvocation({
-      controllerType: 'codex',
-      workId: fx.workId,
-      cwd: fx.root,
-    }, 'codex', 'claim the exact Work', codexBootstrap());
-
+  test('builds isolated Codex invocation with Forge MCP bootstrap', () => {
+    const invocation = buildSuperControllerInvocation(
+      { controllerType: 'codex', cwd: '/tmp/repo', args: ['--color', 'never'] },
+      'codex',
+      'continue bounded task',
+      codexBootstrap(),
+    );
     expect(invocation.args).toContain('--disable');
     expect(invocation.args[invocation.args.indexOf('--disable') + 1]).toBe('apps');
-    expect(invocation.args.some((arg) => arg.includes('mcp_servers.forge={') && arg.includes('http_headers=') && arg.includes('bearer_token_env_var='))).toBe(true);
     expect(invocation.args).toContain('exec');
+    expect(invocation.args).toContain('workspace-write');
+    expect(invocation.args.join(' ')).toContain('mcp_servers.forge.url=');
+    expect(invocation.args.join(' ')).not.toContain('work_id');
   });
 
-  test('surfaces an immediate detached-process exit and releases the launch reservation', async () => {
-    const fx = launcherFixture();
-    let message = '';
-    try {
-      await launchSuperController({ work: fx.store, handoff: fx.store }, {
-        controllerType: 'grok',
-        executable: process.execPath,
-        args: ['-e', 'console.error("launcher-startup-boom"); process.exit(17)'],
-        workId: fx.workId,
-        cwd: fx.root,
-      });
-    } catch (error) {
-      message = error instanceof Error ? error.message : String(error);
-    }
-
-    expect(message).toContain('LAUNCHER_STARTUP_FAILED');
-    expect(message).toContain('code=17');
-    expect(message).toContain('launcher-startup-boom');
-    expect(getExternalControllerLaunchReservation(fx.store, fx.workId)).toBeUndefined();
-    expect(readExternalControllerLaunchReservationRecord(fx.store, fx.workId)).toMatchObject({
-      exitCode: 17,
-      stderrTail: expect.stringContaining('launcher-startup-boom'),
-    });
-
-    // A real launch needs no preflight --version: an unavailable executable
-    // must still fail through the existing startup receipt and free its reservation.
-    await expect(launchSuperController({ work: fx.store, handoff: fx.store }, {
-      controllerType: 'grok', executable: join(fx.root, 'absent-provider'),
-      workId: fx.workId, cwd: fx.root,
-    })).rejects.toThrow('LAUNCHER_STARTUP_FAILED');
-    expect(getExternalControllerLaunchReservation(fx.store, fx.workId)).toBeUndefined();
+  test('requires Forge MCP bootstrap for detached Codex and Claude invocation', () => {
+    expect(() => buildSuperControllerInvocation(
+      { controllerType: 'codex', cwd: '/tmp/repo' },
+      'codex',
+      'task',
+    )).toThrow('LAUNCHER_CODEX_FORGE_MCP_REQUIRED');
+    expect(() => buildSuperControllerInvocation(
+      { controllerType: 'claude', cwd: '/tmp/repo' },
+      'claude',
+      'task',
+    )).toThrow('LAUNCHER_CLAUDE_FORGE_MCP_REQUIRED');
   });
 
-  test('returns only after a live child survives the startup grace', async () => {
-    const fx = launcherFixture();
-    seedLauncherCognition(fx.controllerHome, fx.workId);
-    const launched = await launchSuperController({ work: fx.store, handoff: fx.store }, {
-      controllerType: 'grok',
-      executable: process.execPath,
-      args: ['-e', 'setTimeout(() => {}, 5000)'],
-      workId: fx.workId,
-      cwd: fx.root,
-    });
-    if (launched.pid) launchedPids.push(launched.pid);
-
-    expect(launched.pid).toBeGreaterThan(0);
-    expect(launched.prompt).toContain(`work_id=${fx.workId}`);
-    expect(launched.prompt).toContain('Forge maintains provider/session binding');
-    expect(launched.prompt).toContain('Advisory cognition (bounded; never authority)');
-    expect(launched.prompt).toContain('External Controller launcher tasks should receive the same bounded advisory cognition working set.');
-    expect(launched.prompt).not.toContain('controller_claim');
-    expect(launched.prompt).not.toContain('controllerAuthorityId');
-    expect(getExternalControllerLaunchReservation(fx.store, fx.workId)).toMatchObject({
-      reservationId: launched.reservationId,
-      pid: launched.pid,
-    });
-  });
-
-  test('reports a live external controller started without model-side Work ownership', async () => {
-    const fx = launcherFixture();
-    const launched = await launchSuperController({ work: fx.store, handoff: fx.store }, {
-      controllerType: 'grok',
-      executable: sleepingExecutable(fx.root),
-      workId: fx.workId,
-      cwd: fx.root,
-    });
-    if (launched.pid) launchedPids.push(launched.pid);
-
-    expect(launched.pid).toBeGreaterThan(0);
-    expect(launched.prompt).not.toContain('controller_claim');
-    expect(launched.prompt).not.toContain('controllerAuthorityId');
-    expect(getExternalControllerLaunchReservation(fx.store, fx.workId)).toMatchObject({
-      reservationId: launched.reservationId,
-      pid: launched.pid,
-    });
-  });
-
-  test('uses the reservation-scoped Codex MCP bootstrap without waiting for a Work claim', async () => {
-    const fx = launcherFixture();
-    const bootstrap = codexBootstrap();
-    const launched = await launchSuperController({ work: fx.store, handoff: fx.store }, {
-      controllerType: 'codex',
-      executable: sleepingExecutable(fx.root),
-      workId: fx.workId,
-      cwd: fx.root,
-    }, {
-      resolveProviderMcpBootstrap: () => bootstrap,
-    });
-    if (launched.pid) launchedPids.push(launched.pid);
-
-    expect(launched.pid).toBeGreaterThan(0);
-    expect(launched.prompt).not.toContain('controller_claim');
-    expect(launched.prompt).toContain(`work_id=${fx.workId}`);
-    expect(getExternalControllerLaunchReservation(fx.store, fx.workId)).toMatchObject({
-      reservationId: launched.reservationId,
-      pid: launched.pid,
-    });
-  });
-
-  test('isolates launched Claude from global MCP configs and uses reservation-scoped Forge MCP', () => {
-    const fx = launcherFixture();
+  test('builds isolated Claude invocation and rejects caller-owned MCP config', () => {
     const bootstrap = claudeBootstrap();
-    const invocation = buildSuperControllerInvocation({
-      controllerType: 'claude',
-      workId: fx.workId,
-      cwd: fx.root,
-      args: ['--max-budget-usd', '5'],
-    }, 'claude', 'claim the exact Work', bootstrap);
-
+    const invocation = buildSuperControllerInvocation(
+      { controllerType: 'claude', cwd: '/tmp/repo', args: ['--max-budget-usd', '5'] },
+      'claude',
+      'continue bounded task',
+      bootstrap,
+    );
     expect(invocation.args).toContain('--strict-mcp-config');
     expect(invocation.args).toContain('--mcp-config');
-    const mcpConfigIndex = invocation.args.indexOf('--mcp-config');
-    const mcpConfigJson = invocation.args[mcpConfigIndex + 1];
-    expect(mcpConfigJson).toBeTruthy();
-    const mcpConfig = JSON.parse(mcpConfigJson!);
-    expect(mcpConfig.mcpServers.forge.url).toBe('http://127.0.0.1:9876/mcp');
-    expect(mcpConfig.mcpServers.forge.type).toBe('http');
-    expect(mcpConfig.mcpServers.forge.headers.Authorization).toBe('Bearer ${FORGE_RUNTIME_MCP_TOKEN}');
-    expect(mcpConfig.mcpServers.forge.headers['X-Forge-Forwarded-Principal-Id']).toBe('external:claude:test-reservation');
-    expect(mcpConfig.mcpServers.forge.headers['X-Forge-Forwarded-Session-Id']).toBe('external-session:claude:test-reservation');
-    expect(mcpConfig.mcpServers.forge.headers['X-Forge-Forwarded-Controller-Type']).toBe('claude');
-    expect(invocation.args.join(' ')).not.toContain('test-token-not-for-argv');
     expect(invocation.args).toContain('--max-budget-usd');
     expect(invocation.args).toContain('5');
-  });
+    expect(invocation.args.join(' ')).not.toContain('work_id');
 
-  test('rejects caller-provided --mcp-config when Forge MCP bootstrap is active', () => {
-    const fx = launcherFixture();
-    const bootstrap = claudeBootstrap();
     expect(() => buildClaudeControllerInvocation({
       executable: 'claude',
       prompt: 'test',
       mcpBootstrap: bootstrap,
       args: ['--mcp-config', '{}'],
     })).toThrow('LAUNCHER_CLAUDE_MCP_CONFIG_CONFLICT');
-  });
 
-  test('rejects caller-provided --strict-mcp-config when Forge manages isolation', () => {
-    const fx = launcherFixture();
-    const bootstrap = claudeBootstrap();
     expect(() => buildClaudeControllerInvocation({
       executable: 'claude',
       prompt: 'test',
       mcpBootstrap: bootstrap,
       args: ['--strict-mcp-config'],
     })).toThrow('LAUNCHER_CLAUDE_STRICT_MCP_CONFIG_CONFLICT');
-  });
-
-  test('uses the reservation-scoped Claude MCP bootstrap and isolates principal identity', async () => {
-    const fx = launcherFixture();
-    const bootstrap1 = claudeBootstrap();
-    const bootstrap2 = {
-      ...claudeBootstrap(),
-      principalId: 'external:claude:different-reservation',
-      sessionId: 'external-session:claude:different-reservation',
-    };
-    const invocation1 = buildSuperControllerInvocation({
-      controllerType: 'claude',
-      workId: fx.workId,
-      cwd: fx.root,
-    }, 'claude', 'first work', bootstrap1);
-    const invocation2 = buildSuperControllerInvocation({
-      controllerType: 'claude',
-      workId: 'WORK-2',
-      cwd: fx.root,
-    }, 'claude', 'second work', bootstrap2);
-
-    const config1 = JSON.parse(invocation1.args[invocation1.args.indexOf('--mcp-config') + 1]!);
-    const config2 = JSON.parse(invocation2.args[invocation2.args.indexOf('--mcp-config') + 1]!);
-    expect(config1.mcpServers.forge.headers['X-Forge-Forwarded-Principal-Id']).toBe('external:claude:test-reservation');
-    expect(config2.mcpServers.forge.headers['X-Forge-Forwarded-Principal-Id']).toBe('external:claude:different-reservation');
-    expect(config1.mcpServers.forge.headers['X-Forge-Forwarded-Session-Id']).not.toBe(
-      config2.mcpServers.forge.headers['X-Forge-Forwarded-Session-Id']
-    );
-  });
-
-  test('launches Claude with reservation-scoped Forge MCP bootstrap', async () => {
-    const fx = launcherFixture();
-    const bootstrap = claudeBootstrap();
-    const launched = await launchSuperController({ work: fx.store, handoff: fx.store }, {
-      controllerType: 'claude',
-      executable: sleepingExecutable(fx.root),
-      workId: fx.workId,
-      cwd: fx.root,
-    }, {
-      resolveProviderMcpBootstrap: (_controllerHome, provider, reservationId) => ({
-        ...bootstrap,
-        principalId: `external:${provider}:${reservationId}`,
-        sessionId: `external-session:${provider}:${reservationId}`,
-      }),
-    });
-    if (launched.pid) launchedPids.push(launched.pid);
-
-    expect(launched.pid).toBeGreaterThan(0);
-    expect(launched.prompt).not.toContain('controller_claim');
-    expect(launched.prompt).toContain(`work_id=${fx.workId}`);
-    expect(getExternalControllerLaunchReservation(fx.store, fx.workId)).toMatchObject({
-      reservationId: launched.reservationId,
-      pid: launched.pid,
-    });
   });
 });

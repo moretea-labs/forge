@@ -4,7 +4,7 @@ import { getCoreCapabilityExecutionSchema, listCapabilityDescriptors, searchCapa
 import { evaluatePolicyGate } from '../../src/runtime/control-plane/facade/policy-gate';
 import { buildFacadeResult } from '../../src/runtime/control-plane/facade/facade-result';
 import { allowedFacadeOperations, validateSuggestedNextActions } from '../../src/runtime/control-plane/facade/suggested-actions';
-import { buildClaudeControllerInvocation, buildCodexControllerInvocation, buildSuperControllerInvocation, type ThinLauncherRequest } from '../../src/runtime/control-plane/launcher/thin-launcher';
+import { buildClaudeControllerInvocation, buildCodexControllerInvocation, buildSuperControllerInvocation, type ExternalControllerInvocationRequest } from '../../src/runtime/control-plane/launcher/thin-launcher';
 import { cancelLocalConversation, parseCodexConversationJsonl, readLocalConversationProviderStatus, runCodexConversation } from '../../src/runtime/control-plane/launcher/local-conversation-controller';
 import { RH_WORK_MODEL_OPERATIONS, isRhWorkAcceptedOperation } from '../../src/runtime/control-plane/facade/rh-work-operation-contract';
 import { runtimeToolDefinitions } from '../../adapters/mcp/runtime-gateway/runtime-tool-definitions';
@@ -104,7 +104,7 @@ describe('handoff and facade contracts', () => {
     expect(FACADE_TOOLS).toEqual(['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work', 'capability_execute']);
   });
 
-  test('exposes Work delivery as a repository.git action without widening the top-level facade', () => {
+  test('keeps repository.git actions Work-free without widening the top-level facade', () => {
     const descriptor = listCapabilityDescriptors().find((entry) => entry.capabilityId === 'repository.git');
     expect(descriptor).toMatchObject({
       domain: 'repository', group: 'git', operationClass: 'write', risk: 'local_repo_write',
@@ -119,12 +119,10 @@ describe('handoff and facade contracts', () => {
       }>;
     } | undefined;
     expect(schema?.executeWith).toBe('capability_execute');
-    expect(Object.keys(schema?.actions ?? {}).sort()).toEqual(['commit_paths', 'delete_remote_branch', 'deliver_work', 'diff_paths', 'discard_work', 'stage_paths']);
+    expect(Object.keys(schema?.actions ?? {}).sort()).toEqual(['commit_paths', 'delete_remote_branch', 'diff_paths', 'stage_paths']);
     expect(schema?.actions?.delete_remote_branch).toMatchObject({ readOnly: false, risk: 'destructive_remote' });
     expect(schema?.actions?.delete_remote_branch?.argumentsSchema?.required).toEqual(['branch', 'expected_remote_sha']);
     expect(schema?.actions?.delete_remote_branch?.argumentsSchema?.properties).toHaveProperty('approval_request_id');
-    expect(schema?.actions?.deliver_work?.argumentsSchema?.required).toEqual(['work_id']);
-    expect(schema?.actions?.discard_work?.argumentsSchema?.required).toEqual(['work_id']);
     expect(runtimeToolDefinitions.some((definition) => definition.name === 'work_deliver')).toBe(false);
     expect(FACADE_TOOLS).toHaveLength(6);
   });
@@ -142,7 +140,7 @@ describe('handoff and facade contracts', () => {
     expect(schema?.executeWith).toBe('capability_execute');
     expect(Object.keys(schema?.actions ?? {}).sort()).toEqual(['apply', 'plan']);
     expect(schema?.actions?.plan?.argumentsSchema?.required).toEqual(['operations']);
-    expect(schema?.actions?.apply?.argumentsSchema?.properties).toHaveProperty('work_id');
+    expect(schema?.actions?.apply?.argumentsSchema?.properties).not.toHaveProperty('work_id');
     expect(schema?.actions?.apply?.argumentsSchema?.properties).toHaveProperty('validation_only');
     expect(FACADE_TOOLS).toHaveLength(6);
   });
@@ -199,20 +197,9 @@ describe('handoff and facade contracts', () => {
     expect(cancelLocalConversation(conversationId)).toMatchObject({ status: 'not_active' });
   });
 
-  test('exposes exact Work validation through capability_execute without widening the top-level facade', () => {
-    const descriptor = listCapabilityDescriptors().find((entry) => entry.capabilityId === 'repository.validation');
-    expect(descriptor).toMatchObject({
-      domain: 'repository', group: 'repository-core', operationClass: 'execute', risk: 'workspace_write',
-      exposedVia: 'capability_execute', schemaExposure: 'stable_static',
-    });
-    const schema = getCoreCapabilityExecutionSchema('repository.validation') as {
-      executeWith?: string;
-      actions?: Record<string, { argumentsSchema?: { required?: string[]; properties?: Record<string, unknown> } }>;
-    } | undefined;
-    expect(schema?.executeWith).toBe('capability_execute');
-    expect(Object.keys(schema?.actions ?? {})).toEqual(['validate_work']);
-    expect(schema?.actions?.validate_work?.argumentsSchema?.required).toEqual(['work_id']);
-    expect(schema?.actions?.validate_work?.argumentsSchema?.properties).not.toHaveProperty('commands');
+  test('does not expose retired Work validation capability', () => {
+    expect(listCapabilityDescriptors().some((entry) => entry.capabilityId === 'repository.validation')).toBe(false);
+    expect(getCoreCapabilityExecutionSchema('repository.validation')).toBeUndefined();
     expect(FACADE_TOOLS).toHaveLength(6);
   });
 
@@ -223,27 +210,14 @@ describe('handoff and facade contracts', () => {
     expect(FACADE_TOOLS).toEqual(['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work', 'capability_execute']);
   });
 
-  test('exposes ControllerRound recovery through capability_execute without restoring rh_work lifecycle authority', () => {
-    const descriptor = listCapabilityDescriptors().find((entry) => entry.capabilityId === 'controller.round_recovery');
-    expect(descriptor).toMatchObject({
-      domain: 'controller', group: 'controller', operationClass: 'execute', risk: 'workspace_write',
-      exposedVia: 'capability_execute', schemaExposure: 'stable_static',
-    });
-    const schema = getCoreCapabilityExecutionSchema('controller.round_recovery') as {
-      executeWith?: string;
-      actions?: Record<string, { argumentsSchema?: { required?: string[]; properties?: Record<string, unknown> } }>;
-    } | undefined;
-    expect(schema?.executeWith).toBe('capability_execute');
-    expect(Object.keys(schema?.actions ?? {})).toEqual(['recover_and_dispose']);
-    expect(schema?.actions?.recover_and_dispose?.argumentsSchema?.required).toEqual(
-      expect.arrayContaining(['work_id', 'recovery_reason', 'disposition', 'user_directed']),
-    );
-    expect(searchCapabilityDescriptors('controller round authority recovery').map((entry) => entry.capabilityId)).toContain('controller.round_recovery');
+  test('does not expose retired ControllerRound recovery capability', () => {
+    expect(listCapabilityDescriptors().some((entry) => entry.capabilityId === 'controller.round_recovery')).toBe(false);
+    expect(getCoreCapabilityExecutionSchema('controller.round_recovery')).toBeUndefined();
+    expect(searchCapabilityDescriptors('controller round authority recovery').map((entry) => entry.capabilityId)).not.toContain('controller.round_recovery');
     const rhWork = runtimeToolDefinitions.find((definition) => definition.name === 'rh_work');
     const properties = rhWork?.inputSchema.properties as Record<string, { enum?: string[] }> | undefined;
     expect(properties?.operation?.enum).not.toContain('controller_authority_recover');
     expect(properties).not.toHaveProperty('controller_authority_id');
-    expect(FACADE_TOOLS).toEqual(['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work', 'capability_execute']);
   });
 
   test('keeps expensive maintenance inspection explicit on rh_status', () => {
@@ -264,20 +238,19 @@ describe('handoff and facade contracts', () => {
     expect(allowedFacadeOperations('rh_work')).not.toContain('controller_disposition');
   });
 
-  test('exposes Work objective relations only on the current typed rh_work schema', () => {
+  test('keeps retired Work relations and writers out of the current typed rh_work schema', () => {
     const rhWork = runtimeToolDefinitions.find((definition) => definition.name === 'rh_work');
     const properties = rhWork?.inputSchema.properties as Record<string, any> | undefined;
-    expect(properties?.semantic_parent_work_id).toMatchObject({ type: 'string', minLength: 1, maxLength: 256 });
-    expect(properties?.depends_on_work_ids).toMatchObject({ type: 'array', maxItems: 32, uniqueItems: true });
-    expect(properties?.depends_on_work_ids?.items).toMatchObject({ type: 'string', minLength: 1, maxLength: 256 });
+    expect(properties).not.toHaveProperty('semantic_parent_work_id');
+    expect(properties).not.toHaveProperty('depends_on_work_ids');
 
     expect(normalizeRhWorkInputWireMigration({
       operation: 'repair',
       capability_id: `semantic.v1:${JSON.stringify({ operation: 'work_revise', work_id: 'WORK-1', expected_revision: 1, semantic_parent_work_id: 'WORK-0' })}`,
     })).toMatchObject({
       ok: false,
-      summary: 'FROZEN_MCP_SEMANTIC_V1_FIELD_UNSUPPORTED',
-      data: { operation: 'work_revise', field: 'semantic_parent_work_id' },
+      summary: 'FROZEN_MCP_SEMANTIC_V1_OPERATION_UNSUPPORTED',
+      data: { operation: 'work_revise' },
     });
   });
 
@@ -297,7 +270,7 @@ describe('handoff and facade contracts', () => {
     // an interaction quota and not a second schema-local policy.
     expect(learning?.maxItems).toBe(CONTROLLER_LEARNING_SIGNAL_ENVELOPE_MAX_ITEMS);
     expect(learning?.items?.additionalProperties).toBe(false);
-    expect(learning?.items?.properties?.scope_kind?.enum).toEqual(['work', 'requirement', 'project', 'workspace']);
+    expect(learning?.items?.properties?.scope_kind?.enum).toEqual(['requirement', 'project', 'workspace']);
     expect(learning?.items?.properties?.admission_source?.enum).toContain('explicit_human');
     expect(learning?.items?.properties?.portability?.enum).toContain('portable');
     expect(learning?.items?.properties).not.toHaveProperty('source_work_id');
@@ -316,8 +289,8 @@ describe('handoff and facade contracts', () => {
     expect(properties?.operation?.enum).not.toContain('verify');
     expect(properties?.operation?.enum).not.toContain('finalize');
     expect(properties?.operation?.enum).toContain('learning_record');
-    expect(properties?.operation?.enum).toContain('outcome_record');
-    expect(properties?.operation?.enum).toContain('experience_record');
+    expect(properties?.operation?.enum).not.toContain('outcome_record');
+    expect(properties?.operation?.enum).not.toContain('experience_record');
 
     const retiredReview = validateSuggestedNextActions([
       { label: 'Review implementation', tool: 'rh_work', operation: 'review', risk: 'workspace_write' },
@@ -339,7 +312,7 @@ describe('handoff and facade contracts', () => {
     expect(properties).not.toHaveProperty('relay_scope_id');
     expect(properties).not.toHaveProperty('plan_step_id');
     expect(properties?.capability_id?.description).not.toContain('compatibility');
-    for (const operation of ['verify', 'review', 'finalize', 'plan_approve', 'plan_accept_step', 'controller_claim', 'controller_release', 'controller_disposition']) {
+    for (const operation of ['start', 'revise', 'complete', 'outcome_record', 'experience_record', 'verify', 'review', 'finalize', 'plan_approve', 'plan_accept_step', 'controller_claim', 'controller_release', 'controller_disposition']) {
       expect(isRhWorkAcceptedOperation(operation)).toBe(false);
     }
   });
@@ -462,8 +435,8 @@ describe('handoff and facade contracts', () => {
     expect(properties).not.toHaveProperty('work_kind');
     expect(properties).not.toHaveProperty('review_findings');
     expect(properties).not.toHaveProperty('acceptance_evidence');
-    expect(properties).toHaveProperty('work_state');
-    expect(properties).toHaveProperty('work_result_refs');
+    expect(properties).not.toHaveProperty('work_state');
+    expect(properties).not.toHaveProperty('work_result_refs');
     expect(properties).toHaveProperty('expected_revision');
   });
 
@@ -472,8 +445,8 @@ describe('handoff and facade contracts', () => {
     const properties = rhWork?.inputSchema.properties as Record<string, { enum?: string[] }> | undefined;
     expect(properties?.operation?.enum).toEqual([...RH_WORK_MODEL_OPERATIONS]);
     expect(properties).toHaveProperty('expected_revision');
-    expect(properties).toHaveProperty('work_state');
-    expect(properties).toHaveProperty('work_result_refs');
+    expect(properties).not.toHaveProperty('work_state');
+    expect(properties).not.toHaveProperty('work_result_refs');
     expect(properties).not.toHaveProperty('controller_authority_id');
     expect(properties).not.toHaveProperty('relay_scope_id');
     expect(properties).not.toHaveProperty('assistant_context_digest');
@@ -633,18 +606,17 @@ describe('handoff and facade contracts', () => {
     expect(capabilities.map((entry) => entry.capabilityId)).toContain('repository.direct_edit');
     expect(capabilities.map((entry) => entry.capabilityId)).not.toContain('controller.goal_workloop');
     expect(capabilities.map((entry) => entry.capabilityId)).toContain('controller.self_healing');
-    expect(capabilities.map((entry) => entry.capabilityId)).toContain('controller.external_controller');
+    expect(capabilities.map((entry) => entry.capabilityId)).not.toContain('controller.external_controller');
     expect(new Set(capabilities.map((entry) => entry.exposedVia).filter((surface) => surface.startsWith('rh_')))).toEqual(new Set(['rh_context', 'rh_inbox', 'rh_status', 'rh_work']));
     expect(capabilities.some((entry) => entry.exposedVia === 'plugin_action_execute')).toBe(true);
-    expect(new Set(capabilities.map((entry) => entry.group))).toEqual(new Set([
+    expect([...new Set(capabilities.map((entry) => entry.group))].sort()).toEqual([
       'controller',
       'evidence',
       'git',
       'ios',
-      'issue-task',
       'repository-core',
       'runtime-maintenance',
-    ]));
+    ]);
     expect(capabilities.every((entry) => entry.schemaExposure === 'stable_static')).toBe(true);
     const groups = summarizeCapabilityGroups([]);
     expect(groups.find((entry) => entry.group === 'git')).toMatchObject({ capabilityCount: 1, facadeTools: ['capability_execute'] });
@@ -731,7 +703,7 @@ describe('handoff and facade contracts', () => {
 
 
 describe('Thin Launcher external Controller invocation', () => {
-  const request = (overrides: Partial<ThinLauncherRequest> = {}): ThinLauncherRequest => ({ controllerType: 'chatgpt', workId: 'WORK-1', cwd: '/tmp/repo', controllerHome: '/tmp/controller', repoId: 'repo-1', ...overrides });
+  const request = (overrides: Partial<ExternalControllerInvocationRequest> = {}): ExternalControllerInvocationRequest => ({ controllerType: 'chatgpt', cwd: '/tmp/repo', ...overrides });
   test('uses non-interactive provider modes and requires Forge MCP bootstrap for detached CLI controllers', () => {
     const bootstrap = {
       url: 'http://127.0.0.1:8765/mcp',

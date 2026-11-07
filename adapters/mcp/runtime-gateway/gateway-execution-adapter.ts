@@ -1,7 +1,7 @@
 import { createHash } from 'crypto';
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
-import { callRepositoryTool, claimedSessionEditBinding } from '../tool-mapping/repository-tools';
+import { callRepositoryTool } from '../tool-mapping/repository-tools';
 import { resolveRepositorySelection } from '../../../src/cli/repositories/registry';
 import { listControllerChecks } from '../../../src/cli/controller/check-runner';
 import { executionIdentityForRepository } from '../../../src/runtime/control-plane/execution/execution-identity';
@@ -21,22 +21,16 @@ async function runEditSessionValidationViaProcessRuntime(
 ): Promise<CallToolResult> {
   const resolved = resolveEditValidationRepository(repository, editSessionId);
   const explicitWorkId = typeof args.work_id === 'string' && args.work_id.trim() ? args.work_id.trim() : undefined;
-  const workId = explicitWorkId ?? resolved.session.workId;
-  // Ordinary Direct Edit has repository/caller identity without a Work claim.
-  // Never infer a different Work from the transport session for this edit.
-  const binding = workId
-    ? claimedSessionEditBinding(ctx.controllerHome, resolved.repository, {
-      sessionId: ctx.sessionId,
-      principalId: ctx.principalId,
-      controllerInstanceId: ctx.controllerInstanceId,
-    }, workId)
-    : ctx.principalId?.trim()
-      ? {
-        repoId: resolved.repository.repoId,
-        checkoutId: resolved.repository.activeCheckoutId,
-        principalId: ctx.principalId.trim(),
-      }
-      : undefined;
+  if (explicitWorkId) throw new Error(`WORK_MUTATION_AUTHORITY_RETIRED: ${explicitWorkId}`);
+  // Historical EditSession Work provenance is audit-only. Validation binds to
+  // the physical repository/checkout plus authenticated principal.
+  const binding = ctx.principalId?.trim()
+    ? {
+      repoId: resolved.repository.repoId,
+      checkoutId: resolved.repository.activeCheckoutId,
+      principalId: ctx.principalId.trim(),
+    }
+    : undefined;
   assertEditSessionDurableBinding(resolved.session, binding, { requireBoundIdentity: true });
   const validation = await startOrJoinEditValidation(ctx.controllerHome, resolved.repository, {
     editSessionId,

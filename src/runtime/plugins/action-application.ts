@@ -117,9 +117,8 @@ export async function executeAssistantPluginActionApplication(input: {
     };
   }
 
-  // Reject an invalid Work binding before allocating an immutable Process request ID.
-  // Reattach any existing authoritative provider receipt without fresh preflight.
-  if (action && input.request.workId && !readPluginActionReceiptForRequest(input.controllerHome, input.request.requestId, repositoryAction)) {
+  // Work attribution is retired. Reject legacy fields before reserving a Process request ID.
+  if (action && (input.request.workId || input.request.workRepoId)) {
     preflightPluginActionWorkBinding(input.controllerHome, input.scope, action, input.request);
   }
 

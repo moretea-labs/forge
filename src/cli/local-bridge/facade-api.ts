@@ -1,4 +1,3 @@
-import { randomUUID } from 'crypto';
 import type { RepositoryRecord } from '../repositories/types';
 import {
   accessModeDescriptor,
@@ -38,8 +37,6 @@ import {
   listHandoffItems,
   listWorkContracts,
   normalizeCheckIds,
-  createWorkSemanticContext,
-  workSemanticView,
   runSelfHealingLoop,
   summarizeHandoffItem,
   summarizeWorkContract,
@@ -91,7 +88,6 @@ import type {
   WorkSummaryViewModel,
 } from './console-view-models';
 import { listActiveOccurrences, listSchedules } from '../../../packages/kernel/scheduler/api/index';
-import { executeWorkVerification } from '../../runtime/control-plane/execution/work-verification-service';
 
 export type ConsoleFacadeContext = {
   controllerHome: string;
@@ -933,13 +929,7 @@ export async function buildCommandCenter(
   repositories: RepositoryCardViewModel[],
 ): Promise<CommandCenterViewModel> {
   const readiness = await buildSystemReadiness(ctx);
-  const mapWork = (work: WorkContract) => mapWorkSummary(work, {
-    controllerHome: ctx.controllerHome,
-    repoId: ctx.repository.repoId,
-  });
   const currentRepository = repositories.find((entry) => entry.current) ?? mapRepositoryCard(ctx.repository, true);
-  const activeWork = listWorkContracts({ ...store(ctx), state: 'active', limit: 20 }).map(mapWork);
-  const allRecent = listWorkContracts({ ...store(ctx), state: 'all', limit: 12 }).map(mapWork);
   const handoffs = listHandoffItems({ ...store(ctx), status: 'pending', limit: 20 }).map(mapHandoffCard);
   const plugins = listConsolePlugins(ctx);
   const pluginSummary = buildPluginSummary(plugins);
@@ -958,8 +948,6 @@ export async function buildCommandCenter(
     readiness,
     currentRepository,
     repositories,
-    currentWork: activeWork[0],
-    recentWork: allRecent,
     handoffs,
     pluginSummary,
     plugins,
@@ -1003,8 +991,8 @@ export function setConsoleAccessPolicy(
 }
 
 export function startConsoleWork(
-  ctx: ConsoleFacadeContext,
-  input: {
+  _ctx: ConsoleFacadeContext,
+  _input: {
     objective: string;
     acceptanceCriteria?: string[];
     allowedPaths?: string[];
@@ -1018,37 +1006,24 @@ export function startConsoleWork(
     checkIds?: string[];
   },
 ): FacadeResult {
-  const objective = input.objective.trim();
-  if (!objective) return buildFacadeResult({ status: 'blocked', summary: 'WORK_OBJECTIVE_REQUIRED', data: {} });
-  const created = createWorkSemanticContext(store(ctx), {
-    workId: `work-console-${randomUUID().slice(0, 12)}`,
-    objective,
-    requestedBy: 'user',
-  });
   return buildFacadeResult({
-    summary: `Work ${created.workId} created as semantic context.`,
-    data: { work: workSemanticView(created) },
+    status: 'blocked',
+    summary: 'WORK_LIFECYCLE_RETIRED: Local Bridge can no longer create Work. Use Requirement/Plan plus repository Run/Job/edit capabilities.',
+    data: { workLifecycleRetired: true, replacementAuthorities: ['requirement', 'plan', 'github_issue', 'run', 'job', 'repository'] },
+    suggestedNextActions: [],
   });
 }
 
 export async function verifyConsoleWork(
-  ctx: ConsoleFacadeContext,
-  input: { workId: string; checkId?: string; simulate?: boolean; checkFailed?: boolean; infrastructureFailed?: boolean },
+  _ctx: ConsoleFacadeContext,
+  _input: { workId: string; checkId?: string; simulate?: boolean; checkFailed?: boolean; infrastructureFailed?: boolean },
 ): Promise<FacadeResult> {
-  const verification = await executeWorkVerification({
-    controllerHome: ctx.controllerHome,
-    repository: ctx.repository,
-    workId: input.workId,
-    checkId: input.checkId,
-    interactiveWaitMs: 0,
-    simulate: input.simulate
-      ? {
-          checkFailed: input.checkFailed === true,
-          infrastructureFailed: input.infrastructureFailed === true,
-        }
-      : undefined,
+  return buildFacadeResult({
+    status: 'blocked',
+    summary: 'WORK_LIFECYCLE_RETIRED: Work-bound verification is retired. Run checks directly against the selected repository/checkout.',
+    data: { workLifecycleRetired: true },
+    suggestedNextActions: [],
   });
-  return verification.facade;
 }
 
 export function delegateConsoleWork(
@@ -1058,7 +1033,6 @@ export function delegateConsoleWork(
   return delegateToCodexCerebellum(
     { repoId: ctx.repository.repoId },
     {
-      workId: input.workId,
       target: input.target ?? 'codex',
       objective: input.objective || '请协助完成当前任务',
       available: input.available,
@@ -1074,7 +1048,6 @@ export function repairConsole(
     dryRun?: boolean;
     approvalConfirmed?: boolean;
     destructive?: boolean;
-    workId?: string;
   } = {},
 ): FacadeResult {
   let maintenanceStatus: {
@@ -1110,7 +1083,6 @@ export function repairConsole(
       dryRun: input.dryRun === undefined ? true : input.dryRun,
       approvalConfirmed: input.approvalConfirmed === true,
       destructive: input.destructive === true,
-      workId: input.workId,
       maintenanceStatus,
       diagnostics: {
         controllerDaemonUnhealthy: daemon.status !== 'ready',

@@ -77,8 +77,6 @@ export interface LocalConversationThread {
   projectRepoId?: string;
   // Exact registered checkout identity, fixed for an established transcript.
   checkoutId?: string;
-  // Conversation-local foreign key; Forge remains the sole Work authority.
-  workId?: string;
   providerSessionId?: string;
   provider?: LocalProviderChoice;
   createdAt: string;
@@ -100,7 +98,7 @@ function localId(prefix: string): string {
 }
 
 export function createThread(
-  provider: LocalProviderChoice, projectRepoId?: string, workId?: string, checkoutId?: string,
+  provider: LocalProviderChoice, projectRepoId?: string, checkoutId?: string,
 ): LocalConversationThread {
   const timestamp = new Date().toISOString();
   return {
@@ -109,7 +107,6 @@ export function createThread(
     provider,
     ...(projectRepoId ? { projectRepoId } : {}),
     ...(projectRepoId && checkoutId ? { checkoutId } : {}),
-    ...(projectRepoId && workId ? { workId } : {}),
     createdAt: timestamp,
     updatedAt: timestamp,
     archived: false,
@@ -123,10 +120,10 @@ export function selectThreadCheckout(
 ): { thread: LocalConversationThread; created: boolean } {
   if (thread.checkoutId === checkoutId) return { thread, created: false };
   if (thread.messages.length > 0 || thread.providerSessionId) {
-    return { thread: createThread(provider, thread.projectRepoId, undefined, checkoutId), created: true };
+    return { thread: createThread(provider, thread.projectRepoId, checkoutId), created: true };
   }
   return {
-    thread: { ...thread, checkoutId, workId: undefined, providerSessionId: undefined,
+    thread: { ...thread, checkoutId, providerSessionId: undefined,
       updatedAt: new Date().toISOString() },
     created: false,
   };
@@ -139,24 +136,15 @@ export function selectThreadRepository(
 ): { thread: LocalConversationThread; created: boolean } {
   if (thread.projectRepoId === nextRepoId) return { thread, created: false };
   if (thread.messages.length > 0 || thread.providerSessionId) {
-    return { thread: createThread(provider, nextRepoId, undefined, nextCheckoutId), created: true };
+    return { thread: createThread(provider, nextRepoId, nextCheckoutId), created: true };
   }
   return {
     thread: {
-      ...thread, projectRepoId: nextRepoId, checkoutId: nextCheckoutId, workId: undefined,
+      ...thread, projectRepoId: nextRepoId, checkoutId: nextCheckoutId,
       providerSessionId: undefined, updatedAt: new Date().toISOString(),
     },
     created: false,
   };
-}
-
-export function findExistingWorkThread(
-  threads: LocalConversationThread[], provider: LocalProviderChoice, repoId: string, workId: string,
-  checkoutId?: string,
-): LocalConversationThread | undefined {
-  return threads.filter((thread) => !thread.archived && (thread.provider ?? 'codex') === provider
-    && thread.projectRepoId === repoId && thread.checkoutId === checkoutId && thread.workId === workId)
-    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
 }
 
 function loadThreads(): LocalConversationThread[] {
@@ -166,12 +154,16 @@ function loadThreads(): LocalConversationThread[] {
     const value = JSON.parse(raw) as unknown;
     if (!Array.isArray(value)) return [];
     return value
-      .filter((thread): thread is LocalConversationThread => Boolean(
+      .filter((thread): thread is LocalConversationThread & { workId?: unknown } => Boolean(
         thread && typeof thread === 'object'
         && typeof (thread as LocalConversationThread).id === 'string'
         && typeof (thread as LocalConversationThread).title === 'string'
         && Array.isArray((thread as LocalConversationThread).messages),
       ))
+      .map((thread) => {
+        const { workId: _legacyWorkId, ...current } = thread;
+        return current;
+      })
       .slice(0, MAX_THREADS)
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
   } catch {
@@ -207,7 +199,6 @@ export interface LocalConversationNavItem {
   updatedAt: string;
   provider: LocalProviderChoice;
   projectRepoId?: string;
-  workId?: string;
   running?: boolean;
   draft?: boolean;
 }
@@ -226,7 +217,6 @@ export function localConversationNavItems(
       updatedAt: thread.updatedAt,
       provider: thread.provider ?? 'codex',
       ...(thread.projectRepoId ? { projectRepoId: thread.projectRepoId } : {}),
-      ...(thread.workId ? { workId: thread.workId } : {}),
       ...(runningIds.has(thread.id) ? { running: true } : {}),
       ...(thread.messages.length ? {} : { draft: true }),
     }));
@@ -333,8 +323,6 @@ export function LocalConversationSurface({
   projects,
   defaultProjectRepoId,
   newThreadContext,
-  onOpenWork,
-  onOpenRecord,
   provider,
   providerLoading,
   providerError,
@@ -353,9 +341,7 @@ export function LocalConversationSurface({
 }: {
   projects: ProjectListItemProjection[];
   defaultProjectRepoId?: string;
-  newThreadContext?: { repoId: string; workId?: string };
-  onOpenWork?: (repoId: string, workId: string) => void;
-  onOpenRecord?: (repoId: string, mode: 'requirements' | 'plans', id: string) => void;
+  newThreadContext?: { repoId: string };
   provider: LocalProviderStatusProjection | null;
   providerLoading: boolean;
   providerError: string | null;
@@ -399,13 +385,6 @@ export function LocalConversationSurface({
   }>>([]);
   const [checkoutLoading, setCheckoutLoading] = useState(false);
   const [checkoutError, setCheckoutError] = useState<string>();
-  const [workIndex, setWorkIndex] = useState<Array<{ workId: string; objective: string; state: string }>>([]);
-  const [workIndexError, setWorkIndexError] = useState<string>();
-  const [workDetail, setWorkDetail] = useState<{
-    repoId: string; workId: string; objective: string; state: string;
-    requirementId?: string; planId?: string;
-  }>();
-  const [workDetailError, setWorkDetailError] = useState<string>();
   const diffRequest = useRef(0);
   const handledNewThread = useRef(false);
   const initialThreadProvisioned = useRef<LocalProviderChoice | null>(null);
@@ -544,12 +523,10 @@ export function LocalConversationSurface({
 
   const selectedProject = projects.find((project) => project.repoId === selectedThread?.projectRepoId);
   const selectedRepoId = selectedThread?.projectRepoId;
-  const selectedWorkId = selectedThread?.workId;
 
-  // An effect permission is for exactly one conversation context. It must not
-  // carry into a different thread, Work, repository or registered checkout.
+  // An effect permission is for exactly one conversation repository/checkout context.
   useEffect(() => { setAllowEffects(false); },
-    [selectedThread?.id, selectedRepoId, selectedThread?.checkoutId, selectedWorkId]);
+    [selectedThread?.id, selectedRepoId, selectedThread?.checkoutId]);
 
   // Catalog load may complete after an empty draft was first created.
   // Never rewrite a conversation with messages or a provider resume handle.
@@ -589,50 +566,9 @@ export function LocalConversationSurface({
     return () => { active = false; };
   }, [selectedRepoId]);
 
-  useEffect(() => {
-    if (!selectedRepoId) { setWorkIndex([]); setWorkIndexError(undefined); return; }
-    let active = true;
-    setWorkIndex([]);
-    setWorkIndexError(undefined);
-    void invoke<{ data?: {
-      works?: Array<{ workId: string; objective: string; state: string }>;
-      recentHistory?: Array<{ workId: string; objective: string; state: string }>;
-    } }>('read_project_work_list', { repoId: selectedRepoId }).then((response) => {
-      if (!active) return;
-      const rows = [...(response.data?.works ?? []), ...(response.data?.recentHistory ?? [])];
-      setWorkIndex([...new Map(rows.map((work) => [work.workId, work] as const)).values()]);
-    }).catch((cause: unknown) => {
-      if (active) setWorkIndexError(cause instanceof Error ? cause.message : String(cause));
-    });
-    return () => { active = false; };
-  }, [selectedRepoId]);
-
-  useEffect(() => {
-    if (!selectedRepoId || !selectedWorkId) {
-      setWorkDetail(undefined); setWorkDetailError(undefined);
-      return;
-    }
-    let active = true;
-    setWorkDetail(undefined); setWorkDetailError(undefined);
-    void invoke<{ data?: { work?: {
-      workId: string; objective: string; state: string; requirementId?: string; planId?: string;
-    } } }>('read_work_detail', { repoId: selectedRepoId, workId: selectedWorkId })
-      .then((response) => {
-        if (!active) return;
-        const work = response.data?.work;
-        if (!work || work.workId !== selectedWorkId) throw Error('Forge 未确认当前 Work 的归属');
-        setWorkDetail({ ...work, repoId: selectedRepoId });
-      }).catch((cause: unknown) => {
-        if (active) setWorkDetailError(cause instanceof Error ? cause.message : String(cause));
-      });
-    return () => { active = false; };
-  }, [selectedRepoId, selectedWorkId]);
-
   const projectBindingReady = !selectedRepoId || Boolean(selectedProject);
   const checkoutBindingReady = !selectedRepoId || Boolean(selectedThread?.checkoutId
     && checkoutIndex.some((checkout) => checkout.checkoutId === selectedThread.checkoutId));
-  const workBindingReady = !selectedWorkId
-    || (workDetail?.repoId === selectedRepoId && workDetail?.workId === selectedWorkId);
   const apiSelected = selectedThreadProvider === 'api';
   const loopbackApi = Boolean(apiSettings && /^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::[0-9]+)?(?:\/|$)/.test(apiSettings.endpoint));
   // When Codex is the new-session default, the settings read deliberately
@@ -642,13 +578,13 @@ export function LocalConversationSurface({
   const apiReady = Boolean(apiSettings?.model.trim()
     && (apiSettings?.hasKey || loopbackApi || apiCredentialDeferred));
   const providerReady = (apiSelected ? apiReady : provider?.status === 'ready')
-    && Boolean(onSend) && projectBindingReady && checkoutBindingReady && workBindingReady;
+    && Boolean(onSend) && projectBindingReady && checkoutBindingReady;
 
   const addThread = () => {
     const repoId = selectedThread?.projectRepoId ?? defaultProjectRepoId;
     const checkoutId = selectedThread?.checkoutId
       ?? projects.find((project) => project.repoId === repoId)?.checkoutId;
-    const thread = createThread(defaultProvider, repoId, undefined, checkoutId);
+    const thread = createThread(defaultProvider, repoId, checkoutId);
     setThreads((current) => [thread, ...current]);
     setSelectedThreadId(thread.id);
     setSendError(null);
@@ -661,21 +597,11 @@ export function LocalConversationSurface({
     }
     if (handledNewThread.current) return;
     handledNewThread.current = true;
-    // Re-enter an existing Work-bound Agent thread rather than manufacturing
-    // multiple local transcripts for the same ongoing work.
-    const existing = newThreadContext?.workId
-      ? findExistingWorkThread(threads, defaultProvider, newThreadContext.repoId, newThreadContext.workId,
-        projects.find((project) => project.repoId === newThreadContext.repoId)?.checkoutId)
-      : undefined;
-    if (existing) {
-      setSelectedThreadId(existing.id);
-    } else {
-      const repoId = newThreadContext?.repoId ?? defaultProjectRepoId;
-      const thread = createThread(defaultProvider, repoId, newThreadContext?.workId,
-        projects.find((project) => project.repoId === repoId)?.checkoutId);
-      setThreads((current) => [thread, ...current]);
-      setSelectedThreadId(thread.id);
-    }
+    const repoId = newThreadContext?.repoId ?? defaultProjectRepoId;
+    const thread = createThread(defaultProvider, repoId,
+      projects.find((project) => project.repoId === repoId)?.checkoutId);
+    setThreads((current) => [thread, ...current]);
+    setSelectedThreadId(thread.id);
     setSendError(null);
     onNewThreadHandled();
   }, [newThreadRequested, defaultProvider, defaultProjectRepoId, newThreadContext,
@@ -684,7 +610,7 @@ export function LocalConversationSurface({
   useEffect(() => {
     if (newThreadRequested || activeThreads.length > 0 || initialThreadProvisioned.current === defaultProvider) return;
     initialThreadProvisioned.current = defaultProvider;
-    const thread = createThread(defaultProvider, defaultProjectRepoId, undefined,
+    const thread = createThread(defaultProvider, defaultProjectRepoId,
       projects.find((project) => project.repoId === defaultProjectRepoId)?.checkoutId);
     setThreads((current) => current.some((entry) => !entry.archived)
       ? current : [thread, ...current]);
@@ -728,21 +654,6 @@ export function LocalConversationSurface({
     setDiffVisible(false);
     setCommitSuccess(undefined);
     setCommitError(undefined);
-  };
-
-  const changeWork = (nextWorkId?: string) => {
-    if (!selectedThread || !selectedRepoId || sending || committing || nextWorkId === selectedWorkId) return;
-    if (selectedThread.messages.length || selectedThread.providerSessionId) {
-      const next = createThread(selectedThreadProvider, selectedRepoId, nextWorkId, selectedThread.checkoutId);
-      setThreads((current) => [next, ...current]);
-      setSelectedThreadId(next.id);
-      setDrafts((current) => ({ ...current, [next.id]: current[selectedThread.id] ?? '' }));
-    } else updateSelected((thread) => ({
-      ...thread, workId: nextWorkId, providerSessionId: undefined,
-      updatedAt: new Date().toISOString(),
-    }));
-    setAllowEffects(false);
-    setSendError(null);
   };
 
   const archiveThread = () => {
@@ -1084,14 +995,12 @@ export function LocalConversationSurface({
                 }
               }}
             />
-            {(sendError || (!checkoutBindingReady && selectedRepoId)
-              || (selectedWorkId && !workBindingReady) || !projectBindingReady
+            {(sendError || (!checkoutBindingReady && selectedRepoId) || !projectBindingReady
               || (!providerReady && !providerLoading && !sending)) && (
               <div className="agent-composer-notice" role={sendError ? 'alert' : 'status'}>
                 {sendError
                   ?? (!projectBindingReady ? '项目已不在 Forge 注册目录中，请重新选择'
                     : !checkoutBindingReady && selectedRepoId ? 'Checkout 未核实，暂时禁止执行'
-                    : selectedWorkId && !workBindingReady ? workDetailError ?? '正在核对 Work 归属…'
                     : apiSelected ? '请配置可用的 API 模型与密钥'
                     : providerError ?? 'Codex CLI 尚未就绪')}
               </div>
@@ -1132,40 +1041,6 @@ export function LocalConversationSurface({
                       ]} />
                     {checkoutError && <small role="alert">检出目录读取失败：{checkoutError}</small>}
                     <small title={selectedThread.checkoutId}>切换 Checkout 将保留原会话历史，新的操作使用独立会话。</small>
-                  </div>
-                </details>}
-                {selectedRepoId && <details className="agent-context-menu" name="agent-chat-controls">
-                  <summary title="关联 Forge Work" aria-label="关联 Forge Work">
-                    <AgentControlIcon name="work" />
-                    <span>{selectedWorkId ? (workDetail?.objective.slice(0, 18) ?? '已关联 Work') : 'Work'}</span>
-                    <AgentControlIcon name="chevron" />
-                  </summary>
-                  <div className="agent-context-panel">
-                    <ContextOptionList label="会话关联的 Forge Work" value={selectedWorkId ?? ''}
-                      disabled={sending || committing} onSelect={(value) => changeWork(value || undefined)} options={[
-                        { value: '', label: '不关联 Work' },
-                        ...(selectedWorkId && !workIndex.some((work) => work.workId === selectedWorkId)
-                          ? [{ value: selectedWorkId, label: `${selectedWorkId} · 当前列表以外` }] : []),
-                        ...workIndex.map((work) => ({ value: work.workId,
-                          label: `${work.state === 'open' ? '进行中' : '历史'} · ${work.objective.slice(0, 72)}` })),
-                      ]} />
-                    {selectedWorkId && workBindingReady && workDetail && <div className="agent-context-work-links">
-                      <button type="button" onClick={() => onOpenWork?.(selectedRepoId, workDetail.workId)}>
-                        查看 Work
-                      </button>
-                      {workDetail.requirementId && <button type="button"
-                        onClick={() => onOpenRecord?.(selectedRepoId, 'requirements', workDetail.requirementId!)}>
-                        Requirement
-                      </button>}
-                      {workDetail.planId && <button type="button"
-                        onClick={() => onOpenRecord?.(selectedRepoId, 'plans', workDetail.planId!)}>
-                        Plan
-                      </button>}
-                    </div>}
-                    {workIndexError && <small role="status">Work 列表读取失败：{workIndexError}</small>}
-                    {selectedWorkId && !workBindingReady && <small role="alert">
-                      {workDetailError ?? '正在核对 Forge Work 与项目归属…'}
-                    </small>}
                   </div>
                 </details>}
               </div>

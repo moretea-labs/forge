@@ -9,7 +9,6 @@ import {
   evaluateEngineeringAdmission,
 } from '../../packages/kernel/work/domain/engineering-profile';
 import { getWorkContract, listWorkContracts } from '../../packages/kernel/work/api/index';
-import { continueGoalWorkloop, routeWorkStart } from '../../src/runtime/control-plane/facade/goal-workloop';
 import {
   buildDesignDecisionContractReceipt,
   buildEngineeringBlockerDispositionReceipt,
@@ -52,7 +51,7 @@ function readyClosure(sourceRevision = 'revision-a'): ContextClosureReceipt {
     sourceRevision,
     generatedAt: recordedAt,
     contextPackSchemaVersion: 11,
-    repository: { branch: 'kernel-v2/architecture', dirty: false, activeWorkIds: [] },
+    repository: { branch: 'kernel-v2/architecture', dirty: false },
     projectContractStatus: 'missing',
     guidance: { status: 'none', paths: [] },
     detected: { languages: ['typescript'], platforms: [] },
@@ -228,173 +227,6 @@ describe('Stage7C upstream engineering authority', () => {
     expect(unrelated.designState).toBe('ready');
     expect(unrelated.semanticScope).toEqual(base.semanticScope);
     expect(unrelated.blockerDispositions?.at(-1)?.action).toBe('linked_work');
-  });
-
-  test('same-root design observations remain durable guidance without blocking Work continuation', () => {
-    const root = temp('stage7c-design-supersession-');
-    const context = {
-      workStore: { controllerHome: root, repoId: 'repo-a' },
-      handoffStore: { root: join(root, 'handoff') },
-      repoId: 'repo-a',
-      checkoutId: 'checkout-a',
-      principalId: 'principal-a',
-      controllerInstanceId: 'controller-a',
-      sourceRevision: 'revision-a',
-    };
-    const baseEvidence = trustedEngineeringEvidence('revision-a');
-    const started = routeWorkStart(context, {
-      objective: 'Exercise same-root design re-entry.',
-      acceptanceCriteria: ['Design supersession is explicit.'],
-      request: { scopeClear: true, mutation: true, requiresRecovery: true, remoteWrite: true, risk: 'remote_write' },
-      verifiedEngineeringEvidence: baseEvidence,
-    });
-    expect(started.status).toBe('ok');
-    const workId = (started.data as { work?: { workId?: string } }).work?.workId;
-    expect(workId).toBeTruthy();
-
-    const blocked = continueGoalWorkloop(context, {
-      workId: workId!,
-      engineeringBlocker: {
-        blockerId: 'root-cause-1',
-        classification: 'same_root_cause',
-        rationale: 'The blocker invalidates the prior lifecycle assumption.',
-      },
-    });
-    expect(blocked.summary).not.toContain('ENGINEERING_DESIGN');
-    expect(getWorkContract(context.workStore, workId!)?.engineeringContext?.designState).toBe('revisit_required');
-
-    const bypass = continueGoalWorkloop(context, { workId: workId!, allowedPaths: ['src/**'] });
-    expect(bypass.summary).not.toContain('ENGINEERING_DESIGN');
-    expect(getWorkContract(context.workStore, workId!)?.scopeEvidence?.initialLikelyPaths).toContain('src/**');
-
-    const withoutSupersession = continueGoalWorkloop(context, { workId: workId!, verifiedEngineeringEvidence: trustedEngineeringEvidence('revision-a') });
-    expect(withoutSupersession.summary).not.toContain('ENGINEERING_DESIGN');
-
-    const prior = baseEvidence.designDecisionReceipt!;
-    const nextDesign = buildDesignDecisionContractReceipt({
-      sourceRevision: prior.sourceRevision,
-      contextClosureReceiptId: prior.contextClosureReceiptId,
-      productDodReceiptId: prior.productDodReceiptId,
-      semanticScopeKeys: prior.semanticScopeKeys,
-      mutationClass: prior.mutationClass,
-      decisions: { ...prior.decisions, lifecycle: 'Revised lifecycle closes the same-root blocker before mutation resumes.' },
-      complexityBudget: prior.complexityBudget,
-      supersedesReceiptId: prior.receiptId,
-      recordedAt: '2026-09-03T00:01:00.000Z',
-    });
-    const refreshed = trustedEngineeringEvidence('revision-a');
-    refreshed.designDecisionReceipt = nextDesign;
-    refreshed.independentCritiqueReceipt = buildIndependentCritiqueReceipt({
-      sourceRevision: 'revision-a',
-      contextClosureReceiptId: refreshed.contextClosureReceipt!.receiptId,
-      productDodReceiptId: refreshed.productDodReceipt!.receiptId,
-      designDecisionReceiptId: nextDesign.receiptId,
-      requirementDigest: 'b'.repeat(64),
-      projectContractDigest: 'a'.repeat(64),
-      decision: 'changes_required',
-      findings: [{ severity: 'medium', summary: 'The superseding design still needs revision.' }],
-      recordedAt: '2026-09-03T00:01:00.000Z',
-    });
-    const critiqueBlocked = continueGoalWorkloop(context, { workId: workId!, verifiedEngineeringEvidence: refreshed });
-    expect(critiqueBlocked.summary).not.toContain('ENGINEERING_DESIGN');
-
-    refreshed.independentCritiqueReceipt = buildIndependentCritiqueReceipt({
-      sourceRevision: 'revision-a',
-      contextClosureReceiptId: refreshed.contextClosureReceipt!.receiptId,
-      productDodReceiptId: refreshed.productDodReceipt!.receiptId,
-      designDecisionReceiptId: nextDesign.receiptId,
-      requirementDigest: 'b'.repeat(64),
-      projectContractDigest: 'a'.repeat(64),
-      decision: 'approved',
-      findings: [],
-      recordedAt: '2026-09-03T00:02:00.000Z',
-    });
-    const resumed = continueGoalWorkloop(context, { workId: workId!, verifiedEngineeringEvidence: refreshed });
-    expect(resumed.summary).not.toContain('ENGINEERING_DESIGN_SUPERSESSION_REQUIRED');
-    expect(getWorkContract(context.workStore, workId!)?.engineeringContext).toMatchObject({
-      designState: 'ready',
-      evidence: { designDecisionReceipt: { supersedesReceiptId: prior.receiptId } },
-    });
-  });
-
-
-  test('unrelated blockers require an explicitly declared owning Work instead of an automatically created child Work', () => {
-    const root = temp('stage7c-linked-work-');
-    const context = {
-      workStore: { controllerHome: root, repoId: 'repo-a' },
-      handoffStore: { root: join(root, 'handoff') },
-      repoId: 'repo-a',
-      checkoutId: 'checkout-a',
-      principalId: 'principal-a',
-      controllerInstanceId: 'controller-a',
-      sourceRevision: 'revision-a',
-    };
-    const started = routeWorkStart(context, {
-      objective: 'Own the primary semantic scope.',
-      acceptanceCriteria: ['Primary scope remains unchanged.'],
-      request: { scopeClear: true, mutation: true, requiresRecovery: true, remoteWrite: true, risk: 'remote_write' },
-      verifiedEngineeringEvidence: trustedEngineeringEvidence('revision-a'),
-    });
-    const workId = (started.data as { work?: { workId?: string } }).work?.workId!;
-    const before = getWorkContract(context.workStore, workId)!;
-    const semanticScope = before.engineeringContext?.semanticScope;
-    const workCountBefore = listWorkContracts({ ...context.workStore, state: 'all' }).length;
-
-    // Forge never decomposes work on the model's behalf: an unrelated blocker
-    // without an explicit owning Work is refused and creates no Work at all.
-    const undeclared = continueGoalWorkloop(context, {
-      workId,
-      engineeringBlocker: {
-        blockerId: 'external-disjoint-blocker',
-        classification: 'unrelated',
-        rationale: 'A separate dependency needs investigation outside this semantic scope.',
-        semanticScopeKeys: ['dependency.external'],
-      },
-    });
-    expect(undeclared.status).toBe('blocked');
-    expect(undeclared.summary).toContain('ENGINEERING_BLOCKER_LINKED_WORK_REQUIRED');
-    expect(listWorkContracts({ ...context.workStore, state: 'all' })).toHaveLength(workCountBefore);
-    expect(getWorkContract(context.workStore, workId)?.engineeringContext?.semanticScope).toEqual(semanticScope);
-
-    // The caller declares the owning Work explicitly and links it by exact id.
-    const owningWork = routeWorkStart(context, {
-      objective: 'Resolve the unrelated external dependency blocker.',
-      acceptanceCriteria: ['Bounded blocker evidence or a precise wake condition is recorded.'],
-      request: { scopeClear: true, mutation: false, requiresRecovery: true, risk: 'readonly' },
-      workKind: 'investigation',
-      relatedWorkId: workId,
-      workRelation: 'parallel',
-    });
-    const owningWorkId = (owningWork.data as { work?: { workId?: string } }).work?.workId;
-    expect(owningWork.status).toBe('ok');
-    expect(owningWorkId).toBeTruthy();
-
-    const declared = continueGoalWorkloop(context, {
-      workId,
-      engineeringBlocker: {
-        blockerId: 'external-disjoint-blocker',
-        classification: 'unrelated',
-        rationale: 'A separate dependency needs investigation outside this semantic scope.',
-        semanticScopeKeys: ['dependency.external'],
-        linkedWorkId: owningWorkId,
-      },
-    });
-    expect(declared.summary).not.toContain('ENGINEERING_BLOCKER');
-    expect(getWorkContract(context.workStore, workId)?.engineeringContext?.blockerDispositions?.at(-1)?.linkedWorkId).toBe(owningWorkId);
-    expect(getWorkContract(context.workStore, workId)?.engineeringContext?.semanticScope).toEqual(semanticScope);
-
-    // An unknown declared owner is refused rather than silently created.
-    const unknown = continueGoalWorkloop(context, {
-      workId,
-      engineeringBlocker: {
-        blockerId: 'external-disjoint-blocker-2',
-        classification: 'unrelated',
-        rationale: 'Another separate dependency.',
-        linkedWorkId: 'work-does-not-exist',
-      },
-    });
-    expect(unknown.status).toBe('blocked');
-    expect(unknown.summary).toContain('ENGINEERING_BLOCKER_LINKED_WORK_UNKNOWN');
   });
 
 });

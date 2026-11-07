@@ -8,20 +8,17 @@ import type { ResolvedExecutionIdentity } from '../../control-plane/execution/ex
 
 export interface ExecutionConcurrencyWaitProjection {
   schemaVersion: 1;
-  source: 'work_compatibility' | 'resource_lease' | 'scheduler_capacity';
+  source: 'resource_lease' | 'scheduler_capacity';
   blockerCode: string;
   disposition: 'wait' | 'invalid';
-  blockingWorkId?: string;
   /** Exact Process to join before deciding whether to submit a distinct action. */
   blockingProcessId?: string;
-  blockingOwnerRelation?: 'same_work_same_checkout' | 'other_work_or_checkout' | 'non_work_owner' | 'unknown';
+  blockingOwnerRelation?: 'process_owner' | 'non_process_owner' | 'unknown';
   semanticScopeKeys: string[];
   resourceKeys: string[];
   wakeTrigger:
-    | { kind: 'work_terminal'; workId: string }
     | { kind: 'resource_release'; resourceKeys: string[] }
-    | { kind: 'scheduler_capacity'; capacityKey: string }
-    | { kind: 'work_contract_change'; workId: string };
+    | { kind: 'scheduler_capacity'; capacityKey: string };
   observedAt: string;
 }
 

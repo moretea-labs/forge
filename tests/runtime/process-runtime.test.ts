@@ -86,10 +86,10 @@ import { sanitizeFileComponent } from '../../src/runtime/shared/json-files';
 import { callProcessTool, DEFAULT_PROCESS_WAIT_ATTACH_BUDGET_MS, processToolDefinitions } from '../../adapters/mcp/runtime-gateway/process-tools';
 import type { MultiRepositoryMcpToolContext } from '../../adapters/mcp/multi-repository';
 import { rebuildRepositoryProjection } from '../../src/runtime/projections/materialized-view';
-import { createWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { rotateRuntimeGeneration } from '../../src/runtime/control-plane/runtime-generation';
 import { iosTestEvidenceResourceId } from '../../src/runtime/control-plane/generated-cache-retention';
 import { getOwnedResource } from '../../packages/kernel/identity/api/index';
+import { seedHistoricalWorkContract } from '../helpers/historical-work-contract';
 
 const roots: string[] = [];
 const FORGE_ROOT = join(import.meta.dir, '../..');
@@ -199,7 +199,7 @@ function createFixtureWork(
   workId: string,
   workKind: 'repository_change' | 'local_effect' = 'repository_change',
 ): void {
-  createWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
+  seedHistoricalWorkContract({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId }, {
     workId,
     repoId: fx.repository.repoId,
     checkoutId: fx.repository.activeCheckoutId,
@@ -1330,7 +1330,7 @@ describe('run_check Process Runtime facade', () => {
       observedAt: new Date().toISOString(),
     });
     const workId = 'work-self-host-candidate-runner';
-    createWorkContract({ controllerHome: fx.controllerHome, repoId: repository.repoId }, {
+    seedHistoricalWorkContract({ controllerHome: fx.controllerHome, repoId: repository.repoId }, {
       workId,
       repoId: repository.repoId,
       checkoutId: repository.activeCheckoutId,
@@ -2884,7 +2884,6 @@ describe('Process Runtime real lease contention', () => {
           concurrencyWait: { source: 'resource_lease', blockingOwnerRelation: 'unknown' },
         });
         expect(blocked.concurrencyWait?.blockingProcessId).toBeUndefined();
-        expect(blocked.concurrencyWait?.blockingWorkId).toBeUndefined();
         expect(blocked.stdout).not.toContain('must-not-run');
       } finally {
         releaseExecutionLeases(fx.controllerHome, fx.repository.repoId, ownerJobId);

@@ -1,11 +1,5 @@
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
-import { getWorkContract } from '../../../packages/kernel/work/api/index';
-import {
-  recordControllerExperience,
-  recordControllerOutcome,
-  type ControllerExperienceDraft,
-  type ControllerOutcomeObservationDraft,
-} from '../../../src/runtime/context/assistant-work-context';
+
 import { parseControllerLearningSignalDrafts } from '../../../src/runtime/context/automatic-learning';
 import { persistDirectControllerLearning, recordDirectControllerLearningFeedback, type DirectControllerLearningFeedbackDraft } from '../../../src/runtime/context/direct-controller-learning';
 import { buildFacadeResult } from '../../../src/runtime/control-plane/facade';
@@ -15,9 +9,9 @@ import { result } from './result-adapter';
 type RepositoryIdentity = { repoId: string; activeCheckoutId: string };
 
 /**
- * rh_work learning dispatch is advisory. Generic learning needs no Work; Work-specific
- * outcome/experience writes are bound to exact Work provenance and canonical evidence.
- * ControllerSession/ControllerRound state never grants write authority here.
+ * rh_work learning dispatch is advisory. Project/Workspace learning needs no lifecycle;
+ * optional Requirement scope is selected by exact requirement_id and validated by the
+ * Requirement owner. Historical Work never grants learning write authority.
  */
 export function callRhWorkLearningOperation(
   ctx: MultiRepositoryMcpToolContext,
@@ -25,9 +19,12 @@ export function callRhWorkLearningOperation(
   operation: string,
   args: Record<string, unknown>,
 ): CallToolResult | undefined {
-  if (!['learning_record', 'learning_feedback', 'outcome_record', 'experience_record'].includes(operation)) return undefined;
-  const store = { controllerHome: ctx.controllerHome, repoId: repository.repoId };
+  if (!['learning_record', 'learning_feedback'].includes(operation)) return undefined;
   try {
+    if (typeof args.work_id === 'string' && args.work_id.trim()) throw new Error('COGNITION_WORK_SCOPE_RETIRED');
+    const requirementId = typeof args.requirement_id === 'string' && args.requirement_id.trim()
+      ? args.requirement_id.trim()
+      : undefined;
     if (operation === 'learning_feedback') {
       if (!Array.isArray(args.learning_feedback) || args.learning_feedback.length === 0 || args.learning_feedback.length > 32) {
         throw new Error('COGNITION_DIRECT_FEEDBACK_ITEMS_REQUIRED');
@@ -54,11 +51,11 @@ export function callRhWorkLearningOperation(
       const recorded = recordDirectControllerLearningFeedback({
         controllerHome: ctx.controllerHome,
         repository,
+        requirementId,
         feedback,
         principalId: ctx.principalId,
         sessionId: ctx.sessionId,
         controllerInstanceId: ctx.controllerInstanceId,
-        workId: typeof args.work_id === 'string' && args.work_id.trim() ? args.work_id.trim() : undefined,
       });
       return result(buildFacadeResult({
         summary: `Recorded ${recorded.observationIds.length} lifecycle-free Cognitive usage feedback observation(s).`,
@@ -77,12 +74,12 @@ export function callRhWorkLearningOperation(
       const learning = persistDirectControllerLearning({
         controllerHome: ctx.controllerHome,
         repository,
+        requirementId,
         signals,
         principalId: ctx.principalId,
         sessionId: ctx.sessionId,
         controllerInstanceId: ctx.controllerInstanceId,
         controllerType: ctx.controllerType,
-        workId: typeof args.work_id === 'string' && args.work_id.trim() ? args.work_id.trim() : undefined,
       });
       return result(buildFacadeResult({
         summary: `Recorded ${learning.storedMemoryIds.length} model-authored advisory learning item(s) without creating Work lifecycle.`,
@@ -97,44 +94,6 @@ export function callRhWorkLearningOperation(
       }) as unknown as Record<string, unknown>);
     }
 
-    const workId = String(args.work_id ?? '').trim();
-    if (!workId) throw new Error('LEARNING_LOOP_WORK_ID_REQUIRED');
-    const work = getWorkContract(store, workId);
-    if (!work) throw new Error(`WORK_NOT_FOUND: ${workId}`);
-    const identity = { workId };
-
-    if (operation === 'outcome_record') {
-      if (!args.outcome_observation || typeof args.outcome_observation !== 'object' || Array.isArray(args.outcome_observation)) {
-        throw new Error('OUTCOME_OBSERVATION_REQUIRED');
-      }
-      const outcome = recordControllerOutcome({
-        controllerHome: ctx.controllerHome,
-        repoId: repository.repoId,
-        identity,
-        draft: args.outcome_observation as ControllerOutcomeObservationDraft,
-      });
-      return result(buildFacadeResult({
-        summary: `OutcomeObservation ${outcome.id} recorded from canonical Work evidence.`,
-        data: { outcome },
-      }) as unknown as Record<string, unknown>);
-    }
-
-    if (!args.experience_draft || typeof args.experience_draft !== 'object' || Array.isArray(args.experience_draft)) {
-      throw new Error('EXPERIENCE_DRAFT_REQUIRED');
-    }
-    const experience = recordControllerExperience({
-      controllerHome: ctx.controllerHome,
-      repoId: repository.repoId,
-      identity,
-      draft: args.experience_draft as ControllerExperienceDraft,
-      qualityAdjustmentFingerprint: typeof args.quality_adjustment_fingerprint === 'string'
-        ? args.quality_adjustment_fingerprint.trim() || undefined
-        : undefined,
-    });
-    return result(buildFacadeResult({
-      summary: `Experience ${experience.id} recorded from canonical Work evidence for later advisory reuse.`,
-      data: { experience },
-    }) as unknown as Record<string, unknown>);
   } catch (error) {
     return result(buildFacadeResult({
       status: 'blocked',

@@ -1,9 +1,8 @@
 import { readForgeInstanceIdentity } from '../../../../packages/kernel/identity/api/index';
 import { resolveProjectForRepositoryPlacement } from '../workspace/workspace-store';
 import type { ScopeRef } from '../../../../packages/kernel/identity/api/index';
-import { recordExperience, recordOutcomeObservation, type ExperienceRecord, type ExperienceStorePort, type OutcomeObservation, type OutcomeObservationStorePort } from '../../../../packages/kernel/memory/api/index';
-import { getWorkContract, isTerminalSemanticWorkState, type WorkContract } from '../../../../packages/kernel/work/api/index';
-import { getControllerRoundRelay } from '../../../../packages/kernel/controller/api/index';
+import { type ExperienceRecord, type ExperienceStorePort, type OutcomeObservation, type OutcomeObservationStorePort } from '../../../../packages/kernel/memory/api/index';
+import { getWorkContract, type WorkContract } from '../../../../packages/kernel/work/api/index';
 import { readExecutionArtifact } from '../../evidence/artifact-store';
 import { readExecutionEvidence } from '../../evidence/evidence-store';
 import { assertControlPlaneMetadataPayload } from './metadata-payload-policy';
@@ -12,20 +11,9 @@ import { deleteControlPlaneRecordWithinTransaction, listControlPlaneRecords, lis
 
 export const EXPERIENCE_NAMESPACE = 'assistant_experience';
 export const OUTCOME_OBSERVATION_NAMESPACE = 'assistant_outcome_observation';
-export interface ExperienceWriteIdentity {
-  workId: string;
-  /** Legacy provenance only; never execution or write authority. */
-  controllerId?: string;
-  /** Legacy provenance only; never execution or write authority. */
-  authorityId?: string;
-}
-export interface ClosedRoundLearningAuthority { workId: string; sourceRoundId: string }
-
 interface ExperienceStoreOptions {
   controllerHome: string;
   repoId: string;
-  identity?: ExperienceWriteIdentity;
-  closedRoundAuthority?: ClosedRoundLearningAuthority;
   now?: () => string;
 }
 
@@ -72,10 +60,6 @@ export function cognitiveScopesForWork(work: WorkContract, controllerHome?: stri
     scopes.push({ schemaVersion: 1, kind: 'workspace', id: workspaceId });
   }
   return scopes;
-}
-
-function matchesExperienceScope(work: WorkContract, scope: ScopeRef, controllerHome: string): boolean {
-  return experienceScopesForWork(work, controllerHome).some(candidate => candidate.kind === scope.kind && candidate.id === scope.id);
 }
 
 function matchesCognitiveScope(work: WorkContract, scope: ScopeRef, controllerHome: string): boolean {
@@ -127,54 +111,8 @@ export function canonicalWorkflowEvidenceAvailable(input: { controllerHome: stri
   } catch { return false; }
 }
 
-export function workExperienceProvenance(work: Pick<WorkContract, 'workId' | 'semanticRevision'>): string {
-  const revision = Number(work.semanticRevision);
-  return `work:${work.workId}:r${Number.isSafeInteger(revision) && revision > 0 ? revision : 'legacy'}`;
-}
-
-export function assertMemoryWriteAuthority(input: { controllerHome: string; repoId: string; identity?: ExperienceWriteIdentity }, scope: ScopeRef, sourceWorkId: string, sourceRoundId: string): void {
-  const identity = input.identity;
-  if (!identity?.workId?.trim()) throw new Error('EXPERIENCE_WORK_IDENTITY_REQUIRED');
-  const current = getWorkContract(input, identity.workId);
-  const source = getWorkContract(input, sourceWorkId);
-  if (!current || isTerminalSemanticWorkState(current.semanticState) || !source
-    || current.workId !== source.workId
-    || !matchesExperienceScope(current, scope, input.controllerHome)
-    || !matchesExperienceScope(source, scope, input.controllerHome)) {
-    throw new Error('EXPERIENCE_WORK_SCOPE_MISMATCH');
-  }
-  if (sourceRoundId !== workExperienceProvenance(source)) {
-    throw new Error('EXPERIENCE_WORK_PROVENANCE_MISMATCH');
-  }
-}
-
-function assertClosedRoundLearningWriteAuthority(
-  input: Pick<ExperienceStoreOptions, 'controllerHome' | 'repoId' | 'closedRoundAuthority'>,
-  scope: ScopeRef,
-  sourceWorkId: string,
-  sourceRoundId: string,
-): void {
-  const authority = input.closedRoundAuthority;
-  if (!authority || authority.workId !== sourceWorkId || authority.sourceRoundId !== sourceRoundId) {
-    throw new Error('EXPERIENCE_CLOSED_ROUND_AUTHORITY_MISMATCH');
-  }
-  const work = getWorkContract(input, authority.workId);
-  if (!work || isTerminalSemanticWorkState(work.semanticState) || !matchesExperienceScope(work, scope, input.controllerHome)) {
-    throw new Error('EXPERIENCE_CLOSED_ROUND_WORK_SCOPE_MISMATCH');
-  }
-  const relay = getControllerRoundRelay(input, authority.workId);
-  if (!relay?.observationWindow?.some(observation => observation.roundRef === sourceRoundId)) {
-    throw new Error('EXPERIENCE_CLOSED_ROUND_NOT_OBSERVED');
-  }
-}
-
-function assertExperienceStoreWriteAuthority(input: ExperienceStoreOptions, scope: ScopeRef, sourceWorkId: string, sourceRoundId: string): void {
-  if (input.identity && input.closedRoundAuthority) throw new Error('EXPERIENCE_WRITE_AUTHORITY_AMBIGUOUS');
-  if (input.closedRoundAuthority) {
-    assertClosedRoundLearningWriteAuthority(input, scope, sourceWorkId, sourceRoundId);
-    return;
-  }
-  assertMemoryWriteAuthority(input, scope, sourceWorkId, sourceRoundId);
+function legacyExperienceWriteRetired(): never {
+  throw new Error('EXPERIENCE_LEGACY_WRITE_RETIRED: use cognition_settlement with Project/Requirement/Workspace scope');
 }
 
 /** One SQLite writer; nested domain operations share the same transaction. */
@@ -190,8 +128,8 @@ export function controllerExperienceStore(input: ExperienceStoreOptions): Experi
         try { return operation(); } finally { transaction = undefined; }
       });
     },
-    assertWriteAuthority(scope, sourceWorkId, sourceRoundId) {
-      assertExperienceStoreWriteAuthority(input, scope, sourceWorkId, sourceRoundId);
+    assertWriteAuthority() {
+      legacyExperienceWriteRetired();
     },
     evidenceAvailable(ref, scope, sourceWorkId) {
       return canonicalWorkflowEvidenceAvailable(input, ref, scope, sourceWorkId);
@@ -207,29 +145,11 @@ export function controllerExperienceStore(input: ExperienceStoreOptions): Experi
       return (transaction ? listControlPlaneRecordsWithinTransaction<ExperienceRecord>(transaction, query)
         : listControlPlaneRecords<ExperienceRecord>(input.controllerHome, query)).map(row => row.value);
     },
-    write(record, expectedRevision) {
-      if (!transaction) throw new Error('EXPERIENCE_TRANSACTION_REQUIRED');
-      assertControlPlaneMetadataPayload(record, 'experience', 16 * 1024);
-      const row = writeControlPlaneRecordWithinTransaction(transaction, { namespace: EXPERIENCE_NAMESPACE, scope: key(record.scope), key: record.id,
-        schemaVersion: 1, value: record, expectedRevision, action: record.retractedAt ? 'experience_retracted' : record.supersedesId ? 'experience_superseded' : 'experience_recorded' });
-      if (row.revision !== record.revision) throw new Error('EXPERIENCE_REVISION_CONFLICT');
+    write() {
+      legacyExperienceWriteRetired();
     },
     assertSafePayload: record => assertControlPlaneMetadataPayload(record, 'experience', 16 * 1024),
   };
-}
-
-export function recordClosedRoundExperience(input: {
-  controllerHome: string;
-  repoId: string;
-  authority: ClosedRoundLearningAuthority;
-  record: ExperienceRecord;
-  now?: string;
-}): ExperienceRecord {
-  return recordExperience(
-    controllerExperienceStore({ controllerHome: input.controllerHome, repoId: input.repoId, closedRoundAuthority: input.authority }),
-    input.record,
-    input.now,
-  );
 }
 
 export function controllerOutcomeObservationStore(input: ExperienceStoreOptions): OutcomeObservationStorePort {
@@ -243,7 +163,7 @@ export function controllerOutcomeObservationStore(input: ExperienceStoreOptions)
         try { return operation(); } finally { transaction = undefined; }
       });
     },
-    assertWriteAuthority(scope, sourceWorkId, sourceRoundId) { assertExperienceStoreWriteAuthority(input, scope, sourceWorkId, sourceRoundId); },
+    assertWriteAuthority() { legacyExperienceWriteRetired(); },
     evidenceAvailable(ref, scope, sourceWorkId) { return canonicalWorkflowEvidenceAvailable(input, ref, scope, sourceWorkId); },
     read(scope, id) {
       const row = transaction ? readControlPlaneRecordWithinTransaction<OutcomeObservation>(transaction, OUTCOME_OBSERVATION_NAMESPACE, key(scope), id)
@@ -255,28 +175,11 @@ export function controllerOutcomeObservationStore(input: ExperienceStoreOptions)
       return (transaction ? listControlPlaneRecordsWithinTransaction<OutcomeObservation>(transaction, query)
         : listControlPlaneRecords<OutcomeObservation>(input.controllerHome, query)).map(row => row.value);
     },
-    write(observation) {
-      if (!transaction) throw new Error('OUTCOME_TRANSACTION_REQUIRED');
-      assertControlPlaneMetadataPayload(observation, 'outcome_observation', 32 * 1024);
-      writeControlPlaneRecordWithinTransaction(transaction, { namespace: OUTCOME_OBSERVATION_NAMESPACE, scope: key(observation.scope), key: observation.id,
-        schemaVersion: 1, value: observation, expectedRevision: null, action: 'outcome_observation_recorded' });
+    write() {
+      legacyExperienceWriteRetired();
     },
     assertSafePayload: observation => assertControlPlaneMetadataPayload(observation, 'outcome_observation', 32 * 1024),
   };
-}
-
-export function recordClosedRoundOutcomeObservation(input: {
-  controllerHome: string;
-  repoId: string;
-  authority: ClosedRoundLearningAuthority;
-  observation: OutcomeObservation;
-  now?: string;
-}): OutcomeObservation {
-  return recordOutcomeObservation(
-    controllerOutcomeObservationStore({ controllerHome: input.controllerHome, repoId: input.repoId, closedRoundAuthority: input.authority }),
-    input.observation,
-    input.now,
-  );
 }
 
 /** Called by central maintenance, never by recall. A 30-day terminal grace preserves diagnosis. */

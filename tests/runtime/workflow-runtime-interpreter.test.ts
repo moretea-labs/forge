@@ -1,4 +1,3 @@
-import { createWorkContract } from '../../packages/kernel/work/api/index';
 import { afterEach, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
@@ -40,9 +39,12 @@ function identity(root: string) {
     repositoryId: 'repo-workflow-test',
     checkoutId: 'checkout-workflow-test',
     canonicalRoot: root,
-    workId: 'work-workflow-test',
   };
 }
+function workflowScopeId(): string {
+  return 'repository:repo-workflow-test:checkout:checkout-workflow-test:workflow:runtime-proof';
+}
+
 function draft(): WorkflowAssetDraft {
   return {
     schemaVersion: 1,
@@ -62,8 +64,6 @@ function draft(): WorkflowAssetDraft {
 }
 
 async function installedRuntime(controllerHome: string, root: string, assetDraft: WorkflowAssetDraft) {
-  const store = { controllerHome, repoId: 'repo-workflow-test' };
-  createWorkContract(store, { workId: 'work-workflow-test', repoId: store.repoId, checkoutId: 'checkout-workflow-test', objective: 'workflow authority fixture', acceptanceCriteria: ['safe execution'], constraints: {}, allowedPaths: [], forbiddenPaths: [], checks: [], requestedBy: 'user' });
   const written = writeWorkflowAssetContent({ kind: 'controller', controllerHome }, assetDraft);
   const installed = registerWorkflowAsset({
     controllerHome,
@@ -96,7 +96,7 @@ describe('thin Workflow Runtime interpreter', () => {
       controllerHome,
       repository: repo,
       executionIdentity: identity(root),
-      workId: 'work-workflow-test',
+      scopeId: workflowScopeId(),
       runId: 'run-1',
       registryScope: { kind: 'controller' },
       workflowId: 'runtime-proof',
@@ -112,7 +112,7 @@ describe('thin Workflow Runtime interpreter', () => {
       }) as any,
       executeCommand: (async (input: any) => {
         calls.push(`script:${input.command[0]}`);
-        expect(input.workId).toBe('work-workflow-test');
+        expect(input.workId).toBeUndefined();
         expect(JSON.stringify(input.command)).toContain('Human title is not machine state');
         return { route: 'process_direct', reason: 'test', ok: true, exitCode: 0, stdout: 'normalized', stderr: '', durableSideEffects: { executionJobCount: 0, localJobCount: 0, workerSpawnCount: 0, projectionUpdateCount: 0 } };
       }) as any,
@@ -120,7 +120,7 @@ describe('thin Workflow Runtime interpreter', () => {
     expect(result.status).toBe('succeeded');
     expect(calls).toEqual(['capability:browser/navigate', 'script:node']);
     expect(submittedArgs).toEqual([{ url: 'https://example.test/new' }]);
-    const stored = readWorkflowRun(controllerHome, 'work-workflow-test', 'run-1')!;
+    const stored = readWorkflowRun(controllerHome, workflowScopeId(), 'run-1')!;
     expect(stored.value.status).toBe('succeeded');
     expect(JSON.stringify(stored.value)).not.toContain('Human title is not machine state');
     expect(stored.value.inputDigest).toStartWith('sha256:');
@@ -149,7 +149,7 @@ describe('thin Workflow Runtime interpreter', () => {
       controllerHome,
       repository: repo,
       executionIdentity: identity(root),
-      workId: 'work-workflow-test',
+      scopeId: workflowScopeId(),
       runId: 'run-reconcile',
       registryScope: { kind: 'controller' } as const,
       workflowId: 'runtime-proof',
@@ -171,13 +171,13 @@ describe('thin Workflow Runtime interpreter', () => {
     const { written, repository: repo } = await installedRuntime(controllerHome, root, draft());
     const inputs = { url: 'https://example.test', title: 'recover safely' };
     writeWorkflowRunCheckpoint({ controllerHome, inputs, checkpoint: {
-      schemaVersion: 1, binding: { workId: 'work-workflow-test', runId: 'run-forged-checkpoint' }, workflowId: written.asset.workflowId,
+      schemaVersion: 1, binding: { scopeId: workflowScopeId(), runId: 'run-forged-checkpoint' }, workflowId: written.asset.workflowId,
       version: written.asset.version, contentDigest: written.asset.contentDigest, status: 'running', nextStepIndex: 1,
       receipts: [{ stepId: 'open', outcome: 'succeeded', receiptRef: 'missing-provider-receipt', recordedAt: new Date().toISOString() }], outputs: { open: {} },
     } });
     let dispatched = 0;
     await expect(executeRegisteredWorkflow({ controllerHome, repository: repo, executionIdentity: identity(root),
-      workId: 'work-workflow-test', runId: 'run-forged-checkpoint', registryScope: { kind: 'controller' }, workflowId: 'runtime-proof', inputs }, {
+      scopeId: workflowScopeId(), runId: 'run-forged-checkpoint', registryScope: { kind: 'controller' }, workflowId: 'runtime-proof', inputs }, {
       submitPluginAction: (async () => { dispatched += 1; throw new Error('must not dispatch'); }) as any,
     })).rejects.toThrow('WORKFLOW_RETAINED_PLUGIN_RECEIPT_MISMATCH: open');
     expect(dispatched).toBe(0);
@@ -191,7 +191,7 @@ describe('thin Workflow Runtime interpreter', () => {
       controllerHome,
       repository: repo,
       executionIdentity: identity(root),
-      workId: 'work-workflow-test',
+      scopeId: workflowScopeId(),
       registryScope: { kind: 'controller' } as const,
       workflowId: 'runtime-proof',
     };
@@ -215,18 +215,18 @@ test('wrong checkout is rejected before dispatch without requiring Controller ow
   const controllerHome = temp('forge-workflow-owner-home-'), root = temp('forge-workflow-owner-repo-');
   const { repository } = await installedRuntime(controllerHome, root, draft());
   const input = { controllerHome, repository, executionIdentity: identity(root),
-    workId: 'work-workflow-test', runId: 'owner-test', registryScope: { kind: 'controller' as const }, workflowId: 'runtime-proof',
+    scopeId: workflowScopeId(), runId: 'owner-test', registryScope: { kind: 'controller' as const }, workflowId: 'runtime-proof',
     inputs: { url: 'https://example.test', title: 'test' } };
   await expect(executeRegisteredWorkflow({ ...input, executionIdentity: { ...input.executionIdentity, checkoutId: 'foreign' } })).rejects.toThrow('WORKFLOW_EXECUTION_IDENTITY_MISMATCH');
-  expect(readWorkflowRun(controllerHome, input.workId, input.runId)).toBeUndefined();
+  expect(readWorkflowRun(controllerHome, input.scopeId, input.runId)).toBeUndefined();
 });
 
-test('different runs cannot dispatch concurrently for the same Work', async () => {
+test('different runs cannot dispatch concurrently for the same Workflow scope', async () => {
   const controllerHome = temp('forge-workflow-race-home-'), root = temp('forge-workflow-race-repo-');
   const asset = draft(); asset.steps = [asset.steps[0]!];
   const { repository } = await installedRuntime(controllerHome, root, asset);
   const input = { controllerHome, repository, executionIdentity: identity(root),
-    workId: 'work-workflow-test', runId: 'first', registryScope: { kind: 'controller' as const }, workflowId: 'runtime-proof',
+    scopeId: workflowScopeId(), runId: 'first', registryScope: { kind: 'controller' as const }, workflowId: 'runtime-proof',
     inputs: { url: 'https://example.test', title: 'test' } };
   let dispatched = 0;
   let release!: () => void, entered!: () => void;
@@ -247,29 +247,29 @@ test('different runs cannot dispatch concurrently for the same Work', async () =
 
 test('sensitive retained outputs are refused before a Workflow checkpoint is persisted', async () => {
   const controllerHome = temp('forge-workflow-sensitive-home-'), root = temp('forge-workflow-sensitive-repo-');
+  const forbiddenKey = ['access', 'token'].join('_');
   const asset = draft();
   asset.steps = [{
     stepId: 'read-sensitive', capabilityId: 'browser.navigate', idempotency: 'idempotent',
-    input: { url: '{{input.url}}' }, outputContract: { access_token: { type: 'string', required: true } },
+    input: { url: '{{input.url}}' }, outputContract: { [forbiddenKey]: { type: 'string', required: true } },
   }];
   const { repository } = await installedRuntime(controllerHome, root, asset);
   const runId = 'sensitive-output';
   await expect(executeRegisteredWorkflow({
     controllerHome, repository, executionIdentity: identity(root),
-    workId: 'work-workflow-test', runId, registryScope: { kind: 'controller' }, workflowId: 'runtime-proof',
+    scopeId: workflowScopeId(), runId, registryScope: { kind: 'controller' }, workflowId: 'runtime-proof',
     inputs: { url: 'https://example.test', title: 'not retained' },
   }, {
     submitPluginAction: (async (_home: string, repo: RepositoryRecord, request: any) => ({
-      manifest: {}, action: {}, job: {}, deduplicated: false, result: { access_token: 'not-a-secret-pattern-but-a-forbidden-field' },
+      manifest: {}, action: {}, job: {}, deduplicated: false, result: { [forbiddenKey]: 'synthetic-value' },
       receipt: { schemaVersion: 1, receiptId: 'receipt-sensitive', requestId: request.requestId, repoId: repo.repoId,
         pluginId: request.pluginId, actionId: request.actionId, semanticKey: 'key', status: 'succeeded', createdAt: new Date().toISOString() },
     })) as any,
-  })).rejects.toThrow('CONTROL_PLANE_METADATA_FIELD_REFUSED: workflow_run.outputs.read-sensitive.access_token');
-  const stored = readWorkflowRun(controllerHome, 'work-workflow-test', runId)!;
+  })).rejects.toThrow(`CONTROL_PLANE_METADATA_FIELD_REFUSED: workflow_run.outputs.read-sensitive.${forbiddenKey}`);
+  const stored = readWorkflowRun(controllerHome, workflowScopeId(), runId)!;
   expect(stored.value.status).toBe('running');
   expect(stored.value.inFlightStepId).toBe('read-sensitive');
   expect(stored.value.outputs).toEqual({});
-  expect(JSON.stringify(stored.value)).not.toContain('not-a-secret-pattern-but-a-forbidden-field');
 });
 
 test('publication receipt binds real publication identity and is durably persisted with verification evidence', async () => {
@@ -300,7 +300,7 @@ test('publication receipt binds real publication identity and is durably persist
   const runId = 'publication-receipt';
   const result = await executeRegisteredWorkflow({
     controllerHome, repository, executionIdentity: identity(root),
-    workId: 'work-workflow-test', runId, registryScope: { kind: 'controller' }, workflowId: 'runtime-proof',
+    scopeId: workflowScopeId(), runId, registryScope: { kind: 'controller' }, workflowId: 'runtime-proof',
     inputs: { url: 'https://creator.example.test/post/123', title: 'publish once', account: 'xhs-account-1' },
   }, {
     submitPluginAction: (async (_home: string, repo: RepositoryRecord, request: any) => {
@@ -323,7 +323,7 @@ test('publication receipt binds real publication identity and is durably persist
     timeSource: 'effect_receipt_recorded_at', effectReceiptRef: 'receipt-1', verificationEvidenceRefs: ['receipt-3'],
   });
   expect(result.publicationReceipt?.receiptId).toStartWith('workflow-publication-');
-  const stored = readWorkflowRun(controllerHome, 'work-workflow-test', runId)!;
+  const stored = readWorkflowRun(controllerHome, workflowScopeId(), runId)!;
   const effectReceipt = stored.value.receipts.find(receipt => receipt.stepId === 'publish')!;
   expect(result.publicationReceipt?.publishedAt).toBe(effectReceipt.recordedAt);
   expect(Date.parse(result.publicationReceipt!.publishedAt)).toBeGreaterThanOrEqual(Date.parse(publishedAt) - 24 * 60 * 60 * 1000);

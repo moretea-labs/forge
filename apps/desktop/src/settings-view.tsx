@@ -51,7 +51,7 @@ export function SettingsView({
       <p>先选择本地 Agent 的模型来源。项目、Checkout 与 Work 在会话中选择；MCP 独立提供外部客户端接入。</p></header>
     <section className="settings-group">
       <div className="settings-group-heading"><strong>本地 Agent</strong><span>新会话默认模型</span></div>
-      <p className="settings-hint">更改默认模型仅影响新建会话；已有会话继续使用创建时的 Codex 或 API，不会丢失历史记录和关联的 Forge Work。</p>
+      <p className="settings-hint">更改默认模型仅影响新建会话；已有会话继续使用创建时的 Codex 或 API，不会丢失历史记录和已有项目上下文。</p>
       <div className="settings-options" role="group" aria-label="本地助手提供方">
         <button type="button" aria-pressed={provider === 'codex'}
           className={provider === 'codex' ? 'settings-option selected' : 'settings-option'}

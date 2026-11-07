@@ -65,18 +65,13 @@ import {
   getConsolePlugin,
   listConsolePlugins,
   toConsoleOperationFeedback,
-  delegateConsoleWork,
   dismissConsoleHandoff,
   getConsoleHandoff,
-  getConsoleWork,
   listConsoleHandoffs,
-  listConsoleWork,
   mapRepositoryCard,
   repairConsole,
   resolveConsoleHandoff,
   setConsoleAccessPolicy,
-  startConsoleWork,
-  verifyConsoleWork,
 } from "./facade-api";
 import {
   FORGE_MCP_SCHEMA_VERSION,
@@ -1180,33 +1175,6 @@ export async function startLocalBridgeServer(
     }
   });
 
-  app.get("/api/console/work-portfolio", (_request, response) => {
-    try {
-      const repositories = loadRepositoryRegistry(controllerHome).repositories
-        .filter((repository) => repository.enabled && !repository.removedAt);
-      const items = repositories.flatMap((repository) =>
-        listConsoleWork({ controllerHome, repository }, "all").map((work) => ({
-          ...work,
-          repositoryName: repository.displayName,
-        })),
-      ).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
-      const stateOf = (item: (typeof items)[number]) => String(item.advanced?.state ?? "");
-      response.json({
-        schemaVersion: 1,
-        generatedAt: new Date().toISOString(),
-        summary: {
-          total: items.length,
-          open: items.filter((item) => stateOf(item) === "open").length,
-          needsAttention: items.filter((item) => ["blocked", "failed", "needs_attention"].includes(item.phase)).length,
-          completed: items.filter((item) => ["completed", "cancelled"].includes(stateOf(item))).length,
-        },
-        repositories: repositories.map((repository) => ({ repoId: repository.repoId, repositoryName: repository.displayName })),
-        items,
-      });
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
 
   app.get("/api/console/automations", (_request, response) => {
     try {
@@ -1423,96 +1391,6 @@ export async function startLocalBridgeServer(
     }
   });
 
-  app.get("/api/console/work", (request, response) => {
-    try {
-      const status = queryString(request.query.status) === "all" ? "all" : "active";
-      response.json({ items: listConsoleWork(consoleCtx(request), status) });
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-
-  app.get("/api/console/work/:workId", (request, response) => {
-    try {
-      const work = getConsoleWork(consoleCtx(request), String(request.params.workId ?? ""));
-      if (!work) {
-        response.status(404).json({ error: "work not found" });
-        return;
-      }
-      response.json({ work });
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-
-  app.post("/api/console/work/start", (request, response) => {
-    try {
-      const body = request.body && typeof request.body === "object" && !Array.isArray(request.body)
-        ? request.body as Record<string, unknown>
-        : {};
-      const result = startConsoleWork(consoleCtx(request), {
-        objective: queryString(body.objective) ?? "",
-        acceptanceCriteria: Array.isArray(body.acceptanceCriteria) ? body.acceptanceCriteria.map(String) : undefined,
-        allowedPaths: Array.isArray(body.allowedPaths) ? body.allowedPaths.map(String) : undefined,
-        forbiddenPaths: Array.isArray(body.forbiddenPaths) ? body.forbiddenPaths.map(String) : undefined,
-        scopeClear: body.scopeClear !== false,
-        requiresApproval: body.requiresApproval === true,
-        destructive: body.destructive === true,
-        accessMode: body.accessMode === 'full_access' ? 'full_access' : body.accessMode === 'request' ? 'request' : undefined,
-        approvalConfirmed: body.approvalConfirmed === true,
-        checkIds: Array.isArray(body.checkIds) ? body.checkIds.map(String) : undefined,
-      });
-      const feedback = toConsoleOperationFeedback(result);
-      response.status(result.status === "blocked" || result.status === "failed" ? 409 : 200).json({
-        ...result,
-        ...feedback,
-        feedback,
-      });
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-
-  const withFeedback = (result: Parameters<typeof toConsoleOperationFeedback>[0]) => {
-    const feedback = toConsoleOperationFeedback(result);
-    return { ...result, ...feedback, feedback };
-  };
-
-  app.post("/api/console/work/verify", async (request, response) => {
-    try {
-      const body = request.body && typeof request.body === "object" && !Array.isArray(request.body)
-        ? request.body as Record<string, unknown>
-        : {};
-      const result = await verifyConsoleWork(consoleCtx(request), {
-        workId: queryString(body.workId) ?? "",
-        checkId: queryString(body.checkId),
-        simulate: body.simulate === true,
-        checkFailed: body.checkFailed === true,
-        infrastructureFailed: body.infrastructureFailed === true,
-      });
-      response.status(result.status === "not_found" ? 404 : result.status === "failed" ? 409 : 200).json(withFeedback(result));
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
-
-  app.post("/api/console/work/delegate", (request, response) => {
-    try {
-      const body = request.body && typeof request.body === "object" && !Array.isArray(request.body)
-        ? request.body as Record<string, unknown>
-        : {};
-      const target = queryString(body.target);
-      const result = delegateConsoleWork(consoleCtx(request), {
-        workId: queryString(body.workId),
-        target: target === "grok" || target === "claude" || target === "codex" ? target : "codex",
-        objective: queryString(body.objective),
-        available: typeof body.available === "boolean" ? body.available : undefined,
-      });
-      response.status(result.status === "blocked" ? 409 : 200).json(withFeedback(result));
-    } catch (error) {
-      response.status(400).json({ error: errorMessage(error) });
-    }
-  });
 
   app.post("/api/console/repair", (request, response) => {
     try {
@@ -1527,7 +1405,6 @@ export async function startLocalBridgeServer(
         dryRun: body.dryRun === undefined ? true : body.dryRun === true,
         approvalConfirmed: body.approvalConfirmed === true,
         destructive: body.destructive === true,
-        workId: queryString(body.workId),
       });
       response.status(result.status === "approval_required" || result.status === "blocked" ? 409 : 200).json({
         ...result,

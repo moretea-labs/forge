@@ -1,6 +1,5 @@
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 import type { WorkflowJsonValue } from '../../../packages/workflow-runtime/api/index';
-import { getWorkContract } from '../../../packages/kernel/work/api/index';
 import { selectRepositoryCheckout } from '../../../src/cli/repositories/registry';
 import { executionIdentityForRepository } from '../../../src/runtime/control-plane/execution/execution-identity';
 import { readWorkflowRun } from '../../../src/runtime/control-plane/persistence/workflow-run-store';
@@ -14,9 +13,9 @@ import { result } from './result-adapter';
 type RepositorySelection = Parameters<typeof selectRepositoryCheckout>[0];
 
 /**
- * Dedicated rh_work Workflow domain dispatch. Workflow execution is fenced by
- * its typed Work/target/effect identities rather than Work-wide Controller ownership;
- * this adapter does not own Work lifecycle transitions or semantic completion.
+ * Dedicated Workflow dispatch retained under the compatibility rh_work namespace.
+ * WorkflowRun is owned by repository/checkout/workflow scope plus exact effect receipts;
+ * historical Work is never execution authority.
  */
 export async function callRhWorkWorkflowOperation(
   ctx: MultiRepositoryMcpToolContext,
@@ -25,17 +24,17 @@ export async function callRhWorkWorkflowOperation(
   args: Record<string, unknown>,
 ): Promise<CallToolResult | undefined> {
   if (operation !== 'workflow_execute' && operation !== 'workflow_reconcile') return undefined;
-  const store = { controllerHome: ctx.controllerHome, repoId: repository.repoId };
   try {
-    const workId = String(args.work_id ?? '').trim();
+    if (typeof args.work_id === 'string' && args.work_id.trim()) throw new Error('WORKFLOW_WORK_ID_RETIRED');
     const workflowId = String(args.workflow_id ?? '').trim();
     const runId = String(args.workflow_run_id ?? '').trim();
-    if (!workId || !workflowId || !runId) throw new Error('WORKFLOW_FACADE_IDENTITY_REQUIRED');
-    const work = getWorkContract(store, workId);
-    if (!work) throw new Error(`WORK_NOT_FOUND: ${workId}`);
+    if (!workflowId || !runId) throw new Error('WORKFLOW_FACADE_IDENTITY_REQUIRED');
 
-    const workRepository = selectRepositoryCheckout(repository, work.checkoutId);
-    const executionIdentity = executionIdentityForRepository(workRepository, { workId });
+    const selectedRepository = selectRepositoryCheckout(repository, typeof args.checkout_id === 'string' && args.checkout_id.trim()
+      ? args.checkout_id.trim()
+      : repository.activeCheckoutId);
+    const executionIdentity = executionIdentityForRepository(selectedRepository);
+    const scopeId = `repository:${selectedRepository.repoId}:checkout:${selectedRepository.activeCheckoutId}:workflow:${workflowId}`;
     if (Object.values(XIAOHONGSHU_WORKFLOW_IDS).includes(workflowId as never)) {
       ensureXiaohongshuWorkflowInstalled(ctx.controllerHome, workflowId);
     }
@@ -44,11 +43,13 @@ export async function callRhWorkWorkflowOperation(
     const workflowInputs = args.workflow_inputs && typeof args.workflow_inputs === 'object' && !Array.isArray(args.workflow_inputs)
       ? args.workflow_inputs as Record<string, WorkflowJsonValue>
       : {};
+    const requirementId = typeof args.requirement_id === 'string' && args.requirement_id.trim() ? args.requirement_id.trim() : undefined;
     const base = {
       controllerHome: ctx.controllerHome,
-      repository: workRepository,
+      repository: selectedRepository,
       executionIdentity,
-      workId,
+      scopeId,
+      requirementId,
       runId,
       registryScope,
       workflowId,
@@ -56,15 +57,15 @@ export async function callRhWorkWorkflowOperation(
       timeoutMs: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
     };
     const learningMetadata = (workflow: Awaited<ReturnType<typeof executeRegisteredWorkflow>>) => {
-      const persisted = readWorkflowRun(ctx.controllerHome, workId, runId)?.value;
+      const persisted = readWorkflowRun(ctx.controllerHome, scopeId, runId)?.value;
       let outcomeCollectionSchedule;
       let outcomeCollectionError: string | undefined;
       if (workflow.status === 'succeeded' && workflow.publicationReceipt) {
         try {
           outcomeCollectionSchedule = schedulePublicationOutcomeCollection({
             controllerHome: ctx.controllerHome,
-            repoId: repository.repoId,
-            workId,
+            repoId: selectedRepository.repoId,
+            runId,
             publication: workflow.publicationReceipt,
             workflowInputs,
           });

@@ -144,9 +144,8 @@ export interface AssistantPluginActionRequest {
   pluginId: string;
   actionId: string;
   requestId: string;
-  /** Optional existing Work that owns this typed action receipt. */
+  /** Legacy request fields are rejected for new actions; retained only to decode older callers. */
   workId?: string;
-  /** Durable repository authority for workId. May differ from provider scope for controller-scoped plugins. */
   workRepoId?: string;
   args: Record<string, unknown>;
   timeoutMs?: number;
@@ -170,7 +169,7 @@ export interface AssistantPluginActionExecutionInput {
   args: Record<string, unknown>;
   origin: ExecutionJobOrigin;
   jobId?: string;
-  /** Canonically validated Work attribution for this exact plugin invocation. */
+  /** Legacy execution provenance only; new Plugin execution never receives Work attribution. */
   workId?: string;
   workRepoId?: string;
   timeoutMs?: number;

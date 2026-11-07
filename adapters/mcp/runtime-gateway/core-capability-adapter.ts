@@ -2,21 +2,8 @@ import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contra
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 import { callRepositoryTool } from '../tool-mapping/repository-tools';
 import { commitSelectedPaths, selectedPathDiff, stageSelectedPaths } from '../../../src/cli/repositories/selected-path-actions';
-import { deliverWork } from '../../../src/runtime/control-plane/execution/work-delivery-service';
-import { discardManagedWork } from '../../../src/runtime/control-plane/execution/work-terminal-cleanup';
-import { validateWork } from '../../../src/runtime/control-plane/execution/work-operation-service';
-import { startOrResumeSession } from './execution-tools';
 import { result } from './result-adapter';
 import { selected } from './shared-adapter';
-import {
-  claimControllerRoundSession,
-  getControllerRoundRelay,
-  releaseObservedControllerSession,
-  submitControllerRoundDisposition,
-  type ControllerRoundDisposition,
-} from '../../../packages/kernel/controller/api/index';
-import { recoverControllerAuthority } from '../../../src/runtime/control-plane/execution/controller-authority-recovery';
-import { authenticatedFacadeControllerIdentity, runtimeIdentitySnapshot } from './controller-authority-adapter';
 import { readControllerConnectionSnapshot, repairControllerConnection } from '../../../src/runtime/control-plane/facade/controller-connection';
 import { cancelLocalConversation, readLocalConversationProviderStatus, sendLocalConversation } from '../../../src/runtime/control-plane/launcher/local-conversation-controller';
 
@@ -62,99 +49,6 @@ export async function callCoreCapabilityAdapter(
       }
       return result({ error: { code: 'CORE_CAPABILITY_ACTION_UNSUPPORTED', message: `Unsupported controller.local_conversation action: ${action || '<empty>'}` } }, true);
     }
-    if (capabilityId === 'controller.round_recovery') {
-      if (action !== 'recover_and_dispose') {
-        return result({ error: { code: 'CORE_CAPABILITY_ACTION_UNSUPPORTED', message: `Unsupported controller.round_recovery action: ${action || '<empty>'}` } }, true);
-      }
-      if (input.user_directed !== true) throw new Error('WORK_CONTROLLER_AUTHORITY_RECOVERY_USER_REQUIRED: user_directed=true is required.');
-      const workId = typeof input.work_id === 'string' ? input.work_id.trim() : '';
-      const recoveryReason = typeof input.recovery_reason === 'string' ? input.recovery_reason.trim() : '';
-      const disposition = typeof input.disposition === 'string' ? input.disposition.trim() as ControllerRoundDisposition : undefined;
-      const handoffId = typeof input.handoff_id === 'string' ? input.handoff_id.trim() : undefined;
-      if (!workId) throw new Error('WORK_CONTROLLER_AUTHORITY_RECOVERY_WORK_REQUIRED');
-      if (!recoveryReason) throw new Error('WORK_CONTROLLER_AUTHORITY_RECOVERY_REASON_REQUIRED');
-      if (!disposition || !['continue_immediately', 'wait', 'wait_for_user', 'goal_complete'].includes(disposition)) {
-        throw new Error('CONTROLLER_RELAY_DISPOSITION_INVALID');
-      }
-      if (disposition === 'wait_for_user' && !handoffId) throw new Error('CONTROLLER_RELAY_WAIT_FOR_USER_HANDOFF_REQUIRED');
-
-      const repository = selected(ctx, args);
-      const store = { controllerHome: ctx.controllerHome, repoId: repository.repoId };
-      const before = getControllerRoundRelay(store, workId);
-      if (!before) throw new Error(`WORK_CONTROLLER_AUTHORITY_RECOVERY_RELAY_REQUIRED: ${workId}`);
-      const identity = authenticatedFacadeControllerIdentity(ctx, {});
-      const recovered = recoverControllerAuthority({
-        controllerHome: ctx.controllerHome,
-        repoId: repository.repoId,
-        repositoryActiveCheckoutId: repository.activeCheckoutId,
-        workId,
-        requestedBy: 'user',
-        recoveryReason,
-        identity,
-        runtime: runtimeIdentitySnapshot(ctx),
-        leaseMs: 60_000,
-      });
-      if (!('relay' in recovered)) throw new Error(`WORK_CONTROLLER_AUTHORITY_RECOVERY_RELAY_REQUIRED: ${workId}`);
-      if (before.providerDispatchEffectId && recovered.relay.providerDispatchEffectId !== before.providerDispatchEffectId) {
-        throw new Error(`WORK_CONTROLLER_AUTHORITY_RECOVERY_EFFECT_CHANGED: ${workId}`);
-      }
-
-      const claimed = claimControllerRoundSession(store, {
-        workId,
-        relayWorkId: workId,
-        sessionClaim: {
-          workId,
-          controllerId: identity.controllerId,
-          controllerType: identity.controllerType,
-          sessionId: identity.sessionId,
-          principalId: identity.principalId,
-          controllerInstanceId: identity.controllerInstanceId,
-          leaseMs: 60_000,
-        },
-      });
-      if (!claimed.relay || claimed.relay.status !== 'claimed') throw new Error(`CONTROLLER_RELAY_ROUND_NOT_CLAIMED: ${claimed.relay?.status ?? 'missing'}`);
-
-      let disposed;
-      let releaseResult;
-      try {
-        disposed = submitControllerRoundDisposition(store, {
-          workId,
-          identity: {
-            controllerId: claimed.session.controllerId,
-            controllerType: claimed.session.controllerType,
-            principalId: claimed.session.principalId?.trim() || claimed.session.controllerId,
-            controllerInstanceId: claimed.session.controllerInstanceId?.trim() || '',
-            sessionId: claimed.session.sessionId,
-          },
-          disposition,
-          relayScopeId: recovered.relay.relayScopeId,
-          requirementId: recovered.relay.requirementId,
-          ...(handoffId ? { handoffId } : {}),
-          reason: recoveryReason,
-        });
-      } finally {
-        releaseResult = releaseObservedControllerSession(store, {
-          workId,
-          actor: `controller-round-recovery:${identity.controllerId}`,
-          owner: claimed.session,
-        });
-      }
-      if (!releaseResult?.allowed) throw new Error(`WORK_CONTROLLER_RELEASE_FENCED: ${workId}:${releaseResult?.reason ?? 'unknown'}`);
-      const after = getControllerRoundRelay(store, workId);
-      return result({
-        repoId: repository.repoId,
-        workId,
-        authorityRecovered: true,
-        claimed: true,
-        disposition,
-        dispositionStatus: disposed.status,
-        relayScopeId: disposed.relayScopeId,
-        ownerReleased: true,
-        providerDispatchEffectId: after?.providerDispatchEffectId,
-        providerDispatchEffectPreserved: before.providerDispatchEffectId === after?.providerDispatchEffectId,
-        providerRedispatched: false,
-      });
-    }
     if (capabilityId === 'repository.direct_edit') {
       const toolName = action === 'plan'
         ? 'repository_safe_patch_plan'
@@ -164,37 +58,26 @@ export async function callCoreCapabilityAdapter(
       if (!toolName) {
         return result({ error: { code: 'CORE_CAPABILITY_ACTION_UNSUPPORTED', message: `Unsupported repository.direct_edit action: ${action || '<empty>'}` } }, true);
       }
-      const workId = action === 'apply' && typeof input.work_id === 'string' ? input.work_id.trim() : '';
-      const callerSession = workId && (!ctx.sessionId || !ctx.principalId || !ctx.controllerInstanceId)
-        ? startOrResumeSession(ctx)
-        : undefined;
       const forwarded = await callRepositoryTool(ctx.controllerHome, toolName, {
         ...input,
         ...(typeof args.repo_id === 'string' && args.repo_id.trim() ? { repo_id: args.repo_id.trim() } : {}),
         ...(typeof args.checkout_id === 'string' && args.checkout_id.trim() ? { checkout_id: args.checkout_id.trim() } : {}),
       }, {
-        sessionId: callerSession?.sessionId ?? ctx.sessionId,
-        principalId: callerSession?.principalId ?? ctx.principalId,
-        controllerInstanceId: callerSession?.controllerInstanceId ?? ctx.controllerInstanceId,
+        sessionId: ctx.sessionId,
+        principalId: ctx.principalId,
+        controllerInstanceId: ctx.controllerInstanceId,
       });
       return forwarded ?? result({
         error: { code: 'CORE_CAPABILITY_ROUTE_UNAVAILABLE', message: 'Repository direct-edit capability route is unavailable.' },
       }, true);
     }
     if (capabilityId === 'repository.validation') {
-      if (action !== 'validate_work') {
-        return result({ error: { code: 'CORE_CAPABILITY_ACTION_UNSUPPORTED', message: `Unsupported repository.validation action: ${action || '<empty>'}` } }, true);
-      }
-      const repository = selected(ctx, args);
-      const sessionId = typeof input.session_id === 'string' && input.session_id.trim()
-        ? input.session_id.trim()
-        : startOrResumeSession(ctx).sessionId;
-      return result(await validateWork(ctx, {
-        ...input,
-        session_id: sessionId,
-        repo_id: repository.repoId,
-        request_id: typeof args.request_id === 'string' ? args.request_id.trim() : '',
-      }));
+      return result({
+        error: {
+          code: 'WORK_LIFECYCLE_RETIRED',
+          message: 'repository.validation.validate_work is retired; run registered checks directly against repo_id/checkout_id.',
+        },
+      }, true);
     }
     if (capabilityId !== 'repository.git') {
       return result({ error: { code: 'CORE_CAPABILITY_UNSUPPORTED', message: `Unsupported core capability: ${capabilityId || '<empty>'}` } }, true);
@@ -243,33 +126,14 @@ export async function callCoreCapabilityAdapter(
           error: { code: 'CORE_CAPABILITY_ROUTE_UNAVAILABLE', message: 'Repository remote-branch delete route is unavailable.' },
         }, true);
       }
-      case 'deliver_work': {
-        const sessionId = typeof input.session_id === 'string' && input.session_id.trim()
-          ? input.session_id.trim()
-          : startOrResumeSession(ctx).sessionId;
-        const delivered = await deliverWork(ctx, {
-          ...input,
-          session_id: sessionId,
-          repo_id: repository.repoId,
-        });
-        return result(delivered);
-      }
-      case 'discard_work': {
-        // Explicit convergence exit for retained dirty managed worktrees: the
-        // dirty state is archived (tracked diff + untracked copies + branch
-        // bundle) before the worktree/branch are removed. Never heuristic.
-        const workId = typeof input.work_id === 'string' ? input.work_id.trim() : '';
-        if (!workId) {
-          return result({ error: { code: 'WORK_ID_REQUIRED', message: 'discard_work requires an explicit work_id.' } }, true);
-        }
-        const discarded = await discardManagedWork(ctx.controllerHome, repository.repoId, workId, {
-          reason: typeof input.reason === 'string' ? input.reason.trim() : undefined,
-        });
+      case 'deliver_work':
+      case 'discard_work':
         return result({
-          repoId: repository.repoId,
-          ...discarded,
-        }, discarded.status !== 'discarded' && discarded.status !== 'already_cleaned');
-      }
+          error: {
+            code: 'WORK_LIFECYCLE_RETIRED',
+            message: `repository.git.${action} is retired; use ordinary Git/checkout capabilities. Historical Work cleanup is maintenance-owned.`,
+          },
+        }, true);
       default:
         return result({ error: { code: 'CORE_CAPABILITY_ACTION_UNSUPPORTED', message: `Unsupported repository.git action: ${action || '<empty>'}` } }, true);
     }

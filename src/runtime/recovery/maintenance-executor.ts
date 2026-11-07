@@ -11,7 +11,6 @@ import { rebuildRepositoryProjection } from '../projections/materialized-view';
 import { getWorkContract, readWorkContractStore, semanticWorkState } from '../../../packages/kernel/work/api/index';
 import { assertOwnedResourceCleanupTarget, listOwnedResources, markOwnedResourceCleaned, type OwnedResource } from '../../../packages/kernel/identity/api/index';
 import { listPlanContracts } from '../control-plane/facade/plan-contract-store';
-import { updateRepositoryWorkPlacement } from '../control-plane/facade/repository-work-admission';
 import { readRequirement } from '../control-plane/persistence/requirement-store';
 import { listControlPlaneRecords, type ControlPlaneRecord } from '../control-plane/persistence/sqlite-store';
 import type { WorkContract } from '../control-plane/facade/types';
@@ -31,7 +30,6 @@ import {
 import { gcTerminalProcesses, type ProcessGcResult } from '../execution/process-runtime/gc';
 import { cleanupStaleWorkVerificationSnapshots, type WorkVerificationSnapshotRetentionReport } from '../control-plane/execution/work-verification-snapshot';
 import { cleanupGeneratedRepositoryCheckoutCaches, cleanupReleasableIosTestEvidence, inspectRepositoryIosTestEvidence, releasableIosTestEvidenceWorkIds, type IosTestEvidenceInventoryReport, type IosTestEvidenceRetentionReport, type RepositoryGeneratedCacheRetentionReport } from '../control-plane/generated-cache-retention';
-import { cleanupWorkPreservationArtifacts, type CleanupArtifactRetentionReport } from '../control-plane/cleanup-artifact-retention';
 import {
   cleanupRuntimeQuarantine,
   quarantineRuntimePath,
@@ -158,7 +156,6 @@ export interface RuntimeMaintenanceApplyResult extends Omit<RuntimeMaintenanceSt
   generatedCacheGc?: RepositoryGeneratedCacheRetentionReport;
   iosTestEvidenceGc?: IosTestEvidenceRetentionReport;
   iosTestEvidenceInventory?: IosTestEvidenceInventoryReport;
-  cleanupArtifactGc?: CleanupArtifactRetentionReport;
   projection?: unknown;
 }
 
@@ -1139,7 +1136,6 @@ function detachLegacyRemoteEffectPlacement(
   if (!inspection || !inspection.safe || !inspection.path || !inspection.checkoutId || !inspection.canonicalCheckoutId || !inspection.branch || !inspection.canonicalBranch) {
     return { ...candidate, safe: false, reason: inspection?.detail ?? 'Legacy remote_effect placement is no longer eligible for resource detachment.', sourceState: 'source_state_unknown', disposition: 'source_preservation_required', applied: false, result: 'legacy_remote_effect_placement_preserved' };
   }
-  const store = { controllerHome, repoId: repository.repoId };
   try {
     assertOwnedResourceCleanupTarget(controllerHome, {
       resourceId: managedWorkspaceOwnedResourceId(repository.repoId, inspection.checkoutId),
@@ -1160,16 +1156,8 @@ function detachLegacyRemoteEffectPlacement(
   if (!current.checkoutId || !current.worktreeRef || current.checkoutId !== inspection.checkoutId || current.worktreeRef !== inspection.path) {
     throw new Error(`LEGACY_REMOTE_EFFECT_PLACEMENT_SNAPSHOT_INVALID: ${current.workId}`);
   }
-  const previous = { checkoutId: current.checkoutId, worktreeRef: current.worktreeRef, constraints: current.constraints, worktreePolicy: current.worktreePolicy };
-  updateRepositoryWorkPlacement(store, current.workId, {
-    kind: 'detach_legacy_remote_effect',
-    expectedCheckoutId: current.checkoutId,
-    expectedWorktreeRef: current.worktreeRef,
-    checkoutId: inspection.canonicalCheckoutId,
-    worktreeRef: undefined,
-    constraints: { ...current.constraints, workspaceMode: 'current' },
-    worktreePolicy: { required: false, reason: 'Legacy pure remote_effect repository placement detached by explicit runtime maintenance; external-effect execution has no repository source authority.' },
-  });
+  // Historical Work placement is immutable compatibility data. Physical cleanup is
+  // authorized only by the exact OwnedResource + Git checkout/branch identities below.
   try {
     setRepositoryCheckoutLifecycle({ controllerHome, repoId: repository.repoId, checkoutId: inspection.checkoutId, lifecycle: 'removed', reason: `Legacy remote_effect placement detached for ${current.workId}.` });
     const removed = runProcess('git', ['worktree', 'remove', '--force', inspection.path], { cwd: repository.canonicalRoot, timeoutMs: 60_000, maxOutputBytes: 500_000 });
@@ -1197,17 +1185,6 @@ function detachLegacyRemoteEffectPlacement(
   } catch (error) {
     if (existsSync(inspection.path)) {
       try { setRepositoryCheckoutLifecycle({ controllerHome, repoId: repository.repoId, checkoutId: inspection.checkoutId, lifecycle: 'active', reason: `Rollback failed legacy remote_effect detach for ${current.workId}.` }); } catch { /* preserve primary failure */ }
-      try {
-        updateRepositoryWorkPlacement(store, current.workId, {
-          kind: 'restore_legacy_remote_effect',
-          expectedCheckoutId: inspection.canonicalCheckoutId,
-          expectedWorktreeRef: undefined,
-          checkoutId: previous.checkoutId,
-          worktreeRef: previous.worktreeRef,
-          worktreePolicy: previous.worktreePolicy,
-          constraints: previous.constraints,
-        });
-      } catch { /* preserve primary failure */ }
     }
     throw error;
   }
@@ -1769,7 +1746,6 @@ export function applyRuntimeMaintenance(
   let generatedCacheGc: RepositoryGeneratedCacheRetentionReport | undefined;
   let iosTestEvidenceGc: IosTestEvidenceRetentionReport | undefined;
   let iosTestEvidenceInventory: IosTestEvidenceInventoryReport | undefined;
-  let cleanupArtifactGc: CleanupArtifactRetentionReport | undefined;
   if (options.actionId === 'full_maintenance_pass') {
     let cacheRepository: Parameters<typeof cleanupGeneratedRepositoryCheckoutCaches>[0] = {
       canonicalRoot: repository.canonicalRoot,
@@ -1809,11 +1785,7 @@ export function applyRuntimeMaintenance(
       maxEntries: Math.max(256, (options.maxCandidates ?? 50) * 20),
       owner: { controllerHome, repoId: repository.repoId },
     });
-    cleanupArtifactGc = cleanupWorkPreservationArtifacts(controllerHome, {
-      maxEntries: Math.max(1_000, (options.maxCandidates ?? 50) * 20),
-      maxRemovals: Math.max(1, options.maxCandidates ?? 50),
-      repositoryIds: [repository.repoId],
-    });
+    // Legacy Work preservation artifacts are read-only after Work retirement.
   }
 
   if (options.actionId === 'runtime_storage_finalize_relocation' || options.actionId === 'full_maintenance_pass' || applied.some((candidate) => candidate.applied) || runtimeStorageRepairApply) {
@@ -1837,7 +1809,6 @@ export function applyRuntimeMaintenance(
     generatedCacheGc,
     iosTestEvidenceGc,
     iosTestEvidenceInventory,
-    cleanupArtifactGc,
     projection,
   };
 }

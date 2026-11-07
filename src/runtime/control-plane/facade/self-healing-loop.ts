@@ -33,7 +33,6 @@ export interface SelfHealingInput {
   /** Defaults to true for diagnose and repair. */
   dryRun?: boolean;
   approvalConfirmed?: boolean;
-  workId?: string;
   /** Observed/simulated issues for deterministic testing and facade injection. */
   issues?: SelfHealingIssue[];
   /** Bounded maintenance status snapshot from buildRuntimeMaintenanceStatus (optional). */
@@ -236,12 +235,11 @@ function repairPlanFor(issue: SelfHealingIssue): {
   }
 }
 
-function verificationSuggestion(workId?: string): SuggestedNextAction {
+function verificationSuggestion(): SuggestedNextAction {
   return {
     label: 'Verify controller status after repair',
     tool: 'rh_status',
     operation: 'get',
-    payload: workId ? { work_id: workId } : undefined,
     risk: 'readonly',
     confidence: 'high',
     reason: 'Repair must be followed by a real verification action.',
@@ -265,7 +263,7 @@ export function runSelfHealingLoop(ctx: SelfHealingContext, input: SelfHealingIn
             label: 'Preview repair (dry-run)',
             tool: 'rh_work' as const,
             operation: 'repair',
-            payload: { repair_operation: 'repair', dry_run: true, work_id: input.workId },
+            payload: { repair_operation: 'repair', dry_run: true },
             risk: 'readonly' as const,
             confidence: 'high' as const,
           }]
@@ -276,7 +274,7 @@ export function runSelfHealingLoop(ctx: SelfHealingContext, input: SelfHealingIn
             risk: 'readonly' as const,
             confidence: 'medium' as const,
           }]),
-      verificationSuggestion(input.workId),
+      verificationSuggestion(),
     ]).actions;
 
     return buildFacadeResult({
@@ -332,7 +330,7 @@ export function runSelfHealingLoop(ctx: SelfHealingContext, input: SelfHealingIn
         isAcceptanceFailure: false,
       },
       suggestedNextActions: validateSuggestedNextActions([
-        verificationSuggestion(input.workId),
+        verificationSuggestion(),
       ]).actions,
     });
   }
@@ -342,7 +340,7 @@ export function runSelfHealingLoop(ctx: SelfHealingContext, input: SelfHealingIn
     // concrete user authorization or product decision has actually been found.
     return buildFacadeResult({
       status: 'blocked',
-      summary: 'Self-healing could not safely complete automatically; keep the exact Work blocked for bounded internal recovery rather than escalating infrastructure failure to the user.',
+      summary: 'Self-healing could not safely complete automatically; keep the maintenance action blocked for bounded internal recovery rather than escalating infrastructure failure to the user.',
       data: {
         operation: 'handoff',
         internalRecoveryRequired: true,
@@ -353,7 +351,7 @@ export function runSelfHealingLoop(ctx: SelfHealingContext, input: SelfHealingIn
           label: 'Diagnose again (dry-run)',
           tool: 'rh_work',
           operation: 'repair',
-          payload: { repair_operation: 'diagnose', dry_run: true, work_id: input.workId },
+          payload: { repair_operation: 'diagnose', dry_run: true },
           risk: 'workspace_write',
           confidence: 'low',
         },
@@ -414,12 +412,11 @@ export function runSelfHealingLoop(ctx: SelfHealingContext, input: SelfHealingIn
             repair_operation: 'repair',
             dry_run: false,
             approval_confirmed: needsStrongApproval,
-            work_id: input.workId,
           },
           risk: needsStrongApproval ? 'destructive' : 'workspace_write',
           confidence: 'medium',
         },
-        verificationSuggestion(input.workId),
+        verificationSuggestion(),
       ]).actions,
       warnings: policy.warnings,
     });
@@ -429,7 +426,6 @@ export function runSelfHealingLoop(ctx: SelfHealingContext, input: SelfHealingIn
     const handoff = createHandoffItem(ctx.handoffStore, {
       id: `hnd-heal-approval-${randomUUID().slice(0, 8)}`,
       repoId: ctx.repoId,
-      workId: input.workId,
       title: 'Repair requires approval',
       severity: 'blocked',
       creationReason: input.destructive
@@ -439,8 +435,7 @@ export function runSelfHealingLoop(ctx: SelfHealingContext, input: SelfHealingIn
       summary: 'Destructive or remote repair requires explicit approval.',
       currentState: {
         repoId: ctx.repoId,
-        workId: input.workId,
-        statusSummary: 'repair blocked pending approval',
+          statusSummary: 'repair blocked pending approval',
       },
       attemptedActions: ['self_healing_repair'],
       evidenceRefs: [],
@@ -505,15 +500,7 @@ export function runSelfHealingLoop(ctx: SelfHealingContext, input: SelfHealingIn
       classification: 'infrastructure_recovery',
     },
     suggestedNextActions: validateSuggestedNextActions([
-      verificationSuggestion(input.workId),
-      ...(input.workId ? [{
-        label: 'Read current Work semantic state',
-        tool: 'rh_work' as const,
-        operation: 'get',
-        payload: { work_id: input.workId },
-        risk: 'readonly' as const,
-        confidence: 'medium' as const,
-      }] : []),
+      verificationSuggestion(),
     ]).actions,
     rawAvailable: false,
   });

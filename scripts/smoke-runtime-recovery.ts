@@ -4,18 +4,6 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { ensureControllerHome } from '../src/effects/controller-home';
 import { registerRepository } from '../src/cli/repositories/registry';
-import {
-  acceptSubmittedWorkContract,
-  getWorkContract,
-  getWorkContractByRequestId,
-  recordWorkCompletionReceipt,
-} from '../src/runtime/control-plane/facade/work-contract-store';
-import { reviseWorkSemanticContext } from '../packages/kernel/work/api/index';
-import {
-  claimControllerSession,
-  getControllerSession,
-  releaseControllerSession,
-} from '../packages/kernel/controller/api/index';
 import { listExecutionJobs } from '../src/runtime/execution/jobs/store';
 import {
   __resetLiveMonitorsForTests,
@@ -51,42 +39,17 @@ try {
   git(['commit', '-m', 'init']);
 
   ensureControllerHome(controllerHome);
-  const repository = registerRepository({ path: repoRoot, controllerHome, repoIdOverride: 'repo-runtime-recovery-smoke' });
-  const operation = {
-    name: 'repository_command',
-    semanticKey: 'runtime-recovery:process',
-    argumentHash: 'runtime-recovery:process',
-    mode: 'mutating' as const,
-    idempotent: true,
-    replayable: true,
-    resourceClaims: [],
-  };
-  const request = {
-    requestId: 'runtime-recovery-work-1',
-    repoId: repository.repoId,
-    semanticKey: operation.semanticKey,
-    operation,
-    objective: 'Verify WorkContract and Process Runtime recovery without ExecutionJobs',
-    workKind: 'completed_no_change' as const,
-    checks: [],
-  };
-  const accepted = acceptSubmittedWorkContract(controllerHome, request);
-  const duplicate = acceptSubmittedWorkContract(controllerHome, request);
-  assert(duplicate.deduplicated, 'WorkContract requestId was not idempotent');
-  assert(duplicate.contract.workId === accepted.contract.workId, 'duplicate request returned a different WorkContract');
-  assert(
-    getWorkContractByRequestId(controllerHome, request.requestId, repository.repoId)?.workId === accepted.contract.workId,
-    'request index did not resolve the WorkContract',
-  );
-  assert(listExecutionJobs(controllerHome, repository.repoId, 20).length === 0, 'Work acceptance created an ExecutionJob');
-
-  claimControllerSession({ controllerHome, repoId: repository.repoId }, {
-    workId: accepted.contract.workId,
-    controllerId: 'controller-recovery-a',
-    controllerType: 'codex',
-    sessionId: 'session-recovery-a',
-    leaseMs: 60_000,
+  const repository = registerRepository({
+    path: repoRoot,
+    controllerHome,
+    repoIdOverride: 'repo-runtime-recovery-smoke',
   });
+
+  assert(
+    listExecutionJobs(controllerHome, repository.repoId, 20).length === 0,
+    'runtime recovery smoke must start without ExecutionJobs',
+  );
+
   const handle = await spawnManagedProcess({
     controllerHome,
     repoId: repository.repoId,
@@ -101,68 +64,41 @@ try {
     timeoutMs: 15_000,
     interactiveWaitMs: 0,
     returnHandleImmediately: true,
-    workId: accepted.contract.workId,
-    commandId: `cmd-${accepted.contract.workId}-recovery`,
+    commandId: 'cmd-runtime-recovery-smoke',
     origin: { surface: 'command', toolName: 'smoke-runtime-recovery' },
   });
   assert(!handle.completed, 'managed process unexpectedly completed before recovery');
 
   __resetLiveMonitorsForTests();
   const recovery = recoverManagedProcesses(controllerHome, repository.repoId);
-  const processRecovered = recovery.recovered.includes(handle.processId) || recovery.completedFromReceipt.includes(handle.processId);
+  const processRecovered = recovery.recovered.includes(handle.processId)
+    || recovery.completedFromReceipt.includes(handle.processId);
   assert(processRecovered, 'Process Runtime record was neither recovered nor completed from its receipt');
+
   const completed = await waitForProcess(controllerHome, repository.repoId, handle.processId, { timeoutMs: 5_000 });
   assert(completed.completed && completed.ok, 'recovered process did not complete successfully');
-
-  releaseControllerSession({ controllerHome, repoId: repository.repoId }, accepted.contract.workId, 'controller-recovery-a');
-  const replacement = claimControllerSession({ controllerHome, repoId: repository.repoId }, {
-    workId: accepted.contract.workId,
-    controllerId: 'controller-recovery-b',
-    controllerType: 'codex',
-    sessionId: 'session-recovery-b',
-    leaseMs: 60_000,
-  });
-  assert(replacement.controllerId === 'controller-recovery-b', 'released Work could not be reclaimed');
-  assert(getControllerSession({ controllerHome, repoId: repository.repoId }, accepted.contract.workId)?.sessionId === 'session-recovery-b', 'replacement Controller session missing');
-  const completionRecordedAt = new Date().toISOString();
-  const completionRevision = String(spawnSync('git', ['-C', repoRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).stdout).trim();
-  const completionReceiptId = `REC-smoke-${accepted.contract.workId}`;
-  recordWorkCompletionReceipt(
-    { controllerHome, repoId: repository.repoId },
-    accepted.contract.workId,
-    {
-      schemaVersion: 1,
-      receiptId: completionReceiptId,
-      source: 'direct_edit',
-      issueId: 'ISS-runtime-recovery-smoke',
-      taskId: 'T1',
-      workId: accepted.contract.workId,
-      targetBranch: 'main',
-      targetRevision: completionRevision,
-      changedPaths: [],
-      delivery: { kind: 'no_change', status: 'integrated', strategy: 'no_change', reachable: true, recordedAt: completionRecordedAt },
-      cleanup: { status: 'complete', warnings: [], blockers: [], recordedAt: completionRecordedAt },
-      verifiedAt: completionRecordedAt,
-      recordedAt: completionRecordedAt,
-    },
-    'completed_no_change',
-    'completed_no_change',
+  assert(
+    listExecutionJobs(controllerHome, repository.repoId, 20).length === 0,
+    'Process recovery created an ExecutionJob',
   );
-  const delivered = getWorkContract({ controllerHome, repoId: repository.repoId }, accepted.contract.workId);
-  assert(delivered?.semanticState !== 'completed', 'delivery receipt must not implicitly complete semantic Work');
-  reviseWorkSemanticContext(
-    { controllerHome, repoId: repository.repoId },
-    accepted.contract.workId,
-    { expectedRevision: Number(delivered?.semanticRevision ?? 1), state: 'completed', resultRefs: [`receipt:${completionReceiptId}`] },
-  );
-  assert(getWorkContract({ controllerHome, repoId: repository.repoId }, accepted.contract.workId)?.semanticState === 'completed', 'explicit semantic Work completion was not persisted');
-  assert(listExecutionJobs(controllerHome, repository.repoId, 20).length === 0, 'runtime recovery created an ExecutionJob');
 
   const scheduleInput = {
-    requestId: 'schedule-idempotency', repoId: repository.repoId, name: 'bounded triage', enabled: true,
+    requestId: 'schedule-idempotency',
+    repoId: repository.repoId,
+    name: 'bounded triage',
+    enabled: true,
     trigger: { type: 'manual' as const },
-    policy: { maxActiveOccurrences: 1, maxFailures: 3, cooldownMinutes: 0, dailyBudgetMinutes: 10, shadowMode: true },
-    action: { operation: 'controller_context', resourceClaims: [{ resourceKey: 'repo-state', mode: 'read' as const }] },
+    policy: {
+      maxActiveOccurrences: 1,
+      maxFailures: 3,
+      cooldownMinutes: 0,
+      dailyBudgetMinutes: 10,
+      shadowMode: true,
+    },
+    action: {
+      operation: 'controller_context',
+      resourceClaims: [{ resourceKey: 'repo-state', mode: 'read' as const }],
+    },
     stopConditions: [] as string[],
   };
   const scheduleA = createSchedule(controllerHome, scheduleInput);
@@ -170,14 +106,17 @@ try {
   assert(scheduleA.scheduleId === scheduleB.scheduleId, 'Schedule requestId was not idempotent');
 
   let automaticIssueBlocked = false;
-  try { assertAutomatedOperationAllowed('create_issue'); } catch { automaticIssueBlocked = true; }
+  try {
+    assertAutomatedOperationAllowed('create_issue');
+  } catch {
+    automaticIssueBlocked = true;
+  }
   assert(automaticIssueBlocked, 'Kernel automation could create an Issue without an explicit external-effect path');
 
   console.log(JSON.stringify({
     status: 'ok',
-    workId: accepted.contract.workId,
+    processId: handle.processId,
     processRecovered,
-    replacementController: replacement.controllerId,
     scheduleId: scheduleA.scheduleId,
     automaticIssueBlocked,
     executionJobCount: listExecutionJobs(controllerHome, repository.repoId, 20).length,
