@@ -192,7 +192,6 @@ export function writeControllerResult(input: {
   repoId?: string;
   sessionId: string;
   principalId: string;
-  workId?: string;
   kind: ControllerResultRecord['kind'];
   value: unknown;
 }): ControllerResultRecord {
@@ -209,7 +208,6 @@ export function writeControllerResult(input: {
     ...(input.repoId?.trim() ? { repoId: input.repoId.trim() } : {}),
     sessionId: input.sessionId,
     principalId: input.principalId,
-    ...(input.workId ? { workId: input.workId } : {}),
     kind: input.kind,
     byteLength: statSync(path).size,
     createdAt: new Date().toISOString(),
@@ -220,9 +218,8 @@ export function writeControllerResult(input: {
   return record;
 }
 
-function authorizeRecord(record: ControllerResultRecord, sessionId: string, principalId: string, workId?: string): void {
+function authorizeRecord(record: ControllerResultRecord, sessionId: string, principalId: string): void {
   if (record.sessionId !== sessionId || record.principalId !== principalId) throw new Error('RESULT_ACCESS_DENIED: result belongs to another session or principal');
-  if (workId && record.workId && record.workId !== workId) throw new Error('RESULT_ACCESS_DENIED: result belongs to another work handle');
 }
 
 export function readControllerResult(input: {
@@ -230,13 +227,12 @@ export function readControllerResult(input: {
   resultRef: string;
   sessionId: string;
   principalId: string;
-  workId?: string;
   cursor?: number;
   limit?: number;
 }): { record: ControllerResultRecord; items: unknown; cursor: number; nextCursor?: number; truncated: boolean } {
   const parsed = parseRef(input.resultRef);
   const resolved = resolveStoredResult(input.controllerHome, parsed.resultId, parsed.legacyRepoId);
-  authorizeRecord(resolved.record, input.sessionId, input.principalId, input.workId);
+  authorizeRecord(resolved.record, input.sessionId, input.principalId);
   const sanitized = sanitizeResolvedResult(input.controllerHome, resolved.record, resolved.value, resolved.storage);
   const value = sanitized.value;
   const cursor = Math.max(0, Math.trunc(input.cursor ?? 0));
@@ -267,13 +263,12 @@ export function searchControllerResult(input: {
   resultRef: string;
   sessionId: string;
   principalId: string;
-  workId?: string;
   query: string;
   limit?: number;
 }): { record: ControllerResultRecord; matches: Array<{ line: number; text: string }>; truncated: boolean } {
   const parsed = parseRef(input.resultRef);
   const resolved = resolveStoredResult(input.controllerHome, parsed.resultId, parsed.legacyRepoId);
-  authorizeRecord(resolved.record, input.sessionId, input.principalId, input.workId);
+  authorizeRecord(resolved.record, input.sessionId, input.principalId);
   const sanitized = sanitizeResolvedResult(input.controllerHome, resolved.record, resolved.value, resolved.storage);
   const value = sanitized.value;
   const query = input.query.trim().toLowerCase();
