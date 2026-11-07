@@ -942,6 +942,13 @@ requireMissing('adapters/chatgpt/controller-round-settlement-store.ts');
 requireMissing('adapters/chatgpt/work-conversation-binding-store.ts');
 requireMissing('adapters/chatgpt/controller-binding-store.ts');
 requireMissing('src/runtime/root/controller-round-composition.ts');
+for (const retiredProviderDeliveryPath of [
+  'adapters/chatgpt/provider-delivery.ts',
+  'adapters/chatgpt/browser-delivery-host.ts',
+  'adapters/chatgpt/browser-delivery-runtime.ts',
+  'adapters/chatgpt/wsl-bridge-delivery-host.ts',
+  'scripts/canary-chatgpt-provider-delivery.ts',
+]) requireMissing(retiredProviderDeliveryPath);
 forbid(
   'src/runtime/control-plane/global-scheduler/maintenance.ts',
   /ControllerRound|originWorkId|getChatgptWorkConversationBinding|settleWorkChatgptAutomationTab|recordChatgptControllerRoundTabSettlement/,
