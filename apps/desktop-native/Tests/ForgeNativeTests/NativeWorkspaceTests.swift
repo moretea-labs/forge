@@ -41,6 +41,7 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertNil(message.attachmentNames)
         XCTAssertNil(message.contextPaths)
         XCTAssertNil(message.toolActivityCount)
+        XCTAssertNil(message.activityEvents)
     }
 
     @MainActor
@@ -63,6 +64,21 @@ final class NativeWorkspaceTests: XCTestCase {
         let restored = NativeWorkspace(store:store)
         XCTAssertEqual(restored.threads.first?.title,"Agent lifecycle polish")
         XCTAssertEqual(restored.threads.first?.providerSessionId,"session_a")
+    }
+
+    @MainActor
+    func testCompletedActivityEventsDecodeFromRuntimeResponseShape() {
+        let events = NativeWorkspace.decodeActivityEvents([[
+            "phase":"tool",
+            "label":"正在使用 forge.rh_status",
+            "status":"completed",
+            "startedAt":"2026-11-07T00:00:00.000Z",
+            "completedAt":"2026-11-07T00:00:01.000Z",
+        ]])
+        XCTAssertEqual(events?.count,1)
+        XCTAssertEqual(events?.first?.phase,"tool")
+        XCTAssertEqual(events?.first?.status,"completed")
+        XCTAssertNil(NativeWorkspace.decodeActivityEvents([]))
     }
 
     @MainActor

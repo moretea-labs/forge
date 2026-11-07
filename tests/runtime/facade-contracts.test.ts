@@ -236,6 +236,31 @@ describe('handoff and facade contracts', () => {
     }
   });
 
+  test('successful local conversation returns the same bounded tool activity snapshot used live', async () => {
+    const conversationId = 'test-local-complete-' + crypto.randomUUID();
+    const script = [
+      "console.log(JSON.stringify({type:'thread.started',thread_id:'thread-complete'}));",
+      "console.log(JSON.stringify({type:'turn.started'}));",
+      "console.log(JSON.stringify({type:'item.started',item:{type:'mcp_tool_call',name:'forge.rh_status'}}));",
+      "console.log(JSON.stringify({type:'item.completed',item:{type:'mcp_tool_call',name:'forge.rh_status'}}));",
+      "console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:'done'}}));",
+      "console.log(JSON.stringify({type:'turn.completed'}));",
+    ].join('');
+    const completed = await runCodexConversation(
+      process.execPath, ['-e', script],
+      process.env, process.cwd(), 5000, conversationId,
+    );
+    expect(readLocalConversationActivity(conversationId)).toMatchObject({
+      conversationId, status: 'idle', toolActivityCount: 0, events: [],
+    });
+    expect(completed.activity.toolActivityCount).toBe(1);
+    expect(completed.activity.events.filter((event) => event.phase === 'tool')).toEqual([
+      expect.objectContaining({
+        phase: 'tool', label: '正在使用 forge.rh_status', status: 'completed',
+      }),
+    ]);
+  });
+
   test('cancel stops the exact locally owned Codex process and keeps live activity bounded', async () => {
     const conversationId = 'test-local-stop-' + crypto.randomUUID();
     const script = [

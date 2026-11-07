@@ -124,6 +124,7 @@ export interface LocalConversationSendResult {
   providerSessionId: string;
   output: string;
   toolActivityCount: number;
+  activityEvents: LocalConversationActivityEvent[];
 }
 
 export interface ParsedCodexConversationEvents {
@@ -413,7 +414,7 @@ export function runCodexConversation(
   cwd: string,
   timeoutMs: number,
   conversationId: string,
-): Promise<{ stdout: string; stderr: string }> {
+): Promise<{ stdout: string; stderr: string; activity: LocalConversationActivitySnapshot }> {
   return new Promise((resolve, reject) => {
     if (activeLocalTurns.has(conversationId)) {
       throw Error('LOCAL_CONVERSATION_ALREADY_RUNNING');
@@ -472,6 +473,10 @@ export function runCodexConversation(
     child.once('error', (error) => fail(new Error(`LOCAL_CONVERSATION_PROVIDER_START_FAILED: ${error.message}`)));
     child.once('close', (code, signal) => {
       if (active.lineBuffer.trim()) applyActivityLine(active, active.lineBuffer);
+      const activity = {
+        ...active.activity,
+        events: active.activity.events.map((event) => ({ ...event })),
+      };
       if (activeLocalTurns.get(conversationId) === active) activeLocalTurns.delete(conversationId);
       if (settled) return;
       settled = true;
@@ -485,7 +490,7 @@ export function runCodexConversation(
         reject(new Error(`LOCAL_CONVERSATION_PROVIDER_FAILED: code=${String(code ?? 'null')} signal=${signal ?? 'none'}${detail ? `; ${detail}` : ''}`));
         return;
       }
-      resolve({ stdout, stderr });
+      resolve({ stdout, stderr, activity });
     });
     const timer = setTimeout(() => {
       child.kill('SIGTERM');
@@ -597,5 +602,8 @@ export async function sendLocalConversation(input: LocalConversationSendInput): 
     providerSessionId: resolvedProviderSessionId,
     output: parsed.output.trim(),
     toolActivityCount: parsed.toolActivityCount,
+    activityEvents: completed.activity.events
+      .filter((event) => event.phase === 'tool')
+      .map((event) => ({ ...event })),
   };
 }

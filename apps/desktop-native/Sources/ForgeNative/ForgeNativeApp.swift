@@ -344,6 +344,7 @@ private struct AgentPane: View {
     @ObservedObject var model: NativeWorkspace
     @State private var showChanges = false
     @State private var showActivityDetails = false
+    @State private var expandedMessageActivities: Set<String> = []
     @State private var isComposerDropTarget = false
 
     var body: some View {
@@ -418,7 +419,25 @@ private struct AgentPane: View {
                                         AgentAssistantMessageBody(text:message.text)
                                         HStack(spacing:10) {
                                             if let count = message.toolActivityCount, count > 0 {
-                                                Label("\(count) 次工具调用",systemImage:"hammer")
+                                                if message.activityEvents?.isEmpty == false {
+                                                    Button {
+                                                        if expandedMessageActivities.contains(message.id) {
+                                                            expandedMessageActivities.remove(message.id)
+                                                        } else {
+                                                            expandedMessageActivities.insert(message.id)
+                                                        }
+                                                    } label: {
+                                                        HStack(spacing:5) {
+                                                            Label("\(count) 次工具调用",systemImage:"hammer")
+                                                            Image(systemName:expandedMessageActivities.contains(message.id)
+                                                                  ? "chevron.up" : "chevron.down")
+                                                                .font(.system(size:8,weight:.semibold))
+                                                        }
+                                                    }
+                                                    .buttonStyle(.plain)
+                                                } else {
+                                                    Label("\(count) 次工具调用",systemImage:"hammer")
+                                                }
                                             }
                                             Spacer(minLength:0)
                                             Button {
@@ -431,6 +450,27 @@ private struct AgentPane: View {
                                         }
                                         .font(.system(size:10.5,weight:.medium))
                                         .foregroundStyle(ForgePalette.secondary)
+                                        if expandedMessageActivities.contains(message.id),
+                                           let events = message.activityEvents, !events.isEmpty {
+                                            VStack(alignment:.leading,spacing:5) {
+                                                ForEach(events) { event in
+                                                    HStack(spacing:7) {
+                                                        Image(systemName:activityIcon(event.phase))
+                                                            .font(.system(size:9.5,weight:.medium))
+                                                            .frame(width:12)
+                                                        Text(event.label).lineLimit(1)
+                                                        Spacer(minLength:8)
+                                                        Image(systemName:event.status == "completed" ? "checkmark" : "circle.fill")
+                                                            .font(.system(size:event.status == "completed" ? 8 : 5,weight:.semibold))
+                                                    }
+                                                }
+                                            }
+                                            .font(.system(size:10.5))
+                                            .foregroundStyle(ForgePalette.secondary)
+                                            .padding(.horizontal,9).padding(.vertical,7)
+                                            .background(ForgePalette.softFill,
+                                                        in:RoundedRectangle(cornerRadius:9,style:.continuous))
+                                        }
                                     }
                                     Spacer(minLength:56)
                                 }

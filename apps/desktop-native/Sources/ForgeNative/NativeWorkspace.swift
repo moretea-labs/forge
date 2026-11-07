@@ -130,6 +130,7 @@ struct ChatMessage: Codable, Identifiable {
     var attachmentNames: [String]?
     var contextPaths: [String]?
     var toolActivityCount: Int?
+    var activityEvents: [AgentLiveActivityEvent]?
     var createdAt = Date()
 }
 struct ChatThread: Codable, Identifiable {
@@ -580,6 +581,14 @@ final class NativeWorkspace: ObservableObject {
         pendingContextPaths.removeAll { $0 == path }
     }
 
+    static func decodeActivityEvents(_ raw: Any?) -> [AgentLiveActivityEvent]? {
+        guard let rows = raw as? [[String:Any]],
+              let bytes = try? JSONSerialization.data(withJSONObject:rows),
+              let events = try? JSONDecoder().decode([AgentLiveActivityEvent].self,from:bytes),
+              !events.isEmpty else { return nil }
+        return events
+    }
+
     static func providerPrompt(_ prompt: String, contextPaths: [String]) -> String {
         guard !contextPaths.isEmpty,
               let data = try? JSONSerialization.data(withJSONObject:contextPaths),
@@ -671,8 +680,10 @@ final class NativeWorkspace: ObservableObject {
             guard let current = threads.firstIndex(where:{$0.id == id}) else { return }
             let answer = response["output"] as? String ?? ""
             let toolActivityCount = response["toolActivityCount"] as? Int
+            let activityEvents = Self.decodeActivityEvents(response["activityEvents"])
             threads[current].messages.append(ChatMessage(
-                role:"assistant", text:answer, toolActivityCount:toolActivityCount
+                role:"assistant", text:answer, toolActivityCount:toolActivityCount,
+                activityEvents:activityEvents
             ))
             threads[current].providerSessionId = response["providerSessionId"] as? String ??
                 threads[current].providerSessionId
