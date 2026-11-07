@@ -146,15 +146,15 @@ function corruptProjectionWork(controllerHome: string, repoId: string, workId: s
 }
 
 describe('runtime source isolation', () => {
-  test('rh_context Work source reads the exact registered isolated checkout and rejects mismatched/unknown owners', async () => {
-    const controllerHome = tempRoot('forge-context-exact-work-home-');
-    const repoRoot = tempRoot('forge-context-exact-work-repo-');
-    initGitRepo(repoRoot, 'context-exact-work');
+  test('rh_context source routing uses explicit checkout identity and ignores historical Work placement', async () => {
+    const controllerHome = tempRoot('forge-context-explicit-checkout-home-');
+    const repoRoot = tempRoot('forge-context-explicit-checkout-repo-');
+    initGitRepo(repoRoot, 'context-explicit-checkout');
     writeFileSync(join(repoRoot, 'src', 'index.ts'), 'export const EXACT_WORK_SOURCE = "CANONICAL";\\n');
     git(repoRoot, 'add', '.');
     git(repoRoot, 'commit', '-m', 'canonical context source');
     const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'Context source owner' });
-    const worktree = join(controllerHome, 'managed-worktrees', repository.repoId, 'work-context-proof');
+    const worktree = join(controllerHome, 'managed-worktrees', repository.repoId, 'historical-work-context-proof');
     mkdirSync(join(controllerHome, 'managed-worktrees', repository.repoId), { recursive: true });
     git(repoRoot, 'worktree', 'add', '-q', '-b', 'work/context-exact-source', worktree, 'HEAD');
     writeFileSync(join(worktree, 'src', 'index.ts'), 'export const EXACT_WORK_SOURCE = "ISOLATED";\\n');
@@ -166,30 +166,45 @@ describe('runtime source isolation', () => {
     const workId = 'work-context-source-provenance';
     seedHistoricalWorkContract({ controllerHome, repoId: repository.repoId }, {
       workId, repoId: repository.repoId, checkoutId: checkout!.checkoutId,
-      objective: 'Review exactly the current isolated Work source.',
+      objective: 'Historical Work placement must not select current source.',
       acceptanceCriteria: [], constraints: {}, requestedBy: 'chatgpt', checks: [],
     });
     const context = mcpContext(controllerHome, repository);
-    const args = {
+    const baseArgs = {
       repo_id: repository.repoId, operation: 'search', query: 'EXACT_WORK_SOURCE',
       known_paths: ['src/index.ts'], max_files: 1, max_snippets: 2,
-      detail_level: 'raw', retrieval_mode: 'implementation', structural_context: 'off', work_id: workId,
+      detail_level: 'raw', retrieval_mode: 'implementation', structural_context: 'off',
     };
-    const data = structured(await callRuntimeTool(context, 'rh_context', args)).data as {
+
+    const historicalWorkData = structured(await callRuntimeTool(context, 'rh_context', {
+      ...baseArgs, work_id: workId,
+    })).data as {
       contextClosure?: { sourceRevision?: string; repository?: { branch?: string } };
       files?: Array<{ snippets?: Array<{ content?: string }> }>;
     };
-    const actualSource = (data.files ?? []).flatMap(file => file.snippets ?? []).map(snippet => snippet.content ?? '').join('');
-    expect(data.contextClosure?.sourceRevision).toBe(git(worktree, 'rev-parse', 'HEAD'));
-    expect(data.contextClosure?.repository?.branch).toBe('work/context-exact-source');
-    expect(actualSource).toContain('ISOLATED');
-    expect(actualSource).not.toContain('CANONICAL');
-    await expect(callContextAdapter(context, 'rh_context', { ...args, checkout_id: repository.activeCheckoutId }))
-      .rejects.toThrow('CONTEXT_WORK_CHECKOUT_MISMATCH');
-    await expect(callContextAdapter(context, 'rh_context', { ...args, work_id: 'unknown-work-context' }))
-      .rejects.toThrow('CONTEXT_WORK_NOT_FOUND');
-  });
+    const historicalWorkSource = (historicalWorkData.files ?? []).flatMap(file => file.snippets ?? []).map(snippet => snippet.content ?? '').join('');
+    expect(historicalWorkData.contextClosure?.sourceRevision).toBe(git(repoRoot, 'rev-parse', 'HEAD'));
+    expect(historicalWorkSource).toContain('CANONICAL');
+    expect(historicalWorkSource).not.toContain('ISOLATED');
 
+    const explicitCheckoutData = structured(await callRuntimeTool(context, 'rh_context', {
+      ...baseArgs, checkout_id: checkout!.checkoutId, work_id: workId,
+    })).data as {
+      contextClosure?: { sourceRevision?: string; repository?: { branch?: string } };
+      files?: Array<{ snippets?: Array<{ content?: string }> }>;
+    };
+    const explicitCheckoutSource = (explicitCheckoutData.files ?? []).flatMap(file => file.snippets ?? []).map(snippet => snippet.content ?? '').join('');
+    expect(explicitCheckoutData.contextClosure?.sourceRevision).toBe(git(worktree, 'rev-parse', 'HEAD'));
+    expect(explicitCheckoutData.contextClosure?.repository?.branch).toBe('work/context-exact-source');
+    expect(explicitCheckoutSource).toContain('ISOLATED');
+    expect(explicitCheckoutSource).not.toContain('CANONICAL');
+
+    const unknownHistoricalWork = structured(await callRuntimeTool(context, 'rh_context', {
+      ...baseArgs, work_id: 'unknown-work-context',
+    })).data as { files?: Array<{ snippets?: Array<{ content?: string }> }> };
+    const unknownSource = (unknownHistoricalWork.files ?? []).flatMap(file => file.snippets ?? []).map(snippet => snippet.content ?? '').join('');
+    expect(unknownSource).toContain('CANONICAL');
+  });
   test('stable semantic ids resolve without synthetic repository ownership in a multi-repository Controller Home', async () => {
     const controllerHome = tempRoot('forge-home-stable-semantic-id-');
     const primaryRoot = tempRoot('forge-stable-semantic-primary-');
