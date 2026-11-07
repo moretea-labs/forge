@@ -1313,6 +1313,28 @@ final class NativeWorkspace: ObservableObject {
         )
     }
 
+    nonisolated static func agentTurnFailure(_ raw: String) -> (message:String, effectReviewRequired:Bool) {
+        if raw == "FORGE_DESKTOP_API_TURN_CANCELLED" {
+            return ("请求已取消。",false)
+        }
+        let cancelledAfterTool = "FORGE_DESKTOP_API_TURN_CANCELLED_AFTER_TOOL:"
+        if raw.hasPrefix(cancelledAfterTool) {
+            let requestId = String(raw.dropFirst(cancelledAfterTool.count)).split(separator:":",maxSplits:1).first.map(String.init) ?? "unknown"
+            return ("请求已取消，但最近一次写操作已返回结果。操作请求：\(requestId)",true)
+        }
+        let failedAfterTool = "FORGE_DESKTOP_API_TURN_FAILED_AFTER_TOOL:"
+        if raw.hasPrefix(failedAfterTool) {
+            let requestId = String(raw.dropFirst(failedAfterTool.count)).split(separator:":",maxSplits:1).first.map(String.init) ?? "unknown"
+            return ("模型请求未完成，但最近一次写操作已返回结果。操作请求：\(requestId)",true)
+        }
+        let reconciliation = "FORGE_DESKTOP_LOCAL_EFFECT_RECONCILIATION_REQUIRED:"
+        if raw.hasPrefix(reconciliation) {
+            let requestId = String(raw.dropFirst(reconciliation.count)).split(separator:":",maxSplits:1).first.map(String.init) ?? "unknown"
+            return ("写操作结果需要核对，未自动重试。操作请求：\(requestId)",true)
+        }
+        return (raw,true)
+    }
+
     func send() async {
         let prompt = draft.trimmingCharacters(in:.whitespacesAndNewlines)
         guard !prompt.isEmpty, !busy, let id = selectedThreadId,
@@ -1452,13 +1474,19 @@ final class NativeWorkspace: ObservableObject {
             await refreshAgentChanges()
         } catch {
             // Keep the failed user message as truthful history. Never auto-resend because tools may have side effects.
+            let failure = Self.agentTurnFailure(error.localizedDescription)
             let restored = restoreFailedComposer(
                 conversationId:id, prompt:prompt, imageURLs:imageURLs, contextPaths:contextPaths
             )
-            let recoveryNote = restored
-                ? "请求内容已恢复到输入框；再次发送前请确认上一次工具操作是否已部分执行。"
-                : "未覆盖当前输入；如需重试，可从历史消息选择“重新编辑”。"
-            self.error = "\(error.localizedDescription)\n\(recoveryNote)"
+            let recoveryNote: String
+            if restored && !failure.effectReviewRequired {
+                recoveryNote = "请求内容已恢复到输入框；再次发送会创建新的请求。"
+            } else if restored {
+                recoveryNote = "请求内容已恢复到输入框；再次发送前请先核对 Changes 与工具记录。"
+            } else {
+                recoveryNote = "未覆盖当前输入；如需重试，可从历史消息选择“重新编辑”。"
+            }
+            self.error = "\(failure.message)\n\(recoveryNote)"
         }
     }
 

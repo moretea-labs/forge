@@ -1344,6 +1344,19 @@ fn validate_agent_checkout_binding(
     Ok(())
 }
 
+fn contextualize_api_turn_error(error: String, last_effect_request_id: Option<&str>) -> String {
+    if error.starts_with("FORGE_DESKTOP_LOCAL_EFFECT_RECONCILIATION_REQUIRED:")
+        || error.starts_with("FORGE_DESKTOP_API_TURN_CANCELLED_AFTER_TOOL:")
+        || error.starts_with("FORGE_DESKTOP_API_TURN_FAILED_AFTER_TOOL:") {
+        return error;
+    }
+    let Some(request_id) = last_effect_request_id else { return error; };
+    if error == "FORGE_DESKTOP_API_TURN_CANCELLED" {
+        return format!("FORGE_DESKTOP_API_TURN_CANCELLED_AFTER_TOOL:{request_id}");
+    }
+    format!("FORGE_DESKTOP_API_TURN_FAILED_AFTER_TOOL:{request_id}:{error}")
+}
+
 async fn run_local_api_turn<H: LocalApiHost + Sync>(
     host: &H,
     messages: Vec<Value>,
@@ -1408,9 +1421,12 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
     };
     let mut tool_events: Vec<Value> = Vec::new();
     let mut total_calls = 0usize;
+    let mut last_effect_request_id: Option<String> = None;
     for _round in 0..6 {
         if *cancel_receiver.borrow() {
-            return Err("FORGE_DESKTOP_API_TURN_CANCELLED".into());
+            return Err(contextualize_api_turn_error(
+                "FORGE_DESKTOP_API_TURN_CANCELLED".into(), last_effect_request_id.as_deref()
+            ));
         }
         let provider_body = if protocol == "anthropic" {
             let tools: Vec<Value> = available_tools.iter().map(|tool| json!({
@@ -1439,42 +1455,66 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
         let output = request_local_api_round_cancellable(
             &client, &endpoint, protocol, key.as_deref(), &provider_body,
             cancel_receiver,
-        ).await?;
-        let requests = provider_tool_calls(protocol, &output)?;
+        ).await.map_err(|error| contextualize_api_turn_error(
+            error, last_effect_request_id.as_deref()
+        ))?;
+        let requests = provider_tool_calls(protocol, &output).map_err(|error| {
+            contextualize_api_turn_error(error, last_effect_request_id.as_deref())
+        })?;
         if protocol == "anthropic" {
             let blocks = output.get("content").and_then(Value::as_array)
-                .ok_or("FORGE_DESKTOP_API_RESPONSE_INVALID")?;
+                .ok_or("FORGE_DESKTOP_API_RESPONSE_INVALID")
+                .map_err(|error| contextualize_api_turn_error(
+                    error.into(), last_effect_request_id.as_deref()
+                ))?;
             if requests.is_empty() {
                 let text = blocks.iter().filter_map(|block| {
                     if block.get("type").and_then(Value::as_str) == Some("text") {
                         block.get("text").and_then(Value::as_str)
                     } else { None }
                 }).collect::<Vec<_>>().join("\n");
-                if text.trim().is_empty() { return Err("FORGE_DESKTOP_API_RESPONSE_MISSING".into()); }
+                if text.trim().is_empty() {
+                    return Err(contextualize_api_turn_error(
+                        "FORGE_DESKTOP_API_RESPONSE_MISSING".into(), last_effect_request_id.as_deref()
+                    ));
+                }
                 return Ok(json!({ "output": text, "toolActivityCount": total_calls, "toolEvents": tool_events }));
             }
             history.push(json!({ "role": "assistant", "content": blocks }));
         } else {
-            let message = output.pointer("/choices/0/message").ok_or("FORGE_DESKTOP_API_RESPONSE_INVALID")?;
+            let message = output.pointer("/choices/0/message")
+                .ok_or("FORGE_DESKTOP_API_RESPONSE_INVALID")
+                .map_err(|error| contextualize_api_turn_error(
+                    error.into(), last_effect_request_id.as_deref()
+                ))?;
             if requests.is_empty() {
                 let text = message.get("content").and_then(Value::as_str)
                     .filter(|value| !value.trim().is_empty())
-                    .ok_or("FORGE_DESKTOP_API_RESPONSE_MISSING")?;
+                    .ok_or("FORGE_DESKTOP_API_RESPONSE_MISSING")
+                    .map_err(|error| contextualize_api_turn_error(
+                        error.into(), last_effect_request_id.as_deref()
+                    ))?;
                 return Ok(json!({ "output": text, "toolActivityCount": total_calls, "toolEvents": tool_events }));
             }
             history.push(message.clone());
         }
         if repo_id.is_none() || requests.is_empty() || requests.len() > 4 || total_calls + requests.len() > 12 {
-            return Err("FORGE_DESKTOP_API_TOOL_BUDGET_EXCEEDED".into());
+            return Err(contextualize_api_turn_error(
+                "FORGE_DESKTOP_API_TOOL_BUDGET_EXCEEDED".into(), last_effect_request_id.as_deref()
+            ));
         }
         let mut tool_results = Vec::new();
         for (id, name, mut args) in requests {
             if *cancel_receiver.borrow() {
-                return Err("FORGE_DESKTOP_API_TURN_CANCELLED".into());
+                return Err(contextualize_api_turn_error(
+                    "FORGE_DESKTOP_API_TURN_CANCELLED".into(), last_effect_request_id.as_deref()
+                ));
             }
             if id.is_empty() || name.is_empty() || !args.is_object()
                 || !available_tools.iter().any(|tool| tool.pointer("/function/name").and_then(Value::as_str) == Some(&name)) {
-                return Err("FORGE_DESKTOP_API_TOOL_NOT_AUTHORIZED".into());
+                return Err(contextualize_api_turn_error(
+                    "FORGE_DESKTOP_API_TOOL_NOT_AUTHORIZED".into(), last_effect_request_id.as_deref()
+                ));
             }
             let effectful = matches!(name.as_str(), "apply_patch" | "run_command" | "git_commit");
             let effect_request_id = if effectful {
@@ -1502,7 +1542,9 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
                     return Err(if effectful {
                         format!("FORGE_DESKTOP_LOCAL_EFFECT_RECONCILIATION_REQUIRED:{}:{}",
                             effect_request_id.as_deref().unwrap_or("unknown"), error)
-                    } else { error });
+                    } else {
+                        contextualize_api_turn_error(error, last_effect_request_id.as_deref())
+                    });
                 }
             };
             let ok = if effectful {
@@ -1513,10 +1555,13 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
             // A cancel that arrives during a Forge tool must wait for the tool
             // receipt. Never report the effect itself as rolled back.
             if *cancel_receiver.borrow() {
-                return Err(if effectful {
+                let cancellation = if effectful {
                     format!("FORGE_DESKTOP_API_TURN_CANCELLED_AFTER_TOOL:{}",
                         effect_request_id.as_deref().unwrap_or("unknown"))
-                } else { "FORGE_DESKTOP_API_TURN_CANCELLED".into() });
+                } else { "FORGE_DESKTOP_API_TURN_CANCELLED".into() };
+                return Err(contextualize_api_turn_error(
+                    cancellation, last_effect_request_id.as_deref()
+                ));
             }
             tool_events.push(json!({ "name": name, "ok": ok,
                 "requestId": effect_request_id }));
@@ -1537,6 +1582,9 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
                 return Err(format!("FORGE_DESKTOP_LOCAL_EFFECT_RECONCILIATION_REQUIRED:{}",
                     effect_request_id.as_deref().unwrap_or("unknown")));
             }
+            if effectful {
+                last_effect_request_id = effect_request_id.clone();
+            }
             if protocol == "anthropic" {
                 tool_results.push(json!({"type":"tool_result","tool_use_id":id,"content":bounded,"is_error":!ok}));
             } else {
@@ -1547,7 +1595,9 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
             history.push(json!({ "role": "user", "content": tool_results }));
         }
     }
-    Err("FORGE_DESKTOP_API_TOOL_ROUND_LIMIT".into())
+    Err(contextualize_api_turn_error(
+        "FORGE_DESKTOP_API_TOOL_ROUND_LIMIT".into(), last_effect_request_id.as_deref()
+    ))
 }
 
 #[tauri::command]
@@ -1872,6 +1922,28 @@ mod tests {
         });
         assert_eq!(result.unwrap_err(), "FORGE_DESKTOP_API_TURN_CANCELLED");
         server.join().expect("server joined");
+    }
+
+    #[test]
+    fn api_turn_errors_keep_completed_effect_identity() {
+        assert_eq!(
+            contextualize_api_turn_error("FORGE_DESKTOP_API_TURN_CANCELLED".into(),None),
+            "FORGE_DESKTOP_API_TURN_CANCELLED"
+        );
+        assert_eq!(
+            contextualize_api_turn_error("FORGE_DESKTOP_API_TURN_CANCELLED".into(),Some("effect-1")),
+            "FORGE_DESKTOP_API_TURN_CANCELLED_AFTER_TOOL:effect-1"
+        );
+        assert_eq!(
+            contextualize_api_turn_error("FORGE_DESKTOP_API_HTTP_503".into(),Some("effect-2")),
+            "FORGE_DESKTOP_API_TURN_FAILED_AFTER_TOOL:effect-2:FORGE_DESKTOP_API_HTTP_503"
+        );
+        assert_eq!(
+            contextualize_api_turn_error(
+                "FORGE_DESKTOP_LOCAL_EFFECT_RECONCILIATION_REQUIRED:effect-3".into(),Some("effect-2")
+            ),
+            "FORGE_DESKTOP_LOCAL_EFFECT_RECONCILIATION_REQUIRED:effect-3"
+        );
     }
 
     #[test]

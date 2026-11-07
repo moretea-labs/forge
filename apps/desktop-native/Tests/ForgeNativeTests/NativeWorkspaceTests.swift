@@ -442,6 +442,36 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertTrue(model.threads[0].messages.isEmpty)
     }
 
+    func testAgentTurnFailureSeparatesSafeCancelFromEffectReconciliation() {
+        let cancelled = NativeWorkspace.agentTurnFailure("FORGE_DESKTOP_API_TURN_CANCELLED")
+        XCTAssertEqual(cancelled.message,"请求已取消。")
+        XCTAssertFalse(cancelled.effectReviewRequired)
+
+        let afterTool = NativeWorkspace.agentTurnFailure(
+            "FORGE_DESKTOP_API_TURN_CANCELLED_AFTER_TOOL:forge-desktop-api-42"
+        )
+        XCTAssertTrue(afterTool.message.contains("forge-desktop-api-42"))
+        XCTAssertTrue(afterTool.effectReviewRequired)
+
+        let failedAfterTool = NativeWorkspace.agentTurnFailure(
+            "FORGE_DESKTOP_API_TURN_FAILED_AFTER_TOOL:forge-desktop-api-77:FORGE_DESKTOP_API_HTTP_503"
+        )
+        XCTAssertTrue(failedAfterTool.message.contains("forge-desktop-api-77"))
+        XCTAssertFalse(failedAfterTool.message.contains("HTTP_503"))
+        XCTAssertTrue(failedAfterTool.effectReviewRequired)
+
+        let reconcile = NativeWorkspace.agentTurnFailure(
+            "FORGE_DESKTOP_LOCAL_EFFECT_RECONCILIATION_REQUIRED:forge-desktop-api-99:timeout"
+        )
+        XCTAssertTrue(reconcile.message.contains("forge-desktop-api-99"))
+        XCTAssertFalse(reconcile.message.contains("timeout"))
+        XCTAssertTrue(reconcile.effectReviewRequired)
+
+        let unknown = NativeWorkspace.agentTurnFailure("CUSTOM_PROVIDER_ERROR")
+        XCTAssertEqual(unknown.message,"CUSTOM_PROVIDER_ERROR")
+        XCTAssertTrue(unknown.effectReviewRequired)
+    }
+
     @MainActor
     func testFailedComposerRecoveryNeverOverwritesNewInput() {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
