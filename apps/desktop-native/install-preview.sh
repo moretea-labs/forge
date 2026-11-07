@@ -7,6 +7,7 @@ APP="$HOME/Applications/Forge.app"
 TMP="/tmp/Forge-native-preview.app"
 
 cd "$ROOT"
+SOURCE_REVISION="$(git rev-parse HEAD)"
 
 swift test --package-path apps/desktop-native
 swift build -c release --package-path apps/desktop-native
@@ -59,3 +60,19 @@ rm -rf apps/desktop/src-tauri/target/release/bundle/macos/ForgeCSSStartupProbe.a
 rm -rf apps/desktop/src-tauri/target/release/bundle/macos/ForgeBootstrapProbe.app
 
 open "$APP"
+
+# The installer is the canonical preview activation path. Verify that the old
+# product process was retired and exactly one newly launched product exists.
+PREVIEW_PIDS=""
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+  PREVIEW_PIDS="$(pgrep -f "^$APP/Contents/MacOS/Forge$" 2>/dev/null || true)"
+  PREVIEW_COUNT="$(printf '%s\n' "$PREVIEW_PIDS" | sed '/^$/d' | wc -l | tr -d ' ')"
+  if [ "$PREVIEW_COUNT" = "1" ]; then
+    echo "Forge preview installed revision=$SOURCE_REVISION pid=$PREVIEW_PIDS"
+    exit 0
+  fi
+  sleep 0.25
+done
+
+echo "Forge preview activation failed: expected exactly one product process, found ${PREVIEW_COUNT:-0}" >&2
+exit 1
