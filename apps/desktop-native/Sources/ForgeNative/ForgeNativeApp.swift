@@ -1033,7 +1033,7 @@ private struct AgentChangesPane: View {
                                     in:RoundedRectangle(cornerRadius:8,style:.continuous))
                 }
                 .buttonStyle(.plain)
-                .disabled(model.changesLoading)
+                .disabled(model.changesLoading || focusedLoading)
                 .help("刷新改动")
 
                 Button {
@@ -1104,6 +1104,7 @@ private struct AgentChangesPane: View {
                                                 in:RoundedRectangle(cornerRadius:8,style:.continuous))
                                 }
                                 .buttonStyle(.plain)
+                                .disabled(focusedLoading)
 
                                 ForEach(changes.nameOnly,id:\.self) { path in
                                     Button {
