@@ -351,7 +351,7 @@ export function applySafePatch(repository: RepositoryRecord, input: {
         try {
           session = adoptEditSessionSuccessorHead(repository.canonicalRoot, session.sessionId, { binding: input.binding });
           expectedRevision = session.currentRevision;
-          recoveredSession = { reason: 'Existing Work-bound edit session adopted a proven non-overlapping successor HEAD.', previousSessionId, newSessionId: session.sessionId };
+          recoveredSession = { reason: 'Existing edit session adopted a proven non-overlapping successor HEAD.', previousSessionId, newSessionId: session.sessionId };
           const retry = preflightChunk(repository, group, chunkIndex, refresh);
           if (retry.failures.length === 0) {
             session = applyEditOperations(repository.canonicalRoot, policy, session.sessionId, retry.operations.map(stripInternalIndex), { expectedRevision, maxBatchOperations: MAX_SAFE_PATCH_CHUNK_SIZE, binding: input.binding });

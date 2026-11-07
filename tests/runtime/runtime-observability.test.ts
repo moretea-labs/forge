@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
+import { seedHistoricalWorkHandle } from '../helpers/historical-work-handle';
 import { spawnSync } from 'child_process';
-import { createHash } from 'crypto';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -20,7 +20,7 @@ import type { ExecutionJob } from '../../src/runtime/execution/jobs/types';
 import type { TaskLedgerProjection } from '../../src/cli/controller/task-ledger';
 import { flushMcpDiagnostics, recordMcpIncident, recordMcpTiming } from '../../src/runtime/diagnostics/mcp-timing';
 import { classifyForgeIncidentForRepair, maybeRegisterMcpIncidentRepair } from '../../src/runtime/diagnostics/incident-repair';
-import { callRuntimeTool, sessionlessFacadeControllerAuthorityMatches } from '../../adapters/mcp/runtime-gateway/runtime-tools';
+import { callRuntimeTool } from '../../adapters/mcp/runtime-gateway/runtime-tools';
 import { authenticatedFacadeControllerIdentity } from '../../adapters/mcp/runtime-gateway/controller-authority-adapter';
 import { createMcpToolContext as createMultiRepositoryContext } from '../../adapters/mcp/multi-repository';
 import { resolveControllerAccessState, persistControllerAccessMode, configuredControllerAccessMode } from '../../adapters/mcp/access-mode';
@@ -35,19 +35,18 @@ import { collectRuntimeSourceIdentity, rotateRuntimeGeneration } from '../../src
 import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 import { collectWorkLifecycleAttention, workLifecycleAttentionBlocksReadiness } from '../../src/runtime/control-plane/execution/work-lifecycle-audit';
 import { sampleRepositoryGitStatusForRepositories } from '../../src/runtime/projections/git-status-sampler';
-import { cancelWorkContract, createWorkContract, getWorkContract, listWorkContracts, recordWorkCompletionReceipt, recordWorkImplementationReview, reviseWorkSemanticContext, transitionWorkContractPhase, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { getWorkContract, listWorkContracts } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { implementationReviewChangedPathDigest } from '../../packages/kernel/work/domain/implementation-review';
-import { claimControllerSession } from '../../packages/kernel/controller/api/index';
-import { listWorkContinuationSchedules } from '../../src/runtime/workflow/schedules/work-continuation';
 import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
 import { runHandoffInboxApplication } from '../../src/runtime/control-plane/facade/handoff-inbox-application';
-import { writeWorkHandle, type WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
+import { WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { PREFERRED_CONTROLLER_TOOL_NAMES, PREFERRED_FACADE_TOOL_NAMES } from '../../adapters/mcp/toolset-names';
 import { FORGE_VERSION } from '../../src/cli/controller/runtime-config';
 import {
   PROCESS_RUNNER_RELEASE_CANARY_CHILD_ARG,
   processRunnerReleaseCanaryChildCommand,
 } from '../../src/runtime/execution/process-runtime/canary';
+import { seedHistoricalWorkContract } from '../helpers/historical-work-contract';
 
 function observations(overrides: Partial<RuntimeHealthObservations> = {}): RuntimeHealthObservations {
   return {
@@ -98,9 +97,9 @@ function ledgerWithRunningTask(): TaskLedgerProjection {
     issueCount: 1,
     archivedIssueCount: 0,
     status: {
-      kind: 'active_work',
+      kind: 'active_run',
       severity: 'info',
-      label: 'Work in progress',
+      label: 'Run in progress',
       reason: 'fixture',
       nextAction: 'fixture',
     },
@@ -224,29 +223,6 @@ describe('runtime observability', () => {
       controllerAuthorityId: 'ctrl-durable-authority',
     });
   });
-  test('requires exact durable Work authority when modern MCP has no transport session', () => {
-    const authorityId = 'ctrl_exact_sessionless_authority';
-    const owner = {
-      schemaVersion: 1 as const,
-      workId: 'work-sessionless-authority',
-      controllerId: 'controller-a',
-      controllerType: 'chatgpt' as const,
-      sessionId: 'legacy-session-a',
-      authorityDigest: createHash('sha256').update(authorityId).digest('hex'),
-      principalId: 'principal-a',
-      controllerInstanceId: 'runtime-a',
-      claimGeneration: 1,
-      claimedAt: '2026-09-08T00:00:00.000Z',
-      leaseExpiresAt: '2026-09-08T01:00:00.000Z',
-    };
-
-    expect(sessionlessFacadeControllerAuthorityMatches(owner, { controllerAuthorityId: authorityId })).toBe(true);
-    expect(sessionlessFacadeControllerAuthorityMatches(owner, { controllerAuthorityId: 'wrong-authority' })).toBe(false);
-    expect(sessionlessFacadeControllerAuthorityMatches(owner, {})).toBe(false);
-    expect(sessionlessFacadeControllerAuthorityMatches({ ...owner, authorityDigest: undefined }, {})).toBe(false);
-    expect(sessionlessFacadeControllerAuthorityMatches(owner, { transportSessionId: 'legacy-session-b' })).toBe(true);
-  });
-
   test('keeps legacy terminal execution attention in history without resurrecting it as a current release blocker', () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-terminal-attention-ch-'));
     const repoId = 'repo-terminal-attention';
@@ -315,7 +291,7 @@ describe('runtime observability', () => {
       const store = { controllerHome, repoId: repository.repoId };
       const localEffectWorkId = 'work-local-effect-does-not-block-release';
 
-      createWorkContract(store, {
+      seedHistoricalWorkContract(store, {
         workId: localEffectWorkId,
         repoId: repository.repoId,
         checkoutId,
@@ -348,7 +324,7 @@ describe('runtime observability', () => {
       expect(sourceNeutralHealth.activeBlockers.map((item) => item.code)).not.toContain('ACTIVE_JOB_ATTENTION_REQUIRED');
 
       const repositoryWorkId = 'work-repository-change-still-blocks-release';
-      createWorkContract(store, {
+      seedHistoricalWorkContract(store, {
         workId: repositoryWorkId,
         repoId: repository.repoId,
         checkoutId,
@@ -362,7 +338,7 @@ describe('runtime observability', () => {
         checks: [],
         dispatchState: 'running',
       });
-      expect(collectWorkLifecycleAttention(controllerHome, repository)).toContainEqual(expect.objectContaining({
+      expect(collectWorkLifecycleAttention(controllerHome, repository)).not.toContainEqual(expect.objectContaining({
         jobId: `lifecycle:work_active:${repositoryWorkId}`,
       }));
     } finally {
@@ -376,7 +352,7 @@ describe('runtime observability', () => {
     expect(workLifecycleAttentionBlocksReadiness({ status: 'active_work_handle_missing' })).toBe(false);
     expect(workLifecycleAttentionBlocksReadiness({ status: 'active_worktree_missing' })).toBe(false);
     expect(workLifecycleAttentionBlocksReadiness({ status: 'terminal_work_cleanup_unsettled' })).toBe(false);
-    expect(workLifecycleAttentionBlocksReadiness({ status: 'work_branch_not_integrated' })).toBe(false);
+    expect(workLifecycleAttentionBlocksReadiness({ status: 'branch_not_integrated' })).toBe(false);
     expect(workLifecycleAttentionBlocksReadiness({ status: 'dirty_linked_worktree_unregistered' })).toBe(true);
   });
 
@@ -405,15 +381,15 @@ describe('runtime observability', () => {
       const findings = collectWorkLifecycleAttention(controllerHome, repository);
       expect(findings).toEqual(expect.arrayContaining([
         expect.objectContaining({ status: 'dirty_linked_worktree_unregistered' }),
-        expect.objectContaining({ status: 'work_branch_not_integrated' }),
+        expect.objectContaining({ status: 'branch_not_integrated' }),
       ]));
       rebuildRepositoryProjection(controllerHome, repository.repoId);
       const projection = readRepositoryProjectionSnapshot(controllerHome, repository.repoId).projection;
       expect(projection.currentAttention).toEqual(expect.arrayContaining([
         expect.objectContaining({ status: 'dirty_linked_worktree_unregistered' }),
       ]));
-      expect(projection.currentAttention).not.toContainEqual(expect.objectContaining({ status: 'work_branch_not_integrated' }));
-      expect(projection.attention).toContainEqual(expect.objectContaining({ status: 'work_branch_not_integrated' }));
+      expect(projection.currentAttention).not.toContainEqual(expect.objectContaining({ status: 'branch_not_integrated' }));
+      expect(projection.attention).toContainEqual(expect.objectContaining({ status: 'branch_not_integrated' }));
       const health = evaluateRuntimeHealth(observations({
         workers: {
           queueDepth: projection.queueDepth,
@@ -516,190 +492,6 @@ describe('runtime observability', () => {
     }
   });
 
-  test('audits immutable completion delivery and repository-owned legacy cleanup without false blockers', () => {
-    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-lifecycle-receipt-ch-'));
-    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-lifecycle-receipt-repo-'));
-    try {
-      spawnSync('git', ['init', '-b', 'main'], { cwd: repoRoot, stdio: 'ignore' });
-      spawnSync('git', ['config', 'user.email', 'forge-test@example.invalid'], { cwd: repoRoot, stdio: 'ignore' });
-      spawnSync('git', ['config', 'user.name', 'Forge Test'], { cwd: repoRoot, stdio: 'ignore' });
-      writeFileSync(join(repoRoot, 'README.md'), 'base\n');
-      spawnSync('git', ['add', '.'], { cwd: repoRoot, stdio: 'ignore' });
-      spawnSync('git', ['commit', '-m', 'base'], { cwd: repoRoot, stdio: 'ignore' });
-      const mainRevision = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).stdout.trim();
-      const repository = registerRepository({ path: repoRoot, controllerHome, defaultBranch: 'main' });
-      const checkoutId = repository.checkouts[0]!.checkoutId;
-      const now = new Date().toISOString();
-      const store = { controllerHome, repoId: repository.repoId };
-
-      const baseWork = (workId: string, state: 'ready' | 'cancelled' = 'ready') => {
-        const work = createWorkContract(store, {
-          workId,
-          repoId: repository.repoId,
-          checkoutId,
-          objective: `audit fixture ${workId}`,
-          acceptanceCriteria: [],
-          constraints: {},
-          requestedBy: 'system',
-          allowedPaths: [],
-          forbiddenPaths: [],
-          checks: [],
-          ...(state === 'ready' ? { phase: 'verification' as const } : {}),
-        });
-        return state === 'cancelled'
-          ? cancelWorkContract(store, workId, { summary: 'Audit fixture explicitly cancels terminal Work.' })
-          : work;
-      };
-      const handle = (workId: string, finalization: WorkHandleState['finalization']): WorkHandleState => ({
-        schemaVersion: 1,
-        workId,
-        sessionId: `session-${workId}`,
-        principalId: 'test',
-        repositoryId: repository.repoId,
-        checkoutId,
-        worktreePath: repoRoot,
-        branch: 'main',
-        managedWorktree: false,
-        workContractId: workId,
-        baseCommit: mainRevision,
-        expectedHead: mainRevision,
-        permissionSnapshotVersion: 1,
-        state: 'prepared',
-        createdAt: now,
-        updatedAt: now,
-        finalization,
-      });
-      const receipt = (workId: string, targetRevision: string) => ({
-        schemaVersion: 1 as const,
-        receiptId: `receipt-${workId}`,
-        source: 'controller_work' as const,
-        issueId: 'work',
-        taskId: workId,
-        workId,
-        targetBranch: 'main',
-        targetRevision,
-        sourceRevision: 'legacy-source-revision-that-is-not-the-delivered-head',
-        baseRevision: mainRevision,
-        changedPaths: [],
-        delivery: {
-          kind: 'commit' as const,
-          status: 'integrated' as const,
-          strategy: 'already_integrated' as const,
-          reachable: true,
-          recordedAt: now,
-        },
-        cleanup: { status: 'complete' as const, warnings: [], blockers: [], recordedAt: now },
-        verifiedAt: now,
-        recordedAt: now,
-      });
-      const approveNoChangeCompletion = (workId: string, sourceRevision: string) => {
-        transitionWorkContractPhase(store, workId, {
-          phase: 'verification', state: 'satisfied', dispatchState: 'terminal',
-          summary: 'The exact audit fixture candidate was verified before review.',
-        });
-        recordWorkImplementationReview(store, workId, {
-          schemaVersion: 1,
-          reviewId: `REV-${workId}`,
-          workId,
-          reviewerPrincipalId: 'runtime-observability-test',
-          decision: 'approved',
-          rationale: 'The exact no-change completion candidate was reviewed before recording its immutable receipt.',
-          findings: [],
-          sourceRevision,
-          workspaceFingerprint: `runtime-observability-${workId}-content`,
-          verificationWorkspaceFingerprint: `runtime-observability-${workId}-verification`,
-          changedPaths: [],
-          changedPathDigest: implementationReviewChangedPathDigest([]),
-          acceptanceCriteriaSummary: 'Lifecycle attention distinguishes immutable receipt delivery from cleanup ownership.',
-          verificationEvidence: [],
-          architectureEvidence: [],
-          recordedAt: now,
-        });
-      };
-
-      const completedWorkId = 'work-completed-audit-fixture';
-      baseWork(completedWorkId);
-      approveNoChangeCompletion(completedWorkId, mainRevision);
-      writeWorkHandle(controllerHome, handle(completedWorkId, {
-        validation: 'pending',
-        commit: 'pending',
-        merge: 'pending',
-        branchCleanup: 'pending',
-        worktreeCleanup: 'pending',
-      }));
-      recordWorkCompletionReceipt(store, completedWorkId, receipt(completedWorkId, mainRevision), 'completed_changed');
-      reviseWorkSemanticContext(store, completedWorkId, {
-        expectedRevision: getWorkContract(store, completedWorkId)!.semanticRevision!,
-        state: 'completed',
-        resultRefs: [`receipt:${completedWorkId}`],
-      });
-
-      spawnSync('git', ['switch', '-c', 'receipt-unreachable'], { cwd: repoRoot, stdio: 'ignore' });
-      writeFileSync(join(repoRoot, 'unreachable.txt'), 'unique\n');
-      spawnSync('git', ['add', 'unreachable.txt'], { cwd: repoRoot, stdio: 'ignore' });
-      spawnSync('git', ['commit', '-m', 'unreachable receipt'], { cwd: repoRoot, stdio: 'ignore' });
-      const unreachableRevision = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).stdout.trim();
-      spawnSync('git', ['switch', 'main'], { cwd: repoRoot, stdio: 'ignore' });
-      const unreachableWorkId = 'work-unreachable-receipt-fixture';
-      baseWork(unreachableWorkId);
-      approveNoChangeCompletion(unreachableWorkId, unreachableRevision);
-      writeWorkHandle(controllerHome, handle(unreachableWorkId, {
-        validation: 'done',
-        commit: 'done',
-        merge: 'done',
-        branchCleanup: 'done',
-        worktreeCleanup: 'done',
-      }));
-      recordWorkCompletionReceipt(store, unreachableWorkId, receipt(unreachableWorkId, unreachableRevision), 'completed_changed');
-      reviseWorkSemanticContext(store, unreachableWorkId, {
-        expectedRevision: getWorkContract(store, unreachableWorkId)!.semanticRevision!,
-        state: 'completed',
-        resultRefs: [`receipt:${unreachableWorkId}`],
-      });
-
-      const failedCleanupWorkId = 'work-failed-cleanup-fixture';
-      baseWork(failedCleanupWorkId, 'cancelled');
-      writeWorkHandle(controllerHome, handle(failedCleanupWorkId, {
-        validation: 'pending',
-        commit: 'pending',
-        merge: 'pending',
-        branchCleanup: 'failed',
-        worktreeCleanup: 'pending',
-      }));
-
-      const findings = collectWorkLifecycleAttention(controllerHome, repository);
-      expect(findings).not.toContainEqual(expect.objectContaining({
-        jobId: `lifecycle:completion_receipt_source_mismatch:${completedWorkId}`,
-      }));
-      expect(findings).not.toContainEqual(expect.objectContaining({
-        jobId: `lifecycle:terminal_work_cleanup_unsettled:${completedWorkId}`,
-      }));
-      expect(findings).toContainEqual(expect.objectContaining({
-        jobId: `lifecycle:completion_receipt_target_not_integrated:${unreachableWorkId}`,
-      }));
-      expect(findings).toContainEqual(expect.objectContaining({
-        jobId: `lifecycle:terminal_work_cleanup_unsettled:${failedCleanupWorkId}`,
-      }));
-
-      const projection = rebuildRepositoryProjection(controllerHome, repository.repoId);
-      expect(projection.attention).toContainEqual(expect.objectContaining({
-        jobId: `lifecycle:completion_receipt_target_not_integrated:${unreachableWorkId}`,
-      }));
-      expect(projection.currentAttention).not.toContainEqual(expect.objectContaining({
-        jobId: `lifecycle:completion_receipt_target_not_integrated:${unreachableWorkId}`,
-      }));
-      expect(projection.currentAttention).not.toContainEqual(expect.objectContaining({
-        jobId: `lifecycle:terminal_work_cleanup_unsettled:${failedCleanupWorkId}`,
-      }));
-      expect(projection.attention).toContainEqual(expect.objectContaining({
-        jobId: `lifecycle:terminal_work_cleanup_unsettled:${failedCleanupWorkId}`,
-      }));
-    } finally {
-      rmSync(controllerHome, { recursive: true, force: true });
-      rmSync(repoRoot, { recursive: true, force: true });
-    }
-  });
-
   test('uses the active canonical release branch for patch-equivalence instead of repository.defaultBranch', () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-lifecycle-cherry-ch-'));
     const repoRoot = mkdtempSync(join(tmpdir(), 'forge-lifecycle-cherry-repo-'));
@@ -729,10 +521,10 @@ describe('runtime observability', () => {
 
       const findings = collectWorkLifecycleAttention(controllerHome, repository);
       expect(findings).not.toContainEqual(expect.objectContaining({
-        jobId: 'lifecycle:work_branch_not_integrated:work/patch-equivalent',
+        jobId: 'lifecycle:branch_not_integrated:work/patch-equivalent',
       }));
       expect(findings).toContainEqual(expect.objectContaining({
-        jobId: 'lifecycle:work_branch_not_integrated:work/unique-patch',
+        jobId: 'lifecycle:branch_not_integrated:work/unique-patch',
       }));
     } finally {
       rmSync(controllerHome, { recursive: true, force: true });
@@ -978,102 +770,6 @@ describe('runtime observability', () => {
     }
   });
 
-  test('promotes only recurrent source-authority-proven Forge incidents into one canonical repair Work', () => {
-    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-incident-repair-controller-'));
-    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-incident-repair-repo-'));
-    try {
-      spawnSync('git', ['init', '-b', 'main'], { cwd: repoRoot, stdio: 'ignore' });
-      spawnSync('git', ['config', 'user.email', 'forge-test@example.invalid'], { cwd: repoRoot, stdio: 'ignore' });
-      spawnSync('git', ['config', 'user.name', 'Forge Test'], { cwd: repoRoot, stdio: 'ignore' });
-      writeFileSync(join(repoRoot, 'package.json'), '{\"name\":\"forge-incident-repair-fixture\",\"private\":true}\n');
-      spawnSync('git', ['add', '.'], { cwd: repoRoot, stdio: 'ignore' });
-      spawnSync('git', ['commit', '-m', 'fixture'], { cwd: repoRoot, stdio: 'ignore' });
-      const repository = registerRepository({ path: repoRoot, controllerHome, defaultBranch: 'main' });
-      const makeIncident = (index: number) => ({
-        traceId: `trace-recurrent-${index}`,
-        requestId: `request-recurrent-${index}`,
-        tool: index % 2 === 0 ? 'rh_work' : 'execute_command',
-        kind: 'tool_error' as const,
-        code: 'CONTROLLER_AUTHENTICATED_SESSION_REQUIRED',
-        message: 'reconnect or provide session_id through the authenticated MCP transport',
-        repoId: 'repo-business-affected',
-      });
-
-      expect(classifyForgeIncidentForRepair(makeIncident(1))).toMatchObject({ eligible: true, rootCode: 'CONTROLLER_AUTHENTICATED_SESSION_REQUIRED' });
-      expect(classifyForgeIncidentForRepair({ ...makeIncident(1), code: 'TOOL_NOT_FOUND' })).toMatchObject({ eligible: false });
-      expect(classifyForgeIncidentForRepair({
-        ...makeIncident(1),
-        tool: 'plugin_action_execute',
-        code: 'PLUGIN_BROWSER_DIAGNOSTICS_UNAVAILABLE',
-        message: 'Console and failed-request diagnostics require a Playwright/CDP-controlled page; native Apple Events sessions do not expose browser diagnostic events.',
-      })).toMatchObject({ eligible: false, reason: 'expected provider capability limitation PLUGIN_BROWSER_DIAGNOSTICS_UNAVAILABLE' });
-
-      let repairWorkId: string | undefined;
-      for (let index = 1; index <= 4; index += 1) {
-        const incident = makeIncident(index);
-        recordMcpIncident(controllerHome, incident);
-        const result = maybeRegisterMcpIncidentRepair({ controllerHome, runtimeSourceRoot: repoRoot, incident });
-        if (index < 3) {
-          expect(result).toMatchObject({ eligible: true, recurrent: false, occurrenceCount: index });
-          expect(result.workId).toBeUndefined();
-          continue;
-        }
-        if (index === 3) {
-          expect(result).toMatchObject({ eligible: true, recurrent: true, repairRepoId: repository.repoId, reusedExistingWork: false });
-          expect(result.workId).toBeTruthy();
-          // An incident record does not invent an external Controller session.
-          // It creates exactly one repair Work without starting a model turn.
-          // Even an authenticated session cannot re-enable retired continuation.
-          repairWorkId = result.workId;
-          claimControllerSession({ controllerHome, repoId: repository.repoId }, {
-            workId: repairWorkId!,
-            controllerId: 'incident-repair-chatgpt',
-            controllerType: 'chatgpt',
-            principalId: 'incident-repair-chatgpt',
-            controllerInstanceId: 'incident-repair-runtime',
-            sessionId: 'incident-repair-session',
-          });
-        } else {
-          expect(result).toMatchObject({ eligible: true, recurrent: true, workId: repairWorkId, reusedExistingWork: true });
-          expect(result.workId).toBe(repairWorkId);
-        }
-      }
-
-      const works = listWorkContracts({ controllerHome, repoId: repository.repoId, state: 'all', limit: 100 })
-        .filter((work) => work.requestId?.startsWith('forge-incident-repair:'));
-      expect(works).toHaveLength(1);
-      expect(works[0]).toMatchObject({
-        workId: repairWorkId,
-        requestedBy: 'system',
-        workKind: 'investigation',
-        semanticState: 'open',
-      });
-      expect(works[0]?.evidenceRefs.filter((entry) => entry.evidenceId?.startsWith('MCPINC-')).length).toBe(4);
-      const schedules = listWorkContinuationSchedules(controllerHome, repository.repoId, { workId: repairWorkId });
-      // Incident registration may record repair Work, but cannot create or
-      // reactivate an autonomous Controller schedule through any session.
-      expect(schedules.schedules).toHaveLength(0);
-
-      cancelWorkContract({ controllerHome, repoId: repository.repoId }, repairWorkId!, { summary: 'Close the prior repair generation before registering a successor.' });
-      const recurrentAfterTerminal = makeIncident(5);
-      recordMcpIncident(controllerHome, recurrentAfterTerminal);
-      const successor = maybeRegisterMcpIncidentRepair({ controllerHome, runtimeSourceRoot: repoRoot, incident: recurrentAfterTerminal });
-      expect(successor).toMatchObject({ eligible: true, recurrent: true, reusedExistingWork: false, repairRepoId: repository.repoId });
-      expect(successor.workId).toBeTruthy();
-      expect(successor.workId).not.toBe(repairWorkId);
-      const generations = listWorkContracts({ controllerHome, repoId: repository.repoId, state: 'all', limit: 100 })
-        .filter((work) => work.requestId?.startsWith('forge-incident-repair:'))
-        .sort((left, right) => (left.requestId ?? '').localeCompare(right.requestId ?? ''));
-      expect(generations).toHaveLength(2);
-      expect(generations.map((work) => work.requestId?.split(':').at(-1))).toEqual(['g1', 'g2']);
-      expect(getWorkContract({ controllerHome, repoId: repository.repoId }, successor.workId!)?.evidenceRefs)
-        .toEqual(expect.arrayContaining([expect.objectContaining({ title: 'incident repair predecessor' })]));
-    } finally {
-      rmSync(controllerHome, { recursive: true, force: true });
-      rmSync(repoRoot, { recursive: true, force: true });
-    }
-  });
-
   test('does not promote recurrent incidents when Runtime source authority cannot be proven', () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-incident-unmapped-controller-'));
     try {
@@ -1264,7 +960,7 @@ describe('runtime observability', () => {
 
       expect(result).toMatchObject({
         operation: 'resolve',
-        item: { id: 'HND-APPLICATION-PORT', workId: 'WORK-APPLICATION-PORT', status: 'resolved' },
+        item: { id: 'HND-APPLICATION-PORT', status: 'resolved' },
         continuationOccurrences: [],
       });
     } finally {

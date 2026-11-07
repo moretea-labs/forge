@@ -9,13 +9,6 @@ import {
   repositoryAccessPolicyPath,
   writeRepositoryAccessPolicy,
 } from '../src/runtime/control-plane/governance/access-policy';
-import {
-  getWorkContract,
-  listHandoffItems,
-  routeWorkStart,
-  runGoalWorkloop,
-  type GoalWorkloopContext,
-} from '../src/runtime/control-plane/facade';
 import { evaluatePolicyGate } from '../src/runtime/control-plane/facade/policy-gate';
 
 const tempRoots: string[] = [];
@@ -24,16 +17,6 @@ function controllerHome(): string {
   const root = mkdtempSync(join(tmpdir(), 'forge-access-policy-'));
   tempRoots.push(root);
   return root;
-}
-
-function workloopContext(home: string): GoalWorkloopContext {
-  const store = { controllerHome: home, repoId: 'repo-test' };
-  return {
-    workStore: store,
-    handoffStore: store,
-    repoId: 'repo-test',
-    availableChecks: [],
-  };
 }
 
 afterEach(() => {
@@ -118,102 +101,4 @@ describe('policy gate access mode integration', () => {
     expect(evaluatePolicyGate({ risk: 'destructive', accessMode: 'full_access' }).decision).toBe('approval_required');
     expect(evaluatePolicyGate({ risk: 'raw_secret_config', accessMode: 'full_access' }).decision).toBe('denied');
   });
-});
-
-describe('access-aware work routing', () => {
-  test('legacy request mode admits an explicit Work without an approval handoff', () => {
-    const home = controllerHome();
-    const ctx = workloopContext(home);
-    writeRepositoryAccessPolicy(home, 'repo-test', 'request');
-    const result = routeWorkStart(ctx, {
-      objective: 'Update several local repository files',
-      request: { objective: 'Update several local repository files', scopeClear: true, requiresApproval: true },
-      requestedBy: 'user',
-    });
-
-    expect(result.status).toBe('ok');
-    // Invoking rh_work is the explicit durable-Work choice; size never decides it.
-    expect(result.data.workContractCreated).toBe(true);
-    expect(result.data.policy).toMatchObject({ decision: 'allowed' });
-    expect(listHandoffItems({ controllerHome: home, repoId: 'repo-test', status: 'pending' })).toHaveLength(0);
-  });
-
-  test('legacy request mode does not require an approval hint before admitting Work', () => {
-    const home = controllerHome();
-    const ctx = workloopContext(home);
-    writeRepositoryAccessPolicy(home, 'repo-test', 'request');
-
-    const result = routeWorkStart(ctx, {
-      objective: 'Update several local repository files',
-      request: { objective: 'Update several local repository files', scopeClear: true },
-      requestedBy: 'user',
-    });
-
-    expect(result.status).toBe('ok');
-    expect(result.data.workContractCreated).toBe(true);
-    expect(result.data.policy).toMatchObject({ decision: 'allowed' });
-    expect(listHandoffItems({ controllerHome: home, repoId: 'repo-test', status: 'pending' })).toHaveLength(0);
-  });
-
-  test('repository full access admits explicit bounded Work', () => {
-    const home = controllerHome();
-    const ctx = workloopContext(home);
-    writeRepositoryAccessPolicy(home, 'repo-test', 'full_access');
-
-    const result = routeWorkStart(ctx, {
-      objective: 'Update several local repository files',
-      request: { objective: 'Update several local repository files', scopeClear: true, requiresApproval: true },
-      requestedBy: 'user',
-    });
-
-    expect(result.status).toBe('ok');
-    expect(result.data.workContractCreated).toBe(true);
-    expect(result.data.policy).toMatchObject({ decision: 'allowed' });
-  });
-
-  test('rh_work constraints may override the repository default for one task', () => {
-    const home = controllerHome();
-    const ctx = workloopContext(home);
-    writeRepositoryAccessPolicy(home, 'repo-test', 'request');
-
-    const result = runGoalWorkloop(ctx, 'start', {
-      objective: 'Update several local repository files',
-      expected_files: 4,
-      scope_clear: true,
-      requires_approval: true,
-      constraints: { accessMode: 'full_access' },
-      requested_by: 'user',
-    });
-
-    expect(result.status).toBe('ok');
-    expect(result.data.workContractCreated).toBe(true);
-    expect(result.data.policy).toMatchObject({ decision: 'allowed' });
-    expect(readRepositoryAccessPolicy(home, 'repo-test').mode).toBe('request');
-    const workId = String((result.data.work as { workId?: string }).workId ?? '');
-    expect(getWorkContract({ controllerHome: home, repoId: 'repo-test' }, workId)?.constraints.accessMode).toBe('full_access');
-  });
-  test('running work keeps its captured mode and current-workspace policy after repository settings change', () => {
-    const home = controllerHome();
-    const ctx = workloopContext(home);
-    writeRepositoryAccessPolicy(home, 'repo-test', 'full_access');
-    const result = runGoalWorkloop(ctx, 'start', {
-      objective: 'Refactor local source safely',
-      expected_files: 5,
-      expected_changed_lines: 250,
-      scope_clear: true,
-      requires_recovery: true,
-      constraints: { workspace_mode: 'current' },
-      requested_by: 'user',
-    });
-    const workId = String((result.data.work as { workId?: string }).workId ?? '');
-    const before = getWorkContract({ controllerHome: home, repoId: 'repo-test' }, workId)!;
-    expect(before.constraints.accessMode).toBe('full_access');
-    expect(before.worktreePolicy.required).toBe(false);
-
-    writeRepositoryAccessPolicy(home, 'repo-test', 'request');
-    const after = getWorkContract({ controllerHome: home, repoId: 'repo-test' }, workId)!;
-    expect(after.constraints.accessMode).toBe('full_access');
-    expect(readRepositoryAccessPolicy(home, 'repo-test').mode).toBe('request');
-  });
-
 });

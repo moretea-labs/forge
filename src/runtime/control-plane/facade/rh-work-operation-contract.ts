@@ -7,13 +7,10 @@
  * or reject valid lifecycle actions that the schema already exposes.
  */
 export const RH_WORK_OPERATIONS = [
-  'start',
   'repair',
   'list',
   'get',
   'get_contract',
-  'revise',
-  'complete',
   'launcher_start',
   'requirement_create',
   'requirement_get',
@@ -34,8 +31,6 @@ export const RH_WORK_OPERATIONS = [
   'workflow_reconcile',
   'learning_record',
   'learning_feedback',
-  'outcome_record',
-  'experience_record',
 ] as const;
 
 /**
@@ -44,37 +39,9 @@ export const RH_WORK_OPERATIONS = [
  * controller-claim vocabulary instead of silently translating it.
  */
 
-export const RH_WORK_MODEL_OPERATIONS = [
-  'start',
-  'repair',
-  'list',
-  'get',
-  'get_contract',
-  'revise',
-  'complete',
-  'launcher_start',
-  'requirement_create',
-  'requirement_get',
-  'requirement_revise',
-  'requirement_promote_candidate',
-  'plan_create',
-  'plan_get',
-  'plan_revise',
-  'plan_list',
-  'schedule_create',
-  'schedule_list',
-  'schedule_get',
-  'schedule_pause',
-  'schedule_resume',
-  'schedule_delete',
-  'schedule_trigger',
-  'workflow_execute',
-  'workflow_reconcile',
-  'learning_record',
-  'learning_feedback',
-  'outcome_record',
-  'experience_record',
-] as const;
+// One registry is authoritative for both server admission and model schema.
+// Historical Work remains readable through list/get/get_contract only.
+export const RH_WORK_MODEL_OPERATIONS = RH_WORK_OPERATIONS;
 
 export type RhWorkOperation = (typeof RH_WORK_OPERATIONS)[number];
 

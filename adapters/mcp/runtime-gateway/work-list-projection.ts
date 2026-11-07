@@ -8,9 +8,9 @@ import { buildFacadeResult } from '../../../src/runtime/control-plane/facade';
 import { result } from './result-adapter';
 
 /**
- * Bounded read-only collection projection for current and recent terminal semantic Work.
- * Collection reads are separate from the semantic start/get/revise/complete
- * mutation adapter so listing can never widen or gate semantic completion.
+ * Bounded read-only legacy Work history for audit/migration only.
+ * Open legacy records remain visible because old releases may have persisted them;
+ * their stored state never grants current execution, progress, or lifecycle authority.
  */
 export function callRhWorkListProjection(
   store: WorkContractStoreOptions,
@@ -20,8 +20,8 @@ export function callRhWorkListProjection(
   if (operation !== 'list') return undefined;
   const limit = Math.max(1, Math.min(Math.trunc(typeof args.limit === 'number' ? args.limit : 50), 100));
   const historyLimit = Math.min(limit, 50);
-  const works = listWorkContracts({ ...store, state: 'active', limit });
-  const recentHistory = [
+  const openLegacyRecords = listWorkContracts({ ...store, state: 'active', limit });
+  const recentTerminalHistory = [
     ...listWorkContracts({ ...store, state: 'completed', limit: historyLimit }),
     ...listWorkContracts({ ...store, state: 'cancelled', limit: historyLimit }),
   ]
@@ -47,10 +47,11 @@ export function callRhWorkListProjection(
     };
   };
   return result(buildFacadeResult({
-    summary: `${works.length} current and ${recentHistory.length} recent terminal semantic Work(s) in this repository; use get for detailed result refs and objective context.`,
+    summary: `${openLegacyRecords.length} open legacy and ${recentTerminalHistory.length} recent terminal Work record(s) retained read-only for audit/migration.`,
     data: {
-      works: works.map(compact),
-      recentHistory: recentHistory.map(compact),
+      readOnlyLegacy: true,
+      openLegacyRecords: openLegacyRecords.map(compact),
+      recentTerminalHistory: recentTerminalHistory.map(compact),
       bounded: true,
       limit,
       historyLimit,

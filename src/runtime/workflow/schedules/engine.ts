@@ -3,14 +3,12 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { getRepository } from '../../../cli/repositories/registry';
 import { findExecutionJob, listActiveExecutionJobs, listExecutionJobs } from '../../execution/jobs/store';
-import { executionJobBelongsToWork } from '../../execution/work-activity';
 import { readRepositoryProjection } from '../../projections/materialized-view';
 import {
   applyRuntimeMaintenance,
   previewAutomaticRuntimeMaintenance,
   type RuntimeMaintenanceActionId,
 } from '../../recovery/maintenance-executor';
-import { getWorkContract, semanticWorkState } from '../../../../packages/kernel/work/api/index';
 import {
   applyScheduleFailure,
   cronDue,
@@ -40,24 +38,23 @@ import type {
 
 const execFileAsync = promisify(execFile);
 const LIVE_MAINTENANCE_OPERATION = 'runtime_maintenance_apply';
-const EXTERNAL_CONTROLLER_WAKE_OPERATION = 'external_controller_wake';
-const CONTROLLER_PROGRESSION_OPERATION = 'controller_progression';
+const RETIRED_AUTONOMOUS_CONTINUATION_OPERATIONS = new Set(['external_controller_wake', 'controller_progression']);
 const BROWSER_PROBE_OPERATION = 'browser_probe';
 const GITHUB_ISSUE_WATCH_OPERATION = 'github_issue_watch';
 
 function isDeterministicSchedule(schedule: RepositorySchedule): boolean {
   // Kernel executes only typed, bounded dispatch operations.
   return schedule.action.operation === LIVE_MAINTENANCE_OPERATION
-    || schedule.action.operation === EXTERNAL_CONTROLLER_WAKE_OPERATION
-    || schedule.action.operation === CONTROLLER_PROGRESSION_OPERATION
     || schedule.action.operation === BROWSER_PROBE_OPERATION
     || schedule.action.operation === GITHUB_ISSUE_WATCH_OPERATION;
 }
 
-function retiredScheduleReason(schedule: RepositorySchedule): string | undefined {
-  if (schedule.action.operation === EXTERNAL_CONTROLLER_WAKE_OPERATION
-    || schedule.action.operation === CONTROLLER_PROGRESSION_OPERATION) {
+export function retiredScheduleReason(schedule: RepositorySchedule): string | undefined {
+  if (RETIRED_AUTONOMOUS_CONTINUATION_OPERATIONS.has(schedule.action.operation)) {
     return 'RETIRED_AUTONOMOUS_CONTINUATION_SCHEDULE';
+  }
+  if (typeof schedule.action.arguments?.work_id === 'string' && schedule.action.arguments.work_id.trim()) {
+    return 'RETIRED_WORK_BOUND_SCHEDULE';
   }
   if (schedule.action.operation === 'chatgpt_browser_prompt') return 'RETIRED_WORK_FREE_PROMPT_SCHEDULE';
   if (schedule.action.operation === 'assistant_routine_execute') return 'RETIRED_PERSONAL_ASSISTANT_SCHEDULE';
@@ -79,27 +76,12 @@ async function workspaceDirty(controllerHome: string, repoId: string): Promise<b
   }
 }
 
-function workBoundScheduleWorkId(schedule: RepositorySchedule): string | undefined {
-  if (schedule.action.operation !== EXTERNAL_CONTROLLER_WAKE_OPERATION
-    && schedule.action.operation !== CONTROLLER_PROGRESSION_OPERATION
-    && schedule.action.operation !== BROWSER_PROBE_OPERATION) return undefined;
-  const value = schedule.action.arguments?.work_id;
-  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
-}
-
 async function stopReason(controllerHome: string, schedule: RepositorySchedule): Promise<string | undefined> {
   const projection = readRepositoryProjection(controllerHome, schedule.repoId);
-  const workId = workBoundScheduleWorkId(schedule);
-  const work = workId ? getWorkContract({ controllerHome, repoId: schedule.repoId }, workId) : undefined;
   if (schedule.stopConditions.includes('human_review_required')) {
     const pendingUserRequests = listUserRequests(controllerHome, 'pending');
-    if (workId) {
-      const request = pendingUserRequests.find((item) => item.targetScope?.workId === workId);
-      if (request) return `Work ${workId} has pending UserRequest ${request.requestId} requiring human action.`;
-    } else {
-      const request = pendingUserRequests.find((item) => item.targetScope?.repoId === schedule.repoId);
-      if (request) return `Repository ${schedule.repoId} has pending UserRequest ${request.requestId}.`;
-    }
+    const request = pendingUserRequests.find((item) => item.targetScope?.repoId === schedule.repoId);
+    if (request) return `Repository ${schedule.repoId} has pending UserRequest ${request.requestId}.`;
   }
   if (schedule.stopConditions.includes('release_ready') && projection.releaseFrozen) return 'Repository is in release freeze.';
   if (schedule.stopConditions.includes('external_blocker')) {
@@ -111,10 +93,6 @@ async function stopReason(controllerHome: string, schedule: RepositorySchedule):
     }
     const recentInfrastructureFailure = listExecutionJobs(controllerHome, schedule.repoId, 20).find((job) => {
       if (!['failed', 'timed_out', 'orphaned'].includes(job.status) || !job.error) return false;
-      if (workId) {
-        if (!work || Date.parse(job.createdAt) < Date.parse(work.createdAt)) return false;
-        if (!executionJobBelongsToWork(job, workId)) return false;
-      }
       if (job.error.retryable) return true;
       return /(?:network|connection|upstream|external|remote|github|tunnel|502|503|timeout)/i.test(`${job.error.code} ${job.error.message}`);
     });
@@ -241,9 +219,8 @@ export async function evaluateSchedule(
     updatedAt: timestamp,
   });
 
-  // Semantic/model-owned schedule actions record the trigger only. A trigger is
-  // continuation input for the external Controller/Supervisor, not a human
-  // blocker and therefore must not manufacture Handoff/UserRequest state.
+  // Unknown actions are never executed implicitly. Record a bounded skipped
+  // occurrence rather than manufacturing a task, controller turn or Handoff.
   if (!isDeterministicSchedule(schedule)) {
     const recorded = decideOccurrence(
       controllerHome,
@@ -251,7 +228,7 @@ export async function evaluateSchedule(
       occurrence,
       'operation_blocked',
       'skipped',
-      'Schedule trigger recorded for external Controller continuation; no Kernel ExecutionJob or human Handoff was created.',
+      `Unsupported schedule operation ${schedule.action.operation}; no execution or Handoff was created.`,
       occurrenceDecisionEvidence({ operation: schedule.action.operation, trigger: occurrence.triggerContext?.source }),
     );
     updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({ lastTriggeredAt: timestamp, lastOccurrenceId: occurrenceId }));
@@ -443,20 +420,6 @@ export async function evaluateSchedule(
   }
 
   if (schedule.action.operation === BROWSER_PROBE_OPERATION) {
-    const workId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
-    if (workId) {
-      const workStore = { controllerHome, repoId: schedule.repoId };
-      const work = getWorkContract(workStore, workId);
-      if (!work) {
-        updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({ enabled: false, pausedReason: `Work ${workId} no longer exists.`, lastTriggeredAt: timestamp, lastOccurrenceId: occurrenceId }));
-        return decideOccurrence(controllerHome, schedule, occurrence, 'operation_blocked', 'skipped', `SCHEDULE_BROWSER_PROBE_WORK_NOT_FOUND:${workId}`);
-      }
-      if (semanticWorkState(work) !== 'open') {
-        updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({ enabled: false, pausedReason: `Work ${workId} is terminal (${work.semanticState}).`, lastTriggeredAt: timestamp, lastOccurrenceId: occurrenceId }));
-        return decideOccurrence(controllerHome, schedule, occurrence, 'nothing_to_do', 'skipped', `Work ${workId} is terminal (${work.semanticState}); browser watcher stopped before probing.`);
-      }
-    }
-
     try {
       const repository = getRepository(schedule.repoId, controllerHome, { includeRemoved: true });
       const probe = await executeScheduledBrowserProbe({ controllerHome, repository, occurrenceId, args });
@@ -480,7 +443,7 @@ export async function evaluateSchedule(
           ...(current.enabled ? { pausedReason: undefined } : {}),
         }));
         return decideOccurrence(controllerHome, observedSchedule, occurrence, 'operation_blocked', 'skipped',
-          'Browser ' + (workId ? 'watcher' : 'keepalive') + ' requires authentication: ' + (probe.authReason ?? 'login marker matched'),
+          'Browser observation requires authentication: ' + (probe.authReason ?? 'login marker matched'),
           { ...observationEvidence, authReason: probe.authReason });
       }
 

@@ -39,10 +39,9 @@ struct ForgeNativeApp: App {
                 }.keyboardShortcut("k")
                 Divider()
                 Button("显示会话") { workspace.show(.agent) }.keyboardShortcut("1")
-                Button("显示 Work") { workspace.show(.work) }.keyboardShortcut("2")
-                Button("显示 Requirement") { workspace.show(.requirement) }.keyboardShortcut("3")
-                Button("显示 Plan") { workspace.show(.plan) }.keyboardShortcut("4")
-                Button("显示知识库") { workspace.show(.knowledge) }.keyboardShortcut("5")
+                Button("显示 Requirement") { workspace.show(.requirement) }.keyboardShortcut("2")
+                Button("显示 Plan") { workspace.show(.plan) }.keyboardShortcut("3")
+                Button("显示知识库") { workspace.show(.knowledge) }.keyboardShortcut("4")
                 Divider()
                 Button("刷新项目") { Task { await workspace.refresh() } }.keyboardShortcut("r")
             }
@@ -314,9 +313,11 @@ private struct ForgeWorkspaceView: View {
                     .font(.system(size:13,weight:.semibold))
                 Spacer()
                 if model.page == .agent, let thread = model.thread {
-                    Label(thread.checkoutId == nil ? "未绑定" : "Checkout", systemImage:"point.3.connected.trianglepath.dotted")
+                    Label(thread.checkoutId == nil ? "未绑定" : (model.checkoutBranch ?? "Checkout"),
+                          systemImage:"point.3.connected.trianglepath.dotted")
                         .font(.system(size:10))
                         .foregroundStyle(ForgePalette.secondary)
+                        .lineLimit(1)
                 }
                 Button { Task { await model.refresh() } } label: {
                     Image(systemName:"arrow.clockwise")
@@ -331,7 +332,7 @@ private struct ForgeWorkspaceView: View {
             .zIndex(1)
             switch model.page {
             case .agent: AgentPane(model:model)
-            case .work,.requirement,.plan: RecordsPane(model:model)
+            case .requirement,.plan: RecordsPane(model:model)
             case .knowledge: KnowledgePane(model:model)
             case .runtime: TextDetailPane(title:"Runtime / Recovery",subtitle:"仅显示真实健康信息；不会修改被冻结的 Runtime。",
                                            text:model.detail,refresh:{ Task { await model.loadPage() } })
@@ -364,7 +365,7 @@ private struct AgentPane: View {
                                     .accessibilityHidden(true)
                                 Text("开始一个 Agent 任务")
                                     .font(.system(size:24,weight:.medium)).tracking(-0.45)
-                                Text("直接描述要完成的结果。Forge 会继续使用当前项目、checkout 与既有 Work 事实。")
+                                Text("直接描述要完成的结果。Forge 会使用当前项目与 checkout；Requirement / Plan 作为可浏览语义上下文，不建立第二套执行状态。")
                                     .font(.system(size:12))
                                     .foregroundStyle(ForgePalette.secondary)
                                     .multilineTextAlignment(.center)
@@ -627,50 +628,6 @@ private struct AgentPane: View {
                     .disabled(model.projects.isEmpty || model.busy)
                     .help("切换项目会创建新的会话，避免改变已有 Agent 上下文")
 
-                    Menu {
-                        Button {
-                            model.selectAgentWork(nil)
-                        } label: {
-                            if model.thread?.workId == nil {
-                                Label("不关联 Work",systemImage:"checkmark")
-                            } else {
-                                Text("不关联 Work")
-                            }
-                        }
-                        if !model.agentWorks.isEmpty { Divider() }
-                        ForEach(model.agentWorks) { work in
-                            Button {
-                                model.selectAgentWork(work.id)
-                            } label: {
-                                if model.thread?.workId == work.id {
-                                    Label(work.title,systemImage:"checkmark")
-                                } else {
-                                    Text(work.title)
-                                }
-                            }
-                        }
-                    } label: {
-                        HStack(spacing:5) {
-                            Image(systemName:"checkmark.square")
-                                .font(.system(size:9.5,weight:.medium))
-                            Text(model.selectedAgentWork?.title ?? model.thread?.workId ?? "关联 Work")
-                                .lineLimit(1)
-                                .frame(maxWidth:180,alignment:.leading)
-                            Image(systemName:"chevron.down")
-                                .font(.system(size:7,weight:.semibold))
-                                .foregroundStyle(.tertiary)
-                        }
-                        .font(.system(size:10.5,weight:.medium))
-                        .foregroundStyle(ForgePalette.secondary)
-                        .padding(.horizontal,8)
-                        .frame(height:25)
-                        .background(ForgePalette.softFill,
-                                    in:RoundedRectangle(cornerRadius:8,style:.continuous))
-                    }
-                    .menuStyle(.borderlessButton)
-                    .fixedSize()
-                    .disabled(model.busy)
-                    .help("仅关联已有 Forge Work；不会创建、关闭或修改 Work")
 
                     Menu {
                         ForEach(model.agentModels) { option in

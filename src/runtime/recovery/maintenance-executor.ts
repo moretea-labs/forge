@@ -8,14 +8,7 @@ import { ensureRepositoryRuntimeStorage, type RepositoryRuntimeStorageReport } f
 import { getRepository, selectRepositoryCheckout, setRepositoryCheckoutLifecycle } from '../../cli/repositories/registry';
 import type { RepositoryRecord } from '../../cli/repositories/types';
 import { rebuildRepositoryProjection } from '../projections/materialized-view';
-import { getWorkContract, readWorkContractStore, semanticWorkState } from '../../../packages/kernel/work/api/index';
 import { assertOwnedResourceCleanupTarget, listOwnedResources, markOwnedResourceCleaned, type OwnedResource } from '../../../packages/kernel/identity/api/index';
-import { listPlanContracts } from '../control-plane/facade/plan-contract-store';
-import { updateRepositoryWorkPlacement } from '../control-plane/facade/repository-work-admission';
-import { readRequirement } from '../control-plane/persistence/requirement-store';
-import { listControlPlaneRecords, type ControlPlaneRecord } from '../control-plane/persistence/sqlite-store';
-import type { WorkContract } from '../control-plane/facade/types';
-import { listSchedules } from '../../../packages/kernel/scheduler/api/index';
 import {
   collectRuntimeProcesses,
   removeRuntimeTempEntry,
@@ -29,18 +22,13 @@ import {
   type RuntimeStorageRepairPreview,
 } from './local-jobs-repair';
 import { gcTerminalProcesses, type ProcessGcResult } from '../execution/process-runtime/gc';
-import { cleanupStaleWorkVerificationSnapshots, type WorkVerificationSnapshotRetentionReport } from '../control-plane/execution/work-verification-snapshot';
-import { cleanupGeneratedRepositoryCheckoutCaches, cleanupReleasableIosTestEvidence, inspectRepositoryIosTestEvidence, releasableIosTestEvidenceWorkIds, type IosTestEvidenceInventoryReport, type IosTestEvidenceRetentionReport, type RepositoryGeneratedCacheRetentionReport } from '../control-plane/generated-cache-retention';
-import { cleanupWorkPreservationArtifacts, type CleanupArtifactRetentionReport } from '../control-plane/cleanup-artifact-retention';
+import { cleanupGeneratedRepositoryCheckoutCaches, cleanupReleasableIosTestEvidence, inspectRepositoryIosTestEvidence, type IosTestEvidenceInventoryReport, type IosTestEvidenceRetentionReport, type RepositoryGeneratedCacheRetentionReport } from '../control-plane/generated-cache-retention';
 import {
   cleanupRuntimeQuarantine,
   quarantineRuntimePath,
   runtimeLegacyCheckQuarantineRoot,
   type RuntimeQuarantineRetentionReport,
 } from './quarantine-retention';
-import { readWorkHandle, resolveWorkDeliveryTargetBranch } from '../control-plane/execution/work-handle-store';
-import { listRecoverableProcessRecords } from '../execution/process-runtime/store';
-import { isManagedProcessActive } from '../execution/process-runtime/types';
 import { managedBranchOwnedResourceId, managedBranchOwnedResourceLocator, managedWorkspaceOwnedResourceId } from '../execution/managed-workspace';
 
 export type RuntimeMaintenanceActionId =
@@ -57,9 +45,7 @@ export type RuntimeMaintenanceCandidateKind =
   | 'missing_job_metadata'
   | 'runtime_storage_warning'
   | 'stale_runtime_temp_entry'
-  | 'stale_work_contract'
   | 'stale_edit_session'
-  | 'retained_migrated_work'
   | 'unowned_managed_worktree';
 
 export interface RuntimeMaintenanceRepository {
@@ -121,9 +107,7 @@ export interface RuntimeMaintenanceSummary {
   missingJobMetadata: number;
   runtimeStorageWarnings: number;
   staleRuntimeTempEntries: number;
-  staleWorkContracts: number;
   staleEditSessions: number;
-  retainedMigratedWork: number;
   unownedManagedWorktrees: number;
 }
 
@@ -153,12 +137,10 @@ export interface RuntimeMaintenanceApplyResult extends Omit<RuntimeMaintenanceSt
   runtimeStorageRepairApply?: RuntimeStorageRepairApplyResult;
   /** Existing bounded terminal-process retention, run only during explicit full maintenance. */
   processGc?: ProcessGcResult;
-  verificationSnapshotGc?: WorkVerificationSnapshotRetentionReport;
   quarantineGc?: RuntimeQuarantineRetentionReport;
   generatedCacheGc?: RepositoryGeneratedCacheRetentionReport;
   iosTestEvidenceGc?: IosTestEvidenceRetentionReport;
   iosTestEvidenceInventory?: IosTestEvidenceInventoryReport;
-  cleanupArtifactGc?: CleanupArtifactRetentionReport;
   projection?: unknown;
 }
 
@@ -265,9 +247,7 @@ function summarize(candidates: RuntimeMaintenanceCandidate[]): RuntimeMaintenanc
     missingJobMetadata: candidates.filter((candidate) => candidate.kind === 'missing_job_metadata').length,
     runtimeStorageWarnings: candidates.filter((candidate) => candidate.kind === 'runtime_storage_warning').length,
     staleRuntimeTempEntries: candidates.filter((candidate) => candidate.kind === 'stale_runtime_temp_entry').length,
-    staleWorkContracts: candidates.filter((candidate) => candidate.kind === 'stale_work_contract').length,
     staleEditSessions: candidates.filter((candidate) => candidate.kind === 'stale_edit_session').length,
-    retainedMigratedWork: candidates.filter((candidate) => candidate.kind === 'retained_migrated_work').length,
     unownedManagedWorktrees: candidates.filter((candidate) => candidate.kind === 'unowned_managed_worktree').length,
   };
 }
@@ -437,52 +417,6 @@ function scanRuntimeTempCandidates(
     }));
 }
 
-interface RetainedMigratedWork {
-  migrationId: string;
-  sourceHome: string;
-  work: WorkContract;
-}
-
-interface AppliedControllerHomeMigrationRecord {
-  migrationId: string;
-  status: 'applied' | 'rolled_back';
-  sourceHome: string;
-}
-
-function listRetainedMigratedWork(destinationHomeInput: string, repoId: string): RetainedMigratedWork[] {
-  const destinationHome = resolve(destinationHomeInput);
-  const destinationWorkIds = new Set(
-    listControlPlaneRecords<WorkContract>(destinationHome, { namespace: 'work_contract', scope: repoId, limit: 5_000 })
-      .map((record) => record.key),
-  );
-  const migrations = listControlPlaneRecords<AppliedControllerHomeMigrationRecord>(destinationHome, {
-    namespace: 'controller_home_migration',
-    scope: 'controller',
-    limit: 100,
-  });
-  const retained: RetainedMigratedWork[] = [];
-  for (const record of migrations) {
-    const migration = record.value;
-    if (migration.status !== 'applied') continue;
-    const sourceHome = resolve(migration.sourceHome);
-    if (!existsSync(join(sourceHome, 'control-plane.sqlite'))) continue;
-    let sourceWork: ControlPlaneRecord<WorkContract>[];
-    try {
-      sourceWork = listControlPlaneRecords<WorkContract>(sourceHome, { namespace: 'work_contract', limit: 5_000 });
-    } catch {
-      continue;
-    }
-    for (const source of sourceWork) {
-      const work = source.value;
-      if (work.repoId !== repoId || semanticWorkState(work) === 'open') continue;
-      if (!work.worktreeRef?.trim() || !existsSync(work.worktreeRef)) continue;
-      if (destinationWorkIds.has(work.workId)) continue;
-      retained.push({ migrationId: migration.migrationId, sourceHome, work });
-    }
-  }
-  return retained.sort((left, right) => left.work.updatedAt.localeCompare(right.work.updatedAt));
-}
-
 function gitWorktreePaths(repoRoot: string): string[] {
   const result = runProcess('git', ['worktree', 'list', '--porcelain'], {
     cwd: repoRoot,
@@ -553,11 +487,6 @@ function inspectOwnedManagedWorktree(
   } catch (error) {
     return { safe: false, path, sourceState: 'source_state_unknown', detail: `Managed worktree OwnedResource failed exact identity validation: ${error instanceof Error ? error.message : String(error)}` };
   }
-  const contractOwner = readWorkContractStore({ controllerHome, repoId: repository.repoId }).contracts.find((contract) =>
-    contract.worktreeRef && resolve(contract.worktreeRef) === path);
-  if (contractOwner) {
-    return { safe: false, path, sourceState: 'source_state_unknown', detail: `Managed worktree still has WorkContract owner ${contractOwner.workId}; cleanup must remain with that Work lifecycle.` };
-  }
   let registered;
   try { registered = getRepository(repository.repoId, controllerHome, { includeRemoved: true }); } catch (error) {
     return { safe: false, path, sourceState: 'source_state_unknown', detail: `Repository registry could not be read for owned managed worktree: ${error instanceof Error ? error.message : String(error)}` };
@@ -622,336 +551,21 @@ function inspectOwnedManagedWorktree(
   };
 }
 
-interface StaleWorkSourceInspection {
-  safeToCancel: boolean;
-  state: StaleWorkSourceState;
-  path?: string;
-  detail: string;
-}
-
-interface StaleWorkDeliveryTargetResolution {
-  targetBranch: string;
-  handle?: NonNullable<ReturnType<typeof readWorkHandle>>;
-  identityMismatch: boolean;
-}
-
-function resolveStaleWorkDeliveryTarget(
-  repository: RuntimeMaintenanceRepository,
-  controllerHome: string,
-  contract: WorkContract,
-): StaleWorkDeliveryTargetResolution {
-  const handle = readWorkHandle(controllerHome, repository.repoId, contract.workId);
-  if (!handle) {
-    return { targetBranch: repository.defaultBranch?.trim() || 'main', identityMismatch: false };
-  }
-  if (!contract.checkoutId || handle.checkoutId !== contract.checkoutId) {
-    return {
-      targetBranch: repository.defaultBranch?.trim() || 'main',
-      handle,
-      identityMismatch: true,
-    };
-  }
-  return {
-    targetBranch: resolveWorkDeliveryTargetBranch(handle, repository.defaultBranch),
-    handle,
-    identityMismatch: false,
-  };
-}
-
-function isLegacyImplicitRemoteEffectPlacement(contract: WorkContract): boolean {
-  if (contract.workKind !== 'remote_effect' || contract.worktreePolicy.required !== true || !contract.worktreeRef || !contract.checkoutId) return false;
-  const reason = contract.worktreePolicy.reason?.trim() ?? '';
-  if (/Typed placement/i.test(reason)) return false;
-  return true;
-}
-
-interface LegacyRemoteEffectPlacementInspection {
-  safe: boolean;
-  path?: string;
-  detail: string;
-  checkoutId?: string;
-  canonicalCheckoutId?: string;
-  branch?: string;
-  canonicalBranch?: string;
-}
-
-function inspectLegacyRemoteEffectPlacement(
-  repository: RuntimeMaintenanceRepository,
-  controllerHome: string,
-  contract: WorkContract,
-): LegacyRemoteEffectPlacementInspection | undefined {
-  if (!isLegacyImplicitRemoteEffectPlacement(contract)) return undefined;
-  const recordedPath = contract.worktreeRef?.trim();
-  if (!recordedPath) return undefined;
-  const path = resolve(recordedPath);
-  if (!looksLikeForgeManagedWorktree(path)) return { safe: false, path, detail: 'Legacy remote_effect placement is outside Forge-managed worktree storage; automatic resource detachment is forbidden.' };
-  if (readWorkHandle(controllerHome, repository.repoId, contract.workId)) return { safe: false, path, detail: 'Legacy remote_effect placement unexpectedly has a WorkHandle; repository source authority must be reconciled explicitly.' };
-  let registered;
-  try { registered = getRepository(repository.repoId, controllerHome, { includeRemoved: true }); } catch (error) {
-    return { safe: false, path, detail: `Repository registry could not be read for legacy remote_effect placement: ${error instanceof Error ? error.message : String(error)}` };
-  }
-  const checkout = registered.checkouts.find((candidate) => candidate.checkoutId === contract.checkoutId);
-  if (!checkout) return { safe: false, path, detail: 'Legacy remote_effect checkout identity is missing from the Repository Registry.' };
-  if ((checkout.lifecycle ?? 'active') !== 'active' || checkout.worktree !== true) return { safe: false, path, detail: `Legacy remote_effect checkout ${checkout.checkoutId} is not an active registered worktree.` };
-  const registeredPath = resolve(checkout.canonicalRoot);
-  if (registeredPath !== path && resolve(checkout.localRoot) !== path) return { safe: false, path, detail: 'Legacy remote_effect WorkContract path does not match its registered checkout identity.' };
-  const otherOwner = readWorkContractStore({ controllerHome, repoId: repository.repoId }).contracts.find((candidate) =>
-    candidate.workId !== contract.workId
-    && semanticWorkState(candidate) === 'open'
-    && candidate.worktreeRef
-    && resolve(candidate.worktreeRef) === path);
-  if (otherOwner) return { safe: false, path, detail: `Managed worktree is also owned by active Work ${otherOwner.workId}; resource detachment is fenced.` };
-  if (!existsSync(path)) return { safe: false, path, detail: 'Legacy remote_effect managed worktree path is absent; registry/source reconciliation is required before detachment.' };
-  const status = runProcess('git', ['status', '--porcelain', '--untracked-files=all'], { cwd: path, timeoutMs: 10_000, maxOutputBytes: 500_000 });
-  if (!status.ok || status.stdout.trim()) return { safe: false, path, detail: status.ok ? 'Legacy remote_effect managed worktree is dirty; live source must be preserved.' : 'Legacy remote_effect managed worktree status could not be read.' };
-  const head = runProcess('git', ['rev-parse', 'HEAD'], { cwd: path, timeoutMs: 10_000, maxOutputBytes: 100_000 });
-  const baseRevision = contract.baseRevision?.trim();
-  if (!head.ok || !head.stdout.trim() || !baseRevision || head.stdout.trim() !== baseRevision) return { safe: false, path, detail: 'Legacy remote_effect worktree HEAD does not exactly equal the Work base revision; repository delta ownership is ambiguous.' };
-  const branch = runProcess('git', ['branch', '--show-current'], { cwd: path, timeoutMs: 10_000, maxOutputBytes: 100_000 });
-  if (!branch.ok || !branch.stdout.trim()) return { safe: false, path, detail: 'Legacy remote_effect managed worktree branch could not be resolved.' };
-  let canonical;
-  try { canonical = selectRepositoryCheckout(registered, registered.activeCheckoutId); } catch (error) {
-    return { safe: false, path, detail: `Canonical repository checkout could not be resolved: ${error instanceof Error ? error.message : String(error)}` };
-  }
-  if (canonical.activeCheckoutId === checkout.checkoutId) return { safe: false, path, detail: 'Legacy remote_effect placement unexpectedly points at the canonical active checkout; automatic detachment is forbidden.' };
-  const canonicalBranch = runProcess('git', ['branch', '--show-current'], { cwd: canonical.canonicalRoot, timeoutMs: 10_000, maxOutputBytes: 100_000 });
-  if (!canonicalBranch.ok || !canonicalBranch.stdout.trim()) return { safe: false, path, detail: 'Canonical integration branch could not be resolved for legacy remote_effect detachment.' };
-  const contained = runProcess('git', ['merge-base', '--is-ancestor', baseRevision, `refs/heads/${canonicalBranch.stdout.trim()}`], { cwd: canonical.canonicalRoot, timeoutMs: 10_000, maxOutputBytes: 100_000 });
-  if (!contained.ok) return { safe: false, path, detail: `Legacy remote_effect base revision ${baseRevision} is not contained in canonical branch ${canonicalBranch.stdout.trim()}; source preservation remains required.` };
-  return {
-    safe: true, path, checkoutId: checkout.checkoutId, canonicalCheckoutId: canonical.activeCheckoutId,
-    branch: branch.stdout.trim(), canonicalBranch: canonicalBranch.stdout.trim(),
-    detail: `Legacy remote_effect owns a clean no-delta managed worktree at base revision ${baseRevision}, which is already contained in canonical branch ${canonicalBranch.stdout.trim()}; repository placement may be detached without changing Work semantics.`,
-  };
-}
-
-function inspectStaleWorkRepositorySource(
-  repository: RuntimeMaintenanceRepository,
-  controllerHome: string,
-  contract: WorkContract,
-): StaleWorkSourceInspection {
-  const legacyRemoteEffect = inspectLegacyRemoteEffectPlacement(repository, controllerHome, contract);
-  if (legacyRemoteEffect) {
-    return {
-      safeToCancel: legacyRemoteEffect.safe,
-      state: legacyRemoteEffect.safe ? 'clean_integrated' : 'source_state_unknown',
-      path: legacyRemoteEffect.path,
-      detail: legacyRemoteEffect.detail,
-    };
-  }
-  const recordedPath = contract.worktreeRef?.trim();
-  if (!recordedPath) {
-    return {
-      safeToCancel: true,
-      state: 'no_managed_source',
-      detail: 'Work has no recorded managed worktree source.',
-    };
-  }
-  const path = resolve(recordedPath);
-  if (!looksLikeForgeManagedWorktree(path)) {
-    return {
-      safeToCancel: true,
-      state: 'no_managed_source',
-      path,
-      detail: 'Recorded Work path is not a Forge-managed worktree and is not disposable maintenance source.',
-    };
-  }
-  if (!existsSync(path)) {
-    const deliveryTarget = resolveStaleWorkDeliveryTarget(repository, controllerHome, contract);
-    const handle = deliveryTarget.handle;
-    const expectedHead = handle?.expectedHead?.trim();
-    if (deliveryTarget.identityMismatch || !handle || !expectedHead) {
-      return {
-        safeToCancel: false,
-        state: 'source_state_unknown',
-        path,
-        detail: 'Recorded managed worktree path is absent and no identity-matched durable WorkHandle head can prove source preservation; destructive stale-Work cancellation is fenced.',
-      };
-    }
-    const targetBranch = deliveryTarget.targetBranch;
-    const head = runProcess('git', ['rev-parse', '--verify', `${expectedHead}^{commit}`], {
-      cwd: repository.canonicalRoot,
-      timeoutMs: 10_000,
-      maxOutputBytes: 100_000,
-    });
-    const target = runProcess('git', ['rev-parse', '--verify', `refs/heads/${targetBranch}`], {
-      cwd: repository.canonicalRoot,
-      timeoutMs: 10_000,
-      maxOutputBytes: 100_000,
-    });
-    if (!head.ok || !head.stdout.trim() || !target.ok || !target.stdout.trim()) {
-      return {
-        safeToCancel: false,
-        state: 'source_state_unknown',
-        path,
-        detail: `Recorded managed worktree path is absent and durable source head/target ${targetBranch} could not be resolved; destructive stale-Work cancellation is fenced.`,
-      };
-    }
-    const unique = runProcess('git', ['rev-list', '--count', `${target.stdout.trim()}..${head.stdout.trim()}`], {
-      cwd: repository.canonicalRoot,
-      timeoutMs: 10_000,
-      maxOutputBytes: 100_000,
-    });
-    if (!unique.ok || !/^\d+$/.test(unique.stdout.trim())) {
-      return {
-        safeToCancel: false,
-        state: 'source_state_unknown',
-        path,
-        detail: 'Durable WorkHandle source head could not be compared with its delivery target; destructive stale-Work cancellation is fenced.',
-      };
-    }
-    if (Number(unique.stdout.trim()) > 0) {
-      return {
-        safeToCancel: false,
-        state: 'unintegrated_commits',
-        path,
-        detail: `Managed worktree is absent, but durable WorkHandle head ${expectedHead} has ${unique.stdout.trim()} commit(s) not reachable from ${targetBranch}; exact source remains preserved in Git and requires explicit adoption or cleanup authority.`,
-      };
-    }
-    return {
-      safeToCancel: true,
-      state: 'clean_integrated',
-      path,
-      detail: `Managed worktree is absent, but its identity-matched durable WorkHandle head ${expectedHead} is already reachable from ${targetBranch}; no unique source is being discarded.`,
-    };
-  }
-
-  const status = runProcess('git', ['status', '--porcelain', '--untracked-files=all'], {
-    cwd: path,
-    timeoutMs: 10_000,
-    maxOutputBytes: 500_000,
-  });
-  if (!status.ok) {
-    return {
-      safeToCancel: false,
-      state: 'source_state_unknown',
-      path,
-      detail: `Managed worktree source state could not be read (${status.stderr || 'git status failed'}); destructive stale-Work cancellation is fenced.`,
-    };
-  }
-  if (status.stdout.trim()) {
-    return {
-      safeToCancel: false,
-      state: 'dirty_worktree',
-      path,
-      detail: 'Managed worktree contains uncommitted or untracked repository source; durable metadata/process evidence is not a substitute for preserving the live source checkout.',
-    };
-  }
-
-  const head = runProcess('git', ['rev-parse', 'HEAD'], {
-    cwd: path,
-    timeoutMs: 10_000,
-    maxOutputBytes: 100_000,
-  });
-  const deliveryTarget = resolveStaleWorkDeliveryTarget(repository, controllerHome, contract);
-  if (deliveryTarget.identityMismatch) {
-    return {
-      safeToCancel: false,
-      state: 'source_state_unknown',
-      path,
-      detail: 'Managed worktree has a durable WorkHandle whose checkout identity does not match the WorkContract; source containment cannot be proven against that handle and destructive stale-Work cancellation is fenced.',
-    };
-  }
-  const targetBranch = deliveryTarget.targetBranch;
-  const target = runProcess('git', ['rev-parse', '--verify', `refs/heads/${targetBranch}`], {
-    cwd: repository.canonicalRoot,
-    timeoutMs: 10_000,
-    maxOutputBytes: 100_000,
-  });
-  if (!head.ok || !head.stdout.trim() || !target.ok || !target.stdout.trim()) {
-    return {
-      safeToCancel: false,
-      state: 'source_state_unknown',
-      path,
-      detail: `Managed worktree HEAD or target branch ${targetBranch} could not be resolved; destructive stale-Work cancellation is fenced.`,
-    };
-  }
-  const unique = runProcess('git', ['rev-list', '--count', `${target.stdout.trim()}..${head.stdout.trim()}`], {
-    cwd: repository.canonicalRoot,
-    timeoutMs: 10_000,
-    maxOutputBytes: 100_000,
-  });
-  if (!unique.ok || !/^\d+$/.test(unique.stdout.trim())) {
-    return {
-      safeToCancel: false,
-      state: 'source_state_unknown',
-      path,
-      detail: 'Managed worktree unique-commit state could not be proven; destructive stale-Work cancellation is fenced.',
-    };
-  }
-  if (Number(unique.stdout.trim()) > 0) {
-    return {
-      safeToCancel: false,
-      state: 'unintegrated_commits',
-      path,
-      detail: `Managed worktree HEAD has ${unique.stdout.trim()} commit(s) not reachable from ${targetBranch}; explicit semantic adoption or cleanup authority is required.`,
-    };
-  }
-  return {
-    safeToCancel: true,
-    state: 'clean_integrated',
-    path,
-    detail: `Managed worktree is clean and its HEAD is already reachable from ${targetBranch}.`,
-  };
-}
-
-function staleWorkCandidateReason(source: StaleWorkSourceInspection): string {
-  if (!source.safeToCancel) {
-    return `Protected stale Work: repository source preservation is required. ${source.detail} Maintenance may reconcile only concrete owned resources; semantic Work remains model/user-owned.`;
-  }
-  return `Observed stale Work: repository source has no unique live changes, but liveness/legacy phase facts do not authorize semantic cancellation or completion. ${source.detail} Use explicit Work semantic CAS to close the Work.`;
-}
-
 function scanRetainedWorktreeCandidates(
   repository: RuntimeMaintenanceRepository,
   controllerHome: string,
   maxCandidates: number,
 ): RuntimeMaintenanceCandidate[] {
-  const worktreePaths = gitWorktreePaths(repository.canonicalRoot);
-  if (worktreePaths.length === 0) return [];
-  const normalizedInventory = new Set(worktreePaths.map((path) => resolve(path)));
-  const currentContracts = readWorkContractStore({ controllerHome, repoId: repository.repoId }).contracts;
-  const currentOwnedPaths = new Set(
-    currentContracts
-      .map((contract) => contract.worktreeRef?.trim())
-      .filter((path): path is string => Boolean(path))
-      .map((path) => resolve(path)),
-  );
   const candidates: RuntimeMaintenanceCandidate[] = [];
-  const retained = listRetainedMigratedWork(controllerHome, repository.repoId);
-  const retainedByPath = new Map(retained.map((entry) => [resolve(entry.work.worktreeRef!), entry]));
-
-  for (const path of worktreePaths) {
+  for (const path of gitWorktreePaths(repository.canonicalRoot)) {
     const normalized = resolve(path);
-    if (normalized === resolve(repository.canonicalRoot) || currentOwnedPaths.has(normalized)) continue;
-    const migrated = retainedByPath.get(normalized);
-    if (migrated) {
-      const completed = semanticWorkState(migrated.work) === 'completed';
-      candidates.push({
-        kind: 'retained_migrated_work',
-        id: migrated.work.workId,
-        path: normalized,
-        status: migrated.work.semanticState,
-        safe: false,
-        reason: completed
-          ? 'A terminal Work from a retired Controller Home still owns a Git worktree and requires completion/cleanup reconciliation under the current Controller before lifecycle health can be reported.'
-          : 'A terminal Work from a retired Controller Home still owns preserved implementation state in a Git worktree. Review and explicitly resume or supersede it under current authority; automatic maintenance must not delete it.',
-        suggestedAction: 'full_maintenance_pass',
-        ownershipStatus: 'explicit',
-        sourceControllerHome: migrated.sourceHome,
-        objective: migrated.work.objective,
-        continuationPrompt: migrated.work.continuationPrompt,
-        disposition: completed ? 'completion_reconciliation' : 'resume_or_supersede_review',
-      });
-      continue;
-    }
-    if (!looksLikeForgeManagedWorktree(normalized)) continue;
+    if (normalized === resolve(repository.canonicalRoot) || !looksLikeForgeManagedWorktree(normalized)) continue;
     const ownedResource = activeOwnedWorktreeResource(controllerHome, repository.repoId, normalized);
     if (ownedResource) {
       const inspection = inspectOwnedManagedWorktree(repository, controllerHome, normalized);
       candidates.push({
         kind: 'unowned_managed_worktree',
-        id: `managed-worktree:${basename(normalized)}`,
+        id: 'managed-worktree:' + basename(normalized),
         path: normalized,
         safe: inspection.safe,
         reason: inspection.detail,
@@ -964,50 +578,15 @@ function scanRetainedWorktreeCandidates(
     }
     candidates.push({
       kind: 'unowned_managed_worktree',
-      id: `managed-worktree:${basename(normalized)}`,
+      id: 'managed-worktree:' + basename(normalized),
       path: normalized,
       safe: false,
-      reason: 'Git reports a Forge-managed worktree for this repository, but neither the current Work store, retained migration state, nor canonical OwnedResource authority owns it. Ownership must be reconciled before lifecycle health can be reported.',
+      reason: 'Git reports a Forge-managed worktree without canonical cleanup-capable OwnedResource authority. Historical Work metadata cannot grant or veto cleanup; reconcile the physical owner first.',
       suggestedAction: 'full_maintenance_pass',
       ownershipStatus: 'unknown',
       disposition: 'ownership_reconciliation',
     });
   }
-
-  // A retained migrated Work whose referenced path still exists but is no longer
-  // in Git inventory remains preservation debt rather than disappearing silently.
-  for (const migrated of retained) {
-    const normalized = resolve(migrated.work.worktreeRef!);
-    if (normalizedInventory.has(normalized) || currentOwnedPaths.has(normalized)) continue;
-    // Legacy WorkContract records sometimes stored the repository checkout/root
-    // in worktreeRef even though it was not a Controller-managed worktree. Such
-    // historical references remain audit evidence, but must not turn every old
-    // repository root into current lifecycle debt. Only known Forge/RepoHarness
-    // managed-worktree storage can represent preserved implementation here.
-    if (!looksLikeForgeManagedWorktree(normalized)) continue;
-    // A removed legacy campaign may leave an empty managed-storage directory
-    // behind after its Git metadata and contents are already gone. That is not
-    // preserved implementation and must not block lifecycle health. A retained
-    // path outside current Git inventory only remains lifecycle debt when its
-    // worktree .git marker still exists for manual reconciliation.
-    if (!existsSync(join(normalized, '.git'))) continue;
-    const completed = semanticWorkState(migrated.work) === 'completed';
-    candidates.push({
-      kind: 'retained_migrated_work',
-      id: migrated.work.workId,
-      path: normalized,
-      status: migrated.work.semanticState,
-      safe: false,
-      reason: 'A terminal Work retained by a migrated Controller Home still has preserved filesystem state, but Git no longer reports it as a registered worktree. Manual lifecycle reconciliation is required; automatic cleanup is forbidden.',
-      suggestedAction: 'full_maintenance_pass',
-      ownershipStatus: 'explicit',
-      sourceControllerHome: migrated.sourceHome,
-      objective: migrated.work.objective,
-      continuationPrompt: migrated.work.continuationPrompt,
-      disposition: completed ? 'completion_reconciliation' : 'resume_or_supersede_review',
-    });
-  }
-
   return candidates.slice(0, maxCandidates);
 }
 
@@ -1017,200 +596,6 @@ function normalizedOptions(options: RuntimeMaintenanceOptions = {}): Required<Ru
     maxCandidates: clampNumber(options.maxCandidates, MAX_CANDIDATES, 1, 500),
     cancelPendingApprovals: options.cancelPendingApprovals === true,
   };
-}
-
-interface RuntimeMaintenanceAuthoritySnapshot {
-  contracts: WorkContract[];
-  workById: Map<string, WorkContract>;
-  planByWorkId: Map<string, string>;
-  activeRequirementStateById: Map<string, string>;
-  scheduleByWorkId: Map<string, string>;
-  processByWorkId: Map<string, string>;
-}
-
-/**
- * Build one bounded read snapshot for a maintenance status pass. Discovery must
- * never turn N candidate Works/EditSessions into N full Plan/Schedule/Process
- * scans. Process liveness comes from Process Runtime's recovery index instead of
- * enumerating terminal process history. This snapshot is advisory only; mutation
- * paths still re-read current authority before terminalization.
- */
-function buildRuntimeMaintenanceAuthoritySnapshot(
-  repository: RuntimeMaintenanceRepository,
-  controllerHome: string,
-): RuntimeMaintenanceAuthoritySnapshot {
-  const contracts = readWorkContractStore({ controllerHome, repoId: repository.repoId }).contracts;
-  const workById = new Map(contracts.map((contract) => [contract.workId, contract]));
-  const planByWorkId = new Map<string, string>();
-  for (const plan of listPlanContracts({ controllerHome, repoId: repository.repoId, status: 'active', limit: 100 })) {
-    for (const step of plan.steps) if (step.workId) planByWorkId.set(step.workId, plan.planId);
-    if (plan.planId) {
-      for (const contract of contracts) if (contract.planId === plan.planId) planByWorkId.set(contract.workId, plan.planId);
-    }
-  }
-  const activeRequirementStateById = new Map<string, string>();
-  for (const requirementId of new Set(contracts.flatMap((contract) => contract.requirementId ? [contract.requirementId] : []))) {
-    const requirement = readRequirement({ controllerHome }, requirementId)?.value;
-    if (requirement && !['done', 'cancelled'].includes(requirement.state)) activeRequirementStateById.set(requirementId, requirement.state);
-  }
-  const scheduleByWorkId = new Map<string, string>();
-  for (const schedule of listSchedules(controllerHome, repository.repoId)) {
-    if (!schedule.enabled) continue;
-    const workId = String((schedule.action.arguments as Record<string, unknown> | undefined)?.work_id ?? '').trim();
-    if (workId && !scheduleByWorkId.has(workId)) scheduleByWorkId.set(workId, schedule.scheduleId);
-  }
-  const processByWorkId = new Map<string, string>();
-  for (const process of listRecoverableProcessRecords(controllerHome, repository.repoId)) {
-    if (process.workId && isManagedProcessActive(process) && !processByWorkId.has(process.workId)) processByWorkId.set(process.workId, process.processId);
-  }
-  return { contracts, workById, planByWorkId, activeRequirementStateById, scheduleByWorkId, processByWorkId };
-}
-
-function activeWorkAuthorityRefs(contract: WorkContract, snapshot: RuntimeMaintenanceAuthoritySnapshot): string[] {
-  const refs: string[] = [];
-  const planId = snapshot.planByWorkId.get(contract.workId);
-  if (planId) refs.push(`plan:${planId}`);
-  if (contract.requirementId) {
-    const state = snapshot.activeRequirementStateById.get(contract.requirementId);
-    if (state) refs.push(`requirement:${contract.requirementId}:${state}`);
-  }
-  const scheduleId = snapshot.scheduleByWorkId.get(contract.workId);
-  if (scheduleId) refs.push(`schedule:${scheduleId}`);
-  const processId = snapshot.processByWorkId.get(contract.workId);
-  if (processId) refs.push(`process:${processId}`);
-  return refs;
-}
-
-function scanStaleWorkContractCandidates(
-  repository: RuntimeMaintenanceRepository,
-  controllerHome: string,
-  options: Required<RuntimeMaintenanceOptions>,
-  snapshot: RuntimeMaintenanceAuthoritySnapshot,
-): RuntimeMaintenanceCandidate[] {
-  const nowMs = Date.now();
-  return snapshot.contracts
-    .filter((contract) => semanticWorkState(contract) === 'open')
-    .map((contract) => {
-      const updatedMs = Date.parse(contract.updatedAt);
-      const ageMinutes = Number.isFinite(updatedMs) ? Math.max(0, Math.floor((nowMs - updatedMs) / 60_000)) : 0;
-      return { contract, ageMinutes };
-    })
-    .filter(({ ageMinutes }) => ageMinutes >= options.minAgeMinutes)
-    .filter(({ contract }) => {
-      // A live Plan/Requirement/Schedule/Process reference is retained migration authority,
-      // not maintenance debt. The authority inventory was read once for this status pass.
-      return activeWorkAuthorityRefs(contract, snapshot).length === 0;
-    })
-    .sort((left, right) => right.ageMinutes - left.ageMinutes)
-    // Expensive Git source inspection belongs after the visible candidate budget.
-    .slice(0, options.maxCandidates)
-    .map(({ contract, ageMinutes }) => ({
-      contract, ageMinutes, source: inspectStaleWorkRepositorySource(repository, controllerHome, contract),
-    }))
-    .map(({ contract, ageMinutes, source }) => {
-      const legacyRemotePlacement = isLegacyImplicitRemoteEffectPlacement(contract);
-      return {
-        kind: 'stale_work_contract' as const,
-        id: contract.workId,
-        path: source.path,
-        status: contract.semanticState,
-        safe: legacyRemotePlacement ? source.safeToCancel : false,
-        reason: legacyRemotePlacement ? source.detail : staleWorkCandidateReason(source),
-        ageMinutes,
-        suggestedAction: 'full_maintenance_pass' as const,
-        ownershipStatus: 'explicit' as const,
-        sourceState: source.state,
-        disposition: !source.safeToCancel
-          ? ('source_preservation_required' as const)
-          : !legacyRemotePlacement
-            ? ('semantic_completion_required' as const)
-            : undefined,
-      };
-    });
-}
-
-function detachLegacyRemoteEffectPlacement(
-  repository: RuntimeMaintenanceRepository,
-  controllerHome: string,
-  current: WorkContract,
-  candidate: RuntimeMaintenanceCandidate,
-): RuntimeMaintenanceCandidate & { applied: boolean; result: string } {
-  const inspection = inspectLegacyRemoteEffectPlacement(repository, controllerHome, current);
-  if (!inspection || !inspection.safe || !inspection.path || !inspection.checkoutId || !inspection.canonicalCheckoutId || !inspection.branch || !inspection.canonicalBranch) {
-    return { ...candidate, safe: false, reason: inspection?.detail ?? 'Legacy remote_effect placement is no longer eligible for resource detachment.', sourceState: 'source_state_unknown', disposition: 'source_preservation_required', applied: false, result: 'legacy_remote_effect_placement_preserved' };
-  }
-  const store = { controllerHome, repoId: repository.repoId };
-  try {
-    assertOwnedResourceCleanupTarget(controllerHome, {
-      resourceId: managedWorkspaceOwnedResourceId(repository.repoId, inspection.checkoutId),
-      kind: 'worktree',
-      targetRef: inspection.path,
-    });
-  } catch (error) {
-    return {
-      ...candidate,
-      safe: false,
-      reason: `Canonical OwnedResource authority is required before legacy worktree detachment: ${error instanceof Error ? error.message : String(error)}`,
-      sourceState: 'source_state_unknown',
-      disposition: 'source_preservation_required',
-      applied: false,
-      result: 'legacy_remote_effect_owned_resource_required',
-    };
-  }
-  if (!current.checkoutId || !current.worktreeRef || current.checkoutId !== inspection.checkoutId || current.worktreeRef !== inspection.path) {
-    throw new Error(`LEGACY_REMOTE_EFFECT_PLACEMENT_SNAPSHOT_INVALID: ${current.workId}`);
-  }
-  const previous = { checkoutId: current.checkoutId, worktreeRef: current.worktreeRef, constraints: current.constraints, worktreePolicy: current.worktreePolicy };
-  updateRepositoryWorkPlacement(store, current.workId, {
-    kind: 'detach_legacy_remote_effect',
-    expectedCheckoutId: current.checkoutId,
-    expectedWorktreeRef: current.worktreeRef,
-    checkoutId: inspection.canonicalCheckoutId,
-    worktreeRef: undefined,
-    constraints: { ...current.constraints, workspaceMode: 'current' },
-    worktreePolicy: { required: false, reason: 'Legacy pure remote_effect repository placement detached by explicit runtime maintenance; external-effect execution has no repository source authority.' },
-  });
-  try {
-    setRepositoryCheckoutLifecycle({ controllerHome, repoId: repository.repoId, checkoutId: inspection.checkoutId, lifecycle: 'removed', reason: `Legacy remote_effect placement detached for ${current.workId}.` });
-    const removed = runProcess('git', ['worktree', 'remove', '--force', inspection.path], { cwd: repository.canonicalRoot, timeoutMs: 60_000, maxOutputBytes: 500_000 });
-    if (!removed.ok && existsSync(inspection.path)) throw new Error(`LEGACY_REMOTE_EFFECT_WORKTREE_REMOVE_FAILED: ${removed.stderr || removed.stdout}`);
-    markOwnedResourceCleaned(controllerHome, managedWorkspaceOwnedResourceId(repository.repoId, inspection.checkoutId), 'forge:legacy-remote-effect-detach');
-    if (inspection.branch !== inspection.canonicalBranch) {
-      try {
-        assertOwnedResourceCleanupTarget(controllerHome, {
-          resourceId: managedBranchOwnedResourceId(repository.repoId, inspection.checkoutId),
-          kind: 'git_branch',
-          targetRef: inspection.branch,
-          locator: managedBranchOwnedResourceLocator(repository.canonicalRoot, inspection.checkoutId, inspection.branch),
-        });
-      } catch {
-        return { ...candidate, safe: true, reason: inspection.detail, sourceState: 'clean_integrated', disposition: undefined, applied: true, result: `legacy_remote_effect_placement_detached_branch_retained:${inspection.branch}` };
-      }
-      const deleted = runProcess('git', ['branch', '--delete', inspection.branch], { cwd: repository.canonicalRoot, timeoutMs: 10_000, maxOutputBytes: 100_000 });
-      if (!deleted.ok) {
-        const forced = runProcess('git', ['branch', '--delete', '--force', inspection.branch], { cwd: repository.canonicalRoot, timeoutMs: 10_000, maxOutputBytes: 100_000 });
-        if (!forced.ok) return { ...candidate, safe: true, reason: inspection.detail, sourceState: 'clean_integrated', disposition: undefined, applied: true, result: `legacy_remote_effect_placement_detached_branch_retained:${inspection.branch}` };
-      }
-      markOwnedResourceCleaned(controllerHome, managedBranchOwnedResourceId(repository.repoId, inspection.checkoutId), 'forge:legacy-remote-effect-detach');
-    }
-    return { ...candidate, safe: true, reason: inspection.detail, sourceState: 'clean_integrated', disposition: undefined, applied: true, result: 'legacy_remote_effect_placement_detached' };
-  } catch (error) {
-    if (existsSync(inspection.path)) {
-      try { setRepositoryCheckoutLifecycle({ controllerHome, repoId: repository.repoId, checkoutId: inspection.checkoutId, lifecycle: 'active', reason: `Rollback failed legacy remote_effect detach for ${current.workId}.` }); } catch { /* preserve primary failure */ }
-      try {
-        updateRepositoryWorkPlacement(store, current.workId, {
-          kind: 'restore_legacy_remote_effect',
-          expectedCheckoutId: inspection.canonicalCheckoutId,
-          expectedWorktreeRef: undefined,
-          checkoutId: previous.checkoutId,
-          worktreeRef: previous.worktreeRef,
-          worktreePolicy: previous.worktreePolicy,
-          constraints: previous.constraints,
-        });
-      } catch { /* preserve primary failure */ }
-    }
-    throw error;
-  }
 }
 
 function detachOwnedManagedWorktree(
@@ -1321,73 +706,13 @@ function detachOwnedManagedWorktree(
   }
 }
 
-export function applyStaleWorkContractMaintenanceCandidate(
-  repository: RuntimeMaintenanceRepository,
-  controllerHome: string,
-  candidate: RuntimeMaintenanceCandidate,
-): RuntimeMaintenanceCandidate & { applied: boolean; result: string } {
-  const work = getWorkContract({ controllerHome, repoId: repository.repoId }, candidate.id);
-  if (!work || semanticWorkState(work) !== 'open') {
-    return { ...candidate, applied: false, result: 'already_terminal' };
-  }
-
-  // The stale scan is discovery only. Re-read the exact Work and every
-  // non-Controller authority immediately before mutation. WorkContract writes are
-  // serialized by the canonical Work store writer; ControllerSession ownership is
-  // continuation state and cannot fence maintenance of semantic Work.
-  const current = getWorkContract({ controllerHome, repoId: repository.repoId }, work.workId);
-  if (!current || semanticWorkState(current) !== 'open') {
-    return { ...candidate, applied: false, result: 'already_terminal' };
-  }
-  const authorityRefs = activeWorkAuthorityRefs(current, buildRuntimeMaintenanceAuthoritySnapshot(repository, controllerHome));
-  if (authorityRefs.length > 0) {
-    return {
-      ...candidate,
-      applied: false,
-      result: `work_authority_became_active:${authorityRefs.join(',')}`,
-    };
-  }
-  // Discovery and mutation are separated by an arbitrary Runtime delay.
-  // Re-probe the live worktree immediately before mutation; concrete Git/worktree
-  // state is the relevant safety authority, not a Controller claim.
-  const source = inspectStaleWorkRepositorySource(repository, controllerHome, current);
-  if (!source.safeToCancel) {
-        return {
-          ...candidate,
-          path: source.path ?? candidate.path,
-          safe: false,
-          reason: isLegacyImplicitRemoteEffectPlacement(current) ? source.detail : staleWorkCandidateReason(source),
-          sourceState: source.state,
-          disposition: 'source_preservation_required' as const,
-          applied: false,
-          result: `work_source_preserved:${source.state}`,
-        };
-      }
-  if (isLegacyImplicitRemoteEffectPlacement(current)) {
-        return detachLegacyRemoteEffectPlacement(repository, controllerHome, current, candidate);
-      }
-  return {
-    ...candidate,
-    path: source.path ?? candidate.path,
-    safe: false,
-    reason: staleWorkCandidateReason(source),
-    sourceState: source.state,
-    disposition: 'semantic_completion_required' as const,
-    applied: false,
-    result: 'work_semantic_completion_required',
-  };
-}
-
 function scanStaleEditSessionCandidates(
   repository: RuntimeMaintenanceRepository,
   options: Required<RuntimeMaintenanceOptions>,
-  snapshot: RuntimeMaintenanceAuthoritySnapshot,
 ): RuntimeMaintenanceCandidate[] {
   const nowMs = Date.now();
   return listEditSessions(repository.canonicalRoot, Math.min(options.maxCandidates * 3, 500))
     .filter((summary) => ['open', 'dirty', 'checked', 'check_failed'].includes(summary.status))
-    // Status discovery is read-only. Workspace hashing/Git reconciliation belongs
-    // exclusively to explicit full maintenance for the selected candidate.
     .map((session) => {
       const updatedMs = Date.parse(session.updatedAt);
       const ageMinutes = Number.isFinite(updatedMs) ? Math.max(0, Math.floor((nowMs - updatedMs) / 60_000)) : 0;
@@ -1396,32 +721,16 @@ function scanStaleEditSessionCandidates(
     .filter(({ ageMinutes }) => ageMinutes >= options.minAgeMinutes)
     .sort((left, right) => right.ageMinutes - left.ageMinutes)
     .slice(0, options.maxCandidates)
-    .flatMap(({ session, ageMinutes }) => {
-      const work = session.workId ? snapshot.workById.get(session.workId) : undefined;
-      const terminalWork = Boolean(work && semanticWorkState(work) !== 'open');
-      if (work && !terminalWork && activeWorkAuthorityRefs(work, snapshot).length > 0) {
-        // The Edit Session inherits the live Work lifecycle authority. Reporting it
-        // as stale maintenance debt while that authority is active would duplicate
-        // ownership and can permanently block release readiness for valid long work.
-        return [];
-      }
-      const contractFreeDirect = !session.workId;
-      const safeToReconcile = terminalWork || contractFreeDirect;
-      return [{
-        kind: 'stale_edit_session' as const,
-        id: session.sessionId,
-        status: session.status,
-        safe: safeToReconcile,
-        reason: terminalWork
-          ? 'Edit Session belongs to a terminal WorkContract; cleanup may reconcile metadata only and must refuse unique uncommitted source changes.'
-          : contractFreeDirect
-            ? 'Contract-free Direct Edit Session has no WorkContract by design; cleanup may reconcile metadata only and must refuse unique uncommitted source changes.'
-            : 'Edit Session WorkContract is missing or still nonterminal without live lifecycle authority; active-session ownership must remain fenced.',
-        ageMinutes,
-        suggestedAction: 'full_maintenance_pass' as const,
-        ownershipStatus: safeToReconcile ? 'explicit' as const : 'unknown' as const,
-      }];
-    });
+    .map(({ session, ageMinutes }) => ({
+      kind: 'stale_edit_session' as const,
+      id: session.sessionId,
+      status: session.status,
+      safe: true,
+      reason: 'Work-free Edit Session may reconcile metadata only; cleanupEditSession still refuses unique uncommitted source changes.',
+      ageMinutes,
+      suggestedAction: 'full_maintenance_pass' as const,
+      ownershipStatus: 'explicit' as const,
+    }));
 }
 
 function readBoolean(input: Record<string, unknown>, snake: string, camel: string): boolean | undefined {
@@ -1463,7 +772,6 @@ export function buildRuntimeMaintenanceStatus(
   // Runtime-storage binding is the compatibility cutover authority for legacy test/
   // migrated repositories. Read lifecycle owners only after that binding is resolved.
   const storage = safeRuntimeStorage(repository, controllerHome);
-  const authoritySnapshot = buildRuntimeMaintenanceAuthoritySnapshot(repository, controllerHome);
   const runtimeStorageRepair = previewRuntimeStorageRepair(coerceRepository(repository), controllerHome, {
     minAgeMinutes: normalized.minAgeMinutes,
     maxCandidates: normalized.maxCandidates,
@@ -1471,10 +779,9 @@ export function buildRuntimeMaintenanceStatus(
   const localJobCandidates = scanLocalJobCandidates(repository.canonicalRoot, normalized);
   const storageCandidates = runtimeStorageCandidates(storage.report);
   const tempCandidates = scanRuntimeTempCandidates(repository, normalized.maxCandidates);
-  const staleWorkCandidates = scanStaleWorkContractCandidates(repository, controllerHome, normalized, authoritySnapshot);
-  const staleEditCandidates = scanStaleEditSessionCandidates(repository, normalized, authoritySnapshot);
+  const staleEditCandidates = scanStaleEditSessionCandidates(repository, normalized);
   const retainedWorktreeCandidates = scanRetainedWorktreeCandidates(repository, controllerHome, normalized.maxCandidates);
-  const candidates = [...localJobCandidates, ...storageCandidates, ...staleWorkCandidates, ...staleEditCandidates, ...retainedWorktreeCandidates, ...tempCandidates].slice(0, normalized.maxCandidates);
+  const candidates = [...localJobCandidates, ...storageCandidates, ...staleEditCandidates, ...retainedWorktreeCandidates, ...tempCandidates].slice(0, normalized.maxCandidates);
   const summary = summarize(candidates);
   const blockingCandidates = candidates.filter((candidate) => candidate.kind !== 'stale_runtime_temp_entry');
   const readyForExecution = storage.report?.readyForExecution === true
@@ -1510,7 +817,7 @@ export function buildRuntimeMaintenanceStatus(
       'Pending approvals are not cancelled unless cancel_pending_approvals is explicitly enabled.',
       'System temp cleanup only removes direct forge-prefixed children of approved temp roots after a 24-hour retention period and a fresh process-occupancy check.',
       'Runtime lifecycle changes and source repair are outside the runtime maintenance executor.',
-      'Retained or unknown-ownership managed worktrees remain review-only lifecycle blockers. A WorkContract-less managed worktree is cleanup-eligible only when canonical OwnedResource identity is exact, the worktree is clean, and its HEAD is already contained in the canonical branch.',
+      'Unknown-ownership managed worktrees remain lifecycle blockers. Cleanup is eligible only when canonical OwnedResource identity is exact, the worktree is clean, and its HEAD is already contained in the canonical branch.',
     ],
   };
 }
@@ -1720,9 +1027,6 @@ export function applyRuntimeMaintenance(
           }),
         };
       }
-      if (candidate.kind === 'stale_work_contract') {
-        return applyStaleWorkContractMaintenanceCandidate(repository, controllerHome, candidate);
-      }
       if (candidate.kind === 'unowned_managed_worktree') {
         return detachOwnedManagedWorktree(repository, controllerHome, candidate);
       }
@@ -1748,17 +1052,6 @@ export function applyRuntimeMaintenance(
   const processGc = options.actionId === 'full_maintenance_pass'
     ? gcTerminalProcesses({ controllerHome, repoId: repository.repoId })
     : undefined;
-  const currentWork = readWorkContractStore({ controllerHome, repoId: repository.repoId }).contracts;
-  const protectedWorkIds = currentWork
-    .filter((contract) => semanticWorkState(contract) === 'open')
-    .map((contract) => contract.workId);
-  const verificationSnapshotGc = options.actionId === 'full_maintenance_pass'
-    ? cleanupStaleWorkVerificationSnapshots(controllerHome, repository.repoId, {
-      protectedWorkIds,
-      maxEntries: Math.max(100, (options.maxCandidates ?? 50) * 3),
-      maxRemovals: Math.max(1, options.maxCandidates ?? 50),
-    })
-    : undefined;
   const quarantineGc = options.actionId === 'full_maintenance_pass'
     ? cleanupRuntimeQuarantine(controllerHome, repository.repoId, repository.canonicalRoot, {
       maxEntries: Math.max(100, (options.maxCandidates ?? 50) * 3),
@@ -1769,7 +1062,6 @@ export function applyRuntimeMaintenance(
   let generatedCacheGc: RepositoryGeneratedCacheRetentionReport | undefined;
   let iosTestEvidenceGc: IosTestEvidenceRetentionReport | undefined;
   let iosTestEvidenceInventory: IosTestEvidenceInventoryReport | undefined;
-  let cleanupArtifactGc: CleanupArtifactRetentionReport | undefined;
   if (options.actionId === 'full_maintenance_pass') {
     let cacheRepository: Parameters<typeof cleanupGeneratedRepositoryCheckoutCaches>[0] = {
       canonicalRoot: repository.canonicalRoot,
@@ -1792,16 +1084,12 @@ export function applyRuntimeMaintenance(
       maxEntries: Math.max(1_000, (options.maxCandidates ?? 50) * 20),
       maxRemovals: Math.max(1, options.maxCandidates ?? 50),
     });
-    const releasableWorkIds = releasableIosTestEvidenceWorkIds(
-      readWorkContractStore({ controllerHome, repoId: repository.repoId }).contracts,
-    );
     iosTestEvidenceGc = cleanupReleasableIosTestEvidence(cacheRepository, {
       nowMs: cacheScanNowMs,
       rootStartIndex: Math.floor(cacheScanNowMs / 60_000),
       maxEntries: Math.max(256, (options.maxCandidates ?? 50) * 20),
       maxRemovals: Math.max(1, Math.min(8, options.maxCandidates ?? 50)),
       owner: { controllerHome, repoId: repository.repoId },
-      releasableWorkIds,
     });
     iosTestEvidenceInventory = inspectRepositoryIosTestEvidence(cacheRepository, {
       nowMs: cacheScanNowMs,
@@ -1809,11 +1097,7 @@ export function applyRuntimeMaintenance(
       maxEntries: Math.max(256, (options.maxCandidates ?? 50) * 20),
       owner: { controllerHome, repoId: repository.repoId },
     });
-    cleanupArtifactGc = cleanupWorkPreservationArtifacts(controllerHome, {
-      maxEntries: Math.max(1_000, (options.maxCandidates ?? 50) * 20),
-      maxRemovals: Math.max(1, options.maxCandidates ?? 50),
-      repositoryIds: [repository.repoId],
-    });
+    // Legacy Work preservation artifacts are read-only after Work retirement.
   }
 
   if (options.actionId === 'runtime_storage_finalize_relocation' || options.actionId === 'full_maintenance_pass' || applied.some((candidate) => candidate.applied) || runtimeStorageRepairApply) {
@@ -1832,12 +1116,10 @@ export function applyRuntimeMaintenance(
     applied,
     runtimeStorageRepairApply,
     processGc,
-    verificationSnapshotGc,
     quarantineGc,
     generatedCacheGc,
     iosTestEvidenceGc,
     iosTestEvidenceInventory,
-    cleanupArtifactGc,
     projection,
   };
 }

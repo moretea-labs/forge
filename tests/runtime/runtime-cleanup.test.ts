@@ -18,20 +18,19 @@ import { runSchedulerPeriodicCleanup } from '../../src/runtime/control-plane/glo
 import { applyRuntimeCleanup, previewRuntimeCleanup } from '../../src/runtime/maintenance/cleanup';
 import { markRepositoryProjectionDirty, persistRepositoryProjectionDirty, repositoryProjectionIsDirty } from '../../src/runtime/projections/invalidation';
 import type { RepositoryRecord } from '../../src/cli/repositories/types';
-import { repositoryControllerRoot } from '../../src/effects/controller-home';
+import { controllerSystemRoot, repositoryControllerRoot } from '../../src/effects/controller-home';
 import { registerRepository, removeRepository } from '../../src/cli/repositories/registry';
 import { cleanupRetiredRepositoryNamespaces } from '../../src/runtime/control-plane/repository-namespace-retention';
 import { resolveGitExecutable } from '../../src/effects/git-executable';
 import { ensureManagedWorkspace } from '../../src/runtime/execution/managed-workspace';
-import { cleanupStaleWorkVerificationSnapshots } from '../../src/runtime/control-plane/execution/work-verification-snapshot';
 import { cleanupTerminalEditSessionRecords } from '../../src/cli/editing/edit-session';
 import { ensureRepositoryRuntimeStorage } from '../../src/cli/repositories/runtime-storage';
 import { createSchedule, saveOccurrence } from '../../packages/kernel/scheduler/api/index';
 import { cleanupRetiredExecutionJobs, executionJobRoot } from '../../src/runtime/execution/jobs/store';
 import { writeExecutionArtifact } from '../../src/runtime/evidence/artifact-store';
-import { cancelWorkContract, createWorkContract } from '../../packages/kernel/work/api/index';
 import { recordIosTestEvidenceOwner } from '../../src/runtime/control-plane/generated-cache-retention';
-import { getOwnedResource } from '../../packages/kernel/identity/api/index';
+import { getOwnedResource, recordOwnedResource } from '../../packages/kernel/identity/api/index';
+import { seedHistoricalWorkContract } from '../helpers/historical-work-contract';
 
 const homes: string[] = [];
 
@@ -72,41 +71,6 @@ afterEach(() => {
 });
 
 describe('runtime cleanup', () => {
-  test('verification snapshot retention protects active Work and reclaims only stale bounded evidence', () => {
-    const home = controllerHome();
-    const root = join(repositoryControllerRoot(home, 'repo-snapshots'), 'verification-snapshots');
-    const active = join(root, 'snapshot-active-a');
-    const stale = join(root, 'snapshot-stale-b');
-    const fresh = join(root, 'snapshot-fresh-c');
-    const legacyUnmarked = join(root, 'work-active-legacy-name');
-    const invalidMarker = join(root, 'legacy-invalid-marker');
-    for (const path of [active, stale, fresh]) mkdirSync(join(path, '.ai/harness/controller'), { recursive: true });
-    mkdirSync(legacyUnmarked, { recursive: true });
-    mkdirSync(join(invalidMarker, '.ai/harness/controller'), { recursive: true });
-    writeFileSync(join(active, '.ai/harness/controller/work-verification-snapshot.json'), JSON.stringify({ schemaVersion: 1, workId: 'work-active' }));
-    writeFileSync(join(stale, '.ai/harness/controller/work-verification-snapshot.json'), JSON.stringify({ schemaVersion: 1, workId: 'work-stale' }));
-    writeFileSync(join(fresh, '.ai/harness/controller/work-verification-snapshot.json'), JSON.stringify({ schemaVersion: 1, workId: 'work-fresh' }));
-    writeFileSync(join(stale, 'payload.bin'), 'reclaim-me');
-    writeFileSync(join(invalidMarker, '.ai/harness/controller/work-verification-snapshot.json'), '{invalid');
-    age(active); age(stale);
-    age(legacyUnmarked, 25 * 60 * 60_000);
-    age(invalidMarker, 25 * 60 * 60_000);
-
-    const report = cleanupStaleWorkVerificationSnapshots(home, 'repo-snapshots', { protectedWorkIds: ['work-active'], maxEntries: 10, maxRemovals: 10 });
-
-    expect(existsSync(active)).toBe(true);
-    expect(existsSync(fresh)).toBe(true);
-    expect(existsSync(stale)).toBe(false);
-    expect(existsSync(legacyUnmarked)).toBe(false);
-    expect(existsSync(invalidMarker)).toBe(true);
-    expect(report.protected).toBe(1);
-    expect(report.skippedByReason.active_work).toBe(1);
-    expect(report.removedPaths).toEqual(['snapshot-stale-b', 'work-active-legacy-name']);
-    expect(report.skippedByReason.invalid_marker).toBe(1);
-    expect(report.reclaimedBytes).toBeGreaterThanOrEqual(Buffer.byteLength('reclaim-me'));
-    expect(report.policyVersion).toBe('runtime-lifecycle-retention-v1');
-  });
-
   test('scheduler history retention physically bounds unindexed terminal occurrence evidence and protects active state', () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-runtime-scheduler-retention-'));
     homes.push(root);
@@ -133,7 +97,7 @@ describe('runtime cleanup', () => {
       windowKey: 'active', status: 'running', decision: 'execute', createdAt: now, updatedAt: now,
     });
 
-    const schedules = join(repositoryControllerRoot(home, repository.repoId), 'schedules');
+    const schedules = join(controllerSystemRoot(home), 'schedules');
     const occurrenceRoot = join(schedules, 'occurrences');
     const decisionRoot = join(schedules, 'decisions');
     mkdirSync(occurrenceRoot, { recursive: true });
@@ -209,7 +173,7 @@ describe('runtime cleanup', () => {
     expect(report.lifecycleMetrics.reclaimedByClass.repository_controller_home_namespace.count).toBeGreaterThan(0);
   });
 
-  test('repository namespace retirement fails closed while a Work remains active', () => {
+  test('repository namespace retirement ignores historical Work lifecycle state', () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-runtime-namespace-active-work-'));
     homes.push(root);
     const home = join(root, 'controller');
@@ -223,9 +187,9 @@ describe('runtime cleanup', () => {
     expect(spawnSync(git, ['-C', repositoryRoot, 'add', 'README.md']).status).toBe(0);
     expect(spawnSync(git, ['-C', repositoryRoot, 'commit', '-m', 'fixture']).status).toBe(0);
     const repository = registerRepository({ path: repositoryRoot, controllerHome: home, displayName: 'namespace-active-work' });
-    createWorkContract({ controllerHome: home, repoId: repository.repoId }, {
+    seedHistoricalWorkContract({ controllerHome: home, repoId: repository.repoId }, {
       workId: 'WORK-NAMESPACE-ACTIVE', repoId: repository.repoId, checkoutId: repository.checkouts[0]!.checkoutId,
-      objective: 'protect namespace while Work is active',
+      objective: 'historical Work provenance must not retain disposable repository namespace state',
       acceptanceCriteria: [], allowedPaths: [], forbiddenPaths: [], checks: [],
       constraints: {}, requestedBy: 'system', phase: 'verification',
     });
@@ -238,9 +202,9 @@ describe('runtime cleanup', () => {
       nowMs: Date.now() + 2 * 60_000, graceMs: 60_000, maxEntries: 100, maxRemovals: 20,
     });
 
-    expect(existsSync(join(namespace, 'indexes', 'active.bin'))).toBe(true);
-    expect(report.removedPaths).toEqual([]);
-    expect(report.skippedByReason.active_work).toBeGreaterThanOrEqual(1);
+    expect(existsSync(join(namespace, 'indexes', 'active.bin'))).toBe(false);
+    expect(report.removedPaths).toContain(`repositories/${repository.repoId}/indexes`);
+    expect(report.skippedByReason.active_work).toBeUndefined();
   });
 
   test('repository namespace retirement honors a zero removal budget', () => {
@@ -285,9 +249,9 @@ describe('runtime cleanup', () => {
     expect(spawnSync(git, ['-C', repositoryRoot, 'add', 'README.md']).status).toBe(0);
     expect(spawnSync(git, ['-C', repositoryRoot, 'commit', '-m', 'fixture']).status).toBe(0);
     const repository = registerRepository({ path: repositoryRoot, controllerHome: home, displayName: 'edit-session-retention' });
-    createWorkContract({ controllerHome: home, repoId: repository.repoId }, {
+    seedHistoricalWorkContract({ controllerHome: home, repoId: repository.repoId }, {
       workId: 'WORK-ACTIVE', repoId: repository.repoId, checkoutId: repository.checkouts[0]!.checkoutId,
-      objective: 'protect terminal edit-session evidence while Work remains active',
+      objective: 'historical Work provenance must not protect terminal edit-session evidence',
       acceptanceCriteria: [], allowedPaths: [], forbiddenPaths: [], checks: [],
       constraints: {}, requestedBy: 'system', phase: 'verification',
     });
@@ -304,17 +268,16 @@ describe('runtime cleanup', () => {
       return dir;
     };
     const stale = writeSession('EDIT-1000-stale', 'finalized');
-    const protectedByWork = writeSession('EDIT-1001-protected', 'finalized', 'WORK-ACTIVE');
+    const legacyWorkTagged = writeSession('EDIT-1001-protected', 'finalized', 'WORK-ACTIVE');
     const open = writeSession('EDIT-1002-open', 'open');
 
     const direct = cleanupTerminalEditSessionRecords(repositoryRoot, {
       nowMs, retentionMs: 24 * 60 * 60_000, maxRetained: 200, maxEntries: 100, maxRemovals: 10,
-      protectedWorkIds: ['WORK-ACTIVE'],
     });
     expect(existsSync(stale)).toBe(false);
-    expect(existsSync(protectedByWork)).toBe(true);
+    expect(existsSync(legacyWorkTagged)).toBe(false);
     expect(existsSync(open)).toBe(true);
-    expect(direct.skippedByReason.active_work).toBe(1);
+    expect(direct.skippedByReason.active_work).toBeUndefined();
     expect(direct.skippedByReason.active_session).toBe(1);
 
     const central = writeSession('EDIT-1003-central', 'superseded');
@@ -323,7 +286,7 @@ describe('runtime cleanup', () => {
       editSessionRetentionMs: 24 * 60 * 60_000, editSessionMaxRetained: 200,
     });
     expect(existsSync(central)).toBe(false);
-    expect(existsSync(protectedByWork)).toBe(true);
+    expect(existsSync(legacyWorkTagged)).toBe(false);
     expect(existsSync(open)).toBe(true);
     expect(report.removedEditSessionPaths).toContain(`repositories/${repository.repoId}/edit-sessions/EDIT-1003-central`);
     expect(report.lifecycleMetrics.reclaimedByClass.edit_session.count).toBe(1);
@@ -436,6 +399,7 @@ describe('runtime cleanup', () => {
     const staleTempPath = join(home, 'repositories', 'repo-a', 'execution-jobs', 'records', 'job.json.123.tmp');
     mkdirSync(activeWorktree, { recursive: true });
     mkdirSync(orphanWorktree, { recursive: true });
+    recordOwnedResource(home, { kind: 'worktree', targetRef: orphanWorktree, creator: 'test:runtime-cleanup', repoId: 'repo-a', retentionIntent: 'temporary' });
     mkdirSync(join(home, 'repositories', 'repo-a', 'runs', 'RUN-active'), { recursive: true });
     mkdirSync(join(home, 'repositories', 'repo-a', 'execution-jobs', 'records'), { recursive: true });
     writeFileSync(runMetaPath, `${JSON.stringify({
@@ -535,7 +499,7 @@ describe('runtime cleanup', () => {
     rmSync(dependencyPath, { recursive: true, force: true });
     mkdirSync(join(dependencyPath, 'legacy-copy'), { recursive: true });
     writeFileSync(join(dependencyPath, 'legacy-copy', 'marker'), 'legacy\n');
-    const leaseRoot = join(repositoryControllerRoot(home, repository.repoId), 'leases', 'active');
+    const leaseRoot = join(controllerSystemRoot(home), 'execution-leases', 'active');
     mkdirSync(leaseRoot, { recursive: true });
     const now = Date.now();
     writeFileSync(join(leaseRoot, 'LEASE-active.json'), JSON.stringify({
@@ -608,6 +572,7 @@ describe('runtime cleanup', () => {
     const unknownWorktree = join(home, 'repositories', 'repo-a', 'worktrees', 'RUN-unknown');
     const activeWorktree = join(home, 'repositories', 'repo-a', 'worktrees', 'RUN-active');
     mkdirSync(cancelledWorktree, { recursive: true });
+    recordOwnedResource(home, { kind: 'worktree', targetRef: cancelledWorktree, creator: 'test:runtime-cleanup', repoId: 'repo-a', retentionIntent: 'temporary' });
     mkdirSync(unknownWorktree, { recursive: true });
     mkdirSync(activeWorktree, { recursive: true });
     mkdirSync(join(home, 'repositories', 'repo-a', 'runs', 'RUN-cancelled'), { recursive: true });
@@ -693,6 +658,7 @@ describe('runtime cleanup', () => {
     const orphanWorktree = join(home, 'repositories', 'repo-a', 'worktrees', 'RUN-orphaned');
     const records = join(home, 'repositories', 'repo-a', 'execution-jobs', 'records');
     mkdirSync(orphanWorktree, { recursive: true });
+    recordOwnedResource(home, { kind: 'worktree', targetRef: orphanWorktree, creator: 'test:runtime-cleanup', repoId: 'repo-a', retentionIntent: 'temporary' });
     mkdirSync(records, { recursive: true });
     for (let index = 0; index < 80; index += 1) {
       writeFileSync(join(records, `EJOB-${index}.json`), '{}\n', 'utf8');
@@ -875,75 +841,6 @@ describe('runtime cleanup', () => {
     expect(inlineCleanupCalls).toBe(0);
   });
 
-  test('periodic retention reclaims old XCTest evidence only for semantically cancelled Work', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'forge-periodic-ios-evidence-'));
-    homes.push(root);
-    const home = join(root, 'controller');
-    const repositoryRoot = join(root, 'repository');
-    mkdirSync(repositoryRoot, { recursive: true });
-    const git = resolveGitExecutable();
-    expect(spawnSync(git, ['-C', repositoryRoot, 'init', '-b', 'main']).status).toBe(0);
-    expect(spawnSync(git, ['-C', repositoryRoot, 'config', 'user.name', 'Test']).status).toBe(0);
-    expect(spawnSync(git, ['-C', repositoryRoot, 'config', 'user.email', 'test@example.com']).status).toBe(0);
-    writeFileSync(join(repositoryRoot, 'README.md'), 'periodic evidence retention\n');
-    expect(spawnSync(git, ['-C', repositoryRoot, 'add', 'README.md']).status).toBe(0);
-    expect(spawnSync(git, ['-C', repositoryRoot, 'commit', '-m', 'fixture']).status).toBe(0);
-    const repository = registerRepository({ path: repositoryRoot, controllerHome: home, displayName: 'periodic-ios-evidence' });
-
-    const work = createWorkContract({ controllerHome: home, repoId: repository.repoId }, {
-      workId: 'WORK-CANCELLED-IOS-EVIDENCE',
-      repoId: repository.repoId,
-      checkoutId: repository.checkouts[0]!.checkoutId,
-      objective: 'cancelled XCTest evidence is reclaimable',
-      acceptanceCriteria: [],
-      allowedPaths: [],
-      forbiddenPaths: [],
-      checks: [],
-      constraints: {},
-      requestedBy: 'system',
-      phase: 'verification',
-    });
-    cancelWorkContract({ controllerHome: home, repoId: repository.repoId }, work.workId, { summary: 'fixture cancellation' });
-
-    const relativeBundle = '.forge/ios/test-results/20261020T120000Z-1-1-CancelledTests.xcresult';
-    const bundle = join(repository.canonicalRoot, relativeBundle);
-    mkdirSync(bundle, { recursive: true });
-    writeFileSync(join(bundle, 'Info.plist'), 'old cancelled evidence');
-    const nowMs = 30 * 24 * 60 * 60_000;
-    const old = new Date(nowMs - 8 * 24 * 60 * 60_000);
-    utimesSync(bundle, old, old);
-    const owner = recordIosTestEvidenceOwner({
-      controllerHome: home,
-      repoId: repository.repoId,
-      repoRoot: repository.canonicalRoot,
-      resultBundlePath: relativeBundle,
-      producerRequestId: 'JOB-periodic-cancelled',
-      associatedWorkId: work.workId,
-    });
-    expect(owner.recorded).toBe(true);
-
-    await runSchedulerPeriodicCleanup({
-      controllerHome: home,
-      controllerPid: process.pid,
-      nowMs,
-      cleanupIntervalMs: 60_000,
-      repositories: [repository],
-      runtimeCleanup: () => ({} as RuntimeCleanupReport),
-      terminalWorkCleanup: async () => ({
-        scanned: 0, eligible: 0, attempted: 0, cleaned: [], blocked: [],
-        skippedRecent: [], skippedRetained: [], skippedNonTerminal: [],
-        branchReconciled: [], errors: [], truncated: false,
-        orphanWorktrees: { scanned: 0, removed: [], retained: [], errors: [] },
-      }),
-      processGc: () => ({
-        ok: true, removedRecords: 0, removedLogs: 0, skippedActive: 0, reconciledStaleActive: 0,
-      }),
-    });
-
-    expect(existsSync(bundle)).toBe(false);
-    expect(getOwnedResource(home, owner.resourceId!)?.status).toBe('released');
-  });
-
   test('production periodic maintenance invokes the canonical Runtime cleanup owner', async () => {
     const home = controllerHome();
     let runtimeCleanupCalls = 0;
@@ -961,12 +858,6 @@ describe('runtime cleanup', () => {
         // The scheduler only observes whether this call throws, not its report.
         return {} as RuntimeCleanupReport;
       },
-      terminalWorkCleanup: async () => ({
-        scanned: 0, eligible: 0, attempted: 0, cleaned: [], blocked: [],
-        skippedRecent: [], skippedRetained: [], skippedNonTerminal: [],
-        branchReconciled: [], errors: [], truncated: false,
-        orphanWorktrees: { scanned: 0, removed: [], retained: [], errors: [] },
-      }),
       processGc: () => ({
         ok: true, removedRecords: 0, removedLogs: 0, skippedActive: 0, reconciledStaleActive: 0,
       }),
@@ -1000,10 +891,10 @@ describe('runtime cleanup', () => {
     expect(existsSync(join(root, 'records', `${terminalId}.json`))).toBe(false);
     expect(existsSync(join(root, 'receipts', `${terminalId}.json`))).toBe(false);
     expect(existsSync(join(repositoryControllerRoot(home, repoId), 'events', 'jobs', `${terminalId}.jsonl`))).toBe(false);
-    expect(existsSync(join(repositoryControllerRoot(home, repoId), 'artifacts', 'records', `${terminalArtifact.artifactId}.json`))).toBe(false);
-    expect(existsSync(join(repositoryControllerRoot(home, repoId), 'artifacts', 'data', `${terminalArtifact.artifactId}.json`))).toBe(false);
-    expect(existsSync(join(repositoryControllerRoot(home, repoId), 'artifacts', 'records', `${activeArtifact.artifactId}.json`))).toBe(true);
-    expect(existsSync(join(repositoryControllerRoot(home, repoId), 'artifacts', 'data', `${activeArtifact.artifactId}.json`))).toBe(true);
+    expect(existsSync(join(controllerSystemRoot(home), 'outputs', 'artifacts', 'records', `${terminalArtifact.artifactId}.json`))).toBe(false);
+    expect(existsSync(join(controllerSystemRoot(home), 'outputs', 'artifacts', 'data', `${terminalArtifact.artifactId}.json`))).toBe(false);
+    expect(existsSync(join(controllerSystemRoot(home), 'outputs', 'artifacts', 'records', `${activeArtifact.artifactId}.json`))).toBe(true);
+    expect(existsSync(join(controllerSystemRoot(home), 'outputs', 'artifacts', 'data', `${activeArtifact.artifactId}.json`))).toBe(true);
     expect(existsSync(join(root, 'records', `${activeId}.json`))).toBe(true);
   });
 
@@ -1014,24 +905,16 @@ describe('runtime cleanup', () => {
     const now = Date.now();
     const internal = scheduler as unknown as {
       runtimeCleanup: () => void;
-      terminalWorkCleanup: () => Promise<void>;
       processGc: (options: { repoId: string }) => { ok: boolean };
-      workValidationReconcile: (controllerHome: string, repoId: string, limit: number) => { errors: unknown[] };
       editValidationReconcile: (controllerHome: string, repository: { repoId: string }, limit: number) => Promise<{ errors: unknown[] }>;
       repositoryList: () => Array<{ repoId: string; enabled: boolean; canonicalRoot: string; removedAt?: string }>;
       lastSourceScanAt: number;
       lastGitStatusSampleAt: number;
     };
     internal.runtimeCleanup = () => undefined;
-    internal.terminalWorkCleanup = async () => undefined;
     internal.processGc = (options) => {
       processGcRepos.push(options.repoId);
       return { ok: true };
-    };
-    const validationRepos: string[] = [];
-    internal.workValidationReconcile = (_controllerHome, repoId) => {
-      validationRepos.push(repoId);
-      return { errors: [] };
     };
     const editValidationRepos: string[] = [];
     internal.editValidationReconcile = async (_controllerHome, repository) => {
@@ -1039,9 +922,9 @@ describe('runtime cleanup', () => {
       return { errors: [] };
     };
     internal.repositoryList = () => [
-      { repoId: 'repo-a', enabled: true, canonicalRoot: home },
-      { repoId: 'repo-b', enabled: true, canonicalRoot: home },
-      { repoId: 'repo-disabled', enabled: false, canonicalRoot: home },
+      { repoId: 'repo-a', enabled: true, canonicalRoot: home, checkouts: [] },
+      { repoId: 'repo-b', enabled: true, canonicalRoot: home, checkouts: [] },
+      { repoId: 'repo-disabled', enabled: false, canonicalRoot: home, checkouts: [] },
     ];
     internal.lastSourceScanAt = now;
     internal.lastGitStatusSampleAt = now;
@@ -1049,7 +932,6 @@ describe('runtime cleanup', () => {
     await scheduler.tick();
     expect(processGcRepos).toHaveLength(1);
     expect(['repo-a', 'repo-b']).toContain(processGcRepos[0]!);
-    expect(validationRepos.sort()).toEqual(['repo-a', 'repo-b']);
     expect(editValidationRepos.sort()).toEqual(['repo-a', 'repo-b']);
   });
 
@@ -1110,7 +992,6 @@ describe('runtime cleanup', () => {
       lastSourceScanAt: number;
       lastGitStatusSampleAt: number;
       runtimeCleanup: () => void;
-      terminalWorkCleanup: () => Promise<void>;
       processGc: () => { ok: boolean };
       workValidationReconcile: () => { errors: unknown[] };
       editValidationReconcile: () => Promise<{ errors: unknown[] }>;
@@ -1119,7 +1000,6 @@ describe('runtime cleanup', () => {
     internal.lastSourceScanAt = 0;
     internal.lastGitStatusSampleAt = 0;
     internal.runtimeCleanup = () => undefined;
-    internal.terminalWorkCleanup = async () => undefined;
     internal.processGc = () => ({ ok: true });
     internal.workValidationReconcile = () => ({ errors: [] });
     internal.editValidationReconcile = async () => ({ errors: [] });
@@ -1166,7 +1046,6 @@ describe('runtime cleanup', () => {
       lastSourceScanAt: number;
       lastGitStatusSampleAt: number;
       runtimeCleanup: () => void;
-      terminalWorkCleanup: () => Promise<void>;
       processGc: () => { ok: boolean };
       workValidationReconcile: () => { errors: unknown[] };
       editValidationReconcile: () => Promise<{ errors: unknown[] }>;
@@ -1177,7 +1056,6 @@ describe('runtime cleanup', () => {
     internal.lastSourceScanAt = now;
     internal.lastGitStatusSampleAt = now;
     internal.runtimeCleanup = () => undefined;
-    internal.terminalWorkCleanup = async () => undefined;
     internal.processGc = () => ({ ok: true });
     internal.workValidationReconcile = () => ({ errors: [] });
     internal.editValidationReconcile = async () => ({ errors: [] });
@@ -1188,71 +1066,6 @@ describe('runtime cleanup', () => {
     await expect(scheduler.tick()).resolves.toEqual({ activeJobs: 0 });
 
     expect(repositoryProjectionIsDirty(home, repositoryB.repoId)).toBe(false);
-  });
-
-  test('a Work concurrency reconciliation failure is isolated per repository and does not interrupt the scheduler tick', async () => {
-    const home = controllerHome();
-    const now = Date.now();
-    const makeRepository = (repoId: string): RepositoryRecord => {
-      const root = mkdtempSync(join(tmpdir(), `${repoId}-`));
-      homes.push(root);
-      const at = new Date(now).toISOString();
-      return {
-        schemaVersion: 1,
-        repoId,
-        displayName: repoId,
-        localRoot: root,
-        canonicalRoot: root,
-        activeCheckoutId: 'checkout-main',
-        checkouts: [{
-          checkoutId: 'checkout-main', localRoot: root, canonicalRoot: root, worktree: false,
-          branch: 'main', createdAt: at, updatedAt: at, lastSeenAt: at,
-        }],
-        repositoryType: 'git',
-        enabled: true,
-        createdAt: at,
-        updatedAt: at,
-        lastSeenAt: at,
-        configurationPath: join(root, '.ai', 'harness', 'repository.json'),
-        stateStorageStrategy: 'controller-home',
-      };
-    };
-    const repositoryA = makeRepository('repo-concurrency-invalid');
-    const repositoryB = makeRepository('repo-concurrency-healthy');
-    const scheduler = new GlobalScheduler(home, { pollIntervalMs: 1 });
-    const observed: string[] = [];
-    const internal = scheduler as unknown as {
-      repositoryList: () => RepositoryRecord[];
-      lastSourceScanAt: number;
-      lastGitStatusSampleAt: number;
-      runtimeCleanup: () => void;
-      terminalWorkCleanup: () => Promise<void>;
-      processGc: () => { ok: boolean };
-      workExecutionConcurrencyReconcile: (input: { repoId: string }) => { scanned: number; waiting: number; cleared: number; workIds: string[] };
-      workValidationReconcile: () => { errors: unknown[] };
-      editValidationReconcile: () => Promise<{ errors: unknown[] }>;
-    };
-    internal.repositoryList = () => [repositoryA, repositoryB];
-    internal.lastSourceScanAt = now;
-    internal.lastGitStatusSampleAt = now;
-    internal.runtimeCleanup = () => undefined;
-    internal.terminalWorkCleanup = async () => undefined;
-    internal.processGc = () => ({ ok: true });
-    internal.workExecutionConcurrencyReconcile = ({ repoId }) => {
-      observed.push(repoId);
-      if (repoId === repositoryA.repoId) throw new Error('WORK_OBJECTIVE_REQUIRED');
-      return { scanned: 0, waiting: 0, cleared: 0, workIds: [] };
-    };
-    internal.workValidationReconcile = () => ({ errors: [] });
-    internal.editValidationReconcile = async () => ({ errors: [] });
-    const originalError = console.error;
-    console.error = () => undefined;
-    try {
-      await expect(scheduler.tick()).resolves.toEqual({ activeJobs: 0 });
-    } finally {
-      console.error = originalError;
-    }
-    expect(observed).toEqual([repositoryA.repoId, repositoryB.repoId]);
   });
 
   test('a cleanup failure does not interrupt the scheduler tick', async () => {

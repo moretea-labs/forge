@@ -5,7 +5,6 @@ import { createHash } from 'crypto';
 import { result } from './result-adapter';
 import { callPluginAdapter } from './plugin-adapter';
 import { buildFacadeResult } from '../../../src/runtime/control-plane/facade';
-import { launchSuperController } from '../../../src/runtime/control-plane/launcher/thin-launcher';
 
 // The existing Computer create_session action owns browser/session state.
 // This thin launcher validates intent only; it never sends a model message.
@@ -58,47 +57,26 @@ export async function callRhWorkControllerOperation(
   args: Record<string, unknown>,
 ): Promise<CallToolResult | undefined> {
   if (operation !== 'launcher_start') return undefined;
-  const store = { controllerHome: ctx.controllerHome, repoId: repository.repoId };
   try {
-    const controllerType = String(args.controller_type ?? 'codex');
-    if (!['chatgpt', 'codex', 'grok', 'claude'].includes(controllerType)) throw new Error('CONTROLLER_TYPE_INVALID');
-    const workId = String(args.work_id ?? '').trim();
-    const launchArgs = Array.isArray(args.launch_args) ? args.launch_args.map(String) : [];
-
-    if (controllerType === 'chatgpt') {
-      const launch = chatgptLaunchSessionRequest(args, repository.repoId);
-      const launched = await callPluginAdapter(ctx, 'plugin_action_execute', {
-        plugin_id: 'computer',
-        action_id: 'create_session',
-        request_id: launch.requestId,
-        arguments: {
-          session_id: launch.sessionId,
-          url: launch.url,
-          wait_until: 'domcontentloaded',
-        },
-      });
-      if (!launched) throw new Error('LAUNCH_SESSION_COMPUTER_ACTION_UNAVAILABLE');
-      return launched;
+    const controllerType = String(args.controller_type ?? 'chatgpt');
+    if (controllerType !== 'chatgpt') throw new Error('WORK_BOUND_CONTROLLER_LAUNCH_RETIRED');
+    if (typeof args.work_id === 'string' && args.work_id.trim()) {
+      throw new Error('WORK_BOUND_CONTROLLER_LAUNCH_RETIRED');
     }
 
-    const launched = await launchSuperController({ work: store, handoff: store }, {
-      controllerType: controllerType as 'codex' | 'grok' | 'claude',
-      executable: typeof args.executable === 'string' && args.executable.trim() ? args.executable.trim() : undefined,
-      args: launchArgs,
-      workId,
-      launchReservationMs: typeof args.launch_reservation_ms === 'number'
-        ? args.launch_reservation_ms
-        : typeof args.lease_ms === 'number' ? args.lease_ms : undefined,
-      handoffId: typeof args.handoff_id === 'string' ? args.handoff_id : undefined,
-      browserSessionId: typeof args.browser_session_id === 'string' ? args.browser_session_id : undefined,
-      conversationUrl: typeof args.conversation_url === 'string' ? args.conversation_url : undefined,
-      continuationPrompt: typeof args.continuation_prompt === 'string' ? args.continuation_prompt : undefined,
-      cwd: repository.canonicalRoot,
+    const launch = chatgptLaunchSessionRequest(args, repository.repoId);
+    const launched = await callPluginAdapter(ctx, 'plugin_action_execute', {
+      plugin_id: 'computer',
+      action_id: 'create_session',
+      request_id: launch.requestId,
+      arguments: {
+        session_id: launch.sessionId,
+        url: launch.url,
+        wait_until: 'domcontentloaded',
+      },
     });
-    return result(buildFacadeResult({
-      summary: `Thin Launcher started ${launched.controllerType}.`,
-      data: { pid: launched.pid, executable: launched.executable, workId, reservationId: launched.reservationId },
-    }) as unknown as Record<string, unknown>);
+    if (!launched) throw new Error('LAUNCH_SESSION_COMPUTER_ACTION_UNAVAILABLE');
+    return launched;
   } catch (error) {
     return result(buildFacadeResult({
       status: 'blocked',

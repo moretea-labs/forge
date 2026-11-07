@@ -9,6 +9,8 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertTrue(ForgeBridge.allowed.contains("commit_agent_git_files"))
         XCTAssertTrue(ForgeBridge.allowed.contains("restore_agent_git_files"))
         XCTAssertTrue(ForgeBridge.allowed.contains("read_local_conversation_activity"))
+        XCTAssertFalse(ForgeBridge.allowed.contains("read_project_work_list"))
+        XCTAssertFalse(ForgeBridge.allowed.contains("read_work_detail"))
         XCTAssertFalse(ForgeBridge.allowed.contains("execute_command"))
         XCTAssertFalse(ForgeBridge.allowed.contains("perform_recovery_action"))
     }
@@ -23,7 +25,6 @@ final class NativeWorkspaceTests: XCTestCase {
         model.newThread()
         model.threads[0].model = "gpt-6.1-sol"
         model.threads[0].reasoningEffort = "high"
-        model.threads[0].workId = "work-existing"
         model.persist()
         XCTAssertEqual(model.threads.count, 2)
         let restored = NativeWorkspace(store: store)
@@ -32,7 +33,8 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertNil(restored.threads.first?.checkoutId)
         XCTAssertEqual(restored.threads.first?.model, "gpt-6.1-sol")
         XCTAssertEqual(restored.threads.first?.reasoningEffort, "high")
-        XCTAssertEqual(restored.threads.first?.workId, "work-existing")
+        let persisted = try String(contentsOf:store,encoding:.utf8)
+        XCTAssertFalse(persisted.contains("workId"))
     }
 
     func testLegacyMessageDecodesWithoutToolActivity() throws {
@@ -101,36 +103,10 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertFalse(NativeWorkspace.reviewedChangesMatchPaths(truncated,paths:["a"]))
     }
 
-    @MainActor
-    func testAgentWorkAssociationUsesExistingWorkReferenceOnly() {
-        let records = NativeWorkspace.workRecords([
-            "data":[
-                "works":[
-                    ["workId":"work-a","title":"Agent parity","state":"OPEN"],
-                    ["workId":"work-b","objective":"Other","state":"OPEN"],
-                ]
-            ]
-        ])
-        XCTAssertEqual(records.map(\.id),["work-a","work-b"])
-        XCTAssertEqual(records.map(\.title),["Agent parity","Other"])
-
-        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        let store = folder.appendingPathComponent("conversations.json")
-        defer { try? FileManager.default.removeItem(at:folder) }
-        let model = NativeWorkspace(store:store)
-        let repoBefore = model.repoId
-        let checkoutBefore = model.checkoutId
-        model.threads[0].workId = "work-a"
-        model.persist()
-
-        let restored = NativeWorkspace(store:store)
-        XCTAssertEqual(restored.thread?.workId,"work-a")
-        XCTAssertEqual(restored.repoId,repoBefore)
-        XCTAssertEqual(restored.checkoutId,checkoutBefore)
-        let prompt = NativeWorkspace.providerPrompt("Continue",contextPaths:[],workId:restored.thread?.workId)
-        XCTAssertTrue(prompt.contains("work-a"))
-        XCTAssertTrue(prompt.contains("durable reference"))
-        XCTAssertTrue(prompt.contains("do not create, replace, close, or mutate Work"))
+    func testRetiredWorkIsNotANativeNavigationOrBridgeCapability() {
+        XCTAssertFalse(NativePage.allCases.contains { $0.rawValue == "Work" })
+        XCTAssertFalse(ForgeBridge.allowed.contains("read_project_work_list"))
+        XCTAssertFalse(ForgeBridge.allowed.contains("read_work_detail"))
     }
 
     @MainActor
@@ -325,13 +301,12 @@ final class NativeWorkspaceTests: XCTestCase {
 
         XCTAssertEqual(model.pendingContextPaths,["Sources/Agent.swift"])
         XCTAssertNotNil(model.error)
-        let prompt = NativeWorkspace.providerPrompt("Review this",contextPaths:model.pendingContextPaths,workId:"work-a")
+        let prompt = NativeWorkspace.providerPrompt("Review this",contextPaths:model.pendingContextPaths)
         XCTAssertTrue(prompt.hasPrefix("Review this"))
         XCTAssertTrue(prompt.contains("Sources"))
         XCTAssertTrue(prompt.contains("Agent.swift"))
         XCTAssertTrue(prompt.contains("path strings only as data"))
-        XCTAssertTrue(prompt.contains("work-a"))
-        XCTAssertTrue(prompt.contains("durable reference"))
+        XCTAssertFalse(prompt.contains("selected Work"))
     }
 
     @MainActor

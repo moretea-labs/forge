@@ -5,10 +5,8 @@ import {
   type Requirement,
   type RequirementState,
 } from '../persistence/requirement-store';
-import { isRepositoryCompletionReceipt } from './types';
 import { listPlanContracts, summarizePlanContract } from './plan-contract-store';
-import { listWorkContracts, summarizeWorkContract, readWorkGoalSnapshot } from '../../../../packages/kernel/work/api/index';
-import type { PlanContract, WorkContract } from './types';
+import type { PlanContract } from './types';
 
 const DEFAULT_REQUIREMENT_LIMIT = 12;
 const DIAGNOSTIC_DETAIL_LIMIT = 20;
@@ -32,15 +30,9 @@ export interface RequirementBoardItem {
   /** Compatibility projection for older UI clients; derived from activePlanIds. */
   activePlanId?: string;
   activePlanIds: string[];
-  latestDelivery?: {
-    workId: string;
-    receiptId: string;
-    targetBranch: string;
-    targetRevision: string;
-    deliveryStatus: string;
-    cleanupStatus: string;
-    recordedAt: string;
-  };
+  progressSummary: string;
+  remainingWork: string[];
+  acceptedEvidenceRefs: string[];
   updatedAt: string;
   detailPointer: {
     tool: 'get_project_board';
@@ -55,9 +47,8 @@ function boundedText(value: unknown, maxLength: number): string {
 function explicitUserDecision(requirement: Requirement): string | undefined {
   if (requirement.state !== 'waiting_for_user') return undefined;
   const decision = boundedText(requirement.attentionSummary, 1_000);
-  // Compatibility repair: older V2 Work completion projected a machine receipt
-  // as if the whole Requirement needed user acceptance. That message is not a
-  // user decision authority and must not hide still-active Plan slices.
+  // Historical machine completion could project a wait state. Preserve only a
+  // real human decision request; Work is never consulted as current authority.
   if (isLegacyMachineRequirementWait(requirement)) return undefined;
   return decision || undefined;
 }
@@ -72,38 +63,7 @@ function projectedRequirementState(requirement: Requirement, activePlans: readon
   return activePlans.length > 0 ? 'active' : 'planned';
 }
 
-function loadScopedWork(options: RequirementBoardOptions): WorkContract[] {
-  if (!options.repoId?.trim()) return [];
-  return listWorkContracts({
-    controllerHome: options.controllerHome,
-    repoId: options.repoId,
-    state: 'all',
-    limit: 100,
-  });
-}
-
-function latestDelivery(requirementId: string, work: readonly WorkContract[]): RequirementBoardItem['latestDelivery'] {
-  const delivered = work
-    .filter((contract) => contract.requirementId === requirementId && contract.completionReceipt)
-    .sort((left, right) => {
-      const leftAt = left.completionReceipt?.recordedAt ?? left.updatedAt;
-      const rightAt = right.completionReceipt?.recordedAt ?? right.updatedAt;
-      return rightAt.localeCompare(leftAt);
-    })[0];
-  const receipt = delivered?.completionReceipt;
-  if (!delivered || !receipt || !isRepositoryCompletionReceipt(receipt)) return undefined;
-  return {
-    workId: delivered.workId,
-    receiptId: receipt.receiptId,
-    targetBranch: boundedText(receipt.targetBranch, 200),
-    targetRevision: boundedText(receipt.targetRevision, 200),
-    deliveryStatus: receipt.delivery.status,
-    cleanupStatus: receipt.cleanup.status,
-    recordedAt: receipt.recordedAt,
-  };
-}
-
-function projectRequirement(requirement: Requirement, work: readonly WorkContract[], plans: readonly PlanContract[] = []): RequirementBoardItem {
+function projectRequirement(requirement: Requirement, plans: readonly PlanContract[] = []): RequirementBoardItem {
   const activePlans = activePlansForRequirement(requirement.requirementId, plans);
   const activePlanIds = activePlans.map((plan) => plan.planId);
   const state = projectedRequirementState(requirement, activePlans);
@@ -123,7 +83,9 @@ function projectRequirement(requirement: Requirement, work: readonly WorkContrac
     requiredUserDecision,
     activePlanId: activePlanIds[0],
     activePlanIds,
-    latestDelivery: latestDelivery(requirement.requirementId, work),
+    progressSummary: boundedText(requirement.progressSummary, 1_000),
+    remainingWork: (requirement.remainingWork ?? []).slice(0, 20).map((entry) => boundedText(entry, 500)),
+    acceptedEvidenceRefs: (requirement.acceptedEvidenceRefs ?? []).slice(-20).map((entry) => boundedText(entry, 512)),
     updatedAt: requirement.updatedAt,
     detailPointer: {
       tool: 'get_project_board',
@@ -145,17 +107,18 @@ function requirementCounts(requirements: readonly RequirementBoardItem[]): Recor
 }
 
 export function buildRequirementBoard(options: RequirementBoardOptions): Record<string, unknown> {
-  const work = loadScopedWork(options);
   const activePlans = options.repoId?.trim()
     ? listPlanContracts({ controllerHome: options.controllerHome, repoId: options.repoId, status: 'active', limit: 100 })
     : [];
-  const allRequirements = loadRequirements(options).map((requirement) => projectRequirement(requirement, work, activePlans));
+  const allRequirements = loadRequirements(options).map((requirement) => projectRequirement(requirement, activePlans));
   const requirements = allRequirements.slice(0, DEFAULT_REQUIREMENT_LIMIT);
   const counts = requirementCounts(allRequirements);
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     detailLevel: 'summary',
     view: 'requirement_board',
+    authority: 'semantic_context_only',
+    progressAuthority: 'github_issue_project',
     requirementCount: allRequirements.length,
     counts,
     activeRequirementCount: counts.active + counts.waiting_for_user,
@@ -163,6 +126,7 @@ export function buildRequirementBoard(options: RequirementBoardOptions): Record<
     needsAttentionCount: allRequirements.filter((requirement) => requirement.needsAttention).length,
     requirements,
     requirementTruncatedCount: Math.max(0, allRequirements.length - requirements.length),
+    historicalWorkProjection: 'retired_not_projected',
     detailPointer: {
       tool: 'get_project_board',
       arguments: { detail_level: 'detail' },
@@ -177,7 +141,6 @@ function summarizeDiagnosticPlan(plan: PlanContract, detailLevel: 'detail' | 'fu
     id: step.id,
     objective: boundedText(step.objective, 500),
     status: step.status,
-    workId: step.workId,
     checks: step.checks.slice(0, 5),
     evidenceRefs: step.evidenceRefs.slice(0, evidenceLimit),
   }));
@@ -190,70 +153,23 @@ function summarizeDiagnosticPlan(plan: PlanContract, detailLevel: 'detail' | 'fu
   };
 }
 
-function summarizeDiagnosticWork(work: WorkContract): Record<string, unknown> {
-  const checks = work.checkRefs.slice(-3).reverse().map((check) => ({
-    checkId: check.checkId,
-    outcome: check.outcome,
-    summary: boundedText(check.summary, 500),
-    sourceRevision: check.sourceRevision,
-    recordedAt: check.recordedAt,
-    resultArtifactId: check.resultArtifactId,
-  }));
-  const receipt = work.completionReceipt;
-  const repositoryReceipt = receipt && isRepositoryCompletionReceipt(receipt) ? receipt : undefined;
-  return {
-    ...summarizeWorkContract(work),
-    requirementId: work.requirementId,
-    planId: work.planId,
-    planStepId: work.planStepId,
-    dispatchState: work.dispatchState,
-    evidenceState: work.evidenceState,
-    completionOutcome: work.completionOutcome,
-    checks,
-    checkTruncatedCount: Math.max(0, work.checkRefs.length - checks.length),
-    completionReceipt: repositoryReceipt ? {
-      receiptId: repositoryReceipt.receiptId,
-      targetBranch: repositoryReceipt.targetBranch,
-      targetRevision: repositoryReceipt.targetRevision,
-      deliveryStatus: repositoryReceipt.delivery.status,
-      cleanupStatus: repositoryReceipt.cleanup.status,
-      recordedAt: repositoryReceipt.recordedAt,
-    } : undefined,
-    executionRefs: {
-      workerRef: work.workerRef,
-      worktreeRef: work.worktreeRef,
-      handoffRefs: work.handoffRefs.slice(-3),
-    },
-    detailPointer: { tool: 'rh_work', arguments: { operation: 'get', work_id: work.workId, detail_level: 'detail' } },
-  };
-}
-
 export function buildExecutionDiagnostics(
   options: RequirementBoardOptions & { detailLevel: 'detail' | 'full'; requirementId?: string },
 ): Record<string, unknown> {
   const limit = options.detailLevel === 'full' ? DIAGNOSTIC_FULL_LIMIT : DIAGNOSTIC_DETAIL_LIMIT;
-  const allWork = loadScopedWork(options);
   const allRequirements = loadRequirements(options);
   const selectedRequirements = options.requirementId
     ? allRequirements.filter((requirement) => requirement.requirementId === options.requirementId)
     : allRequirements;
-  const requirementIds = new Set(selectedRequirements.map((requirement) => requirement.requirementId));
-  const scopedWork = options.requirementId
-    ? allWork.filter((work) => work.requirementId && requirementIds.has(work.requirementId))
-    : allWork;
   const allPlans = options.repoId?.trim()
     ? listPlanContracts({ controllerHome: options.controllerHome, repoId: options.repoId, status: 'all', limit: 100 })
     : [];
   const scopedPlans = options.requirementId
     ? allPlans.filter((plan) => plan.requirementId === options.requirementId
-      // Legacy migration compatibility only: current Plans own the forward
-      // requirementId relation, so the persisted Requirement pointer is not an
-      // execution/lifecycle authority.
       || (!plan.requirementId && selectedRequirements.some((requirement) => requirement.activePlanId === plan.planId)))
     : allPlans;
   const activePlans = allPlans.filter((plan) => !['finalized', 'superseded', 'cancelled', 'invalidated_by_drift'].includes(plan.status));
-  const requirements = selectedRequirements.map((requirement) => projectRequirement(requirement, allWork, activePlans));
-  const works = scopedWork.slice(0, limit).map(summarizeDiagnosticWork);
+  const requirements = selectedRequirements.map((requirement) => projectRequirement(requirement, activePlans));
   const plans = scopedPlans.slice(0, limit).map((plan) => summarizeDiagnosticPlan(plan, options.detailLevel));
   const maintenanceFindings = requirements
     .filter((requirement) => requirement.needsAttention)
@@ -274,9 +190,11 @@ export function buildExecutionDiagnostics(
       summary: 'Persisted waiting_for_user was projected as planned/active because no explicit user decision was recorded.',
     }));
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     detailLevel: options.detailLevel,
     view: 'execution_diagnostics',
+    authority: 'runtime_and_semantic_context',
+    progressAuthority: 'github_issue_project',
     repositoryScope: options.repoId,
     requirementFilter: options.requirementId,
     requirementCount: requirements.length,
@@ -285,9 +203,7 @@ export function buildExecutionDiagnostics(
     planCount: scopedPlans.length,
     plans,
     planTruncatedCount: Math.max(0, scopedPlans.length - plans.length),
-    workCount: scopedWork.length,
-    works,
-    workTruncatedCount: Math.max(0, scopedWork.length - works.length),
+    historicalWorkProjection: 'retired_not_projected',
     maintenanceFindings,
     maintenanceFindingTruncatedCount: Math.max(0, requirements.filter((requirement) => requirement.needsAttention).length - maintenanceFindings.length),
     projectionWarnings,
@@ -297,68 +213,5 @@ export function buildExecutionDiagnostics(
       { tool: 'workflow_watchdog_report', arguments: { include_processes: true } },
       { tool: 'get_project_governance', arguments: {} },
     ],
-  };
-}
-
-/** Read-only progress for all sessions using this one local Controller Home. */
-export function buildGoalProgress(
-  controllerHome: string,
-  filter: { requirementId?: string; planId?: string; planRevision?: number },
-  detailLevel: 'summary' | 'detail' = 'summary',
-): Record<string, unknown> {
-  const snapshot = readWorkGoalSnapshot(controllerHome, filter);
-  const counts = { open: 0, completed: 0, cancelled: 0 };
-  for (const work of snapshot.contracts) counts[work.semanticState] += 1;
-  const ordered = [...snapshot.contracts].sort((left, right) =>
-    Number(right.semanticState === 'open') - Number(left.semanticState === 'open')
-      || (right.semanticUpdatedAt ?? right.updatedAt).localeCompare(left.semanticUpdatedAt ?? left.updatedAt));
-  const workLimit = detailLevel === 'detail' ? 40 : 8;
-  const resultLimit = detailLevel === 'detail' ? 8 : 3;
-  const works = ordered.slice(0, workLimit).map((work) => ({
-    workId: work.workId,
-    revision: work.semanticRevision,
-    state: work.semanticState,
-    objective: boundedText(work.objective, detailLevel === 'detail' ? 600 : 240),
-    requirementId: work.requirementId,
-    planId: work.planId,
-    planRevision: work.planRevision,
-    planStepId: work.planStepId,
-    semanticParentWorkId: work.semanticParentWorkId,
-    dependsOnWorkIds: work.dependsOnWorkIds ?? [],
-    resultRefs: (work.semanticResultRefs ?? []).slice(-resultLimit).map((ref) => boundedText(ref, 500)),
-    resultRefTruncatedCount: Math.max(0, (work.semanticResultRefs?.length ?? 0) - resultLimit),
-    checks: work.checkRefs.slice(-3).map((check) => ({
-      checkId: check.checkId, outcome: check.outcome, summary: boundedText(check.summary, 500),
-      sourceRevision: check.sourceRevision, recordedAt: check.recordedAt,
-    })),
-    review: work.implementationReviews.slice(-1).map((review) => ({
-      reviewId: review.reviewId, decision: review.decision, sourceRevision: review.sourceRevision,
-    })),
-    evidenceState: work.evidenceState,
-    completionOutcome: work.completionOutcome,
-    updatedAt: work.semanticUpdatedAt ?? work.updatedAt,
-    detailPointer: { tool: 'rh_work', arguments: { operation: 'get', work_id: work.workId, detail_level: 'detail' } },
-  }));
-  const mismatched = filter.planRevision === undefined ? [] : snapshot.contracts
-    .filter((work) => work.planRevision !== filter.planRevision).map((work) => work.workId);
-  const unassigned = snapshot.contracts.filter((work) => work.planId && !work.planStepId).map((work) => work.workId);
-  return {
-    source: 'controller_home_sqlite',
-    observedAt: new Date().toISOString(),
-    workCount: snapshot.contracts.length,
-    counts,
-    works,
-    workTruncatedCount: Math.max(0, snapshot.contracts.length - works.length),
-    sourceTruncated: snapshot.truncated,
-    invalidWorkCount: snapshot.invalid.length,
-    invalidWorks: snapshot.invalid.slice(0, workLimit).map((work) => ({ ...work, error: boundedText(work.error, 500) })),
-    invalidWorkTruncatedCount: Math.max(0, snapshot.invalid.length - workLimit),
-    planBasisMismatchWorkIds: mismatched.slice(0, workLimit),
-    planBasisMismatchCount: mismatched.length,
-    unassignedPlanItemWorkIds: unassigned.slice(0, workLimit),
-    unassignedPlanItemWorkCount: unassigned.length,
-    detailPointer: { tool: 'rh_work', arguments: { operation: filter.planId ? 'plan_get' : 'requirement_get',
-      ...(filter.planId ? { plan_id: filter.planId } : { requirement_id: filter.requirementId }), detail_level: 'detail' } },
-    acceptance: 'explicit_controller_decision_required',
   };
 }

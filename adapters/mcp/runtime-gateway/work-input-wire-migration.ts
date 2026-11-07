@@ -21,27 +21,6 @@ const FROZEN_FORBIDDEN_OBJECT_KEYS = new Set(['__proto__', 'prototype', 'constru
 const FROZEN_COMMON_FIELDS = ['repo_id', 'checkout_id', 'request_id', 'detail_level'] as const;
 const FROZEN_SEMANTIC_V1_FIELDS: Record<string, ReadonlySet<string>> = {
   work_get: new Set([...FROZEN_COMMON_FIELDS, 'operation', 'work_id']),
-  work_revise: new Set([
-    ...FROZEN_COMMON_FIELDS,
-    'operation',
-    'work_id',
-    'expected_revision',
-    'objective',
-    'work_state',
-    'requirement_revision',
-    'plan_revision',
-    'work_result_refs',
-  ]),
-  work_complete: new Set([
-    ...FROZEN_COMMON_FIELDS,
-    'operation',
-    'work_id',
-    'expected_revision',
-    'objective',
-    'requirement_revision',
-    'plan_revision',
-    'work_result_refs',
-  ]),
   requirement_get: new Set([...FROZEN_COMMON_FIELDS, 'operation', 'requirement_id']),
   requirement_revise: new Set([
     ...FROZEN_COMMON_FIELDS,
@@ -142,13 +121,7 @@ function translateFrozenSemanticV1(
   const frozenOperation = typeof semantic.operation === 'string' ? semantic.operation.trim() : '';
   const allowed = FROZEN_SEMANTIC_V1_FIELDS[frozenOperation];
   if (!allowed) return failure('FROZEN_MCP_SEMANTIC_V1_OPERATION_UNSUPPORTED', { operation: frozenOperation });
-  const operation = frozenOperation === 'work_get'
-    ? 'get'
-    : frozenOperation === 'work_revise'
-      ? 'revise'
-      : frozenOperation === 'work_complete'
-        ? 'complete'
-        : frozenOperation;
+  const operation = frozenOperation === 'work_get' ? 'get' : frozenOperation;
 
   const semanticUnsupported = unsupportedInputField(semantic, allowed);
   if (semanticUnsupported) {
@@ -193,7 +166,7 @@ export function normalizeRhWorkInputWireMigration(input: Record<string, unknown>
   if (unsafeKey) return failure('FROZEN_MCP_INPUT_UNSAFE_KEY', { key: unsafeKey });
 
   const args = { ...input };
-  const requestedOperation = String(args.operation ?? 'start');
+  const requestedOperation = String(args.operation ?? '');
   const capabilityId = typeof args.capability_id === 'string' ? args.capability_id.trim() : '';
 
   if (capabilityId === FROZEN_CURRENT_CONVERSATION_ENROLLMENT) {

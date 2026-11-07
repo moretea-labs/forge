@@ -79,8 +79,8 @@ ${packet.allowedActions.map((action) => `- ${action}`).join('\n')}
 ${packet.stopConditions.map((condition) => `- ${condition}`).join('\n')}
 
 ## Instructions
-1. Read current Runtime state through \`rh_status\`, pending decisions through \`rh_inbox\`, and bounded Work through \`rh_work\` before starting new work.
-2. Use \`rh_work.verify/finalize/repair\` for current Work lifecycle changes; do not mutate legacy Issue/Task state.
+1. Read current Runtime state through \`rh_status\`, pending decisions through \`rh_inbox\`, and the canonical Issue/Requirement/Plan plus current Run/Job evidence needed for the task.
+2. Do not create or mutate Work lifecycle state. Use direct repository/check capabilities for execution and validation; update the canonical Issue/Project only after acceptance evidence is sufficient.
 3. For high/destructive work, prepare a concise review summary instead of auto-approving it.
 4. If a command fails because of tool/platform limitations, create a Runtime HandoffItem or bounded continuation note rather than retrying the same blocked path repeatedly.
 5. Finish with checks, a short status summary, and explicit remaining blockers.
@@ -101,7 +101,7 @@ export function prepareCodexContinuation(repoRoot: string, options: CodexContinu
     controller: 'codex-cli',
     allowedActions: [
       'inspect compact backlog and stuck-state reports',
-      'finish validated bounded Work through rh_work.finalize when policy allows',
+      'finish validated Runs/Jobs and update the canonical Issue/Project after acceptance is proven',
       'prepare patches for remaining blocker classes',
       'run declared checks and summarize failures',
     ],
@@ -145,6 +145,6 @@ export function prepareCodexContinuation(repoRoot: string, options: CodexContinu
   return {
     ...result,
     launchRejected: true,
-    error: 'CONTINUATION_LAUNCH_DEPRECATED: start an external Codex session through rh_work.launcher_start after claiming a WorkContract.',
+    error: 'CONTINUATION_LAUNCH_DEPRECATED: use the Work-free local conversation capability for Codex or an explicit ChatGPT launcher_start session.',
   };
 }

@@ -12,10 +12,6 @@ export const COGNITION_SETTLEMENT_PROPERTY = {
   type: 'object',
   additionalProperties: false,
   properties: {
-    work_id: {
-      type: 'string',
-      description: 'Optional selected Work. Forge derives reachable Work/Requirement/Project/Workspace scope and provenance; this is not caller-authored authority.',
-    },
     learning_signals: {
       type: 'array',
       maxItems: CONTROLLER_LEARNING_SIGNAL_ENVELOPE_MAX_ITEMS,
@@ -102,10 +98,6 @@ export function settleCognitionEnvelope(
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('COGNITION_SETTLEMENT_INVALID');
   const envelope = raw as Record<string, unknown>;
   const repository = selected(ctx, args);
-  const workId = typeof envelope.work_id === 'string' && envelope.work_id.trim()
-    ? envelope.work_id.trim()
-    : typeof args.work_id === 'string' && args.work_id.trim() ? args.work_id.trim() : undefined;
-
   const storedMemoryIds: string[] = [];
   const observationIds: string[] = [];
 
@@ -120,7 +112,6 @@ export function settleCognitionEnvelope(
       sessionId: ctx.sessionId,
       controllerInstanceId: ctx.controllerInstanceId,
       controllerType: ctx.controllerType,
-      workId,
     });
     storedMemoryIds.push(...learning.storedMemoryIds);
   }
@@ -133,7 +124,6 @@ export function settleCognitionEnvelope(
       principalId: ctx.principalId,
       sessionId: ctx.sessionId,
       controllerInstanceId: ctx.controllerInstanceId,
-      workId,
     });
     observationIds.push(...recorded.observationIds);
   }

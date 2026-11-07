@@ -270,23 +270,15 @@ export function repositoryScopedToolArgs(
   input: Record<string, unknown>,
   repository: RepositoryRecord,
 ): Record<string, unknown> {
-  // Preserve resolved repository identity for every downstream call. Exact
-  // claimed Work calls are the one exception for checkout injection: when the
-  // caller omitted checkout_id, repository tools must resolve the Work-owned
-  // checkout after validating the authenticated principal instead of inheriting
-  // the repository's currently active checkout.
-  const workOwnedCheckoutResolution = [
-    'execute_command',
-    'repository_safe_patch_apply',
-  ].includes(name)
-    && typeof input.work_id === 'string'
-    && input.work_id.trim().length > 0
-    && !(typeof input.checkout_id === 'string' && input.checkout_id.trim().length > 0);
+  // Preserve resolved repository identity and checkout for every downstream
+  // call. Historical Work identifiers never select, override, or own checkout.
   const args: Record<string, unknown> = {
     ...input,
     repo_id: repository.repoId,
+    checkout_id: typeof input.checkout_id === 'string' && input.checkout_id.trim()
+      ? input.checkout_id
+      : repository.activeCheckoutId,
   };
-  if (!workOwnedCheckoutResolution) args.checkout_id = repository.activeCheckoutId;
 
   const github = repository.github;
   const githubRepo = github ? `${github.owner}/${github.repo}` : undefined;

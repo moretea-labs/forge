@@ -348,7 +348,7 @@ function localConversationCwd(): string {
 function conversationPrompt(prompt: string, repoId?: string): string {
   return [
     'You are the Forge Desktop local controller.',
-    'Use the injected Forge MCP capabilities for repository, Runtime, and other Forge operations. Do not create Requirement, Plan, Work, ControllerRound, or a scheduled continuation unless the user explicitly requests that durable lifecycle.',
+    'Use the injected Forge MCP capabilities for repository, Runtime, and other Forge operations. Work and ControllerRound are retired and must never be created. Create Requirement, Plan, Schedule, or Workflow state only when the user explicitly requests that durable context or trigger.',
     repoId
       ? `Attached repository: ${repoId}. Pass repo_id=${repoId} to Forge capabilities that require repository scope.`
       : 'No repository is attached. Do not guess a repository identity.',

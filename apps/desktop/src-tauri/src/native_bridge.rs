@@ -45,12 +45,8 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
             read_project_repository(required(args, "repoId")?).await,
         "read_project_overview" =>
             read_project_overview(required(args, "repoId")?).await,
-        "read_project_work_list" =>
-            read_project_work_list(required(args, "repoId")?).await,
         "read_project_plan_list" =>
             read_project_plan_list(required(args, "repoId")?).await,
-        "read_work_detail" =>
-            read_work_detail(required(args, "repoId")?, required(args, "workId")?).await,
         "read_requirement_detail" =>
             read_requirement_detail(required(args, "repoId")?, required(args, "requirementId")?).await,
         "read_plan_detail" =>
@@ -58,7 +54,6 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
         "read_project_knowledge" =>
             read_project_knowledge(
                 required(args, "repoId")?,
-                args.get("workId").and_then(Value::as_str).map(str::to_owned),
                 args.get("query").and_then(Value::as_str).unwrap_or("").to_string(),
             ).await,
         "read_recovery_status" => read_recovery_status().await,

@@ -172,8 +172,8 @@ export async function callPluginAdapter(
     case 'plugin_action_execute': {
       const pluginId = String(args.plugin_id ?? '').trim();
       const workId = typeof args.work_id === 'string' && args.work_id.trim() ? args.work_id.trim() : undefined;
+      if (workId) throw new Error(`WORK_PLUGIN_RECEIPT_AUTHORITY_RETIRED: ${workId}`);
       const scope = pluginTransportScope(ctx, args, pluginId);
-      const workRepository = workId ? selected(ctx, args) : undefined;
       const actionId = String(args.action_id ?? '').trim();
       const requestId = String(args.request_id ?? '').trim();
       const actionArguments = args.arguments && typeof args.arguments === 'object' && !Array.isArray(args.arguments)
@@ -183,8 +183,6 @@ export async function callPluginAdapter(
         pluginId,
         actionId,
         requestId,
-        workId,
-        ...(workId && workRepository ? { workRepoId: workRepository.repoId } : {}),
         args: actionArguments,
         timeoutMs: typeof args.timeout_ms === 'number' ? args.timeout_ms : undefined,
         signal: ctx.signal,
@@ -211,7 +209,6 @@ export async function callPluginAdapter(
           sessionId: ctx.sessionId,
           principalId: ctx.principalId,
           controllerInstanceId: ctx.controllerInstanceId,
-          workId,
         }, application.result);
         const value = {
           accepted: true,
@@ -252,7 +249,6 @@ export async function callPluginAdapter(
           sessionId: ctx.sessionId,
           principalId: ctx.principalId,
           controllerInstanceId: ctx.controllerInstanceId,
-          workId,
         }, application.result);
         return result({
           accepted: true,
@@ -347,7 +343,6 @@ export async function callPluginAdapter(
         scope: pluginScopeLabel(scope),
         receiptId: submitted.receipt.receiptId,
         requestId: submitted.receipt.requestId,
-        ...(submitted.receipt.workId ? { workId: submitted.receipt.workId } : {}),
         authorization: submitted.authorization,
         result: compactResult,
         detail: {

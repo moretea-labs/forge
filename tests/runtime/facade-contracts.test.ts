@@ -4,7 +4,7 @@ import { getCoreCapabilityExecutionSchema, listCapabilityDescriptors, searchCapa
 import { evaluatePolicyGate } from '../../src/runtime/control-plane/facade/policy-gate';
 import { buildFacadeResult } from '../../src/runtime/control-plane/facade/facade-result';
 import { allowedFacadeOperations, validateSuggestedNextActions } from '../../src/runtime/control-plane/facade/suggested-actions';
-import { buildClaudeControllerInvocation, buildCodexControllerInvocation, buildSuperControllerInvocation, type ThinLauncherRequest } from '../../src/runtime/control-plane/launcher/thin-launcher';
+import { buildClaudeControllerInvocation, buildCodexControllerInvocation, buildSuperControllerInvocation, type ExternalControllerInvocationRequest } from '../../src/runtime/control-plane/launcher/thin-launcher';
 import { buildLocalConversationProviderArgs, cancelLocalConversation, parseCodexConversationJsonl, parseCodexModelCatalog, readLocalConversationActivity, readLocalConversationProviderStatus, runCodexConversation, validateLocalConversationImagePaths } from '../../src/runtime/control-plane/launcher/local-conversation-controller';
 import { RH_WORK_MODEL_OPERATIONS, isRhWorkAcceptedOperation } from '../../src/runtime/control-plane/facade/rh-work-operation-contract';
 import { runtimeToolDefinitions } from '../../adapters/mcp/runtime-gateway/runtime-tool-definitions';
@@ -29,7 +29,6 @@ describe('handoff and facade contracts', () => {
     const provider = await pending;
     expect(provider.provider).toBe('codex');
     expect(['ready', 'not_configured', 'unavailable']).toContain(provider.status);
-    expect(provider.imageInput).toBe(true);
     if (provider.status !== 'ready') {
       expect(provider.tools).toBe(false);
     } else {
@@ -105,7 +104,7 @@ describe('handoff and facade contracts', () => {
     expect(FACADE_TOOLS).toEqual(['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work', 'capability_execute']);
   });
 
-  test('exposes Work delivery as a repository.git action without widening the top-level facade', () => {
+  test('keeps repository.git actions Work-free without widening the top-level facade', () => {
     const descriptor = listCapabilityDescriptors().find((entry) => entry.capabilityId === 'repository.git');
     expect(descriptor).toMatchObject({
       domain: 'repository', group: 'git', operationClass: 'write', risk: 'local_repo_write',
@@ -120,14 +119,12 @@ describe('handoff and facade contracts', () => {
       }>;
     } | undefined;
     expect(schema?.executeWith).toBe('capability_execute');
-    expect(Object.keys(schema?.actions ?? {}).sort()).toEqual(['commit_paths', 'delete_remote_branch', 'deliver_work', 'diff_paths', 'discard_work', 'restore_paths', 'stage_paths']);
+    expect(Object.keys(schema?.actions ?? {}).sort()).toEqual(['commit_paths', 'delete_remote_branch', 'diff_paths', 'restore_paths', 'stage_paths']);
     expect(schema?.actions?.restore_paths).toMatchObject({ readOnly: false, risk: 'destructive' });
     expect(schema?.actions?.restore_paths?.argumentsSchema?.required).toEqual(['paths', 'expected_head', 'expected_branch', 'expected_patch', 'confirm_authorization']);
     expect(schema?.actions?.delete_remote_branch).toMatchObject({ readOnly: false, risk: 'destructive_remote' });
     expect(schema?.actions?.delete_remote_branch?.argumentsSchema?.required).toEqual(['branch', 'expected_remote_sha']);
     expect(schema?.actions?.delete_remote_branch?.argumentsSchema?.properties).toHaveProperty('approval_request_id');
-    expect(schema?.actions?.deliver_work?.argumentsSchema?.required).toEqual(['work_id']);
-    expect(schema?.actions?.discard_work?.argumentsSchema?.required).toEqual(['work_id']);
     expect(runtimeToolDefinitions.some((definition) => definition.name === 'work_deliver')).toBe(false);
     expect(FACADE_TOOLS).toHaveLength(6);
   });
@@ -145,7 +142,7 @@ describe('handoff and facade contracts', () => {
     expect(schema?.executeWith).toBe('capability_execute');
     expect(Object.keys(schema?.actions ?? {}).sort()).toEqual(['apply', 'plan']);
     expect(schema?.actions?.plan?.argumentsSchema?.required).toEqual(['operations']);
-    expect(schema?.actions?.apply?.argumentsSchema?.properties).toHaveProperty('work_id');
+    expect(schema?.actions?.apply?.argumentsSchema?.properties).not.toHaveProperty('work_id');
     expect(schema?.actions?.apply?.argumentsSchema?.properties).toHaveProperty('validation_only');
     expect(FACADE_TOOLS).toHaveLength(6);
   });
@@ -181,9 +178,7 @@ describe('handoff and facade contracts', () => {
     expect(Object.keys(schema?.actions ?? {}).sort()).toEqual(['activity', 'cancel', 'models', 'send', 'status']);
     expect(schema?.actions?.cancel).toMatchObject({ readOnly: false, risk: 'workspace_write' });
     expect(schema?.actions?.cancel?.argumentsSchema?.required).toEqual(['conversation_id']);
-    expect(cancelLocalConversation('unregistered-local-id')).toMatchObject({
-      status: 'not_active',
-    });
+    expect(cancelLocalConversation('unregistered-local-id')).toMatchObject({ status: 'not_active' });
     expect(() => cancelLocalConversation('invalid id')).toThrow('LOCAL_CONVERSATION_ID_INVALID');
     expect(schema?.actions?.status).toMatchObject({ readOnly: true, risk: 'readonly' });
     expect(schema?.actions?.models).toMatchObject({ readOnly: true, risk: 'readonly' });
@@ -229,8 +224,7 @@ describe('handoff and facade contracts', () => {
     writeFileSync(image, 'image-bytes');
     try {
       expect(validateLocalConversationImagePaths(conversationId, [image])).toEqual([realpathSync(image)]);
-      expect(() => validateLocalConversationImagePaths(conversationId, ['/tmp/outside.png']))
-        .toThrow();
+      expect(() => validateLocalConversationImagePaths(conversationId, ['/tmp/outside.png'])).toThrow();
       expect(() => validateLocalConversationImagePaths(conversationId, Array(5).fill(image)))
         .toThrow('LOCAL_CONVERSATION_IMAGE_COUNT_INVALID');
     } finally {
@@ -238,89 +232,21 @@ describe('handoff and facade contracts', () => {
     }
   });
 
-  test('successful local conversation returns the same bounded tool activity snapshot used live', async () => {
-    const conversationId = 'test-local-complete-' + crypto.randomUUID();
-    const script = [
-      "console.log(JSON.stringify({type:'thread.started',thread_id:'thread-complete'}));",
-      "console.log(JSON.stringify({type:'turn.started'}));",
-      "console.log(JSON.stringify({type:'item.started',item:{type:'mcp_tool_call',server:'forge',tool:'rh_status'}}));",
-      "console.log(JSON.stringify({type:'item.completed',item:{type:'mcp_tool_call',server:'forge',tool:'rh_status'}}));",
-      "console.log(JSON.stringify({type:'item.started',item:{type:'command_execution',command:'git status --short'}}));",
-      "console.log(JSON.stringify({type:'item.completed',item:{type:'command_execution',command:'git status --short',aggregated_output:'DO_NOT_PERSIST_COMMAND_OUTPUT',exit_code:0,status:'completed'}}));",
-      "console.log(JSON.stringify({type:'item.completed',item:{type:'file_change',changes:[{path:'src/a.ts',kind:'update'},{path:'src/b.ts',kind:'create'}],status:'completed'}}));",
-      "console.log(JSON.stringify({type:'item.completed',item:{type:'web_search',query:'Codex JSON event schema'}}));",
-      "console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:'done'}}));",
-      "console.log(JSON.stringify({type:'turn.completed'}));",
-    ].join('');
-    const completed = await runCodexConversation(
-      process.execPath, ['-e', script],
-      process.env, process.cwd(), 5000, conversationId,
-    );
-    expect(readLocalConversationActivity(conversationId)).toMatchObject({
-      conversationId, status: 'idle', toolActivityCount: 0, events: [],
-    });
-    expect(completed.activity.toolActivityCount).toBe(4);
-    const toolEvents = completed.activity.events.filter((event) => event.phase === 'tool');
-    expect(toolEvents).toEqual([
-      expect.objectContaining({
-        phase: 'tool', label: '正在使用 forge · rh_status', status: 'completed',
-      }),
-      expect.objectContaining({
-        phase: 'tool', label: '正在执行命令', detail: 'git status --short', status: 'completed',
-      }),
-      expect.objectContaining({
-        phase: 'tool', label: '正在修改文件', detail: 'update src/a.ts · create src/b.ts', status: 'completed',
-      }),
-      expect.objectContaining({
-        phase: 'tool', label: '正在搜索', detail: 'Codex JSON event schema', status: 'completed',
-      }),
-    ]);
-    expect(JSON.stringify(completed.activity.events)).not.toContain('DO_NOT_PERSIST_COMMAND_OUTPUT');
-  });
-
-  test('cancel stops the exact locally owned Codex process and keeps live activity bounded', async () => {
+  test('cancel stops the exact locally owned Codex process and releases its handle', async () => {
     const conversationId = 'test-local-stop-' + crypto.randomUUID();
-    const script = [
-      "console.log(JSON.stringify({type:'thread.started',thread_id:'thread-test'}));",
-      "console.log(JSON.stringify({type:'turn.started'}));",
-      "for(let i=0;i<35;i++) console.log(JSON.stringify({type:'item.completed',item:{type:'mcp_tool_call',name:'forge.tool.'+i}}));",
-      "setTimeout(() => {}, 10000);",
-    ].join('');
     const running = runCodexConversation(
-      process.execPath, ['-e', script],
+      process.execPath, ['-e', 'setTimeout(() => {}, 10000)'],
       process.env, process.cwd(), 5000, conversationId,
     );
-    let activity = readLocalConversationActivity(conversationId);
-    for (let attempt = 0; attempt < 50 && activity.toolActivityCount < 35; attempt += 1) {
-      await Bun.sleep(10);
-      activity = readLocalConversationActivity(conversationId);
-    }
-    expect(activity).toMatchObject({
-      conversationId, status: 'running', phase: 'tool', toolActivityCount: 35,
-    });
-    expect(activity.events).toHaveLength(30);
-    expect(activity.events.at(-1)).toMatchObject({
-      phase: 'tool', label: '正在使用 forge.tool.34', status: 'completed',
-    });
+    // The launcher registers the process synchronously before it awaits exit.
     expect(cancelLocalConversation(conversationId)).toMatchObject({ status: 'requested' });
     await expect(running).rejects.toThrow('LOCAL_CONVERSATION_CANCELLED_RECONCILE');
     expect(cancelLocalConversation(conversationId)).toMatchObject({ status: 'not_active' });
   });
 
-  test('exposes exact Work validation through capability_execute without widening the top-level facade', () => {
-    const descriptor = listCapabilityDescriptors().find((entry) => entry.capabilityId === 'repository.validation');
-    expect(descriptor).toMatchObject({
-      domain: 'repository', group: 'repository-core', operationClass: 'execute', risk: 'workspace_write',
-      exposedVia: 'capability_execute', schemaExposure: 'stable_static',
-    });
-    const schema = getCoreCapabilityExecutionSchema('repository.validation') as {
-      executeWith?: string;
-      actions?: Record<string, { argumentsSchema?: { required?: string[]; properties?: Record<string, unknown> } }>;
-    } | undefined;
-    expect(schema?.executeWith).toBe('capability_execute');
-    expect(Object.keys(schema?.actions ?? {})).toEqual(['validate_work']);
-    expect(schema?.actions?.validate_work?.argumentsSchema?.required).toEqual(['work_id']);
-    expect(schema?.actions?.validate_work?.argumentsSchema?.properties).not.toHaveProperty('commands');
+  test('does not expose retired Work validation capability', () => {
+    expect(listCapabilityDescriptors().some((entry) => entry.capabilityId === 'repository.validation')).toBe(false);
+    expect(getCoreCapabilityExecutionSchema('repository.validation')).toBeUndefined();
     expect(FACADE_TOOLS).toHaveLength(6);
   });
 
@@ -331,27 +257,14 @@ describe('handoff and facade contracts', () => {
     expect(FACADE_TOOLS).toEqual(['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work', 'capability_execute']);
   });
 
-  test('exposes ControllerRound recovery through capability_execute without restoring rh_work lifecycle authority', () => {
-    const descriptor = listCapabilityDescriptors().find((entry) => entry.capabilityId === 'controller.round_recovery');
-    expect(descriptor).toMatchObject({
-      domain: 'controller', group: 'controller', operationClass: 'execute', risk: 'workspace_write',
-      exposedVia: 'capability_execute', schemaExposure: 'stable_static',
-    });
-    const schema = getCoreCapabilityExecutionSchema('controller.round_recovery') as {
-      executeWith?: string;
-      actions?: Record<string, { argumentsSchema?: { required?: string[]; properties?: Record<string, unknown> } }>;
-    } | undefined;
-    expect(schema?.executeWith).toBe('capability_execute');
-    expect(Object.keys(schema?.actions ?? {})).toEqual(['recover_and_dispose']);
-    expect(schema?.actions?.recover_and_dispose?.argumentsSchema?.required).toEqual(
-      expect.arrayContaining(['work_id', 'recovery_reason', 'disposition', 'user_directed']),
-    );
-    expect(searchCapabilityDescriptors('controller round authority recovery').map((entry) => entry.capabilityId)).toContain('controller.round_recovery');
+  test('does not expose retired ControllerRound recovery capability', () => {
+    expect(listCapabilityDescriptors().some((entry) => entry.capabilityId === 'controller.round_recovery')).toBe(false);
+    expect(getCoreCapabilityExecutionSchema('controller.round_recovery')).toBeUndefined();
+    expect(searchCapabilityDescriptors('controller round authority recovery').map((entry) => entry.capabilityId)).not.toContain('controller.round_recovery');
     const rhWork = runtimeToolDefinitions.find((definition) => definition.name === 'rh_work');
     const properties = rhWork?.inputSchema.properties as Record<string, { enum?: string[] }> | undefined;
     expect(properties?.operation?.enum).not.toContain('controller_authority_recover');
     expect(properties).not.toHaveProperty('controller_authority_id');
-    expect(FACADE_TOOLS).toEqual(['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work', 'capability_execute']);
   });
 
   test('keeps expensive maintenance inspection explicit on rh_status', () => {
@@ -372,20 +285,19 @@ describe('handoff and facade contracts', () => {
     expect(allowedFacadeOperations('rh_work')).not.toContain('controller_disposition');
   });
 
-  test('exposes Work objective relations only on the current typed rh_work schema', () => {
+  test('keeps retired Work relations and writers out of the current typed rh_work schema', () => {
     const rhWork = runtimeToolDefinitions.find((definition) => definition.name === 'rh_work');
     const properties = rhWork?.inputSchema.properties as Record<string, any> | undefined;
-    expect(properties?.semantic_parent_work_id).toMatchObject({ type: 'string', minLength: 1, maxLength: 256 });
-    expect(properties?.depends_on_work_ids).toMatchObject({ type: 'array', maxItems: 32, uniqueItems: true });
-    expect(properties?.depends_on_work_ids?.items).toMatchObject({ type: 'string', minLength: 1, maxLength: 256 });
+    expect(properties).not.toHaveProperty('semantic_parent_work_id');
+    expect(properties).not.toHaveProperty('depends_on_work_ids');
 
     expect(normalizeRhWorkInputWireMigration({
       operation: 'repair',
       capability_id: `semantic.v1:${JSON.stringify({ operation: 'work_revise', work_id: 'WORK-1', expected_revision: 1, semantic_parent_work_id: 'WORK-0' })}`,
     })).toMatchObject({
       ok: false,
-      summary: 'FROZEN_MCP_SEMANTIC_V1_FIELD_UNSUPPORTED',
-      data: { operation: 'work_revise', field: 'semantic_parent_work_id' },
+      summary: 'FROZEN_MCP_SEMANTIC_V1_OPERATION_UNSUPPORTED',
+      data: { operation: 'work_revise' },
     });
   });
 
@@ -405,7 +317,7 @@ describe('handoff and facade contracts', () => {
     // an interaction quota and not a second schema-local policy.
     expect(learning?.maxItems).toBe(CONTROLLER_LEARNING_SIGNAL_ENVELOPE_MAX_ITEMS);
     expect(learning?.items?.additionalProperties).toBe(false);
-    expect(learning?.items?.properties?.scope_kind?.enum).toEqual(['work', 'requirement', 'project', 'workspace']);
+    expect(learning?.items?.properties?.scope_kind?.enum).toEqual(['requirement', 'project', 'workspace']);
     expect(learning?.items?.properties?.admission_source?.enum).toContain('explicit_human');
     expect(learning?.items?.properties?.portability?.enum).toContain('portable');
     expect(learning?.items?.properties).not.toHaveProperty('source_work_id');
@@ -424,8 +336,8 @@ describe('handoff and facade contracts', () => {
     expect(properties?.operation?.enum).not.toContain('verify');
     expect(properties?.operation?.enum).not.toContain('finalize');
     expect(properties?.operation?.enum).toContain('learning_record');
-    expect(properties?.operation?.enum).toContain('outcome_record');
-    expect(properties?.operation?.enum).toContain('experience_record');
+    expect(properties?.operation?.enum).not.toContain('outcome_record');
+    expect(properties?.operation?.enum).not.toContain('experience_record');
 
     const retiredReview = validateSuggestedNextActions([
       { label: 'Review implementation', tool: 'rh_work', operation: 'review', risk: 'workspace_write' },
@@ -447,7 +359,7 @@ describe('handoff and facade contracts', () => {
     expect(properties).not.toHaveProperty('relay_scope_id');
     expect(properties).not.toHaveProperty('plan_step_id');
     expect(properties?.capability_id?.description).not.toContain('compatibility');
-    for (const operation of ['verify', 'review', 'finalize', 'plan_approve', 'plan_accept_step', 'controller_claim', 'controller_release', 'controller_disposition']) {
+    for (const operation of ['start', 'revise', 'complete', 'outcome_record', 'experience_record', 'verify', 'review', 'finalize', 'plan_approve', 'plan_accept_step', 'controller_claim', 'controller_release', 'controller_disposition']) {
       expect(isRhWorkAcceptedOperation(operation)).toBe(false);
     }
   });
@@ -570,8 +482,8 @@ describe('handoff and facade contracts', () => {
     expect(properties).not.toHaveProperty('work_kind');
     expect(properties).not.toHaveProperty('review_findings');
     expect(properties).not.toHaveProperty('acceptance_evidence');
-    expect(properties).toHaveProperty('work_state');
-    expect(properties).toHaveProperty('work_result_refs');
+    expect(properties).not.toHaveProperty('work_state');
+    expect(properties).not.toHaveProperty('work_result_refs');
     expect(properties).toHaveProperty('expected_revision');
   });
 
@@ -580,8 +492,8 @@ describe('handoff and facade contracts', () => {
     const properties = rhWork?.inputSchema.properties as Record<string, { enum?: string[] }> | undefined;
     expect(properties?.operation?.enum).toEqual([...RH_WORK_MODEL_OPERATIONS]);
     expect(properties).toHaveProperty('expected_revision');
-    expect(properties).toHaveProperty('work_state');
-    expect(properties).toHaveProperty('work_result_refs');
+    expect(properties).not.toHaveProperty('work_state');
+    expect(properties).not.toHaveProperty('work_result_refs');
     expect(properties).not.toHaveProperty('controller_authority_id');
     expect(properties).not.toHaveProperty('relay_scope_id');
     expect(properties).not.toHaveProperty('assistant_context_digest');
@@ -741,18 +653,17 @@ describe('handoff and facade contracts', () => {
     expect(capabilities.map((entry) => entry.capabilityId)).toContain('repository.direct_edit');
     expect(capabilities.map((entry) => entry.capabilityId)).not.toContain('controller.goal_workloop');
     expect(capabilities.map((entry) => entry.capabilityId)).toContain('controller.self_healing');
-    expect(capabilities.map((entry) => entry.capabilityId)).toContain('controller.external_controller');
+    expect(capabilities.map((entry) => entry.capabilityId)).not.toContain('controller.external_controller');
     expect(new Set(capabilities.map((entry) => entry.exposedVia).filter((surface) => surface.startsWith('rh_')))).toEqual(new Set(['rh_context', 'rh_inbox', 'rh_status', 'rh_work']));
     expect(capabilities.some((entry) => entry.exposedVia === 'plugin_action_execute')).toBe(true);
-    expect(new Set(capabilities.map((entry) => entry.group))).toEqual(new Set([
+    expect([...new Set(capabilities.map((entry) => entry.group))].sort()).toEqual([
       'controller',
       'evidence',
       'git',
       'ios',
-      'issue-task',
       'repository-core',
       'runtime-maintenance',
-    ]));
+    ]);
     expect(capabilities.every((entry) => entry.schemaExposure === 'stable_static')).toBe(true);
     const groups = summarizeCapabilityGroups([]);
     expect(groups.find((entry) => entry.group === 'git')).toMatchObject({ capabilityCount: 1, facadeTools: ['capability_execute'] });
@@ -839,7 +750,7 @@ describe('handoff and facade contracts', () => {
 
 
 describe('Thin Launcher external Controller invocation', () => {
-  const request = (overrides: Partial<ThinLauncherRequest> = {}): ThinLauncherRequest => ({ controllerType: 'chatgpt', workId: 'WORK-1', cwd: '/tmp/repo', controllerHome: '/tmp/controller', repoId: 'repo-1', ...overrides });
+  const request = (overrides: Partial<ExternalControllerInvocationRequest> = {}): ExternalControllerInvocationRequest => ({ controllerType: 'chatgpt', cwd: '/tmp/repo', ...overrides });
   test('uses non-interactive provider modes and requires Forge MCP bootstrap for detached CLI controllers', () => {
     const bootstrap = {
       url: 'http://127.0.0.1:8765/mcp',
@@ -869,39 +780,30 @@ describe('Thin Launcher external Controller invocation', () => {
       prompt: 'local question',
       mcpBootstrap: bootstrap,
       sandbox: 'read-only',
-      args: ['--skip-git-repo-check', '--image', '/tmp/local.png'],
+      args: ['--skip-git-repo-check'],
       json: true,
     });
     expect(local.args).toContain('--skip-git-repo-check');
-    expect(local.args).toContain('/tmp/local.png');
     expect(local.args).toContain('read-only');
     expect(local.args).toContain('--json');
     expect(local.args).not.toContain('workspace-write');
-    const localDelimiter = local.args.indexOf('--');
-    expect(localDelimiter).toBeGreaterThan(local.args.indexOf('/tmp/local.png'));
-    expect(local.args[localDelimiter + 1]).toBe('local question');
     const resumed = buildCodexControllerInvocation({
       executable: 'codex',
       prompt: 'follow up',
       mcpBootstrap: bootstrap,
       sandbox: 'read-only',
       resumeSessionId: '01a1102c-2c50-76d3-ae32-478a4b24788b',
-      args: ['--skip-git-repo-check', '--image', '/tmp/resumed.png'],
+      args: ['--skip-git-repo-check'],
       json: true,
     });
     expect(resumed.args).toContain('--skip-git-repo-check');
-    expect(resumed.args).toContain('/tmp/resumed.png');
     expect(resumed.args).toContain('resume');
     expect(resumed.args).toContain('01a1102c-2c50-76d3-ae32-478a4b24788b');
     expect(resumed.args).not.toContain('workspace-write');
-    const resumedDelimiter = resumed.args.indexOf('--');
-    expect(resumedDelimiter).toBeGreaterThan(resumed.args.indexOf('/tmp/resumed.png'));
-    expect(resumed.args[resumedDelimiter + 1]).toBe('01a1102c-2c50-76d3-ae32-478a4b24788b');
-    expect(resumed.args[resumedDelimiter + 2]).toBe('follow up');
 
     expect(parseCodexConversationJsonl([
       JSON.stringify({ type: 'thread.started', thread_id: 'thread-1' }),
-      JSON.stringify({ type: 'item.completed', item: { type: 'mcp_tool_call', server: 'forge', tool: 'rh_status' } }),
+      JSON.stringify({ type: 'item.completed', item: { type: 'mcp_tool_call', name: 'forge.rh_status' } }),
       JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'done' } }),
     ].join('\n'))).toEqual({ providerSessionId: 'thread-1', output: 'done', toolActivityCount: 1 });
 

@@ -6,7 +6,6 @@ import { controllerExposureSnapshot, controllerToolSurfaceStatus } from "../tool
 import { result } from "./result-adapter";
 import { selected, selectedOptional } from "./shared-adapter";
 import { SEMANTIC_SCOPE_KEY } from "../../../src/effects/controller-home";
-import type { ExecutionJob } from '../../../src/runtime/execution/jobs/types';
 import { getProcessRecord, isManagedProcessActive, processRuntimeResourceDiagnostics } from "../../../src/runtime/execution/process-runtime";
 import { gatewayLatencySummaries } from '../../../src/runtime/observability/gateway-contention-metrics';
 import { formatRuntimeSourceDriftMessage, readRuntimeGeneration } from "../../../src/runtime/control-plane/runtime-generation";
@@ -15,42 +14,14 @@ import { buildCheckExecutionSchedule } from "../../../src/runtime/execution/proc
 import { listAssistantPluginManifests } from "../../../src/runtime/plugins/store";
 import { cachedGitIdentity, gitSnapshot } from "../../../src/cli/repository/inspector";
 import { buildRuntimeMaintenanceStatus } from "../../../src/runtime/recovery";
-import { allowedFacadeOperations, buildFacadeResult, listCapabilityDescriptors, summarizeCapabilityGroups, listHandoffAttentionItems, normalizeCheckIds, buildWorkContinuationSnapshot, listPlanContracts, summarizePlanContract, runHandoffInboxApplication, type FacadeTool } from "../../../src/runtime/control-plane/facade";
-import { buildJobOperationDigest } from '../../../src/runtime/control-plane/facade/operation-digest';
-import { getWorkContract, readActiveWorkCandidates, semanticWorkState, type InvalidActiveWorkCandidate } from "../../../packages/kernel/work/api/index";
-import { listWorkHandles } from '../../../src/runtime/control-plane/execution/work-handle-store';
+import { allowedFacadeOperations, buildFacadeResult, listCapabilityDescriptors, summarizeCapabilityGroups, listHandoffAttentionItems, normalizeCheckIds, listPlanContracts, summarizePlanContract, runHandoffInboxApplication, type FacadeTool } from "../../../src/runtime/control-plane/facade";
 import { observeRuntimeStatus } from "../../../src/runtime/root/status";
-import { getControllerSession } from "../../../packages/kernel/controller/api/index";
-import { listActiveOccurrences, listSchedules, scheduleOwnsWork } from "../../../packages/kernel/scheduler/api/index";
 import { summarizeHandoffItem } from '../../../src/runtime/control-plane/facade';
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 import { getUserRequest, listUserRequests, recordUserRequest, resolveUserRequest, type UserRequest } from '../../../packages/kernel/identity/api/index';
 import { controllerReadinessEvidence, runtimeSourceSnapshotStatus } from './runtime-readiness-observation';
 export { ageMs, probeLocalControllerHealth, localControllerDiagnosticMatchesRuntime, controllerReadinessEvidence, runtimeSourceSnapshotStatus } from './runtime-readiness-observation';
 export type { ControllerReadinessSignals } from './runtime-readiness-observation';
-
-export const PRIMARY_WORK_RUNTIME_ACTIVITIES = [
-  'running',
-  'waiting_for_user',
-  'scheduled',
-  'recoverable',
-  'needs_reconciliation',
-] as const;
-export type PrimaryWorkRuntimeActivity = (typeof PRIMARY_WORK_RUNTIME_ACTIVITIES)[number];
-
-/** Read-only runtime projection. These facts never mutate or extend semantic Work state. */
-export function primaryWorkRuntimeActivity(facts: {
-  running: boolean;
-  waitingForUser: boolean;
-  scheduled: boolean;
-  needsReconciliation: boolean;
-}): PrimaryWorkRuntimeActivity {
-  if (facts.running) return 'running';
-  if (facts.waitingForUser) return 'waiting_for_user';
-  if (facts.scheduled) return 'scheduled';
-  if (facts.needsReconciliation) return 'needs_reconciliation';
-  return 'recoverable';
-}
 
 export const GIT_IDENTITY_SAMPLE_TTL_MS = Math.max(1_000, Number(process.env.FORGE_GIT_IDENTITY_SAMPLE_TTL_MS ?? 3_000));
 
@@ -64,42 +35,6 @@ export function repositoryRevisionContains(repoRoot: string, ancestorRevision: s
     timeoutMs: 10_000,
     maxOutputBytes: 32_000,
   }).ok;
-}
-
-export function summarizeInvalidActiveWorkCandidate(entry: InvalidActiveWorkCandidate) {
-  return {
-    workId: entry.workId,
-    updatedAt: entry.updatedAt,
-    requirementId: entry.requirementId,
-    planId: entry.planId,
-    planStepId: entry.planStepId,
-    semanticScopeKeys: entry.semanticScopeKeys.slice(0, 4),
-    isolation: entry.isolation,
-    error: entry.error.slice(0, 160),
-  };
-}
-
-export function summarizeWorkListItem(job: ExecutionJob): Record<string, unknown> {
-  const digest = buildJobOperationDigest(job);
-  return {
-    workId: job.jobId,
-    requestId: job.requestId,
-    kind: 'execution_job',
-    operation: typeof job.payload?.operation === 'string' ? job.payload.operation : job.type,
-    status: job.status,
-    phase: digest.phase,
-    statusLabel: digest.statusLabel,
-    summary: digest.summary,
-    terminal: digest.terminal,
-    resumable: !digest.terminal || digest.phase === 'needs_attention',
-    errorClass: digest.errorClass,
-    changedFileCount: digest.changedFiles?.length ?? 0,
-    evidenceCount: job.evidenceIds.length,
-    createdAt: job.createdAt,
-    updatedAt: job.updatedAt,
-    suggestedNextAction: digest.suggestedNextActions[0],
-    detailPointer: { tool: 'rh_work', operation: 'get', work_id: job.jobId },
-  };
 }
 
 export function invalidFacadeOperation(tool: FacadeTool, operation: string): CallToolResult {
@@ -286,16 +221,6 @@ export async function callStatusInboxAdapter(
             : 'RUNTIME_SOURCE_SNAPSHOT_STALE');
         const runtimeReadiness = observation.snapshot?.readiness;
         const releaseDiagnostic = runtimeReadiness?.diagnostics.releaseCoherence;
-        const activeWorkProjection = repository && store
-          ? readActiveWorkCandidates({ ...store, limit: 3 })
-          : { contracts: [], invalid: [] };
-        const activeWorkSnapshot = activeWorkProjection.contracts.map((entry) => ({
-          workId: entry.workId,
-          state: entry.semanticState,
-          objective: entry.objective.slice(0, 160),
-          semantics: buildWorkContinuationSnapshot(entry).semantics,
-          nextSafeAction: buildWorkContinuationSnapshot(entry).nextSafeAction,
-        }));
         // Plans are authored semantic context: without a repository target the
         // instance-level semantic scope carries them.
         const activePlanSnapshot = (repository && store
@@ -389,20 +314,16 @@ export async function callStatusInboxAdapter(
               schemaStableAcrossAccessModes: exposure.schemaStableAcrossAccessModes,
             },
             controllerSnapshot: {
-              activeWork: activeWorkSnapshot,
-              invalidActiveWorkCount: activeWorkProjection.invalid.length,
-              invalidActiveWork: activeWorkProjection.invalid.slice(0, 3).map(summarizeInvalidActiveWorkCandidate),
               activePlans: activePlanSnapshot,
               pendingHandoffCount,
               pendingHandoffs: pendingHandoffSnapshot.slice(0, 3).map((item) => ({
                 id: item.id,
-                workId: item.workId,
                 title: item.title.slice(0, 96),
                 severity: item.severity,
                 updatedAt: item.updatedAt,
               })),
               bounded: true,
-              nextDetail: 'Use rh_context(work_id=...) or rh_work(plan_get) only when the next decision requires more detail.',
+              nextDetail: 'Use rh_context or rh_work(plan_get/requirement_get) only when the next decision requires more detail.',
             },
           },
           suggestedNextActions: [{
@@ -556,99 +477,14 @@ export async function callStatusInboxAdapter(
       const pendingHandoffAttention = listHandoffAttentionItems(store, 100);
       const pendingHandoffs = pendingHandoffAttention.slice(0, 20);
       const pendingHandoffCount = pendingHandoffAttention.length;
-      const activeWorkProjection = readActiveWorkCandidates({ ...store, limit: 200 });
-      const activeContracts = activeWorkProjection.contracts;
-      // Reuse the exact WorkHandle and semantic Work authorities consulted by
-      // delivery. This is a read-only diagnosis, never a delivery admission gate.
-      const receivingOwners = detailLevel === 'detail'
-        ? listWorkHandles(ctx.controllerHome, repository.repoId)
-        .filter((handle) => {
-          if (handle.checkoutId !== repository.activeCheckoutId
-            || handle.branch !== liveGit.branch
-            || handle.state === 'cleaned' || handle.state === 'failed') return false;
-          const contract = getWorkContract(store, handle.workContractId ?? handle.workId);
-          return Boolean(contract && semanticWorkState(contract) === 'open');
-        })
-        .sort((left, right) => left.workId.localeCompare(right.workId))
-        : [];
-      const headDriftedOwners = receivingOwners.filter((handle) =>
-        Boolean(handle.expectedHead && handle.expectedHead !== liveGit.head));
-      const repositoryDeliveryBlockers = [
-        ...(receivingOwners.length > 1 ? ['WORK_CANONICAL_MUTATION_OWNERSHIP_AMBIGUOUS']
-          : receivingOwners.length ? ['WORK_DELIVERY_TARGET_WORK_ACTIVE'] : []),
-        ...(headDriftedOwners.length ? ['WORK_HANDLE_HEAD_CHANGED'] : []),
-        ...(liveGit.dirty ? ['WORK_DELIVERY_TARGET_DIRTY'] : []),
-      ];
-      const repositoryDeliveryNextSafeAction =
-        receivingOwners.length > 1
-          ? 'Multiple open WorkHandles claim this checkout. Resolve canonical ownership before any Git mutation; do not guess or bypass a writer.'
-          : headDriftedOwners.length && liveGit.dirty
-          ? 'Owning Work: review the uncommitted paths against successor commits, converge its edits, then use explicit work_prepare successor adoption only if ancestry and path disjointness are proven.'
-          : headDriftedOwners.length
-            ? 'Owning Work: verify exact HEAD ancestry and use work_prepare with expected_previous_head/adopt_candidate_head; never silently rebase or reset.'
-            : liveGit.dirty
-              ? 'Owning writer: review and verify the existing dirty paths, then commit through its authorized Work before integrating another candidate; never auto-stash or reset.'
-              : receivingOwners.length
-                ? 'The receiving Work owns this checkout. Integrate reviewed source commits using its own authorized Git path, then reconcile each source Work through canonical deliver_work.'
-                : 'For a validated source Work, use canonical repository.git.deliver_work; this read-only projection does not check live mutation leases or grant integration authority.';
-      markDetailPhase('work_state');
-      const activePrimaryWork = activeContracts.filter((contract) => (contract.lifecycleRole ?? 'primary') === 'primary');
-      const activeExecutionChildren = activeContracts.filter((contract) => contract.lifecycleRole === 'execution_child');
-      // Current Runtime activity is owned by the in-memory Process monitor set.
-      // Do not route an interactive status read through the retired cross-restart
-      // recovery index, which may contain historical starting/running records.
+      const repositoryDeliveryBlockers = liveGit.dirty ? ['REPOSITORY_DELIVERY_TARGET_DIRTY'] : [];
+      const repositoryDeliveryNextSafeAction = liveGit.dirty
+        ? 'Review the existing dirty paths and converge them through checkout/EditSession/Git authorities before integrating another candidate; never auto-stash or reset.'
+        : 'Use ordinary repository Git integration with current checkout, CAS and resource-lease safety; record progress/closure on the GitHub Issue.';
       const activeProcessRecords = processRuntimeResourceDiagnostics().activeProcessIds
         .map((processId) => getProcessRecord(ctx.controllerHome, repository.repoId, processId))
         .filter((process): process is NonNullable<typeof process> => Boolean(process && isManagedProcessActive(process)));
       markDetailPhase('process_state');
-      const activePrimaryWorkIds = new Set(activePrimaryWork.map((contract) => contract.workId));
-      const activeProcessWorkIds = new Set(
-        activeProcessRecords
-          .map((process) => process.workId)
-          .filter((workId): workId is string => Boolean(workId && activePrimaryWorkIds.has(workId))),
-      );
-      const activeControllerWorkIds = new Set(
-        activePrimaryWork
-          .filter((contract) => Boolean(getControllerSession({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, contract.workId)))
-          .map((contract) => contract.workId),
-      );
-      const runningPrimaryWorkIds = new Set([...activeProcessWorkIds, ...activeControllerWorkIds]);
-      markDetailPhase('controller_sessions');
-
-      const waitingForUserPrimaryWorkIds = new Set(
-        pendingHandoffAttention
-          .map((item) => item.workId?.trim())
-          .filter((workId): workId is string => Boolean(workId && activePrimaryWorkIds.has(workId))),
-      );
-      const schedules = listSchedules(ctx.controllerHome, repository.repoId);
-      const activeOccurrenceScheduleIds = new Set(
-        listActiveOccurrences(ctx.controllerHome, repository.repoId).map((occurrence) => occurrence.scheduleId),
-      );
-      const scheduledPrimaryWorkIds = new Set<string>();
-      for (const schedule of schedules) {
-        if (!schedule.enabled && !activeOccurrenceScheduleIds.has(schedule.scheduleId)) continue;
-        for (const workId of activePrimaryWorkIds) {
-          if (scheduleOwnsWork(schedule, workId)) scheduledPrimaryWorkIds.add(workId);
-        }
-      }
-      const primaryWorkActivities = activePrimaryWork.map((contract) => ({
-        workId: contract.workId,
-        activity: primaryWorkRuntimeActivity({
-          running: runningPrimaryWorkIds.has(contract.workId),
-          waitingForUser: waitingForUserPrimaryWorkIds.has(contract.workId),
-          scheduled: scheduledPrimaryWorkIds.has(contract.workId),
-          needsReconciliation: buildWorkContinuationSnapshot(contract).reconciliationRequired,
-        }),
-      }));
-      const primaryWorkActivityCounts: Record<PrimaryWorkRuntimeActivity, number> = {
-        running: 0,
-        waiting_for_user: 0,
-        scheduled: 0,
-        recoverable: 0,
-        needs_reconciliation: 0,
-      };
-      for (const projection of primaryWorkActivities) primaryWorkActivityCounts[projection.activity] += 1;
-      markDetailPhase('work_activity');
       const latencyBuckets = gatewayLatencySummaries(repository.repoId);
       const preferredFacadeTools = ['rh_access', 'rh_status', 'rh_inbox', 'rh_context', 'rh_work', 'capability_execute'] as const;
       const facade = buildFacadeResult({
@@ -688,36 +524,18 @@ export async function callStatusInboxAdapter(
             dynamicDomainSchemaLoadingSupported: false,
           },
           pendingHandoffCount,
-          // User-facing Work count means objective-level primary lanes. Low-level
-          // resumable operation handles are reported separately.
-          activeWorkCount: activePrimaryWork.length,
-          activePrimaryWorkCount: activePrimaryWork.length,
-          activeExecutionChildCount: activeExecutionChildren.length,
           activeProcessCount: activeProcessRecords.length,
-          primaryWorkActivityCounts,
-          primaryWorkActivities,
-          activeContractCount: activeContracts.length,
           ...(detailLevel === 'detail' ? { repositoryDelivery: {
-            observation: 'work_handle_and_git_snapshot' as const,
+            observation: 'git_snapshot' as const,
             diagnosticOnly: true,
             checkoutId: repository.activeCheckoutId,
             branch: liveGit.branch,
             head: liveGit.head,
             dirty: liveGit.dirty,
-            ownerCount: receivingOwners.length,
-            ownersTruncated: receivingOwners.length > 5,
-            owners: receivingOwners.slice(0, 5).map((handle) => ({
-              workId: handle.workId,
-              state: handle.state,
-              expectedHead: handle.expectedHead ?? null,
-              headDrift: Boolean(handle.expectedHead && handle.expectedHead !== liveGit.head),
-            })),
             blockers: repositoryDeliveryBlockers,
             nextSafeAction: repositoryDeliveryNextSafeAction,
             limitations: 'Live leases, source validation, conflict preview and target CAS remain canonical delivery-time checks.',
           } } : {}),
-          invalidActiveContractCount: activeWorkProjection.invalid.length,
-          invalidActiveContracts: activeWorkProjection.invalid.slice(0, 10).map(summarizeInvalidActiveWorkCandidate),
           // Summary keeps the stable facade surface only; detail expands to the full registered schema.
           toolSurface: detailLevel === 'detail'
             ? exposure.actualToolNames
@@ -783,15 +601,18 @@ export function shouldUseCanonicalUserRequestInbox(
   operation: string,
   request: UserRequest | undefined,
 ): boolean {
+  if (operation === 'list' || operation === 'create') return true;
   if (!repositoryRepoId) return true;
-  if (operation === 'list' || operation === 'create') return false;
-  return Boolean(request && !request.targetScope?.repoId?.trim());
+  return Boolean(request);
 }
 
 function callCanonicalUserRequestInbox(ctx: MultiRepositoryMcpToolContext, args: Record<string, unknown>, operation: string): CallToolResult {
   const limit = Math.max(1, Math.min(Math.trunc(typeof args.limit === 'number' ? args.limit : 50), 100));
   if (operation === 'list') {
-    const items = listUserRequests(ctx.controllerHome, 'pending').slice(0, limit);
+    const repoId = typeof args.repo_id === 'string' ? args.repo_id.trim() : '';
+    const items = listUserRequests(ctx.controllerHome, 'pending')
+      .filter((item) => !repoId || item.targetScope?.repoId === repoId)
+      .slice(0, limit);
     return result(buildFacadeResult({
       summary: items.length ? `${items.length} pending UserRequest item(s).` : 'No pending UserRequest items.',
       data: { items: items.map(summarizeUserRequest) },
@@ -802,13 +623,14 @@ function callCanonicalUserRequestInbox(ctx: MultiRepositoryMcpToolContext, args:
     const title = typeof args.title === 'string' ? args.title.trim() : '';
     const summary = typeof args.summary === 'string' ? args.summary.trim() : typeof args.reason === 'string' ? args.reason.trim() : '';
     if (!title || !summary) throw new Error('USER_REQUEST_TITLE_SUMMARY_REQUIRED');
-    const workId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
+    if (typeof args.work_id === 'string' && args.work_id.trim()) throw new Error('USER_REQUEST_WORK_SCOPE_RETIRED');
+    const repoId = typeof args.repo_id === 'string' ? args.repo_id.trim() : '';
     const explicitId = typeof args.handoff_id === 'string' ? args.handoff_id.trim() : '';
     const actionRequired = (typeof args.action_required === 'string' ? args.action_required : 'product_decision') as 'login' | 'grant_permission' | 'confirm_destructive' | 'product_decision';
     const kind = (typeof args.request_kind === 'string' ? args.request_kind : actionRequired === 'product_decision' ? 'user_decision_request' : 'user_action_request') as 'user_action_request' | 'user_decision_request';
     const rootCauseKey = typeof args.root_cause_key === 'string' && args.root_cause_key.trim()
       ? args.root_cause_key.trim()
-      : `rh_inbox:${explicitId || workId || title}:${summary}`;
+      : `rh_inbox:${explicitId || repoId || title}:${summary}`;
     const item = recordUserRequest(ctx.controllerHome, {
       ...(explicitId ? { requestId: explicitId } : {}),
       kind,
@@ -816,7 +638,7 @@ function callCanonicalUserRequestInbox(ctx: MultiRepositoryMcpToolContext, args:
       title,
       summary,
       actionRequired,
-      ...(workId ? { targetScope: { scopeKind: 'work', scopeId: workId, workId } } : {}),
+      ...(repoId ? { targetScope: { scopeKind: 'repository', scopeId: repoId, repoId } } : {}),
       presentation: {
         ...(typeof args.handoff_id === 'string' && args.handoff_id.trim() ? { legacyHandoffId: args.handoff_id.trim() } : {}),
         ...(typeof args.reason === 'string' ? { reason: args.reason } : {}),
@@ -872,7 +694,6 @@ async function callInboxAdapter(ctx: MultiRepositoryMcpToolContext, args: Record
     store: { controllerHome: ctx.controllerHome, repoId: repository.repoId },
     handoffId: typeof args.handoff_id === 'string' ? args.handoff_id : undefined,
     limit: typeof args.limit === 'number' ? args.limit : undefined,
-    workId: typeof args.work_id === 'string' ? args.work_id : undefined,
     title: typeof args.title === 'string' ? args.title : undefined,
     reason: typeof args.reason === 'string' ? args.reason : undefined,
     summary: typeof args.summary === 'string' ? args.summary : undefined,
@@ -883,7 +704,6 @@ async function callInboxAdapter(ctx: MultiRepositoryMcpToolContext, args: Record
     recommendedContinuationPrompt: typeof args.recommended_continuation_prompt === 'string' ? args.recommended_continuation_prompt : undefined,
     decision: typeof args.decision === 'string' ? args.decision : undefined,
     resolver: typeof args.resolver === 'string' ? args.resolver : undefined,
-    controllerIdentity: { principalId: ctx.principalId, sessionId: ctx.sessionId },
   });
   if (operation === 'get') {
     const item = 'item' in app ? app.item : undefined;

@@ -4,7 +4,6 @@ import { FACADE_TOOLS, type EvidenceRef, type FacadeTool, type SuggestedNextActi
 function expectedActionRisk(action: SuggestedNextAction): SuggestedNextAction['risk'] | undefined {
   if (action.tool !== 'rh_work') return undefined;
   switch (action.operation) {
-    case 'start':
     case 'repair':
     case 'launcher_start':
     case 'requirement_create':
@@ -20,14 +19,10 @@ function expectedActionRisk(action: SuggestedNextAction): SuggestedNextAction['r
       return 'readonly';
     case 'plan_create':
     case 'plan_revise':
-    case 'revise':
-    case 'complete':
     case 'workflow_execute':
     case 'workflow_reconcile':
     case 'learning_record':
     case 'learning_feedback':
-    case 'outcome_record':
-    case 'experience_record':
       return 'workspace_write';
     case 'plan_get':
     case 'plan_list':
@@ -51,7 +46,6 @@ export interface SuggestedActionValidationOptions {
   validCheckIds?: readonly string[];
   evidenceRefs?: readonly EvidenceRef[];
   validHandoffIds?: readonly string[];
-  validWorkIds?: readonly string[];
 }
 
 export interface SuggestedActionValidationResult {
@@ -69,12 +63,6 @@ function actionUsesKnownHandoff(action: SuggestedNextAction, validHandoffIds: re
   if (!validHandoffIds || validHandoffIds.length === 0) return true;
   const handoffId = action.payload && typeof action.payload.handoff_id === 'string' ? action.payload.handoff_id : undefined;
   return !handoffId || validHandoffIds.includes(handoffId);
-}
-
-function actionUsesKnownWork(action: SuggestedNextAction, validWorkIds: readonly string[] | undefined): boolean {
-  if (!validWorkIds || validWorkIds.length === 0) return true;
-  const workId = action.payload && typeof action.payload.work_id === 'string' ? action.payload.work_id : undefined;
-  return !workId || validWorkIds.includes(workId);
 }
 
 export function allowedFacadeOperations(tool: FacadeTool): readonly string[] {
@@ -101,10 +89,6 @@ export function validateSuggestedNextActions(
     }
     if (!actionUsesKnownHandoff(action, options.validHandoffIds)) {
       warnings.push(`Dropped suggested action ${action.label}: invalid handoff_id ${String(action.payload?.handoff_id)}.`);
-      return [];
-    }
-    if (!actionUsesKnownWork(action, options.validWorkIds)) {
-      warnings.push(`Dropped suggested action ${action.label}: invalid work_id ${String(action.payload?.work_id)}.`);
       return [];
     }
     const expectedRisk = expectedActionRisk(action);

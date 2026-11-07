@@ -8,12 +8,10 @@ import type { MultiRepositoryMcpToolContext } from '../../adapters/mcp/multi-rep
 import { ensureControllerHome } from '../../src/effects/controller-home';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { callRuntimeTool } from '../../adapters/mcp/runtime-gateway/runtime-tools';
-import { bindControllerSessionBinding, claimControllerSession, releaseControllerSession } from '../../packages/kernel/controller/api/index';
-import { upsertChatgptControllerBinding } from '../../adapters/chatgpt/controller-binding-store';
 import { cronDue } from '../../packages/kernel/scheduler/application/eligibility';
 import { getSchedule, saveSchedule } from '../../packages/kernel/scheduler/api/index';
 import { evaluateSchedule } from '../../src/runtime/workflow/schedules/engine';
-import { createWorkContract } from '../../packages/kernel/work/api/index';
+import { seedHistoricalWorkContract } from '../helpers/historical-work-contract';
 
 const roots: string[] = [];
 
@@ -45,7 +43,7 @@ function fixture() {
   ensureControllerHome(controllerHome);
   const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'rh_work schedule fixture' });
   const workId = 'work-schedule-fixture';
-  createWorkContract({ controllerHome, repoId: repository.repoId }, {
+  seedHistoricalWorkContract({ controllerHome, repoId: repository.repoId }, {
     workId,
     repoId: repository.repoId,
     checkoutId: repository.activeCheckoutId,
@@ -79,11 +77,10 @@ function structured(result: Awaited<ReturnType<typeof callRuntimeTool>>): Record
     ?? JSON.parse(result!.content[0] && 'text' in result!.content[0] ? String(result!.content[0].text) : '{}')) as Record<string, any>;
 }
 
-async function createShadowKeepalive(ctx: MultiRepositoryMcpToolContext, repoId: string, workId: string, requestId: string) {
+async function createShadowKeepalive(ctx: MultiRepositoryMcpToolContext, repoId: string, requestId: string) {
   const created = structured(await callRuntimeTool(ctx, 'rh_work', {
     repo_id: repoId,
     operation: 'schedule_create',
-    work_id: workId,
     schedule_mode: 'browser_keepalive',
     controller_type: 'chatgpt',
     schedule_name: `Fixture ${requestId}`,
@@ -108,7 +105,7 @@ describe('retired autonomous Schedule actions', () => {
   for (const operation of ['external_controller_wake', 'controller_progression']) {
     test(operation + ' stops once without dispatching or creating an occurrence', async () => {
       const { controllerHome, repository, ctx, workId } = fixture();
-      const scheduleId = await createShadowKeepalive(ctx, repository.repoId, workId, 'retire-' + operation);
+      const scheduleId = await createShadowKeepalive(ctx, repository.repoId, 'retire-' + operation);
       const old = getSchedule(controllerHome, repository.repoId, scheduleId);
       const candidate = saveSchedule(controllerHome, {
         ...old,
@@ -174,9 +171,9 @@ describe('Work-free observe-only Schedule', () => {
 describe('rh_work Scheduler MCP adapter', () => {
   test('bounds Schedule listing and hides historical model prompts while preserving exact detail', async () => {
     const { controllerHome, repository, ctx, workId } = fixture();
-    const first = await createShadowKeepalive(ctx, repository.repoId, workId, 'bounded-list-first');
-    const second = await createShadowKeepalive(ctx, repository.repoId, workId, 'bounded-list-second');
-    const retired = await createShadowKeepalive(ctx, repository.repoId, workId, 'bounded-list-retired');
+    const first = await createShadowKeepalive(ctx, repository.repoId, 'bounded-list-first');
+    const second = await createShadowKeepalive(ctx, repository.repoId, 'bounded-list-second');
+    const retired = await createShadowKeepalive(ctx, repository.repoId, 'bounded-list-retired');
     const stored = getSchedule(controllerHome, repository.repoId, retired);
     saveSchedule(controllerHome, {
       ...stored,
@@ -224,13 +221,12 @@ describe('rh_work Scheduler MCP adapter', () => {
 
   test('routes the complete schedule lifecycle through the Scheduler adapter without external effects', async () => {
     const { controllerHome, repository, ctx, workId } = fixture();
-    const scheduleId = await createShadowKeepalive(ctx, repository.repoId, workId, 'schedule-lifecycle-fixture');
+    const scheduleId = await createShadowKeepalive(ctx, repository.repoId, 'schedule-lifecycle-fixture');
 
     const retired = structured(await callRuntimeTool(ctx, 'rh_work', {
       repo_id: repository.repoId,
       operation: 'schedule_create',
-      work_id: workId,
-      schedule_mode: 'continuation',
+        schedule_mode: 'continuation',
       controller_type: 'chatgpt',
       schedule_name: 'Retired autonomous schedule',
       schedule_request_id: 'schedule-autonomous-creation-denied-fixture',
@@ -306,7 +302,7 @@ describe('rh_work Scheduler MCP adapter', () => {
 
   test('rejects the removed frozen schedule.delete carrier and uses the canonical Scheduler operation', async () => {
     const { repository, ctx, workId } = fixture();
-    const scheduleId = await createShadowKeepalive(ctx, repository.repoId, workId, 'schedule-frozen-delete-fixture');
+    const scheduleId = await createShadowKeepalive(ctx, repository.repoId, 'schedule-frozen-delete-fixture');
 
     const paused = structured(await callRuntimeTool(ctx, 'rh_work', {
       repo_id: repository.repoId,

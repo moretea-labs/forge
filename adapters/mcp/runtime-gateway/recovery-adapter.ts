@@ -204,7 +204,7 @@ export async function callRecoveryAdapter(
         externalLifecycleHandoff: snapshot.externalLifecycleHandoff,
         notes: snapshot.notes,
         next: ready
-          ? 'Continue through the current Runtime and Work interfaces.'
+          ? 'Continue through the current Runtime, repository, Requirement/Plan, Schedule, and Workflow interfaces; historical Work is read-only.'
           : snapshot.externalLifecycleHandoff
             ? 'Create or consume an rh_inbox handoff for the external Runtime lifecycle owner. Operate on the existing single forge-runtime only, then verify controller_ready and rh_status source coherence.'
             : 'Inspect runtime_maintenance_status and create an rh_inbox handoff when operator or external Controller action is required.',

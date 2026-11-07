@@ -16,8 +16,6 @@ import {
   type CliRuntimeTarget,
 } from '../../../cli/runtime-invocation';
 import { readRuntimeGeneration, resolveControllerRuntimeSourceRoot } from '../../control-plane/runtime-generation';
-import { cleanupWorkVerificationSnapshot, materializeWorkVerificationSnapshot } from '../../control-plane/execution/work-verification-snapshot';
-import { resolveBunExecutable } from '../../shared/process-environment';
 import {
   checkRequiresDurableWorkflow,
   processCheckSemanticScopeKey,
@@ -31,12 +29,6 @@ import { getProcessRecord, getProcessRequestBinding } from './store';
 import { allocatePersistedCheckResultReceiptPath } from './check-result';
 import { durationAwareInteractiveWaitMs } from './interactive-admission';
 
-/**
- * Work verification may overlap another Work's repository-wide build cache.
- * Wait through one ordinary sibling check, but never past Process Runtime's
- * bounded lease-admission ceiling; explicit callers may still choose less.
- */
-export const DEFAULT_WORK_CHECK_LEASE_WAIT_MS = 30_000;
 
 const PERSISTED_CHECK_SOURCE_ENTRY = 'src/runtime/execution/process-runtime/check-runner-sidecar.ts';
 const PERSISTED_CHECK_NODE_LOADER = 'src/runtime/shared/node-ts-loader.mjs';
@@ -81,54 +73,8 @@ export function resolveRuntimeCliEntry(controllerHome?: string): string {
   return resolveRuntimeCliTarget(controllerHome).entry;
 }
 
-export function shouldUseCandidatePersistedCheckRunner(input: {
-  repoId: string;
-  runtimeSourceRepoId?: string;
-  verificationSnapshot: boolean;
-  liveCertification: boolean;
-}): boolean {
-  return input.verificationSnapshot
-    && !input.liveCertification
-    && Boolean(input.runtimeSourceRepoId && input.runtimeSourceRepoId === input.repoId);
-}
-
-export function resolveCandidatePersistedCheckRunnerTarget(
-  candidateRoot: string,
-  sourceRevision: string,
-  options: { bunExecutable?: string; entryExists?: (path: string) => boolean } = {},
-): { cliTarget: CliRuntimeTarget; runtimeExecutable: string; executionStateFingerprint: string } {
-  const root = resolve(candidateRoot);
-  const revision = sourceRevision.trim();
-  if (!revision) throw new Error('PERSISTED_CHECK_CANDIDATE_REVISION_REQUIRED');
-  const entryExists = options.entryExists ?? existsSync;
-  const sourceEntry = resolve(root, PERSISTED_CHECK_SOURCE_ENTRY);
-  if (!entryExists(sourceEntry)) {
-    throw new Error(`PERSISTED_CHECK_CANDIDATE_RUNNER_MISSING: ${sourceEntry}`);
-  }
-  const runtimeExecutable = options.bunExecutable?.trim() || resolveBunExecutable();
-  const cliTarget: CliRuntimeTarget = {
-    entry: sourceEntry,
-    cwd: root,
-    runtimeKind: 'bun_source',
-    sourceRevision: revision,
-    immutable: false,
-    explanation: 'self-hosting Work verification snapshot candidate Check Runner',
-  };
-  const executionStateFingerprint = createHash('sha256')
-    .update(JSON.stringify({
-      schemaVersion: 1,
-      authority: 'self_hosting_work_verification_candidate',
-      runnerEntry: PERSISTED_CHECK_SOURCE_ENTRY,
-      runtimeKind: cliTarget.runtimeKind,
-      sourceRevision: revision,
-    }))
-    .digest('hex')
-    .slice(0, 24);
-  return { cliTarget, runtimeExecutable, executionStateFingerprint };
-}
-
 export function persistedCheckSemanticScopeKey(
-  input: Pick<RunCheckFacadeInput, 'workId' | 'verificationBinding' | 'checkoutId' | 'requestSemanticFingerprint'>,
+  input: Pick<RunCheckFacadeInput, 'verificationBinding' | 'checkoutId' | 'requestSemanticFingerprint'>,
   reuseScope: 'repository' | 'checkout',
 ): string {
   return processCheckSemanticScopeKey(input, reuseScope);
@@ -182,10 +128,8 @@ export function resolvePersistedCheckProcessInvocation(
 /**
  * Run a registered check through Process Runtime while keeping check-runner
  * evidence authoritative. Ordinary repositories and live-runtime certification
- * use the active immutable Runtime runner. Self-hosting Forge Work verification
- * instead executes the exact candidate snapshot sidecar so pre-cutover evidence
- * cannot be interpreted by an older Runtime release. Process/lease/receipt
- * authority remains in the active Runtime in both cases.
+ * use the active immutable Runtime runner. Process/lease/receipt authority
+ * remains in the active Runtime; source identity is fenced by checkout and check fingerprints.
  */
 export async function runPersistedCheckViaProcessRuntime(
   input: RunCheckFacadeInput,
@@ -206,7 +150,6 @@ export async function runPersistedCheckViaProcessRuntime(
         record
         && record.repoId === input.repoId
         && (record.checkoutId?.trim() || undefined) === (input.checkoutId?.trim() || undefined)
-        && (record.workId?.trim() || undefined) === (input.workId?.trim() || undefined)
         && record.origin?.surface === 'check'
         && record.origin.requestId === requestId
         && record.origin.checkId === input.checkId
@@ -228,10 +171,8 @@ export async function runPersistedCheckViaProcessRuntime(
       };
     }
   }
-  // Check-definition authority belongs to the canonical repository, while Work source
-  // verification may execute from an immutable snapshot that intentionally excludes
-  // machine-local registry files such as .forge/checks.json. Freeze the exact
-  // registered definition before materializing the source-under-test snapshot.
+  // Check-definition authority belongs to the canonical repository. Freeze the exact
+  // registered definition before executing the check.
   const check = listControllerChecks(input.repoRoot).find((entry) => entry.id === input.checkId);
   if (!check) {
     return {
@@ -245,31 +186,18 @@ export async function runPersistedCheckViaProcessRuntime(
     };
   }
   const checkSnapshot = snapshotControllerCheck(input.repoRoot, input.checkId);
-  const verificationSnapshot = input.verificationSnapshot
-    ? materializeWorkVerificationSnapshot({
-        controllerHome: input.controllerHome,
-        repoId: input.repoId,
-        sourceRoot: input.repoRoot,
-        scope: input.verificationSnapshot,
-      })
-    : undefined;
-  const executionRoot = verificationSnapshot?.root ?? input.repoRoot;
-  const cleanupVerificationSnapshot = () => {
-    if (verificationSnapshot) cleanupWorkVerificationSnapshot(verificationSnapshot.root);
-  };
+  const executionRoot = input.repoRoot;
   if (check.id !== checkSnapshot.id) {
-    cleanupVerificationSnapshot();
     throw new Error(`CHECK_DEFINITION_AUTHORITY_MISMATCH: ${input.checkId}`);
   }
   if (input.forceDurable || (checkRequiresDurableWorkflow(input.checkId, check) && input.allowDurableCheckExecution !== true)) {
-    cleanupVerificationSnapshot();
     return {
       mode: 'durable',
       checkId: input.checkId,
       check,
       durable: {
         reason: 'multi_phase_or_release_check_requires_durable_workflow',
-        suggestedOperation: 'Run this check through a Work-bound durable verification workflow.',
+        suggestedOperation: 'Run this check through the durable verification workflow.',
       },
       durableSideEffects: emptyEffects,
     };
@@ -306,14 +234,12 @@ export async function runPersistedCheckViaProcessRuntime(
   );
   const usesLiveDevice = claimsRequireLiveDeviceAdmission(claims);
   const leaseWaitMs = input.leaseWaitMs
-    ?? (usesLiveDevice ? LIVE_DEVICE_ADMISSION_WAIT_MS
-      : input.workId?.trim() ? DEFAULT_WORK_CHECK_LEASE_WAIT_MS : undefined);
+    ?? (usesLiveDevice ? LIVE_DEVICE_ADMISSION_WAIT_MS : undefined);
   const checkFingerprint = createHash('sha256')
     .update(JSON.stringify(checkSnapshot))
     .digest('hex');
   const liveCertification = check.executionAuthority === 'live_controller_home';
   if (liveCertification && input.allowDurableCheckExecution !== true) {
-    cleanupVerificationSnapshot();
     throw new Error('LIVE_CHECK_DURABLE_AUTHORITY_REQUIRED');
   }
   const liveExecutionStateFingerprint = liveCertification
@@ -326,18 +252,7 @@ export async function runPersistedCheckViaProcessRuntime(
     checkSnapshot,
     liveExecutionStateFingerprint,
   );
-  const runtimeGeneration = verificationSnapshot && !liveCertification
-    ? readRuntimeGeneration(input.controllerHome)
-    : undefined;
-  const candidateRunner = shouldUseCandidatePersistedCheckRunner({
-    repoId: input.repoId,
-    runtimeSourceRepoId: runtimeGeneration?.source.sourceRepositoryId,
-    verificationSnapshot: Boolean(verificationSnapshot),
-    liveCertification,
-  })
-    ? resolveCandidatePersistedCheckRunnerTarget(executionRoot, preliminarySemanticCheck.revision)
-    : undefined;
-  const runnerStateFingerprint = candidateRunner?.executionStateFingerprint ?? liveExecutionStateFingerprint;
+  const runnerStateFingerprint = liveExecutionStateFingerprint;
   // Freeze the same exact EditSession input for both Process reuse and the
   // Check Runner's own success cache; a fresh Process alone is insufficient.
   const editInputFingerprint = input.verificationBinding?.editSessionId
@@ -345,7 +260,7 @@ export async function runPersistedCheckViaProcessRuntime(
   const executionStateFingerprint = editInputFingerprint
     ? createHash('sha256').update(JSON.stringify({ runnerStateFingerprint: runnerStateFingerprint ?? '', editInputFingerprint })).digest('hex').slice(0, 24)
     : runnerStateFingerprint;
-  const semanticCheck = candidateRunner || editInputFingerprint
+  const semanticCheck = editInputFingerprint
     ? controllerCheckExecutionIdentity(
         executionRoot,
         input.checkId,
@@ -365,7 +280,7 @@ export async function runPersistedCheckViaProcessRuntime(
     reuseScope: semanticCheck.reuseScope,
     scopeKey: persistedCheckSemanticScopeKey(input, semanticCheck.reuseScope),
   };
-  const cliTarget = candidateRunner?.cliTarget ?? resolveRuntimeCliTarget(input.controllerHome);
+  const cliTarget = resolveRuntimeCliTarget(input.controllerHome);
   const checkResultReceiptPath = allocatePersistedCheckResultReceiptPath(
     input.controllerHome,
     input.repoId,
@@ -389,22 +304,13 @@ export async function runPersistedCheckViaProcessRuntime(
     '--result-receipt',
     checkResultReceiptPath,
     ...(executionStateFingerprint ? ['--execution-state-fingerprint', executionStateFingerprint] : []),
-    ...(verificationSnapshot ? [
-      ...(liveCertification ? ['--live-controller-home'] : ['--isolated-controller-home', verificationSnapshot.isolatedControllerHome]),
-      '--cleanup-root', verificationSnapshot.root,
-    ] : []),
   ];
-  const invocation = resolvePersistedCheckProcessInvocation(cliTarget, checkArgs, candidateRunner
-    ? { runtimeExecutable: candidateRunner.runtimeExecutable }
-    : {});
-  let handle;
-  try {
-    handle = await spawnWithQueuedAdmission({
+  const invocation = resolvePersistedCheckProcessInvocation(cliTarget, checkArgs);
+  const handle = await spawnWithQueuedAdmission({
     controllerHome: input.controllerHome,
     repoId: executionIdentity.repositoryId,
     checkoutId: executionIdentity.checkoutId,
     executionIdentity,
-    workId: input.workId,
     commandId: input.commandId,
     command: {
       kind: 'argv',
@@ -423,24 +329,15 @@ export async function runPersistedCheckViaProcessRuntime(
       checkId: input.checkId,
       requestId: input.requestId,
       requestSemanticFingerprint: input.requestSemanticFingerprint,
-      correlationId: input.workId,
       executionSessionId: input.verificationBinding?.executionSessionId,
       editSessionId: input.verificationBinding?.editSessionId,
       editRevision: input.verificationBinding?.editRevision,
       issueId: input.verificationBinding?.issueId,
       taskId: input.verificationBinding?.taskId,
       checkResultReceiptPath,
-      ...(verificationSnapshot ? { workVerificationSnapshot: true } : {}),
     },
     signal: input.signal,
   }, usesLiveDevice);
-  } catch (error) {
-    cleanupVerificationSnapshot();
-    throw error;
-  }
-  if (verificationSnapshot && (handle.deduplicated === true || handle.semanticDeduplicated === true)) {
-    cleanupVerificationSnapshot();
-  }
 
   const mode: CheckExecutionMode = handle.completed ? 'direct' : 'managed';
   return {

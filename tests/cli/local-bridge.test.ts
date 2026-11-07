@@ -637,7 +637,8 @@ describe("Local Execution Bridge", () => {
     });
     const consoleWithWatcher = await fetch(new URL("/api/console/automations", handle.url), { headers }).then((response) => response.json());
     const projectedWatcher = consoleWithWatcher.automations.find((automation: { name: string }) => automation.name === "Apple ICP · QQ Mail Watcher");
-    expect(projectedWatcher).toMatchObject({ mode: "browser_watch", modeLabel: "网页变更监听", status: "enabled", schedule: "每天 20:00", delivery: "变化时唤醒 ChatGPT", live: true, targetLabel: "已绑定浏览器会话", boundWorkId: "WORK-ICP", observationStatus: "baseline", lastResult: "已建立基线" });
+    expect(projectedWatcher).toMatchObject({ mode: "browser_watch", modeLabel: "网页变更监听", status: "enabled", schedule: "每天 20:00", delivery: "变化时唤醒 ChatGPT", live: true, targetLabel: "已绑定浏览器会话", observationStatus: "baseline", lastResult: "已建立基线" });
+    expect(projectedWatcher.boundWorkId).toBeUndefined();
     expect(projectedWatcher.history).toHaveLength(1);
     expect(projectedWatcher.history[0]).toMatchObject({ result: "无变化", trigger: "手动", tone: "gray", reason: "已建立观察基线；没有唤醒 ChatGPT。" });
 
@@ -667,7 +668,7 @@ describe("Local Execution Bridge", () => {
     const projectedFailedWorkflow = consoleStateSemantics.automations.find((automation: { name: string }) => automation.name === "Forge 新问题自动修复 Workflow");
     expect(projectedFailedWorkflow).toMatchObject({ status: "attention", schedule: "每小时整点", attentionMessage: "连续执行失败达到上限，任务已自动暂停。", pausedReason: "连续执行失败达到上限，已自动暂停。修复问题后可以恢复任务。", actions: ["resume"] });
     const projectedCompletedWorkflow = consoleStateSemantics.automations.find((automation: { name: string }) => automation.name === "有限任务");
-    expect(projectedCompletedWorkflow).toMatchObject({ status: "completed", pausedReason: "关联工作已经完成，这个自动任务不会再触发。", actions: [] });
+    expect(projectedCompletedWorkflow).toMatchObject({ status: "completed", pausedReason: "历史 continuation 已终止，这个自动任务不会再触发。", actions: [] });
     expect(consoleStateSemantics.summary.completed).toBeGreaterThanOrEqual(1);
 
     for (const path of ["/api/assistant/intent", "/api/assistant/routines", "/api/assistant/readiness", "/api/assistant/maintenance/cleanup-preview"]) {
@@ -1054,8 +1055,8 @@ describe("Local Execution Bridge", () => {
       expect((await fetch(new URL(path, handle.url), { headers: auth })).status).toBe(404);
     }
     const trackedWork = await fetch(new URL("/api/console/requirements", handle.url), { headers: auth }).then((response) => response.json()); expect(Array.isArray(trackedWork.requirements)).toBe(true); expect(typeof trackedWork.requirementCount).toBe("number");
-    const executionWork = await fetch(new URL("/api/console/work", handle.url), { headers: auth }).then((response) => response.json()); expect(Array.isArray(executionWork.items)).toBe(true);
-    const workPortfolio = await fetch(new URL("/api/console/work-portfolio", handle.url), { headers: auth }).then((response) => response.json()); expect(Array.isArray(workPortfolio.items)).toBe(true); expect(Array.isArray(workPortfolio.repositories)).toBe(true); expect(typeof workPortfolio.summary.total).toBe("number");
+    expect((await fetch(new URL("/api/console/work", handle.url), { headers: auth })).status).toBe(404);
+    expect((await fetch(new URL("/api/console/work-portfolio", handle.url), { headers: auth })).status).toBe(404);
     const automations = await fetch(new URL("/api/console/automations", handle.url), { headers: auth }).then((response) => response.json()); expect(Array.isArray(automations.automations)).toBe(true); expect(typeof automations.summary.total).toBe("number");
 
     const plugins = await fetch(new URL("/api/console/plugins", handle.url), {

@@ -49,6 +49,7 @@ import {
   claimProcessCheckExecution,
   claimProcessRequest,
   createProcessRecord,
+  getProcessRequestBinding,
   getProcessRecord,
   listProcessRecords,
   listRecoverableProcessRecords,
@@ -57,14 +58,7 @@ import {
   updateProcessRecord,
 } from './store';
 import { assertExecutionIdentity } from '../../control-plane/execution/execution-identity';
-import { settleWorkHandleExpectedHeadAfterRepositoryCommand } from '../../control-plane/execution/work-head-settlement';
 import { recordProcessXcodeTestEvidenceOwner } from '../../control-plane/generated-cache-retention';
-import {
-  clearWorkExecutionConcurrencyWaitForAttempt,
-  evaluateManagedProcessWorkCompatibility,
-  executionConcurrencyWaitProjection,
-  recordWorkExecutionConcurrencyWait,
-} from '../../control-plane/concurrency/work-execution-concurrency';
 import {
   DEFAULT_INTERACTIVE_WAIT_MS,
   DEFAULT_MAX_OUTPUT_BYTES,
@@ -74,6 +68,7 @@ import {
   isManagedProcessActive,
   isManagedProcessTerminal,
   isTerminalProcessStatus,
+  type ExecutionConcurrencyWaitProjection,
   type ManagedProcessRecord,
   type ProcessHandle,
   type ProcessLeaseRef,
@@ -122,6 +117,12 @@ const PROCESS_RECOVERY_RECEIPT_POLL_MS = 25;
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+function processConcurrencyWaitProjection(
+  input: Omit<ExecutionConcurrencyWaitProjection, 'schemaVersion' | 'observedAt'>,
+): ExecutionConcurrencyWaitProjection {
+  return { schemaVersion: 1, ...input, observedAt: nowIso() };
 }
 
 function newProcessId(): string {
@@ -219,6 +220,29 @@ function canonicalProcessCommand(command: SpawnManagedProcessInput['command']): 
 /** Stable semantic command fingerprint used by request-id idempotency. */
 export function fingerprintProcessCommand(command: SpawnManagedProcessInput['command']): string {
   return createHash('sha256').update(JSON.stringify(canonicalProcessCommand(command))).digest('hex');
+}
+
+function processClaimsFingerprint(claims: readonly ProcessResourceClaim[]): string {
+  const normalized = claims.map((claim) => ({
+    resourceKey: claim.resourceKey,
+    mode: claim.mode,
+    repoId: claim.repoId ?? null,
+    checkoutId: claim.checkoutId ?? null,
+  })).sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+  return createHash('sha256').update(JSON.stringify(normalized)).digest('hex');
+}
+
+function executionIdentityFingerprint(identity: SpawnManagedProcessInput['executionIdentity']): string {
+  return createHash('sha256').update(JSON.stringify({
+    authority: identity.authority ?? 'repository',
+    repositoryId: identity.repositoryId,
+    checkoutId: identity.checkoutId,
+    canonicalRoot: identity.canonicalRoot,
+    worktreePath: identity.worktreePath ?? null,
+    branch: identity.branch ?? null,
+    expectedHead: identity.expectedHead ?? null,
+    allowArchived: identity.allowArchived === true,
+  })).digest('hex');
 }
 
 function tailText(buffer: Buffer, maxBytes: number): string {
@@ -390,7 +414,6 @@ function toResourceClaimSpecs(claims: ProcessResourceClaim[]): ResourceClaimSpec
     mode: claim.mode,
     ...(claim.repoId ? { repoId: claim.repoId } : {}),
     ...(claim.checkoutId ? { checkoutId: claim.checkoutId } : {}),
-    ...(claim.workId ? { workId: claim.workId } : {}),
   }));
 }
 
@@ -418,20 +441,17 @@ function expectedLeaseRefsForProcess(record: ManagedProcessRecord, repoId: strin
   fencingToken: number;
   repoId: string;
   checkoutId?: string;
-  workId?: string;
   resourceKey: string;
 }> {
   return (record.leaseRefs ?? []).flatMap((ref) => {
     // A malformed or cross-repository reference is never eligible for cleanup.
     if (!ref.leaseId || !ref.resourceKey || (ref.repoId && ref.repoId !== repoId)) return [];
     if (ref.checkoutId && record.checkoutId && ref.checkoutId !== record.checkoutId) return [];
-    if (ref.workId && record.workId && ref.workId !== record.workId) return [];
     return [{
       leaseId: ref.leaseId,
       fencingToken: ref.fencingToken,
       repoId,
       ...(ref.checkoutId ? { checkoutId: ref.checkoutId } : {}),
-      ...(ref.workId ? { workId: ref.workId } : {}),
       resourceKey: ref.resourceKey,
     }];
   });
@@ -498,7 +518,7 @@ export function releaseProcessLeasesOnce(
       repoId,
       processId,
       expectedRefs,
-      { visibility: 'ephemeral', notifyScheduler: Boolean(record.workId), invalidateProjection: false, emitRuntimeEvent: false },
+      { visibility: 'ephemeral', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false },
     );
   } catch (error) {
     // Exact-set or token mismatch remains pending and retryable. Failed cleanup
@@ -546,7 +566,6 @@ function recordTerminalProcessXcodeEvidenceOwner(record: ManagedProcessRecord): 
       repoRoot: identity.worktreePath ?? identity.canonicalRoot,
       command: record.command,
       processId: record.processId,
-      ...(record.workId ? { associatedWorkId: record.workId } : {}),
     });
   } catch {
     // Process terminal truth remains authoritative. Failure to authenticate the
@@ -620,38 +639,6 @@ export function completeProcessFromEvidence(
   const afterTerminal = completion.record ?? getProcessRecord(controllerHome, repoId, processId);
   if (afterTerminal && (completion.ok || completion.reason === 'already_terminal' || afterTerminal.terminalWritten === true)) {
     const released = releaseProcessLeasesOnce(controllerHome, repoId, processId) ?? afterTerminal;
-    // Successful repository mutation settlement is deliberately downstream of
-    // durable terminal persistence. Recovery may repeat this block, but the
-    // WorkHandle CAS plus immutable expectedHead makes reconciliation idempotent.
-    if (
-      released.status === 'succeeded'
-      && released.exitCode === 0
-      && released.cancelled !== true
-      && released.timedOut !== true
-      && released.workId
-      && released.executionIdentity
-    ) {
-      try {
-        const repository = selectRepositoryCheckout(
-          getRepository(released.executionIdentity.repositoryId, controllerHome),
-          released.executionIdentity.checkoutId,
-          { allowArchived: released.executionIdentity.allowArchived },
-        );
-        settleWorkHandleExpectedHeadAfterRepositoryCommand({
-          controllerHome,
-          repository,
-          executionIdentity: released.executionIdentity,
-          workId: released.workId,
-          ok: true,
-          cancelled: false,
-          timedOut: false,
-        });
-      } catch {
-        // Terminal Process evidence remains valid even when its exact historical
-        // checkout is no longer selectable. Never infer authority from active
-        // checkout/session state; Work finalization will continue to fail closed.
-      }
-    }
     recordTerminalProcessXcodeEvidenceOwner(released);
     cleanupTerminalRunnerReceipts(released);
     return released;
@@ -1082,7 +1069,6 @@ function recordToHandle(
     : undefined;
   return {
     processId: safeRecord.processId,
-    workId: safeRecord.workId,
     commandId: safeRecord.commandId ?? safeRecord.processId,
     status: safeRecord.status,
     contractStatus: processContractStatus(safeRecord.status),
@@ -1186,6 +1172,73 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
   const candidateProcessId = newProcessId();
   const requestId = input.origin?.requestId?.trim() || undefined;
   const commandFingerprint = fingerprintProcessCommand(command);
+  const resourceClaims = toProcessClaims(scopeResourceClaims(
+    toResourceClaimSpecs(input.resourceClaims ?? []),
+    input.repoId,
+    input.checkoutId,
+  ));
+
+  // Request-id idempotency is stronger than active-command reuse. Resolve it
+  // first so a retry can never drift to a different Process merely because an
+  // equivalent build/test is also running.
+  if (requestId) {
+    const existingBinding = getProcessRequestBinding(
+      input.controllerHome,
+      input.repoId,
+      input.checkoutId,
+      requestId,
+    );
+    if (existingBinding) {
+      if (existingBinding.commandFingerprint !== commandFingerprint) {
+        throw new Error(`PROCESS_REQUEST_ID_CONFLICT: ${requestId}`);
+      }
+      const existing = getProcessHandle(input.controllerHome, input.repoId, existingBinding.processId);
+      if (!existing) {
+        throw new Error(`PROCESS_REQUEST_INCOMPLETE: request ${requestId} is bound to missing process ${existingBinding.processId}; refusing re-execution`);
+      }
+      return { ...existing, deduplicated: true, requestId };
+    }
+  }
+
+  // Build/test single-flight belongs to Process Runtime, not Work. Reuse only
+  // an exact active Process with the same immutable source identity, principal,
+  // command and resource claims. This prevents duplicate compiler/test work
+  // without turning arbitrary side effects into implicit idempotent operations.
+  if (input.reuseActiveEquivalent === true && !input.checkExecution) {
+    const identityKey = executionIdentityFingerprint(input.executionIdentity);
+    const claimsKey = processClaimsFingerprint(resourceClaims);
+    const equivalent = listProcessRecords(input.controllerHome, input.repoId, 100).find((record) => (
+      isManagedProcessActive(record)
+      && record.checkoutId === input.checkoutId
+      && (record.principalId ?? undefined) === (input.principalId ?? undefined)
+      && record.origin?.surface === 'command'
+      && record.origin?.toolName === 'execute_command'
+      && record.executionIdentity !== undefined
+      && executionIdentityFingerprint(record.executionIdentity) === identityKey
+      && fingerprintProcessCommand(record.command) === commandFingerprint
+      && processClaimsFingerprint(record.resourceClaims) === claimsKey
+    ));
+    if (equivalent) {
+      let selectedProcessId = equivalent.processId;
+      if (requestId) {
+        const claim = claimProcessRequest({
+          controllerHome: input.controllerHome,
+          repoId: input.repoId,
+          checkoutId: input.checkoutId,
+          requestId,
+          commandFingerprint,
+          processId: equivalent.processId,
+        });
+        selectedProcessId = claim.binding.processId;
+      }
+      const existing = getProcessHandle(input.controllerHome, input.repoId, selectedProcessId);
+      if (!existing) {
+        throw new Error(`PROCESS_ACTIVE_EQUIVALENT_INCOMPLETE: process ${selectedProcessId} disappeared before attachment`);
+      }
+      return { ...existing, deduplicated: true, requestId };
+    }
+  }
+
   let processId = candidateProcessId;
   let semanticExisting = false;
   if (input.checkExecution) {
@@ -1237,13 +1290,6 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
   const stderrPath = join(logDir, `${processId}.stderr.log`);
   const exitReceiptPath = receiptPathFor(input.controllerHome, input.repoId, processId);
   const descriptorPath = descriptorPathFor(input.controllerHome, input.repoId, processId);
-  const resourceClaims = toProcessClaims(scopeResourceClaims(
-    toResourceClaimSpecs(input.resourceClaims ?? []),
-    input.repoId,
-    input.checkoutId,
-    input.workId,
-  ));
-
   const runtimeClaim = getRuntimeWriteClaim();
   const record: ManagedProcessRecord = {
     schemaVersion: 1,
@@ -1251,7 +1297,6 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
     repoId: input.repoId,
     checkoutId: input.checkoutId,
     ...(input.principalId ? { principalId: input.principalId } : {}),
-    workId: input.workId,
     executionIdentity: input.executionIdentity,
     commandId: input.commandId?.trim() || processId,
     requestFingerprint: requestId ? commandFingerprint : undefined,
@@ -1287,7 +1332,6 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
     lane: 'managed',
     target: processScopeExecutionTarget(input.controllerHome, processScopeFromKey(input.repoId)),
     principalId: input.principalId,
-    workId: input.workId,
     commandId: record.commandId,
   });
 
@@ -1336,57 +1380,6 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
   const leaseWaitMs = Number.isFinite(input.leaseWaitMs)
     ? Math.max(0, Math.min(Math.trunc(input.leaseWaitMs!), 24 * 60 * 60_000))
     : 0;
-  let compatibility = evaluateManagedProcessWorkCompatibility({
-    controllerHome: input.controllerHome,
-    repoId: input.repoId,
-    processId,
-    workId: input.workId,
-    resourceClaims,
-    checkExecution: input.checkExecution,
-    origin: input.origin,
-  });
-  if (!compatibility.compatible && !compatibility.hardBlocked && leaseWaitMs > 0) {
-    const semanticDeadline = Date.now() + leaseWaitMs;
-    while (!compatibility.compatible && !compatibility.hardBlocked && Date.now() < semanticDeadline) {
-      if (input.signal?.aborted) break;
-      await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
-      compatibility = evaluateManagedProcessWorkCompatibility({
-        controllerHome: input.controllerHome,
-        repoId: input.repoId,
-        processId,
-        workId: input.workId,
-        resourceClaims,
-        checkExecution: input.checkExecution,
-        origin: input.origin,
-      });
-    }
-  }
-  if (!compatibility.compatible && compatibility.wait) {
-    recordWorkExecutionConcurrencyWait({
-      controllerHome: input.controllerHome,
-      repoId: input.repoId,
-      workId: input.workId,
-      attemptId: processId,
-      wait: compatibility.wait,
-      resourceClaims,
-      leaseRepoId: input.repoId,
-    });
-    updateProcessRecord(input.controllerHome, input.repoId, processId, { concurrencyWait: compatibility.wait });
-    const code = compatibility.hardBlocked ? 'PROCESS_WORK_COMPATIBILITY_INVALID' : 'PROCESS_WORK_COMPATIBILITY_WAIT';
-    completeProcessFromEvidence(input.controllerHome, input.repoId, processId, fenceToken, {
-      status: 'failed',
-      exitCode: 1,
-      errorMessage: `${code}: ${compatibility.wait.blockerCode}`,
-      exitReceiptPath,
-    }, { authority: 'durable_pre_spawn_abandonment' });
-    const blocked = getProcessRecord(input.controllerHome, input.repoId, processId)!;
-    return recordToHandle(blocked, {
-      completed: true,
-      stdout: '',
-      stderr: blocked.error?.message ?? `${code}: ${compatibility.wait.blockerCode}`,
-    });
-  }
-
   // Acquire real execution leases BEFORE spawning the runner. Fail closed on conflict.
   let leaseRefs: ProcessLeaseRef[] = [];
   if (resourceClaims.length > 0) {
@@ -1449,7 +1442,7 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
     // store remains the single conflict authority; this loop only polls it.
     if (!acquisition.acquired && leaseWaitMs > 0) {
       const resourceKeys = [...new Set(acquisition.blockers.map((blocker) => blocker.resourceKey))].sort();
-      const wait = executionConcurrencyWaitProjection({
+      const wait = processConcurrencyWaitProjection({
         source: 'resource_lease',
         blockerCode: 'resource_claim_conflict',
         disposition: 'wait',
@@ -1518,36 +1511,22 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
       // may be projected as the exact join target.
       const activeBlockingProcess = blockingProcess && isManagedProcessActive(blockingProcess)
         ? blockingProcess : undefined;
-      const blockingOwnerRelation = !ownerId ? 'unknown'
-        : !isProcessOwner ? 'non_work_owner'
+      const blockingOwnerRelation: ExecutionConcurrencyWaitProjection['blockingOwnerRelation'] = !ownerId ? 'unknown'
+        : !isProcessOwner ? 'non_process_owner'
         : !blockingProcess || !activeBlockingProcess ? 'unknown'
-        : !activeBlockingProcess.workId ? 'non_work_owner'
-        : activeBlockingProcess.workId === input.workId && activeBlockingProcess.checkoutId === input.checkoutId
-          ? 'same_work_same_checkout' : 'other_work_or_checkout';
-      const wait = executionConcurrencyWaitProjection({
+        : 'process_owner';
+      const wait = processConcurrencyWaitProjection({
         source: 'resource_lease',
         blockerCode: 'resource_claim_conflict',
         disposition: 'wait',
-        blockingWorkId: activeBlockingProcess?.workId,
         blockingProcessId: activeBlockingProcess ? blockingProcessId : undefined,
         blockingOwnerRelation,
         semanticScopeKeys: [],
         resourceKeys,
         wakeTrigger: { kind: 'resource_release', resourceKeys },
       });
-      // This is a dependency on this Work's existing Process, not a semantic
-      // Work blocker. The rejected request never spawned and must not replay.
-      if (blockingOwnerRelation !== 'same_work_same_checkout') {
-        recordWorkExecutionConcurrencyWait({
-          controllerHome: input.controllerHome,
-          repoId: input.repoId,
-          workId: input.workId,
-          attemptId: processId,
-          wait,
-          resourceClaims,
-          leaseRepoId: input.repoId,
-        });
-      }
+      // The rejected request never spawned; the Process record itself is the
+      // durable admission receipt. Do not mirror this conflict into semantic state.
       updateProcessRecord(input.controllerHome, input.repoId, processId, { concurrencyWait: wait });
       const blockers = acquisition.blockers
         .map((b) => `${b.resourceKey}@${b.ownerJobId}`)
@@ -1573,7 +1552,7 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
         input.controllerHome, input.repoId, processOwnerJobId(processId),
         acquisition.leases.map((lease) => ({
           leaseId: lease.leaseId, fencingToken: lease.fencingToken,
-          repoId: lease.repoId, checkoutId: lease.checkoutId, workId: lease.workId,
+          repoId: lease.repoId, checkoutId: lease.checkoutId,
           resourceKey: lease.resourceKey,
         })),
         { visibility: 'ephemeral', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false },
@@ -1587,9 +1566,7 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
       expiresAt: lease.expiresAt,
       repoId: lease.repoId,
       checkoutId: lease.checkoutId,
-      workId: lease.workId,
     }));
-    clearWorkExecutionConcurrencyWaitForAttempt({ controllerHome: input.controllerHome, repoId: input.repoId, workId: input.workId, attemptId: processId });
     updateProcessRecord(input.controllerHome, input.repoId, processId, { leaseRefs, concurrencyWait: undefined });
   }
 

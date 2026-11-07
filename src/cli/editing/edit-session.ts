@@ -83,11 +83,9 @@ export interface EditSessionAssurance {
 }
 
 export interface EditSessionBinding {
-  workId?: string;
   repoId?: string;
   checkoutId?: string;
   principalId?: string;
-  controllerInstanceId?: string;
 }
 
 export interface EditSession {
@@ -95,7 +93,6 @@ export interface EditSession {
   sessionId: string;
   issueId?: string;
   taskId?: string;
-  workId?: string;
   repoId?: string;
   checkoutId?: string;
   principalId?: string;
@@ -135,8 +132,6 @@ export interface EditSession {
 export interface EditSessionSummary {
   sessionId: string;
   purpose: string;
-  /** Derived ownership identity for cheap lifecycle inventory; never a second Work authority. */
-  workId?: string;
   status: EditSessionStatus;
   issueId?: string;
   taskId?: string;
@@ -335,8 +330,7 @@ export function assertEditSessionDurableBinding(
   options: { requireBoundIdentity?: boolean } = {},
 ): void {
   const hasDurableIdentity = Boolean(
-    session.workId
-    || session.repoId
+    session.repoId
     || session.checkoutId
     || session.principalId,
   );
@@ -345,7 +339,6 @@ export function assertEditSessionDurableBinding(
   }
   if (!binding) return;
   const pairs: Array<[keyof EditSessionBinding, string | undefined, string | undefined]> = [
-    ['workId', session.workId, binding.workId],
     ['repoId', session.repoId, binding.repoId],
     ['checkoutId', session.checkoutId, binding.checkoutId],
     ['principalId', session.principalId, binding.principalId],
@@ -355,35 +348,11 @@ export function assertEditSessionDurableBinding(
   }
 }
 
-function bindSessionControllerInstance(repoRoot: string, session: EditSession, binding: EditSessionBinding | undefined): EditSession {
+function validateSessionBinding(session: EditSession, binding: EditSessionBinding | undefined): EditSession {
   assertEditSessionDurableBinding(session, binding);
-  const nextInstanceId = binding?.controllerInstanceId?.trim();
-  if (!nextInstanceId || session.controllerInstanceId === nextInstanceId) return session;
-  // A non-Work Safe Patch session has no Controller instance owner to rebind.
-  // Its persisted repository identity is still checked above; never promote
-  // a caller-supplied transient Runtime identity into durable session authority.
-  if (!session.workId && !session.controllerInstanceId) return session;
-  const durableIdentity = [
-    [session.workId, binding?.workId],
-    [session.repoId, binding?.repoId],
-    [session.checkoutId, binding?.checkoutId],
-    [session.principalId, binding?.principalId],
-  ];
-  if (!durableIdentity.every(([expected, observed]) => Boolean(expected) && expected === observed)) {
-    throw new Error('EDIT_SESSION_IDENTITY_MISMATCH: controllerInstanceId');
-  }
-  const rebound = { ...session, controllerInstanceId: nextInstanceId, updatedAt: now() };
-  writeSession(repoRoot, rebound);
-  tryAppendControllerWorklogEvent(repoRoot, {
-    category: 'edit',
-    action: 'edit_session_controller_instance_rebound',
-    summary: `${session.purpose}: resumed after Controller Runtime instance change`,
-    issueId: session.issueId,
-    taskId: session.taskId,
-    editSessionId: session.sessionId,
-    details: { workId: session.workId, checkoutId: session.checkoutId },
-  });
-  return rebound;
+  // Historical extra fields are ignored. Current mutation authority is
+  // repository/checkout/principal plus source fingerprints.
+  return session;
 }
 
 function now(): string {
@@ -446,7 +415,6 @@ function normalizeStoredSession(value: Partial<EditSession> & { sessionId: strin
     sessionId: value.sessionId,
     issueId: value.issueId,
     taskId: value.taskId,
-    workId: value.workId,
     repoId: value.repoId,
     checkoutId: value.checkoutId,
     principalId: value.principalId,
@@ -741,7 +709,7 @@ export function adoptEditSessionSuccessorHead(repoRoot: string, sessionId: strin
   const previousBaseRevision = session.baseRevision?.trim();
   const successorRevision = gitRevision(repoRoot)?.trim();
   if (!previousBaseRevision || !successorRevision) throw new Error('EDIT_SESSION_SUCCESSOR_HEAD_REVISION_REQUIRED');
-  if (previousBaseRevision === successorRevision) return bindSessionControllerInstance(repoRoot, session, input.binding);
+  if (previousBaseRevision === successorRevision) return validateSessionBinding(session, input.binding);
 
   const committedPaths = committedChangedPathsBetween(repoRoot, previousBaseRevision, successorRevision);
   const tracked = new Set(sessionTrackedPaths(session));
@@ -754,7 +722,7 @@ export function adoptEditSessionSuccessorHead(repoRoot: string, sessionId: strin
     throw new Error(`EDIT_SESSION_SUCCESSOR_HEAD_CONTENT_DRIFT: ${mismatches.join(',')}`);
   }
 
-  session = bindSessionControllerInstance(repoRoot, session, input.binding);
+  session = validateSessionBinding(session, input.binding);
   const revision = session.currentRevision + 1;
   const revisionPatch = '';
   const absoluteRevisionPatch = revisionPatchPath(repoRoot, session.sessionId, revision);
@@ -791,7 +759,6 @@ export function adoptEditSessionSuccessorHead(repoRoot: string, sessionId: strin
     taskId: session.taskId,
     editSessionId: session.sessionId,
     details: {
-      workId: session.workId,
       previousBaseRevision,
       successorRevision,
       committedPaths,
@@ -1210,7 +1177,6 @@ function sessionSummary(session: EditSession): EditSessionSummary {
   return {
     sessionId: session.sessionId,
     purpose: session.purpose,
-    workId: session.workId,
     status: session.status,
     issueId: session.issueId,
     taskId: session.taskId,
@@ -1279,11 +1245,9 @@ export function beginEditSession(repoRoot: string, input: {
     sessionId: `EDIT-${Date.now()}-${randomBytes(4).toString('hex')}`,
     issueId: input.issueId?.trim() || undefined,
     taskId: input.taskId?.trim() || undefined,
-    workId: input.binding?.workId?.trim() || undefined,
     repoId: input.binding?.repoId?.trim() || undefined,
     checkoutId: input.binding?.checkoutId?.trim() || undefined,
     principalId: input.binding?.principalId?.trim() || undefined,
-    controllerInstanceId: input.binding?.controllerInstanceId?.trim() || undefined,
     workspaceFingerprint: workspaceFingerprint(repoRoot),
     purpose,
     status: 'open',
@@ -1371,10 +1335,9 @@ function editSessionDirectoryBytes(path: string): { bytes: number; complete: boo
 }
 
 /**
- * Physically reclaim terminal EditSession artifacts after their Work no longer
- * owns live review/delivery authority. The repository-relative path may be the
- * runtime-storage compatibility link; deletion therefore follows the existing
- * Controller Home binding instead of creating a second persistence root.
+ * Physically reclaim terminal EditSession artifacts after their own terminal
+ * state and retention policy allow it.
+ * The repository-relative path may be the runtime-storage compatibility link.
  */
 export function cleanupTerminalEditSessionRecords(repoRoot: string, input: {
   nowMs?: number;
@@ -1383,7 +1346,6 @@ export function cleanupTerminalEditSessionRecords(repoRoot: string, input: {
   maxEntries?: number;
   maxRemovals?: number;
   sequence?: number;
-  protectedWorkIds?: Iterable<string>;
 } = {}): EditSessionRetentionResult {
   const root = join(repoRoot, SESSION_ROOT);
   const result: EditSessionRetentionResult = {
@@ -1397,7 +1359,6 @@ export function cleanupTerminalEditSessionRecords(repoRoot: string, input: {
   const maxRetained = Math.max(0, Math.trunc(input.maxRetained ?? EDIT_SESSION_TERMINAL_MAX_RETAINED));
   const maxEntries = Math.max(1, Math.trunc(input.maxEntries ?? 2_000));
   const maxRemovals = Math.max(0, Math.trunc(input.maxRemovals ?? 50));
-  const protectedWorkIds = new Set(Array.from(input.protectedWorkIds ?? [], (value) => String(value).trim()).filter(Boolean));
   const skip = (reason: string) => {
     result.retained += 1;
     result.skippedByReason[reason] = (result.skippedByReason[reason] ?? 0) + 1;
@@ -1427,10 +1388,6 @@ export function cleanupTerminalEditSessionRecords(repoRoot: string, input: {
     }
     if (!['finalized', 'superseded', 'rolled_back'].includes(session.status)) {
       skip('active_session');
-      continue;
-    }
-    if (session.workId && protectedWorkIds.has(session.workId)) {
-      skip('active_work');
       continue;
     }
     const updatedMs = Date.parse(session.updatedAt);
@@ -1519,7 +1476,7 @@ export function applyEditOperations(repoRoot: string, policy: McpPolicy, session
   }
   const uniquePaths = new Set(operations.map((operation) => operation.path));
   if (uniquePaths.size !== operations.length) throw new Error('each path may appear only once per patch batch');
-  session = bindSessionControllerInstance(repoRoot, session, options.binding);
+  session = validateSessionBinding(session, options.binding);
   if (session.baseRevision && gitRevision(repoRoot) !== session.baseRevision) throw new Error('EDIT_SESSION_BASE_REVISION_CHANGED');
   if (session.workspaceFingerprint && workspaceFingerprint(repoRoot) !== session.workspaceFingerprint) throw new Error('EDIT_SESSION_WORKSPACE_FINGERPRINT_CHANGED');
   try {
@@ -2005,7 +1962,7 @@ export function finalizeEditSession(repoRoot: string, sessionId: string, input: 
   binding?: EditSessionBinding;
 } = {}): EditSession {
   let session = getEditSession(repoRoot, sessionId);
-  session = bindSessionControllerInstance(repoRoot, session, input.binding);
+  session = validateSessionBinding(session, input.binding);
   const baseRevisionChanged = Boolean(session.baseRevision && gitRevision(repoRoot) !== session.baseRevision);
   const workspaceFingerprintChanged = Boolean(session.workspaceFingerprint && workspaceFingerprint(repoRoot) !== session.workspaceFingerprint);
   if (session.assurance?.approvalRequired && input.approvalConfirmed !== true) throw new Error('EDIT_SESSION_APPROVAL_REQUIRED');

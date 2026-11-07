@@ -1,4 +1,4 @@
-import type { ProcessCheckReceiptEvidence } from '../../../packages/kernel/work/api/index';
+import type { ProcessCheckReceiptEvidence } from './process-check-receipt';
 import type { ScopeRef } from '../../../packages/kernel/identity/api/index';
 import { OPERATIONAL_TARGET_DEFINITIONS, type OperationalActionId, type OperationalMetricId, type OperationalObservation, type OperationalOutcomeClass, type OperationalTargetId } from '../../../packages/kernel/memory/api/index';
 import type { ExecutionJob } from '../execution/jobs/types';

@@ -6,9 +6,9 @@ import {
 
 const REQUIRED_CLASSES = [
   'assistant_experience', 'assistant_outcome_observation',
-  'requirement','plan','work','process_record_log','execution_job','check_receipt',
-  'controller_round','controller_session_lease','scheduler_occurrence_history',
-  'managed_workspace_checkout','edit_session','verification_snapshot','mcp_transport_session',
+  'requirement','plan','work','process_record_log','execution_job','check_receipt','resource_lease',
+  'scheduler_occurrence_history',
+  'managed_workspace_checkout','edit_session','mcp_transport_session',
   'browser_session_profile','browser_disposable_artifact','computer_interaction_target',
   'plugin_config_profile','release_artifact','recovery_backup','quarantine',
   'operational_memory','context_record','repository_controller_home_namespace','sqlite_control_plane','runtime_temp',
@@ -39,23 +39,21 @@ describe('Kernel V2 runtime lifecycle inventory', () => {
     expect(summary.pendingIds).toEqual([]);
   });
 
-  test('keeps authored semantic authority durable while ControllerRound remains execution mechanics', () => {
+  test('keeps authored semantic authority durable without restoring ControllerRound lifecycle', () => {
     for (const id of ['requirement', 'plan', 'work'] as const) {
       const entry = RUNTIME_LIFECYCLE_INVENTORY.find((candidate) => candidate.id === id);
       expect(entry).toBeDefined();
       expect(entry!.dataClass).toBe('semantic_authority');
       expect(entry!.retentionCapacity).toMatch(/semantic|revision history|audit retention/i);
-      expect(entry!.cleanupAuthority).toMatch(/does not delete|never rewrites|never rewrite semantic Work completion|semantic retention/i);
+      expect(entry!.cleanupAuthority).toMatch(/does not delete|never rewrites|never rewrite semantic Work completion|semantic retention|no Work cleanup writer exists/i);
     }
-    const controllerRound = RUNTIME_LIFECYCLE_INVENTORY.find((candidate) => candidate.id === 'controller_round');
-    expect(controllerRound).toBeDefined();
-    expect(controllerRound!.dataClass).toBe('execution_authority');
-    expect(controllerRound!.cleanupAuthority).toContain('continuation mechanics');
+    expect(RUNTIME_LIFECYCLE_INVENTORY.some((candidate) => candidate.id === 'controller_round')).toBe(false);
+    expect(RUNTIME_LIFECYCLE_INVENTORY.some((candidate) => candidate.id === 'controller_session_lease')).toBe(false);
   });
 
   test('keeps already-bounded Process, transport, Context and Operational Memory classes explicit', () => {
     const bounded = new Set(RUNTIME_LIFECYCLE_INVENTORY.filter((entry) => entry.closureStatus === 'existing_bounded').map((entry) => entry.id));
-    for (const id of ['requirement','plan','work','controller_round','process_record_log','mcp_transport_session','operational_memory','context_record','runtime_temp','managed_workspace_checkout','verification_snapshot','scheduler_occurrence_history','edit_session','plugin_config_profile','quarantine','release_artifact','recovery_backup','controller_session_lease','browser_disposable_artifact','repository_controller_home_namespace','browser_session_profile','computer_interaction_target','check_receipt','execution_job']) {
+    for (const id of ['requirement','plan','work','process_record_log','mcp_transport_session','operational_memory','context_record','runtime_temp','managed_workspace_checkout','scheduler_occurrence_history','edit_session','plugin_config_profile','quarantine','release_artifact','recovery_backup','browser_disposable_artifact','repository_controller_home_namespace','browser_session_profile','computer_interaction_target','check_receipt','execution_job','resource_lease']) {
       expect(bounded.has(id)).toBe(true);
     }
   });

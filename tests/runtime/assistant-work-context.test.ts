@@ -4,11 +4,11 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { recordCognitiveMemory, type CognitiveWriteAuthorityPort } from '../../packages/kernel/cognition/api/index';
-import { createWorkContract } from '../../packages/kernel/work/api/index';
 import { ensureControllerHome } from '../../src/effects/controller-home';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { prepareAssistantWorkContext } from '../../src/runtime/context/assistant-work-context';
 import { cognitionMemoryStore } from '../../src/runtime/control-plane/persistence/cognition-store';
+import { seedHistoricalWorkContract } from '../helpers/historical-work-contract';
 
 describe('assistant context for Controller Work', () => {
   test('does not block an unbound Work when optional Project knowledge is unavailable', () => {
@@ -25,7 +25,7 @@ describe('assistant context for Controller Work', () => {
       execFileSync('git', ['add', '.'], { cwd: repoRoot });
       execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
       const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'assistant context fixture' });
-      createWorkContract({ controllerHome, repoId: repository.repoId }, {
+      seedHistoricalWorkContract({ controllerHome, repoId: repository.repoId }, {
         workId: 'work-unbound-assistant-context',
         repoId: repository.repoId,
         checkoutId: repository.activeCheckoutId,

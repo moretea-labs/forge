@@ -2,16 +2,15 @@ import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contra
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 import { applyScheduleDedupe, buildScheduleDedupeReport, deleteSchedule } from '../../../packages/kernel/scheduler/api/index';
 import { buildFacadeResult } from '../../../src/runtime/control-plane/facade/facade-result';
-import { buildWorkContinuationSnapshot } from '../../../src/runtime/control-plane/facade/work-continuation';
 import {
-  createWorkContinuationSchedule,
-  getWorkContinuationSchedule,
-  listWorkContinuationSchedules,
-  pauseWorkContinuationSchedule,
-  resumeWorkContinuationSchedule,
-  triggerWorkContinuationSchedule,
-  type ContinuationControllerType,
-} from '../../../src/runtime/workflow/schedules/work-continuation';
+  createBrowserObservationSchedule,
+  getBrowserObservationSchedule,
+  listBrowserObservationSchedules,
+  pauseBrowserObservationSchedule,
+  resumeBrowserObservationSchedule,
+  triggerBrowserObservationSchedule,
+  type BrowserObservationControllerType,
+} from '../../../src/runtime/workflow/schedules/browser-observation';
 import { result } from './result-adapter';
 import { selected } from './shared-adapter';
 
@@ -52,28 +51,34 @@ export async function callRhWorkScheduleAdapter(
 ): Promise<CallToolResult> {
   try {
     const workId = String(args.work_id ?? '').trim();
+    if (workId) throw new Error('WORK_BOUND_SCHEDULE_OPERATION_RETIRED');
     const scheduleId = options.scheduleIdOverride?.trim() || String(args.schedule_id ?? '').trim();
     if (operation === 'schedule_create') {
+      const retiredAutonomousFields = [
+        'continuation_prompt',
+        'controller_binding_id',
+        'launch_args',
+        'launch_reservation_ms',
+        'lease_ms',
+        'transport_conversation',
+        'conversation_url',
+        'browser_session_id',
+      ].filter((field) => args[field] !== undefined);
+      if (retiredAutonomousFields.length > 0) {
+        throw new Error(`SCHEDULE_AUTONOMOUS_MODEL_LAUNCH_FIELDS_RETIRED: ${retiredAutonomousFields.join(',')}`);
+      }
       const controllerType = String(args.controller_type ?? 'chatgpt').trim();
       if (!['chatgpt', 'codex', 'claude', 'grok'].includes(controllerType)) throw new Error('CONTROLLER_TYPE_INVALID');
       const triggerTypeRaw = String(args.trigger_type ?? '').trim();
       const triggerType = ['interval', 'cron', 'calendar', 'condition', 'repository-event', 'dependency-checkpoint', 'manual'].includes(triggerTypeRaw)
         ? triggerTypeRaw as 'interval' | 'cron' | 'calendar' | 'condition' | 'repository-event' | 'dependency-checkpoint' | 'manual'
         : undefined;
-      const scheduleModeRaw = String(args.schedule_mode ?? (workId ? 'continuation' : '')).trim();
-      if (!['continuation', 'browser_watch', 'browser_keepalive'].includes(scheduleModeRaw)) throw new Error('SCHEDULE_MODE_REQUIRES_WORK_OR_EXPLICIT_BROWSER_KEEPALIVE');
-      const created = createWorkContinuationSchedule(ctx.controllerHome, repository.repoId, {
-        workId,
-        scheduleMode: scheduleModeRaw as 'continuation' | 'browser_watch' | 'browser_keepalive',
-        controllerType: controllerType as ContinuationControllerType,
+      const scheduleModeRaw = String(args.schedule_mode ?? 'browser_watch').trim();
+      if (!['browser_watch', 'browser_keepalive'].includes(scheduleModeRaw)) throw new Error('SCHEDULE_MODE_INVALID');
+      const created = createBrowserObservationSchedule(ctx.controllerHome, repository.repoId, {
+        scheduleMode: scheduleModeRaw as 'browser_watch' | 'browser_keepalive',
+        controllerType: controllerType as BrowserObservationControllerType,
         authorizationGrantRefs: Array.isArray(args.authorization_grant_refs) ? args.authorization_grant_refs.map(String) : undefined,
-        executable: typeof args.executable === 'string' ? args.executable : undefined,
-        launchArgs: Array.isArray(args.launch_args) ? args.launch_args.map(String) : undefined,
-        launchReservationMs: typeof args.launch_reservation_ms === 'number' ? args.launch_reservation_ms : typeof args.lease_ms === 'number' ? args.lease_ms : undefined,
-        handoffId: typeof args.handoff_id === 'string' ? args.handoff_id : undefined,
-        browserSessionId: typeof args.browser_session_id === 'string' ? args.browser_session_id : undefined,
-        conversationUrl: typeof args.conversation_url === 'string' ? args.conversation_url : undefined,
-        continuationPrompt: typeof args.continuation_prompt === 'string' ? args.continuation_prompt : undefined,
         probeUrl: typeof args.probe_url === 'string' ? args.probe_url : undefined,
         probeBrowserSessionId: typeof args.probe_browser_session_id === 'string' ? args.probe_browser_session_id : undefined,
         probeSelector: typeof args.probe_selector === 'string' ? args.probe_selector : undefined,
@@ -84,8 +89,6 @@ export async function callRhWorkScheduleAdapter(
         loginUrlTerms: Array.isArray(args.login_url_terms) ? args.login_url_terms.map(String) : undefined,
         loginTextTerms: Array.isArray(args.login_text_terms) ? args.login_text_terms.map(String) : undefined,
         wakeOnFirstObservation: args.wake_on_first_observation === true,
-        wakeOnAuthRequired: args.wake_on_auth_required !== false,
-        authRequiredPrompt: typeof args.auth_required_prompt === 'string' ? args.auth_required_prompt : undefined,
         scheduleName: typeof args.schedule_name === 'string' ? args.schedule_name : undefined,
         requestId: typeof args.schedule_request_id === 'string' ? args.schedule_request_id : undefined,
         triggerType,
@@ -105,19 +108,10 @@ export async function callRhWorkScheduleAdapter(
         backoffMaxMinutes: typeof args.backoff_max_minutes === 'number' ? args.backoff_max_minutes : undefined,
         stopConditions: Array.isArray(args.stop_conditions) ? args.stop_conditions.map(String) : undefined,
       });
-      return result(buildFacadeResult({
-        summary: created.work
-          ? `Work schedule ${created.schedule.scheduleId} is configured for Work ${created.work.workId}.`
-          : `Browser keepalive schedule ${created.schedule.scheduleId} is configured without a durable Work.`,
-        data: {
-          schedule: created.schedule,
-          ...(created.work ? { work: buildWorkContinuationSnapshot(created.work) } : {}),
-        },
-      }) as unknown as Record<string, unknown>);
+      return result(buildFacadeResult({ summary: `Browser observation schedule ${created.schedule.scheduleId} is configured.`, data: { schedule: created.schedule } }) as unknown as Record<string, unknown>);
     }
     if (operation === 'schedule_list') {
-      const schedules = listWorkContinuationSchedules(ctx.controllerHome, repository.repoId, {
-        workId: workId || undefined,
+      const schedules = listBrowserObservationSchedules(ctx.controllerHome, repository.repoId, {
         includeOccurrences: args.include_occurrences === true,
       });
       // A list is discovery, not a transport for archived controller prompts.
@@ -147,22 +141,22 @@ export async function callRhWorkScheduleAdapter(
     }
     if (!scheduleId) throw new Error('SCHEDULE_ID_REQUIRED');
     if (operation === 'schedule_get') {
-      const data = getWorkContinuationSchedule(ctx.controllerHome, repository.repoId, scheduleId, args.include_occurrences === true);
+      const data = getBrowserObservationSchedule(ctx.controllerHome, repository.repoId, scheduleId, args.include_occurrences === true);
       return result(buildFacadeResult({ summary: `Schedule ${scheduleId}.`, data }) as unknown as Record<string, unknown>);
     }
     if (operation === 'schedule_pause') {
-      const saved = pauseWorkContinuationSchedule(ctx.controllerHome, repository.repoId, scheduleId, typeof args.reason === 'string' ? args.reason : undefined);
+      const saved = pauseBrowserObservationSchedule(ctx.controllerHome, repository.repoId, scheduleId, typeof args.reason === 'string' ? args.reason : undefined);
       return result(buildFacadeResult({ summary: `Schedule ${scheduleId} is paused.`, data: { schedule: saved } }) as unknown as Record<string, unknown>);
     }
     if (operation === 'schedule_resume') {
-      const saved = resumeWorkContinuationSchedule(ctx.controllerHome, repository.repoId, scheduleId);
+      const saved = resumeBrowserObservationSchedule(ctx.controllerHome, repository.repoId, scheduleId);
       return result(buildFacadeResult({
         summary: `Schedule ${scheduleId} is resumed.`,
         data: { schedule: saved },
       }) as unknown as Record<string, unknown>);
     }
     if (operation === 'schedule_delete') {
-      const schedule = getWorkContinuationSchedule(ctx.controllerHome, repository.repoId, scheduleId).schedule;
+      const schedule = getBrowserObservationSchedule(ctx.controllerHome, repository.repoId, scheduleId).schedule;
       deleteSchedule(ctx.controllerHome, repository.repoId, scheduleId);
       return result(buildFacadeResult({
         summary: `Schedule ${scheduleId} is deleted; historical occurrences and evidence are retained.`,
@@ -172,7 +166,7 @@ export async function callRhWorkScheduleAdapter(
     const repositoryEvent = typeof args.event_name === 'string' && args.event_name.trim().length > 0;
     const explicitEventId = typeof args.event_id === 'string' ? args.event_id.trim() : '';
     const manualRequestId = !repositoryEvent && typeof args.request_id === 'string' ? args.request_id.trim() : '';
-    const occurrence = await triggerWorkContinuationSchedule(ctx.controllerHome, repository.repoId, scheduleId, {
+    const occurrence = await triggerBrowserObservationSchedule(ctx.controllerHome, repository.repoId, scheduleId, {
       source: repositoryEvent ? 'repository-event' : 'manual',
       eventName: typeof args.event_name === 'string' ? args.event_name : undefined,
       eventId: explicitEventId || manualRequestId || undefined,

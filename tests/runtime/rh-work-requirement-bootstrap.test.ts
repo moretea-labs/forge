@@ -7,7 +7,7 @@ import { getMcpPolicy } from '../../adapters/mcp/policy';
 import type { MultiRepositoryMcpToolContext } from '../../adapters/mcp/multi-repository';
 import { ensureControllerHome } from '../../src/effects/controller-home';
 import { addRepositoryCheckout, registerRepository } from '../../src/cli/repositories/registry';
-import { createWorkContract, getWorkContract, reviseWorkSemanticContext } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { createPlanSemanticContext, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { readRequirement, updateRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { ensureForgeInstanceIdentity, readForgeInstanceIdentity } from '../../packages/kernel/identity/api/index';
@@ -21,6 +21,7 @@ import {
 } from '../../src/runtime/control-plane/workspace/workspace-store';
 import { callRuntimeTool } from '../../adapters/mcp/runtime-gateway/runtime-tools';
 import { runtimeToolDefinitions } from '../../adapters/mcp/runtime-gateway/runtime-tool-definitions';
+import { seedHistoricalWorkContract } from '../helpers/historical-work-contract';
 
 const roots: string[] = [];
 
@@ -195,62 +196,13 @@ describe('rh_work Requirement bootstrap', () => {
     expect(detailed.data.plan.items).toHaveLength(50);
   });
 
-  test('work list returns compact discovery rows and leaves semantic result refs to get (#478)', async () => {
-    const repoRoot = tempRoot('forge-rh-work-list-repo-');
-    const controllerHome = tempRoot('forge-rh-work-list-home-');
-    initRepo(repoRoot);
-    ensureControllerHome(controllerHome);
-    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'Work list transport fixture' });
-    const store = { controllerHome, repoId: repository.repoId };
-    const workId = 'WORK-LIST-DETAIL';
-    createWorkContract(store, {
-      workId,
-      repoId: repository.repoId,
-      checkoutId: repository.activeCheckoutId,
-      objective: 'work-list-objective-'.padEnd(2_000, 'x'),
-      acceptanceCriteria: [],
-      checks: [],
-      constraints: { workspaceMode: 'current' },
-      requestedBy: 'chatgpt',
-      phase: 'verification',
-    });
-    reviseWorkSemanticContext(store, workId, {
-      expectedRevision: 1,
-      resultRefs: Array.from({ length: 100 }, (_, index) => `result-ref-${index}-${'r'.repeat(480)}`),
-    });
-
-    const listed = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_work', {
-      operation: 'list',
-      repo_id: repository.repoId,
-      limit: 20,
-    }));
-    expect(listed.status).toBe('ok');
-    expect(listed.data.works).toHaveLength(1);
-    expect(listed.data.works[0]).toMatchObject({
-      workId,
-      revision: 2,
-      state: 'open',
-      resultRefCount: 100,
-    });
-    expect(listed.data.works[0].objective.length).toBeLessThanOrEqual(240);
-    expect(listed.data.works[0].resultRefs).toBeUndefined();
-    expect(JSON.stringify(listed).length).toBeLessThan(5_000);
-
-    const detailed = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_work', {
-      operation: 'get',
-      repo_id: repository.repoId,
-      work_id: workId,
-    }));
-    expect(detailed.data.work.resultRefs).toHaveLength(100);
-  });
-
   test('get_contract exposes the complete canonical WorkContract read-only, separate from the thin semantic view', async () => {
     const repoRoot = tempRoot('forge-work-full-contract-read-repo-');
     const controllerHome = tempRoot('forge-work-full-contract-read-home-');
     initRepo(repoRoot);
     const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'work-full-contract-read' });
     const workId = 'WORK-FULL-CONTRACT-READ';
-    createWorkContract({ controllerHome, repoId: repository.repoId }, {
+    seedHistoricalWorkContract({ controllerHome, repoId: repository.repoId }, {
       workId, repoId: repository.repoId, checkoutId: repository.activeCheckoutId,
       objective: 'Read the exact canonical Work acceptance and safety contract before disposition.',
       acceptanceCriteria: ['External evaluation boundary must use wait rather than goal_complete.'],
@@ -271,62 +223,6 @@ describe('rh_work Requirement bootstrap', () => {
     expect(response.data.workContract).not.toHaveProperty('forbiddenPaths');
     expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)).toEqual(before);
     expect(response.data).not.toHaveProperty('work');
-  });
-  test('automatically onboards Project/Workspace identity during normal Work start admission', async () => {
-    const repoRoot = tempRoot('forge-work-project-onboarding-repo-');
-    const controllerHome = tempRoot('forge-work-project-onboarding-home-');
-    initRepo(repoRoot);
-    mkdirSync(join(repoRoot, '.forge'), { recursive: true });
-    writeFileSync(join(repoRoot, '.forge', 'project-engineering.json'), JSON.stringify({
-      schemaVersion: 1,
-      contractId: 'work-onboarding-contract',
-      contractVersion: '1',
-      projectId: 'work-onboarding-project',
-      authority: {},
-      quality: {},
-      checks: [],
-      journeys: [],
-    }, null, 2));
-    git(repoRoot, 'add', '.forge/project-engineering.json');
-    git(repoRoot, 'commit', '-m', 'add project contract');
-    ensureControllerHome(controllerHome);
-    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'Work onboarding fixture' });
-    const ctx = {
-      ...mcpContext(controllerHome, repository),
-      principalId: 'project-onboarding-principal',
-      sessionId: 'project-onboarding-session',
-      controllerInstanceId: 'project-onboarding-runtime',
-      controllerType: 'chatgpt',
-    } as unknown as MultiRepositoryMcpToolContext;
-
-    const started = structured(await callRuntimeTool(ctx, 'rh_work', {
-      repo_id: repository.repoId,
-      operation: 'start',
-      objective: 'Verify semantic project onboarding at Work admission.',
-      requested_by: 'user',
-      scope_clear: true,
-      work_kind: 'repository_change',
-    }));
-    expect(started.status).toBe('ok');
-    expect(started.data.projectOnboarding).toMatchObject({
-      status: 'bound',
-      projectId: 'work-onboarding-project',
-      workspaceId: 'workspace-personal',
-      identitySource: 'project_contract',
-      createdProject: true,
-      createdPlacement: true,
-    });
-    const instance = readForgeInstanceIdentity(controllerHome);
-    expect(instance).toBeTruthy();
-    expect(resolveProjectForRepositoryPlacement({
-      controllerHome,
-      forgeInstanceId: instance!.instanceId,
-      repositoryId: repository.repoId,
-      checkoutId: repository.activeCheckoutId,
-    })).toMatchObject({
-      projectId: 'work-onboarding-project',
-      workspaceId: 'workspace-personal',
-    });
   });
 
   test('explicitly promotes one Workspace Cognitive requirement candidate into exactly one canonical Requirement', async () => {
@@ -649,7 +545,7 @@ describe('rh_work Requirement bootstrap', () => {
       }],
     }));
     expect(created.status).toBe('ok');
-    createWorkContract(store, {
+    seedHistoricalWorkContract(store, {
       workId: 'work-active-scope', repoId: repository.repoId, planId, planStepId: 'stage', planSourceRevision: sourceRevision,
       objective: 'Deliver without replacing Work authority.', acceptanceCriteria: ['The same Work remains authoritative.'],
       allowedPaths: ['src/**'], forbiddenPaths: [], checks: ['package:check:type'], constraints: {}, requestedBy: 'chatgpt', dispatchState: 'running',

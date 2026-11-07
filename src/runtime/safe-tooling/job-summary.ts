@@ -223,7 +223,6 @@ export function summarizeExecutionJobForMcp(job: ExecutionJob, repoRoot?: string
     terminal: rawDigest.terminal,
     resultAccepted: rawDigest.resultAccepted,
     operation: rawDigest.operation,
-    workId: rawDigest.workId,
     jobId: rawDigest.jobId,
     requestId: rawDigest.requestId,
     errorClass: rawDigest.errorClass,

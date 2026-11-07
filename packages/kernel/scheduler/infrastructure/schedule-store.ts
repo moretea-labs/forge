@@ -101,29 +101,13 @@ function requestPath(controllerHome: string, targetKey: string, requestId: strin
 export const SCHEDULE_OCCURRENCE_RECENT_LIMIT = 5_000;
 export const SCHEDULE_CREATED_OCCURRENCE_STALE_MS = 5 * 60 * 1_000;
 
-const WORK_CONTINUATION_MAX_FAILURES = 3;
-const WORK_CONTINUATION_DAILY_BUDGET_MINUTES = 60;
-const WORK_CONTINUATION_MIN_COOLDOWN_MINUTES = 10;
-
 function boundedSchedulePolicy(schedule: RepositorySchedule): RepositorySchedule['policy'] {
   const policy = {
     ...schedule.policy,
     backoffBaseMinutes: Math.max(1, schedule.policy.backoffBaseMinutes ?? schedule.policy.cooldownMinutes ?? 1),
     backoffMaxMinutes: Math.max(1, schedule.policy.backoffMaxMinutes ?? 24 * 60),
   };
-  if (schedule.action.operation !== 'external_controller_wake' && schedule.action.operation !== 'controller_progression') return policy;
-  // A Work-bound continuation is expensive and can affect the user's
-  // provider. No schedule payload may convert a transient tool outage into an
-  // all-day retry loop. Larger work needs an explicit future user action after
-  // the bounded lane records useful failure evidence.
-  return {
-    ...policy,
-    maxFailures: Math.max(1, Math.min(policy.maxFailures, WORK_CONTINUATION_MAX_FAILURES)),
-    dailyBudgetMinutes: Math.max(1, Math.min(policy.dailyBudgetMinutes, WORK_CONTINUATION_DAILY_BUDGET_MINUTES)),
-    cooldownMinutes: Math.max(policy.cooldownMinutes, WORK_CONTINUATION_MIN_COOLDOWN_MINUTES),
-    backoffBaseMinutes: Math.max(policy.backoffBaseMinutes, WORK_CONTINUATION_MIN_COOLDOWN_MINUTES),
-    backoffMaxMinutes: Math.max(policy.backoffMaxMinutes, WORK_CONTINUATION_MIN_COOLDOWN_MINUTES, policy.backoffBaseMinutes),
-  };
+  return policy;
 }
 function canonical(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonical);

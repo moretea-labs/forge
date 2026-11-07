@@ -152,7 +152,6 @@ export async function startLightweightPluginAction(input: {
     cwd: input.repository.canonicalRoot,
     interactiveWaitMs: Math.max(0, input.interactiveWaitMs ?? 750),
     timeoutMs: input.timeoutMs,
-    workId: input.request.workId,
     commandId: `plugin-action:${input.request.requestId}`,
     maxOutputBytes: 64 * 1024,
     signal: input.request.signal,
@@ -229,7 +228,6 @@ export async function startManagedControllerPluginAction(input: {
       toolName: 'plugin_action_execute',
       requestId: input.request.requestId,
       requestSemanticFingerprint: requestSha256,
-      correlationId: input.request.workId,
     },
     signal: input.request.signal,
   });
@@ -294,14 +292,12 @@ export async function startManagedPluginAction(input: {
     repositoryId: input.repository.repoId,
     checkoutId: input.repository.activeCheckoutId,
     canonicalRoot: input.repository.canonicalRoot,
-    ...(input.request.workId ? { workId: input.request.workId } : {}),
   });
   const handle = await spawnManagedProcess({
     controllerHome: input.controllerHome,
     repoId: input.repository.repoId,
     checkoutId: input.repository.activeCheckoutId,
     executionIdentity,
-    workId: input.request.workId,
     commandId: `plugin-action:${input.request.requestId}`,
     trustedRuntimeChild: 'plugin_action_sidecar',
     command: {
@@ -322,7 +318,6 @@ export async function startManagedPluginAction(input: {
       toolName: 'plugin_action_execute',
       requestId: input.request.requestId,
       requestSemanticFingerprint: requestSha256,
-      correlationId: input.request.workId,
     },
     signal: input.request.signal,
   });

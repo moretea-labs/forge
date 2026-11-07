@@ -2,12 +2,9 @@ import { bindRepositoryEntities } from '../../../src/cli/repositories/entity-mig
 import { bootstrapLocalProject, diagnoseLatestLocalProjectSource } from '../../../src/cli/repositories/local-project-onboarding';
 import { resolveEphemeralWorkspaceTarget } from '../../../src/cli/repositories/ephemeral-workspace';
 import { commandExecutionScopeKey, type RepositoryCommandScopeTarget } from '../../../src/cli/repositories/command-scope';
-import { executionIdentityForWork, type ResolvedExecutionIdentity } from '../../../src/runtime/control-plane/execution/execution-identity';
-import { resolveClaimedRepositoryWorkId, resolveExplicitClaimedRepositoryWork, type RepositoryWorkAttributionCaller } from '../../../src/runtime/control-plane/execution/repository-work-attribution';
-import { getWorkContract, semanticWorkState, type WorkContract } from '../../../packages/kernel/work/api';
-import { ensureRepositoryMutationWorkHandle, markRepositoryMutationStarted } from '../../../src/runtime/control-plane/execution/work-handle-authority';
-import { readWorkHandle } from '../../../src/runtime/control-plane/execution/work-handle-store';
-import { ensureRunningRepositoryWorkCheckout } from '../../../src/runtime/control-plane/execution/retained-work-resume';
+import type { ResolvedExecutionIdentity } from '../../../src/runtime/control-plane/execution/execution-identity';
+import { getWorkContract, type WorkContract } from '../../../packages/kernel/work/api';
+
 import { executeRepositoryCommand, previewRepositoryCommandExecution } from '../../../src/cli/repositories/command-executor';
 import { withControllerLock } from '../../../src/cli/repositories/locks';
 import { withRepositoryMutationExclusion } from '../../../src/runtime/resources/leases/store';
@@ -29,7 +26,7 @@ import { repositoryGitRemoveWorktree } from '../../../src/cli/repositories/struc
 import { buildControllerWorkbench } from '../../../src/cli/repositories/workbench';
 import { applySafePatch, buildSafePatchPlan } from '../../../src/cli/repositories/safe-patch';
 import { EDIT_OPERATION_INPUT_SCHEMA } from '../../../src/cli/editing/edit-operation-contract';
-import { getEditSession, getEditSessionDiff, type EditSessionBinding } from '../../../src/cli/editing/edit-session';
+import { getEditSessionDiff, type EditSessionBinding } from '../../../src/cli/editing/edit-session';
 import { buildSyncOperationDigest, classifyUserFacingError } from '../../../src/runtime/control-plane/facade/operation-digest';
 import {
   repositoryGitCommit,
@@ -243,7 +240,6 @@ export const repositoryToolDefinitions: McpToolDefinition[] = [
   definition('repository_safe_patch_apply', 'Apply one coherent deterministic edit batch and return bounded review evidence. Checks are opt-in: pass check_ids only when the batch is stable. Long checks return managed Process handles instead of blocking the MCP call; use validation_only with the returned session/request ids to join later without replaying the patch.', {
     repo_id: repoId,
     checkout_id: { type: 'string', description: 'Optional checkout identity for repositories with multiple local clones.' },
-    work_id: { type: 'string', description: 'Optional durable Work identity. Workflow controllers should pass the exact claimed Work id so attribution survives transient MCP transport sessions.' },
     session_id: { type: 'string', description: 'Existing edit session id. Required for validation_only; otherwise omit to create one.' },
     purpose: { type: 'string', description: 'Purpose for a newly created edit session.' },
     operations: { type: 'array', items: EDIT_OPERATION_INPUT_SCHEMA, description: 'Typed edit operations. Use type=create for a new path; write/replace/insert/prepend/append/delete require an existing target and preserve strict preconditions. Required unless validation_only=true.' },
@@ -263,7 +259,6 @@ export const repositoryToolDefinitions: McpToolDefinition[] = [
   definition('execute_command', 'Single terminal entry. Repository and authorized workspace commands need no Work or Plan. Explicit scope=host uses the existing ForgeInstance process:exec Grant. Process Runtime owns execution, process handles and timeouts; Git ownership checks remain mechanical.', {
     repo_id: repoId,
     checkout_id: { type: 'string', description: 'Optional checkout identity for repositories with multiple local clones.' },
-    work_id: { type: 'string', description: 'Optional Work provenance; ordinary commands never require a Work. Work-attributed effects require a stable request_id.' },
     scope: { type: 'string', enum: ['repository', 'host'], description: 'Defaults to repository; host requires an explicit process:exec ForgeInstance Grant.' },
     command: { anyOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' }, minItems: 1 }], description: 'Repository: typed argv or shell string; host: typed argv only.' },
     shell_command: { type: 'string', description: 'Host shell only; mutually exclusive with command and requires scope=host.' },
@@ -306,99 +301,41 @@ function withResponseMeta(payload: Record<string, unknown>, startedAt: number): 
   return response;
 }
 
-export type RepositoryToolCallerContext = RepositoryWorkAttributionCaller;
-
-export function claimedSessionEditBinding(
-  controllerHome: string,
-  repository: ReturnType<typeof resolveRepositorySelection>,
-  caller?: RepositoryToolCallerContext,
-  explicitWorkId?: unknown,
-): EditSessionBinding | undefined {
-  const workId = resolveClaimedRepositoryWorkId(controllerHome, repository, caller, explicitWorkId);
-  if (!workId || !caller?.principalId?.trim()) return undefined;
-  const work = getWorkContract({ controllerHome, repoId: repository.repoId }, workId);
-  if (!work) return undefined;
-  return {
-    workId,
-  repoId: repository.repoId,
-  checkoutId: repository.activeCheckoutId,
-    principalId: caller.principalId.trim(),
-    controllerInstanceId: caller.controllerInstanceId,
-  };
+export interface RepositoryToolCallerContext {
+  sessionId?: string;
+  principalId?: string;
+  controllerInstanceId?: string;
 }
 
 function safePatchEditBinding(
-  controllerHome: string,
   repository: ReturnType<typeof resolveRepositorySelection>,
-  caller: RepositoryToolCallerContext | undefined,
   args: Record<string, unknown>,
 ): EditSessionBinding | undefined {
   const explicitWorkId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
-  if (explicitWorkId) return claimedSessionEditBinding(controllerHome, repository, caller, explicitWorkId);
-  const sessionId = typeof args.session_id === 'string' ? args.session_id.trim() : '';
-  if (sessionId) {
-    const existingWorkId = getEditSession(repository.canonicalRoot, sessionId).workId?.trim();
-    return existingWorkId
-      ? claimedSessionEditBinding(controllerHome, repository, caller, existingWorkId)
-      : undefined;
+  if (explicitWorkId) {
+    throw new Error(`WORK_MUTATION_AUTHORITY_RETIRED: ${explicitWorkId}; omit work_id and use repository/checkout/EditSession/resource authorities directly`);
   }
-  // Work attribution is opt-in. A historical session binding never vetoes
-  // ordinary Direct Edit, whose physical checkout/lease gate runs separately.
   return undefined;
 }
 
-function resolveRepositorySelectionForClaimedWork(
+function resolveRepositorySelectionWithoutWorkAuthority(
   controllerHome: string,
   args: Record<string, unknown>,
   repoIdValue: string,
-  caller?: RepositoryToolCallerContext,
+  _caller?: RepositoryToolCallerContext,
   allowCheckoutMutation = true,
 ): ReturnType<typeof resolveRepositorySelection> {
   const checkoutId = typeof args.checkout_id === 'string' ? args.checkout_id.trim() : '';
   const explicitWorkId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
-  let repository = resolveRepositorySelection({
+  if (explicitWorkId && allowCheckoutMutation) {
+    throw new Error(`WORK_MUTATION_AUTHORITY_RETIRED: ${explicitWorkId}; Work cannot select, recover, relocate, or own a mutation checkout`);
+  }
+  return resolveRepositorySelection({
     repoId: repoIdValue || undefined,
     checkoutId: checkoutId || undefined,
     controllerHome,
     allowSoleRepository: true,
   });
-  if (!explicitWorkId) return repository;
-  const recordedWork = getWorkContract({ controllerHome, repoId: repository.repoId }, explicitWorkId);
-  const recordedHandle = readWorkHandle(controllerHome, repository.repoId, explicitWorkId);
-  const workCheckoutId = recordedHandle?.checkoutId?.trim() || recordedWork?.checkoutId?.trim();
-  if (!checkoutId && workCheckoutId && workCheckoutId !== repository.activeCheckoutId) {
-    repository = resolveRepositorySelection({
-      repoId: repository.repoId,
-      checkoutId: workCheckoutId,
-      controllerHome,
-      allowSoleRepository: true,
-    });
-  }
-  const work = resolveExplicitClaimedRepositoryWork(controllerHome, repository, caller, explicitWorkId);
-  if (!work) return repository;
-  const principalId = caller?.principalId?.trim();
-  const sessionId = caller?.sessionId?.trim();
-  const controllerInstanceId = caller?.controllerInstanceId?.trim();
-  if (allowCheckoutMutation && principalId && sessionId && controllerInstanceId) {
-    ensureRunningRepositoryWorkCheckout({
-      controllerHome,
-      repository,
-      workId: work.workId,
-      identity: { principalId, sessionId, controllerInstanceId },
-    });
-    const refreshedWork = getWorkContract({ controllerHome, repoId: repository.repoId }, work.workId);
-    const refreshedHandle = readWorkHandle(controllerHome, repository.repoId, work.workId);
-    const refreshedCheckoutId = refreshedHandle?.checkoutId?.trim() || refreshedWork?.checkoutId?.trim();
-    if (refreshedCheckoutId && refreshedCheckoutId !== repository.activeCheckoutId) {
-      repository = resolveRepositorySelection({
-        repoId: repository.repoId,
-        checkoutId: refreshedCheckoutId,
-        controllerHome,
-        allowSoleRepository: true,
-      });
-    }
-  }
-  return repository;
 }
 
 function rawDefaultBranchMergeCommand(repository: ReturnType<typeof resolveRepositorySelection>, command: unknown): boolean {
@@ -417,7 +354,7 @@ interface HistoricalReadOnlyWorkContext {
   workId: string;
   state: WorkContract['semanticState'];
   mode: 'historical_read_only_observation';
-  attribution: 'not_active_work';
+  attribution: 'historical_only';
 }
 
 function historicalReadOnlyWorkContext(
@@ -428,14 +365,14 @@ function historicalReadOnlyWorkContext(
   const requestedWorkId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
   if (!requestedWorkId) return undefined;
   const work = getWorkContract({ controllerHome, repoId: repository.repoId }, requestedWorkId);
-  if (!work || semanticWorkState(work) === 'open') return undefined;
+  if (!work) throw new Error(`HISTORICAL_WORK_NOT_FOUND: ${requestedWorkId}`);
   const classification = classifyRepositoryCommand(args.command as string | string[], repository.defaultBranch);
   if (classification.risk !== 'readonly') return undefined;
   return {
     workId: work.workId,
     state: work.semanticState,
     mode: 'historical_read_only_observation',
-    attribution: 'not_active_work',
+    attribution: 'historical_only',
   };
 }
 
@@ -476,8 +413,7 @@ function resolveRepositoryCommandTarget(
   // terminal work_id may still accompany a read-only observation immediately
   // after finalize, so preserve it as explicit historical context while
   // executing against the caller-selected/current repository checkout. Any
-  // non-read-only command continues through claimed Work resolution and fails
-  // closed for terminal attribution.
+  // non-read-only command rejects Work authority and uses repository/checkout/resource owners only.
   const selectedRepository = resolveRepositorySelection({
     repoId: repoIdValue || undefined,
     checkoutId: checkoutId || undefined,
@@ -502,11 +438,7 @@ function resolveRepositoryCommandTarget(
 
   // Observation must not reconstruct a checkout or re-arm mutation authority.
   const readonly = classifyRepositoryCommand(args.command as string | string[], selectedRepository.defaultBranch).risk === 'readonly';
-  const repository = resolveRepositorySelectionForClaimedWork(controllerHome, args, repoIdValue, caller, !readonly);
-  const explicitWorkId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
-  const workId = explicitWorkId
-    ? resolveClaimedRepositoryWorkId(controllerHome, repository, caller, explicitWorkId)
-    : undefined;
+  const repository = resolveRepositorySelectionWithoutWorkAuthority(controllerHome, args, repoIdValue, caller, !readonly);
   return {
     repository,
     commandTarget: repository,
@@ -516,7 +448,6 @@ function resolveRepositoryCommandTarget(
       repositoryId: repository.repoId,
       checkoutId: repository.activeCheckoutId,
       canonicalRoot: repository.canonicalRoot,
-      ...(workId ? { workId } : {}),
     },
   };
 }
@@ -980,8 +911,8 @@ export async function callRepositoryTool(
         });
       }
       case 'repository_safe_patch_apply': {
-        const repository = resolveRepositorySelectionForClaimedWork(controllerHome, args, repoIdValue, caller);
-        const binding = safePatchEditBinding(controllerHome, repository, caller, args);
+        const repository = resolveRepositorySelectionWithoutWorkAuthority(controllerHome, args, repoIdValue, caller);
+        const binding = safePatchEditBinding(repository, args);
         const patchPaths = extractPatchPaths(args.operations);
         const mutationClaims = args.validation_only === true
           ? []
@@ -993,17 +924,6 @@ export async function callRepositoryTool(
           repository.repoId,
           'mcp:repository_safe_patch_apply',
           () => {
-            // A validation-only reattachment is not repository mutation admission;
-            // it must never promote a thin investigation to repository_change.
-            const mutationAuthority = binding?.workId && args.validation_only !== true
-              ? ensureRepositoryMutationWorkHandle({
-                  controllerHome,
-                  repository,
-                  workId: binding.workId,
-                  principalId: binding.principalId ?? caller?.principalId ?? '',
-                  sessionId: caller?.sessionId,
-                })
-              : undefined;
             const patchResult = applySafePatch(repository, {
               sessionId: args.session_id,
               purpose: args.purpose,
@@ -1016,14 +936,6 @@ export async function callRepositoryTool(
               recoverStaleSession: args.recover_stale_session,
               binding,
             });
-            if (binding?.workId && mutationAuthority && patchResult.appliedChunks.length > 0) {
-              markRepositoryMutationStarted({
-                controllerHome,
-                repository,
-                workId: binding.workId,
-                expectedDeliveryBase: mutationAuthority.handle.deliveryBaseCommit ?? mutationAuthority.handle.baseCommit,
-              });
-            }
             return patchResult;
           },
           60_000,
@@ -1131,7 +1043,7 @@ export async function callRepositoryTool(
         }
         // Work context is optional. Repository mutation safety is decided by
         // Git/Process/Lease and physical-checkout fences, never by an old
-        // session's activeWorkId.
+        // session repository/checkout focus.
         const mutationClassification = classifyRepositoryCommand(args.command as string | string[], commandTarget.defaultBranch);
         const hasDeclaredMutationScope = Boolean(mutationPaths?.length);
         // Git integration is a capability with its own repository, scope and
@@ -1165,47 +1077,11 @@ export async function callRepositoryTool(
         const rawCommitScope = classifyRawGitCommitScope(args.command as string | string[]);
         const routeClass = classifyRepositoryCommandRoute(args.command as string | string[], {
           forceDurable,
-          workId: executionIdentity.workId,
           defaultBranch: commandTarget.defaultBranch,
           timeoutMs,
           mutationPaths,
         });
         const processRequestId = typeof args.request_id === 'string' ? args.request_id.trim() : '';
-        if (executionIdentity.workId
-          && (mutationClassification.risk !== 'readonly' || hasDeclaredMutationScope)
-          && (routeClass.route === 'process_direct' || routeClass.route === 'process_managed' || routeClass.route === 'durable')
-          && !processRequestId) {
-          throw new Error(
-            `WORK_PROCESS_REQUEST_ID_REQUIRED: ${executionIdentity.workId}; `
-            + 'Work-attributed Process Runtime commands require a stable request_id so reconnect/retry can resume the original Process without duplicate execution.',
-          );
-        }
-        let mutationAuthority: ReturnType<typeof ensureRepositoryMutationWorkHandle> | undefined;
-        if (
-          (hasDeclaredMutationScope || mutationClassification.risk === 'workspace_write' || mutationClassification.risk === 'destructive')
-          && (routeClass.route === 'process_direct' || routeClass.route === 'process_managed')
-        ) {
-          if (executionIdentity.workId) {
-            mutationAuthority = withControllerLock(
-              controllerHome,
-              { scope: 'repository', repoId: commandExecutionScopeKey(commandTarget) },
-              'mcp:execute_command:mutation-authority',
-              () => ensureRepositoryMutationWorkHandle({
-                controllerHome,
-                repository: repository!,
-                workId: executionIdentity.workId!,
-                principalId: caller?.principalId ?? '',
-                sessionId: caller?.sessionId,
-              }),
-              60_000,
-            );
-            // Pre-mutation reconciliation may advance expectedHead. Preserve the
-            // complete WorkHandle identity after that CAS; rebuilding a generic
-            // repository identity here drops branch/expectedHead and prevents the
-            // successful command from settling its legitimate successor HEAD.
-            executionIdentity = executionIdentityForWork(repository!, mutationAuthority.handle);
-          }
-        }
         // Compatibility boundary only: this facade owns repository-domain
         // context (target resolution, Git/source mutation fencing and legacy
         // response translation), while Unified Process Runtime owns execution,
@@ -1287,32 +1163,10 @@ export async function callRepositoryTool(
                 maxOutputBytes,
                 returnHandleImmediately,
                 requestId: processRequestId || undefined,
-                workId: executionIdentity.workId,
                 executionIdentity,
                 allowNonGitWorkspace: target.workspace !== undefined,
                 principalId: caller?.principalId ?? undefined,
               });
-              if (repository && mutationAuthority && (processResult.route === 'process_direct' || processResult.route === 'process_managed')) {
-                const processHandle = processResult.process;
-                const postStatus = repositoryGitStatus(repository);
-                const expectedHead = mutationAuthority.handle.expectedHead;
-                const mutationObserved = !postStatus.clean
-                  || (Boolean(postStatus.head) && postStatus.head !== expectedHead);
-                if (mutationObserved) {
-                  withControllerLock(
-                    controllerHome,
-                    { scope: 'repository', repoId: commandExecutionScopeKey(commandTarget) },
-                    'mcp:execute_command:mutation-started',
-                    () => markRepositoryMutationStarted({
-                      controllerHome,
-                      repository,
-                      workId: executionIdentity.workId!,
-                      expectedDeliveryBase: mutationAuthority!.handle.deliveryBaseCommit ?? mutationAuthority!.handle.baseCommit,
-                    }),
-                    60_000,
-                  );
-                }
-              }
               if (processResult.route === 'process_direct' || processResult.route === 'process_managed') {
                 const handle = processResult.process;
                 const detailLevel = args.detail_level === 'detail' || args.detail === true
@@ -1447,7 +1301,6 @@ export async function callRepositoryTool(
                 timeoutMs,
                 maxOutputBytes,
                 requestId: typeof args.request_id === 'string' ? args.request_id : undefined,
-                workId: executionIdentity.workId,
                 executionIdentity,
                 principalId: caller?.principalId ?? undefined,
               });

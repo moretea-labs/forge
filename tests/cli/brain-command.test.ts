@@ -5,7 +5,7 @@ import { join } from 'path';
 import { spawnSync } from 'child_process';
 import { runBrainPromote } from '../../src/cli/commands/brain';
 import { registerRepository } from '../../src/cli/repositories/registry';
-import { createWorkContract, recordWorkCompletionReceipt, reviseWorkSemanticContext } from '../../packages/kernel/work/api/index';
+import { createRequirement, reviseRequirementSemantic } from '../../src/runtime/control-plane/persistence/requirement-store';
 
 function git(repo: string, ...args: string[]) {
   const result = spawnSync('git', args, { cwd: repo, encoding: 'utf-8' });
@@ -53,8 +53,8 @@ describe('brain terminal workflow promotion', () => {
     }
   });
 
-  test('modern promotion rejects a nonterminal Work instead of falling back to Git history', () => {
-    const repo = mkdtempSync(join(tmpdir(), 'forge-brain-modern-nonterminal-'));
+  test('modern promotion uses accepted Requirement evidence without Work lifecycle state', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'forge-brain-modern-requirement-'));
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-brain-modern-home-'));
     try {
       git(repo, 'init', '-q', '-b', 'main');
@@ -65,59 +65,59 @@ describe('brain terminal workflow promotion', () => {
       writeFileSync(join(repo, 'README.md'), '# modern brain\n');
       git(repo, 'add', '.');
       git(repo, 'commit', '-qm', 'init modern brain fixture');
-      const repository = registerRepository({ path: repo, controllerHome, displayName: 'Brain modern fixture' });
-      const workId = 'work-brain-nonterminal';
-      createWorkContract({ controllerHome, repoId: repository.repoId }, {
-        workId, repoId: repository.repoId, objective: 'Not terminal yet', acceptanceCriteria: [],
-        allowedPaths: [], forbiddenPaths: [], checks: [], constraints: {}, requestedBy: 'chatgpt', dispatchState: 'running',
-        scopeRef: { schemaVersion: 1, kind: 'project', id: 'project-brain-modern' },
+      registerRepository({ path: repo, controllerHome, displayName: 'Brain modern fixture' });
+      const requirementId = 'REQ-BRAIN-MODERN';
+      createRequirement({ controllerHome }, {
+        requirementId,
+        title: 'Promote validated architecture knowledge',
+        outcomeStatement: 'Brain promotion is Requirement-scoped and Work-free.',
+        acceptanceCriteria: ['Use accepted evidence rather than Work completion.'],
       });
-      const result = runBrainPromote({ repo, controllerHome, workId, slug: 'modern-nonterminal', category: 'references', dryRun: true });
+      reviseRequirementSemantic({ controllerHome }, requirementId, {
+        expectedRevision: 1,
+        progressSummary: 'Validated one reusable architecture decision.',
+        acceptedEvidenceRefs: ['git:abc123', 'check:brain-modern-pass'],
+      });
+
+      const result = runBrainPromote({ repo, controllerHome, requirementId, slug: 'modern-requirement', category: 'references', dryRun: true });
       expect(result.written).toBe(false);
-      expect(result.sources).toEqual([]);
-      expect(result.issues.map(item => item.message).join('\n')).toContain('semantically completed Work');
-      expect(result.issues.map(item => item.message).join('\n')).not.toContain('Git history');
+      expect(result.issues).toEqual([]);
+      expect(result.sources).toEqual(['requirement:REQ-BRAIN-MODERN', 'git:abc123', 'check:brain-modern-pass']);
+      expect(result.sources.some(source => source.startsWith('work:'))).toBe(false);
     } finally {
       rmSync(repo, { recursive: true, force: true });
       rmSync(controllerHome, { recursive: true, force: true });
     }
   });
 
-  test('modern promotion uses validated terminal Work completion evidence and never requires deleted Git files', () => {
-    const repo = mkdtempSync(join(tmpdir(), 'forge-brain-modern-terminal-'));
-    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-brain-modern-terminal-home-'));
+  test('modern promotion refuses a Requirement with no accepted evidence instead of falling back to Work or Git history', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'forge-brain-modern-unaccepted-'));
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-brain-modern-unaccepted-home-'));
     try {
       git(repo, 'init', '-q', '-b', 'main');
       git(repo, 'config', 'user.email', 'forge-test@example.invalid');
       git(repo, 'config', 'user.name', 'Forge Test');
       mkdirSync(join(repo, '.ai', 'harness'), { recursive: true });
       writeFileSync(join(repo, '.ai', 'harness', 'brain-manifest.json'), `${JSON.stringify({ version: 1, project: 'forge-brain-modern', groups: [], entries: [] }, null, 2)}\n`);
-      writeFileSync(join(repo, 'README.md'), '# terminal brain\n');
+      writeFileSync(join(repo, 'README.md'), '# modern brain\n');
       git(repo, 'add', '.');
-      git(repo, 'commit', '-qm', 'init terminal brain fixture');
-      const repository = registerRepository({ path: repo, controllerHome, displayName: 'Brain terminal fixture' });
-      const workId = 'work-brain-terminal';
-      const store = { controllerHome, repoId: repository.repoId };
-      createWorkContract(store, {
-        workId, repoId: repository.repoId, objective: 'Produce one durable learning result', acceptanceCriteria: ['terminal evidence exists'],
-        allowedPaths: [], forbiddenPaths: [], checks: [], constraints: {}, requestedBy: 'chatgpt', dispatchState: 'running',
-        workKind: 'local_effect', scopeRef: { schemaVersion: 1, kind: 'project', id: 'project-brain-modern' },
+      git(repo, 'commit', '-qm', 'init modern brain fixture');
+      registerRepository({ path: repo, controllerHome, displayName: 'Brain unaccepted fixture' });
+      const requirementId = 'REQ-BRAIN-UNACCEPTED';
+      createRequirement({ controllerHome }, {
+        requirementId,
+        title: 'Unaccepted knowledge',
+        outcomeStatement: 'No evidence yet.',
       });
-      const recordedAt = '2026-09-08T00:00:00.000Z';
-      recordWorkCompletionReceipt(store, workId, {
-        schemaVersion: 1, receiptId: 'REC-brain-terminal', source: 'local_effect', workId,
-        operation: 'capture_learning_result', target: { kind: 'controller_local', id: 'brain-learning-result' }, changed: true, recordedAt,
-      }, 'completed_local', 'local_effect');
-      reviseWorkSemanticContext(store, workId, { expectedRevision: 1, state: 'completed', resultRefs: ['REC-brain-terminal'] });
-      const result = runBrainPromote({ repo, controllerHome, workId, slug: 'modern-terminal', category: 'references', dryRun: true });
-      expect(result.issues).toEqual([]);
-      expect(result.written).toBe(false);
-      expect(result.sources).toEqual([`work:${workId}`, 'REC-brain-terminal', 'completion:REC-brain-terminal']);
-      expect(result.sources.some(source => source.startsWith('git:'))).toBe(false);
+
+      const result = runBrainPromote({ repo, controllerHome, requirementId, slug: 'modern-unaccepted', category: 'references', dryRun: true });
+      expect(result.sources).toEqual([]);
+      expect(result.issues.map(item => item.message).join('\n')).toContain('accepted Requirement evidence');
     } finally {
       rmSync(repo, { recursive: true, force: true });
       rmSync(controllerHome, { recursive: true, force: true });
     }
   });
+
 
 });

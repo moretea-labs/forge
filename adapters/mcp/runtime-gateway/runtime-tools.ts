@@ -64,5 +64,5 @@ export async function callRuntimeTool(ctx: MultiRepositoryMcpToolContext, name: 
   return callRuntimeToolUnchecked(ctx, name, args);
 }
 
-export { runtimeIdentitySnapshot, dispatchedChatgptRelayAuthorizesStaleControllerRecovery, sessionlessFacadeControllerAuthorityMatches } from './controller-authority-adapter';
+export { runtimeIdentitySnapshot } from './controller-authority-adapter';
 export type { RuntimeIdentitySnapshot } from './controller-authority-adapter';

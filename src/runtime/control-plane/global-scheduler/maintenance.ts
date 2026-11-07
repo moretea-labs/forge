@@ -1,39 +1,16 @@
 import type { RepositoryRecord } from '../../../cli/repositories/types';
 import { cleanupRuntimeComputerInteractionTargets } from '../../root/computer-target-composition';
-import { cleanupControllerHomeBrowserArtifacts, cleanupGeneratedRepositoryCheckoutCaches, cleanupIdleXCTestDevices, cleanupReleasableIosTestEvidence, releasableIosTestEvidenceWorkIds } from '../generated-cache-retention';
+import { cleanupControllerHomeBrowserArtifacts, cleanupGeneratedRepositoryCheckoutCaches, cleanupIdleXCTestDevices, cleanupReleasableIosTestEvidence } from '../generated-cache-retention';
 import type { cleanupControllerRuntimeState } from '../runtime-cleanup';
-import type { reconcileTerminalWorkCleanups } from '../execution/work-terminal-cleanup';
 import type { gcTerminalProcesses } from '../../execution/process-runtime/gc';
 import { assertRuntimeMayWrite } from '../../root/write-fence';
 import { cleanupPersistedCheckResults } from '../../execution/process-runtime/check-result-retention';
 import { cleanupRetiredExecutionJobs } from '../../execution/jobs/store';
-import type { reconcilePendingWorkValidations } from '../execution/work-validation-reconciler';
 import type { reconcilePendingEditValidations } from '../execution/edit-validation-coordinator';
-import {
-  controllerRoundBlockerClass,
-  listCurrentControllerRoundRelays,
-} from '../../../../packages/kernel/controller/api/index';
-import { settleWorkChatgptAutomationTab } from '../launcher/chatgpt-work-continuation';
-import { getChatgptWorkConversationBinding } from '../../../../adapters/chatgpt/work-conversation-binding-store';
-import {
-  chatgptControllerRoundSettlementAttemptIdentity,
-  getChatgptControllerRoundSettlement,
-} from '../../../../adapters/chatgpt/controller-round-settlement-store';
-import { recordChatgptControllerRoundTabSettlement } from '../../root/controller-round-composition';
 import { deriveForgeActionableFailureCode, maybeRegisterFailedReleaseSessionRepairs, maybeRegisterForgeActionableFailureRepair } from '../../diagnostics/incident-repair';
-import { readWorkContractStore } from '../../../../packages/kernel/work/api/index';
 
 const PERIODIC_RETENTION_INTERVAL_MS = 5 * 60_000;
 const PERIODIC_DEEP_RETENTION_INTERVAL_MS = 15 * 60_000;
-// A provider-ambiguous ControllerRound remains durable and claimable, but its
-// Forge-owned Chrome tab is not durable authority. Give an in-flight ChatGPT
-// turn a bounded claim window, then release the ephemeral resource without
-// replaying or clearing the semantic outcome-unknown fence.
-const CHATGPT_OUTCOME_UNKNOWN_TAB_SETTLEMENT_GRACE_MS = 5 * 60_000;
-// Retention is a fallback GC path, not the primary ControllerRound settlement path.
-// Keep its external-effect volume deliberately small so one stale repository set
-// cannot create a provider burst or hold a maintenance worker for hours.
-const CHATGPT_TAB_SETTLEMENT_EFFECT_BUDGET_PER_PASS = 4;
 
 function runtimeMaintenanceAuthorityCurrent(controllerHome: string): boolean {
   const fence = assertRuntimeMayWrite('cleanup', controllerHome);
@@ -49,7 +26,6 @@ function registerSchedulerFailure(input: {
   message: string;
   observationId: string;
   repoId?: string;
-  workId?: string;
   atMs?: number;
 }): void {
   try {
@@ -62,7 +38,6 @@ function registerSchedulerFailure(input: {
         message: input.message,
         at: new Date(input.atMs ?? Date.now()).toISOString(),
         repoId: input.repoId,
-        workId: input.workId,
       },
     });
   } catch {
@@ -112,9 +87,7 @@ export async function runSchedulerPeriodicCleanup(input: {
   cleanupIntervalMs: number;
   repositories: readonly RepositoryRecord[];
   runtimeCleanup: typeof cleanupControllerRuntimeState;
-  terminalWorkCleanup: typeof reconcileTerminalWorkCleanups;
   processGc: typeof gcTerminalProcesses;
-  settleBrowserTab?: typeof settleWorkChatgptAutomationTab;
 }): Promise<void> {
   const plan = planSchedulerPeriodicMaintenance({
     nowMs: input.nowMs,
@@ -125,8 +98,8 @@ export async function runSchedulerPeriodicCleanup(input: {
   // that claim throughout a long pass so a detached child cannot survive a Runtime
   // rollover and continue producing effects under retired authority.
   if (!runtimeMaintenanceAuthorityCurrent(input.controllerHome)) return;
-  // Runtime-state phase rotation and terminal Work cleanup are lifecycle
-  // reconciliation, not retention. Keep them at the base cleanup cadence.
+  // Runtime-state cleanup remains lifecycle reconciliation at the base cadence.
+  // Historical Work is read-only and has no scheduled cleanup writer.
   try {
     input.runtimeCleanup(input.controllerHome, {
       reason: 'periodic',
@@ -145,21 +118,6 @@ export async function runSchedulerPeriodicCleanup(input: {
       atMs: input.nowMs,
     });
     console.error('[forge cleanup] periodic cleanup failed:', error);
-  }
-  if (!runtimeMaintenanceAuthorityCurrent(input.controllerHome)) return;
-  try {
-    await input.terminalWorkCleanup(input.controllerHome, { nowMs: input.nowMs });
-  } catch (error) {
-    const reason = error instanceof Error ? error.message : String(error);
-    registerSchedulerFailure({
-      controllerHome: input.controllerHome,
-      source: 'maintenance',
-      prefix: 'TERMINAL_WORK_CLEANUP_FAILED',
-      message: reason,
-      observationId: `maintenance:terminal-work-cleanup:${plan.periodicSequence}`,
-      atMs: input.nowMs,
-    });
-    console.error('[forge cleanup] terminal Work cleanup failed:', error);
   }
   if (!runtimeMaintenanceAuthorityCurrent(input.controllerHome)) return;
 
@@ -181,59 +139,6 @@ export async function runSchedulerPeriodicCleanup(input: {
       }
     } catch (error) {
       console.error('[forge cleanup] Computer interaction-target retention failed:', error);
-    }
-    if (!runtimeMaintenanceAuthorityCurrent(input.controllerHome)) return;
-    let chatgptTabSettlementEffects = 0;
-    chatgptTabSettlementSweep:
-    for (const repository of input.repositories) {
-      const store = { controllerHome: input.controllerHome, repoId: repository.repoId };
-      for (const relay of listCurrentControllerRoundRelays(store, 100)) {
-        const blocker = controllerRoundBlockerClass(relay);
-        const outcomeUnknown = blocker === 'provider_dispatch_outcome_unknown';
-        const durableInactiveRound = ['waiting', 'waiting_for_user', 'goal_complete', 'failed'].includes(relay.status)
-          || (relay.status === 'blocked' && !outcomeUnknown);
-        if (!durableInactiveRound && !outcomeUnknown) continue;
-        if (outcomeUnknown) {
-          const blockedAtMs = Date.parse(relay.updatedAt);
-          if (!Number.isFinite(blockedAtMs) || input.nowMs - blockedAtMs < CHATGPT_OUTCOME_UNKNOWN_TAB_SETTLEMENT_GRACE_MS) continue;
-        }
-        const existingSettlement = getChatgptControllerRoundSettlement(store, {
-          workId: relay.originWorkId,
-          relayScopeId: relay.relayScopeId,
-        });
-        if (existingSettlement && ['closed', 'preserved_user_owned', 'session_closed'].includes(existingSettlement.status)) continue;
-        const binding = getChatgptWorkConversationBinding(store, relay.originWorkId);
-        if (!binding?.latestBrowserSessionId) continue;
-        const attemptIdentity = chatgptControllerRoundSettlementAttemptIdentity({
-          browserSessionId: binding.latestBrowserSessionId,
-          authorizationGrantRefs: binding.authorizationGrantRefs,
-        });
-        // Failed close_page calls are commonly authorization failures. Retrying
-        // the same browser/grant tuple on every retention pass only creates
-        // provider traffic and audit churn; a changed resource or grant set is a
-        // distinct attempt and remains eligible for recovery.
-        if (existingSettlement?.status === 'failed' && existingSettlement.attemptIdentity === attemptIdentity) continue;
-        if (chatgptTabSettlementEffects >= CHATGPT_TAB_SETTLEMENT_EFFECT_BUDGET_PER_PASS) {
-          console.error('[forge cleanup] ChatGPT tab settlement reached bounded effect budget');
-          break chatgptTabSettlementSweep;
-        }
-        if (!runtimeMaintenanceAuthorityCurrent(input.controllerHome)) return;
-        chatgptTabSettlementEffects += 1;
-        const settlement = await (input.settleBrowserTab ?? settleWorkChatgptAutomationTab)({
-          controllerHome: input.controllerHome,
-          workId: relay.originWorkId,
-          browserSessionId: binding.latestBrowserSessionId,
-          authorizationGrantRefs: binding.authorizationGrantRefs,
-        });
-        if (!runtimeMaintenanceAuthorityCurrent(input.controllerHome)) return;
-        recordChatgptControllerRoundTabSettlement(store, {
-          workId: relay.originWorkId,
-          relayScopeId: relay.relayScopeId,
-          status: settlement.status,
-          error: settlement.error?.message,
-          attemptIdentity,
-        });
-      }
     }
   }
 
@@ -271,12 +176,8 @@ export async function runSchedulerPeriodicCleanup(input: {
         nowMs: input.nowMs, rootStartIndex: plan.generatedCacheRootStartIndex,
       });
       if (generated.errors.length > 0) console.error(`[forge cleanup] generated-cache retention reported ${generated.errors.length} error(s) for ${cacheRepo.repoId}`);
-      const releasableWorkIds = releasableIosTestEvidenceWorkIds(
-        readWorkContractStore({ controllerHome: input.controllerHome, repoId: cacheRepo.repoId }).contracts,
-      );
       const evidence = cleanupReleasableIosTestEvidence(cacheRepo, {
         owner: { controllerHome: input.controllerHome, repoId: cacheRepo.repoId },
-        releasableWorkIds,
         nowMs: input.nowMs,
         rootStartIndex: plan.generatedCacheRootStartIndex,
       });
@@ -328,16 +229,9 @@ export async function runSchedulerPeriodicCleanup(input: {
 export async function runSchedulerValidationReconciliation(input: {
   controllerHome: string;
   repositories: readonly RepositoryRecord[];
-  workValidationReconcile: typeof reconcilePendingWorkValidations;
   editValidationReconcile: typeof reconcilePendingEditValidations;
 }): Promise<void> {
   for (const repository of input.repositories) {
-    const validation = input.workValidationReconcile(input.controllerHome, repository.repoId, 500);
-    if (validation.errors.length > 0) {
-      console.error(
-        `[forge validation] background Work reconciliation reported ${validation.errors.length} error(s) for ${repository.repoId}`,
-      );
-    }
     const editValidation = await input.editValidationReconcile(input.controllerHome, repository, 200);
     if (editValidation.errors.length > 0) {
       console.error(

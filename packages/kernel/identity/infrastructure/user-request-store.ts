@@ -65,6 +65,7 @@ function canonicalUserRequests(requests: readonly UserRequest[]): UserRequest[] 
  * return the existing record to guarantee deduplication across retries.
  */
 export function recordUserRequest(controllerHome: string, input: CreateUserRequestInput): UserRequest {
+  if (input.targetScope?.workId?.trim()) throw new Error('USER_REQUEST_WORK_SCOPE_RETIRED');
   const rootCauseKey = input.rootCauseKey.trim();
   if (!rootCauseKey) throw new Error('USER_REQUEST_ROOT_CAUSE_KEY_REQUIRED');
 

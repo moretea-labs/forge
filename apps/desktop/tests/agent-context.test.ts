@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
-import { ContextOptionList, contextOptionIndex, localPendingCopy, advanceLocalToolProgress, createThread, findExistingWorkThread, localConversationNavItems, LocalConversationSurface, LocalMessageBody, selectThreadCheckout, selectThreadRepository, shouldSubmitComposerKey, transcriptIsNearBottom } from '../src/local-conversation';
+import { ContextOptionList, contextOptionIndex, localPendingCopy, advanceLocalToolProgress, createThread, localConversationNavItems, LocalConversationSurface, LocalMessageBody, selectThreadCheckout, selectThreadRepository, shouldSubmitComposerKey, transcriptIsNearBottom } from '../src/local-conversation';
 import { ForgeIcon } from '../src/ui-icons';
-import { RuntimeView, Sidebar, codexBoundPrompt, sidebarToggleShortcut, sidebarDestinationShortcut } from '../src/App';
+import { RuntimeView, Sidebar, codexBoundPrompt, sidebarToggleShortcut } from '../src/App';
 import { SettingsView } from '../src/settings-view';
 import { readFileSync } from 'node:fs';
 import { repositoryLabel } from '../src/runtime-client';
@@ -10,7 +10,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { ProjectRecordsView } from '../src/project-records-view';
 import { designPreviewProjection, disconnectedProjection } from '../src/runtime-projection';
 
-describe('Forge Desktop Work-bound Agent thread identity', () => {
+describe('Forge Desktop Agent thread identity', () => {
   test('context options select directly, close and return focus, with keyboard navigation', () => {
     const selected: string[] = [];
     const list = ContextOptionList({ label: 'Project', value: 'a', options: [
@@ -50,12 +50,12 @@ describe('Forge Desktop Work-bound Agent thread identity', () => {
     expect(client).toMatch(/'send_local_conversation',[\s\S]*?repoId: input.repoId,\s*checkoutId: input.checkoutId/);
   });
 
-  test('Codex gets exact selected project, checkout and linked Work without claiming checkout authority', () => {
-    const thread = createThread('codex', 'repo_forge', 'work_record', 'checkout_forge');
+  test('Codex gets exact selected project and checkout without lifecycle binding', () => {
+    const thread = createThread('codex', 'repo_forge', 'checkout_forge');
     const prompt = codexBoundPrompt(thread, 'Please implement the plan.');
     expect(prompt).toContain('selected repo_id=repo_forge');
     expect(prompt).toContain('selected checkout_id=checkout_forge');
-    expect(prompt).toContain('Attached existing Forge Work: work_record');
+    expect(prompt).not.toContain('Forge Work');
     expect(prompt).toContain('verify that the exact repo_id AND checkout_id');
     expect(prompt).toContain('If a tool cannot target the selected checkout, do not mutate');
     expect(prompt).toContain('Please implement the plan.');
@@ -64,12 +64,12 @@ describe('Forge Desktop Work-bound Agent thread identity', () => {
   });
 
   test('independent repository conversations retain their own running status and sidebar groups', () => {
-    const first = { ...createThread('codex', 'repo_one', 'work_one', 'checkout_one'),
+    const first = { ...createThread('codex', 'repo_one', 'checkout_one'),
       title: 'Implement feature A', messages: [{
         id: 'one', role: 'user' as const, content: 'Implement feature A',
         createdAt: '2026-11-06T08:00:00Z',
       }] };
-    const second = { ...createThread('codex', 'repo_two', 'work_two', 'checkout_two'),
+    const second = { ...createThread('codex', 'repo_two', 'checkout_two'),
       title: 'Review feature B', messages: [{
         id: 'two', role: 'user' as const, content: 'Review feature B',
         createdAt: '2026-11-06T08:02:00Z',
@@ -77,10 +77,10 @@ describe('Forge Desktop Work-bound Agent thread identity', () => {
     const nav = localConversationNavItems([first, second], {}, new Set([first.id]));
     expect(nav).toHaveLength(2);
     expect(nav.find((item) => item.id === first.id)).toMatchObject({
-      projectRepoId: 'repo_one', workId: 'work_one', running: true,
+      projectRepoId: 'repo_one', running: true,
     });
     expect(nav.find((item) => item.id === second.id)).toMatchObject({
-      projectRepoId: 'repo_two', workId: 'work_two',
+      projectRepoId: 'repo_two',
     });
     expect(nav.find((item) => item.id === second.id)?.running).toBeUndefined();
     const projects = [
@@ -103,22 +103,20 @@ describe('Forge Desktop Work-bound Agent thread identity', () => {
     expect(html).toContain('在 project-b 中新建会话');
     expect((html.match(/sidebar-project-conversations/g) ?? [])).toHaveLength(2);
     expect((html.match(/sidebar-turn-running/g) ?? [])).toHaveLength(1);
-    // The reference-led shell has one fixed search action before the project
-    // destinations, one existing thread index and explicit active navigation.
-    expect(html).toContain('sidebar-quick-search');
-    expect(html).toContain('sidebar-destinations-heading');
-    expect(html.indexOf('sidebar-new-thread')).toBeLessThan(html.indexOf('sidebar-quick-search'));
-    expect(html.indexOf('sidebar-quick-search')).toBeLessThan(html.indexOf('sidebar-destinations-heading'));
+    // Primary semantic destinations stay above the local conversation index.
+    expect(html).toContain('sidebar-primary');
+    expect(html).toContain('sidebar-conversations');
+    expect(html.indexOf('sidebar-new-thread')).toBeLessThan(html.indexOf('sidebar-conversations'));
     expect((html.match(/aria-label="搜索会话"/g) ?? [])).toHaveLength(1);
     expect(html).toContain('aria-current="page"');
   });
 
   test('new provider defaults never hide older pinned Codex/API conversations', () => {
-    const codex = { ...createThread('codex', 'repo_one', undefined, 'checkout_one'),
-      title: 'Codex task', messages: [{ id: 'c1', role: 'user' as const,
+    const codex = { ...createThread('codex', 'repo_one', 'checkout_one'),
+      title: 'Codex task', updatedAt: '2026-11-06T08:00:00Z', messages: [{ id: 'c1', role: 'user' as const,
         content: 'Continue Codex task', createdAt: '2026-11-06T08:00:00Z' }] };
-    const api = { ...createThread('api', 'repo_two', undefined, 'checkout_two'),
-      title: 'API task', messages: [{ id: 'a1', role: 'user' as const,
+    const api = { ...createThread('api', 'repo_two', 'checkout_two'),
+      title: 'API task', updatedAt: '2026-11-06T08:01:00Z', messages: [{ id: 'a1', role: 'user' as const,
         content: 'Continue API task', createdAt: '2026-11-06T08:01:00Z' }] };
     const originalStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
     const projects = [
@@ -146,16 +144,16 @@ describe('Forge Desktop Work-bound Agent thread identity', () => {
       }));
     };
     try {
-      const oldCodexWithApiDefault = renderHistory([codex, api], 'api');
-      expect(oldCodexWithApiDefault).toContain('Continue Codex task');
-      expect(oldCodexWithApiDefault).toContain('title="Connected"');
-      expect(oldCodexWithApiDefault).not.toContain('API 尚未配置');
-      const oldApiWithCodexDefault = renderHistory([api, codex], 'codex');
-      expect(oldApiWithCodexDefault).toContain('Continue API task');
-      expect(oldApiWithCodexDefault).toContain('发送时校验钥匙串');
-      expect(oldApiWithCodexDefault).toContain('允许本轮编辑文件和执行命令');
+      const apiDefault = renderHistory([codex, api], 'api');
+      expect(apiDefault).toContain('Continue API task');
+      expect(apiDefault).toContain('API 尚未配置');
+      const codexDefault = renderHistory([api, codex], 'codex');
+      expect(codexDefault).toContain('Continue API task');
+      expect(codexDefault).toContain('发送时校验钥匙串');
+      expect(codexDefault).toContain('允许本轮编辑文件和执行命令');
       const nav = localConversationNavItems([codex, api], {});
       expect(nav.map((item) => item.provider).sort()).toEqual(['api', 'codex']);
+      expect(nav.map((item) => item.title).sort()).toEqual(['API task', 'Codex task']);
     } finally {
       if (originalStorage) Object.defineProperty(globalThis, 'localStorage', originalStorage);
       else delete (globalThis as { localStorage?: Storage }).localStorage;
@@ -256,7 +254,7 @@ describe('Forge Desktop Work-bound Agent thread identity', () => {
 
   test('sidebar, project and Agent actions share purposeful Lucide SVG glyphs', () => {
     for (const name of [
-      'new-thread', 'conversations', 'work', 'requirement', 'plan', 'knowledge',
+      'new-thread', 'conversations', 'requirement', 'plan', 'knowledge',
       'project', 'conversation', 'draft', 'settings', 'runtime',
       'plus', 'diff', 'more', 'folder', 'branch', 'shield', 'arrow', 'stop',
     ] as const) {
@@ -284,10 +282,10 @@ describe('Forge Desktop Work-bound Agent thread identity', () => {
   });
 
   test('unsent drafts remain discoverable without mutating transcript history', () => {
-    const empty = createThread('codex', 'repo_forge', undefined, 'checkout_forge');
-    const draft = { ...createThread('codex', 'repo_forge', undefined, 'checkout_forge'),
+    const empty = createThread('codex', 'repo_forge', 'checkout_forge');
+    const draft = { ...createThread('codex', 'repo_forge', 'checkout_forge'),
       updatedAt: '2026-11-06T08:10:00Z' };
-    const sent = { ...createThread('codex', 'repo_forge', undefined, 'checkout_forge'),
+    const sent = { ...createThread('codex', 'repo_forge', 'checkout_forge'),
       title: 'Existing result', updatedAt: '2026-11-06T08:00:00Z',
       messages: [{ id: 'message', role: 'user' as const, content: 'Existing result',
         createdAt: '2026-11-06T08:00:00Z' }] };
@@ -306,7 +304,7 @@ describe('Forge Desktop Work-bound Agent thread identity', () => {
 
   test('reopening the client restores an unsent conversation draft from its own storage key', () => {
     const originalStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
-    const thread = createThread('codex', 'repo_forge', undefined, 'checkout_forge');
+    const thread = createThread('codex', 'repo_forge', 'checkout_forge');
     const unfinished = 'Can we continue from the earlier note?';
     Object.defineProperty(globalThis, 'localStorage', {
       configurable: true,
@@ -363,9 +361,9 @@ describe('Forge Desktop Work-bound Agent thread identity', () => {
     expect(shouldSubmitComposerKey(press({ key: 'a' }), false)).toBe(false);
   });
 
-  test('Agent transcript is free of permanent project, Work and model toolbars', () => {
+  test('Agent transcript is free of permanent lifecycle and model toolbars', () => {
     const originalStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
-    const thread = createThread('api', 'repo_forge', 'work_1', 'checkout_main');
+    const thread = createThread('api', 'repo_forge', 'checkout_main');
     Object.defineProperty(globalThis, 'localStorage', {
       configurable: true,
       value: { getItem: () => JSON.stringify([thread]), setItem() {} },
@@ -377,7 +375,7 @@ describe('Forge Desktop Work-bound Agent thread identity', () => {
         provider: { status: 'ready', label: 'Codex', detail: 'ready', streaming: false, tools: true },
         providerLoading: false, providerError: null,
         apiSettings: { provider: 'api', endpoint: 'http://127.0.0.1:1234', model: 'test-model', apiProtocol: 'openai', hasKey: true },
-        onOpenSettings() {}, onOpenProjects() {}, onOpenKnowledge() {}, onOpenWork() {}, onOpenRecord() {},
+        onOpenSettings() {}, onOpenProjects() {}, onOpenKnowledge() {},
         newThreadRequested: false, onNewThreadHandled() {}, onOpenThreadHandled() {}, onThreadsChange() {},
         async onRefreshProvider() {}, async onSend() { return { content: 'ok' }; },
       }));
@@ -385,11 +383,11 @@ describe('Forge Desktop Work-bound Agent thread identity', () => {
       expect(html).toContain('aria-label="查看 Git 变更"');
       expect(html).toContain('aria-label="新建会话"');
       expect(html).toContain('aria-label="更多会话操作"');
-      expect((html.match(/name="agent-chat-controls"/g) ?? [])).toHaveLength(4);
+      expect((html.match(/name="agent-chat-controls"/g) ?? [])).toHaveLength(3);
       expect(html).toContain('class="local-composer agent-chat-composer"');
       expect(html).toContain('aria-label="Agent 项目上下文"');
       expect(html).toContain('aria-label="Agent 执行的 Git Checkout"');
-      expect(html).toContain('aria-label="会话关联的 Forge Work"');
+      expect(html).not.toContain('aria-label="会话关联的 Forge Work"');
       expect(html).toContain('aria-label="允许本轮编辑文件和执行命令"');
       expect(html).toContain('aria-label="发送消息"');
       expect((html.match(/class="local-send-button"/g) ?? [])).toHaveLength(1);
@@ -445,15 +443,14 @@ describe('Forge Desktop Work-bound Agent thread identity', () => {
     });
   });
 
-  test('failed project read reports the selected project failure rather than showing stale records', () => {
+  test('failed project read reports the selected project failure rather than showing stale semantic records', () => {
     const html = renderToStaticMarkup(createElement(ProjectRecordsView, {
-      mode: 'works',
+      mode: 'requirements',
       projection: {
         ...disconnectedProjection,
         source: 'runtime',
         runtime: { status: 'degraded', label: '项目详情读取失败', detail: 'yaozhunshi：Forge 返回了错误' },
       },
-      onSelectWork() {},
       onNavigateRecord() {},
       async onRefresh() {},
     }));
@@ -479,21 +476,19 @@ describe('Forge Desktop Work-bound Agent thread identity', () => {
     expect(repositoryLabel({ repoId: 'repo_unlocated', displayName: 'Legacy' })).toBe('Legacy');
   });
 
-  test('new threads store only repository/Work/Checkout foreign keys, no semantic duplicates', () => {
-    const thread = createThread('api', 'repo_a', 'work_existing_1', 'checkout_a');
+  test('new threads store only repository and checkout foreign keys, no semantic duplicates', () => {
+    const thread = createThread('api', 'repo_a', 'checkout_a');
     expect(thread.projectRepoId).toBe('repo_a');
-    expect(thread.workId).toBe('work_existing_1');
     expect(thread.checkoutId).toBe('checkout_a');
     expect(thread.messages).toEqual([]);
     expect(thread.provider).toBe('api');
     expect('requirement' in thread).toBe(false);
     expect('plan' in thread).toBe(false);
-    expect(createThread('api', undefined, 'work_orphan').workId).toBeUndefined();
   });
 
   test('switching Avela to Forge creates a new Agent identity without rewriting history or resume ID', () => {
     const avela = {
-      ...createThread('codex', 'repo_avela', 'work_avela'),
+      ...createThread('codex', 'repo_avela'),
       providerSessionId: 'codex-session-avela',
       messages: [{ id: 'msg1', role: 'user' as const, content: 'build Avela', createdAt: '2026-11-05T00:00:00Z' }],
     };
@@ -501,11 +496,9 @@ describe('Forge Desktop Work-bound Agent thread identity', () => {
     expect(switched.created).toBe(true);
     expect(switched.thread.projectRepoId).toBe('repo_forge');
     expect(switched.thread.messages).toEqual([]);
-    expect(switched.thread.workId).toBeUndefined();
     expect(switched.thread.providerSessionId).toBeUndefined();
     expect(switched.thread.id).not.toBe(avela.id);
     expect(avela.projectRepoId).toBe('repo_avela');
-    expect(avela.workId).toBe('work_avela');
     expect(avela.providerSessionId).toBe('codex-session-avela');
     expect(avela.messages[0]?.content).toBe('build Avela');
     const bounded = selectThreadRepository(avela, 'codex', 'repo_forge', 'checkout_forge');
@@ -515,7 +508,7 @@ describe('Forge Desktop Work-bound Agent thread identity', () => {
 
   test('checkout switching preserves historical transcript and provider session in its original identity', () => {
     const original = {
-      ...createThread('api', 'repo_forge', 'work_a', 'checkout_main'),
+      ...createThread('api', 'repo_forge', 'checkout_main'),
       providerSessionId: 'provider-session-1',
       messages: [{ id: 'msg-1', role: 'user' as const, content: 'run tests', createdAt: '2026-11-05T00:00:00Z' }],
     };
@@ -524,33 +517,29 @@ describe('Forge Desktop Work-bound Agent thread identity', () => {
     expect(switchResult.thread.checkoutId).toBe('checkout_worktree');
     expect(switchResult.thread.projectRepoId).toBe('repo_forge');
     expect(switchResult.thread.messages).toHaveLength(0);
-    expect(switchResult.thread.workId).toBeUndefined();
     expect(switchResult.thread.providerSessionId).toBeUndefined();
     expect(switchResult.thread.id).not.toBe(original.id);
     expect(original.checkoutId).toBe('checkout_main');
-    expect(original.workId).toBe('work_a');
     expect(original.providerSessionId).toBe('provider-session-1');
     expect(original.messages[0]?.content).toBe('run tests');
   });
 
-  test('checkout switching replaces only empty draft and drops stale Work link', () => {
-    const draft = createThread('api', 'repo_forge', 'work_a', 'checkout_main');
+  test('checkout switching replaces only the checkout on an empty draft', () => {
+    const draft = createThread('api', 'repo_forge', 'checkout_main');
     const switched = selectThreadCheckout(draft, 'api', 'checkout_worktree');
     expect(switched.created).toBe(false);
     expect(switched.thread.id).toBe(draft.id);
     expect(switched.thread.checkoutId).toBe('checkout_worktree');
-    expect(switched.thread.workId).toBeUndefined();
     expect(draft.checkoutId).toBe('checkout_main');
     expect(selectThreadCheckout(switched.thread, 'api', 'checkout_worktree').thread).toBe(switched.thread);
   });
 
-  test('switching an unsent draft reuses it but clears old Work binding', () => {
-    const empty = createThread('api', 'repo_avela', 'work_avela');
+  test('switching an unsent draft reuses it without carrying stale repository context', () => {
+    const empty = createThread('api', 'repo_avela');
     const switched = selectThreadRepository(empty, 'api', 'repo_forge');
     expect(switched.created).toBe(false);
     expect(switched.thread.id).toBe(empty.id);
     expect(switched.thread.projectRepoId).toBe('repo_forge');
-    expect(switched.thread.workId).toBeUndefined();
     expect(empty.projectRepoId).toBe('repo_avela');
     expect(selectThreadRepository(switched.thread, 'api', 'repo_forge').thread).toBe(switched.thread);
     const ghostResume = { ...empty, providerSessionId: 'old-resume' };
@@ -580,24 +569,7 @@ describe('Forge Desktop Work-bound Agent thread identity', () => {
     expect(recent[0]?.requestId).toBe('r3');
   });
 
-  test('resumes latest active same-project, same-Work and same-provider thread only', () => {
-    const older = { ...createThread('api', 'repo_a', 'work_1'), updatedAt: '2026-11-01T00:00:00Z' };
-    const current = { ...createThread('api', 'repo_a', 'work_1'), updatedAt: '2026-11-05T00:00:00Z' };
-    const otherProject = createThread('api', 'repo_b', 'work_1');
-    const otherWork = createThread('api', 'repo_a', 'work_2');
-    const otherProvider = createThread('codex', 'repo_a', 'work_1');
-    const archived = { ...createThread('api', 'repo_a', 'work_1'), archived: true, updatedAt: '2026-11-06T00:00:00Z' };
-    const threads = [older, otherProject, archived, otherWork, current, otherProvider];
-    expect(findExistingWorkThread(threads, 'api', 'repo_a', 'work_1')?.id).toBe(current.id);
-    const otherCheckout = createThread('api', 'repo_a', 'work_1', 'checkout_2');
-    expect(findExistingWorkThread([...threads, otherCheckout], 'api', 'repo_a', 'work_1', 'checkout_2')?.id)
-      .toBe(otherCheckout.id);
-    expect(findExistingWorkThread([...threads, otherCheckout], 'api', 'repo_a', 'work_1', 'checkout_1'))
-      .toBeUndefined();
-    expect(findExistingWorkThread(threads, 'codex', 'repo_a', 'work_1')?.id).toBe(otherProvider.id);
-    expect(findExistingWorkThread(threads, 'api', 'repo_c', 'work_1')).toBeUndefined();
-    expect(findExistingWorkThread(threads, 'api', 'repo_a', 'work_not_registered')).toBeUndefined();
-  });
+
 });
 
 
@@ -669,10 +641,15 @@ describe('approved A workspace + C rail design contract', () => {
     const styles = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8');
     const app = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
     expect(project.designSystem.version).toBe(tokens.meta.version);
-    expect(tokens.color.sidebarGlass).toBe('#F0F1F4');
-    expect(tokens.color.canvas).toBe('#FFFDFB');
-    expect(tokens.color.composerGlass).toBe('#FFFFFF');
-    expect(variables).toContain("'--surface-muted': designTokens.color.surfaceMuted");
+    expect(tokens.color.sidebarGlass).toBe('rgba(240,241,243,.70)');
+    expect(tokens.color.canvas).toBe('#FFFFFF');
+    expect(tokens.color.composerGlass).toBe('rgba(248,249,251,.85)');
+    expect(variables).toContain("'--glass': designTokens.color.sidebarGlass");
+    expect(variables).toContain("'--popover': designTokens.color.popoverGlass");
+    expect(variables).toContain("'--canvas': designTokens.color.canvas");
+    expect(variables).toContain("'--canvas-raised': designTokens.color.canvasRaised");
+    expect(variables).toContain("'--border-strong': designTokens.color.borderStrong");
+    expect(variables).toContain("'--composer-bg': designTokens.color.composerGlass");
     expect(styles).toContain('background: var(--glass)');
     expect(styles).toContain('background: var(--canvas)');
     expect(app).toContain('className="sidebar-project-picker-panel" style={desktopThemeStyle}');
@@ -680,17 +657,17 @@ describe('approved A workspace + C rail design contract', () => {
 });
 
 
-describe('Project asset browser-only preview boundary', () => {
-  test('Requirement preview labels its limited Work projection and does not claim native Plan access', () => {
+describe('Project semantic browser boundary', () => {
+  test('Requirement navigation is Plan-derived and never projects historical Work as progress', () => {
     const html = renderToStaticMarkup(createElement(ProjectRecordsView, {
-      mode: 'requirements', preview: true, projection: designPreviewProjection,
-      onSelectWork() {}, onNavigateRecord() {}, async onRefresh() {},
+      mode: 'requirements', projection: designPreviewProjection,
+      onNavigateRecord() {}, async onRefresh() {},
     }));
-    expect(html).toContain('界面预览：只展示已加载 Work');
-    expect(html).toContain('REQ-forge-v3-desktop-client-20260930');
-    expect(html).toContain('disabled');
-    expect(html).not.toContain('关联 Plan 读取失败');
-    expect(html).not.toContain('来自 Forge 按项目查询');
+    expect(html).toContain('Requirements');
+    expect(html).toContain('Requirement 由本项目 Plan 的 canonical requirementId 发现');
+    expect(html).toContain('不会从历史 Work 推断');
+    expect(html).not.toContain('打开完整 Work 详情');
+    expect(html).not.toContain('Work 状态');
   });
 });
 
@@ -710,20 +687,12 @@ describe('Forge native first-frame boot surface', () => {
 
 
 describe('Mac Agent navigation and local transcript deletion', () => {
-  test('native sidebar navigation uses one established shortcut map', () => {
-    const key = (value: string, overrides: Record<string, boolean> = {}) => ({
-      key: value, metaKey: true, ctrlKey: false, altKey: false, shiftKey: false, ...overrides,
-    });
-    expect(sidebarDestinationShortcut(key('1'))).toBe('assistant');
-    expect(sidebarDestinationShortcut(key('2'))).toBe('works');
-    expect(sidebarDestinationShortcut(key('3'))).toBe('requirements');
-    expect(sidebarDestinationShortcut(key('4'))).toBe('plans');
-    expect(sidebarDestinationShortcut(key('5'))).toBe('knowledge');
-    expect(sidebarDestinationShortcut(key(','))).toBe('settings');
-    expect(sidebarDestinationShortcut(key('2', { shiftKey: true }))).toBeNull();
-    expect(sidebarDestinationShortcut(key('2', { ctrlKey: true }))).toBeNull();
-    expect(sidebarDestinationShortcut(key('2', { metaKey: false }))).toBeNull();
-    expect(sidebarDestinationShortcut(key('k'))).toBeNull();
+  test('desktop semantic navigation has Requirement and Plan destinations without a Work destination', () => {
+    const source = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+    expect(source).toContain('onOpenRequirements');
+    expect(source).toContain('onOpenPlans');
+    expect(source).not.toContain("activeView === 'works'");
+    expect(source).not.toContain('onOpenWork');
   });
 
   test('deleting a local conversation removes its record and draft instead of retaining a hidden archive', () => {
@@ -736,15 +705,14 @@ describe('Mac Agent navigation and local transcript deletion', () => {
 });
 
 
-describe('Work master-detail layout behavior', () => {
-  test('keeps Work list selection local and requires explicit navigation to full Work', () => {
+describe('Requirement and Plan master-detail behavior', () => {
+  test('keeps semantic detail navigation Work-free and links Plan back to its Requirement', () => {
     const source = readFileSync(new URL('../src/project-records-view.tsx', import.meta.url), 'utf8');
-    expect(source).toContain("if (mode === 'works') { setSelectedId(id); return; }");
-    expect(source).not.toContain("if (mode === 'works') { onSelectWork(id); return; }");
-    expect(source).toContain('aria-pressed={record.id === selectedId}');
-    expect(source).toContain('打开完整 Work 详情');
-    expect(source).toContain('onSelectWork(selectedWork.workId)');
-    expect(source).toContain('onNavigateRecord(\'requirements\', selectedWork.requirementId!)');
-    expect(source).toContain('onNavigateRecord(\'plans\', selectedWork.planId!)');
+    expect(source).toContain("export type RecordMode = 'requirements' | 'plans'");
+    expect(source).toContain("onNavigateRecord('requirements', detail.value.requirementId!)");
+    expect(source).toContain("onNavigateRecord('plans', plan.planId)");
+    expect(source).not.toContain("mode === 'works'");
+    expect(source).not.toContain('onSelectWork');
+    expect(source).not.toContain('read_work_detail');
   });
 });

@@ -139,7 +139,6 @@ struct ChatThread: Codable, Identifiable {
     var title = "新会话"
     var repoId: String?
     var checkoutId: String?
-    var workId: String?
     var providerSessionId: String?
     var model: String?
     var reasoningEffort: String?
@@ -152,13 +151,12 @@ struct ForgeRecord: Identifiable {
     let state: String
 }
 enum NativePage: String, CaseIterable, Identifiable {
-    case agent = "会话", work = "Work", requirement = "Requirement", plan = "Plan",
+    case agent = "会话", requirement = "Requirement", plan = "Plan",
          knowledge = "知识库", runtime = "Runtime", settings = "设置"
     var id: String { rawValue }
     var symbol: String {
         switch self {
         case .agent: return "bubble.left.and.bubble.right"
-        case .work: return "checkmark.square"
         case .requirement: return "doc.text"
         case .plan: return "list.bullet.rectangle"
         case .knowledge: return "books.vertical"
@@ -168,7 +166,6 @@ enum NativePage: String, CaseIterable, Identifiable {
     }
     var recordIdKey: String {
         switch self {
-        case .work: return "workId"
         case .requirement: return "requirementId"
         case .plan: return "planId"
         default: return "id"
@@ -194,8 +191,8 @@ final class NativeWorkspace: ObservableObject {
     @Published var pendingImageURLs: [URL] = []
     @Published var pendingContextPaths: [String] = []
     @Published var checkoutRoot: URL?
+    @Published var checkoutBranch: String?
     @Published private(set) var agentModels: [AgentModelOption] = []
-    @Published private(set) var agentWorks: [ForgeRecord] = []
     @Published var agentChanges: AgentGitDiff?
     @Published var changesLoading = false
     @Published var liveActivity: AgentLiveActivity?
@@ -235,10 +232,6 @@ final class NativeWorkspace: ObservableObject {
     }
     var selectedReasoningOptions: [AgentReasoningOption] {
         selectedAgentModel?.supportedReasoningLevels ?? []
-    }
-    var selectedAgentWork: ForgeRecord? {
-        guard let workId = thread?.workId else { return nil }
-        return agentWorks.first { $0.id == workId }
     }
     var changedFileCount: Int { agentChanges?.nameOnly.count ?? 0 }
     var visibleThreads: [ChatThread] {
@@ -285,6 +278,7 @@ final class NativeWorkspace: ObservableObject {
         pendingContextPaths = []
         agentChanges = nil
         checkoutRoot = nil
+        checkoutBranch = nil
         if let boundRepoId = item.repoId {
             repoId = boundRepoId
             checkoutId = item.checkoutId
@@ -307,17 +301,6 @@ final class NativeWorkspace: ObservableObject {
         threads[index].reasoningEffort = effort
         threads[index].updatedAt = Date()
         persist()
-    }
-    func selectAgentWork(_ workId: String?) {
-        guard !busy, let index = threads.firstIndex(where: { $0.id == selectedThreadId }) else { return }
-        guard workId == nil || agentWorks.contains(where: { $0.id == workId }) else {
-            self.error = "所选 Work 不属于当前项目列表。"
-            return
-        }
-        threads[index].workId = workId
-        threads[index].updatedAt = Date()
-        persist()
-        error = nil
     }
     func renameThread(_ id: String, to title: String) {
         let title = title.trimmingCharacters(in:.whitespacesAndNewlines)
@@ -367,6 +350,9 @@ final class NativeWorkspace: ObservableObject {
         guard repoId != id else { return }
         repoId = id
         checkoutId = nil
+        checkoutRoot = nil
+        checkoutBranch = nil
+        pendingContextPaths = []
         Task {
             await refreshProject()
             // New scope creates a new chat identity, never mutates old history.
@@ -414,31 +400,17 @@ final class NativeWorkspace: ObservableObject {
             let targetCheckoutId = checkoutId ?? activeCheckoutId
             checkoutId = targetCheckoutId
             let checkouts = repository?["checkouts"] as? [[String: Any]] ?? []
-            checkoutRoot = checkouts.first(where: { $0["checkoutId"] as? String == targetCheckoutId })
+            let targetCheckout = checkouts.first { $0["checkoutId"] as? String == targetCheckoutId }
+            checkoutRoot = targetCheckout
                 .flatMap { $0["path"] as? String }
                 .map { URL(fileURLWithPath:$0).resolvingSymlinksInPath().standardizedFileURL }
-            if page == .agent { await refreshAgentWorks() } else { await loadPage() }
+            checkoutBranch = targetCheckout?["branch"] as? String
+            if page != .agent { await loadPage() }
         } catch {
             checkoutRoot = nil
+            checkoutBranch = nil
             self.error = error.localizedDescription
         }
-    }
-    static func workRecords(_ result: [String:Any]) -> [ForgeRecord] {
-        let data = result["data"] as? [String:Any] ?? result
-        let rows = data["works"] as? [[String:Any]] ?? data["activeWork"] as? [[String:Any]] ?? []
-        return rows.compactMap { row in
-            guard let id = row["workId"] as? String else { return nil }
-            return ForgeRecord(id:id, title:row["title"] as? String ?? row["objective"] as? String ??
-                               row["goal"] as? String ?? id, state:row["state"] as? String ?? "")
-        }
-    }
-    func refreshAgentWorks() async {
-        guard let repoId else { agentWorks = []; return }
-        guard let result = try? await ForgeBridge.request("read_project_work_list",["repoId":repoId]) else {
-            agentWorks = []
-            return
-        }
-        agentWorks = Self.workRecords(result)
     }
     func loadPage() async {
         if page == .runtime {
@@ -454,20 +426,13 @@ final class NativeWorkspace: ObservableObject {
             } catch { self.error = error.localizedDescription }
             return
         }
-        guard let repoId, [.work,.requirement,.plan].contains(page) else { return }
+        guard let repoId, [.requirement,.plan].contains(page) else { return }
         do {
-            let action = page == .work ? "read_project_work_list" :
-                page == .plan ? "read_project_plan_list" : "read_project_overview"
+            let action = page == .plan ? "read_project_plan_list" : "read_project_overview"
             let result = try await ForgeBridge.request(action, ["repoId":repoId])
             let data = result["data"] as? [String: Any] ?? result
             let rows: [[String: Any]]
             switch page {
-            case .work:
-                records = Self.workRecords(result)
-                detail = ""
-                selectedRecord = nil
-                error = nil
-                return
             case .plan: rows = data["plans"] as? [[String:Any]] ?? []
             case .requirement:
                 let board = data["requirementBoard"] as? [String:Any] ?? result["requirementBoard"] as? [String:Any] ?? [:]
@@ -500,7 +465,7 @@ final class NativeWorkspace: ObservableObject {
     func openRecord(_ id: String) async {
         guard let repoId else { return }
         selectedRecord = id
-        let action = page == .work ? "read_work_detail" : page == .plan ? "read_plan_detail" : "read_requirement_detail"
+        let action = page == .plan ? "read_plan_detail" : "read_requirement_detail"
         await loadRaw(action, ["repoId": repoId, page.recordIdKey:id])
     }
     func searchKnowledge() async {
@@ -716,18 +681,8 @@ final class NativeWorkspace: ObservableObject {
         return events
     }
 
-    static func providerPrompt(_ prompt: String, contextPaths: [String], workId: String? = nil) -> String {
+    static func providerPrompt(_ prompt: String, contextPaths: [String]) -> String {
         var result = prompt
-        if let workId = workId?.trimmingCharacters(in:.whitespacesAndNewlines), !workId.isEmpty,
-           let data = try? JSONSerialization.data(withJSONObject:[workId]),
-           let json = String(data:data,encoding:.utf8) {
-            result += """
-
-            [Forge selected Work context]
-            Existing Work id (JSON array): \(json)
-            Treat the Work id only as a durable reference. Inspect it through existing Forge capabilities when relevant; do not create, replace, close, or mutate Work merely because this conversation references it.
-            """
-        }
         if !contextPaths.isEmpty,
            let data = try? JSONSerialization.data(withJSONObject:contextPaths),
            let json = String(data:data,encoding:.utf8) {
@@ -786,7 +741,7 @@ final class NativeWorkspace: ObservableObject {
         persist()
         var args: [String:Any] = [
             "conversationId":id,
-            "prompt":Self.providerPrompt(prompt,contextPaths:contextPaths,workId:item.workId)
+            "prompt":Self.providerPrompt(prompt,contextPaths:contextPaths)
         ]
         if !imageURLs.isEmpty { args["imagePaths"] = imageURLs.map(\.path) }
         if let repo = item.repoId { args["repoId"] = repo }

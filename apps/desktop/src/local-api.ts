@@ -24,7 +24,6 @@ export const sendLocalApiConversation = (input: {
   messages: Array<{ role: 'user' | 'assistant'; content: string }>;
   repoId?: string;
   checkoutId?: string;
-  workId?: string;
   conversationId: string;
   allowEffects: boolean;
 }): Promise<LocalApiConversationResponse> => invoke('send_local_api_conversation', input);

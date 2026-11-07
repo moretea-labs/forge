@@ -14,7 +14,7 @@ import { configuredBrainRoot } from './brain-root';
 import { addBrainAssistantCommands } from './brain-assistant';
 import { resolveRepoPreferredControllerHome } from '../../effects/controller-home';
 import { findRegisteredRepositoryByCheckoutRoot } from '../repositories/registry';
-import { getWorkContract, semanticWorkState } from '../../../packages/kernel/work/api/index';
+import { readRequirement, requirementSemanticView } from '../../runtime/control-plane/persistence/requirement-store';
 
 export type BrainLifecycle = 'always-sync' | 'archive-only' | 'never-sync';
 export type BrainCategory = 'decisions' | 'runbooks' | 'patterns' | 'references';
@@ -93,7 +93,7 @@ export interface BrainPromoteOptions {
   repo?: string;
   slug: string;
   category: BrainCategory;
-  workId?: string;
+  requirementId?: string;
   controllerHome?: string;
   legacyGitHistory?: boolean;
   dryRun?: boolean;
@@ -538,59 +538,52 @@ function yamlQuote(value: string): string {
 }
 
 function modernBrainPromotionSource(repoRoot: string, opts: BrainPromoteOptions, issues: BrainIssue[]): {
-  sources: string[]; sections: string[]; relatedPlan: string; terminalAt: string; outcome: string; sourceWork: string; completionReceipt: string; workScope: string;
+  sources: string[]; sections: string[]; relatedPlan: string; terminalAt: string; outcome: string; sourceRequirement: string; knowledgeScope: string;
 } {
-  const workId = opts.workId?.trim();
-  if (!workId) {
-    issue(issues, 'error', 'Modern Brain promotion requires --work-id; use --legacy-git-history only for retired Git delete/rename imports.');
-    return { sources: [], sections: [], relatedPlan: '', terminalAt: '', outcome: '', sourceWork: '', completionReceipt: '', workScope: '' };
+  const requirementId = opts.requirementId?.trim();
+  if (!requirementId) {
+    issue(issues, 'error', 'Modern Brain promotion requires --requirement-id; use --legacy-git-history only for retired Git delete/rename imports.');
+    return { sources: [], sections: [], relatedPlan: '', terminalAt: '', outcome: '', sourceRequirement: '', knowledgeScope: '' };
   }
   const controllerHome = resolveRepoPreferredControllerHome(repoRoot, opts.controllerHome);
   const repository = findRegisteredRepositoryByCheckoutRoot(repoRoot, controllerHome);
   if (!repository) {
-    issue(issues, 'error', `Repository is not registered in Controller Home; cannot resolve Work evidence for ${workId}.`);
-    return { sources: [], sections: [], relatedPlan: '', terminalAt: '', outcome: '', sourceWork: workId, completionReceipt: '', workScope: '' };
+    issue(issues, 'error', `Repository is not registered in Controller Home; cannot resolve Requirement evidence for ${requirementId}.`);
+    return { sources: [], sections: [], relatedPlan: '', terminalAt: '', outcome: '', sourceRequirement: requirementId, knowledgeScope: '' };
   }
-  const work = getWorkContract({ controllerHome, repoId: repository.repoId }, workId);
-  if (!work) {
-    issue(issues, 'error', `Work not found in registered repository: ${workId}`);
-    return { sources: [], sections: [], relatedPlan: '', terminalAt: '', outcome: '', sourceWork: workId, completionReceipt: '', workScope: '' };
+  const record = readRequirement({ controllerHome }, requirementId);
+  if (!record) {
+    issue(issues, 'error', `Requirement not found: ${requirementId}`);
+    return { sources: [], sections: [], relatedPlan: '', terminalAt: '', outcome: '', sourceRequirement: requirementId, knowledgeScope: '' };
   }
-  if (!work.scopeRef) {
-    issue(issues, 'error', `Modern Brain promotion requires a portable Work scope: ${workId}; use --legacy-git-history only for retired unscoped imports.`);
-    return { sources: [], sections: [], relatedPlan: work.planId ?? '', terminalAt: '', outcome: '', sourceWork: workId, completionReceipt: '', workScope: '' };
+  const view = requirementSemanticView(record.value);
+  if (view.acceptedEvidenceRefs.length === 0) {
+    issue(issues, 'error', `Brain promotion requires accepted Requirement evidence: ${requirementId}`);
+    return { sources: [], sections: [], relatedPlan: '', terminalAt: '', outcome: '', sourceRequirement: requirementId, knowledgeScope: `requirement:${requirementId}` };
   }
-  const workScope = `${work.scopeRef.kind}:${work.scopeRef.id}`;
-  if (semanticWorkState(work) !== 'completed') {
-    issue(issues, 'error', `Brain promotion requires a semantically completed Work: ${workId}`);
-    return { sources: [], sections: [], relatedPlan: work.planId ?? '', terminalAt: '', outcome: '', sourceWork: workId, completionReceipt: '', workScope };
-  }
-  const receipt = work.completionReceipt;
-  const semanticResultRefs = [...new Set((work.semanticResultRefs ?? []).map((value) => value.trim()).filter(Boolean))];
-  const repositoryDetails = receipt && 'targetRevision' in receipt
-    ? [`- Target revision: ${receipt.targetRevision}`, `- Changed paths: ${receipt.changedPaths.length}`]
-    : [];
-  const legacyReceiptDetails = receipt
-    ? [`- Legacy completion receipt: ${receipt.receiptId}`, `- Legacy completion source: ${receipt.source}`]
-    : ['- Legacy completion receipt: none (not required for semantic completion)'];
+  const knowledgeScope = `requirement:${requirementId}`;
   const section = [
-    `## Source: work:${work.workId}`,
+    `## Source: requirement:${requirementId}`,
     '',
-    `- Objective: ${work.objective}`,
-    `- Completion outcome: ${work.completionOutcome ?? 'completed'}`,
-    `- Semantic result refs: ${semanticResultRefs.length ? semanticResultRefs.join(', ') : '(none recorded)'}`,
-    `- Work scope: ${workScope}`,
-    ...legacyReceiptDetails,
-    ...repositoryDetails,
+    `- Title: ${view.title}`,
+    `- Outcome: ${view.outcomeStatement}`,
+    `- Semantic state: ${view.state}`,
+    `- Progress: ${view.progressSummary || '(none recorded)'}`,
+    `- Remaining work: ${view.remainingWork.length ? view.remainingWork.join('; ') : '(none recorded)'}`,
+    `- Accepted evidence: ${view.acceptedEvidenceRefs.join(', ')}`,
+    `- Knowledge scope: ${knowledgeScope}`,
     '',
-    'This entry is promoted from validated durable Work metadata. Raw process logs, credentials, and chat history are not copied into Brain.',
+    'This entry is promoted from Requirement-authored context and accepted evidence. Raw process logs, credentials, chat history, and historical Work lifecycle state are not copied into Brain.',
     '',
   ].join('\n');
   return {
-    sources: [`work:${work.workId}`, ...semanticResultRefs, ...(receipt ? [`completion:${receipt.receiptId}`] : [])],
-    sections: [section], relatedPlan: work.planId ?? '', terminalAt: work.semanticUpdatedAt ?? work.updatedAt,
-    outcome: work.completionOutcome ?? 'completed', sourceWork: work.workId,
-    completionReceipt: receipt?.receiptId ?? '', workScope,
+    sources: [`requirement:${requirementId}`, ...view.acceptedEvidenceRefs],
+    sections: [section],
+    relatedPlan: '',
+    terminalAt: view.updatedAt,
+    outcome: view.outcomeStatement,
+    sourceRequirement: requirementId,
+    knowledgeScope,
   };
 }
 
@@ -598,7 +591,7 @@ export function runBrainPromote(opts: BrainPromoteOptions): BrainPromoteResult {
   if (!VALID_CATEGORIES.has(opts.category)) {
     throw new Error(`invalid category "${opts.category}" (expected: ${Array.from(VALID_CATEGORIES).join(', ')})`);
   }
-  if (opts.legacyGitHistory && opts.workId?.trim()) throw new Error('BRAIN_PROMOTION_MODE_CONFLICT');
+  if (opts.legacyGitHistory && opts.requirementId?.trim()) throw new Error('BRAIN_PROMOTION_MODE_CONFLICT');
   const repoRoot = resolveRepoRoot(opts.repo);
   const { manifest } = readManifest(repoRoot);
   const project = manifest.project || path.basename(repoRoot);
@@ -612,9 +605,8 @@ export function runBrainPromote(opts: BrainPromoteOptions): BrainPromoteResult {
   let relatedPlan = '';
   let terminalAt = '';
   let outcome = '';
-  let sourceWork = '';
-  let completionReceipt = '';
-  let workScope = '';
+  let sourceRequirement = '';
+  let knowledgeScope = '';
 
   if (opts.legacyGitHistory) {
     const historicalSources = findTerminalHistorySources(repoRoot, opts.slug);
@@ -628,7 +620,7 @@ export function runBrainPromote(opts: BrainPromoteOptions): BrainPromoteResult {
     outcome = frontmatterValue(firstContent, 'Outcome') || 'Promoted';
   } else {
     const modern = modernBrainPromotionSource(repoRoot, opts, issues);
-    ({ sources, sections, relatedPlan, terminalAt, outcome, sourceWork, completionReceipt, workScope } = modern);
+    ({ sources, sections, relatedPlan, terminalAt, outcome, sourceRequirement, knowledgeScope } = modern);
   }
 
   const body = [
@@ -636,9 +628,8 @@ export function runBrainPromote(opts: BrainPromoteOptions): BrainPromoteResult {
     `slug: ${yamlQuote(opts.slug)}`,
     `category: ${yamlQuote(opts.category)}`,
     `source_plan: ${yamlQuote(relatedPlan || '')}`,
-    ...(sourceWork ? [`source_work: ${yamlQuote(sourceWork)}`] : []),
-    ...(completionReceipt ? [`completion_receipt: ${yamlQuote(completionReceipt)}`] : []),
-    ...(workScope ? [`work_scope: ${yamlQuote(workScope)}`] : []),
+    ...(sourceRequirement ? [`source_requirement: ${yamlQuote(sourceRequirement)}`] : []),
+    ...(knowledgeScope ? [`knowledge_scope: ${yamlQuote(knowledgeScope)}`] : []),
     `terminal_at: ${yamlQuote(terminalAt || '')}`,
     `outcome: ${yamlQuote(outcome || '')}`,
     `repo: ${yamlQuote(repoRoot)}`,
@@ -741,12 +732,12 @@ export function buildBrainCommand(): Command {
 
   brain
     .command('promote')
-    .description('Promote one validated terminal Work into ~/brain/<project>/<category>/; Git-history import is explicit legacy compatibility only')
+    .description('Promote accepted Requirement evidence into ~/brain/<project>/<category>/; Git-history import is explicit legacy compatibility only')
     .requiredOption('--slug <slug>', 'Brain entry slug')
     .requiredOption('--category <category>', 'Target category: decisions|runbooks|patterns|references')
     .option('--repo <path>', 'Repository root to inspect')
-    .option('--work-id <id>', 'Completed Work identity for modern promotion')
-    .option('--controller-home <path>', 'Override Controller Home used to resolve the registered repository and Work')
+    .option('--requirement-id <id>', 'Requirement identity carrying accepted evidence for modern promotion')
+    .option('--controller-home <path>', 'Override Controller Home used to resolve the registered repository and Requirement')
     .option('--legacy-git-history', 'Explicitly use retired Git delete/rename promotion compatibility')
     .option('--dry-run', 'Show planned promotion without writing files')
     .option('--json', 'Output JSON instead of human-readable text')

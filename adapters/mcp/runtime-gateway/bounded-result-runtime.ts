@@ -9,7 +9,6 @@ export interface BoundedRuntimeResultScope {
   sessionId?: string;
   principalId?: string;
   controllerInstanceId?: string;
-  workId?: string;
 }
 
 /**
@@ -38,7 +37,6 @@ export function boundedRuntimeResult(
     repoId: scope.repoId,
     sessionId: session.sessionId,
     principalId: session.principalId,
-    workId: scope.workId,
     kind: 'generic',
     value,
   });

@@ -16,8 +16,8 @@ enum ForgeBridgeError: LocalizedError {
 enum ForgeBridge {
     static let allowed: Set<String> = [
         "read_projects", "read_project_repository", "read_project_overview",
-        "read_project_work_list", "read_project_plan_list",
-        "read_work_detail", "read_requirement_detail", "read_plan_detail",
+        "read_project_plan_list",
+        "read_requirement_detail", "read_plan_detail",
         "read_project_knowledge", "read_recovery_status", "read_connection_status",
         "read_local_provider_status", "read_local_provider_models", "read_local_conversation_activity",
         "read_agent_git_diff", "commit_agent_git_files", "restore_agent_git_files", "read_local_api_settings",

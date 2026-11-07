@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import type { ForgeDesktopProjection, WorkGraphNodeProjection, WorkSemanticState } from './runtime-projection';
+import type { ForgeDesktopProjection } from './runtime-projection';
 import { ForgeIcon } from './ui-icons';
 
-export type RecordMode = 'requirements' | 'plans' | 'works';
+export type RecordMode = 'requirements' | 'plans';
 
 type RequirementRecord = {
   requirementId: string; title: string; outcomeStatement: string; state: string;
@@ -16,26 +16,18 @@ type PlanRecord = {
 type RecordDetail = { kind: 'requirements'; value: RequirementRecord }
   | { kind: 'plans'; value: PlanRecord };
 
-function workState(state: WorkSemanticState): string {
-  return state === 'completed' ? '已完成' : state === 'cancelled' ? '已取消' : '进行中';
-}
-
 /**
- * Forge records are project assets, not chat messages. This view reads the
- * existing canonical detail commands and never writes semantic lifecycle data.
- * The index is explicitly bounded by the loaded Work inventory until Forge
- * offers a project-wide Requirement/Plan index.
+ * Requirement and Plan are durable semantic project records. This view never
+ * projects historical Work as project progress or execution authority.
  */
 export function ProjectRecordsView({
-  mode, projection, onSelectWork, onRefresh, requestedRecordId, onNavigateRecord, preview = false,
+  mode, projection, onRefresh, requestedRecordId, onNavigateRecord,
 }: {
   mode: RecordMode;
-  preview?: boolean;
   projection: ForgeDesktopProjection;
-  onSelectWork: (workId: string) => void;
   onRefresh: () => Promise<void>;
   requestedRecordId?: string;
-  onNavigateRecord: (mode: 'requirements' | 'plans', id: string) => void;
+  onNavigateRecord: (mode: RecordMode, id: string) => void;
 }) {
   const [query, setQuery] = useState('');
   const [selectedId, setSelectedId] = useState<string>();
@@ -52,96 +44,52 @@ export function ProjectRecordsView({
   const repoId = projection.project?.repoId;
 
   useEffect(() => {
-    // Explicit design preview cannot load canonical Forge data over native IPC.
-    if (preview || mode === 'works' || !repoId) return;
+    if (!repoId) return;
     let disposed = false;
     setPlanIndex([]);
     setPlanIndexError(undefined);
     void invoke<{ data?: { plans?: Array<{
       planId: string; goal: string; revision: number; requirementId?: string;
-    }> } }>(
-      'read_project_plan_list', { repoId },
-    ).then((response) => {
+    }> } }>('read_project_plan_list', { repoId }).then((response) => {
       if (!disposed) setPlanIndex(response.data?.plans ?? []);
     }).catch((cause: unknown) => {
       if (!disposed) setPlanIndexError(cause instanceof Error ? cause.message : String(cause));
     });
     return () => { disposed = true; };
-  }, [mode, repoId, refreshEpoch, preview]);
-  const titles = { requirements: '需求', plans: '计划', works: '工作' };
+  }, [repoId, refreshEpoch]);
+
+  const titles = { requirements: 'Requirements', plans: 'Plans' };
   const explanations = {
-    requirements: '需求目标、验收条件和关联工作',
-    plans: '实施方案、计划项和关联工作',
-    works: '执行任务、状态和验证证据',
+    requirements: '需求目标与验收条件',
+    plans: '可替换的实施方案与计划项',
   };
-  // The selected Work detail can contain Requirement/Plan links not present in
-  // the bounded Work graph. Treat it as the newest projection of that same Work.
-  const works: WorkGraphNodeProjection[] = [...new Map([
-    ...projection.workGraph.nodes,
-    ...projection.recentWorkHistory,
-    ...(projection.work ? [{ ...projection.work, state: projection.work.semanticState }] : []),
-  ].map((work) => [work.workId, work] as const)).values()];
-  const ids = mode === 'works'
-    ? works.map((work) => work.workId)
-    : [...new Set([
-      ...(requestedRecordId ? [requestedRecordId] : []),
-      ...(mode === 'plans' ? planIndex.map((plan) => plan.planId)
-        : planIndex.flatMap((plan) => plan.requirementId ? [plan.requirementId] : [])),
-      ...works.flatMap((work) => {
-        const id = mode === 'requirements' ? work.requirementId : work.planId;
-        return id ? [id] : [];
-      }),
-    ])];
-  const records = ids.map((id) => ({
-    id,
-    works: works.filter((work) => mode === 'works' ? work.workId === id
-      : mode === 'requirements' ? work.requirementId === id : work.planId === id),
-  }));
-  const filtered = records.filter((record) =>
-    (record.id + ' ' + (planIndex.find((plan) => plan.planId === record.id)?.goal ?? '') + ' '
-      + record.works.map((work) => work.objective).join(' '))
+  const ids = [...new Set([
+    ...(requestedRecordId ? [requestedRecordId] : []),
+    ...(mode === 'plans'
+      ? planIndex.map((plan) => plan.planId)
+      : planIndex.flatMap((plan) => plan.requirementId ? [plan.requirementId] : [])),
+  ])];
+  const filtered = ids.filter((id) =>
+    (id + ' ' + (planIndex.find((plan) => plan.planId === id)?.goal ?? ''))
       .toLowerCase().includes(query.toLowerCase().trim()));
-  const selected = records.find((record) => record.id === selectedId);
-  const selectedWork = mode === 'works' ? selected?.works[0] : undefined;
-  const firstRecordId = records[0]?.id;
+  const selected = selectedId && ids.includes(selectedId) ? selectedId : undefined;
   const relatedPlans = mode === 'requirements' && selected
-    ? planIndex.filter((plan) => plan.requirementId === selected.id) : [];
+    ? planIndex.filter((plan) => plan.requirementId === selected) : [];
 
   useEffect(() => {
-    if (!requestedRecordId || !repoId || mode === 'works') return;
+    if (!requestedRecordId || !repoId) return;
     const key = repoId + ':' + mode + ':' + requestedRecordId;
     if (requestedRef.current === key) return;
     requestedRef.current = key;
     void openRecord(requestedRecordId);
   }, [requestedRecordId, repoId, mode]);
 
-  // A populated list should open with a meaningful detail pane. Explicit
-  // cross-page deep links always win, and Work stays on its own list surface.
-  useEffect(() => {
-    if (!repoId || !firstRecordId || selectedId || requestedRecordId) return;
-    const key = repoId + ':' + mode + ':' + firstRecordId;
-    if (requestedRef.current === key) return;
-    requestedRef.current = key;
-    if (mode === 'works') {
-      setSelectedId(firstRecordId);
-    } else {
-      void openRecord(firstRecordId);
-    }
-  }, [repoId, mode, firstRecordId, selectedId, requestedRecordId]);
-
   async function openRecord(id: string) {
-    if (mode === 'works') { setSelectedId(id); return; }
-    const repoId = projection.project?.repoId;
     if (!repoId) return;
     const request = ++revision.current;
     setSelectedId(id);
     setDetail(undefined);
     setError(undefined);
-    if (preview) {
-      // Only the Work relationships already in the preview projection are known.
-      setLoading(false);
-      return;
-    }
     setLoading(true);
     try {
       if (mode === 'requirements') {
@@ -182,8 +130,7 @@ export function ProjectRecordsView({
           <div className="records-context">
             <strong>{projection.project.name}</strong>
             <span>{projection.project.branch}</span>
-            <button className="plain-action" type="button" disabled={preview}
-              title={preview ? '预览模式不连接 Forge Runtime' : '刷新项目记录'} onClick={() => {
+            <button className="plain-action" type="button" onClick={() => {
               void onRefresh().then(
                 () => setRefreshEpoch((value) => value + 1),
                 (cause: unknown) => setPlanIndexError(cause instanceof Error ? cause.message : String(cause)),
@@ -191,62 +138,30 @@ export function ProjectRecordsView({
             }}>刷新</button>
           </div>
           <p className="records-coverage">
-            {preview ? '界面预览：只展示已加载 Work 的关联标识；完整记录需要在 Forge 客户端读取'
-              : mode === 'works'
-              ? '当前及近期 Work · 不是完整历史'
-              : mode === 'plans'
-                ? '当前 Plan 来自 Forge 按项目查询（最多 100 条），并显示相关 Work'
-                : 'Requirement 从本项目的 Plan 和已加载 Work 关联发现，非完整 Controller 级需求目录'}
+            {mode === 'plans'
+              ? 'Plan 来自 Forge 项目查询（最多 100 条）'
+              : 'Requirement 由本项目 Plan 的 canonical requirementId 发现；不会从历史 Work 推断。'}
           </p>
           <div className="records-split">
             <section className="records-index" aria-label={titles[mode] + ' 列表'}>
-              <input aria-label="筛选项目记录" value={query} placeholder="搜索记录或关联工作"
+              <input aria-label="筛选项目记录" value={query} placeholder="搜索记录"
                 onChange={(event) => setQuery(event.target.value)} />
-              {planIndexError && <p role="alert" className="inline-error">关联 Plan 读取失败：{planIndexError}</p>}
+              {planIndexError && <p role="alert" className="inline-error">Plan 索引读取失败：{planIndexError}</p>}
               {filtered.length === 0 && <p className="records-empty">没有加载到匹配记录；不代表项目中不存在记录。</p>}
-              {filtered.map((record) => (
-                <button type="button" key={record.id} onClick={() => void openRecord(record.id)}
-                  className={record.id === selectedId ? 'record-row active' : 'record-row'}
-                  aria-pressed={record.id === selectedId}>
-                  <strong>{mode === 'works' ? record.works[0]?.objective ?? record.id
-                    : mode === 'plans' ? planIndex.find((plan) => plan.planId === record.id)?.goal ?? record.id
-                    : record.id}</strong>
-                  <small>{mode === 'works' ? workState(record.works[0]?.state ?? 'open')
-                    : mode === 'plans' ? record.id : record.works.length + ' 个可见关联 Work'}</small>
+              {filtered.map((id) => (
+                <button type="button" key={id} onClick={() => void openRecord(id)}
+                  className={id === selectedId ? 'record-row active' : 'record-row'}>
+                  <strong>{mode === 'plans' ? planIndex.find((plan) => plan.planId === id)?.goal ?? id : id}</strong>
+                  <small>{mode === 'plans' ? id : relatedPlans.length && id === selected ? relatedPlans.length + ' 个 Plan' : 'Requirement'}</small>
                 </button>
               ))}
             </section>
             <section className="records-detail" aria-label="记录详情">
-              {!selected && <div className="records-empty">选择记录查看详情及项目关联。</div>}
+              {!selected && <div className="records-empty">选择记录查看 canonical 详情。</div>}
               {selected && <>
-                <div className="breadcrumb">{mode === 'works' ? 'Work' : mode === 'plans' ? 'Plan' : 'Requirement'}</div>
-                <h2>{mode === 'works' ? selected.works[0]?.objective : selected.id}</h2>
-                <code>{selected.id}</code>
-                {selectedWork && (
-                  <div className="record-fields">
-                    <span>状态 · {workState(selectedWork.state)}</span>
-                    {selectedWork.activity && <p>{selectedWork.activity}</p>}
-                    {selectedWork.nextSafeAction && <>
-                      <strong>下一步</strong>
-                      <p>{selectedWork.nextSafeAction}</p>
-                    </>}
-                    {selectedWork.requirementId && (
-                      <button type="button" className="record-deep-link"
-                        onClick={() => onNavigateRecord('requirements', selectedWork.requirementId!)}>
-                        Requirement · {selectedWork.requirementId}
-                      </button>
-                    )}
-                    {selectedWork.planId && (
-                      <button type="button" className="record-deep-link"
-                        onClick={() => onNavigateRecord('plans', selectedWork.planId!)}>
-                        Plan · {selectedWork.planId}
-                      </button>
-                    )}
-                    <button className="record-open-work" type="button"
-                      onClick={() => onSelectWork(selectedWork.workId)}>打开完整 Work 详情</button>
-                  </div>
-                )}
-                {preview && mode !== 'works' && <p role="status" className="records-coverage">界面预览不读取 Forge 详情；关联 Work 来自当前预览数据。</p>}
+                <div className="breadcrumb">{mode === 'plans' ? 'Plan' : 'Requirement'}</div>
+                <h2>{selected}</h2>
+                <code>{selected}</code>
                 {loading && <p role="status">正在读取 Forge 记录…</p>}
                 {error && <p role="alert" className="inline-error">详情读取失败：{error}</p>}
                 {detail?.kind === 'requirements' && mode === 'requirements' && (
@@ -287,15 +202,6 @@ export function ProjectRecordsView({
                     ))}
                   </div>
                 )}
-                {mode !== 'works' && <h3 className="record-related-heading">关联 Work · {selected.works.length}</h3>}
-                {mode !== 'works' && selected.works.map((work: WorkGraphNodeProjection) => (
-                  <button key={work.workId} className="record-work-link" type="button"
-                    onClick={() => onSelectWork(work.workId)}>
-                    <span className={'work-state-dot ' + work.state} />
-                    <span>{work.objective}</span>
-                    <small>{workState(work.state)}</small>
-                  </button>
-                ))}
               </>}
             </section>
           </div>
