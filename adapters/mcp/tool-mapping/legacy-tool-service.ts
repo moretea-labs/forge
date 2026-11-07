@@ -1118,12 +1118,8 @@ export async function callMcpTool(
         const controllerHome = resolveRepoPreferredControllerHome(ctx.repoRoot);
         const allowedPaths = stringList(args.allowed_paths);
         const checks = stringList(args.checks);
-        // An edit transaction is not a semantic objective. Only the Controller
-        // can select an existing Work; ordinary Direct Edit needs no Work lifecycle.
-        const workId = typeof args.work_id === "string" ? args.work_id.trim() || undefined : undefined;
-        if (workId && !getWorkContract({ controllerHome, repoId }, workId)) {
-          return errorResult("WORK_NOT_FOUND", `WorkContract ${workId} not found`);
-        }
+        // EditSession identity is repository/checkout/principal only. Legacy
+        // work_id input is ignored here and cannot become edit ownership.
         const editRepository = resolveRepositorySelection({
           repoId,
           checkoutId: identity.checkoutId,
@@ -1142,11 +1138,9 @@ export async function callMcpTool(
           maxChangedLines: typeof args.max_changed_lines === "number" ? args.max_changed_lines : undefined,
           checks,
           binding: {
-            workId,
             repoId,
             checkoutId: identity.checkoutId,
             principalId: identity.principalId,
-            controllerInstanceId: workId ? identity.controllerInstanceId : undefined,
           },
         }));
         audit(
@@ -1180,11 +1174,9 @@ export async function callMcpTool(
                   : undefined,
               maxBatchOperations: PREFERRED_EDIT_PATCH_BATCH_OPERATIONS,
               binding: {
-                workId: current.workId,
                 repoId: identity.repoId,
                 checkoutId: identity.checkoutId,
                 principalId: identity.principalId,
-                controllerInstanceId: identity.controllerInstanceId,
               },
             },
           ));
@@ -1299,11 +1291,9 @@ export async function callMcpTool(
             note: typeof args.note === "string" ? args.note : undefined,
             approvalConfirmed: args.confirm_authorization === true,
             binding: {
-              workId: current.workId,
               repoId: identity.repoId,
               checkoutId: identity.checkoutId,
               principalId: identity.principalId,
-              controllerInstanceId: identity.controllerInstanceId,
             },
           },
         ));
