@@ -84,3 +84,22 @@ extension NativeWorkspaceTests {
         XCTAssertTrue(legacyActivity.recentPriorEvents.isEmpty)
     }
 }
+
+
+extension NativeWorkspaceTests {
+    func testAgentMessageBlocksSeparateMarkdownAndFencedCodeWithoutDuplicatingContent() {
+        let text = "**Done**\n\n```swift\nlet answer = 42\nprint(answer)\n```\n\nNext step."
+        XCTAssertEqual(AgentMessageBlock.parse(text),[
+            .markdown("**Done**"),
+            .code(language:"swift",text:"let answer = 42\nprint(answer)"),
+            .markdown("Next step.")
+        ])
+    }
+
+    func testAgentMessageBlocksKeepUnclosedFenceAsCode() {
+        XCTAssertEqual(
+            AgentMessageBlock.parse("Before\n```\nline 1\nline 2"),
+            [.markdown("Before"),.code(language:nil,text:"line 1\nline 2")]
+        )
+    }
+}

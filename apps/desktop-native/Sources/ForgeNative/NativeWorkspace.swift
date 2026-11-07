@@ -67,6 +67,58 @@ struct AgentLiveActivity: Codable {
     }
 }
 
+enum AgentMessageBlock: Equatable {
+    case markdown(String)
+    case code(language: String?, text: String)
+
+    static func parse(_ source: String) -> [AgentMessageBlock] {
+        let lines = source.components(separatedBy:"\n")
+        var blocks: [AgentMessageBlock] = []
+        var prose: [String] = []
+        var code: [String] = []
+        var language: String?
+        var inCode = false
+
+        func normalizedProse(_ lines: [String]) -> String {
+            lines.joined(separator:"\n").trimmingCharacters(in:.newlines)
+        }
+        func fenceLanguage(_ line: String) -> String? {
+            let trimmed = line.trimmingCharacters(in:.whitespaces)
+            guard trimmed.hasPrefix("```") else { return nil }
+            let suffix = String(trimmed.dropFirst(3)).trimmingCharacters(in:.whitespaces)
+            return suffix.isEmpty ? nil : suffix
+        }
+
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in:.whitespaces)
+            if trimmed.hasPrefix("```") {
+                if inCode {
+                    blocks.append(.code(language:language,text:code.joined(separator:"\n")))
+                    code.removeAll(keepingCapacity:true)
+                    language = nil
+                    inCode = false
+                } else {
+                    let text = normalizedProse(prose)
+                    if !text.isEmpty { blocks.append(.markdown(text)) }
+                    prose.removeAll(keepingCapacity:true)
+                    language = fenceLanguage(line)
+                    inCode = true
+                }
+                continue
+            }
+            if inCode { code.append(line) } else { prose.append(line) }
+        }
+
+        if inCode {
+            blocks.append(.code(language:language,text:code.joined(separator:"\n")))
+        } else {
+            let text = normalizedProse(prose)
+            if !text.isEmpty { blocks.append(.markdown(text)) }
+        }
+        return blocks
+    }
+}
+
 struct ChatMessage: Codable, Identifiable {
     var id = UUID().uuidString
     let role: String

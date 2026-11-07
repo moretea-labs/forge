@@ -354,16 +354,23 @@ private struct AgentPane: View {
                                         .font(.system(size:17))
                                         .padding(.top,1)
                                         .accessibilityHidden(true)
-                                    VStack(alignment:.leading,spacing:7) {
-                                        Text(message.text)
-                                            .font(.system(size:13))
-                                            .lineSpacing(6)
-                                            .textSelection(.enabled)
-                                        if let count = message.toolActivityCount, count > 0 {
-                                            Label("\(count) 次工具调用",systemImage:"hammer")
-                                                .font(.system(size:10.5,weight:.medium))
-                                                .foregroundStyle(ForgePalette.secondary)
+                                    VStack(alignment:.leading,spacing:8) {
+                                        AgentAssistantMessageBody(text:message.text)
+                                        HStack(spacing:10) {
+                                            if let count = message.toolActivityCount, count > 0 {
+                                                Label("\(count) 次工具调用",systemImage:"hammer")
+                                            }
+                                            Spacer(minLength:0)
+                                            Button {
+                                                copyAgentText(message.text)
+                                            } label: {
+                                                Label("复制",systemImage:"doc.on.doc")
+                                            }
+                                            .buttonStyle(.plain)
+                                            .help("复制完整回复")
                                         }
+                                        .font(.system(size:10.5,weight:.medium))
+                                        .foregroundStyle(ForgePalette.secondary)
                                     }
                                     Spacer(minLength:56)
                                 }
@@ -627,6 +634,93 @@ private struct AgentPane: View {
     }
 }
 
+private func copyAgentText(_ text: String) {
+    NSPasteboard.general.clearContents()
+    NSPasteboard.general.setString(text,forType:.string)
+}
+
+private struct AgentAssistantMessageBody: View {
+    let text: String
+    private var blocks: [AgentMessageBlock] { AgentMessageBlock.parse(text) }
+
+    var body: some View {
+        VStack(alignment:.leading,spacing:10) {
+            ForEach(Array(blocks.enumerated()),id:\.offset) { _, block in
+                switch block {
+                case .markdown(let markdown):
+                    markdownView(markdown)
+                case .code(let language,let code):
+                    AgentCodeBlockView(language:language,code:code)
+                }
+            }
+        }
+        .frame(maxWidth:.infinity,alignment:.leading)
+    }
+
+    @ViewBuilder
+    private func markdownView(_ markdown: String) -> some View {
+        if let attributed = try? AttributedString(markdown:markdown) {
+            Text(attributed)
+                .font(.system(size:13))
+                .lineSpacing(6)
+                .textSelection(.enabled)
+        } else {
+            Text(markdown)
+                .font(.system(size:13))
+                .lineSpacing(6)
+                .textSelection(.enabled)
+        }
+    }
+}
+
+private struct AgentCodeBlockView: View {
+    let language: String?
+    let code: String
+
+    var body: some View {
+        VStack(alignment:.leading,spacing:0) {
+            HStack(spacing:8) {
+                Image(systemName:"chevron.left.forwardslash.chevron.right")
+                    .font(.system(size:9,weight:.semibold))
+                    .foregroundStyle(.tertiary)
+                Text(language?.isEmpty == false ? language! : "code")
+                    .font(.system(size:9.5,weight:.medium,design:.monospaced))
+                    .foregroundStyle(ForgePalette.secondary)
+                    .lineLimit(1)
+                Spacer()
+                Button {
+                    copyAgentText(code)
+                } label: {
+                    Label("复制",systemImage:"doc.on.doc")
+                        .font(.system(size:9.5,weight:.medium))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(ForgePalette.secondary)
+                .help("复制代码")
+            }
+            .padding(.horizontal,10)
+            .frame(height:30)
+            .background(ForgePalette.selection)
+
+            ScrollView(.horizontal) {
+                Text(code)
+                    .font(.system(size:11.5,design:.monospaced))
+                    .lineSpacing(4)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal:true,vertical:false)
+                    .padding(11)
+            }
+            .scrollIndicators(.automatic)
+            .frame(maxWidth:.infinity,alignment:.leading)
+            .background(ForgePalette.softFill)
+        }
+        .clipShape(RoundedRectangle(cornerRadius:10,style:.continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius:10,style:.continuous)
+                .strokeBorder(Color.primary.opacity(0.055),lineWidth:0.5)
+        }
+    }
+}
 private struct AgentChangesPane: View {
     @ObservedObject var model: NativeWorkspace
     @Binding var isPresented: Bool
