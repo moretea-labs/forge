@@ -2,7 +2,8 @@ import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileS
 import { dirname, join } from 'path';
 import { randomUUID } from 'crypto';
 import { resolveControllerHome } from '../../effects/controller-home';
-import { readRuntimeOwner, runtimeOwnerIsAlive } from './ownership';
+import { isProcessAlive } from '../shared/process-tree';
+import { readRuntimeOwner, runtimeOwnerProcessIdentityMatches } from './ownership';
 import type {
   RuntimeDiagnosticEvidence,
   RuntimeReadiness,
@@ -144,7 +145,11 @@ export function observeRuntimeStatus(
 ): RuntimeStatusObservation {
   const snapshot = readRuntimeStatusSnapshot(controllerHome);
   const owner = readRuntimeOwner(controllerHome);
-  const ownerAlive = runtimeOwnerIsAlive(owner);
+  const ownerAlive = Boolean(owner && (
+    owner.processStartTime && owner.executableFingerprint
+      ? runtimeOwnerProcessIdentityMatches(owner)
+      : isProcessAlive(owner.pid)
+  ));
   if (!snapshot) {
     return {
       schemaVersion: 1,
