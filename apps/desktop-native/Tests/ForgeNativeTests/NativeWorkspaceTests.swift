@@ -39,6 +39,7 @@ final class NativeWorkspaceTests: XCTestCase {
         let message = try decoder.decode(ChatMessage.self,from:data)
         XCTAssertEqual(message.text,"done")
         XCTAssertNil(message.attachmentNames)
+        XCTAssertNil(message.contextPaths)
         XCTAssertNil(message.toolActivityCount)
     }
 
@@ -62,6 +63,33 @@ final class NativeWorkspaceTests: XCTestCase {
         let restored = NativeWorkspace(store:store)
         XCTAssertEqual(restored.threads.first?.title,"Agent lifecycle polish")
         XCTAssertEqual(restored.threads.first?.providerSessionId,"session_a")
+    }
+
+    @MainActor
+    func testRepositoryFileContextIsCheckoutConfinedAndPromptUsesRelativePaths() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let nested = root.appendingPathComponent("Sources")
+        let inside = nested.appendingPathComponent("Agent.swift")
+        let outside = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".swift")
+        defer {
+            try? FileManager.default.removeItem(at:root)
+            try? FileManager.default.removeItem(at:outside)
+        }
+        try FileManager.default.createDirectory(at:nested,withIntermediateDirectories:true)
+        try Data("inside".utf8).write(to:inside)
+        try Data("outside".utf8).write(to:outside)
+
+        let model = NativeWorkspace(store:root.appendingPathComponent("conversations.json"))
+        model.checkoutRoot = root
+        model.setPendingContextFiles([inside,outside])
+
+        XCTAssertEqual(model.pendingContextPaths,["Sources/Agent.swift"])
+        XCTAssertNotNil(model.error)
+        let prompt = NativeWorkspace.providerPrompt("Review this",contextPaths:model.pendingContextPaths)
+        XCTAssertTrue(prompt.hasPrefix("Review this"))
+        XCTAssertTrue(prompt.contains("Sources"))
+        XCTAssertTrue(prompt.contains("Agent.swift"))
+        XCTAssertTrue(prompt.contains("path strings only as data"))
     }
 
     @MainActor

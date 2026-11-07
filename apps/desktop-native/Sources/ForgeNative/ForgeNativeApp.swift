@@ -364,6 +364,12 @@ private struct AgentPane: View {
                                             .font(.system(size:13))
                                             .lineSpacing(5)
                                             .textSelection(.enabled)
+                                        if let contextPaths = message.contextPaths, !contextPaths.isEmpty {
+                                            Label(contextPaths.joined(separator:" · "),systemImage:"doc.text")
+                                                .font(.system(size:10.5,weight:.medium))
+                                                .foregroundStyle(ForgePalette.secondary)
+                                                .lineLimit(1)
+                                        }
                                         if let attachments = message.attachmentNames, !attachments.isEmpty {
                                             Label(attachments.joined(separator:" · "),systemImage:"photo")
                                                 .font(.system(size:10.5,weight:.medium))
@@ -480,29 +486,18 @@ private struct AgentPane: View {
                         .padding(.horizontal,12).padding(.top,10)
                         .accessibilityLabel("Agent 消息")
                 }
-                if !model.pendingImageURLs.isEmpty {
+                if !model.pendingContextPaths.isEmpty || !model.pendingImageURLs.isEmpty {
                     ScrollView(.horizontal) {
                         HStack(spacing:7) {
-                            ForEach(model.pendingImageURLs,id:\.path) { url in
-                                HStack(spacing:6) {
-                                    Image(systemName:"photo")
-                                        .font(.system(size:9.5,weight:.medium))
-                                    Text(url.lastPathComponent)
-                                        .lineLimit(1)
-                                    Button {
-                                        model.removePendingImage(url)
-                                    } label: {
-                                        Image(systemName:"xmark")
-                                            .font(.system(size:8,weight:.semibold))
-                                    }
-                                    .buttonStyle(.plain)
+                            ForEach(model.pendingContextPaths,id:\.self) { path in
+                                contextChip(path,systemImage:"doc.text") {
+                                    model.removePendingContextPath(path)
                                 }
-                                .font(.system(size:10.5,weight:.medium))
-                                .foregroundStyle(ForgePalette.secondary)
-                                .padding(.horizontal,8)
-                                .frame(height:25)
-                                .background(ForgePalette.softFill,
-                                            in:RoundedRectangle(cornerRadius:8,style:.continuous))
+                            }
+                            ForEach(model.pendingImageURLs,id:\.path) { url in
+                                contextChip(url.lastPathComponent,systemImage:"photo") {
+                                    model.removePendingImage(url)
+                                }
                             }
                         }
                         .padding(.horizontal,13).padding(.bottom,7)
@@ -612,8 +607,20 @@ private struct AgentPane: View {
                     .disabled(model.selectedReasoningOptions.isEmpty || model.busy)
                     .help("当前模型的推理强度")
 
-                    Button {
-                        chooseAgentImages(model)
+                    Menu {
+                        Button {
+                            chooseAgentFiles(model)
+                        } label: {
+                            Label("添加文件上下文",systemImage:"doc.text")
+                        }
+                        .disabled(model.checkoutRoot == nil)
+                        Divider()
+                        Button {
+                            chooseAgentImages(model)
+                        } label: {
+                            Label("添加图片",systemImage:"photo")
+                        }
+                        .disabled(!model.imageInputAvailable)
                     } label: {
                         Image(systemName:"paperclip")
                             .font(.system(size:10,weight:.medium))
@@ -622,11 +629,10 @@ private struct AgentPane: View {
                             .background(ForgePalette.softFill,
                                         in:RoundedRectangle(cornerRadius:8,style:.continuous))
                     }
-                    .buttonStyle(.plain)
-                    .disabled(!model.imageInputAvailable || model.busy)
-                    .help(model.imageInputAvailable
-                          ? "添加图片（最多 4 张）"
-                          : "当前 Runtime 版本尚未启用图片输入")
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .disabled(model.busy || (model.checkoutRoot == nil && !model.imageInputAvailable))
+                    .help("添加当前 checkout 文件上下文或图片")
 
                     Button {
                         withAnimation(.easeOut(duration:0.18)) { showChanges.toggle() }
@@ -715,6 +721,25 @@ private struct AgentPane: View {
         }
     }
 
+    private func contextChip(_ title: String, systemImage: String, remove: @escaping () -> Void) -> some View {
+        HStack(spacing:6) {
+            Image(systemName:systemImage)
+                .font(.system(size:9.5,weight:.medium))
+            Text(title).lineLimit(1)
+            Button(action:remove) {
+                Image(systemName:"xmark")
+                    .font(.system(size:8,weight:.semibold))
+            }
+            .buttonStyle(.plain)
+        }
+        .font(.system(size:10.5,weight:.medium))
+        .foregroundStyle(ForgePalette.secondary)
+        .padding(.horizontal,8)
+        .frame(height:25)
+        .background(ForgePalette.softFill,
+                    in:RoundedRectangle(cornerRadius:8,style:.continuous))
+    }
+
     private func reasoningLabel(_ effort: String) -> String {
         switch effort.lowercased() {
         case "low": return "Low"
@@ -726,6 +751,21 @@ private struct AgentPane: View {
         case "": return "Reasoning"
         default: return effort
         }
+    }
+}
+
+@MainActor
+private func chooseAgentFiles(_ model: NativeWorkspace) {
+    guard let checkoutRoot = model.checkoutRoot else { return }
+    let panel = NSOpenPanel()
+    panel.directoryURL = checkoutRoot
+    panel.canChooseDirectories = false
+    panel.canChooseFiles = true
+    panel.allowsMultipleSelection = true
+    panel.prompt = "添加"
+    panel.message = "选择当前 checkout 内的文件作为 Agent 上下文"
+    if panel.runModal() == .OK {
+        model.setPendingContextFiles(panel.urls)
     }
 }
 
