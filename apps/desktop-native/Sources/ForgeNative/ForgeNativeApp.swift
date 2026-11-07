@@ -30,7 +30,10 @@ struct ForgeNativeApp: App {
         .windowToolbarStyle(.unified)
         .commands {
             CommandGroup(replacing:.newItem) {
-                Button("新会话") { workspace.newThread() }.keyboardShortcut("n")
+                Button("新会话") {
+                    workspace.show(.agent)
+                    workspace.newThread()
+                }.keyboardShortcut("n")
             }
             CommandMenu("导航") {
                 Button("搜索会话") {
@@ -124,7 +127,10 @@ private struct ForgeWorkspaceView: View {
             }
             .padding(.horizontal,13).padding(.top,13).padding(.bottom,14)
 
-            Button { model.newThread() } label: {
+            Button {
+                model.show(.agent)
+                model.newThread()
+            } label: {
                 HStack(spacing:10) {
                     Image(systemName:"plus")
                         .font(.system(size:10,weight:.semibold))
@@ -348,6 +354,7 @@ private struct AgentPane: View {
     @State private var showActivityDetails = false
     @State private var expandedMessageActivities: Set<String> = []
     @State private var isComposerDropTarget = false
+    @FocusState private var composerFocused: Bool
 
     var body: some View {
         VStack(spacing:0) {
@@ -565,12 +572,15 @@ private struct AgentPane: View {
                             .allowsHitTesting(false)
                     }
                     TextEditor(text:$model.draft)
+                        .focused($composerFocused)
                         .font(.system(size:13))
                         .foregroundStyle(ForgePalette.ink)
                         .scrollContentBackground(.hidden)
                         .frame(minHeight:56,maxHeight:105)
                         .padding(.horizontal,12).padding(.top,10)
                         .accessibilityLabel("Agent 消息")
+                        .accessibilityHint("输入任务描述，按 Command Return 发送")
+                        .accessibilityIdentifier("agent.composer")
                 }
                 if !model.pendingContextPaths.isEmpty || !model.pendingImageURLs.isEmpty {
                     ScrollView(.horizontal) {
@@ -591,149 +601,7 @@ private struct AgentPane: View {
                     .scrollIndicators(.hidden)
                 }
                 HStack(spacing:7) {
-                    Menu {
-                        ForEach(model.projects) { project in
-                            Button {
-                                model.selectProject(project.repoId)
-                            } label: {
-                                if model.project?.repoId == project.repoId {
-                                    Label(project.label,systemImage:"checkmark")
-                                } else {
-                                    Text(project.label)
-                                }
-                            }
-                        }
-                    } label: {
-                        HStack(spacing:5) {
-                            Image(systemName:"folder.fill")
-                                .symbolRenderingMode(.hierarchical)
-                                .font(.system(size:9.5,weight:.medium))
-                            Text(model.project?.label ?? "选择项目")
-                                .lineLimit(1)
-                            Image(systemName:"chevron.down")
-                                .font(.system(size:7,weight:.semibold))
-                                .foregroundStyle(.tertiary)
-                        }
-                        .font(.system(size:10.5,weight:.medium))
-                        .foregroundStyle(ForgePalette.secondary)
-                        .padding(.horizontal,8)
-                        .frame(height:25)
-                        .background(ForgePalette.softFill,
-                                    in:RoundedRectangle(cornerRadius:8,style:.continuous))
-                    }
-                    .menuStyle(.borderlessButton)
-                    .fixedSize()
-                    .disabled(model.projects.isEmpty || model.busy)
-                    .help("切换项目会创建新的会话，避免改变已有 Agent 上下文")
-
-
-                    Menu {
-                        Button {
-                            model.selectThreadProvider("codex")
-                        } label: {
-                            if model.selectedProvider == "codex" { Label("Codex CLI",systemImage:"checkmark") }
-                            else { Text("Codex CLI") }
-                        }
-                        Button {
-                            model.selectThreadProvider("api")
-                        } label: {
-                            if model.selectedProvider == "api" { Label("兼容 API",systemImage:"checkmark") }
-                            else { Text("兼容 API") }
-                        }
-                        .disabled(!model.apiProfileReady)
-                    } label: {
-                        HStack(spacing:5) {
-                            Image(systemName:model.selectedProvider == "api" ? "network" : "terminal")
-                                .font(.system(size:9.5,weight:.medium))
-                            Text(model.selectedProvider == "api" ? "API" : "Codex")
-                            Image(systemName:"chevron.down")
-                                .font(.system(size:7,weight:.semibold))
-                                .foregroundStyle(.tertiary)
-                        }
-                        .font(.system(size:10.5,weight:.medium))
-                        .foregroundStyle(ForgePalette.ink)
-                        .padding(.horizontal,8)
-                        .frame(height:25)
-                        .background(ForgePalette.softFill,
-                                    in:RoundedRectangle(cornerRadius:8,style:.continuous))
-                    }
-                    .menuStyle(.borderlessButton)
-                    .fixedSize()
-                    .disabled(model.busy || model.thread?.messages.isEmpty == false)
-                    .help(model.thread?.messages.isEmpty == false
-                          ? "已有历史的会话固定 Provider；新建会话可切换"
-                          : "选择当前会话 Provider")
-
-                    Menu {
-                        ForEach(model.agentModels) { option in
-                            Button {
-                                model.selectAgentModel(option.slug)
-                            } label: {
-                                if model.selectedAgentModel?.slug == option.slug {
-                                    Label(option.displayName,systemImage:"checkmark")
-                                } else {
-                                    Text(option.displayName)
-                                }
-                            }
-                        }
-                    } label: {
-                        HStack(spacing:5) {
-                            Image(systemName:model.selectedProvider == "api" ? "server.rack" : "cpu")
-                                .font(.system(size:9.5,weight:.medium))
-                            Text(model.selectedProvider == "api"
-                                 ? (model.localApiSettings?.model ?? "API 模型")
-                                 : (model.selectedAgentModel?.displayName ?? "选择模型"))
-                                .lineLimit(1)
-                            Image(systemName:"chevron.down")
-                                .font(.system(size:7,weight:.semibold))
-                                .foregroundStyle(.tertiary)
-                        }
-                        .font(.system(size:10.5,weight:.medium))
-                        .foregroundStyle(ForgePalette.ink)
-                        .padding(.horizontal,8)
-                        .frame(height:25)
-                        .background(ForgePalette.softFill,
-                                    in:RoundedRectangle(cornerRadius:8,style:.continuous))
-                    }
-                    .menuStyle(.borderlessButton)
-                    .fixedSize()
-                    .disabled(model.selectedProvider != "codex" || model.agentModels.isEmpty || model.busy)
-                    .help(model.selectedProvider == "api"
-                          ? "API 模型来自保存的本地 profile"
-                          : (model.selectedAgentModel?.description ?? "从 Codex 当前模型目录选择"))
-
-                    Menu {
-                        ForEach(model.selectedReasoningOptions) { option in
-                            Button {
-                                model.selectReasoningEffort(option.effort)
-                            } label: {
-                                if model.selectedReasoningEffort == option.effort {
-                                    Label(reasoningLabel(option.effort),systemImage:"checkmark")
-                                } else {
-                                    Text(reasoningLabel(option.effort))
-                                }
-                            }
-                        }
-                    } label: {
-                        HStack(spacing:5) {
-                            Image(systemName:"brain.head.profile")
-                                .font(.system(size:9.5,weight:.medium))
-                            Text(model.selectedProvider == "api" ? "API" : reasoningLabel(model.selectedReasoningEffort))
-                            Image(systemName:"chevron.down")
-                                .font(.system(size:7,weight:.semibold))
-                                .foregroundStyle(.tertiary)
-                        }
-                        .font(.system(size:10.5,weight:.medium))
-                        .foregroundStyle(ForgePalette.ink)
-                        .padding(.horizontal,8)
-                        .frame(height:25)
-                        .background(ForgePalette.softFill,
-                                    in:RoundedRectangle(cornerRadius:8,style:.continuous))
-                    }
-                    .menuStyle(.borderlessButton)
-                    .fixedSize()
-                    .disabled(model.selectedProvider != "codex" || model.selectedReasoningOptions.isEmpty || model.busy)
-                    .help(model.selectedProvider == "api" ? "兼容 API 不使用 Codex reasoning 目录" : "当前模型的推理强度")
+                    agentConfigurationControls
 
                     Menu {
                         Button {
@@ -761,6 +629,9 @@ private struct AgentPane: View {
                     .fixedSize()
                     .disabled(model.busy || (model.checkoutRoot == nil && !model.selectedProviderSupportsImages))
                     .help("添加当前 checkout 文件上下文或图片")
+                    .accessibilityLabel("添加上下文")
+                    .accessibilityHint("添加当前 checkout 文件或当前 Provider 支持的图片")
+                    .accessibilityIdentifier("agent.attach")
 
                     if model.selectedProvider == "api", model.checkoutId != nil {
                         Button {
@@ -778,6 +649,10 @@ private struct AgentPane: View {
                         .help(model.allowApiEffects
                               ? "本轮 API Agent 可执行受 Forge 约束的写操作；发送后自动关闭"
                               : "本轮 API Agent 只允许只读工具；点击后仅授权下一次发送的写操作")
+                        .accessibilityLabel("API 写操作授权")
+                        .accessibilityValue(model.allowApiEffects ? "下一次发送已授权" : "未授权")
+                        .accessibilityHint("授权仅对下一次 API 发送有效")
+                        .accessibilityIdentifier("agent.api-effects")
                     }
 
                     Button {
@@ -801,6 +676,9 @@ private struct AgentPane: View {
                     .buttonStyle(.plain)
                     .disabled(model.checkoutId == nil)
                     .help("查看当前 checkout 的未提交改动")
+                    .accessibilityLabel("Git Changes")
+                    .accessibilityValue(model.changedFileCount > 0 ? "\(model.changedFileCount) 个文件" : "无已加载改动")
+                    .accessibilityIdentifier("agent.changes")
 
                     Circle()
                         .fill(model.selectedProvider == "api"
@@ -810,6 +688,10 @@ private struct AgentPane: View {
                         .help(model.selectedProvider == "api"
                               ? (model.apiProfileReady ? "兼容 API profile 已就绪" : "兼容 API profile 未完成")
                               : model.provider)
+                        .accessibilityLabel("Provider 状态")
+                        .accessibilityValue(model.selectedProvider == "api"
+                                            ? (model.apiProfileReady ? "API 已就绪" : "API 未完成配置")
+                                            : model.provider)
                     Spacer()
                     Text("⌘↵").font(.system(size:10)).foregroundStyle(.tertiary)
                     if model.busy {
@@ -822,6 +704,9 @@ private struct AgentPane: View {
                         .buttonStyle(.plain)
                         .keyboardShortcut(.escape,modifiers:[])
                         .help("停止 Agent（Esc）")
+                        .accessibilityLabel("停止 Agent")
+                        .accessibilityHint("停止当前正在进行的 Agent 请求")
+                        .accessibilityIdentifier("agent.cancel")
                     } else {
                         let sendDisabled = model.draft.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty
                             || (model.selectedProvider == "api" && !model.apiProfileReady)
@@ -838,6 +723,10 @@ private struct AgentPane: View {
                         .disabled(sendDisabled)
                         .keyboardShortcut(.return,modifiers:.command)
                         .help("发送消息（⌘↵）")
+                        .accessibilityLabel("发送消息")
+                        .accessibilityValue(sendDisabled ? "不可发送" : "可发送")
+                        .accessibilityHint("按 Command Return 发送")
+                        .accessibilityIdentifier("agent.send")
                     }
                 }.padding(.horizontal,13).padding(.bottom,11)
             }
@@ -872,6 +761,167 @@ private struct AgentPane: View {
             }
         }
         .animation(.easeOut(duration:0.18),value:showChanges)
+        .onAppear {
+            if !model.busy { composerFocused = true }
+        }
+        .onChange(of:model.selectedThreadId) { _ in
+            if !model.busy { composerFocused = true }
+        }
+    }
+
+    @ViewBuilder
+    private var agentConfigurationControls: some View {
+        Menu {
+            ForEach(model.projects) { project in
+                Button {
+                    model.selectProject(project.repoId)
+                } label: {
+                    if model.project?.repoId == project.repoId {
+                        Label(project.label,systemImage:"checkmark")
+                    } else {
+                        Text(project.label)
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing:5) {
+                Image(systemName:"folder.fill")
+                    .symbolRenderingMode(.hierarchical)
+                    .font(.system(size:9.5,weight:.medium))
+                Text(model.project?.label ?? "选择项目").lineLimit(1)
+                Image(systemName:"chevron.down")
+                    .font(.system(size:7,weight:.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .font(.system(size:10.5,weight:.medium))
+            .foregroundStyle(ForgePalette.secondary)
+            .padding(.horizontal,8)
+            .frame(height:25)
+            .background(ForgePalette.softFill,
+                        in:RoundedRectangle(cornerRadius:8,style:.continuous))
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .disabled(model.projects.isEmpty || model.busy)
+        .help("切换项目会创建新的会话，避免改变已有 Agent 上下文")
+        .accessibilityLabel("项目")
+        .accessibilityValue(model.project?.label ?? "未选择")
+        .accessibilityIdentifier("agent.project")
+
+        Menu {
+            Button { model.selectThreadProvider("codex") } label: {
+                if model.selectedProvider == "codex" { Label("Codex CLI",systemImage:"checkmark") }
+                else { Text("Codex CLI") }
+            }
+            Button { model.selectThreadProvider("api") } label: {
+                if model.selectedProvider == "api" { Label("兼容 API",systemImage:"checkmark") }
+                else { Text("兼容 API") }
+            }
+            .disabled(!model.apiProfileReady)
+        } label: {
+            HStack(spacing:5) {
+                Image(systemName:model.selectedProvider == "api" ? "network" : "terminal")
+                    .font(.system(size:9.5,weight:.medium))
+                Text(model.selectedProvider == "api" ? "API" : "Codex")
+                Image(systemName:"chevron.down")
+                    .font(.system(size:7,weight:.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .font(.system(size:10.5,weight:.medium))
+            .foregroundStyle(ForgePalette.ink)
+            .padding(.horizontal,8)
+            .frame(height:25)
+            .background(ForgePalette.softFill,
+                        in:RoundedRectangle(cornerRadius:8,style:.continuous))
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .disabled(model.busy || model.thread?.messages.isEmpty == false)
+        .help(model.thread?.messages.isEmpty == false
+              ? "已有历史的会话固定 Provider；新建会话可切换"
+              : "选择当前会话 Provider")
+        .accessibilityLabel("Provider")
+        .accessibilityValue(model.selectedProvider == "api" ? "兼容 API" : "Codex CLI")
+        .accessibilityIdentifier("agent.provider")
+
+        agentModelControl
+
+        Menu {
+            ForEach(model.selectedReasoningOptions) { option in
+                Button {
+                    model.selectReasoningEffort(option.effort)
+                } label: {
+                    if model.selectedReasoningEffort == option.effort {
+                        Label(reasoningLabel(option.effort),systemImage:"checkmark")
+                    } else {
+                        Text(reasoningLabel(option.effort))
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing:5) {
+                Image(systemName:"brain.head.profile")
+                    .font(.system(size:9.5,weight:.medium))
+                Text(model.selectedProvider == "api" ? "API" : reasoningLabel(model.selectedReasoningEffort))
+                Image(systemName:"chevron.down")
+                    .font(.system(size:7,weight:.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .font(.system(size:10.5,weight:.medium))
+            .foregroundStyle(ForgePalette.ink)
+            .padding(.horizontal,8)
+            .frame(height:25)
+            .background(ForgePalette.softFill,
+                        in:RoundedRectangle(cornerRadius:8,style:.continuous))
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .disabled(model.selectedProvider != "codex" || model.selectedReasoningOptions.isEmpty || model.busy)
+        .help(model.selectedProvider == "api" ? "兼容 API 不使用 Codex reasoning 目录" : "当前模型的推理强度")
+    }
+
+    private var agentModelControl: some View {
+        Menu {
+            ForEach(model.agentModels) { option in
+                Button {
+                    model.selectAgentModel(option.slug)
+                } label: {
+                    if model.selectedAgentModel?.slug == option.slug {
+                        Label(option.displayName,systemImage:"checkmark")
+                    } else {
+                        Text(option.displayName)
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing:5) {
+                Image(systemName:model.selectedProvider == "api" ? "server.rack" : "cpu")
+                    .font(.system(size:9.5,weight:.medium))
+                Text(agentModelLabel).lineLimit(1)
+                Image(systemName:"chevron.down")
+                    .font(.system(size:7,weight:.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .font(.system(size:10.5,weight:.medium))
+            .foregroundStyle(ForgePalette.ink)
+            .padding(.horizontal,8)
+            .frame(height:25)
+            .background(ForgePalette.softFill,
+                        in:RoundedRectangle(cornerRadius:8,style:.continuous))
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .disabled(model.selectedProvider != "codex" || model.agentModels.isEmpty || model.busy)
+        .help(model.selectedProvider == "api"
+              ? "API 模型来自保存的本地 profile"
+              : (model.selectedAgentModel?.description ?? "从 Codex 当前模型目录选择"))
+    }
+
+    private var agentModelLabel: String {
+        if model.selectedProvider == "api" {
+            return model.localApiSettings?.model ?? "API 模型"
+        }
+        return model.selectedAgentModel?.displayName ?? "选择模型"
     }
 
     private func activityIcon(_ phase: String) -> String {
