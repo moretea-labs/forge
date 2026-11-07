@@ -386,9 +386,10 @@ private struct AgentPane: View {
                                         Button { copyAgentText(message.text) } label: {
                                             Label("复制",systemImage:"doc.on.doc")
                                         }
-                                        Button { model.draft = message.text } label: {
+                                        Button { model.reeditMessage(message) } label: {
                                             Label("重新编辑",systemImage:"arrow.uturn.backward")
                                         }
+                                        .disabled(model.busy)
                                     }
                                 }
                                 .frame(maxWidth:.infinity)

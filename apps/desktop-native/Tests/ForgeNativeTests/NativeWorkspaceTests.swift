@@ -90,6 +90,35 @@ final class NativeWorkspaceTests: XCTestCase {
     }
 
     @MainActor
+    func testReeditRestoresValidRepositoryContextButNeverFabricatesImages() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let nested = root.appendingPathComponent("Sources")
+        let file = nested.appendingPathComponent("Agent.swift")
+        defer { try? FileManager.default.removeItem(at:root) }
+        try FileManager.default.createDirectory(at:nested,withIntermediateDirectories:true)
+        try Data("source".utf8).write(to:file)
+
+        let model = NativeWorkspace(store:root.appendingPathComponent("conversations.json"))
+        model.checkoutRoot = root
+        let message = ChatMessage(
+            role:"user", text:"change this",
+            attachmentNames:["screen.png"], contextPaths:["Sources/Agent.swift"]
+        )
+
+        model.reeditMessage(message)
+
+        XCTAssertEqual(model.draft,"change this")
+        XCTAssertEqual(model.pendingContextPaths,["Sources/Agent.swift"])
+        XCTAssertTrue(model.pendingImageURLs.isEmpty)
+        XCTAssertTrue(model.error?.contains("重新附加图片") == true)
+
+        model.busy = true
+        model.draft = "keep current"
+        model.reeditMessage(ChatMessage(role:"user",text:"must not overwrite"))
+        XCTAssertEqual(model.draft,"keep current")
+    }
+
+    @MainActor
     func testAttachmentSelectionAppendsDedupesAndDroppedFilesReuseExistingPaths() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let nested = root.appendingPathComponent("Sources")

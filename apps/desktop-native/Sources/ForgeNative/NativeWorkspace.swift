@@ -304,6 +304,30 @@ final class NativeWorkspace: ObservableObject {
         if selectedThreadId == id { selectedThreadId = threads.first?.id }
         if threads.isEmpty { newThread() } else { persist() }
     }
+
+    func reeditMessage(_ message: ChatMessage) {
+        guard !busy else {
+            self.error = "请先停止正在运行的会话。"
+            return
+        }
+        draft = message.text
+        pendingImageURLs = []
+        pendingContextPaths = []
+
+        var notes: [String] = []
+        if let paths = message.contextPaths, !paths.isEmpty {
+            if let checkoutRoot {
+                addPendingContextFiles(paths.map { checkoutRoot.appendingPathComponent($0) })
+                if let error { notes.append(error) }
+            } else {
+                notes.append("当前 checkout 不可用，文件上下文未恢复。")
+            }
+        }
+        if message.attachmentNames?.isEmpty == false {
+            notes.append("历史图片仅保存文件名，请重新附加图片后再发送。")
+        }
+        self.error = notes.isEmpty ? nil : Array(Set(notes)).sorted().joined(separator:" ")
+    }
     func selectProject(_ id: String) {
         guard repoId != id else { return }
         repoId = id
