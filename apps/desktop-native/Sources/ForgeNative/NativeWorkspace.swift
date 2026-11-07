@@ -150,6 +150,37 @@ struct ForgeRecord: Identifiable {
     let title: String
     let state: String
 }
+struct RequirementRecordDetail {
+    let requirementId: String
+    let revision: Int
+    let title: String
+    let outcomeStatement: String
+    let state: String
+    let acceptanceCriteria: [String]
+    let progressSummary: String
+    let remainingWork: [String]
+}
+
+struct PlanRecordItem: Identifiable {
+    let id: String
+    let objective: String
+}
+
+struct PlanRecordDetail {
+    let planId: String
+    let revision: Int
+    let requirementId: String?
+    let sourceBasisRevision: String?
+    let goal: String
+    let items: [PlanRecordItem]
+    let resolvedDecisions: [String]
+    let nonGoals: [String]
+}
+
+enum SemanticRecordDetail {
+    case requirement(RequirementRecordDetail)
+    case plan(PlanRecordDetail)
+}
 enum NativePage: String, CaseIterable, Identifiable {
     case agent = "会话", requirement = "Requirement", plan = "Plan",
          knowledge = "知识库", runtime = "Runtime", settings = "设置"
@@ -200,6 +231,7 @@ final class NativeWorkspace: ObservableObject {
     @Published var error: String?
     @Published var records: [ForgeRecord] = []
     @Published var selectedRecord: String?
+    @Published var recordDetail: SemanticRecordDetail?
     @Published var detail = ""
     @Published var knowledgeQuery = ""
     @Published var settings = ""
@@ -446,6 +478,7 @@ final class NativeWorkspace: ObservableObject {
             }
             detail = ""
             selectedRecord = nil
+            recordDetail = nil
             error = nil
         } catch { self.error = error.localizedDescription }
     }
@@ -462,11 +495,66 @@ final class NativeWorkspace: ObservableObject {
         else { return "" }
         return String(data:bytes,encoding:.utf8) ?? ""
     }
+    nonisolated static func requirementDetail(_ result: [String:Any]) -> RequirementRecordDetail? {
+        let data = result["data"] as? [String:Any] ?? result
+        guard let value = data["requirement"] as? [String:Any],
+              let id = value["requirementId"] as? String else { return nil }
+        return RequirementRecordDetail(
+            requirementId:id,
+            revision:value["revision"] as? Int ?? 0,
+            title:value["title"] as? String ?? id,
+            outcomeStatement:value["outcomeStatement"] as? String ?? "",
+            state:value["state"] as? String ?? "",
+            acceptanceCriteria:value["acceptanceCriteria"] as? [String] ?? [],
+            progressSummary:value["progressSummary"] as? String ?? "",
+            remainingWork:value["remainingWork"] as? [String] ?? []
+        )
+    }
+
+    nonisolated static func planDetail(_ result: [String:Any]) -> PlanRecordDetail? {
+        let data = result["data"] as? [String:Any] ?? result
+        guard let value = data["plan"] as? [String:Any],
+              let id = value["planId"] as? String else { return nil }
+        let items = (value["items"] as? [[String:Any]] ?? []).compactMap { item -> PlanRecordItem? in
+            guard let itemId = item["id"] as? String else { return nil }
+            return PlanRecordItem(id:itemId,objective:item["objective"] as? String ?? itemId)
+        }
+        return PlanRecordDetail(
+            planId:id,
+            revision:value["revision"] as? Int ?? 0,
+            requirementId:value["requirementId"] as? String,
+            sourceBasisRevision:value["sourceBasisRevision"] as? String,
+            goal:value["goal"] as? String ?? id,
+            items:items,
+            resolvedDecisions:value["resolvedDecisions"] as? [String] ?? [],
+            nonGoals:value["nonGoals"] as? [String] ?? []
+        )
+    }
+
     func openRecord(_ id: String) async {
         guard let repoId else { return }
         selectedRecord = id
-        let action = page == .plan ? "read_plan_detail" : "read_requirement_detail"
-        await loadRaw(action, ["repoId": repoId, page.recordIdKey:id])
+        recordDetail = nil
+        do {
+            if page == .plan {
+                let result = try await ForgeBridge.request("read_plan_detail",["repoId":repoId,"planId":id])
+                guard let parsed = Self.planDetail(result) else { throw ForgeBridgeError.invalidResponse }
+                recordDetail = .plan(parsed)
+            } else {
+                let result = try await ForgeBridge.request("read_requirement_detail",["repoId":repoId,"requirementId":id])
+                guard let parsed = Self.requirementDetail(result) else { throw ForgeBridgeError.invalidResponse }
+                recordDetail = .requirement(parsed)
+            }
+            error = nil
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    func openRequirement(_ id: String) async {
+        page = .requirement
+        await loadPage()
+        await openRecord(id)
     }
     func searchKnowledge() async {
         guard let repoId else { return }

@@ -109,6 +109,35 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertFalse(ForgeBridge.allowed.contains("read_work_detail"))
     }
 
+    func testSemanticRecordDetailParsersProjectCanonicalFieldsWithoutWork() {
+        let requirement = NativeWorkspace.requirementDetail([
+            "data":["requirement":[
+                "requirementId":"REQ-a","revision":4,"title":"Desktop",
+                "outcomeStatement":"Useful native client","state":"open",
+                "acceptanceCriteria":["Agent first","No Work authority"],
+                "progressSummary":"Source green","remainingWork":["GUI QA"],
+            ]]
+        ])
+        XCTAssertEqual(requirement?.requirementId,"REQ-a")
+        XCTAssertEqual(requirement?.revision,4)
+        XCTAssertEqual(requirement?.acceptanceCriteria.count,2)
+        XCTAssertEqual(requirement?.remainingWork,["GUI QA"])
+
+        let plan = NativeWorkspace.planDetail([
+            "data":["plan":[
+                "planId":"PLAN-a","revision":8,"requirementId":"REQ-a",
+                "sourceBasisRevision":"abcdef123456","goal":"Ship client",
+                "items":[["id":"p1","objective":"Polish UI"]],
+                "resolvedDecisions":["One native app"],"nonGoals":["No Work lifecycle"],
+            ]]
+        ])
+        XCTAssertEqual(plan?.planId,"PLAN-a")
+        XCTAssertEqual(plan?.requirementId,"REQ-a")
+        XCTAssertEqual(plan?.items.first?.objective,"Polish UI")
+        XCTAssertEqual(plan?.resolvedDecisions,["One native app"])
+        XCTAssertEqual(plan?.nonGoals,["No Work lifecycle"])
+    }
+
     @MainActor
     func testThreadRenamePersistsWithoutChangingConversationBinding() {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

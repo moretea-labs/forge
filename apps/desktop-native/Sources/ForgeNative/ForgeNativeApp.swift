@@ -1313,14 +1313,8 @@ private struct RecordsPane: View {
                                 .font(.system(size:14)).foregroundStyle(ForgePalette.secondary)
                         }.padding(.top,16)
                     }
-                    if !model.detail.isEmpty {
-                        Text(model.detail)
-                            .font(.system(size:11,design:.monospaced))
-                            .textSelection(.enabled)
-                            .padding(16)
-                            .frame(maxWidth:.infinity,alignment:.leading)
-                            .background(ForgePalette.softFill,
-                                        in:RoundedRectangle(cornerRadius:15,style:.continuous))
+                    if let recordDetail = model.recordDetail {
+                        semanticRecordDetail(recordDetail)
                     }
                 }
                 .frame(maxWidth:790,alignment:.leading)
@@ -1328,6 +1322,106 @@ private struct RecordsPane: View {
                 .padding(.horizontal,22).padding(.vertical,24)
             }
         }.background(ForgePalette.canvas)
+    }
+
+    @ViewBuilder
+    private func semanticRecordDetail(_ detail: SemanticRecordDetail) -> some View {
+        switch detail {
+        case .requirement(let requirement):
+            VStack(alignment:.leading,spacing:18) {
+                semanticSection("目标") {
+                    Text(requirement.outcomeStatement.isEmpty ? "未提供 outcome。" : requirement.outcomeStatement)
+                        .font(.system(size:12.5)).lineSpacing(4).textSelection(.enabled)
+                }
+                if !requirement.acceptanceCriteria.isEmpty {
+                    semanticSection("验收标准") {
+                        semanticBulletList(requirement.acceptanceCriteria)
+                    }
+                }
+                if !requirement.progressSummary.isEmpty {
+                    semanticSection("当前进度") {
+                        Text(requirement.progressSummary)
+                            .font(.system(size:12.5)).lineSpacing(4).textSelection(.enabled)
+                    }
+                }
+                if !requirement.remainingWork.isEmpty {
+                    semanticSection("剩余工作") {
+                        semanticBulletList(requirement.remainingWork)
+                    }
+                }
+                Text("Requirement · r\(requirement.revision) · \(requirement.state)")
+                    .font(.system(size:10,design:.monospaced)).foregroundStyle(.tertiary)
+            }
+        case .plan(let plan):
+            VStack(alignment:.leading,spacing:18) {
+                semanticSection("目标") {
+                    Text(plan.goal).font(.system(size:12.5)).lineSpacing(4).textSelection(.enabled)
+                }
+                if let requirementId = plan.requirementId, !requirementId.isEmpty {
+                    Button {
+                        Task { await model.openRequirement(requirementId) }
+                    } label: {
+                        HStack(spacing:7) {
+                            Image(systemName:"doc.text")
+                            Text("打开 Requirement")
+                            Text(requirementId).font(.system(size:10,design:.monospaced)).foregroundStyle(.secondary)
+                            Spacer(minLength:0)
+                            Image(systemName:"chevron.right").font(.system(size:9,weight:.semibold))
+                        }
+                        .font(.system(size:11,weight:.medium))
+                        .padding(.horizontal,11).frame(height:34)
+                        .background(ForgePalette.softFill,in:RoundedRectangle(cornerRadius:9,style:.continuous))
+                    }
+                    .buttonStyle(.plain)
+                }
+                if !plan.items.isEmpty {
+                    semanticSection("计划项") {
+                        VStack(alignment:.leading,spacing:9) {
+                            ForEach(plan.items) { item in
+                                VStack(alignment:.leading,spacing:3) {
+                                    Text(item.objective).font(.system(size:12.5)).lineSpacing(3)
+                                    Text(item.id).font(.system(size:9.5,design:.monospaced)).foregroundStyle(.tertiary)
+                                }
+                            }
+                        }
+                    }
+                }
+                if !plan.resolvedDecisions.isEmpty {
+                    semanticSection("已确认决策") { semanticBulletList(plan.resolvedDecisions) }
+                }
+                if !plan.nonGoals.isEmpty {
+                    semanticSection("不做") { semanticBulletList(plan.nonGoals) }
+                }
+                HStack(spacing:8) {
+                    Text("Plan · r\(plan.revision)")
+                    if let source = plan.sourceBasisRevision, !source.isEmpty {
+                        Text(String(source.prefix(10))).textSelection(.enabled)
+                    }
+                }
+                .font(.system(size:10,design:.monospaced)).foregroundStyle(.tertiary)
+            }
+        }
+    }
+
+    private func semanticSection<Content:View>(_ title:String,@ViewBuilder content:() -> Content) -> some View {
+        VStack(alignment:.leading,spacing:9) {
+            Text(title).font(.system(size:11,weight:.semibold)).foregroundStyle(ForgePalette.secondary)
+            content()
+        }
+        .padding(14)
+        .frame(maxWidth:.infinity,alignment:.leading)
+        .background(ForgePalette.softFill,in:RoundedRectangle(cornerRadius:13,style:.continuous))
+    }
+
+    private func semanticBulletList(_ values:[String]) -> some View {
+        VStack(alignment:.leading,spacing:7) {
+            ForEach(Array(values.enumerated()),id:\.offset) { _, value in
+                HStack(alignment:.top,spacing:8) {
+                    Circle().frame(width:4,height:4).padding(.top,6)
+                    Text(value).font(.system(size:12)).lineSpacing(3).textSelection(.enabled)
+                }
+            }
+        }
     }
 }
 
