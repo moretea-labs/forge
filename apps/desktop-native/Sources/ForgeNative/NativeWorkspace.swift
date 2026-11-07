@@ -334,7 +334,11 @@ final class NativeWorkspace: ObservableObject {
         if let bytes = try? Data(contentsOf: self.store),
            let items = try? JSONDecoder().decode([ChatThread].self, from: bytes) {
             threads = Array(items.prefix(100))
-            selectedThreadId = threads.first?.id
+            if let first = threads.first {
+                selectedThreadId = first.id
+                repoId = first.repoId
+                checkoutId = first.checkoutId
+            }
         }
         if threads.isEmpty { newThread() }
     }
@@ -406,6 +410,9 @@ final class NativeWorkspace: ObservableObject {
             repoId = boundRepoId
             checkoutId = item.checkoutId
             Task { await refreshProject() }
+        } else {
+            repoId = nil
+            checkoutId = nil
         }
     }
     func selectAgentModel(_ slug: String) {
@@ -493,9 +500,8 @@ final class NativeWorkspace: ObservableObject {
             let rows = result["repositories"] as? [[String: Any]] ?? []
             let bytes = try JSONSerialization.data(withJSONObject: rows)
             projects = try JSONDecoder().decode([ForgeProject].self, from: bytes)
-            if repoId == nil || !projects.contains(where: { $0.repoId == repoId }) {
-                repoId = result["preferredRepoId"] as? String ?? projects.first?.repoId
-            }
+            // Agent repository context is owned by the selected ChatThread. Do not
+            // fabricate a binding from preferredRepoId for an unbound conversation.
             let status = try? await ForgeBridge.request("read_local_provider_status")
             provider = status?["label"] as? String ?? status?["status"] as? String ?? "Codex 不可用"
             imageInputAvailable = status?["imageInput"] as? Bool == true

@@ -103,7 +103,7 @@ private struct ForgeWorkspaceView: View {
                 deleteThreadId = nil
             }
         } message: {
-            Text("只会删除这条本地会话记录，不会删除 Forge Work、项目或 Provider 会话。")
+            Text("只会删除这条本地会话记录，不会修改项目、Requirement / Plan 或 Provider 会话。")
         }
     }
 

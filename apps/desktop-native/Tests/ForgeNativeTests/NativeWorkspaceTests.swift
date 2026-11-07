@@ -428,6 +428,46 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(model.checkoutId, "checkout_a")
     }
 
+    @MainActor
+    func testSelectingUnboundThreadClearsStaleProjectContext() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = folder.appendingPathComponent("conversations.json")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let model = NativeWorkspace(store:store)
+        let unboundId = model.threads[0].id
+        XCTAssertNil(model.threads[0].repoId)
+        XCTAssertNil(model.threads[0].checkoutId)
+        model.repoId = "repo_stale"
+        model.checkoutId = "checkout_stale"
+        model.checkoutRoot = folder
+        model.checkoutBranch = "stale"
+
+        model.selectThread(unboundId)
+
+        XCTAssertNil(model.repoId)
+        XCTAssertNil(model.checkoutId)
+        XCTAssertNil(model.checkoutRoot)
+        XCTAssertNil(model.checkoutBranch)
+    }
+
+    @MainActor
+    func testRestoredThreadOwnsInitialProjectContext() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = folder.appendingPathComponent("conversations.json")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let source = NativeWorkspace(store:store)
+        source.threads[0].repoId = "repo_saved"
+        source.threads[0].checkoutId = "checkout_saved"
+        source.persist()
+
+        let restored = NativeWorkspace(store:store)
+
+        XCTAssertEqual(restored.repoId,"repo_saved")
+        XCTAssertEqual(restored.checkoutId,"checkout_saved")
+        XCTAssertEqual(restored.thread?.repoId,"repo_saved")
+        XCTAssertEqual(restored.thread?.checkoutId,"checkout_saved")
+    }
+
     func testRegistryProjectLabelDoesNotFabricateRepository() {
         let item = ForgeProject(repoId:"r",displayName:"Forge",localRoot:nil,checkoutId:nil,
                                 remoteUrl:"https://github.com/moretea-labs/forge.git",defaultBranch:"main")
