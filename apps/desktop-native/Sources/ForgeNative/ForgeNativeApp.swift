@@ -57,6 +57,7 @@ private struct ForgeWorkspaceView: View {
     @State private var visibility: NavigationSplitViewVisibility = .all
     @State private var renameThreadId: String?
     @State private var renameThreadTitle = ""
+    @State private var hoveredThreadId: String?
     @State private var deleteThreadId: String?
 
     var body: some View {
@@ -95,18 +96,6 @@ private struct ForgeWorkspaceView: View {
             }
         } message: {
             Text("名称仅用于本地会话列表。")
-        }
-        .alert("删除会话？",isPresented:Binding(
-            get:{ deleteThreadId != nil },
-            set:{ if !$0 { deleteThreadId = nil } }
-        )) {
-            Button("取消",role:.cancel) { deleteThreadId = nil }
-            Button("删除",role:.destructive) {
-                if let id = deleteThreadId { model.deleteThread(id) }
-                deleteThreadId = nil
-            }
-        } message: {
-            Text("只会删除这条本地会话记录，不会修改项目、Requirement / Plan 或 Provider 会话。")
         }
     }
 
@@ -189,35 +178,7 @@ private struct ForgeWorkspaceView: View {
             ScrollView {
                 LazyVStack(alignment:.leading,spacing:2) {
                     ForEach(model.visibleThreads) { thread in
-                        Button { model.selectThread(thread.id) } label: {
-                            HStack(spacing:8) {
-                                let selected = model.selectedThreadId == thread.id && model.page == .agent
-                                Image(systemName:selected ? "bubble.left.fill" : "bubble.left")
-                                    .symbolRenderingMode(.hierarchical)
-                                    .font(.system(size:11))
-                                    .frame(width:17)
-                                Text(thread.title)
-                                    .font(.system(size:12,weight:selected ? .medium : .regular))
-                                    .lineLimit(1)
-                                Spacer(minLength:0)
-                            }
-                            .frame(maxWidth:.infinity,alignment:.leading)
-                            .padding(.horizontal,10).frame(height:34)
-                            .background(model.selectedThreadId == thread.id && model.page == .agent
-                                ? ForgePalette.selectionStrong : .clear,
-                                in:RoundedRectangle(cornerRadius:10,style:.continuous))
-                            .contentShape(Rectangle())
-                        }.buttonStyle(.plain)
-                            .disabled(model.busy && model.activeConversationId != thread.id)
-                            .contextMenu {
-                                Button {
-                                    renameThreadId = thread.id
-                                    renameThreadTitle = thread.title
-                                } label: {
-                                    Label("重命名",systemImage:"pencil")
-                                }
-                                Button("删除会话",role:.destructive) { deleteThreadId = thread.id }
-                            }
+                        threadRow(thread)
                     }
                 }.padding(.horizontal,10)
             }.scrollIndicators(.hidden)
@@ -262,6 +223,109 @@ private struct ForgeWorkspaceView: View {
         }
         .foregroundStyle(ForgePalette.ink)
         .background(.ultraThinMaterial)
+    }
+
+    private func threadRow(_ thread: ChatThread) -> some View {
+        let selected = model.selectedThreadId == thread.id && model.page == .agent
+        let hovered = hoveredThreadId == thread.id
+        let deleting = deleteThreadId == thread.id
+        let running = model.activeConversationId == thread.id
+        let showDelete = hovered || deleting
+
+        return HStack(spacing:4) {
+            Button { model.selectThread(thread.id) } label: {
+                HStack(spacing:8) {
+                    Image(systemName:selected ? "bubble.left.fill" : "bubble.left")
+                        .symbolRenderingMode(.hierarchical)
+                        .font(.system(size:11))
+                        .frame(width:17)
+                    Text(thread.title)
+                        .font(.system(size:12,weight:selected ? .medium : .regular))
+                        .lineLimit(1)
+                    Spacer(minLength:0)
+                }
+                .frame(maxWidth:.infinity,alignment:.leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(model.busy && !running)
+
+            Button {
+                guard !running else { return }
+                deleteThreadId = thread.id
+            } label: {
+                Image(systemName:"trash")
+                    .font(.system(size:10.5,weight:.medium))
+                    .frame(width:24,height:24)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(running ? ForgePalette.secondary.opacity(0.35) : Color.red.opacity(0.78))
+            .opacity(showDelete ? 1 : 0)
+            .allowsHitTesting(showDelete && !running)
+            .accessibilityHidden(!showDelete)
+            .accessibilityLabel("删除会话 \(thread.title)")
+            .help(running ? "请先停止正在运行的会话" : "删除会话")
+            .popover(isPresented:Binding(
+                get:{ deleteThreadId == thread.id },
+                set:{ if !$0 && deleteThreadId == thread.id { deleteThreadId = nil } }
+            ),arrowEdge:.trailing) {
+                deleteConfirmation(thread)
+            }
+        }
+        .padding(.leading,10).padding(.trailing,5)
+        .frame(height:34)
+        .background(selected ? ForgePalette.selectionStrong : (hovered ? ForgePalette.softFill : .clear),
+                    in:RoundedRectangle(cornerRadius:10,style:.continuous))
+        .contentShape(RoundedRectangle(cornerRadius:10,style:.continuous))
+        .onHover { inside in
+            if inside {
+                hoveredThreadId = thread.id
+            } else if hoveredThreadId == thread.id {
+                hoveredThreadId = nil
+            }
+        }
+        .animation(.easeOut(duration:0.12),value:hovered)
+        .contextMenu {
+            Button {
+                renameThreadId = thread.id
+                renameThreadTitle = thread.title
+            } label: {
+                Label("重命名",systemImage:"pencil")
+            }
+            Button("删除会话…",role:.destructive) { deleteThreadId = thread.id }
+                .disabled(running)
+        }
+    }
+
+    private func deleteConfirmation(_ thread: ChatThread) -> some View {
+        VStack(alignment:.leading,spacing:11) {
+            HStack(spacing:8) {
+                Image(systemName:"trash.fill")
+                    .font(.system(size:12,weight:.semibold))
+                    .foregroundStyle(Color.red.opacity(0.82))
+                Text("删除会话？")
+                    .font(.system(size:13,weight:.semibold))
+            }
+            Text(thread.title)
+                .font(.system(size:12,weight:.medium))
+                .lineLimit(2)
+            Text("仅删除这条本地记录，不影响项目、Requirement / Plan 或 Provider 会话。")
+                .font(.system(size:11))
+                .foregroundStyle(ForgePalette.secondary)
+                .fixedSize(horizontal:false,vertical:true)
+            HStack(spacing:8) {
+                Spacer()
+                Button("取消") { deleteThreadId = nil }
+                    .keyboardShortcut(.cancelAction)
+                Button("删除",role:.destructive) {
+                    model.deleteThread(thread.id)
+                    deleteThreadId = nil
+                }
+            }
+        }
+        .padding(14)
+        .frame(width:280)
     }
 
     private func sectionLabel(_ name: String) -> some View {
