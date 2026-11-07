@@ -114,6 +114,8 @@ export interface ProcessResourceClaim {
   mode: 'read' | 'write' | 'exclusive';
   repoId?: string;
   checkoutId?: string;
+  /** Historical compatibility only; new Process claims never write Work attribution. */
+  workId?: string;
 }
 
 /** Durable lease ownership held by a managed process (not only recorded claims). */
@@ -124,6 +126,8 @@ export interface ProcessLeaseRef {
   expiresAt?: string;
   repoId?: string;
   checkoutId?: string;
+  /** Historical compatibility only; retained so old leases remain releasable. */
+  workId?: string;
 }
 
 /** Retryable diagnostic for terminal lease cleanup; not a second lease state machine. */
@@ -185,6 +189,8 @@ export interface ManagedProcessRecord {
   checkoutId?: string;
   /** Authenticated principal that owns the handle; opaque ids never authorize by themselves. */
   principalId?: string;
+  /** Historical compatibility only; current Process writers never set Work attribution. */
+  workId?: string;
   /** Immutable pre-spawn repository/checkout authority used for execution validation. */
   executionIdentity?: ResolvedExecutionIdentity;
   /** Caller-stable command identity; defaults to processId when omitted. */
@@ -260,7 +266,6 @@ export interface ManagedProcessRecord {
     taskId?: string;
     /** Internal structured result written by the persisted Check sidecar. */
     checkResultReceiptPath?: string;
-    /** True when this Check executed in a Work-owned verification snapshot. */
   };
   error?: { code: string; message: string };
   /** Sidecar exit receipt path written by wrapper (survives controller restart). */
@@ -313,7 +318,7 @@ export interface SpawnManagedProcessInput {
   artifactIdentity?: string;
   workerProtocolVersion?: number;
   signal?: AbortSignal;
-  /** Reuse one exact active build/test Process when command, source identity and resource claims all match. */
+  /** Reuse only an exact active Process with identical source identity, principal, command and resource claims. */
   reuseActiveEquivalent?: boolean;
   /** When true, never block the caller waiting for completion. */
   returnHandleImmediately?: boolean;
@@ -321,6 +326,8 @@ export interface SpawnManagedProcessInput {
 
 export interface ProcessHandle {
   processId: string;
+  /** Historical compatibility projection from old persisted Process records. */
+  workId?: string;
   commandId: string;
   status: ProcessRuntimeStatus;
   contractStatus: ProcessContractStatus;

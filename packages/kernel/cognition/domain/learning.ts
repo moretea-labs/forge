@@ -39,8 +39,6 @@ export interface LearningSignal {
   utility: number;
   sourceKind: MemorySourceKind;
   sourceId?: string;
-  sourceWorkId?: string;
-  sourceRoundId?: string;
   observedAt: string;
   evidenceRefs: string[];
   counterEvidenceRefs?: string[];
@@ -89,8 +87,6 @@ export function memoryDraftFromLearningSignal(input: LearningSignal): MemoryUnit
     provenance: {
       sourceKind: signal.sourceKind,
       ...(signal.sourceId ? { sourceId: signal.sourceId } : {}),
-      ...(signal.sourceWorkId ? { sourceWorkId: signal.sourceWorkId } : {}),
-      ...(signal.sourceRoundId ? { sourceRoundId: signal.sourceRoundId } : {}),
       recordedAt: signal.observedAt,
       evidenceRefs: signal.evidenceRefs,
     },

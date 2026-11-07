@@ -14,7 +14,6 @@ export interface ControllerResultRecord {
   repoId?: string;
   sessionId: string;
   principalId: string;
-  workId?: string;
   kind: 'inspection' | 'command' | 'validation' | 'finalization' | 'generic';
   byteLength: number;
   createdAt: string;
@@ -74,7 +73,6 @@ function resultFingerprint(record: ControllerResultRecord, value: unknown): stri
     resultId: record.resultId,
     sessionId: record.sessionId,
     principalId: record.principalId,
-    workId: record.workId ?? null,
     kind: record.kind,
     createdAt: record.createdAt,
     value,
@@ -94,7 +92,6 @@ function registerResult(
     repositoryId: record.repoId,
     principalId: record.principalId,
     sessionId: record.sessionId,
-    workId: record.workId,
     fingerprint: resultFingerprint(record, value),
   });
 }

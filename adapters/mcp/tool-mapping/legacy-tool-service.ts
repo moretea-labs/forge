@@ -9,6 +9,7 @@ import { withRepositoryMutationExclusion } from '../../../src/runtime/resources/
 import { listAgentJobs } from "../../../src/cli/agent-jobs/job-manager";
 import { listControllerChecks } from "../../../src/cli/controller/check-runner";
 import { buildExecutionDiagnostics, buildRequirementBoard } from '../../../src/runtime/control-plane/facade/requirement-board';
+import { getWorkContract } from '../../../packages/kernel/work/api';
 import { listCapabilityDescriptors, summarizeCapabilityGroups } from '../../../src/runtime/control-plane/facade/capability-registry';
 import { exportControllerWorklog, listControllerWorklogEvents, parseWorklogCategory } from "../../../src/cli/controller/worklog";
 import { FORGE_MCP_SCHEMA_VERSION, FORGE_TOOL_SURFACE, FORGE_VERSION, forgeToolSurfaceFingerprint, formatDurationMs, normalizeAgentTimeoutMs } from "../../../src/cli/controller/runtime-config";
@@ -1116,8 +1117,13 @@ export async function callMcpTool(
         const controllerHome = resolveRepoPreferredControllerHome(ctx.repoRoot);
         const allowedPaths = stringList(args.allowed_paths);
         const checks = stringList(args.checks);
-        // EditSession authority is physical repository/checkout/principal state.
-        // Historical Work identity is never accepted as a mutation binding.
+        const explicitWorkId = typeof args.work_id === "string" ? args.work_id.trim() : "";
+        if (explicitWorkId) {
+          return errorResult(
+            "WORK_MUTATION_AUTHORITY_RETIRED",
+            `Work ${explicitWorkId} cannot own or select a direct-edit session; use repository/checkout/principal identity.`,
+          );
+        }
         const editRepository = resolveRepositorySelection({
           repoId,
           checkoutId: identity.checkoutId,

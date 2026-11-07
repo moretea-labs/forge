@@ -118,7 +118,6 @@ function mapSuggested(actions: SuggestedNextAction[] = []): SuggestedActionViewM
   });
 }
 
-
 const ERROR_COPY: Record<UserFacingErrorClass, { title: string; explanation: string; nextActions: string[] }> = {
   controller_unavailable: {
     title: '控制器暂不可用',
@@ -226,7 +225,6 @@ export function summarizeChangedFiles(paths: readonly string[]): ChangedFilesSum
   };
 }
 
-
 function handoffTone(severity: HandoffItem['severity']): PlainStatusTone {
   if (severity === 'blocked' || severity === 'failed') return 'red';
   if (severity === 'needs_review') return 'amber';
@@ -238,9 +236,7 @@ function describeHandoffDecision(item: HandoffItem): HandoffCardViewModel['decis
   const reason = item.creationReason;
   const isApproval = reason === 'policy_approval_required' || reason === 'destructive_action_requires_confirmation';
   const approvalAction = item.approvalAction;
-  const canApproveAndContinue = isApproval
-    && (item.status === 'pending' || item.status === 'acknowledged')
-    && approvalAction?.operation === 'start';
+  const canApproveAndContinue = false;
   if (isApproval) {
     const destructive = reason === 'destructive_action_requires_confirmation' || approvalAction?.risk === 'destructive';
     const payload = approvalAction?.payload ?? {};
@@ -253,21 +249,19 @@ function describeHandoffDecision(item: HandoffItem): HandoffCardViewModel['decis
       type: 'approval',
       typeLabel: destructive ? '高风险操作审批' : '执行授权',
       requestedAction: approvalAction?.operation === 'start' && objective
-        ? `创建任务并继续处理：“${objective.slice(0, 240)}”`
+        ? `历史任务创建请求：“${objective.slice(0, 240)}”`
         : item.blockingDecision || item.summary,
       necessityLabel: '必须确认',
       necessityExplanation: destructive
         ? '此操作包含高风险或潜在不可逆副作用，系统不能替你默认同意。'
         : '当前安全策略要求显式授权；缩小范围或改为只读预览后可避免本次审批。',
       impact: approvalAction?.operation === 'start'
-        ? `批准后会创建正式任务。${scopeSummary}。`
-        : '当前审批没有保存可安全重放的具体动作，因此不能自动续跑。',
-      afterApproval: canApproveAndContinue
-        ? '系统会记录批准、立即创建任务并打开任务详情；接下来会明确显示继续、委派、验证或收尾动作，不代表任务已经完成。'
-        : '只会记录你的决定，不会自动执行。请按人工继续提示处理，或重新提交范围明确的任务。',
+        ? `这是退役 Work 生命周期留下的历史审批。${scopeSummary}。当前只能记录决定，不会创建或续跑 Work。`
+        : '当前审批没有可执行的现行动作，只能记录决定。',
+      afterApproval: '只会记录你的决定，不会自动执行或恢复 Work。需要继续时请从 Requirement/Plan 与当前 repository/checkout 发起现行操作。',
       ifRejected: '相关操作保持未执行；你可以缩小范围、改成预览、补充信息或取消。',
       canApproveAndContinue,
-      primaryActionLabel: canApproveAndContinue ? '批准并创建任务' : '仅记录决定',
+      primaryActionLabel: '仅记录决定',
     };
   }
   if (reason === 'missing_authorization') {
@@ -833,7 +827,6 @@ export function setConsoleAccessPolicy(
   };
 }
 
-
 export function repairConsole(
   ctx: ConsoleFacadeContext,
   input: {
@@ -902,26 +895,29 @@ export async function resolveConsoleHandoff(ctx: ConsoleFacadeContext, handoffId
   return mapHandoffCard(item);
 }
 
-export async function approveConsoleHandoff(ctx: ConsoleFacadeContext, handoffId: string, _resolver = 'user') {
+export async function approveConsoleHandoff(ctx: ConsoleFacadeContext, handoffId: string, resolver = 'user') {
   const item = getHandoffItem(store(ctx), handoffId);
   if (!item) throw new Error(`handoff not found: ${handoffId}`);
   const decision = describeHandoffDecision(item);
-  if (decision.type !== 'approval') throw new Error('该事项不是审批，不能使用批准动作。');
-  const summary = item.approvalAction?.operation === 'start'
-    ? 'WORK_APPROVAL_ACTION_RETIRED: 历史 Work start 审批只读保留，不能重放。请通过当前 UserRequest/权限路径记录决定。'
-    : 'APPROVAL_ACTION_NOT_REPLAYABLE: 当前审批没有可由本地控制台安全重放的动作。';
+  if (decision.type !== 'approval') throw new Error('该事项不是审批，不能使用批准操作。');
+  if (item.status !== 'pending' && item.status !== 'acknowledged') {
+    throw new Error(`该审批已处理（${item.status}）。`);
+  }
+  const resolved = resolveHandoffItem(store(ctx), handoffId, {
+    decision: item.approvalAction?.operation === 'start'
+      ? `approved_historical_work_request: ${item.approvalAction.label}`
+      : `approved_decision_only: ${item.blockingDecision || item.summary}`,
+    resolver,
+  });
   return {
-    item: mapHandoffCard(item),
+    item: mapHandoffCard(resolved),
     continued: false,
-    summary,
-    historicalWorkActionRetired: item.approvalAction?.operation === 'start',
+    summary: '已记录批准决定；历史 Work 创建/续跑动作已退役，未执行任何任务创建。',
   };
 }
-
 export function dismissConsoleHandoff(ctx: ConsoleFacadeContext, handoffId: string, decision = 'dismissed', resolver = 'user') {
   return mapHandoffCard(dismissHandoffItem(store(ctx), handoffId, { decision, resolver }));
 }
-
 
 /** Normalize facade/tool results into GUI-friendly operation feedback. */
 export function toConsoleOperationFeedback(result: FacadeResult): {
@@ -967,26 +963,6 @@ export function toConsoleOperationFeedback(result: FacadeResult): {
     suggestedNextActions: mapSuggested(result.suggestedNextActions),
     changedFiles: changed,
   };
-}
-
-export function buildConsoleContext(ctx: ConsoleFacadeContext) {
-  const checks = listControllerChecks(ctx.repository.canonicalRoot);
-  return buildFacadeResult({
-    summary: '仓库上下文已就绪',
-    data: {
-      repositoryName: ctx.repository.displayName,
-      checks: checks.map((check) => ({ id: check.id, description: check.description })),
-      handoffs: listHandoffItems({ ...store(ctx), status: 'pending', limit: 10 }).map(summarizeHandoffItem),
-      historicalWorkProjection: 'retired_not_projected',
-      progressAuthority: 'github_issue_project',
-    },
-    suggestedNextActions: [{
-      label: '读取仓库上下文',
-      tool: 'rh_context' as const,
-      operation: 'get',
-      risk: 'readonly' as const,
-    }],
-  });
 }
 
 export function normalizeRequestedChecks(ctx: ConsoleFacadeContext, requested: string[]) {

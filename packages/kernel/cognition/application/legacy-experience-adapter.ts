@@ -18,7 +18,7 @@ export function memoryUnitFromExperience(record: ExperienceRecord): MemoryUnit {
     facets: ['knowledge', record.kind],
     canonicalText: record.statement,
     concepts: stableConcepts(`experience.${record.kind}`, record.scope.kind, record.scope.id, record.statement),
-    provenance: { sourceKind: 'experience', sourceId: record.id, sourceWorkId: record.sourceWorkId, sourceRoundId: record.sourceRoundId, recordedAt: record.recordedAt, evidenceRefs: record.evidenceRefs },
+    provenance: { sourceKind: 'experience', sourceId: record.id, recordedAt: record.recordedAt, evidenceRefs: record.evidenceRefs },
     confidence,
     utility,
     tier: record.kind === 'observation' ? 'cold' : 'warm',

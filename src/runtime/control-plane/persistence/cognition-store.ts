@@ -211,8 +211,6 @@ function rowToMemory(row: Record<string, unknown>, evidenceRefs: string[], count
     provenance: {
       sourceKind: row.source_kind as MemoryUnit['provenance']['sourceKind'],
       ...(row.source_id ? { sourceId: row.source_id as string } : {}),
-      ...(row.source_work_id ? { sourceWorkId: row.source_work_id as string } : {}),
-      ...(row.source_round_id ? { sourceRoundId: row.source_round_id as string } : {}),
       recordedAt: row.recorded_at as string,
       evidenceRefs,
     },
@@ -329,8 +327,8 @@ function writeCognitiveMemoryUnitWithinTransaction(
     kind, id, memory.id, memory.schemaVersion, memory.revision, memory.canonicalText,
     JSON.stringify(memory.facets), JSON.stringify(memory.concepts), memory.confidence, memory.utility, memory.tier,
     memory.payloadRef?.digest ?? null, memory.payloadRef?.mediaType ?? null, memory.payloadRef?.bytes ?? null,
-    memory.provenance.sourceKind, memory.provenance.sourceId ?? null, memory.provenance.sourceWorkId ?? null,
-    memory.provenance.sourceRoundId ?? null, memory.provenance.recordedAt, memory.validFrom, memory.expiresAt ?? null,
+    memory.provenance.sourceKind, memory.provenance.sourceId ?? null, null,
+    null, memory.provenance.recordedAt, memory.validFrom, memory.expiresAt ?? null,
     memory.supersedesId ?? null, memory.retractedAt ?? null, memory.retractionReason ?? null));
 
   statement(database,
@@ -367,7 +365,7 @@ function writeCognitiveMemoryEdgeWithinTransaction(database: SqliteDatabase, edg
       source_work_id=excluded.source_work_id, source_round_id=excluded.source_round_id,
       recorded_at=excluded.recorded_at, expires_at=excluded.expires_at, retracted_at=excluded.retracted_at`,
     prepared => prepared.run(kind, id, edge.id, edge.fromId, edge.toId, edge.relation, edge.weight,
-      JSON.stringify(edge.evidenceRefs), edge.sourceWorkId ?? null, edge.sourceRoundId ?? null,
+      JSON.stringify(edge.evidenceRefs), null, null,
       edge.recordedAt, edge.expiresAt ?? null, edge.retractedAt ?? null));
   return edge;
 }
@@ -632,8 +630,6 @@ function readPortForDatabase(database: SqliteDatabase): CognitiveReadPort {
           relation: row.relation as string,
           weight: Number(row.weight),
           evidenceRefs: JSON.parse(row.evidence_json as string) as string[],
-          ...(row.source_work_id ? { sourceWorkId: row.source_work_id as string } : {}),
-          ...(row.source_round_id ? { sourceRoundId: row.source_round_id as string } : {}),
           recordedAt: row.recorded_at as string,
           ...(row.expires_at ? { expiresAt: row.expires_at as string } : {}),
           ...(row.retracted_at ? { retractedAt: row.retracted_at as string } : {}),
@@ -658,7 +654,6 @@ export interface CognitiveAuditQuery {
   concept?: string;
   facet?: string;
   sourceKind?: MemoryUnit['provenance']['sourceKind'];
-  sourceWorkId?: string;
   limit?: number;
 }
 
@@ -683,8 +678,6 @@ function auditEdgeFromRow(row: Record<string, unknown>): MemoryEdge {
     relation: row.relation as string,
     weight: Number(row.weight),
     evidenceRefs: JSON.parse(row.evidence_json as string) as string[],
-    ...(row.source_work_id ? { sourceWorkId: row.source_work_id as string } : {}),
-    ...(row.source_round_id ? { sourceRoundId: row.source_round_id as string } : {}),
     recordedAt: row.recorded_at as string,
     ...(row.expires_at ? { expiresAt: row.expires_at as string } : {}),
     ...(row.retracted_at ? { retractedAt: row.retracted_at as string } : {}),
@@ -707,10 +700,6 @@ export function auditCognitiveMemory(controllerHome: string, input: CognitiveAud
     if (input.sourceKind) {
       clauses.push('source_kind = ?');
       params.push(input.sourceKind);
-    }
-    if (input.sourceWorkId?.trim()) {
-      clauses.push('source_work_id = ?');
-      params.push(input.sourceWorkId.trim());
     }
     const scanLimit = Math.min(512, Math.max(limit * 8, 64));
     const rows = statement(database, `
@@ -736,8 +725,6 @@ export function auditCognitiveMemory(controllerHome: string, input: CognitiveAud
           ...memory.concepts,
           ...memory.facets,
           memory.provenance.sourceId ?? '',
-          memory.provenance.sourceWorkId ?? '',
-          memory.provenance.sourceRoundId ?? '',
         ].join('\n'));
         for (const term of queryTerms) if (terms.has(term)) return true;
         return false;

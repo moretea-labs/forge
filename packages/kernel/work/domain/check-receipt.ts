@@ -2,7 +2,7 @@ export type ProcessCheckReceiptStatus = 'passed' | 'failed' | 'timed_out' | 'can
 export type ProcessCheckReceiptRuntimeStatus = 'succeeded' | 'failed' | 'timed_out' | 'cancelled';
 
 /**
- * Stable, persistence-safe evidence contract shared by Edit Sessions, Work and Tasks.
+ * Stable, persistence-safe evidence contract shared by Edit Sessions, Issues/Tasks and checks.
  * It deliberately contains no execution-runtime implementation types.
  */
 export interface ProcessCheckReceiptEvidence {
@@ -11,7 +11,6 @@ export interface ProcessCheckReceiptEvidence {
   resultDigest: string;
   repoId: string;
   checkoutId?: string;
-  workId?: string;
   executionSessionId?: string;
   editSessionId?: string;
   editRevision?: number;

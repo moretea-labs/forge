@@ -129,7 +129,7 @@ export function consolidateMemories(scope: ScopeRef, memories: readonly MemoryUn
     const sources = [...group].sort((a, b) => a.id.localeCompare(b.id));
     const evidence = [...new Set(sources.flatMap(memory => memory.provenance.evidenceRefs))].slice(0, 64);
     const traceable = sources.every(memory => Boolean(
-      memory.provenance.sourceRoundId || memory.provenance.sourceId || memory.provenance.evidenceRefs.length));
+      memory.provenance.sourceId || memory.provenance.evidenceRefs.length));
     if (!traceable) {
       skipped.push({ id: sources.map(memory => memory.id).join(','), reason: 'no_provenance' });
       continue;
@@ -140,7 +140,6 @@ export function consolidateMemories(scope: ScopeRef, memories: readonly MemoryUn
     const averageConfidence = sources.reduce((sum, memory) => sum + memory.confidence, 0) / sources.length;
     const sourceObservations = new Set(sources.map(memory => {
       const provenance = memory.provenance;
-      if (provenance.sourceRoundId) return `round:${provenance.sourceRoundId}`;
       if (provenance.sourceId) return `${provenance.sourceKind}:${provenance.sourceId}`;
       return `evidence:${[...provenance.evidenceRefs].sort().join('|')}`;
     }));

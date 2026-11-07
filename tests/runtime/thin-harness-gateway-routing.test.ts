@@ -1367,10 +1367,11 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     git(owner, ['worktree', 'remove', linked]);
   });
 
-  test('durable edit-session validation binding rejects different principal or checkout', () => {
+  test('durable edit-session validation binding rejects different Work, principal, or checkout', () => {
     const fx = fixture();
     roots.push(fx.root);
     const binding = {
+      workId: 'work-validation-owner',
       repoId: fx.repository.repoId,
       checkoutId: fx.repository.activeCheckoutId,
       principalId: 'principal-validation-owner',
@@ -1384,6 +1385,8 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     });
 
     expect(() => assertEditSessionDurableBinding(session, binding, { requireBoundIdentity: true })).not.toThrow();
+    expect(() => assertEditSessionDurableBinding(session, { ...binding, repoId: 'repo-other' }, { requireBoundIdentity: true }))
+      .toThrow('EDIT_SESSION_IDENTITY_MISMATCH: repoId');
     expect(() => assertEditSessionDurableBinding(session, { ...binding, principalId: 'principal-other' }, { requireBoundIdentity: true }))
       .toThrow('EDIT_SESSION_IDENTITY_MISMATCH: principalId');
     expect(() => assertEditSessionDurableBinding(session, { ...binding, checkoutId: 'checkout_other' }, { requireBoundIdentity: true }))

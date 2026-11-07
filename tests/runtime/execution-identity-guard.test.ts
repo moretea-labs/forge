@@ -21,8 +21,8 @@ import {
   assertExecutionIdentity,
   classifyGitCommonDirectoryDrift,
   executionIdentityForRepository,
-  executionIdentityFromCoordinates,
   ExecutionIdentityError,
+  type ResolvedExecutionIdentity,
 } from '../../src/runtime/control-plane/execution/execution-identity';
 import { resolveWorkDeliveryTargetBranch } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { spawnManagedProcess } from '../../src/runtime/execution/process-runtime';
@@ -65,6 +65,11 @@ function dualRepoFixture() {
   return { root, controllerHome, repoA, repoB, headA, headB, repoARoot, repoBRoot };
 }
 
+function identityFromCoordinates(
+  input: Omit<ResolvedExecutionIdentity, 'schemaVersion'>,
+): ResolvedExecutionIdentity {
+  return Object.freeze({ schemaVersion: 1 as const, ...input });
+}
 
 describe('execution identity pre-spawn guard', () => {
 
@@ -107,7 +112,7 @@ describe('execution identity pre-spawn guard', () => {
 
   test('rejects an execution identity for an unregistered checkout', () => {
     const fx = dualRepoFixture();
-    const identity = executionIdentityFromCoordinates({
+    const identity = identityFromCoordinates({
       repositoryId: fx.repoA.repoId,
       checkoutId: 'checkout_missing',
       canonicalRoot: fx.repoARoot,
@@ -117,18 +122,6 @@ describe('execution identity pre-spawn guard', () => {
       identity,
       cwd: fx.repoARoot,
     })).toThrow(/CHECKOUT_NOT_REGISTERED/);
-  });
-
-  test('rejects worktree path drift', () => {
-    const fx = dualRepoFixture();
-    const identity = executionIdentityForRepository(fx.repoA, {
-      worktreePath: fx.repoBRoot,
-    });
-    expect(() => assertExecutionIdentity({
-      controllerHome: fx.controllerHome,
-      identity,
-      cwd: fx.repoARoot,
-    })).toThrow(/WORKTREE_PATH_MISMATCH/);
   });
 
   test('rejects Git top-level mismatch when cwd is outside registered checkout', () => {
@@ -159,7 +152,7 @@ describe('execution identity pre-spawn guard', () => {
 
   test('rejects branch drift', () => {
     const fx = dualRepoFixture();
-    const identity = executionIdentityFromCoordinates({
+    const identity = identityFromCoordinates({
       repositoryId: fx.repoA.repoId,
       checkoutId: fx.repoA.activeCheckoutId,
       canonicalRoot: fx.repoA.canonicalRoot,
@@ -170,12 +163,12 @@ describe('execution identity pre-spawn guard', () => {
       controllerHome: fx.controllerHome,
       identity,
       cwd: fx.repoARoot,
-    })).toThrow(/CHECKOUT_BRANCH_CHANGED/);
+    })).toThrow(/WORK_HANDLE_BRANCH_CHANGED/);
   });
 
   test('rejects HEAD drift', () => {
     const fx = dualRepoFixture();
-    const identity = executionIdentityFromCoordinates({
+    const identity = identityFromCoordinates({
       repositoryId: fx.repoA.repoId,
       checkoutId: fx.repoA.activeCheckoutId,
       canonicalRoot: fx.repoA.canonicalRoot,
@@ -186,14 +179,14 @@ describe('execution identity pre-spawn guard', () => {
       controllerHome: fx.controllerHome,
       identity,
       cwd: fx.repoARoot,
-    })).toThrow(/CHECKOUT_HEAD_CHANGED/);
+    })).toThrow(/WORK_HANDLE_HEAD_CHANGED/);
   });
 
   test('symlink path alias still validates through realpath', () => {
     const fx = dualRepoFixture();
     const alias = join(fx.root, 'alias-a');
     symlinkSync(fx.repoARoot, alias);
-    const identity = executionIdentityFromCoordinates({
+    const identity = identityFromCoordinates({
       repositoryId: fx.repoA.repoId,
       checkoutId: fx.repoA.activeCheckoutId,
       canonicalRoot: alias,
@@ -372,7 +365,7 @@ describe('execution identity pre-spawn guard', () => {
     mkdirSync(child, { recursive: true });
     mkdirSync(outside, { recursive: true });
     const canonicalRoot = realpathSync(workspaceRoot);
-    const identity = executionIdentityFromCoordinates({
+    const identity = identityFromCoordinates({
       authority: 'ephemeral_workspace',
       repositoryId: 'workspace_test_identity',
       checkoutId: 'workspace_checkout_test_identity',
@@ -454,7 +447,7 @@ describe('execution identity pre-spawn guard', () => {
 
   test('structured errors expose safe expected/actual fields', () => {
     const fx = dualRepoFixture();
-    const identity = executionIdentityFromCoordinates({
+    const identity = identityFromCoordinates({
       repositoryId: fx.repoA.repoId,
       checkoutId: fx.repoA.activeCheckoutId,
       canonicalRoot: fx.repoA.canonicalRoot,
@@ -471,7 +464,7 @@ describe('execution identity pre-spawn guard', () => {
     } catch (error) {
       expect(error).toBeInstanceOf(ExecutionIdentityError);
       const typed = error as ExecutionIdentityError;
-      expect(typed.code).toBe('CHECKOUT_HEAD_CHANGED');
+      expect(typed.code).toBe('WORK_HANDLE_HEAD_CHANGED');
       expect(typed.details.expected).toBe('deadbeefdeadbeefdeadbeefdeadbeefdeadbeef');
       expect(typed.details.actual).toBe(fx.headA);
       expect(typed.details.repoId).toBe(fx.repoA.repoId);
@@ -499,9 +492,9 @@ describe('execution identity pre-spawn guard', () => {
 
 });
 
-describe('historical WorkHandle delivery target audit compatibility', () => {
+describe('repository Work delivery target authority', () => {
 
-  test('reads retained delivery target metadata without granting current delivery authority', () => {
+  test('uses the bound target, accepts an explicit match, rejects explicit rebinding, and preserves legacy fallback', () => {
     const repository = { defaultBranch: 'main' };
     const bound = { workId: 'work-bound-target', deliveryTargetBranch: 'kernel-v2/architecture' };
     expect(resolveWorkDeliveryTargetBranch(bound, repository.defaultBranch)).toBe('kernel-v2/architecture');

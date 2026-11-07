@@ -2,7 +2,6 @@ import { createHash } from "crypto";
 import { defaultSemanticProviderRegistry, type SemanticNavigationKind, type SemanticNavigationRequest } from "../../../src/runtime/context/semantic-navigation";
 import { isIncidentalSemanticDependencyProbe } from "../../../src/runtime/context/semantic-navigation-contract";
 import { buildContextClosureReceipt } from "../../../src/runtime/context/context-closure";
-import { readWorkHandle } from "../../../src/runtime/control-plane/execution/work-handle-store";
 import type { MultiRepositoryMcpToolContext } from "../multi-repository";
 import { result } from "./result-adapter";
 import { boundedRuntimeResult } from "./bounded-result-runtime";
@@ -73,7 +72,7 @@ function rhContextReadSessionId(ctx: MultiRepositoryMcpToolContext): string | un
 function rhContextKnowledgeAuditRequested(args: Record<string, unknown>): boolean {
   return [
     'knowledge_query', 'knowledge_memory_id', 'knowledge_scope_kind', 'knowledge_scope_id',
-    'knowledge_concept', 'knowledge_facet', 'knowledge_source_kind', 'knowledge_source_work_id',
+    'knowledge_concept', 'knowledge_facet', 'knowledge_source_kind',
   ].some(key => typeof args[key] === 'string' && String(args[key]).trim().length > 0)
     || typeof args.knowledge_limit === 'number';
 }
@@ -125,8 +124,6 @@ function rhContextKnowledgeAudit(
       ? { facet: args.knowledge_facet.trim() } : {}),
     ...(typeof args.knowledge_source_kind === 'string' && args.knowledge_source_kind.trim()
       ? { sourceKind: args.knowledge_source_kind.trim() as 'experience' | 'outcome' | 'knowledge' | 'controller' | 'system' | 'external' } : {}),
-    ...(typeof args.knowledge_source_work_id === 'string' && args.knowledge_source_work_id.trim()
-      ? { sourceWorkId: args.knowledge_source_work_id.trim() } : {}),
     ...(typeof args.knowledge_limit === 'number' ? { limit: args.knowledge_limit } : {}),
   });
   const usage = cognitiveUsageFeedbackForContext({
@@ -159,7 +156,6 @@ function rhContextKnowledgeAudit(
       ...(typeof args.knowledge_concept === 'string' && args.knowledge_concept.trim() ? { concept: args.knowledge_concept.trim() } : {}),
       ...(typeof args.knowledge_facet === 'string' && args.knowledge_facet.trim() ? { facet: args.knowledge_facet.trim() } : {}),
       ...(typeof args.knowledge_source_kind === 'string' && args.knowledge_source_kind.trim() ? { sourceKind: args.knowledge_source_kind.trim() } : {}),
-      ...(typeof args.knowledge_source_work_id === 'string' && args.knowledge_source_work_id.trim() ? { sourceWorkId: args.knowledge_source_work_id.trim() } : {}),
     },
     items: audit.items.map(entry => {
       const address = memoryAddressKey({ scope: entry.memory.scope, id: entry.memory.id });
@@ -475,59 +471,10 @@ async function rhContextSemanticNavigation(
   };
 }
 
-/**
- * Work-specific source evidence uses the exact registered physical placement.
- * Work semantic identity stays in Kernel; Repository Registry owns checkout
- * resolution. This projection neither creates source state nor chooses a
- * different checkout when the exact Work target has disappeared.
- */
-function selectContextSourceRepository(
-  ctx: MultiRepositoryMcpToolContext,
-  args: Record<string, unknown>,
-  operation: string,
-): ReturnType<typeof selected> {
-  const workId = operation === 'search' && typeof args.query === 'string' && args.query.trim()
-    && typeof args.work_id === 'string' ? args.work_id.trim() : '';
-  if (!workId) return selected(ctx, args);
-  const repository = selected(ctx, { ...args, checkout_id: undefined });
-  const work = getWorkContract({ controllerHome: ctx.controllerHome, repoId: repository.repoId }, workId);
-  if (!work) throw new Error(`CONTEXT_WORK_NOT_FOUND: ${workId}`);
-  if (work.repoId && work.repoId !== repository.repoId) {
-    throw new Error(`CONTEXT_WORK_REPOSITORY_MISMATCH: ${workId}`);
-  }
-  const handle = readWorkHandle(ctx.controllerHome, repository.repoId, workId);
-  const workCheckoutId = handle?.checkoutId?.trim()
-    || work.executionPlacement?.checkoutId?.trim()
-    || work.checkoutId?.trim();
-  // Pure semantic Work has no physical source. Keep explicitly elected
-  // repository context for this case instead of inventing source placement.
-  if (!workCheckoutId) return selected(ctx, args);
-  const requestedCheckoutId = typeof args.checkout_id === 'string' ? args.checkout_id.trim() : '';
-  if (requestedCheckoutId && requestedCheckoutId !== workCheckoutId) {
-    throw new Error(`CONTEXT_WORK_CHECKOUT_MISMATCH: ${workId}`);
-  }
-  if (handle?.state === 'cleaned' || handle?.state === 'failed') {
-    throw new Error(`CONTEXT_WORK_CHECKOUT_RETIRED: ${workId}`);
-  }
-  let selectedCheckout: ReturnType<typeof selected>;
-  try {
-    selectedCheckout = selected(ctx, { ...args, repo_id: repository.repoId, checkout_id: workCheckoutId });
-  } catch {
-    throw new Error(`CONTEXT_WORK_CHECKOUT_UNAVAILABLE: ${workId}`);
-  }
-  if (selectedCheckout.activeCheckoutId !== workCheckoutId) {
-    throw new Error(`CONTEXT_WORK_CHECKOUT_MISMATCH: ${workId}`);
-  }
-  if (handle?.expectedHead && freshGitIdentity(selectedCheckout.canonicalRoot).head !== handle.expectedHead) {
-    throw new Error(`CONTEXT_WORK_SOURCE_REVISION_MISMATCH: ${workId}`);
-  }
-  return selectedCheckout;
-}
-
 export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, name: string, args: Record<string, unknown>): Promise<CallToolResult | undefined> {
   if (name !== 'rh_context') return undefined;
     const operation = String(args.operation ?? 'get');
-    const repository = selectContextSourceRepository(ctx, args, operation);
+    const repository = selected(ctx, args);
     if (!allowedFacadeOperations('rh_context').includes(operation)) {
       return invalidFacadeOperation('rh_context', operation);
     }

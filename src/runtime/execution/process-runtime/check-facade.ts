@@ -3,7 +3,7 @@
  *
  * Ordinary checks execute through an in-memory lightweight handle and return
  * within the interactive budget without creating Process/Lease state. Checks
- * with real Work/Edit/verification consumers keep persisted Process receipts.
+ * with real EditSession/verification consumers keep persisted Process receipts.
  * Multi-phase and release checks require explicit external Controller handling.
  */
 
@@ -52,7 +52,7 @@ export interface RunCheckFacadeInput {
   commandId?: string;
   /** Force durable workflow (release / multi-phase). */
   forceDurable?: boolean;
-  /** Internal-only: allow an already-authorized external controller to execute a durable-class check through persisted Process Runtime. */
+  /** Internal-only: allow an already-authorized release/durable workflow to execute a durable-class check through persisted Process Runtime. */
   allowDurableCheckExecution?: boolean;
   signal?: AbortSignal;
   /** Immutable resolved identity — required; never inferred from main/active/cwd. */
@@ -150,7 +150,7 @@ export async function runCheckViaProcessRuntime(
       check,
       durable: {
         reason: 'multi_phase_or_release_check_requires_durable_workflow',
-        suggestedOperation: 'Run this check through the durable verification workflow.',
+        suggestedOperation: 'Run this check through the explicit release/durable verification workflow.',
       },
       durableSideEffects: emptyEffects,
     };

@@ -39,6 +39,8 @@ export interface ProcessHandleIndexEntry {
   target: ProcessExecutionTarget;
   /** Authenticated principal that owns the handle; opaque ids never authorize by themselves. */
   principalId?: string;
+  /** Historical compatibility only; new index writers never accept Work attribution. */
+  workId?: string;
   commandId?: string;
   recordedAt: string;
   updatedAt: string;
@@ -91,7 +93,7 @@ export function workspaceExecutionTarget(controllerHome: string, workspaceId: st
 
 export function recordProcessHandleIndexEntry(
   controllerHome: string,
-  input: Omit<ProcessHandleIndexEntry, 'schemaVersion' | 'recordedAt' | 'updatedAt'> & { now?: string },
+  input: Omit<ProcessHandleIndexEntry, 'schemaVersion' | 'recordedAt' | 'updatedAt' | 'workId'> & { now?: string },
 ): ProcessHandleIndexEntry | undefined {
   const processId = boundedId(input.processId);
   if (!processId) return undefined;
@@ -112,6 +114,7 @@ export function recordProcessHandleIndexEntry(
         target: input.target,
         ...(principalId ? { principalId } : {}),
         ...(current?.value.principalId && !principalId ? { principalId: current.value.principalId } : {}),
+        ...(current?.value.workId ? { workId: current.value.workId } : {}),
         ...(commandId ? { commandId } : {}),
         recordedAt: current?.value.recordedAt ?? now,
         updatedAt: now,

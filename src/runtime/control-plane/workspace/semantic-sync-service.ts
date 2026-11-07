@@ -76,7 +76,6 @@ export interface PlanSemanticView {
     dependencies: string[];
     acceptanceCriteria: string[];
     status: PlanContract['steps'][number]['status'];
-    workId?: string;
   }>;
   supersedes?: string[];
   supersededBy?: string;
@@ -85,7 +84,7 @@ export interface PlanSemanticView {
   updatedAt: string;
 }
 
-export interface WorkSemanticView {
+interface HistoricalWorkSemanticView {
   schemaVersion: 1;
   workId: string;
   semanticScope: ReturnType<typeof semanticScopeRefForWork>;
@@ -185,7 +184,6 @@ export function projectPlanSemantic(plan: PlanContract): PlanSemanticView {
       dependencies: [...step.dependencies],
       acceptanceCriteria: [...step.acceptanceCriteria],
       status: step.status,
-      ...(step.workId ? { workId: step.workId } : {}),
     })),
     ...(plan.supersedes ? { supersedes: [...plan.supersedes] } : {}),
     ...(plan.supersededBy ? { supersededBy: plan.supersededBy } : {}),
@@ -195,7 +193,7 @@ export function projectPlanSemantic(plan: PlanContract): PlanSemanticView {
   };
 }
 
-export function projectWorkSemantic(work: WorkContract): WorkSemanticView {
+function projectHistoricalWorkSemantic(work: WorkContract): HistoricalWorkSemanticView {
   return {
     schemaVersion: 1,
     workId: work.workId,
@@ -280,10 +278,8 @@ export function exportSemanticSyncBundle(input: {
     record({ kind: 'project', id: project.value.projectId, revision: project.revision, updatedAt: project.updatedAt, sourceForgeInstanceId: instance.instanceId, value: project.value, expectedRevision: expected('project', project.value.projectId) }),
   ];
   const plans = listControlPlaneRecords<PlanContract>(input.controllerHome, { namespace: 'plan_contract', scope: repoId, limit: 1_000 });
-  const works = listControlPlaneRecords<WorkContract>(input.controllerHome, { namespace: 'work_contract', scope: repoId, limit: 1_000 });
   const requirementIds = new Set<string>();
   for (const plan of plans) if (plan.value.requirementId?.trim()) requirementIds.add(plan.value.requirementId.trim());
-  for (const work of works) if (work.value.requirementId?.trim()) requirementIds.add(work.value.requirementId.trim());
   const requirements = listControlPlaneRecords<Requirement>(input.controllerHome, { namespace: 'requirement', scope: CONTROLLER_SCOPE, limit: 5_000 })
     .filter((entry) => requirementIds.has(entry.value.requirementId));
   for (const entry of requirements) {
@@ -291,9 +287,6 @@ export function exportSemanticSyncBundle(input: {
   }
   for (const entry of plans) {
     records.push(record({ kind: 'plan', id: entry.value.planId, revision: entry.revision, updatedAt: entry.updatedAt, sourceForgeInstanceId: instance.instanceId, value: projectPlanSemantic(entry.value), expectedRevision: expected('plan', entry.value.planId) }));
-  }
-  for (const entry of works) {
-    records.push(record({ kind: 'work', id: entry.value.workId, revision: entry.revision, updatedAt: entry.updatedAt, sourceForgeInstanceId: instance.instanceId, value: projectWorkSemantic(entry.value), expectedRevision: expected('work', entry.value.workId) }));
   }
   records.sort((left, right) => semanticSyncRecordKey(left.kind, left.id).localeCompare(semanticSyncRecordKey(right.kind, right.id)));
   assertSemanticSyncRecordBounds(records);
@@ -335,7 +328,9 @@ function localSemanticValue(kind: SemanticSyncRecordKind, value: unknown): unkno
   if (kind === 'workspace' || kind === 'project') return value;
   if (kind === 'requirement') return projectRequirementSemantic(value as Requirement);
   if (kind === 'plan') return projectPlanSemantic(value as PlanContract);
-  if (kind === 'work') return projectWorkSemantic(value as WorkContract);
+  // Historical sync bundles may still contain Work. Compare them only as
+  // read-only compatibility replicas; current export never emits Work records.
+  if (kind === 'work') return projectHistoricalWorkSemantic(value as WorkContract);
   return value;
 }
 

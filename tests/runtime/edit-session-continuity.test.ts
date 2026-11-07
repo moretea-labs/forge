@@ -23,7 +23,7 @@ afterEach(() => {
   while (roots.length > 0) rmSync(roots.pop()!, { recursive: true, force: true });
 });
 
-test('adopts a non-overlapping successor HEAD in the same edit session and advances validation revision', () => {
+test('adopts a non-overlapping successor HEAD in the same durable edit session and advances validation revision', () => {
     const fx = fixture();
     const session = beginEditSession(fx.repoRoot, {
       purpose: 'Concurrent successor adoption',
@@ -57,7 +57,7 @@ test('adopts a non-overlapping successor HEAD in the same edit session and advan
     expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toBe('export const value = 3;\n');
   });
 
-  test('adopts a non-overlapping successor HEAD for an ordinary non-Work Safe Patch session', () => {
+  test('adopts a non-overlapping successor HEAD for an ordinary Safe Patch session', () => {
     const fx = fixture();
     const binding: EditSessionBinding = {
       repoId: fx.repository.repoId,
@@ -89,7 +89,7 @@ test('adopts a non-overlapping successor HEAD in the same edit session and advan
     expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toBe('export const value = 2;\n');
   });
 
-  test('safe patch transparently recovers an ordinary non-Work session after a non-overlapping HEAD advance', () => {
+  test('safe patch transparently recovers an ordinary edit session after a non-overlapping HEAD advance', () => {
     const fx = fixture();
     const binding: EditSessionBinding = {
       repoId: fx.repository.repoId,
@@ -167,6 +167,7 @@ test('adopts a non-overlapping successor HEAD in the same edit session and advan
       binding: durableBinding(),
     });
     expect(finalized).toMatchObject({ status: 'finalized', currentRevision: 1 });
+    expect(finalized.controllerInstanceId).toBeUndefined();
   });
 
   test('does not finalize a stale session while its tracked after-image remains uncommitted', () => {
@@ -221,7 +222,7 @@ test('adopts a non-overlapping successor HEAD in the same edit session and advan
       .toThrow('EDIT_SESSION_SUCCESSOR_HEAD_NOT_DESCENDANT');
   });
 
-  test('safe patch transparently continues the same edit session after a non-overlapping HEAD advance', () => {
+  test('safe patch transparently continues the same durable edit session after a non-overlapping HEAD advance', () => {
     const fx = fixture();
     const binding = durableBinding({ repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId });
     const session = beginEditSession(fx.repoRoot, { purpose: 'Safe patch successor recovery', allowedPaths: ['source.ts'], binding });
@@ -235,11 +236,12 @@ test('adopts a non-overlapping successor HEAD in the same edit session and advan
     writeFileSync(join(fx.repoRoot, 'unrelated.txt'), 'parallel\n');
     spawnSync('git', ['add', 'unrelated.txt'], { cwd: fx.repoRoot });
     spawnSync('git', ['commit', '-qm', 'parallel unrelated change'], { cwd: fx.repoRoot });
+    const rebound = binding;
     const second = applySafePatch(fx.repository, {
       sessionId: session.sessionId,
       expectedRevision: first.session.currentRevision,
       operations: [{ type: 'replace', path: 'source.ts', old_text: 'value = 2', new_text: 'value = 3' }],
-      binding,
+      binding: rebound,
     });
 
     expect(second.status).toBe('applied');
@@ -282,13 +284,14 @@ function durableBinding(overrides: Partial<EditSessionBinding> = {}): EditSessio
   };
 }
 
-describe('edit session durable identity', () => {
-  test('preserves durable repository identity across calls and finalization', () => {
+describe('edit session durable identity continuity', () => {
+  test('continues and finalizes using the same repository/checkout/principal identity', () => {
     const fx = fixture();
+    const binding = durableBinding();
     const session = beginEditSession(fx.repoRoot, {
-      purpose: 'Runtime continuity',
+      purpose: 'Durable identity continuity',
       allowedPaths: ['source.ts'],
-      binding: durableBinding(),
+      binding,
     });
 
     const applied = applyEditOperations(fx.repoRoot, fx.policy, session.sessionId, [{
@@ -296,41 +299,57 @@ describe('edit session durable identity', () => {
       path: 'source.ts',
       expectedSha256: sha256(fx.initial),
       replacements: [{ oldText: 'value = 1', newText: 'value = 2' }],
-    }], { binding: durableBinding() });
+    }], { binding });
 
     expect(applied).toMatchObject({ status: 'dirty', currentRevision: 1 });
+    expect(applied.controllerInstanceId).toBeUndefined();
     expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toBe('export const value = 2;\n');
 
-    const finalized = finalizeEditSession(fx.repoRoot, session.sessionId, {
-      binding: durableBinding(),
-    });
+    const finalized = finalizeEditSession(fx.repoRoot, session.sessionId, { binding });
     expect(finalized).toMatchObject({ status: 'finalized', currentRevision: 1 });
-    expect(getEditSession(fx.repoRoot, session.sessionId).controllerInstanceId).toBeUndefined();
+    expect(finalized.controllerInstanceId).toBeUndefined();
   });
 
-  test('rejects mutation when the durable principal or checkout changes', () => {
+  test('rejects a foreign principal or checkout without consulting Work', () => {
     const fx = fixture();
+    const binding = durableBinding();
     const session = beginEditSession(fx.repoRoot, {
-      purpose: 'Foreign principal guard',
+      purpose: 'Durable identity fence',
       allowedPaths: ['source.ts'],
-      binding: durableBinding(),
+      binding,
+    });
+    const operation = [{
+      type: 'replace' as const,
+      path: 'source.ts',
+      expectedSha256: sha256(fx.initial),
+      replacements: [{ oldText: 'value = 1', newText: 'value = 2' }],
+    }];
+
+    expect(() => applyEditOperations(fx.repoRoot, fx.policy, session.sessionId, operation, {
+      binding: durableBinding({ principalId: 'foreign-principal' }),
+    })).toThrow('EDIT_SESSION_IDENTITY_MISMATCH: principalId');
+    expect(() => applyEditOperations(fx.repoRoot, fx.policy, session.sessionId, operation, {
+      binding: durableBinding({ checkoutId: 'foreign-checkout' }),
+    })).toThrow('EDIT_SESSION_IDENTITY_MISMATCH: checkoutId');
+    expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toBe(fx.initial);
+  });
+
+  test('principal-only transient edit identity can continue without Runtime-instance rebinding', () => {
+    const fx = fixture();
+    const binding: EditSessionBinding = { principalId: 'principal-runtime-continuity' };
+    const session = beginEditSession(fx.repoRoot, {
+      purpose: 'Transient principal continuity',
+      allowedPaths: ['source.ts'],
+      binding,
     });
 
-    expect(() => applyEditOperations(fx.repoRoot, fx.policy, session.sessionId, [{
+    const applied = applyEditOperations(fx.repoRoot, fx.policy, session.sessionId, [{
       type: 'replace',
       path: 'source.ts',
       expectedSha256: sha256(fx.initial),
       replacements: [{ oldText: 'value = 1', newText: 'value = 2' }],
-    }], { binding: durableBinding({ principalId: 'foreign-principal' }) })).toThrow('EDIT_SESSION_IDENTITY_MISMATCH: principalId');
-    expect(() => applyEditOperations(fx.repoRoot, fx.policy, session.sessionId, [{
-      type: 'replace',
-      path: 'source.ts',
-      expectedSha256: sha256(fx.initial),
-      replacements: [{ oldText: 'value = 1', newText: 'value = 2' }],
-    }], { binding: durableBinding({ checkoutId: 'foreign-checkout' }) })).toThrow('EDIT_SESSION_IDENTITY_MISMATCH: checkoutId');
-    expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toBe(fx.initial);
-    expect(getEditSession(fx.repoRoot, session.sessionId).controllerInstanceId).toBeUndefined();
+    }], { binding });
+    expect(applied.status).toBe('dirty');
+    expect(applied.controllerInstanceId).toBeUndefined();
   });
-
-
 });

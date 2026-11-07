@@ -238,7 +238,6 @@ function executionIdentityFingerprint(identity: SpawnManagedProcessInput['execut
     repositoryId: identity.repositoryId,
     checkoutId: identity.checkoutId,
     canonicalRoot: identity.canonicalRoot,
-    worktreePath: identity.worktreePath ?? null,
     branch: identity.branch ?? null,
     expectedHead: identity.expectedHead ?? null,
     allowArchived: identity.allowArchived === true,
@@ -414,6 +413,7 @@ function toResourceClaimSpecs(claims: ProcessResourceClaim[]): ResourceClaimSpec
     mode: claim.mode,
     ...(claim.repoId ? { repoId: claim.repoId } : {}),
     ...(claim.checkoutId ? { checkoutId: claim.checkoutId } : {}),
+    ...(claim.workId ? { workId: claim.workId } : {}),
   }));
 }
 
@@ -441,17 +441,20 @@ function expectedLeaseRefsForProcess(record: ManagedProcessRecord, repoId: strin
   fencingToken: number;
   repoId: string;
   checkoutId?: string;
+  workId?: string;
   resourceKey: string;
 }> {
   return (record.leaseRefs ?? []).flatMap((ref) => {
     // A malformed or cross-repository reference is never eligible for cleanup.
     if (!ref.leaseId || !ref.resourceKey || (ref.repoId && ref.repoId !== repoId)) return [];
     if (ref.checkoutId && record.checkoutId && ref.checkoutId !== record.checkoutId) return [];
+    if (ref.workId && record.workId && ref.workId !== record.workId) return [];
     return [{
       leaseId: ref.leaseId,
       fencingToken: ref.fencingToken,
       repoId,
       ...(ref.checkoutId ? { checkoutId: ref.checkoutId } : {}),
+      ...(ref.workId ? { workId: ref.workId } : {}),
       resourceKey: ref.resourceKey,
     }];
   });
@@ -563,7 +566,7 @@ function recordTerminalProcessXcodeEvidenceOwner(record: ManagedProcessRecord): 
     recordProcessXcodeTestEvidenceOwner({
       controllerHome: record.controllerHome,
       repoId: record.repoId,
-      repoRoot: identity.worktreePath ?? identity.canonicalRoot,
+      repoRoot: identity.canonicalRoot,
       command: record.command,
       processId: record.processId,
     });
@@ -1069,6 +1072,7 @@ function recordToHandle(
     : undefined;
   return {
     processId: safeRecord.processId,
+    workId: safeRecord.workId,
     commandId: safeRecord.commandId ?? safeRecord.processId,
     status: safeRecord.status,
     contractStatus: processContractStatus(safeRecord.status),
@@ -1178,9 +1182,7 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
     input.checkoutId,
   ));
 
-  // Request-id idempotency is stronger than active-command reuse. Resolve it
-  // first so a retry can never drift to a different Process merely because an
-  // equivalent build/test is also running.
+  // Request-id idempotency is stronger than active-command reuse.
   if (requestId) {
     const existingBinding = getProcessRequestBinding(
       input.controllerHome,
@@ -1201,9 +1203,8 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
   }
 
   // Build/test single-flight belongs to Process Runtime, not Work. Reuse only
-  // an exact active Process with the same immutable source identity, principal,
-  // command and resource claims. This prevents duplicate compiler/test work
-  // without turning arbitrary side effects into implicit idempotent operations.
+  // an exact active Process with identical source identity, principal, command
+  // and physical resource claims.
   if (input.reuseActiveEquivalent === true && !input.checkExecution) {
     const identityKey = executionIdentityFingerprint(input.executionIdentity);
     const claimsKey = processClaimsFingerprint(resourceClaims);

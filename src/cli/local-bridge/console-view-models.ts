@@ -90,7 +90,6 @@ export interface ConsoleErrorViewModel {
   nextActions: string[];
 }
 
-
 export interface ConnectorFreshnessViewModel {
   status:
     | 'local_mcp_updated'
@@ -123,11 +122,24 @@ export interface SystemReadinessViewModel {
   connectorLabel: string;
   connectorTone: PlainStatusTone;
   pendingHandoffCount: number;
+  /** Shared runtime classification used by MCP, lifecycle, recovery, and GUI surfaces. */
   runtimeHealth?: import('../../runtime/health').RuntimeHealthEvaluation;
   operationalView?: import('../../runtime/health').RuntimeOperationalView;
+  /** Normalized connector freshness; distinguishes local MCP vs ChatGPT snapshot. */
   connectorFreshness?: ConnectorFreshnessViewModel;
-  sections: Array<{ id: string; title: string; statusLabel: string; tone: PlainStatusTone; detail: string }>;
-  selfHealing?: { dryRun: boolean; issueCount: number; summary: string; actions: SuggestedActionViewModel[] };
+  sections: Array<{
+    id: string;
+    title: string;
+    statusLabel: string;
+    tone: PlainStatusTone;
+    detail: string;
+  }>;
+  selfHealing?: {
+    dryRun: boolean;
+    issueCount: number;
+    summary: string;
+    actions: SuggestedActionViewModel[];
+  };
 }
 
 export interface RepositoryCardViewModel {
@@ -140,7 +152,12 @@ export interface RepositoryCardViewModel {
   branchLabel?: string;
   dirtyLabel?: string;
   readinessLabel?: string;
-  advanced?: { repoId: string; remote?: string; defaultBranch?: string; checkoutId?: string };
+  advanced?: {
+    repoId: string;
+    remote?: string;
+    defaultBranch?: string;
+    checkoutId?: string;
+  };
 }
 
 export interface PluginActionViewModel {
@@ -172,7 +189,11 @@ export interface PluginCardViewModel {
   capabilityLabels: string[];
   actions: PluginActionViewModel[];
   warnings: string[];
-  advanced?: { pluginId: string; provider: string; revision?: number };
+  advanced?: {
+    pluginId: string;
+    provider: string;
+    revision?: number;
+  };
 }
 
 export interface PluginSummaryViewModel {
@@ -181,7 +202,6 @@ export interface PluginSummaryViewModel {
   needsAttention: number;
   lines: string[];
 }
-
 
 export interface AccessStateViewModel {
   configuredAccessMode: 'request' | 'full_access';

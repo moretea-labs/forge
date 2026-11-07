@@ -131,8 +131,7 @@ describe('MCP ordinary tool cognition settlement', () => {
         4,
       );
       expect(stored).toHaveLength(1);
-      expect(stored[0]?.provenance.sourceWorkId).toBeUndefined();
-      expect(stored[0]?.provenance.sourceRoundId).toBeUndefined();
+      expect(stored[0]?.provenance.sourceKind).toBe('controller');
     } finally {
       await client.close();
       await server.close();

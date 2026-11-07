@@ -798,6 +798,9 @@ export function scopeResourceClaims(
       ...claim,
       repoId: normalizedRepoId,
       ...(normalizedCheckoutId ? { checkoutId: normalizedCheckoutId } : {}),
+      // Historical ResourceClaimSpec rows may still carry workId, but new Process
+      // claims never propagate it into current lease ownership.
+      workId: undefined,
     };
   });
 }

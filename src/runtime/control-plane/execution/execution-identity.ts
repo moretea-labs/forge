@@ -14,12 +14,12 @@ export type ExecutionIdentityErrorCode =
   | 'CHECKOUT_ROUTE_MISMATCH'
   | 'CHECKOUT_NOT_REGISTERED'
   | 'CHECKOUT_NOT_ACTIVE'
-  | 'CHECKOUT_BRANCH_CHANGED'
-  | 'CHECKOUT_HEAD_CHANGED'
+  | 'WORK_HANDLE_CHECKOUT_DRIFT'
+  | 'WORK_HANDLE_BRANCH_CHANGED'
+  | 'WORK_HANDLE_HEAD_CHANGED'
   | 'GIT_TOPLEVEL_MISMATCH'
   | 'GIT_COMMON_DIR_MISMATCH'
   | 'WORKTREE_MISSING'
-  | 'WORKTREE_PATH_MISMATCH'
   | 'REPOSITORY_NOT_EXECUTABLE'
   | 'WORKSPACE_SCOPE_MISMATCH'
   | 'FORGE_INSTANCE_SCOPE_MISMATCH';
@@ -32,7 +32,6 @@ export interface ResolvedExecutionIdentity {
   /** Legacy storage coordinate. For forge_instance authority this is `instance`, not a checkout. */
   readonly checkoutId: string;
   readonly canonicalRoot: string;
-  readonly worktreePath?: string;
   readonly branch?: string;
   readonly expectedHead?: string;
   readonly allowArchived?: boolean;
@@ -204,7 +203,7 @@ export function classifyGitCommonDirectoryDrift(input: {
 
 export function executionIdentityForRepository(
   repository: RepositoryRecord,
-  patch: Partial<Pick<ResolvedExecutionIdentity, 'worktreePath' | 'branch' | 'expectedHead' | 'allowArchived'>> = {},
+  patch: Partial<Pick<ResolvedExecutionIdentity, 'branch' | 'expectedHead' | 'allowArchived'>> = {},
 ): ResolvedExecutionIdentity {
   return Object.freeze({
     schemaVersion: 1 as const,
@@ -214,24 +213,6 @@ export function executionIdentityForRepository(
     ...patch,
   });
 }
-
-
-export function executionIdentityFromCoordinates(input: {
-  repositoryId: string;
-  checkoutId: string;
-  canonicalRoot: string;
-  worktreePath?: string;
-  branch?: string;
-  expectedHead?: string;
-  allowArchived?: boolean;
-  authority?: 'repository' | 'ephemeral_workspace' | 'forge_instance';
-}): ResolvedExecutionIdentity {
-  if (!input.repositoryId.trim() || !input.checkoutId.trim() || !input.canonicalRoot.trim()) {
-    fail('EXECUTION_IDENTITY_REQUIRED', 'repositoryId, checkoutId, and canonicalRoot are required');
-  }
-  return Object.freeze({ schemaVersion: 1 as const, ...input });
-}
-
 
 export function assertExecutionIdentity(input: {
   controllerHome: string;
@@ -339,17 +320,6 @@ export function assertExecutionIdentity(input: {
       actual: identityRoot,
     });
   }
-  if (identity.worktreePath) {
-    const worktreePath = realpathOrFail(identity.worktreePath, 'WORKTREE_MISSING', 'registered worktree');
-    if (!samePath(worktreePath, registeredRoot)) {
-      fail('WORKTREE_PATH_MISMATCH', 'worktree path differs from registered checkout', {
-        repoId: identity.repositoryId,
-        checkoutId: identity.checkoutId,
-        expected: registeredRoot,
-        actual: worktreePath,
-        });
-    }
-  }
   const requestedCwd = isAbsolute(input.cwd) ? input.cwd : resolve(registeredRoot, input.cwd);
   const resolvedCwd = realpathOrFail(requestedCwd, 'WORKTREE_MISSING', 'process cwd');
   const cwdRelative = relative(registeredRoot, resolvedCwd);
@@ -418,7 +388,7 @@ export function assertExecutionIdentity(input: {
   const currentBranch = gitSnapshot.branch;
   const currentHead = gitSnapshot.head;
   if (identity.branch && currentBranch !== identity.branch) {
-    fail('CHECKOUT_BRANCH_CHANGED', 'branch drifted from execution identity', {
+    fail('WORK_HANDLE_BRANCH_CHANGED', 'branch drifted from execution identity', {
       repoId: identity.repositoryId,
       checkoutId: identity.checkoutId,
       expected: identity.branch,
@@ -426,7 +396,7 @@ export function assertExecutionIdentity(input: {
     });
   }
   if (identity.expectedHead && currentHead !== identity.expectedHead) {
-    fail('CHECKOUT_HEAD_CHANGED', 'HEAD drifted from execution identity; refresh checkout identity before retry', {
+    fail('WORK_HANDLE_HEAD_CHANGED', 'HEAD drifted from execution identity; re-prepare required', {
       repoId: identity.repositoryId,
       checkoutId: identity.checkoutId,
       expected: identity.expectedHead,

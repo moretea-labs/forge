@@ -23,12 +23,12 @@ export interface CognitiveMemoryStorePort {
 export interface CognitiveWriteAuthorityPort {
   assertMemoryWrite(memory: MemoryUnit): void;
   assertEdgeWrite(edge: MemoryEdge): void;
-  evidenceAvailable(ref: string, scope: ScopeRef, sourceWorkId?: string): boolean;
+  evidenceAvailable(ref: string, scope: ScopeRef): boolean;
 }
 
 function assertEvidence(authority: CognitiveWriteAuthorityPort, memory: MemoryUnit): void {
   for (const ref of [...memory.provenance.evidenceRefs, ...memory.counterEvidenceRefs]) {
-    if (!authority.evidenceAvailable(ref, memory.scope, memory.provenance.sourceWorkId)) {
+    if (!authority.evidenceAvailable(ref, memory.scope)) {
       throw new Error('COGNITION_EVIDENCE_UNAVAILABLE');
     }
   }
@@ -57,7 +57,7 @@ export function recordCognitiveMemoryEdge(
     const edge = validateMemoryEdge({ ...structuredClone(draft), schemaVersion: 1 });
     authority.assertEdgeWrite(edge);
     for (const ref of edge.evidenceRefs) {
-      if (!authority.evidenceAvailable(ref, edge.scope, edge.sourceWorkId)) throw new Error('COGNITION_EDGE_EVIDENCE_UNAVAILABLE');
+      if (!authority.evidenceAvailable(ref, edge.scope)) throw new Error('COGNITION_EDGE_EVIDENCE_UNAVAILABLE');
     }
     return store.writeEdge(edge);
   });

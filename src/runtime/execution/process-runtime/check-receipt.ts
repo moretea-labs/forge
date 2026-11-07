@@ -66,7 +66,7 @@ function stableDigest(value: Record<string, unknown>): string {
 
 /**
  * Normalize one persisted Process Runtime record into the single authoritative
- * check completion receipt consumed by Edit Sessions, Issues/Tasks, and other current evidence consumers.
+ * check completion receipt consumed by Edit Sessions, Issues/Tasks and validation.
  */
 export function processCheckCompletionReceipt(
   record: ManagedProcessRecord,
