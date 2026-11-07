@@ -847,13 +847,14 @@ private struct AgentPane: View {
             .frame(maxWidth:.infinity)
         }
         .background(ForgePalette.canvas)
-        .overlay(alignment:.trailing) {
+        .safeAreaInset(edge:.trailing,spacing:0) {
             if showChanges {
-                AgentChangesPane(model:model,isPresented:$showChanges)
-                    .frame(width:390)
-                    .padding(.vertical,10)
-                    .padding(.trailing,10)
-                    .transition(.move(edge:.trailing).combined(with:.opacity))
+                HStack(spacing:0) {
+                    Divider()
+                    AgentChangesPane(model:model,isPresented:$showChanges)
+                        .frame(width:340)
+                }
+                .transition(.move(edge:.trailing).combined(with:.opacity))
             }
         }
         .animation(.easeOut(duration:0.18),value:showChanges)
@@ -1690,9 +1691,8 @@ private struct AgentChangesPane: View {
         .onChange(of:model.agentChanges?.staged) { staged in
             if let staged { reviewStaged = staged }
         }
-        .background(.ultraThinMaterial,
-                    in:RoundedRectangle(cornerRadius:16,style:.continuous))
-        .shadow(color:Color.black.opacity(0.12),radius:22,y:8)
+        .frame(maxWidth:.infinity,maxHeight:.infinity)
+        .background(ForgePalette.canvas.opacity(0.34))
         .alert("放弃已审查改动？",isPresented:Binding(
             get:{ restoreSnapshot != nil },
             set:{ if !$0 { restoreSnapshot = nil } }
