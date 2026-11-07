@@ -637,7 +637,7 @@ describe("Local Execution Bridge", () => {
     });
     const consoleWithWatcher = await fetch(new URL("/api/console/automations", handle.url), { headers }).then((response) => response.json());
     const projectedWatcher = consoleWithWatcher.automations.find((automation: { name: string }) => automation.name === "Apple ICP · QQ Mail Watcher");
-    expect(projectedWatcher).toMatchObject({ mode: "browser_watch", modeLabel: "网页变更监听", status: "enabled", schedule: "每天 20:00", delivery: "变化时唤醒 ChatGPT", live: true, targetLabel: "已绑定浏览器会话", boundWorkId: "WORK-ICP", observationStatus: "baseline", lastResult: "已建立基线" });
+    expect(projectedWatcher).toMatchObject({ mode: "browser_watch", modeLabel: "网页变更监听", status: "disabled", schedule: "每天 20:00", live: true, targetLabel: "已绑定浏览器会话", boundWorkId: "WORK-ICP", observationStatus: "baseline", lastResult: "已建立基线", pausedReason: "历史 Work 绑定自动任务已退役，仅供查看，不能恢复或执行。", actions: [] });
     expect(projectedWatcher.history).toHaveLength(1);
     expect(projectedWatcher.history[0]).toMatchObject({ result: "无变化", trigger: "手动", tone: "gray", reason: "已建立观察基线；没有唤醒 ChatGPT。" });
 
@@ -665,10 +665,18 @@ describe("Local Execution Bridge", () => {
     saveSchedule(controllerHome, { ...completedWorkflow, pausedReason: "Work WORK-DONE is terminal (completed)." });
     const consoleStateSemantics = await fetch(new URL("/api/console/automations", handle.url), { headers }).then((response) => response.json());
     const projectedFailedWorkflow = consoleStateSemantics.automations.find((automation: { name: string }) => automation.name === "Forge 新问题自动修复 Workflow");
-    expect(projectedFailedWorkflow).toMatchObject({ status: "attention", schedule: "每小时整点", attentionMessage: "连续执行失败达到上限，任务已自动暂停。", pausedReason: "连续执行失败达到上限，已自动暂停。修复问题后可以恢复任务。", actions: ["resume"] });
+    expect(projectedFailedWorkflow).toMatchObject({ status: "disabled", schedule: "每小时整点", modeLabel: "历史 Work 续跑（已退役）", delivery: "已退役", pausedReason: "历史 Work 绑定自动任务已退役，仅供查看，不能恢复或执行。", actions: [] });
+    expect(projectedFailedWorkflow.attentionMessage).toBeUndefined();
     const projectedCompletedWorkflow = consoleStateSemantics.automations.find((automation: { name: string }) => automation.name === "有限任务");
-    expect(projectedCompletedWorkflow).toMatchObject({ status: "completed", pausedReason: "关联工作已经完成，这个自动任务不会再触发。", actions: [] });
-    expect(consoleStateSemantics.summary.completed).toBeGreaterThanOrEqual(1);
+    expect(projectedCompletedWorkflow).toMatchObject({ status: "disabled", modeLabel: "历史 Work 续跑（已退役）", delivery: "已退役", pausedReason: "历史 Work 绑定自动任务已退役，仅供查看，不能恢复或执行。", actions: [] });
+    expect(consoleStateSemantics.summary.paused).toBeGreaterThanOrEqual(2);
+
+    const retiredResume = await fetch(new URL(`/api/console/automations/schedule/${registeredRepository!.repoId}/${failedWorkflow.scheduleId}/resume`, handle.url), {
+      method: "POST",
+      headers,
+    }).then(async (response) => ({ status: response.status, body: await response.json() }));
+    expect(retiredResume.status).toBe(400);
+    expect(retiredResume.body.error).toContain("RETIRED_WORK_BOUND_SCHEDULE_READ_ONLY");
 
     for (const path of ["/api/assistant/intent", "/api/assistant/routines", "/api/assistant/readiness", "/api/assistant/maintenance/cleanup-preview"]) {
       const response = await fetch(new URL(path, handle.url), { headers });
