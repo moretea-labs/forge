@@ -468,6 +468,25 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(restored.thread?.checkoutId,"checkout_saved")
     }
 
+    func testRepositoryCheckoutContextUsesRequestedOrActiveCheckoutWithoutFabricatingState() {
+        let result: [String:Any] = ["repository":[
+            "activeCheckoutId":"checkout_active",
+            "checkouts":[
+                ["checkoutId":"checkout_active","path":"/tmp/active","branch":"main"],
+                ["checkoutId":"checkout_requested","path":"/tmp/requested","branch":"feature"]
+            ]
+        ]]
+        let active = NativeWorkspace.repositoryCheckoutContext(result,requestedCheckoutId:nil)
+        XCTAssertEqual(active.checkoutId,"checkout_active")
+        XCTAssertEqual(active.checkoutBranch,"main")
+        XCTAssertEqual(active.checkoutRoot?.path,"/tmp/active")
+
+        let requested = NativeWorkspace.repositoryCheckoutContext(result,requestedCheckoutId:"checkout_requested")
+        XCTAssertEqual(requested.checkoutId,"checkout_requested")
+        XCTAssertEqual(requested.checkoutBranch,"feature")
+        XCTAssertEqual(requested.checkoutRoot?.path,"/tmp/requested")
+    }
+
     func testRegistryProjectLabelDoesNotFabricateRepository() {
         let item = ForgeProject(repoId:"r",displayName:"Forge",localRoot:nil,checkoutId:nil,
                                 remoteUrl:"https://github.com/moretea-labs/forge.git",defaultBranch:"main")

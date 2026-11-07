@@ -264,6 +264,12 @@ struct LocalApiSettingsDetail {
     let apiProtocol: String
     let hasKey: Bool
 }
+
+struct RepositoryCheckoutContext {
+    let checkoutId: String?
+    let checkoutRoot: URL?
+    let checkoutBranch: String?
+}
 enum NativePage: String, CaseIterable, Identifiable {
     case agent = "会话", requirement = "Requirement", plan = "Plan",
          knowledge = "知识库", runtime = "Runtime", settings = "设置"
@@ -477,16 +483,28 @@ final class NativeWorkspace: ObservableObject {
             self.error = "请先停止正在运行的会话。"
             return
         }
-        guard repoId != id else { return }
-        repoId = id
-        checkoutId = nil
-        checkoutRoot = nil
-        checkoutBranch = nil
-        pendingContextPaths = []
+        guard thread?.repoId != id else { return }
+        let sourceThreadId = selectedThreadId
         Task {
-            await refreshProject()
-            // New scope creates a new chat identity, never mutates old history.
-            newThread()
+            do {
+                let result = try await ForgeBridge.request("read_project_repository",["repoId":id])
+                guard selectedThreadId == sourceThreadId, !busy else { return }
+                let context = Self.repositoryCheckoutContext(result,requestedCheckoutId:nil)
+                guard let targetCheckoutId = context.checkoutId else {
+                    self.error = "目标项目没有可用的 active checkout。"
+                    return
+                }
+                // Resolve first, then create a new conversation identity. The old selected
+                // ChatThread remains the sole context authority until this exact point.
+                repoId = id
+                checkoutId = targetCheckoutId
+                checkoutRoot = context.checkoutRoot
+                checkoutBranch = context.checkoutBranch
+                pendingContextPaths = []
+                newThread()
+            } catch {
+                self.error = error.localizedDescription
+            }
         }
     }
     func show(_ page: NativePage) {
@@ -518,22 +536,32 @@ final class NativeWorkspace: ObservableObject {
             error = nil
         } catch { self.error = error.localizedDescription }
     }
+    nonisolated static func repositoryCheckoutContext(
+        _ result:[String:Any], requestedCheckoutId:String?
+    ) -> RepositoryCheckoutContext {
+        let repository = result["repository"] as? [String:Any] ?? [:]
+        let targetCheckoutId = requestedCheckoutId ?? repository["activeCheckoutId"] as? String
+        let checkouts = repository["checkouts"] as? [[String:Any]] ?? []
+        let target = checkouts.first { $0["checkoutId"] as? String == targetCheckoutId }
+        let root = target.flatMap { $0["path"] as? String }
+            .map { URL(fileURLWithPath:$0).resolvingSymlinksInPath().standardizedFileURL }
+        return RepositoryCheckoutContext(
+            checkoutId:targetCheckoutId,
+            checkoutRoot:root,
+            checkoutBranch:target?["branch"] as? String
+        )
+    }
+
     func refreshProject() async {
         guard let repoId else { return }
         let requestedCheckoutId = checkoutId
         do {
             let result = try await ForgeBridge.request("read_project_repository", ["repoId":repoId])
             guard self.repoId == repoId, self.checkoutId == requestedCheckoutId else { return }
-            let repository = result["repository"] as? [String: Any]
-            let activeCheckoutId = repository?["activeCheckoutId"] as? String
-            let targetCheckoutId = checkoutId ?? activeCheckoutId
-            checkoutId = targetCheckoutId
-            let checkouts = repository?["checkouts"] as? [[String: Any]] ?? []
-            let targetCheckout = checkouts.first { $0["checkoutId"] as? String == targetCheckoutId }
-            checkoutRoot = targetCheckout
-                .flatMap { $0["path"] as? String }
-                .map { URL(fileURLWithPath:$0).resolvingSymlinksInPath().standardizedFileURL }
-            checkoutBranch = targetCheckout?["branch"] as? String
+            let context = Self.repositoryCheckoutContext(result,requestedCheckoutId:requestedCheckoutId)
+            checkoutId = context.checkoutId
+            checkoutRoot = context.checkoutRoot
+            checkoutBranch = context.checkoutBranch
             if page != .agent { await loadPage() }
         } catch {
             checkoutRoot = nil
