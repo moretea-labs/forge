@@ -114,6 +114,7 @@ export interface ProcessResourceClaim {
   mode: 'read' | 'write' | 'exclusive';
   repoId?: string;
   checkoutId?: string;
+  /** Historical compatibility only; new Process claims never write Work attribution. */
   workId?: string;
 }
 
@@ -125,6 +126,7 @@ export interface ProcessLeaseRef {
   expiresAt?: string;
   repoId?: string;
   checkoutId?: string;
+  /** Historical compatibility only; retained so old leases remain releasable. */
   workId?: string;
 }
 
@@ -187,9 +189,9 @@ export interface ManagedProcessRecord {
   checkoutId?: string;
   /** Authenticated principal that owns the handle; opaque ids never authorize by themselves. */
   principalId?: string;
-  /** Optional facade WorkContract that owns this command. */
+  /** Historical compatibility only; current Process writers never set Work attribution. */
   workId?: string;
-  /** Immutable pre-spawn authority required for post-terminal Work reconciliation. */
+  /** Immutable pre-spawn repository/checkout authority used for execution validation. */
   executionIdentity?: ResolvedExecutionIdentity;
   /** Caller-stable command identity; defaults to processId when omitted. */
   commandId?: string;
@@ -264,8 +266,6 @@ export interface ManagedProcessRecord {
     taskId?: string;
     /** Internal structured result written by the persisted Check sidecar. */
     checkResultReceiptPath?: string;
-    /** True when this Check executed in a Work-owned verification snapshot. */
-    workVerificationSnapshot?: boolean;
   };
   error?: { code: string; message: string };
   /** Sidecar exit receipt path written by wrapper (survives controller restart). */
@@ -293,7 +293,6 @@ export interface SpawnManagedProcessInput {
   principalId?: string;
   /** Immutable resolved execution identity — required; validated immediately before spawn. */
   executionIdentity: ResolvedExecutionIdentity;
-  workId?: string;
   commandId?: string;
   command: ProcessCommandSpec;
   interactiveWaitMs?: number;
@@ -325,6 +324,7 @@ export interface SpawnManagedProcessInput {
 
 export interface ProcessHandle {
   processId: string;
+  /** Historical compatibility projection from old persisted Process records. */
   workId?: string;
   commandId: string;
   status: ProcessRuntimeStatus;
