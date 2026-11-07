@@ -1120,7 +1120,6 @@ function spawnProcessRunner(descriptor: ProcessCommandDescriptor, descriptorPath
  *   receipt / cancel / timeout / failure → release leases exactly once
  */
 export async function spawnManagedProcess(input: SpawnManagedProcessInput): Promise<ProcessHandle> {
-  if (input.workId?.trim()) throw new Error(`WORK_PROCESS_ATTRIBUTION_RETIRED: ${input.workId.trim()}`);
   if (!input.executionIdentity) {
     throw new Error('EXECUTION_IDENTITY_REQUIRED: spawnManagedProcess requires an immutable executionIdentity');
   }
