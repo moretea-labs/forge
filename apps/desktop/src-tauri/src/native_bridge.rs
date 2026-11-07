@@ -40,12 +40,15 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
         "read_recovery_status" => read_recovery_status().await,
         "read_connection_status" => read_connection_status().await,
         "read_local_provider_status" => read_local_provider_status().await,
+        "read_local_provider_models" => read_local_provider_models().await,
         "read_local_api_settings" => read_local_api_settings(),
         "send_local_conversation" =>
             send_local_conversation(
                 required(args, "conversationId")?,
                 args.get("providerSessionId").and_then(Value::as_str).map(str::to_owned),
                 required(args, "prompt")?,
+                args.get("model").and_then(Value::as_str).map(str::to_owned),
+                args.get("reasoningEffort").and_then(Value::as_str).map(str::to_owned),
                 args.get("repoId").and_then(Value::as_str).map(str::to_owned),
                 args.get("checkoutId").and_then(Value::as_str).map(str::to_owned),
             ).await,

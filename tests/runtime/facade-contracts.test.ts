@@ -5,7 +5,7 @@ import { evaluatePolicyGate } from '../../src/runtime/control-plane/facade/polic
 import { buildFacadeResult } from '../../src/runtime/control-plane/facade/facade-result';
 import { allowedFacadeOperations, validateSuggestedNextActions } from '../../src/runtime/control-plane/facade/suggested-actions';
 import { buildClaudeControllerInvocation, buildCodexControllerInvocation, buildSuperControllerInvocation, type ThinLauncherRequest } from '../../src/runtime/control-plane/launcher/thin-launcher';
-import { cancelLocalConversation, parseCodexConversationJsonl, readLocalConversationProviderStatus, runCodexConversation } from '../../src/runtime/control-plane/launcher/local-conversation-controller';
+import { buildLocalConversationProviderArgs, cancelLocalConversation, parseCodexConversationJsonl, parseCodexModelCatalog, readLocalConversationProviderStatus, runCodexConversation } from '../../src/runtime/control-plane/launcher/local-conversation-controller';
 import { RH_WORK_MODEL_OPERATIONS, isRhWorkAcceptedOperation } from '../../src/runtime/control-plane/facade/rh-work-operation-contract';
 import { runtimeToolDefinitions } from '../../adapters/mcp/runtime-gateway/runtime-tool-definitions';
 import { mcpServerInstructions } from '../../adapters/mcp/instructions';
@@ -175,7 +175,7 @@ describe('handoff and facade contracts', () => {
       actions?: Record<string, { readOnly?: boolean; risk?: string; argumentsSchema?: { required?: string[] } }>;
     } | undefined;
     expect(schema?.executeWith).toBe('capability_execute');
-    expect(Object.keys(schema?.actions ?? {}).sort()).toEqual(['cancel', 'send', 'status']);
+    expect(Object.keys(schema?.actions ?? {}).sort()).toEqual(['cancel', 'models', 'send', 'status']);
     expect(schema?.actions?.cancel).toMatchObject({ readOnly: false, risk: 'workspace_write' });
     expect(schema?.actions?.cancel?.argumentsSchema?.required).toEqual(['conversation_id']);
     expect(cancelLocalConversation('unregistered-local-id')).toMatchObject({
@@ -183,8 +183,31 @@ describe('handoff and facade contracts', () => {
     });
     expect(() => cancelLocalConversation('invalid id')).toThrow('LOCAL_CONVERSATION_ID_INVALID');
     expect(schema?.actions?.status).toMatchObject({ readOnly: true, risk: 'readonly' });
+    expect(schema?.actions?.models).toMatchObject({ readOnly: true, risk: 'readonly' });
     expect(schema?.actions?.send?.argumentsSchema?.required).toEqual(['conversation_id', 'prompt']);
     expect(FACADE_TOOLS).toHaveLength(6);
+  });
+
+  test('uses the Codex catalog as model authority and builds bounded per-turn overrides', () => {
+    const catalog = parseCodexModelCatalog(JSON.stringify({
+      models: [
+        { slug: 'hidden-model', display_name: 'Hidden', visibility: 'hide', priority: 0,
+          default_reasoning_level: 'medium', supported_reasoning_levels: [] },
+        { slug: 'gpt-6.1-sol', display_name: 'GPT-6.1-Sol', description: 'Workhorse',
+          visibility: 'list', priority: 1, default_reasoning_level: 'low',
+          supported_reasoning_levels: [
+            { effort: 'low', description: 'Fast' },
+            { effort: 'high', description: 'Deep' },
+          ] },
+      ],
+    }));
+    expect(catalog.models.map((model) => model.slug)).toEqual(['gpt-6.1-sol']);
+    expect(catalog.models[0]?.supportedReasoningLevels.map((level) => level.effort)).toEqual(['low', 'high']);
+    expect(buildLocalConversationProviderArgs('gpt-6.1-sol', 'high')).toEqual([
+      '--skip-git-repo-check', '--model', 'gpt-6.1-sol', '-c', 'model_reasoning_effort="high"',
+    ]);
+    expect(() => buildLocalConversationProviderArgs('../bad', 'high')).toThrow('LOCAL_CONVERSATION_MODEL_INVALID');
+    expect(() => parseCodexModelCatalog('not-json')).toThrow('LOCAL_CONVERSATION_MODEL_CATALOG_INVALID');
   });
 
   test('cancel stops the exact locally owned Codex process and releases its handle', async () => {

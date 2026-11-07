@@ -377,6 +377,11 @@ export function getCoreCapabilityExecutionSchema(capabilityId: string): Record<s
           risk: 'readonly',
           argumentsSchema: { type: 'object', additionalProperties: false, properties: {} },
         },
+        models: {
+          readOnly: true,
+          risk: 'readonly',
+          argumentsSchema: { type: 'object', additionalProperties: false, properties: {} },
+        },
         cancel: {
           readOnly: false,
           risk: 'workspace_write',
@@ -396,6 +401,8 @@ export function getCoreCapabilityExecutionSchema(capabilityId: string): Record<s
               conversation_id: { type: 'string', minLength: 1, maxLength: 160 },
               provider_session_id: { type: 'string', minLength: 1, maxLength: 160 },
               prompt: { type: 'string', minLength: 1, maxLength: 20_000 },
+              model: { type: 'string', minLength: 1, maxLength: 120 },
+              reasoning_effort: { type: 'string', minLength: 1, maxLength: 32 },
               timeout_ms: { type: 'number', minimum: 5_000, maximum: 600_000 },
             },
           },

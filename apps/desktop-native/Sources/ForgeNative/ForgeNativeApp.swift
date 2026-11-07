@@ -6,7 +6,8 @@ private enum ForgePalette {
     static let ink = Color(red:0.16,green:0.18,blue:0.17)
     static let secondary = Color(red:0.45,green:0.47,blue:0.46)
     static let accent = Color(red:0.25,green:0.31,blue:0.26)
-    static let selection = Color(red:0.89,green:0.91,blue:0.87).opacity(0.78)
+    static let selection = Color.primary.opacity(0.072)
+    static let selectionStrong = Color.primary.opacity(0.095)
     static let userBubble = Color(red:0.945,green:0.949,blue:0.938)
     static let raisedSurface = Color.white.opacity(0.90)
     static let softFill = Color.primary.opacity(0.045)
@@ -154,20 +155,21 @@ private struct ForgeWorkspaceView: View {
                     ForEach(model.visibleThreads) { thread in
                         Button { model.selectThread(thread.id) } label: {
                             HStack(spacing:8) {
-                                Image(systemName:"bubble.left")
+                                let selected = model.selectedThreadId == thread.id && model.page == .agent
+                                Image(systemName:selected ? "bubble.left.fill" : "bubble.left")
                                     .symbolRenderingMode(.hierarchical)
                                     .font(.system(size:11))
                                     .frame(width:17)
                                 Text(thread.title)
-                                    .font(.system(size:12))
+                                    .font(.system(size:12,weight:selected ? .medium : .regular))
                                     .lineLimit(1)
                                 Spacer(minLength:0)
                             }
                             .frame(maxWidth:.infinity,alignment:.leading)
                             .padding(.horizontal,10).frame(height:34)
                             .background(model.selectedThreadId == thread.id && model.page == .agent
-                                ? ForgePalette.selection : .clear,
-                                in:RoundedRectangle(cornerRadius:11,style:.continuous))
+                                ? ForgePalette.selectionStrong : .clear,
+                                in:RoundedRectangle(cornerRadius:10,style:.continuous))
                             .contentShape(Rectangle())
                         }.buttonStyle(.plain)
                             .contextMenu {
@@ -386,13 +388,84 @@ private struct AgentPane: View {
                     .frame(minHeight:56,maxHeight:105)
                     .padding(.horizontal,12).padding(.top,10)
                     .accessibilityLabel("Agent 消息")
-                HStack(spacing:9) {
+                HStack(spacing:7) {
                     Label(model.project?.label ?? "未选择项目",systemImage:"folder.fill")
                         .symbolRenderingMode(.hierarchical)
-                        .font(.system(size:10.5))
+                        .font(.system(size:10.5,weight:.medium))
                         .foregroundStyle(ForgePalette.secondary)
                         .lineLimit(1)
-                    Text(model.provider).font(.system(size:10)).foregroundStyle(.tertiary)
+
+                    Menu {
+                        ForEach(model.agentModels) { option in
+                            Button {
+                                model.selectAgentModel(option.slug)
+                            } label: {
+                                if model.selectedAgentModel?.slug == option.slug {
+                                    Label(option.displayName,systemImage:"checkmark")
+                                } else {
+                                    Text(option.displayName)
+                                }
+                            }
+                        }
+                    } label: {
+                        HStack(spacing:5) {
+                            Image(systemName:"cpu")
+                                .font(.system(size:9.5,weight:.medium))
+                            Text(model.selectedAgentModel?.displayName ?? "选择模型")
+                                .lineLimit(1)
+                            Image(systemName:"chevron.down")
+                                .font(.system(size:7,weight:.semibold))
+                                .foregroundStyle(.tertiary)
+                        }
+                        .font(.system(size:10.5,weight:.medium))
+                        .foregroundStyle(ForgePalette.ink)
+                        .padding(.horizontal,8)
+                        .frame(height:25)
+                        .background(ForgePalette.softFill,
+                                    in:RoundedRectangle(cornerRadius:8,style:.continuous))
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .disabled(model.agentModels.isEmpty || model.busy)
+                    .help(model.selectedAgentModel?.description ?? "从 Codex 当前模型目录选择")
+
+                    Menu {
+                        ForEach(model.selectedReasoningOptions) { option in
+                            Button {
+                                model.selectReasoningEffort(option.effort)
+                            } label: {
+                                if model.selectedReasoningEffort == option.effort {
+                                    Label(reasoningLabel(option.effort),systemImage:"checkmark")
+                                } else {
+                                    Text(reasoningLabel(option.effort))
+                                }
+                            }
+                        }
+                    } label: {
+                        HStack(spacing:5) {
+                            Image(systemName:"brain.head.profile")
+                                .font(.system(size:9.5,weight:.medium))
+                            Text(reasoningLabel(model.selectedReasoningEffort))
+                            Image(systemName:"chevron.down")
+                                .font(.system(size:7,weight:.semibold))
+                                .foregroundStyle(.tertiary)
+                        }
+                        .font(.system(size:10.5,weight:.medium))
+                        .foregroundStyle(ForgePalette.ink)
+                        .padding(.horizontal,8)
+                        .frame(height:25)
+                        .background(ForgePalette.softFill,
+                                    in:RoundedRectangle(cornerRadius:8,style:.continuous))
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .disabled(model.selectedReasoningOptions.isEmpty || model.busy)
+                    .help("当前模型的推理强度")
+
+                    Circle()
+                        .fill(model.provider.contains("已连接") ? Color.green : Color.orange)
+                        .frame(width:6,height:6)
+                        .help(model.provider)
                     Spacer()
                     Text("⌘↵").font(.system(size:10)).foregroundStyle(.tertiary)
                     if model.busy {
@@ -429,6 +502,19 @@ private struct AgentPane: View {
             .frame(maxWidth:.infinity)
         }
         .background(ForgePalette.canvas)
+    }
+
+    private func reasoningLabel(_ effort: String) -> String {
+        switch effort.lowercased() {
+        case "low": return "Low"
+        case "medium": return "Medium"
+        case "high": return "High"
+        case "xhigh": return "XHigh"
+        case "max": return "Max"
+        case "ultra": return "Ultra"
+        case "": return "Reasoning"
+        default: return effort
+        }
     }
 }
 

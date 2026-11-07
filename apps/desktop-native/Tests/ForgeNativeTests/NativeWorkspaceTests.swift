@@ -4,6 +4,7 @@ import XCTest
 final class NativeWorkspaceTests: XCTestCase {
     func testBridgeAllowlistExcludesGenericCommandsAndRecoveryMutations() {
         XCTAssertTrue(ForgeBridge.allowed.contains("send_local_conversation"))
+        XCTAssertTrue(ForgeBridge.allowed.contains("read_local_provider_models"))
         XCTAssertFalse(ForgeBridge.allowed.contains("execute_command"))
         XCTAssertFalse(ForgeBridge.allowed.contains("perform_recovery_action"))
     }
@@ -16,11 +17,16 @@ final class NativeWorkspaceTests: XCTestCase {
         let model = NativeWorkspace(store: store)
         let original = model.threads.first!.id
         model.newThread()
+        model.threads[0].model = "gpt-6.1-sol"
+        model.threads[0].reasoningEffort = "high"
+        model.persist()
         XCTAssertEqual(model.threads.count, 2)
         let restored = NativeWorkspace(store: store)
         XCTAssertEqual(restored.threads.count, 2)
         XCTAssertNotEqual(restored.threads.first?.id, original)
         XCTAssertNil(restored.threads.first?.checkoutId)
+        XCTAssertEqual(restored.threads.first?.model, "gpt-6.1-sol")
+        XCTAssertEqual(restored.threads.first?.reasoningEffort, "high")
     }
 
     func testRegistryProjectLabelDoesNotFabricateRepository() {

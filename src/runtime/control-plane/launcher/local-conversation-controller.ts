@@ -44,12 +44,32 @@ export interface LocalConversationProviderStatus {
   cancellable: boolean;
 }
 
+export interface LocalConversationReasoningOption {
+  effort: string;
+  description: string;
+}
+
+export interface LocalConversationModelOption {
+  slug: string;
+  displayName: string;
+  description: string;
+  defaultReasoningLevel: string;
+  supportedReasoningLevels: LocalConversationReasoningOption[];
+}
+
+export interface LocalConversationModelCatalog {
+  provider: 'codex';
+  models: LocalConversationModelOption[];
+}
+
 export interface LocalConversationSendInput {
   controllerHome: string;
   conversationId: string;
   providerSessionId?: string;
   prompt: string;
   repoId?: string;
+  model?: string;
+  reasoningEffort?: string;
   timeoutMs?: number;
 }
 
@@ -184,6 +204,64 @@ export async function readLocalConversationProviderStatus(
   }
 }
 
+function boundedCatalogText(value: unknown, fallback = ''): string {
+  return typeof value === 'string' ? value.trim().slice(0, 500) : fallback;
+}
+
+export function parseCodexModelCatalog(stdout: string): LocalConversationModelCatalog {
+  let parsed: unknown;
+  try { parsed = JSON.parse(stdout); } catch { throw new Error('LOCAL_CONVERSATION_MODEL_CATALOG_INVALID'); }
+  const root = record(parsed);
+  const rows = Array.isArray(root?.models) ? root.models : [];
+  const models = rows.flatMap((value, index): Array<LocalConversationModelOption & { priority: number }> => {
+    const item = record(value);
+    const slug = boundedCatalogText(item?.slug);
+    if (!slug || slug.length > 120 || !/^[A-Za-z0-9._:-]+$/.test(slug) || item?.visibility !== 'list') return [];
+    const levels = Array.isArray(item.supported_reasoning_levels)
+      ? item.supported_reasoning_levels.flatMap((entry): LocalConversationReasoningOption[] => {
+          const level = record(entry);
+          const effort = boundedCatalogText(level?.effort);
+          if (!effort || effort.length > 32 || !/^[A-Za-z0-9_-]+$/.test(effort)) return [];
+          return [{ effort, description: boundedCatalogText(level?.description) }];
+        })
+      : [];
+    return [{
+      slug,
+      displayName: boundedCatalogText(item.display_name, slug),
+      description: boundedCatalogText(item.description),
+      defaultReasoningLevel: boundedCatalogText(item.default_reasoning_level),
+      supportedReasoningLevels: levels,
+      priority: typeof item.priority === 'number' && Number.isFinite(item.priority) ? item.priority : 10_000 + index,
+    }];
+  }).sort((left, right) => left.priority - right.priority)
+    .slice(0, 32)
+    .map(({ priority: _priority, ...model }) => model);
+  if (!models.length) throw new Error('LOCAL_CONVERSATION_MODEL_CATALOG_EMPTY');
+  return { provider: 'codex', models };
+}
+
+export async function readLocalConversationModelCatalog(
+  cwd: string = process.cwd(),
+): Promise<LocalConversationModelCatalog> {
+  const executable = resolveLauncherExecutable({ controllerType: 'codex', cwd });
+  const stdout = await new Promise<string>((resolve, reject) => {
+    execFile(executable, ['debug', 'models'], {
+      cwd,
+      env: launcherProcessEnvironment(process.env),
+      timeout: 5_000,
+      maxBuffer: 8 * 1024 * 1024,
+      encoding: 'utf8',
+    }, (error, output) => {
+      if (error) {
+        reject(new Error(`LOCAL_CONVERSATION_MODEL_CATALOG_FAILED: ${error.message}`));
+        return;
+      }
+      resolve(output);
+    });
+  });
+  return parseCodexModelCatalog(stdout);
+}
+
 export function runCodexConversation(
   executable: string,
   args: string[],
@@ -247,6 +325,22 @@ export function runCodexConversation(
   });
 }
 
+export function buildLocalConversationProviderArgs(model?: string, reasoningEffort?: string): string[] {
+  const selectedModel = model?.trim();
+  const selectedReasoning = reasoningEffort?.trim();
+  if (selectedModel && (selectedModel.length > 120 || !/^[A-Za-z0-9._:-]+$/.test(selectedModel))) {
+    throw new Error('LOCAL_CONVERSATION_MODEL_INVALID');
+  }
+  if (selectedReasoning && (selectedReasoning.length > 32 || !/^[A-Za-z0-9_-]+$/.test(selectedReasoning))) {
+    throw new Error('LOCAL_CONVERSATION_REASONING_INVALID');
+  }
+  return [
+    '--skip-git-repo-check',
+    ...(selectedModel ? ['--model', selectedModel] : []),
+    ...(selectedReasoning ? ['-c', `model_reasoning_effort="${selectedReasoning}"`] : []),
+  ];
+}
+
 export async function sendLocalConversation(input: LocalConversationSendInput): Promise<LocalConversationSendResult> {
   const conversationId = input.conversationId.trim();
   const prompt = input.prompt.trim();
@@ -257,6 +351,7 @@ export async function sendLocalConversation(input: LocalConversationSendInput): 
   if (providerSessionId && !LOCAL_CONVERSATION_ID.test(providerSessionId)) throw new Error('LOCAL_CONVERSATION_PROVIDER_SESSION_INVALID');
   if (repoId && repoId.length > 256) throw new Error('LOCAL_CONVERSATION_REPOSITORY_INVALID');
 
+  const providerArgs = buildLocalConversationProviderArgs(input.model, input.reasoningEffort);
   const cwd = localConversationCwd();
   // The real conversation spawn reports startup failures; status queries still probe.
   const executable = resolveLauncherExecutable({ controllerType: 'codex', cwd }, process.env, false);
@@ -269,7 +364,7 @@ export async function sendLocalConversation(input: LocalConversationSendInput): 
     // The isolated local-conversation cwd is intentionally not a Git checkout.
     // Only this local Agent entry opts out of Codex's repo presence check.
     // Forge MCP tools still validate the registered repo/checkout independently.
-    args: ['--skip-git-repo-check'],
+    args: providerArgs,
     resumeSessionId: providerSessionId,
     json: true,
   });

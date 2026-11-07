@@ -534,6 +534,16 @@ async fn read_local_provider_status() -> Result<Value, String> {
     })).await
 }
 
+#[tauri::command]
+async fn read_local_provider_models() -> Result<Value, String> {
+    call_runtime_tool("capability_execute", json!({
+        "capability_id": "controller.local_conversation",
+        "action": "models",
+        "arguments": {},
+        "request_id": request_id("local-conversation-models")
+    })).await
+}
+
 
 #[tauri::command]
 async fn read_project_knowledge(repo_id: String, work_id: Option<String>, query: String) -> Result<Value, String> {
@@ -566,15 +576,20 @@ async fn send_local_conversation(
     conversation_id: String,
     provider_session_id: Option<String>,
     prompt: String,
+    model: Option<String>,
+    reasoning_effort: Option<String>,
     repo_id: Option<String>,
     checkout_id: Option<String>,
 ) -> Result<Value, String> {
-    let request = local_conversation_request(conversation_id, provider_session_id, prompt, repo_id, checkout_id)?;
+    let request = local_conversation_request(
+        conversation_id, provider_session_id, prompt, model, reasoning_effort, repo_id, checkout_id
+    )?;
     call_runtime_tool("capability_execute", request).await
 }
 
 fn local_conversation_request(
     conversation_id: String, provider_session_id: Option<String>, prompt: String,
+    model: Option<String>, reasoning_effort: Option<String>,
     repo_id: Option<String>, checkout_id: Option<String>,
 ) -> Result<Value, String> {
     if conversation_id.trim().is_empty() || prompt.trim().is_empty() {
@@ -597,6 +612,12 @@ fn local_conversation_request(
     });
     if let Some(provider_session_id) = provider_session_id.filter(|value| !value.trim().is_empty()) {
         request["arguments"]["provider_session_id"] = Value::String(provider_session_id);
+    }
+    if let Some(model) = model.filter(|value| !value.trim().is_empty()) {
+        request["arguments"]["model"] = Value::String(model);
+    }
+    if let Some(reasoning_effort) = reasoning_effort.filter(|value| !value.trim().is_empty()) {
+        request["arguments"]["reasoning_effort"] = Value::String(reasoning_effort);
     }
     if let Some(repo_id) = repo_id { request["repo_id"] = Value::String(repo_id); }
     if let Some(checkout_id) = checkout_id { request["checkout_id"] = Value::String(checkout_id); }
@@ -1500,6 +1521,7 @@ fn main() {
             read_plan_detail,
             continue_work,
             read_local_provider_status,
+            read_local_provider_models,
             read_project_knowledge,
             send_local_conversation,
             cancel_local_conversation,
@@ -1521,8 +1543,12 @@ mod tests {
     #[test]
     fn local_conversation_binds_checkout_or_rejects_incomplete_context() {
         let build = |repo: Option<&str>, checkout: Option<&str>| local_conversation_request(
-            "conversation".into(), None, "hello".into(), repo.map(str::to_owned), checkout.map(str::to_owned));
+            "conversation".into(), None, "hello".into(),
+            Some("gpt-6.1-sol".into()), Some("high".into()),
+            repo.map(str::to_owned), checkout.map(str::to_owned));
         let bound = build(Some("repo_a"), Some("checkout_b")).unwrap();
+        assert_eq!(bound["arguments"]["model"], "gpt-6.1-sol");
+        assert_eq!(bound["arguments"]["reasoning_effort"], "high");
         assert_eq!(bound["repo_id"], "repo_a");
         assert_eq!(bound["checkout_id"], "checkout_b");
         let unbound = build(None, None).unwrap();

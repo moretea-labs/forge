@@ -14,6 +14,21 @@ struct ForgeProject: Identifiable, Decodable {
         return remoteUrl.replacingOccurrences(of: ".git", with: "").split(separator: "/").suffix(2).joined(separator: "/")
     }
 }
+struct AgentReasoningOption: Codable, Identifiable {
+    let effort: String
+    let description: String
+    var id: String { effort }
+}
+
+struct AgentModelOption: Codable, Identifiable {
+    let slug: String
+    let displayName: String
+    let description: String
+    let defaultReasoningLevel: String
+    let supportedReasoningLevels: [AgentReasoningOption]
+    var id: String { slug }
+}
+
 struct ChatMessage: Codable, Identifiable {
     var id = UUID().uuidString
     let role: String
@@ -26,6 +41,8 @@ struct ChatThread: Codable, Identifiable {
     var repoId: String?
     var checkoutId: String?
     var providerSessionId: String?
+    var model: String?
+    var reasoningEffort: String?
     var messages: [ChatMessage] = []
     var updatedAt = Date()
 }
@@ -72,6 +89,7 @@ final class NativeWorkspace: ObservableObject {
     @Published var showSearch = false
     @Published var busy = false
     @Published var provider = "未检测"
+    @Published private(set) var agentModels: [AgentModelOption] = []
     @Published var connection = "未检测"
     @Published var error: String?
     @Published var records: [ForgeRecord] = []
@@ -94,6 +112,21 @@ final class NativeWorkspace: ObservableObject {
 
     var project: ForgeProject? { projects.first { $0.repoId == repoId } }
     var thread: ChatThread? { threads.first { $0.id == selectedThreadId } }
+    var selectedAgentModel: AgentModelOption? {
+        if let slug = thread?.model, let exact = agentModels.first(where: { $0.slug == slug }) { return exact }
+        return agentModels.first
+    }
+    var selectedReasoningEffort: String {
+        guard let model = selectedAgentModel else { return "" }
+        if let current = thread?.reasoningEffort,
+           model.supportedReasoningLevels.contains(where: { $0.effort == current }) {
+            return current
+        }
+        return model.defaultReasoningLevel
+    }
+    var selectedReasoningOptions: [AgentReasoningOption] {
+        selectedAgentModel?.supportedReasoningLevels ?? []
+    }
     var visibleThreads: [ChatThread] {
         let needle = search.trimmingCharacters(in: .whitespacesAndNewlines)
         return threads.filter { t in
@@ -116,6 +149,23 @@ final class NativeWorkspace: ObservableObject {
         persist()
     }
     func selectThread(_ id: String) { selectedThreadId = id; page = .agent; draft = "" }
+    func selectAgentModel(_ slug: String) {
+        guard let index = threads.firstIndex(where: { $0.id == selectedThreadId }),
+              let model = agentModels.first(where: { $0.slug == slug }) else { return }
+        threads[index].model = model.slug
+        if !model.supportedReasoningLevels.contains(where: { $0.effort == threads[index].reasoningEffort }) {
+            threads[index].reasoningEffort = model.defaultReasoningLevel
+        }
+        threads[index].updatedAt = Date()
+        persist()
+    }
+    func selectReasoningEffort(_ effort: String) {
+        guard let index = threads.firstIndex(where: { $0.id == selectedThreadId }),
+              selectedReasoningOptions.contains(where: { $0.effort == effort }) else { return }
+        threads[index].reasoningEffort = effort
+        threads[index].updatedAt = Date()
+        persist()
+    }
     func deleteThread(_ id: String) {
         guard !busy || selectedThreadId != id else {
             self.error = "请先停止正在运行的会话。"
@@ -150,7 +200,13 @@ final class NativeWorkspace: ObservableObject {
                 repoId = result["preferredRepoId"] as? String ?? projects.first?.repoId
             }
             let status = try? await ForgeBridge.request("read_local_provider_status")
-            provider = status?["status"] as? String ?? "unavailable"
+            provider = status?["label"] as? String ?? status?["status"] as? String ?? "Codex 不可用"
+            if let catalog = try? await ForgeBridge.request("read_local_provider_models"),
+               let rows = catalog["models"] as? [[String: Any]],
+               let bytes = try? JSONSerialization.data(withJSONObject: rows),
+               let decoded = try? JSONDecoder().decode([AgentModelOption].self, from: bytes) {
+                agentModels = decoded
+            }
             let health = try? await ForgeBridge.request("read_connection_status")
             connection = health?["ready"] as? Bool == true ? "已连接" : "未就绪"
             await refreshProject()
@@ -246,6 +302,14 @@ final class NativeWorkspace: ObservableObject {
         if let repo = item.repoId { args["repoId"] = repo }
         if let checkout = item.checkoutId { args["checkoutId"] = checkout }
         if let session = item.providerSessionId { args["providerSessionId"] = session }
+        let effectiveModel = item.model.flatMap { slug in agentModels.first { $0.slug == slug } } ?? agentModels.first
+        if let effectiveModel {
+            args["model"] = effectiveModel.slug
+            let reasoning = item.reasoningEffort.flatMap { current in
+                effectiveModel.supportedReasoningLevels.first(where: { $0.effort == current })?.effort
+            } ?? effectiveModel.defaultReasoningLevel
+            if !reasoning.isEmpty { args["reasoningEffort"] = reasoning }
+        }
         defer { busy = false }
         do {
             let response = try await ForgeBridge.request("send_local_conversation",args)
