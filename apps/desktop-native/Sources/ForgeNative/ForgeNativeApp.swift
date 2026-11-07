@@ -389,11 +389,40 @@ private struct AgentPane: View {
                     .padding(.horizontal,12).padding(.top,10)
                     .accessibilityLabel("Agent 消息")
                 HStack(spacing:7) {
-                    Label(model.project?.label ?? "未选择项目",systemImage:"folder.fill")
-                        .symbolRenderingMode(.hierarchical)
+                    Menu {
+                        ForEach(model.projects) { project in
+                            Button {
+                                model.selectProject(project.repoId)
+                            } label: {
+                                if model.project?.repoId == project.repoId {
+                                    Label(project.label,systemImage:"checkmark")
+                                } else {
+                                    Text(project.label)
+                                }
+                            }
+                        }
+                    } label: {
+                        HStack(spacing:5) {
+                            Image(systemName:"folder.fill")
+                                .symbolRenderingMode(.hierarchical)
+                                .font(.system(size:9.5,weight:.medium))
+                            Text(model.project?.label ?? "选择项目")
+                                .lineLimit(1)
+                            Image(systemName:"chevron.down")
+                                .font(.system(size:7,weight:.semibold))
+                                .foregroundStyle(.tertiary)
+                        }
                         .font(.system(size:10.5,weight:.medium))
                         .foregroundStyle(ForgePalette.secondary)
-                        .lineLimit(1)
+                        .padding(.horizontal,8)
+                        .frame(height:25)
+                        .background(ForgePalette.softFill,
+                                    in:RoundedRectangle(cornerRadius:8,style:.continuous))
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .disabled(model.projects.isEmpty || model.busy)
+                    .help("切换项目会创建新的会话，避免改变已有 Agent 上下文")
 
                     Menu {
                         ForEach(model.agentModels) { option in

@@ -29,6 +29,24 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(restored.threads.first?.reasoningEffort, "high")
     }
 
+    @MainActor
+    func testSelectingThreadRestoresItsBoundProjectContext() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = folder.appendingPathComponent("conversations.json")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let model = NativeWorkspace(store: store)
+        model.threads[0].repoId = "repo_a"
+        model.threads[0].checkoutId = "checkout_a"
+        let id = model.threads[0].id
+        model.repoId = "repo_b"
+        model.checkoutId = "checkout_b"
+
+        model.selectThread(id)
+
+        XCTAssertEqual(model.repoId, "repo_a")
+        XCTAssertEqual(model.checkoutId, "checkout_a")
+    }
+
     func testRegistryProjectLabelDoesNotFabricateRepository() {
         let item = ForgeProject(repoId:"r",displayName:"Forge",localRoot:nil,checkoutId:nil,
                                 remoteUrl:"https://github.com/moretea-labs/forge.git",defaultBranch:"main")

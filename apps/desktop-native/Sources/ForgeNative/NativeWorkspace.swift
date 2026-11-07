@@ -148,7 +148,16 @@ final class NativeWorkspace: ObservableObject {
         draft = ""
         persist()
     }
-    func selectThread(_ id: String) { selectedThreadId = id; page = .agent; draft = "" }
+    func selectThread(_ id: String) {
+        guard let item = threads.first(where: { $0.id == id }) else { return }
+        selectedThreadId = id
+        page = .agent
+        draft = ""
+        if let boundRepoId = item.repoId {
+            repoId = boundRepoId
+            checkoutId = item.checkoutId
+        }
+    }
     func selectAgentModel(_ slug: String) {
         guard let index = threads.firstIndex(where: { $0.id == selectedThreadId }),
               let model = agentModels.first(where: { $0.slug == slug }) else { return }
