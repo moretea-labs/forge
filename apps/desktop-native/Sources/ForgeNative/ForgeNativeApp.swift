@@ -504,26 +504,42 @@ private struct AgentPane: View {
 
     var body: some View {
         VStack(spacing:0) {
+            agentWorkspaceBar
+            Divider().opacity(0.45)
             ScrollViewReader { reader in
                 ScrollView {
                     LazyVStack(alignment:.leading,spacing:20) {
                         if model.thread?.messages.isEmpty != false {
-                            VStack(spacing:13) {
-                                Image(systemName:"bolt.circle")
-                                    .symbolRenderingMode(.hierarchical)
-                                    .font(.system(size:30,weight:.light))
-                                    .foregroundStyle(ForgePalette.accent)
-                                    .accessibilityHidden(true)
-                                Text("开始一个 Agent 任务")
-                                    .font(.system(size:24,weight:.medium)).tracking(-0.45)
-                                Text("直接描述要完成的结果。Forge 会使用当前项目与 checkout；Requirement / Plan 作为可浏览语义上下文，不建立第二套执行状态。")
-                                    .font(.system(size:12))
-                                    .foregroundStyle(ForgePalette.secondary)
-                                    .multilineTextAlignment(.center)
-                                    .lineSpacing(4)
-                                    .frame(maxWidth:440)
+                            VStack(spacing:16) {
+                                ZStack {
+                                    Circle()
+                                        .fill(ForgePalette.accent.opacity(0.09))
+                                        .frame(width:54,height:54)
+                                    Image(systemName:"bolt.fill")
+                                        .font(.system(size:20,weight:.medium))
+                                        .foregroundStyle(ForgePalette.accent)
+                                }
+                                .accessibilityHidden(true)
+                                VStack(spacing:7) {
+                                    Text("把结果交给 Forge")
+                                        .font(.system(size:24,weight:.medium)).tracking(-0.45)
+                                    Text("当前项目、checkout 与 Forge 语义记录保持为真实上下文；Agent 负责执行，Requirement / Plan 仍是唯一语义事实。")
+                                        .font(.system(size:12))
+                                        .foregroundStyle(ForgePalette.secondary)
+                                        .multilineTextAlignment(.center)
+                                        .lineSpacing(4)
+                                        .frame(maxWidth:470)
+                                }
+                                HStack(spacing:8) {
+                                    starterPromptButton("审查当前改动",systemImage:"doc.text.magnifyingglass",
+                                                        prompt:"检查当前 checkout 的未提交改动，指出风险并完成必要修复与验证。")
+                                    starterPromptButton("定位问题",systemImage:"scope",
+                                                        prompt:"读取当前项目真实状态，定位最高价值的问题并直接修复，完成必要验证。")
+                                    starterPromptButton("实现需求",systemImage:"hammer",
+                                                        prompt:"读取当前 Requirement / Plan 与代码现状，选择最高价值的下一项实现并完成验证。")
+                                }
                             }
-                            .padding(.top,88)
+                            .padding(.top,70)
                             .frame(maxWidth:.infinity)
                         }
                         ForEach(model.thread?.messages ?? []) { message in
@@ -642,18 +658,30 @@ private struct AgentPane: View {
                             }
                         }
                         if model.busy {
-                            VStack(alignment:.leading,spacing:7) {
-                                HStack(spacing:8) {
-                                    ProgressView().controlSize(.small)
-                                    Text(model.liveActivity?.lastActivity ?? "Agent 正在处理请求…")
-                                        .lineLimit(1)
-                                    if let count = model.liveActivity?.toolActivityCount, count > 0 {
-                                        Text("· \(count) 次工具")
-                                            .foregroundStyle(.tertiary)
+                            VStack(alignment:.leading,spacing:10) {
+                                HStack(spacing:10) {
+                                    ZStack {
+                                        Circle().fill(ForgePalette.accent.opacity(0.10))
+                                            .frame(width:28,height:28)
+                                        ProgressView().controlSize(.mini)
+                                    }
+                                    VStack(alignment:.leading,spacing:2) {
+                                        Text("Agent 正在执行")
+                                            .font(.system(size:11.5,weight:.semibold))
+                                            .foregroundStyle(ForgePalette.ink)
+                                        Text(model.liveActivity?.lastActivity ?? "正在处理请求…")
+                                            .font(.system(size:10.5))
+                                            .foregroundStyle(ForgePalette.secondary)
+                                            .lineLimit(1)
                                     }
                                     Spacer(minLength:8)
+                                    if let count = model.liveActivity?.toolActivityCount, count > 0 {
+                                        Text("\(count) tools")
+                                            .font(.system(size:9.5,weight:.medium))
+                                            .foregroundStyle(.tertiary)
+                                    }
                                     if let count = model.liveActivity?.priorEvents.count, count > 4 {
-                                        Button(showActivityDetails ? "收起" : "全部 \(count)") {
+                                        Button(showActivityDetails ? "收起" : "全部") {
                                             withAnimation(.easeOut(duration:0.16)) {
                                                 showActivityDetails.toggle()
                                             }
@@ -662,39 +690,25 @@ private struct AgentPane: View {
                                         .font(.system(size:10.5,weight:.medium))
                                     }
                                 }
-                                .font(.system(size:12,weight:.medium))
 
                                 let activityEvents = showActivityDetails
                                     ? model.liveActivity?.priorEvents ?? []
                                     : model.liveActivity?.recentPriorEvents ?? []
-                                ForEach(activityEvents) { event in
-                                    HStack(spacing:7) {
-                                        Image(systemName:activityIcon(event.phase))
-                                            .font(.system(size:9.5,weight:.medium))
-                                            .frame(width:12)
-                                            .foregroundStyle(.tertiary)
-                                        VStack(alignment:.leading,spacing:2) {
-                                            Text(event.label).lineLimit(1)
-                                            if let detail = event.detail, !detail.isEmpty {
-                                                Text(detail)
-                                                    .font(.system(size:9.5,design:.monospaced))
-                                                    .foregroundStyle(.tertiary)
-                                                    .lineLimit(2)
-                                            }
+                                if !activityEvents.isEmpty {
+                                    Divider().opacity(0.45)
+                                    VStack(alignment:.leading,spacing:7) {
+                                        ForEach(activityEvents) { event in
+                                            activityTrailRow(event)
                                         }
-                                        Spacer(minLength:8)
-                                        Image(systemName:event.status == "completed" ? "checkmark" : "circle.fill")
-                                            .font(.system(size:event.status == "completed" ? 8 : 5,weight:.semibold))
-                                            .foregroundStyle(.tertiary)
                                     }
-                                    .font(.system(size:10.5,weight:.regular))
-                                    .foregroundStyle(ForgePalette.secondary)
                                 }
                             }
-                            .padding(.horizontal,11).padding(.vertical,9)
-                            .background(ForgePalette.softFill,
-                                        in:RoundedRectangle(cornerRadius:11,style:.continuous))
-                            .foregroundStyle(ForgePalette.secondary)
+                            .padding(11)
+                            .background(ForgePalette.raisedSurface,
+                                        in:RoundedRectangle(cornerRadius:12,style:.continuous))
+                            .overlay(RoundedRectangle(cornerRadius:12,style:.continuous)
+                                .stroke(Color.black.opacity(0.055),lineWidth:0.7))
+                            .shadow(color:Color.black.opacity(0.025),radius:5,y:2)
                             .id("pending")
                         }
                     }
@@ -917,6 +931,134 @@ private struct AgentPane: View {
         }
         .onChange(of:model.selectedThreadId) { _ in
             if !model.busy { composerFocused = true }
+        }
+    }
+
+    private var agentWorkspaceBar: some View {
+        HStack(spacing:10) {
+            HStack(spacing:7) {
+                Image(systemName:"folder.fill")
+                    .symbolRenderingMode(.hierarchical)
+                    .font(.system(size:10.5,weight:.medium))
+                    .foregroundStyle(ForgePalette.secondary)
+                Text(model.project?.label ?? "未选择项目")
+                    .font(.system(size:11.5,weight:.semibold))
+                    .lineLimit(1)
+                if let context = checkoutContextLabel {
+                    Text(context)
+                        .font(.system(size:9.5,weight:.medium,design:.monospaced))
+                        .foregroundStyle(ForgePalette.secondary)
+                        .lineLimit(1)
+                        .padding(.horizontal,7)
+                        .frame(height:21)
+                        .background(ForgePalette.softFill,
+                                    in:RoundedRectangle(cornerRadius:7,style:.continuous))
+                }
+            }
+            .help(model.checkoutId.map { "checkout: \($0)" } ?? "当前项目没有 checkout")
+
+            Spacer(minLength:12)
+
+            ViewThatFits(in:.horizontal) {
+                HStack(spacing:3) {
+                    semanticContextButton("Requirement",page:.requirement,systemImage:"doc.text")
+                    semanticContextButton("Plan",page:.plan,systemImage:"list.bullet.rectangle")
+                    semanticContextButton("Knowledge",page:.knowledge,systemImage:"books.vertical")
+                }
+                HStack(spacing:3) {
+                    semanticContextButton("Requirement",page:.requirement,systemImage:"doc.text",compact:true)
+                    semanticContextButton("Plan",page:.plan,systemImage:"list.bullet.rectangle",compact:true)
+                    semanticContextButton("Knowledge",page:.knowledge,systemImage:"books.vertical",compact:true)
+                }
+            }
+
+            Divider().frame(height:18)
+
+            HStack(spacing:6) {
+                Circle()
+                    .fill(model.busy ? ForgePalette.accent : Color.green)
+                    .frame(width:6,height:6)
+                Text(model.busy ? "执行中" : "就绪")
+                    .font(.system(size:10.5,weight:.medium))
+                    .foregroundStyle(ForgePalette.secondary)
+            }
+        }
+        .padding(.horizontal,18)
+        .frame(height:43)
+        .background(ForgePalette.raisedSurface.opacity(0.64))
+        .accessibilityElement(children:.contain)
+        .accessibilityIdentifier("agent.workspace-context")
+    }
+
+    private var checkoutContextLabel: String? {
+        if let branch = model.checkoutBranch, !branch.isEmpty { return branch }
+        if let checkout = model.checkoutId, !checkout.isEmpty { return String(checkout.prefix(8)) }
+        return nil
+    }
+
+    private func semanticContextButton(_ title: String, page: NativePage, systemImage: String,
+                                       compact: Bool = false) -> some View {
+        Button { model.show(page) } label: {
+            HStack(spacing:4) {
+                Image(systemName:systemImage).font(.system(size:9))
+                if !compact { Text(title) }
+            }
+            .font(.system(size:10.5,weight:.medium))
+            .foregroundStyle(ForgePalette.secondary)
+            .padding(.horizontal,7)
+            .frame(minWidth:compact ? 25 : nil,minHeight:24)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(model.repoId == nil)
+        .help("打开当前项目的 \(title)")
+    }
+
+    private func starterPromptButton(_ title: String, systemImage: String, prompt: String) -> some View {
+        Button {
+            model.draft = prompt
+            composerFocused = true
+        } label: {
+            HStack(spacing:6) {
+                Image(systemName:systemImage).font(.system(size:9.5,weight:.medium))
+                Text(title)
+            }
+            .font(.system(size:10.5,weight:.medium))
+            .foregroundStyle(ForgePalette.secondary)
+            .padding(.horizontal,10)
+            .frame(height:30)
+            .background(ForgePalette.raisedSurface,
+                        in:RoundedRectangle(cornerRadius:9,style:.continuous))
+            .overlay(RoundedRectangle(cornerRadius:9,style:.continuous)
+                .stroke(Color.black.opacity(0.055),lineWidth:0.7))
+        }
+        .buttonStyle(.plain)
+        .disabled(model.busy)
+    }
+
+    private func activityTrailRow(_ event: AgentLiveActivityEvent) -> some View {
+        HStack(alignment:.top,spacing:8) {
+            ZStack {
+                Circle()
+                    .fill(event.status == "completed" ? Color.green.opacity(0.11) : ForgePalette.softFill)
+                    .frame(width:21,height:21)
+                Image(systemName:event.status == "completed" ? "checkmark" : activityIcon(event.phase))
+                    .font(.system(size:8.5,weight:.semibold))
+                    .foregroundStyle(event.status == "completed" ? Color.green : ForgePalette.secondary)
+            }
+            VStack(alignment:.leading,spacing:2) {
+                Text(event.label)
+                    .font(.system(size:10.5,weight:.medium))
+                    .foregroundStyle(ForgePalette.secondary)
+                    .lineLimit(1)
+                if let detail = event.detail, !detail.isEmpty {
+                    Text(detail)
+                        .font(.system(size:9.5,design:.monospaced))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(2)
+                }
+            }
+            Spacer(minLength:8)
         }
     }
 
