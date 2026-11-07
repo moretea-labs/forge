@@ -118,6 +118,15 @@ final class NativeWorkspaceTests: XCTestCase {
     }
 
     @MainActor
+    func testAgentGitDiffKeepsUntrackedOutsideReviewedPatchScope() throws {
+        let payload = Data(#"{"repoId":"repo_a","checkoutId":"checkout_a","branch":"work/a","head":"abcdef","staged":false,"paths":[],"nameOnly":["tracked.txt"],"stat":"1 file changed","patch":"diff --git a/tracked.txt b/tracked.txt\n","truncated":false,"untracked":["new.txt"]}"#.utf8)
+        let diff = try JSONDecoder().decode(AgentGitDiff.self,from:payload)
+        XCTAssertEqual(diff.untrackedFiles,["new.txt"])
+        XCTAssertEqual(diff.nameOnly,["tracked.txt"])
+        XCTAssertFalse(NativeWorkspace.reviewedChangesMatchPaths(diff,paths:["new.txt"]))
+    }
+
+    @MainActor
     func testReviewedChangesRestoreGuardRejectsStagedTruncatedAndWrongCheckout() {
         let valid = AgentGitDiff(
             repoId:"repo_a", checkoutId:"checkout_a", branch:"work/a", head:"abcdef",

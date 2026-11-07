@@ -77,7 +77,7 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
             } else {
                 None
             };
-            read_agent_git_diff_runtime(
+            read_agent_git_diff_for_review(
                 &repo_id, Some(&checkout_id),
                 args.get("staged").and_then(Value::as_bool).unwrap_or(false),
                 paths.as_deref(),

@@ -858,6 +858,15 @@ fn agent_git_diff_arguments(staged: bool) -> Value {
     json!({ "max_bytes": 20_000, "staged": staged })
 }
 
+fn agent_untracked_paths(status: &Value, paths: Option<&[String]>) -> Vec<String> {
+    status.get("untracked").and_then(Value::as_array).into_iter().flatten()
+        .filter_map(Value::as_str)
+        .filter(|path| paths.map_or(true, |scope| scope.iter().any(|candidate| candidate == path)))
+        .take(100)
+        .map(str::to_owned)
+        .collect()
+}
+
 async fn read_agent_git_diff_runtime(
     repo_id: &str,
     checkout_id: Option<&str>,
@@ -888,11 +897,41 @@ async fn read_agent_git_diff_runtime(
     Ok(diff)
 }
 
+async fn read_agent_git_diff_for_review(
+    repo_id: &str,
+    checkout_id: Option<&str>,
+    staged: bool,
+    paths: Option<&[String]>,
+) -> Result<Value, String> {
+    let mut diff = read_agent_git_diff_runtime(repo_id, checkout_id, staged, paths).await?;
+    let mut request = json!({ "repo_id": repo_id, "refresh": true });
+    if let Some(checkout_id) = checkout_id {
+        request["checkout_id"] = Value::String(checkout_id.to_string());
+    }
+    let result = call_runtime_tool("repository_git_status", request).await?;
+    let status = result.get("status")
+        .ok_or_else(|| "FORGE_DESKTOP_GIT_STATUS_RESULT_INVALID".to_string())?;
+    if status.get("repoId").and_then(Value::as_str) != Some(repo_id)
+        || checkout_id.is_some_and(|expected|
+            status.get("checkoutId").and_then(Value::as_str) != Some(expected)
+        )
+        || status.get("head").and_then(Value::as_str) != diff.get("head").and_then(Value::as_str)
+        || status.get("branch").and_then(Value::as_str) != diff.get("branch").and_then(Value::as_str)
+    {
+        return Err("FORGE_DESKTOP_GIT_STATUS_RESULT_INVALID".into());
+    }
+    let untracked = agent_untracked_paths(status, paths);
+    diff.as_object_mut()
+        .ok_or_else(|| "FORGE_DESKTOP_GIT_DIFF_RESULT_INVALID".to_string())?
+        .insert("untracked".to_string(), json!(untracked));
+    Ok(diff)
+}
+
 #[tauri::command]
 async fn read_agent_git_diff(
     repo_id: String, checkout_id: Option<String>, staged: Option<bool>,
 ) -> Result<Value, String> {
-    read_agent_git_diff_runtime(
+    read_agent_git_diff_for_review(
         &repo_id, checkout_id.as_deref(), staged.unwrap_or(false), None
     ).await
 }
@@ -1635,6 +1674,17 @@ mod tests {
     fn agent_git_inspector_forwards_exact_staged_selection() {
         assert_eq!(agent_git_diff_arguments(false), json!({"max_bytes": 20000, "staged": false}));
         assert_eq!(agent_git_diff_arguments(true), json!({"max_bytes": 20000, "staged": true}));
+    }
+
+    #[test]
+    fn agent_untracked_review_evidence_is_bounded_and_path_scoped() {
+        let status = json!({"untracked":["new-a.txt","nested/new-b.txt","other.txt"]});
+        assert_eq!(agent_untracked_paths(&status, None), vec![
+            "new-a.txt".to_string(), "nested/new-b.txt".to_string(), "other.txt".to_string()
+        ]);
+        assert_eq!(agent_untracked_paths(&status, Some(&["nested/new-b.txt".to_string()])),
+            vec!["nested/new-b.txt".to_string()]);
+        assert!(agent_untracked_paths(&json!({}), None).is_empty());
     }
 
     #[test]

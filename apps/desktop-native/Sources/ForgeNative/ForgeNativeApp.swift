@@ -1492,12 +1492,18 @@ private struct AgentChangesPane: View {
                     VStack(alignment:.leading,spacing:14) {
                         changeScopeHeader(changes)
 
+                        if !changes.untrackedFiles.isEmpty {
+                            untrackedChangesNotice(changes.untrackedFiles)
+                        }
+
                         if changes.nameOnly.isEmpty {
                             VStack(spacing:10) {
                                 Image(systemName:"checkmark.circle")
                                     .font(.system(size:24,weight:.light))
                                     .foregroundStyle(ForgePalette.secondary)
-                                Text(changes.staged ? "暂存区没有改动" : "工作区没有未提交改动")
+                                Text(changes.untrackedFiles.isEmpty
+                                     ? (changes.staged ? "暂存区没有改动" : "工作区没有未提交改动")
+                                     : "没有可审查的 tracked diff")
                                     .font(.system(size:12,weight:.medium))
                                     .foregroundStyle(ForgePalette.secondary)
                             }
@@ -1734,6 +1740,37 @@ private struct AgentChangesPane: View {
         focusedPath = nil
         focusedChanges = nil
         Task { await model.refreshAgentChanges(staged:staged) }
+    }
+
+    private func untrackedChangesNotice(_ paths:[String]) -> some View {
+        VStack(alignment:.leading,spacing:7) {
+            HStack(spacing:7) {
+                Image(systemName:"questionmark.square.dashed")
+                    .foregroundStyle(Color.orange)
+                Text("\(paths.count) 个未跟踪文件尚未进入可审查 patch")
+                    .font(.system(size:10.5,weight:.semibold))
+            }
+            ForEach(Array(paths.prefix(4)),id:\.self) { path in
+                Text(path)
+                    .font(.system(size:9.5,design:.monospaced))
+                    .foregroundStyle(ForgePalette.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            if paths.count > 4 {
+                Text("另有 \(paths.count - 4) 个未跟踪文件")
+                    .font(.system(size:9.5))
+                    .foregroundStyle(.tertiary)
+            }
+            Text("Git 在 add 前没有 tracked diff；Forge 不会把这些文件自动纳入 Commit 或 Discard。")
+                .font(.system(size:9.5))
+                .foregroundStyle(.tertiary)
+                .lineSpacing(2)
+        }
+        .padding(10)
+        .background(Color.orange.opacity(0.055),
+                    in:RoundedRectangle(cornerRadius:10,style:.continuous))
+        .accessibilityIdentifier("changes.untracked")
     }
 
     private func changeScopeHeader(_ changes: AgentGitDiff) -> some View {

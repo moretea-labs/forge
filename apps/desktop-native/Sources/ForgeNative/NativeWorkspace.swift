@@ -40,6 +40,8 @@ struct AgentGitDiff: Codable {
     let stat: String
     let patch: String
     let truncated: Bool
+    var untracked: [String]? = nil
+    var untrackedFiles: [String] { untracked ?? [] }
 }
 
 struct AgentLiveActivityEvent: Codable, Identifiable {
@@ -397,7 +399,10 @@ final class NativeWorkspace: ObservableObject {
     var selectedReasoningOptions: [AgentReasoningOption] {
         selectedAgentModel?.supportedReasoningLevels ?? []
     }
-    var changedFileCount: Int { agentChanges?.nameOnly.count ?? 0 }
+    var changedFileCount: Int {
+        guard let changes = agentChanges else { return 0 }
+        return changes.nameOnly.count + changes.untrackedFiles.count
+    }
     var visibleThreads: [ChatThread] {
         let needle = search.trimmingCharacters(in: .whitespacesAndNewlines)
         return threads.filter { t in
