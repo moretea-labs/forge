@@ -225,7 +225,6 @@ function assertProcessHandleAccess(ctx: MultiRepositoryMcpToolContext, processId
 function handleToPayload(handle: NonNullable<ReturnType<typeof getRepositoryCommandProcess>>): Record<string, unknown> {
   return {
     processId: handle.processId,
-    workId: handle.workId,
     commandId: handle.commandId,
     status: handle.status,
     contractStatus: handle.contractStatus,

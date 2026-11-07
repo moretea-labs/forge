@@ -6,7 +6,7 @@ import {
   scheduledBrowserProbeManagedRehydrateIntent,
   scheduledBrowserProbeNavigationAction,
 } from '../../src/runtime/workflow/schedules/browser-probe';
-import { createBrowserObservationSchedule } from '../../src/runtime/workflow/schedules/work-continuation';
+import { createBrowserObservationSchedule } from '../../src/runtime/workflow/schedules/browser-observation';
 
 describe('scheduled browser probe primitives', () => {
   test('forwards only normalized exact interactive grant references into scheduled browser actions', () => {

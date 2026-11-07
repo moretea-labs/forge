@@ -20,13 +20,6 @@ import type {
 export type BrowserObservationControllerType = 'chatgpt' | 'codex' | 'claude' | 'grok';
 export type BrowserObservationScheduleMode = 'browser_watch' | 'browser_keepalive';
 
-const CONTROLLER_PROGRESSION_OPERATION = 'controller_progression';
-const LEGACY_EXTERNAL_CONTROLLER_WAKE_OPERATION = 'external_controller_wake';
-
-function isLegacyWorkContinuationOperation(operation: string): boolean {
-  return operation === CONTROLLER_PROGRESSION_OPERATION || operation === LEGACY_EXTERNAL_CONTROLLER_WAKE_OPERATION;
-}
-
 export interface BrowserObservationScheduleInput {
   scheduleMode?: BrowserObservationScheduleMode;
   controllerType?: BrowserObservationControllerType;
@@ -62,12 +55,11 @@ export interface BrowserObservationScheduleInput {
 }
 
 export interface BrowserObservationScheduleListOptions {
-  historicalWorkId?: string;
   includeOccurrences?: boolean;
 }
 
 function browserSchedule(schedule: RepositorySchedule): RepositorySchedule {
-  if (!isLegacyWorkContinuationOperation(schedule.action.operation) && schedule.action.operation !== 'browser_probe') {
+  if (schedule.action.operation !== 'browser_probe') {
     throw new Error(`SCHEDULE_NOT_BROWSER_OBSERVATION: ${schedule.scheduleId}`);
   }
   return schedule;
@@ -139,8 +131,7 @@ export function createBrowserObservationSchedule(controllerHome: string, repoId:
 
 export function listBrowserObservationSchedules(controllerHome: string, repoId: string, options: BrowserObservationScheduleListOptions = {}): { schedules: RepositorySchedule[]; occurrences?: ScheduleOccurrence[] } {
   const schedules = listSchedules(controllerHome, repoId)
-    .filter(entry => isLegacyWorkContinuationOperation(entry.action.operation) || entry.action.operation === 'browser_probe')
-    .filter(entry => !options.historicalWorkId || entry.action.arguments?.work_id === options.historicalWorkId);
+    .filter(entry => entry.action.operation === 'browser_probe');
   if (!options.includeOccurrences) return { schedules };
   const scheduleIds = new Set(schedules.map(entry => entry.scheduleId));
   return { schedules, occurrences: listOccurrences(controllerHome, repoId, undefined, 100).filter(entry => scheduleIds.has(entry.scheduleId)) };
@@ -158,16 +149,10 @@ export function pauseBrowserObservationSchedule(controllerHome: string, repoId: 
 
 export function resumeBrowserObservationSchedule(controllerHome: string, repoId: string, scheduleId: string): RepositorySchedule {
   const schedule = browserSchedule(getSchedule(controllerHome, repoId, scheduleId));
-  if (isLegacyWorkContinuationOperation(schedule.action.operation) || (typeof schedule.action.arguments?.work_id === 'string' && schedule.action.arguments.work_id.trim())) {
-    throw new Error('WORK_BOUND_SCHEDULE_RESUME_RETIRED');
-  }
   return saveSchedule(controllerHome, { ...schedule, enabled: true, pausedReason: undefined, consecutiveFailures: 0, nextEligibleAt: undefined });
 }
 
 export async function triggerBrowserObservationSchedule(controllerHome: string, repoId: string, scheduleId: string, context: ScheduleTriggerContext = { source: 'manual' }): Promise<ScheduleOccurrence | undefined> {
   const schedule = browserSchedule(getSchedule(controllerHome, repoId, scheduleId));
-  if (isLegacyWorkContinuationOperation(schedule.action.operation) || (typeof schedule.action.arguments?.work_id === 'string' && schedule.action.arguments.work_id.trim())) {
-    throw new Error('WORK_BOUND_SCHEDULE_TRIGGER_RETIRED');
-  }
   return evaluateSchedule(controllerHome, schedule, true, context);
 }

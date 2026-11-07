@@ -1,6 +1,6 @@
 import { createHash } from 'crypto';
 import type { WorkflowJsonValue, WorkflowPublicationReceipt } from '../../../packages/workflow-runtime/api/index';
-import { createBrowserObservationSchedule } from '../workflow/schedules/work-continuation';
+import { createBrowserObservationSchedule } from '../workflow/schedules/browser-observation';
 
 const DAY_MS = 86_400_000;
 

@@ -40,7 +40,6 @@ export interface OperationDigest {
   requestAccepted?: boolean;
   resultAccepted?: boolean | null;
   operation?: string;
-  workId?: string;
   jobId?: string;
   requestId?: string;
   semanticKey?: string;
@@ -169,7 +168,6 @@ function defaultNextActions(phase: UserFacingPhase, jobId?: string, errorClass?:
         label: errorClass === 'policy_denied' ? '检查策略限制' : '修复代码或检查契约',
         tool: 'rh_context',
         operation: 'get',
-        payload: jobId ? { work_id: jobId } : undefined,
         risk: 'readonly',
         confidence: 'high',
       }];
@@ -374,7 +372,6 @@ export function buildJobOperationDigest(job: ExecutionJob, options: {
       ? (child.delegationAccepted ? false : phase === 'succeeded')
       : null,
     operation,
-    workId: job.jobId,
     jobId: job.jobId,
     requestId: job.requestId,
     semanticKey: job.semanticKey,
@@ -427,7 +424,6 @@ export function buildAcceptedQueuedDigest(input: {
     requestAccepted: true,
     resultAccepted: null,
     operation: input.operation,
-    workId: input.jobId,
     jobId: input.jobId,
     requestId: input.requestId,
     suggestedNextActions: [

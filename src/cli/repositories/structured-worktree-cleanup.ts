@@ -3,7 +3,6 @@ import { closeSync, existsSync, fstatSync, lstatSync, openSync, realpathSync, un
 import { dirname, join, resolve } from 'path';
 import { listOwnedResources } from '../../../packages/kernel/identity/api/index';
 import { withRepositoryMutationExclusion } from '../../runtime/resources/leases/store';
-import { listWorkHandlesFailClosed } from '../../runtime/control-plane/execution/work-handle-store';
 import { getRepository, setRepositoryCheckoutLifecycle } from './registry';
 import { executeRepositoryGitCommand, type RepositoryGitExecution } from './git-command-executor';
 import type { RepositoryRecord } from './types';
@@ -84,7 +83,7 @@ function withNativeWorktreeHeadLock<T>(
 
 /**
  * The registry Checkout ID is the target authority. Neither caller-supplied
- * filesystem paths nor a historical WorkHandle can authorize deletion.
+ * filesystem paths nor historical Work records can authorize deletion.
  * Repository/Git/Process ownership checks share the existing repository lock.
  */
 export function repositoryGitRemoveWorktree(
@@ -122,16 +121,6 @@ export function repositoryGitRemoveWorktree(
           || (existsSync(recorded) && realpathSync(recorded) === realpathSync(targetRoot));
       });
     if (owner) throw new Error('GIT_WORKTREE_OWNED_RESOURCE_PROTECTED: ' + owner.resourceId);
-    // Legacy WorkHandles may predate OwnedResource registration. Keep their
-    // checkout authority fenced; do not reinterpret absence of metadata as
-    // permission to delete another Work's physical source.
-    const legacyOwner = listWorkHandlesFailClosed(controllerHome, repository.repoId)
-      .find((handle) => handle.state !== 'cleaned'
-        && (handle.checkoutId === target.checkoutId
-          || resolve(handle.worktreePath) === targetRoot
-          || (existsSync(handle.worktreePath) && existsSync(targetRoot)
-            && realpathSync(handle.worktreePath) === realpathSync(targetRoot))));
-    if (legacyOwner) throw new Error('GIT_WORKTREE_LEGACY_WORK_HANDLE_PROTECTED: ' + legacyOwner.workId);
     // No path-based adoption: registry identity and live Git linkage must agree.
     const listed = gitWorktreeListed(repository.canonicalRoot, targetRoot);
     if (!existsSync(targetRoot)) {

@@ -16,7 +16,6 @@ import { managedPathInside, managedWorktreeStorageRoot } from '../../cli/reposit
 import { migrateManagedWorkspacePhysicalDependenciesToCanonical } from '../execution/managed-workspace';
 import { listActiveLeases } from '../resources/leases/store';
 import { cleanupScheduleOccurrenceHistory } from '../../../packages/kernel/scheduler/api/index';
-import { isTerminalSemanticWorkState, readWorkContractStore } from '../../../packages/kernel/work/api/index';
 import { assertOwnedResourceCleanupTarget, listOwnedResources, markOwnedResourceCleaned, type OwnedResource } from '../../../packages/kernel/identity/api/index';
 import { appendJsonLine, readJsonFile, writeJsonAtomic } from '../shared/json-files';
 import { cleanupControllerReleaseHistory } from './release-retention';
@@ -193,14 +192,10 @@ export interface RuntimeCleanupOptions {
   releaseRetentionGraceMs?: number;
   /** Minimum age before an abandoned runtime .staging-* directory can be reclaimed. */
   stagingReleaseRetentionGraceMs?: number;
-  /** Minimum age before a proven-redundant terminal Work preservation bundle can be reclaimed. */
-  cleanupArtifactRetentionGraceMs?: number;
-  /** Maximum age for terminal EditSession artifacts once no active Work owns them. */
+  /** Maximum age for terminal EditSession artifacts under EditSession-owned retention. */
   editSessionRetentionMs?: number;
   /** Count cap for newest terminal EditSession artifacts retained for local review/debugging. */
   editSessionMaxRetained?: number;
-  /** Grace period before a non-Plan Work with no exact durable owner loses execution authority. */
-  ownerlessWorkAuthorityGraceMs?: number;
   /** Grace before a removed repository may shed only explicit disposable Controller Home children. */
   repositoryNamespaceRetentionMs?: number;
   /** Minimum reclaimable SQLite free-page bytes before physical VACUUM is eligible. */
@@ -1211,17 +1206,6 @@ export function cleanupControllerRuntimeState(
           if (removalBudget.remaining <= 0) removalBudget.exhausted = true;
           break;
         }
-        let protectedWorkIds: string[];
-        try {
-          protectedWorkIds = readWorkContractStore({ controllerHome: home, repoId: repository.repoId }).contracts
-            .filter((contract) => !isTerminalSemanticWorkState(contract.semanticState))
-            .map((contract) => contract.workId);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          skippedByReason.edit_session_work_authority_unavailable = (skippedByReason.edit_session_work_authority_unavailable ?? 0) + 1;
-          editSessionHistory.errors.push(`${repository.repoId}:work_authority_unavailable:${message}`);
-          continue;
-        }
         const retained = cleanupTerminalEditSessionRecords(repository.canonicalRoot, {
           nowMs,
           retentionMs: options.editSessionRetentionMs,
@@ -1229,7 +1213,6 @@ export function cleanupControllerRuntimeState(
           maxEntries: editSessionBudget.remaining,
           maxRemovals: removalBudget.remaining,
           sequence,
-          protectedWorkIds,
         });
         editSessionBudget.remaining = Math.max(0, editSessionBudget.remaining - retained.inspected);
         editSessionBudget.inspected += retained.inspected;

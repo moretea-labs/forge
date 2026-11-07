@@ -48,7 +48,6 @@ describe('v8.1 repository runtime storage isolation', () => {
         purpose: 'durable storage invariant',
         allowedPaths: ['src/**'],
         binding: {
-          workId: 'work-storage-invariant',
           repoId: fixture.repoA.repoId,
           checkoutId: fixture.repoA.activeCheckoutId,
           principalId: 'test-principal',
@@ -63,7 +62,6 @@ describe('v8.1 repository runtime storage isolation', () => {
         purpose: 'durable storage wrong-target invariant',
         allowedPaths: ['src/**'],
         binding: {
-          workId: 'work-storage-wrong-target',
           repoId: fixture.repoA.repoId,
           checkoutId: fixture.repoA.activeCheckoutId,
           principalId: 'test-principal',

@@ -38,23 +38,19 @@ import type {
 
 const execFileAsync = promisify(execFile);
 const LIVE_MAINTENANCE_OPERATION = 'runtime_maintenance_apply';
-const EXTERNAL_CONTROLLER_WAKE_OPERATION = 'external_controller_wake';
-const CONTROLLER_PROGRESSION_OPERATION = 'controller_progression';
+const RETIRED_AUTONOMOUS_CONTINUATION_OPERATIONS = new Set(['external_controller_wake', 'controller_progression']);
 const BROWSER_PROBE_OPERATION = 'browser_probe';
 const GITHUB_ISSUE_WATCH_OPERATION = 'github_issue_watch';
 
 function isDeterministicSchedule(schedule: RepositorySchedule): boolean {
   // Kernel executes only typed, bounded dispatch operations.
   return schedule.action.operation === LIVE_MAINTENANCE_OPERATION
-    || schedule.action.operation === EXTERNAL_CONTROLLER_WAKE_OPERATION
-    || schedule.action.operation === CONTROLLER_PROGRESSION_OPERATION
     || schedule.action.operation === BROWSER_PROBE_OPERATION
     || schedule.action.operation === GITHUB_ISSUE_WATCH_OPERATION;
 }
 
 function retiredScheduleReason(schedule: RepositorySchedule): string | undefined {
-  if (schedule.action.operation === EXTERNAL_CONTROLLER_WAKE_OPERATION
-    || schedule.action.operation === CONTROLLER_PROGRESSION_OPERATION) {
+  if (RETIRED_AUTONOMOUS_CONTINUATION_OPERATIONS.has(schedule.action.operation)) {
     return 'RETIRED_AUTONOMOUS_CONTINUATION_SCHEDULE';
   }
   if (typeof schedule.action.arguments?.work_id === 'string' && schedule.action.arguments.work_id.trim()) {
@@ -223,9 +219,8 @@ export async function evaluateSchedule(
     updatedAt: timestamp,
   });
 
-  // Semantic/model-owned schedule actions record the trigger only. A trigger is
-  // continuation input for the external Controller/Supervisor, not a human
-  // blocker and therefore must not manufacture Handoff/UserRequest state.
+  // Unknown actions are never executed implicitly. Record a bounded skipped
+  // occurrence rather than manufacturing a task, controller turn or Handoff.
   if (!isDeterministicSchedule(schedule)) {
     const recorded = decideOccurrence(
       controllerHome,
@@ -233,7 +228,7 @@ export async function evaluateSchedule(
       occurrence,
       'operation_blocked',
       'skipped',
-      'Schedule trigger recorded for external Controller continuation; no Kernel ExecutionJob or human Handoff was created.',
+      `Unsupported schedule operation ${schedule.action.operation}; no execution or Handoff was created.`,
       occurrenceDecisionEvidence({ operation: schedule.action.operation, trigger: occurrence.triggerContext?.source }),
     );
     updateSchedule(controllerHome, schedule.repoId, schedule.scheduleId, () => ({ lastTriggeredAt: timestamp, lastOccurrenceId: occurrenceId }));

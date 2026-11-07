@@ -641,10 +641,6 @@
       "module": "controller",
       "resource": "git-worktree"
     },
-    "tests/runtime/work-process-evidence.test.ts": {
-      "module": "process-runtime",
-      "resource": "controller-home-isolated"
-    },
     "tests/runtime/route-session-concurrency.test.ts": {
       "module": "routing",
       "resource": "temp-isolated"
@@ -717,10 +713,6 @@
       "module": "controller",
       "resource": "pure"
     },
-    "tests/runtime/work-validation-reconciler.test.ts": {
-      "module": "process-runtime",
-      "resource": "temp-isolated"
-    },
     "tests/runtime/xiaohongshu-publish.test.ts": {
       "module": "browser",
       "resource": "pure"
@@ -775,10 +767,6 @@
       "resource": "pure"
     },
     "tests/runtime/browser-product-discovery.test.ts": {
-      "module": "browser",
-      "resource": "pure"
-    },
-    "tests/runtime/chatgpt-provider-dispatch-lane.test.ts": {
       "module": "browser",
       "resource": "pure"
     },

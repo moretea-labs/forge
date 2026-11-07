@@ -346,7 +346,6 @@ export function repositoryGitMergeBranch(
     authorizationDecision?: AuthorizationDecision;
     sessionId?: string;
     principalId?: string;
-    workId?: string;
     goalId?: string;
   },
 ): { branch: string; before: RepositoryGitStatusSnapshot; execution: RepositoryGitExecution; abort?: RepositoryGitExecution; after: RepositoryGitStatusSnapshot } {
@@ -374,7 +373,6 @@ export function repositoryGitRebaseOnto(
     authorizationDecision?: AuthorizationDecision;
     sessionId?: string;
     principalId?: string;
-    workId?: string;
     goalId?: string;
   },
 ): { before: RepositoryGitStatusSnapshot; execution: RepositoryGitExecution; abort?: RepositoryGitExecution; after: RepositoryGitStatusSnapshot; rebased: boolean; restored: boolean } {
@@ -425,7 +423,7 @@ function repositoryGitDeleteRemoteBranch(
   controllerHome: string,
   repository: RepositoryRecord,
   branch: string,
-  input: { expectedRemoteSha?: unknown; approvalRequestId?: string; authorizationDecision?: AuthorizationDecision; sessionId?: string; principalId?: string; workId?: string; goalId?: string },
+  input: { expectedRemoteSha?: unknown; approvalRequestId?: string; authorizationDecision?: AuthorizationDecision; sessionId?: string; principalId?: string; goalId?: string },
 ): RepositoryGitRemoteDeleteResult {
   if (isProtectedRemoteBranchDeletionTarget(branch, repository.defaultBranch)) {
     throw new Error(`GIT_REMOTE_BRANCH_PROTECTED: remote branch is not eligible for typed deletion: ${branch}`);
@@ -474,7 +472,7 @@ function repositoryGitDeleteRemoteBranch(
   };
 }
 
-export function repositoryGitDeleteBranch(controllerHome: string, repository: RepositoryRecord, input: { branch: unknown; force?: unknown; remote?: unknown; expectedRemoteSha?: unknown; approvalRequestId?: string; authorizationDecision?: AuthorizationDecision; sessionId?: string; principalId?: string; workId?: string; goalId?: string }): { branch: string; execution: RepositoryGitExecution } | RepositoryGitRemoteDeleteResult {
+export function repositoryGitDeleteBranch(controllerHome: string, repository: RepositoryRecord, input: { branch: unknown; force?: unknown; remote?: unknown; expectedRemoteSha?: unknown; approvalRequestId?: string; authorizationDecision?: AuthorizationDecision; sessionId?: string; principalId?: string; goalId?: string }): { branch: string; execution: RepositoryGitExecution } | RepositoryGitRemoteDeleteResult {
   const branch = assertSafeBranchName(input.branch);
   if (input.remote === true) {
     if (input.force === true) throw new Error('GIT_REMOTE_BRANCH_FORCE_INVALID: remote deletion uses exact expected_remote_sha CAS, not force');
@@ -485,7 +483,7 @@ export function repositoryGitDeleteBranch(controllerHome: string, repository: Re
   return { branch, execution: executeRepositoryGitCommand(controllerHome, repository, { args: ['branch', input.force === true ? '-D' : '-d', branch], authorization: 'explicit_user_request', ...input }) };
 }
 
-export function repositoryGitCommit(controllerHome: string, repository: RepositoryRecord, input: { message: unknown; paths?: unknown; allowEmpty?: unknown; authorizationDecision?: AuthorizationDecision; sessionId?: string; principalId?: string; workId?: string; goalId?: string }): RepositoryGitCommitResult {
+export function repositoryGitCommit(controllerHome: string, repository: RepositoryRecord, input: { message: unknown; paths?: unknown; allowEmpty?: unknown; authorizationDecision?: AuthorizationDecision; sessionId?: string; principalId?: string; goalId?: string }): RepositoryGitCommitResult {
   const before = repositoryGitStatus(repository);
   const message = normalizeCommitMessage(input.message);
   const scope = resolveRepositoryGitCommitScope(repository, { paths: input.paths });
@@ -601,7 +599,7 @@ export function repositoryGitCommit(controllerHome: string, repository: Reposito
   };
 }
 
-export function repositoryGitFinishWorkflow(controllerHome: string, repository: RepositoryRecord, input: { targetBranch?: unknown; featureBranch?: unknown; deleteBranch?: unknown; noFf?: unknown; preserveDirtyTargetPaths?: unknown; authorizationDecision?: AuthorizationDecision; sessionId?: string; principalId?: string; workId?: string; goalId?: string }): RepositoryGitFinishResult {
+export function repositoryGitFinishWorkflow(controllerHome: string, repository: RepositoryRecord, input: { targetBranch?: unknown; featureBranch?: unknown; deleteBranch?: unknown; noFf?: unknown; preserveDirtyTargetPaths?: unknown; authorizationDecision?: AuthorizationDecision; sessionId?: string; principalId?: string; goalId?: string }): RepositoryGitFinishResult {
   const before = repositoryGitStatus(repository);
   const featureBranch = assertSafeBranchName(input.featureBranch ?? before.branch);
   const targetBranch = assertSafeBranchName(input.targetBranch ?? repository.defaultBranch ?? 'main');
@@ -653,7 +651,7 @@ export function repositoryGitFinishWorkflow(controllerHome: string, repository: 
   const finishAuthorization = 'explicit_user_request' as const;
   let equivalentOverlapStashRef: string | null = null;
   if (equivalentOverlappingDirtyPaths.length > 0) {
-    const stash = executeRepositoryGitCommand(controllerHome, repository, { args: ['stash', 'push', '-m', `forge-finish-equivalent:${input.workId ?? featureBranch}`, '--', ...equivalentOverlappingDirtyPaths], authorization: finishAuthorization, ...input });
+    const stash = executeRepositoryGitCommand(controllerHome, repository, { args: ['stash', 'push', '-m', `forge-finish-equivalent:${featureBranch}`, '--', ...equivalentOverlappingDirtyPaths], authorization: finishAuthorization, ...input });
     steps.push({ name: 'stash_equivalent_target_overlap', execution: stash });
     if (stash.status !== 'executed' || stash.ok !== true) {
       return { repoId: repository.repoId, checkoutId: repository.activeCheckoutId, featureBranch, targetBranch, before, steps, after: repositoryGitStatus(repository), completed: false, error: { code: 'GIT_EQUIVALENT_TARGET_STASH_FAILED', message: stash.stderr || 'Unable to preserve candidate-equivalent dirty target paths before integration.' } };
@@ -677,7 +675,7 @@ export function repositoryGitFinishWorkflow(controllerHome: string, repository: 
   };
   let stashRef: string | null = null;
   if (protectTrackedChanges) {
-    const stash = executeRepositoryGitCommand(controllerHome, repository, { args: ['stash', 'push', '-m', `forge-finish:${input.workId ?? featureBranch}`], authorization: finishAuthorization, ...input });
+    const stash = executeRepositoryGitCommand(controllerHome, repository, { args: ['stash', 'push', '-m', `forge-finish:${featureBranch}`], authorization: finishAuthorization, ...input });
     steps.push({ name: 'stash_target_changes', execution: stash });
     if (stash.status !== 'executed' || stash.ok !== true) return { repoId: repository.repoId, checkoutId: repository.activeCheckoutId, featureBranch, targetBranch, before, steps, after: repositoryGitStatus(repository), completed: false, error: { code: 'GIT_STASH_LOCAL_CHANGES_FAILED', message: stash.stderr || 'git stash push failed' } };
     stashRef = gitText(repository, ['rev-parse', 'refs/stash']);

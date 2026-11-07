@@ -7,7 +7,6 @@ import {
 } from '../../../cli/repositories/registry';
 import { resolveGitExecutable } from '../../../effects/git-executable';
 import type { RepositoryRecord } from '../../../cli/repositories/types';
-import type { WorkHandleState } from './work-handle-store';
 
 export type ExecutionIdentityErrorCode =
   | 'EXECUTION_IDENTITY_MISMATCH'
@@ -15,16 +14,13 @@ export type ExecutionIdentityErrorCode =
   | 'CHECKOUT_ROUTE_MISMATCH'
   | 'CHECKOUT_NOT_REGISTERED'
   | 'CHECKOUT_NOT_ACTIVE'
-  | 'WORK_HANDLE_CHECKOUT_DRIFT'
-  | 'WORK_HANDLE_BRANCH_CHANGED'
-  | 'WORK_HANDLE_HEAD_CHANGED'
+  | 'CHECKOUT_BRANCH_CHANGED'
+  | 'CHECKOUT_HEAD_CHANGED'
   | 'GIT_TOPLEVEL_MISMATCH'
   | 'GIT_COMMON_DIR_MISMATCH'
   | 'WORKTREE_MISSING'
   | 'WORKTREE_PATH_MISMATCH'
   | 'REPOSITORY_NOT_EXECUTABLE'
-  | 'LEGACY_WORK_IDENTITY_AMBIGUOUS'
-  | 'LEGACY_WORK_IDENTITY_REJECTED'
   | 'WORKSPACE_SCOPE_MISMATCH'
   | 'FORGE_INSTANCE_SCOPE_MISMATCH';
 
@@ -36,7 +32,6 @@ export interface ResolvedExecutionIdentity {
   /** Legacy storage coordinate. For forge_instance authority this is `instance`, not a checkout. */
   readonly checkoutId: string;
   readonly canonicalRoot: string;
-  readonly workId?: string;
   readonly worktreePath?: string;
   readonly branch?: string;
   readonly expectedHead?: string;
@@ -209,7 +204,7 @@ export function classifyGitCommonDirectoryDrift(input: {
 
 export function executionIdentityForRepository(
   repository: RepositoryRecord,
-  patch: Partial<Pick<ResolvedExecutionIdentity, 'workId' | 'worktreePath' | 'branch' | 'expectedHead' | 'allowArchived'>> = {},
+  patch: Partial<Pick<ResolvedExecutionIdentity, 'worktreePath' | 'branch' | 'expectedHead' | 'allowArchived'>> = {},
 ): ResolvedExecutionIdentity {
   return Object.freeze({
     schemaVersion: 1 as const,
@@ -220,38 +215,11 @@ export function executionIdentityForRepository(
   });
 }
 
-export function executionIdentityForWork(
-  repository: RepositoryRecord,
-  handle: WorkHandleState,
-): ResolvedExecutionIdentity {
-  if (repository.repoId !== handle.repositoryId) {
-    fail('EXECUTION_IDENTITY_MISMATCH', 'validated repository does not match WorkHandle', {
-      expectedRepoId: handle.repositoryId,
-      actualRepoId: repository.repoId,
-      workId: handle.workId,
-    });
-  }
-
-  // Once a Work exists, its immutable coordinates are the execution authority.
-  // Repository.activeCheckoutId/canonicalRoot are mutable UI/session projection
-  // fields and must never veto or rewrite an explicit Work-bound invocation.
-  return Object.freeze({
-    schemaVersion: 1 as const,
-    repositoryId: handle.repositoryId,
-    checkoutId: handle.checkoutId,
-    canonicalRoot: handle.worktreePath,
-    workId: handle.workId,
-    worktreePath: handle.worktreePath,
-    branch: handle.branch,
-    expectedHead: handle.expectedHead,
-  });
-}
 
 export function executionIdentityFromCoordinates(input: {
   repositoryId: string;
   checkoutId: string;
   canonicalRoot: string;
-  workId?: string;
   worktreePath?: string;
   branch?: string;
   expectedHead?: string;
@@ -264,50 +232,6 @@ export function executionIdentityFromCoordinates(input: {
   return Object.freeze({ schemaVersion: 1 as const, ...input });
 }
 
-/**
- * Resolve legacy WorkContract identity only through a unique exact WorkHandle match.
- * Ambiguous or incomplete identity fails closed — never falls back to Session/main.
- */
-export function resolveLegacyWorkContractIdentity(input: {
-  workId: string;
-  repoId?: string;
-  checkoutId?: string;
-  canonicalRoot?: string;
-  branch?: string;
-  head?: string;
-  candidates: readonly WorkHandleState[];
-}): WorkHandleState {
-  const exact = input.candidates.filter((handle) => {
-    if (handle.workId !== input.workId) return false;
-    if (input.repoId && handle.repositoryId !== input.repoId) return false;
-    if (input.checkoutId && handle.checkoutId !== input.checkoutId) return false;
-    if (input.canonicalRoot) {
-      try {
-        if (!samePath(realpathSync(handle.worktreePath), realpathSync(input.canonicalRoot))) return false;
-      } catch {
-        return false;
-      }
-    }
-    if (input.branch && handle.branch !== input.branch) return false;
-    if (input.head && handle.expectedHead && handle.expectedHead !== input.head) return false;
-    return true;
-  });
-  if (exact.length === 1) return exact[0];
-  if (exact.length > 1) {
-    fail('LEGACY_WORK_IDENTITY_AMBIGUOUS', 'legacy WorkContract matches multiple WorkHandles', {
-      workId: input.workId,
-      repoId: input.repoId,
-      checkoutId: input.checkoutId,
-      matchCount: String(exact.length),
-    });
-  }
-  fail('LEGACY_WORK_IDENTITY_REJECTED', 'legacy WorkContract has no unique exact WorkHandle match', {
-    workId: input.workId,
-    repoId: input.repoId,
-    checkoutId: input.checkoutId,
-    candidateCount: String(input.candidates.length),
-  });
-}
 
 export function assertExecutionIdentity(input: {
   controllerHome: string;
@@ -322,7 +246,6 @@ export function assertExecutionIdentity(input: {
       expectedRepoId: identity.repositoryId,
       actualRepoId: input.requestedRepoId,
       checkoutId: identity.checkoutId,
-      workId: identity.workId,
     });
   }
   if (input.requestedCheckoutId && input.requestedCheckoutId !== identity.checkoutId) {
@@ -330,7 +253,6 @@ export function assertExecutionIdentity(input: {
       expectedCheckoutId: identity.checkoutId,
       actualCheckoutId: input.requestedCheckoutId,
       repoId: identity.repositoryId,
-      workId: identity.workId,
     });
   }
 
@@ -418,15 +340,14 @@ export function assertExecutionIdentity(input: {
     });
   }
   if (identity.worktreePath) {
-    const worktreePath = realpathOrFail(identity.worktreePath, 'WORKTREE_MISSING', 'WorkHandle worktree');
+    const worktreePath = realpathOrFail(identity.worktreePath, 'WORKTREE_MISSING', 'registered worktree');
     if (!samePath(worktreePath, registeredRoot)) {
-      fail('WORKTREE_PATH_MISMATCH', 'WorkHandle path differs from registered checkout', {
+      fail('WORKTREE_PATH_MISMATCH', 'worktree path differs from registered checkout', {
         repoId: identity.repositoryId,
         checkoutId: identity.checkoutId,
         expected: registeredRoot,
         actual: worktreePath,
-        workId: identity.workId,
-      });
+        });
     }
   }
   const requestedCwd = isAbsolute(input.cwd) ? input.cwd : resolve(registeredRoot, input.cwd);
@@ -497,21 +418,19 @@ export function assertExecutionIdentity(input: {
   const currentBranch = gitSnapshot.branch;
   const currentHead = gitSnapshot.head;
   if (identity.branch && currentBranch !== identity.branch) {
-    fail('WORK_HANDLE_BRANCH_CHANGED', 'branch drifted from execution identity', {
+    fail('CHECKOUT_BRANCH_CHANGED', 'branch drifted from execution identity', {
       repoId: identity.repositoryId,
       checkoutId: identity.checkoutId,
       expected: identity.branch,
       actual: currentBranch ?? 'detached',
-      workId: identity.workId,
     });
   }
   if (identity.expectedHead && currentHead !== identity.expectedHead) {
-    fail('WORK_HANDLE_HEAD_CHANGED', 'HEAD drifted from execution identity; re-prepare required', {
+    fail('CHECKOUT_HEAD_CHANGED', 'HEAD drifted from execution identity; refresh checkout identity before retry', {
       repoId: identity.repositoryId,
       checkoutId: identity.checkoutId,
       expected: identity.expectedHead,
       actual: currentHead ?? 'missing',
-      workId: identity.workId,
     });
   }
 

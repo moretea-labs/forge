@@ -242,6 +242,11 @@ function isGitHubCliExternalMutation(words: string[]): boolean {
   return true;
 }
 
+function isReadOnlyCodeGraphCommand(words: string[]): boolean {
+  const program = words[0]?.split(/[\\/]/).at(-1)?.toLowerCase();
+  return program === 'codegraph' && words[1]?.toLowerCase() === 'status';
+}
+
 function isReadOnlySegment(segment: string): boolean {
   const words = firstWords(segment);
   const program = words[0]?.toLowerCase();
@@ -252,6 +257,7 @@ function isReadOnlySegment(segment: string): boolean {
   if (program === 'find') return !/(?:-delete|-exec|-execdir|-ok|-okdir)\b/.test(segment);
   if (program === 'sed') return !isSedInPlaceSegment(segment);
   if (program === 'gh') return isReadOnlyGitHubCliCommand(words);
+  if (isReadOnlyCodeGraphCommand(words)) return true;
   return READ_ONLY_PROGRAMS.has(program);
 }
 
@@ -546,6 +552,9 @@ function classifyArgvCommand(
   }
   if (program === 'sqlite3' && isSafeReadOnlySqliteWords(argv)) {
     return { risk: 'readonly', confirmation: 'none', reasons: ['sqlite3 is constrained by safe mode, readonly database access, and one read-only SQL statement'] };
+  }
+  if (isReadOnlyCodeGraphCommand(argv)) {
+    return { risk: 'readonly', confirmation: 'none', reasons: ['CodeGraph status is a read-only repository observation'] };
   }
   // Explicit shell wrappers are common in generated diagnostics. Re-classify
   // the fixed inner command instead of treating `sh -c` / `bash -lc` wrappers

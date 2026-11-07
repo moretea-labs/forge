@@ -10,7 +10,7 @@ import {
   resumeBrowserObservationSchedule,
   triggerBrowserObservationSchedule,
   type BrowserObservationControllerType,
-} from '../../../src/runtime/workflow/schedules/work-continuation';
+} from '../../../src/runtime/workflow/schedules/browser-observation';
 import { result } from './result-adapter';
 import { selected } from './shared-adapter';
 
@@ -51,6 +51,7 @@ export async function callRhWorkScheduleAdapter(
 ): Promise<CallToolResult> {
   try {
     const workId = String(args.work_id ?? '').trim();
+    if (workId) throw new Error('WORK_BOUND_SCHEDULE_OPERATION_RETIRED');
     const scheduleId = options.scheduleIdOverride?.trim() || String(args.schedule_id ?? '').trim();
     if (operation === 'schedule_create') {
       const retiredAutonomousFields = [
@@ -72,9 +73,7 @@ export async function callRhWorkScheduleAdapter(
       const triggerType = ['interval', 'cron', 'calendar', 'condition', 'repository-event', 'dependency-checkpoint', 'manual'].includes(triggerTypeRaw)
         ? triggerTypeRaw as 'interval' | 'cron' | 'calendar' | 'condition' | 'repository-event' | 'dependency-checkpoint' | 'manual'
         : undefined;
-      if (workId) throw new Error('WORK_BOUND_SCHEDULE_CREATE_RETIRED');
       const scheduleModeRaw = String(args.schedule_mode ?? 'browser_watch').trim();
-      if (scheduleModeRaw === 'continuation') throw new Error('SCHEDULE_AUTONOMOUS_CONTINUATION_RETIRED');
       if (!['browser_watch', 'browser_keepalive'].includes(scheduleModeRaw)) throw new Error('SCHEDULE_MODE_INVALID');
       const created = createBrowserObservationSchedule(ctx.controllerHome, repository.repoId, {
         scheduleMode: scheduleModeRaw as 'browser_watch' | 'browser_keepalive',
@@ -109,11 +108,10 @@ export async function callRhWorkScheduleAdapter(
         backoffMaxMinutes: typeof args.backoff_max_minutes === 'number' ? args.backoff_max_minutes : undefined,
         stopConditions: Array.isArray(args.stop_conditions) ? args.stop_conditions.map(String) : undefined,
       });
-      return result(buildFacadeResult({ summary: `Browser observation schedule ${created.schedule.scheduleId} is configured without Work lifecycle.`, data: { schedule: created.schedule } }) as unknown as Record<string, unknown>);
+      return result(buildFacadeResult({ summary: `Browser observation schedule ${created.schedule.scheduleId} is configured.`, data: { schedule: created.schedule } }) as unknown as Record<string, unknown>);
     }
     if (operation === 'schedule_list') {
       const schedules = listBrowserObservationSchedules(ctx.controllerHome, repository.repoId, {
-        historicalWorkId: workId || undefined,
         includeOccurrences: args.include_occurrences === true,
       });
       // A list is discovery, not a transport for archived controller prompts.

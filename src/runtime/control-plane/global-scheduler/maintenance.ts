@@ -1,6 +1,6 @@
 import type { RepositoryRecord } from '../../../cli/repositories/types';
 import { cleanupRuntimeComputerInteractionTargets } from '../../root/computer-target-composition';
-import { cleanupControllerHomeBrowserArtifacts, cleanupGeneratedRepositoryCheckoutCaches, cleanupIdleXCTestDevices, cleanupReleasableIosTestEvidence, releasableIosTestEvidenceWorkIds } from '../generated-cache-retention';
+import { cleanupControllerHomeBrowserArtifacts, cleanupGeneratedRepositoryCheckoutCaches, cleanupIdleXCTestDevices, cleanupReleasableIosTestEvidence } from '../generated-cache-retention';
 import type { cleanupControllerRuntimeState } from '../runtime-cleanup';
 import type { gcTerminalProcesses } from '../../execution/process-runtime/gc';
 import { assertRuntimeMayWrite } from '../../root/write-fence';
@@ -8,7 +8,6 @@ import { cleanupPersistedCheckResults } from '../../execution/process-runtime/ch
 import { cleanupRetiredExecutionJobs } from '../../execution/jobs/store';
 import type { reconcilePendingEditValidations } from '../execution/edit-validation-coordinator';
 import { deriveForgeActionableFailureCode, maybeRegisterFailedReleaseSessionRepairs, maybeRegisterForgeActionableFailureRepair } from '../../diagnostics/incident-repair';
-import { readWorkContractStore } from '../../../../packages/kernel/work/api/index';
 
 const PERIODIC_RETENTION_INTERVAL_MS = 5 * 60_000;
 const PERIODIC_DEEP_RETENTION_INTERVAL_MS = 15 * 60_000;
@@ -179,12 +178,8 @@ export async function runSchedulerPeriodicCleanup(input: {
         nowMs: input.nowMs, rootStartIndex: plan.generatedCacheRootStartIndex,
       });
       if (generated.errors.length > 0) console.error(`[forge cleanup] generated-cache retention reported ${generated.errors.length} error(s) for ${cacheRepo.repoId}`);
-      const releasableWorkIds = releasableIosTestEvidenceWorkIds(
-        readWorkContractStore({ controllerHome: input.controllerHome, repoId: cacheRepo.repoId }).contracts,
-      );
       const evidence = cleanupReleasableIosTestEvidence(cacheRepo, {
         owner: { controllerHome: input.controllerHome, repoId: cacheRepo.repoId },
-        releasableWorkIds,
         nowMs: input.nowMs,
         rootStartIndex: plan.generatedCacheRootStartIndex,
       });

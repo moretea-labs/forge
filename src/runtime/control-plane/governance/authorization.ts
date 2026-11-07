@@ -26,7 +26,6 @@ export interface GoalDelegation {
   schemaVersion: 1;
   sessionId: string;
   repositoryId: string;
-  workId?: string;
   goalId?: string;
   allowedRiskClasses: AuthorizationRiskClass[];
   deniedRiskClasses: AuthorizationRiskClass[];
@@ -43,7 +42,6 @@ export interface AuthorizationRequestRecord {
   repositoryId: string;
   sessionId?: string;
   principalId?: string;
-  workId?: string;
   goalId?: string;
   command?: string | string[];
   approvalToken?: string;
@@ -64,8 +62,6 @@ export interface AuthorizationContext {
   risk: AuthorizationRiskClass;
   repositoryId: string;
   currentRepositoryId?: string;
-  workId?: string;
-  boundWorkId?: string;
   goalId?: string;
   boundGoalId?: string;
   sessionId?: string;
@@ -109,7 +105,6 @@ function readableRequestPath(controllerHome: string, repoId: string, requestId: 
 
 function scopeMatches(context: AuthorizationContext): boolean {
   if (context.currentRepositoryId && context.repositoryId !== context.currentRepositoryId) return false;
-  if (context.workId && context.boundWorkId && context.workId !== context.boundWorkId) return false;
   if (context.goalId && context.boundGoalId && context.goalId !== context.boundGoalId) return false;
   if (context.worktreePath && context.cwd) {
     const cwd = resolve(context.worktreePath, context.cwd);
@@ -122,7 +117,6 @@ function scopeMatches(context: AuthorizationContext): boolean {
 function delegationMatches(context: AuthorizationContext): boolean {
   const delegation = context.delegation;
   if (!delegation || delegation.sessionId !== context.sessionId || delegation.repositoryId !== context.repositoryId) return false;
-  if (delegation.workId && delegation.workId !== context.workId) return false;
   if (delegation.goalId && delegation.goalId !== context.goalId && delegation.goalId !== context.boundGoalId) return false;
   if (delegation.permissionSnapshotVersion !== context.permissionSnapshotVersion) return false;
   if (delegation.expiresAt && Date.parse(delegation.expiresAt) <= Date.now()) return false;
@@ -141,7 +135,6 @@ function requestDecision(context: AuthorizationContext, reason: string): Authori
     repositoryId: context.repositoryId,
     ...(context.sessionId ? { sessionId: context.sessionId } : {}),
     ...(context.principalId ? { principalId: context.principalId } : {}),
-    ...(context.workId ? { workId: context.workId } : {}),
     ...(context.goalId ? { goalId: context.goalId } : {}),
     ...(context.command ? { command: context.command } : {}),
     ...(context.approvalToken ? { approvalToken: context.approvalToken } : {}),
@@ -151,7 +144,6 @@ function requestDecision(context: AuthorizationContext, reason: string): Authori
     consequences: [
       `Operation risk class: ${context.risk}`,
       `Repository: ${context.repositoryId}`,
-      ...(context.workId ? [`Work handle: ${context.workId}`] : []),
     ],
     continuation: context.command
       ? `After confirming approvalRequestId=${approvalRequestId}, retry the same command with the returned approval request; changed commands require a new approval.`
@@ -165,7 +157,7 @@ function requestDecision(context: AuthorizationContext, reason: string): Authori
 
 export function decideAuthorization(context: AuthorizationContext): AuthorizationDecision {
   if (context.risk === 'secret_access') return { decision: 'deny', reason: 'Credential, keychain, token, and raw secret access is always denied.' };
-  if (!scopeMatches(context)) return requestDecision(context, 'The operation is outside the active repository, worktree, or Goal scope.');
+  if (!scopeMatches(context)) return requestDecision(context, 'The operation is outside the active repository, checkout, or Goal scope.');
   if (['outside_repository', 'destructive'].includes(context.risk)) {
     return context.approvedByUser ? { decision: 'allow', source: 'user_confirmation', reason: 'The user explicitly confirmed the scoped catastrophic operation.' } : requestDecision(context, `Explicit user confirmation is required for ${context.risk}.`);
   }
@@ -187,25 +179,23 @@ export function readAuthorizationRequest(controllerHome: string, repositoryId: s
   return request;
 }
 
-export function resolveAuthorizationRequest(input: { controllerHome: string; repositoryId: string; approvalRequestId: string; sessionId?: string; principalId?: string; workId?: string; permissionSnapshotVersion: number; confirm: boolean }): AuthorizationRequestRecord {
+export function resolveAuthorizationRequest(input: { controllerHome: string; repositoryId: string; approvalRequestId: string; sessionId?: string; principalId?: string; permissionSnapshotVersion: number; confirm: boolean }): AuthorizationRequestRecord {
   const request = readAuthorizationRequest(input.controllerHome, input.repositoryId, input.approvalRequestId);
   if (!input.confirm) throw new Error('USER_CONFIRMATION_REQUIRED: confirm_authorization=true is required to resolve the approval request');
   if (request.status === 'invalidated') throw new Error(`APPROVAL_REQUEST_INVALIDATED: ${request.invalidatedReason ?? 'approval request is stale'}`);
   if (request.sessionId && request.sessionId !== input.sessionId) throw new Error('APPROVAL_REQUEST_SESSION_MISMATCH');
   if (request.principalId && request.principalId !== input.principalId) throw new Error('APPROVAL_REQUEST_PRINCIPAL_MISMATCH');
-  if (request.workId && request.workId !== input.workId) throw new Error('APPROVAL_REQUEST_WORK_MISMATCH');
   if (request.permissionSnapshotVersion !== input.permissionSnapshotVersion) throw new Error('APPROVAL_REQUEST_STALE_PERMISSION');
   const resolved = { ...request, status: 'resolved' as const, resolvedAt: new Date().toISOString() };
   writeJsonAtomic(requestPath(input.controllerHome, input.repositoryId, input.approvalRequestId), resolved);
   return resolved;
 }
 
-export function assertResolvedAuthorization(input: { controllerHome: string; repositoryId: string; approvalRequestId: string; sessionId?: string; principalId?: string; workId?: string; permissionSnapshotVersion: number; command?: string | string[] }): AuthorizationRequestRecord {
+export function assertResolvedAuthorization(input: { controllerHome: string; repositoryId: string; approvalRequestId: string; sessionId?: string; principalId?: string; permissionSnapshotVersion: number; command?: string | string[] }): AuthorizationRequestRecord {
   const request = readAuthorizationRequest(input.controllerHome, input.repositoryId, input.approvalRequestId);
   if (request.status !== 'resolved') throw new Error('APPROVAL_REQUEST_NOT_RESOLVED: confirm the approval request in the current conversation first');
   if (request.sessionId && request.sessionId !== input.sessionId) throw new Error('APPROVAL_REQUEST_SESSION_MISMATCH');
   if (request.principalId && request.principalId !== input.principalId) throw new Error('APPROVAL_REQUEST_PRINCIPAL_MISMATCH');
-  if (request.workId && request.workId !== input.workId) throw new Error('APPROVAL_REQUEST_WORK_MISMATCH');
   if (request.permissionSnapshotVersion !== input.permissionSnapshotVersion) throw new Error('APPROVAL_REQUEST_STALE_PERMISSION');
   if (request.command && input.command && JSON.stringify(request.command) !== JSON.stringify(input.command)) throw new Error('APPROVAL_REQUEST_COMMAND_CHANGED: request a new approval for changed parameters');
   return request;

@@ -861,7 +861,7 @@ export function LocalConversationSurface({
             <summary title="更多会话操作" aria-label="更多会话操作"><AgentControlIcon name="more" /></summary>
             <div className="agent-header-menu-panel" role="group" aria-label="会话操作">
               <button type="button" onClick={() => { closeAgentMenus(surfaceRef.current); onOpenProjects(); }}>
-                <AgentControlIcon name="work" /> Work 与项目
+                <AgentControlIcon name="work" /> 项目与记录
               </button>
               <button type="button" onClick={() => { closeAgentMenus(surfaceRef.current); onOpenKnowledge(); }}>
                 <AgentControlIcon name="book" /> 项目知识
@@ -883,7 +883,7 @@ export function LocalConversationSurface({
       {!selectedThread ? (
         <div className="local-empty">
           <strong>开始一个本地会话</strong>
-          <p>会话记录只属于桌面客户端；Requirement、Plan 和 Work 仍由 Forge 保持唯一权威。</p>
+          <p>会话记录只属于桌面客户端；Requirement 与 Plan 由 Forge 持久化，历史 Work 仅兼容读取，开发进度以 GitHub Issue / Project 为准。</p>
           <button className="plain-action" type="button" onClick={addThread}>新建会话</button>
         </div>
       ) : (

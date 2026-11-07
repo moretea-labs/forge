@@ -338,7 +338,7 @@ describe('runtime observability', () => {
         checks: [],
         dispatchState: 'running',
       });
-      expect(collectWorkLifecycleAttention(controllerHome, repository)).toContainEqual(expect.objectContaining({
+      expect(collectWorkLifecycleAttention(controllerHome, repository)).not.toContainEqual(expect.objectContaining({
         jobId: `lifecycle:work_active:${repositoryWorkId}`,
       }));
     } finally {
@@ -352,7 +352,7 @@ describe('runtime observability', () => {
     expect(workLifecycleAttentionBlocksReadiness({ status: 'active_work_handle_missing' })).toBe(false);
     expect(workLifecycleAttentionBlocksReadiness({ status: 'active_worktree_missing' })).toBe(false);
     expect(workLifecycleAttentionBlocksReadiness({ status: 'terminal_work_cleanup_unsettled' })).toBe(false);
-    expect(workLifecycleAttentionBlocksReadiness({ status: 'work_branch_not_integrated' })).toBe(false);
+    expect(workLifecycleAttentionBlocksReadiness({ status: 'branch_not_integrated' })).toBe(false);
     expect(workLifecycleAttentionBlocksReadiness({ status: 'dirty_linked_worktree_unregistered' })).toBe(true);
   });
 
@@ -381,15 +381,15 @@ describe('runtime observability', () => {
       const findings = collectWorkLifecycleAttention(controllerHome, repository);
       expect(findings).toEqual(expect.arrayContaining([
         expect.objectContaining({ status: 'dirty_linked_worktree_unregistered' }),
-        expect.objectContaining({ status: 'work_branch_not_integrated' }),
+        expect.objectContaining({ status: 'branch_not_integrated' }),
       ]));
       rebuildRepositoryProjection(controllerHome, repository.repoId);
       const projection = readRepositoryProjectionSnapshot(controllerHome, repository.repoId).projection;
       expect(projection.currentAttention).toEqual(expect.arrayContaining([
         expect.objectContaining({ status: 'dirty_linked_worktree_unregistered' }),
       ]));
-      expect(projection.currentAttention).not.toContainEqual(expect.objectContaining({ status: 'work_branch_not_integrated' }));
-      expect(projection.attention).toContainEqual(expect.objectContaining({ status: 'work_branch_not_integrated' }));
+      expect(projection.currentAttention).not.toContainEqual(expect.objectContaining({ status: 'branch_not_integrated' }));
+      expect(projection.attention).toContainEqual(expect.objectContaining({ status: 'branch_not_integrated' }));
       const health = evaluateRuntimeHealth(observations({
         workers: {
           queueDepth: projection.queueDepth,
@@ -521,10 +521,10 @@ describe('runtime observability', () => {
 
       const findings = collectWorkLifecycleAttention(controllerHome, repository);
       expect(findings).not.toContainEqual(expect.objectContaining({
-        jobId: 'lifecycle:work_branch_not_integrated:work/patch-equivalent',
+        jobId: 'lifecycle:branch_not_integrated:work/patch-equivalent',
       }));
       expect(findings).toContainEqual(expect.objectContaining({
-        jobId: 'lifecycle:work_branch_not_integrated:work/unique-patch',
+        jobId: 'lifecycle:branch_not_integrated:work/unique-patch',
       }));
     } finally {
       rmSync(controllerHome, { recursive: true, force: true });

@@ -1083,7 +1083,6 @@ export async function callRepositoryTool(
         const rawCommitScope = classifyRawGitCommitScope(args.command as string | string[]);
         const routeClass = classifyRepositoryCommandRoute(args.command as string | string[], {
           forceDurable,
-          workId: undefined,
           defaultBranch: commandTarget.defaultBranch,
           timeoutMs,
           mutationPaths,
@@ -1308,7 +1307,6 @@ export async function callRepositoryTool(
                 timeoutMs,
                 maxOutputBytes,
                 requestId: typeof args.request_id === 'string' ? args.request_id : undefined,
-                workId: executionIdentity.workId,
                 executionIdentity,
                 principalId: caller?.principalId ?? undefined,
               });
