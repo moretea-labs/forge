@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSy
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawn, spawnSync } from 'child_process';
-import { executionIdentityForRepository, executionIdentityFromCoordinates } from '../../src/runtime/control-plane/execution/execution-identity';
+import { executionIdentityForRepository } from '../../src/runtime/control-plane/execution/execution-identity';
 import {
   __resetLiveMonitorsForTests,
   cancelProcess,
@@ -947,11 +947,12 @@ describe('Unified Process Runtime', () => {
       controllerHome,
       repoId: target.workspaceId,
       checkoutId: target.checkoutId,
-      executionIdentity: executionIdentityFromCoordinates({
+      executionIdentity: Object.freeze({
+        schemaVersion: 1 as const,
         repositoryId: target.workspaceId,
         checkoutId: target.checkoutId,
         canonicalRoot: target.canonicalRoot,
-        authority: 'ephemeral_workspace',
+        authority: 'ephemeral_workspace' as const,
       }),
       command: {
         kind: 'argv',
