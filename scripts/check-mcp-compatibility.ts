@@ -64,7 +64,7 @@ const EXPECTED_PREFERRED_TOOL_NAME_FINGERPRINT = 'f22e635a213b45fa';
 // 2026-11-07: #483 retires Work-specific outcome_record/experience_record input
 // fields and keeps lifecycle-free learning_record/learning_feedback as the
 // canonical advisory-memory write path.
-const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = 'f428c370a641e97d';
+const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = 'b76899ee059d962b';
 
 const policy = runtimePolicy(process.cwd(), {
   profile: 'controller',
