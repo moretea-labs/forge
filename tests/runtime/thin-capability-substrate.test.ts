@@ -306,6 +306,24 @@ describe('Thin capability substrate', () => {
     expect(listUserRequests(controllerHome, 'pending')).toHaveLength(0);
   });
 
+  test('Step 4a: UserRequest writer rejects retired Work target scope', () => {
+    const controllerHome = tempHome();
+    expect(() => recordUserRequest(controllerHome, {
+      kind: 'user_action_request',
+      rootCauseKey: 'legacy-work-scope',
+      title: 'Retired Work scope',
+      summary: 'New UserRequests must use current repository/project/requirement scope.',
+      actionRequired: 'product_decision',
+      targetScope: {
+        scopeKind: 'work',
+        scopeId: 'work-retired',
+        repoId: 'repo-example',
+        workId: 'work-retired',
+      },
+    })).toThrow('USER_REQUEST_WORK_SCOPE_RETIRED');
+    expect(listUserRequests(controllerHome, 'all')).toHaveLength(0);
+  });
+
   test('Step 4b: requestId remains one authority across legacy duplicate rows', () => {
     const controllerHome = tempHome();
     const path = userRequestStorePath(controllerHome);

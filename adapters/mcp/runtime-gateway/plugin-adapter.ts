@@ -343,7 +343,6 @@ export async function callPluginAdapter(
         scope: pluginScopeLabel(scope),
         receiptId: submitted.receipt.receiptId,
         requestId: submitted.receipt.requestId,
-        ...(submitted.receipt.workId ? { workId: submitted.receipt.workId } : {}),
         authorization: submitted.authorization,
         result: compactResult,
         detail: {
