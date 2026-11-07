@@ -912,6 +912,8 @@ private struct AgentPane: View {
                         .font(.system(size:9.5,weight:.medium,design:.monospaced))
                         .foregroundStyle(ForgePalette.secondary)
                         .lineLimit(1)
+                        .truncationMode(.middle)
+                        .frame(maxWidth:170,alignment:.leading)
                         .padding(.horizontal,7)
                         .frame(height:21)
                         .background(ForgePalette.softFill,
@@ -995,6 +997,8 @@ private struct AgentPane: View {
                 Text(model.project?.label ?? "选择项目")
                     .font(.system(size:11.5,weight:.semibold))
                     .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth:185,alignment:.leading)
                 Image(systemName:"chevron.down")
                     .font(.system(size:7,weight:.semibold))
                     .foregroundStyle(.tertiary)
@@ -1214,6 +1218,8 @@ private struct AgentPane: View {
                                      ? ForgePalette.accent : ForgePalette.secondary)
                 Text(composerConfigurationLabel)
                     .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth:210,alignment:.leading)
                 Image(systemName:"chevron.down")
                     .font(.system(size:7,weight:.semibold))
                     .foregroundStyle(.tertiary)
@@ -1226,7 +1232,7 @@ private struct AgentPane: View {
                         in:RoundedRectangle(cornerRadius:9,style:.continuous))
         }
         .menuStyle(.borderlessButton)
-        .fixedSize()
+        .fixedSize(horizontal:false,vertical:true)
         .help(model.allowApiEffects && model.selectedProvider == "api"
               ? "下一次 API 发送已授权受 Forge 约束的写操作"
               : "选择 Provider、模型与推理强度")
