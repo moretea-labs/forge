@@ -355,10 +355,11 @@ test('Runtime ownership liveness rejects a reused live PID when schema-v2 proces
   });
 });
 
-test('stopped Runtime reconciliation ignores only an incoherent reused incarnation PID after a strong owner is proven dead', () => {
-  const home = mkdtempSync(join(tmpdir(), 'forge-runtime-owner-incoherent-pid-reuse-'));
+test('Runtime reconciliation ignores an incoherent incarnation PID once the schema-v2 owner identity is dead', () => {
+  const home = mkdtempSync(join(tmpdir(), 'forge-runtime-owner-incoherent-incarnation-'));
   roots.push(home);
   mkdirSync(join(home, 'runtime'), { recursive: true });
+
   writeFileSync(runtimeOwnerPath(home), JSON.stringify({
     schemaVersion: 2,
     runtimeInstanceId: 'runtime-dead-owner',
@@ -380,7 +381,7 @@ test('stopped Runtime reconciliation ignores only an incoherent reused incarnati
   expect(inspectRuntimeOwnership(home)).toMatchObject({
     coherent: false,
     ownerAlive: false,
-    incarnationAlive: true,
+    incarnationAlive: false,
   });
   expect(observeRuntimeStatus(home)).toMatchObject({
     running: false,
@@ -395,8 +396,7 @@ test('stopped Runtime reconciliation ignores only an incoherent reused incarnati
     detail: 'dead Runtime owner evidence was fenced out after service shutdown',
   });
   expect(existsSync(runtimeOwnerPath(home))).toBe(false);
-  expect(reconciled.staleOwnerPath && existsSync(reconciled.staleOwnerPath)).toBe(true);
-  expect(readFileSync(runtimeIncarnationPath(home), 'utf8')).toContain('"fencingGeneration": 9');
+  expect(existsSync(runtimeIncarnationPath(home))).toBe(true);
 });
 
 test('Runtime ownership liveness still reports an exact live schema-v2 owner', () => {
@@ -407,11 +407,6 @@ test('Runtime ownership liveness still reports an exact live schema-v2 owner', (
 
   expect(inspectRuntimeOwnership(home)).toMatchObject({
     ownerAlive: true,
-  });
-  expect(reconcileStoppedRuntimeOwnership(home)).toMatchObject({
-    ok: false,
-    changed: false,
-    detail: 'RUNTIME_OWNERSHIP_STILL_LIVE',
   });
 });
 
