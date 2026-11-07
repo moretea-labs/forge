@@ -806,9 +806,10 @@ fn read_local_api_settings() -> Result<Value, String> {
         "endpoint": endpoint,
         "model": model,
         "apiProtocol": api_protocol,
-        // The Codex CLI uses its existing login; never access Keychain just
-        // to display Codex settings. API credentials are scoped to API mode.
-        "hasKey": if provider == "api" { read_local_api_key(endpoint)?.is_some() } else { false },
+        // Provider is a new-conversation default, not an execution-mode gate.
+        // Existing API threads may remain valid when Codex becomes the default,
+        // so key presence belongs to the configured endpoint itself.
+        "hasKey": read_local_api_key(endpoint)?.is_some(),
     }))
 }
 
@@ -1078,8 +1079,28 @@ fn local_effect_completed(name: &str, receipt: &Value) -> bool {
     }
 }
 
-async fn run_local_forge_tool(
+trait LocalApiHost {
+    fn packaged_tool_script(&self) -> Result<PathBuf, String>;
+    fn emit_tool_progress(&self, payload: Value);
+}
+
+struct TauriLocalApiHost {
     app: tauri::AppHandle,
+}
+
+impl LocalApiHost for TauriLocalApiHost {
+    fn packaged_tool_script(&self) -> Result<PathBuf, String> {
+        self.app.path().resolve("resources/forge-local-tool.mjs", tauri::path::BaseDirectory::Resource)
+            .map_err(|_| "FORGE_DESKTOP_LOCAL_TOOL_RESOURCE_UNAVAILABLE".to_string())
+    }
+
+    fn emit_tool_progress(&self, payload: Value) {
+        let _ = self.app.emit("forge-agent-tool-progress", payload);
+    }
+}
+
+async fn run_local_forge_tool<H: LocalApiHost + Sync>(
+    host: &H,
     repo_id: String,
     checkout_id: Option<String>,
     conversation_id: String,
@@ -1100,8 +1121,7 @@ async fn run_local_forge_tool(
         let script = if dev_script.is_file() {
             dev_script
         } else {
-            app.path().resolve("resources/forge-local-tool.mjs", tauri::path::BaseDirectory::Resource)
-                .map_err(|_| "FORGE_DESKTOP_LOCAL_TOOL_RESOURCE_UNAVAILABLE")?
+            host.packaged_tool_script()?
         };
         if !script.is_file() {
             return Err("FORGE_DESKTOP_LOCAL_TOOL_RESOURCE_UNAVAILABLE".to_string());
@@ -1285,14 +1305,14 @@ fn validate_agent_checkout_binding(
     Ok(())
 }
 
-#[tauri::command]
-async fn send_local_api_conversation(
-    app: tauri::AppHandle,
+async fn run_local_api_turn<H: LocalApiHost + Sync>(
+    host: &H,
     messages: Vec<Value>,
     repo_id: Option<String>,
     checkout_id: Option<String>,
     conversation_id: String,
     allow_effects: bool,
+    cancel_receiver: &mut tokio::sync::watch::Receiver<bool>,
 ) -> Result<Value, String> {
     // The saved provider is a default for new sessions, not a prohibition on
     // continuing an existing API conversation. Every API request still checks
@@ -1327,8 +1347,8 @@ async fn send_local_api_conversation(
         history.push(json!({ "role": role, "content": content }));
     }
     let key = read_local_api_key(&endpoint)?;
-    let host = reqwest::Url::parse(&endpoint).map_err(|_| "FORGE_DESKTOP_API_ENDPOINT_INVALID")?;
-    let local = matches!(host.host_str().unwrap_or(""), "localhost" | "127.0.0.1" | "[::1]");
+    let endpoint_url = reqwest::Url::parse(&endpoint).map_err(|_| "FORGE_DESKTOP_API_ENDPOINT_INVALID")?;
+    let local = matches!(endpoint_url.host_str().unwrap_or(""), "localhost" | "127.0.0.1" | "[::1]");
     if key.is_none() && !local { return Err("FORGE_DESKTOP_API_KEY_MISSING".into()); }
     let protocol = config.get("apiProtocol").and_then(Value::as_str).unwrap_or("openai");
     if !matches!(protocol, "openai" | "anthropic") {
@@ -1344,18 +1364,6 @@ async fn send_local_api_conversation(
         format!("You are the Forge Desktop local API agent working in registered repository {id}, checkout {checkout}. Use the supplied tools for real facts and repository operations. All calls execute through the existing Forge repository authority in the local process, not MCP HTTP. Never invent a file, command result, Requirement or Plan state. Tools with effects require a pinned checkout and the user's approval for this turn. Never claim an operation succeeded unless its tool result confirms it.")
     } else {
         "You are the Forge Desktop assistant. No Forge project is attached: tools are disabled. Do not invent repository changes or imply that you ran a command. Ask the user to attach a project to work on files.".to_string()
-    };
-    let (cancel_sender, mut cancel_receiver) = tokio::sync::watch::channel(false);
-    {
-        let registry = app.state::<LocalApiTurnRegistry>();
-        let mut turns = registry.0.lock().map_err(|_| "FORGE_DESKTOP_API_TURN_REGISTRY_FAILED")?;
-        if turns.contains_key(&conversation_id) {
-            return Err("FORGE_DESKTOP_API_TURN_ALREADY_RUNNING".into());
-        }
-        turns.insert(conversation_id.clone(), cancel_sender);
-    }
-    let _registration = LocalApiTurnRegistration {
-        app: app.clone(), conversation_id: conversation_id.clone(),
     };
     let mut tool_events: Vec<Value> = Vec::new();
     let mut total_calls = 0usize;
@@ -1389,7 +1397,7 @@ async fn send_local_api_conversation(
         // repository effect. Requests may already have reached a provider.
         let output = request_local_api_round_cancellable(
             &client, &endpoint, protocol, key.as_deref(), &provider_body,
-            &mut cancel_receiver,
+            cancel_receiver,
         ).await?;
         let requests = provider_tool_calls(protocol, &output)?;
         if protocol == "anthropic" {
@@ -1435,18 +1443,18 @@ async fn send_local_api_conversation(
                 args["request_id"] = Value::String(id.clone());
                 Some(id)
             } else { None };
-            let _ = app.emit("forge-agent-tool-progress", json!({
+            host.emit_tool_progress(json!({
                 "conversationId": conversation_id, "name": name, "phase": "started",
                 "requestId": effect_request_id,
             }));
             let tool_result = run_local_forge_tool(
-                app.clone(), repo_id.clone().unwrap_or_default(), checkout_id.clone(),
+                host, repo_id.clone().unwrap_or_default(), checkout_id.clone(),
                 conversation_id.clone(), name.clone(), args, allow_effects
             ).await;
             let result = match tool_result {
                 Ok(receipt) => receipt,
                 Err(error) => {
-                    let _ = app.emit("forge-agent-tool-progress", json!({
+                    host.emit_tool_progress(json!({
                         "conversationId": conversation_id, "name": name, "phase": "failed",
                         "requestId": effect_request_id,
                     }));
@@ -1471,7 +1479,7 @@ async fn send_local_api_conversation(
             }
             tool_events.push(json!({ "name": name, "ok": ok,
                 "requestId": effect_request_id }));
-            let _ = app.emit("forge-agent-tool-progress", json!({
+            host.emit_tool_progress(json!({
                 "conversationId": conversation_id, "name": name,
                 "phase": if ok { "completed" } else { "failed" },
                 "requestId": effect_request_id,
@@ -1501,9 +1509,41 @@ async fn send_local_api_conversation(
     Err("FORGE_DESKTOP_API_TOOL_ROUND_LIMIT".into())
 }
 
+#[tauri::command]
+async fn send_local_api_conversation(
+    app: tauri::AppHandle,
+    messages: Vec<Value>,
+    repo_id: Option<String>,
+    checkout_id: Option<String>,
+    conversation_id: String,
+    allow_effects: bool,
+) -> Result<Value, String> {
+    let (cancel_sender, mut cancel_receiver) = tokio::sync::watch::channel(false);
+    {
+        let registry = app.state::<LocalApiTurnRegistry>();
+        let mut turns = registry.0.lock().map_err(|_| "FORGE_DESKTOP_API_TURN_REGISTRY_FAILED")?;
+        if turns.contains_key(&conversation_id) {
+            return Err("FORGE_DESKTOP_API_TURN_ALREADY_RUNNING".into());
+        }
+        turns.insert(conversation_id.clone(), cancel_sender);
+    }
+    let _registration = LocalApiTurnRegistration {
+        app:app.clone(), conversation_id:conversation_id.clone(),
+    };
+    let host = TauriLocalApiHost { app };
+    run_local_api_turn(
+        &host, messages, repo_id, checkout_id, conversation_id, allow_effects,
+        &mut cancel_receiver,
+    ).await
+}
+
 
 fn main() {
-    if std::env::args().nth(1).as_deref() == Some("--native-bridge") {
+    let mode = std::env::args().nth(1);
+    if mode.as_deref() == Some("--native-api-turn") {
+        std::process::exit(native_bridge::run_api_turn());
+    }
+    if mode.as_deref() == Some("--native-bridge") {
         std::process::exit(native_bridge::run());
     }
     tauri::Builder::default()

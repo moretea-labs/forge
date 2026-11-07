@@ -124,7 +124,7 @@ private struct ForgeWorkspaceView: View {
             }
             .padding(.horizontal,13).padding(.top,13).padding(.bottom,14)
 
-            Button(action:model.newThread) {
+            Button { model.newThread() } label: {
                 HStack(spacing:10) {
                     Image(systemName:"plus")
                         .font(.system(size:10,weight:.semibold))
@@ -628,6 +628,43 @@ private struct AgentPane: View {
 
 
                     Menu {
+                        Button {
+                            model.selectThreadProvider("codex")
+                        } label: {
+                            if model.selectedProvider == "codex" { Label("Codex CLI",systemImage:"checkmark") }
+                            else { Text("Codex CLI") }
+                        }
+                        Button {
+                            model.selectThreadProvider("api")
+                        } label: {
+                            if model.selectedProvider == "api" { Label("兼容 API",systemImage:"checkmark") }
+                            else { Text("兼容 API") }
+                        }
+                        .disabled(!model.apiProfileReady)
+                    } label: {
+                        HStack(spacing:5) {
+                            Image(systemName:model.selectedProvider == "api" ? "network" : "terminal")
+                                .font(.system(size:9.5,weight:.medium))
+                            Text(model.selectedProvider == "api" ? "API" : "Codex")
+                            Image(systemName:"chevron.down")
+                                .font(.system(size:7,weight:.semibold))
+                                .foregroundStyle(.tertiary)
+                        }
+                        .font(.system(size:10.5,weight:.medium))
+                        .foregroundStyle(ForgePalette.ink)
+                        .padding(.horizontal,8)
+                        .frame(height:25)
+                        .background(ForgePalette.softFill,
+                                    in:RoundedRectangle(cornerRadius:8,style:.continuous))
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .disabled(model.busy || model.thread?.messages.isEmpty == false)
+                    .help(model.thread?.messages.isEmpty == false
+                          ? "已有历史的会话固定 Provider；新建会话可切换"
+                          : "选择当前会话 Provider")
+
+                    Menu {
                         ForEach(model.agentModels) { option in
                             Button {
                                 model.selectAgentModel(option.slug)
@@ -641,9 +678,11 @@ private struct AgentPane: View {
                         }
                     } label: {
                         HStack(spacing:5) {
-                            Image(systemName:"cpu")
+                            Image(systemName:model.selectedProvider == "api" ? "server.rack" : "cpu")
                                 .font(.system(size:9.5,weight:.medium))
-                            Text(model.selectedAgentModel?.displayName ?? "选择模型")
+                            Text(model.selectedProvider == "api"
+                                 ? (model.localApiSettings?.model ?? "API 模型")
+                                 : (model.selectedAgentModel?.displayName ?? "选择模型"))
                                 .lineLimit(1)
                             Image(systemName:"chevron.down")
                                 .font(.system(size:7,weight:.semibold))
@@ -658,8 +697,10 @@ private struct AgentPane: View {
                     }
                     .menuStyle(.borderlessButton)
                     .fixedSize()
-                    .disabled(model.agentModels.isEmpty || model.busy)
-                    .help(model.selectedAgentModel?.description ?? "从 Codex 当前模型目录选择")
+                    .disabled(model.selectedProvider != "codex" || model.agentModels.isEmpty || model.busy)
+                    .help(model.selectedProvider == "api"
+                          ? "API 模型来自保存的本地 profile"
+                          : (model.selectedAgentModel?.description ?? "从 Codex 当前模型目录选择"))
 
                     Menu {
                         ForEach(model.selectedReasoningOptions) { option in
@@ -677,7 +718,7 @@ private struct AgentPane: View {
                         HStack(spacing:5) {
                             Image(systemName:"brain.head.profile")
                                 .font(.system(size:9.5,weight:.medium))
-                            Text(reasoningLabel(model.selectedReasoningEffort))
+                            Text(model.selectedProvider == "api" ? "API" : reasoningLabel(model.selectedReasoningEffort))
                             Image(systemName:"chevron.down")
                                 .font(.system(size:7,weight:.semibold))
                                 .foregroundStyle(.tertiary)
@@ -691,8 +732,8 @@ private struct AgentPane: View {
                     }
                     .menuStyle(.borderlessButton)
                     .fixedSize()
-                    .disabled(model.selectedReasoningOptions.isEmpty || model.busy)
-                    .help("当前模型的推理强度")
+                    .disabled(model.selectedProvider != "codex" || model.selectedReasoningOptions.isEmpty || model.busy)
+                    .help(model.selectedProvider == "api" ? "兼容 API 不使用 Codex reasoning 目录" : "当前模型的推理强度")
 
                     Menu {
                         Button {
@@ -707,7 +748,7 @@ private struct AgentPane: View {
                         } label: {
                             Label("添加图片",systemImage:"photo")
                         }
-                        .disabled(!model.imageInputAvailable)
+                        .disabled(!model.selectedProviderSupportsImages)
                     } label: {
                         Image(systemName:"paperclip")
                             .font(.system(size:10,weight:.medium))
@@ -718,8 +759,26 @@ private struct AgentPane: View {
                     }
                     .menuStyle(.borderlessButton)
                     .fixedSize()
-                    .disabled(model.busy || (model.checkoutRoot == nil && !model.imageInputAvailable))
+                    .disabled(model.busy || (model.checkoutRoot == nil && !model.selectedProviderSupportsImages))
                     .help("添加当前 checkout 文件上下文或图片")
+
+                    if model.selectedProvider == "api", model.checkoutId != nil {
+                        Button {
+                            model.allowApiEffects.toggle()
+                        } label: {
+                            Image(systemName:model.allowApiEffects ? "shield.checkered" : "shield")
+                                .font(.system(size:10,weight:.medium))
+                                .foregroundStyle(model.allowApiEffects ? ForgePalette.accent : ForgePalette.secondary)
+                                .frame(width:25,height:25)
+                                .background(model.allowApiEffects ? ForgePalette.selectionStrong : ForgePalette.softFill,
+                                            in:RoundedRectangle(cornerRadius:8,style:.continuous))
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(model.busy)
+                        .help(model.allowApiEffects
+                              ? "本轮 API Agent 可执行受 Forge 约束的写操作；发送后自动关闭"
+                              : "本轮 API Agent 只允许只读工具；点击后仅授权下一次发送的写操作")
+                    }
 
                     Button {
                         withAnimation(.easeOut(duration:0.18)) { showChanges.toggle() }
@@ -744,9 +803,13 @@ private struct AgentPane: View {
                     .help("查看当前 checkout 的未提交改动")
 
                     Circle()
-                        .fill(model.provider.contains("已连接") ? Color.green : Color.orange)
+                        .fill(model.selectedProvider == "api"
+                              ? (model.apiProfileReady ? Color.green : Color.red)
+                              : (model.provider.contains("已连接") ? Color.green : Color.orange))
                         .frame(width:6,height:6)
-                        .help(model.provider)
+                        .help(model.selectedProvider == "api"
+                              ? (model.apiProfileReady ? "兼容 API profile 已就绪" : "兼容 API profile 未完成")
+                              : model.provider)
                     Spacer()
                     Text("⌘↵").font(.system(size:10)).foregroundStyle(.tertiary)
                     if model.busy {
@@ -761,6 +824,8 @@ private struct AgentPane: View {
                         .help("停止 Agent（Esc）")
                     } else {
                         let sendDisabled = model.draft.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty
+                            || (model.selectedProvider == "api" && !model.apiProfileReady)
+                            || (model.thread?.repoId != nil && model.thread?.checkoutId == nil)
                         Button { Task { await model.send() } } label: {
                             Image(systemName:"arrow.up")
                                 .font(.system(size:11,weight:.bold))
@@ -1659,6 +1724,12 @@ private struct KnowledgePane: View {
 
 private struct SettingsPane: View {
     @ObservedObject var model: NativeWorkspace
+    @State private var defaultProvider = "codex"
+    @State private var apiProtocol = "openai"
+    @State private var endpoint = "https://api.openai.com/v1"
+    @State private var apiModel = ""
+    @State private var apiKey = ""
+    @State private var saving = false
 
     var body: some View {
         ScrollView {
@@ -1666,7 +1737,7 @@ private struct SettingsPane: View {
                 HStack(alignment:.top) {
                     VStack(alignment:.leading,spacing:6) {
                         Text("Agent 设置").font(.system(size:22,weight:.medium))
-                        Text("当前 Native Agent 只通过 Forge controller.local_conversation 使用 Codex。保存的 API profile 是配置事实，不会静默切换 Native 执行 Provider。")
+                        Text("Provider 按会话固定：Codex 继续使用 Forge controller.local_conversation；兼容 API 复用同一 Rust Agent 核心、取消与工具事件协议。已有历史不会因默认配置改变而切换 Provider。")
                             .font(.system(size:12)).foregroundStyle(ForgePalette.secondary)
                     }
                     Spacer()
@@ -1681,22 +1752,32 @@ private struct SettingsPane: View {
 
                 VStack(alignment:.leading,spacing:13) {
                     HStack(spacing:9) {
-                        Circle().fill(model.provider.contains("已连接") ? Color.green : Color.orange)
+                        Circle().fill(model.selectedProvider == "api"
+                                           ? (model.apiProfileReady ? Color.green : Color.red)
+                                           : (model.provider.contains("已连接") ? Color.green : Color.orange))
                             .frame(width:8,height:8)
-                        Text("Native Agent · Codex CLI").font(.system(size:14,weight:.semibold))
+                        Text("当前会话 · \(model.selectedProvider == "api" ? "兼容 API" : "Codex CLI")")
+                            .font(.system(size:14,weight:.semibold))
                         Spacer()
                         Text("当前执行 Provider")
                             .font(.system(size:9.5,weight:.semibold))
                             .padding(.horizontal,8).frame(height:22)
                             .background(ForgePalette.selection,in:Capsule())
                     }
-                    Text(model.provider).font(.system(size:12)).foregroundStyle(ForgePalette.secondary)
+                    Text(model.selectedProvider == "api"
+                         ? (model.apiProfileReady ? "使用保存的兼容 API profile；写操作仍需每轮显式授权。" : "API profile 尚未完成。")
+                         : model.provider)
+                        .font(.system(size:12)).foregroundStyle(ForgePalette.secondary)
                     HStack(spacing:16) {
-                        settingMeta("会话模型",model.selectedAgentModel?.displayName ?? "Codex 默认")
-                        settingMeta("Reasoning",model.selectedReasoningEffort.isEmpty ? "默认" : model.selectedReasoningEffort)
-                        settingMeta("图片输入",model.imageInputAvailable ? "可用" : "不可用")
+                        settingMeta("会话模型",model.selectedProvider == "api"
+                                    ? (model.localApiSettings?.model ?? "未配置")
+                                    : (model.selectedAgentModel?.displayName ?? "Codex 默认"))
+                        settingMeta("Reasoning",model.selectedProvider == "api"
+                                    ? "API profile"
+                                    : (model.selectedReasoningEffort.isEmpty ? "默认" : model.selectedReasoningEffort))
+                        settingMeta("图片输入",model.selectedProviderSupportsImages ? "可用" : "不可用")
                     }
-                    Text("模型与推理强度按会话保存，可直接在 Agent 输入区调整。")
+                    Text("Provider 与模型上下文按会话保存；已有历史不会被默认设置静默改写。")
                         .font(.system(size:10.5)).foregroundStyle(.tertiary)
                 }
                 .padding(16)
@@ -1706,27 +1787,74 @@ private struct SettingsPane: View {
                     HStack {
                         Text("保存的兼容 API profile").font(.system(size:13,weight:.semibold))
                         Spacer()
-                        Text("尚未接入 Native Agent")
-                            .font(.system(size:9.5,weight:.semibold)).foregroundStyle(.orange)
+                        Text(model.apiProfileReady ? "可用于新会话" : "配置未完成")
+                            .font(.system(size:9.5,weight:.semibold))
+                            .foregroundStyle(model.apiProfileReady ? Color.green : Color.orange)
                     }
                     if let settings = model.localApiSettings {
                         HStack(spacing:16) {
-                            settingMeta("保存 Provider",settings.provider)
+                            settingMeta("新会话默认",settings.provider == "api" ? "兼容 API" : "Codex CLI")
                             settingMeta("协议",settings.apiProtocol)
                             settingMeta("Keychain",settings.hasKey ? "已存密钥" : "无密钥")
-                        }
-                        if settings.provider == "api" || !settings.model.isEmpty || settings.hasKey {
-                            settingLine("Endpoint",settings.endpoint)
-                            settingLine("Model",settings.model.isEmpty ? "未设置" : settings.model)
-                        } else {
-                            Text("当前保存配置仍选择 Codex；没有启用的 API profile。")
-                                .font(.system(size:11.5)).foregroundStyle(ForgePalette.secondary)
                         }
                     } else {
                         Text(model.settingsLoading ? "正在读取本地配置…" : "尚未读取本地 API 配置。")
                             .font(.system(size:11.5)).foregroundStyle(ForgePalette.secondary)
                     }
-                    Text("API 凭据继续由现有 Rust / macOS Keychain 层持有。Native Provider parity 会复用同一 API Agent 生命周期，保留取消、工具活动和 effect reconciliation 后再开放切换。")
+
+                    VStack(alignment:.leading,spacing:11) {
+                        HStack(spacing:12) {
+                            Text("新会话默认").font(.system(size:10.5,weight:.medium))
+                                .foregroundStyle(ForgePalette.secondary).frame(width:82,alignment:.leading)
+                            Picker("新会话默认",selection:$defaultProvider) {
+                                Text("Codex CLI").tag("codex")
+                                Text("兼容 API").tag("api")
+                            }
+                            .labelsHidden().pickerStyle(.segmented).frame(maxWidth:260)
+                        }
+                        HStack(spacing:12) {
+                            Text("API 协议").font(.system(size:10.5,weight:.medium))
+                                .foregroundStyle(ForgePalette.secondary).frame(width:82,alignment:.leading)
+                            Picker("API 协议",selection:$apiProtocol) {
+                                Text("OpenAI-compatible").tag("openai")
+                                Text("Anthropic").tag("anthropic")
+                            }
+                            .labelsHidden().pickerStyle(.menu).frame(maxWidth:260,alignment:.leading)
+                        }
+                        settingsField("Endpoint") {
+                            TextField("https://api.example.com/v1",text:$endpoint)
+                                .textFieldStyle(.plain).font(.system(size:11.5,design:.monospaced))
+                        }
+                        settingsField("模型 ID") {
+                            TextField("例如 gpt-5.6 / claude-sonnet",text:$apiModel)
+                                .textFieldStyle(.plain).font(.system(size:11.5,design:.monospaced))
+                        }
+                        settingsField("API Key") {
+                            SecureField(model.localApiSettings?.hasKey == true ? "已存 Key；留空保持" : "本机服务可留空",text:$apiKey)
+                                .textFieldStyle(.plain).font(.system(size:11.5,design:.monospaced))
+                        }
+                        HStack(spacing:10) {
+                            if model.localApiSettings?.hasKey == true {
+                                Button("删除已存 Key",role:.destructive) {
+                                    clearApiKey()
+                                }
+                                .buttonStyle(.plain).foregroundStyle(.red)
+                                .disabled(saving || model.settingsLoading)
+                            }
+                            Spacer()
+                            Button(saving ? "保存中…" : "保存配置") {
+                                saveApiSettings()
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(saving || model.settingsLoading
+                                      || endpoint.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty
+                                      || (defaultProvider == "api" && apiModel.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty))
+                        }
+                    }
+                    .padding(13)
+                    .background(ForgePalette.canvas,in:RoundedRectangle(cornerRadius:12,style:.continuous))
+
+                    Text("API Key 只写入 macOS Keychain；JSON 配置只保存 Provider、Endpoint、模型与协议。新会话读取默认 Provider，已有会话继续使用自己的 Provider。写操作授权仍只对下一次 API 发送有效。")
                         .font(.system(size:10.5)).foregroundStyle(.tertiary).lineSpacing(3)
                 }
                 .padding(16)
@@ -1735,6 +1863,60 @@ private struct SettingsPane: View {
             .frame(maxWidth:850,alignment:.leading)
             .frame(maxWidth:.infinity,alignment:.leading)
             .padding(30)
+        }
+        .task(id:settingsSignature) {
+            syncSettingsDraft()
+        }
+    }
+
+    private var settingsSignature: String {
+        guard let settings = model.localApiSettings else { return "none" }
+        return [settings.provider,settings.endpoint,settings.model,settings.apiProtocol,settings.hasKey ? "1" : "0"].joined(separator:"|")
+    }
+
+    private func syncSettingsDraft() {
+        guard let settings = model.localApiSettings else { return }
+        defaultProvider = settings.provider
+        endpoint = settings.endpoint
+        apiModel = settings.model
+        apiProtocol = settings.apiProtocol
+        apiKey = ""
+    }
+
+    private func saveApiSettings() {
+        guard !saving else { return }
+        saving = true
+        Task {
+            let saved = await model.saveLocalApiSettings(
+                provider:defaultProvider,
+                endpoint:endpoint,
+                model:apiModel,
+                apiProtocol:apiProtocol,
+                apiKey:apiKey
+            )
+            if saved { apiKey = "" }
+            saving = false
+        }
+    }
+
+    private func clearApiKey() {
+        guard !saving else { return }
+        saving = true
+        Task {
+            _ = await model.clearLocalApiKey()
+            apiKey = ""
+            saving = false
+        }
+    }
+
+    @ViewBuilder
+    private func settingsField<Content:View>(_ label:String,@ViewBuilder content:() -> Content) -> some View {
+        HStack(spacing:12) {
+            Text(label).font(.system(size:10.5,weight:.medium))
+                .foregroundStyle(ForgePalette.secondary).frame(width:82,alignment:.leading)
+            content()
+                .padding(.horizontal,10).frame(height:32)
+                .background(ForgePalette.softFill,in:RoundedRectangle(cornerRadius:8,style:.continuous))
         }
     }
 

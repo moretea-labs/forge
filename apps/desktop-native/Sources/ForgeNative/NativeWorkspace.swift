@@ -139,6 +139,7 @@ struct ChatThread: Codable, Identifiable {
     var title = "新会话"
     var repoId: String?
     var checkoutId: String?
+    var provider: String?
     var providerSessionId: String?
     var model: String?
     var reasoningEffort: String?
@@ -306,8 +307,11 @@ final class NativeWorkspace: ObservableObject {
     @Published var showSearch = false
     @Published var busy = false
     @Published private(set) var activeConversationId: String?
+    private var activeApiTurn: ForgeApiTurn?
+    private var activeTurnProvider: String?
     @Published var provider = "未检测"
     @Published var imageInputAvailable = false
+    @Published var allowApiEffects = false
     @Published var pendingImageURLs: [URL] = []
     @Published var pendingContextPaths: [String] = []
     @Published var checkoutRoot: URL?
@@ -351,6 +355,19 @@ final class NativeWorkspace: ObservableObject {
 
     var project: ForgeProject? { projects.first { $0.repoId == repoId } }
     var thread: ChatThread? { threads.first { $0.id == selectedThreadId } }
+    var selectedProvider: String {
+        if let provider = thread?.provider { return provider }
+        if thread?.messages.isEmpty == false { return "codex" }
+        return localApiSettings?.provider ?? "codex"
+    }
+    var apiProfileReady: Bool {
+        guard let settings = localApiSettings else { return false }
+        return !settings.endpoint.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty
+            && !settings.model.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty
+    }
+    var selectedProviderSupportsImages: Bool {
+        selectedProvider == "codex" && imageInputAvailable
+    }
     var selectedAgentModel: AgentModelOption? {
         if let slug = thread?.model, let exact = agentModels.first(where: { $0.slug == slug }) { return exact }
         return agentModels.first
@@ -380,18 +397,23 @@ final class NativeWorkspace: ObservableObject {
             try JSONEncoder().encode(Array(threads.prefix(100))).write(to: store, options: .atomic)
         } catch { self.error = "无法保存会话：\(error.localizedDescription)" }
     }
-    func newThread() {
+    func newThread(provider providerOverride: String? = nil) {
         guard !busy else {
             self.error = "请先停止正在运行的会话。"
             return
         }
-        let item = ChatThread(repoId: repoId, checkoutId: checkoutId)
-        threads.insert(item, at: 0)
+        let item = ChatThread(
+            repoId:repoId,
+            checkoutId:checkoutId,
+            provider:providerOverride ?? localApiSettings?.provider
+        )
+        threads.insert(item, at:0)
         selectedThreadId = item.id
         page = .agent
         draft = ""
         pendingImageURLs = []
         pendingContextPaths = []
+        allowApiEffects = false
         agentChanges = nil
         persist()
     }
@@ -409,6 +431,7 @@ final class NativeWorkspace: ObservableObject {
         draft = ""
         pendingImageURLs = []
         pendingContextPaths = []
+        allowApiEffects = false
         agentChanges = nil
         checkoutRoot = nil
         checkoutBranch = nil
@@ -421,6 +444,29 @@ final class NativeWorkspace: ObservableObject {
             checkoutId = nil
         }
     }
+    func selectThreadProvider(_ value: String) {
+        guard !busy, matchesProvider(value),
+              let index = threads.firstIndex(where:{$0.id == selectedThreadId}),
+              threads[index].messages.isEmpty else { return }
+        if value == "api" && !apiProfileReady {
+            self.error = "请先在设置中完成 API Endpoint 与模型配置。"
+            return
+        }
+        threads[index].provider = value
+        threads[index].providerSessionId = nil
+        threads[index].model = nil
+        threads[index].reasoningEffort = nil
+        threads[index].updatedAt = Date()
+        pendingImageURLs = []
+        allowApiEffects = false
+        persist()
+        self.error = nil
+    }
+
+    private func matchesProvider(_ value:String) -> Bool {
+        value == "codex" || value == "api"
+    }
+
     func selectAgentModel(_ slug: String) {
         guard let index = threads.firstIndex(where: { $0.id == selectedThreadId }),
               let model = agentModels.first(where: { $0.slug == slug }) else { return }
@@ -485,6 +531,7 @@ final class NativeWorkspace: ObservableObject {
         }
         guard thread?.repoId != id else { return }
         let sourceThreadId = selectedThreadId
+        let sourceProvider = selectedProvider
         Task {
             do {
                 let result = try await ForgeBridge.request("read_project_repository",["repoId":id])
@@ -501,7 +548,7 @@ final class NativeWorkspace: ObservableObject {
                 checkoutRoot = context.checkoutRoot
                 checkoutBranch = context.checkoutBranch
                 pendingContextPaths = []
-                newThread()
+                newThread(provider:sourceProvider)
             } catch {
                 self.error = error.localizedDescription
             }
@@ -523,7 +570,11 @@ final class NativeWorkspace: ObservableObject {
             let status = try? await ForgeBridge.request("read_local_provider_status")
             provider = status?["label"] as? String ?? status?["status"] as? String ?? "Codex 不可用"
             imageInputAvailable = status?["imageInput"] as? Bool == true
-            if !imageInputAvailable { pendingImageURLs = [] }
+            if !selectedProviderSupportsImages { pendingImageURLs = [] }
+            if let settingsValue = try? await ForgeBridge.request("read_local_api_settings"),
+               let parsed = Self.localApiSettingsDetail(settingsValue) {
+                localApiSettings = parsed
+            }
             if let catalog = try? await ForgeBridge.request("read_local_provider_models"),
                let rows = catalog["models"] as? [[String: Any]],
                let bytes = try? JSONSerialization.data(withJSONObject: rows),
@@ -767,6 +818,52 @@ final class NativeWorkspace: ObservableObject {
             self.error = error.localizedDescription
         }
     }
+
+    func saveLocalApiSettings(
+        provider:String,
+        endpoint:String,
+        model:String,
+        apiProtocol:String,
+        apiKey:String
+    ) async -> Bool {
+        guard !settingsLoading else { return false }
+        settingsLoading = true
+        defer { settingsLoading = false }
+        do {
+            var arguments: [String:Any] = [
+                "provider":provider,
+                "endpoint":endpoint.trimmingCharacters(in:.whitespacesAndNewlines),
+                "model":model.trimmingCharacters(in:.whitespacesAndNewlines),
+                "apiProtocol":apiProtocol
+            ]
+            let secret = apiKey.trimmingCharacters(in:.whitespacesAndNewlines)
+            if !secret.isEmpty { arguments["apiKey"] = secret }
+            let value = try await ForgeBridge.request("save_local_api_settings",arguments)
+            guard let parsed = Self.localApiSettingsDetail(value) else { throw ForgeBridgeError.invalidResponse }
+            localApiSettings = parsed
+            error = nil
+            return true
+        } catch {
+            self.error = error.localizedDescription
+            return false
+        }
+    }
+
+    func clearLocalApiKey() async -> Bool {
+        guard !settingsLoading else { return false }
+        settingsLoading = true
+        defer { settingsLoading = false }
+        do {
+            let value = try await ForgeBridge.request("clear_local_api_key")
+            guard let parsed = Self.localApiSettingsDetail(value) else { throw ForgeBridgeError.invalidResponse }
+            localApiSettings = parsed
+            error = nil
+            return true
+        } catch {
+            self.error = error.localizedDescription
+            return false
+        }
+    }
     static func prettyJSON(_ value: Any) -> String {
         guard JSONSerialization.isValidJSONObject(value),
               let bytes = try? JSONSerialization.data(withJSONObject: value, options:[.prettyPrinted,.sortedKeys])
@@ -997,8 +1094,10 @@ final class NativeWorkspace: ObservableObject {
     private static let agentImageExtensions = Set(["png","jpg","jpeg","webp","gif"])
 
     func addPendingImages(_ urls: [URL]) {
-        guard imageInputAvailable else {
-            self.error = "当前 Runtime 尚未启用图片输入。"
+        guard selectedProviderSupportsImages else {
+            self.error = selectedProvider == "api"
+                ? "当前兼容 API Agent 尚不支持图片输入。"
+                : "当前 Runtime 尚未启用图片输入。"
             return
         }
         let accepted = urls.filter { Self.agentImageExtensions.contains($0.pathExtension.lowercased()) }
@@ -1068,7 +1167,7 @@ final class NativeWorkspace: ObservableObject {
         return events
     }
 
-    static func providerPrompt(_ prompt: String, contextPaths: [String]) -> String {
+    nonisolated static func providerPrompt(_ prompt: String, contextPaths: [String]) -> String {
         var result = prompt
         if !contextPaths.isEmpty,
            let data = try? JSONSerialization.data(withJSONObject:contextPaths),
@@ -1098,26 +1197,108 @@ final class NativeWorkspace: ObservableObject {
         return true
     }
 
+    nonisolated static func apiEffectsAuthorized(
+        provider:String,
+        requested:Bool,
+        repoId:String?,
+        checkoutId:String?
+    ) -> Bool {
+        provider == "api" && requested && repoId != nil && checkoutId != nil
+    }
+
+    nonisolated static func apiTurnMessages(
+        _ thread: ChatThread,
+        prompt: String,
+        contextPaths: [String]
+    ) -> [[String:String]] {
+        var messages = thread.messages.suffix(39).compactMap { message -> [String:String]? in
+            guard message.role == "user" || message.role == "assistant" else { return nil }
+            return ["role":message.role,"content":message.text]
+        }
+        messages.append([
+            "role":"user",
+            "content":providerPrompt(prompt,contextPaths:contextPaths)
+        ])
+        return messages
+    }
+
+    nonisolated static func apiActivityEvents(_ raw: Any?) -> [AgentLiveActivityEvent]? {
+        guard let rows = raw as? [[String:Any]], !rows.isEmpty else { return nil }
+        let now = ISO8601DateFormatter().string(from:Date())
+        let events = rows.compactMap { row -> AgentLiveActivityEvent? in
+            guard let name = row["name"] as? String else { return nil }
+            let ok = row["ok"] as? Bool == true
+            return AgentLiveActivityEvent(
+                phase:"tool", label:name,
+                detail:row["requestId"] as? String,
+                status:ok ? "completed" : "failed",
+                startedAt:now, completedAt:now
+            )
+        }
+        return events.isEmpty ? nil : events
+    }
+
+    func applyApiToolProgress(_ payload:[String:Any], conversationId:String) {
+        guard activeConversationId == conversationId,
+              let name = payload["name"] as? String else { return }
+        let transportPhase = payload["phase"] as? String ?? "running"
+        let status = transportPhase == "started" ? "running" : transportPhase
+        let now = ISO8601DateFormatter().string(from:Date())
+        var events = liveActivity?.events ?? []
+        events.append(AgentLiveActivityEvent(
+            phase:"tool", label:name,
+            detail:payload["requestId"] as? String,
+            status:status, startedAt:now,
+            completedAt:status == "running" ? nil : now
+        ))
+        let completedCount = events.filter { $0.status == "completed" || $0.status == "failed" }.count
+        liveActivity = AgentLiveActivity(
+            conversationId:conversationId,
+            status:"running", phase:"tool",
+            toolActivityCount:completedCount,
+            lastActivity:name,
+            startedAt:liveActivity?.startedAt ?? now,
+            updatedAt:now,
+            events:events
+        )
+    }
+
     func send() async {
         let prompt = draft.trimmingCharacters(in:.whitespacesAndNewlines)
         guard !prompt.isEmpty, !busy, let id = selectedThreadId,
               let index = threads.firstIndex(where:{$0.id == id}) else { return }
         let item = threads[index]
+        let turnProvider = selectedProvider
         let imageURLs = pendingImageURLs
         let contextPaths = pendingContextPaths
-        if !imageURLs.isEmpty && !imageInputAvailable {
-            self.error = "当前 Runtime 尚未启用图片输入。"
+        if !imageURLs.isEmpty && !(turnProvider == "codex" && imageInputAvailable) {
+            self.error = turnProvider == "api"
+                ? "当前兼容 API Agent 尚不支持图片输入。"
+                : "当前 Runtime 尚未启用图片输入。"
+            return
+        }
+        if turnProvider == "api" && !apiProfileReady {
+            self.error = "兼容 API 尚未配置 Endpoint 与模型。"
             return
         }
         if item.repoId != nil && item.checkoutId == nil {
             self.error = "此会话没有有效 checkout；请选择项目后新建会话。"
             return
         }
+        let authorizedApiEffects = Self.apiEffectsAuthorized(
+            provider:turnProvider,
+            requested:allowApiEffects,
+            repoId:item.repoId,
+            checkoutId:item.checkoutId
+        )
         busy = true
         activeConversationId = id
+        activeTurnProvider = turnProvider
         draft = ""
         pendingImageURLs = []
         pendingContextPaths = []
+        allowApiEffects = false
+        threads[index].provider = turnProvider
         threads[index].messages.append(ChatMessage(
             role:"user", text:prompt,
             attachmentNames:imageURLs.isEmpty ? nil : imageURLs.map(\.lastPathComponent),
@@ -1126,51 +1307,82 @@ final class NativeWorkspace: ObservableObject {
         if threads[index].messages.count == 1 { threads[index].title = String(prompt.prefix(46)) }
         threads[index].updatedAt = Date()
         persist()
-        var args: [String:Any] = [
-            "conversationId":id,
-            "prompt":Self.providerPrompt(prompt,contextPaths:contextPaths)
-        ]
-        if !imageURLs.isEmpty { args["imagePaths"] = imageURLs.map(\.path) }
-        if let repo = item.repoId { args["repoId"] = repo }
-        if let checkout = item.checkoutId { args["checkoutId"] = checkout }
-        if let session = item.providerSessionId { args["providerSessionId"] = session }
-        let effectiveModel = item.model.flatMap { slug in agentModels.first { $0.slug == slug } } ?? agentModels.first
-        if let effectiveModel {
-            args["model"] = effectiveModel.slug
-            let reasoning = item.reasoningEffort.flatMap { current in
-                effectiveModel.supportedReasoningLevels.first(where: { $0.effort == current })?.effort
-            } ?? effectiveModel.defaultReasoningLevel
-            if !reasoning.isEmpty { args["reasoningEffort"] = reasoning }
-        }
+
+        var activityMonitor: Task<Void,Never>?
         liveActivity = AgentLiveActivity(
             conversationId:id, status:"running", phase:"starting",
-            toolActivityCount:0, lastActivity:"正在启动 Codex", startedAt:nil, updatedAt:nil,
-            events:[]
+            toolActivityCount:0,
+            lastActivity:turnProvider == "api" ? "正在连接兼容 API" : "正在启动 Codex",
+            startedAt:nil, updatedAt:nil, events:[]
         )
-        let activityMonitor = Task { [weak self] in
-            while !Task.isCancelled {
-                await self?.refreshLiveActivity(conversationId:id)
-                try? await Task.sleep(for:.milliseconds(350))
+        if turnProvider == "codex" {
+            activityMonitor = Task { [weak self] in
+                while !Task.isCancelled {
+                    await self?.refreshLiveActivity(conversationId:id)
+                    try? await Task.sleep(for:.milliseconds(350))
+                }
             }
         }
         defer {
-            activityMonitor.cancel()
+            activityMonitor?.cancel()
+            activeApiTurn = nil
+            activeTurnProvider = nil
             liveActivity = nil
             activeConversationId = nil
             busy = false
         }
+
         do {
-            let response = try await ForgeBridge.request("send_local_conversation",args)
+            let response: [String:Any]
+            if turnProvider == "api" {
+                var apiArguments: [String:Any] = [
+                    "conversationId":id,
+                    "messages":Self.apiTurnMessages(item,prompt:prompt,contextPaths:contextPaths),
+                    "allowEffects":authorizedApiEffects
+                ]
+                if let repo = item.repoId { apiArguments["repoId"] = repo }
+                if let checkout = item.checkoutId { apiArguments["checkoutId"] = checkout }
+                let turn = try ForgeBridge.startApiTurn(apiArguments)
+                activeApiTurn = turn
+                response = try await turn.wait { [weak self] payload in
+                    Task { @MainActor in
+                        self?.applyApiToolProgress(payload,conversationId:id)
+                    }
+                }
+            } else {
+                var args: [String:Any] = [
+                    "conversationId":id,
+                    "prompt":Self.providerPrompt(prompt,contextPaths:contextPaths)
+                ]
+                if !imageURLs.isEmpty { args["imagePaths"] = imageURLs.map(\.path) }
+                if let repo = item.repoId { args["repoId"] = repo }
+                if let checkout = item.checkoutId { args["checkoutId"] = checkout }
+                if let session = item.providerSessionId { args["providerSessionId"] = session }
+                let effectiveModel = item.model.flatMap { slug in agentModels.first { $0.slug == slug } } ?? agentModels.first
+                if let effectiveModel {
+                    args["model"] = effectiveModel.slug
+                    let reasoning = item.reasoningEffort.flatMap { current in
+                        effectiveModel.supportedReasoningLevels.first(where: { $0.effort == current })?.effort
+                    } ?? effectiveModel.defaultReasoningLevel
+                    if !reasoning.isEmpty { args["reasoningEffort"] = reasoning }
+                }
+                response = try await ForgeBridge.request("send_local_conversation",args)
+            }
+
             guard let current = threads.firstIndex(where:{$0.id == id}) else { return }
             let answer = response["output"] as? String ?? ""
             let toolActivityCount = response["toolActivityCount"] as? Int
-            let activityEvents = Self.decodeActivityEvents(response["activityEvents"])
+            let activityEvents = turnProvider == "api"
+                ? Self.apiActivityEvents(response["toolEvents"])
+                : Self.decodeActivityEvents(response["activityEvents"])
             threads[current].messages.append(ChatMessage(
                 role:"assistant", text:answer, toolActivityCount:toolActivityCount,
                 activityEvents:activityEvents
             ))
-            threads[current].providerSessionId = response["providerSessionId"] as? String ??
-                threads[current].providerSessionId
+            if turnProvider == "codex" {
+                threads[current].providerSessionId = response["providerSessionId"] as? String ??
+                    threads[current].providerSessionId
+            }
             threads[current].updatedAt = Date()
             persist()
             error = nil
@@ -1186,8 +1398,13 @@ final class NativeWorkspace: ObservableObject {
             self.error = "\(error.localizedDescription)\n\(recoveryNote)"
         }
     }
+
     func cancel() async {
         guard busy, let id = activeConversationId else { return }
+        if activeTurnProvider == "api" {
+            activeApiTurn?.cancel()
+            return
+        }
         do { _ = try await ForgeBridge.request("cancel_local_conversation",["conversationId":id]) }
         catch { self.error = error.localizedDescription }
     }

@@ -12,6 +12,8 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertTrue(ForgeBridge.allowed.contains("verify_recovery_runtime"))
         XCTAssertTrue(ForgeBridge.allowed.contains("repair_connection"))
         XCTAssertTrue(ForgeBridge.allowed.contains("read_local_api_settings"))
+        XCTAssertTrue(ForgeBridge.allowed.contains("save_local_api_settings"))
+        XCTAssertTrue(ForgeBridge.allowed.contains("clear_local_api_key"))
         XCTAssertFalse(ForgeBridge.allowed.contains("send_local_api_conversation"))
         XCTAssertFalse(ForgeBridge.allowed.contains("cancel_local_api_conversation"))
         XCTAssertFalse(ForgeBridge.allowed.contains("read_project_work_list"))
@@ -52,6 +54,67 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertNil(message.contextPaths)
         XCTAssertNil(message.toolActivityCount)
         XCTAssertNil(message.activityEvents)
+    }
+
+    @MainActor
+    func testProviderIsThreadOwnedAndLegacyHistoryStaysCodex() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = folder.appendingPathComponent("conversations.json")
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:store)
+        model.localApiSettings = LocalApiSettingsDetail(
+            provider:"api",endpoint:"https://api.example.com/v1",model:"model-a",
+            apiProtocol:"openai",hasKey:true
+        )
+        XCTAssertEqual(model.selectedProvider,"api")
+        model.selectThreadProvider("api")
+        XCTAssertEqual(model.thread?.provider,"api")
+        model.threads[0].messages.append(ChatMessage(role:"user",text:"hello"))
+        model.selectThreadProvider("codex")
+        XCTAssertEqual(model.thread?.provider,"api")
+        model.persist()
+        let restored = NativeWorkspace(store:store)
+        XCTAssertEqual(restored.thread?.provider,"api")
+        XCTAssertEqual(restored.selectedProvider,"api")
+
+        restored.threads[0].provider = nil
+        XCTAssertEqual(restored.selectedProvider,"codex")
+    }
+
+    func testApiTurnHistoryAndEffectAuthorizationAreBounded() {
+        var thread = ChatThread(provider:"api")
+        thread.messages = [
+            ChatMessage(role:"user",text:"old user"),
+            ChatMessage(role:"assistant",text:"old answer")
+        ]
+        let messages = NativeWorkspace.apiTurnMessages(
+            thread,prompt:"inspect",contextPaths:["src/a.ts"]
+        )
+        XCTAssertEqual(messages.count,3)
+        XCTAssertEqual(messages[0]["content"],"old user")
+        XCTAssertEqual(messages[1]["content"],"old answer")
+        XCTAssertTrue(messages[2]["content"]?.contains("Forge selected repository file context") == true)
+        XCTAssertTrue(messages[2]["content"]?.contains("a.ts") == true)
+        XCTAssertFalse(messages[0]["content"]?.contains("Forge selected repository file context") == true)
+
+        XCTAssertTrue(NativeWorkspace.apiEffectsAuthorized(
+            provider:"api",requested:true,repoId:"repo",checkoutId:"checkout"
+        ))
+        XCTAssertFalse(NativeWorkspace.apiEffectsAuthorized(
+            provider:"codex",requested:true,repoId:"repo",checkoutId:"checkout"
+        ))
+        XCTAssertFalse(NativeWorkspace.apiEffectsAuthorized(
+            provider:"api",requested:false,repoId:"repo",checkoutId:"checkout"
+        ))
+        XCTAssertFalse(NativeWorkspace.apiEffectsAuthorized(
+            provider:"api",requested:true,repoId:"repo",checkoutId:nil
+        ))
+    }
+
+    func testNativeApiTurnEventFramingIsTyped() {
+        let progress = #"{"type":"progress","data":{"name":"read_file","phase":"started"}}"#.data(using:.utf8)!
+        XCTAssertEqual(ForgeApiTurn.decodeEvent(progress)?["type"] as? String,"progress")
+        XCTAssertNil(ForgeApiTurn.decodeEvent(Data("{}".utf8)))
     }
 
     @MainActor
@@ -197,7 +260,7 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(result?.items.first?.memory.scope.kind,"project")
     }
 
-    func testSavedApiProfileProjectionIsConfigurationOnly() {
+    func testSavedApiProfileProjectionAndOneShotBridgeBoundary() {
         let settings = NativeWorkspace.localApiSettingsDetail([
             "provider":"api","endpoint":"https://api.example.com/v1",
             "model":"model-a","apiProtocol":"openai","hasKey":true

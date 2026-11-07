@@ -18,6 +18,7 @@ mkdir -p "$TMP/Contents/MacOS" "$TMP/Contents/Resources"
 cp apps/desktop-native/.build/out/Products/Release/ForgeNative "$TMP/Contents/MacOS/Forge"
 cp apps/desktop/src-tauri/target/release/forge-desktop "$TMP/Contents/MacOS/forge-desktop"
 cp apps/desktop/src-tauri/icons/icon.icns "$TMP/Contents/Resources/icon.icns"
+cp apps/desktop/src-tauri/resources/forge-local-tool.mjs "$TMP/Contents/Resources/forge-local-tool.mjs"
 
 cat > "$TMP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
