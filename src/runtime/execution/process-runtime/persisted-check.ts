@@ -15,7 +15,7 @@ import {
   type CliChildInvocationOptions,
   type CliRuntimeTarget,
 } from '../../../cli/runtime-invocation';
-import { resolveControllerRuntimeSourceRoot } from '../../control-plane/runtime-generation';
+import { readRuntimeGeneration, resolveControllerRuntimeSourceRoot } from '../../control-plane/runtime-generation';
 import { resolveBunExecutable } from '../../shared/process-environment';
 import {
   checkRequiresDurableWorkflow,
@@ -256,8 +256,8 @@ export async function runPersistedCheckViaProcessRuntime(
   const editInputFingerprint = input.verificationBinding?.editSessionId
     ? input.requestSemanticFingerprint?.trim() : undefined;
   const executionStateFingerprint = editInputFingerprint
-    ? createHash('sha256').update(JSON.stringify({ runnerStateFingerprint: runnerStateFingerprint ?? '', editInputFingerprint })).digest('hex').slice(0, 24)
-    : runnerStateFingerprint;
+    ? createHash('sha256').update(JSON.stringify({ liveExecutionStateFingerprint: liveExecutionStateFingerprint ?? '', editInputFingerprint })).digest('hex').slice(0, 24)
+    : liveExecutionStateFingerprint;
   const semanticCheck = editInputFingerprint
     ? controllerCheckExecutionIdentity(
         executionRoot,
