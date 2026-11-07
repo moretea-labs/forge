@@ -613,6 +613,51 @@ private struct AgentPane: View {
                     .help("切换项目会创建新的会话，避免改变已有 Agent 上下文")
 
                     Menu {
+                        Button {
+                            model.selectAgentWork(nil)
+                        } label: {
+                            if model.thread?.workId == nil {
+                                Label("不关联 Work",systemImage:"checkmark")
+                            } else {
+                                Text("不关联 Work")
+                            }
+                        }
+                        if !model.agentWorks.isEmpty { Divider() }
+                        ForEach(model.agentWorks) { work in
+                            Button {
+                                model.selectAgentWork(work.id)
+                            } label: {
+                                if model.thread?.workId == work.id {
+                                    Label(work.title,systemImage:"checkmark")
+                                } else {
+                                    Text(work.title)
+                                }
+                            }
+                        }
+                    } label: {
+                        HStack(spacing:5) {
+                            Image(systemName:"checkmark.square")
+                                .font(.system(size:9.5,weight:.medium))
+                            Text(model.selectedAgentWork?.title ?? model.thread?.workId ?? "关联 Work")
+                                .lineLimit(1)
+                                .frame(maxWidth:180,alignment:.leading)
+                            Image(systemName:"chevron.down")
+                                .font(.system(size:7,weight:.semibold))
+                                .foregroundStyle(.tertiary)
+                        }
+                        .font(.system(size:10.5,weight:.medium))
+                        .foregroundStyle(ForgePalette.secondary)
+                        .padding(.horizontal,8)
+                        .frame(height:25)
+                        .background(ForgePalette.softFill,
+                                    in:RoundedRectangle(cornerRadius:8,style:.continuous))
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .disabled(model.busy)
+                    .help("仅关联已有 Forge Work；不会创建、关闭或修改 Work")
+
+                    Menu {
                         ForEach(model.agentModels) { option in
                             Button {
                                 model.selectAgentModel(option.slug)
