@@ -16,8 +16,9 @@ export interface ExecutionLease {
   schemaVersion: 1;
   leaseId: string;
   repoId: string;
-  /** Exact checkout/work ownership when acquired by a Work-bound Process. */
+  /** Exact checkout placement. Historical persisted leases may also carry workId. */
   checkoutId?: string;
+  /** Historical compatibility only; new lease acquisition never writes Work attribution. */
   workId?: string;
   resourceKey: string;
   mode: ResourceClaimMode;
