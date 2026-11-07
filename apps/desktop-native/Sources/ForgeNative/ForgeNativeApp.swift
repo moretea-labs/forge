@@ -1547,14 +1547,7 @@ private struct AgentChangesPane: View {
                 let reviewed = focusedChanges ?? changes
                 ScrollView {
                     VStack(alignment:.leading,spacing:14) {
-                        VStack(alignment:.leading,spacing:4) {
-                            Text(changes.branch)
-                                .font(.system(size:11,weight:.semibold))
-                                .lineLimit(1)
-                            Text(String(changes.head.prefix(10)))
-                                .font(.system(size:10,design:.monospaced))
-                                .foregroundStyle(.tertiary)
-                        }
+                        changeScopeHeader(changes)
 
                         if changes.nameOnly.isEmpty {
                             VStack(spacing:10) {
@@ -1603,14 +1596,23 @@ private struct AgentChangesPane: View {
                                             }
                                         }
                                     } label: {
-                                        HStack(spacing:7) {
+                                        HStack(spacing:8) {
                                             Image(systemName:"doc")
                                                 .font(.system(size:10))
                                                 .foregroundStyle(ForgePalette.secondary)
-                                            Text(path)
-                                                .font(.system(size:10.5))
-                                                .lineLimit(1)
-                                                .truncationMode(.middle)
+                                                .frame(width:14)
+                                            VStack(alignment:.leading,spacing:1) {
+                                                Text(fileName(path))
+                                                    .font(.system(size:10.5,weight:.medium))
+                                                    .lineLimit(1)
+                                                if !parentPath(path).isEmpty {
+                                                    Text(parentPath(path))
+                                                        .font(.system(size:9,design:.monospaced))
+                                                        .foregroundStyle(.tertiary)
+                                                        .lineLimit(1)
+                                                        .truncationMode(.middle)
+                                                }
+                                            }
                                             Spacer(minLength:0)
                                         }
                                         .padding(.horizontal,9)
@@ -1630,22 +1632,32 @@ private struct AgentChangesPane: View {
                                         .font(.system(size:10.5))
                                         .foregroundStyle(ForgePalette.secondary)
                                 }
-                            } else if !reviewed.stat.isEmpty {
-                                Text(reviewed.stat)
-                                    .font(.system(size:10.5,design:.monospaced))
-                                    .foregroundStyle(ForgePalette.secondary)
-                                    .textSelection(.enabled)
+                            } else {
+                                HStack(spacing:8) {
+                                    if !reviewed.stat.isEmpty {
+                                        Text(reviewed.stat)
+                                            .font(.system(size:9.5,design:.monospaced))
+                                            .foregroundStyle(ForgePalette.secondary)
+                                            .lineLimit(1)
+                                            .textSelection(.enabled)
+                                    }
+                                    Spacer(minLength:8)
+                                    if !reviewed.patch.isEmpty {
+                                        Button {
+                                            copyAgentText(reviewed.patch)
+                                        } label: {
+                                            Label("Copy patch",systemImage:"doc.on.doc")
+                                                .font(.system(size:9.5,weight:.medium))
+                                        }
+                                        .buttonStyle(.plain)
+                                        .foregroundStyle(ForgePalette.secondary)
+                                        .help("复制当前已审查 diff")
+                                    }
+                                }
                             }
 
-                            if !focusedLoading {
-                                Text(reviewed.patch)
-                                    .font(.system(size:10.5,design:.monospaced))
-                                    .lineSpacing(3)
-                                    .textSelection(.enabled)
-                                    .frame(maxWidth:.infinity,alignment:.leading)
-                                    .padding(11)
-                                    .background(ForgePalette.softFill,
-                                                in:RoundedRectangle(cornerRadius:10,style:.continuous))
+                            if !focusedLoading && !reviewed.patch.isEmpty {
+                                AgentDiffPatchView(patch:reviewed.patch)
                             }
 
                             if reviewed.truncated {
@@ -1755,6 +1767,98 @@ private struct AgentChangesPane: View {
         }
         .accessibilityElement(children:.contain)
         .accessibilityLabel("Agent Changes")
+    }
+
+    private func changeScopeHeader(_ changes: AgentGitDiff) -> some View {
+        VStack(alignment:.leading,spacing:8) {
+            HStack(spacing:8) {
+                Label(changes.branch,systemImage:"arrow.triangle.branch")
+                    .font(.system(size:11,weight:.semibold))
+                    .lineLimit(1)
+                Spacer(minLength:8)
+                Text(changes.staged ? "STAGED" : "WORKING TREE")
+                    .font(.system(size:8.5,weight:.semibold))
+                    .foregroundStyle(changes.staged ? ForgePalette.accent : ForgePalette.secondary)
+                    .padding(.horizontal,7)
+                    .frame(height:20)
+                    .background(changes.staged ? ForgePalette.selectionStrong : ForgePalette.softFill,
+                                in:Capsule())
+            }
+            HStack(spacing:7) {
+                Text(String(changes.head.prefix(10)))
+                    .font(.system(size:9.5,design:.monospaced))
+                    .foregroundStyle(.tertiary)
+                    .textSelection(.enabled)
+                Text("·")
+                    .foregroundStyle(.quaternary)
+                Text("\(changes.nameOnly.count) files")
+                    .font(.system(size:9.5,weight:.medium))
+                    .foregroundStyle(ForgePalette.secondary)
+                Spacer(minLength:0)
+                Text("checkout \(String(changes.checkoutId.prefix(8)))")
+                    .font(.system(size:9,design:.monospaced))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+            }
+        }
+        .padding(10)
+        .background(ForgePalette.raisedSurface,
+                    in:RoundedRectangle(cornerRadius:11,style:.continuous))
+        .overlay(RoundedRectangle(cornerRadius:11,style:.continuous)
+            .stroke(Color.primary.opacity(0.05),lineWidth:0.7))
+    }
+
+    private func fileName(_ path: String) -> String {
+        path.split(separator:"/").last.map(String.init) ?? path
+    }
+
+    private func parentPath(_ path: String) -> String {
+        let parts = path.split(separator:"/")
+        guard parts.count > 1 else { return "" }
+        return parts.dropLast().joined(separator:"/")
+    }
+}
+
+private struct AgentDiffPatchView: View {
+    let patch: String
+
+    private var lines: [String] {
+        patch.split(separator:"\n",omittingEmptySubsequences:false).map(String.init)
+    }
+
+    var body: some View {
+        LazyVStack(alignment:.leading,spacing:0) {
+            ForEach(Array(lines.enumerated()),id:\.offset) { _, line in
+                Text(line.isEmpty ? " " : line)
+                    .font(.system(size:10,design:.monospaced))
+                    .foregroundStyle(foreground(line))
+                    .textSelection(.enabled)
+                    .padding(.horizontal,9)
+                    .padding(.vertical,1.5)
+                    .frame(maxWidth:.infinity,alignment:.leading)
+                    .background(background(line))
+            }
+        }
+        .padding(.vertical,7)
+        .background(ForgePalette.softFill,
+                    in:RoundedRectangle(cornerRadius:10,style:.continuous))
+        .clipShape(RoundedRectangle(cornerRadius:10,style:.continuous))
+        .overlay(RoundedRectangle(cornerRadius:10,style:.continuous)
+            .stroke(Color.primary.opacity(0.05),lineWidth:0.5))
+    }
+
+    private func background(_ line: String) -> Color {
+        if line.hasPrefix("+") && !line.hasPrefix("+++") { return Color.green.opacity(0.07) }
+        if line.hasPrefix("-") && !line.hasPrefix("---") { return Color.red.opacity(0.065) }
+        if line.hasPrefix("@@") { return ForgePalette.selection.opacity(0.72) }
+        return .clear
+    }
+
+    private func foreground(_ line: String) -> Color {
+        if line.hasPrefix("+") && !line.hasPrefix("+++") { return Color.green.opacity(0.82) }
+        if line.hasPrefix("-") && !line.hasPrefix("---") { return Color.red.opacity(0.80) }
+        if line.hasPrefix("@@") || line.hasPrefix("diff --git") { return ForgePalette.secondary }
+        return ForgePalette.ink
     }
 }
 
