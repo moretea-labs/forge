@@ -144,14 +144,14 @@ function scheduleMode(schedule: RepositorySchedule): ConsoleAutomationMode {
 function modeLabel(mode: ConsoleAutomationMode): string {
   if (mode === 'browser_watch') return '网页变更监听';
   if (mode === 'browser_keepalive') return '登录保活';
-  if (mode === 'continuation') return '自动继续 Work';
+  if (mode === 'continuation') return '历史 Work 续跑（已退役）';
   return '自动任务';
 }
 
 function scheduleSummary(mode: ConsoleAutomationMode): string {
   if (mode === 'browser_watch') return '静默观察目标页面；只有内容发生变化时才恢复 ChatGPT。';
   if (mode === 'browser_keepalive') return '静默刷新登录态；正常时不打扰，认证失效时再恢复 ChatGPT。';
-  if (mode === 'continuation') return '按计划恢复绑定的 Work，让外部 Controller 继续未完成目标。';
+  if (mode === 'continuation') return '历史 Work 续跑记录，仅供查看，不再恢复或执行。';
   return '由 Forge Schedule Engine 管理的持久自动任务。';
 }
 
@@ -159,7 +159,7 @@ function scheduleDelivery(schedule: RepositorySchedule, mode: ConsoleAutomationM
   const controller = typeof schedule.action.arguments?.controller_type === 'string' ? schedule.action.arguments.controller_type : 'chatgpt';
   if (mode === 'browser_watch') return `变化时唤醒 ${controller === 'chatgpt' ? 'ChatGPT' : controller}`;
   if (mode === 'browser_keepalive') return `登录失效时唤醒 ${controller === 'chatgpt' ? 'ChatGPT' : controller}`;
-  if (mode === 'continuation') return `恢复 ${controller === 'chatgpt' ? 'ChatGPT' : controller}`;
+  if (mode === 'continuation') return '已退役';
   return undefined;
 }
 
@@ -276,7 +276,7 @@ export function listConsoleAutomations(controllerHome: string, repositories: Rep
         lastResult: observationResult(schedule, last),
         nextRunHint: nextScheduleHint(schedule),
         pausedReason: displayPauseReason(schedule),
-        attentionMessage: attentionMessage(schedule),
+        attentionMessage: retired ? undefined : attentionMessage(schedule),
         history: occurrenceHistory(occurrences),
         actions: retired ? [] : schedule.enabled ? ['run', 'pause'] : ['resume'],
       });
