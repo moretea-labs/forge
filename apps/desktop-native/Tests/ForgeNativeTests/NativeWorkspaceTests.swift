@@ -90,6 +90,36 @@ final class NativeWorkspaceTests: XCTestCase {
     }
 
     @MainActor
+    func testAttachmentSelectionAppendsDedupesAndDroppedFilesReuseExistingPaths() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let nested = root.appendingPathComponent("Sources")
+        let first = nested.appendingPathComponent("First.swift")
+        let second = nested.appendingPathComponent("Second.swift")
+        defer { try? FileManager.default.removeItem(at:root) }
+        try FileManager.default.createDirectory(at:nested,withIntermediateDirectories:true)
+        try Data("one".utf8).write(to:first)
+        try Data("two".utf8).write(to:second)
+
+        let model = NativeWorkspace(store:root.appendingPathComponent("conversations.json"))
+        model.checkoutRoot = root
+        model.imageInputAvailable = true
+        let image1 = URL(fileURLWithPath:"/tmp/drop-one.png")
+        let image2 = URL(fileURLWithPath:"/tmp/drop-two.jpg")
+
+        model.addPendingImages([image1])
+        model.addPendingImages([image1,image2])
+        XCTAssertEqual(model.pendingImageURLs,[image1,image2])
+
+        model.addPendingContextFiles([first])
+        model.addPendingContextFiles([first,second])
+        XCTAssertEqual(model.pendingContextPaths,["Sources/First.swift","Sources/Second.swift"])
+
+        model.addDroppedAttachments([image2,second])
+        XCTAssertEqual(model.pendingImageURLs,[image1,image2])
+        XCTAssertEqual(model.pendingContextPaths,["Sources/First.swift","Sources/Second.swift"])
+    }
+
+    @MainActor
     func testRepositoryFileContextIsCheckoutConfinedAndPromptUsesRelativePaths() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let nested = root.appendingPathComponent("Sources")
@@ -105,7 +135,7 @@ final class NativeWorkspaceTests: XCTestCase {
 
         let model = NativeWorkspace(store:root.appendingPathComponent("conversations.json"))
         model.checkoutRoot = root
-        model.setPendingContextFiles([inside,outside])
+        model.addPendingContextFiles([inside,outside])
 
         XCTAssertEqual(model.pendingContextPaths,["Sources/Agent.swift"])
         XCTAssertNotNil(model.error)
@@ -191,11 +221,11 @@ extension NativeWorkspaceTests {
 
         let images = (0..<5).map { URL(fileURLWithPath:"/tmp/image-\($0).png") }
         model.imageInputAvailable = false
-        model.setPendingImages(images)
+        model.addPendingImages(images)
         XCTAssertTrue(model.pendingImageURLs.isEmpty)
 
         model.imageInputAvailable = true
-        model.setPendingImages(images)
+        model.addPendingImages(images)
         XCTAssertEqual(model.pendingImageURLs.count,4)
         XCTAssertTrue(model.threads[0].messages.isEmpty)
     }

@@ -490,16 +490,22 @@ final class NativeWorkspace: ObservableObject {
             return false
         }
     }
-    func setPendingImages(_ urls: [URL]) {
+    private static let agentImageExtensions = Set(["png","jpg","jpeg","webp","gif"])
+
+    func addPendingImages(_ urls: [URL]) {
         guard imageInputAvailable else {
-            pendingImageURLs = []
             self.error = "当前 Runtime 尚未启用图片输入。"
             return
         }
-        let supported = Set(["png","jpg","jpeg","webp","gif"])
-        let accepted = urls.filter { supported.contains($0.pathExtension.lowercased()) }
-        pendingImageURLs = Array(accepted.prefix(4))
-        self.error = accepted.count == urls.count && accepted.count <= 4
+        let accepted = urls.filter { Self.agentImageExtensions.contains($0.pathExtension.lowercased()) }
+        var merged = pendingImageURLs
+        for url in accepted {
+            let path = url.standardizedFileURL.path
+            guard !merged.contains(where: { $0.standardizedFileURL.path == path }) else { continue }
+            merged.append(url)
+        }
+        pendingImageURLs = Array(merged.prefix(4))
+        self.error = accepted.count == urls.count && merged.count <= 4
             ? nil : "图片仅支持 PNG/JPEG/WebP/GIF，且最多 4 张。"
     }
 
@@ -507,9 +513,8 @@ final class NativeWorkspace: ObservableObject {
         pendingImageURLs.removeAll { $0 == url }
     }
 
-    func setPendingContextFiles(_ urls: [URL]) {
+    func addPendingContextFiles(_ urls: [URL]) {
         guard let checkoutRoot else {
-            pendingContextPaths = []
             self.error = "当前会话没有可用的 checkout 文件上下文。"
             return
         }
@@ -525,9 +530,26 @@ final class NativeWorkspace: ObservableObject {
             guard !relative.isEmpty, !accepted.contains(relative) else { continue }
             accepted.append(relative)
         }
-        pendingContextPaths = Array(accepted.prefix(8))
-        self.error = accepted.count == urls.count && accepted.count <= 8
+        var merged = pendingContextPaths
+        for path in accepted where !merged.contains(path) { merged.append(path) }
+        pendingContextPaths = Array(merged.prefix(8))
+        self.error = accepted.count == urls.count && merged.count <= 8
             ? nil : "文件上下文仅支持当前 checkout 内的文件，且最多 8 个。"
+    }
+
+    func addDroppedAttachments(_ urls: [URL]) {
+        let images = urls.filter { Self.agentImageExtensions.contains($0.pathExtension.lowercased()) }
+        let files = urls.filter { !Self.agentImageExtensions.contains($0.pathExtension.lowercased()) }
+        var issues: [String] = []
+        if !images.isEmpty {
+            addPendingImages(images)
+            if let error { issues.append(error) }
+        }
+        if !files.isEmpty {
+            addPendingContextFiles(files)
+            if let error { issues.append(error) }
+        }
+        self.error = issues.isEmpty ? nil : Array(Set(issues)).sorted().joined(separator:" ")
     }
 
     func removePendingContextPath(_ path: String) {

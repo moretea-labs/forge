@@ -331,6 +331,7 @@ private struct AgentPane: View {
     @ObservedObject var model: NativeWorkspace
     @State private var showChanges = false
     @State private var showActivityDetails = false
+    @State private var isComposerDropTarget = false
 
     var body: some View {
         VStack(spacing:0) {
@@ -707,6 +708,17 @@ private struct AgentPane: View {
                         in:RoundedRectangle(cornerRadius:19,style:.continuous))
             .background(.ultraThinMaterial,
                         in:RoundedRectangle(cornerRadius:19,style:.continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius:19,style:.continuous)
+                    .stroke(isComposerDropTarget ? ForgePalette.accent.opacity(0.55) : .clear,lineWidth:1.25)
+            }
+            .dropDestination(for:URL.self) { urls, _ in
+                guard !model.busy, !urls.isEmpty else { return false }
+                model.addDroppedAttachments(urls)
+                return true
+            } isTargeted: { targeted in
+                isComposerDropTarget = targeted && !model.busy
+            }
             .shadow(color:Color.black.opacity(0.060),radius:18,y:7)
             .frame(maxWidth:760)
             .padding(.horizontal,30).padding(.bottom,20)
@@ -779,7 +791,7 @@ private func chooseAgentFiles(_ model: NativeWorkspace) {
     panel.prompt = "添加"
     panel.message = "选择当前 checkout 内的文件作为 Agent 上下文"
     if panel.runModal() == .OK {
-        model.setPendingContextFiles(panel.urls)
+        model.addPendingContextFiles(panel.urls)
     }
 }
 
@@ -792,7 +804,7 @@ private func chooseAgentImages(_ model: NativeWorkspace) {
     panel.allowedContentTypes = [.image]
     panel.prompt = "添加"
     if panel.runModal() == .OK {
-        model.setPendingImages(panel.urls)
+        model.addPendingImages(panel.urls)
     }
 }
 
