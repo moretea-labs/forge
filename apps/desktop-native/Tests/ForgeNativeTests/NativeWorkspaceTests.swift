@@ -404,6 +404,21 @@ final class NativeWorkspaceTests: XCTestCase {
     }
 
     @MainActor
+    func testPageTransitionClearsOnlyStalePageError() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        model.page = .agent
+        model.error = "agent error"
+
+        model.show(.agent)
+        XCTAssertEqual(model.error,"agent error")
+
+        model.show(.settings)
+        XCTAssertNil(model.error)
+    }
+
+    @MainActor
     func testConversationSearchToggleOwnsNavigationAndClearSemantics() {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at:folder) }

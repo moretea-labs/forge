@@ -585,6 +585,7 @@ final class NativeWorkspace: ObservableObject {
         }
     }
     func show(_ page: NativePage) {
+        if self.page != page { error = nil }
         self.page = page
         if page != .agent { Task { await loadPage() } }
     }
