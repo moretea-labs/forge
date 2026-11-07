@@ -835,6 +835,9 @@ describe('Thin Launcher external Controller invocation', () => {
     expect(local.args).toContain('read-only');
     expect(local.args).toContain('--json');
     expect(local.args).not.toContain('workspace-write');
+    const localDelimiter = local.args.indexOf('--');
+    expect(localDelimiter).toBeGreaterThan(local.args.indexOf('/tmp/local.png'));
+    expect(local.args[localDelimiter + 1]).toBe('local question');
     const resumed = buildCodexControllerInvocation({
       executable: 'codex',
       prompt: 'follow up',
@@ -849,6 +852,10 @@ describe('Thin Launcher external Controller invocation', () => {
     expect(resumed.args).toContain('resume');
     expect(resumed.args).toContain('01a1102c-2c50-76d3-ae32-478a4b24788b');
     expect(resumed.args).not.toContain('workspace-write');
+    const resumedDelimiter = resumed.args.indexOf('--');
+    expect(resumedDelimiter).toBeGreaterThan(resumed.args.indexOf('/tmp/resumed.png'));
+    expect(resumed.args[resumedDelimiter + 1]).toBe('01a1102c-2c50-76d3-ae32-478a4b24788b');
+    expect(resumed.args[resumedDelimiter + 2]).toBe('follow up');
 
     expect(parseCodexConversationJsonl([
       JSON.stringify({ type: 'thread.started', thread_id: 'thread-1' }),

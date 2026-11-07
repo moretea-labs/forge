@@ -211,6 +211,7 @@ export function buildCodexControllerInvocation(
         'resume', '--ignore-user-config',
         ...(request.json ? ['--json'] : []),
         ...(request.args ?? []),
+        '--',
         request.resumeSessionId.trim(),
         request.prompt,
       ],
@@ -223,6 +224,7 @@ export function buildCodexControllerInvocation(
       '--ignore-user-config', '--sandbox', request.sandbox,
       ...(request.json ? ['--json'] : []),
       ...(request.args ?? []),
+      '--',
       request.prompt,
     ],
   };
