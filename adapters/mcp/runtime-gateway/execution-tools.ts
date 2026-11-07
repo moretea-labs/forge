@@ -6,6 +6,7 @@ import { resolveAuthorizationRequest } from '../../../src/runtime/control-plane/
 import { readControllerResult, searchControllerResult } from '../../../src/runtime/evidence/result-store';
 import { resumeExecutionJobAfterApproval } from '../../../src/runtime/execution/jobs/store';
 import { principalFor, requireSession } from '../../../src/runtime/control-plane/execution/session-execution-support';
+import { resolveRepositorySelection } from '../../../src/cli/repositories/registry';
 
 function definition(name: string, description: string, properties: Record<string, unknown>, required: string[] = [], readOnlyHint = false, destructiveHint = false): McpToolDefinition {
   return { name, description, inputSchema: { type: 'object', properties, ...(required.length ? { required } : {}), additionalProperties: false }, annotations: { readOnlyHint, openWorldHint: false, destructiveHint } };
@@ -59,7 +60,22 @@ export async function callExecutionTool(ctx: MultiRepositoryMcpToolContext, name
         const session = startOrResumeSession(ctx);
         return result({ session: { sessionId: session.sessionId, principalId: session.principalId, activeRepositoryId: session.activeRepositoryId, activeCheckoutId: session.activeCheckoutId, permissionSnapshotVersion: session.permissionSnapshotVersion, capabilitySnapshotVersion: session.capabilitySnapshotVersion, controllerInstanceId: session.controllerInstanceId, createdAt: session.createdAt, updatedAt: session.updatedAt } });
       }
-      case 'session_bind_repository': return result(bindSessionRepository(ctx, args));
+      case 'session_bind_repository': {
+        const explicitRepoId = typeof args.repo_id === 'string' ? args.repo_id.trim() : '';
+        if (!explicitRepoId) throw new Error('REPOSITORY_ID_REQUIRED: repository selection must be explicit for session binding');
+        const repository = resolveRepositorySelection({
+          repoId: explicitRepoId,
+          checkoutId: typeof args.checkout_id === 'string' ? args.checkout_id : undefined,
+          controllerHome: ctx.controllerHome,
+          allowSoleRepository: false,
+        });
+        return result(bindSessionRepository(ctx, args, {
+          repoId: repository.repoId,
+          checkoutId: repository.activeCheckoutId,
+          canonicalRoot: repository.canonicalRoot,
+          branch: repository.checkouts.find((entry) => entry.checkoutId === repository.activeCheckoutId)?.branch ?? null,
+        }));
+      }
       case 'approval_resolve': {
         const session = requireSession(ctx, args);
         const repositoryId = typeof args.repo_id === 'string' && args.repo_id.trim() ? args.repo_id.trim() : session.activeRepositoryId;
