@@ -120,11 +120,7 @@ export function inspectRuntimeOwnership(controllerHome: string): RuntimeOwnershi
   // Schema-v2 owners carry OS-process identity. Once present, raw PID liveness
   // is insufficient because a stopped Runtime PID may be reused by another
   // process before Recovery reconciles durable ownership.
-  const ownerAlive = Boolean(owner && (
-    owner.processStartTime && owner.executableFingerprint
-      ? runtimeOwnerProcessIdentityMatches(owner)
-      : isProcessAlive(owner.pid)
-  ));
+  const ownerAlive = runtimeOwnerIsAlive(owner);
   // A coherent incarnation is the same Runtime owner epoch, so inherit the
   // stronger owner identity result instead of re-introducing PID-only liveness.
   // Incarnation-only legacy evidence remains conservative because it has no
@@ -146,6 +142,14 @@ export function runtimeOwnerProcessIdentityMatches(record: RuntimeOwnerRecord | 
   }, record.pid).matches;
 }
 
+/** Canonical Runtime-owner liveness. Schema-v2 identity outranks raw PID reuse. */
+export function runtimeOwnerIsAlive(record: RuntimeOwnerRecord | undefined): boolean {
+  if (!record) return false;
+  return record.processStartTime && record.executableFingerprint
+    ? runtimeOwnerProcessIdentityMatches(record)
+    : isProcessAlive(record.pid);
+}
+
 /**
  * Recovery calls this only after the service manager and Runtime listener have
  * been proven stopped. It never kills a live process. Dead owner evidence is
@@ -159,7 +163,18 @@ export function reconcileStoppedRuntimeOwnership(controllerHome: string): {
   staleOwnerPath?: string;
 } {
   const inspection = inspectRuntimeOwnership(controllerHome);
-  if (inspection.ownerAlive || inspection.incarnationAlive) {
+  const stronglyIdentifiedDeadOwner = Boolean(
+    inspection.owner
+    && inspection.owner.schemaVersion === 2
+    && inspection.owner.processStartTime
+    && inspection.owner.executableFingerprint
+    && !inspection.ownerAlive
+  );
+  // This function is called only after the service manager and Runtime listener
+  // are proven stopped. At that boundary a schema-v2 owner whose exact OS
+  // identity is dead is authoritative; an incoherent legacy incarnation may
+  // retain a reused PID solely to preserve monotonic fencing history.
+  if (inspection.ownerAlive || (inspection.incarnationAlive && !stronglyIdentifiedDeadOwner)) {
     return {
       ok: false,
       changed: false,
