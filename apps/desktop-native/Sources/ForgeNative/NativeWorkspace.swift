@@ -186,6 +186,7 @@ final class NativeWorkspace: ObservableObject {
     @Published var search = ""
     @Published var showSearch = false
     @Published var busy = false
+    @Published private(set) var activeConversationId: String?
     @Published var provider = "未检测"
     @Published var imageInputAvailable = false
     @Published var pendingImageURLs: [URL] = []
@@ -247,6 +248,10 @@ final class NativeWorkspace: ObservableObject {
         } catch { self.error = "无法保存会话：\(error.localizedDescription)" }
     }
     func newThread() {
+        guard !busy else {
+            self.error = "请先停止正在运行的会话。"
+            return
+        }
         let item = ChatThread(repoId: repoId, checkoutId: checkoutId)
         threads.insert(item, at: 0)
         selectedThreadId = item.id
@@ -258,6 +263,13 @@ final class NativeWorkspace: ObservableObject {
         persist()
     }
     func selectThread(_ id: String) {
+        if busy {
+            guard id == activeConversationId else {
+                self.error = "请先停止正在运行的会话。"
+                return
+            }
+            return
+        }
         guard let item = threads.first(where: { $0.id == id }) else { return }
         selectedThreadId = id
         page = .agent
@@ -297,7 +309,7 @@ final class NativeWorkspace: ObservableObject {
         persist()
     }
     func deleteThread(_ id: String) {
-        guard !busy || selectedThreadId != id else {
+        guard activeConversationId != id else {
             self.error = "请先停止正在运行的会话。"
             return
         }
@@ -330,6 +342,10 @@ final class NativeWorkspace: ObservableObject {
         self.error = notes.isEmpty ? nil : Array(Set(notes)).sorted().joined(separator:" ")
     }
     func selectProject(_ id: String) {
+        guard !busy else {
+            self.error = "请先停止正在运行的会话。"
+            return
+        }
         guard repoId != id else { return }
         repoId = id
         checkoutId = nil
@@ -632,6 +648,7 @@ final class NativeWorkspace: ObservableObject {
             return
         }
         busy = true
+        activeConversationId = id
         draft = ""
         pendingImageURLs = []
         pendingContextPaths = []
@@ -673,6 +690,7 @@ final class NativeWorkspace: ObservableObject {
         defer {
             activityMonitor.cancel()
             liveActivity = nil
+            activeConversationId = nil
             busy = false
         }
         do {
@@ -703,7 +721,7 @@ final class NativeWorkspace: ObservableObject {
         }
     }
     func cancel() async {
-        guard busy, let id = selectedThreadId else { return }
+        guard busy, let id = activeConversationId else { return }
         do { _ = try await ForgeBridge.request("cancel_local_conversation",["conversationId":id]) }
         catch { self.error = error.localizedDescription }
     }

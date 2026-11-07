@@ -142,7 +142,9 @@ private struct ForgeWorkspaceView: View {
                             in:RoundedRectangle(cornerRadius:13,style:.continuous))
                 .shadow(color:Color.black.opacity(0.035),radius:7,y:2)
             }
-            .buttonStyle(.plain).padding(.horizontal,10).padding(.bottom,6)
+            .buttonStyle(.plain)
+            .disabled(model.busy)
+            .padding(.horizontal,10).padding(.bottom,6)
 
             Button {
                 model.show(.agent)
@@ -201,6 +203,7 @@ private struct ForgeWorkspaceView: View {
                                 in:RoundedRectangle(cornerRadius:10,style:.continuous))
                             .contentShape(Rectangle())
                         }.buttonStyle(.plain)
+                            .disabled(model.busy && model.activeConversationId != thread.id)
                             .contextMenu {
                                 Button {
                                     renameThreadId = thread.id

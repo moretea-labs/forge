@@ -82,6 +82,27 @@ final class NativeWorkspaceTests: XCTestCase {
     }
 
     @MainActor
+    func testBusyTurnBlocksConversationAndProjectRebinding() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        let first = model.selectedThreadId!
+        model.newThread()
+        let second = model.selectedThreadId!
+        model.selectThread(first)
+        model.repoId = "repo_a"
+        model.busy = true
+
+        model.selectThread(second)
+        XCTAssertEqual(model.selectedThreadId,first)
+        model.newThread()
+        XCTAssertEqual(model.threads.count,2)
+        model.selectProject("repo_b")
+        XCTAssertEqual(model.repoId,"repo_a")
+        XCTAssertTrue(model.error?.contains("停止正在运行") == true)
+    }
+
+    @MainActor
     func testThreadDeleteOnlyRemovesLocalTargetAndKeepsSelectionDeterministic() {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at:folder) }
