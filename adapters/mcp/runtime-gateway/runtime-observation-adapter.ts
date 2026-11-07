@@ -5,7 +5,7 @@ import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 import { controllerExposureSnapshot, controllerToolSurfaceStatus } from '../toolset';
 import { boundedPluginArtifactImageContent, jsonPreview, result, resultWithPluginArtifactImages } from './result-adapter';
 import { expectedRevision, repositoryRootForRepoId, selected, stringList } from './shared-adapter';
-import { callStatusInboxAdapter, GIT_IDENTITY_SAMPLE_TTL_MS, summarizeInvalidActiveWorkCandidate, summarizeWorkListItem } from './status-inbox-adapter';
+import { callStatusInboxAdapter, GIT_IDENTITY_SAMPLE_TTL_MS } from './status-inbox-adapter';
 import { ageMs, controllerReadinessEvidence, localControllerDiagnosticMatchesRuntime, probeLocalControllerHealth, runtimeSourceSnapshotStatus, type ControllerReadinessSignals } from './runtime-readiness-observation';
 import { listRepositories, repositorySummary, resolveRepositorySelection } from '../../../src/cli/repositories/registry';
 import { repositoryControllerRoot } from '../../../src/effects/controller-home';

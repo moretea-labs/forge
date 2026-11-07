@@ -1054,8 +1054,8 @@ describe("Local Execution Bridge", () => {
       expect((await fetch(new URL(path, handle.url), { headers: auth })).status).toBe(404);
     }
     const trackedWork = await fetch(new URL("/api/console/requirements", handle.url), { headers: auth }).then((response) => response.json()); expect(Array.isArray(trackedWork.requirements)).toBe(true); expect(typeof trackedWork.requirementCount).toBe("number");
-    const executionWork = await fetch(new URL("/api/console/work", handle.url), { headers: auth }).then((response) => response.json()); expect(Array.isArray(executionWork.items)).toBe(true);
-    const workPortfolio = await fetch(new URL("/api/console/work-portfolio", handle.url), { headers: auth }).then((response) => response.json()); expect(Array.isArray(workPortfolio.items)).toBe(true); expect(Array.isArray(workPortfolio.repositories)).toBe(true); expect(typeof workPortfolio.summary.total).toBe("number");
+    expect((await fetch(new URL("/api/console/work", handle.url), { headers: auth })).status).toBe(404);
+    expect((await fetch(new URL("/api/console/work-portfolio", handle.url), { headers: auth })).status).toBe(404);
     const automations = await fetch(new URL("/api/console/automations", handle.url), { headers: auth }).then((response) => response.json()); expect(Array.isArray(automations.automations)).toBe(true); expect(typeof automations.summary.total).toBe("number");
 
     const plugins = await fetch(new URL("/api/console/plugins", handle.url), {

@@ -261,63 +261,6 @@ interface RepositoryCommandPathPolicyOptions {
   repositoryId?: string;
 }
 
-interface SourceControllerRoundCompatibilityScope {
-  operation: 'round-close';
-  controllerHome: string;
-  workId: string;
-  controllerAuthorityId: string;
-  relayScopeId: string;
-}
-
-function sourceControllerRoundCompatibilityScope(
-  command: CanonicalRepositoryCommand,
-  options: RepositoryCommandPathPolicyOptions,
-): SourceControllerRoundCompatibilityScope | undefined {
-  if (command.kind !== 'argv' || !options.controllerHome || !options.repositoryId) return undefined;
-  const executable = command.executable?.split(/[\\/]/).at(-1)?.toLowerCase();
-  const args = command.args ?? [];
-  if (executable !== 'bun' || args[0] !== 'src/cli/index.ts' || args[1] !== 'chatgpt') return undefined;
-  const operation = args[2];
-  if (operation !== 'round-close') return undefined;
-
-  const allowedFlags = new Set(['--controller-home', '--repo-id', '--work-id', '--controller-authority-id', '--relay-scope-id', '--disposition', '--handoff-id', '--reason']);
-  const values = new Map<string, string>();
-  for (let index = 3; index < args.length; index += 2) {
-    const flag = args[index];
-    const value = args[index + 1];
-    if (!flag || !allowedFlags.has(flag) || !value || value.startsWith('--') || values.has(flag)) {
-      throw new Error(`SOURCE_CONTROLLER_ROUND_COMMAND_CONTRACT_INVALID:${operation}:${flag ?? 'missing'}`);
-    }
-    values.set(flag, value);
-  }
-  const required = ['--controller-home', '--repo-id', '--work-id', '--controller-authority-id', '--relay-scope-id'];
-  for (const flag of required) {
-    if (!values.get(flag)?.trim()) throw new Error(`SOURCE_CONTROLLER_ROUND_COMMAND_CONTRACT_INVALID:${operation}:${flag}`);
-  }
-  if (values.get('--repo-id') !== options.repositoryId) {
-    throw new Error(`SOURCE_CONTROLLER_ROUND_COMMAND_REPOSITORY_MISMATCH:${values.get('--repo-id')}`);
-  }
-  const configuredControllerHome = realpathSync(options.controllerHome);
-  const requestedControllerHome = realpathSync(resolve(values.get('--controller-home')!));
-  if (requestedControllerHome !== configuredControllerHome) {
-    throw new Error(`SOURCE_CONTROLLER_ROUND_COMMAND_CONTROLLER_HOME_MISMATCH:${requestedControllerHome}`);
-  }
-  const disposition = values.get('--disposition');
-  if (!disposition || !['wait', 'wait_for_user', 'goal_complete'].includes(disposition)) {
-    throw new Error(`SOURCE_CONTROLLER_ROUND_COMMAND_DISPOSITION_INVALID:${disposition ?? 'missing'}`);
-  }
-  if (disposition === 'wait_for_user' && !values.get('--handoff-id')?.trim()) {
-    throw new Error('SOURCE_CONTROLLER_ROUND_COMMAND_HANDOFF_REQUIRED');
-  }
-  return {
-    operation,
-    controllerHome: configuredControllerHome,
-    workId: values.get('--work-id')!,
-    controllerAuthorityId: values.get('--controller-authority-id')!,
-    relayScopeId: values.get('--relay-scope-id')!,
-  };
-}
-
 function grantCoversPath(grant: ExternalFilesystemGrant, canonicalPath: string, operation: RepositoryCommandExternalPathOperation): boolean {
   if (operation === 'controller_local_effect') return false;
   if (externalFilesystemGrantExpired(grant)) return false;
@@ -368,7 +311,6 @@ export function assertCommandPathOperandsStayInRepository(
   options: RepositoryCommandPathPolicyOptions = {},
 ): RepositoryCommandExternalPathUsage[] {
   const usages: RepositoryCommandExternalPathUsage[] = [];
-  const controllerRoundScope = typeof command === 'string' ? undefined : sourceControllerRoundCompatibilityScope(command, options);
   const segments = typeof command === 'string'
     ? shellSegments(command).map((segment) => ({ raw: segment, words: shellWords(segment) }))
     : command.kind === 'shell'
@@ -398,18 +340,6 @@ export function assertCommandPathOperandsStayInRepository(
       if (pathInside(root, resolved)) continue;
       if (!absoluteInput) {
         throw new Error(`COMMAND_SCOPE_DENIED: command operand escapes repository root through a symlink or parent path: ${token}`);
-      }
-      if (controllerRoundScope
-        && words[index - 1] === '--controller-home'
-        && resolved === controllerRoundScope.controllerHome) {
-        usages.push({
-          token,
-          canonicalPath: resolved,
-          operation: 'controller_local_effect',
-          grantKey: `tool-contract-abi:${controllerRoundScope.operation}:${controllerRoundScope.workId}`,
-          grantRoot: controllerRoundScope.controllerHome,
-        });
-        continue;
       }
       if (sensitivePathDenied(resolved)) {
         throw new Error(`COMMAND_SCOPE_DENIED: sensitive external path is never allowed in repository commands: ${token}`);

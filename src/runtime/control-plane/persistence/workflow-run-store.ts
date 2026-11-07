@@ -9,7 +9,10 @@ const MAX_RECEIPTS = 128;
 
 export interface WorkflowRunRecord {
   schemaVersion: typeof SCHEMA_VERSION;
-  workId: string;
+  /** Canonical new-run scope. Historical records may instead contain workId. */
+  scopeId?: string;
+  /** Legacy read-only provenance for records created before Work retirement. Never written by the new path. */
+  workId?: string;
   runId: string;
   workflowId: string;
   version: string;
@@ -31,6 +34,11 @@ function bounded(value: string, code: string): string {
   const trimmed = value.trim();
   if (!trimmed || trimmed.length > 512) throw new Error(code);
   return trimmed;
+}
+
+export function workflowRunScopeId(value: Pick<WorkflowRunRecord, 'scopeId' | 'workId'>): string {
+  const scopeId = value.scopeId?.trim() || value.workId?.trim() || '';
+  return bounded(scopeId, 'WORKFLOW_RUN_SCOPE_ID_INVALID');
 }
 
 function canonical(value: unknown): unknown {
@@ -56,13 +64,15 @@ export function workflowRunEvidenceRef(value: Omit<WorkflowRunRecord, 'evidenceR
 
 function validRecord(value: WorkflowRunRecord): WorkflowRunRecord {
   if (value.schemaVersion !== SCHEMA_VERSION) throw new Error('WORKFLOW_RUN_SCHEMA_VERSION_UNSUPPORTED');
-  bounded(value.workId, 'WORKFLOW_RUN_WORK_ID_INVALID');
+  workflowRunScopeId(value);
   bounded(value.runId, 'WORKFLOW_RUN_ID_INVALID');
   bounded(value.workflowId, 'WORKFLOW_RUN_WORKFLOW_ID_INVALID');
   bounded(value.version, 'WORKFLOW_RUN_VERSION_INVALID');
   bounded(value.contentDigest, 'WORKFLOW_RUN_CONTENT_DIGEST_INVALID');
   bounded(value.inputDigest, 'WORKFLOW_RUN_INPUT_DIGEST_INVALID');
   bounded(value.evidenceRef, 'WORKFLOW_RUN_EVIDENCE_REF_INVALID');
+  // Validate the exact persisted shape. Adding scopeId to a legacy Work record
+  // before this check would change its historical evidence digest.
   if (workflowRunEvidenceRef(value) !== value.evidenceRef) throw new Error('WORKFLOW_RUN_EVIDENCE_REF_MISMATCH');
   if (!['running', 'reconcile_required', 'failed', 'succeeded'].includes(value.status)) throw new Error('WORKFLOW_RUN_STATUS_INVALID');
   if (!Number.isInteger(value.nextStepIndex) || value.nextStepIndex < 0) throw new Error('WORKFLOW_RUN_NEXT_STEP_INVALID');
@@ -74,10 +84,15 @@ function validRecord(value: WorkflowRunRecord): WorkflowRunRecord {
 
 export function readWorkflowRun(
   controllerHome: string,
-  workId: string,
+  scopeId: string,
   runId: string,
 ): ControlPlaneRecord<WorkflowRunRecord> | undefined {
-  const record = readControlPlaneRecord<WorkflowRunRecord>(controllerHome, WORKFLOW_RUN_NAMESPACE, bounded(workId, 'WORKFLOW_RUN_WORK_ID_INVALID'), bounded(runId, 'WORKFLOW_RUN_ID_INVALID'));
+  const record = readControlPlaneRecord<WorkflowRunRecord>(
+    controllerHome,
+    WORKFLOW_RUN_NAMESPACE,
+    bounded(scopeId, 'WORKFLOW_RUN_SCOPE_ID_INVALID'),
+    bounded(runId, 'WORKFLOW_RUN_ID_INVALID'),
+  );
   if (!record) return undefined;
   validRecord(record.value);
   return record;
@@ -93,7 +108,7 @@ export function writeWorkflowRunCheckpoint(input: {
   if (input.checkpoint.receipts.length > MAX_RECEIPTS) throw new Error('WORKFLOW_RUN_RECEIPT_BUDGET_EXCEEDED');
   const content: Omit<WorkflowRunRecord, 'evidenceRef'> = {
     schemaVersion: SCHEMA_VERSION,
-    workId: input.checkpoint.binding.workId,
+    scopeId: input.checkpoint.binding.scopeId,
     runId: input.checkpoint.binding.runId,
     workflowId: input.checkpoint.workflowId,
     version: input.checkpoint.version,
@@ -113,7 +128,7 @@ export function writeWorkflowRunCheckpoint(input: {
   validRecord(value);
   return writeControlPlaneRecord(input.controllerHome, {
     namespace: WORKFLOW_RUN_NAMESPACE,
-    scope: value.workId,
+    scope: workflowRunScopeId(value),
     key: value.runId,
     schemaVersion: SCHEMA_VERSION,
     value,

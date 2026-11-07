@@ -9,7 +9,6 @@ import { ensureControllerHome, repositoryControllerRoot } from '../../src/effect
 import { addRepositoryCheckout, registerRepository } from '../../src/cli/repositories/registry';
 import { callRuntimeTool } from '../../adapters/mcp/runtime-gateway/runtime-tools';
 import { callContextAdapter, selectProgressiveSourcePaths } from '../../adapters/mcp/runtime-gateway/context-adapter';
-import { primaryWorkRuntimeActivity } from '../../adapters/mcp/runtime-gateway/status-inbox-adapter';
 import { recordGatewayLatency } from '../../src/runtime/observability/gateway-contention-metrics';
 import { mintEngineeringAdmissionEvidence } from '../../adapters/mcp/runtime-gateway/engineering-preconditions';
 import {
@@ -36,9 +35,8 @@ import {
   waitManagedPluginAction,
 } from '../../src/runtime/plugins/lightweight-action';
 import { clearAssistantPluginManifestCacheForTest, getAssistantPluginManifest, submitAssistantPluginAction } from '../../src/runtime/plugins/store';
-import { startGoalWorkloop } from '../../src/runtime/control-plane/facade/goal-workloop';
 import { createHandoffItem, getHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
-import { cancelWorkContract, createWorkContract, type WorkContract } from '../../packages/kernel/work/api/index';
+import { WorkContract } from '../../packages/kernel/work/api/index';
 import { createPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { createRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { ensureForgeInstanceIdentity } from '../../packages/kernel/identity/api/index';
@@ -46,6 +44,7 @@ import { recordCognitiveMemory, type CognitiveWriteAuthorityPort } from '../../p
 import { cognitionMemoryStore } from '../../src/runtime/control-plane/persistence/cognition-store';
 import { writeProjectIdentity, writeProjectPlacement, writeWorkspaceIdentity } from '../../src/runtime/control-plane/workspace/workspace-store';
 import { readControlPlaneRecord, writeControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
+import { seedHistoricalWorkContract } from '../helpers/historical-work-contract';
 
 const roots: string[] = [];
 const previousEnv = process.env[CONTROLLER_RUNTIME_SOURCE_ROOT_ENV];
@@ -122,7 +121,7 @@ function createProjectionWork(
   repository: ReturnType<typeof registerRepository>,
   workId: string,
 ): WorkContract {
-  return createWorkContract({ controllerHome, repoId: repository.repoId }, {
+  return seedHistoricalWorkContract({ controllerHome, repoId: repository.repoId }, {
     workId,
     repoId: repository.repoId,
     checkoutId: repository.activeCheckoutId,
@@ -165,7 +164,7 @@ describe('runtime source isolation', () => {
     const checkout = registry.checkouts.find(item => item.canonicalRoot === realpathSync(worktree));
     expect(checkout).toBeDefined();
     const workId = 'work-context-source-provenance';
-    createWorkContract({ controllerHome, repoId: repository.repoId }, {
+    seedHistoricalWorkContract({ controllerHome, repoId: repository.repoId }, {
       workId, repoId: repository.repoId, checkoutId: checkout!.checkoutId,
       objective: 'Review exactly the current isolated Work source.',
       acceptanceCriteria: [], constraints: {}, requestedBy: 'chatgpt', checks: [],
@@ -480,117 +479,6 @@ describe('runtime source isolation', () => {
     expect(resolved.reason).toBe('package-root');
     expect(resolved.root).toBe(packageRuntimeSourceRoot());
     expect(realpathSync(resolved.root!)).not.toBe(realpathSync(business));
-  });
-
-  test('package Runtime lightweight ios.build reaches its handler from a non-Forge repository cwd', async () => {
-    const business = tempRoot('forge-business-ios-lightweight-');
-    const controllerHome = tempRoot('forge-home-ios-lightweight-');
-    const releaseRoot = tempRoot('forge-package-release-ios-lightweight-');
-    const fakeBin = tempRoot('forge-ios-lightweight-bin-');
-    initGitRepo(business, 'business-ios-app');
-    mkdirSync(join(business, 'Business.xcodeproj'), { recursive: true });
-    writeFileSync(join(business, 'Business.xcodeproj', 'project.pbxproj'), '// lightweight iOS fixture\n');
-    ensureControllerHome(controllerHome);
-    git(business, 'add', '.');
-    git(business, 'commit', '-m', 'add iOS fixture');
-    const repository = registerRepository({ path: business, controllerHome, displayName: 'Business iOS app' });
-    const startedWork = startGoalWorkloop({
-      workStore: { controllerHome, repoId: repository.repoId },
-      handoffStore: { controllerHome, repoId: repository.repoId },
-      repoId: repository.repoId,
-      checkoutId: repository.activeCheckoutId,
-    }, {
-      objective: 'Build the non-Forge iOS fixture through the typed plugin action.',
-      acceptanceCriteria: ['The lightweight iOS build reaches xcodebuild.'],
-      allowedPaths: ['**'], forbiddenPaths: [], checks: [],
-      request: { scopeClear: true, mutation: true, requiresExternalEffect: false, remoteWrite: false, requiresRecovery: false, requiresApproval: false },
-    });
-    const workId = String((startedWork.data as { work?: { workId?: string } }).work?.workId ?? '');
-    expect(workId).toBeTruthy();
-    symlinkSync(packageRuntimeSourceRoot(), join(releaseRoot, 'package'), 'dir');
-    expect(existsSync(join(business, 'src', 'runtime', 'shared', 'node-ts-loader.mjs'))).toBe(false);
-
-    const invocation = resolveLightweightPluginActionRuntimeInvocation({
-      releasePath: releaseRoot,
-      sourceDir: '/$bunfs/runtime/plugins',
-      nodeExecutable: '/runtime-owned/trusted-node',
-    });
-    expect(invocation).toMatchObject({ identity: 'package_release_node', executable: '/runtime-owned/trusted-node' });
-    expect(invocation.argsPrefix[1]).toBe(join(releaseRoot, 'package', 'src', 'runtime', 'shared', 'node-ts-loader.mjs'));
-    expect(invocation.argsPrefix[2]).toBe(join(releaseRoot, 'package', 'src', 'runtime', 'plugins', 'plugin-action-sidecar.ts'));
-    expect(invocation.argsPrefix.join(' ')).not.toContain('/$bunfs/');
-    expect(invocation.argsPrefix.join(' ')).not.toContain(business);
-    if (process.platform !== 'darwin') return;
-
-    writeFileSync(join(fakeBin, 'xcodebuild'), `#!/bin/sh
-if [ "$1" = "-version" ]; then
-  printf 'Xcode 16.0\\nBuild version 16A000\\n'
-  exit 0
-fi
-for arg in "$@"; do
-  if [ "$arg" = "-list" ]; then
-    printf '{"project":{"schemes":["Business"]}}\\n'
-    exit 0
-  fi
-done
-derived=""
-previous=""
-for arg in "$@"; do
-  if [ "$previous" = "-derivedDataPath" ]; then
-    derived="$arg"
-    break
-  fi
-  previous="$arg"
-done
-if [ -n "$derived" ]; then
-  mkdir -p "$derived/Build/Products/Debug-iphonesimulator/Business.app"
-fi
-printf 'BUILD SUCCEEDED\\n'
-`, { mode: 0o700 });
-
-    const previousReleasePath = process.env.FORGE_RELEASE_PATH;
-    const previousPath = process.env.PATH;
-    process.env.FORGE_RELEASE_PATH = releaseRoot;
-    process.env.PATH = `${fakeBin}:${previousPath ?? ''}`;
-    const request = {
-      pluginId: 'ios',
-      actionId: 'build',
-      requestId: 'non-forge-package-runtime-ios-build',
-      workId,
-      args: { scheme: 'Business', project: 'Business.xcodeproj', simulator_name: 'iPhone 16 Pro' },
-      origin: { surface: 'mcp' as const, actor: 'test' },
-    };
-    try {
-      const started = await startLightweightPluginAction({
-        controllerHome,
-        repository,
-        request,
-        interactiveWaitMs: 5_000,
-        timeoutMs: 15_000,
-      });
-      const completed = started.handle.completed
-        ? started.handle
-        : await waitLightweightPluginAction(controllerHome, repository.repoId, started.handle.processId, 15_000);
-      expect(completed.ok).toBe(true);
-      expect(completed.workId).toBe(workId);
-      expect(`${completed.stdoutTail ?? ''}\n${completed.stderrTail ?? ''}`).not.toContain('ERR_MODULE_NOT_FOUND');
-      expect(`${completed.stdoutTail ?? ''}\n${completed.stderrTail ?? ''}`).not.toContain('/$bunfs/');
-      const submitted = await submitAssistantPluginAction(controllerHome, repository, request);
-      expect(submitted.deduplicated).toBe(true);
-      expect(submitted.workId).toBe(workId);
-      expect(submitted.receipt.workId).toBe(workId);
-      expect(submitted.action.resourceClaims).toEqual([
-        { resource: 'workspace', mode: 'write' },
-        { resource: 'repo-state', mode: 'write' },
-      ]);
-      expect(submitted.result?.result).toMatchObject({ ready: true, ok: true, scheme: 'Business' });
-      expect(String((submitted.result?.result as Record<string, unknown>).appPath ?? '')).toContain('Business.app');
-    } finally {
-      if (previousReleasePath === undefined) delete process.env.FORGE_RELEASE_PATH;
-      else process.env.FORGE_RELEASE_PATH = previousReleasePath;
-      if (previousPath === undefined) delete process.env.PATH;
-      else process.env.PATH = previousPath;
-    }
   });
 
   test('controller-scoped plugin execution binds one durable Process before observation and reattaches by request id', async () => {
@@ -929,14 +817,6 @@ printf '{"ok":true}\\n'
     }
   });
 
-  test('runtime Work activity projection is mutually exclusive and fact-precedence driven', () => {
-    expect(primaryWorkRuntimeActivity({ running: true, waitingForUser: true, scheduled: true, needsReconciliation: true })).toBe('running');
-    expect(primaryWorkRuntimeActivity({ running: false, waitingForUser: true, scheduled: true, needsReconciliation: true })).toBe('waiting_for_user');
-    expect(primaryWorkRuntimeActivity({ running: false, waitingForUser: false, scheduled: true, needsReconciliation: true })).toBe('scheduled');
-    expect(primaryWorkRuntimeActivity({ running: false, waitingForUser: false, scheduled: false, needsReconciliation: true })).toBe('needs_reconciliation');
-    expect(primaryWorkRuntimeActivity({ running: false, waitingForUser: false, scheduled: false, needsReconciliation: false })).toBe('recoverable');
-  });
-
   test('rh_status row-isolates malformed active Work while keeping bounded diagnostics', async () => {
     const runtimeRoot = tempRoot('forge-runtime-status-invalid-work-');
     const business = tempRoot('forge-status-invalid-work-');
@@ -1122,61 +1002,6 @@ printf '{"ok":true}\\n'
     expect(detail.invalidActiveWork?.[0]).toMatchObject({ workId: malformed.workId });
   });
 
-  test('rh_context excludes pending Handoffs whose owning Work is canonically terminal', async () => {
-    const business = tempRoot('forge-context-terminal-handoff-');
-    const controllerHome = tempRoot('forge-home-context-terminal-handoff-');
-    initGitRepo(business, 'context-terminal-handoff');
-    ensureControllerHome(controllerHome);
-    const repository = registerRepository({ path: business, controllerHome, displayName: 'Context Terminal Handoff' });
-    const terminalWork = createProjectionWork(controllerHome, repository, 'work-context-terminal-handoff');
-    const store = { controllerHome, repoId: repository.repoId };
-    const stale = createHandoffItem(store, {
-      id: 'handoff-terminal-work',
-      repoId: repository.repoId,
-      workId: terminalWork.workId,
-      title: 'Historical terminal Work decision',
-      severity: 'needs_review',
-      reason: 'This recent pending record must become historical attention once its Work is terminal.',
-      creationReason: 'ambiguous_outcome',
-      summary: 'Terminal Work handoff.',
-      currentState: { repoId: repository.repoId, workId: terminalWork.workId, statusSummary: 'pending' },
-      evidenceRefs: [],
-      recommendedDecision: 'No current action.',
-      recommendedPrompt: 'Inspect history only.',
-      suggestedNextActions: [],
-    });
-    const current = createHandoffItem(store, {
-      id: 'handoff-current-decision',
-      repoId: repository.repoId,
-      title: 'Current repository decision',
-      severity: 'needs_review',
-      reason: 'This unresolved repository decision remains current.',
-      creationReason: 'ambiguous_outcome',
-      summary: 'Current decision.',
-      currentState: { repoId: repository.repoId, statusSummary: 'pending' },
-      evidenceRefs: [],
-      recommendedDecision: 'Review current decision.',
-      recommendedPrompt: 'Review current decision.',
-      suggestedNextActions: [],
-    });
-    cancelWorkContract(store, terminalWork.workId, { summary: 'Terminalize Work for Handoff projection regression.' });
-
-    const summaryPayload = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_context', {
-      repo_id: repository.repoId, operation: 'get', detail_level: 'summary',
-    }));
-    const summary = summaryPayload.data as { activeAttention?: Array<{ id?: string }>; counts?: { currentAttention?: number } };
-    expect(summary.activeAttention?.some((item) => item.id === stale.id)).toBe(false);
-    expect(summary.activeAttention?.some((item) => item.id === current.id)).toBe(true);
-
-    const detailPayload = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_context', {
-      repo_id: repository.repoId, operation: 'list', detail_level: 'detail',
-    }));
-    const detail = detailPayload.data as { activeAttention?: Array<{ id?: string }> };
-    expect(detail.activeAttention?.some((item) => item.id === stale.id)).toBe(false);
-    expect(detail.activeAttention?.some((item) => item.id === current.id)).toBe(true);
-    expect(getHandoffItem(store, stale.id)?.status).toBe('pending');
-  });
-
   test('rh_context exact Work projects one current task and keeps unrelated repository attention out of that task', async () => {
     const business = tempRoot('forge-context-current-task-lineage-');
     const controllerHome = tempRoot('forge-home-context-current-task-lineage-');
@@ -1276,42 +1101,6 @@ printf '{"ok":true}\\n'
     expect(currentInventory).not.toHaveProperty('objective');
     expect(currentInventory).not.toHaveProperty('continuation');
     expect(currentInventory).not.toHaveProperty('nextSafeAction');
-  });
-
-  test('rh_context Work summary defers plugin capability and historical process hydration', async () => {
-    const business = tempRoot('forge-context-summary-fast-');
-    const controllerHome = tempRoot('forge-home-context-summary-fast-');
-    initGitRepo(business, 'context-summary-fast');
-    ensureControllerHome(controllerHome);
-    const repository = registerRepository({ path: business, controllerHome, displayName: 'Context Summary Fast' });
-    const started = startGoalWorkloop({
-      workStore: { controllerHome, repoId: repository.repoId },
-      handoffStore: { controllerHome, repoId: repository.repoId },
-      repoId: repository.repoId,
-      checkoutId: repository.activeCheckoutId,
-    }, {
-      objective: 'Keep one bounded Work available for fast summary projection.',
-      acceptanceCriteria: ['Summary projection remains bounded.'],
-      allowedPaths: ['**'], forbiddenPaths: [], checks: [],
-      request: { scopeClear: true, mutation: true, requiresExternalEffect: false, remoteWrite: false, requiresRecovery: false, requiresApproval: false },
-    });
-    const workId = String((started.data as { work?: { workId?: string } }).work?.workId ?? '');
-    expect(workId).toBeTruthy();
-    const payload = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_context', {
-      repo_id: repository.repoId,
-      operation: 'get',
-      work_id: workId,
-      detail_level: 'summary',
-    }));
-    const data = payload.data as {
-      capabilityInventory?: { mode?: string; deferred?: boolean };
-      counts?: { capabilityInventoryDeferred?: boolean; historicalProcessScanDeferred?: boolean };
-      work?: { workId?: string };
-    };
-    expect(data.work?.workId).toBe(workId);
-    expect(data.capabilityInventory).toEqual(expect.objectContaining({ mode: 'detail_only', deferred: true }));
-    expect(data.counts).toEqual(expect.objectContaining({ capabilityInventoryDeferred: true, historicalProcessScanDeferred: true }));
-    expect('capabilityCount' in data).toBe(false);
   });
 
   test('rh_context knowledge-only search audits learned memory within current Project and Workspace scopes', async () => {

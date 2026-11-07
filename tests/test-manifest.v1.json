@@ -429,17 +429,9 @@
       "module": "process-runtime",
       "resource": "temp-isolated"
     },
-    "tests/runtime/read-only-review-lifecycle.test.ts": {
-      "module": "workflow",
-      "resource": "temp-isolated"
-    },
     "tests/runtime/controller-home-migration.test.ts": {
       "module": "controller",
       "resource": "controller-home-isolated"
-    },
-    "tests/runtime/controller-session-store.test.ts": {
-      "module": "controller",
-      "resource": "temp-isolated"
     },
     "tests/runtime/desktop-operator-registration.test.ts": {
       "module": "controller",
@@ -459,10 +451,6 @@
     },
     "tests/runtime/execution-job-reconciliation.test.ts": {
       "module": "process-runtime",
-      "resource": "controller-home-isolated"
-    },
-    "tests/runtime/external-controller-launch-reservation.test.ts": {
-      "module": "controller",
       "resource": "controller-home-isolated"
     },
     "tests/runtime/external-plugin-adapter.test.ts": {
@@ -585,10 +573,6 @@
       "module": "release",
       "resource": "temp-isolated"
     },
-    "tests/runtime/pending-continuation-activation.test.ts": {
-      "module": "workflow",
-      "resource": "controller-home-isolated"
-    },
     "tests/runtime/plugin-controller-global-migration.test.ts": {
       "module": "controller",
       "resource": "controller-home-isolated"
@@ -641,10 +625,6 @@
       "module": "repository",
       "resource": "pure"
     },
-    "tests/runtime/repository-work-admission.test.ts": {
-      "module": "routing",
-      "resource": "pure"
-    },
     "tests/runtime/requirement-portfolio-migration.test.ts": {
       "module": "workflow",
       "resource": "controller-home-isolated"
@@ -657,17 +637,9 @@
       "module": "workflow",
       "resource": "controller-home-isolated"
     },
-    "tests/runtime/rh-work-repository-admission.test.ts": {
-      "module": "routing",
-      "resource": "git-worktree"
-    },
     "tests/runtime/rh-work-scheduler-adapter.test.ts": {
       "module": "controller",
       "resource": "git-worktree"
-    },
-    "tests/runtime/work-authority-reconciler.test.ts": {
-      "module": "workflow",
-      "resource": "controller-home-isolated"
     },
     "tests/runtime/work-process-evidence.test.ts": {
       "module": "process-runtime",
@@ -675,10 +647,6 @@
     },
     "tests/runtime/route-session-concurrency.test.ts": {
       "module": "routing",
-      "resource": "temp-isolated"
-    },
-    "tests/runtime/generic-work-verification-reconciliation.test.ts": {
-      "module": "process-runtime",
       "resource": "temp-isolated"
     },
     "tests/runtime/goal-authority-convergence.test.ts": {
@@ -747,22 +715,6 @@
     },
     "tests/runtime/uu-remote-rescue-registration.test.ts": {
       "module": "controller",
-      "resource": "pure"
-    },
-    "tests/runtime/work-handle-store.test.ts": {
-      "module": "process-runtime",
-      "resource": "temp-isolated"
-    },
-    "tests/runtime/unborn-repository-change.test.ts": {
-      "module": "workflow",
-      "resource": "git-worktree"
-    },
-    "tests/runtime/work-terminal-cleanup.test.ts": {
-      "module": "workflow",
-      "resource": "git-worktree"
-    },
-    "tests/runtime/work-operation-validation-identity.test.ts": {
-      "module": "process-runtime",
       "resource": "pure"
     },
     "tests/runtime/work-validation-reconciler.test.ts": {
@@ -894,21 +846,9 @@
       "module": "process-runtime",
       "resource": "pure"
     },
-    "tests/runtime/work-contract-store-atomicity.test.ts": {
-      "module": "controller",
-      "resource": "process-tree"
-    },
-    "tests/runtime/work-execution-concurrency.test.ts": {
-      "module": "controller",
-      "resource": "controller-home-isolated"
-    },
     "tests/runtime/workspace-semantic-sync.test.ts": {
       "module": "controller",
       "resource": "controller-home-isolated"
-    },
-    "tests/runtime/execution-quality.test.ts": {
-      "module": "controller",
-      "resource": "pure"
     },
     "tests/runtime/assistant-learning-loop-e2e.test.ts": {
       "module": "controller",
@@ -924,10 +864,6 @@
     },
     "tests/runtime/semantic-authority-guardrail.test.ts": {
       "module": "controller",
-      "resource": "pure"
-    },
-    "tests/runtime/work-v3-lifecycle-authority.test.ts": {
-      "module": "workflow",
       "resource": "pure"
     },
     "tests/runtime/cognitive-memory.test.ts": {
@@ -958,10 +894,6 @@
       "module": "workflow",
       "resource": "controller-home-isolated",
       "smoke": false
-    },
-    "tests/runtime/work-semantic-lifecycle.test.ts": {
-      "module": "workflow",
-      "resource": "temp-isolated"
     }
   }
 }

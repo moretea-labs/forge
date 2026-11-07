@@ -6,11 +6,8 @@ import {
   type ForgeDesktopProjection,
   type ProjectListItemProjection,
   type RuntimeRecoveryProjection,
-  type WorkGraphNodeProjection,
-  type WorkSemanticState,
 } from './runtime-projection';
 import {
-  continueWork,
   readConnectionStatus,
   readLocalProviderStatus,
   readProjects,
@@ -36,7 +33,7 @@ import {
   verifyRecoveryRuntime,
 } from './recovery-client';
 
-type AppView = 'assistant' | 'project' | 'requirements' | 'plans' | 'works' | 'knowledge' | 'settings' | 'runtime';
+type AppView = 'assistant' | 'project' | 'requirements' | 'plans' | 'knowledge' | 'settings' | 'runtime';
 
 export function sidebarToggleShortcut(
   event: Pick<KeyboardEvent, 'key' | 'metaKey' | 'ctrlKey' | 'altKey' | 'shiftKey'>,
@@ -64,48 +61,6 @@ function formatTimestamp(value?: string): string {
     hour: '2-digit',
     minute: '2-digit',
   }).format(date);
-}
-
-function semanticStateLabel(state: WorkSemanticState): string {
-  if (state === 'completed') return '已完成';
-  if (state === 'cancelled') return '已取消';
-  return '进行中';
-}
-
-function verificationOutcomeLabel(outcome: string): string {
-  const labels: Record<string, string> = {
-    valid_pass: '通过',
-    valid_fail: '未通过',
-    invalid_check_id: '检查无效',
-    infrastructure_failure: '基础设施异常',
-    skipped: '已跳过',
-    superseded: '已被替代',
-  };
-  return labels[outcome] ?? outcome;
-}
-
-function executionPhaseLabel(phase: string): string {
-  const labels: Record<string, string> = {
-    implementation: '实现',
-    verification: '验证',
-    review: '审查',
-    delivery: '交付',
-    cleanup: '清理',
-  };
-  return labels[phase] ?? phase;
-}
-
-function phaseEvidenceStateLabel(state: string): string {
-  const labels: Record<string, string> = {
-    active: '进行中',
-    pending: '待处理',
-    completed: '已完成',
-    passed: '已通过',
-    failed: '失败',
-    blocked: '阻塞',
-    skipped: '已跳过',
-  };
-  return labels[state] ?? state;
 }
 
 export function Sidebar({
@@ -172,7 +127,7 @@ export function Sidebar({
     })
     : localThreads;
   // One read-only grouping of the existing conversation index. The repository
-  // and Work remain owned by Forge and each individual Agent thread.
+  // and repository context remain owned by Forge and each individual Agent thread.
   const conversationGroups = new Map<string, LocalConversationNavItem[]>();
   for (const thread of shownThreads) {
     const repoId = thread.projectRepoId ?? '';
@@ -246,8 +201,8 @@ export function Sidebar({
           <button className={activeView === 'assistant' ? 'nav-row active' : 'nav-row'} type="button" onClick={onOpenAssistant}>
             <span className="nav-symbol"><ForgeIcon name="conversations" /></span><span className="nav-label">会话</span>
           </button>
-          <button className={activeView === 'works' || activeView === 'project' ? 'nav-row active' : 'nav-row'} type="button" onClick={onOpenProjects}>
-            <span className="nav-symbol"><ForgeIcon name="work" /></span><span className="nav-label">Work · 工作</span>
+          <button className={activeView === 'project' ? 'nav-row active' : 'nav-row'} type="button" onClick={onOpenProjects}>
+            <span className="nav-symbol"><ForgeIcon name="project" /></span><span className="nav-label">Project · 项目</span>
           </button>
           <button className={activeView === 'requirements' ? 'nav-row active' : 'nav-row'} type="button" onClick={onOpenRequirements}>
             <span className="nav-symbol"><ForgeIcon name="requirement" /></span><span className="nav-label">Requirement · 需求</span>
@@ -397,498 +352,99 @@ export function Sidebar({
   );
 }
 
-function WorkView({
+function ProjectView({
   projection,
   refreshing,
   refreshError,
   onRefresh,
-  onContinue,
-  onSelectWork,
-  onNavigateRecord,
-  onStartAgentForWork,
+  onOpenRequirements,
+  onOpenPlans,
 }: {
   projection: ForgeDesktopProjection;
   refreshing: boolean;
   refreshError: string | null;
   onRefresh?: () => Promise<void>;
-  onContinue?: (prompt: string) => Promise<void>;
-  onSelectWork?: (workId: string) => void;
-  onNavigateRecord?: (mode: 'requirements' | 'plans', id: string) => void;
-  onStartAgentForWork?: (repoId: string, workId: string) => void;
+  onOpenRequirements: () => void;
+  onOpenPlans: () => void;
 }) {
-  const work = projection.work;
-  // Current and bounded history only: these links are not an exhaustive
-  // Requirement/Plan portfolio and must not be presented as one.
-  const visibleWorks = [...projection.workGraph.nodes, ...projection.recentWorkHistory];
-  const linkedRequirements = Array.from(new Set(visibleWorks
-    .map((node) => node.requirementId).filter((id): id is string => Boolean(id))));
-  const linkedPlans = Array.from(new Set(visibleWorks
-    .map((node) => node.planId).filter((id): id is string => Boolean(id))));
-  const relatedWorks = work?.requirementId
-    ? visibleWorks.filter((node) => node.requirementId === work.requirementId && node.workId !== work.workId)
-    : [];
-  const [draft, setDraft] = useState('');
-  const [sending, setSending] = useState(false);
-  const [sendError, setSendError] = useState<string | null>(null);
-
-  if (!work) {
-    const project = projection.project;
-    if (!project) {
-      return (
-        <main className="main-pane empty-main">
-          <div className="empty-copy">
-            <h1>选择一个项目</h1>
-            <p>从左侧选择项目，可查看已登记的 Work、关联需求、计划和验证证据。</p>
+  const project = projection.project;
+  return (
+    <main className="main-pane mcp-detail-pane">
+      <div className="content-column">
+        <header className="mcp-detail-header">
+          <div>
+            <div className="breadcrumb">Forge / Project</div>
+            <h1>{project?.name ?? '项目'}</h1>
+            <p>{project?.repository ?? projection.runtime.detail}</p>
           </div>
-        </main>
-      );
-    }
-    return (
-      <main className="main-pane work-pane">
-        <div className="content-column">
-          <header className="work-hero mcp-project-hero">
-            <div className="breadcrumb">项目 / Repository</div>
-            <h1>{project.name}</h1>
-            <p>{project.repository}</p>
-          </header>
-
-          <div className="mcp-overview-status" aria-label="Forge 工作区状态">
-            <div><span className={`health-dot ${projection.runtime.status}`} /><strong>项目工作区</strong></div>
-            <div className="mcp-status-actions">
-              <span>{projection.runtime.label}</span>
-              <button className="plain-action" type="button" disabled={!onRefresh || refreshing} onClick={() => void onRefresh?.()}>
-                {refreshing ? '刷新中…' : '刷新'}
-              </button>
-            </div>
+          {onRefresh && <button className="plain-action" type="button" disabled={refreshing}
+            onClick={() => void onRefresh()}>{refreshing ? '刷新中…' : '刷新'}</button>}
+        </header>
+        {refreshError && <p role="alert" className="inline-error">{refreshError}</p>}
+        {!project ? (
+          <div className="records-empty" role="status">
+            {projection.runtime.status === 'connecting' || projection.runtime.status === 'degraded'
+              ? projection.runtime.detail : '从左侧选择已注册项目。'}
           </div>
-
-          {refreshError && <div className="inline-error mcp-refresh-error">刷新失败：{refreshError}</div>}
-
-          <section className="mcp-summary-grid" aria-label="Forge 工作概览">
-            <div className="mcp-summary-card">
-              <span>Repository</span>
-              <strong>{project.dirty ? '有未提交修改' : '工作区干净'}</strong>
-              <small>{project.branch} · {compactId(project.sourceRevision)}</small>
-            </div>
-            <div className="mcp-summary-card">
-              <span>Work</span>
-              <strong>{projection.workGraph.nodes.length} 个当前节点</strong>
-              <small>{projection.recentWorkHistory.length > 0 ? projection.recentWorkHistory.length + ' 个近期历史' : '无近期历史'}</small>
-            </div>
-            <div className="mcp-summary-card">
-              <span>Worktree</span>
-              <strong>{project.activeCheckoutCount}/{project.checkoutCount} active</strong>
-              <small>{project.worktree} · {compactId(project.checkoutId)}</small>
-            </div>
-            <div className="mcp-summary-card">
-              <span>Runtime / MCP</span>
-              <strong>{projection.runtime.label}</strong>
-              <small>{projection.runtime.status === 'connected' ? 'canonical Runtime projection' : projection.runtime.detail}</small>
-            </div>
-          </section>
-
-          <section className="relationship-overview" aria-label="项目需求和计划关联">
-            <div className="relationship-heading">
-              <strong>需求与工作关联</strong>
-              <span>从当前及近期 Work 汇总 · 非完整需求目录</span>
-            </div>
-            {linkedRequirements.length > 0 ? (
-              <div className="relationship-list">
-                {linkedRequirements.map((requirementId) => {
-                  const members = visibleWorks.filter((node) => node.requirementId === requirementId);
-                  return (
-                    <div className="relationship-item" key={requirementId}>
-                      <div className="relationship-item-head">
-                        <span className="relation-type">需求</span>
-                        <strong className="mono" title={requirementId}>{requirementId}</strong>
-                        <small>{members.length} 个可见 Work</small>
-                      </div>
-                      <div className="relation-work-links">
-                        {members.map((member) => (
-                          <button className="relation-work-link" type="button" key={member.workId}
-                            onClick={() => onSelectWork?.(member.workId)} disabled={!onSelectWork}
-                            title={member.objective}>
-                            <span className={'work-state-dot ' + member.state} />
-                            <span>{member.objective}</span>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  );
-                })}
+        ) : (
+          <>
+            <section className="mcp-summary-grid" aria-label="项目摘要">
+              <div className="mcp-summary-card">
+                <span>Repository</span><strong>{project.repository}</strong><small>{project.branch}</small>
               </div>
-            ) : <p className="relationship-empty">当前加载的 Work 未提供 Requirement 关联，不能推断项目没有需求。</p>}
-            {linkedPlans.length > 0 && (
-              <div className="relationship-plan-summary">
-                <span>关联 Plan · {linkedPlans.length}</span>
-                <div>{linkedPlans.map((id) => <code key={id} title={id}>{id}</code>)}</div>
+              <div className="mcp-summary-card">
+                <span>Checkout</span><strong>{project.worktree}</strong><small className="mono">{compactId(project.checkoutId)}</small>
               </div>
-            )}
-          </section>
-
-          <section className="mcp-work-overview" aria-label="Forge Work">
-            <div className="mcp-work-overview-heading">
-              <div><strong>Work</strong><span>canonical rh_work projection</span></div>
-              <span>{projection.workGraph.nodes.length} 个当前节点</span>
-            </div>
-            {projection.workGraph.nodes.length > 0 ? (
-              <div className="mcp-work-overview-list">
-                {projection.workGraph.nodes.map((node) => (
-                  <button className="mcp-work-overview-row" type="button" key={node.workId} disabled={!onSelectWork} onClick={() => onSelectWork?.(node.workId)}>
-                    <span className={`work-state-dot ${node.state}`} aria-hidden="true" />
-                    <span className="mcp-work-overview-copy"><strong>{node.objective}</strong><small>{semanticStateLabel(node.state)}{node.activity ? ` · ${node.activity}` : ''}</small></span>
-                    <span className="mono mcp-work-id">{compactId(node.workId)}</span>
-                  </button>
+              <div className="mcp-summary-card">
+                <span>Source</span><strong>{project.dirty ? '有未提交变更' : '工作区干净'}</strong>
+                <small className="mono">{compactId(project.sourceRevision)}</small>
+              </div>
+              <div className="mcp-summary-card">
+                <span>UserRequest</span><strong>{projection.userRequests.length}</strong><small>待用户处理</small>
+              </div>
+            </section>
+            <section className="detail-section project-record-entry">
+              <h2>语义记录</h2>
+              <p>Requirement 记录目标与验收；Plan 记录可替换的实施方案。执行结果由 Git、Run、Job、Process 与 Check 各自持有。</p>
+              <div className="record-related-plans">
+                <button type="button" className="record-work-link" onClick={onOpenRequirements}>
+                  <span className="record-plan-icon"><ForgeIcon name="requirement" size={16} /></span>
+                  <span>Requirements</span><small>验收语义</small>
+                </button>
+                <button type="button" className="record-work-link" onClick={onOpenPlans}>
+                  <span className="record-plan-icon"><ForgeIcon name="plan" size={16} /></span>
+                  <span>Plans</span><small>实施方案</small>
+                </button>
+              </div>
+            </section>
+            <details className="detail-section" open>
+              <summary>Git Checkout · {project.activeCheckoutCount}/{project.checkoutCount} active</summary>
+              <div className="relation-grid">
+                {project.checkouts.map((entry) => (
+                  <div key={entry.checkoutId}>
+                    <span>{entry.active ? '当前' : entry.kind === 'worktree' ? 'Worktree' : 'Checkout'}</span>
+                    <strong>{entry.branch ?? 'Detached HEAD'}</strong>
+                    <small className="mono">{compactId(entry.checkoutId)}</small>
+                  </div>
                 ))}
               </div>
-            ) : <div className="empty-copy inline-empty"><p>这个项目当前没有 canonical Work。Repository 与 Runtime 事实仍可独立查看。</p></div>}
-          </section>
-
-          <details className="detail-section" open>
-            <summary>Repository / Worktree</summary>
-            <div className="detail-grid">
-              <div><span>Repository ID</span><strong className="mono">{project.repoId}</strong></div>
-              <div><span>Repository</span><strong>{project.repository}</strong></div>
-              <div><span>Branch</span><strong>{project.branch}</strong></div>
-              <div><span>Checkout</span><strong className="mono">{project.checkoutId}</strong></div>
-              <div><span>Checkout type</span><strong>{project.worktree}</strong></div>
-              <div><span>Path</span><strong className="mono">{project.checkoutPath}</strong></div>
-              <div><span>Source revision</span><strong className="mono">{project.sourceRevision}</strong></div>
-              <div><span>Runtime source</span><strong>{projection.runtime.label}</strong></div>
-            </div>
-          </details>
-
-          <details className="detail-section" open>
-            <summary>Active Worktrees · {project.activeCheckoutCount}/{project.checkoutCount}</summary>
-            <div className="checkout-list">
-              {project.checkouts.map((checkout) => (
-                <div className="checkout-row" key={checkout.checkoutId}>
-                  <span className={`health-dot ${checkout.active ? 'connected' : 'not_connected'}`} aria-hidden="true" />
-                  <div className="checkout-copy">
-                    <strong>{checkout.branch ?? 'detached HEAD'}</strong>
-                    <span className="mono">{checkout.path}</span>
-                  </div>
-                  <div className="checkout-meta">
-                    <span>{checkout.active ? '当前' : checkout.kind === 'worktree' ? 'worktree' : '主检出'}</span>
-                    <span className="mono">{compactId(checkout.checkoutId)}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-            {project.checkoutListTruncated && <p className="detail-text">Active checkout 数量超过桌面投影上限；完整 checkout 历史仍由 Repository Registry 持有。</p>}
-          </details>
-        </div>
-      </main>
-    );
-  }
-
-  return (
-    <main className="main-pane work-pane">
-      <div className="content-column">
-        <header className="work-hero mcp-work-hero">
-          <div className="mcp-work-hero-copy">
-            <div className="breadcrumb">项目 / {projection.project?.name ?? '项目'} / {semanticStateLabel(work.semanticState)}</div>
-            <h1>{work.title}</h1>
-            {work.continuationPrompt && <p>{work.continuationPrompt}</p>}
-          </div>
-          <div className="work-hero-actions">
-            {projection.project && <button type="button" className="work-agent-action"
-              onClick={() => onStartAgentForWork?.(projection.project!.repoId, work.workId)}
-              disabled={!onStartAgentForWork}>
-              在 Agent 中继续
-            </button>}
-            <button className="plain-action" type="button" disabled={!onRefresh || refreshing} onClick={() => void onRefresh?.()}>
-              {refreshing ? '刷新中…' : '刷新'}
-            </button>
-          </div>
-        </header>
-
-        {refreshError && <div className="inline-error mcp-refresh-error">刷新失败：{refreshError}</div>}
-
-        <div className="work-body-copy">
-          <p>{work.objective}</p>
-        </div>
-
-        <section className="mcp-summary-grid work-summary-grid" aria-label="Forge Work 操作概览">
-          <div className="mcp-summary-card">
-            <span>Work</span>
-            <strong>{semanticStateLabel(work.semanticState)} · r{work.revision}</strong>
-            <small className="mono">{compactId(work.workId)}</small>
-          </div>
-          <div className="mcp-summary-card">
-            <span>Plan</span>
-            <strong>{projection.plan ? 'r' + projection.plan.revision : '未绑定'}</strong>
-            <small>{projection.plan ? projection.plan.items.length + ' 个计划项' : 'Work 可独立存在'}</small>
-          </div>
-          <div className="mcp-summary-card">
-            <span>Evidence</span>
-            <strong>{work.executionEvidence ? executionPhaseLabel(work.executionEvidence.phase) + ' · ' + work.executionEvidence.evidenceState : '暂无执行证据'}</strong>
-            <small>{work.executionEvidence ? work.executionEvidence.verifications.length + ' 条验证 · ' + work.executionEvidence.checks.length + ' 个检查' : 'canonical Work 未提供 evidence projection'}</small>
-          </div>
-          <div className="mcp-summary-card">
-            <span>Repository</span>
-            <strong>{projection.project?.dirty ? '有未提交修改' : '工作区干净'}</strong>
-            <small>{projection.project?.branch ?? '未知分支'} · {projection.project?.sourceRevision ? compactId(projection.project.sourceRevision) : '未知版本'}</small>
-          </div>
-        </section>
-
-        <section id="work-relations" className="work-relations" aria-label="工作关系">
-          <div className="relationship-heading"><strong>关联与上下文</strong><span>Forge canonical ID，不推断任务完成率</span></div>
-          <div className="work-relation-row">
-            <div><span className="relation-type">Requirement</span>
-              {work.requirementId ? <button className="record-deep-link" type="button"
-                onClick={() => onNavigateRecord?.('requirements', work.requirementId!)}
-                title={work.requirementId}>{projection.requirement?.title ?? work.requirementId}</button>
-                : <span className="relation-unbound">未绑定</span>}
-            </div>
-            <div><span className="relation-type">Plan</span>
-              {work.planId ? <button className="record-deep-link" type="button"
-                onClick={() => onNavigateRecord?.('plans', work.planId!)}
-                title={work.planId}>{projection.plan?.goal ?? work.planId}</button>
-                : <span className="relation-unbound">未绑定</span>}
-            </div>
-            <div><span className="relation-type">Work</span><strong>{semanticStateLabel(work.semanticState)} · r{work.revision}</strong></div>
-          </div>
-          {relatedWorks.length > 0 && (
-            <div className="related-work-list">
-              <div className="relationship-heading"><strong>相同 Requirement 下的其他 Work</strong><span>{relatedWorks.length} 个可见</span></div>
-              {relatedWorks.map((node) => (
-                <button className="mcp-work-overview-row" type="button" key={node.workId}
-                  disabled={!onSelectWork} onClick={() => onSelectWork?.(node.workId)}>
-                  <span className={'work-state-dot ' + node.state} />
-                  <span className="mcp-work-overview-copy"><strong>{node.objective}</strong><small>{semanticStateLabel(node.state)}</small></span>
-                  <span className="mono mcp-work-id">{compactId(node.workId)}</span>
-                </button>
-              ))}
-            </div>
-          )}
-          {(work.semanticParentWorkId || work.dependsOnWorkIds.length > 0) && (
-            <div className="work-dependencies">
-              {work.semanticParentWorkId && <div><span>父 Work</span><code>{work.semanticParentWorkId}</code></div>}
-              {work.dependsOnWorkIds.length > 0 && <div><span>依赖 Work</span>
-                {work.dependsOnWorkIds.map((id) => <button key={id} type="button"
-                  disabled={!onSelectWork || !visibleWorks.some((candidate) => candidate.workId === id)}
-                  title={id} onClick={() => onSelectWork?.(id)}>{compactId(id)}</button>)}
-              </div>}
-            </div>
-          )}
-          <p className="relation-limit">仅显示本次加载的 Work 和近期历史；未出现不代表没有其他关联记录。</p>
-        </section>
-
-        {work.nextSafeAction && (
-          <div className="next-fact"><span>Forge 下一安全动作</span><p>{work.nextSafeAction}</p></div>
-        )}
-
-        {projection.userRequests.length > 0 && (
-          <section className="attention-inline" aria-label="需要你处理">
-            <div className="attention-heading">需要你处理 · {projection.userRequests.length}</div>
-            {projection.userRequests.map((request) => (
-              <div className="attention-item" key={request.requestId}>
-                <strong>{request.title}</strong>
-                <p>{request.summary}</p>
-              </div>
-            ))}
-          </section>
-        )}
-
-        <details className="detail-section">
-          <summary>工程上下文</summary>
-          <div className="detail-grid">
-            <div><span>工作</span><strong className="mono">{compactId(work.workId)}</strong></div>
-            <div><span>工作修订</span><strong>r{work.revision}</strong></div>
-            <div><span>父工作</span><strong className="mono">{work.semanticParentWorkId ? compactId(work.semanticParentWorkId) : '无'}</strong></div>
-            <div><span>依赖</span><strong>{work.dependsOnWorkIds.length > 0 ? `${work.dependsOnWorkIds.length} 个` : '无'}</strong></div>
-            <div><span>需求</span><strong className="mono">{work.requirementId ? compactId(work.requirementId) : '未绑定'}</strong></div>
-            <div><span>计划</span><strong className="mono">{work.planId ? compactId(work.planId) : '未绑定'}</strong></div>
-            <div><span>Repository 当前检出</span><strong>{projection.project ? `${projection.project.worktree} · ${compactId(projection.project.checkoutId)}` : '未知'}</strong></div>
-            <div><span>更新时间</span><strong>{work.updatedAt ? new Date(work.updatedAt).toLocaleString('zh-CN') : '未知'}</strong></div>
-          </div>
-          {work.dependsOnWorkIds.length > 0 && <p className="detail-text">依赖：{work.dependsOnWorkIds.map(compactId).join('、')}</p>}
-        </details>
-
-        {projection.requirement && (
-          <details id="work-requirement" className="detail-section">
-            <summary>需求 · {projection.requirement.title}</summary>
-            <div className="detail-grid">
-              <div><span>状态</span><strong>{projection.requirement.state === 'open' ? '进行中' : projection.requirement.state}</strong></div>
-              <div><span>修订</span><strong>r{projection.requirement.revision}</strong></div>
-            </div>
-            <p className="detail-text">{projection.requirement.outcomeStatement}</p>
-            {projection.requirement.acceptanceCriteria.length > 0 && (
-              <ul className="fact-list">{projection.requirement.acceptanceCriteria.map((criterion) => <li key={criterion}>{criterion}</li>)}</ul>
-            )}
-          </details>
-        )}
-
-        {projection.plan && (
-          <details id="work-plan" className="detail-section">
-            <summary>计划 · r{projection.plan.revision}</summary>
-            <p className="detail-text">{projection.plan.goal}</p>
-            {projection.plan.items.length > 0 && (
-              <ul className="fact-list">{projection.plan.items.map((item) => <li key={item.id}>{item.objective}</li>)}</ul>
-            )}
-          </details>
-        )}
-
-        {work.executionEvidence && (
-          <details className="detail-section" open>
-            <summary>执行与验证 · {executionPhaseLabel(work.executionEvidence.phase)} · {work.executionEvidence.checks.length} 个检查 / {work.executionEvidence.verifications.length} 条验证</summary>
-            <div className="detail-grid">
-              <div><span>阶段</span><strong>{executionPhaseLabel(work.executionEvidence.phase)}</strong></div>
-              <div><span>调度</span><strong className="mono">{work.executionEvidence.dispatchState}</strong></div>
-              <div><span>证据</span><strong className="mono">{work.executionEvidence.evidenceState}</strong></div>
-              <div><span>类型</span><strong className="mono">{work.executionEvidence.workKind}</strong></div>
-              <div><span>完成结果</span><strong className="mono">{work.executionEvidence.completionOutcome ?? '未记录'}</strong></div>
-              <div><span>证据引用</span><strong>{work.executionEvidence.evidenceRefs.length}</strong></div>
-            </div>
-
-            {work.executionEvidence.checks.length > 0 && (
-              <section className="evidence-subsection" aria-label="声明检查">
-                <div className="evidence-subheading">声明检查</div>
-                <div className="check-chip-list">
-                  {work.executionEvidence.checks.map((checkId) => <code key={checkId}>{checkId}</code>)}
-                </div>
-              </section>
-            )}
-
-            {work.executionEvidence.phaseEvidence.length > 0 && (
-              <section className="evidence-subsection" aria-label="阶段证据">
-                <div className="evidence-subheading">阶段证据</div>
-                <div className="phase-evidence-list">
-                  {work.executionEvidence.phaseEvidence.map((phaseEvidence, index) => (
-                    <div className="phase-evidence-item" key={`${phaseEvidence.phase}-${phaseEvidence.recordedAt}-${index}`}>
-                      <div className="phase-evidence-heading">
-                        <strong>{executionPhaseLabel(phaseEvidence.phase)}</strong>
-                        <span>{phaseEvidenceStateLabel(phaseEvidence.state)}</span>
-                        {phaseEvidence.source && <span>{phaseEvidence.source}</span>}
-                        <span>{formatTimestamp(phaseEvidence.recordedAt)}</span>
-                      </div>
-                      <p>{phaseEvidence.summary}</p>
-                      <div className="phase-evidence-meta">
-                        {phaseEvidence.receiptId && <span className="mono">receipt {compactId(phaseEvidence.receiptId)}</span>}
-                        {phaseEvidence.evidenceRefs.length > 0 && <span>证据 {phaseEvidence.evidenceRefs.length}</span>}
-                      </div>
-                      {phaseEvidence.evidenceRefs.length > 0 && (
-                        <div className="nested-evidence-list" aria-label="阶段证据引用">
-                          {phaseEvidence.evidenceRefs.map((evidence, evidenceIndex) => (
-                            <div className="nested-evidence-item" key={`${evidence.evidenceId ?? evidence.artifactId ?? evidence.title}-${evidenceIndex}`}>
-                              <strong>{evidence.title}</strong>
-                              {evidence.summary && <span>{evidence.summary}</span>}
-                              <small className="mono">{evidence.evidenceId ?? evidence.artifactId ?? evidence.detailLevel}</small>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
+            </details>
+            {projection.userRequests.length > 0 && (
+              <section className="detail-section">
+                <h2>需要用户处理</h2>
+                <div className="handoff-list">
+                  {projection.userRequests.map((request) => (
+                    <article key={request.requestId} className="handoff-card">
+                      <div><strong>{request.title}</strong><p>{request.summary}</p></div>
+                      <small>{formatTimestamp(request.updatedAt)}</small>
+                    </article>
                   ))}
                 </div>
               </section>
             )}
-
-            {work.executionEvidence.verifications.length > 0 && (
-              <section className="evidence-subsection" aria-label="验证记录">
-                <div className="evidence-subheading">验证记录</div>
-                <div className="verification-list">
-                  {work.executionEvidence.verifications.map((verification, index) => (
-                    <div className="verification-item" key={`${verification.checkId}-${verification.recordedAt}-${index}`}>
-                      <div className="verification-heading">
-                        <strong className="mono">{verification.checkId}</strong>
-                        <span>{verificationOutcomeLabel(verification.outcome)}</span>
-                        <span>{formatTimestamp(verification.recordedAt)}</span>
-                      </div>
-                      <p>{verification.summary}</p>
-                      <div className="verification-meta">
-                        {verification.sourceRevision && <span className="mono">版本 {compactId(verification.sourceRevision)}</span>}
-                        {verification.startedAt && <span>开始 {formatTimestamp(verification.startedAt)}</span>}
-                        {verification.completedAt && <span>完成 {formatTimestamp(verification.completedAt)}</span>}
-                        {verification.receipt && <span className="mono">receipt {compactId(verification.receipt.receiptId)}</span>}
-                      </div>
-                      {verification.staleReason && <div className="verification-warning">证据已陈旧：{verification.staleReason}</div>}
-                      {verification.receipt && (
-                        <div className="verification-receipt">
-                          <span>执行 {verification.receipt.status}</span>
-                          <span>Runtime {verification.receipt.runtimeStatus}</span>
-                          <span>{verification.receipt.reusedExecution ? '复用已有执行' : '本次执行'}</span>
-                          <span>{formatTimestamp(verification.receipt.startedAt)} → {formatTimestamp(verification.receipt.finishedAt)}</span>
-                        </div>
-                      )}
-                      {verification.evidenceRef && (
-                        <div className="nested-evidence-item verification-evidence">
-                          <strong>{verification.evidenceRef.title}</strong>
-                          {verification.evidenceRef.summary && <span>{verification.evidenceRef.summary}</span>}
-                          <small className="mono">{verification.evidenceRef.evidenceId ?? verification.evidenceRef.artifactId ?? verification.evidenceRef.detailLevel}</small>
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </section>
-            )}
-
-            {work.executionEvidence.evidenceRefs.length > 0 && (
-              <section className="evidence-subsection" aria-label="证据引用">
-                <div className="evidence-subheading">证据引用</div>
-                <div className="evidence-ref-list">
-                  {work.executionEvidence.evidenceRefs.map((evidence, index) => (
-                    <div key={`${evidence.evidenceId ?? evidence.artifactId ?? evidence.title}-${index}`}>
-                      <strong>{evidence.title}</strong>
-                      {evidence.summary && <span>{evidence.summary}</span>}
-                      <small className="mono">{evidence.evidenceId ?? evidence.artifactId ?? evidence.detailLevel}</small>
-                    </div>
-                  ))}
-                </div>
-              </section>
-            )}
-          </details>
+          </>
         )}
-
-        <details className="detail-section">
-          <summary>结果与证据 {work.resultRefs.length > 0 ? `· ${work.resultRefs.length}` : ''}</summary>
-          {work.resultRefs.length > 0 ? (
-            <div className="result-list">
-              {work.resultRefs.map((resultRef) => <code key={resultRef}>{resultRef}</code>)}
-            </div>
-          ) : <p className="detail-text">当前还没有结果引用。</p>}
-        </details>
       </div>
-
-      <details className="work-service-continuation">
-        <summary>通过 Forge 工作流继续此 Work（高级）</summary>
-        <p>这是已有 Work 的服务端执行入口，不是本地 Agent 聊天。日常任务建议使用上方“在 Agent 中继续”。</p>
-        <div className="composer-wrap">
-          <div className="composer">
-          <textarea
-            aria-label="继续现有 Forge Work"
-            placeholder="描述你想推进的工作…"
-            rows={3}
-            value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-            disabled={!onContinue}
-          />
-          {sendError && <div className="composer-error">发送失败：{sendError}</div>}
-          <div className="composer-footer">
-            <span>{projection.project?.name ?? '项目'} · {compactId(work.workId)}</span>
-            <button
-              type="button"
-              disabled={!onContinue || !draft.trim() || sending}
-              onClick={async () => {
-                if (!onContinue || !draft.trim()) return;
-                setSendError(null);
-                setSending(true);
-                try {
-                  await onContinue(draft.trim());
-                  setDraft('');
-                } catch (cause) {
-                  setSendError(cause instanceof Error ? cause.message : String(cause));
-                } finally {
-                  setSending(false);
-                }
-              }}
-            >{sending ? '提交中…' : '提交到 Forge 工作流'}</button>
-          </div>
-          </div>
-        </div>
-      </details>
     </main>
   );
 }
@@ -897,8 +453,6 @@ function AssistantView({
   projects,
   defaultProjectRepoId,
   newThreadContext,
-  onOpenWork,
-  onOpenRecord,
   provider,
   providerLoading,
   providerError,
@@ -917,9 +471,7 @@ function AssistantView({
 }: {
   projects: ProjectListItemProjection[];
   defaultProjectRepoId?: string;
-  newThreadContext?: { repoId: string; workId?: string };
-  onOpenWork: (repoId: string, workId: string) => void;
-  onOpenRecord: (repoId: string, mode: 'requirements' | 'plans', id: string) => void;
+  newThreadContext?: { repoId: string };
   provider: LocalProviderStatusProjection | null;
   providerLoading: boolean;
   providerError: string | null;
@@ -943,8 +495,6 @@ function AssistantView({
           projects={projects}
           defaultProjectRepoId={defaultProjectRepoId}
           newThreadContext={newThreadContext}
-          onOpenWork={onOpenWork}
-          onOpenRecord={onOpenRecord}
           provider={provider}
           providerLoading={providerLoading}
           providerError={providerError}
@@ -1155,11 +705,6 @@ export function codexBoundPrompt(thread: LocalConversationThread, prompt: string
       + 'If a tool cannot target the selected checkout, do not mutate or run a repository command. '
       + 'Never treat the temporary process directory as this project.]');
   }
-  if (thread.workId) {
-    notes.push('[Attached existing Forge Work: ' + thread.workId
-      + '. Retrieve its current Requirement, Plan, and Work from Forge before deciding actions. '
-      + 'Do not create duplicate Work or claim completion without canonical evidence.]');
-  }
   return notes.length ? notes.join('\n') + '\n\n' + prompt : prompt;
 }
 
@@ -1185,7 +730,6 @@ export function App() {
   const [projection, setProjection] = useState<ForgeDesktopProjection>(preview ? designPreviewProjection : disconnectedProjection);
   const [projects, setProjects] = useState<ProjectListItemProjection[]>(preview ? [...designPreviewProjection.projects] : []);
   const [selectedRepoId, setSelectedRepoId] = useState<string | undefined>(preview ? designPreviewProjection.project?.repoId : undefined);
-  const [selectedWorkId, setSelectedWorkId] = useState<string | undefined>(preview ? designPreviewProjection.work?.workId : undefined);
   const projectLoadRevision = useRef(0);
   const [activeView, setActiveView] = useState<AppView>(preview ? 'project' : 'assistant');
   const [requestedRecord, setRequestedRecord] = useState<{
@@ -1204,7 +748,7 @@ export function App() {
   const [localProviderError, setLocalProviderError] = useState<string | null>(null);
   const [localApiSettings, setLocalApiSettings] = useState<LocalApiSettings | null>(null);
   const [newThreadRequested, setNewThreadRequested] = useState(false);
-  const [newThreadContext, setNewThreadContext] = useState<{ repoId: string; workId?: string }>();
+  const [newThreadContext, setNewThreadContext] = useState<{ repoId: string }>();
   // Read-only sidebar projection; LocalConversationSurface owns the actual threads.
   const [localThreadNav, setLocalThreadNav] = useState<LocalConversationNavItem[]>([]);
   const [selectedLocalThreadId, setSelectedLocalThreadId] = useState<string | undefined>();
@@ -1266,7 +810,7 @@ export function App() {
       const messages = thread.messages.filter(message => message.role === 'user' || message.role === 'assistant')
         .slice(-40).map(message => ({ role: message.role as 'user' | 'assistant', content: message.content }));
       const reply = await sendLocalApiConversation({
-        messages, repoId: thread.projectRepoId, checkoutId: thread.checkoutId, workId: thread.workId,
+        messages, repoId: thread.projectRepoId, checkoutId: thread.checkoutId,
         conversationId: thread.id, allowEffects,
       });
       return { content: reply.output, toolActivityCount: reply.toolActivityCount, toolEvents: reply.toolEvents };
@@ -1295,26 +839,22 @@ export function App() {
     }
   }, [preview]);
 
-  const loadProject = useCallback(async (project: ProjectListItemProjection, workId?: string) => {
+  const loadProject = useCallback(async (project: ProjectListItemProjection) => {
     if (preview || !tauriRuntimeAvailable()) return;
     const revision = ++projectLoadRevision.current;
     setSelectedRepoId(project.repoId);
-    setSelectedWorkId(undefined);
-    // A stale Work/Requirement from another repository is never displayed
-    // while the newly selected project is being fetched.
     setProjection({
       ...disconnectedProjection,
       source: 'runtime',
       projects,
       runtime: {
         status: 'connecting', label: '正在加载项目',
-        detail: '正在从 Forge 读取 ' + project.name + ' 的项目记录。',
+        detail: '正在从 Forge 读取 ' + project.name + ' 的项目事实。',
       },
     });
     try {
-      const workspace = await readProjectWorkspace(project, workId);
+      const workspace = await readProjectWorkspace(project);
       if (revision !== projectLoadRevision.current) return;
-      setSelectedWorkId(workspace.work?.workId);
       setProjection({
         source: 'runtime',
         runtime: { status: 'connected', label: '运行时已连接', detail: '当前数据来自 Forge Runtime。' },
@@ -1356,7 +896,6 @@ export function App() {
     const selectedProject = catalog.projects.find((project) => project.repoId === catalog.preferredRepoId) ?? catalog.projects[0];
     if (!selectedProject) {
       setSelectedRepoId(undefined);
-      setSelectedWorkId(undefined);
       setProjection({
         ...disconnectedProjection,
         source: 'runtime',
@@ -1371,7 +910,6 @@ export function App() {
     try {
       const workspace = await readProjectWorkspace(selectedProject);
       if (revision !== projectLoadRevision.current) return;
-      setSelectedWorkId(workspace.work?.workId);
       setProjection({
         source: 'runtime',
         runtime: { status: 'connected', label: '运行时已连接', detail: '当前数据来自 Forge Runtime。' },
@@ -1380,7 +918,6 @@ export function App() {
       });
     } catch (cause) {
       if (revision !== projectLoadRevision.current) return;
-      setSelectedWorkId(undefined);
       setProjection({
         ...disconnectedProjection,
         source: 'runtime',
@@ -1412,7 +949,6 @@ export function App() {
         ?? catalog.projects[0];
       if (!selectedProject) {
         setSelectedRepoId(undefined);
-        setSelectedWorkId(undefined);
         setProjection({
           ...disconnectedProjection,
           source: 'runtime',
@@ -1421,10 +957,9 @@ export function App() {
         });
         return;
       }
-      const workspace = await readProjectWorkspace(selectedProject, selectedWorkId);
+      const workspace = await readProjectWorkspace(selectedProject);
       if (revision !== projectLoadRevision.current) return;
       setSelectedRepoId(selectedProject.repoId);
-      setSelectedWorkId(workspace.work?.workId);
       setProjection({
         source: 'runtime',
         runtime: { status: 'connected', label: '运行时已连接', detail: '刚刚从 Forge Runtime 重新读取。' },
@@ -1438,7 +973,7 @@ export function App() {
     } finally {
       setMcpRefreshing(false);
     }
-  }, [mcpRefreshing, preview, selectedRepoId, selectedWorkId]);
+  }, [mcpRefreshing, preview, selectedRepoId]);
 
   const handleSelectProject = useCallback(async (project: ProjectListItemProjection) => {
     setRequestedRecord(undefined);
@@ -1448,24 +983,9 @@ export function App() {
       setNewThreadContext({ repoId: project.repoId });
       setNewThreadRequested(true);
     }
-    if (activeView === 'project') setActiveView('works');
-    await loadProject(project);
-  }, [activeView, activeAgentRepoId, loadProject]);
-
-  const handleSelectWork = useCallback(async (workId: string) => {
-    const project = projects.find((candidate) => candidate.repoId === selectedRepoId);
-    if (!project) return;
     setActiveView('project');
-    await loadProject(project, workId);
-  }, [loadProject, projects, selectedRepoId]);
-
-  const handleContinue = useCallback(async (prompt: string) => {
-    if (!projection.project || !projection.work) return;
-    const selectedProject = projects.find((candidate) => candidate.repoId === projection.project?.repoId);
-    if (!selectedProject) throw new Error('当前项目已经不在项目列表中，请重新选择项目。');
-    await continueWork(projection.project.repoId, projection.work.workId, prompt);
-    await loadProject(selectedProject, projection.work.workId);
-  }, [loadProject, projection, projects]);
+    await loadProject(project);
+  }, [activeAgentRepoId, loadProject]);
 
   const handleLocalThreadNavigation = useCallback((
     threads: LocalConversationNavItem[], selectedId?: string, activeRepoId?: string,
@@ -1502,13 +1022,7 @@ export function App() {
     setNewThreadRequested(false);
     setNewThreadContext(undefined);
   }, []);
-  const handleStartAgentForWork = useCallback((repoId: string, workId: string) => {
-    setNewThreadContext({ repoId, workId });
-    setActiveView('assistant');
-    setNewThreadRequested(true);
-  }, []);
-
-  const openProjectSection = useCallback((section: 'works' | 'requirements' | 'plans' | 'knowledge') => {
+  const openProjectSection = useCallback((section: 'project' | 'requirements' | 'plans' | 'knowledge') => {
     // When leaving Agent for project assets, browse the Agent's actual repo,
     // not a different workspace that happened to be loaded earlier.
     if (activeView === 'assistant' && activeAgentRepoId && activeAgentRepoId !== selectedRepoId) {
@@ -1518,29 +1032,13 @@ export function App() {
     setRequestedRecord(undefined);
     setActiveView(section);
   }, [activeView, activeAgentRepoId, selectedRepoId, projects, loadProject]);
-  const handleOpenProjects = useCallback(() => openProjectSection('works'), [openProjectSection]);
+  const handleOpenProjects = useCallback(() => openProjectSection('project'), [openProjectSection]);
   const handleOpenRequirements = useCallback(() => openProjectSection('requirements'), [openProjectSection]);
   const handleOpenPlans = useCallback(() => openProjectSection('plans'), [openProjectSection]);
   const handleNavigateRecord = useCallback((mode: 'requirements' | 'plans', id: string) => {
     setRequestedRecord({ mode, id });
     setActiveView(mode);
   }, []);
-  const handleOpenWorkFromAgent = useCallback(async (repoId: string, workId: string) => {
-    const project = projects.find((entry) => entry.repoId === repoId);
-    if (!project) return;
-    await loadProject(project, workId);
-    setActiveView('project');
-  }, [loadProject, projects]);
-  const handleOpenRecordFromAgent = useCallback(async (
-    repoId: string, mode: 'requirements' | 'plans', id: string,
-  ) => {
-    const project = projects.find((entry) => entry.repoId === repoId);
-    if (!project) return;
-    await loadProject(project);
-    setRequestedRecord({ mode, id });
-    setActiveView(mode);
-  }, [loadProject, projects]);
-
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'n') {
@@ -1669,10 +1167,9 @@ export function App() {
           </button>
           <div className="workspace-topbar-title" data-tauri-drag-region>
             <strong>{activeView === 'assistant' ? '本地会话'
-              : activeView === 'project' ? projection.work?.title ?? 'Work 详情'
+              : activeView === 'project' ? '项目'
               : activeView === 'requirements' ? 'Requirements'
               : activeView === 'plans' ? 'Plans'
-              : activeView === 'works' ? 'Works'
               : activeView === 'knowledge' ? '记忆与知识'
               : activeView === 'settings' ? '设置' : 'MCP 服务与连接'}</strong>
             {activeView === 'project' && projection.project?.branch && <span className="workspace-topbar-branch">{projection.project.branch}</span>}
@@ -1684,15 +1181,13 @@ export function App() {
         </header>
 
       {/* Keep the one transcript owner mounted while viewing independent
-          Requirement/Plan/Work assets. In-flight Agent replies must not vanish
+          project semantic assets. In-flight Agent replies must not vanish
           when the user navigates away from the conversation. */}
       <div className="agent-view-preserved" hidden={activeView !== 'assistant'}>
         <AssistantView
           projects={projects}
           defaultProjectRepoId={activeAgentRepoId ?? selectedRepoId}
           newThreadContext={newThreadContext}
-          onOpenWork={(repoId, workId) => { void handleOpenWorkFromAgent(repoId, workId); }}
-          onOpenRecord={(repoId, mode, id) => { void handleOpenRecordFromAgent(repoId, mode, id); }}
           provider={localProvider}
           providerLoading={localProviderLoading}
           providerError={localProviderError}
@@ -1713,16 +1208,15 @@ export function App() {
           }}
         />
       </div>
-      {activeView === 'assistant' ? null : activeView === 'requirements' || activeView === 'plans' || activeView === 'works' ? (
+      {activeView === 'assistant' ? null : activeView === 'requirements' || activeView === 'plans' ? (
         <ProjectRecordsView key={(selectedRepoId ?? 'none') + ':' + activeView}
           mode={activeView} projection={projection}
           requestedRecordId={requestedRecord?.mode === activeView ? requestedRecord.id : undefined}
           onNavigateRecord={handleNavigateRecord}
-          onSelectWork={(workId) => { void handleSelectWork(workId); }}
           onRefresh={refreshMcp} />
       ) : activeView === 'knowledge' ? (
         <KnowledgeView repoId={selectedRepoId ?? projects[0]?.repoId}
-          workId={selectedWorkId} projectName={projects.find((project) => project.repoId === (selectedRepoId ?? projects[0]?.repoId))?.name} />
+          projectName={projects.find((project) => project.repoId === (selectedRepoId ?? projects[0]?.repoId))?.name} />
       ) : activeView === 'settings' ? (
         <SettingsView settings={localApiSettings} loading={localApiLoading} error={localApiError}
           onRefresh={refreshLocalApi} onSave={saveLocalApi} onClearKey={clearLocalApi}
@@ -1749,15 +1243,13 @@ export function App() {
           onOpenSettings={handleOpenSettings}
         />
       ) : (
-        <WorkView
+        <ProjectView
           projection={projection}
           refreshing={mcpRefreshing}
           refreshError={mcpRefreshError}
           onRefresh={preview ? undefined : refreshMcp}
-          onContinue={preview ? undefined : handleContinue}
-          onNavigateRecord={handleNavigateRecord}
-          onStartAgentForWork={handleStartAgentForWork}
-          onSelectWork={preview ? undefined : (workId) => { void handleSelectWork(workId); }}
+          onOpenRequirements={handleOpenRequirements}
+          onOpenPlans={handleOpenPlans}
         />
       )}
       </div>

@@ -8,11 +8,6 @@ import {
   selectedPathDiff,
   stageSelectedPaths,
 } from '../../../src/cli/repositories/selected-path-actions';
-import { ensureRepositoryMutationWorkHandle } from '../../../src/runtime/control-plane/execution/work-handle-authority';
-import { settleWorkHandleExpectedHeadAfterRepositoryCommand } from '../../../src/runtime/control-plane/execution/work-head-settlement';
-import { readWorkHandle } from '../../../src/runtime/control-plane/execution/work-handle-store';
-import type { ResolvedExecutionIdentity } from '../../../src/runtime/control-plane/execution/execution-identity';
-import { repositoryGitStatus } from '../../../src/cli/repositories/structured-git';
 
 
 
@@ -40,77 +35,18 @@ export async function callRepositoryCompatibilityAdapter(ctx: MultiRepositoryMcp
             }
       case 'git_commit_paths': {
               const workId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
-              const requestedRepository = selected(ctx, args);
-              const ownedCheckoutId = workId
-                ? readWorkHandle(ctx.controllerHome, requestedRepository.repoId, workId)?.checkoutId
-                : undefined;
-              // WorkHandle owns physical placement. The caller should not have to
-              // rediscover and rebind the checkout for each ordinary commit.
-              if (ownedCheckoutId && args.checkout_id && args.checkout_id !== ownedCheckoutId) {
-                throw new Error('WORK_HANDLE_PLACEMENT_CHECKOUT_MISMATCH: ' + workId);
+              if (workId) {
+                throw new Error(`WORK_MUTATION_AUTHORITY_RETIRED: ${workId}; git_commit_paths uses the explicit repository/checkout and Git CAS only`);
               }
-              const repository = ownedCheckoutId
-                ? selected(ctx, { ...args, checkout_id: ownedCheckoutId })
-                : requestedRepository;
-              const handle = workId ? ensureRepositoryMutationWorkHandle({
-                controllerHome: ctx.controllerHome,
-                repository,
-                workId,
-                principalId: ctx.principalId?.trim() ?? '',
-                sessionId: ctx.sessionId,
-              }).handle : undefined;
-              const executionIdentity: ResolvedExecutionIdentity | undefined = handle ? {
-                schemaVersion: 1,
-                repositoryId: handle.repositoryId,
-                checkoutId: handle.checkoutId,
-                canonicalRoot: handle.worktreePath,
-                workId: handle.workId,
-                branch: handle.branch,
-                expectedHead: handle.expectedHead,
-              } : undefined;
-              let headSettlement: ReturnType<typeof settleWorkHandleExpectedHeadAfterRepositoryCommand> | undefined;
-              let settlementError: string | undefined;
+              const repository = selected(ctx, args);
               const committed = commitSelectedPaths(ctx.controllerHome, repository, {
                 paths: args.paths,
                 message: args.message,
-                ...(handle ? { beforeStageGuard: () => {
-                  const status = repositoryGitStatus(repository);
-                  if (status.head !== handle.expectedHead || status.branch !== handle.branch) {
-                    throw new Error(`WORK_HANDLE_HEAD_CHANGED: expected ${handle.expectedHead ?? 'missing'} on ${handle.branch}, found ${status.head ?? 'missing'} on ${status.branch ?? 'detached'}`);
-                  }
-                } } : {}),
-                ...(handle ? { beforeCommitGuard: ({ currentHead }: { currentHead: string | null }) => {
-                  if (currentHead !== handle.expectedHead) {
-                    throw new Error(`WORK_HANDLE_HEAD_CHANGED: expected ${handle.expectedHead ?? 'missing'}, found ${currentHead ?? 'missing'}`);
-                  }
-                  const branch = repositoryGitStatus(repository).branch;
-                  if (branch !== handle.branch) {
-                    throw new Error(`WORK_HANDLE_BRANCH_CHANGED: expected ${handle.branch}, found ${branch ?? 'detached'}`);
-                  }
-                } } : {}),
-                ...(executionIdentity ? { afterCommit: () => {
-                  try {
-                    headSettlement = settleWorkHandleExpectedHeadAfterRepositoryCommand({
-                      controllerHome: ctx.controllerHome,
-                      repository,
-                      executionIdentity,
-                      workId,
-                      ok: true,
-                    });
-                  } catch (error) {
-                    settlementError = error instanceof Error ? error.message : String(error);
-                  }
-                } } : {}),
               });
-              const requiresReconciliation = Boolean(handle && !committed.error && headSettlement?.settled !== true);
               return result({
                 repoId: repository.repoId,
                 checkoutId: repository.activeCheckoutId,
                 ...committed,
-                ...(handle ? { workId, headSettlement: headSettlement ?? null } : {}),
-                ...(requiresReconciliation ? { settlementWarning: settlementError ?? `WORK_HEAD_SETTLEMENT_RECONCILIATION_REQUIRED: ${headSettlement?.reason ?? 'no settlement receipt'}` } : {}),
-              // Successful Git commit is never misreported as a failed
-              // side effect merely because Work HEAD settlement needs repair.
               }, Boolean(committed.error));
             }
       case 'repository_change_verify': {

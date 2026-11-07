@@ -10,6 +10,7 @@ export interface UserRequestTargetScope {
   scopeKind: string;
   scopeId: string;
   repoId?: string;
+  /** Legacy persisted provenance only; new UserRequest writers must not target Work. */
   workId?: string;
   requirementId?: string;
 }

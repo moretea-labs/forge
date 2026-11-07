@@ -1,6 +1,5 @@
 export type RuntimeConnectionStatus = 'not_connected' | 'connecting' | 'connected' | 'degraded';
 export type ProjectionSource = 'runtime' | 'disconnected' | 'design_preview';
-export type WorkSemanticState = 'open' | 'completed' | 'cancelled';
 
 export interface UserRequestProjection {
   requestId: string;
@@ -20,18 +19,6 @@ export interface ProjectListItemProjection {
   defaultBranch?: string;
 }
 
-export interface WorkGraphNodeProjection {
-  workId: string;
-  objective: string;
-  state: WorkSemanticState;
-  requirementId?: string;
-  planId?: string;
-  semanticParentWorkId?: string;
-  dependsOnWorkIds: string[];
-  activity?: string;
-  nextSafeAction?: string;
-}
-
 export interface ProjectRequirementProjection {
   requirementId: string;
   revision: number;
@@ -40,60 +27,6 @@ export interface ProjectRequirementProjection {
   state: string;
   acceptanceCriteria: string[];
   updatedAt?: string;
-}
-
-export type WorkVerificationOutcome = 'valid_pass' | 'valid_fail' | 'invalid_check_id' | 'infrastructure_failure' | 'skipped' | 'superseded';
-
-export interface WorkEvidenceRefProjection {
-  evidenceId?: string;
-  artifactId?: string;
-  title: string;
-  summary?: string;
-  detailLevel?: 'summary' | 'detail' | 'raw';
-}
-
-export interface WorkVerificationProjection {
-  checkId: string;
-  outcome: WorkVerificationOutcome;
-  summary: string;
-  recordedAt: string;
-  sourceRevision?: string;
-  startedAt?: string;
-  completedAt?: string;
-  staleReason?: string;
-  evidenceRef?: WorkEvidenceRefProjection;
-  receipt?: {
-    receiptId: string;
-    processId: string;
-    status: 'passed' | 'failed' | 'timed_out' | 'cancelled';
-    runtimeStatus: 'succeeded' | 'failed' | 'timed_out' | 'cancelled';
-    ok: boolean;
-    timedOut: boolean;
-    cancelled: boolean;
-    reusedExecution?: boolean;
-    startedAt: string;
-    finishedAt: string;
-  };
-}
-
-export interface WorkExecutionEvidenceProjection {
-  dispatchState: string;
-  evidenceState: string;
-  phase: string;
-  workKind: string;
-  completionOutcome?: string;
-  checks: string[];
-  phaseEvidence: Array<{
-    phase: string;
-    state: string;
-    source?: string;
-    summary: string;
-    evidenceRefs: WorkEvidenceRefProjection[];
-    recordedAt: string;
-    receiptId?: string;
-  }>;
-  evidenceRefs: WorkEvidenceRefProjection[];
-  verifications: WorkVerificationProjection[];
 }
 
 export interface ProjectPlanProjection {
@@ -211,34 +144,12 @@ export interface ForgeDesktopProjection {
     sourceRevision: string;
     dirty: boolean;
   } | null;
-  workGraph: { nodes: WorkGraphNodeProjection[] };
-  recentWorkHistory: WorkGraphNodeProjection[];
-  work: {
-    workId: string;
-    revision: number;
-    title: string;
-    objective: string;
-    semanticState: WorkSemanticState;
-    relationLabel?: string;
-    continuationPrompt?: string;
-    nextSafeAction?: string;
-    semanticParentWorkId?: string;
-    dependsOnWorkIds: string[];
-    requirementId?: string;
-    planId?: string;
-    updatedAt?: string;
-    resultRefs: string[];
-    executionEvidence?: WorkExecutionEvidenceProjection;
-  } | null;
   requirement: ProjectRequirementProjection | null;
   plan: ProjectPlanProjection | null;
   userRequests: UserRequestProjection[];
 }
 
-/**
- * 仅用于断开连接时的展示值。Requirement、Plan、Work、Controller、Scheduler
- * 和 connection facts 仍由 Forge Runtime 持有权威；桌面端不持久化语义副本。
- */
+/** Read-only fallback. Runtime and semantic authorities remain in Forge. */
 export const disconnectedProjection = Object.freeze<ForgeDesktopProjection>({
   source: 'disconnected',
   runtime: {
@@ -248,118 +159,73 @@ export const disconnectedProjection = Object.freeze<ForgeDesktopProjection>({
   },
   projects: [],
   project: null,
-  workGraph: { nodes: [] },
-  recentWorkHistory: [],
-  work: null,
   requirement: null,
   plan: null,
   userRequests: [],
 });
 
-/**
- * 显式设计预览数据。仅在 ?preview=1 时启用，不得作为 Runtime 事实。
- */
 export const designPreviewProjection = Object.freeze<ForgeDesktopProjection>({
   source: 'design_preview',
   runtime: {
     status: 'connected',
-    label: '运行时正常',
-    detail: '当前为设计预览；正式客户端中的数据来自 Forge 运行时权威投影。',
+    label: '设计预览',
+    detail: '示例数据仅用于 Desktop UI 预览。',
   },
-  projects: [
-    { repoId: 'repo-preview-forge', name: 'forge', repository: 'moretea-labs/forge', defaultBranch: 'main' },
-    { repoId: 'repo-preview-avela', name: 'Avela', repository: 'greysonOuyang/yaozhunshi', defaultBranch: 'main' },
-    { repoId: 'repo-preview-knowledge', name: 'Knowledge', repository: 'personal-knowledge-system', defaultBranch: 'main' },
-  ],
+  projects: [{
+    repoId: 'preview-forge',
+    name: 'Forge',
+    repository: 'moretea-labs/forge',
+    localRoot: '/Users/preview/forge',
+    checkoutId: 'checkout-preview',
+    defaultBranch: 'main',
+  }],
   project: {
-    repoId: 'repo-preview-forge',
-    name: 'forge',
+    repoId: 'preview-forge',
+    name: 'Forge',
     repository: 'moretea-labs/forge',
     branch: 'main',
     worktree: '主检出',
-    checkoutId: 'checkout-preview-main',
-    checkoutPath: '/workspace/forge',
-    checkoutCount: 2,
-    activeCheckoutCount: 2,
+    checkoutId: 'checkout-preview',
+    checkoutPath: '/Users/preview/forge',
+    checkoutCount: 1,
+    activeCheckoutCount: 1,
     checkoutListTruncated: false,
-    checkouts: [
-      { checkoutId: 'checkout-preview-main', path: '/workspace/forge', branch: 'main', kind: 'primary', lifecycle: 'active', active: true },
-      { checkoutId: 'checkout-preview-work', path: '/workspace/worktrees/forge/work-preview', branch: 'work/forge-v3-client', kind: 'worktree', lifecycle: 'active', active: false },
-    ],
-    sourceRevision: '设计预览',
+    checkouts: [{
+      checkoutId: 'checkout-preview',
+      path: '/Users/preview/forge',
+      branch: 'main',
+      kind: 'primary',
+      lifecycle: 'active',
+      active: true,
+    }],
+    sourceRevision: '0123456789abcdef',
     dirty: false,
   },
-  workGraph: {
-    nodes: [
-      { workId: 'work-ia', objective: '冻结 MCP-first 信息架构', state: 'completed', dependsOnWorkIds: [] },
-      { workId: 'work-foundation', objective: '完成桌面客户端基础壳层', state: 'completed', semanticParentWorkId: 'work-ia', dependsOnWorkIds: [] },
-      { workId: 'work-mcp', objective: '接通项目与 Work 的 Runtime 投影', state: 'open', semanticParentWorkId: 'work-ia', dependsOnWorkIds: ['work-foundation'] },
-      { workId: 'work-recovery', objective: '补齐运行时与恢复界面', state: 'open', semanticParentWorkId: 'work-ia', dependsOnWorkIds: [] },
-    ],
-  },
-  recentWorkHistory: [
-    { workId: 'work-release-v2', objective: '完成上一轮 Runtime 发布候选验证', state: 'completed', dependsOnWorkIds: [] },
-    { workId: 'work-retired-prototype', objective: '退休旧桌面原型', state: 'cancelled', dependsOnWorkIds: [] },
-  ],
-  work: {
-    workId: 'work-mcp',
-    revision: 3,
-    title: '接通项目与 Work 的 Runtime 投影',
-    objective: '围绕 Forge canonical projection 完成项目工作台，不在客户端复制 Work 生命周期或图权威。',
-    semanticState: 'open',
-    relationLabel: '当前工作',
-    continuationPrompt: '项目列表、Work 选择与依赖关系使用现有 Forge 权威。',
-    nextSafeAction: '继续把 Forge canonical facts 投影到当前工作面。',
-    semanticParentWorkId: 'work-ia',
-    dependsOnWorkIds: ['work-foundation'],
-    requirementId: 'REQ-forge-v3-desktop-client-20260930',
-    planId: 'PLAN-forge-v3-desktop-client-20260930-r1',
-    updatedAt: '2026-10-06T03:40:00.000Z',
-    resultRefs: ['path:apps/desktop', 'adr:forge-v3-desktop-client-boundary'],
-    executionEvidence: {
-      dispatchState: 'running',
-      evidenceState: 'valid',
-      phase: 'verification',
-      workKind: 'repository_change',
-      checks: ['check:v3-client'],
-      phaseEvidence: [
-        { phase: 'implementation', state: 'satisfied', source: 'recorded', summary: '桌面事实投影代码已形成。', evidenceRefs: [], recordedAt: '2026-10-06T03:50:00.000Z' },
-        { phase: 'verification', state: 'active', source: 'recorded', summary: '正在收敛桌面检查证据。', evidenceRefs: [], recordedAt: '2026-10-06T04:00:00.000Z' },
-      ],
-      evidenceRefs: [{ title: 'desktop-build', summary: '生产构建通过。', detailLevel: 'summary' }],
-      verifications: [{ checkId: 'check:v3-client', outcome: 'valid_pass', summary: '桌面客户端检查通过。', recordedAt: '2026-10-06T04:00:00.000Z', sourceRevision: '设计预览' }],
-    },
-  },
   requirement: {
-    requirementId: 'REQ-forge-v3-desktop-client-20260930',
+    requirementId: 'REQ-forge-v3-desktop-client',
     revision: 1,
-    title: 'Forge V3 Desktop Client',
-    outcomeStatement: '交付第一方 macOS Forge 客户端，同时保持 Forge Runtime 与语义事实的单一权威。',
+    title: 'Forge Desktop Client',
+    outcomeStatement: '提供第一方 macOS 客户端，并保持 Runtime 与项目事实的单一权威。',
     state: 'open',
-    acceptanceCriteria: ['macOS 日间模式', '客户端不复制 Forge 语义权威'],
-    updatedAt: '2026-09-30T11:38:34.129Z',
+    acceptanceCriteria: ['原生桌面体验', '不复制 Forge 语义权威'],
   },
   plan: {
-    planId: 'PLAN-forge-v3-desktop-client-20260930-r1',
+    planId: 'PLAN-forge-v3-desktop-client-r1',
     revision: 1,
-    goal: '交付 Forge V3 桌面客户端，并保持 Runtime / Controller 单一权威。',
-    requirementId: 'REQ-forge-v3-desktop-client-20260930',
-    updatedAt: '2026-10-04T11:45:31.464Z',
+    goal: '交付 Forge Desktop 的 Project、Agent 与 Runtime 体验。',
+    requirementId: 'REQ-forge-v3-desktop-client',
     items: [
-      { id: 'v3-4-runtime-recovery-bootstrap', objective: '完成运行时与恢复纵向闭环' },
-      { id: 'v3-5-mcp-assistant-projects', objective: '完成 Assistant、Projects 与 Work 的真实事实投影' },
+      { id: 'project', objective: '展示 repository / checkout 项目事实' },
+      { id: 'agent', objective: '提供项目绑定的本地 Agent 会话' },
     ],
   },
-  userRequests: [
-    {
-      requestId: 'preview-user-request',
-      kind: 'user_decision_request',
-      title: '确认下一阶段产品方向',
-      summary: '这是设计预览中的 UserRequest 示例；正式客户端只展示 Forge Inbox 的真实 pending 请求。',
-      actionRequired: 'product_decision',
-      updatedAt: '2026-10-06T03:40:00.000Z',
-    },
-  ],
+  userRequests: [{
+    requestId: 'preview-user-request',
+    kind: 'user_decision_request',
+    title: '确认下一阶段产品方向',
+    summary: '设计预览示例；正式客户端只展示 Forge Inbox 的真实 pending 请求。',
+    actionRequired: 'product_decision',
+  }],
 });
 
 export interface ForgeRuntimeProjectionPort {

@@ -70,7 +70,6 @@ describe('Context Closure', () => {
       pack: pack('rev-ts', ['src/service.ts'], ['tests/service.test.ts']),
       semanticProviders: [{ id: 'typescript-language-service', languages: ['typescript'] }],
       semanticNavigation: { requested: 1, results: [{ result: { providerId: 'typescript-language-service' } }], errors: [], freshness: 'current' },
-      workId: 'work-ts', activeWorkIds: ['work-ts'],
     });
     expect(receipt.detected.languages).toContain('typescript');
     expect(receipt.skills).toMatchObject({ status: 'ready', unresolvedKinds: [] });
@@ -243,7 +242,6 @@ describe('Context Closure', () => {
       pack: pack('revision-issued', ['src/service.ts'], ['tests/service.test.ts']),
       semanticNavigation: { requested: 0, results: [], errors: [] },
       semanticProviders: [{ id: 'typescript-language-service', languages: ['typescript'] }],
-      activeWorkIds: ['work-a', 'work-b'],
     });
     expect(validateRuntimeIssuedContextClosureReceipt(issued).receiptId).toBe(issued.receiptId);
 
@@ -262,11 +260,6 @@ describe('Context Closure', () => {
     const tampered = { ...issued, generatedAt: '2026-09-03T00:00:01.000Z' };
     expect(() => validateRuntimeIssuedContextClosureReceipt(tampered)).toThrow('CONTEXT_CLOSURE_RECEIPT_NOT_ISSUED_BY_RUNTIME');
 
-    const reorderedArray = {
-      ...issued,
-      repository: { ...issued.repository, activeWorkIds: [...issued.repository.activeWorkIds].reverse() },
-    };
-    expect(() => validateRuntimeIssuedContextClosureReceipt(reorderedArray)).toThrow('CONTEXT_CLOSURE_RECEIPT_NOT_ISSUED_BY_RUNTIME');
   });
 
 });

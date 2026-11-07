@@ -11,9 +11,7 @@ import {
 import { isProcessAlive } from '../../shared/process-tree';
 import { readSchedulerWakeSignal, waitForSchedulerWakeSignal } from './wake-signal';
 import { cleanupControllerRuntimeState } from '../runtime-cleanup';
-import { reconcileTerminalWorkCleanups } from '../execution/work-terminal-cleanup';
 import { gcTerminalProcesses } from '../../execution/process-runtime/gc';
-import { reconcilePendingWorkValidations } from '../execution/work-validation-reconciler';
 import { reconcilePendingEditValidations } from '../execution/edit-validation-coordinator';
 import {
   runSchedulerPeriodicCleanup,
@@ -26,7 +24,6 @@ import {
   refreshSchedulerRepositoryProjections,
   selectSchedulerDirtyProjectionRepositories,
 } from './projection-refresh';
-import { reconcileWorkExecutionConcurrencyWaits } from '../concurrency/work-execution-concurrency';
 import { cleanupSchedulerWorkerProcesses } from './worker-process';
 import {
   spawnSchedulerPeriodicCleanup,
@@ -184,11 +181,8 @@ export class GlobalScheduler {
   private lastSourceScanRepoCount = 0;
   private sourceScansAvoided = 0;
   private runtimeCleanup = cleanupControllerRuntimeState;
-  private terminalWorkCleanup = reconcileTerminalWorkCleanups;
   private processGc = gcTerminalProcesses;
   private periodicCleanupSpawn = spawnSchedulerPeriodicCleanup;
-  private workExecutionConcurrencyReconcile = reconcileWorkExecutionConcurrencyWaits;
-  private workValidationReconcile = reconcilePendingWorkValidations;
   private editValidationReconcile = reconcilePendingEditValidations;
   private repositoryList = listRepositories;
 
@@ -295,24 +289,14 @@ export class GlobalScheduler {
           cleanupIntervalMs: RUNTIME_CLEANUP_INTERVAL_MS,
           repositories,
           runtimeCleanup: this.runtimeCleanup,
-          terminalWorkCleanup: this.terminalWorkCleanup,
           processGc: this.processGc,
         });
       }
     }
     if (now - this.lastReconcile >= SCHEDULER_RECONCILIATION_INTERVAL_MS) {
-      for (const repository of repositories) {
-        try {
-          this.workExecutionConcurrencyReconcile({ controllerHome: this.controllerHome, repoId: repository.repoId });
-        } catch (error) {
-          const reason = error instanceof Error ? error.message : String(error);
-          console.error(`[forge concurrency] Work wait reconciliation failed for ${repository.repoId}:`, reason);
-        }
-      }
       await runSchedulerValidationReconciliation({
         controllerHome: this.controllerHome,
         repositories,
-        workValidationReconcile: this.workValidationReconcile,
         editValidationReconcile: this.editValidationReconcile,
       });
       this.lastReconcile = now;

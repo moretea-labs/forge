@@ -99,36 +99,6 @@ const CORE_CAPABILITIES: CapabilityDescriptor[] = [
     summary: 'Diagnose and dry-run repair stuck jobs, stale projections, invalid check pollution, and worker unavailability without treating infrastructure failure as acceptance failure.',
   },
   {
-    capabilityId: 'controller.external_controller',
-    domain: 'controller',
-    group: 'controller',
-    operationClass: 'execute',
-    risk: 'workspace_write',
-    exposedVia: 'rh_work',
-    schemaExposure: 'stable_static',
-    summary: 'Start an explicitly requested external Codex, Claude, or ChatGPT controller through launcher_start; provider identity, transport recovery, and mechanical binding remain internal.',
-  },
-  {
-    capabilityId: 'controller.round_recovery',
-    domain: 'controller',
-    group: 'controller',
-    operationClass: 'execute',
-    risk: 'workspace_write',
-    exposedVia: 'capability_execute',
-    schemaExposure: 'stable_static',
-    summary: 'Recover one exact orphaned ControllerRound through the existing authority-rekey transaction, claim it with the authenticated current Runtime, apply only the caller-explicit disposition, and never replay the confirmed provider dispatch effect.',
-  },
-  {
-    capabilityId: 'controller.work_contract',
-    domain: 'controller',
-    group: 'controller',
-    operationClass: 'execute',
-    risk: 'workspace_write',
-    exposedVia: 'rh_work',
-    schemaExposure: 'stable_static',
-    summary: 'Persist optional semantic Work context with stable identity, CAS revision, objective, result references, and open/completed/cancelled state.',
-  },
-  {
     capabilityId: 'controller.plan_contract',
     domain: 'controller',
     group: 'controller',
@@ -139,16 +109,6 @@ const CORE_CAPABILITIES: CapabilityDescriptor[] = [
     summary: 'Persist model-authored Plan working memory with stable identity and semantic revision/CAS; Plan items do not own execution, checks, or acceptance.',
   },
   {
-    capabilityId: 'repository.validation',
-    domain: 'repository',
-    group: 'repository-core',
-    operationClass: 'execute',
-    risk: 'workspace_write',
-    exposedVia: 'capability_execute',
-    schemaExposure: 'stable_static',
-    summary: 'Refresh exact Work validation authority through the existing Work validation owner without adding a top-level MCP tool or command execution surface.',
-  },
-  {
     capabilityId: 'repository.git',
     domain: 'repository',
     group: 'git',
@@ -157,16 +117,6 @@ const CORE_CAPABILITIES: CapabilityDescriptor[] = [
     exposedVia: 'capability_execute',
     schemaExposure: 'stable_static',
     summary: 'Repository-native typed Git handlers own identity, dirty-path, CAS, lease, conflict, authorization, and idempotency fences; Work completion is not a Git admission gate.',
-  },
-  {
-    capabilityId: 'workflow.durable_work',
-    domain: 'controller',
-    group: 'issue-task',
-    operationClass: 'execute',
-    risk: 'workspace_write',
-    exposedVia: 'rh_work',
-    schemaExposure: 'stable_static',
-    summary: 'Persist and schedule durable semantic Work. Work is open, completed, or cancelled; execution evidence is advisory and never an admission phase.',
   },
   {
     capabilityId: 'platform.ios',
@@ -403,30 +353,6 @@ export function getCoreCapabilityExecutionSchema(capabilityId: string): Record<s
       },
     };
   }
-  if (capabilityId === 'controller.round_recovery') {
-    return {
-      capabilityId,
-      executeWith: 'capability_execute',
-      actions: {
-        recover_and_dispose: {
-          readOnly: false,
-          risk: 'workspace_write',
-          argumentsSchema: {
-            type: 'object',
-            additionalProperties: false,
-            required: ['work_id', 'recovery_reason', 'disposition', 'user_directed'],
-            properties: {
-              work_id: { type: 'string', minLength: 1, maxLength: 256 },
-              recovery_reason: { type: 'string', minLength: 1, maxLength: 1000 },
-              disposition: { type: 'string', enum: ['continue_immediately', 'wait', 'wait_for_user', 'goal_complete'] },
-              handoff_id: { type: 'string', minLength: 1, maxLength: 200 },
-              user_directed: { type: 'boolean', const: true },
-            },
-          },
-        },
-      },
-    };
-  }
   if (capabilityId === 'repository.direct_edit') {
     return {
       capabilityId,
@@ -452,7 +378,6 @@ export function getCoreCapabilityExecutionSchema(capabilityId: string): Record<s
             type: 'object',
             additionalProperties: false,
             properties: {
-              work_id: { type: 'string', minLength: 1, maxLength: 256 },
               session_id: { type: 'string', minLength: 1, maxLength: 256 },
               purpose: { type: 'string', maxLength: 2000 },
               operations: { type: 'array', minItems: 1, maxItems: 100, items: EDIT_OPERATION_INPUT_SCHEMA },
@@ -467,29 +392,6 @@ export function getCoreCapabilityExecutionSchema(capabilityId: string): Record<s
               lease_wait_ms: { type: 'number', minimum: 0 },
               validation_request_id: { type: 'string', minLength: 1, maxLength: 256 },
               validation_only: { type: 'boolean' },
-            },
-          },
-        },
-      },
-    };
-  }
-  if (capabilityId === 'repository.validation') {
-    return {
-      capabilityId,
-      executeWith: 'capability_execute',
-      actions: {
-        validate_work: {
-          readOnly: false,
-          risk: 'workspace_write',
-          argumentsSchema: {
-            type: 'object',
-            additionalProperties: false,
-            required: ['work_id'],
-            properties: {
-              session_id: { type: 'string', minLength: 1, maxLength: 256 },
-              work_id: { type: 'string', minLength: 1, maxLength: 256 },
-              check_ids: { type: 'array', maxItems: 32, items: { type: 'string', minLength: 1, maxLength: 256 } },
-              interactive_wait_ms: { type: 'number', minimum: 0, maximum: 30000 },
             },
           },
         },
@@ -551,36 +453,6 @@ export function getCoreCapabilityExecutionSchema(capabilityId: string): Record<s
             branch: { type: 'string', minLength: 1, maxLength: 512 },
             expected_remote_sha: { type: 'string', pattern: '^[0-9a-fA-F]{40}$' },
             approval_request_id: { type: 'string', minLength: 1, maxLength: 256 },
-          },
-        },
-      },
-      deliver_work: {
-        readOnly: false,
-        risk: 'local_repo_write',
-        argumentsSchema: {
-          type: 'object',
-          additionalProperties: false,
-          required: ['work_id'],
-          properties: {
-            session_id: { type: 'string', minLength: 1, maxLength: 256 },
-            work_id: { type: 'string', minLength: 1, maxLength: 256 },
-            target_branch: { type: 'string', minLength: 1, maxLength: 512 },
-            complete_work: { type: 'boolean' },
-            allow_merge_commit: { type: 'boolean' },
-          },
-        },
-      },
-      discard_work: {
-        readOnly: false,
-        risk: 'local_repo_write',
-        argumentsSchema: {
-          type: 'object',
-          additionalProperties: false,
-          required: ['work_id'],
-          properties: {
-            session_id: { type: 'string', minLength: 1, maxLength: 256 },
-            work_id: { type: 'string', minLength: 1, maxLength: 256 },
-            reason: { type: 'string', minLength: 0, maxLength: 1_000 },
           },
         },
       },

@@ -1,6 +1,5 @@
 import { listRepositories } from '../../../cli/repositories/registry';
 import { cleanupControllerRuntimeState } from '../runtime-cleanup';
-import { reconcileTerminalWorkCleanups } from '../execution/work-terminal-cleanup';
 import { gcTerminalProcesses } from '../../execution/process-runtime/gc';
 import { assertRuntimeMayWrite } from '../../root/write-fence';
 import { runSchedulerPeriodicCleanup } from './maintenance';
@@ -45,7 +44,6 @@ async function main(): Promise<void> {
     cleanupIntervalMs,
     repositories,
     runtimeCleanup: cleanupControllerRuntimeState,
-    terminalWorkCleanup: reconcileTerminalWorkCleanups,
     processGc: gcTerminalProcesses,
   });
 }

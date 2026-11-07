@@ -84,7 +84,6 @@ const DURABLE_OPERATIONS = new Set<string>([
   'repository_git_delete_branch',
   'repository_git_remove_worktree',
   'integrate_task_run',
-  'work_finalize',
 ]);
 
 const WRITE_OPERATIONS = new Set([

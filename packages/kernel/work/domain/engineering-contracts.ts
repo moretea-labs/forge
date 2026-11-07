@@ -126,8 +126,6 @@ export interface ContextClosureReceipt {
   repository: {
     branch: string | null;
     dirty: boolean;
-    workId?: string;
-    activeWorkIds: string[];
   };
   projectContract?: ProjectEngineeringContractReceipt;
   projectContractStatus: 'ready' | 'missing';

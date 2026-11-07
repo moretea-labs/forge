@@ -3,11 +3,12 @@ import { mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
 import { backupControlPlaneDatabase, restoreControlPlaneDatabase, withControlPlaneTransaction, writeControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
 import { createRequirement, normalizeLegacyRequirementAcceptance, readRequirement, reviseRequirementSemantic, updateRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
-import { cancelWorkContract, createWorkContract, listWorkContracts, recordWorkCompletionReceipt, recordWorkEvidenceState, recordWorkImplementationReview, supersedeWorkContract, transitionWorkContractPhase, updateWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { listWorkContracts } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { implementationReviewChangedPathDigest } from '../../packages/kernel/work/api/index';
 import { executionPlacement, scopeRef, semanticRecordMetadata } from '../../packages/kernel/identity/api/index';
 import { createPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { buildRequirementBoard } from '../../src/runtime/control-plane/facade/requirement-board';
+import { seedHistoricalWorkContract } from '../helpers/historical-work-contract';
 
 const homes: string[] = [];
 afterEach(() => {
@@ -15,11 +16,10 @@ afterEach(() => {
 });
 
 function createCancelledWork(
-  options: Parameters<typeof createWorkContract>[0],
-  input: Parameters<typeof createWorkContract>[1],
+  options: Parameters<typeof seedHistoricalWorkContract>[0],
+  input: Parameters<typeof seedHistoricalWorkContract>[1],
 ) {
-  const created = createWorkContract(options, input);
-  return cancelWorkContract(options, created.workId, { summary: 'test fixture semantic cancellation' });
+  return seedHistoricalWorkContract(options, { ...input, semanticState: 'cancelled' });
 }
 
 test('keeps user Requirement lifecycle separate from its active technical plan', () => {
@@ -47,57 +47,6 @@ test('keeps user Requirement lifecycle separate from its active technical plan',
 });
 
 test('derives multiple active Plan slices from Plan.requirementId without a mutable Requirement pointer', () => { const home = mkdtempSync(join('/tmp', 'forge-requirement-')); homes.push(home); const requirementOptions = { controllerHome: home }; createRequirement(requirementOptions, { requirementId: 'req-derived-plans', title: 'Derived plan slices', outcomeStatement: 'Plan relationships are queried from Plan.requirementId.' }); const planOptions = { controllerHome: home, repoId: 'repo-derived-plans' }; for (const [planId, scopeKey] of [['plan-a', 'slice-a'], ['plan-b', 'slice-b']] as const) createPlanContract(planOptions, { planId, repoId: 'repo-derived-plans', requirementId: 'req-derived-plans', scopeKey, sourceRevision: 'revision-a', goal: `Deliver ${scopeKey}`, steps: [{ id: 'step-1', objective: 'Implement slice', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: [], acceptanceCriteria: [] }] }); expect(readRequirement(requirementOptions, 'req-derived-plans')?.value.activePlanId).toBeUndefined(); const board = buildRequirementBoard({ controllerHome: home, repoId: 'repo-derived-plans' }) as { requirements: Array<{ requirementId: string; activePlanId?: string; activePlanIds: string[] }> }; const item = board.requirements.find((entry) => entry.requirementId === 'req-derived-plans'); expect(item?.activePlanIds).toEqual(['plan-b', 'plan-a']); expect(item?.activePlanId).toBe('plan-b'); });
-
-test('keeps superseded Work as durable history while removing it from the current active view', () => {
-  const home = mkdtempSync(join('/tmp', 'forge-work-lineage-'));
-  homes.push(home);
-  const options = { controllerHome: home, repoId: 'repo-work-lineage' };
-  const make = (workId: string) => createWorkContract(options, {
-    workId,
-    repoId: options.repoId,
-    objective: `Deliver ${workId}`,
-    acceptanceCriteria: [],
-    allowedPaths: [],
-    forbiddenPaths: [],
-    checks: [],
-    constraints: {},
-    requestedBy: 'chatgpt',
-    dispatchState: 'running',
-  });
-  make('work-lineage-old');
-  make('work-lineage-new');
-
-  const linked = supersedeWorkContract(options, {
-    workId: 'work-lineage-old',
-    supersededBy: 'work-lineage-new',
-    reason: 'same-root successor verified',
-  });
-  expect(linked.predecessor).toMatchObject({
-    semanticState: 'open',
-    dispatchState: 'running',
-    supersededBy: 'work-lineage-new',
-    supersessionReason: 'same-root successor verified',
-  });
-  expect(linked.successor.supersedes).toEqual(['work-lineage-old']);
-  expect(listWorkContracts({ ...options, state: 'active' }).map((work) => work.workId)).toEqual(['work-lineage-new']);
-  expect(listWorkContracts({ ...options, state: 'all' }).map((work) => work.workId).sort()).toEqual(['work-lineage-new', 'work-lineage-old']);
-  make('work-lineage-other');
-  expect(() => supersedeWorkContract(options, {
-    workId: 'work-lineage-old',
-    supersededBy: 'work-lineage-other',
-    reason: 'conflicting replacement',
-  })).toThrow('WORK_SUPERSESSION_CONFLICT');
-  supersedeWorkContract(options, {
-    workId: 'work-lineage-new',
-    supersededBy: 'work-lineage-other',
-    reason: 'new successor verified',
-  });
-  expect(() => supersedeWorkContract(options, {
-    workId: 'work-lineage-other',
-    supersededBy: 'work-lineage-old',
-    reason: 'must reject transitive cycle',
-  })).toThrow('WORK_SUPERSESSION_CYCLE');
-});
 
 test('rejects reopening a completed Requirement without an explicit replacement state', async () => {
   const home = mkdtempSync(join('/tmp', 'forge-requirement-'));
@@ -183,42 +132,6 @@ test('restores a verified SQLite backup without losing Requirement authority', (
   updateRequirement(options, { requirementId: 'req-backup', action: 'activate', mutate: (current) => ({ ...current, state: 'active' }) });
   restoreControlPlaneDatabase(home, backup);
   expect(readRequirement(options, 'req-backup')?.value.state).toBe('planned');
-});
-
-test('historical cancelled Work evidence cannot reopen a reviewed Requirement outcome', () => {
-  const home = mkdtempSync(join('/tmp', 'forge-requirement-'));
-  homes.push(home);
-  const options = { controllerHome: home, now: () => '2026-08-02T00:00:00.000Z' };
-  createRequirement(options, { requirementId: 'req-reviewed', title: 'Reviewed outcome', outcomeStatement: 'The reviewed outcome remains done.' });
-  updateRequirement(options, { requirementId: 'req-reviewed', action: 'activate', mutate: (current) => ({ ...current, state: 'active' }) });
-  reviseRequirementSemantic(options, 'req-reviewed', {
-    expectedRevision: 1, state: 'completed', remainingWork: [], acceptedEvidenceRefs: ['review:accepted'],
-  });
-
-  const work = createCancelledWork({ controllerHome: home, repoId: 'repo-reviewed' }, {
-    workId: 'work-historical-cancelled',
-    repoId: 'repo-reviewed',
-    requirementId: 'req-reviewed',
-    objective: 'Historical attempt retained for evidence.',
-    acceptanceCriteria: [],
-    allowedPaths: [],
-    forbiddenPaths: [],
-    checks: [],
-    constraints: {},
-    requestedBy: 'chatgpt',
-  });
-  expect(work.semanticState).toBe('cancelled');
-  expect(work.completionReceipt).toBeUndefined();
-  expect(readRequirement(options, 'req-reviewed')?.value.state).toBe('done');
-  expect(() => updateRequirement(options, {
-    requirementId: 'req-reviewed',
-    action: 'stale_run_reopen',
-    mutate: (current) => ({ ...current, state: 'active' }),
-  })).toThrow(/REQUIREMENT_TERMINAL_IMMUTABLE/);
-
-  const retained = recordWorkEvidenceState({ controllerHome: home, repoId: 'repo-reviewed' }, work.workId, 'failed');
-  expect(retained.semanticState).toBe('cancelled');
-  expect(readRequirement(options, 'req-reviewed')?.value.state).toBe('done');
 });
 
 

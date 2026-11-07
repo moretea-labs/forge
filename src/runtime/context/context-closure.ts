@@ -81,8 +81,6 @@ export interface BuildContextClosureInput {
   pack: ContextPackLike;
   semanticNavigation: SemanticNavigationLike;
   semanticProviders: Array<{ id: string; languages: readonly string[] }>;
-  workId?: string;
-  activeWorkIds?: string[];
   includeRecentChanges?: boolean;
   /** Executor install root override, useful for hermetic tests. */
   skillHomeDir?: string;
@@ -333,8 +331,6 @@ export function buildContextClosureReceipt(input: BuildContextClosureInput): Con
     repository: {
       branch: input.pack.git.branch,
       dirty: input.pack.git.dirty,
-      ...(input.workId ? { workId: input.workId } : {}),
-      activeWorkIds: unique(input.activeWorkIds ?? [], 20),
     },
     ...(project.status === 'ready' ? { projectContract: project.receipt } : {}),
     projectContractStatus: project.status,

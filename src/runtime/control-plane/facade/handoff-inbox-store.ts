@@ -162,11 +162,12 @@ function canonicalUserRequestInput(item: HandoffItem): CreateUserRequestInput | 
     title: item.title,
     summary: item.summary,
     actionRequired,
+    // Legacy Handoff workId remains history only. The migrated UserRequest
+    // is repository-scoped and can never reactivate a Work lifecycle.
     targetScope: {
-      scopeKind: item.workId ? 'work' : 'repository',
-      scopeId: item.workId ?? item.repoId,
+      scopeKind: 'repository',
+      scopeId: item.repoId,
       repoId: item.repoId,
-      ...(item.workId ? { workId: item.workId } : {}),
     },
     presentation: {
       legacyHandoffId: item.id,

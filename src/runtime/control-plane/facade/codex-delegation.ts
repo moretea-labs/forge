@@ -123,7 +123,7 @@ export function delegateToCodexCerebellum(
   });
   return buildFacadeResult({
     status: 'blocked',
-    summary: 'DEPRECATED_DELEGATE: delegate is read-only through 2026-12-31 and will be removed in 1.5.0. Use launcher_start for an explicit external controller and the inbox only for genuine human decisions.',
+    summary: 'DEPRECATED_DELEGATE: delegate is read-only through 2026-12-31 and will be removed in 1.5.0. Use launcher_start only for an explicit Work-free ChatGPT Launch Session, or use the local conversation capability for Codex.',
     data: {
       target,
       workId: input.workId,
@@ -134,8 +134,5 @@ export function delegateToCodexCerebellum(
       contextPack: pack,
       workerOutputIgnored: input.workerOutput !== undefined,
     },
-    suggestedNextActions: input.workId ? [
-      { label: 'Start external controller', tool: 'rh_work', operation: 'launcher_start', payload: { work_id: input.workId, controller_type: target }, risk: 'workspace_write' },
-    ] : [],
   });
 }

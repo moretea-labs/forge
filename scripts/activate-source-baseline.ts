@@ -13,8 +13,6 @@ import { dirname, join, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { resolveRepoPreferredControllerHome } from '../src/effects/controller-home';
 import { findRegisteredRepositoryByCheckoutRoot } from '../src/cli/repositories/registry';
-import { cleanupTerminalWork } from '../src/runtime/control-plane/execution/work-terminal-cleanup';
-import { listWorkHandles, type WorkTerminalOutcome } from '../src/runtime/control-plane/execution/work-handle-store';
 import { runProcess } from '../src/effects/process-runner';
 
 interface CheckReceipt {
@@ -66,7 +64,6 @@ const CHECKS: readonly CheckDefinition[] = [
   { id: 'package:check:runtime-architecture', args: ['run', 'check:runtime-architecture'], timeoutMs: 3 * 60_000 },
   ...[
     'tests/runtime/process-runtime.test.ts',
-    'tests/runtime/work-terminal-cleanup.test.ts',
     'tests/runtime/canonical-single-runtime.test.ts',
     'tests/cli/runtime-command.test.ts',
     'tests/cli/mcp-http.test.ts',
@@ -161,10 +158,6 @@ function runCheck(repoRoot: string, definition: CheckDefinition): CheckReceipt {
     stdoutTail: boundedTail(result.stdout),
     stderrTail: boundedTail(result.stderr),
   };
-}
-
-function terminalOutcome(handle: ReturnType<typeof listWorkHandles>[number]): WorkTerminalOutcome {
-  return handle.cleanupReceipt?.terminalOutcome ?? 'cancelled';
 }
 
 function cleanupSafety(repoRoot: string, worktreePath: string): { safe: boolean; reason?: string } {
@@ -276,46 +269,6 @@ async function run(args: string[]): Promise<void> {
       state = updateState(state, { checks: [...state.checks, receipt] });
       if (!receipt.ok) throw new Error(`SOURCE_BASELINE_CHECK_FAILED: ${definition.id}`);
       assertCleanMain(repoRoot, expectedHead);
-    }
-
-    state = updateState(state, { phase: 'cleaning_terminal_work' });
-    const candidates = listWorkHandles(controllerHome, repoId)
-      .filter((handle) => handle.managedWorktree && handle.state === 'failed_terminal_cleanup');
-    for (const handle of candidates) {
-      const safety = cleanupSafety(repoRoot, handle.worktreePath);
-      if (!safety.safe) {
-        state = updateState(state, {
-          cleanup: [...state.cleanup, {
-            workId: handle.workId,
-            checkoutId: handle.checkoutId,
-            branch: handle.branch,
-            attempted: false,
-            complete: false,
-            blockers: [],
-            reason: safety.reason,
-          }],
-        });
-        continue;
-      }
-      const result = await cleanupTerminalWork({
-        controllerHome,
-        handle,
-        deleteBranch: true,
-        terminalOutcome: terminalOutcome(handle),
-        failureReason: handle.failureReason ?? 'source baseline terminal cleanup reconciliation',
-      });
-      const summary: CleanupReceiptSummary = {
-        workId: handle.workId,
-        checkoutId: handle.checkoutId,
-        branch: handle.branch,
-        attempted: true,
-        complete: result.receipt.complete,
-        blockers: [...result.receipt.blockers],
-      };
-      state = updateState(state, { cleanup: [...state.cleanup, summary] });
-      if (!result.receipt.complete) {
-        throw new Error(`SOURCE_BASELINE_CLEANUP_BLOCKED: ${handle.workId}: ${result.receipt.blockers.join('; ')}`);
-      }
     }
 
     assertCleanMain(repoRoot, expectedHead);

@@ -15,7 +15,7 @@ export function trustedEngineeringEvidence(sourceRevision = 'revision-a'): Engin
     sourceRevision,
     generatedAt: RECORDED_AT,
     contextPackSchemaVersion: 11,
-    repository: { branch: 'main', dirty: false, activeWorkIds: [] },
+    repository: { branch: 'main', dirty: false },
     projectContractStatus: 'missing',
     guidance: { status: 'none', paths: [] },
     detected: { languages: ['typescript'], platforms: [] },

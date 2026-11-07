@@ -18,14 +18,9 @@ import {
 } from '../../../src/runtime/execution/process-runtime';
 import { redactSensitiveText, redactSensitiveValue } from '../../../src/runtime/evidence/sensitive-output';
 import { resolveControllerAccessState } from '../access-mode';
-import { getProcessRecord } from '../../../src/runtime/execution/process-runtime/store';
 import { forgeInstanceIdFor, readProcessHandleIndexEntry } from '../../../src/runtime/execution/process-runtime/handle-index';
 import { isForgeInstanceProcessScopeKey, isRepositoryProcessScopeKey, processScopeKeyForHandle } from '../../../src/runtime/execution/process-runtime/process-scope';
-import { reconcileTerminalWorkVerifications } from '../../../src/runtime/control-plane/execution/work-verification-service';
-import type { WorkHandleState } from '../../../src/runtime/control-plane/execution/work-handle-store';
-import { findControlPlaneRecordsByKey } from '../../../src/runtime/control-plane/persistence/sqlite-store';
-import { sanitizeFileComponent } from '../../../src/runtime/shared/json-files';
-import { selected, stringList } from './shared-adapter';
+import { stringList } from './shared-adapter';
 
 function definition(
   name: string,
@@ -125,32 +120,6 @@ export const processToolDefinitions: McpToolDefinition[] = [
 const processToolNames = new Set(processToolDefinitions.map((tool) => tool.name));
 const processAttachmentToolNames = new Set(['process_get', 'process_wait', 'process_logs', 'process_cancel']);
 
-function reconcileAttachedWorkVerification(
-  ctx: MultiRepositoryMcpToolContext,
-  repoId: string,
-  processId: string,
-  handle: { completed?: boolean; workId?: string },
-): Record<string, unknown> | undefined {
-  if (handle.completed !== true || !handle.workId) return undefined;
-  const record = getProcessRecord(ctx.controllerHome, repoId, processId);
-  if (record?.origin?.workVerificationSnapshot !== true) return undefined;
-  try {
-    const repository = selected(ctx, { repo_id: repoId, checkout_id: record.checkoutId });
-    const reconciled = reconcileTerminalWorkVerifications({
-      controllerHome: ctx.controllerHome,
-      repository,
-      workId: handle.workId,
-    });
-    return {
-      workId: handle.workId,
-      processId,
-      status: reconciled.reconciledProcessIds.includes(processId) ? 'reconciled' : 'already_current_or_non_authoritative',
-      reconciledProcessIds: reconciled.reconciledProcessIds,
-    };
-  } catch {
-    return { workId: handle.workId, processId, status: 'non_authoritative' };
-  }
-}
 // A long-lived MCP wait can monopolize shared Runtime request/transport capacity
 // even though the underlying Process wait is asynchronous. Keep public waits
 // short and return a normal running snapshot; the Process continues unchanged
@@ -298,13 +267,9 @@ export async function callProcessTool(
     const scopePayload = repoId ? { repoId } : {};
     switch (name) {
       case 'process_get': {
-        const workVerificationReconciliation = repoId
-          ? reconcileAttachedWorkVerification(ctx, repoId, processId, attachedHandle)
-          : undefined;
         return result({
           ...scopePayload,
           process: handleToPayload(attachedHandle),
-          ...(workVerificationReconciliation ? { workVerificationReconciliation } : {}),
         });
       }
       case 'process_wait': {
@@ -319,13 +284,9 @@ export async function callProcessTool(
         const handle = await waitRepositoryCommandProcess(ctx.controllerHome, repoId, processId, {
           timeoutMs: Math.min(requestedWaitMs, attachBudgetMs),
         });
-        const workVerificationReconciliation = repoId
-          ? reconcileAttachedWorkVerification(ctx, repoId, processId, handle)
-          : undefined;
         return result({
           ...scopePayload,
           process: handleToPayload(handle),
-          ...(workVerificationReconciliation ? { workVerificationReconciliation } : {}),
           synchronization: handle.completed === true ? 'terminal_result_available' : 'continue_independent_work',
           waitedMs: Date.now() - startedAt,
           requestedWaitMs,
@@ -373,23 +334,6 @@ export async function callProcessTool(
  * execution argument. Authorization is one explicit canonical `process:exec`
  * Grant for this instance, enforced in the lane before any spawn.
  */
-function workDefaultCommandCwd(ctx: MultiRepositoryMcpToolContext, workId: string): string | undefined {
-  if (!workId) return undefined;
-  const matches = findControlPlaneRecordsByKey<WorkHandleState>(ctx.controllerHome, {
-    namespace: 'execution_work_handle',
-    key: sanitizeFileComponent(workId),
-    limit: 2,
-  });
-  if (matches.length > 1) {
-    throw new Error(`WORK_EXECUTION_PLACEMENT_AMBIGUOUS: ${workId} resolves to multiple execution handles`);
-  }
-  const handle = matches[0]?.value;
-  if (!handle) return undefined;
-  if (handle.workId !== workId) throw new Error(`WORK_EXECUTION_PLACEMENT_IDENTITY_MISMATCH: ${workId}`);
-  const workspace = handle.worktreePath?.trim();
-  return workspace || undefined;
-}
-
 /**
  * The explicitly user-selected Full Access mode is the single Forge permission
  * authority for ordinary host commands. Legacy defaults are not opt-in proof.
@@ -419,9 +363,10 @@ export async function executeAuthorizedHostCommand(
       throw new Error('HOST_COMMAND_REQUIRED: provide command (argv) or shell_command');
     }
     const requestId = typeof args.request_id === 'string' ? args.request_id.trim() : '';
-    const workId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
-    const explicitCwd = typeof args.cwd === 'string' ? args.cwd.trim() : '';
-    const cwd = explicitCwd || workDefaultCommandCwd(ctx, workId) || '';
+    if (typeof args.work_id === 'string' && args.work_id.trim()) {
+      throw new Error(`WORK_PROCESS_ATTRIBUTION_RETIRED: ${args.work_id}`);
+    }
+    const cwd = typeof args.cwd === 'string' ? args.cwd.trim() : '';
     const executed = await executeHostCommand({
       controllerHome: ctx.controllerHome,
       principalId: ctx.principalId ?? '',
@@ -432,7 +377,6 @@ export async function executeAuthorizedHostCommand(
       ...(typeof args.interactive_wait_ms === 'number' ? { interactiveWaitMs: args.interactive_wait_ms } : {}),
       ...(typeof args.max_output_bytes === 'number' ? { maxOutputBytes: args.max_output_bytes } : {}),
       ...(requestId ? { commandId: requestId } : {}),
-      ...(workId ? { workId } : {}),
     });
     return result({
       process: handleToPayload(executed.handle),

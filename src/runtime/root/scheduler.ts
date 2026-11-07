@@ -1,5 +1,4 @@
 import { GlobalScheduler, readSchedulerHealthSnapshot } from '../control-plane/global-scheduler/scheduler';
-import { applyPendingContinuationActivations } from '../workflow/schedules/pending-activation';
 
 export interface RuntimeSchedulerHandle {
   ready: Promise<void>;
@@ -39,10 +38,6 @@ export function startInProcessScheduler(input: {
 }): RuntimeSchedulerHandle {
   const { controllerHome, readyTimeoutMs = 5_000 } = input;
   const abort = new AbortController();
-  // Old Runtime releases ignore pending activation markers entirely. A naturally
-  // restarted Runtime that contains this code consumes them once, before its
-  // sole Scheduler starts, so no second scheduler or rollout hook is required.
-  applyPendingContinuationActivations(controllerHome);
   const startedAfterMs = Date.now();
   const scheduler = new GlobalScheduler(controllerHome, {}, {
     controllerPid: process.pid,
