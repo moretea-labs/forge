@@ -413,6 +413,10 @@ export function getCoreCapabilityExecutionSchema(capabilityId: string): Record<s
               prompt: { type: 'string', minLength: 1, maxLength: 20_000 },
               model: { type: 'string', minLength: 1, maxLength: 120 },
               reasoning_effort: { type: 'string', minLength: 1, maxLength: 32 },
+              image_paths: {
+                type: 'array', maxItems: 4,
+                items: { type: 'string', minLength: 1, maxLength: 4096 },
+              },
               timeout_ms: { type: 'number', minimum: 5_000, maximum: 600_000 },
             },
           },

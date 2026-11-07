@@ -1,7 +1,7 @@
 import { execFile, spawn, type ChildProcess } from 'child_process';
-import { mkdirSync } from 'fs';
+import { mkdirSync, realpathSync, statSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { extname, isAbsolute, join, relative, sep } from 'path';
 import { redactProcessOutput } from '../../../effects/process-runner';
 import { resolveProviderMcpBootstrap } from './provider-mcp-bootstrap';
 import {
@@ -14,6 +14,10 @@ const LOCAL_CONVERSATION_TIMEOUT_MS = 5 * 60_000;
 const LOCAL_CONVERSATION_MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
 const LOCAL_CONVERSATION_MAX_PROMPT_CHARS = 20_000;
 const LOCAL_CONVERSATION_ACTIVITY_EVENT_LIMIT = 30;
+const LOCAL_CONVERSATION_MAX_IMAGES = 4;
+const LOCAL_CONVERSATION_MAX_IMAGE_BYTES = 20 * 1024 * 1024;
+const LOCAL_CONVERSATION_IMAGE_ROOT = 'forge-local-conversation-images';
+const LOCAL_CONVERSATION_IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif']);
 const LOCAL_CONVERSATION_ID = /^[A-Za-z0-9._:-]{1,160}$/;
 
 export type LocalConversationActivityPhase = 'starting' | 'thinking' | 'tool' | 'responding' | 'finishing';
@@ -80,6 +84,7 @@ export interface LocalConversationProviderStatus {
   streaming: boolean;
   tools: boolean;
   cancellable: boolean;
+  imageInput: boolean;
 }
 
 export interface LocalConversationReasoningOption {
@@ -108,6 +113,7 @@ export interface LocalConversationSendInput {
   repoId?: string;
   model?: string;
   reasoningEffort?: string;
+  imagePaths?: string[];
   timeoutMs?: number;
 }
 
@@ -313,6 +319,7 @@ export async function readLocalConversationProviderStatus(
         streaming: false,
         tools: false,
         cancellable: true,
+        imageInput: true,
       };
     }
     return {
@@ -323,6 +330,7 @@ export async function readLocalConversationProviderStatus(
       streaming: false,
       tools: true,
       cancellable: true,
+      imageInput: true,
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -335,6 +343,7 @@ export async function readLocalConversationProviderStatus(
       streaming: false,
       tools: false,
       cancellable: true,
+      imageInput: true,
     };
   }
 }
@@ -485,7 +494,46 @@ export function runCodexConversation(
   });
 }
 
-export function buildLocalConversationProviderArgs(model?: string, reasoningEffort?: string): string[] {
+export function validateLocalConversationImagePaths(conversationId: string, imagePaths?: string[]): string[] {
+  if (!imagePaths?.length) return [];
+  if (!LOCAL_CONVERSATION_ID.test(conversationId)) throw new Error('LOCAL_CONVERSATION_ID_INVALID');
+  if (imagePaths.length > LOCAL_CONVERSATION_MAX_IMAGES) throw new Error('LOCAL_CONVERSATION_IMAGE_COUNT_INVALID');
+
+  let root: string;
+  try {
+    root = realpathSync(join(tmpdir(), LOCAL_CONVERSATION_IMAGE_ROOT, conversationId));
+  } catch {
+    throw new Error('LOCAL_CONVERSATION_IMAGE_ROOT_INVALID');
+  }
+
+  return imagePaths.map((imagePath) => {
+    if (!imagePath || imagePath.length > 4096 || !isAbsolute(imagePath)) {
+      throw new Error('LOCAL_CONVERSATION_IMAGE_PATH_INVALID');
+    }
+    let resolved: string;
+    try {
+      resolved = realpathSync(imagePath);
+    } catch {
+      throw new Error('LOCAL_CONVERSATION_IMAGE_PATH_INVALID');
+    }
+    const scoped = relative(root, resolved);
+    if (!scoped || scoped === '..' || scoped.startsWith(`..${sep}`) || isAbsolute(scoped)) {
+      throw new Error('LOCAL_CONVERSATION_IMAGE_PATH_OUTSIDE_STAGING');
+    }
+    if (!LOCAL_CONVERSATION_IMAGE_EXTENSIONS.has(extname(resolved).toLowerCase())) {
+      throw new Error('LOCAL_CONVERSATION_IMAGE_TYPE_UNSUPPORTED');
+    }
+    const stat = statSync(resolved);
+    if (!stat.isFile() || stat.size <= 0 || stat.size > LOCAL_CONVERSATION_MAX_IMAGE_BYTES) {
+      throw new Error('LOCAL_CONVERSATION_IMAGE_FILE_INVALID');
+    }
+    return resolved;
+  });
+}
+
+export function buildLocalConversationProviderArgs(
+  model?: string, reasoningEffort?: string, imagePaths: string[] = [],
+): string[] {
   const selectedModel = model?.trim();
   const selectedReasoning = reasoningEffort?.trim();
   if (selectedModel && (selectedModel.length > 120 || !/^[A-Za-z0-9._:-]+$/.test(selectedModel))) {
@@ -498,6 +546,7 @@ export function buildLocalConversationProviderArgs(model?: string, reasoningEffo
     '--skip-git-repo-check',
     ...(selectedModel ? ['--model', selectedModel] : []),
     ...(selectedReasoning ? ['-c', `model_reasoning_effort="${selectedReasoning}"`] : []),
+    ...imagePaths.flatMap((imagePath) => ['--image', imagePath]),
   ];
 }
 
@@ -511,7 +560,8 @@ export async function sendLocalConversation(input: LocalConversationSendInput): 
   if (providerSessionId && !LOCAL_CONVERSATION_ID.test(providerSessionId)) throw new Error('LOCAL_CONVERSATION_PROVIDER_SESSION_INVALID');
   if (repoId && repoId.length > 256) throw new Error('LOCAL_CONVERSATION_REPOSITORY_INVALID');
 
-  const providerArgs = buildLocalConversationProviderArgs(input.model, input.reasoningEffort);
+  const imagePaths = validateLocalConversationImagePaths(conversationId, input.imagePaths);
+  const providerArgs = buildLocalConversationProviderArgs(input.model, input.reasoningEffort, imagePaths);
   const cwd = localConversationCwd();
   // The real conversation spawn reports startup failures; status queries still probe.
   const executable = resolveLauncherExecutable({ controllerType: 'codex', cwd }, process.env, false);

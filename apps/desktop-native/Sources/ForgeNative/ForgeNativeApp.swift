@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 
 private enum ForgePalette {
     static let canvas = Color(nsColor:.textBackgroundColor)
@@ -337,21 +338,29 @@ private struct AgentPane: View {
                             if message.role == "user" {
                                 HStack(alignment:.top) {
                                     Spacer(minLength:96)
-                                    Text(message.text)
-                                        .font(.system(size:13))
-                                        .lineSpacing(5)
-                                        .textSelection(.enabled)
-                                        .padding(.horizontal,14).padding(.vertical,11)
-                                        .background(ForgePalette.userBubble,
-                                                    in:RoundedRectangle(cornerRadius:14,style:.continuous))
-                                        .contextMenu {
-                                            Button { copyAgentText(message.text) } label: {
-                                                Label("复制",systemImage:"doc.on.doc")
-                                            }
-                                            Button { model.draft = message.text } label: {
-                                                Label("重新编辑",systemImage:"arrow.uturn.backward")
-                                            }
+                                    VStack(alignment:.leading,spacing:7) {
+                                        Text(message.text)
+                                            .font(.system(size:13))
+                                            .lineSpacing(5)
+                                            .textSelection(.enabled)
+                                        if let attachments = message.attachmentNames, !attachments.isEmpty {
+                                            Label(attachments.joined(separator:" · "),systemImage:"photo")
+                                                .font(.system(size:10.5,weight:.medium))
+                                                .foregroundStyle(ForgePalette.secondary)
+                                                .lineLimit(1)
                                         }
+                                    }
+                                    .padding(.horizontal,14).padding(.vertical,11)
+                                    .background(ForgePalette.userBubble,
+                                                in:RoundedRectangle(cornerRadius:14,style:.continuous))
+                                    .contextMenu {
+                                        Button { copyAgentText(message.text) } label: {
+                                            Label("复制",systemImage:"doc.on.doc")
+                                        }
+                                        Button { model.draft = message.text } label: {
+                                            Label("重新编辑",systemImage:"arrow.uturn.backward")
+                                        }
+                                    }
                                 }
                                 .frame(maxWidth:.infinity)
                                 .id(message.id)
@@ -449,6 +458,35 @@ private struct AgentPane: View {
                         .frame(minHeight:56,maxHeight:105)
                         .padding(.horizontal,12).padding(.top,10)
                         .accessibilityLabel("Agent 消息")
+                }
+                if !model.pendingImageURLs.isEmpty {
+                    ScrollView(.horizontal) {
+                        HStack(spacing:7) {
+                            ForEach(model.pendingImageURLs,id:\.path) { url in
+                                HStack(spacing:6) {
+                                    Image(systemName:"photo")
+                                        .font(.system(size:9.5,weight:.medium))
+                                    Text(url.lastPathComponent)
+                                        .lineLimit(1)
+                                    Button {
+                                        model.removePendingImage(url)
+                                    } label: {
+                                        Image(systemName:"xmark")
+                                            .font(.system(size:8,weight:.semibold))
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                                .font(.system(size:10.5,weight:.medium))
+                                .foregroundStyle(ForgePalette.secondary)
+                                .padding(.horizontal,8)
+                                .frame(height:25)
+                                .background(ForgePalette.softFill,
+                                            in:RoundedRectangle(cornerRadius:8,style:.continuous))
+                            }
+                        }
+                        .padding(.horizontal,13).padding(.bottom,7)
+                    }
+                    .scrollIndicators(.hidden)
                 }
                 HStack(spacing:7) {
                     Menu {
@@ -554,6 +592,22 @@ private struct AgentPane: View {
                     .help("当前模型的推理强度")
 
                     Button {
+                        chooseAgentImages(model)
+                    } label: {
+                        Image(systemName:"paperclip")
+                            .font(.system(size:10,weight:.medium))
+                            .foregroundStyle(ForgePalette.secondary)
+                            .frame(width:25,height:25)
+                            .background(ForgePalette.softFill,
+                                        in:RoundedRectangle(cornerRadius:8,style:.continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!model.imageInputAvailable || model.busy)
+                    .help(model.imageInputAvailable
+                          ? "添加图片（最多 4 张）"
+                          : "当前 Runtime 版本尚未启用图片输入")
+
+                    Button {
                         withAnimation(.easeOut(duration:0.18)) { showChanges.toggle() }
                         if showChanges {
                             Task { await model.refreshAgentChanges() }
@@ -651,6 +705,19 @@ private struct AgentPane: View {
         case "": return "Reasoning"
         default: return effort
         }
+    }
+}
+
+@MainActor
+private func chooseAgentImages(_ model: NativeWorkspace) {
+    let panel = NSOpenPanel()
+    panel.canChooseDirectories = false
+    panel.canChooseFiles = true
+    panel.allowsMultipleSelection = true
+    panel.allowedContentTypes = [.image]
+    panel.prompt = "添加"
+    if panel.runModal() == .OK {
+        model.setPendingImages(panel.urls)
     }
 }
 

@@ -31,6 +31,13 @@ fn required_strings(arguments: &Value, field: &str, max_items: usize) -> Result<
     }).collect()
 }
 
+fn optional_strings(arguments: &Value, field: &str, max_items: usize) -> Result<Option<Vec<String>>, String> {
+    match arguments.get(field) {
+        None | Some(Value::Null) => Ok(None),
+        Some(_) => required_strings(arguments, field, max_items).map(Some),
+    }
+}
+
 async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
     match operation {
         "read_projects" => read_projects().await,
@@ -94,6 +101,7 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
                 args.get("reasoningEffort").and_then(Value::as_str).map(str::to_owned),
                 args.get("repoId").and_then(Value::as_str).map(str::to_owned),
                 args.get("checkoutId").and_then(Value::as_str).map(str::to_owned),
+                optional_strings(args, "imagePaths", 4)?,
             ).await,
         "cancel_local_conversation" =>
             cancel_local_conversation(required(args, "conversationId")?).await,
@@ -136,5 +144,8 @@ mod tests {
         assert_eq!(required_strings(&json!({"paths":["src/main.rs"]}), "paths", 32).unwrap(),
                    vec!["src/main.rs".to_string()]);
         assert!(required_strings(&json!({"paths":[]}), "paths", 32).is_err());
+        assert_eq!(optional_strings(&json!({}), "imagePaths", 4).unwrap(), None);
+        assert_eq!(optional_strings(&json!({"imagePaths":["/tmp/a.png"]}), "imagePaths", 4).unwrap(),
+                   Some(vec!["/tmp/a.png".to_string()]));
     }
 }

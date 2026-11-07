@@ -571,6 +571,79 @@ async fn read_project_knowledge(repo_id: String, work_id: Option<String>, query:
     Ok(audit.clone())
 }
 
+const LOCAL_CONVERSATION_MAX_IMAGES: usize = 4;
+const LOCAL_CONVERSATION_MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
+const LOCAL_CONVERSATION_IMAGE_EXTENSIONS: [&str; 5] = ["png", "jpg", "jpeg", "webp", "gif"];
+
+fn valid_local_conversation_id(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 160
+        && value.chars().all(|character| character.is_ascii_alphanumeric() || "._:-".contains(character))
+}
+
+fn local_conversation_image_root(conversation_id: &str) -> Result<PathBuf, String> {
+    if !valid_local_conversation_id(conversation_id) {
+        return Err("FORGE_DESKTOP_CONVERSATION_INVALID".into());
+    }
+    Ok(env::temp_dir().join("forge-local-conversation-images").join(conversation_id))
+}
+
+fn cleanup_local_conversation_images(conversation_id: &str) {
+    if let Ok(root) = local_conversation_image_root(conversation_id) {
+        let _ = fs::remove_dir_all(root);
+    }
+}
+
+fn stage_local_conversation_images(
+    conversation_id: &str,
+    image_paths: Vec<String>,
+) -> Result<Vec<String>, String> {
+    if image_paths.is_empty() { return Ok(Vec::new()); }
+    if image_paths.len() > LOCAL_CONVERSATION_MAX_IMAGES {
+        return Err("FORGE_DESKTOP_LOCAL_CONVERSATION_IMAGE_COUNT_INVALID".into());
+    }
+
+    let staging_parent = fs::canonicalize(env::temp_dir())
+        .map_err(|_| "FORGE_DESKTOP_LOCAL_CONVERSATION_IMAGE_STAGE_FAILED".to_string())?
+        .join("forge-local-conversation-images");
+    let sources = image_paths.into_iter().map(|raw| {
+        if raw.trim().is_empty() || raw.len() > 4096 {
+            return Err("FORGE_DESKTOP_LOCAL_CONVERSATION_IMAGE_PATH_INVALID".to_string());
+        }
+        let source = fs::canonicalize(&raw)
+            .map_err(|_| "FORGE_DESKTOP_LOCAL_CONVERSATION_IMAGE_PATH_INVALID".to_string())?;
+        if source.starts_with(&staging_parent) {
+            return Err("FORGE_DESKTOP_LOCAL_CONVERSATION_IMAGE_SOURCE_UNSAFE".into());
+        }
+        let metadata = fs::metadata(&source)
+            .map_err(|_| "FORGE_DESKTOP_LOCAL_CONVERSATION_IMAGE_PATH_INVALID".to_string())?;
+        let extension = source.extension().and_then(|value| value.to_str())
+            .map(|value| value.to_ascii_lowercase())
+            .filter(|value| LOCAL_CONVERSATION_IMAGE_EXTENSIONS.contains(&value.as_str()))
+            .ok_or_else(|| "FORGE_DESKTOP_LOCAL_CONVERSATION_IMAGE_TYPE_UNSUPPORTED".to_string())?;
+        if !metadata.is_file() || metadata.len() == 0 || metadata.len() > LOCAL_CONVERSATION_MAX_IMAGE_BYTES {
+            return Err("FORGE_DESKTOP_LOCAL_CONVERSATION_IMAGE_FILE_INVALID".into());
+        }
+        Ok((source, extension))
+    }).collect::<Result<Vec<_>, String>>()?;
+
+    let root = local_conversation_image_root(conversation_id)?;
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)
+        .map_err(|_| "FORGE_DESKTOP_LOCAL_CONVERSATION_IMAGE_STAGE_FAILED".to_string())?;
+
+    let staged = sources.into_iter().enumerate().map(|(index, (source, extension))| {
+        let target = root.join(format!("{index}.{extension}"));
+        fs::copy(source, &target)
+            .map_err(|_| "FORGE_DESKTOP_LOCAL_CONVERSATION_IMAGE_STAGE_FAILED".to_string())?;
+        fs::canonicalize(target)
+            .map_err(|_| "FORGE_DESKTOP_LOCAL_CONVERSATION_IMAGE_STAGE_FAILED".to_string())
+            .map(|path| path.to_string_lossy().to_string())
+    }).collect::<Result<Vec<_>, String>>();
+
+    if staged.is_err() { cleanup_local_conversation_images(conversation_id); }
+    staged
+}
+
 #[tauri::command]
 async fn send_local_conversation(
     conversation_id: String,
@@ -580,19 +653,32 @@ async fn send_local_conversation(
     reasoning_effort: Option<String>,
     repo_id: Option<String>,
     checkout_id: Option<String>,
+    image_paths: Option<Vec<String>>,
 ) -> Result<Value, String> {
-    let request = local_conversation_request(
-        conversation_id, provider_session_id, prompt, model, reasoning_effort, repo_id, checkout_id
+    let staged_images = stage_local_conversation_images(
+        &conversation_id, image_paths.unwrap_or_default()
     )?;
-    call_runtime_tool("capability_execute", request).await
+    let request = match local_conversation_request(
+        conversation_id.clone(), provider_session_id, prompt, model, reasoning_effort,
+        repo_id, checkout_id, staged_images,
+    ) {
+        Ok(request) => request,
+        Err(error) => {
+            cleanup_local_conversation_images(&conversation_id);
+            return Err(error);
+        }
+    };
+    let result = call_runtime_tool("capability_execute", request).await;
+    cleanup_local_conversation_images(&conversation_id);
+    result
 }
 
 fn local_conversation_request(
     conversation_id: String, provider_session_id: Option<String>, prompt: String,
     model: Option<String>, reasoning_effort: Option<String>,
-    repo_id: Option<String>, checkout_id: Option<String>,
+    repo_id: Option<String>, checkout_id: Option<String>, image_paths: Vec<String>,
 ) -> Result<Value, String> {
-    if conversation_id.trim().is_empty() || prompt.trim().is_empty() {
+    if !valid_local_conversation_id(conversation_id.trim()) || prompt.trim().is_empty() {
         return Err("FORGE_DESKTOP_LOCAL_CONVERSATION_ARGUMENT_REQUIRED".to_string());
     }
     if repo_id.as_ref().is_some_and(|value| value.trim().is_empty())
@@ -618,6 +704,9 @@ fn local_conversation_request(
     }
     if let Some(reasoning_effort) = reasoning_effort.filter(|value| !value.trim().is_empty()) {
         request["arguments"]["reasoning_effort"] = Value::String(reasoning_effort);
+    }
+    if !image_paths.is_empty() {
+        request["arguments"]["image_paths"] = json!(image_paths);
     }
     if let Some(repo_id) = repo_id { request["repo_id"] = Value::String(repo_id); }
     if let Some(checkout_id) = checkout_id { request["checkout_id"] = Value::String(checkout_id); }
@@ -1587,7 +1676,7 @@ mod tests {
         let build = |repo: Option<&str>, checkout: Option<&str>| local_conversation_request(
             "conversation".into(), None, "hello".into(),
             Some("gpt-6.1-sol".into()), Some("high".into()),
-            repo.map(str::to_owned), checkout.map(str::to_owned));
+            repo.map(str::to_owned), checkout.map(str::to_owned), Vec::new());
         let bound = build(Some("repo_a"), Some("checkout_b")).unwrap();
         assert_eq!(bound["arguments"]["model"], "gpt-6.1-sol");
         assert_eq!(bound["arguments"]["reasoning_effort"], "high");
@@ -1600,6 +1689,28 @@ mod tests {
         assert!(build(Some(" "), Some(" ")).is_err());
         assert!(build(Some("repo_a"), Some("../invalid")).is_err());
     }
+    #[test]
+    fn local_conversation_images_are_staged_scoped_and_cleaned() {
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let conversation_id = format!("test-image-stage-{}-{nonce}", std::process::id());
+        let source = env::temp_dir().join(format!("forge-image-source-{}-{nonce}.png", std::process::id()));
+        fs::write(&source, b"image-bytes").unwrap();
+
+        let staged = stage_local_conversation_images(
+            &conversation_id,
+            vec![source.to_string_lossy().to_string()],
+        ).unwrap();
+        assert_eq!(staged.len(), 1);
+        let root = fs::canonicalize(local_conversation_image_root(&conversation_id).unwrap()).unwrap();
+        let staged_path = fs::canonicalize(&staged[0]).unwrap();
+        assert!(staged_path.starts_with(&root));
+        assert!(staged_path.is_file());
+
+        cleanup_local_conversation_images(&conversation_id);
+        assert!(!root.exists());
+        let _ = fs::remove_file(source);
+    }
+
     #[test]
     fn mcp_timeout_only_extends_local_conversation_send() {
         let send = json!({"capability_id": "controller.local_conversation", "action": "send"});

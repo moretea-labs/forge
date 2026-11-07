@@ -123,6 +123,7 @@ struct ChatMessage: Codable, Identifiable {
     var id = UUID().uuidString
     let role: String
     let text: String
+    var attachmentNames: [String]?
     var toolActivityCount: Int?
     var createdAt = Date()
 }
@@ -180,6 +181,8 @@ final class NativeWorkspace: ObservableObject {
     @Published var showSearch = false
     @Published var busy = false
     @Published var provider = "未检测"
+    @Published var imageInputAvailable = false
+    @Published var pendingImageURLs: [URL] = []
     @Published private(set) var agentModels: [AgentModelOption] = []
     @Published var agentChanges: AgentGitDiff?
     @Published var changesLoading = false
@@ -241,6 +244,7 @@ final class NativeWorkspace: ObservableObject {
         selectedThreadId = item.id
         page = .agent
         draft = ""
+        pendingImageURLs = []
         agentChanges = nil
         persist()
     }
@@ -249,6 +253,7 @@ final class NativeWorkspace: ObservableObject {
         selectedThreadId = id
         page = .agent
         draft = ""
+        pendingImageURLs = []
         agentChanges = nil
         if let boundRepoId = item.repoId {
             repoId = boundRepoId
@@ -307,6 +312,8 @@ final class NativeWorkspace: ObservableObject {
             }
             let status = try? await ForgeBridge.request("read_local_provider_status")
             provider = status?["label"] as? String ?? status?["status"] as? String ?? "Codex 不可用"
+            imageInputAvailable = status?["imageInput"] as? Bool == true
+            if !imageInputAvailable { pendingImageURLs = [] }
             if let catalog = try? await ForgeBridge.request("read_local_provider_models"),
                let rows = catalog["models"] as? [[String: Any]],
                let bytes = try? JSONSerialization.data(withJSONObject: rows),
@@ -453,22 +460,49 @@ final class NativeWorkspace: ObservableObject {
             return false
         }
     }
+    func setPendingImages(_ urls: [URL]) {
+        guard imageInputAvailable else {
+            pendingImageURLs = []
+            self.error = "当前 Runtime 尚未启用图片输入。"
+            return
+        }
+        let supported = Set(["png","jpg","jpeg","webp","gif"])
+        let accepted = urls.filter { supported.contains($0.pathExtension.lowercased()) }
+        pendingImageURLs = Array(accepted.prefix(4))
+        self.error = accepted.count == urls.count && accepted.count <= 4
+            ? nil : "图片仅支持 PNG/JPEG/WebP/GIF，且最多 4 张。"
+    }
+
+    func removePendingImage(_ url: URL) {
+        pendingImageURLs.removeAll { $0 == url }
+    }
+
     func send() async {
         let prompt = draft.trimmingCharacters(in:.whitespacesAndNewlines)
         guard !prompt.isEmpty, !busy, let id = selectedThreadId,
               let index = threads.firstIndex(where:{$0.id == id}) else { return }
         let item = threads[index]
+        let imageURLs = pendingImageURLs
+        if !imageURLs.isEmpty && !imageInputAvailable {
+            self.error = "当前 Runtime 尚未启用图片输入。"
+            return
+        }
         if item.repoId != nil && item.checkoutId == nil {
             self.error = "此会话没有有效 checkout；请选择项目后新建会话。"
             return
         }
         busy = true
         draft = ""
-        threads[index].messages.append(ChatMessage(role:"user",text:prompt))
+        pendingImageURLs = []
+        threads[index].messages.append(ChatMessage(
+            role:"user", text:prompt,
+            attachmentNames:imageURLs.isEmpty ? nil : imageURLs.map(\.lastPathComponent)
+        ))
         if threads[index].messages.count == 1 { threads[index].title = String(prompt.prefix(46)) }
         threads[index].updatedAt = Date()
         persist()
         var args: [String:Any] = ["conversationId":id,"prompt":prompt]
+        if !imageURLs.isEmpty { args["imagePaths"] = imageURLs.map(\.path) }
         if let repo = item.repoId { args["repoId"] = repo }
         if let checkout = item.checkoutId { args["checkoutId"] = checkout }
         if let session = item.providerSessionId { args["providerSessionId"] = session }

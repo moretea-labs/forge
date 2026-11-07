@@ -5,11 +5,11 @@ import { evaluatePolicyGate } from '../../src/runtime/control-plane/facade/polic
 import { buildFacadeResult } from '../../src/runtime/control-plane/facade/facade-result';
 import { allowedFacadeOperations, validateSuggestedNextActions } from '../../src/runtime/control-plane/facade/suggested-actions';
 import { buildClaudeControllerInvocation, buildCodexControllerInvocation, buildSuperControllerInvocation, type ThinLauncherRequest } from '../../src/runtime/control-plane/launcher/thin-launcher';
-import { buildLocalConversationProviderArgs, cancelLocalConversation, parseCodexConversationJsonl, parseCodexModelCatalog, readLocalConversationActivity, readLocalConversationProviderStatus, runCodexConversation } from '../../src/runtime/control-plane/launcher/local-conversation-controller';
+import { buildLocalConversationProviderArgs, cancelLocalConversation, parseCodexConversationJsonl, parseCodexModelCatalog, readLocalConversationActivity, readLocalConversationProviderStatus, runCodexConversation, validateLocalConversationImagePaths } from '../../src/runtime/control-plane/launcher/local-conversation-controller';
 import { RH_WORK_MODEL_OPERATIONS, isRhWorkAcceptedOperation } from '../../src/runtime/control-plane/facade/rh-work-operation-contract';
 import { runtimeToolDefinitions } from '../../adapters/mcp/runtime-gateway/runtime-tool-definitions';
 import { mcpServerInstructions } from '../../adapters/mcp/instructions';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { normalizeRhWorkInputWireMigration } from '../../adapters/mcp/runtime-gateway/work-input-wire-migration';
@@ -29,6 +29,7 @@ describe('handoff and facade contracts', () => {
     const provider = await pending;
     expect(provider.provider).toBe('codex');
     expect(['ready', 'not_configured', 'unavailable']).toContain(provider.status);
+    expect(provider.imageInput).toBe(true);
     if (provider.status !== 'ready') {
       expect(provider.tools).toBe(false);
     } else {
@@ -190,6 +191,8 @@ describe('handoff and facade contracts', () => {
       conversationId: 'unregistered-local-id', status: 'idle', toolActivityCount: 0, events: [],
     });
     expect(schema?.actions?.send?.argumentsSchema?.required).toEqual(['conversation_id', 'prompt']);
+    const sendProperties = (schema?.actions?.send?.argumentsSchema as any)?.properties ?? {};
+    expect(sendProperties.image_paths).toMatchObject({ type: 'array', maxItems: 4 });
     expect(FACADE_TOOLS).toHaveLength(6);
   });
 
@@ -208,11 +211,29 @@ describe('handoff and facade contracts', () => {
     }));
     expect(catalog.models.map((model) => model.slug)).toEqual(['gpt-6.1-sol']);
     expect(catalog.models[0]?.supportedReasoningLevels.map((level) => level.effort)).toEqual(['low', 'high']);
-    expect(buildLocalConversationProviderArgs('gpt-6.1-sol', 'high')).toEqual([
+    expect(buildLocalConversationProviderArgs('gpt-6.1-sol', 'high', ['/tmp/a.png'])).toEqual([
       '--skip-git-repo-check', '--model', 'gpt-6.1-sol', '-c', 'model_reasoning_effort="high"',
+      '--image', '/tmp/a.png',
     ]);
     expect(() => buildLocalConversationProviderArgs('../bad', 'high')).toThrow('LOCAL_CONVERSATION_MODEL_INVALID');
     expect(() => parseCodexModelCatalog('not-json')).toThrow('LOCAL_CONVERSATION_MODEL_CATALOG_INVALID');
+  });
+
+  test('accepts only bounded conversation-scoped staged image paths', () => {
+    const conversationId = 'test-image-' + crypto.randomUUID();
+    const root = join(tmpdir(), 'forge-local-conversation-images', conversationId);
+    mkdirSync(root, { recursive: true });
+    const image = join(root, '0.png');
+    writeFileSync(image, 'image-bytes');
+    try {
+      expect(validateLocalConversationImagePaths(conversationId, [image])).toEqual([realpathSync(image)]);
+      expect(() => validateLocalConversationImagePaths(conversationId, ['/tmp/outside.png']))
+        .toThrow();
+      expect(() => validateLocalConversationImagePaths(conversationId, Array(5).fill(image)))
+        .toThrow('LOCAL_CONVERSATION_IMAGE_COUNT_INVALID');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   test('cancel stops the exact locally owned Codex process and keeps live activity bounded', async () => {
@@ -806,10 +827,11 @@ describe('Thin Launcher external Controller invocation', () => {
       prompt: 'local question',
       mcpBootstrap: bootstrap,
       sandbox: 'read-only',
-      args: ['--skip-git-repo-check'],
+      args: ['--skip-git-repo-check', '--image', '/tmp/local.png'],
       json: true,
     });
     expect(local.args).toContain('--skip-git-repo-check');
+    expect(local.args).toContain('/tmp/local.png');
     expect(local.args).toContain('read-only');
     expect(local.args).toContain('--json');
     expect(local.args).not.toContain('workspace-write');
@@ -819,10 +841,11 @@ describe('Thin Launcher external Controller invocation', () => {
       mcpBootstrap: bootstrap,
       sandbox: 'read-only',
       resumeSessionId: '01a1102c-2c50-76d3-ae32-478a4b24788b',
-      args: ['--skip-git-repo-check'],
+      args: ['--skip-git-repo-check', '--image', '/tmp/resumed.png'],
       json: true,
     });
     expect(resumed.args).toContain('--skip-git-repo-check');
+    expect(resumed.args).toContain('/tmp/resumed.png');
     expect(resumed.args).toContain('resume');
     expect(resumed.args).toContain('01a1102c-2c50-76d3-ae32-478a4b24788b');
     expect(resumed.args).not.toContain('workspace-write');

@@ -38,6 +38,7 @@ final class NativeWorkspaceTests: XCTestCase {
         decoder.dateDecodingStrategy = .secondsSince1970
         let message = try decoder.decode(ChatMessage.self,from:data)
         XCTAssertEqual(message.text,"done")
+        XCTAssertNil(message.attachmentNames)
         XCTAssertNil(message.toolActivityCount)
     }
 
@@ -101,5 +102,26 @@ extension NativeWorkspaceTests {
             AgentMessageBlock.parse("Before\n```\nline 1\nline 2"),
             [.markdown("Before"),.code(language:nil,text:"line 1\nline 2")]
         )
+    }
+}
+
+
+extension NativeWorkspaceTests {
+    @MainActor
+    func testPendingImageDraftIsCapabilityGatedBoundedAndNotPersistedAsPaths() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = folder.appendingPathComponent("conversations.json")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let model = NativeWorkspace(store: store)
+
+        let images = (0..<5).map { URL(fileURLWithPath:"/tmp/image-\($0).png") }
+        model.imageInputAvailable = false
+        model.setPendingImages(images)
+        XCTAssertTrue(model.pendingImageURLs.isEmpty)
+
+        model.imageInputAvailable = true
+        model.setPendingImages(images)
+        XCTAssertEqual(model.pendingImageURLs.count,4)
+        XCTAssertTrue(model.threads[0].messages.isEmpty)
     }
 }
