@@ -647,8 +647,16 @@ for (const name of architectureRootMarkdown) {
 for (const path of ['README.md', 'docs/ROADMAP.md', 'docs/architecture/CURRENT.md', 'docs/architecture/index.md']) {
   forbid(path, /\/Users\//, 'maintained documentation must not contain personal absolute macOS paths');
   forbid(path, /\bRepo Harness\b/i, 'maintained documentation must use the current Forge product identity');
-  forbid(path, /(?:^|\n)\s*(?:>\s*)?(?:\*\*)?Status(?:\*\*)?\s*:\s*[^\n]*(?:implementation in progress|Phase\s+\d+)/i, 'maintained documentation must not carry transient execution status; use Plan/Work/evidence or history');
+  forbid(path, /(?:^|\n)\s*(?:>\s*)?(?:\*\*)?Status(?:\*\*)?\s*:\s*[^\n]*(?:implementation in progress|Phase\s+\d+)/i, 'maintained documentation must not carry transient execution status; use Issue/Requirement/Plan/evidence or history');
 }
+
+requireText('docs/architecture/CURRENT.md', 'Work lifecycle is retired.');
+requireText('docs/architecture/CURRENT.md', 'Historical Work / WorkHandle / retired Supervisor records');
+forbid(
+  'docs/architecture/CURRENT.md',
+  /Repository-bound `rh_work start`|uses the same `work_prepare` writer|Work-attributed verification is an application service|Direct Work ownership is durable|Work preparation\/adoption is an application service|Work command execution and validation live|Every created Work may persist|Work-owned Supervisor close propagation|adapters\/chatgpt\/provider-delivery\.ts/,
+  'CURRENT architecture must not restore retired Work\/WorkHandle\/Supervisor writers as present-tense authorities',
+);
 
 const required = [
   'adapters/mcp/runtime-gateway/router.ts',
