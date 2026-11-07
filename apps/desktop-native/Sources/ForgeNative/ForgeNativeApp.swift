@@ -634,8 +634,9 @@ private struct AgentPane: View {
                                                             }
                                                         }
                                                         Spacer(minLength:8)
-                                                        Image(systemName:event.status == "completed" ? "checkmark" : "circle.fill")
-                                                            .font(.system(size:event.status == "completed" ? 8 : 5,weight:.semibold))
+                                                        Image(systemName:activityStatusIcon(event))
+                                                            .font(.system(size:(event.status == "completed" || event.status == "failed") ? 8 : 5,weight:.semibold))
+                                                            .foregroundStyle(activityStatusColor(event))
                                                     }
                                                 }
                                             }
@@ -714,6 +715,13 @@ private struct AgentPane: View {
                 .onChange(of:model.thread?.messages.count) { _ in
                     if let last = model.thread?.messages.last {
                         withAnimation(.easeOut(duration:0.2)) { reader.scrollTo(last.id,anchor:.bottom) }
+                    }
+                }
+                .onChange(of:model.busy) { busy in
+                    guard busy else { return }
+                    Task { @MainActor in
+                        await Task.yield()
+                        withAnimation(.easeOut(duration:0.2)) { reader.scrollTo("pending",anchor:.bottom) }
                     }
                 }
             }
@@ -862,6 +870,7 @@ private struct AgentPane: View {
             if !model.busy { composerFocused = true }
         }
         .onChange(of:model.selectedThreadId) { _ in
+            showChanges = false
             if !model.busy { composerFocused = true }
         }
     }
