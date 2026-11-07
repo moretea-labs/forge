@@ -90,41 +90,6 @@ export interface ConsoleErrorViewModel {
   nextActions: string[];
 }
 
-export interface WorkSummaryViewModel {
-  id: string;
-  repoId: string;
-  updatedAt: string;
-  title: string;
-  objective: string;
-  accessMode: 'request' | 'full_access';
-  accessModeLabel: string;
-  statusLabel: string;
-  tone: PlainStatusTone;
-  /** Machine phase for UI feedback: running | waiting | succeeded | failed | blocked | ... */
-  phase: string;
-  phaseLabel: string;
-  nextAction: string;
-  latestAction: string;
-  latestSummary: string;
-  progressSteps: Array<{ label: string; done: boolean; active: boolean }>;
-  latestVerification?: VerificationViewModel;
-  acceptanceCriteria: string[];
-  evidenceLabels: string[];
-  changedFiles?: ChangedFilesSummaryViewModel;
-  error?: ConsoleErrorViewModel;
-  delegateSummary?: string;
-  suggestedActions: SuggestedActionViewModel[];
-  primaryActionLabel?: string;
-  advanced?: {
-    workId: string;
-    state: string;
-    dispatchState: string;
-    evidenceState: string;
-    checkIds: string[];
-    handoffRefs: string[];
-  };
-}
-
 export interface ConnectorFreshnessViewModel {
   status:
     | 'local_mcp_updated'
