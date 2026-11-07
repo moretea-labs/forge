@@ -10,7 +10,6 @@ export type { ProcessCheckReceiptEvidence, ProcessCheckReceiptStatus } from '../
 export interface ProcessCheckReceiptExpectation {
   repoId?: string;
   checkoutId?: string;
-  workId?: string;
   executionSessionId?: string;
   editSessionId?: string;
   editRevision?: number;
@@ -67,7 +66,7 @@ function stableDigest(value: Record<string, unknown>): string {
 
 /**
  * Normalize one persisted Process Runtime record into the single authoritative
- * check completion receipt consumed by Edit Sessions, Work validation and Tasks.
+ * check completion receipt consumed by Edit Sessions, Issues/Tasks and validation.
  */
 export function processCheckCompletionReceipt(
   record: ManagedProcessRecord,
@@ -112,7 +111,6 @@ export function processCheckCompletionReceipt(
     }
   } else {
     assertExpected('checkoutId', record.checkoutId, expected.checkoutId);
-    assertExpected('workId', record.workId, expected.workId);
     assertExpected('executionSessionId', record.origin.executionSessionId, expected.executionSessionId);
     assertExpected('editSessionId', record.origin.editSessionId, expected.editSessionId);
     assertExpected('editRevision', record.origin.editRevision, expected.editRevision);
@@ -122,7 +120,6 @@ export function processCheckCompletionReceipt(
   }
 
   const consumerCheckoutId = semanticRebind ? expected.checkoutId ?? record.checkoutId : record.checkoutId;
-  const consumerWorkId = semanticRebind ? expected.workId : record.workId;
   const consumerExecutionSessionId = semanticRebind ? expected.executionSessionId : record.origin.executionSessionId;
   const consumerEditSessionId = semanticRebind ? expected.editSessionId : record.origin.editSessionId;
   const consumerEditRevision = semanticRebind ? expected.editRevision : record.origin.editRevision;
@@ -131,7 +128,6 @@ export function processCheckCompletionReceipt(
   const consumerRequestId = semanticRebind ? expected.requestId : record.origin.requestId;
   const reusedExecution = semanticRebind && (
     consumerCheckoutId !== record.checkoutId
-    || consumerWorkId !== record.workId
     || consumerExecutionSessionId !== record.origin.executionSessionId
     || consumerEditSessionId !== record.origin.editSessionId
     || consumerEditRevision !== record.origin.editRevision
@@ -149,7 +145,6 @@ export function processCheckCompletionReceipt(
     schemaVersion: 1,
     repoId: record.repoId,
     checkoutId: consumerCheckoutId,
-    workId: consumerWorkId,
     executionSessionId: consumerExecutionSessionId,
     editSessionId: consumerEditSessionId,
     editRevision: consumerEditRevision,
