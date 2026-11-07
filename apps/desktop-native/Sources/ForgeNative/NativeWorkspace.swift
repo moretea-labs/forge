@@ -61,9 +61,13 @@ struct AgentLiveActivity: Codable {
     let updatedAt: String?
     let events: [AgentLiveActivityEvent]?
 
-    var recentPriorEvents: [AgentLiveActivityEvent] {
+    var priorEvents: [AgentLiveActivityEvent] {
         guard let events, events.count > 1 else { return [] }
-        return Array(events.dropLast().suffix(4))
+        return Array(events.dropLast())
+    }
+
+    var recentPriorEvents: [AgentLiveActivityEvent] {
+        Array(priorEvents.suffix(4))
     }
 }
 

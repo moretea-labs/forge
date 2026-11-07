@@ -125,6 +125,7 @@ extension NativeWorkspaceTests {
         """.utf8)
         let activity = try JSONDecoder().decode(AgentLiveActivity.self, from: current)
         XCTAssertEqual(activity.events?.count, 2)
+        XCTAssertEqual(activity.priorEvents.map(\.label), ["正在推理"])
         XCTAssertEqual(activity.recentPriorEvents.map(\.label), ["正在推理"])
 
         let legacy = Data("""

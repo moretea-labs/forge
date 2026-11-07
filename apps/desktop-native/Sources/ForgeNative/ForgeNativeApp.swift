@@ -330,6 +330,7 @@ private struct ForgeWorkspaceView: View {
 private struct AgentPane: View {
     @ObservedObject var model: NativeWorkspace
     @State private var showChanges = false
+    @State private var showActivityDetails = false
 
     var body: some View {
         VStack(spacing:0) {
@@ -432,10 +433,23 @@ private struct AgentPane: View {
                                         Text("· \(count) 次工具")
                                             .foregroundStyle(.tertiary)
                                     }
+                                    Spacer(minLength:8)
+                                    if let count = model.liveActivity?.priorEvents.count, count > 4 {
+                                        Button(showActivityDetails ? "收起" : "全部 \(count)") {
+                                            withAnimation(.easeOut(duration:0.16)) {
+                                                showActivityDetails.toggle()
+                                            }
+                                        }
+                                        .buttonStyle(.plain)
+                                        .font(.system(size:10.5,weight:.medium))
+                                    }
                                 }
                                 .font(.system(size:12,weight:.medium))
 
-                                ForEach(model.liveActivity?.recentPriorEvents ?? []) { event in
+                                let activityEvents = showActivityDetails
+                                    ? model.liveActivity?.priorEvents ?? []
+                                    : model.liveActivity?.recentPriorEvents ?? []
+                                ForEach(activityEvents) { event in
                                     HStack(spacing:7) {
                                         Image(systemName:activityIcon(event.phase))
                                             .font(.system(size:9.5,weight:.medium))
