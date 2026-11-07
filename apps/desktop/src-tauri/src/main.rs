@@ -794,6 +794,13 @@ fn clear_local_api_key() -> Result<Value, String> {
     read_local_api_settings()
 }
 
+fn local_api_endpoint_ready(endpoint: &str, has_key: bool) -> bool {
+    let Ok(validated) = validated_local_api_endpoint(endpoint) else { return false; };
+    let Ok(url) = reqwest::Url::parse(&validated) else { return false; };
+    let loopback = matches!(url.host_str().unwrap_or(""), "localhost" | "127.0.0.1" | "[::1]");
+    loopback || has_key
+}
+
 #[tauri::command]
 fn read_local_api_settings() -> Result<Value, String> {
     let config = local_api_config()?;
@@ -801,6 +808,7 @@ fn read_local_api_settings() -> Result<Value, String> {
     let endpoint = config.get("endpoint").and_then(Value::as_str).unwrap_or("https://api.openai.com/v1");
     let model = config.get("model").and_then(Value::as_str).unwrap_or("");
     let api_protocol = config.get("apiProtocol").and_then(Value::as_str).unwrap_or("openai");
+    let has_key = read_local_api_key(endpoint)?.is_some();
     Ok(json!({
         "provider": provider,
         "endpoint": endpoint,
@@ -808,8 +816,9 @@ fn read_local_api_settings() -> Result<Value, String> {
         "apiProtocol": api_protocol,
         // Provider is a new-conversation default, not an execution-mode gate.
         // Existing API threads may remain valid when Codex becomes the default,
-        // so key presence belongs to the configured endpoint itself.
-        "hasKey": read_local_api_key(endpoint)?.is_some(),
+        // so endpoint/key readiness belongs to the configured endpoint itself.
+        "hasKey": has_key,
+        "endpointReady": local_api_endpoint_ready(endpoint, has_key),
     }))
 }
 
@@ -1997,6 +2006,15 @@ mod tests {
             tool.pointer("/function/name").and_then(Value::as_str)
         ).collect::<Vec<_>>();
         assert!(!names.contains(&"read_work_context"));
+    }
+
+    #[test]
+    fn api_endpoint_readiness_requires_key_only_for_remote_endpoints() {
+        assert!(local_api_endpoint_ready("http://127.0.0.1:11434/v1", false));
+        assert!(local_api_endpoint_ready("http://[::1]:11434/v1", false));
+        assert!(local_api_endpoint_ready("https://api.example.com/v1", true));
+        assert!(!local_api_endpoint_ready("https://api.example.com/v1", false));
+        assert!(!local_api_endpoint_ready("http://api.example.com/v1", true));
     }
 
     #[test]

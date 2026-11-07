@@ -64,7 +64,7 @@ final class NativeWorkspaceTests: XCTestCase {
         let model = NativeWorkspace(store:store)
         model.localApiSettings = LocalApiSettingsDetail(
             provider:"api",endpoint:"https://api.example.com/v1",model:"model-a",
-            apiProtocol:"openai",hasKey:true
+            apiProtocol:"openai",hasKey:true,endpointReady:true
         )
         XCTAssertEqual(model.selectedProvider,"api")
         model.selectThreadProvider("api")
@@ -283,13 +283,14 @@ final class NativeWorkspaceTests: XCTestCase {
     func testSavedApiProfileProjectionAndOneShotBridgeBoundary() {
         let settings = NativeWorkspace.localApiSettingsDetail([
             "provider":"api","endpoint":"https://api.example.com/v1",
-            "model":"model-a","apiProtocol":"openai","hasKey":true
+            "model":"model-a","apiProtocol":"openai","hasKey":true,"endpointReady":true
         ])
         XCTAssertEqual(settings?.provider,"api")
         XCTAssertEqual(settings?.endpoint,"https://api.example.com/v1")
         XCTAssertEqual(settings?.model,"model-a")
         XCTAssertEqual(settings?.apiProtocol,"openai")
         XCTAssertEqual(settings?.hasKey,true)
+        XCTAssertEqual(settings?.endpointReady,true)
         XCTAssertFalse(ForgeBridge.allowed.contains("send_local_api_conversation"))
     }
 
@@ -300,7 +301,7 @@ final class NativeWorkspaceTests: XCTestCase {
         let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
         model.localApiSettings = LocalApiSettingsDetail(
             provider:"codex", endpoint:"https://api.example.com/v1",
-            model:"", apiProtocol:"openai", hasKey:true
+            model:"", apiProtocol:"openai", hasKey:true, endpointReady:true
         )
         model.threads[0].provider = "api"
         model.threads[0].model = "thread-model"
@@ -309,9 +310,31 @@ final class NativeWorkspaceTests: XCTestCase {
 
         model.localApiSettings = LocalApiSettingsDetail(
             provider:"codex", endpoint:"",
-            model:"", apiProtocol:"openai", hasKey:true
+            model:"", apiProtocol:"openai", hasKey:true, endpointReady:false
         )
         XCTAssertFalse(model.selectedProviderReady)
+    }
+
+    @MainActor
+    func testApiReadinessFailsClosedWhenEndpointAuthIsNotReady() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        model.localApiSettings = LocalApiSettingsDetail(
+            provider:"api", endpoint:"https://api.example.com/v1",
+            model:"model-a", apiProtocol:"openai", hasKey:false, endpointReady:false
+        )
+        model.threads[0].provider = "api"
+        model.threads[0].model = "model-a"
+        XCTAssertFalse(model.apiProfileReady)
+        XCTAssertFalse(model.selectedProviderReady)
+
+        model.localApiSettings = LocalApiSettingsDetail(
+            provider:"api", endpoint:"http://127.0.0.1:11434/v1",
+            model:"model-a", apiProtocol:"openai", hasKey:false, endpointReady:true
+        )
+        XCTAssertTrue(model.apiProfileReady)
+        XCTAssertTrue(model.selectedProviderReady)
     }
 
     @MainActor
@@ -321,7 +344,7 @@ final class NativeWorkspaceTests: XCTestCase {
         let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
         model.localApiSettings = LocalApiSettingsDetail(
             provider:"api", endpoint:"https://api.example.com/v1",
-            model:"model-a", apiProtocol:"openai", hasKey:true
+            model:"model-a", apiProtocol:"openai", hasKey:true, endpointReady:true
         )
 
         model.newThread(provider:"api")
@@ -330,7 +353,7 @@ final class NativeWorkspaceTests: XCTestCase {
 
         model.localApiSettings = LocalApiSettingsDetail(
             provider:"api", endpoint:"https://api.example.com/v1",
-            model:"model-b", apiProtocol:"openai", hasKey:true
+            model:"model-b", apiProtocol:"openai", hasKey:true, endpointReady:true
         )
         XCTAssertEqual(model.thread?.model,"model-a")
         XCTAssertEqual(model.selectedApiModel,"model-a")

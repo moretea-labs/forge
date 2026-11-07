@@ -266,6 +266,7 @@ struct LocalApiSettingsDetail {
     let model: String
     let apiProtocol: String
     let hasKey: Bool
+    let endpointReady: Bool
 }
 
 struct RepositoryCheckoutContext {
@@ -375,13 +376,12 @@ final class NativeWorkspace: ObservableObject {
     }
     var apiProfileReady: Bool {
         guard let settings = localApiSettings else { return false }
-        return !settings.endpoint.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty
+        return settings.endpointReady
             && !settings.model.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty
     }
     var selectedProviderReady: Bool {
         if selectedProvider == "api" {
-            let endpoint = localApiSettings?.endpoint.trimmingCharacters(in:.whitespacesAndNewlines) ?? ""
-            return !endpoint.isEmpty && !selectedApiModel.isEmpty
+            return localApiSettings?.endpointReady == true && !selectedApiModel.isEmpty
         }
         return localProviderReady
     }
@@ -856,7 +856,9 @@ final class NativeWorkspace: ObservableObject {
               let apiProtocol = result["apiProtocol"] as? String else { return nil }
         return LocalApiSettingsDetail(
             provider:provider, endpoint:endpoint, model:model,
-            apiProtocol:apiProtocol, hasKey:result["hasKey"] as? Bool == true
+            apiProtocol:apiProtocol,
+            hasKey:result["hasKey"] as? Bool == true,
+            endpointReady:result["endpointReady"] as? Bool == true
         )
     }
 
