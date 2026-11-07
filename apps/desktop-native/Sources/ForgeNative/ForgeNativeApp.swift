@@ -601,7 +601,12 @@ private struct AgentPane: View {
                     .scrollIndicators(.hidden)
                 }
                 HStack(spacing:7) {
-                    agentConfigurationControls
+                    ViewThatFits(in:.horizontal) {
+                        HStack(spacing:7) { agentConfigurationControls }
+                        compactAgentConfigurationControl
+                    }
+                    .frame(maxWidth:430,alignment:.leading)
+                    .layoutPriority(-1)
 
                     Menu {
                         Button {
@@ -767,6 +772,113 @@ private struct AgentPane: View {
         .onChange(of:model.selectedThreadId) { _ in
             if !model.busy { composerFocused = true }
         }
+    }
+
+    private var compactAgentConfigurationControl: some View {
+        Menu {
+            Menu("项目") {
+                ForEach(model.projects) { project in
+                    Button {
+                        model.selectProject(project.repoId)
+                    } label: {
+                        if model.project?.repoId == project.repoId {
+                            Label(project.label,systemImage:"checkmark")
+                        } else {
+                            Text(project.label)
+                        }
+                    }
+                }
+            }
+            .disabled(model.projects.isEmpty || model.busy)
+
+            Menu("Provider") {
+                Button {
+                    model.selectThreadProvider("codex")
+                } label: {
+                    if model.selectedProvider == "codex" {
+                        Label("Codex CLI",systemImage:"checkmark")
+                    } else {
+                        Text("Codex CLI")
+                    }
+                }
+                Button {
+                    model.selectThreadProvider("api")
+                } label: {
+                    if model.selectedProvider == "api" {
+                        Label("兼容 API",systemImage:"checkmark")
+                    } else {
+                        Text("兼容 API")
+                    }
+                }
+                .disabled(!model.apiProfileReady)
+            }
+            .disabled(model.busy || model.thread?.messages.isEmpty == false)
+
+            if model.selectedProvider == "codex" {
+                Menu("模型") {
+                    ForEach(model.agentModels) { option in
+                        Button {
+                            model.selectAgentModel(option.slug)
+                        } label: {
+                            if model.selectedAgentModel?.slug == option.slug {
+                                Label(option.displayName,systemImage:"checkmark")
+                            } else {
+                                Text(option.displayName)
+                            }
+                        }
+                    }
+                }
+                .disabled(model.agentModels.isEmpty || model.busy)
+
+                Menu("Reasoning") {
+                    ForEach(model.selectedReasoningOptions) { option in
+                        Button {
+                            model.selectReasoningEffort(option.effort)
+                        } label: {
+                            if model.selectedReasoningEffort == option.effort {
+                                Label(reasoningLabel(option.effort),systemImage:"checkmark")
+                            } else {
+                                Text(reasoningLabel(option.effort))
+                            }
+                        }
+                    }
+                }
+                .disabled(model.selectedReasoningOptions.isEmpty || model.busy)
+            } else {
+                Button(compactApiModelLabel) {}
+                    .disabled(true)
+            }
+        } label: {
+            HStack(spacing:5) {
+                Image(systemName:"slider.horizontal.3")
+                    .font(.system(size:9.5,weight:.medium))
+                Text("配置")
+                Image(systemName:"chevron.down")
+                    .font(.system(size:7,weight:.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .font(.system(size:10.5,weight:.medium))
+            .foregroundStyle(ForgePalette.ink)
+            .padding(.horizontal,8)
+            .frame(height:25)
+            .background(ForgePalette.softFill,
+                        in:RoundedRectangle(cornerRadius:8,style:.continuous))
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .accessibilityLabel("Agent 配置")
+        .accessibilityValue(compactConfigurationAccessibilityValue)
+        .accessibilityIdentifier("agent.configuration.compact")
+    }
+
+    private var compactApiModelLabel: String {
+        "模型 · \(model.localApiSettings?.model ?? "API 模型")"
+    }
+
+    private var compactConfigurationAccessibilityValue: String {
+        let project = model.project?.label ?? "未选择项目"
+        let provider = model.selectedProvider == "api" ? "兼容 API" : "Codex CLI"
+        return "\(project)，\(provider)"
     }
 
     @ViewBuilder
