@@ -48,22 +48,15 @@ function fencedEphemeralOwner(lease: ExecutionLease, current: ReturnType<typeof 
 
 function validateClaimScopes(repoId: string, claims: ResourceClaimSpec[]): void {
   const checkoutIds = new Set<string>();
-  const workIds = new Set<string>();
   for (const claim of claims) {
     const claimRepoId = claim.repoId?.trim();
     const checkoutId = claim.checkoutId?.trim();
-    const workId = claim.workId?.trim();
     if (claimRepoId && claimRepoId !== repoId) {
       throw new Error(`LEASE_REPOSITORY_SCOPE_MISMATCH: expected ${repoId}, received ${claimRepoId}`);
     }
     if (checkoutId) checkoutIds.add(checkoutId);
-    if (workId) workIds.add(workId);
-    if (workId && (!claimRepoId || !checkoutId)) {
-      throw new Error(`LEASE_WORK_SCOPE_INCOMPLETE: ${workId}`);
-    }
   }
   if (checkoutIds.size > 1) throw new Error('LEASE_CHECKOUT_SCOPE_AMBIGUOUS');
-  if (workIds.size > 1) throw new Error('LEASE_WORK_SCOPE_AMBIGUOUS');
 }
 
 function ownerIdentityDigest(identity: ExecutionLeaseOwnerIdentity): string {
@@ -313,7 +306,6 @@ export function acquireExecutionLeases(
       leaseId: `LEASE-${Date.now()}-${randomUUID().slice(0, 8)}`,
       repoId,
       ...(claim.checkoutId?.trim() ? { checkoutId: claim.checkoutId.trim() } : {}),
-      ...(claim.workId?.trim() ? { workId: claim.workId.trim() } : {}),
       resourceKey: claim.resourceKey,
       mode: claim.mode,
       ownerJobId,
