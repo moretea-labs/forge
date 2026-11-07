@@ -546,6 +546,21 @@ final class NativeWorkspace: ObservableObject {
         """
     }
 
+    @discardableResult
+    func restoreFailedComposer(
+        conversationId: String,
+        prompt: String,
+        imageURLs: [URL],
+        contextPaths: [String]
+    ) -> Bool {
+        guard selectedThreadId == conversationId,
+              draft.isEmpty, pendingImageURLs.isEmpty, pendingContextPaths.isEmpty else { return false }
+        draft = prompt
+        pendingImageURLs = imageURLs
+        pendingContextPaths = contextPaths
+        return true
+    }
+
     func send() async {
         let prompt = draft.trimmingCharacters(in:.whitespacesAndNewlines)
         guard !prompt.isEmpty, !busy, let id = selectedThreadId,
@@ -620,8 +635,14 @@ final class NativeWorkspace: ObservableObject {
             error = nil
             await refreshAgentChanges()
         } catch {
-            // Message retained, but no fabricated success or automatic retry.
-            self.self.error = error.localizedDescription
+            // Keep the failed user message as truthful history. Never auto-resend because tools may have side effects.
+            let restored = restoreFailedComposer(
+                conversationId:id, prompt:prompt, imageURLs:imageURLs, contextPaths:contextPaths
+            )
+            let recoveryNote = restored
+                ? "请求内容已恢复到输入框；再次发送前请确认上一次工具操作是否已部分执行。"
+                : "未覆盖当前输入；如需重试，可从历史消息选择“重新编辑”。"
+            self.error = "\(error.localizedDescription)\n\(recoveryNote)"
         }
     }
     func cancel() async {

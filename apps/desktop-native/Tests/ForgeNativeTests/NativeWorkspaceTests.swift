@@ -66,6 +66,30 @@ final class NativeWorkspaceTests: XCTestCase {
     }
 
     @MainActor
+    func testFailedComposerRecoveryNeverOverwritesNewInput() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        let id = model.selectedThreadId!
+        let image = URL(fileURLWithPath:"/tmp/example.png")
+
+        XCTAssertTrue(model.restoreFailedComposer(
+            conversationId:id, prompt:"retry me", imageURLs:[image], contextPaths:["Sources/App.swift"]
+        ))
+        XCTAssertEqual(model.draft,"retry me")
+        XCTAssertEqual(model.pendingImageURLs,[image])
+        XCTAssertEqual(model.pendingContextPaths,["Sources/App.swift"])
+
+        model.draft = "new user input"
+        model.pendingImageURLs = []
+        model.pendingContextPaths = []
+        XCTAssertFalse(model.restoreFailedComposer(
+            conversationId:id, prompt:"stale failed prompt", imageURLs:[], contextPaths:[]
+        ))
+        XCTAssertEqual(model.draft,"new user input")
+    }
+
+    @MainActor
     func testRepositoryFileContextIsCheckoutConfinedAndPromptUsesRelativePaths() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let nested = root.appendingPathComponent("Sources")
