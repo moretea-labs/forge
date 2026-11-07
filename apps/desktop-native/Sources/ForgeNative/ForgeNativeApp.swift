@@ -756,13 +756,6 @@ private struct AgentPane: View {
                     .scrollIndicators(.hidden)
                 }
                 HStack(spacing:7) {
-                    ViewThatFits(in:.horizontal) {
-                        HStack(spacing:7) { agentConfigurationControls }
-                        compactAgentConfigurationControl
-                    }
-                    .frame(maxWidth:430,alignment:.leading)
-                    .layoutPriority(-1)
-
                     Menu {
                         Button {
                             chooseAgentFiles(model)
@@ -781,9 +774,9 @@ private struct AgentPane: View {
                         Image(systemName:"paperclip")
                             .font(.system(size:10,weight:.medium))
                             .foregroundStyle(ForgePalette.secondary)
-                            .frame(width:25,height:25)
+                            .frame(width:27,height:27)
                             .background(ForgePalette.softFill,
-                                        in:RoundedRectangle(cornerRadius:8,style:.continuous))
+                                        in:RoundedRectangle(cornerRadius:9,style:.continuous))
                     }
                     .menuStyle(.borderlessButton)
                     .fixedSize()
@@ -793,68 +786,15 @@ private struct AgentPane: View {
                     .accessibilityHint("添加当前 checkout 文件或当前 Provider 支持的图片")
                     .accessibilityIdentifier("agent.attach")
 
-                    if model.selectedProvider == "api", model.checkoutId != nil {
-                        Button {
-                            model.allowApiEffects.toggle()
-                        } label: {
-                            Image(systemName:model.allowApiEffects ? "shield.checkered" : "shield")
-                                .font(.system(size:10,weight:.medium))
-                                .foregroundStyle(model.allowApiEffects ? ForgePalette.accent : ForgePalette.secondary)
-                                .frame(width:25,height:25)
-                                .background(model.allowApiEffects ? ForgePalette.selectionStrong : ForgePalette.softFill,
-                                            in:RoundedRectangle(cornerRadius:8,style:.continuous))
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(model.busy)
-                        .help(model.allowApiEffects
-                              ? "本轮 API Agent 可执行受 Forge 约束的写操作；发送后自动关闭"
-                              : "本轮 API Agent 只允许只读工具；点击后仅授权下一次发送的写操作")
-                        .accessibilityLabel("API 写操作授权")
-                        .accessibilityValue(model.allowApiEffects ? "下一次发送已授权" : "未授权")
-                        .accessibilityHint("授权仅对下一次 API 发送有效")
-                        .accessibilityIdentifier("agent.api-effects")
-                    }
+                    compactAgentConfigurationControl
 
-                    Button {
-                        withAnimation(.easeOut(duration:0.18)) { showChanges.toggle() }
-                        if showChanges {
-                            Task { await model.refreshAgentChanges() }
-                        }
-                    } label: {
-                        HStack(spacing:5) {
-                            Image(systemName:"doc.text.magnifyingglass")
-                                .font(.system(size:9.5,weight:.medium))
-                            Text(model.changedFileCount > 0 ? "Changes \(model.changedFileCount)" : "Changes")
-                        }
-                        .font(.system(size:10.5,weight:.medium))
-                        .foregroundStyle(showChanges ? ForgePalette.ink : ForgePalette.secondary)
-                        .padding(.horizontal,8)
-                        .frame(height:25)
-                        .background(showChanges ? ForgePalette.selectionStrong : ForgePalette.softFill,
-                                    in:RoundedRectangle(cornerRadius:8,style:.continuous))
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(model.checkoutId == nil)
-                    .help("查看当前 checkout 的未提交改动")
-                    .accessibilityLabel("Git Changes")
-                    .accessibilityValue(model.changedFileCount > 0 ? "\(model.changedFileCount) 个文件" : "无已加载改动")
-                    .accessibilityIdentifier("agent.changes")
+                    Spacer(minLength:12)
 
-                    Circle()
-                        .fill(model.selectedProviderReady ? Color.green : Color.orange)
-                        .frame(width:6,height:6)
-                        .help(model.selectedProvider == "api"
-                              ? (model.apiProfileReady ? "兼容 API profile 已就绪" : "兼容 API profile 未完成")
-                              : model.provider)
-                        .accessibilityLabel("Provider 状态")
-                        .accessibilityValue(model.selectedProviderReady ? "已就绪" : "未就绪")
-                    Spacer()
-                    Text("⌘↵").font(.system(size:10)).foregroundStyle(.tertiary)
                     if model.busy {
                         Button { Task { await model.cancel() } } label: {
                             Image(systemName:"stop.fill")
                                 .font(.system(size:9,weight:.semibold))
-                                .frame(width:29,height:29)
+                                .frame(width:30,height:30)
                                 .background(ForgePalette.softFill,in:Circle())
                         }
                         .buttonStyle(.plain)
@@ -871,7 +811,7 @@ private struct AgentPane: View {
                             Image(systemName:"arrow.up")
                                 .font(.system(size:11,weight:.bold))
                                 .foregroundStyle(.white)
-                                .frame(width:29,height:29)
+                                .frame(width:30,height:30)
                                 .background(ForgePalette.accent,in:Circle())
                                 .opacity(sendDisabled ? 0.34 : 1)
                         }
@@ -965,13 +905,7 @@ private struct AgentPane: View {
     private var agentWorkspaceBar: some View {
         HStack(spacing:10) {
             HStack(spacing:7) {
-                Image(systemName:"folder.fill")
-                    .symbolRenderingMode(.hierarchical)
-                    .font(.system(size:10.5,weight:.medium))
-                    .foregroundStyle(ForgePalette.secondary)
-                Text(model.project?.label ?? "未选择项目")
-                    .font(.system(size:11.5,weight:.semibold))
-                    .lineLimit(1)
+                workspaceProjectControl
                 if let context = checkoutContextLabel {
                     Text(context)
                         .font(.system(size:9.5,weight:.medium,design:.monospaced))
@@ -999,6 +933,8 @@ private struct AgentPane: View {
                     semanticContextButton("Knowledge",page:.knowledge,systemImage:"books.vertical",compact:true)
                 }
             }
+
+            workspaceChangesControl
 
             Divider().frame(height:18)
 
@@ -1034,6 +970,76 @@ private struct AgentPane: View {
         if let branch = model.checkoutBranch, !branch.isEmpty { return branch }
         if let checkout = model.checkoutId, !checkout.isEmpty { return String(checkout.prefix(8)) }
         return nil
+    }
+
+    private var workspaceProjectControl: some View {
+        Menu {
+            ForEach(model.projects) { project in
+                Button {
+                    model.selectProject(project.repoId)
+                } label: {
+                    if model.project?.repoId == project.repoId {
+                        Label(project.label,systemImage:"checkmark")
+                    } else {
+                        Text(project.label)
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing:6) {
+                Image(systemName:"folder.fill")
+                    .symbolRenderingMode(.hierarchical)
+                    .font(.system(size:10.5,weight:.medium))
+                    .foregroundStyle(ForgePalette.secondary)
+                Text(model.project?.label ?? "选择项目")
+                    .font(.system(size:11.5,weight:.semibold))
+                    .lineLimit(1)
+                Image(systemName:"chevron.down")
+                    .font(.system(size:7,weight:.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize(horizontal:false,vertical:true)
+        .disabled(model.projects.isEmpty || model.busy)
+        .help("切换项目会创建新的会话，避免改变已有 Agent 上下文")
+        .accessibilityLabel("项目")
+        .accessibilityValue(model.project?.label ?? "未选择")
+        .accessibilityIdentifier("agent.project")
+    }
+
+    private var workspaceChangesControl: some View {
+        Button {
+            withAnimation(.easeOut(duration:0.18)) { showChanges.toggle() }
+            if showChanges {
+                Task { await model.refreshAgentChanges() }
+            }
+        } label: {
+            HStack(spacing:5) {
+                Image(systemName:"doc.text.magnifyingglass")
+                    .font(.system(size:9.5,weight:.medium))
+                if model.changedFileCount > 0 {
+                    Text("\(model.changedFileCount)")
+                        .font(.system(size:9.5,weight:.semibold))
+                        .monospacedDigit()
+                }
+            }
+            .foregroundStyle(showChanges ? ForgePalette.ink : ForgePalette.secondary)
+            .padding(.horizontal,7)
+            .frame(minWidth:25,minHeight:24)
+            .background(showChanges ? ForgePalette.selectionStrong : Color.clear,
+                        in:RoundedRectangle(cornerRadius:8,style:.continuous))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(model.checkoutId == nil)
+        .help(model.changedFileCount > 0
+              ? "查看当前 checkout 的 \(model.changedFileCount) 个未提交文件"
+              : "查看当前 checkout 的未提交改动")
+        .accessibilityLabel("Git Changes")
+        .accessibilityValue(model.changedFileCount > 0 ? "\(model.changedFileCount) 个文件" : "无已加载改动")
+        .accessibilityIdentifier("agent.changes")
     }
 
     private func semanticContextButton(_ title: String, page: NativePage, systemImage: String,
@@ -1126,21 +1132,6 @@ private struct AgentPane: View {
 
     private var compactAgentConfigurationControl: some View {
         Menu {
-            Menu("项目") {
-                ForEach(model.projects) { project in
-                    Button {
-                        model.selectProject(project.repoId)
-                    } label: {
-                        if model.project?.repoId == project.repoId {
-                            Label(project.label,systemImage:"checkmark")
-                        } else {
-                            Text(project.label)
-                        }
-                    }
-                }
-            }
-            .disabled(model.projects.isEmpty || model.busy)
-
             Menu("Provider") {
                 Button {
                     model.selectThreadProvider("codex")
@@ -1180,7 +1171,7 @@ private struct AgentPane: View {
                 }
                 .disabled(model.agentModels.isEmpty || model.busy)
 
-                Menu("Reasoning") {
+                Menu("推理强度") {
                     ForEach(model.selectedReasoningOptions) { option in
                         Button {
                             model.selectReasoningEffort(option.effort)
@@ -1195,14 +1186,33 @@ private struct AgentPane: View {
                 }
                 .disabled(model.selectedReasoningOptions.isEmpty || model.busy)
             } else {
-                Button(compactApiModelLabel) {}
+                Button("模型 · \(model.localApiSettings?.model ?? "API 模型")") {}
                     .disabled(true)
+                if model.checkoutId != nil {
+                    Divider()
+                    Button {
+                        model.allowApiEffects.toggle()
+                    } label: {
+                        Label(model.allowApiEffects ? "下一次发送已授权写操作" : "仅下一次发送允许写操作",
+                              systemImage:model.allowApiEffects ? "checkmark.shield.fill" : "shield")
+                    }
+                    .disabled(model.busy)
+                    .accessibilityLabel("API 写操作授权")
+                    .accessibilityValue(model.allowApiEffects ? "下一次发送已授权" : "未授权")
+                    .accessibilityHint("授权仅对下一次 API 发送有效")
+                    .accessibilityIdentifier("agent.api-effects")
+                }
             }
         } label: {
             HStack(spacing:5) {
-                Image(systemName:"slider.horizontal.3")
+                Image(systemName:model.allowApiEffects && model.selectedProvider == "api"
+                      ? "checkmark.shield.fill"
+                      : (model.selectedProvider == "api" ? "server.rack" : "cpu"))
                     .font(.system(size:9.5,weight:.medium))
-                Text("配置")
+                    .foregroundStyle(model.allowApiEffects && model.selectedProvider == "api"
+                                     ? ForgePalette.accent : ForgePalette.secondary)
+                Text(composerConfigurationLabel)
+                    .lineLimit(1)
                 Image(systemName:"chevron.down")
                     .font(.system(size:7,weight:.semibold))
                     .foregroundStyle(.tertiary)
@@ -1210,180 +1220,34 @@ private struct AgentPane: View {
             .font(.system(size:10.5,weight:.medium))
             .foregroundStyle(ForgePalette.ink)
             .padding(.horizontal,8)
-            .frame(height:25)
+            .frame(height:27)
             .background(ForgePalette.softFill,
-                        in:RoundedRectangle(cornerRadius:8,style:.continuous))
+                        in:RoundedRectangle(cornerRadius:9,style:.continuous))
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
+        .help(model.allowApiEffects && model.selectedProvider == "api"
+              ? "下一次 API 发送已授权受 Forge 约束的写操作"
+              : "选择 Provider、模型与推理强度")
         .accessibilityLabel("Agent 配置")
         .accessibilityValue(compactConfigurationAccessibilityValue)
         .accessibilityIdentifier("agent.configuration.compact")
     }
 
-    private var compactApiModelLabel: String {
-        "模型 · \(model.localApiSettings?.model ?? "API 模型")"
+    private var composerConfigurationLabel: String {
+        if model.selectedProvider == "api" {
+            let apiModel = model.localApiSettings?.model ?? "API 模型"
+            return "API · \(apiModel)"
+        }
+        let modelName = model.selectedAgentModel?.displayName ?? "Codex"
+        let reasoning = reasoningLabel(model.selectedReasoningEffort)
+        return reasoning.isEmpty ? modelName : "\(modelName) · \(reasoning)"
     }
 
     private var compactConfigurationAccessibilityValue: String {
-        let project = model.project?.label ?? "未选择项目"
         let provider = model.selectedProvider == "api" ? "兼容 API" : "Codex CLI"
-        return "\(project)，\(provider)"
-    }
-
-    @ViewBuilder
-    private var agentConfigurationControls: some View {
-        Menu {
-            ForEach(model.projects) { project in
-                Button {
-                    model.selectProject(project.repoId)
-                } label: {
-                    if model.project?.repoId == project.repoId {
-                        Label(project.label,systemImage:"checkmark")
-                    } else {
-                        Text(project.label)
-                    }
-                }
-            }
-        } label: {
-            HStack(spacing:5) {
-                Image(systemName:"folder.fill")
-                    .symbolRenderingMode(.hierarchical)
-                    .font(.system(size:9.5,weight:.medium))
-                Text(model.project?.label ?? "选择项目").lineLimit(1)
-                Image(systemName:"chevron.down")
-                    .font(.system(size:7,weight:.semibold))
-                    .foregroundStyle(.tertiary)
-            }
-            .font(.system(size:10.5,weight:.medium))
-            .foregroundStyle(ForgePalette.secondary)
-            .padding(.horizontal,8)
-            .frame(height:25)
-            .background(ForgePalette.softFill,
-                        in:RoundedRectangle(cornerRadius:8,style:.continuous))
-        }
-        .menuStyle(.borderlessButton)
-        .fixedSize()
-        .disabled(model.projects.isEmpty || model.busy)
-        .help("切换项目会创建新的会话，避免改变已有 Agent 上下文")
-        .accessibilityLabel("项目")
-        .accessibilityValue(model.project?.label ?? "未选择")
-        .accessibilityIdentifier("agent.project")
-
-        Menu {
-            Button { model.selectThreadProvider("codex") } label: {
-                if model.selectedProvider == "codex" { Label("Codex CLI",systemImage:"checkmark") }
-                else { Text("Codex CLI") }
-            }
-            Button { model.selectThreadProvider("api") } label: {
-                if model.selectedProvider == "api" { Label("兼容 API",systemImage:"checkmark") }
-                else { Text("兼容 API") }
-            }
-            .disabled(!model.apiProfileReady)
-        } label: {
-            HStack(spacing:5) {
-                Image(systemName:model.selectedProvider == "api" ? "network" : "terminal")
-                    .font(.system(size:9.5,weight:.medium))
-                Text(model.selectedProvider == "api" ? "API" : "Codex")
-                Image(systemName:"chevron.down")
-                    .font(.system(size:7,weight:.semibold))
-                    .foregroundStyle(.tertiary)
-            }
-            .font(.system(size:10.5,weight:.medium))
-            .foregroundStyle(ForgePalette.ink)
-            .padding(.horizontal,8)
-            .frame(height:25)
-            .background(ForgePalette.softFill,
-                        in:RoundedRectangle(cornerRadius:8,style:.continuous))
-        }
-        .menuStyle(.borderlessButton)
-        .fixedSize()
-        .disabled(model.busy || model.thread?.messages.isEmpty == false)
-        .help(model.thread?.messages.isEmpty == false
-              ? "已有历史的会话固定 Provider；新建会话可切换"
-              : "选择当前会话 Provider")
-        .accessibilityLabel("Provider")
-        .accessibilityValue(model.selectedProvider == "api" ? "兼容 API" : "Codex CLI")
-        .accessibilityIdentifier("agent.provider")
-
-        agentModelControl
-
-        Menu {
-            ForEach(model.selectedReasoningOptions) { option in
-                Button {
-                    model.selectReasoningEffort(option.effort)
-                } label: {
-                    if model.selectedReasoningEffort == option.effort {
-                        Label(reasoningLabel(option.effort),systemImage:"checkmark")
-                    } else {
-                        Text(reasoningLabel(option.effort))
-                    }
-                }
-            }
-        } label: {
-            HStack(spacing:5) {
-                Image(systemName:"brain.head.profile")
-                    .font(.system(size:9.5,weight:.medium))
-                Text(model.selectedProvider == "api" ? "API" : reasoningLabel(model.selectedReasoningEffort))
-                Image(systemName:"chevron.down")
-                    .font(.system(size:7,weight:.semibold))
-                    .foregroundStyle(.tertiary)
-            }
-            .font(.system(size:10.5,weight:.medium))
-            .foregroundStyle(ForgePalette.ink)
-            .padding(.horizontal,8)
-            .frame(height:25)
-            .background(ForgePalette.softFill,
-                        in:RoundedRectangle(cornerRadius:8,style:.continuous))
-        }
-        .menuStyle(.borderlessButton)
-        .fixedSize()
-        .disabled(model.selectedProvider != "codex" || model.selectedReasoningOptions.isEmpty || model.busy)
-        .help(model.selectedProvider == "api" ? "兼容 API 不使用 Codex reasoning 目录" : "当前模型的推理强度")
-    }
-
-    private var agentModelControl: some View {
-        Menu {
-            ForEach(model.agentModels) { option in
-                Button {
-                    model.selectAgentModel(option.slug)
-                } label: {
-                    if model.selectedAgentModel?.slug == option.slug {
-                        Label(option.displayName,systemImage:"checkmark")
-                    } else {
-                        Text(option.displayName)
-                    }
-                }
-            }
-        } label: {
-            HStack(spacing:5) {
-                Image(systemName:model.selectedProvider == "api" ? "server.rack" : "cpu")
-                    .font(.system(size:9.5,weight:.medium))
-                Text(agentModelLabel).lineLimit(1)
-                Image(systemName:"chevron.down")
-                    .font(.system(size:7,weight:.semibold))
-                    .foregroundStyle(.tertiary)
-            }
-            .font(.system(size:10.5,weight:.medium))
-            .foregroundStyle(ForgePalette.ink)
-            .padding(.horizontal,8)
-            .frame(height:25)
-            .background(ForgePalette.softFill,
-                        in:RoundedRectangle(cornerRadius:8,style:.continuous))
-        }
-        .menuStyle(.borderlessButton)
-        .fixedSize()
-        .disabled(model.selectedProvider != "codex" || model.agentModels.isEmpty || model.busy)
-        .help(model.selectedProvider == "api"
-              ? "API 模型来自保存的本地 profile"
-              : (model.selectedAgentModel?.description ?? "从 Codex 当前模型目录选择"))
-    }
-
-    private var agentModelLabel: String {
-        if model.selectedProvider == "api" {
-            return model.localApiSettings?.model ?? "API 模型"
-        }
-        return model.selectedAgentModel?.displayName ?? "选择模型"
+        let writeScope = model.selectedProvider == "api" && model.allowApiEffects ? "，下一次发送允许写操作" : ""
+        return "\(provider)，\(composerConfigurationLabel)\(writeScope)"
     }
 
     private func activityIcon(_ phase: String) -> String {
@@ -1552,6 +1416,7 @@ private struct AgentChangesPane: View {
     @State private var focusedPath: String?
     @State private var focusedChanges: AgentGitDiff?
     @State private var focusedLoading = false
+    @State private var reviewStaged = false
 
     var body: some View {
         VStack(alignment:.leading,spacing:0) {
@@ -1567,11 +1432,20 @@ private struct AgentChangesPane: View {
                         .padding(.horizontal,7).padding(.vertical,3)
                         .background(ForgePalette.selectionStrong,in:Capsule())
                 }
-                Spacer()
+                Picker("Review scope",selection:reviewScopeBinding) {
+                    Text("Working").tag(false)
+                    Text("Staged").tag(true)
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .frame(width:122)
+                .disabled(model.changesLoading || focusedLoading)
+                .accessibilityIdentifier("changes.scope")
+                Spacer(minLength:4)
                 Button {
                     focusedPath = nil
                     focusedChanges = nil
-                    Task { await model.refreshAgentChanges() }
+                    Task { await model.refreshAgentChanges(staged:reviewStaged) }
                 } label: {
                     Image(systemName:"arrow.clockwise")
                         .font(.system(size:11,weight:.medium))
@@ -1616,7 +1490,7 @@ private struct AgentChangesPane: View {
                                 Image(systemName:"checkmark.circle")
                                     .font(.system(size:24,weight:.light))
                                     .foregroundStyle(ForgePalette.secondary)
-                                Text("工作区没有未提交改动")
+                                Text(changes.staged ? "暂存区没有改动" : "工作区没有未提交改动")
                                     .font(.system(size:12,weight:.medium))
                                     .foregroundStyle(ForgePalette.secondary)
                             }
@@ -1650,7 +1524,7 @@ private struct AgentChangesPane: View {
                                     Button {
                                         Task {
                                             focusedLoading = true
-                                            let snapshot = await model.reviewAgentChanges(paths:[path])
+                                            let snapshot = await model.reviewAgentChanges(paths:[path],staged:reviewStaged)
                                             focusedLoading = false
                                             if let snapshot {
                                                 focusedPath = path
@@ -1750,19 +1624,26 @@ private struct AgentChangesPane: View {
                                         .foregroundStyle(.tertiary)
                                         .lineLimit(2)
                                     Spacer(minLength:8)
-                                    Button(role:.destructive) {
-                                        restoreSnapshot = reviewed
-                                    } label: {
-                                        Label("Discard",systemImage:"arrow.uturn.backward.circle")
-                                            .font(.system(size:11,weight:.semibold))
-                                            .padding(.horizontal,9)
-                                            .frame(height:29)
+                                    if reviewed.staged {
+                                        Text("Staged 仅支持提交")
+                                            .font(.system(size:9.5,weight:.medium))
+                                            .foregroundStyle(.tertiary)
+                                            .help("不跨越 index 边界执行 Discard")
+                                    } else {
+                                        Button(role:.destructive) {
+                                            restoreSnapshot = reviewed
+                                        } label: {
+                                            Label("Discard",systemImage:"arrow.uturn.backward.circle")
+                                                .font(.system(size:11,weight:.semibold))
+                                                .padding(.horizontal,9)
+                                                .frame(height:29)
+                                        }
+                                        .buttonStyle(.plain)
+                                        .foregroundStyle(.red)
+                                        .disabled(model.changesLoading || focusedLoading
+                                                  || reviewed.truncated || reviewed.patch.isEmpty)
+                                        .help("放弃当前已复查的 tracked / unstaged 改动")
                                     }
-                                    .buttonStyle(.plain)
-                                    .foregroundStyle(.red)
-                                    .disabled(model.changesLoading || focusedLoading || reviewed.staged
-                                              || reviewed.truncated || reviewed.patch.isEmpty)
-                                    .help("放弃当前已复查的 tracked / unstaged 改动")
                                     Button {
                                         let snapshot = reviewed
                                         let message = commitMessage
@@ -1806,6 +1687,9 @@ private struct AgentChangesPane: View {
                 .frame(maxWidth:.infinity,maxHeight:.infinity)
             }
         }
+        .onChange(of:model.agentChanges?.staged) { staged in
+            if let staged { reviewStaged = staged }
+        }
         .background(.ultraThinMaterial,
                     in:RoundedRectangle(cornerRadius:16,style:.continuous))
         .shadow(color:Color.black.opacity(0.12),radius:22,y:8)
@@ -1829,6 +1713,21 @@ private struct AgentChangesPane: View {
         }
         .accessibilityElement(children:.contain)
         .accessibilityLabel("Agent Changes")
+    }
+
+    private var reviewScopeBinding: Binding<Bool> {
+        Binding(
+            get:{ reviewStaged },
+            set:{ staged in switchReviewScope(staged) }
+        )
+    }
+
+    private func switchReviewScope(_ staged: Bool) {
+        guard reviewStaged != staged else { return }
+        reviewStaged = staged
+        focusedPath = nil
+        focusedChanges = nil
+        Task { await model.refreshAgentChanges(staged:staged) }
     }
 
     private func changeScopeHeader(_ changes: AgentGitDiff) -> some View {

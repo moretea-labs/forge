@@ -1000,7 +1000,7 @@ final class NativeWorkspace: ObservableObject {
             // Live activity is advisory UI only; the authoritative send result owns completion/errors.
         }
     }
-    private func loadAgentChanges(paths: [String]? = nil) async throws -> AgentGitDiff {
+    private func loadAgentChanges(paths: [String]? = nil, staged: Bool = false) async throws -> AgentGitDiff {
         guard let repoId, let checkoutId else {
             throw NSError(domain:"ForgeNative",code:1,userInfo:[
                 NSLocalizedDescriptionKey:"当前会话未绑定 repository / checkout。"
@@ -1009,7 +1009,7 @@ final class NativeWorkspace: ObservableObject {
         var arguments: [String:Any] = [
             "repoId":repoId,
             "checkoutId":checkoutId,
-            "staged":false
+            "staged":staged
         ]
         if let paths, !paths.isEmpty { arguments["paths"] = paths }
         let value = try await ForgeBridge.request("read_agent_git_diff",arguments)
@@ -1017,7 +1017,7 @@ final class NativeWorkspace: ObservableObject {
         return try JSONDecoder().decode(AgentGitDiff.self, from:bytes)
     }
 
-    func refreshAgentChanges() async {
+    func refreshAgentChanges(staged: Bool = false) async {
         guard repoId != nil, checkoutId != nil else {
             agentChanges = nil
             return
@@ -1025,7 +1025,7 @@ final class NativeWorkspace: ObservableObject {
         changesLoading = true
         defer { changesLoading = false }
         do {
-            agentChanges = try await loadAgentChanges()
+            agentChanges = try await loadAgentChanges(staged:staged)
         } catch {
             self.error = error.localizedDescription
         }
@@ -1038,9 +1038,9 @@ final class NativeWorkspace: ObservableObject {
             && !changes.patch.isEmpty
     }
 
-    func reviewAgentChanges(paths: [String]) async -> AgentGitDiff? {
+    func reviewAgentChanges(paths: [String], staged: Bool = false) async -> AgentGitDiff? {
         do {
-            let changes = try await loadAgentChanges(paths:paths)
+            let changes = try await loadAgentChanges(paths:paths,staged:staged)
             guard Self.reviewedChangesMatchPaths(changes,paths:paths) else {
                 self.error = "当前文件复查快照与请求范围不一致。"
                 return nil
@@ -1114,12 +1114,12 @@ final class NativeWorkspace: ObservableObject {
             self.error = nil
             agentChanges = nil
             changesLoading = false
-            await refreshAgentChanges()
+            await refreshAgentChanges(staged:changes.staged)
             return true
         } catch {
             changesLoading = false
             self.error = error.localizedDescription
-            await refreshAgentChanges()
+            await refreshAgentChanges(staged:changes.staged)
             return false
         }
     }
