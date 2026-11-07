@@ -73,7 +73,7 @@ function rhContextReadSessionId(ctx: MultiRepositoryMcpToolContext): string | un
 function rhContextKnowledgeAuditRequested(args: Record<string, unknown>): boolean {
   return [
     'knowledge_query', 'knowledge_memory_id', 'knowledge_scope_kind', 'knowledge_scope_id',
-    'knowledge_concept', 'knowledge_facet', 'knowledge_source_kind', 'knowledge_source_work_id',
+    'knowledge_concept', 'knowledge_facet', 'knowledge_source_kind',
   ].some(key => typeof args[key] === 'string' && String(args[key]).trim().length > 0)
     || typeof args.knowledge_limit === 'number';
 }
@@ -125,8 +125,6 @@ function rhContextKnowledgeAudit(
       ? { facet: args.knowledge_facet.trim() } : {}),
     ...(typeof args.knowledge_source_kind === 'string' && args.knowledge_source_kind.trim()
       ? { sourceKind: args.knowledge_source_kind.trim() as 'experience' | 'outcome' | 'knowledge' | 'controller' | 'system' | 'external' } : {}),
-    ...(typeof args.knowledge_source_work_id === 'string' && args.knowledge_source_work_id.trim()
-      ? { sourceWorkId: args.knowledge_source_work_id.trim() } : {}),
     ...(typeof args.knowledge_limit === 'number' ? { limit: args.knowledge_limit } : {}),
   });
   const usage = cognitiveUsageFeedbackForContext({
@@ -159,7 +157,6 @@ function rhContextKnowledgeAudit(
       ...(typeof args.knowledge_concept === 'string' && args.knowledge_concept.trim() ? { concept: args.knowledge_concept.trim() } : {}),
       ...(typeof args.knowledge_facet === 'string' && args.knowledge_facet.trim() ? { facet: args.knowledge_facet.trim() } : {}),
       ...(typeof args.knowledge_source_kind === 'string' && args.knowledge_source_kind.trim() ? { sourceKind: args.knowledge_source_kind.trim() } : {}),
-      ...(typeof args.knowledge_source_work_id === 'string' && args.knowledge_source_work_id.trim() ? { sourceWorkId: args.knowledge_source_work_id.trim() } : {}),
     },
     items: audit.items.map(entry => {
       const address = memoryAddressKey({ scope: entry.memory.scope, id: entry.memory.id });
