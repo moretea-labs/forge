@@ -57,7 +57,6 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     knowledge_concept: { type: 'string', description: 'Optional exact learned concept filter.' },
     knowledge_facet: { type: 'string', description: 'Optional exact learned facet filter.' },
     knowledge_source_kind: { type: 'string', enum: ['experience', 'outcome', 'knowledge', 'controller', 'system', 'external'], description: 'Optional provenance source-kind filter.' },
-    knowledge_source_work_id: { type: 'string', description: 'Optional provenance source Work filter.' },
     knowledge_limit: { type: 'number', minimum: 1, maximum: 100, description: 'Per-call read envelope for explicit Cognitive audit/expansion; defaults to 24. This is a context/transport budget, not a semantic claim that N memories are sufficient.' },
     known_paths: { type: 'array', items: { type: 'string' }, description: 'Optional exact paths or globs that should receive highest retrieval priority. Prefer exact file reads when paths are already known; use retrieval only for missing or changed evidence.' },
     include_globs: { type: 'array', items: { type: 'string' } },
