@@ -9,6 +9,8 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertTrue(ForgeBridge.allowed.contains("commit_agent_git_files"))
         XCTAssertTrue(ForgeBridge.allowed.contains("restore_agent_git_files"))
         XCTAssertTrue(ForgeBridge.allowed.contains("read_local_conversation_activity"))
+        XCTAssertTrue(ForgeBridge.allowed.contains("verify_recovery_runtime"))
+        XCTAssertTrue(ForgeBridge.allowed.contains("repair_connection"))
         XCTAssertFalse(ForgeBridge.allowed.contains("read_project_work_list"))
         XCTAssertFalse(ForgeBridge.allowed.contains("read_work_detail"))
         XCTAssertFalse(ForgeBridge.allowed.contains("execute_command"))
@@ -136,6 +138,41 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(plan?.items.first?.objective,"Polish UI")
         XCTAssertEqual(plan?.resolvedDecisions,["One native app"])
         XCTAssertEqual(plan?.nonGoals,["No Work lifecycle"])
+    }
+
+    func testRuntimeAndConnectionProjectionsUseCanonicalAuthorityFields() {
+        let runtime = NativeWorkspace.runtimeStatusDetail([
+            "running":true,"ready":true,"stale":false,
+            "reasonCodes":["one"],
+            "snapshot":["pid":123,"releaseId":"release-a","endpoint":"http://127.0.0.1:4317","observedAt":"now"]
+        ])
+        XCTAssertTrue(runtime.running)
+        XCTAssertTrue(runtime.ready)
+        XCTAssertEqual(runtime.label,"运行时正常")
+        XCTAssertEqual(runtime.pid,123)
+        XCTAssertEqual(runtime.releaseId,"release-a")
+        XCTAssertEqual(runtime.reasonCount,1)
+
+        let diagnostics = NativeWorkspace.runtimeDiagnosticsDetail([
+            "ok":false,"at":"now",
+            "probes":["runtime_status":["ok":true],"mcp_tools_list":["ok":false]]
+        ])
+        XCTAssertEqual(diagnostics.passed,1)
+        XCTAssertEqual(diagnostics.failed,1)
+        XCTAssertEqual(diagnostics.probes.count,2)
+
+        let connection = NativeWorkspace.controllerConnectionDetail([
+            "connection":[
+                "configured":true,"ready":false,
+                "controller":["ready":true,"title":"Controller ready","detail":"local"],
+                "tunnel":["ready":false,"title":"Tunnel degraded","detail":"reconnect"],
+                "repair":["available":true,"label":"Refresh Forge Connector"]
+            ]
+        ])
+        XCTAssertEqual(connection?.controller.ready,true)
+        XCTAssertEqual(connection?.tunnel.ready,false)
+        XCTAssertEqual(connection?.repairAvailable,true)
+        XCTAssertEqual(connection?.repairLabel,"Refresh Forge Connector")
     }
 
     @MainActor

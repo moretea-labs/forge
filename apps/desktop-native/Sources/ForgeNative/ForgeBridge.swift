@@ -18,7 +18,8 @@ enum ForgeBridge {
         "read_projects", "read_project_repository", "read_project_overview",
         "read_project_plan_list",
         "read_requirement_detail", "read_plan_detail",
-        "read_project_knowledge", "read_recovery_status", "read_connection_status",
+        "read_project_knowledge", "read_recovery_status", "verify_recovery_runtime",
+        "read_connection_status", "repair_connection",
         "read_local_provider_status", "read_local_provider_models", "read_local_conversation_activity",
         "read_agent_git_diff", "commit_agent_git_files", "restore_agent_git_files", "read_local_api_settings",
         "send_local_conversation", "cancel_local_conversation"

@@ -334,8 +334,7 @@ private struct ForgeWorkspaceView: View {
             case .agent: AgentPane(model:model)
             case .requirement,.plan: RecordsPane(model:model)
             case .knowledge: KnowledgePane(model:model)
-            case .runtime: TextDetailPane(title:"Runtime / Recovery",subtitle:"仅显示真实健康信息；不会修改被冻结的 Runtime。",
-                                           text:model.detail,refresh:{ Task { await model.loadPage() } })
+            case .runtime: RuntimePane(model:model)
             case .settings: TextDetailPane(title:"设置",subtitle:"Provider 凭据仍归现有 Rust Keychain 权限层管理。",
                                             text:model.settings,refresh:{ Task { await model.loadPage() } })
             }
@@ -1420,6 +1419,138 @@ private struct RecordsPane: View {
                     Circle().frame(width:4,height:4).padding(.top,6)
                     Text(value).font(.system(size:12)).lineSpacing(3).textSelection(.enabled)
                 }
+            }
+        }
+    }
+}
+
+private struct RuntimePane: View {
+    @ObservedObject var model: NativeWorkspace
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment:.leading,spacing:18) {
+                VStack(alignment:.leading,spacing:6) {
+                    Text("Runtime 与连接").font(.system(size:22,weight:.medium))
+                    Text("读取现有 Recovery 与 controller.connection 权威；此页面不提供版本切换、回滚或 Runtime 激活。")
+                        .font(.system(size:12)).foregroundStyle(ForgePalette.secondary)
+                }
+                runtimeCard
+                connectionCard
+                if let diagnostics = model.runtimeDiagnostics {
+                    VStack(alignment:.leading,spacing:12) {
+                        HStack {
+                            Text("诊断").font(.system(size:12,weight:.semibold))
+                            Spacer()
+                            Text("\(diagnostics.passed) 通过 · \(diagnostics.failed) 失败")
+                                .font(.system(size:10.5,weight:.medium))
+                                .foregroundStyle(diagnostics.ok ? Color.green : Color.orange)
+                        }
+                        ForEach(diagnostics.probes) { probe in
+                            HStack(spacing:9) {
+                                Image(systemName:probe.ok ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                                    .foregroundStyle(probe.ok ? Color.green : Color.orange)
+                                Text(probe.label).font(.system(size:11.5))
+                                Spacer()
+                            }
+                        }
+                    }
+                    .padding(15)
+                    .background(ForgePalette.softFill,in:RoundedRectangle(cornerRadius:14,style:.continuous))
+                }
+            }
+            .frame(maxWidth:850,alignment:.leading)
+            .frame(maxWidth:.infinity,alignment:.leading)
+            .padding(30)
+        }
+    }
+
+    private var runtimeCard: some View {
+        VStack(alignment:.leading,spacing:13) {
+            HStack(spacing:9) {
+                Circle().fill(runtimeColor).frame(width:8,height:8)
+                Text(model.runtimeStatus?.label ?? (model.runtimeLoading ? "正在读取运行时" : "运行时状态未知"))
+                    .font(.system(size:14,weight:.semibold))
+                Spacer()
+                Button("刷新") { Task { await model.loadRuntimePage() } }
+                    .buttonStyle(.plain).disabled(model.runtimeLoading)
+                Button(model.runtimeLoading ? "诊断中…" : "诊断") { Task { await model.diagnoseRuntime() } }
+                    .buttonStyle(.bordered).disabled(model.runtimeLoading)
+            }
+            Text(model.runtimeStatus?.detail ?? "等待独立 Recovery 返回主运行时状态。")
+                .font(.system(size:12)).foregroundStyle(ForgePalette.secondary)
+            if let status = model.runtimeStatus {
+                HStack(spacing:14) {
+                    if let release = status.releaseId { runtimeMeta("Release",String(release.prefix(18))) }
+                    if let pid = status.pid { runtimeMeta("PID","\(pid)") }
+                    runtimeMeta("Reasons","\(status.reasonCount)")
+                }
+            }
+        }
+        .padding(16)
+        .background(ForgePalette.softFill,in:RoundedRectangle(cornerRadius:15,style:.continuous))
+    }
+
+    private var connectionCard: some View {
+        VStack(alignment:.leading,spacing:13) {
+            HStack(spacing:9) {
+                Circle().fill(connectionColor).frame(width:8,height:8)
+                Text(connectionTitle).font(.system(size:14,weight:.semibold))
+                Spacer()
+                Button("刷新连接") { Task { await model.loadRuntimePage() } }
+                    .buttonStyle(.plain).disabled(model.connectionLoading)
+                if model.connectionStatus?.repairAvailable == true {
+                    Button(model.connectionStatus?.repairLabel ?? "刷新 Connector") {
+                        Task { await model.repairControllerConnection() }
+                    }
+                    .buttonStyle(.bordered).disabled(model.connectionLoading)
+                }
+            }
+            if let status = model.connectionStatus {
+                connectionRow("控制器",status.controller)
+                connectionRow("传输",status.tunnel)
+            } else {
+                Text("连接状态来自 Forge setup authority；客户端不保存第二份连接配置。")
+                    .font(.system(size:12)).foregroundStyle(ForgePalette.secondary)
+            }
+        }
+        .padding(16)
+        .background(ForgePalette.softFill,in:RoundedRectangle(cornerRadius:15,style:.continuous))
+    }
+
+    private var runtimeColor: Color {
+        guard let status = model.runtimeStatus else { return .secondary }
+        if status.ready && !status.stale { return .green }
+        return status.running ? .orange : .red
+    }
+
+    private var connectionColor: Color {
+        guard let status = model.connectionStatus else { return .secondary }
+        return status.ready ? .green : status.configured ? .orange : .red
+    }
+
+    private var connectionTitle: String {
+        guard let status = model.connectionStatus else { return model.connectionLoading ? "正在读取连接" : "MCP 连接状态未知" }
+        if status.ready { return "MCP 连接已就绪" }
+        if !status.controller.ready { return "控制器需要处理" }
+        if !status.tunnel.ready { return "远程传输需要处理" }
+        return status.configured ? "连接未就绪" : "连接尚未配置"
+    }
+
+    private func runtimeMeta(_ label:String,_ value:String) -> some View {
+        VStack(alignment:.leading,spacing:2) {
+            Text(label).font(.system(size:9.5,weight:.medium)).foregroundStyle(.tertiary)
+            Text(value).font(.system(size:10.5,design:.monospaced)).textSelection(.enabled)
+        }
+    }
+
+    private func connectionRow(_ label:String,_ item:ConnectionComponentDetail) -> some View {
+        HStack(alignment:.top,spacing:10) {
+            Image(systemName:item.ready ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                .foregroundStyle(item.ready ? Color.green : Color.orange)
+            VStack(alignment:.leading,spacing:3) {
+                Text("\(label) · \(item.title)").font(.system(size:11.5,weight:.medium))
+                Text(item.detail).font(.system(size:11)).foregroundStyle(ForgePalette.secondary)
             }
         }
     }

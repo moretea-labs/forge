@@ -57,7 +57,9 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
                 args.get("query").and_then(Value::as_str).unwrap_or("").to_string(),
             ).await,
         "read_recovery_status" => read_recovery_status().await,
+        "verify_recovery_runtime" => verify_recovery_runtime().await,
         "read_connection_status" => read_connection_status().await,
+        "repair_connection" => repair_connection().await,
         "read_local_provider_status" => read_local_provider_status().await,
         "read_local_provider_models" => read_local_provider_models().await,
         "read_local_conversation_activity" =>

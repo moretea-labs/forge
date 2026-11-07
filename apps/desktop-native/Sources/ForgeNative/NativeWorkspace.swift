@@ -181,6 +181,47 @@ enum SemanticRecordDetail {
     case requirement(RequirementRecordDetail)
     case plan(PlanRecordDetail)
 }
+struct RuntimeStatusDetail {
+    let running: Bool
+    let ready: Bool
+    let stale: Bool
+    let label: String
+    let detail: String
+    let pid: Int?
+    let releaseId: String?
+    let endpoint: String?
+    let observedAt: String?
+    let reasonCount: Int
+}
+
+struct RuntimeProbeDetail: Identifiable {
+    let id: String
+    let label: String
+    let ok: Bool
+}
+
+struct RuntimeDiagnosticsDetail {
+    let ok: Bool
+    let checkedAt: String?
+    let passed: Int
+    let failed: Int
+    let probes: [RuntimeProbeDetail]
+}
+
+struct ConnectionComponentDetail {
+    let ready: Bool
+    let title: String
+    let detail: String
+}
+
+struct ControllerConnectionDetail {
+    let configured: Bool
+    let ready: Bool
+    let controller: ConnectionComponentDetail
+    let tunnel: ConnectionComponentDetail
+    let repairAvailable: Bool
+    let repairLabel: String
+}
 enum NativePage: String, CaseIterable, Identifiable {
     case agent = "会话", requirement = "Requirement", plan = "Plan",
          knowledge = "知识库", runtime = "Runtime", settings = "设置"
@@ -233,6 +274,11 @@ final class NativeWorkspace: ObservableObject {
     @Published var selectedRecord: String?
     @Published var recordDetail: SemanticRecordDetail?
     @Published var detail = ""
+    @Published var runtimeStatus: RuntimeStatusDetail?
+    @Published var runtimeDiagnostics: RuntimeDiagnosticsDetail?
+    @Published var runtimeLoading = false
+    @Published var connectionStatus: ControllerConnectionDetail?
+    @Published var connectionLoading = false
     @Published var knowledgeQuery = ""
     @Published var settings = ""
     let store: URL
@@ -446,7 +492,7 @@ final class NativeWorkspace: ObservableObject {
     }
     func loadPage() async {
         if page == .runtime {
-            await loadRaw("read_recovery_status", [:])
+            await loadRuntimePage()
             return
         }
         if page == .settings {
@@ -486,6 +532,130 @@ final class NativeWorkspace: ObservableObject {
         do {
             let result = try await ForgeBridge.request(operation, args)
             detail = Self.prettyJSON(result)
+            error = nil
+        } catch { self.error = error.localizedDescription }
+    }
+
+    nonisolated static func runtimeStatusDetail(_ result: [String:Any]) -> RuntimeStatusDetail {
+        let status = result["data"] as? [String:Any] ?? result
+        let running = status["running"] as? Bool == true
+        let ready = status["ready"] as? Bool == true
+        let stale = status["stale"] as? Bool == true
+        let snapshot = status["snapshot"] as? [String:Any] ?? [:]
+        let reasonCount = (status["reasonCodes"] as? [Any])?.count ?? 0
+        let label: String
+        let detail: String
+        if stale {
+            label = "运行时状态已过期"
+            detail = "独立恢复能够读取状态，但最近的运行时投影已经过期。"
+        } else if ready {
+            label = "运行时正常"
+            detail = "主运行时正在运行并通过就绪检查。"
+        } else if running {
+            label = "运行时未就绪"
+            detail = "主运行时进程存在，但尚未通过完整就绪检查。"
+        } else {
+            label = "运行时未运行"
+            detail = "主运行时当前未运行；客户端仍只通过独立恢复读取状态。"
+        }
+        return RuntimeStatusDetail(
+            running:running, ready:ready, stale:stale, label:label, detail:detail,
+            pid:snapshot["pid"] as? Int,
+            releaseId:snapshot["releaseId"] as? String,
+            endpoint:snapshot["endpoint"] as? String,
+            observedAt:(snapshot["observedAt"] as? String) ?? (status["observedAt"] as? String),
+            reasonCount:reasonCount
+        )
+    }
+
+    nonisolated static func runtimeDiagnosticsDetail(_ result: [String:Any]) -> RuntimeDiagnosticsDetail {
+        let raw = result["data"] as? [String:Any] ?? result
+        let labels = [
+            "runtime_status":"运行时状态", "active_gateway":"活动网关",
+            "runtime_execution_surface":"运行时执行面", "primary_tunnel_runtime":"主隧道",
+            "primary_connector_local":"主连接器", "recovery_gateway":"恢复网关",
+            "recovery_watchdog":"恢复看门狗", "mcp_initialize":"MCP 初始化",
+            "mcp_tools_list":"MCP 工具列表", "mcp_read_only_call":"MCP 只读调用",
+            "mcp_session_close":"MCP 会话关闭"
+        ]
+        let probeMap = raw["probes"] as? [String:[String:Any]] ?? [:]
+        let probes = probeMap.keys.sorted().map { id in
+            RuntimeProbeDetail(id:id,label:labels[id] ?? id,ok:probeMap[id]?["ok"] as? Bool == true)
+        }
+        let passed = probes.filter(\.ok).count
+        return RuntimeDiagnosticsDetail(
+            ok:raw["ok"] as? Bool == true,
+            checkedAt:raw["at"] as? String,
+            passed:passed, failed:probes.count - passed, probes:probes
+        )
+    }
+
+    nonisolated static func controllerConnectionDetail(_ result: [String:Any]) -> ControllerConnectionDetail? {
+        let data = result["data"] as? [String:Any] ?? result
+        let value = data["connection"] as? [String:Any] ?? data
+        guard let controller = value["controller"] as? [String:Any],
+              let tunnel = value["tunnel"] as? [String:Any] else { return nil }
+        let repair = value["repair"] as? [String:Any] ?? [:]
+        return ControllerConnectionDetail(
+            configured:value["configured"] as? Bool == true,
+            ready:value["ready"] as? Bool == true,
+            controller:ConnectionComponentDetail(
+                ready:controller["ready"] as? Bool == true,
+                title:controller["title"] as? String ?? "控制器",
+                detail:controller["detail"] as? String ?? ""
+            ),
+            tunnel:ConnectionComponentDetail(
+                ready:tunnel["ready"] as? Bool == true,
+                title:tunnel["title"] as? String ?? "隧道",
+                detail:tunnel["detail"] as? String ?? ""
+            ),
+            repairAvailable:repair["available"] as? Bool == true,
+            repairLabel:repair["label"] as? String ?? "刷新 Forge Connector"
+        )
+    }
+
+    func loadRuntimePage() async {
+        runtimeLoading = true
+        connectionLoading = true
+        defer { runtimeLoading = false; connectionLoading = false }
+        var failures: [String] = []
+        do {
+            runtimeStatus = Self.runtimeStatusDetail(try await ForgeBridge.request("read_recovery_status"))
+        } catch {
+            runtimeStatus = nil
+            failures.append("Runtime：\(error.localizedDescription)")
+        }
+        do {
+            let value = try await ForgeBridge.request("read_connection_status")
+            connectionStatus = Self.controllerConnectionDetail(value)
+            connection = connectionStatus?.ready == true ? "已连接" : "未就绪"
+        } catch {
+            connectionStatus = nil
+            connection = "未就绪"
+            failures.append("连接：\(error.localizedDescription)")
+        }
+        self.error = failures.isEmpty ? nil : failures.joined(separator:"\n")
+    }
+
+    func diagnoseRuntime() async {
+        guard !runtimeLoading else { return }
+        runtimeLoading = true
+        defer { runtimeLoading = false }
+        do {
+            runtimeDiagnostics = Self.runtimeDiagnosticsDetail(try await ForgeBridge.request("verify_recovery_runtime"))
+            error = nil
+        } catch { self.error = error.localizedDescription }
+    }
+
+    func repairControllerConnection() async {
+        guard !connectionLoading else { return }
+        connectionLoading = true
+        defer { connectionLoading = false }
+        do {
+            let value = try await ForgeBridge.request("repair_connection")
+            guard let parsed = Self.controllerConnectionDetail(value) else { throw ForgeBridgeError.invalidResponse }
+            connectionStatus = parsed
+            connection = parsed.ready ? "已连接" : "未就绪"
             error = nil
         } catch { self.error = error.localizedDescription }
     }
