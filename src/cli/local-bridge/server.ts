@@ -1343,12 +1343,10 @@ export async function startLocalBridgeServer(
         String(request.params.handoffId ?? ""),
         "user",
       );
-      const feedback = toConsoleOperationFeedback(result.actionResult);
-      response.status(result.continued ? 200 : 409).json({
+      response.status(200).json({
         ...result,
-        phase: feedback.phase,
-        statusLabel: feedback.statusLabel,
-        feedback,
+        phase: 'succeeded',
+        statusLabel: '已记录决定',
       });
     } catch (error) {
       response.status(400).json({ error: errorMessage(error) });
