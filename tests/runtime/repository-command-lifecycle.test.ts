@@ -20,7 +20,7 @@ import {
 import { addRepositoryCheckout, getRepository, registerRepository } from '../../src/cli/repositories/registry';
 import { repositoryGitRemoveWorktree } from '../../src/cli/repositories/structured-worktree-cleanup';
 import { recordOwnedResource } from '../../packages/kernel/identity/api/index';
-import { commitSelectedPaths } from '../../src/cli/repositories/selected-path-actions';
+import { commitSelectedPaths, restoreSelectedPaths, selectedPathDiff } from '../../src/cli/repositories/selected-path-actions';
 import { acquireControllerLock, releaseControllerLock } from '../../src/cli/repositories/locks';
 import { persistControllerAccessMode } from '../../adapters/mcp/access-mode';
 import { executionIdentityForRepository } from '../../src/runtime/control-plane/execution/execution-identity';
@@ -437,6 +437,49 @@ describe('repository command execution lifecycle', () => {
     expect(committed.commit?.ok).toBe(true);
     expect(gitOutput(repoRoot, ['show', '--pretty=format:', '--name-only', 'HEAD']).split(/\r?\n/).filter(Boolean)).toEqual(['README.md']);
     expect(gitOutput(repoRoot, ['diff', '--cached', '--name-only'])).toBe('other.txt');
+  });
+
+  test('reviewed selected-path restore discards only exact tracked unstaged changes and rejects stale or staged scope', () => {
+    const controllerHome = tempRoot('forge-selected-restore-home-');
+    const repoRoot = tempRoot('forge-selected-restore-repo-');
+    const repository = seedRepo(controllerHome, repoRoot);
+    persistControllerAccessMode(controllerHome, 'full_access');
+
+    writeFileSync(join(repoRoot, 'README.md'), 'reviewed restore\n');
+    const reviewed = selectedPathDiff(repository, { paths: ['README.md'], staged:false, maxBytes:20_000 });
+    expect(reviewed.diff).not.toBe('');
+    const restored = restoreSelectedPaths(controllerHome, repository, {
+      paths:['README.md'],
+      expectedHead:reviewed.head,
+      expectedBranch:reviewed.branch,
+      expectedPatch:reviewed.diff,
+      confirmAuthorization:true,
+    });
+    expect(restored.error).toBeUndefined();
+    expect(restored.execution?.ok).toBe(true);
+    expect(gitOutput(repoRoot, ['diff', '--', 'README.md'])).toBe('');
+
+    writeFileSync(join(repoRoot, 'README.md'), 'staged restore must fail\n');
+    const stagedReview = selectedPathDiff(repository, { paths:['README.md'], staged:false, maxBytes:20_000 });
+    git(repoRoot, ['add', 'README.md']);
+    expect(() => restoreSelectedPaths(controllerHome, repository, {
+      paths:['README.md'],
+      expectedHead:stagedReview.head,
+      expectedBranch:stagedReview.branch,
+      expectedPatch:stagedReview.diff,
+      confirmAuthorization:true,
+    })).toThrow('SELECTED_PATH_RESTORE_STAGED_CHANGES');
+    git(repoRoot, ['restore', '--staged', '--', 'README.md']);
+
+    const stale = selectedPathDiff(repository, { paths:['README.md'], staged:false, maxBytes:20_000 });
+    writeFileSync(join(repoRoot, 'README.md'), 'changed after review\n');
+    expect(() => restoreSelectedPaths(controllerHome, repository, {
+      paths:['README.md'],
+      expectedHead:stale.head,
+      expectedBranch:stale.branch,
+      expectedPatch:stale.diff,
+      confirmAuthorization:true,
+    })).toThrow('SELECTED_PATH_RESTORE_PATCH_CHANGED');
   });
 
   test('routes fixed shell diagnostics and ordinary local scripts without weakening external boundaries', () => {

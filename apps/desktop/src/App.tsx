@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import * as Popover from '@radix-ui/react-popover';
 import {
   designPreviewProjection,
   disconnectedProjection,
@@ -108,7 +109,6 @@ export function Sidebar({
 }) {
   const [showProjectPicker, setShowProjectPicker] = useState(false);
   const [projectQuery, setProjectQuery] = useState('');
-  const projectPickerRef = useRef<HTMLDivElement>(null);
   const projectSearchRef = useRef<HTMLInputElement>(null);
   const [conversationSearchOpen, setConversationSearchOpen] = useState(false);
   const [conversationQuery, setConversationQuery] = useState('');
@@ -155,33 +155,6 @@ export function Sidebar({
     window.addEventListener('keydown', onSearchShortcut);
     return () => window.removeEventListener('keydown', onSearchShortcut);
   }, [conversationSearchOpen]);
-  // The project picker is a compact overlay; opening it must not displace
-  // conversation navigation or require another state owner.
-  useEffect(() => {
-    if (!showProjectPicker) return;
-    projectSearchRef.current?.focus({ preventScroll: true });
-    const onPointerDown = (event: PointerEvent) => {
-      if (event.target instanceof Node && !projectPickerRef.current?.contains(event.target)) {
-        setShowProjectPicker(false);
-        setProjectQuery('');
-      }
-    };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return;
-      event.preventDefault();
-      event.stopPropagation();
-      setShowProjectPicker(false);
-      setProjectQuery('');
-      projectPickerRef.current?.querySelector<HTMLButtonElement>('.sidebar-project-picker')
-        ?.focus({ preventScroll: true });
-    };
-    document.addEventListener('pointerdown', onPointerDown, true);
-    document.addEventListener('keydown', onKeyDown, true);
-    return () => {
-      document.removeEventListener('pointerdown', onPointerDown, true);
-      document.removeEventListener('keydown', onKeyDown, true);
-    };
-  }, [showProjectPicker]);
   const activeProject = projects.find((project) => project.repoId === selectedRepoId);
   const matchingProjects = projects.filter((project) =>
     (project.name + ' ' + project.repository + ' ' + (project.localRoot ?? ''))
@@ -198,19 +171,24 @@ export function Sidebar({
           <button className="nav-row sidebar-new-thread" type="button" onClick={onNewThread}>
             <span className="nav-symbol"><ForgeIcon name="new-thread" /></span><span className="nav-label">新会话</span><span className="sidebar-keyboard">⌘N</span>
           </button>
-          <button className={activeView === 'assistant' ? 'nav-row active' : 'nav-row'} type="button" onClick={onOpenAssistant}>
+          <button className={activeView === 'assistant' ? 'nav-row active' : 'nav-row'} type="button"
+            aria-current={activeView === 'assistant' ? 'page' : undefined} onClick={onOpenAssistant}>
             <span className="nav-symbol"><ForgeIcon name="conversations" /></span><span className="nav-label">会话</span>
           </button>
-          <button className={activeView === 'project' ? 'nav-row active' : 'nav-row'} type="button" onClick={onOpenProjects}>
+          <button className={activeView === 'project' ? 'nav-row active' : 'nav-row'} type="button"
+            aria-current={activeView === 'project' ? 'page' : undefined} onClick={onOpenProjects}>
             <span className="nav-symbol"><ForgeIcon name="project" /></span><span className="nav-label">Project · 项目</span>
           </button>
-          <button className={activeView === 'requirements' ? 'nav-row active' : 'nav-row'} type="button" onClick={onOpenRequirements}>
+          <button className={activeView === 'requirements' ? 'nav-row active' : 'nav-row'} type="button"
+            aria-current={activeView === 'requirements' ? 'page' : undefined} onClick={onOpenRequirements}>
             <span className="nav-symbol"><ForgeIcon name="requirement" /></span><span className="nav-label">Requirement · 需求</span>
           </button>
-          <button className={activeView === 'plans' ? 'nav-row active' : 'nav-row'} type="button" onClick={onOpenPlans}>
+          <button className={activeView === 'plans' ? 'nav-row active' : 'nav-row'} type="button"
+            aria-current={activeView === 'plans' ? 'page' : undefined} onClick={onOpenPlans}>
             <span className="nav-symbol"><ForgeIcon name="plan" /></span><span className="nav-label">Plan · 计划</span>
           </button>
-          <button className={activeView === 'knowledge' ? 'nav-row active' : 'nav-row'} type="button" onClick={onOpenKnowledge}>
+          <button className={activeView === 'knowledge' ? 'nav-row active' : 'nav-row'} type="button"
+            aria-current={activeView === 'knowledge' ? 'page' : undefined} onClick={onOpenKnowledge}>
             <span className="nav-symbol"><ForgeIcon name="knowledge" /></span><span className="nav-label">记忆与知识</span>
           </button>
         </nav>
@@ -254,6 +232,7 @@ export function Sidebar({
                   <button type="button" key={thread.id}
                     className={'nav-row sidebar-thread-row'
                       + (activeView === 'assistant' && selectedLocalThreadId === thread.id ? ' active' : '')}
+                    aria-current={activeView === 'assistant' && selectedLocalThreadId === thread.id ? 'page' : undefined}
                     title={thread.title + ' · ' + (thread.provider === 'api' ? '兼容 API' : 'Codex CLI')} onClick={() => {
                       onSelectLocalThread(thread.id);
                       setConversationSearchOpen(false);
@@ -273,75 +252,86 @@ export function Sidebar({
             )}
           </section>
         )}
-        <div className="sidebar-project-popover" ref={projectPickerRef}>
-          <div className="sidebar-project-heading">
-          <button className="sidebar-project-picker" type="button" aria-expanded={showProjectPicker}
-            aria-controls={showProjectPicker ? 'sidebar-project-options' : undefined}
-            title={activeProject?.localRoot ?? activeProject?.repository ?? '选择已注册项目'}
-            onClick={() => setShowProjectPicker((expanded) => !expanded)}>
-            <span className="project-folder"><ForgeIcon name="project" /></span>
-            <span className="project-picker-identity">
-              <span className="nav-label">{activeProject?.repository.split('/').at(-1) ?? '选择项目'}</span>
-              {activeProject?.repository && <small title={activeProject.localRoot ?? activeProject.repository}>
-                {activeProject.name} · {activeProject.repository}
-              </small>}
-            </span>
-            <span className={'project-caret' + (showProjectPicker ? ' expanded' : '')}><ForgeIcon name="chevron" size={15} /></span>
-          </button>
-          <button type="button" title="刷新已注册项目" aria-label="刷新已注册项目" onClick={onRetryProjects}><ForgeIcon name="refresh" size={16} /></button>
-        </div>
-        {showProjectPicker && (
-          <div id="sidebar-project-options" className="sidebar-project-picker-panel"
-            role="region" aria-label="选择项目">
-            <input ref={projectSearchRef} aria-label="搜索已注册项目" placeholder={'搜索 ' + projects.length + ' 个项目'}
-              value={projectQuery} onChange={(event) => setProjectQuery(event.target.value)} />
-            <div className="sidebar-list sidebar-projects">
-              {projects.length === 0 && (
-                <div className="sidebar-project-error" role="status">
-                  <strong>{runtimeStatus === 'connected' ? '尚无已注册项目' : '项目目录读取失败'}</strong>
-                  <span>{runtimeDetail}</span>
-                  <button type="button" className="plain-action" onClick={onRetryProjects}>重新读取</button>
-                </div>
-              )}
-              {matchingProjects.map((project) => (
-                <div className="sidebar-picker-project-row" key={project.repoId}>
-                  <button className={project.repoId === selectedRepoId ? 'nav-row project-row active' : 'nav-row project-row'}
-                    type="button" title={project.localRoot ?? project.repository}
-                    onClick={() => {
-                      onSelectProject?.(project);
-                      setShowProjectPicker(false);
-                      setProjectQuery('');
-                    }}>
-                    <span className="project-folder"><ForgeIcon name="project" /></span>
-                    <span className="project-picker-identity">
-                      <span className="nav-label">{project.repository.split('/').at(-1) ?? project.name}</span>
-                      <small>{project.name} · {project.repository}</small>
-                    </span>
-                  </button>
-                  <button className="sidebar-picker-project-agent" type="button"
-                    aria-label={`在 ${project.repository} 中新建 Agent 会话`}
-                    title="新建此项目的 Agent 会话"
-                    onClick={() => {
-                      onNewProjectThread(project.repoId);
-                      setShowProjectPicker(false);
-                      setProjectQuery('');
-                    }}>
-                    <ForgeIcon name="plus" size={16} />
-                  </button>
-                </div>
-              ))}
-              {projects.length > 0 && matchingProjects.length === 0 && <p className="sidebar-project-error">未找到匹配项目</p>}
+        <div className="sidebar-project-popover">
+          <Popover.Root open={showProjectPicker} onOpenChange={(open) => {
+            setShowProjectPicker(open);
+            if (!open) setProjectQuery('');
+          }}>
+            <div className="sidebar-project-heading">
+              <Popover.Trigger asChild>
+                <button className="sidebar-project-picker" type="button"
+                  title={activeProject?.localRoot ?? activeProject?.repository ?? '选择已注册项目'}>
+                  <span className="project-folder"><ForgeIcon name="project" /></span>
+                  <span className="project-picker-identity">
+                    <span className="nav-label">{activeProject?.repository.split('/').at(-1) ?? '选择项目'}</span>
+                    {activeProject?.repository && <small title={activeProject.localRoot ?? activeProject.repository}>
+                      {activeProject.name} · {activeProject.repository}
+                    </small>}
+                  </span>
+                  <span className={'project-caret' + (showProjectPicker ? ' expanded' : '')}><ForgeIcon name="chevron" size={15} /></span>
+                </button>
+              </Popover.Trigger>
+              <button type="button" title="刷新已注册项目" aria-label="刷新已注册项目" onClick={onRetryProjects}><ForgeIcon name="refresh" size={16} /></button>
             </div>
-          </div>
-        )}
+            <Popover.Portal>
+              <Popover.Content className="sidebar-project-picker-panel" style={desktopThemeStyle} aria-label="选择项目"
+                side="top" align="start" sideOffset={8} collisionPadding={12}
+                onOpenAutoFocus={(event) => {
+                  event.preventDefault();
+                  projectSearchRef.current?.focus({ preventScroll: true });
+                }}>
+                <input ref={projectSearchRef} aria-label="搜索已注册项目" placeholder={'搜索 ' + projects.length + ' 个项目'}
+                  value={projectQuery} onChange={(event) => setProjectQuery(event.target.value)} />
+                <div className="sidebar-list sidebar-projects">
+                  {projects.length === 0 && (
+                    <div className="sidebar-project-error" role="status">
+                      <strong>{runtimeStatus === 'connected' ? '尚无已注册项目' : '项目目录读取失败'}</strong>
+                      <span>{runtimeDetail}</span>
+                      <button type="button" className="plain-action" onClick={onRetryProjects}>重新读取</button>
+                    </div>
+                  )}
+                  {matchingProjects.map((project) => (
+                    <div className="sidebar-picker-project-row" key={project.repoId}>
+                      <button className={project.repoId === selectedRepoId ? 'nav-row project-row active' : 'nav-row project-row'}
+                        type="button" title={project.localRoot ?? project.repository}
+                        onClick={() => {
+                          onSelectProject?.(project);
+                          setShowProjectPicker(false);
+                          setProjectQuery('');
+                        }}>
+                        <span className="project-folder"><ForgeIcon name="project" /></span>
+                        <span className="project-picker-identity">
+                          <span className="nav-label">{project.repository.split('/').at(-1) ?? project.name}</span>
+                          <small>{project.name} · {project.repository}</small>
+                        </span>
+                      </button>
+                      <button className="sidebar-picker-project-agent" type="button"
+                        aria-label={`在 ${project.repository} 中新建 Agent 会话`}
+                        title="新建此项目的 Agent 会话"
+                        onClick={() => {
+                          onNewProjectThread(project.repoId);
+                          setShowProjectPicker(false);
+                          setProjectQuery('');
+                        }}>
+                        <ForgeIcon name="plus" size={16} />
+                      </button>
+                    </div>
+                  ))}
+                  {projects.length > 0 && matchingProjects.length === 0 && <p className="sidebar-project-error">未找到匹配项目</p>}
+                </div>
+              </Popover.Content>
+            </Popover.Portal>
+          </Popover.Root>
         </div>
       </div>
 
       <div className="sidebar-footer">
-        <button className={activeView === 'settings' ? 'nav-row active' : 'nav-row'} type="button" onClick={onOpenSettings}>
+        <button className={activeView === 'settings' ? 'nav-row active' : 'nav-row'} type="button"
+          aria-current={activeView === 'settings' ? 'page' : undefined} onClick={onOpenSettings}>
           <span className="nav-symbol"><ForgeIcon name="settings" /></span><span className="nav-label">设置</span>
         </button>
-        <button className={activeView === 'runtime' ? 'nav-row active' : 'nav-row'} type="button" onClick={onOpenRuntime}>
+        <button className={activeView === 'runtime' ? 'nav-row active' : 'nav-row'} type="button"
+          aria-current={activeView === 'runtime' ? 'page' : undefined} onClick={onOpenRuntime}>
           <span className="nav-symbol"><ForgeIcon name="runtime" /></span>
           <span className="nav-label">MCP 服务与运行时</span>
           <span className={`health-dot ${runtimeStatus}`} />

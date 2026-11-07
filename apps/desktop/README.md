@@ -2,6 +2,16 @@
 
 Forge Desktop is a local Agent client for registered Forge repositories, checkouts and existing Requirement / Plan / Work. The Client does not own or replace the Forge Runtime.
 
+The canonical installed macOS preview is now the SwiftUI shell in `apps/desktop-native`. The Rust executable in `apps/desktop/src-tauri` is packaged beside it only as the allowlisted one-shot native bridge. The React/Tauri surface remains a development/design fixture during migration and must not be installed as a second client preview.
+
+Install or refresh the one supported local preview with:
+
+```sh
+bash apps/desktop-native/install-preview.sh
+```
+
+This keeps only `~/Applications/Forge.app` as the client preview. `Forge Desktop Operator.app` is a separate development capability and is not a client preview.
+
 ## Development
 
 From the repository root:

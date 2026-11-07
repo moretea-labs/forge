@@ -656,15 +656,23 @@ export function LocalConversationSurface({
     setCommitError(undefined);
   };
 
-  const archiveThread = () => {
+  const deleteThread = () => {
     if (!selectedThread || sending || committing) return;
-    updateSelected((thread) => ({ ...thread, archived: true, updatedAt: new Date().toISOString() }));
+    const deletedId = selectedThread.id;
+    // Local conversation state has one owner; deleting must not create hidden history.
+    setThreads((current) => current.filter((thread) => thread.id !== deletedId));
     setDrafts((current) => {
       const next = { ...current };
-      delete next[selectedThread.id];
+      delete next[deletedId];
       return next;
     });
-    setSelectedThreadId(activeThreads.find((thread) => thread.id !== selectedThread.id)?.id);
+    setSendErrors((current) => {
+      const next = { ...current };
+      delete next[deletedId];
+      return next;
+    });
+    setSelectedThreadId(activeThreads.find((thread) => thread.id !== deletedId)?.id);
+    setAllowEffects(false);
   };
 
   async function toggleDiff(forceRefresh = false, staged = diffStaged) {
@@ -861,7 +869,7 @@ export function LocalConversationSurface({
             <summary title="更多会话操作" aria-label="更多会话操作"><AgentControlIcon name="more" /></summary>
             <div className="agent-header-menu-panel" role="group" aria-label="会话操作">
               <button type="button" onClick={() => { closeAgentMenus(surfaceRef.current); onOpenProjects(); }}>
-                <AgentControlIcon name="work" /> 项目与记录
+                <AgentControlIcon name="folder" /> 项目与记录
               </button>
               <button type="button" onClick={() => { closeAgentMenus(surfaceRef.current); onOpenKnowledge(); }}>
                 <AgentControlIcon name="book" /> 项目知识
@@ -874,7 +882,7 @@ export function LocalConversationSurface({
                 <AgentControlIcon name="refresh" /> 刷新 Codex 连接
               </button>}
               {selectedThread && <button type="button" disabled={sending || committing}
-                onClick={() => { closeAgentMenus(surfaceRef.current); archiveThread(); }}>归档当前会话</button>}
+                onClick={() => { closeAgentMenus(surfaceRef.current); deleteThread(); }}>删除当前会话</button>}
             </div>
           </details>
         </div>

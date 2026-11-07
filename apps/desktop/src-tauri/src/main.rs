@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod native_bridge;
+
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tauri::{Emitter, Manager};
@@ -491,6 +493,16 @@ async fn read_local_provider_status() -> Result<Value, String> {
     })).await
 }
 
+#[tauri::command]
+async fn read_local_provider_models() -> Result<Value, String> {
+    call_runtime_tool("capability_execute", json!({
+        "capability_id": "controller.local_conversation",
+        "action": "models",
+        "arguments": {},
+        "request_id": request_id("local-conversation-models")
+    })).await
+}
+
 
 #[tauri::command]
 async fn read_project_knowledge(repo_id: String, query: String) -> Result<Value, String> {
@@ -515,23 +527,114 @@ async fn read_project_knowledge(repo_id: String, query: String) -> Result<Value,
     Ok(audit.clone())
 }
 
+const LOCAL_CONVERSATION_MAX_IMAGES: usize = 4;
+const LOCAL_CONVERSATION_MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
+const LOCAL_CONVERSATION_IMAGE_EXTENSIONS: [&str; 5] = ["png", "jpg", "jpeg", "webp", "gif"];
+
+fn valid_local_conversation_id(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 160
+        && value.chars().all(|character| character.is_ascii_alphanumeric() || "._:-".contains(character))
+}
+
+fn local_conversation_image_root(conversation_id: &str) -> Result<PathBuf, String> {
+    if !valid_local_conversation_id(conversation_id) {
+        return Err("FORGE_DESKTOP_CONVERSATION_INVALID".into());
+    }
+    Ok(env::temp_dir().join("forge-local-conversation-images").join(conversation_id))
+}
+
+fn cleanup_local_conversation_images(conversation_id: &str) {
+    if let Ok(root) = local_conversation_image_root(conversation_id) {
+        let _ = fs::remove_dir_all(root);
+    }
+}
+
+fn stage_local_conversation_images(
+    conversation_id: &str,
+    image_paths: Vec<String>,
+) -> Result<Vec<String>, String> {
+    if image_paths.is_empty() { return Ok(Vec::new()); }
+    if image_paths.len() > LOCAL_CONVERSATION_MAX_IMAGES {
+        return Err("FORGE_DESKTOP_LOCAL_CONVERSATION_IMAGE_COUNT_INVALID".into());
+    }
+
+    let staging_parent = fs::canonicalize(env::temp_dir())
+        .map_err(|_| "FORGE_DESKTOP_LOCAL_CONVERSATION_IMAGE_STAGE_FAILED".to_string())?
+        .join("forge-local-conversation-images");
+    let sources = image_paths.into_iter().map(|raw| {
+        if raw.trim().is_empty() || raw.len() > 4096 {
+            return Err("FORGE_DESKTOP_LOCAL_CONVERSATION_IMAGE_PATH_INVALID".to_string());
+        }
+        let source = fs::canonicalize(&raw)
+            .map_err(|_| "FORGE_DESKTOP_LOCAL_CONVERSATION_IMAGE_PATH_INVALID".to_string())?;
+        if source.starts_with(&staging_parent) {
+            return Err("FORGE_DESKTOP_LOCAL_CONVERSATION_IMAGE_SOURCE_UNSAFE".into());
+        }
+        let metadata = fs::metadata(&source)
+            .map_err(|_| "FORGE_DESKTOP_LOCAL_CONVERSATION_IMAGE_PATH_INVALID".to_string())?;
+        let extension = source.extension().and_then(|value| value.to_str())
+            .map(|value| value.to_ascii_lowercase())
+            .filter(|value| LOCAL_CONVERSATION_IMAGE_EXTENSIONS.contains(&value.as_str()))
+            .ok_or_else(|| "FORGE_DESKTOP_LOCAL_CONVERSATION_IMAGE_TYPE_UNSUPPORTED".to_string())?;
+        if !metadata.is_file() || metadata.len() == 0 || metadata.len() > LOCAL_CONVERSATION_MAX_IMAGE_BYTES {
+            return Err("FORGE_DESKTOP_LOCAL_CONVERSATION_IMAGE_FILE_INVALID".into());
+        }
+        Ok((source, extension))
+    }).collect::<Result<Vec<_>, String>>()?;
+
+    let root = local_conversation_image_root(conversation_id)?;
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)
+        .map_err(|_| "FORGE_DESKTOP_LOCAL_CONVERSATION_IMAGE_STAGE_FAILED".to_string())?;
+
+    let staged = sources.into_iter().enumerate().map(|(index, (source, extension))| {
+        let target = root.join(format!("{index}.{extension}"));
+        fs::copy(source, &target)
+            .map_err(|_| "FORGE_DESKTOP_LOCAL_CONVERSATION_IMAGE_STAGE_FAILED".to_string())?;
+        fs::canonicalize(target)
+            .map_err(|_| "FORGE_DESKTOP_LOCAL_CONVERSATION_IMAGE_STAGE_FAILED".to_string())
+            .map(|path| path.to_string_lossy().to_string())
+    }).collect::<Result<Vec<_>, String>>();
+
+    if staged.is_err() { cleanup_local_conversation_images(conversation_id); }
+    staged
+}
+
 #[tauri::command]
 async fn send_local_conversation(
     conversation_id: String,
     provider_session_id: Option<String>,
     prompt: String,
+    model: Option<String>,
+    reasoning_effort: Option<String>,
     repo_id: Option<String>,
     checkout_id: Option<String>,
+    image_paths: Option<Vec<String>>,
 ) -> Result<Value, String> {
-    let request = local_conversation_request(conversation_id, provider_session_id, prompt, repo_id, checkout_id)?;
-    call_runtime_tool("capability_execute", request).await
+    let staged_images = stage_local_conversation_images(
+        &conversation_id, image_paths.unwrap_or_default()
+    )?;
+    let request = match local_conversation_request(
+        conversation_id.clone(), provider_session_id, prompt, model, reasoning_effort,
+        repo_id, checkout_id, staged_images,
+    ) {
+        Ok(request) => request,
+        Err(error) => {
+            cleanup_local_conversation_images(&conversation_id);
+            return Err(error);
+        }
+    };
+    let result = call_runtime_tool("capability_execute", request).await;
+    cleanup_local_conversation_images(&conversation_id);
+    result
 }
 
 fn local_conversation_request(
     conversation_id: String, provider_session_id: Option<String>, prompt: String,
-    repo_id: Option<String>, checkout_id: Option<String>,
+    model: Option<String>, reasoning_effort: Option<String>,
+    repo_id: Option<String>, checkout_id: Option<String>, image_paths: Vec<String>,
 ) -> Result<Value, String> {
-    if conversation_id.trim().is_empty() || prompt.trim().is_empty() {
+    if !valid_local_conversation_id(conversation_id.trim()) || prompt.trim().is_empty() {
         return Err("FORGE_DESKTOP_LOCAL_CONVERSATION_ARGUMENT_REQUIRED".to_string());
     }
     if repo_id.as_ref().is_some_and(|value| value.trim().is_empty())
@@ -551,6 +654,15 @@ fn local_conversation_request(
     });
     if let Some(provider_session_id) = provider_session_id.filter(|value| !value.trim().is_empty()) {
         request["arguments"]["provider_session_id"] = Value::String(provider_session_id);
+    }
+    if let Some(model) = model.filter(|value| !value.trim().is_empty()) {
+        request["arguments"]["model"] = Value::String(model);
+    }
+    if let Some(reasoning_effort) = reasoning_effort.filter(|value| !value.trim().is_empty()) {
+        request["arguments"]["reasoning_effort"] = Value::String(reasoning_effort);
+    }
+    if !image_paths.is_empty() {
+        request["arguments"]["image_paths"] = json!(image_paths);
     }
     if let Some(repo_id) = repo_id { request["repo_id"] = Value::String(repo_id); }
     if let Some(checkout_id) = checkout_id { request["checkout_id"] = Value::String(checkout_id); }
@@ -694,9 +806,10 @@ fn read_local_api_settings() -> Result<Value, String> {
         "endpoint": endpoint,
         "model": model,
         "apiProtocol": api_protocol,
-        // The Codex CLI uses its existing login; never access Keychain just
-        // to display Codex settings. API credentials are scoped to API mode.
-        "hasKey": if provider == "api" { read_local_api_key(endpoint)?.is_some() } else { false },
+        // Provider is a new-conversation default, not an execution-mode gate.
+        // Existing API threads may remain valid when Codex becomes the default,
+        // so key presence belongs to the configured endpoint itself.
+        "hasKey": read_local_api_key(endpoint)?.is_some(),
     }))
 }
 
@@ -742,28 +855,85 @@ fn save_local_api_settings(provider: String, endpoint: String, model: String, ap
 
 
 fn agent_git_diff_arguments(staged: bool) -> Value {
-    json!({ "max_bytes": 20000, "staged": staged })
+    json!({ "max_bytes": 20_000, "staged": staged })
+}
+
+fn agent_untracked_paths(status: &Value, paths: Option<&[String]>) -> Vec<String> {
+    status.get("untracked").and_then(Value::as_array).into_iter().flatten()
+        .filter_map(Value::as_str)
+        .filter(|path| paths.map_or(true, |scope| scope.iter().any(|candidate| candidate == path)))
+        .take(100)
+        .map(str::to_owned)
+        .collect()
+}
+
+async fn read_agent_git_diff_runtime(
+    repo_id: &str,
+    checkout_id: Option<&str>,
+    staged: bool,
+    paths: Option<&[String]>,
+) -> Result<Value, String> {
+    if repo_id.trim().is_empty() { return Err("FORGE_DESKTOP_REPOSITORY_REQUIRED".into()); }
+    validate_agent_checkout_binding(Some(repo_id), checkout_id, false)?;
+    let mut request = agent_git_diff_arguments(staged);
+    request["repo_id"] = Value::String(repo_id.to_string());
+    request["request_id"] = Value::String(request_id("desktop-agent-git-diff"));
+    if let Some(checkout_id) = checkout_id {
+        request["checkout_id"] = Value::String(checkout_id.to_string());
+    }
+    if let Some(paths) = paths {
+        request["paths"] = json!(paths);
+    }
+    let result = call_runtime_tool("repository_git_diff", request).await?;
+    let diff = result.get("diff").cloned()
+        .ok_or_else(|| "FORGE_DESKTOP_GIT_DIFF_RESULT_INVALID".to_string())?;
+    if diff.get("repoId").and_then(Value::as_str) != Some(repo_id)
+        || diff.get("staged").and_then(Value::as_bool) != Some(staged)
+        || checkout_id.is_some_and(|expected|
+            diff.get("checkoutId").and_then(Value::as_str) != Some(expected)
+        ) {
+        return Err("FORGE_DESKTOP_GIT_DIFF_RESULT_INVALID".into());
+    }
+    Ok(diff)
+}
+
+async fn read_agent_git_diff_for_review(
+    repo_id: &str,
+    checkout_id: Option<&str>,
+    staged: bool,
+    paths: Option<&[String]>,
+) -> Result<Value, String> {
+    let mut diff = read_agent_git_diff_runtime(repo_id, checkout_id, staged, paths).await?;
+    let mut request = json!({ "repo_id": repo_id, "refresh": true });
+    if let Some(checkout_id) = checkout_id {
+        request["checkout_id"] = Value::String(checkout_id.to_string());
+    }
+    let result = call_runtime_tool("repository_git_status", request).await?;
+    let status = result.get("status")
+        .ok_or_else(|| "FORGE_DESKTOP_GIT_STATUS_RESULT_INVALID".to_string())?;
+    if status.get("repoId").and_then(Value::as_str) != Some(repo_id)
+        || checkout_id.is_some_and(|expected|
+            status.get("checkoutId").and_then(Value::as_str) != Some(expected)
+        )
+        || status.get("head").and_then(Value::as_str) != diff.get("head").and_then(Value::as_str)
+        || status.get("branch").and_then(Value::as_str) != diff.get("branch").and_then(Value::as_str)
+    {
+        return Err("FORGE_DESKTOP_GIT_STATUS_RESULT_INVALID".into());
+    }
+    let untracked = agent_untracked_paths(status, paths);
+    diff.as_object_mut()
+        .ok_or_else(|| "FORGE_DESKTOP_GIT_DIFF_RESULT_INVALID".to_string())?
+        .insert("untracked".to_string(), json!(untracked));
+    Ok(diff)
 }
 
 #[tauri::command]
 async fn read_agent_git_diff(
-    app: tauri::AppHandle, repo_id: String, checkout_id: Option<String>, staged: Option<bool>,
+    repo_id: String, checkout_id: Option<String>, staged: Option<bool>,
 ) -> Result<Value, String> {
-    if repo_id.trim().is_empty() { return Err("FORGE_DESKTOP_REPOSITORY_REQUIRED".into()); }
-    let receipt = run_local_forge_tool(
-        app,
-        repo_id,
-        checkout_id,
-        "desktop-git-inspector".to_string(),
-        "git_diff".to_string(),
-        agent_git_diff_arguments(staged.unwrap_or(false)),
-        false,
-    ).await?;
-    if receipt.get("ok").and_then(Value::as_bool) != Some(true) {
-        return Err("FORGE_DESKTOP_GIT_DIFF_FAILED".into());
-    }
-    receipt.pointer("/result/diff").cloned()
-        .ok_or_else(|| "FORGE_DESKTOP_GIT_DIFF_RESULT_INVALID".into())
+    read_agent_git_diff_for_review(
+        &repo_id, checkout_id.as_deref(), staged.unwrap_or(false), None
+    ).await
 }
 
 fn reviewed_commit_scope_matches(
@@ -781,20 +951,37 @@ fn reviewed_commit_scope_matches(
             .is_some_and(|names| paths.iter().all(|path| names.iter().any(|entry| entry.as_str() == Some(path))))
 }
 
-fn native_commit_paths_valid(paths: &[String], message: &str) -> bool {
-    !paths.is_empty() && paths.len() <= 32 && !message.trim().is_empty()
-        && message.len() <= 500 && !message.contains('\0')
-        && paths.iter().all(|path| {
-            !path.is_empty() && path.len() <= 1024 && !path.starts_with('/')
-                && !path.contains('\0') && !path.split('/').any(|part| part == ".." || part == ".")
-        })
+fn native_reviewed_paths_valid(paths: &[String]) -> bool {
+    !paths.is_empty() && paths.len() <= 32 && paths.iter().all(|path| {
+        !path.is_empty() && path.len() <= 1024 && !path.starts_with('/')
+            && !path.contains('\0') && !path.split('/').any(|part| part == ".." || part == ".")
+    })
 }
 
-#[tauri::command]
-async fn commit_agent_git_files(
-    app: tauri::AppHandle, repo_id: String, checkout_id: String,
-    message: String, paths: Vec<String>, staged: bool, expected_patch: String,
-    expected_head: String, expected_branch: String, conversation_id: String,
+fn native_commit_paths_valid(paths: &[String], message: &str) -> bool {
+    native_reviewed_paths_valid(paths) && !message.trim().is_empty()
+        && message.len() <= 500 && !message.contains('\0')
+}
+
+fn reviewed_commit_head(result: &Value, checkout_id: &str) -> Option<String> {
+    if result.get("checkoutId").and_then(Value::as_str) != Some(checkout_id)
+        || result.get("error").is_some()
+        || result.pointer("/commit/ok").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    result.pointer("/commit/after/head").and_then(Value::as_str)
+        .filter(|value| !value.is_empty()).map(str::to_owned)
+}
+
+async fn commit_reviewed_agent_git_files(
+    repo_id: String,
+    checkout_id: String,
+    message: String,
+    paths: Vec<String>,
+    staged: bool,
+    expected_patch: String,
+    expected_head: String,
+    expected_branch: String,
 ) -> Result<Value, String> {
     validate_agent_checkout_binding(Some(&repo_id), Some(&checkout_id), true)?;
     if !native_commit_paths_valid(&paths, &message) {
@@ -804,50 +991,100 @@ async fn commit_agent_git_files(
         || expected_patch.is_empty() || expected_patch.len() > 20_000 {
         return Err("FORGE_DESKTOP_GIT_COMMIT_REVIEW_REQUIRED".into());
     }
-    // Read via Forge again at commit time; a stale/truncated inspection cannot
-    // authorize a different working tree, different file set or changed patch.
-    let current = run_local_forge_tool(
-        app.clone(), repo_id.clone(), Some(checkout_id.clone()),
-        conversation_id.clone(), "git_diff".into(), agent_git_diff_arguments(staged), false,
+
+    // Re-read the exact reviewed paths through Forge at commit time; a stale
+    // or truncated inspection cannot authorize a different patch, HEAD,
+    // branch, checkout or file set.
+    let current = read_agent_git_diff_runtime(
+        &repo_id, Some(&checkout_id), staged, Some(&paths)
     ).await?;
-    let diff = current.pointer("/result/diff")
-        .filter(|value| reviewed_commit_scope_matches(
-            value, &paths, &expected_patch, &expected_head, &expected_branch, &checkout_id, staged,
-        )).ok_or("FORGE_DESKTOP_GIT_COMMIT_REVIEW_STALE")?;
-    if diff.get("nameOnly").and_then(Value::as_array).is_none() {
-        return Err("FORGE_DESKTOP_GIT_COMMIT_REVIEW_REQUIRED".into());
+    if !reviewed_commit_scope_matches(
+        &current, &paths, &expected_patch, &expected_head, &expected_branch, &checkout_id, staged,
+    ) {
+        return Err("FORGE_DESKTOP_GIT_COMMIT_REVIEW_STALE".into());
     }
-    // --only commits the working-tree content of each named file, even when
-    // the UI is reviewing staged changes. Reject mixed index/worktree state
-    // so the commit cannot silently include unreviewed changes in those files.
-    let opposite = run_local_forge_tool(
-        app.clone(), repo_id.clone(), Some(checkout_id.clone()),
-        conversation_id.clone(), "git_diff".into(),
-        json!({"staged": !staged, "paths": paths, "max_bytes": 20000}), false,
+
+    // Selected-path commit stages working-tree content. Reject any opposite
+    // index/worktree diff for the reviewed paths so --only cannot cross a
+    // review boundary.
+    let opposite = read_agent_git_diff_runtime(
+        &repo_id, Some(&checkout_id), !staged, Some(&paths)
     ).await?;
-    let opposite_diff = opposite.pointer("/result/diff")
-        .ok_or("FORGE_DESKTOP_GIT_COMMIT_OTHER_DIFF_UNKNOWN")?;
-    if opposite_diff.get("truncated").and_then(Value::as_bool) != Some(false)
-        || opposite_diff.get("checkoutId").and_then(Value::as_str) != Some(checkout_id.as_str())
-        || opposite_diff.get("head").and_then(Value::as_str) != Some(expected_head.as_str())
-        || opposite_diff.get("branch").and_then(Value::as_str) != Some(expected_branch.as_str())
-        || opposite_diff.get("staged").and_then(Value::as_bool) != Some(!staged)
-        || opposite_diff.get("nameOnly").and_then(Value::as_array).is_none_or(|names| !names.is_empty()) {
+    if opposite.get("truncated").and_then(Value::as_bool) != Some(false)
+        || opposite.get("head").and_then(Value::as_str) != Some(expected_head.as_str())
+        || opposite.get("branch").and_then(Value::as_str) != Some(expected_branch.as_str())
+        || opposite.get("nameOnly").and_then(Value::as_array).is_none_or(|names| !names.is_empty()) {
         return Err("FORGE_DESKTOP_GIT_COMMIT_MIXED_CHANGES_REVIEW_REQUIRED".into());
     }
-    let result = run_local_forge_tool(
-        app, repo_id.clone(), Some(checkout_id.clone()), conversation_id,
-        "git_commit".into(), json!({"message":message.trim(),"paths":paths}), true,
-    ).await?;
-    if !local_effect_completed("git_commit", &result)
-        || result.pointer("/result/commit/checkoutId").and_then(Value::as_str) != Some(checkout_id.as_str()) {
-        return Err("FORGE_DESKTOP_GIT_COMMIT_UNCONFIRMED_RECONCILE".into());
-    }
-    let after = &result["result"]["commit"]["after"];
-    let head = after.get("head").and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
+
+    let result = call_runtime_tool("capability_execute", json!({
+        "repo_id": repo_id,
+        "checkout_id": checkout_id,
+        "capability_id": "repository.git",
+        "action": "commit_paths",
+        "arguments": { "paths": paths, "message": message.trim() },
+        "request_id": request_id("desktop-reviewed-git-commit")
+    })).await?;
+    let head = reviewed_commit_head(&result, &checkout_id)
         .ok_or("FORGE_DESKTOP_GIT_COMMIT_UNCONFIRMED_RECONCILE")?;
-    Ok(json!({"committed":true,"head":head,"branch":after["branch"],"checkoutId":checkout_id}))
+    Ok(json!({
+        "committed": true,
+        "head": head,
+        "branch": result.pointer("/commit/after/branch").cloned().unwrap_or(Value::Null),
+        "checkoutId": checkout_id
+    }))
+}
+
+async fn restore_reviewed_agent_git_files(
+    repo_id: String,
+    checkout_id: String,
+    paths: Vec<String>,
+    expected_patch: String,
+    expected_head: String,
+    expected_branch: String,
+) -> Result<Value, String> {
+    validate_agent_checkout_binding(Some(&repo_id), Some(&checkout_id), true)?;
+    if !native_reviewed_paths_valid(&paths) {
+        return Err("FORGE_DESKTOP_GIT_RESTORE_INPUT_INVALID".into());
+    }
+    if expected_head.is_empty() || expected_branch.is_empty()
+        || expected_patch.is_empty() || expected_patch.len() > 20_000 {
+        return Err("FORGE_DESKTOP_GIT_RESTORE_REVIEW_REQUIRED".into());
+    }
+
+    let result = call_runtime_tool("capability_execute", json!({
+        "repo_id": repo_id,
+        "checkout_id": checkout_id,
+        "capability_id": "repository.git",
+        "action": "restore_paths",
+        "arguments": {
+            "paths": paths,
+            "expected_head": expected_head,
+            "expected_branch": expected_branch,
+            "expected_patch": expected_patch,
+            "confirm_authorization": true
+        },
+        "request_id": request_id("desktop-reviewed-git-restore")
+    })).await?;
+    if result.get("checkoutId").and_then(Value::as_str) != Some(checkout_id.as_str())
+        || result.get("error").is_some()
+        || result.pointer("/execution/ok").and_then(Value::as_bool) != Some(true) {
+        return Err("FORGE_DESKTOP_GIT_RESTORE_UNCONFIRMED".into());
+    }
+    Ok(json!({"restored":true,"checkoutId":checkout_id}))
+}
+
+#[tauri::command]
+async fn commit_agent_git_files(
+    repo_id: String, checkout_id: String,
+    message: String, paths: Vec<String>, staged: bool, expected_patch: String,
+    expected_head: String, expected_branch: String, conversation_id: String,
+) -> Result<Value, String> {
+    drop(conversation_id);
+    commit_reviewed_agent_git_files(
+        repo_id, checkout_id, message, paths, staged,
+        expected_patch, expected_head, expected_branch,
+    ).await
 }
 
 fn local_tool_catalog(allow_effects: bool) -> Vec<Value> {
@@ -881,8 +1118,28 @@ fn local_effect_completed(name: &str, receipt: &Value) -> bool {
     }
 }
 
-async fn run_local_forge_tool(
+trait LocalApiHost {
+    fn packaged_tool_script(&self) -> Result<PathBuf, String>;
+    fn emit_tool_progress(&self, payload: Value);
+}
+
+struct TauriLocalApiHost {
     app: tauri::AppHandle,
+}
+
+impl LocalApiHost for TauriLocalApiHost {
+    fn packaged_tool_script(&self) -> Result<PathBuf, String> {
+        self.app.path().resolve("resources/forge-local-tool.mjs", tauri::path::BaseDirectory::Resource)
+            .map_err(|_| "FORGE_DESKTOP_LOCAL_TOOL_RESOURCE_UNAVAILABLE".to_string())
+    }
+
+    fn emit_tool_progress(&self, payload: Value) {
+        let _ = self.app.emit("forge-agent-tool-progress", payload);
+    }
+}
+
+async fn run_local_forge_tool<H: LocalApiHost + Sync>(
+    host: &H,
     repo_id: String,
     checkout_id: Option<String>,
     conversation_id: String,
@@ -903,8 +1160,7 @@ async fn run_local_forge_tool(
         let script = if dev_script.is_file() {
             dev_script
         } else {
-            app.path().resolve("resources/forge-local-tool.mjs", tauri::path::BaseDirectory::Resource)
-                .map_err(|_| "FORGE_DESKTOP_LOCAL_TOOL_RESOURCE_UNAVAILABLE")?
+            host.packaged_tool_script()?
         };
         if !script.is_file() {
             return Err("FORGE_DESKTOP_LOCAL_TOOL_RESOURCE_UNAVAILABLE".to_string());
@@ -1088,22 +1344,24 @@ fn validate_agent_checkout_binding(
     Ok(())
 }
 
-#[tauri::command]
-async fn send_local_api_conversation(
-    app: tauri::AppHandle,
+async fn run_local_api_turn<H: LocalApiHost + Sync>(
+    host: &H,
     messages: Vec<Value>,
     repo_id: Option<String>,
     checkout_id: Option<String>,
     conversation_id: String,
+    model_override: Option<String>,
     allow_effects: bool,
+    cancel_receiver: &mut tokio::sync::watch::Receiver<bool>,
 ) -> Result<Value, String> {
     // The saved provider is a default for new sessions, not a prohibition on
     // continuing an existing API conversation. Every API request still checks
     // the configured endpoint, model, Keychain secret and Forge authorization.
     let config = read_local_api_settings()?;
     let endpoint = validated_local_api_endpoint(config.get("endpoint").and_then(Value::as_str).unwrap_or(""))?;
-    let model = config.get("model").and_then(Value::as_str).unwrap_or("").trim();
-    if model.is_empty() { return Err("FORGE_DESKTOP_API_MODEL_INVALID".into()); }
+    let configured_model = config.get("model").and_then(Value::as_str).unwrap_or("");
+    let model = model_override.as_deref().unwrap_or(configured_model).trim();
+    if model.is_empty() || model.len() > 120 { return Err("FORGE_DESKTOP_API_MODEL_INVALID".into()); }
     if conversation_id.len() > 160 || conversation_id.is_empty()
         || !conversation_id.chars().all(|char| char.is_ascii_alphanumeric() || "._:-".contains(char)) {
         return Err("FORGE_DESKTOP_API_CONVERSATION_INVALID".into());
@@ -1130,8 +1388,8 @@ async fn send_local_api_conversation(
         history.push(json!({ "role": role, "content": content }));
     }
     let key = read_local_api_key(&endpoint)?;
-    let host = reqwest::Url::parse(&endpoint).map_err(|_| "FORGE_DESKTOP_API_ENDPOINT_INVALID")?;
-    let local = matches!(host.host_str().unwrap_or(""), "localhost" | "127.0.0.1" | "[::1]");
+    let endpoint_url = reqwest::Url::parse(&endpoint).map_err(|_| "FORGE_DESKTOP_API_ENDPOINT_INVALID")?;
+    let local = matches!(endpoint_url.host_str().unwrap_or(""), "localhost" | "127.0.0.1" | "[::1]");
     if key.is_none() && !local { return Err("FORGE_DESKTOP_API_KEY_MISSING".into()); }
     let protocol = config.get("apiProtocol").and_then(Value::as_str).unwrap_or("openai");
     if !matches!(protocol, "openai" | "anthropic") {
@@ -1147,18 +1405,6 @@ async fn send_local_api_conversation(
         format!("You are the Forge Desktop local API agent working in registered repository {id}, checkout {checkout}. Use the supplied tools for real facts and repository operations. All calls execute through the existing Forge repository authority in the local process, not MCP HTTP. Never invent a file, command result, Requirement or Plan state. Tools with effects require a pinned checkout and the user's approval for this turn. Never claim an operation succeeded unless its tool result confirms it.")
     } else {
         "You are the Forge Desktop assistant. No Forge project is attached: tools are disabled. Do not invent repository changes or imply that you ran a command. Ask the user to attach a project to work on files.".to_string()
-    };
-    let (cancel_sender, mut cancel_receiver) = tokio::sync::watch::channel(false);
-    {
-        let registry = app.state::<LocalApiTurnRegistry>();
-        let mut turns = registry.0.lock().map_err(|_| "FORGE_DESKTOP_API_TURN_REGISTRY_FAILED")?;
-        if turns.contains_key(&conversation_id) {
-            return Err("FORGE_DESKTOP_API_TURN_ALREADY_RUNNING".into());
-        }
-        turns.insert(conversation_id.clone(), cancel_sender);
-    }
-    let _registration = LocalApiTurnRegistration {
-        app: app.clone(), conversation_id: conversation_id.clone(),
     };
     let mut tool_events: Vec<Value> = Vec::new();
     let mut total_calls = 0usize;
@@ -1192,7 +1438,7 @@ async fn send_local_api_conversation(
         // repository effect. Requests may already have reached a provider.
         let output = request_local_api_round_cancellable(
             &client, &endpoint, protocol, key.as_deref(), &provider_body,
-            &mut cancel_receiver,
+            cancel_receiver,
         ).await?;
         let requests = provider_tool_calls(protocol, &output)?;
         if protocol == "anthropic" {
@@ -1238,18 +1484,18 @@ async fn send_local_api_conversation(
                 args["request_id"] = Value::String(id.clone());
                 Some(id)
             } else { None };
-            let _ = app.emit("forge-agent-tool-progress", json!({
+            host.emit_tool_progress(json!({
                 "conversationId": conversation_id, "name": name, "phase": "started",
                 "requestId": effect_request_id,
             }));
             let tool_result = run_local_forge_tool(
-                app.clone(), repo_id.clone().unwrap_or_default(), checkout_id.clone(),
+                host, repo_id.clone().unwrap_or_default(), checkout_id.clone(),
                 conversation_id.clone(), name.clone(), args, allow_effects
             ).await;
             let result = match tool_result {
                 Ok(receipt) => receipt,
                 Err(error) => {
-                    let _ = app.emit("forge-agent-tool-progress", json!({
+                    host.emit_tool_progress(json!({
                         "conversationId": conversation_id, "name": name, "phase": "failed",
                         "requestId": effect_request_id,
                     }));
@@ -1274,7 +1520,7 @@ async fn send_local_api_conversation(
             }
             tool_events.push(json!({ "name": name, "ok": ok,
                 "requestId": effect_request_id }));
-            let _ = app.emit("forge-agent-tool-progress", json!({
+            host.emit_tool_progress(json!({
                 "conversationId": conversation_id, "name": name,
                 "phase": if ok { "completed" } else { "failed" },
                 "requestId": effect_request_id,
@@ -1304,8 +1550,43 @@ async fn send_local_api_conversation(
     Err("FORGE_DESKTOP_API_TOOL_ROUND_LIMIT".into())
 }
 
+#[tauri::command]
+async fn send_local_api_conversation(
+    app: tauri::AppHandle,
+    messages: Vec<Value>,
+    repo_id: Option<String>,
+    checkout_id: Option<String>,
+    conversation_id: String,
+    allow_effects: bool,
+) -> Result<Value, String> {
+    let (cancel_sender, mut cancel_receiver) = tokio::sync::watch::channel(false);
+    {
+        let registry = app.state::<LocalApiTurnRegistry>();
+        let mut turns = registry.0.lock().map_err(|_| "FORGE_DESKTOP_API_TURN_REGISTRY_FAILED")?;
+        if turns.contains_key(&conversation_id) {
+            return Err("FORGE_DESKTOP_API_TURN_ALREADY_RUNNING".into());
+        }
+        turns.insert(conversation_id.clone(), cancel_sender);
+    }
+    let _registration = LocalApiTurnRegistration {
+        app:app.clone(), conversation_id:conversation_id.clone(),
+    };
+    let host = TauriLocalApiHost { app };
+    run_local_api_turn(
+        &host, messages, repo_id, checkout_id, conversation_id, None, allow_effects,
+        &mut cancel_receiver,
+    ).await
+}
+
 
 fn main() {
+    let mode = std::env::args().nth(1);
+    if mode.as_deref() == Some("--native-api-turn") {
+        std::process::exit(native_bridge::run_api_turn());
+    }
+    if mode.as_deref() == Some("--native-bridge") {
+        std::process::exit(native_bridge::run());
+    }
     tauri::Builder::default()
         .manage(LocalApiTurnRegistry::default())
         .invoke_handler(tauri::generate_handler![
@@ -1323,6 +1604,7 @@ fn main() {
             read_requirement_detail,
             read_plan_detail,
             read_local_provider_status,
+            read_local_provider_models,
             read_project_knowledge,
             send_local_conversation,
             cancel_local_conversation,
@@ -1344,8 +1626,12 @@ mod tests {
     #[test]
     fn local_conversation_binds_checkout_or_rejects_incomplete_context() {
         let build = |repo: Option<&str>, checkout: Option<&str>| local_conversation_request(
-            "conversation".into(), None, "hello".into(), repo.map(str::to_owned), checkout.map(str::to_owned));
+            "conversation".into(), None, "hello".into(),
+            Some("gpt-6.1-sol".into()), Some("high".into()),
+            repo.map(str::to_owned), checkout.map(str::to_owned), Vec::new());
         let bound = build(Some("repo_a"), Some("checkout_b")).unwrap();
+        assert_eq!(bound["arguments"]["model"], "gpt-6.1-sol");
+        assert_eq!(bound["arguments"]["reasoning_effort"], "high");
         assert_eq!(bound["repo_id"], "repo_a");
         assert_eq!(bound["checkout_id"], "checkout_b");
         let unbound = build(None, None).unwrap();
@@ -1355,6 +1641,28 @@ mod tests {
         assert!(build(Some(" "), Some(" ")).is_err());
         assert!(build(Some("repo_a"), Some("../invalid")).is_err());
     }
+    #[test]
+    fn local_conversation_images_are_staged_scoped_and_cleaned() {
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let conversation_id = format!("test-image-stage-{}-{nonce}", std::process::id());
+        let source = env::temp_dir().join(format!("forge-image-source-{}-{nonce}.png", std::process::id()));
+        fs::write(&source, b"image-bytes").unwrap();
+
+        let staged = stage_local_conversation_images(
+            &conversation_id,
+            vec![source.to_string_lossy().to_string()],
+        ).unwrap();
+        assert_eq!(staged.len(), 1);
+        let root = fs::canonicalize(local_conversation_image_root(&conversation_id).unwrap()).unwrap();
+        let staged_path = fs::canonicalize(&staged[0]).unwrap();
+        assert!(staged_path.starts_with(&root));
+        assert!(staged_path.is_file());
+
+        cleanup_local_conversation_images(&conversation_id);
+        assert!(!root.exists());
+        let _ = fs::remove_file(source);
+    }
+
     #[test]
     fn mcp_timeout_only_extends_local_conversation_send() {
         let send = json!({"capability_id": "controller.local_conversation", "action": "send"});
@@ -1371,6 +1679,17 @@ mod tests {
     }
 
     #[test]
+    fn agent_untracked_review_evidence_is_bounded_and_path_scoped() {
+        let status = json!({"untracked":["new-a.txt","nested/new-b.txt","other.txt"]});
+        assert_eq!(agent_untracked_paths(&status, None), vec![
+            "new-a.txt".to_string(), "nested/new-b.txt".to_string(), "other.txt".to_string()
+        ]);
+        assert_eq!(agent_untracked_paths(&status, Some(&["nested/new-b.txt".to_string()])),
+            vec!["nested/new-b.txt".to_string()]);
+        assert!(agent_untracked_paths(&json!({}), None).is_empty());
+    }
+
+    #[test]
     fn native_commit_requires_explicit_safe_paths() {
         let review = json!({"patch":"diff --git a/src/lib.rs b/src/lib.rs","head":"abcdef",
             "branch":"work/task-1","checkoutId":"checkout_a","staged":false,"truncated":false,"nameOnly":["src/lib.rs"]});
@@ -1382,11 +1701,25 @@ mod tests {
             "diff --git a/src/lib.rs b/src/lib.rs", "abcdef", "work/task-1", "checkout_b", false));
         assert!(!reviewed_commit_scope_matches(&review, &["src/lib.rs".into()],
             "diff --git a/src/lib.rs b/src/lib.rs", "abcdef", "work/task-1", "checkout_a", true));
+        assert!(native_reviewed_paths_valid(&["src/lib.rs".into()]));
+        assert!(!native_reviewed_paths_valid(&[]));
+        assert!(!native_reviewed_paths_valid(&["../outside".into()]));
+        assert!(!native_reviewed_paths_valid(&["/tmp/file".into()]));
         assert!(native_commit_paths_valid(&["src/lib.rs".into()], "fix: update"));
         assert!(!native_commit_paths_valid(&[], "fix"));
         assert!(!native_commit_paths_valid(&["src/lib.rs".into()], ""));
         assert!(!native_commit_paths_valid(&["../outside".into()], "fix"));
         assert!(!native_commit_paths_valid(&["/tmp/file".into()], "fix"));
+        let committed = json!({
+            "checkoutId":"checkout_a",
+            "commit":{"ok":true,"after":{"head":"deadbeef","branch":"work/task-1"}}
+        });
+        assert_eq!(reviewed_commit_head(&committed, "checkout_a").as_deref(), Some("deadbeef"));
+        assert!(reviewed_commit_head(&committed, "checkout_b").is_none());
+        assert!(reviewed_commit_head(&json!({
+            "checkoutId":"checkout_a","error":{"code":"NO_SELECTED_CHANGES"},
+            "commit":{"ok":true,"after":{"head":"deadbeef"}}
+        }), "checkout_a").is_none());
     }
 
     #[test]
@@ -1587,7 +1920,8 @@ mod tests {
 
     #[test]
     fn local_tool_catalog_has_no_work_context_tool() {
-        let names = local_tool_catalog(false).iter().filter_map(|tool|
+        let catalog = local_tool_catalog(false);
+        let names = catalog.iter().filter_map(|tool|
             tool.pointer("/function/name").and_then(Value::as_str)
         ).collect::<Vec<_>>();
         assert!(!names.contains(&"read_work_context"));

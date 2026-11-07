@@ -327,6 +327,21 @@ export function getCoreCapabilityExecutionSchema(capabilityId: string): Record<s
           risk: 'readonly',
           argumentsSchema: { type: 'object', additionalProperties: false, properties: {} },
         },
+        models: {
+          readOnly: true,
+          risk: 'readonly',
+          argumentsSchema: { type: 'object', additionalProperties: false, properties: {} },
+        },
+        activity: {
+          readOnly: true,
+          risk: 'readonly',
+          argumentsSchema: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['conversation_id'],
+            properties: { conversation_id: { type: 'string', minLength: 1, maxLength: 160 } },
+          },
+        },
         cancel: {
           readOnly: false,
           risk: 'workspace_write',
@@ -346,6 +361,12 @@ export function getCoreCapabilityExecutionSchema(capabilityId: string): Record<s
               conversation_id: { type: 'string', minLength: 1, maxLength: 160 },
               provider_session_id: { type: 'string', minLength: 1, maxLength: 160 },
               prompt: { type: 'string', minLength: 1, maxLength: 20_000 },
+              model: { type: 'string', minLength: 1, maxLength: 120 },
+              reasoning_effort: { type: 'string', minLength: 1, maxLength: 32 },
+              image_paths: {
+                type: 'array', maxItems: 4,
+                items: { type: 'string', minLength: 1, maxLength: 4096 },
+              },
               timeout_ms: { type: 'number', minimum: 5_000, maximum: 600_000 },
             },
           },
@@ -439,6 +460,22 @@ export function getCoreCapabilityExecutionSchema(capabilityId: string): Record<s
           properties: {
             paths: { type: 'array', minItems: 1, maxItems: 128, items: { type: 'string' } },
             message: { type: 'string', minLength: 1 },
+          },
+        },
+      },
+      restore_paths: {
+        readOnly: false,
+        risk: 'destructive',
+        argumentsSchema: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['paths', 'expected_head', 'expected_branch', 'expected_patch', 'confirm_authorization'],
+          properties: {
+            paths: { type: 'array', minItems: 1, maxItems: 128, items: { type: 'string' } },
+            expected_head: { type: 'string', minLength: 1, maxLength: 128 },
+            expected_branch: { type: 'string', minLength: 1, maxLength: 512 },
+            expected_patch: { type: 'string', minLength: 1, maxLength: 20000 },
+            confirm_authorization: { type: 'boolean', const: true },
           },
         },
       },

@@ -1,11 +1,11 @@
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 import { callRepositoryTool } from '../tool-mapping/repository-tools';
-import { commitSelectedPaths, selectedPathDiff, stageSelectedPaths } from '../../../src/cli/repositories/selected-path-actions';
+import { commitSelectedPaths, restoreSelectedPaths, selectedPathDiff, stageSelectedPaths } from '../../../src/cli/repositories/selected-path-actions';
 import { result } from './result-adapter';
 import { selected } from './shared-adapter';
 import { readControllerConnectionSnapshot, repairControllerConnection } from '../../../src/runtime/control-plane/facade/controller-connection';
-import { cancelLocalConversation, readLocalConversationProviderStatus, sendLocalConversation } from '../../../src/runtime/control-plane/launcher/local-conversation-controller';
+import { cancelLocalConversation, readLocalConversationActivity, readLocalConversationModelCatalog, readLocalConversationProviderStatus, sendLocalConversation } from '../../../src/runtime/control-plane/launcher/local-conversation-controller';
 
 function object(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
@@ -30,11 +30,22 @@ export async function callCoreCapabilityAdapter(
     }
     if (capabilityId === 'controller.local_conversation') {
       if (action === 'status') return result({ ...await readLocalConversationProviderStatus() });
+      if (action === 'models') return result({ ...await readLocalConversationModelCatalog() });
+      if (action === 'activity') return result({ ...readLocalConversationActivity(String(input.conversation_id ?? '')) });
       if (action === 'cancel') return result(cancelLocalConversation(String(input.conversation_id ?? '')));
       if (action === 'send') {
         const conversationId = typeof input.conversation_id === 'string' ? input.conversation_id.trim() : '';
         const prompt = typeof input.prompt === 'string' ? input.prompt.trim() : '';
         const providerSessionId = typeof input.provider_session_id === 'string' ? input.provider_session_id.trim() : undefined;
+        const model = typeof input.model === 'string' ? input.model.trim() : undefined;
+        const reasoningEffort = typeof input.reasoning_effort === 'string' ? input.reasoning_effort.trim() : undefined;
+        let imagePaths: string[] | undefined;
+        if (input.image_paths !== undefined) {
+          if (!Array.isArray(input.image_paths) || input.image_paths.some((value) => typeof value !== 'string')) {
+            throw new Error('LOCAL_CONVERSATION_IMAGE_PATHS_INVALID');
+          }
+          imagePaths = input.image_paths as string[];
+        }
         const timeoutMs = typeof input.timeout_ms === 'number' ? input.timeout_ms : undefined;
         const requestedRepoId = typeof args.repo_id === 'string' ? args.repo_id.trim() : '';
         const repository = requestedRepoId ? selected(ctx, args) : undefined;
@@ -44,6 +55,9 @@ export async function callCoreCapabilityAdapter(
           prompt,
           providerSessionId,
           repoId: repository?.repoId,
+          model,
+          reasoningEffort,
+          imagePaths,
           timeoutMs,
         }) });
       }
@@ -110,6 +124,20 @@ export async function callCoreCapabilityAdapter(
           checkoutId: repository.activeCheckoutId,
           ...committed,
         }, Boolean(committed.error));
+      }
+      case 'restore_paths': {
+        const restored = restoreSelectedPaths(ctx.controllerHome, repository, {
+          paths: input.paths,
+          expectedHead: input.expected_head,
+          expectedBranch: input.expected_branch,
+          expectedPatch: input.expected_patch,
+          confirmAuthorization: input.confirm_authorization,
+        });
+        return result({
+          repoId: repository.repoId,
+          checkoutId: repository.activeCheckoutId,
+          ...restored,
+        }, Boolean(restored.error));
       }
       case 'delete_remote_branch': {
         const forwarded = await callRepositoryTool(ctx.controllerHome, 'repository_git_delete_branch', {
