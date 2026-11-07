@@ -543,7 +543,7 @@ function recordTerminalProcessXcodeEvidenceOwner(record: ManagedProcessRecord): 
     recordProcessXcodeTestEvidenceOwner({
       controllerHome: record.controllerHome,
       repoId: record.repoId,
-      repoRoot: identity.worktreePath ?? identity.canonicalRoot,
+      repoRoot: identity.canonicalRoot,
       command: record.command,
       processId: record.processId,
     });
