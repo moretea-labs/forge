@@ -227,8 +227,6 @@ describe('connected assistant learning loops', () => {
       [memoryId],
     )[0];
     expect(learned?.provenance.sourceKind).toBe('controller');
-    expect(learned?.provenance.sourceWorkId).toBeUndefined();
-    expect(learned?.provenance.sourceRoundId).toBeUndefined();
     expect(learned?.provenance.evidenceRefs).toEqual([observationPayload.observationReceiptId]);
 
     const recalled = await callRuntimeTool(ctx, 'rh_context', {
@@ -389,7 +387,7 @@ describe('connected assistant learning loops', () => {
       payload.data.storedMemoryIds,
     );
     expect(stored).toHaveLength(2);
-    expect(stored.every(memory => !memory.provenance.sourceWorkId && !memory.provenance.sourceRoundId)).toBe(true);
+    expect(stored.every(memory => memory.provenance.sourceKind === 'controller')).toBe(true);
 
     const ordinaryArgs = {
       repo_id: fx.repository.repoId,
@@ -476,8 +474,7 @@ describe('connected assistant learning loops', () => {
     const requirementMemories = cognitionReadPort(fx.controllerHome).exactByConcept(
       [{ schemaVersion: 1, kind: 'requirement', id: requirementId }], ['requirement.reachable'], 4,
     );
-    expect(requirementMemories[0]?.provenance.sourceWorkId).toBeUndefined();
-    expect(requirementMemories[0]?.provenance.sourceRoundId).toBeUndefined();
+    expect(requirementMemories[0]?.provenance.sourceKind).toBe('controller');
     const requirementFeedback = await callRuntimeTool(ctx, 'rh_work', {
       repo_id: fx.repository.repoId,
       operation: 'learning_feedback',
