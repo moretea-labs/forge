@@ -853,18 +853,30 @@ final class NativeWorkspace: ObservableObject {
         guard !settingsLoading else { return }
         settingsLoading = true
         defer { settingsLoading = false }
+
+        async let statusRequest = ForgeBridge.request("read_local_provider_status")
+        async let settingsRequest = ForgeBridge.request("read_local_api_settings")
+        var failures: [String] = []
+
         do {
-            async let statusRequest = ForgeBridge.request("read_local_provider_status")
-            async let settingsRequest = ForgeBridge.request("read_local_api_settings")
-            let (status, settingsValue) = try await (statusRequest, settingsRequest)
-            applyLocalProviderStatus(status)
+            applyLocalProviderStatus(try await statusRequest)
+        } catch {
+            provider = "Codex 状态不可用"
+            localProviderReady = false
+            imageInputAvailable = false
+            failures.append("Provider：\(error.localizedDescription)")
+        }
+
+        do {
+            let settingsValue = try await settingsRequest
             guard let parsed = Self.localApiSettingsDetail(settingsValue) else { throw ForgeBridgeError.invalidResponse }
             localApiSettings = parsed
-            error = nil
         } catch {
             localApiSettings = nil
-            self.error = error.localizedDescription
+            failures.append("API 配置：\(error.localizedDescription)")
         }
+
+        self.error = failures.isEmpty ? nil : failures.joined(separator:"\n")
     }
 
     func saveLocalApiSettings(
