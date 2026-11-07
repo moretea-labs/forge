@@ -3,7 +3,7 @@ import { dirname, join } from 'path';
 import { randomUUID } from 'crypto';
 import { resolveControllerHome } from '../../effects/controller-home';
 import { isProcessAlive } from '../shared/process-tree';
-import { readRuntimeOwner } from './ownership';
+import { readRuntimeOwner, runtimeOwnerProcessIdentityMatches } from './ownership';
 import type {
   RuntimeDiagnosticEvidence,
   RuntimeReadiness,
@@ -145,7 +145,11 @@ export function observeRuntimeStatus(
 ): RuntimeStatusObservation {
   const snapshot = readRuntimeStatusSnapshot(controllerHome);
   const owner = readRuntimeOwner(controllerHome);
-  const ownerAlive = Boolean(owner && isProcessAlive(owner.pid));
+  const ownerAlive = Boolean(owner && (
+    owner.processStartTime && owner.executableFingerprint
+      ? runtimeOwnerProcessIdentityMatches(owner)
+      : isProcessAlive(owner.pid)
+  ));
   if (!snapshot) {
     return {
       schemaVersion: 1,

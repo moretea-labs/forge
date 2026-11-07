@@ -897,16 +897,19 @@ forbid(
   'the model-facing rh_work schema must not hand-write legacy lifecycle review inputs',
 );
 const rhWorkOperationContract = text('src/runtime/control-plane/facade/rh-work-operation-contract.ts');
-const rhWorkModelOperations = (rhWorkOperationContract.match(/RH_WORK_MODEL_OPERATIONS = \[([\s\S]*?)\] as const/) ?? [])[1] ?? '';
-if (!rhWorkModelOperations.trim()) {
-  failures.push('rh_work operation contract must define RH_WORK_MODEL_OPERATIONS as the thin model-facing ABI');
+const rhWorkOperations = (rhWorkOperationContract.match(/RH_WORK_OPERATIONS = \[([\s\S]*?)\] as const/) ?? [])[1] ?? '';
+if (!rhWorkOperations.trim()) {
+  failures.push('rh_work operation contract must define RH_WORK_OPERATIONS as the single operation registry');
+}
+if (!/export const RH_WORK_MODEL_OPERATIONS\s*=\s*RH_WORK_OPERATIONS\s*;/.test(rhWorkOperationContract)) {
+  failures.push('RH_WORK_MODEL_OPERATIONS must alias RH_WORK_OPERATIONS instead of defining a second model-facing registry');
 }
 for (const legacyModelVerb of [
   'continue', 'verify', 'review', 'finalize', 'stop', 'delegate',
   'controller_claim', 'controller_release', 'controller_disposition', 'controller_get_owner',
 ]) {
-  if (new RegExp(`['"]${legacyModelVerb}['"]`).test(rhWorkModelOperations)) {
-    failures.push(`RH_WORK_MODEL_OPERATIONS must not re-advertise the legacy engineering lifecycle verb: ${legacyModelVerb}`);
+  if (new RegExp(`['"]${legacyModelVerb}['"]`).test(rhWorkOperations)) {
+    failures.push(`RH_WORK_OPERATIONS must not re-advertise the legacy engineering lifecycle verb: ${legacyModelVerb}`);
   }
 }
 for (const retiredControllerPath of [

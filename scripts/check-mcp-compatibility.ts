@@ -25,9 +25,11 @@ const MAX_PREFERRED_TOOL_COUNT = 24;
 // #41 adds one explicit, preview-first registered worktree cleanup operation;
 // preferred ChatGPT routing and preferred schemas remain unchanged.
 // Forge #313 (2026-11-03): intentional removal of the standalone
-// supervisor_task public tool. Preserve the preferred tool ABI; fail closed on
-// any further drift in the complete registry.
-const EXPECTED_EXPOSED_NAME_FINGERPRINT = '42bee78c458ae762';
+// supervisor_task public tool.
+// Forge #483 (2026-11-07): Work/WorkHandle/ControllerRound retirement removes
+// the remaining Work-bound compatibility tools from the complete registry.
+// Preferred facade names stay stable; any further complete-registry drift fails closed.
+const EXPECTED_EXPOSED_NAME_FINGERPRINT = 'c9d5a4f3128a8702';
 
 // #197 decomposition authority: the public/frozen Tool Contract is an explicit
 // baseline, independent from whichever internal adapter currently defines a
@@ -59,7 +61,10 @@ const EXPECTED_PREFERRED_TOOL_NAME_FINGERPRINT = 'f22e635a213b45fa';
 // schema fingerprint without relaxing the frozen public-contract assertion.
 // 2026-11-05: #478 adds model-authored execute_command mutation_paths so the
 // model owns semantic mutation scope while Forge enforces mechanical claims.
-const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = '259ecf71c5a6f34f';
+// 2026-11-07: #483 retires Work-specific outcome_record/experience_record input
+// fields and keeps lifecycle-free learning_record/learning_feedback as the
+// canonical advisory-memory write path.
+const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = 'f428c370a641e97d';
 
 const policy = runtimePolicy(process.cwd(), {
   profile: 'controller',
@@ -159,10 +164,19 @@ for (const field of [
   'checkout_id',
   'workflow_id',
   'workflow_run_id',
-  'outcome_observation',
-  'experience_draft',
+  'learning_signals',
+  'learning_feedback',
 ] as const) {
   if (!(field in rhWorkProperties)) failures.push(`stable rh_work Tool Contract missing ${field}`);
+}
+for (const retiredWorkLearningField of [
+  'outcome_observation',
+  'experience_draft',
+  'quality_adjustment_fingerprint',
+] as const) {
+  if (retiredWorkLearningField in rhWorkProperties) {
+    failures.push(`stable rh_work Tool Contract must not restore retired Work-specific learning field ${retiredWorkLearningField}`);
+  }
 }
 if (failures.length) {
   console.error('[mcp-compatibility] FAILED');
