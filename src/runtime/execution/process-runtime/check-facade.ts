@@ -3,7 +3,7 @@
  *
  * Ordinary checks execute through an in-memory lightweight handle and return
  * within the interactive budget without creating Process/Lease state. Checks
- * with real Work/Edit/verification consumers keep persisted Process receipts.
+ * with real EditSession/verification consumers keep persisted Process receipts.
  * Multi-phase and release checks require explicit external Controller handling.
  */
 
@@ -49,11 +49,10 @@ export interface RunCheckFacadeInput {
   requestId?: string;
   /** Stable caller-owned semantic identity for safely reattaching the same request before rebuilding ephemeral execution inputs. */
   requestSemanticFingerprint?: string;
-  workId?: string;
   commandId?: string;
   /** Force durable workflow (release / multi-phase). */
   forceDurable?: boolean;
-  /** Internal-only: allow an already-authorized external Work Controller to execute a durable-class check through persisted Process Runtime. */
+  /** Internal-only: allow an already-authorized release/durable workflow to execute a durable-class check through persisted Process Runtime. */
   allowDurableCheckExecution?: boolean;
   signal?: AbortSignal;
   /** Immutable resolved identity — required; never inferred from main/active/cwd. */
@@ -66,16 +65,10 @@ export interface RunCheckFacadeInput {
     issueId?: string;
     taskId?: string;
   };
-  /** Work-scoped verification runs against HEAD plus only scope-owned dirty paths. */
-  verificationSnapshot?: {
-    workId: string;
-    allowedPaths: readonly string[];
-    forbiddenPaths: readonly string[];
-  };
 }
 
 export function processCheckSemanticScopeKey(
-  input: Pick<RunCheckFacadeInput, 'workId' | 'verificationBinding' | 'checkoutId' | 'requestSemanticFingerprint'>,
+  input: Pick<RunCheckFacadeInput, 'verificationBinding' | 'checkoutId' | 'requestSemanticFingerprint'>,
   reuseScope: 'repository' | 'checkout',
 ): string {
   const scope = reuseScope === 'repository' ? 'repository' : `checkout:${input.checkoutId ?? 'unknown'}`;
@@ -157,7 +150,7 @@ export async function runCheckViaProcessRuntime(
       check,
       durable: {
         reason: 'multi_phase_or_release_check_requires_durable_workflow',
-        suggestedOperation: 'Run this check through a Work-bound durable verification workflow.',
+        suggestedOperation: 'Run this check through the explicit release/durable verification workflow.',
       },
       durableSideEffects: emptyEffects,
     };
@@ -186,9 +179,7 @@ export async function runCheckViaProcessRuntime(
       : check.timeoutMs,
   );
   const durableVerificationBinding = Boolean(
-    input.workId
-    || input.verificationSnapshot
-    || input.verificationBinding?.executionSessionId
+    input.verificationBinding?.executionSessionId
     || input.verificationBinding?.editSessionId
     || input.verificationBinding?.issueId
     || input.verificationBinding?.taskId,
@@ -218,7 +209,6 @@ export async function runCheckViaProcessRuntime(
     ),
     executionIdentity.repositoryId,
     executionIdentity.checkoutId,
-    input.workId,
   );
   // Live device validation must retain a Process lease across independent
   // sessions. The lightweight lane has no resource admission authority.
@@ -231,7 +221,6 @@ export async function runCheckViaProcessRuntime(
       checkId: input.checkId,
       interactiveWaitMs,
       timeoutMs,
-      workId: input.workId,
       commandId: input.commandId ?? input.requestId,
     });
     const handle = lightweight.handle;
@@ -259,7 +248,6 @@ export async function runCheckViaProcessRuntime(
     reuseScope: semanticCheck.reuseScope,
     scopeKey: processCheckSemanticScopeKey({
       checkoutId: executionIdentity.checkoutId,
-      workId: input.workId,
       verificationBinding: input.verificationBinding,
     }, semanticCheck.reuseScope),
   };
@@ -269,7 +257,6 @@ export async function runCheckViaProcessRuntime(
     repoId: executionIdentity.repositoryId,
     checkoutId: executionIdentity.checkoutId,
     executionIdentity,
-    workId: input.workId,
     commandId: input.commandId,
     command: {
       kind: 'argv',
@@ -287,7 +274,6 @@ export async function runCheckViaProcessRuntime(
       toolName: 'run_check',
       checkId: input.checkId,
       requestId: input.requestId,
-      correlationId: input.workId,
       executionSessionId: input.verificationBinding?.executionSessionId,
       editSessionId: input.verificationBinding?.editSessionId,
       editRevision: input.verificationBinding?.editRevision,
