@@ -25,8 +25,6 @@ export interface MemoryAddress {
 export interface MemoryProvenance {
   sourceKind: MemorySourceKind;
   sourceId?: string;
-  sourceWorkId?: string;
-  sourceRoundId?: string;
   recordedAt: string;
   evidenceRefs: string[];
 }
@@ -63,8 +61,6 @@ export interface MemoryEdge {
   relation: MemoryRelation;
   weight: number;
   evidenceRefs: string[];
-  sourceWorkId?: string;
-  sourceRoundId?: string;
   recordedAt: string;
   expiresAt?: string;
   retractedAt?: string;
