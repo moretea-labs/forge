@@ -11,6 +11,9 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertTrue(ForgeBridge.allowed.contains("read_local_conversation_activity"))
         XCTAssertTrue(ForgeBridge.allowed.contains("verify_recovery_runtime"))
         XCTAssertTrue(ForgeBridge.allowed.contains("repair_connection"))
+        XCTAssertTrue(ForgeBridge.allowed.contains("read_local_api_settings"))
+        XCTAssertFalse(ForgeBridge.allowed.contains("send_local_api_conversation"))
+        XCTAssertFalse(ForgeBridge.allowed.contains("cancel_local_api_conversation"))
         XCTAssertFalse(ForgeBridge.allowed.contains("read_project_work_list"))
         XCTAssertFalse(ForgeBridge.allowed.contains("read_work_detail"))
         XCTAssertFalse(ForgeBridge.allowed.contains("execute_command"))
@@ -192,6 +195,19 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(result?.inspected,4)
         XCTAssertEqual(result?.items.first?.memory.canonicalText,"Keep one authority")
         XCTAssertEqual(result?.items.first?.memory.scope.kind,"project")
+    }
+
+    func testSavedApiProfileProjectionIsConfigurationOnly() {
+        let settings = NativeWorkspace.localApiSettingsDetail([
+            "provider":"api","endpoint":"https://api.example.com/v1",
+            "model":"model-a","apiProtocol":"openai","hasKey":true
+        ])
+        XCTAssertEqual(settings?.provider,"api")
+        XCTAssertEqual(settings?.endpoint,"https://api.example.com/v1")
+        XCTAssertEqual(settings?.model,"model-a")
+        XCTAssertEqual(settings?.apiProtocol,"openai")
+        XCTAssertEqual(settings?.hasKey,true)
+        XCTAssertFalse(ForgeBridge.allowed.contains("send_local_api_conversation"))
     }
 
     @MainActor

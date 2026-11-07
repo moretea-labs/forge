@@ -335,8 +335,7 @@ private struct ForgeWorkspaceView: View {
             case .requirement,.plan: RecordsPane(model:model)
             case .knowledge: KnowledgePane(model:model)
             case .runtime: RuntimePane(model:model)
-            case .settings: TextDetailPane(title:"设置",subtitle:"Provider 凭据仍归现有 Rust Keychain 权限层管理。",
-                                            text:model.settings,refresh:{ Task { await model.loadPage() } })
+            case .settings: SettingsPane(model:model)
             }
         }
         .background(ForgePalette.canvas)
@@ -1658,42 +1657,99 @@ private struct KnowledgePane: View {
     }
 }
 
-private struct TextDetailPane: View {
-    let title:String
-    let subtitle:String
-    let text:String
-    let refresh: () -> Void
+private struct SettingsPane: View {
+    @ObservedObject var model: NativeWorkspace
+
     var body: some View {
         ScrollView {
             VStack(alignment:.leading,spacing:18) {
-                HStack {
-                    VStack(alignment:.leading,spacing:7) {
-                        Text(title).font(.system(size:22,weight:.medium))
-                        Text(subtitle).font(.system(size:12)).foregroundStyle(ForgePalette.secondary)
+                HStack(alignment:.top) {
+                    VStack(alignment:.leading,spacing:6) {
+                        Text("Agent 设置").font(.system(size:22,weight:.medium))
+                        Text("当前 Native Agent 只通过 Forge controller.local_conversation 使用 Codex。保存的 API profile 是配置事实，不会静默切换 Native 执行 Provider。")
+                            .font(.system(size:12)).foregroundStyle(ForgePalette.secondary)
                     }
                     Spacer()
-                    Button(action:refresh) {
-                        Label("刷新",systemImage:"arrow.clockwise")
+                    Button {
+                        Task { await model.loadSettingsPage() }
+                    } label: {
+                        if model.settingsLoading { ProgressView().controlSize(.small) }
+                        else { Label("刷新",systemImage:"arrow.clockwise") }
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(.bordered).disabled(model.settingsLoading)
                 }
-                Group {
-                    if text.isEmpty {
-                        Text("暂无数据。请刷新以读取真实 Forge 状态。")
-                            .font(.system(size:12)).foregroundStyle(ForgePalette.secondary)
+
+                VStack(alignment:.leading,spacing:13) {
+                    HStack(spacing:9) {
+                        Circle().fill(model.provider.contains("已连接") ? Color.green : Color.orange)
+                            .frame(width:8,height:8)
+                        Text("Native Agent · Codex CLI").font(.system(size:14,weight:.semibold))
+                        Spacer()
+                        Text("当前执行 Provider")
+                            .font(.system(size:9.5,weight:.semibold))
+                            .padding(.horizontal,8).frame(height:22)
+                            .background(ForgePalette.selection,in:Capsule())
+                    }
+                    Text(model.provider).font(.system(size:12)).foregroundStyle(ForgePalette.secondary)
+                    HStack(spacing:16) {
+                        settingMeta("会话模型",model.selectedAgentModel?.displayName ?? "Codex 默认")
+                        settingMeta("Reasoning",model.selectedReasoningEffort.isEmpty ? "默认" : model.selectedReasoningEffort)
+                        settingMeta("图片输入",model.imageInputAvailable ? "可用" : "不可用")
+                    }
+                    Text("模型与推理强度按会话保存，可直接在 Agent 输入区调整。")
+                        .font(.system(size:10.5)).foregroundStyle(.tertiary)
+                }
+                .padding(16)
+                .background(ForgePalette.softFill,in:RoundedRectangle(cornerRadius:15,style:.continuous))
+
+                VStack(alignment:.leading,spacing:13) {
+                    HStack {
+                        Text("保存的兼容 API profile").font(.system(size:13,weight:.semibold))
+                        Spacer()
+                        Text("尚未接入 Native Agent")
+                            .font(.system(size:9.5,weight:.semibold)).foregroundStyle(.orange)
+                    }
+                    if let settings = model.localApiSettings {
+                        HStack(spacing:16) {
+                            settingMeta("保存 Provider",settings.provider)
+                            settingMeta("协议",settings.apiProtocol)
+                            settingMeta("Keychain",settings.hasKey ? "已存密钥" : "无密钥")
+                        }
+                        if settings.provider == "api" || !settings.model.isEmpty || settings.hasKey {
+                            settingLine("Endpoint",settings.endpoint)
+                            settingLine("Model",settings.model.isEmpty ? "未设置" : settings.model)
+                        } else {
+                            Text("当前保存配置仍选择 Codex；没有启用的 API profile。")
+                                .font(.system(size:11.5)).foregroundStyle(ForgePalette.secondary)
+                        }
                     } else {
-                        Text(text)
-                            .font(.system(size:12,design:.monospaced))
-                            .textSelection(.enabled)
+                        Text(model.settingsLoading ? "正在读取本地配置…" : "尚未读取本地 API 配置。")
+                            .font(.system(size:11.5)).foregroundStyle(ForgePalette.secondary)
                     }
+                    Text("API 凭据继续由现有 Rust / macOS Keychain 层持有。Native Provider parity 会复用同一 API Agent 生命周期，保留取消、工具活动和 effect reconciliation 后再开放切换。")
+                        .font(.system(size:10.5)).foregroundStyle(.tertiary).lineSpacing(3)
                 }
-                .padding(17)
-                .frame(maxWidth:.infinity,alignment:.leading)
-                .background(ForgePalette.softFill,
-                            in:RoundedRectangle(cornerRadius:15,style:.continuous))
-            }.frame(maxWidth:850,alignment:.leading)
-                .frame(maxWidth:.infinity,alignment:.leading)
-                .padding(30)
+                .padding(16)
+                .background(ForgePalette.softFill,in:RoundedRectangle(cornerRadius:15,style:.continuous))
+            }
+            .frame(maxWidth:850,alignment:.leading)
+            .frame(maxWidth:.infinity,alignment:.leading)
+            .padding(30)
+        }
+    }
+
+    private func settingMeta(_ label:String,_ value:String) -> some View {
+        VStack(alignment:.leading,spacing:3) {
+            Text(label).font(.system(size:9.5,weight:.medium)).foregroundStyle(.tertiary)
+            Text(value).font(.system(size:11.5,weight:.medium)).textSelection(.enabled)
+        }
+    }
+
+    private func settingLine(_ label:String,_ value:String) -> some View {
+        HStack(alignment:.firstTextBaseline,spacing:10) {
+            Text(label).font(.system(size:10,weight:.medium)).foregroundStyle(ForgePalette.secondary)
+                .frame(width:62,alignment:.leading)
+            Text(value).font(.system(size:10.5,design:.monospaced)).textSelection(.enabled)
         }
     }
 }

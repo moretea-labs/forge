@@ -256,6 +256,14 @@ struct KnowledgeAuditDetail: Codable {
     let truncated: Bool
     let gaps: [String]
 }
+
+struct LocalApiSettingsDetail {
+    let provider: String
+    let endpoint: String
+    let model: String
+    let apiProtocol: String
+    let hasKey: Bool
+}
 enum NativePage: String, CaseIterable, Identifiable {
     case agent = "会话", requirement = "Requirement", plan = "Plan",
          knowledge = "知识库", runtime = "Runtime", settings = "设置"
@@ -316,7 +324,8 @@ final class NativeWorkspace: ObservableObject {
     @Published var knowledgeQuery = ""
     @Published var knowledgeResult: KnowledgeAuditDetail?
     @Published var knowledgeLoading = false
-    @Published var settings = ""
+    @Published var localApiSettings: LocalApiSettingsDetail?
+    @Published var settingsLoading = false
     let store: URL
 
     init(store: URL? = nil) {
@@ -536,12 +545,7 @@ final class NativeWorkspace: ObservableObject {
             return
         }
         if page == .settings {
-            do {
-                let value = try await ForgeBridge.request("read_local_api_settings")
-                let provider = value["provider"] as? String ?? "codex"
-                let model = value["model"] as? String ?? "默认"
-                settings = "Provider: \(provider)\nModel: \(model)\nKeychain API Key: \(value["hasKey"] as? Bool == true ? "已配置" : "未配置")"
-            } catch { self.error = error.localizedDescription }
+            await loadSettingsPage()
             return
         }
         guard let repoId, [.requirement,.plan].contains(page) else { return }
@@ -698,6 +702,36 @@ final class NativeWorkspace: ObservableObject {
             connection = parsed.ready ? "已连接" : "未就绪"
             error = nil
         } catch { self.error = error.localizedDescription }
+    }
+
+    nonisolated static func localApiSettingsDetail(_ result:[String:Any]) -> LocalApiSettingsDetail? {
+        guard let provider = result["provider"] as? String,
+              let endpoint = result["endpoint"] as? String,
+              let model = result["model"] as? String,
+              let apiProtocol = result["apiProtocol"] as? String else { return nil }
+        return LocalApiSettingsDetail(
+            provider:provider, endpoint:endpoint, model:model,
+            apiProtocol:apiProtocol, hasKey:result["hasKey"] as? Bool == true
+        )
+    }
+
+    func loadSettingsPage() async {
+        guard !settingsLoading else { return }
+        settingsLoading = true
+        defer { settingsLoading = false }
+        do {
+            async let statusRequest = ForgeBridge.request("read_local_provider_status")
+            async let settingsRequest = ForgeBridge.request("read_local_api_settings")
+            let (status, settingsValue) = try await (statusRequest, settingsRequest)
+            provider = status["label"] as? String ?? status["status"] as? String ?? "Codex 不可用"
+            imageInputAvailable = status["imageInput"] as? Bool == true
+            guard let parsed = Self.localApiSettingsDetail(settingsValue) else { throw ForgeBridgeError.invalidResponse }
+            localApiSettings = parsed
+            error = nil
+        } catch {
+            localApiSettings = nil
+            self.error = error.localizedDescription
+        }
     }
     static func prettyJSON(_ value: Any) -> String {
         guard JSONSerialization.isValidJSONObject(value),
