@@ -1023,6 +1023,11 @@ private struct AgentPane: View {
         .accessibilityIdentifier("agent.project")
     }
 
+    private var workspaceWorkingChangeCount: Int {
+        guard let changes = model.agentChanges, !changes.staged else { return 0 }
+        return changes.nameOnly.count + changes.untrackedFiles.count
+    }
+
     private var workspaceChangesControl: some View {
         Button {
             withAnimation(.easeOut(duration:0.18)) { showChanges.toggle() }
@@ -1033,8 +1038,8 @@ private struct AgentPane: View {
             HStack(spacing:5) {
                 Image(systemName:"doc.text.magnifyingglass")
                     .font(.system(size:9.5,weight:.medium))
-                if model.changedFileCount > 0 {
-                    Text("\(model.changedFileCount)")
+                if workspaceWorkingChangeCount > 0 {
+                    Text("\(workspaceWorkingChangeCount)")
                         .font(.system(size:9.5,weight:.semibold))
                         .monospacedDigit()
                 }
@@ -1048,11 +1053,11 @@ private struct AgentPane: View {
         }
         .buttonStyle(.plain)
         .disabled(model.checkoutId == nil)
-        .help(model.changedFileCount > 0
-              ? "查看当前 checkout 的 \(model.changedFileCount) 个未提交文件"
+        .help(workspaceWorkingChangeCount > 0
+              ? "查看当前 checkout 的 \(workspaceWorkingChangeCount) 个 Working Tree 文件"
               : "查看当前 checkout 的未提交改动")
         .accessibilityLabel("Git Changes")
-        .accessibilityValue(model.changedFileCount > 0 ? "\(model.changedFileCount) 个文件" : "无已加载改动")
+        .accessibilityValue(workspaceWorkingChangeCount > 0 ? "\(workspaceWorkingChangeCount) 个 Working Tree 文件" : "未加载 Working Tree 计数")
         .accessibilityIdentifier("agent.changes")
     }
 
@@ -1442,8 +1447,8 @@ private struct AgentChangesPane: View {
                     .foregroundStyle(ForgePalette.accent)
                 Text("Changes")
                     .font(.system(size:13,weight:.semibold))
-                if model.changedFileCount > 0 {
-                    Text("\(model.changedFileCount)")
+                if let changes = model.agentChanges, !changes.nameOnly.isEmpty {
+                    Text("\(changes.nameOnly.count)")
                         .font(.system(size:10,weight:.semibold))
                         .padding(.horizontal,7).padding(.vertical,3)
                         .background(ForgePalette.selectionStrong,in:Capsule())
