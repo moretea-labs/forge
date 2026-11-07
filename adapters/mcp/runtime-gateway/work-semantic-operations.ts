@@ -7,7 +7,6 @@ import {
 import { buildFacadeResult } from '../../../src/runtime/control-plane/facade';
 import { getPlanContract, currentPlanSemanticRevision, getPlanSemanticRevisionRecord, planSemanticView } from '../../../src/runtime/control-plane/facade/plan-contract-store';
 import { readRequirement, currentRequirementSemanticRevision, getRequirementRevisionRecord, requirementSemanticView } from '../../../src/runtime/control-plane/persistence/requirement-store';
-import { buildWorkContinuationSnapshot } from '../../../src/runtime/control-plane/facade/work-continuation';
 import { result } from './result-adapter';
 import { projectWorkExecutionEvidence } from './work-detail-projection';
 
@@ -84,7 +83,6 @@ export async function callRhWorkSemanticOperation(
       versionBinding: versionBinding(store, work, detail),
       ...(detail ? {
         executionEvidence: projectWorkExecutionEvidence(work),
-        continuation: buildWorkContinuationSnapshot(work),
       } : {}),
     },
     detailLevel: detail ? 'detail' : 'summary',

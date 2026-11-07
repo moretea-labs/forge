@@ -49,6 +49,7 @@ import {
   claimProcessCheckExecution,
   claimProcessRequest,
   createProcessRecord,
+  getProcessRequestBinding,
   getProcessRecord,
   listProcessRecords,
   listRecoverableProcessRecords,
@@ -219,6 +220,28 @@ function canonicalProcessCommand(command: SpawnManagedProcessInput['command']): 
 /** Stable semantic command fingerprint used by request-id idempotency. */
 export function fingerprintProcessCommand(command: SpawnManagedProcessInput['command']): string {
   return createHash('sha256').update(JSON.stringify(canonicalProcessCommand(command))).digest('hex');
+}
+
+function processClaimsFingerprint(claims: readonly ProcessResourceClaim[]): string {
+  const normalized = claims.map((claim) => ({
+    resourceKey: claim.resourceKey,
+    mode: claim.mode,
+    repoId: claim.repoId ?? null,
+    checkoutId: claim.checkoutId ?? null,
+  })).sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+  return createHash('sha256').update(JSON.stringify(normalized)).digest('hex');
+}
+
+function executionIdentityFingerprint(identity: SpawnManagedProcessInput['executionIdentity']): string {
+  return createHash('sha256').update(JSON.stringify({
+    authority: identity.authority ?? 'repository',
+    repositoryId: identity.repositoryId,
+    checkoutId: identity.checkoutId,
+    canonicalRoot: identity.canonicalRoot,
+    branch: identity.branch ?? null,
+    expectedHead: identity.expectedHead ?? null,
+    allowArchived: identity.allowArchived === true,
+  })).digest('hex');
 }
 
 function tailText(buffer: Buffer, maxBytes: number): string {
@@ -1153,6 +1176,70 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
   const candidateProcessId = newProcessId();
   const requestId = input.origin?.requestId?.trim() || undefined;
   const commandFingerprint = fingerprintProcessCommand(command);
+  const resourceClaims = toProcessClaims(scopeResourceClaims(
+    toResourceClaimSpecs(input.resourceClaims ?? []),
+    input.repoId,
+    input.checkoutId,
+  ));
+
+  // Request-id idempotency is stronger than active-command reuse.
+  if (requestId) {
+    const existingBinding = getProcessRequestBinding(
+      input.controllerHome,
+      input.repoId,
+      input.checkoutId,
+      requestId,
+    );
+    if (existingBinding) {
+      if (existingBinding.commandFingerprint !== commandFingerprint) {
+        throw new Error(`PROCESS_REQUEST_ID_CONFLICT: ${requestId}`);
+      }
+      const existing = getProcessHandle(input.controllerHome, input.repoId, existingBinding.processId);
+      if (!existing) {
+        throw new Error(`PROCESS_REQUEST_INCOMPLETE: request ${requestId} is bound to missing process ${existingBinding.processId}; refusing re-execution`);
+      }
+      return { ...existing, deduplicated: true, requestId };
+    }
+  }
+
+  // Build/test single-flight belongs to Process Runtime, not Work. Reuse only
+  // an exact active Process with identical source identity, principal, command
+  // and physical resource claims.
+  if (input.reuseActiveEquivalent === true && !input.checkExecution) {
+    const identityKey = executionIdentityFingerprint(input.executionIdentity);
+    const claimsKey = processClaimsFingerprint(resourceClaims);
+    const equivalent = listProcessRecords(input.controllerHome, input.repoId, 100).find((record) => (
+      isManagedProcessActive(record)
+      && record.checkoutId === input.checkoutId
+      && (record.principalId ?? undefined) === (input.principalId ?? undefined)
+      && record.origin?.surface === 'command'
+      && record.origin?.toolName === 'execute_command'
+      && record.executionIdentity !== undefined
+      && executionIdentityFingerprint(record.executionIdentity) === identityKey
+      && fingerprintProcessCommand(record.command) === commandFingerprint
+      && processClaimsFingerprint(record.resourceClaims) === claimsKey
+    ));
+    if (equivalent) {
+      let selectedProcessId = equivalent.processId;
+      if (requestId) {
+        const claim = claimProcessRequest({
+          controllerHome: input.controllerHome,
+          repoId: input.repoId,
+          checkoutId: input.checkoutId,
+          requestId,
+          commandFingerprint,
+          processId: equivalent.processId,
+        });
+        selectedProcessId = claim.binding.processId;
+      }
+      const existing = getProcessHandle(input.controllerHome, input.repoId, selectedProcessId);
+      if (!existing) {
+        throw new Error(`PROCESS_ACTIVE_EQUIVALENT_INCOMPLETE: process ${selectedProcessId} disappeared before attachment`);
+      }
+      return { ...existing, deduplicated: true, requestId };
+    }
+  }
+
   let processId = candidateProcessId;
   let semanticExisting = false;
   if (input.checkExecution) {
@@ -1204,12 +1291,6 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
   const stderrPath = join(logDir, `${processId}.stderr.log`);
   const exitReceiptPath = receiptPathFor(input.controllerHome, input.repoId, processId);
   const descriptorPath = descriptorPathFor(input.controllerHome, input.repoId, processId);
-  const resourceClaims = toProcessClaims(scopeResourceClaims(
-    toResourceClaimSpecs(input.resourceClaims ?? []),
-    input.repoId,
-    input.checkoutId,
-  ));
-
   const runtimeClaim = getRuntimeWriteClaim();
   const record: ManagedProcessRecord = {
     schemaVersion: 1,

@@ -318,6 +318,8 @@ export interface SpawnManagedProcessInput {
   artifactIdentity?: string;
   workerProtocolVersion?: number;
   signal?: AbortSignal;
+  /** Reuse only an exact active Process with identical source identity, principal, command and resource claims. */
+  reuseActiveEquivalent?: boolean;
   /** When true, never block the caller waiting for completion. */
   returnHandleImmediately?: boolean;
 }

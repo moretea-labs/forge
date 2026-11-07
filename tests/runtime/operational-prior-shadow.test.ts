@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import type { ExecutionJob } from '../../src/runtime/execution/jobs/types';
-import type { ProcessCheckReceiptEvidence } from '../../packages/kernel/work/api/index';
+import type { ProcessCheckReceiptEvidence } from '../../src/runtime/evidence/process-check-receipt';
 import { OPERATIONAL_SIGNAL_DEFINITIONS, OPERATIONAL_TARGET_DEFINITIONS, rankOperationalShadowPriors, reduceOperationalObservations, replayOperationalPriors, resolveOperationalShadowPrior, type OperationalObservation } from '../../packages/kernel/memory/api/index';
 import { extractExecutionJobShadowObservation, extractProcessCheckShadowObservation } from '../../src/runtime/evidence/operational-shadow';
 

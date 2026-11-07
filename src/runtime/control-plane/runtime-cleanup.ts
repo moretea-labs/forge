@@ -16,7 +16,6 @@ import { managedPathInside, managedWorktreeStorageRoot } from '../../cli/reposit
 import { migrateManagedWorkspacePhysicalDependenciesToCanonical } from '../execution/managed-workspace';
 import { listActiveLeases } from '../resources/leases/store';
 import { cleanupScheduleOccurrenceHistory } from '../../../packages/kernel/scheduler/api/index';
-import { isTerminalSemanticWorkState, readWorkContractStore } from '../../../packages/kernel/work/api/index';
 import { assertOwnedResourceCleanupTarget, listOwnedResources, markOwnedResourceCleaned, type OwnedResource } from '../../../packages/kernel/identity/api/index';
 import { appendJsonLine, readJsonFile, writeJsonAtomic } from '../shared/json-files';
 import { cleanupControllerReleaseHistory } from './release-retention';
@@ -193,14 +192,10 @@ export interface RuntimeCleanupOptions {
   releaseRetentionGraceMs?: number;
   /** Minimum age before an abandoned runtime .staging-* directory can be reclaimed. */
   stagingReleaseRetentionGraceMs?: number;
-  /** Minimum age before a proven-redundant terminal Work preservation bundle can be reclaimed. */
-  cleanupArtifactRetentionGraceMs?: number;
-  /** Maximum age for terminal EditSession artifacts once no active Work owns them. */
+  /** Maximum age for terminal EditSession artifacts under EditSession-owned retention. */
   editSessionRetentionMs?: number;
   /** Count cap for newest terminal EditSession artifacts retained for local review/debugging. */
   editSessionMaxRetained?: number;
-  /** Grace period before a non-Plan Work with no exact durable owner loses execution authority. */
-  ownerlessWorkAuthorityGraceMs?: number;
   /** Grace before a removed repository may shed only explicit disposable Controller Home children. */
   repositoryNamespaceRetentionMs?: number;
   /** Minimum reclaimable SQLite free-page bytes before physical VACUUM is eligible. */

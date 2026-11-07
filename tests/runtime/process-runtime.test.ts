@@ -1943,7 +1943,8 @@ describe('run_check Process Runtime facade', () => {
     } as const;
     const first = await executeRepositoryCommandViaProcessRuntime({ ...base, requestId: 'build-singleflight-first' });
     const second = await executeRepositoryCommandViaProcessRuntime({ ...base, requestId: 'build-singleflight-second' });
-    expect(first.process?.processId).toStartWith('lightweight:');
+    expect(first.route).toBe('process_managed');
+    expect(first.process?.processId).toStartWith('proc_');
     expect(second.process?.processId).toBe(first.process?.processId);
     expect(second.process?.commandId).toBe(first.process?.commandId);
     const terminal = await waitRepositoryCommandProcess(
@@ -2002,7 +2003,7 @@ describe('run_check Process Runtime facade', () => {
     expect(terminal).toMatchObject({ processId, completed: true, status: 'completed_unknown' });
   });
 
-  test('returns a lightweight handle before starting long build/test preparation', async () => {
+  test('completes build/test help query within the interactive budget', async () => {
     const fx = fixture();
     const result = await executeRepositoryCommandViaProcessRuntime({
       controllerHome: fx.controllerHome,
@@ -2011,26 +2012,9 @@ describe('run_check Process Runtime facade', () => {
       timeoutMs: 30_000,
       executionIdentity: executionIdentityForRepository(fx.repository),
     });
-    expect(result.route).toBe('process_managed');
-    expect(result.process).toMatchObject({ completed: false, route: 'managed', interactiveWaitMs: 0 });
-    expect(result.process?.processId).toStartWith('lightweight:');
-    const terminal = await waitRepositoryCommandProcess(
-      fx.controllerHome,
-      fx.repository.repoId,
-      result.process!.processId,
-      { timeoutMs: 30_000 },
-    );
-    expect(terminal.completed).toBe(true);
-    clearLightweightProcessMemoryForTest();
-    const recovered = await waitRepositoryCommandProcess(
-      fx.controllerHome,
-      fx.repository.repoId,
-      result.process!.processId,
-      { timeoutMs: 30_000 },
-    );
-    expect(recovered).toMatchObject({ processId: result.process!.processId, completed: true, ok: terminal.ok, exitCode: terminal.exitCode });
-    expect(getRepositoryCommandProcess(fx.controllerHome, fx.repository.repoId, result.process!.processId)).toMatchObject({ completed: true });
-    expect(readRepositoryCommandProcessLogs(fx.controllerHome, fx.repository.repoId, result.process!.processId)?.processId).toBe(result.process!.processId);
+    expect(result.route).toBe('process_direct');
+    expect(result.process).toMatchObject({ completed: true, route: 'direct' });
+    expect(result.ok).toBe(true);
   });
 });
 

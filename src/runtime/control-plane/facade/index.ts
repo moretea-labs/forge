@@ -1,7 +1,6 @@
 export * from './types';
 export * from './handoff-inbox-store';
 export * from '../../../../packages/kernel/work/api/index';
-export * from './work-continuation';
 export * from './plan-contract-store';
 export * from './semantic-admission';
 export * from './facade-result';

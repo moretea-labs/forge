@@ -957,10 +957,10 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
       : [];
     const processScan = isSummary
       ? listRecoverableProcessRecords(ctx.controllerHome, repository.repoId)
-      : listProcessRecords(ctx.controllerHome, repository.repoId, workId ? 100 : 50);
-    const relevantProcesses = processScan.filter((process) => work
-      ? process.workId === work.workId
-      : timestampIsRecent(process.updatedAt, recentActivityCutoffMs));
+      : listProcessRecords(ctx.controllerHome, repository.repoId, 50);
+    const relevantProcesses = work
+      ? []
+      : processScan.filter((process) => timestampIsRecent(process.updatedAt, recentActivityCutoffMs));
     const liveProcessIds = new Set(processRuntimeResourceDiagnostics().activeProcessIds);
     const activeProcesses = relevantProcesses.filter((process) => liveProcessIds.has(process.processId) && isManagedProcessActive(process));
     const manifestOptions = { preferStored: true };
@@ -1040,7 +1040,6 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
           processes: relevantProcesses.slice(0, 8).map((process) => ({
             processId: process.processId,
             status: process.status,
-            workId: process.workId,
             updatedAt: process.updatedAt,
           })),
         },

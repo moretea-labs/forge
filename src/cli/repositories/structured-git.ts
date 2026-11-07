@@ -346,7 +346,6 @@ export function repositoryGitMergeBranch(
     authorizationDecision?: AuthorizationDecision;
     sessionId?: string;
     principalId?: string;
-    workId?: string;
     goalId?: string;
   },
 ): { branch: string; before: RepositoryGitStatusSnapshot; execution: RepositoryGitExecution; abort?: RepositoryGitExecution; after: RepositoryGitStatusSnapshot } {
@@ -374,7 +373,6 @@ export function repositoryGitRebaseOnto(
     authorizationDecision?: AuthorizationDecision;
     sessionId?: string;
     principalId?: string;
-    workId?: string;
     goalId?: string;
   },
 ): { before: RepositoryGitStatusSnapshot; execution: RepositoryGitExecution; abort?: RepositoryGitExecution; after: RepositoryGitStatusSnapshot; rebased: boolean; restored: boolean } {
@@ -425,7 +423,7 @@ function repositoryGitDeleteRemoteBranch(
   controllerHome: string,
   repository: RepositoryRecord,
   branch: string,
-  input: { expectedRemoteSha?: unknown; approvalRequestId?: string; authorizationDecision?: AuthorizationDecision; sessionId?: string; principalId?: string; workId?: string; goalId?: string },
+  input: { expectedRemoteSha?: unknown; approvalRequestId?: string; authorizationDecision?: AuthorizationDecision; sessionId?: string; principalId?: string; goalId?: string },
 ): RepositoryGitRemoteDeleteResult {
   if (isProtectedRemoteBranchDeletionTarget(branch, repository.defaultBranch)) {
     throw new Error(`GIT_REMOTE_BRANCH_PROTECTED: remote branch is not eligible for typed deletion: ${branch}`);
@@ -474,7 +472,7 @@ function repositoryGitDeleteRemoteBranch(
   };
 }
 
-export function repositoryGitDeleteBranch(controllerHome: string, repository: RepositoryRecord, input: { branch: unknown; force?: unknown; remote?: unknown; expectedRemoteSha?: unknown; approvalRequestId?: string; authorizationDecision?: AuthorizationDecision; sessionId?: string; principalId?: string; workId?: string; goalId?: string }): { branch: string; execution: RepositoryGitExecution } | RepositoryGitRemoteDeleteResult {
+export function repositoryGitDeleteBranch(controllerHome: string, repository: RepositoryRecord, input: { branch: unknown; force?: unknown; remote?: unknown; expectedRemoteSha?: unknown; approvalRequestId?: string; authorizationDecision?: AuthorizationDecision; sessionId?: string; principalId?: string; goalId?: string }): { branch: string; execution: RepositoryGitExecution } | RepositoryGitRemoteDeleteResult {
   const branch = assertSafeBranchName(input.branch);
   if (input.remote === true) {
     if (input.force === true) throw new Error('GIT_REMOTE_BRANCH_FORCE_INVALID: remote deletion uses exact expected_remote_sha CAS, not force');
@@ -485,7 +483,7 @@ export function repositoryGitDeleteBranch(controllerHome: string, repository: Re
   return { branch, execution: executeRepositoryGitCommand(controllerHome, repository, { args: ['branch', input.force === true ? '-D' : '-d', branch], authorization: 'explicit_user_request', ...input }) };
 }
 
-export function repositoryGitCommit(controllerHome: string, repository: RepositoryRecord, input: { message: unknown; paths?: unknown; allowEmpty?: unknown; authorizationDecision?: AuthorizationDecision; sessionId?: string; principalId?: string; workId?: string; goalId?: string }): RepositoryGitCommitResult {
+export function repositoryGitCommit(controllerHome: string, repository: RepositoryRecord, input: { message: unknown; paths?: unknown; allowEmpty?: unknown; authorizationDecision?: AuthorizationDecision; sessionId?: string; principalId?: string; goalId?: string }): RepositoryGitCommitResult {
   const before = repositoryGitStatus(repository);
   const message = normalizeCommitMessage(input.message);
   const scope = resolveRepositoryGitCommitScope(repository, { paths: input.paths });

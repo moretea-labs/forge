@@ -295,7 +295,6 @@ describe('Process Runtime fine-grained resource claims', () => {
       mode: 'read',
       repoId: 'repo1',
       checkoutId: 'co1',
-      workId: undefined,
     }]);
   });
 

@@ -374,7 +374,6 @@ export interface ExpectedLeaseRef {
   fencingToken: number;
   repoId?: string;
   checkoutId?: string;
-  workId?: string;
   resourceKey?: string;
   ownerIdentityDigest?: string;
 }
@@ -387,7 +386,6 @@ function leaseMatchesExpected(lease: ExecutionLease, expected: ExpectedLeaseRef 
   if (!expected || expected.fencingToken !== lease.fencingToken) return false;
   if (expected.repoId && expected.repoId !== lease.repoId) return false;
   if (expected.checkoutId && expected.checkoutId !== lease.checkoutId) return false;
-  if (expected.workId && expected.workId !== lease.workId) return false;
   if (expected.resourceKey && expected.resourceKey !== lease.resourceKey) return false;
   if (expected.ownerIdentityDigest && expected.ownerIdentityDigest !== lease.ownerIdentityDigest) return false;
   return true;

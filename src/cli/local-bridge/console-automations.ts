@@ -1,9 +1,9 @@
 import type { RepositoryRecord } from '../repositories/types';
-import { evaluateSchedule } from '../../runtime/workflow/schedules/engine';
+import { evaluateSchedule, retiredScheduleReason } from '../../runtime/workflow/schedules/engine';
 import { getSchedule, listOccurrences, listSchedules, saveSchedule } from '../../../packages/kernel/scheduler/api/index';
 import type { RepositorySchedule, ScheduleOccurrence } from '../../../packages/kernel/scheduler/api/index';
 
-export type ConsoleAutomationMode = 'browser_watch' | 'browser_keepalive' | 'continuation' | 'schedule';
+export type ConsoleAutomationMode = 'browser_watch' | 'browser_keepalive' | 'schedule';
 
 export interface ConsoleAutomationHistoryView {
   id: string;
@@ -29,7 +29,6 @@ export interface ConsoleAutomationView {
   modeLabel: string;
   live?: boolean;
   targetLabel?: string;
-  boundWorkId?: string;
   observationStatus?: RepositorySchedule['lastObservationStatus'];
   observationAt?: string;
   failureCount?: number;
@@ -120,7 +119,6 @@ function displayOccurrenceReason(reason?: string): string | undefined {
   if (value === 'Browser watcher baseline recorded; no Controller wake was emitted.') return '已建立观察基线；没有唤醒 ChatGPT。';
   if (value === 'Browser watcher observation is unchanged; no Controller wake was emitted.') return '页面没有变化；保持静默。';
   if (value.startsWith('Browser watcher requires authentication:')) return '目标登录状态已失效，需要重新认证。';
-  if (value.startsWith('Work ') && value.includes(' is terminal')) return '绑定的 Work 已完成，自动任务已停止。';
   return value;
 }
 
@@ -136,7 +134,6 @@ function occurrenceHistory(occurrences: ScheduleOccurrence[]): ConsoleAutomation
 }
 
 function scheduleMode(schedule: RepositorySchedule): ConsoleAutomationMode {
-  if (schedule.action.operation === 'external_controller_wake' || schedule.action.operation === 'controller_progression') return 'continuation';
   if (schedule.action.operation === 'browser_probe') return schedule.action.arguments?.keepalive_only === true ? 'browser_keepalive' : 'browser_watch';
   return 'schedule';
 }
@@ -144,14 +141,12 @@ function scheduleMode(schedule: RepositorySchedule): ConsoleAutomationMode {
 function modeLabel(mode: ConsoleAutomationMode): string {
   if (mode === 'browser_watch') return '网页变更监听';
   if (mode === 'browser_keepalive') return '登录保活';
-  if (mode === 'continuation') return '历史 Work 续跑（已退役）';
   return '自动任务';
 }
 
 function scheduleSummary(mode: ConsoleAutomationMode): string {
   if (mode === 'browser_watch') return '静默观察目标页面；只有内容发生变化时才恢复 ChatGPT。';
   if (mode === 'browser_keepalive') return '静默刷新登录态；正常时不打扰，认证失效时再恢复 ChatGPT。';
-  if (mode === 'continuation') return '历史 Work 续跑记录，仅供查看，不再恢复或执行。';
   return '由 Forge Schedule Engine 管理的持久自动任务。';
 }
 
@@ -159,20 +154,7 @@ function scheduleDelivery(schedule: RepositorySchedule, mode: ConsoleAutomationM
   const controller = typeof schedule.action.arguments?.controller_type === 'string' ? schedule.action.arguments.controller_type : 'chatgpt';
   if (mode === 'browser_watch') return `变化时唤醒 ${controller === 'chatgpt' ? 'ChatGPT' : controller}`;
   if (mode === 'browser_keepalive') return `登录失效时唤醒 ${controller === 'chatgpt' ? 'ChatGPT' : controller}`;
-  if (mode === 'continuation') return '已退役';
   return undefined;
-}
-
-function chatgptExecutionProfile(schedule: RepositorySchedule, mode: ConsoleAutomationMode): { agentModel?: string; reasoningLevel?: string; tabPolicy?: string } {
-  if (mode !== 'continuation') return {};
-  const args = schedule.action.arguments ?? {};
-  const controller = typeof args.controller_type === 'string' ? args.controller_type : 'chatgpt';
-  if (mode === 'continuation' && controller !== 'chatgpt') return {};
-  return {
-    agentModel: typeof args.model === 'string' && args.model.trim() ? args.model.trim() : 'gpt-5.6',
-    reasoningLevel: typeof args.reasoning === 'string' && args.reasoning.trim() ? args.reasoning.trim() : 'high',
-    tabPolicy: typeof args.tab_policy === 'string' && args.tab_policy.trim() ? args.tab_policy.trim() : 'auto',
-  };
 }
 
 function scheduleTarget(schedule: RepositorySchedule, mode: ConsoleAutomationMode): string | undefined {
@@ -202,27 +184,15 @@ function scheduleNeedsAttention(schedule: RepositorySchedule): boolean {
   return Boolean(schedule.pausedReason && /(?:fail|error|auth|login|block|attention|maximum)/i.test(schedule.pausedReason));
 }
 
-function retiredWorkSchedule(schedule: RepositorySchedule): boolean {
-  const operation = schedule.action.operation;
-  return operation === 'external_controller_wake'
-    || operation === 'controller_progression'
-    || (typeof schedule.action.arguments?.work_id === 'string' && schedule.action.arguments.work_id.trim().length > 0);
-}
-
 function scheduleStatus(schedule: RepositorySchedule): ConsoleAutomationView['status'] {
-  if (retiredWorkSchedule(schedule)) return 'disabled';
+  if (/is terminal \(completed\)/i.test(schedule.pausedReason ?? '')) return 'completed';
   if (schedule.enabled) return scheduleNeedsAttention(schedule) ? 'attention' : 'enabled';
   return scheduleNeedsAttention(schedule) ? 'attention' : 'paused';
 }
 
-function historicalWorkBinding(schedule: RepositorySchedule): { id?: string } {
-  const value = schedule.action.arguments?.work_id;
-  const workId = typeof value === 'string' && value.trim() ? value.trim() : undefined;
-  return workId ? { id: workId } : {};
-}
 
 function displayPauseReason(schedule: RepositorySchedule): string | undefined {
-  if (retiredWorkSchedule(schedule)) return '历史 Work 绑定自动任务已退役，仅供查看，不能恢复或执行。';
+  if (/is terminal \(completed\)/i.test(schedule.pausedReason ?? '')) return '历史 continuation 已终止，这个自动任务不会再触发。';
   if (schedule.lastObservationStatus === 'auth_required') return '目标登录状态已失效，完成重新登录后即可恢复。';
   if (schedule.consecutiveFailures >= schedule.policy.maxFailures || /maximum consecutive failures/i.test(schedule.pausedReason ?? '')) return '连续执行失败达到上限，已自动暂停。修复问题后可以恢复任务。';
   if (/canary completed/i.test(schedule.pausedReason ?? '')) return '验收任务已经完成。';
@@ -243,14 +213,10 @@ export function listConsoleAutomations(controllerHome: string, repositories: Rep
   const items: ConsoleAutomationView[] = [];
   for (const repository of repositories.filter((entry) => entry.enabled && !entry.removedAt)) {
     for (const schedule of listSchedules(controllerHome, repository.repoId)) {
-      if (schedule.action.operation === 'chatgpt_browser_prompt') continue;
-      if (schedule.action.operation === 'assistant_routine_execute') continue;
+      if (retiredScheduleReason(schedule)) continue;
       const occurrences = listOccurrences(controllerHome, repository.repoId, schedule.scheduleId, 8);
       const last = occurrences[0];
       const mode = scheduleMode(schedule);
-      const work = historicalWorkBinding(schedule);
-      const retired = retiredWorkSchedule(schedule);
-      const executionProfile = chatgptExecutionProfile(schedule, mode);
       items.push({
         id: schedule.scheduleId,
         source: 'schedule',
@@ -266,19 +232,17 @@ export function listConsoleAutomations(controllerHome: string, repositories: Rep
         modeLabel: modeLabel(mode),
         live: !schedule.policy.shadowMode,
         targetLabel: scheduleTarget(schedule, mode),
-        boundWorkId: work.id,
         observationStatus: schedule.lastObservationStatus,
         observationAt: schedule.lastObservationAt,
         failureCount: schedule.consecutiveFailures,
         policySummary: policySummary(schedule),
-        ...executionProfile,
         lastRunAt: last?.updatedAt ?? schedule.lastTriggeredAt,
         lastResult: observationResult(schedule, last),
         nextRunHint: nextScheduleHint(schedule),
         pausedReason: displayPauseReason(schedule),
-        attentionMessage: retired ? undefined : attentionMessage(schedule),
+        attentionMessage: attentionMessage(schedule),
         history: occurrenceHistory(occurrences),
-        actions: retired ? [] : schedule.enabled ? ['run', 'pause'] : ['resume'],
+        actions: scheduleStatus(schedule) === 'completed' ? [] : schedule.enabled ? ['run', 'pause'] : ['resume'],
       });
     }
 
@@ -308,9 +272,8 @@ export async function applyConsoleAutomationAction(
   if (!repository) throw new Error(`REPOSITORY_NOT_FOUND: ${repoId}`);
   if (source === 'schedule') {
     const schedule = getSchedule(controllerHome, repoId, id);
-    if (schedule.action.operation === 'chatgpt_browser_prompt') throw new Error('RETIRED_WORK_FREE_PROMPT_SCHEDULE');
-    if (schedule.action.operation === 'assistant_routine_execute') throw new Error('RETIRED_PERSONAL_ASSISTANT_SCHEDULE');
-    if (retiredWorkSchedule(schedule)) throw new Error('RETIRED_WORK_BOUND_SCHEDULE_READ_ONLY');
+    const retirementReason = retiredScheduleReason(schedule);
+    if (retirementReason) throw new Error(retirementReason);
     if (action === 'pause') return saveSchedule(controllerHome, { ...schedule, enabled: false, pausedReason: undefined });
     if (action === 'resume') return saveSchedule(controllerHome, { ...schedule, enabled: true, pausedReason: undefined, consecutiveFailures: 0, consecutiveNoops: 0, nextEligibleAt: undefined });
     if (action === 'run') return evaluateSchedule(controllerHome, schedule, true, { source: 'manual' });

@@ -2263,9 +2263,9 @@ export async function startLocalBridgeServer(
     // providers, mutate Task state, or create Runs/Jobs from this route.
     response.status(410).json({
       error: "AGENT_RUN_RETIRED",
-      message: "Kernel-managed Agent Run retry is disabled. Create or claim a WorkContract and start an external SuperController through Thin Launcher.",
+      message: "Kernel-managed Agent Run retry is retired. Continue from the current Requirement/Plan and explicit repository/checkout through Process Runtime.",
       migration: {
-        path: ["WorkContract", "controller_claim", "Process Runtime", "external SuperController"],
+        path: ["Requirement/Plan", "repository/checkout", "Process Runtime"],
       },
     });
   });

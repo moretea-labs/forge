@@ -23,7 +23,7 @@ import {
   assertRepositoryCommandNoPluginExecutionBypass,
   assertRepositoryCommandStableHostIdentity,
 } from '../../../cli/repositories/command-scope';
-import { claimsForRepositoryCommand, claimsRequireLiveDeviceAdmission, LIVE_DEVICE_ADMISSION_WAIT_MS, scopeResourceClaims, toProcessClaims } from './resource-claims';
+import { claimsForRepositoryCommand, claimsRequireLiveDeviceAdmission, LIVE_DEVICE_ADMISSION_WAIT_MS, looksLikeBuildOrTest, scopeResourceClaims, toProcessClaims } from './resource-claims';
 import {
   spawnWithQueuedAdmission,
   getProcessHandle,
@@ -502,6 +502,7 @@ export async function executeRepositoryCommandViaProcessRuntime(
       requestId: input.requestId,
     },
     signal: input.signal,
+    reuseActiveEquivalent: looksLikeBuildOrTest(input.command),
     returnHandleImmediately: input.returnHandleImmediately === true,
   }, usesLiveDevice);
 

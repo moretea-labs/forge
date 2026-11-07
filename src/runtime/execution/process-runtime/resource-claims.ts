@@ -441,7 +441,7 @@ function claimsForDeclaredCheckEffects(
   return normalizeClaims(claims, { readOnly: claims.every((claim) => claim.mode === 'read') });
 }
 
-function looksLikeBuildOrTest(command: string | readonly string[]): boolean {
+export function looksLikeBuildOrTest(command: string | readonly string[]): boolean {
   const canonical = normalizeRepositoryCommand(command);
   const buildScript = (value: string | undefined): boolean => /^(?:test(?::.*)?|check(?::.*)?|typecheck|lint(?::.*)?|build(?::.*)?|compile(?::.*)?)$/i.test(value ?? '');
   const base = (value: string | undefined): string => (value ?? '').replace(/\\/g, '/').split('/').at(-1)?.toLowerCase() ?? '';
