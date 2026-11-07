@@ -288,7 +288,10 @@ private struct ForgeWorkspaceView: View {
             .background(model.page == section ? ForgePalette.selection : .clear,
                         in:RoundedRectangle(cornerRadius:11,style:.continuous))
             .contentShape(Rectangle())
-        }.buttonStyle(.plain).padding(.horizontal,10)
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier(section.accessibilityId)
+        .padding(.horizontal,10)
     }
 
     private var main: some View {
@@ -330,7 +333,11 @@ private struct ForgeWorkspaceView: View {
                         .font(.system(size:11.5,weight:.medium))
                         .frame(width:27,height:27)
                         .background(ForgePalette.softFill,in:Circle())
-                }.buttonStyle(.plain).help("刷新真实 Forge 状态")
+                }
+                .buttonStyle(.plain)
+                .help("刷新真实 Forge 状态")
+                .accessibilityLabel("刷新当前页面")
+                .accessibilityIdentifier("app.refresh")
             }
             .padding(.horizontal,22).frame(height:48)
             .background(.ultraThinMaterial)
@@ -1700,8 +1707,10 @@ private struct RuntimePane: View {
                 Spacer()
                 Button("刷新") { Task { await model.loadRuntimePage() } }
                     .buttonStyle(.plain).disabled(model.runtimeLoading)
+                    .accessibilityIdentifier("runtime.refresh")
                 Button(model.runtimeLoading ? "诊断中…" : "诊断") { Task { await model.diagnoseRuntime() } }
                     .buttonStyle(.bordered).disabled(model.runtimeLoading)
+                    .accessibilityIdentifier("runtime.diagnose")
             }
             Text(model.runtimeStatus?.detail ?? "等待独立 Recovery 返回主运行时状态。")
                 .font(.system(size:12)).foregroundStyle(ForgePalette.secondary)
@@ -1725,11 +1734,13 @@ private struct RuntimePane: View {
                 Spacer()
                 Button("刷新连接") { Task { await model.loadRuntimePage() } }
                     .buttonStyle(.plain).disabled(model.connectionLoading)
+                    .accessibilityIdentifier("connection.refresh")
                 if model.connectionStatus?.repairAvailable == true {
                     Button(model.connectionStatus?.repairLabel ?? "刷新 Connector") {
                         Task { await model.repairControllerConnection() }
                     }
                     .buttonStyle(.bordered).disabled(model.connectionLoading)
+                    .accessibilityIdentifier("connection.repair")
                 }
             }
             if let status = model.connectionStatus {
@@ -1800,6 +1811,8 @@ private struct KnowledgePane: View {
                         .background(ForgePalette.softFill,
                                     in:RoundedRectangle(cornerRadius:12,style:.continuous))
                         .onSubmit { Task { await model.searchKnowledge() } }
+                        .accessibilityLabel("知识库搜索")
+                        .accessibilityIdentifier("knowledge.query")
                     Button { Task { await model.searchKnowledge() } } label: {
                         if model.knowledgeLoading { ProgressView().controlSize(.small) }
                         else { Label("检索",systemImage:"magnifyingglass") }
@@ -1807,6 +1820,7 @@ private struct KnowledgePane: View {
                     .buttonStyle(.borderedProminent)
                     .controlSize(.regular)
                     .disabled(model.knowledgeLoading || model.repoId == nil)
+                    .accessibilityIdentifier("knowledge.search")
                 }
                 HStack {
                     Text(model.project.map { "项目：\($0.label)" } ?? "未选择项目")
@@ -1910,6 +1924,7 @@ private struct SettingsPane: View {
                         else { Label("刷新",systemImage:"arrow.clockwise") }
                     }
                     .buttonStyle(.bordered).disabled(model.settingsLoading)
+                    .accessibilityIdentifier("settings.refresh")
                 }
 
                 VStack(alignment:.leading,spacing:13) {
@@ -1973,6 +1988,7 @@ private struct SettingsPane: View {
                                 Text("兼容 API").tag("api")
                             }
                             .labelsHidden().pickerStyle(.segmented).frame(maxWidth:260)
+                            .accessibilityIdentifier("settings.default-provider")
                         }
                         HStack(spacing:12) {
                             Text("API 协议").font(.system(size:10.5,weight:.medium))
@@ -1982,18 +1998,22 @@ private struct SettingsPane: View {
                                 Text("Anthropic").tag("anthropic")
                             }
                             .labelsHidden().pickerStyle(.menu).frame(maxWidth:260,alignment:.leading)
+                            .accessibilityIdentifier("settings.api-protocol")
                         }
                         settingsField("Endpoint") {
                             TextField("https://api.example.com/v1",text:$endpoint)
                                 .textFieldStyle(.plain).font(.system(size:11.5,design:.monospaced))
+                                .accessibilityIdentifier("settings.endpoint")
                         }
                         settingsField("模型 ID") {
                             TextField("例如 gpt-5.6 / claude-sonnet",text:$apiModel)
                                 .textFieldStyle(.plain).font(.system(size:11.5,design:.monospaced))
+                                .accessibilityIdentifier("settings.model")
                         }
                         settingsField("API Key") {
                             SecureField(model.localApiSettings?.hasKey == true ? "已存 Key；留空保持" : "本机服务可留空",text:$apiKey)
                                 .textFieldStyle(.plain).font(.system(size:11.5,design:.monospaced))
+                                .accessibilityIdentifier("settings.api-key")
                         }
                         HStack(spacing:10) {
                             if model.localApiSettings?.hasKey == true {
@@ -2002,6 +2022,7 @@ private struct SettingsPane: View {
                                 }
                                 .buttonStyle(.plain).foregroundStyle(.red)
                                 .disabled(saving || model.settingsLoading)
+                                .accessibilityIdentifier("settings.clear-key")
                             }
                             Spacer()
                             Button(saving ? "保存中…" : "保存配置") {
@@ -2011,6 +2032,7 @@ private struct SettingsPane: View {
                             .disabled(saving || model.settingsLoading
                                       || endpoint.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty
                                       || (defaultProvider == "api" && apiModel.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty))
+                            .accessibilityIdentifier("settings.save")
                         }
                     }
                     .padding(13)

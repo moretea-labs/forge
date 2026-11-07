@@ -275,6 +275,16 @@ enum NativePage: String, CaseIterable, Identifiable {
     case agent = "会话", requirement = "Requirement", plan = "Plan",
          knowledge = "知识库", runtime = "Runtime", settings = "设置"
     var id: String { rawValue }
+    var accessibilityId: String {
+        switch self {
+        case .agent: return "nav.agent"
+        case .requirement: return "nav.requirement"
+        case .plan: return "nav.plan"
+        case .knowledge: return "nav.knowledge"
+        case .runtime: return "nav.runtime"
+        case .settings: return "nav.settings"
+        }
+    }
     var symbol: String {
         switch self {
         case .agent: return "bubble.left.and.bubble.right"
