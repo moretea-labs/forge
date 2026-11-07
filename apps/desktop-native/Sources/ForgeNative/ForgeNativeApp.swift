@@ -438,13 +438,17 @@ private struct ForgeWorkspaceView: View {
             if let error = model.error {
                 HStack(spacing:9) {
                     Image(systemName:"exclamationmark.circle")
-                    Text(error).lineLimit(2)
+                    Text(error)
+                        .lineLimit(4)
+                        .fixedSize(horizontal:false,vertical:true)
+                        .textSelection(.enabled)
                     Spacer()
                     Button("关闭") { model.error = nil }.buttonStyle(.plain)
                 }
                 .font(.system(size:11))
                 .foregroundStyle(Color(red:0.58,green:0.26,blue:0.24))
-                .padding(.horizontal,12).frame(height:38)
+                .padding(.horizontal,12).padding(.vertical,9)
+                .frame(minHeight:38)
                 .background(Color(red:0.99,green:0.95,blue:0.93),
                             in:RoundedRectangle(cornerRadius:11,style:.continuous))
                 .padding(.horizontal,14).padding(.top,8)
@@ -932,25 +936,21 @@ private struct AgentPane: View {
 
             Divider().frame(height:18)
 
-            HStack(spacing:6) {
-                Circle()
-                    .fill(agentWorkspaceStatusColor)
-                    .frame(width:6,height:6)
-                Text(agentWorkspaceStatusLabel)
-                    .font(.system(size:10.5,weight:.medium))
-                    .foregroundStyle(ForgePalette.secondary)
-            }
-            .help(agentWorkspaceStatusDetail)
-
             Button { Task { await model.refresh() } } label: {
-                Image(systemName:"arrow.clockwise")
-                    .font(.system(size:10.5,weight:.medium))
-                    .frame(width:25,height:25)
-                    .background(ForgePalette.softFill,in:Circle())
+                HStack(spacing:6) {
+                    Circle()
+                        .fill(agentWorkspaceStatusColor)
+                        .frame(width:6,height:6)
+                    Text(agentWorkspaceStatusLabel)
+                        .font(.system(size:10.5,weight:.medium))
+                        .foregroundStyle(ForgePalette.secondary)
+                }
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help("刷新 Agent 上下文与 Provider 状态")
-            .accessibilityLabel("刷新 Agent 状态")
+            .help("\(agentWorkspaceStatusDetail)\n点击刷新 Agent 上下文与 Provider 状态")
+            .accessibilityLabel("Agent 状态")
+            .accessibilityValue(agentWorkspaceStatusLabel)
             .accessibilityIdentifier("agent.workspace-refresh")
         }
         .padding(.horizontal,18)
