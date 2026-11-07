@@ -23,7 +23,6 @@ export interface ExecuteRepositoryGitCommandInput {
   approvalRequestId?: string;
   sessionId?: string;
   principalId?: string;
-  workId?: string;
   goalId?: string;
 }
 
@@ -250,12 +249,11 @@ export function executeRepositoryGitCommand(
     permissionSnapshotVersion: permission.revision,
     ...(input.sessionId ? { sessionId: input.sessionId } : {}),
     ...(input.principalId ? { principalId: input.principalId } : {}),
-    ...(input.workId ? { workId: input.workId, boundWorkId: input.workId } : {}),
     ...(input.goalId ? { goalId: input.goalId, boundGoalId: input.goalId } : {}),
     command,
   });
   const resolved = input.approvalRequestId
-    ? assertResolvedAuthorization({ controllerHome, repositoryId: repository.repoId, approvalRequestId: input.approvalRequestId, sessionId: input.sessionId, principalId: input.principalId, workId: input.workId, permissionSnapshotVersion: permission.revision, command })
+    ? assertResolvedAuthorization({ controllerHome, repositoryId: repository.repoId, approvalRequestId: input.approvalRequestId, sessionId: input.sessionId, principalId: input.principalId, permissionSnapshotVersion: permission.revision, command })
     : undefined;
   const effectiveDecision = resolved
     ? { decision: 'allow', source: 'user_confirmation', reason: 'Resolved approval request matches the exact Git operation and current permission snapshot.' } as const
