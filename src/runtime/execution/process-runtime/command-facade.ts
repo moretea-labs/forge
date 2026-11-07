@@ -68,7 +68,6 @@ export interface RepositoryCommandProcessInput {
   /** Return a Process handle immediately without changing execution architecture. */
   returnHandleImmediately?: boolean;
   requestId?: string;
-  workId?: string;
   commandId?: string;
   /** Authenticated principal recorded with the process handle for principal-bound attachment. */
   principalId?: string;
@@ -254,7 +253,6 @@ export function classifyRepositoryCommandRoute(
   command: string | readonly string[],
   options: {
     forceDurable?: boolean;
-    workId?: string;
     defaultBranch?: string;
     timeoutMs?: number;
     mutationPaths?: readonly string[];
@@ -271,13 +269,7 @@ export function classifyRepositoryCommandRoute(
     return { route: 'durable', reason: 'force_durable_or_async' };
   }
   const classification = classifyRepositoryCommand(command, options.defaultBranch);
-  // Work-bound effects must survive Controller/Runtime rotation with one durable
-  // Process identity. Read-only observations can remain ephemeral because they
-  // have no ambiguous side effect to reconcile after a restart.
   const hasDeclaredMutationScope = Boolean(options.mutationPaths?.length);
-  if (options.workId?.trim() && (classification.risk !== 'readonly' || hasDeclaredMutationScope)) {
-    return { route: 'process_managed', reason: 'work_attributed_effectful_durable' };
-  }
   // Read-only observations remain lease-free unless the model explicitly says
   // the command mutates source. The declaration affects placement/claims only;
   // it never grants command authorization.
@@ -308,7 +300,6 @@ export async function executeRepositoryCommandViaProcessRuntime(
   assertRepositoryCommandNoPluginExecutionBypass(input.command);
   const decision = classifyRepositoryCommandRoute(input.command, {
     forceDurable: input.forceDurable,
-    workId: input.workId,
     defaultBranch: input.repository.defaultBranch,
     timeoutMs: input.timeoutMs,
     mutationPaths: input.mutationPaths,
@@ -323,7 +314,7 @@ export async function executeRepositoryCommandViaProcessRuntime(
       durableSideEffects: emptyEffects,
       suggestedOperation: decision.reason === 'standalone_recovery_lifecycle_required'
         ? 'Use the standalone Forge Recovery connector for canonical Runtime/connector lifecycle operations.'
-        : 'execute_command via Durable Work / Local Job',
+        : 'execute_command via the explicit durable/release workflow',
       externalEffect: decision.route === 'durable'
         ? {
             outcome: 'not_started',
@@ -370,7 +361,6 @@ export async function executeRepositoryCommandViaProcessRuntime(
     ),
     executionIdentity.repositoryId,
     executionIdentity.checkoutId,
-    input.workId,
   );
   const usesLiveDevice = claimsRequireLiveDeviceAdmission(claims);
 
@@ -417,7 +407,6 @@ export async function executeRepositoryCommandViaProcessRuntime(
         interactiveWaitMs,
         timeoutMs,
         maxOutputBytes: input.maxOutputBytes,
-        workId: input.workId,
         commandId: input.commandId ?? input.requestId,
         ...(input.principalId ? { principalId: input.principalId } : {}),
         deferStart: deferLongPreparation,
@@ -499,7 +488,6 @@ export async function executeRepositoryCommandViaProcessRuntime(
     checkoutId: executionIdentity.checkoutId,
     executionIdentity,
     ...(input.principalId ? { principalId: input.principalId } : {}),
-    workId: input.workId,
     commandId: input.commandId,
     command: toProcessCommand(input.command, cwd),
     // Short commands complete inside this budget; longer ones return a running handle.
@@ -512,7 +500,6 @@ export async function executeRepositoryCommandViaProcessRuntime(
       surface: 'command',
       toolName: 'execute_command',
       requestId: input.requestId,
-      correlationId: input.workId,
     },
     signal: input.signal,
     returnHandleImmediately: input.returnHandleImmediately === true,
