@@ -5,7 +5,7 @@ import { evaluatePolicyGate } from '../../src/runtime/control-plane/facade/polic
 import { buildFacadeResult } from '../../src/runtime/control-plane/facade/facade-result';
 import { allowedFacadeOperations, validateSuggestedNextActions } from '../../src/runtime/control-plane/facade/suggested-actions';
 import { buildClaudeControllerInvocation, buildCodexControllerInvocation, buildSuperControllerInvocation, type ThinLauncherRequest } from '../../src/runtime/control-plane/launcher/thin-launcher';
-import { buildLocalConversationProviderArgs, cancelLocalConversation, parseCodexConversationJsonl, parseCodexModelCatalog, readLocalConversationProviderStatus, runCodexConversation } from '../../src/runtime/control-plane/launcher/local-conversation-controller';
+import { buildLocalConversationProviderArgs, cancelLocalConversation, parseCodexConversationJsonl, parseCodexModelCatalog, readLocalConversationActivity, readLocalConversationProviderStatus, runCodexConversation } from '../../src/runtime/control-plane/launcher/local-conversation-controller';
 import { RH_WORK_MODEL_OPERATIONS, isRhWorkAcceptedOperation } from '../../src/runtime/control-plane/facade/rh-work-operation-contract';
 import { runtimeToolDefinitions } from '../../adapters/mcp/runtime-gateway/runtime-tool-definitions';
 import { mcpServerInstructions } from '../../adapters/mcp/instructions';
@@ -175,7 +175,7 @@ describe('handoff and facade contracts', () => {
       actions?: Record<string, { readOnly?: boolean; risk?: string; argumentsSchema?: { required?: string[] } }>;
     } | undefined;
     expect(schema?.executeWith).toBe('capability_execute');
-    expect(Object.keys(schema?.actions ?? {}).sort()).toEqual(['cancel', 'models', 'send', 'status']);
+    expect(Object.keys(schema?.actions ?? {}).sort()).toEqual(['activity', 'cancel', 'models', 'send', 'status']);
     expect(schema?.actions?.cancel).toMatchObject({ readOnly: false, risk: 'workspace_write' });
     expect(schema?.actions?.cancel?.argumentsSchema?.required).toEqual(['conversation_id']);
     expect(cancelLocalConversation('unregistered-local-id')).toMatchObject({
@@ -184,6 +184,11 @@ describe('handoff and facade contracts', () => {
     expect(() => cancelLocalConversation('invalid id')).toThrow('LOCAL_CONVERSATION_ID_INVALID');
     expect(schema?.actions?.status).toMatchObject({ readOnly: true, risk: 'readonly' });
     expect(schema?.actions?.models).toMatchObject({ readOnly: true, risk: 'readonly' });
+    expect(schema?.actions?.activity).toMatchObject({ readOnly: true, risk: 'readonly' });
+    expect(schema?.actions?.activity?.argumentsSchema?.required).toEqual(['conversation_id']);
+    expect(readLocalConversationActivity('unregistered-local-id')).toEqual({
+      conversationId: 'unregistered-local-id', status: 'idle', toolActivityCount: 0,
+    });
     expect(schema?.actions?.send?.argumentsSchema?.required).toEqual(['conversation_id', 'prompt']);
     expect(FACADE_TOOLS).toHaveLength(6);
   });
@@ -217,6 +222,9 @@ describe('handoff and facade contracts', () => {
       process.env, process.cwd(), 5000, conversationId,
     );
     // The launcher registers the process synchronously before it awaits exit.
+    expect(readLocalConversationActivity(conversationId)).toMatchObject({
+      conversationId, status: 'running', phase: 'starting', toolActivityCount: 0,
+    });
     expect(cancelLocalConversation(conversationId)).toMatchObject({ status: 'requested' });
     await expect(running).rejects.toThrow('LOCAL_CONVERSATION_CANCELLED_RECONCILE');
     expect(cancelLocalConversation(conversationId)).toMatchObject({ status: 'not_active' });

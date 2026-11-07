@@ -372,10 +372,18 @@ private struct AgentPane: View {
                             }
                         }
                         if model.busy {
-                            Label("Agent 正在处理请求…",systemImage:"ellipsis")
-                                .font(.system(size:12))
-                                .foregroundStyle(ForgePalette.secondary)
-                                .id("pending")
+                            HStack(spacing:8) {
+                                ProgressView().controlSize(.small)
+                                Text(model.liveActivity?.lastActivity ?? "Agent 正在处理请求…")
+                                    .lineLimit(1)
+                                if let count = model.liveActivity?.toolActivityCount, count > 0 {
+                                    Text("· \(count) 次工具")
+                                        .foregroundStyle(.tertiary)
+                                }
+                            }
+                            .font(.system(size:12,weight:.medium))
+                            .foregroundStyle(ForgePalette.secondary)
+                            .id("pending")
                         }
                     }
                     .frame(maxWidth:790,alignment:.leading)

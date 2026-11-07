@@ -382,6 +382,16 @@ export function getCoreCapabilityExecutionSchema(capabilityId: string): Record<s
           risk: 'readonly',
           argumentsSchema: { type: 'object', additionalProperties: false, properties: {} },
         },
+        activity: {
+          readOnly: true,
+          risk: 'readonly',
+          argumentsSchema: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['conversation_id'],
+            properties: { conversation_id: { type: 'string', minLength: 1, maxLength: 160 } },
+          },
+        },
         cancel: {
           readOnly: false,
           risk: 'workspace_write',

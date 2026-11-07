@@ -15,9 +15,36 @@ const LOCAL_CONVERSATION_MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
 const LOCAL_CONVERSATION_MAX_PROMPT_CHARS = 20_000;
 const LOCAL_CONVERSATION_ID = /^[A-Za-z0-9._:-]{1,160}$/;
 
-// Transient process handles live only in the existing local conversation
-// owner. Nothing in this map is durable Work or provider session authority.
-const activeLocalTurns = new Map<string, { child: ChildProcess; cancelRequested: boolean }>();
+export type LocalConversationActivityPhase = 'starting' | 'thinking' | 'tool' | 'responding' | 'finishing';
+
+export interface LocalConversationActivitySnapshot {
+  conversationId: string;
+  status: 'idle' | 'running';
+  phase?: LocalConversationActivityPhase;
+  toolActivityCount: number;
+  lastActivity?: string;
+  startedAt?: string;
+  updatedAt?: string;
+}
+
+interface ActiveLocalTurn {
+  child: ChildProcess;
+  cancelRequested: boolean;
+  lineBuffer: string;
+  activity: LocalConversationActivitySnapshot;
+}
+
+// Transient process handles and their bounded live observation live only in the
+// existing local conversation owner. Nothing here is durable Work/session authority.
+const activeLocalTurns = new Map<string, ActiveLocalTurn>();
+
+export function readLocalConversationActivity(conversationId: string): LocalConversationActivitySnapshot {
+  if (!LOCAL_CONVERSATION_ID.test(conversationId)) throw Error('LOCAL_CONVERSATION_ID_INVALID');
+  const active = activeLocalTurns.get(conversationId);
+  return active
+    ? { ...active.activity }
+    : { conversationId, status: 'idle', toolActivityCount: 0 };
+}
 
 export function cancelLocalConversation(conversationId: string): {
   conversationId: string; status: 'requested' | 'not_active';
@@ -138,6 +165,61 @@ export function parseCodexConversationJsonl(stdout: string): ParsedCodexConversa
     }
   }
   return { providerSessionId, output, toolActivityCount };
+}
+
+function activityLabel(itemType: string, item: Record<string, unknown>): string {
+  const name = typeof item.name === 'string' ? item.name.trim().slice(0, 80) : '';
+  if (itemType === 'mcp_tool_call') return name ? `正在使用 ${name}` : '正在使用 Forge 工具';
+  if (itemType === 'command_execution') return '正在执行命令';
+  if (itemType === 'file_change') return '正在修改文件';
+  if (itemType === 'web_search') return '正在搜索';
+  return 'Agent 正在工作';
+}
+
+function applyActivityLine(active: ActiveLocalTurn, line: string): void {
+  const trimmed = line.trim();
+  if (!trimmed.startsWith('{')) return;
+  let event: Record<string, unknown> | undefined;
+  try { event = record(JSON.parse(trimmed)); } catch { return; }
+  if (!event) return;
+  const type = typeof event.type === 'string' ? event.type : '';
+  const now = new Date().toISOString();
+  const update = (phase: LocalConversationActivityPhase, lastActivity: string) => {
+    active.activity.phase = phase;
+    active.activity.lastActivity = lastActivity;
+    active.activity.updatedAt = now;
+  };
+  if (type === 'thread.started' && typeof event.thread_id === 'string' && event.thread_id.trim()) {
+    update('thinking', '会话已启动');
+    return;
+  }
+  if (type === 'turn.started') {
+    update('thinking', '正在推理');
+    return;
+  }
+  if (type === 'turn.completed') {
+    update('finishing', '正在完成');
+    return;
+  }
+  if (type !== 'item.started' && type !== 'item.completed') return;
+  const item = record(event.item);
+  if (!item) return;
+  const itemType = typeof item.type === 'string' ? item.type : '';
+  if (itemType === 'agent_message') {
+    update('responding', '正在生成回复');
+    return;
+  }
+  if (['mcp_tool_call', 'command_execution', 'file_change', 'web_search'].includes(itemType)) {
+    if (type === 'item.completed') active.activity.toolActivityCount += 1;
+    update('tool', activityLabel(itemType, item));
+  }
+}
+
+function ingestActivityChunk(active: ActiveLocalTurn, text: string): void {
+  active.lineBuffer += text;
+  const lines = active.lineBuffer.split(/\r?\n/);
+  active.lineBuffer = lines.pop() ?? '';
+  for (const line of lines) applyActivityLine(active, line);
 }
 
 function localConversationCwd(): string {
@@ -279,7 +361,21 @@ export function runCodexConversation(
       env,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
-    const active = { child, cancelRequested: false };
+    const now = new Date().toISOString();
+    const active: ActiveLocalTurn = {
+      child,
+      cancelRequested: false,
+      lineBuffer: '',
+      activity: {
+        conversationId,
+        status: 'running',
+        phase: 'starting',
+        toolActivityCount: 0,
+        lastActivity: '正在启动 Codex',
+        startedAt: now,
+        updatedAt: now,
+      },
+    };
     activeLocalTurns.set(conversationId, active);
     let stdout = '';
     let stderr = '';
@@ -299,10 +395,15 @@ export function runCodexConversation(
       }
       return next;
     };
-    child.stdout?.on('data', (chunk) => { stdout = append(stdout, chunk, 'stdout'); });
+    child.stdout?.on('data', (chunk) => {
+      const text = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk ?? '');
+      stdout = append(stdout, text, 'stdout');
+      ingestActivityChunk(active, text);
+    });
     child.stderr?.on('data', (chunk) => { stderr = append(stderr, chunk, 'stderr'); });
     child.once('error', (error) => fail(new Error(`LOCAL_CONVERSATION_PROVIDER_START_FAILED: ${error.message}`)));
     child.once('close', (code, signal) => {
+      if (active.lineBuffer.trim()) applyActivityLine(active, active.lineBuffer);
       if (activeLocalTurns.get(conversationId) === active) activeLocalTurns.delete(conversationId);
       if (settled) return;
       settled = true;

@@ -60,6 +60,13 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
         "read_connection_status" => read_connection_status().await,
         "read_local_provider_status" => read_local_provider_status().await,
         "read_local_provider_models" => read_local_provider_models().await,
+        "read_local_conversation_activity" =>
+            call_runtime_tool("capability_execute", json!({
+                "capability_id": "controller.local_conversation",
+                "action": "activity",
+                "arguments": { "conversation_id": required(args, "conversationId")? },
+                "request_id": request_id("native-local-conversation-activity")
+            })).await,
         "read_agent_git_diff" =>
             read_native_agent_git_diff(
                 required(args, "repoId")?,

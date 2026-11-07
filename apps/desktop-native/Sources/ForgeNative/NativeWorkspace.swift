@@ -42,6 +42,16 @@ struct AgentGitDiff: Codable {
     let truncated: Bool
 }
 
+struct AgentLiveActivity: Codable {
+    let conversationId: String
+    let status: String
+    let phase: String?
+    let toolActivityCount: Int
+    let lastActivity: String?
+    let startedAt: String?
+    let updatedAt: String?
+}
+
 struct ChatMessage: Codable, Identifiable {
     var id = UUID().uuidString
     let role: String
@@ -106,6 +116,7 @@ final class NativeWorkspace: ObservableObject {
     @Published private(set) var agentModels: [AgentModelOption] = []
     @Published var agentChanges: AgentGitDiff?
     @Published var changesLoading = false
+    @Published var liveActivity: AgentLiveActivity?
     @Published var connection = "未检测"
     @Published var error: String?
     @Published var records: [ForgeRecord] = []
@@ -311,6 +322,18 @@ final class NativeWorkspace: ObservableObject {
         guard let repoId else { return }
         await loadRaw("read_project_knowledge",["repoId":repoId,"query":knowledgeQuery])
     }
+    func refreshLiveActivity(conversationId: String) async {
+        do {
+            let value = try await ForgeBridge.request("read_local_conversation_activity",[
+                "conversationId":conversationId
+            ])
+            let bytes = try JSONSerialization.data(withJSONObject:value)
+            let activity = try JSONDecoder().decode(AgentLiveActivity.self,from:bytes)
+            liveActivity = activity.status == "running" ? activity : nil
+        } catch {
+            // Live activity is advisory UI only; the authoritative send result owns completion/errors.
+        }
+    }
     func refreshAgentChanges() async {
         guard let repoId, let checkoutId else {
             agentChanges = nil
@@ -357,7 +380,21 @@ final class NativeWorkspace: ObservableObject {
             } ?? effectiveModel.defaultReasoningLevel
             if !reasoning.isEmpty { args["reasoningEffort"] = reasoning }
         }
-        defer { busy = false }
+        liveActivity = AgentLiveActivity(
+            conversationId:id, status:"running", phase:"starting",
+            toolActivityCount:0, lastActivity:"正在启动 Codex", startedAt:nil, updatedAt:nil
+        )
+        let activityMonitor = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.refreshLiveActivity(conversationId:id)
+                try? await Task.sleep(for:.milliseconds(350))
+            }
+        }
+        defer {
+            activityMonitor.cancel()
+            liveActivity = nil
+            busy = false
+        }
         do {
             let response = try await ForgeBridge.request("send_local_conversation",args)
             guard let current = threads.firstIndex(where:{$0.id == id}) else { return }
