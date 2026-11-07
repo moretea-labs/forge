@@ -66,6 +66,28 @@ final class NativeWorkspaceTests: XCTestCase {
     }
 
     @MainActor
+    func testThreadDeleteOnlyRemovesLocalTargetAndKeepsSelectionDeterministic() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        let first = model.selectedThreadId!
+        model.threads[0].repoId = "repo_a"
+        model.threads[0].providerSessionId = "session_a"
+        model.newThread()
+        let selected = model.selectedThreadId!
+
+        model.deleteThread(first)
+        XCTAssertEqual(model.threads.count,1)
+        XCTAssertEqual(model.selectedThreadId,selected)
+        XCTAssertEqual(model.threads[0].id,selected)
+
+        model.deleteThread(selected)
+        XCTAssertEqual(model.threads.count,1)
+        XCTAssertNotEqual(model.selectedThreadId,selected)
+        XCTAssertTrue(model.threads[0].messages.isEmpty)
+    }
+
+    @MainActor
     func testFailedComposerRecoveryNeverOverwritesNewInput() {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at:folder) }

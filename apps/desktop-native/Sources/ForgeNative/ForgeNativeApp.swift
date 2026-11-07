@@ -55,6 +55,7 @@ private struct ForgeWorkspaceView: View {
     @State private var visibility: NavigationSplitViewVisibility = .all
     @State private var renameThreadId: String?
     @State private var renameThreadTitle = ""
+    @State private var deleteThreadId: String?
 
     var body: some View {
         NavigationSplitView(columnVisibility:$visibility) {
@@ -92,6 +93,18 @@ private struct ForgeWorkspaceView: View {
             }
         } message: {
             Text("名称仅用于本地会话列表。")
+        }
+        .alert("删除会话？",isPresented:Binding(
+            get:{ deleteThreadId != nil },
+            set:{ if !$0 { deleteThreadId = nil } }
+        )) {
+            Button("取消",role:.cancel) { deleteThreadId = nil }
+            Button("删除",role:.destructive) {
+                if let id = deleteThreadId { model.deleteThread(id) }
+                deleteThreadId = nil
+            }
+        } message: {
+            Text("只会删除这条本地会话记录，不会删除 Forge Work、项目或 Provider 会话。")
         }
     }
 
@@ -195,7 +208,7 @@ private struct ForgeWorkspaceView: View {
                                 } label: {
                                     Label("重命名",systemImage:"pencil")
                                 }
-                                Button("删除会话",role:.destructive) { model.deleteThread(thread.id) }
+                                Button("删除会话",role:.destructive) { deleteThreadId = thread.id }
                             }
                     }
                 }.padding(.horizontal,10)
