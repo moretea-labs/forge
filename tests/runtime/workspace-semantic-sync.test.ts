@@ -4,7 +4,6 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { ensureForgeInstanceIdentity, MAX_SEMANTIC_SYNC_JOURNAL_ENTRIES } from '../../packages/kernel/identity/api/index';
-import type { WorkContract } from '../../packages/kernel/work/api/index';
 import { portableProjectSourceFingerprint, stablePortableProjectId } from '../../src/cli/repositories/identity';
 import type { PlanContract } from '../../src/runtime/control-plane/facade/types';
 import type { Requirement } from '../../src/runtime/control-plane/persistence/requirement-store';
@@ -63,44 +62,12 @@ function plan(): PlanContract {
     steps: [{
       id: 'step-1', objective: 'Sync semantic records.', dependencies: [], authoritativeFiles: ['local-only.ts'],
       allowedPaths: ['src/**'], forbiddenPaths: [], checks: ['local-check'], acceptanceCriteria: ['Replica visible.'], status: 'executing',
-      workId: 'WORK-SYNC-1', evidenceRefs: [{ title: 'LOCAL-EVIDENCE-SHOULD-NOT-SYNC' }],
+      evidenceRefs: [{ title: 'LOCAL-EVIDENCE-SHOULD-NOT-SYNC' }],
     }],
     evidenceRefs: [{ title: 'LOCAL-PLAN-EVIDENCE-SHOULD-NOT-SYNC' }],
     createdAt: '2026-09-03T00:00:00.000Z',
     updatedAt: '2026-09-03T00:02:00.000Z',
   };
-}
-
-function work(): WorkContract {
-  return {
-    schemaVersion: 2,
-    workId: 'WORK-SYNC-1',
-    repoId: 'repo_mac_local',
-    checkoutId: 'checkout_mac_local',
-    controllerInstanceId: 'runtime_mac_local',
-    objective: 'Execute the shared semantic goal on the source node.',
-    acceptanceCriteria: ['Semantic result is visible remotely.'],
-    status: 'running',
-    phase: 'implementation',
-    workKind: 'repository_change',
-    lifecycleRole: 'primary',
-    requirementId: 'REQ-SYNC-1',
-    planId: 'PLAN-SYNC-1',
-    planStepId: 'step-1',
-    dispatchState: 'running',
-    evidenceState: 'none',
-    constraints: {} as WorkContract['constraints'],
-    risk: 'medium',
-    phaseEvidence: {} as WorkContract['phaseEvidence'],
-    allowedPaths: ['src/**'], forbiddenPaths: [], checks: ['CHECK-SECRET-SHOULD-NOT-SYNC'],
-    worktreePolicy: {} as WorkContract['worktreePolicy'], evidencePolicy: {} as WorkContract['evidencePolicy'],
-    approvalPolicy: {} as WorkContract['approvalPolicy'], recoveryPolicy: {} as WorkContract['recoveryPolicy'],
-    requestedBy: 'chatgpt', evidenceRefs: [{ title: 'LOCAL-WORK-EVIDENCE-SHOULD-NOT-SYNC' }], handoffRefs: [], suggestedNextActions: [],
-    policyDecisions: [], checkRefs: [{ checkId: 'local', outcome: 'passed', evidenceRefs: [{ title: 'CHECK-SECRET-SHOULD-NOT-SYNC' }] } as any],
-    implementationReviews: [], reconciliations: [],
-    worktreeRef: '/private/tmp/WORKTREE-SHOULD-NOT-SYNC', workerRef: 'WORKER-SHOULD-NOT-SYNC',
-    createdAt: '2026-09-03T00:00:00.000Z', updatedAt: '2026-09-03T00:03:00.000Z',
-  } as unknown as WorkContract;
 }
 
 function seedNode(home: string, instanceId: string, repoId: string, projectId: string, sourceFingerprint: string): void {
@@ -263,25 +230,23 @@ describe('Kernel V2 Workspace semantic sync', () => {
 
       writeControlPlaneRecord(macHome, { namespace: 'requirement', scope: 'controller', key: 'REQ-SYNC-1', schemaVersion: 1, value: requirement(), expectedRevision: null });
       writeControlPlaneRecord(macHome, { namespace: 'plan_contract', scope: 'repo_mac_local', key: 'PLAN-SYNC-1', schemaVersion: 1, value: plan(), expectedRevision: null });
-      writeControlPlaneRecord(macHome, { namespace: 'work_contract', scope: 'repo_mac_local', key: 'WORK-SYNC-1', schemaVersion: 2, value: work(), expectedRevision: null });
 
       const firstBundle = exportSemanticSyncBundle({ controllerHome: macHome, workspaceId: 'workspace-personal', projectId, now: () => '2026-09-03T00:05:00.000Z' });
       const serialized = JSON.stringify(firstBundle);
       expect(firstBundle.sourceForgeInstanceId).toBe('mac-forge');
-      expect(firstBundle.records.map((entry) => entry.kind)).toEqual(['plan', 'project', 'requirement', 'work', 'workspace']);
-      for (const forbidden of ['repo_mac_local', 'checkout_mac_local', 'runtime_mac_local', 'WORKTREE-SHOULD-NOT-SYNC', 'WORKER-SHOULD-NOT-SYNC', 'CHECK-SECRET-SHOULD-NOT-SYNC', 'LOCAL-WORK-EVIDENCE-SHOULD-NOT-SYNC']) {
+      expect(firstBundle.records.map((entry) => entry.kind)).toEqual(['plan', 'project', 'requirement', 'workspace']);
+      for (const forbidden of ['repo_mac_local', 'WORK-SYNC-1', 'LOCAL-WORK-EVIDENCE-SHOULD-NOT-SYNC']) {
         expect(serialized).not.toContain(forbidden);
       }
 
       const firstReceipt = importSemanticSyncBundle({ controllerHome: wslHome, bundle: firstBundle, now: () => '2026-09-03T00:06:00.000Z' });
       expect(firstReceipt.targetForgeInstanceId).toBe('wsl-forge');
       expect(firstReceipt.converged).toEqual(expect.arrayContaining([`workspace:workspace-personal`, `project:${projectId}`]));
-      expect(firstReceipt.applied).toEqual(expect.arrayContaining(['requirement:REQ-SYNC-1', 'plan:PLAN-SYNC-1', 'work:WORK-SYNC-1']));
-      expect(readControlPlaneRecord(wslHome, 'work_contract', 'repo_wsl_local', 'WORK-SYNC-1')).toBeUndefined();
+      expect(firstReceipt.applied).toEqual(expect.arrayContaining(['requirement:REQ-SYNC-1', 'plan:PLAN-SYNC-1']));
       expect(readControlPlaneRecord(wslHome, 'plan_contract', 'repo_wsl_local', 'PLAN-SYNC-1')).toBeUndefined();
       expect(readControlPlaneRecord(wslHome, 'requirement', 'controller', 'REQ-SYNC-1')).toBeUndefined();
       const replicas = listSemanticSyncReplicas({ controllerHome: wslHome, workspaceId: 'workspace-personal', projectId });
-      expect(replicas.map((entry) => entry.key).sort()).toEqual(['plan:PLAN-SYNC-1', 'requirement:REQ-SYNC-1', 'work:WORK-SYNC-1']);
+      expect(replicas.map((entry) => entry.key).sort()).toEqual(['plan:PLAN-SYNC-1', 'requirement:REQ-SYNC-1']);
       expect(JSON.stringify(replicas)).not.toContain('repo_mac_local');
 
       writeControlPlaneRecord(macHome, { namespace: 'requirement', scope: 'controller', key: 'REQ-SYNC-1', schemaVersion: 1, value: requirement('Shared requirement v2', 2), expectedRevision: 1 });
@@ -293,7 +258,7 @@ describe('Kernel V2 Workspace semantic sync', () => {
       const secondReceipt = importSemanticSyncBundle({ controllerHome: wslHome, bundle: secondBundle, now: () => '2026-09-03T00:08:00.000Z' });
       expect(secondReceipt.applied).toContain('requirement:REQ-SYNC-1');
       expect(secondReceipt.replicaRevisions['requirement:REQ-SYNC-1']).toBe(2);
-      expect(secondReceipt.converged).toEqual(expect.arrayContaining(['plan:PLAN-SYNC-1', 'work:WORK-SYNC-1']));
+      expect(secondReceipt.converged).toContain('plan:PLAN-SYNC-1');
 
       writeControlPlaneRecord(wslHome, { namespace: 'requirement', scope: 'controller', key: 'REQ-SYNC-1', schemaVersion: 1, value: requirement('Independent WSL authority', 1), expectedRevision: null });
       const thirdBundle = exportSemanticSyncBundle({
