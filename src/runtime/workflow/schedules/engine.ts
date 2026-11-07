@@ -49,7 +49,7 @@ function isDeterministicSchedule(schedule: RepositorySchedule): boolean {
     || schedule.action.operation === GITHUB_ISSUE_WATCH_OPERATION;
 }
 
-function retiredScheduleReason(schedule: RepositorySchedule): string | undefined {
+export function retiredScheduleReason(schedule: RepositorySchedule): string | undefined {
   if (RETIRED_AUTONOMOUS_CONTINUATION_OPERATIONS.has(schedule.action.operation)) {
     return 'RETIRED_AUTONOMOUS_CONTINUATION_SCHEDULE';
   }

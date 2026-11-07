@@ -52,7 +52,7 @@ function effectiveApplicability(input: { explicit?: ExperienceApplicability; dec
   return { value: { ...(declared.value ?? {}), ...(input.published.value ?? {}) }, conflict: false };
 }
 
-/** Shared by interactive context retrieval and every ControllerHost round. */
+/** Explicit historical Work-context retrieval only; never current execution authority. */
 export function prepareAssistantWorkContext(input: {
   controllerHome: string; repoId: string; workId: string; query?: string; applicability?: ExperienceApplicability; now?: string;
 }): AssistantContextResolution | undefined {

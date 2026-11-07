@@ -1,5 +1,5 @@
 import type { RepositoryRecord } from '../repositories/types';
-import { evaluateSchedule } from '../../runtime/workflow/schedules/engine';
+import { evaluateSchedule, retiredScheduleReason } from '../../runtime/workflow/schedules/engine';
 import { getSchedule, listOccurrences, listSchedules, saveSchedule } from '../../../packages/kernel/scheduler/api/index';
 import type { RepositorySchedule, ScheduleOccurrence } from '../../../packages/kernel/scheduler/api/index';
 
@@ -213,10 +213,7 @@ export function listConsoleAutomations(controllerHome: string, repositories: Rep
   const items: ConsoleAutomationView[] = [];
   for (const repository of repositories.filter((entry) => entry.enabled && !entry.removedAt)) {
     for (const schedule of listSchedules(controllerHome, repository.repoId)) {
-      if (schedule.action.operation === 'external_controller_wake' || schedule.action.operation === 'controller_progression') continue;
-      if (typeof schedule.action.arguments?.work_id === 'string' && schedule.action.arguments.work_id.trim()) continue;
-      if (schedule.action.operation === 'chatgpt_browser_prompt') continue;
-      if (schedule.action.operation === 'assistant_routine_execute') continue;
+      if (retiredScheduleReason(schedule)) continue;
       const occurrences = listOccurrences(controllerHome, repository.repoId, schedule.scheduleId, 8);
       const last = occurrences[0];
       const mode = scheduleMode(schedule);
@@ -275,10 +272,8 @@ export async function applyConsoleAutomationAction(
   if (!repository) throw new Error(`REPOSITORY_NOT_FOUND: ${repoId}`);
   if (source === 'schedule') {
     const schedule = getSchedule(controllerHome, repoId, id);
-    if (schedule.action.operation === 'external_controller_wake' || schedule.action.operation === 'controller_progression') throw new Error('RETIRED_AUTONOMOUS_CONTINUATION_SCHEDULE');
-    if (typeof schedule.action.arguments?.work_id === 'string' && schedule.action.arguments.work_id.trim()) throw new Error('RETIRED_WORK_BOUND_SCHEDULE');
-    if (schedule.action.operation === 'chatgpt_browser_prompt') throw new Error('RETIRED_WORK_FREE_PROMPT_SCHEDULE');
-    if (schedule.action.operation === 'assistant_routine_execute') throw new Error('RETIRED_PERSONAL_ASSISTANT_SCHEDULE');
+    const retirementReason = retiredScheduleReason(schedule);
+    if (retirementReason) throw new Error(retirementReason);
     if (action === 'pause') return saveSchedule(controllerHome, { ...schedule, enabled: false, pausedReason: undefined });
     if (action === 'resume') return saveSchedule(controllerHome, { ...schedule, enabled: true, pausedReason: undefined, consecutiveFailures: 0, consecutiveNoops: 0, nextEligibleAt: undefined });
     if (action === 'run') return evaluateSchedule(controllerHome, schedule, true, { source: 'manual' });
