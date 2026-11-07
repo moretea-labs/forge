@@ -39,7 +39,6 @@ function isAuthoritativeCurrentWorkVerification(
     && record.sourceRevision === currentRevision
     && receipt
     && receipt.repoId === work.repoId
-    && receipt.workId === work.workId
     && receipt.checkId === record.checkId
     && receipt.ok === true
     && receipt.timedOut === false
