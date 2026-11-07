@@ -344,6 +344,14 @@ private struct AgentPane: View {
                                         .padding(.horizontal,14).padding(.vertical,11)
                                         .background(ForgePalette.userBubble,
                                                     in:RoundedRectangle(cornerRadius:14,style:.continuous))
+                                        .contextMenu {
+                                            Button { copyAgentText(message.text) } label: {
+                                                Label("复制",systemImage:"doc.on.doc")
+                                            }
+                                            Button { model.draft = message.text } label: {
+                                                Label("重新编辑",systemImage:"arrow.uturn.backward")
+                                            }
+                                        }
                                 }
                                 .frame(maxWidth:.infinity)
                                 .id(message.id)
@@ -426,13 +434,22 @@ private struct AgentPane: View {
                 }
             }
             VStack(alignment:.leading,spacing:0) {
-                TextEditor(text:$model.draft)
-                    .font(.system(size:13))
-                    .foregroundStyle(ForgePalette.ink)
-                    .scrollContentBackground(.hidden)
-                    .frame(minHeight:56,maxHeight:105)
-                    .padding(.horizontal,12).padding(.top,10)
-                    .accessibilityLabel("Agent 消息")
+                ZStack(alignment:.topLeading) {
+                    if model.draft.isEmpty {
+                        Text("描述要完成的任务…")
+                            .font(.system(size:13))
+                            .foregroundStyle(.tertiary)
+                            .padding(.leading,16).padding(.top,18)
+                            .allowsHitTesting(false)
+                    }
+                    TextEditor(text:$model.draft)
+                        .font(.system(size:13))
+                        .foregroundStyle(ForgePalette.ink)
+                        .scrollContentBackground(.hidden)
+                        .frame(minHeight:56,maxHeight:105)
+                        .padding(.horizontal,12).padding(.top,10)
+                        .accessibilityLabel("Agent 消息")
+                }
                 HStack(spacing:7) {
                     Menu {
                         ForEach(model.projects) { project in
@@ -570,7 +587,10 @@ private struct AgentPane: View {
                                 .font(.system(size:9,weight:.semibold))
                                 .frame(width:29,height:29)
                                 .background(ForgePalette.softFill,in:Circle())
-                        }.buttonStyle(.plain).help("请求停止 Agent")
+                        }
+                        .buttonStyle(.plain)
+                        .keyboardShortcut(.escape,modifiers:[])
+                        .help("停止 Agent（Esc）")
                     } else {
                         let sendDisabled = model.draft.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty
                         Button { Task { await model.send() } } label: {
@@ -584,7 +604,7 @@ private struct AgentPane: View {
                         .buttonStyle(.plain)
                         .disabled(sendDisabled)
                         .keyboardShortcut(.return,modifiers:.command)
-                        .help("发送消息")
+                        .help("发送消息（⌘↵）")
                     }
                 }.padding(.horizontal,13).padding(.bottom,11)
             }
