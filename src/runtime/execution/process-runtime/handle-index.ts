@@ -39,6 +39,7 @@ export interface ProcessHandleIndexEntry {
   target: ProcessExecutionTarget;
   /** Authenticated principal that owns the handle; opaque ids never authorize by themselves. */
   principalId?: string;
+  /** Historical compatibility only; new index writers never accept Work attribution. */
   workId?: string;
   commandId?: string;
   recordedAt: string;
@@ -92,13 +93,12 @@ export function workspaceExecutionTarget(controllerHome: string, workspaceId: st
 
 export function recordProcessHandleIndexEntry(
   controllerHome: string,
-  input: Omit<ProcessHandleIndexEntry, 'schemaVersion' | 'recordedAt' | 'updatedAt'> & { now?: string },
+  input: Omit<ProcessHandleIndexEntry, 'schemaVersion' | 'recordedAt' | 'updatedAt' | 'workId'> & { now?: string },
 ): ProcessHandleIndexEntry | undefined {
   const processId = boundedId(input.processId);
   if (!processId) return undefined;
   const now = input.now ?? new Date().toISOString();
   const principalId = boundedId(input.principalId);
-  const workId = boundedId(input.workId);
   const commandId = boundedId(input.commandId);
   try {
     const record = mutateControlPlaneRecord<ProcessHandleIndexEntry>(controllerHome, {
@@ -114,7 +114,7 @@ export function recordProcessHandleIndexEntry(
         target: input.target,
         ...(principalId ? { principalId } : {}),
         ...(current?.value.principalId && !principalId ? { principalId: current.value.principalId } : {}),
-        ...(workId ? { workId } : {}),
+        ...(current?.value.workId ? { workId: current.value.workId } : {}),
         ...(commandId ? { commandId } : {}),
         recordedAt: current?.value.recordedAt ?? now,
         updatedAt: now,
