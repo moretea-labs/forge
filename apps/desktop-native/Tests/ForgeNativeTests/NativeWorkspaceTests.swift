@@ -6,6 +6,7 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertTrue(ForgeBridge.allowed.contains("send_local_conversation"))
         XCTAssertTrue(ForgeBridge.allowed.contains("read_local_provider_models"))
         XCTAssertTrue(ForgeBridge.allowed.contains("read_agent_git_diff"))
+        XCTAssertTrue(ForgeBridge.allowed.contains("commit_agent_git_files"))
         XCTAssertTrue(ForgeBridge.allowed.contains("read_local_conversation_activity"))
         XCTAssertFalse(ForgeBridge.allowed.contains("execute_command"))
         XCTAssertFalse(ForgeBridge.allowed.contains("perform_recovery_action"))

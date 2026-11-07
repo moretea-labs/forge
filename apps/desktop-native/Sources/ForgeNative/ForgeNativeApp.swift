@@ -630,6 +630,7 @@ private struct AgentPane: View {
 private struct AgentChangesPane: View {
     @ObservedObject var model: NativeWorkspace
     @Binding var isPresented: Bool
+    @State private var commitMessage = ""
 
     var body: some View {
         VStack(alignment:.leading,spacing:0) {
@@ -741,10 +742,58 @@ private struct AgentChangesPane: View {
                                             in:RoundedRectangle(cornerRadius:10,style:.continuous))
 
                             if changes.truncated {
-                                Label("Diff 已按 20 KB 上限截断",systemImage:"exclamationmark.triangle")
+                                Label("Diff 已按 20 KB 上限截断，不能提交",systemImage:"exclamationmark.triangle")
                                     .font(.system(size:10.5))
                                     .foregroundStyle(ForgePalette.secondary)
                             }
+
+                            VStack(alignment:.leading,spacing:8) {
+                                HStack {
+                                    Label("Commit reviewed changes",systemImage:"checkmark.seal")
+                                        .font(.system(size:11,weight:.semibold))
+                                    Spacer()
+                                    Text("\(changes.nameOnly.count) files")
+                                        .font(.system(size:10))
+                                        .foregroundStyle(.tertiary)
+                                }
+                                TextField("Commit message",text:$commitMessage)
+                                    .textFieldStyle(.plain)
+                                    .font(.system(size:11.5))
+                                    .padding(.horizontal,10)
+                                    .frame(height:32)
+                                    .background(ForgePalette.canvas,
+                                                in:RoundedRectangle(cornerRadius:8,style:.continuous))
+                                HStack(spacing:8) {
+                                    Text("提交前会重新核对 patch / HEAD / branch / checkout")
+                                        .font(.system(size:9.5))
+                                        .foregroundStyle(.tertiary)
+                                        .lineLimit(2)
+                                    Spacer(minLength:8)
+                                    Button {
+                                        let snapshot = changes
+                                        let message = commitMessage
+                                        Task {
+                                            if await model.commitAgentChanges(snapshot,message:message) {
+                                                commitMessage = ""
+                                            }
+                                        }
+                                    } label: {
+                                        Label("Commit",systemImage:"checkmark.circle.fill")
+                                            .font(.system(size:11,weight:.semibold))
+                                            .padding(.horizontal,10)
+                                            .frame(height:29)
+                                            .background(ForgePalette.selectionStrong,
+                                                        in:RoundedRectangle(cornerRadius:8,style:.continuous))
+                                    }
+                                    .buttonStyle(.plain)
+                                    .disabled(model.changesLoading || changes.truncated
+                                              || changes.patch.isEmpty
+                                              || commitMessage.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty)
+                                }
+                            }
+                            .padding(10)
+                            .background(ForgePalette.softFill,
+                                        in:RoundedRectangle(cornerRadius:11,style:.continuous))
                         }
                     }
                     .padding(.horizontal,14).padding(.bottom,14)

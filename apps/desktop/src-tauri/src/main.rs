@@ -809,28 +809,46 @@ fn save_local_api_settings(provider: String, endpoint: String, model: String, ap
 
 
 fn agent_git_diff_arguments(staged: bool) -> Value {
-    json!({ "max_bytes": 20000, "staged": staged })
+    json!({ "max_bytes": 20_000, "staged": staged })
+}
+
+async fn read_agent_git_diff_runtime(
+    repo_id: &str,
+    checkout_id: Option<&str>,
+    staged: bool,
+    paths: Option<&[String]>,
+) -> Result<Value, String> {
+    if repo_id.trim().is_empty() { return Err("FORGE_DESKTOP_REPOSITORY_REQUIRED".into()); }
+    validate_agent_checkout_binding(Some(repo_id), checkout_id, false)?;
+    let mut request = agent_git_diff_arguments(staged);
+    request["repo_id"] = Value::String(repo_id.to_string());
+    request["request_id"] = Value::String(request_id("desktop-agent-git-diff"));
+    if let Some(checkout_id) = checkout_id {
+        request["checkout_id"] = Value::String(checkout_id.to_string());
+    }
+    if let Some(paths) = paths {
+        request["paths"] = json!(paths);
+    }
+    let result = call_runtime_tool("repository_git_diff", request).await?;
+    let diff = result.get("diff").cloned()
+        .ok_or_else(|| "FORGE_DESKTOP_GIT_DIFF_RESULT_INVALID".to_string())?;
+    if diff.get("repoId").and_then(Value::as_str) != Some(repo_id)
+        || diff.get("staged").and_then(Value::as_bool) != Some(staged)
+        || checkout_id.is_some_and(|expected|
+            diff.get("checkoutId").and_then(Value::as_str) != Some(expected)
+        ) {
+        return Err("FORGE_DESKTOP_GIT_DIFF_RESULT_INVALID".into());
+    }
+    Ok(diff)
 }
 
 #[tauri::command]
 async fn read_agent_git_diff(
-    app: tauri::AppHandle, repo_id: String, checkout_id: Option<String>, staged: Option<bool>,
+    repo_id: String, checkout_id: Option<String>, staged: Option<bool>,
 ) -> Result<Value, String> {
-    if repo_id.trim().is_empty() { return Err("FORGE_DESKTOP_REPOSITORY_REQUIRED".into()); }
-    let receipt = run_local_forge_tool(
-        app,
-        repo_id,
-        checkout_id,
-        "desktop-git-inspector".to_string(),
-        "git_diff".to_string(),
-        agent_git_diff_arguments(staged.unwrap_or(false)),
-        false,
-    ).await?;
-    if receipt.get("ok").and_then(Value::as_bool) != Some(true) {
-        return Err("FORGE_DESKTOP_GIT_DIFF_FAILED".into());
-    }
-    receipt.pointer("/result/diff").cloned()
-        .ok_or_else(|| "FORGE_DESKTOP_GIT_DIFF_RESULT_INVALID".into())
+    read_agent_git_diff_runtime(
+        &repo_id, checkout_id.as_deref(), staged.unwrap_or(false), None
+    ).await
 }
 
 fn reviewed_commit_scope_matches(
@@ -857,11 +875,25 @@ fn native_commit_paths_valid(paths: &[String], message: &str) -> bool {
         })
 }
 
-#[tauri::command]
-async fn commit_agent_git_files(
-    app: tauri::AppHandle, repo_id: String, checkout_id: String,
-    message: String, paths: Vec<String>, staged: bool, expected_patch: String,
-    expected_head: String, expected_branch: String, conversation_id: String,
+fn reviewed_commit_head(result: &Value, checkout_id: &str) -> Option<String> {
+    if result.get("checkoutId").and_then(Value::as_str) != Some(checkout_id)
+        || result.get("error").is_some()
+        || result.pointer("/commit/ok").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    result.pointer("/commit/after/head").and_then(Value::as_str)
+        .filter(|value| !value.is_empty()).map(str::to_owned)
+}
+
+async fn commit_reviewed_agent_git_files(
+    repo_id: String,
+    checkout_id: String,
+    message: String,
+    paths: Vec<String>,
+    staged: bool,
+    expected_patch: String,
+    expected_head: String,
+    expected_branch: String,
 ) -> Result<Value, String> {
     validate_agent_checkout_binding(Some(&repo_id), Some(&checkout_id), true)?;
     if !native_commit_paths_valid(&paths, &message) {
@@ -871,50 +903,60 @@ async fn commit_agent_git_files(
         || expected_patch.is_empty() || expected_patch.len() > 20_000 {
         return Err("FORGE_DESKTOP_GIT_COMMIT_REVIEW_REQUIRED".into());
     }
-    // Read via Forge again at commit time; a stale/truncated inspection cannot
-    // authorize a different working tree, different file set or changed patch.
-    let current = run_local_forge_tool(
-        app.clone(), repo_id.clone(), Some(checkout_id.clone()),
-        conversation_id.clone(), "git_diff".into(), agent_git_diff_arguments(staged), false,
+
+    // Re-read through Forge at commit time; a stale or truncated inspection
+    // cannot authorize a different patch, HEAD, branch, checkout or file set.
+    let current = read_agent_git_diff_runtime(
+        &repo_id, Some(&checkout_id), staged, None
     ).await?;
-    let diff = current.pointer("/result/diff")
-        .filter(|value| reviewed_commit_scope_matches(
-            value, &paths, &expected_patch, &expected_head, &expected_branch, &checkout_id, staged,
-        )).ok_or("FORGE_DESKTOP_GIT_COMMIT_REVIEW_STALE")?;
-    if diff.get("nameOnly").and_then(Value::as_array).is_none() {
-        return Err("FORGE_DESKTOP_GIT_COMMIT_REVIEW_REQUIRED".into());
+    if !reviewed_commit_scope_matches(
+        &current, &paths, &expected_patch, &expected_head, &expected_branch, &checkout_id, staged,
+    ) {
+        return Err("FORGE_DESKTOP_GIT_COMMIT_REVIEW_STALE".into());
     }
-    // --only commits the working-tree content of each named file, even when
-    // the UI is reviewing staged changes. Reject mixed index/worktree state
-    // so the commit cannot silently include unreviewed changes in those files.
-    let opposite = run_local_forge_tool(
-        app.clone(), repo_id.clone(), Some(checkout_id.clone()),
-        conversation_id.clone(), "git_diff".into(),
-        json!({"staged": !staged, "paths": paths, "max_bytes": 20000}), false,
+
+    // Selected-path commit stages working-tree content. Reject any opposite
+    // index/worktree diff for the reviewed paths so --only cannot cross a
+    // review boundary.
+    let opposite = read_agent_git_diff_runtime(
+        &repo_id, Some(&checkout_id), !staged, Some(&paths)
     ).await?;
-    let opposite_diff = opposite.pointer("/result/diff")
-        .ok_or("FORGE_DESKTOP_GIT_COMMIT_OTHER_DIFF_UNKNOWN")?;
-    if opposite_diff.get("truncated").and_then(Value::as_bool) != Some(false)
-        || opposite_diff.get("checkoutId").and_then(Value::as_str) != Some(checkout_id.as_str())
-        || opposite_diff.get("head").and_then(Value::as_str) != Some(expected_head.as_str())
-        || opposite_diff.get("branch").and_then(Value::as_str) != Some(expected_branch.as_str())
-        || opposite_diff.get("staged").and_then(Value::as_bool) != Some(!staged)
-        || opposite_diff.get("nameOnly").and_then(Value::as_array).is_none_or(|names| !names.is_empty()) {
+    if opposite.get("truncated").and_then(Value::as_bool) != Some(false)
+        || opposite.get("head").and_then(Value::as_str) != Some(expected_head.as_str())
+        || opposite.get("branch").and_then(Value::as_str) != Some(expected_branch.as_str())
+        || opposite.get("nameOnly").and_then(Value::as_array).is_none_or(|names| !names.is_empty()) {
         return Err("FORGE_DESKTOP_GIT_COMMIT_MIXED_CHANGES_REVIEW_REQUIRED".into());
     }
-    let result = run_local_forge_tool(
-        app, repo_id.clone(), Some(checkout_id.clone()), conversation_id,
-        "git_commit".into(), json!({"message":message.trim(),"paths":paths}), true,
-    ).await?;
-    if !local_effect_completed("git_commit", &result)
-        || result.pointer("/result/commit/checkoutId").and_then(Value::as_str) != Some(checkout_id.as_str()) {
-        return Err("FORGE_DESKTOP_GIT_COMMIT_UNCONFIRMED_RECONCILE".into());
-    }
-    let after = &result["result"]["commit"]["after"];
-    let head = after.get("head").and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
+
+    let result = call_runtime_tool("capability_execute", json!({
+        "repo_id": repo_id,
+        "checkout_id": checkout_id,
+        "capability_id": "repository.git",
+        "action": "commit_paths",
+        "arguments": { "paths": paths, "message": message.trim() },
+        "request_id": request_id("desktop-reviewed-git-commit")
+    })).await?;
+    let head = reviewed_commit_head(&result, &checkout_id)
         .ok_or("FORGE_DESKTOP_GIT_COMMIT_UNCONFIRMED_RECONCILE")?;
-    Ok(json!({"committed":true,"head":head,"branch":after["branch"],"checkoutId":checkout_id}))
+    Ok(json!({
+        "committed": true,
+        "head": head,
+        "branch": result.pointer("/commit/after/branch").cloned().unwrap_or(Value::Null),
+        "checkoutId": checkout_id
+    }))
+}
+
+#[tauri::command]
+async fn commit_agent_git_files(
+    repo_id: String, checkout_id: String,
+    message: String, paths: Vec<String>, staged: bool, expected_patch: String,
+    expected_head: String, expected_branch: String, conversation_id: String,
+) -> Result<Value, String> {
+    drop(conversation_id);
+    commit_reviewed_agent_git_files(
+        repo_id, checkout_id, message, paths, staged,
+        expected_patch, expected_head, expected_branch,
+    ).await
 }
 
 fn local_tool_catalog(allow_effects: bool, has_work: bool) -> Vec<Value> {
@@ -1590,6 +1632,16 @@ mod tests {
         assert!(!native_commit_paths_valid(&["src/lib.rs".into()], ""));
         assert!(!native_commit_paths_valid(&["../outside".into()], "fix"));
         assert!(!native_commit_paths_valid(&["/tmp/file".into()], "fix"));
+        let committed = json!({
+            "checkoutId":"checkout_a",
+            "commit":{"ok":true,"after":{"head":"deadbeef","branch":"work/task-1"}}
+        });
+        assert_eq!(reviewed_commit_head(&committed, "checkout_a").as_deref(), Some("deadbeef"));
+        assert!(reviewed_commit_head(&committed, "checkout_b").is_none());
+        assert!(reviewed_commit_head(&json!({
+            "checkoutId":"checkout_a","error":{"code":"NO_SELECTED_CHANGES"},
+            "commit":{"ok":true,"after":{"head":"deadbeef"}}
+        }), "checkout_a").is_none());
     }
 
     #[test]

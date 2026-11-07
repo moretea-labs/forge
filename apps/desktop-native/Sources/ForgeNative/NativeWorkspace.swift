@@ -368,6 +368,39 @@ final class NativeWorkspace: ObservableObject {
             self.error = error.localizedDescription
         }
     }
+    func commitAgentChanges(_ changes: AgentGitDiff, message: String) async -> Bool {
+        guard let repoId, let checkoutId,
+              changes.repoId == repoId, changes.checkoutId == checkoutId,
+              !changes.truncated, !changes.nameOnly.isEmpty, !changes.patch.isEmpty else {
+            self.error = "当前 Changes 不是完整可提交的复查快照。"
+            return false
+        }
+        let message = message.trimmingCharacters(in:.whitespacesAndNewlines)
+        guard !message.isEmpty else { return false }
+        changesLoading = true
+        do {
+            _ = try await ForgeBridge.request("commit_agent_git_files",[
+                "repoId":repoId,
+                "checkoutId":checkoutId,
+                "message":message,
+                "paths":changes.nameOnly,
+                "staged":changes.staged,
+                "expectedPatch":changes.patch,
+                "expectedHead":changes.head,
+                "expectedBranch":changes.branch
+            ])
+            self.error = nil
+            agentChanges = nil
+            changesLoading = false
+            await refreshAgentChanges()
+            return true
+        } catch {
+            changesLoading = false
+            self.error = error.localizedDescription
+            await refreshAgentChanges()
+            return false
+        }
+    }
     func send() async {
         let prompt = draft.trimmingCharacters(in:.whitespacesAndNewlines)
         guard !prompt.isEmpty, !busy, let id = selectedThreadId,

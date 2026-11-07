@@ -4,33 +4,31 @@
 use super::*;
 use std::io::Read;
 
-fn required(arguments: &Value, field: &str) -> Result<String, String> {
+fn required_bounded(arguments: &Value, field: &str, max_len: usize) -> Result<String, String> {
     let value = arguments.get(field).and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| format!("FORGE_NATIVE_BRIDGE_{field}_REQUIRED"))?;
-    if value.len() > 4096 {
+    if value.len() > max_len {
         return Err(format!("FORGE_NATIVE_BRIDGE_{field}_TOO_LONG"));
     }
     Ok(value.to_owned())
 }
 
-async fn read_native_agent_git_diff(
-    repo_id: String,
-    checkout_id: String,
-    staged: bool,
-) -> Result<Value, String> {
-    if repo_id.trim().is_empty() || checkout_id.trim().is_empty() {
-        return Err("FORGE_NATIVE_BRIDGE_GIT_CONTEXT_REQUIRED".into());
+fn required(arguments: &Value, field: &str) -> Result<String, String> {
+    required_bounded(arguments, field, 4096)
+}
+
+fn required_strings(arguments: &Value, field: &str, max_items: usize) -> Result<Vec<String>, String> {
+    let values = arguments.get(field).and_then(Value::as_array)
+        .ok_or_else(|| format!("FORGE_NATIVE_BRIDGE_{field}_REQUIRED"))?;
+    if values.is_empty() || values.len() > max_items {
+        return Err(format!("FORGE_NATIVE_BRIDGE_{field}_INVALID"));
     }
-    let result = call_runtime_tool("repository_git_diff", json!({
-        "repo_id": repo_id,
-        "checkout_id": checkout_id,
-        "staged": staged,
-        "max_bytes": 20_000,
-        "request_id": request_id("native-agent-git-diff")
-    })).await?;
-    result.get("diff").cloned()
-        .ok_or_else(|| "FORGE_NATIVE_BRIDGE_GIT_DIFF_INVALID".into())
+    values.iter().map(|value| {
+        value.as_str().filter(|entry| !entry.is_empty())
+            .map(str::to_owned)
+            .ok_or_else(|| format!("FORGE_NATIVE_BRIDGE_{field}_INVALID"))
+    }).collect()
 }
 
 async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
@@ -67,11 +65,24 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
                 "arguments": { "conversation_id": required(args, "conversationId")? },
                 "request_id": request_id("native-local-conversation-activity")
             })).await,
-        "read_agent_git_diff" =>
-            read_native_agent_git_diff(
+        "read_agent_git_diff" => {
+            let repo_id = required(args, "repoId")?;
+            let checkout_id = required(args, "checkoutId")?;
+            read_agent_git_diff_runtime(
+                &repo_id, Some(&checkout_id),
+                args.get("staged").and_then(Value::as_bool).unwrap_or(false), None,
+            ).await
+        },
+        "commit_agent_git_files" =>
+            commit_reviewed_agent_git_files(
                 required(args, "repoId")?,
                 required(args, "checkoutId")?,
+                required(args, "message")?,
+                required_strings(args, "paths", 32)?,
                 args.get("staged").and_then(Value::as_bool).unwrap_or(false),
+                required_bounded(args, "expectedPatch", 20_000)?,
+                required(args, "expectedHead")?,
+                required(args, "expectedBranch")?,
             ).await,
         "read_local_api_settings" => read_local_api_settings(),
         "send_local_conversation" =>
@@ -122,5 +133,8 @@ mod tests {
         assert_eq!(invalid.unwrap_err(), "FORGE_NATIVE_BRIDGE_OPERATION_UNSUPPORTED");
         assert_eq!(required(&json!({"repoId":""}), "repoId").unwrap_err(),
                    "FORGE_NATIVE_BRIDGE_repoId_REQUIRED");
+        assert_eq!(required_strings(&json!({"paths":["src/main.rs"]}), "paths", 32).unwrap(),
+                   vec!["src/main.rs".to_string()]);
+        assert!(required_strings(&json!({"paths":[]}), "paths", 32).is_err());
     }
 }
