@@ -38,7 +38,6 @@ export interface HostCommandRequest {
   interactiveWaitMs?: number;
   maxOutputBytes?: number;
   commandId?: string;
-  workId?: string;
   signal?: AbortSignal;
 }
 
@@ -116,7 +115,6 @@ export async function executeHostCommand(request: HostCommandRequest): Promise<H
     timeoutMs,
     maxOutputBytes,
     ...(request.commandId ? { commandId: request.commandId } : {}),
-    ...(request.workId ? { workId: request.workId } : {}),
     ...(request.signal ? { signal: request.signal } : {}),
     principalId: request.principalId.trim(),
   };
