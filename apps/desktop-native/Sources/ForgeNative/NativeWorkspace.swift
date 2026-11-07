@@ -379,7 +379,16 @@ final class NativeWorkspace: ObservableObject {
             && !settings.model.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty
     }
     var selectedProviderReady: Bool {
-        selectedProvider == "api" ? apiProfileReady : localProviderReady
+        if selectedProvider == "api" {
+            let endpoint = localApiSettings?.endpoint.trimmingCharacters(in:.whitespacesAndNewlines) ?? ""
+            return !endpoint.isEmpty && !selectedApiModel.isEmpty
+        }
+        return localProviderReady
+    }
+    var selectedApiModel: String {
+        let threadModel = thread?.model?.trimmingCharacters(in:.whitespacesAndNewlines) ?? ""
+        if selectedProvider == "api" && !threadModel.isEmpty { return threadModel }
+        return localApiSettings?.model.trimmingCharacters(in:.whitespacesAndNewlines) ?? ""
     }
     var selectedProviderSupportsImages: Bool {
         selectedProvider == "codex" && imageInputAvailable
@@ -421,10 +430,12 @@ final class NativeWorkspace: ObservableObject {
             self.error = "请先停止正在运行的会话。"
             return
         }
+        let provider = providerOverride ?? localApiSettings?.provider
         let item = ChatThread(
             repoId:repoId,
             checkoutId:checkoutId,
-            provider:providerOverride ?? localApiSettings?.provider
+            provider:provider,
+            model:provider == "api" ? localApiSettings?.model : nil
         )
         threads.insert(item, at:0)
         selectedThreadId = item.id
@@ -473,7 +484,7 @@ final class NativeWorkspace: ObservableObject {
         }
         threads[index].provider = value
         threads[index].providerSessionId = nil
-        threads[index].model = nil
+        threads[index].model = value == "api" ? localApiSettings?.model : nil
         threads[index].reasoningEffort = nil
         threads[index].updatedAt = Date()
         pendingImageURLs = []
@@ -1304,8 +1315,16 @@ final class NativeWorkspace: ObservableObject {
         let prompt = draft.trimmingCharacters(in:.whitespacesAndNewlines)
         guard !prompt.isEmpty, !busy, let id = selectedThreadId,
               let index = threads.firstIndex(where:{$0.id == id}) else { return }
-        let item = threads[index]
         let turnProvider = selectedProvider
+        if turnProvider == "api" {
+            let current = threads[index].model?.trimmingCharacters(in:.whitespacesAndNewlines) ?? ""
+            let configured = localApiSettings?.model.trimmingCharacters(in:.whitespacesAndNewlines) ?? ""
+            if current.isEmpty && !configured.isEmpty {
+                threads[index].model = configured
+                persist()
+            }
+        }
+        let item = threads[index]
         let imageURLs = pendingImageURLs
         let contextPaths = pendingContextPaths
         if !imageURLs.isEmpty && !(turnProvider == "codex" && imageInputAvailable) {
@@ -1314,8 +1333,8 @@ final class NativeWorkspace: ObservableObject {
                 : "当前 Runtime 尚未启用图片输入。"
             return
         }
-        if turnProvider == "api" && !apiProfileReady {
-            self.error = "兼容 API 尚未配置 Endpoint 与模型。"
+        if turnProvider == "api" && !selectedProviderReady {
+            self.error = "兼容 API 尚未配置 Endpoint 或当前会话模型。"
             return
         }
         if turnProvider == "codex" && !localProviderReady {
@@ -1379,7 +1398,8 @@ final class NativeWorkspace: ObservableObject {
                 var apiArguments: [String:Any] = [
                     "conversationId":id,
                     "messages":Self.apiTurnMessages(item,prompt:prompt,contextPaths:contextPaths),
-                    "allowEffects":authorizedApiEffects
+                    "allowEffects":authorizedApiEffects,
+                    "model":item.model ?? ""
                 ]
                 if let repo = item.repoId { apiArguments["repoId"] = repo }
                 if let checkout = item.checkoutId { apiArguments["checkoutId"] = checkout }

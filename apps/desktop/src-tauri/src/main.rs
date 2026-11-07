@@ -1350,6 +1350,7 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
     repo_id: Option<String>,
     checkout_id: Option<String>,
     conversation_id: String,
+    model_override: Option<String>,
     allow_effects: bool,
     cancel_receiver: &mut tokio::sync::watch::Receiver<bool>,
 ) -> Result<Value, String> {
@@ -1358,8 +1359,9 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
     // the configured endpoint, model, Keychain secret and Forge authorization.
     let config = read_local_api_settings()?;
     let endpoint = validated_local_api_endpoint(config.get("endpoint").and_then(Value::as_str).unwrap_or(""))?;
-    let model = config.get("model").and_then(Value::as_str).unwrap_or("").trim();
-    if model.is_empty() { return Err("FORGE_DESKTOP_API_MODEL_INVALID".into()); }
+    let configured_model = config.get("model").and_then(Value::as_str).unwrap_or("");
+    let model = model_override.as_deref().unwrap_or(configured_model).trim();
+    if model.is_empty() || model.len() > 120 { return Err("FORGE_DESKTOP_API_MODEL_INVALID".into()); }
     if conversation_id.len() > 160 || conversation_id.is_empty()
         || !conversation_id.chars().all(|char| char.is_ascii_alphanumeric() || "._:-".contains(char)) {
         return Err("FORGE_DESKTOP_API_CONVERSATION_INVALID".into());
@@ -1571,7 +1573,7 @@ async fn send_local_api_conversation(
     };
     let host = TauriLocalApiHost { app };
     run_local_api_turn(
-        &host, messages, repo_id, checkout_id, conversation_id, allow_effects,
+        &host, messages, repo_id, checkout_id, conversation_id, None, allow_effects,
         &mut cancel_receiver,
     ).await
 }

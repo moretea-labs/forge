@@ -293,6 +293,49 @@ final class NativeWorkspaceTests: XCTestCase {
     }
 
     @MainActor
+    func testApiThreadReadinessUsesThreadModelAndSharedEndpoint() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        model.localApiSettings = LocalApiSettingsDetail(
+            provider:"codex", endpoint:"https://api.example.com/v1",
+            model:"", apiProtocol:"openai", hasKey:true
+        )
+        model.threads[0].provider = "api"
+        model.threads[0].model = "thread-model"
+        XCTAssertFalse(model.apiProfileReady)
+        XCTAssertTrue(model.selectedProviderReady)
+
+        model.localApiSettings = LocalApiSettingsDetail(
+            provider:"codex", endpoint:"",
+            model:"", apiProtocol:"openai", hasKey:true
+        )
+        XCTAssertFalse(model.selectedProviderReady)
+    }
+
+    @MainActor
+    func testApiThreadSnapshotsConfiguredModelInsteadOfFollowingLaterProfileChanges() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        model.localApiSettings = LocalApiSettingsDetail(
+            provider:"api", endpoint:"https://api.example.com/v1",
+            model:"model-a", apiProtocol:"openai", hasKey:true
+        )
+
+        model.newThread(provider:"api")
+        XCTAssertEqual(model.thread?.model,"model-a")
+        XCTAssertEqual(model.selectedApiModel,"model-a")
+
+        model.localApiSettings = LocalApiSettingsDetail(
+            provider:"api", endpoint:"https://api.example.com/v1",
+            model:"model-b", apiProtocol:"openai", hasKey:true
+        )
+        XCTAssertEqual(model.thread?.model,"model-a")
+        XCTAssertEqual(model.selectedApiModel,"model-a")
+    }
+
+    @MainActor
     func testThreadRenamePersistsWithoutChangingConversationBinding() {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let store = folder.appendingPathComponent("conversations.json")

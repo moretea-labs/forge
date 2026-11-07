@@ -134,6 +134,7 @@ struct NativeApiTurnRequest {
     repo_id: Option<String>,
     checkout_id: Option<String>,
     conversation_id: String,
+    model: Option<String>,
     allow_effects: bool,
 }
 
@@ -150,6 +151,8 @@ fn parse_api_turn_request(value: &Value) -> Result<NativeApiTurnRequest, String>
         repo_id,
         checkout_id,
         conversation_id,
+        model:value.get("model").and_then(Value::as_str)
+            .map(str::trim).filter(|value| !value.is_empty()).map(str::to_owned),
         allow_effects:value.get("allowEffects").and_then(Value::as_bool).unwrap_or(false),
     })
 }
@@ -223,6 +226,7 @@ pub fn run_api_turn() -> i32 {
         request.repo_id,
         request.checkout_id,
         request.conversation_id,
+        request.model,
         request.allow_effects,
         &mut cancel_receiver,
     ));
@@ -266,11 +270,13 @@ mod tests {
             "repoId":"repo_1",
             "checkoutId":"checkout_1",
             "messages":[{"role":"user","content":"hello"}],
+            "model":"thread-model",
             "allowEffects":true
         })).expect("valid native API turn");
         assert_eq!(request.conversation_id, "thread-1");
         assert_eq!(request.repo_id.as_deref(), Some("repo_1"));
         assert_eq!(request.checkout_id.as_deref(), Some("checkout_1"));
+        assert_eq!(request.model.as_deref(), Some("thread-model"));
         assert!(request.allow_effects);
         assert_eq!(request.messages.len(), 1);
         assert!(parse_api_turn_request(&json!({"conversationId":"thread-1"})).is_err());

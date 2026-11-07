@@ -1191,7 +1191,7 @@ private struct AgentPane: View {
                 }
                 .disabled(model.selectedReasoningOptions.isEmpty || model.busy)
             } else {
-                Button("模型 · \(model.localApiSettings?.model ?? "API 模型")") {}
+                Button("模型 · \(model.selectedApiModel.isEmpty ? "API 模型" : model.selectedApiModel)") {}
                     .disabled(true)
                 if model.checkoutId != nil {
                     Divider()
@@ -1243,7 +1243,7 @@ private struct AgentPane: View {
 
     private var composerConfigurationLabel: String {
         if model.selectedProvider == "api" {
-            let apiModel = model.localApiSettings?.model ?? "API 模型"
+            let apiModel = model.selectedApiModel.isEmpty ? "API 模型" : model.selectedApiModel
             return "API · \(apiModel)"
         }
         let modelName = model.selectedAgentModel?.displayName ?? "Codex"
@@ -2325,9 +2325,7 @@ private struct SettingsPane: View {
 
                 VStack(alignment:.leading,spacing:13) {
                     HStack(spacing:9) {
-                        Circle().fill(model.selectedProvider == "api"
-                                           ? (model.apiProfileReady ? Color.green : Color.red)
-                                           : (model.provider.contains("已连接") ? Color.green : Color.orange))
+                        Circle().fill(model.selectedProviderReady ? Color.green : Color.orange)
                             .frame(width:8,height:8)
                         Text("当前会话 · \(model.selectedProvider == "api" ? "兼容 API" : "Codex CLI")")
                             .font(.system(size:14,weight:.semibold))
@@ -2343,7 +2341,7 @@ private struct SettingsPane: View {
                         .font(.system(size:12)).foregroundStyle(ForgePalette.secondary)
                     HStack(spacing:16) {
                         settingMeta("会话模型",model.selectedProvider == "api"
-                                    ? (model.localApiSettings?.model ?? "未配置")
+                                    ? (model.selectedApiModel.isEmpty ? "未配置" : model.selectedApiModel)
                                     : (model.selectedAgentModel?.displayName ?? "Codex 默认"))
                         settingMeta("Reasoning",model.selectedProvider == "api"
                                     ? "API profile"
