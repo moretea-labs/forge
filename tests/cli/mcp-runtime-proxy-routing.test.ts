@@ -1085,7 +1085,7 @@ describe('MCP terminal Work command context', () => {
         workId: fx.workId,
         state: 'completed',
         mode: 'historical_read_only_observation',
-        attribution: 'not_active_work',
+        attribution: 'historical_only',
       });
       expect(structured.processId).toBeUndefined();
       expect(String(structured.stdout)).toContain('## main');

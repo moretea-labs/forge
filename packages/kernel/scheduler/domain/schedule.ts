@@ -14,7 +14,6 @@ export interface ScheduleResourceClaim {
   repoId?: string;
   /** @deprecated Node-local placement compatibility field. */
   checkoutId?: string;
-  workId?: string;
 }
 
 export type ScheduleTriggerType =

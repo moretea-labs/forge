@@ -82,7 +82,7 @@ test('adopts a non-overlapping successor HEAD in the same edit session and advan
     const adopted = adoptEditSessionSuccessorHead(fx.repoRoot, session.sessionId, { binding });
     expect(adopted.baseRevision).toBe(successor);
     expect(adopted.currentRevision).toBe(2);
-    expect(adopted.workId).toBeUndefined();
+    expect('workId' in adopted).toBe(false);
     expect(adopted.repoId).toBe(fx.repository.repoId);
     expect(adopted.checkoutId).toBe(fx.repository.activeCheckoutId);
     expect(adopted.controllerInstanceId).toBeUndefined();
@@ -117,7 +117,7 @@ test('adopts a non-overlapping successor HEAD in the same edit session and advan
     });
     expect(second.status).toBe('applied');
     expect(second.recoveredSession).toMatchObject({ previousSessionId: session.sessionId, newSessionId: session.sessionId });
-    expect(second.session.workId).toBeUndefined();
+    expect('workId' in second.session).toBe(false);
     expect(second.session.baseRevision).toBe(successor);
     expect(second.session.currentRevision).toBe(3);
     expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toBe('export const value = 3;\n');

@@ -93,7 +93,6 @@ export interface EditSession {
   sessionId: string;
   issueId?: string;
   taskId?: string;
-  workId?: string;
   repoId?: string;
   checkoutId?: string;
   principalId?: string;
@@ -133,8 +132,6 @@ export interface EditSession {
 export interface EditSessionSummary {
   sessionId: string;
   purpose: string;
-  /** Derived ownership identity for cheap lifecycle inventory; never a second Work authority. */
-  workId?: string;
   status: EditSessionStatus;
   issueId?: string;
   taskId?: string;
@@ -353,8 +350,8 @@ export function assertEditSessionDurableBinding(
 
 function validateSessionBinding(session: EditSession, binding: EditSessionBinding | undefined): EditSession {
   assertEditSessionDurableBinding(session, binding);
-  // Historical workId/controllerInstanceId fields remain readable provenance only.
-  // Current mutation authority is repository/checkout/principal plus source fingerprints.
+  // Historical extra fields are ignored. Current mutation authority is
+  // repository/checkout/principal plus source fingerprints.
   return session;
 }
 
@@ -418,7 +415,6 @@ function normalizeStoredSession(value: Partial<EditSession> & { sessionId: strin
     sessionId: value.sessionId,
     issueId: value.issueId,
     taskId: value.taskId,
-    workId: value.workId,
     repoId: value.repoId,
     checkoutId: value.checkoutId,
     principalId: value.principalId,
@@ -763,7 +759,6 @@ export function adoptEditSessionSuccessorHead(repoRoot: string, sessionId: strin
     taskId: session.taskId,
     editSessionId: session.sessionId,
     details: {
-      workId: session.workId,
       previousBaseRevision,
       successorRevision,
       committedPaths,
@@ -1182,7 +1177,6 @@ function sessionSummary(session: EditSession): EditSessionSummary {
   return {
     sessionId: session.sessionId,
     purpose: session.purpose,
-    workId: session.workId,
     status: session.status,
     issueId: session.issueId,
     taskId: session.taskId,
@@ -1342,7 +1336,7 @@ function editSessionDirectoryBytes(path: string): { bytes: number; complete: boo
 
 /**
  * Physically reclaim terminal EditSession artifacts after their own terminal
- * state and retention policy allow it. Historical workId is provenance only.
+ * state and retention policy allow it.
  * The repository-relative path may be the runtime-storage compatibility link.
  */
 export function cleanupTerminalEditSessionRecords(repoRoot: string, input: {

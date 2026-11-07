@@ -1970,7 +1970,10 @@ requireMissing('src/runtime/control-plane/execution/work-evidence-policy.ts');
 // own current mutable state; no Work lifecycle writer may return.
 requireText('packages/kernel/identity/infrastructure/user-request-store.ts', "throw new Error('USER_REQUEST_WORK_SCOPE_RETIRED')");
 forbid('src/runtime/context/cognitive-attention.ts', /resolveCognitiveAttentionForWork|renderCognitiveAttentionForWork/, 'current cognition must not expose Work-scoped convenience APIs');
-forbid('packages/kernel/scheduler/domain/schedule.ts', /scheduleOwnsWork/, 'current Scheduler domain must not project schedule ownership back to Work');
+forbid('packages/kernel/scheduler/domain/schedule.ts', /scheduleOwnsWork|\bworkId\b/, 'current Scheduler domain must not expose Work ownership in ScheduleResourceClaim or helper APIs');
+forbid('src/cli/editing/edit-session.ts', /\bworkId\b/, 'current EditSession schema, summary and worklog must not expose legacy Work identity');
+forbid('src/cli/controller/task-ledger.ts', /active_work|Work in progress/, 'current TaskLedger schema must use Run terminology, not first-class Work terminology');
+forbid('src/cli/controller/operational-plan.ts', /Current Work/, 'current controller UI projection must expose Current Run, not Current Work');
 forbid(
   'src/runtime/evidence/result-store.ts',
   /writeControllerResult\([\s\S]{0,500}\bworkId\??:|readControllerResult\([\s\S]{0,500}\bworkId\??:|searchControllerResult\([\s\S]{0,500}\bworkId\??:/,

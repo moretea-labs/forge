@@ -34,7 +34,7 @@ type ControllerBoardProjection = ReturnType<typeof projectBoard>;
 export type TaskLedgerStatusKind =
   | "empty"
   | "needs_issue_selection"
-  | "active_work"
+  | "active_run"
   | "needs_review"
   | "needs_retry_decision"
   | "blocked"
@@ -265,9 +265,9 @@ function statusProjection(input: {
 
   if (running) {
     return {
-      kind: "active_work",
+      kind: "active_run",
       severity: running.multipleActiveRuns ? "warning" : "info",
-      label: running.multipleActiveRuns ? "Multiple active runs" : "Work in progress",
+      label: running.multipleActiveRuns ? "Multiple active runs" : "Run in progress",
       reason: running.multipleActiveRuns
         ? "A Task has multiple active Runs and needs coordination before more work is dispatched."
         : "A Task has active queued/running work or an active Run.",
