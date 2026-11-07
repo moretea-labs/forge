@@ -14,7 +14,6 @@ import { repositoryControllerRoot } from '../../effects/controller-home';
 import { measureReclaimablePath } from './lifecycle-retention-metrics';
 import { assertOwnedResourceCleanupTarget, getOwnedResource, listOwnedResources, markOwnedResourceCleaned, recordOwnedResource, type OwnedResource } from '../../../packages/kernel/identity/api/index';
 import { fixedShellWrapperCommand, shellSegments, shellWordsPreservingQuotes } from '../../core/shell-command';
-import { semanticWorkState, type WorkContract } from '../../../packages/kernel/work/api/index';
 
 const DEFAULT_GENERATED_CACHE_GRACE_MS = 6 * 60 * 60_000;
 const DEFAULT_BROWSER_UPLOAD_GRACE_MS = 24 * 60 * 60_000;
@@ -830,22 +829,10 @@ export function inspectRepositoryIosTestEvidence(
 
 /**
  * Raw XCTest bundles are mechanical evidence, not semantic Work authority.
- * Once Work is terminal, durable Work/check receipts remain authoritative and
- * the exact producer-owned bundle may enter the existing bounded retention
- * policy. Open, unattributed, identity-unverified, or explicitly retained
- * evidence still fails closed in cleanupReleasableIosTestEvidence().
+ * Exact producer-owned bundles enter the bounded retention policy after grace;
+ * identity-unverified or explicitly retained evidence still fails closed.
+ * Historical associatedWorkId is provenance only.
  */
-export function releasableIosTestEvidenceWorkIds(
-  works: ReadonlyArray<Pick<WorkContract, 'workId' | 'semanticState'>>,
-): Set<string> {
-  return new Set(works
-    .filter((work) => {
-      const state = semanticWorkState(work);
-      return state === 'completed' || state === 'cancelled';
-    })
-    .map((work) => work.workId));
-}
-
 export interface IosTestEvidenceRetentionReport extends GeneratedCacheRetentionReport {
   policyVersion: 'ios-test-evidence-retention-v1';
   rootsInspected: number;
@@ -855,15 +842,14 @@ export interface IosTestEvidenceRetentionReport extends GeneratedCacheRetentionR
 }
 
 /**
- * Reclaim only exact inode-backed XCTest evidence whose semantic owner has
- * already been declared releasable by the existing maintenance authority.
- * Opaque bundles, active Work, and explicitly retained receipts fail closed.
+ * Reclaim only exact inode-backed XCTest evidence admitted by the bounded
+ * evidence-retention policy. Opaque/unverified bundles and explicitly retained
+ * resources fail closed; historical Work provenance never grants or vetoes cleanup.
  */
 export function cleanupReleasableIosTestEvidence(
   repository: GeneratedCacheRepositoryRootSet,
   options: Pick<GeneratedCacheRetentionOptions, 'nowMs' | 'maxEntries' | 'maxRemovals' | 'rootStartIndex'> & {
     owner: { controllerHome: string; repoId: string };
-    releasableWorkIds: ReadonlySet<string>;
     graceMs?: number;
     maxAgeMs?: number;
     maxCount?: number;
@@ -960,12 +946,6 @@ export function cleanupReleasableIosTestEvidence(
             report.retainedPaths.push(path);
             continue;
           }
-          const workId = resource.provenance.associatedWorkId;
-          if (!workId || !options.releasableWorkIds.has(workId)) {
-            skip(workId ? 'work_not_releasable' : 'work_unattributed');
-            report.retainedPaths.push(path);
-            continue;
-          }
           const ageMs = Math.max(0, nowMs - stat.mtimeMs);
           if (ageMs < graceMs) {
             skip('grace');
@@ -1034,12 +1014,6 @@ export function cleanupReleasableIosTestEvidence(
       }
       if (verified.status === 'retained') {
         skip('explicit_retained');
-        report.retainedPaths.push(path);
-        continue;
-      }
-      const workId = verified.provenance.associatedWorkId;
-      if (!workId || !options.releasableWorkIds.has(workId)) {
-        skip(workId ? 'work_not_releasable' : 'work_unattributed');
         report.retainedPaths.push(path);
         continue;
       }

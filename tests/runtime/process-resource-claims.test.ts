@@ -284,21 +284,19 @@ describe('Process Runtime fine-grained resource claims', () => {
     });
   });
 
-  test('Work-bound claims retain conflict keys and carry exact repository, checkout and Work scope', () => {
+  test('scoped claims retain conflict keys and carry exact repository and checkout scope', () => {
     const claims = scopeResourceClaims(
       claimsForRepositoryCommand(['git', 'status'], 'repo1', 'co1'),
       'repo1',
       'co1',
-      'work1',
     );
     expect(claims).toEqual([{
       resourceKey: 'workspace:co1',
       mode: 'read',
       repoId: 'repo1',
       checkoutId: 'co1',
-      workId: 'work1',
     }]);
-    expect(() => scopeResourceClaims(claims, 'repo1', 'co1', 'work2')).toThrow(/RESOURCE_CLAIM_WORK_MISMATCH/);
+    expect(scopeResourceClaims(claims, 'repo1', 'co1')).toEqual(claims);
   });
 
   test('typecheck uses workspace read plus cache and the compiler-heavy serialization fence', () => {

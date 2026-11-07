@@ -8,7 +8,7 @@ const REQUIRED_CLASSES = [
   'assistant_experience', 'assistant_outcome_observation',
   'requirement','plan','work','process_record_log','execution_job','check_receipt','resource_lease',
   'scheduler_occurrence_history',
-  'managed_workspace_checkout','edit_session','verification_snapshot','mcp_transport_session',
+  'managed_workspace_checkout','edit_session','mcp_transport_session',
   'browser_session_profile','browser_disposable_artifact','computer_interaction_target',
   'plugin_config_profile','release_artifact','recovery_backup','quarantine',
   'operational_memory','context_record','repository_controller_home_namespace','sqlite_control_plane','runtime_temp',
@@ -45,7 +45,7 @@ describe('Kernel V2 runtime lifecycle inventory', () => {
       expect(entry).toBeDefined();
       expect(entry!.dataClass).toBe('semantic_authority');
       expect(entry!.retentionCapacity).toMatch(/semantic|revision history|audit retention/i);
-      expect(entry!.cleanupAuthority).toMatch(/does not delete|never rewrites|never rewrite semantic Work completion|semantic retention/i);
+      expect(entry!.cleanupAuthority).toMatch(/does not delete|never rewrites|never rewrite semantic Work completion|semantic retention|no Work cleanup writer exists/i);
     }
     expect(RUNTIME_LIFECYCLE_INVENTORY.some((candidate) => candidate.id === 'controller_round')).toBe(false);
     expect(RUNTIME_LIFECYCLE_INVENTORY.some((candidate) => candidate.id === 'controller_session_lease')).toBe(false);
@@ -53,7 +53,7 @@ describe('Kernel V2 runtime lifecycle inventory', () => {
 
   test('keeps already-bounded Process, transport, Context and Operational Memory classes explicit', () => {
     const bounded = new Set(RUNTIME_LIFECYCLE_INVENTORY.filter((entry) => entry.closureStatus === 'existing_bounded').map((entry) => entry.id));
-    for (const id of ['requirement','plan','work','process_record_log','mcp_transport_session','operational_memory','context_record','runtime_temp','managed_workspace_checkout','verification_snapshot','scheduler_occurrence_history','edit_session','plugin_config_profile','quarantine','release_artifact','recovery_backup','browser_disposable_artifact','repository_controller_home_namespace','browser_session_profile','computer_interaction_target','check_receipt','execution_job','resource_lease']) {
+    for (const id of ['requirement','plan','work','process_record_log','mcp_transport_session','operational_memory','context_record','runtime_temp','managed_workspace_checkout','scheduler_occurrence_history','edit_session','plugin_config_profile','quarantine','release_artifact','recovery_backup','browser_disposable_artifact','repository_controller_home_namespace','browser_session_profile','computer_interaction_target','check_receipt','execution_job','resource_lease']) {
       expect(bounded.has(id)).toBe(true);
     }
   });

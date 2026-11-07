@@ -82,7 +82,6 @@ interface LightweightEntry {
   repoId?: string;
   /** Owning principal recorded from the invoking MCP/Runtime context. */
   principalId?: string;
-  workId?: string;
   commandId: string;
   requestFingerprint: string;
   startedAt: string;
@@ -573,7 +572,6 @@ function entryHandle(entry: LightweightEntry): ProcessHandle {
   const stderrTail = entry.stderrTail || visibleOutputTail(stderr);
   return {
     processId: entry.processId,
-    workId: entry.workId,
     commandId: entry.commandId,
     status,
     contractStatus: status === 'running'
@@ -609,7 +607,6 @@ export interface StartLightweightCommandInput {
   interactiveWaitMs: number;
   timeoutMs: number;
   maxOutputBytes?: number;
-  workId?: string;
   commandId?: string;
   /** Authenticated principal recorded with the handle for principal-bound attachment. */
   principalId?: string;
@@ -637,7 +634,6 @@ export interface StartLightweightCheckInput {
   checkId: string;
   interactiveWaitMs: number;
   timeoutMs: number;
-  workId?: string;
   commandId?: string;
   /** Authenticated principal recorded with the handle for principal-bound attachment. */
   principalId?: string;
@@ -656,7 +652,6 @@ export interface StartLightweightInternalProcessInput {
   controllerHome: string;
   timeoutMs: number;
   maxOutputBytes?: number;
-  workId?: string;
   commandId?: string;
   signal?: AbortSignal;
   /** Authenticated principal recorded with the handle for principal-bound attachment. */
@@ -740,7 +735,6 @@ export async function startLightweightRepositoryCommand(
     scopeKey,
     ...(scope.kind === 'repository' ? { repoId: commandExecutionScopeKey(input.repository) } : {}),
     ...(input.principalId ? { principalId: input.principalId } : {}),
-    workId: input.workId,
     commandId: stableCommandId || processId,
     requestFingerprint,
     startedAt: new Date().toISOString(),
@@ -851,7 +845,6 @@ export async function startLightweightRepositoryCommand(
     lane: 'lightweight',
     target: processScopeExecutionTarget(input.controllerHome, processScopeFromKey(entry.scopeKey)),
     principalId: entry.principalId,
-    workId: entry.workId,
     commandId: entry.commandId,
   });
   persistRunningReceipt(entry, true);
@@ -948,7 +941,6 @@ export async function startLightweightInternalProcess(
     scopeKey,
     ...(repoId ? { repoId } : {}),
     ...(input.principalId?.trim() ? { principalId: input.principalId.trim() } : {}),
-    workId: input.workId,
     commandId: stableCommandId || processId,
     requestFingerprint,
     startedAt: new Date().toISOString(),
@@ -1000,7 +992,6 @@ export async function startLightweightInternalProcess(
     lane: 'lightweight',
     target: processScopeExecutionTarget(entry.controllerHome, processScopeFromKey(entry.scopeKey)),
     principalId: entry.principalId,
-    workId: entry.workId,
     commandId: entry.commandId,
   });
   persistRunningReceipt(entry, true);
@@ -1041,7 +1032,6 @@ export interface StartLightweightHostCommandInput {
   interactiveWaitMs: number;
   timeoutMs: number;
   maxOutputBytes?: number;
-  workId?: string;
   commandId?: string;
   signal?: AbortSignal;
   principalId?: string;
@@ -1085,7 +1075,6 @@ export async function startLightweightHostCommand(
     interactiveWaitMs: input.interactiveWaitMs,
     timeoutMs: input.timeoutMs,
     maxOutputBytes: input.maxOutputBytes,
-    workId: input.workId,
     commandId: input.commandId,
     signal: input.signal,
     principalId: input.principalId,
@@ -1144,7 +1133,6 @@ export async function startLightweightControllerCheck(
     scopeKey: input.repoId,
     repoId: input.repoId,
     ...(input.principalId ? { principalId: input.principalId } : {}),
-    workId: input.workId,
     commandId: stableCommandId || processId,
     requestFingerprint,
     startedAt: new Date().toISOString(),
@@ -1197,7 +1185,6 @@ export async function startLightweightControllerCheck(
     lane: 'lightweight',
     target: processScopeExecutionTarget(entry.controllerHome, processScopeFromKey(entry.scopeKey)),
     principalId: entry.principalId,
-    workId: entry.workId,
     commandId: entry.commandId,
   });
   persistRunningReceipt(entry, true);

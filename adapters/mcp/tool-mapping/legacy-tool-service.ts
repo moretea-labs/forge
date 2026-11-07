@@ -9,7 +9,6 @@ import { withRepositoryMutationExclusion } from '../../../src/runtime/resources/
 import { listAgentJobs } from "../../../src/cli/agent-jobs/job-manager";
 import { listControllerChecks } from "../../../src/cli/controller/check-runner";
 import { buildExecutionDiagnostics, buildRequirementBoard } from '../../../src/runtime/control-plane/facade/requirement-board';
-import { getWorkContract } from '../../../packages/kernel/work/api';
 import { listCapabilityDescriptors, summarizeCapabilityGroups } from '../../../src/runtime/control-plane/facade/capability-registry';
 import { exportControllerWorklog, listControllerWorklogEvents, parseWorklogCategory } from "../../../src/cli/controller/worklog";
 import { FORGE_MCP_SCHEMA_VERSION, FORGE_TOOL_SURFACE, FORGE_VERSION, forgeToolSurfaceFingerprint, formatDurationMs, normalizeAgentTimeoutMs } from "../../../src/cli/controller/runtime-config";
@@ -559,7 +558,6 @@ export function buildMcpToolDefinitions(
           type: "object",
           properties: {
             purpose: { type: "string" },
-            work_id: { type: "string", description: "Optional existing WorkContract. Omit for a Work-independent direct-edit transaction." },
             issue_id: { type: "string" },
             task_id: { type: "string" },
             allowed_paths: { type: "array", items: { type: "string" } },
@@ -1118,12 +1116,8 @@ export async function callMcpTool(
         const controllerHome = resolveRepoPreferredControllerHome(ctx.repoRoot);
         const allowedPaths = stringList(args.allowed_paths);
         const checks = stringList(args.checks);
-        // An edit transaction is not a semantic objective. Only the Controller
-        // can select an existing Work; ordinary Direct Edit needs no Work lifecycle.
-        const workId = typeof args.work_id === "string" ? args.work_id.trim() || undefined : undefined;
-        if (workId && !getWorkContract({ controllerHome, repoId }, workId)) {
-          return errorResult("WORK_NOT_FOUND", `WorkContract ${workId} not found`);
-        }
+        // EditSession authority is physical repository/checkout/principal state.
+        // Historical Work identity is never accepted as a mutation binding.
         const editRepository = resolveRepositorySelection({
           repoId,
           checkoutId: identity.checkoutId,
@@ -1142,11 +1136,9 @@ export async function callMcpTool(
           maxChangedLines: typeof args.max_changed_lines === "number" ? args.max_changed_lines : undefined,
           checks,
           binding: {
-            workId,
             repoId,
             checkoutId: identity.checkoutId,
             principalId: identity.principalId,
-            controllerInstanceId: workId ? identity.controllerInstanceId : undefined,
           },
         }));
         audit(
@@ -1180,11 +1172,9 @@ export async function callMcpTool(
                   : undefined,
               maxBatchOperations: PREFERRED_EDIT_PATCH_BATCH_OPERATIONS,
               binding: {
-                workId: current.workId,
                 repoId: identity.repoId,
                 checkoutId: identity.checkoutId,
                 principalId: identity.principalId,
-                controllerInstanceId: identity.controllerInstanceId,
               },
             },
           ));
@@ -1299,11 +1289,9 @@ export async function callMcpTool(
             note: typeof args.note === "string" ? args.note : undefined,
             approvalConfirmed: args.confirm_authorization === true,
             binding: {
-              workId: current.workId,
               repoId: identity.repoId,
               checkoutId: identity.checkoutId,
               principalId: identity.principalId,
-              controllerInstanceId: identity.controllerInstanceId,
             },
           },
         ));

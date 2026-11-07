@@ -63,7 +63,6 @@ export interface ExecuteRepositoryCommandInput {
   approvalRequestId?: string;
   sessionId?: string;
   principalId?: string;
-  workId?: string;
   /** When set, cancel spawn via process-tree kill. Async path only. */
   signal?: AbortSignal;
   /**
@@ -238,10 +237,9 @@ function finalizePreparedExecution(
     cwd: relativeCwd,
     ...(input.sessionId ? { sessionId: input.sessionId } : {}),
     ...(input.principalId ? { principalId: input.principalId } : {}),
-    ...(input.workId ? { workId: input.workId, boundWorkId: input.workId } : {}),
   }) : undefined);
   const resolved = controllerHome && input.approvalRequestId
-    ? assertResolvedAuthorization({ controllerHome, repositoryId: commandExecutionScopeKey(repository), approvalRequestId: input.approvalRequestId, sessionId: input.sessionId, principalId: input.principalId, workId: input.workId, permissionSnapshotVersion: permission?.revision ?? 1, command: commandForPersistence })
+    ? assertResolvedAuthorization({ controllerHome, repositoryId: commandExecutionScopeKey(repository), approvalRequestId: input.approvalRequestId, sessionId: input.sessionId, principalId: input.principalId, permissionSnapshotVersion: permission?.revision ?? 1, command: commandForPersistence })
     : undefined;
   const effectiveDecision: AuthorizationDecision | undefined = resolved
     ? { decision: 'allow', source: 'user_confirmation', reason: 'Resolved approval request matches the exact command and current permission snapshot.' }

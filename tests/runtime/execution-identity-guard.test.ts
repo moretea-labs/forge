@@ -21,12 +21,10 @@ import {
   assertExecutionIdentity,
   classifyGitCommonDirectoryDrift,
   executionIdentityForRepository,
-  executionIdentityForWork,
   executionIdentityFromCoordinates,
-  resolveLegacyWorkContractIdentity,
   ExecutionIdentityError,
 } from '../../src/runtime/control-plane/execution/execution-identity';
-import { resolveWorkDeliveryTargetBranch, WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
+import { resolveWorkDeliveryTargetBranch } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { spawnManagedProcess } from '../../src/runtime/execution/process-runtime';
 
 const roots: string[] = [];
@@ -67,39 +65,6 @@ function dualRepoFixture() {
   return { root, controllerHome, repoA, repoB, headA, headB, repoARoot, repoBRoot };
 }
 
-function sampleHandle(input: {
-  workId: string;
-  repositoryId: string;
-  checkoutId: string;
-  worktreePath: string;
-  branch: string;
-  expectedHead?: string;
-}): WorkHandleState {
-  const now = new Date().toISOString();
-  return {
-    schemaVersion: 1,
-    workId: input.workId,
-    sessionId: 'sess-test',
-    principalId: 'principal-test',
-    repositoryId: input.repositoryId,
-    checkoutId: input.checkoutId,
-    worktreePath: input.worktreePath,
-    branch: input.branch,
-    managedWorktree: false,
-    expectedHead: input.expectedHead,
-    permissionSnapshotVersion: 1,
-    state: 'prepared',
-    createdAt: now,
-    updatedAt: now,
-    finalization: {
-      validation: 'pending',
-      commit: 'pending',
-      merge: 'pending',
-      branchCleanup: 'pending',
-      worktreeCleanup: 'pending',
-    },
-  };
-}
 
 describe('execution identity pre-spawn guard', () => {
 
@@ -154,10 +119,9 @@ describe('execution identity pre-spawn guard', () => {
     })).toThrow(/CHECKOUT_NOT_REGISTERED/);
   });
 
-  test('rejects WorkHandle worktree path drift', () => {
+  test('rejects worktree path drift', () => {
     const fx = dualRepoFixture();
     const identity = executionIdentityForRepository(fx.repoA, {
-      workId: 'work_wrong_path',
       worktreePath: fx.repoBRoot,
     });
     expect(() => assertExecutionIdentity({
@@ -206,7 +170,7 @@ describe('execution identity pre-spawn guard', () => {
       controllerHome: fx.controllerHome,
       identity,
       cwd: fx.repoARoot,
-    })).toThrow(/WORK_HANDLE_BRANCH_CHANGED/);
+    })).toThrow(/CHECKOUT_BRANCH_CHANGED/);
   });
 
   test('rejects HEAD drift', () => {
@@ -222,7 +186,7 @@ describe('execution identity pre-spawn guard', () => {
       controllerHome: fx.controllerHome,
       identity,
       cwd: fx.repoARoot,
-    })).toThrow(/WORK_HANDLE_HEAD_CHANGED/);
+    })).toThrow(/CHECKOUT_HEAD_CHANGED/);
   });
 
   test('symlink path alias still validates through realpath', () => {
@@ -397,89 +361,6 @@ describe('execution identity pre-spawn guard', () => {
     })).toThrow(/CHECKOUT_REPOSITORY_MISMATCH/);
   });
 
-  test('WorkHandle identity ignores mutable repository checkout projection', () => {
-    const fx = dualRepoFixture();
-    const handle = sampleHandle({
-      workId: 'work_projection',
-      repositoryId: fx.repoA.repoId,
-      checkoutId: fx.repoA.activeCheckoutId,
-      worktreePath: fx.repoA.canonicalRoot,
-      branch: 'main',
-      expectedHead: fx.headA,
-    });
-    const staleProjection = {
-      ...fx.repoA,
-      activeCheckoutId: fx.repoB.activeCheckoutId,
-      canonicalRoot: fx.repoB.canonicalRoot,
-      localRoot: fx.repoB.localRoot,
-    };
-    const identity = executionIdentityForWork(staleProjection, handle);
-    expect(identity.repositoryId).toBe(fx.repoA.repoId);
-    expect(identity.checkoutId).toBe(fx.repoA.activeCheckoutId);
-    expect(identity.canonicalRoot).toBe(fx.repoA.canonicalRoot);
-    expect(identity.worktreePath).toBe(fx.repoA.canonicalRoot);
-  });
-
-  test('WorkHandle still rejects a repository identity mismatch', () => {
-    const fx = dualRepoFixture();
-    const handle = sampleHandle({
-      workId: 'work_wrong_repo',
-      repositoryId: fx.repoA.repoId,
-      checkoutId: fx.repoA.activeCheckoutId,
-      worktreePath: fx.repoA.canonicalRoot,
-      branch: 'main',
-      expectedHead: fx.headA,
-    });
-    expect(() => executionIdentityForWork(fx.repoB, handle)).toThrow(/EXECUTION_IDENTITY_MISMATCH/);
-  });
-
-  test('legacy ambiguous WorkContract identity is rejected', () => {
-    const fx = dualRepoFixture();
-    const handleA = sampleHandle({
-      workId: 'work_shared',
-      repositoryId: fx.repoA.repoId,
-      checkoutId: fx.repoA.activeCheckoutId,
-      worktreePath: fx.repoA.canonicalRoot,
-      branch: 'main',
-      expectedHead: fx.headA,
-    });
-    const handleB = sampleHandle({
-      workId: 'work_shared',
-      repositoryId: fx.repoB.repoId,
-      checkoutId: fx.repoB.activeCheckoutId,
-      worktreePath: fx.repoB.canonicalRoot,
-      branch: 'main',
-      expectedHead: fx.headB,
-    });
-    expect(() => resolveLegacyWorkContractIdentity({
-      workId: 'work_shared',
-      candidates: [handleA, handleB],
-    })).toThrow(/LEGACY_WORK_IDENTITY_AMBIGUOUS|LEGACY_WORK_IDENTITY_REJECTED/);
-  });
-
-  test('legacy unique exact WorkHandle match succeeds', () => {
-    const fx = dualRepoFixture();
-    const handle = sampleHandle({
-      workId: 'work_unique',
-      repositoryId: fx.repoA.repoId,
-      checkoutId: fx.repoA.activeCheckoutId,
-      worktreePath: fx.repoA.canonicalRoot,
-      branch: 'main',
-      expectedHead: fx.headA,
-    });
-    const resolved = resolveLegacyWorkContractIdentity({
-      workId: 'work_unique',
-      repoId: fx.repoA.repoId,
-      checkoutId: fx.repoA.activeCheckoutId,
-      canonicalRoot: fx.repoA.canonicalRoot,
-      branch: 'main',
-      head: fx.headA,
-      candidates: [handle],
-    });
-    expect(resolved.workId).toBe('work_unique');
-    expect(resolved.checkoutId).toBe(fx.repoA.activeCheckoutId);
-  });
-
   test('ephemeral workspace identity validates a non-Git root without Repository Registry ownership and rejects cwd escape', () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-ephemeral-identity-'));
     roots.push(root);
@@ -571,20 +452,6 @@ describe('execution identity pre-spawn guard', () => {
     })).rejects.toThrow(/CHECKOUT_ROUTE_MISMATCH|GIT_TOPLEVEL_MISMATCH|GIT_COMMON_DIR_MISMATCH/);
   });
 
-  test('WorkHandle checkout drift fails closed', () => {
-    const fx = dualRepoFixture();
-    const handle = sampleHandle({
-      workId: 'work_drift',
-      repositoryId: fx.repoA.repoId,
-      checkoutId: fx.repoA.activeCheckoutId,
-      worktreePath: fx.repoA.canonicalRoot,
-      branch: 'main',
-      expectedHead: fx.headA,
-    });
-    const wrongRepoView = selectRepositoryCheckout(fx.repoB, fx.repoB.activeCheckoutId);
-    expect(() => executionIdentityForWork(wrongRepoView, handle)).toThrow(/EXECUTION_IDENTITY_MISMATCH|WORK_HANDLE_CHECKOUT_DRIFT/);
-  });
-
   test('structured errors expose safe expected/actual fields', () => {
     const fx = dualRepoFixture();
     const identity = executionIdentityFromCoordinates({
@@ -604,7 +471,7 @@ describe('execution identity pre-spawn guard', () => {
     } catch (error) {
       expect(error).toBeInstanceOf(ExecutionIdentityError);
       const typed = error as ExecutionIdentityError;
-      expect(typed.code).toBe('WORK_HANDLE_HEAD_CHANGED');
+      expect(typed.code).toBe('CHECKOUT_HEAD_CHANGED');
       expect(typed.details.expected).toBe('deadbeefdeadbeefdeadbeefdeadbeefdeadbeef');
       expect(typed.details.actual).toBe(fx.headA);
       expect(typed.details.repoId).toBe(fx.repoA.repoId);
@@ -632,9 +499,9 @@ describe('execution identity pre-spawn guard', () => {
 
 });
 
-describe('repository Work delivery target authority', () => {
+describe('historical WorkHandle delivery target audit compatibility', () => {
 
-  test('uses the bound target, accepts an explicit match, rejects explicit rebinding, and preserves legacy fallback', () => {
+  test('reads retained delivery target metadata without granting current delivery authority', () => {
     const repository = { defaultBranch: 'main' };
     const bound = { workId: 'work-bound-target', deliveryTargetBranch: 'kernel-v2/architecture' };
     expect(resolveWorkDeliveryTargetBranch(bound, repository.defaultBranch)).toBe('kernel-v2/architecture');

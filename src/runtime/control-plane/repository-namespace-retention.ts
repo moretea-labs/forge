@@ -5,7 +5,6 @@ import { listRepositories } from '../../cli/repositories/registry';
 import { listActiveExecutionJobs } from '../execution/jobs/store';
 import { listActiveProcessIds } from '../execution/process-runtime/store';
 import { listActiveLeases } from '../resources/leases/store';
-import { isTerminalSemanticWorkState, readWorkContractStore } from '../../../packages/kernel/work/api/index';
 import { listControlPlaneRecords } from './persistence/sqlite-store';
 import { measureReclaimablePath } from './lifecycle-retention-metrics';
 
@@ -85,18 +84,6 @@ function activeAuthorityBlockers(controllerHome: string, repoId: string): string
   if (listActiveExecutionJobs(controllerHome, repoId).length > 0) blockers.push('active_execution_job');
   if (listActiveProcessIds(controllerHome, repoId).length > 0) blockers.push('active_process');
   if (listActiveLeases(controllerHome, repoId).length > 0) blockers.push('active_lease');
-
-  const workStore = readWorkContractStore({ controllerHome, repoId });
-  for (const work of workStore.contracts) {
-    if (!isTerminalSemanticWorkState(work.semanticState)) {
-      blockers.push('active_work');
-      break;
-    }
-    if (work.phaseEvidence?.cleanup?.state !== 'satisfied') {
-      blockers.push('work_cleanup_incomplete');
-      break;
-    }
-  }
 
   const browser = browserSessionBlocksRetirement(controllerHome, repoId);
   if (browser.blocked) blockers.push('active_browser_session');

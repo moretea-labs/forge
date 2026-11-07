@@ -1,7 +1,5 @@
 import { existsSync, lstatSync, opendirSync, statSync, unlinkSync } from 'fs';
 import { join, relative } from 'path';
-import { isTerminalSemanticWorkState, type WorkContract } from '../../../../packages/kernel/work/api/index';
-import { listControlPlaneRecords } from '../../control-plane/persistence/sqlite-store';
 import { processLogDir } from './store';
 import { readPersistedCheckResultReceipt } from './check-result';
 
@@ -40,22 +38,6 @@ export function cleanupPersistedCheckResults(
   const maxRetained = Math.max(1, Math.floor(options.maxRetained ?? DEFAULT_MAX_RETAINED_CHECK_RESULTS));
   let remaining = Math.max(0, Math.floor(options.maxRemovals ?? DEFAULT_MAX_REMOVALS));
   const maxScan = Math.max(1, Math.min(Math.floor(options.maxScan ?? 5_000), 5_000));
-
-  const protectedCacheKeys = new Set<string>();
-  const workRecords = listControlPlaneRecords<WorkContract>(controllerHome, { namespace: 'work_contract', scope: repoId, limit: 5_000 });
-  if (workRecords.length >= 5_000) {
-    report.scanTruncated = true;
-    report.blockers.push('work_scan_truncated');
-    return report;
-  }
-  for (const record of workRecords) {
-    const work = record.value;
-    if (isTerminalSemanticWorkState(work.semanticState)) continue;
-    for (const verification of work.checkRefs ?? []) {
-      const key = verification.receipt?.checkCacheKey?.trim();
-      if (key) protectedCacheKeys.add(key);
-    }
-  }
 
   const candidates: Array<{ path: string; name: string; cacheKey: string; executedAtMs: number; bytes?: number }> = [];
   let directory: ReturnType<typeof opendirSync>;
@@ -98,10 +80,6 @@ export function cleanupPersistedCheckResults(
   candidates.sort((left, right) => right.executedAtMs - left.executedAtMs || left.name.localeCompare(right.name));
   let unprotectedRank = 0;
   for (const candidate of candidates) {
-    if (protectedCacheKeys.has(candidate.cacheKey)) {
-      report.retained += 1;
-      continue;
-    }
     const overCount = !report.scanTruncated && unprotectedRank >= maxRetained;
     unprotectedRank += 1;
     const ageExpired = nowMs - candidate.executedAtMs >= ttlMs;

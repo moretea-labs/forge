@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it, spyOn } from 'bun:test';
-import { seedHistoricalWorkHandle } from '../helpers/historical-work-handle';
 import { execFileSync } from 'child_process';
 import { createHash } from 'crypto';
 import { existsSync, lstatSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'fs';
@@ -14,7 +13,6 @@ import {
   buildRecoveryAuditRecord,
   buildRuntimeMaintenanceStatus,
   applyRuntimeMaintenance,
-  applyStaleWorkContractMaintenanceCandidate,
   cleanupRuntimeQuarantine,
   runtimeLegacyCheckQuarantineRoot,
   classifyFailure,
@@ -25,9 +23,6 @@ import { applyEditOperations, beginEditSession, getEditSession } from '../../src
 import { addRepositoryCheckout, getRepository, registerRepository } from '../../src/cli/repositories/registry';
 import { ensureRepositoryRuntimeStorageBinding } from '../../src/cli/repositories/runtime-storage';
 import { getMcpPolicy } from '../../adapters/mcp/policy';
-import { getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
-import { implementationReviewChangedPathDigest } from '../../packages/kernel/work/domain/implementation-review';
-import { createPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { applyControllerHomeMigration } from '../../src/runtime/control-plane/persistence/controller-home-migration';
 import { assertOwnedResourceCleanupTarget, getOwnedResource, recordOwnedResource } from '../../packages/kernel/identity/api/index';
 import { managedBranchOwnedResourceId, managedBranchOwnedResourceLocator, managedWorkspaceOwnedResourceId } from '../../src/runtime/execution/managed-workspace';
@@ -342,81 +337,6 @@ describe('runtime maintenance executor', () => {
     };
   }
 
-  function legacyRemoteEffectWorktreeFixture(dirty = false) {
-    const root = mkdtempSync(join(tmpdir(), 'forge-maintenance-legacy-remote-effect-'));
-    temporaryRoots.push(root);
-    const controllerHome = join(root, 'controller');
-    const repoRoot = join(root, 'repo');
-    mkdirSync(controllerHome, { recursive: true });
-    mkdirSync(repoRoot, { recursive: true });
-    execFileSync('git', ['init', '-q', '-b', 'kernel-v2/architecture'], { cwd: repoRoot });
-    execFileSync('git', ['config', 'user.email', 'test@example.test'], { cwd: repoRoot });
-    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: repoRoot });
-    writeFileSync(join(repoRoot, 'README.md'), '# legacy remote effect placement\n');
-    execFileSync('git', ['add', 'README.md'], { cwd: repoRoot });
-    execFileSync('git', ['commit', '-qm', 'initial'], { cwd: repoRoot });
-    const baseRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' }).trim();
-    const registered = registerRepository({ path: repoRoot, displayName: 'legacy-remote-effect', controllerHome });
-    const worktree = join(controllerHome, 'managed-worktrees', registered.repoId, 'work-legacy-remote');
-    mkdirSync(join(controllerHome, 'managed-worktrees', registered.repoId), { recursive: true });
-    execFileSync('git', ['worktree', 'add', '-q', '-b', 'work/legacy-remote-effect', worktree, 'HEAD'], { cwd: repoRoot });
-    const withCheckout = addRepositoryCheckout({ repoId: registered.repoId, path: worktree, controllerHome });
-    const checkout = withCheckout.checkouts.find((candidate) => candidate.checkoutId !== registered.activeCheckoutId && candidate.worktree);
-    if (!checkout) throw new Error('legacy remote effect fixture checkout missing');
-    const registeredWorktree = checkout.canonicalRoot;
-    const workId = 'work-legacy-remote-effect-placement';
-    seedHistoricalWorkContract({ controllerHome, repoId: registered.repoId, now: () => '2026-01-01T00:00:00.000Z' }, {
-      workId, repoId: registered.repoId, workKind: 'remote_effect',
-      objective: 'continue an external browser task without repository mutation',
-      acceptanceCriteria: ['remote receipt exists'], allowedPaths: [], forbiddenPaths: [], checks: [],
-      constraints: { workspaceMode: 'isolated' },
-      requestedBy: 'user', dispatchState: 'running', checkoutId: checkout.checkoutId, worktreeRef: registeredWorktree, baseRevision,
-      worktreePolicy: { required: true, reason: 'legacy placement inherited from unrelated repository state' },
-    });
-    if (dirty) writeFileSync(join(registeredWorktree, 'unexpected.txt'), 'must preserve\n');
-    return { controllerHome, repository: { repoId: registered.repoId, canonicalRoot: registered.canonicalRoot, defaultBranch: 'main' }, workId, worktree: registeredWorktree, checkoutId: checkout.checkoutId, canonicalCheckoutId: registered.activeCheckoutId };
-  }
-
-  function writeStaleManagedWorkHandle(
-    controllerHome: string,
-    repository: { repoId: string; canonicalRoot: string },
-    workId: string,
-    worktree: string,
-    deliveryTargetBranch?: string,
-  ): string {
-    const contract = getWorkContract({ controllerHome, repoId: repository.repoId }, workId);
-    if (!contract?.checkoutId) throw new Error(`fixture Work ${workId} is missing checkout identity`);
-    const expectedHead = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: worktree, encoding: 'utf8' }).trim();
-    const branch = execFileSync('git', ['branch', '--show-current'], { cwd: worktree, encoding: 'utf8' }).trim();
-    const baseCommit = execFileSync('git', ['merge-base', 'main', expectedHead], { cwd: repository.canonicalRoot, encoding: 'utf8' }).trim();
-    seedHistoricalWorkHandle(controllerHome, {
-      schemaVersion: 1,
-      workId,
-      workContractId: workId,
-      sessionId: `session-${workId}`,
-      principalId: 'principal-maintenance-test',
-      repositoryId: repository.repoId,
-      checkoutId: contract.checkoutId,
-      worktreePath: worktree,
-      branch,
-      managedWorktree: true,
-      baseCommit,
-      expectedHead,
-      ...(deliveryTargetBranch ? { deliveryTargetBranch } : {}),
-      permissionSnapshotVersion: 1,
-      state: 'prepared',
-      createdAt: '2026-01-01T00:00:00.000Z',
-      updatedAt: '2026-01-01T00:00:00.000Z',
-      finalization: {
-        validation: 'pending',
-        commit: 'pending',
-        merge: 'pending',
-        branchCleanup: 'pending',
-        worktreeCleanup: 'pending',
-      },
-    });
-    return expectedHead;
-  }
 
   function editFixture(input: { workStatus?: 'cancelled' | 'running'; createWork?: boolean; applyEdit?: boolean; contractFree?: boolean } = {}) {
     const root = mkdtempSync(join(tmpdir(), 'forge-maintenance-edit-session-'));
@@ -474,32 +394,6 @@ describe('runtime maintenance executor', () => {
       sessionId: session.sessionId,
     };
   }
-
-  it('does not flag a current Work-owned managed worktree as unowned lifecycle debt', () => {
-    const root = mkdtempSync(join(tmpdir(), 'forge-maintenance-owned-worktree-'));
-    temporaryRoots.push(root);
-    const controllerHome = join(root, 'controller');
-    const repoRoot = join(root, 'repo');
-    const worktree = join(root, '.forge', 'managed-worktrees', 'current-controller', 'repo-owned', 'work-owned');
-    mkdirSync(repoRoot, { recursive: true });
-    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repoRoot });
-    execFileSync('git', ['config', 'user.email', 'test@example.test'], { cwd: repoRoot });
-    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: repoRoot });
-    writeFileSync(join(repoRoot, 'README.md'), '# owned\n');
-    execFileSync('git', ['add', 'README.md'], { cwd: repoRoot });
-    execFileSync('git', ['commit', '-qm', 'initial'], { cwd: repoRoot });
-    mkdirSync(join(root, '.forge', 'managed-worktrees', 'current-controller', 'repo-owned'), { recursive: true });
-    execFileSync('git', ['worktree', 'add', '-q', '-b', 'work/owned', worktree, 'HEAD'], { cwd: repoRoot });
-    seedHistoricalWorkContract({ controllerHome, repoId: 'repo-owned' }, {
-      workId: 'work-owned-current', repoId: 'repo-owned', objective: 'Current owned worktree',
-      acceptanceCriteria: [], allowedPaths: ['**'], forbiddenPaths: [], checks: [], constraints: {},
-      requestedBy: 'user', dispatchState: 'running', checkoutId: 'checkout-owned', worktreeRef: worktree,
-    });
-
-    const status = buildRuntimeMaintenanceStatus({ repoId: 'repo-owned', canonicalRoot: repoRoot }, controllerHome, { minAgeMinutes: 60, maxCandidates: 50 });
-    expect(status.candidates).not.toContainEqual(expect.objectContaining({ kind: 'unowned_managed_worktree', path: worktree }));
-    expect(status.candidates).not.toContainEqual(expect.objectContaining({ kind: 'retained_migrated_work', path: worktree }));
-  });
 
   it('reconciles a clean integrated managed worktree from canonical OwnedResource authority when its WorkContract is absent', () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-maintenance-owned-resource-worktree-'));
@@ -688,196 +582,6 @@ describe('runtime maintenance executor', () => {
     expect(existsSync(stale)).toBe(false);
   });
 
-  it('refuses to detach a clean legacy remote_effect worktree without OwnedResource proof', () => {
-    const { controllerHome, repository, workId, worktree, checkoutId } = legacyRemoteEffectWorktreeFixture();
-    const scanned = buildRuntimeMaintenanceStatus(repository, controllerHome, { minAgeMinutes: 1, maxCandidates: 50 });
-    const candidate = scanned.candidates.find((entry) => entry.kind === 'stale_work_contract' && entry.id === workId);
-    expect(candidate).toMatchObject({
-      kind: 'stale_work_contract', id: workId, safe: true, sourceState: 'clean_integrated',
-    });
-    expect(candidate?.reason).toContain('repository placement may be detached');
-
-    const applied = applyStaleWorkContractMaintenanceCandidate(repository, controllerHome, candidate!);
-    expect(applied).toMatchObject({
-      applied: false,
-      safe: false,
-      result: 'legacy_remote_effect_owned_resource_required',
-      disposition: 'source_preservation_required',
-    });
-    const retained = getWorkContract({ controllerHome, repoId: repository.repoId }, workId);
-    expect(retained).toMatchObject({
-      semanticState: 'open', workKind: 'remote_effect', checkoutId,
-      constraints: { workspaceMode: 'isolated' },
-      worktreePolicy: {
-        required: true,
-        reason: 'legacy placement inherited from unrelated repository state',
-      },
-    });
-    expect(retained?.worktreeRef).toBe(worktree);
-    expect(existsSync(worktree)).toBe(true);
-    expect(execFileSync('git', ['branch', '--list', 'work/legacy-remote-effect'], { cwd: repository.canonicalRoot, encoding: 'utf8' }).trim()).toContain('work/legacy-remote-effect');
-    const registry = getRepository(repository.repoId, controllerHome, { includeRemoved: true });
-    expect(registry.checkouts.find((candidate) => candidate.checkoutId === checkoutId)?.lifecycle ?? 'active').toBe('active');
-  });
-
-  it('reclaims old XCTest evidence only after its associated Work is semantically cancelled', () => {
-    const root = mkdtempSync(join(tmpdir(), 'forge-maintenance-ios-evidence-'));
-    temporaryRoots.push(root);
-    const controllerHome = join(root, 'controller');
-    const repoRoot = join(root, 'repo');
-    mkdirSync(controllerHome, { recursive: true });
-    mkdirSync(repoRoot, { recursive: true });
-    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repoRoot });
-    execFileSync('git', ['config', 'user.email', 'test@example.test'], { cwd: repoRoot });
-    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: repoRoot });
-    writeFileSync(join(repoRoot, 'README.md'), '# fixture\n');
-    execFileSync('git', ['add', 'README.md'], { cwd: repoRoot });
-    execFileSync('git', ['commit', '-qm', 'initial'], { cwd: repoRoot });
-    const repository = { repoId: 'repo-ios-evidence-maintenance', canonicalRoot: repoRoot };
-    createCancelledWork({ controllerHome, repoId: repository.repoId }, {
-      workId: 'work-cancelled-ios-evidence',
-      repoId: repository.repoId,
-      objective: 'cancelled XCTest fixture',
-      acceptanceCriteria: ['cancelled evidence becomes releasable'],
-      allowedPaths: [],
-      forbiddenPaths: [],
-      checks: [],
-      constraints: {},
-      requestedBy: 'chatgpt',
-      phase: 'verification',
-    });
-    const relativeBundle = '.forge/ios/test-results/20261020T120000Z-1-1-CancelledTests.xcresult';
-    const bundle = join(repoRoot, relativeBundle);
-    mkdirSync(bundle, { recursive: true });
-    writeFileSync(join(bundle, 'Info.plist'), 'old cancelled evidence');
-    const old = new Date(Date.now() - 8 * 24 * 60 * 60_000);
-    utimesSync(bundle, old, old);
-    const owner = recordIosTestEvidenceOwner({
-      controllerHome,
-      repoId: repository.repoId,
-      repoRoot,
-      resultBundlePath: relativeBundle,
-      producerRequestId: 'JOB-cancelled-maintenance',
-      associatedWorkId: 'work-cancelled-ios-evidence',
-    });
-    expect(owner.recorded).toBe(true);
-
-    const applied = applyRuntimeMaintenance(repository, controllerHome, {
-      actionId: 'full_maintenance_pass',
-      confirmMaintenance: true,
-      minAgeMinutes: 1,
-      maxCandidates: 50,
-    });
-    expect(applied.iosTestEvidenceGc?.removedPaths).toContain(bundle);
-    expect(applied.iosTestEvidenceGc?.errors).toEqual([]);
-    expect(existsSync(bundle)).toBe(false);
-    expect(getOwnedResource(controllerHome, owner.resourceId!)?.status).toBe('released');
-    expect(applied.iosTestEvidenceInventory?.bundlesObserved).toBe(0);
-  });
-
-  it('preserves a dirty legacy remote_effect worktree and leaves placement authority unchanged', () => {
-    const { controllerHome, repository, workId, worktree, checkoutId } = legacyRemoteEffectWorktreeFixture(true);
-    const scanned = buildRuntimeMaintenanceStatus(repository, controllerHome, { minAgeMinutes: 1, maxCandidates: 50 });
-    expect(scanned.candidates).toContainEqual(expect.objectContaining({
-      kind: 'stale_work_contract', id: workId, safe: false, sourceState: 'source_state_unknown', disposition: 'source_preservation_required',
-    }));
-    const applied = applyRuntimeMaintenance(repository, controllerHome, {
-      actionId: 'full_maintenance_pass', confirmMaintenance: true, minAgeMinutes: 1, maxCandidates: 50,
-    });
-    expect(applied.applied).toContainEqual(expect.objectContaining({ kind: 'stale_work_contract', id: workId, applied: false, result: 'not_selected' }));
-    expect(existsSync(join(worktree, 'unexpected.txt'))).toBe(true);
-    expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)).toMatchObject({
-      semanticState: 'open', checkoutId, worktreeRef: worktree, worktreePolicy: { required: true },
-    });
-  });
-
-  it('does not bulk-cancel stale Work whose semantic lifecycle is still unresolved', () => {
-    const root = mkdtempSync(join(tmpdir(), 'forge-maintenance-stale-work-'));
-    temporaryRoots.push(root);
-    const controllerHome = join(root, 'controller');
-    const repoRoot = join(root, 'repo');
-    mkdirSync(controllerHome, { recursive: true });
-    mkdirSync(repoRoot, { recursive: true });
-    // Cache disposal requires verified Git identity; do not weaken that fence
-    // by exercising retention against an uninitialized directory.
-    execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repoRoot });
-    execFileSync('git', ['config', 'user.email', 'test@example.test'], { cwd: repoRoot });
-    execFileSync('git', ['config', 'user.name', 'Test'], { cwd: repoRoot });
-    writeFileSync(join(repoRoot, 'README.md'), '# runtime maintenance fixture\n');
-    execFileSync('git', ['add', 'README.md'], { cwd: repoRoot });
-    execFileSync('git', ['commit', '-qm', 'initial'], { cwd: repoRoot });
-    const repository = { repoId: 'repo-stale-work', canonicalRoot: repoRoot };
-    const oldAt = '2026-01-01T00:00:00.000Z';
-    const work = seedHistoricalWorkContract({ controllerHome, repoId: repository.repoId, now: () => oldAt }, {
-      workId: 'work-stale-ready',
-      repoId: repository.repoId,
-      objective: 'legacy ready work',
-      acceptanceCriteria: ['historical'],
-      allowedPaths: [],
-      forbiddenPaths: [],
-      checks: [],
-      constraints: {},
-      requestedBy: 'chatgpt',
-      phase: 'verification',
-    });
-    expect(work.semanticState).toBe('open');
-
-    const status = buildRuntimeMaintenanceStatus(repository, controllerHome, { minAgeMinutes: 1, maxCandidates: 50 });
-    expect(status.summary.staleWorkContracts).toBe(1);
-    expect(status.candidates).toContainEqual(expect.objectContaining({
-      kind: 'stale_work_contract',
-      id: 'work-stale-ready',
-      safe: false,
-      disposition: 'semantic_completion_required',
-    }));
-
-    const staleCache = join(repository.canonicalRoot, '.repo-harness', 'maintenance', 'DerivedData');
-    mkdirSync(join(staleCache, 'Build'), { recursive: true });
-    writeFileSync(join(staleCache, 'info.plist'), 'Xcode cache metadata');
-    writeFileSync(join(staleCache, 'Build', 'cache.bin'), 'rebuildable cache');
-    const old = new Date(Date.now() - 2 * 60_000);
-    utimesSync(join(staleCache, 'Build'), old, old);
-    utimesSync(staleCache, old, old);
-
-    const applied = applyRuntimeMaintenance(repository, controllerHome, {
-      actionId: 'full_maintenance_pass',
-      confirmMaintenance: true,
-      minAgeMinutes: 1,
-      maxCandidates: 50,
-    });
-    const cacheBuildSuffix = '.repo-harness/maintenance/DerivedData/Build';
-    const cacheRemoved = applied.generatedCacheGc?.removedPaths.some((path) => path.endsWith(cacheBuildSuffix));
-    expect(applied.generatedCacheGc?.errors).toEqual([]);
-    expect(existsSync(join(staleCache, 'info.plist'))).toBe(true);
-    if (cacheRemoved) {
-      expect(existsSync(join(staleCache, 'Build'))).toBe(false);
-    } else {
-      // Live xcodebuild without an exact derivedDataPath must retain this
-      // otherwise-rebuildable cache. An integration fixture cannot kill or
-      // ignore that independent host process to force a deletion.
-      expect(applied.generatedCacheGc?.skippedByReason.active_process).toBeGreaterThan(0);
-      expect(applied.generatedCacheGc?.retainedPaths.some((path) => path.endsWith(cacheBuildSuffix))).toBe(true);
-      expect(existsSync(join(staleCache, 'Build'))).toBe(true);
-    }
-    expect(applied.iosTestEvidenceGc).toMatchObject({
-      policyVersion: 'ios-test-evidence-retention-v1', errors: [],
-    });
-    expect(applied.iosTestEvidenceInventory).toMatchObject({
-      policyVersion: 'ios-test-evidence-inventory-v1', inspectionOnly: true, errors: [],
-    });
-    expect(applied.applied).toContainEqual(expect.objectContaining({
-      kind: 'stale_work_contract',
-      id: 'work-stale-ready',
-      applied: false,
-      result: 'not_selected',
-    }));
-    const retained = getWorkContract({ controllerHome, repoId: repository.repoId }, 'work-stale-ready');
-    expect(retained?.semanticState).toBe('open');
-    expect(retained?.phase).not.toBe('cleanup');
-    expect(retained?.phaseEvidence.delivery.state).toBe('pending');
-    expect(retained?.phaseEvidence.cleanup.state).toBe('pending');
-  });
-
   it('rotates explicit generated-cache maintenance past a saturated checkout scan', () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-maintenance-cache-rotation-'));
     temporaryRoots.push(root);
@@ -942,260 +646,6 @@ describe('runtime maintenance executor', () => {
     }
   });
 
-  it('protects a stale no-authority Work when a recent successful write left dirty managed-worktree source', () => {
-    const { controllerHome, repository, workId, worktree } = staleManagedWorkFixture('dirty');
-    const writtenPath = join(worktree, 'docs', 'architecture', 'global-hook-runtime.md');
-
-    const status = buildRuntimeMaintenanceStatus(repository, controllerHome, { minAgeMinutes: 1, maxCandidates: 50 });
-    expect(status.summary.staleWorkContracts).toBe(1);
-    expect(status.candidates).toContainEqual(expect.objectContaining({
-      kind: 'stale_work_contract',
-      id: workId,
-      path: worktree,
-      safe: false,
-      sourceState: 'dirty_worktree',
-      disposition: 'source_preservation_required',
-    }));
-    expect(status.candidates.find((candidate) => candidate.id === workId)?.reason).toContain('durable metadata/process evidence is not a substitute');
-
-    const applied = applyRuntimeMaintenance(repository, controllerHome, {
-      actionId: 'full_maintenance_pass',
-      confirmMaintenance: true,
-      minAgeMinutes: 1,
-      maxCandidates: 50,
-    });
-    expect(applied.applied).toContainEqual(expect.objectContaining({
-      kind: 'stale_work_contract',
-      id: workId,
-      applied: false,
-      result: 'not_selected',
-    }));
-    expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)?.semanticState).toBe('open');
-    expect(existsSync(worktree)).toBe(true);
-    expect(readFileSync(writtenPath, 'utf8')).toBe('# recent successful write\n');
-    expect(execFileSync('git', ['worktree', 'list', '--porcelain'], { cwd: repository.canonicalRoot, encoding: 'utf8' })).toContain(worktree);
-  });
-
-  it('protects clean stale managed-worktree commits that are not integrated into the bound delivery target branch', () => {
-    const { controllerHome, repository, workId, worktree } = staleManagedWorkFixture('committed');
-    execFileSync('git', ['branch', 'kernel-v2/integration', 'main'], { cwd: repository.canonicalRoot });
-    writeStaleManagedWorkHandle(controllerHome, repository, workId, worktree, 'kernel-v2/integration');
-    const status = buildRuntimeMaintenanceStatus(repository, controllerHome, { minAgeMinutes: 1, maxCandidates: 50 });
-    expect(status.candidates).toContainEqual(expect.objectContaining({
-      kind: 'stale_work_contract',
-      id: workId,
-      path: worktree,
-      safe: false,
-      sourceState: 'unintegrated_commits',
-      disposition: 'source_preservation_required',
-    }));
-
-    applyRuntimeMaintenance(repository, controllerHome, {
-      actionId: 'full_maintenance_pass',
-      confirmMaintenance: true,
-      minAgeMinutes: 1,
-      maxCandidates: 50,
-    });
-    expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)?.semanticState).toBe('open');
-    expect(existsSync(join(worktree, 'unique.txt'))).toBe(true);
-  });
-
-  it('uses the identity-matched WorkHandle delivery target for a retained managed worktree', () => {
-    const { controllerHome, repository, workId, worktree } = staleManagedWorkFixture('committed');
-    const expectedHead = writeStaleManagedWorkHandle(controllerHome, repository, workId, worktree, 'kernel-v2/architecture');
-    execFileSync('git', ['branch', 'kernel-v2/architecture', expectedHead], { cwd: repository.canonicalRoot });
-
-    const status = buildRuntimeMaintenanceStatus(repository, controllerHome, { minAgeMinutes: 1, maxCandidates: 50 });
-    expect(status.candidates).toContainEqual(expect.objectContaining({
-      kind: 'stale_work_contract',
-      id: workId,
-      path: worktree,
-      safe: false,
-      sourceState: 'clean_integrated',
-      disposition: 'semantic_completion_required',
-    }));
-    expect(status.candidates.find((candidate) => candidate.id === workId)?.reason).toContain('kernel-v2/architecture');
-  });
-
-  it('falls back to repository default branch for a retained legacy WorkHandle without a delivery target', () => {
-    const { controllerHome, repository, workId, worktree } = staleManagedWorkFixture('committed');
-    const expectedHead = writeStaleManagedWorkHandle(controllerHome, repository, workId, worktree);
-    execFileSync('git', ['branch', 'release/integration', expectedHead], { cwd: repository.canonicalRoot });
-
-    const status = buildRuntimeMaintenanceStatus(
-      { ...repository, defaultBranch: 'release/integration' },
-      controllerHome,
-      { minAgeMinutes: 1, maxCandidates: 50 },
-    );
-    expect(status.candidates).toContainEqual(expect.objectContaining({
-      kind: 'stale_work_contract',
-      id: workId,
-      path: worktree,
-      sourceState: 'clean_integrated',
-      disposition: 'semantic_completion_required',
-    }));
-  });
-
-  it('uses an identity-matched durable WorkHandle head to reconcile an already-removed managed worktree', () => {
-    const { controllerHome, repository, workId, worktree } = staleManagedWorkFixture('clean');
-    const expectedHead = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repository.canonicalRoot, encoding: 'utf8' }).trim();
-    seedHistoricalWorkHandle(controllerHome, {
-      schemaVersion: 1,
-      workId,
-      workContractId: workId,
-      sessionId: 'session-stale-removed',
-      principalId: 'principal-stale-removed',
-      repositoryId: repository.repoId,
-      checkoutId: 'checkout-clean',
-      worktreePath: worktree,
-      branch: 'work/clean',
-      managedWorktree: true,
-      baseCommit: expectedHead,
-      expectedHead,
-      permissionSnapshotVersion: 1,
-      state: 'prepared',
-      createdAt: '2026-01-01T00:00:00.000Z',
-      updatedAt: '2026-01-01T00:00:00.000Z',
-      finalization: {
-        validation: 'pending',
-        commit: 'pending',
-        merge: 'pending',
-        branchCleanup: 'pending',
-        worktreeCleanup: 'pending',
-      },
-    });
-    execFileSync('git', ['worktree', 'remove', '--force', worktree], { cwd: repository.canonicalRoot });
-
-    const status = buildRuntimeMaintenanceStatus(repository, controllerHome, { minAgeMinutes: 1, maxCandidates: 50 });
-    expect(status.candidates).toContainEqual(expect.objectContaining({
-      kind: 'stale_work_contract',
-      id: workId,
-      safe: false,
-      sourceState: 'clean_integrated',
-      disposition: 'semantic_completion_required',
-    }));
-  });
-
-  it('keeps a clean integrated stale Work nonterminal while semantic phases remain unresolved', () => {
-    const { controllerHome, repository, workId } = staleManagedWorkFixture('clean');
-    const status = buildRuntimeMaintenanceStatus(repository, controllerHome, { minAgeMinutes: 1, maxCandidates: 50 });
-    const candidate = status.candidates.find((entry) => entry.kind === 'stale_work_contract' && entry.id === workId);
-    expect(candidate).toMatchObject({
-      kind: 'stale_work_contract',
-      id: workId,
-      safe: false,
-      sourceState: 'clean_integrated',
-      disposition: 'semantic_completion_required',
-    });
-
-    const applied = applyRuntimeMaintenance(repository, controllerHome, {
-      actionId: 'full_maintenance_pass',
-      confirmMaintenance: true,
-      minAgeMinutes: 1,
-      maxCandidates: 50,
-    });
-    expect(applied.applied).toContainEqual(expect.objectContaining({
-      kind: 'stale_work_contract',
-      id: workId,
-      applied: false,
-      result: 'not_selected',
-    }));
-    const directlyFenced = applyStaleWorkContractMaintenanceCandidate(repository, controllerHome, candidate!);
-    expect(directlyFenced).toMatchObject({
-      applied: false,
-      safe: false,
-      result: 'work_semantic_completion_required',
-      disposition: 'semantic_completion_required',
-    });
-    expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)?.semanticState).toBe('open');
-  });
-
-  it('never mechanically terminalizes a cleanup-ready stale semantic Work with no source debt', () => {
-    const { controllerHome, repository, workId } = staleManagedWorkFixture('clean');
-    const store = { controllerHome, repoId: repository.repoId, now: () => '2026-01-01T00:00:00.000Z' };
-    advanceWorkToCleanup(store, workId);
-
-    const status = buildRuntimeMaintenanceStatus(repository, controllerHome, { minAgeMinutes: 1, maxCandidates: 50 });
-    const candidate = status.candidates.find((entry) => entry.kind === 'stale_work_contract' && entry.id === workId);
-    expect(candidate).toMatchObject({
-      kind: 'stale_work_contract',
-      id: workId,
-      safe: false,
-      sourceState: 'clean_integrated',
-      disposition: 'semantic_completion_required',
-    });
-
-    const applied = applyRuntimeMaintenance(repository, controllerHome, {
-      actionId: 'full_maintenance_pass',
-      confirmMaintenance: true,
-      minAgeMinutes: 1,
-      maxCandidates: 50,
-    });
-    expect(applied.applied).toContainEqual(expect.objectContaining({
-      kind: 'stale_work_contract',
-      id: workId,
-      applied: false,
-      result: 'not_selected',
-    }));
-    const direct = applyStaleWorkContractMaintenanceCandidate(repository, controllerHome, candidate!);
-    expect(direct).toMatchObject({
-      applied: false,
-      safe: false,
-      result: 'work_semantic_completion_required',
-      disposition: 'semantic_completion_required',
-    });
-    expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)).toMatchObject({
-      semanticState: 'open',
-    });
-  });
-
-  it('rechecks managed-worktree source at apply time before stale cancellation', () => {
-    const { controllerHome, repository, workId, worktree } = staleManagedWorkFixture('clean');
-    const scanned = buildRuntimeMaintenanceStatus(repository, controllerHome, { minAgeMinutes: 1, maxCandidates: 50 });
-    const candidate = scanned.candidates.find((entry) => entry.kind === 'stale_work_contract' && entry.id === workId);
-    expect(candidate).toMatchObject({ safe: false, sourceState: 'clean_integrated', disposition: 'semantic_completion_required' });
-
-    writeFileSync(join(worktree, 'late-write.txt'), 'written after maintenance scan\n');
-    const fenced = applyStaleWorkContractMaintenanceCandidate(repository, controllerHome, candidate!);
-    expect(fenced).toMatchObject({
-      applied: false,
-      safe: false,
-      result: 'work_source_preserved:dirty_worktree',
-      sourceState: 'dirty_worktree',
-      disposition: 'source_preservation_required',
-    });
-    expect(getWorkContract({ controllerHome, repoId: repository.repoId }, workId)?.semanticState).toBe('open');
-    expect(readFileSync(join(worktree, 'late-write.txt'), 'utf8')).toBe('written after maintenance scan\n');
-  });
-
-
-  it('does not classify an old Work as stale while an active Plan still owns it', () => {
-    const root = mkdtempSync(join(tmpdir(), 'forge-maintenance-plan-authority-'));
-    temporaryRoots.push(root);
-    const controllerHome = join(root, 'controller');
-    const repoRoot = join(root, 'repo');
-    mkdirSync(controllerHome, { recursive: true });
-    mkdirSync(repoRoot, { recursive: true });
-    const repository = { repoId: 'repo-plan-owned-work', canonicalRoot: repoRoot };
-    const oldAt = '2026-01-01T00:00:00.000Z';
-    seedHistoricalWorkContract({ controllerHome, repoId: repository.repoId, now: () => oldAt }, {
-      workId: 'work-plan-owned', repoId: repository.repoId, objective: 'authoritative old work',
-      planId: 'PLAN-owned', planStepId: 'step-a', planSourceRevision: 'revision-a',
-      acceptanceCriteria: ['finish plan'], allowedPaths: [], forbiddenPaths: [], checks: [],
-      constraints: {}, requestedBy: 'chatgpt', phase: 'verification',
-    });
-    createPlanContract({ controllerHome, repoId: repository.repoId, now: () => oldAt }, {
-      planId: 'PLAN-owned', repoId: repository.repoId, scopeKey: 'owned-scope', sourceRevision: 'revision-a', goal: 'Own the old work',
-      steps: [{ id: 'step-a', objective: 'Execute authoritative work', dependencies: [], authoritativeFiles: [], allowedPaths: [], forbiddenPaths: [], checks: ['package:check:type'], acceptanceCriteria: ['finish plan'] }],
-    });
-    const status = buildRuntimeMaintenanceStatus(repository, controllerHome, { minAgeMinutes: 1, maxCandidates: 50 });
-    expect(status.candidates).not.toContainEqual(expect.objectContaining({ kind: 'stale_work_contract', id: 'work-plan-owned' }));
-    const applied = applyRuntimeMaintenance(repository, controllerHome, { actionId: 'full_maintenance_pass', confirmMaintenance: true, minAgeMinutes: 1, maxCandidates: 50 });
-    expect(applied.applied).not.toContainEqual(expect.objectContaining({ kind: 'stale_work_contract', id: 'work-plan-owned' }));
-    expect(getWorkContract({ controllerHome, repoId: repository.repoId }, 'work-plan-owned')?.semanticState).toBe('open');
-  });
-
-
   it('keeps maintenance discovery read-only and reconciles committed Direct Edit metadata only during explicit maintenance', () => {
     const fx = editFixture();
     execFileSync('git', ['add', 'src/session.ts'], { cwd: fx.repoRoot });
@@ -1255,10 +705,10 @@ describe('runtime maintenance executor', () => {
   });
 
 
-  it('keeps missing Work ownership as an unsafe stale Edit Session candidate', () => {
+  it('treats historical Work ownership as provenance while EditSession source safety remains authoritative', () => {
     const fx = editFixture({ createWork: false });
     const status = buildRuntimeMaintenanceStatus(fx.repository, fx.controllerHome, { minAgeMinutes: 0, maxCandidates: 50 });
-    expect(status.candidates).toContainEqual(expect.objectContaining({ kind: 'stale_edit_session', id: fx.sessionId, safe: false }));
+    expect(status.candidates).toContainEqual(expect.objectContaining({ kind: 'stale_edit_session', id: fx.sessionId, safe: true }));
     const applied = applyRuntimeMaintenance(fx.repository, fx.controllerHome, {
       actionId: 'full_maintenance_pass', confirmMaintenance: true, minAgeMinutes: 0, maxCandidates: 50,
     });
@@ -1266,7 +716,7 @@ describe('runtime maintenance executor', () => {
     expect(getEditSession(fx.repoRoot, fx.sessionId).status).toBe('dirty');
   });
 
-  it('rolls back an empty stale open session owned by terminal Work without touching source', () => {
+  it('rolls back an empty stale open session regardless of historical Work provenance', () => {
     const fx = editFixture({ applyEdit: false });
     const applied = applyRuntimeMaintenance(fx.repository, fx.controllerHome, {
       actionId: 'full_maintenance_pass', confirmMaintenance: true, minAgeMinutes: 0, maxCandidates: 50,

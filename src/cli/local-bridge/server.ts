@@ -1343,12 +1343,10 @@ export async function startLocalBridgeServer(
         String(request.params.handoffId ?? ""),
         "user",
       );
-      const feedback = toConsoleOperationFeedback(result.actionResult);
       response.status(result.continued ? 200 : 409).json({
         ...result,
-        phase: feedback.phase,
-        statusLabel: feedback.statusLabel,
-        feedback,
+        phase: result.continued ? "succeeded" : "needs_attention",
+        statusLabel: result.continued ? "已完成" : "需要处理",
       });
     } catch (error) {
       response.status(400).json({ error: errorMessage(error) });
@@ -2265,9 +2263,9 @@ export async function startLocalBridgeServer(
     // providers, mutate Task state, or create Runs/Jobs from this route.
     response.status(410).json({
       error: "AGENT_RUN_RETIRED",
-      message: "Kernel-managed Agent Run retry is disabled. Create or claim a WorkContract and start an external SuperController through Thin Launcher.",
+      message: "Kernel-managed Agent Run retry is disabled. Start a new explicit Run/Process or use the Work-free local conversation / launcher capability with the canonical Issue, Requirement, Plan and repository context.",
       migration: {
-        path: ["WorkContract", "controller_claim", "Process Runtime", "external SuperController"],
+        path: ["Issue/Requirement/Plan", "Run/Process", "Work-free launcher or local conversation"],
       },
     });
   });

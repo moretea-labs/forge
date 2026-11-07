@@ -39,7 +39,6 @@ export interface ProcessHandleIndexEntry {
   target: ProcessExecutionTarget;
   /** Authenticated principal that owns the handle; opaque ids never authorize by themselves. */
   principalId?: string;
-  workId?: string;
   commandId?: string;
   recordedAt: string;
   updatedAt: string;
@@ -98,7 +97,6 @@ export function recordProcessHandleIndexEntry(
   if (!processId) return undefined;
   const now = input.now ?? new Date().toISOString();
   const principalId = boundedId(input.principalId);
-  const workId = boundedId(input.workId);
   const commandId = boundedId(input.commandId);
   try {
     const record = mutateControlPlaneRecord<ProcessHandleIndexEntry>(controllerHome, {
@@ -114,7 +112,6 @@ export function recordProcessHandleIndexEntry(
         target: input.target,
         ...(principalId ? { principalId } : {}),
         ...(current?.value.principalId && !principalId ? { principalId: current.value.principalId } : {}),
-        ...(workId ? { workId } : {}),
         ...(commandId ? { commandId } : {}),
         recordedAt: current?.value.recordedAt ?? now,
         updatedAt: now,

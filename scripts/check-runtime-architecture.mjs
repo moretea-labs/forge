@@ -695,7 +695,6 @@ const required = [
   'packages/kernel/work/api/index.ts',
   'packages/kernel/controller/domain/types.ts',
   'packages/kernel/controller/api/index.ts',
-  'src/runtime/control-plane/execution/work-evidence-policy.ts',
   'src/runtime/control-plane/execution/session-execution-support.ts',
   'src/runtime/control-plane/execution/session-repository-binding.ts',
   'src/runtime/evidence/process-check-execution.ts',
@@ -725,7 +724,7 @@ const required = [
   'src/runtime/projections/controller-context.ts',
   'src/runtime/projections/invalidation.ts',
   'src/runtime/workflow/schedules/engine.ts',
-  'src/runtime/workflow/schedules/work-continuation.ts',
+  'src/runtime/workflow/schedules/browser-observation.ts',
   'scripts/smoke-runtime-recovery.ts',
   'scripts/smoke-schedule-engine.ts',
   'src/runtime/root/runtime.ts',
@@ -868,9 +867,9 @@ forbid(
   'terminal Check evidence classification belongs to Process Runtime, not the Gateway transport',
 );
 
-// Thin Work authority: semantic state is open/completed/cancelled. Review and
-// verification may exist as evidence/capabilities, never as generic Work/Git
-// admission authority. The old delivery/finalizer modules are intentionally gone.
+// Historical Work records retain their stored open/completed/cancelled values for
+// audit/migration reads only. No current execution, review, verification, Git,
+ // cleanup, liveness, or semantic writer may consume those values as authority.
 requireText('packages/kernel/work/domain/types.ts', "export const SEMANTIC_WORK_STATES = ['open', 'completed', 'cancelled'] as const;");
 requireText('packages/kernel/work/domain/types.ts', 'export type SemanticWorkState = (typeof SEMANTIC_WORK_STATES)[number];');
 requireText('packages/kernel/work/api/index.ts', "export * from '../application/work-service'");
@@ -905,6 +904,7 @@ if (!/export const RH_WORK_MODEL_OPERATIONS\s*=\s*RH_WORK_OPERATIONS\s*;/.test(r
   failures.push('RH_WORK_MODEL_OPERATIONS must alias RH_WORK_OPERATIONS instead of defining a second model-facing registry');
 }
 for (const legacyModelVerb of [
+  'start', 'revise', 'complete',
   'continue', 'verify', 'review', 'finalize', 'stop', 'delegate',
   'controller_claim', 'controller_release', 'controller_disposition', 'controller_get_owner',
 ]) {
@@ -1037,22 +1037,26 @@ requireMissing('scripts/smoke-user-request-continuation-restart.ts');
 requireMissing('tests/runtime/computer-chatgpt-reasoning-control.test.ts');
 forbid('src/runtime/diagnostics/incident-repair.ts', /ensureAutomaticContinuation|createWorkContinuationSchedule|touchSchedulerWakeSignal/, 'recurring incident detection must not create or dispatch autonomous model continuation');
 forbid('src/runtime/control-plane/facade/handoff-inbox-application.ts', /triggerResolvedContinuation|rearmControllerRoundAfterProviderUserAction/, 'resolved handoff must not auto rearm or wake a model turn');
-forbid('src/runtime/workflow/schedules/work-continuation.ts', /rearmControllerRoundAfterProviderUserAction|touchSchedulerWakeSignal|ensureScheduledControllerBinding/, 'Schedule and historical Handoff reading must not rearm a Controller turn');
+requireMissing('src/runtime/workflow/schedules/work-continuation.ts');
+requireMissing('src/runtime/workflow/schedules/chatgpt-automation-migration.ts');
+requireMissing('scripts/migrate-chatgpt-automation-schedules.ts');
 requireMissing('tests/runtime/controller-progression-continuation.test.ts');
 requireMissing('adapters/controller-process/controller-host.ts');
 requireMissing('adapters/controller-process/binding-store.ts');
-requireText('docs/architecture/CURRENT.md', 'An existing nonterminal unbound task may acquire one explicit Work or Requirement binding');
-requireText('src/runtime/workflow/schedules/engine.ts', "const CONTROLLER_PROGRESSION_OPERATION = 'controller_progression';");
+requireText('docs/architecture/CURRENT.md', 'Historical Work records are read-only compatibility and never current task authority.');
+requireText('src/runtime/workflow/schedules/engine.ts', "const RETIRED_AUTONOMOUS_CONTINUATION_OPERATIONS = new Set(['external_controller_wake', 'controller_progression']);");
 requireText('packages/kernel/scheduler/application/eligibility.ts', 'return value >= min && value <= max && (value - min) % step === 0;');
-requireText('packages/kernel/scheduler/infrastructure/schedule-store.ts', "schedule.action.operation !== 'external_controller_wake' && schedule.action.operation !== 'controller_progression'");
+forbid('packages/kernel/scheduler/infrastructure/schedule-store.ts', /external_controller_wake|controller_progression|WORK_CONTINUATION_/, 'current Schedule policy must not special-case retired Work continuation operations');
 requireText('packages/kernel/scheduler/infrastructure/schedule-store.ts', 'const schedule: RepositorySchedule = { ...candidate, policy: boundedSchedulePolicy(candidate) };');
 requireText('packages/kernel/scheduler/infrastructure/schedule-store.ts', 'policy: boundedSchedulePolicy(candidate),');
-requireText('src/cli/local-bridge/console-automations.ts', "schedule.action.operation === 'external_controller_wake' || schedule.action.operation === 'controller_progression'");
+forbid('src/runtime/workflow/schedules/browser-observation.ts', /external_controller_wake|controller_progression|historicalWorkId|work_id/, 'current browser scheduling API must not expose retired Work continuation identity');
+forbid('src/cli/local-bridge/console-automations.ts', /external_controller_wake|controller_progression|historicalWorkId|work_id/, 'Console automation must use the Engine retirement classifier instead of re-declaring legacy Work schedule vocabulary');
 requireText('tests/runtime/rh-work-scheduler-adapter.test.ts', "cronDue('0 8 * * *', Date.parse('2026-10-17T00:00:00.000Z'), 'Asia/Shanghai')");
 requireText('tests/runtime/rh-work-scheduler-adapter.test.ts', "cronDue('0 8 * * *', Date.parse('2026-10-18T00:00:00.000Z'), 'Asia/Shanghai')");
-requireText('src/runtime/workflow/schedules/engine.ts', 'schedule.action.operation === CONTROLLER_PROGRESSION_OPERATION');
-requireText('src/runtime/workflow/schedules/work-continuation.ts', "const CONTROLLER_PROGRESSION_OPERATION = 'controller_progression';");
+requireText('src/runtime/workflow/schedules/engine.ts', "return 'RETIRED_AUTONOMOUS_CONTINUATION_SCHEDULE';");
+forbid('adapters/mcp/runtime-gateway/scheduler-adapter.ts', /historicalWorkId|SCHEDULE_AUTONOMOUS_CONTINUATION_RETIRED/, 'current Scheduler facade must not expose legacy continuation as a selectable mode');
 requireMissing('src/runtime/workflow/schedules/pending-activation.ts');
+requireMissing('tools/cleanup-works.ts');
 requireText('src/runtime/plugins/gmail-adapter.ts', 'actualEmail !== configuredEmail');
 requireText('src/runtime/plugins/gmail-adapter.ts', "export const GMAIL_AUTOMATION_CAPABILITY_ID = 'scheduled-gmail-automation';");
 requireText('src/runtime/plugins/gmail-adapter.ts', "actionId: 'authorize_scheduled_gmail_automation'");
@@ -1709,10 +1713,28 @@ requireMissing('src/runtime/control-plane/facade/repository-work-admission.ts');
 requireMissing('src/runtime/control-plane/execution/repository-work-attribution.ts');
 requireMissing('src/runtime/control-plane/launcher/launch-reservation-store.ts');
 requireMissing('src/runtime/control-plane/execution/work-remote-delivery.ts');
+requireMissing('src/runtime/control-plane/execution/work-process-evidence.ts');
+for (const retiredWorkBoundProviderPath of [
+  'adapters/chatgpt/provider-delivery.ts',
+  'adapters/chatgpt/browser-delivery-runtime.ts',
+  'adapters/chatgpt/browser-delivery-host.ts',
+  'adapters/chatgpt/wsl-bridge-delivery-host.ts',
+  'scripts/canary-chatgpt-provider-delivery.ts',
+]) requireMissing(retiredWorkBoundProviderPath);
 forbid(
   'src/runtime/control-plane/launcher/thin-launcher.ts',
   /\bworkId\b|getWorkContract|WorkContractStoreOptions|launchSuperController|ExternalControllerLaunchReservation/,
   'pure external launcher utilities must remain Work-free',
+);
+forbid(
+  'adapters/mcp/multi-repository.ts',
+  /workOwnedCheckoutResolution|claimed Work calls|Work-owned checkout|input\.work_id/,
+  'repository/checkout routing must never derive current placement from historical Work identity',
+);
+forbid(
+  'src/cli/local-bridge/server.ts',
+  /Create or claim a WorkContract|controller_claim|WorkContract.*external SuperController/,
+  'Local Bridge must never recommend retired Work lifecycle as the migration path',
 );
 requireText(
   'src/runtime/control-plane/execution/work-handle-history.ts',
@@ -1761,7 +1783,7 @@ for (const path of [
   'adapters/mcp/runtime-gateway/work-adapter.ts',
   'src/runtime/control-plane/global-scheduler/scheduler.ts',
   'src/runtime/workflow/schedules/engine.ts',
-  'src/runtime/workflow/schedules/work-continuation.ts',
+  'src/runtime/workflow/schedules/browser-observation.ts',
   'adapters/mcp/transports/http.ts',
 ]) {
   forbid(path, /\b(?:spawnSync|execSync|execFileSync)\s*\(/, 'the non-blocking Gateway/Controller hot-path rule');
@@ -1942,12 +1964,8 @@ requireText('adapters/mcp/runtime-gateway/work-semantic-operations.ts', "const R
 forbid('src/runtime/control-plane/facade/rh-work-operation-contract.ts', /'start'|'revise'|'complete'|'outcome_record'|'experience_record'/, 'retired Work lifecycle/write vocabulary must not remain in the accepted rh_work ABI');
 requireText('adapters/mcp/runtime-gateway/work-semantic-operations.ts', "if (operation === 'get_contract') {");
 requireText('adapters/mcp/runtime-gateway/work-adapter.ts', "operation === 'get_contract'");
-for (const path of [
-  'packages/kernel/work/domain/state-machine.ts',
-  'src/runtime/control-plane/execution/work-evidence-policy.ts',
-]) {
-  forbid(path, /READ_ONLY_REVIEW_CLEAN_SCOPE|cleanReadOnlyReviewEvidence|READ_ONLY_REVIEW_FINDINGS_BLOCK/, 'read-only review findings must not gate terminal completion');
-}
+forbid('packages/kernel/work/domain/state-machine.ts', /READ_ONLY_REVIEW_CLEAN_SCOPE|cleanReadOnlyReviewEvidence|READ_ONLY_REVIEW_FINDINGS_BLOCK/, 'historical Work state parsing must not retain review-completion gates');
+requireMissing('src/runtime/control-plane/execution/work-evidence-policy.ts');
 // Work is historical read-only compatibility data. Requirement/Plan/Run/Git
 // own current mutable state; no Work lifecycle writer may return.
 const retiredWorkBusinessWriter = /\b(?:writeWorkContractStore|createWorkSemanticContext|createWorkContract|acceptSubmittedWorkContract|supersedeWorkContract|reviseWorkSemanticContext|updateWorkContract|updateWorkContractPlacementAtomically|updateWorkContractPlacement|promoteWorkToRepositoryChange|recordWorkEvidenceState|activateWorkContract|failWorkContract|cancelWorkContract|recordCancelledWorkCleanupCompleted|recordWorkScopeEvidence|transitionWorkContractPhase|recordWorkImplementationReview|appendWorkEvidence|appendWorkHandoffRef|appendVerificationRecord|recordWorkCompletionReceipt)\b/;
@@ -2006,7 +2024,7 @@ for (const path of [
 forbid(
   'src/runtime/recovery/maintenance-executor.ts',
   /withControllerSessionTerminalizationFence|listControllerSessions|getControllerSession|controllerWorkIds|controller_session/,
-  'stale Work maintenance must re-check concrete Work/source/resource facts instead of using ControllerSession as lifecycle authority',
+  'Runtime maintenance must use concrete repository/resource/process facts instead of retired ControllerSession authority',
 );
 requireText('src/runtime/control-plane/facade/handoff-inbox-store.ts', 'migrateLegacyHandoffInbox');
 requireText('src/runtime/control-plane/facade/handoff-inbox-store.ts', 'HANDOFF_LEGACY_STORE_READ_ONLY');
@@ -2023,7 +2041,37 @@ forbid(
 for (const path of sourceFiles('src')) {
   forbid(path, /\bcancelWorkContract\s*\(/, 'runtime/maintenance code must never auto-cancel semantic Work; cancellation belongs to explicit semantic CAS');
 }
-requireText('src/runtime/recovery/maintenance-executor.ts', "result: 'work_semantic_completion_required'");
+forbid('src/runtime/recovery/maintenance-executor.ts', /stale_work_contract|work_semantic_completion_required|applyStaleWorkContractMaintenanceCandidate/, 'runtime maintenance must not revive retired Work lifecycle cleanup or semantic completion gates');
+forbid(
+  'src/runtime/recovery/maintenance-executor.ts',
+  /readWorkContractStore|semanticWorkState|readWorkHandle|resolveWorkDeliveryTargetBranch|retained_migrated_work|activeWorkAuthorityRefs/,
+  'Runtime maintenance must not use historical Work/WorkHandle state as cleanup owner, liveness gate, or reverse veto',
+);
+forbid(
+  'src/runtime/control-plane/runtime-cleanup.ts',
+  /readWorkContractStore|isTerminalSemanticWorkState|protectedWorkIds|ownerlessWorkAuthorityGraceMs|cleanupArtifactRetentionGraceMs/,
+  'Runtime cleanup must derive retention from each resource domain instead of historical Work liveness',
+);
+forbid(
+  'src/runtime/control-plane/generated-cache-retention.ts',
+  /releasableIosTestEvidenceWorkIds|releasableWorkIds|work_not_releasable|semanticWorkState/,
+  'generated evidence retention must use exact OwnedResource and bounded retention policy, not Work semantic state',
+);
+forbid(
+  'src/runtime/control-plane/global-scheduler/maintenance.ts',
+  /readWorkContractStore|releasableIosTestEvidenceWorkIds/,
+  'periodic maintenance must not query historical Work state to authorize evidence retention',
+);
+forbid(
+  'src/cli/editing/edit-session.ts',
+  /protectedWorkIds|skippedByReason\.active_work/,
+  'EditSession retention must be owned by EditSession state/retention rather than Work liveness',
+);
+forbid(
+  'src/runtime/control-plane/execution/work-lifecycle-audit.ts',
+  /packages\/kernel\/work|work-handle-store|readActiveWorkCandidates|getWorkContract|listWorkHandles|isTerminalSemanticWorkState|work_active|active_work_handle_missing|terminal_work_cleanup_unsettled/,
+  'Runtime readiness must be derived from Repository Registry and Git facts; historical Work/WorkHandle cannot create current attention',
+);
 forbid(
   'packages/kernel/scheduler/infrastructure/schedule-store.ts',
   /repeated_infrastructure_failure|activeScheduleFailureHandoff|stableScheduleFailureHandoffId|resolveRecoveredScheduleFailureHandoffs/,

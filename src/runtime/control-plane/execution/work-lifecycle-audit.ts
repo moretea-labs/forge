@@ -2,13 +2,6 @@ import { spawnSync } from 'child_process';
 import { existsSync, realpathSync } from 'fs';
 import { resolve } from 'path';
 import type { RepositoryRecord } from '../../../cli/repositories/types';
-import {
-  getWorkContract,
-  readActiveWorkCandidates,
-  type WorkContract,
-} from '../../../../packages/kernel/work/api/index';
-import { isTerminalSemanticWorkState } from '../facade/types';
-import { listWorkHandles } from './work-handle-store';
 
 export interface WorkLifecycleAttention {
   jobId: string;
@@ -17,23 +10,16 @@ export interface WorkLifecycleAttention {
 }
 
 const CURRENT_READINESS_LIFECYCLE_STATUSES = new Set([
-  'work_contract_invalid',
   'active_checkout_missing',
-  'cleaned_worktree_still_present',
   'dirty_linked_worktree_unregistered',
   'linked_worktree_unregistered',
 ]);
 
 /**
- * Full lifecycle attention is durable audit evidence. Runtime readiness is narrower:
- * only source-integrity contradictions that can affect the canonical checkout or
- * release identity may block current execution. Active semantic Work and missing or
- * retained isolated Work resources and orphaned historical branches remain visible in
- * the audit and maintenance projections, but are not shared Runtime execution blockers.
- * Legacy Work finalization stages are historical maintenance evidence after the Thin
- * cutover; only independently observable contradictions that affect an active checkout
- * or canonical source identity may block shared readiness.
- * Isolated concurrent Work must not make an unrelated clean main release appear unhealthy.
+ * Runtime readiness consumes only repository/checkout/Git contradictions.
+ * Historical Work and WorkHandle records are never consulted and cannot block
+ * current execution. Unregistered dirty/unique linked worktrees remain physical
+ * source-integrity blockers; unintegrated branch debt is advisory only.
  */
 export function workLifecycleAttentionBlocksReadiness(
   finding: Pick<WorkLifecycleAttention, 'status'>,
@@ -164,78 +150,15 @@ function attention(code: string, identity: string, message: string): WorkLifecyc
   return { jobId: `lifecycle:${code}:${identity}`, status: code, message };
 }
 
-interface LifecycleWorkSnapshot {
-  contracts: WorkContract[];
-  invalid: Array<{ workId: string; error: string }>;
-}
-
 /**
- * Lifecycle attention is a projection consumer, not a historical Work scanner.
- * Active authority comes from the row-isolated Kernel candidate projection.
- * Terminal diagnostics are bounded to Work that still has a WorkHandle because
- * that handle owns the physical delivery/cleanup state inspected below. Orphaned
- * terminal Work is reconstructed by terminal-cleanup reconciliation before it
- * becomes projection-owned cleanup state.
- */
-function readLifecycleWorkSnapshot(
-  controllerHome: string,
-  repoId: string,
-  handles: ReturnType<typeof listWorkHandles>,
-): LifecycleWorkSnapshot {
-  const store = { controllerHome, repoId };
-  const active = readActiveWorkCandidates({ ...store, limit: 100 });
-  const contractsById = new Map(active.contracts.map((contract) => [contract.workId, contract]));
-  const invalidById = new Map(active.invalid.map((entry) => [entry.workId, { workId: entry.workId, error: entry.error }]));
-
-  const handledWorkIds = [...new Set(
-    [...handles]
-      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
-      .map((handle) => handle.workContractId ?? handle.workId),
-  )];
-
-  for (const workId of handledWorkIds) {
-    if (contractsById.size >= 100) break;
-    if (contractsById.has(workId) || invalidById.has(workId)) continue;
-    try {
-      const contract = getWorkContract(store, workId);
-      if (contract) contractsById.set(workId, contract);
-    } catch (error) {
-      invalidById.set(workId, {
-        workId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  }
-
-  return {
-    contracts: [...contractsById.values()]
-      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
-      .slice(0, 100),
-    invalid: [...invalidById.values()]
-      .sort((left, right) => left.workId.localeCompare(right.workId))
-      .slice(0, 100),
-  };
-}
-
-/**
- * Read-only reconciliation across canonical Work, WorkHandle, registry, and Git.
- * It reports contradictions and live Work through the existing Runtime projection;
- * it never changes lifecycle state or owns cleanup.
+ * Compatibility-named read-only repository lifecycle audit.
+ * It reports only Registry/Git contradictions through the existing Runtime projection.
  */
 export function collectWorkLifecycleAttention(
-  controllerHome: string,
+  _controllerHome: string,
   repository: RepositoryRecord,
 ): WorkLifecycleAttention[] {
-  const handles = listWorkHandles(controllerHome, repository.repoId, 5_000);
-  const workSnapshot = readLifecycleWorkSnapshot(controllerHome, repository.repoId, handles);
-  const contracts = workSnapshot.contracts;
-  const contractsByWork = new Map(contracts.map((contract) => [contract.workId, contract]));
-  const handlesByWork = new Map(handles.map((handle) => [handle.workContractId ?? handle.workId, handle]));
-  const findings: WorkLifecycleAttention[] = workSnapshot.invalid.map((entry) => attention(
-    'work_contract_invalid',
-    entry.workId,
-    `Work ${entry.workId} is unreadable by Kernel semantics and is excluded from valid lifecycle authority: ${entry.error.slice(0, 180)}`,
-  ));
+  const findings: WorkLifecycleAttention[] = [];
   const canonicalBranch = git(repository.canonicalRoot, ['branch', '--show-current'])?.trim();
   const targetBranch = canonicalBranch || repository.defaultBranch || 'main';
   const targetReachability = new Map<string, ReadonlySet<string> | undefined>();
@@ -245,124 +168,26 @@ export function collectWorkLifecycleAttention(
     }
     return targetReachability.get(branch);
   };
-
-  for (const contract of contracts) {
-    const handle = handlesByWork.get(contract.workId);
-    const terminal = isTerminalSemanticWorkState(contract.semanticState);
-    if (!terminal) {
-      // Repository lifecycle attention is release-facing. A source-neutral Work
-      // (for example local UI automation) may legitimately remain active while
-      // an unrelated clean source candidate is released. Only source-mutating
-      // repository Work should make its mere liveness a release blocker; real
-      // structural contradictions below remain attention regardless of kind.
-      if (contract.workKind === 'repository_change') {
-        findings.push(attention(
-          'work_active',
-          contract.workId,
-          `Work ${contract.workId} is ${contract.semanticState} in ${contract.phase}; continue, block with a handoff, or finalize it explicitly.`,
-        ));
-      }
-      if (contract.workKind === 'repository_change' && !handle) {
-        findings.push(attention(
-          'active_work_handle_missing',
-          contract.workId,
-          `Repository Work ${contract.workId} is active but has no readable WorkHandle.`,
-        ));
-      }
-      if (handle?.managedWorktree && !existsSync(handle.worktreePath)) {
-        findings.push(attention(
-          'active_worktree_missing',
-          contract.workId,
-          `Active Work ${contract.workId} owns missing managed worktree ${handle.worktreePath}.`,
-        ));
-      }
-      continue;
-    }
-
-    if (contract.semanticState === 'completed' && !contract.completionReceipt) {
-      findings.push(attention(
-        'completed_work_receipt_missing',
-        contract.workId,
-        `Completed Work ${contract.workId} has no Completion Receipt.`,
-      ));
-    }
-    if (contract.semanticState === 'completed' && contract.completionReceipt?.source === 'controller_work') {
-      const receiptTargetRevision = contract.completionReceipt.targetRevision?.trim();
-      const receiptTargetBranch = contract.completionReceipt.targetBranch?.trim() || targetBranch;
-      if (!receiptTargetRevision || exactCommitReachableFromTarget(
-        repository.canonicalRoot,
-        receiptTargetRevision,
-        receiptTargetBranch,
-        reachableFrom(receiptTargetBranch),
-      ) !== true) {
-        findings.push(attention(
-          'completion_receipt_target_not_integrated',
-          contract.workId,
-          `Work ${contract.workId} receipt target ${receiptTargetRevision || 'missing'} is not reachable from ${receiptTargetBranch}.`,
-        ));
-      }
-    }
-    if (!handle || handle.terminalResourceDisposition?.mode === 'retained_by_request') continue;
-    const cleanupFailed = handle.finalization.branchCleanup === 'failed'
-      || handle.finalization.worktreeCleanup === 'failed';
-    const cleanupPending = handle.finalization.branchCleanup === 'pending'
-      || handle.finalization.worktreeCleanup === 'pending';
-    const repositoryOwnedCanonicalCheckout = !handle.managedWorktree
-      && canonicalPath(handle.worktreePath) === canonicalPath(repository.canonicalRoot)
-      && handle.branch === targetBranch;
-    const cleanupUnsettled = cleanupFailed || (cleanupPending && !repositoryOwnedCanonicalCheckout);
-    if (cleanupUnsettled) {
-      findings.push(attention(
-        'terminal_work_cleanup_unsettled',
-        contract.workId,
-        `Terminal Work ${contract.workId} still has unsettled branch/worktree cleanup stages.`,
-      ));
-    }
-    if (handle.state === 'cleaned' && handle.managedWorktree && existsSync(handle.worktreePath)) {
-      findings.push(attention(
-        'cleaned_worktree_still_present',
-        contract.workId,
-        `WorkHandle ${contract.workId} is cleaned but managed worktree ${handle.worktreePath} still exists.`,
-      ));
-    }
-  }
-
-  const activeBranches = new Set(
-    handles
-      .filter((handle) => {
-        const contract = contractsByWork.get(handle.workContractId ?? handle.workId);
-        return contract ? !isTerminalSemanticWorkState(contract.semanticState) : false;
-      })
-      .map((handle) => handle.branch),
-  );
-  const retainedBranches = new Set(
-    handles
-      .filter((handle) => handle.terminalResourceDisposition?.retainBranch === true)
-      .map((handle) => handle.branch),
-  );
   const activeRegistryRoots = new Set(
     repository.checkouts
       .filter((checkout) => (checkout.lifecycle ?? 'active') === 'active')
       .map((checkout) => canonicalPath(checkout.canonicalRoot)),
   );
-  const handleRoots = new Map(handles.map((handle) => [canonicalPath(handle.worktreePath), handle]));
 
   for (const checkout of repository.checkouts) {
     if ((checkout.lifecycle ?? 'active') === 'active' && !existsSync(checkout.canonicalRoot)) {
       findings.push(attention(
         'active_checkout_missing',
         checkout.checkoutId,
-        `Registry checkout ${checkout.checkoutId} is active but ${checkout.canonicalRoot} is missing.`,
+        'Registry checkout ' + checkout.checkoutId + ' is active but ' + checkout.canonicalRoot + ' is missing.',
       ));
     }
   }
 
-  const linked = linkedWorktrees(repository.canonicalRoot);
-  for (const worktree of linked) {
+  for (const worktree of linkedWorktrees(repository.canonicalRoot)) {
     const root = canonicalPath(worktree.path);
     if (activeRegistryRoots.has(root)) continue;
     const isDirty = dirty(root);
-    const handle = handleRoots.get(root);
     if (isDirty === false) {
       const integrated = worktree.branch
         ? branchIntegrated(repository.canonicalRoot, worktree.branch, targetBranch, reachableFrom(targetBranch), worktree.head)
@@ -372,10 +197,13 @@ export function collectWorkLifecycleAttention(
       if (integrated === true) continue;
     }
     const code = isDirty === true ? 'dirty_linked_worktree_unregistered' : 'linked_worktree_unregistered';
+    const identity = worktree.branch ?? root;
+    const branchText = worktree.branch ? ' on ' + worktree.branch : '';
+    const dirtyText = isDirty === true ? ' and has uncommitted changes' : '';
     findings.push(attention(
       code,
-      handle?.workId ?? worktree.branch ?? root,
-      `Git worktree ${root}${worktree.branch ? ` on ${worktree.branch}` : ''} is linked but absent from the active checkout registry${isDirty === true ? ' and has uncommitted changes' : ''}.`,
+      identity,
+      'Git worktree ' + root + branchText + ' is linked but absent from the active checkout registry' + dirtyText + '.',
     ));
   }
 
@@ -388,12 +216,11 @@ export function collectWorkLifecycleAttention(
     .filter((entry) => Boolean(entry.branch)) ?? [];
   const targetReachableCommits = reachableFrom(targetBranch);
   for (const { branch, head } of branches) {
-    if (activeBranches.has(branch) || retainedBranches.has(branch)) continue;
     if (branchIntegrated(repository.canonicalRoot, branch, targetBranch, targetReachableCommits, head) !== false) continue;
     findings.push(attention(
-      'work_branch_not_integrated',
+      'branch_not_integrated',
       branch,
-      `Work branch ${branch} is not reachable from ${targetBranch} and is not owned by an active or explicitly retained Work.`,
+      'Git branch ' + branch + ' has unique patches not integrated into ' + targetBranch + '.',
     ));
   }
 
