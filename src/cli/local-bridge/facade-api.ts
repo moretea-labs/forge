@@ -32,17 +32,13 @@ import {
   classifyUserFacingError,
   dismissHandoffItem,
   getHandoffItem,
-  getWorkContract,
   listHandoffItems,
-  listWorkContracts,
   normalizeCheckIds,
   runSelfHealingLoop,
   summarizeHandoffItem,
-  summarizeWorkContract,
   type FacadeResult,
   type HandoffItem,
   type SuggestedNextAction,
-  type WorkContract,
 } from '../../runtime/control-plane/facade';
 import { resolveHandoffItem } from '../../runtime/control-plane/facade/handoff-inbox-store';
 import { buildRuntimeMaintenanceStatus } from '../../runtime/recovery';
@@ -84,7 +80,6 @@ import type {
   SuggestedActionViewModel,
   SystemReadinessViewModel,
   VerificationViewModel,
-  WorkSummaryViewModel,
 } from './console-view-models';
 import { listActiveOccurrences, listSchedules } from '../../../packages/kernel/scheduler/api/index';
 
@@ -121,16 +116,6 @@ function mapSuggested(actions: SuggestedNextAction[] = []): SuggestedActionViewM
       primary: index === 0,
     };
   });
-}
-
-function workStatusLabel(work: WorkContract): { label: string; tone: PlainStatusTone; phase: UserFacingPhase } {
-  if (work.semanticState === 'completed') return { label: '已完成', tone: 'green', phase: 'succeeded' };
-  if (work.semanticState === 'cancelled') return { label: '已停止', tone: 'gray', phase: 'cancelled' };
-  if (work.evidenceState === 'failed' || work.phaseEvidence[work.phase].state === 'failed') return { label: '执行失败', tone: 'red', phase: 'failed' };
-  if (work.dispatchState === 'blocked' || work.phaseEvidence[work.phase].state === 'blocked') return { label: '已阻塞', tone: 'red', phase: 'blocked' };
-  if (work.phase === 'review' && work.phaseEvidence.review.state === 'active') return { label: '需要你审阅', tone: 'amber', phase: 'needs_attention' };
-  if (['claimed', 'launching', 'running'].includes(work.dispatchState)) return { label: '进行中', tone: 'blue', phase: 'running' };
-  return { label: '待继续', tone: 'gray', phase: 'queued' };
 }
 
 const ERROR_COPY: Record<UserFacingErrorClass, { title: string; explanation: string; nextActions: string[] }> = {
@@ -237,149 +222,6 @@ export function summarizeChangedFiles(paths: readonly string[]): ChangedFilesSum
     deleted,
     files,
     summaryLabel: parts.join(' · '),
-  };
-}
-
-function extractChangedPathsFromWork(
-  work: WorkContract,
-  opts: { controllerHome: string; repoId: string } | null = null,
-): string[] {
-  const paths: string[] = [];
-  for (const evidence of work.evidenceRefs ?? []) {
-    const blob = `${evidence.title ?? ''} ${evidence.summary ?? ''}`;
-    for (const match of blob.matchAll(/(?:^|[\s`])([A-Za-z0-9_./-]+\.[A-Za-z0-9]+)(?:$|[\s`,])/g)) {
-      if (match[1] && !match[1].startsWith('http')) paths.push(match[1]);
-    }
-  }
-  if (opts) {
-    for (const handoffId of work.handoffRefs ?? []) {
-      try {
-        const item = getHandoffItem({ controllerHome: opts.controllerHome, repoId: opts.repoId }, handoffId);
-        for (const path of item?.currentState?.changedFiles ?? []) {
-          if (path) paths.push(path);
-        }
-      } catch {
-        // ignore missing handoffs
-      }
-    }
-  }
-  return paths;
-}
-
-function progressSteps(work: WorkContract): WorkSummaryViewModel['progressSteps'] {
-  const checks = work.checkRefs ?? [];
-  const hasPass = checks.some((entry) => entry.outcome === 'valid_pass');
-  const hasFail = checks.some((entry) => entry.outcome === 'valid_fail');
-  const hasDelegate = Boolean(work.workerRef);
-  const review = work.phase === 'review' && work.phaseEvidence.review.state === 'active';
-  const done = work.semanticState === 'completed';
-  const failed = work.evidenceState === 'failed' || work.phaseEvidence[work.phase].state === 'failed';
-  const cancelled = work.semanticState === 'cancelled';
-  const executing = ['claimed', 'launching', 'running'].includes(work.dispatchState);
-  return [
-    { label: '已开始', done: true, active: executing && !hasDelegate && !hasPass },
-    { label: '已委派助手', done: hasDelegate, active: hasDelegate && !hasPass && !review },
-    { label: '已提出修改', done: hasDelegate || hasPass || hasFail, active: false },
-    { label: '已验证', done: hasPass || hasFail, active: hasFail && !review },
-    { label: '等待审阅', done: review || done, active: review },
-    { label: done ? '已完成' : failed ? '执行失败' : cancelled ? '已停止' : '收尾', done: done || cancelled, active: false },
-  ];
-}
-
-function latestVerification(work: WorkContract): VerificationViewModel | undefined {
-  const record = work.checkRefs[0];
-  if (!record) return undefined;
-  const isAcceptanceFailure = record.outcome === 'valid_fail';
-  const isInfrastructureIssue = record.outcome === 'infrastructure_failure' || record.outcome === 'invalid_check_id';
-  const tone: PlainStatusTone = record.outcome === 'valid_pass' ? 'green'
-    : isAcceptanceFailure ? 'red'
-      : isInfrastructureIssue ? 'amber'
-        : 'gray';
-  const label = record.outcome === 'valid_pass' ? '检查通过'
-    : record.outcome === 'valid_fail' ? '检查未通过'
-      : record.outcome === 'infrastructure_failure' ? '环境问题'
-        : record.outcome === 'invalid_check_id' ? '检查项无效'
-          : record.outcome === 'superseded' ? '已被后续结果覆盖'
-            : '已跳过';
-  return {
-    label,
-    tone,
-    outcome: record.outcome,
-    checkLabel: record.checkId,
-    isAcceptanceFailure,
-    isInfrastructureIssue,
-    summary: record.summary,
-  };
-}
-
-export function mapWorkSummary(
-  work: WorkContract,
-  opts: { controllerHome?: string; repoId?: string } = {},
-): WorkSummaryViewModel {
-  const status = workStatusLabel(work);
-  const verification = latestVerification(work);
-  const suggested = mapSuggested(work.suggestedNextActions);
-  const nextAction = suggested[0]?.label
-    ?? (work.semanticState === 'completed' ? '任务已完成'
-      : work.semanticState === 'cancelled' ? '任务已停止'
-        : status.phase === 'needs_attention' ? '请审阅后继续或收尾'
-          : status.phase === 'running' ? '继续或运行检查'
-            : status.phase === 'failed' ? '查看失败原因并决定是否重试'
-              : '查看任务状态');
-  const storeOpts = opts.controllerHome && opts.repoId
-    ? { controllerHome: opts.controllerHome, repoId: opts.repoId }
-    : null;
-  const changedFiles = summarizeChangedFiles(extractChangedPathsFromWork(work, storeOpts));
-  let error: ConsoleErrorViewModel | undefined;
-  if (status.phase === 'failed') {
-    error = describeConsoleError(
-      verification?.isInfrastructureIssue ? 'infrastructure_failure' : 'acceptance_failure',
-      verification?.summary,
-    );
-  } else if (status.phase === 'blocked' || status.phase === 'needs_attention') {
-    error = describeConsoleError(
-      'handoff_required',
-      work.suggestedNextActions[0]?.reason,
-    );
-  }
-  const latestSummary = verification?.summary
-    || work.evidenceRefs[0]?.summary
-    || work.evidenceRefs[0]?.title
-    || (status.phase === 'running' ? '任务执行中…' : status.label);
-  return {
-    id: work.workId,
-    repoId: work.repoId,
-    updatedAt: work.updatedAt,
-    title: work.objective.slice(0, 160) || '未命名任务',
-    objective: work.objective,
-    accessMode: work.constraints.accessMode ?? 'full_access',
-    accessModeLabel: accessModeDescriptor(work.constraints.accessMode ?? 'full_access').shortLabel,
-    statusLabel: status.label,
-    tone: status.tone,
-    phase: status.phase,
-    phaseLabel: statusLabelForPhase(status.phase),
-    nextAction,
-    latestAction: suggested[0]?.label || nextAction,
-    latestSummary,
-    progressSteps: progressSteps(work),
-    latestVerification: verification,
-    acceptanceCriteria: work.acceptanceCriteria.slice(0, 8),
-    evidenceLabels: work.evidenceRefs.slice(0, 6).map((entry) => entry.title || entry.summary || '证据'),
-    changedFiles,
-    error,
-    delegateSummary: work.workerRef
-      ? `已委派小助手（${work.workerRef.split(':')[0] ?? 'worker'}），等待 ChatGPT 审阅后才能收尾。`
-      : undefined,
-    suggestedActions: suggested,
-    primaryActionLabel: suggested[0]?.label,
-    advanced: {
-      workId: work.workId,
-      state: work.semanticState,
-      dispatchState: work.dispatchState,
-      evidenceState: work.evidenceState,
-      checkIds: work.checks,
-      handoffRefs: work.handoffRefs,
-    },
   };
 }
 
@@ -1077,18 +919,6 @@ export function dismissConsoleHandoff(ctx: ConsoleFacadeContext, handoffId: stri
   return mapHandoffCard(dismissHandoffItem(store(ctx), handoffId, { decision, resolver }));
 }
 
-export function getConsoleWork(ctx: ConsoleFacadeContext, workId: string): WorkSummaryViewModel | undefined {
-  const work = getWorkContract(store(ctx), workId);
-  return work
-    ? mapWorkSummary(work, { controllerHome: ctx.controllerHome, repoId: ctx.repository.repoId })
-    : undefined;
-}
-
-export function listConsoleWork(ctx: ConsoleFacadeContext, state: 'active' | 'all' = 'active'): WorkSummaryViewModel[] {
-  return listWorkContracts({ ...store(ctx), state, limit: 50 }).map((work) =>
-    mapWorkSummary(work, { controllerHome: ctx.controllerHome, repoId: ctx.repository.repoId }));
-}
-
 /** Normalize facade/tool results into GUI-friendly operation feedback. */
 export function toConsoleOperationFeedback(result: FacadeResult): {
   phase: string;
@@ -1133,34 +963,6 @@ export function toConsoleOperationFeedback(result: FacadeResult): {
     suggestedNextActions: mapSuggested(result.suggestedNextActions),
     changedFiles: changed,
   };
-}
-
-export function buildConsoleContext(ctx: ConsoleFacadeContext, workId?: string) {
-  const checks = listControllerChecks(ctx.repository.canonicalRoot);
-  const work = workId ? getWorkContract(store(ctx), workId) : undefined;
-  return buildFacadeResult({
-    summary: work ? `任务上下文：${work.objective.slice(0, 120)}` : '仓库上下文已就绪',
-    data: {
-      repositoryName: ctx.repository.displayName,
-      checks: checks.map((check) => ({ id: check.id, description: check.description })),
-      work: work ? summarizeWorkContract(work) : undefined,
-      handoffs: listHandoffItems({ ...store(ctx), status: 'pending', limit: 10 }).map(summarizeHandoffItem),
-    },
-    suggestedNextActions: work
-      ? mapSuggested(work.suggestedNextActions).map((action) => ({
-          label: action.label,
-          tool: (action.tool as 'rh_work') || 'rh_work',
-          operation: action.operation || 'continue',
-          payload: action.payload,
-          risk: 'readonly' as const,
-        }))
-      : [{
-          label: '开始一个任务',
-          tool: 'rh_work' as const,
-          operation: 'start',
-          risk: 'readonly' as const,
-        }],
-  });
 }
 
 export function normalizeRequestedChecks(ctx: ConsoleFacadeContext, requested: string[]) {
