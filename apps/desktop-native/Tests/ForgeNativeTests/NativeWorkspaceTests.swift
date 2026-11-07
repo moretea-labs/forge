@@ -159,14 +159,23 @@ final class NativeWorkspaceTests: XCTestCase {
     func testCompletedActivityEventsDecodeFromRuntimeResponseShape() {
         let events = NativeWorkspace.decodeActivityEvents([[
             "phase":"tool",
-            "label":"正在使用 forge.rh_status",
+            "label":"正在执行命令",
+            "detail":"git status --short",
             "status":"completed",
             "startedAt":"2026-11-07T00:00:00.000Z",
             "completedAt":"2026-11-07T00:00:01.000Z",
         ]])
         XCTAssertEqual(events?.count,1)
         XCTAssertEqual(events?.first?.phase,"tool")
+        XCTAssertEqual(events?.first?.detail,"git status --short")
         XCTAssertEqual(events?.first?.status,"completed")
+        let legacy = NativeWorkspace.decodeActivityEvents([[
+            "phase":"tool",
+            "label":"正在使用 forge · rh_status",
+            "status":"completed",
+            "startedAt":"2026-11-07T00:00:00.000Z",
+        ]])
+        XCTAssertNil(legacy?.first?.detail)
         XCTAssertNil(NativeWorkspace.decodeActivityEvents([]))
     }
 

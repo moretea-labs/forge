@@ -14,6 +14,7 @@ const LOCAL_CONVERSATION_TIMEOUT_MS = 5 * 60_000;
 const LOCAL_CONVERSATION_MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
 const LOCAL_CONVERSATION_MAX_PROMPT_CHARS = 20_000;
 const LOCAL_CONVERSATION_ACTIVITY_EVENT_LIMIT = 30;
+const LOCAL_CONVERSATION_ACTIVITY_DETAIL_CHARS = 240;
 const LOCAL_CONVERSATION_MAX_IMAGES = 4;
 const LOCAL_CONVERSATION_MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 const LOCAL_CONVERSATION_IMAGE_ROOT = 'forge-local-conversation-images';
@@ -26,6 +27,7 @@ export type LocalConversationActivityEventStatus = 'active' | 'completed';
 export interface LocalConversationActivityEvent {
   phase: LocalConversationActivityPhase;
   label: string;
+  detail?: string;
   status: LocalConversationActivityEventStatus;
   startedAt: string;
   completedAt?: string;
@@ -185,17 +187,24 @@ export function parseCodexConversationJsonl(stdout: string): ParsedCodexConversa
   return { providerSessionId, output, toolActivityCount };
 }
 
+function activityField(item: Record<string, unknown>, ...keys: string[]): string {
+  for (const key of keys) {
+    const value = item[key];
+    if (typeof value === 'string' && value.trim()) return value.trim().slice(0, 160);
+  }
+  return '';
+}
+
+function boundedActivityDetail(value: string): string | undefined {
+  const detail = redactProcessOutput(value).replace(/\s+/g, ' ').trim()
+    .slice(0, LOCAL_CONVERSATION_ACTIVITY_DETAIL_CHARS);
+  return detail || undefined;
+}
+
 function activityLabel(itemType: string, item: Record<string, unknown>): string {
-  const field = (...keys: string[]): string => {
-    for (const key of keys) {
-      const value = item[key];
-      if (typeof value === 'string' && value.trim()) return value.trim().slice(0, 80);
-    }
-    return '';
-  };
   if (itemType === 'mcp_tool_call') {
-    const tool = field('tool', 'tool_name', 'name');
-    const server = field('server', 'server_name');
+    const tool = activityField(item, 'tool', 'tool_name', 'name');
+    const server = activityField(item, 'server', 'server_name');
     const display = tool
       ? (server && !tool.startsWith(`${server}.`) ? `${server} · ${tool}` : tool)
       : server;
@@ -207,10 +216,42 @@ function activityLabel(itemType: string, item: Record<string, unknown>): string 
   return 'Agent 正在工作';
 }
 
+function activityDetail(itemType: string, item: Record<string, unknown>): string | undefined {
+  if (itemType === 'command_execution') {
+    const command = typeof item.command === 'string'
+      ? item.command
+      : Array.isArray(item.command)
+        ? item.command.filter((part): part is string => typeof part === 'string').join(' ')
+        : '';
+    return command ? boundedActivityDetail(command) : undefined;
+  }
+  if (itemType === 'file_change') {
+    const changes = Array.isArray(item.changes) ? item.changes : [];
+    const summaries = changes.flatMap((value) => {
+      const change = record(value);
+      if (!change) return [];
+      const path = activityField(change, 'path');
+      if (!path) return [];
+      const kind = activityField(change, 'kind') || 'change';
+      return [`${kind} ${path}`];
+    });
+    if (summaries.length === 0) return undefined;
+    const shown = summaries.slice(0, 4);
+    const suffix = summaries.length > shown.length ? ` · +${summaries.length - shown.length}` : '';
+    return boundedActivityDetail(`${shown.join(' · ')}${suffix}`);
+  }
+  if (itemType === 'web_search') {
+    const query = activityField(item, 'query');
+    return query ? boundedActivityDetail(query) : undefined;
+  }
+  return undefined;
+}
+
 function recordActivityEvent(
   active: ActiveLocalTurn,
   phase: LocalConversationActivityPhase,
   label: string,
+  detail: string | undefined,
   status: LocalConversationActivityEventStatus,
   now: string,
 ): void {
@@ -220,6 +261,7 @@ function recordActivityEvent(
       const existing = events[index]!;
       if (existing.status === 'active' && existing.phase === phase && existing.label === label) {
         existing.status = 'completed';
+        if (detail) existing.detail = detail;
         existing.completedAt = now;
         return;
       }
@@ -234,6 +276,7 @@ function recordActivityEvent(
   events.push({
     phase,
     label,
+    ...(detail ? { detail } : {}),
     status,
     startedAt: now,
     ...(status === 'completed' ? { completedAt: now } : {}),
@@ -255,11 +298,12 @@ function applyActivityLine(active: ActiveLocalTurn, line: string): void {
     phase: LocalConversationActivityPhase,
     lastActivity: string,
     status: LocalConversationActivityEventStatus,
+    detail?: string,
   ) => {
     active.activity.phase = phase;
     active.activity.lastActivity = lastActivity;
     active.activity.updatedAt = now;
-    recordActivityEvent(active, phase, lastActivity, status, now);
+    recordActivityEvent(active, phase, lastActivity, detail, status, now);
   };
   if (type === 'thread.started' && typeof event.thread_id === 'string' && event.thread_id.trim()) {
     update('thinking', '会话已启动', 'completed');
@@ -284,7 +328,7 @@ function applyActivityLine(active: ActiveLocalTurn, line: string): void {
   }
   if (['mcp_tool_call', 'command_execution', 'file_change', 'web_search'].includes(itemType)) {
     if (type === 'item.completed') active.activity.toolActivityCount += 1;
-    update('tool', activityLabel(itemType, item), status);
+    update('tool', activityLabel(itemType, item), status, activityDetail(itemType, item));
   }
 }
 

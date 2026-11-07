@@ -45,6 +45,7 @@ struct AgentGitDiff: Codable {
 struct AgentLiveActivityEvent: Codable, Identifiable {
     let phase: String
     let label: String
+    let detail: String?
     let status: String
     let startedAt: String
     let completedAt: String?

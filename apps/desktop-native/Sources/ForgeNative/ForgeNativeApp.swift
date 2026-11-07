@@ -461,7 +461,15 @@ private struct AgentPane: View {
                                                         Image(systemName:activityIcon(event.phase))
                                                             .font(.system(size:9.5,weight:.medium))
                                                             .frame(width:12)
-                                                        Text(event.label).lineLimit(1)
+                                                        VStack(alignment:.leading,spacing:2) {
+                                                            Text(event.label).lineLimit(1)
+                                                            if let detail = event.detail, !detail.isEmpty {
+                                                                Text(detail)
+                                                                    .font(.system(size:9.5,design:.monospaced))
+                                                                    .foregroundStyle(.tertiary)
+                                                                    .lineLimit(2)
+                                                            }
+                                                        }
                                                         Spacer(minLength:8)
                                                         Image(systemName:event.status == "completed" ? "checkmark" : "circle.fill")
                                                             .font(.system(size:event.status == "completed" ? 8 : 5,weight:.semibold))
@@ -513,8 +521,15 @@ private struct AgentPane: View {
                                             .font(.system(size:9.5,weight:.medium))
                                             .frame(width:12)
                                             .foregroundStyle(.tertiary)
-                                        Text(event.label)
-                                            .lineLimit(1)
+                                        VStack(alignment:.leading,spacing:2) {
+                                            Text(event.label).lineLimit(1)
+                                            if let detail = event.detail, !detail.isEmpty {
+                                                Text(detail)
+                                                    .font(.system(size:9.5,design:.monospaced))
+                                                    .foregroundStyle(.tertiary)
+                                                    .lineLimit(2)
+                                            }
+                                        }
                                         Spacer(minLength:8)
                                         Image(systemName:event.status == "completed" ? "checkmark" : "circle.fill")
                                             .font(.system(size:event.status == "completed" ? 8 : 5,weight:.semibold))

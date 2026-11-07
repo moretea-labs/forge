@@ -245,6 +245,10 @@ describe('handoff and facade contracts', () => {
       "console.log(JSON.stringify({type:'turn.started'}));",
       "console.log(JSON.stringify({type:'item.started',item:{type:'mcp_tool_call',server:'forge',tool:'rh_status'}}));",
       "console.log(JSON.stringify({type:'item.completed',item:{type:'mcp_tool_call',server:'forge',tool:'rh_status'}}));",
+      "console.log(JSON.stringify({type:'item.started',item:{type:'command_execution',command:'git status --short'}}));",
+      "console.log(JSON.stringify({type:'item.completed',item:{type:'command_execution',command:'git status --short',aggregated_output:'DO_NOT_PERSIST_COMMAND_OUTPUT',exit_code:0,status:'completed'}}));",
+      "console.log(JSON.stringify({type:'item.completed',item:{type:'file_change',changes:[{path:'src/a.ts',kind:'update'},{path:'src/b.ts',kind:'create'}],status:'completed'}}));",
+      "console.log(JSON.stringify({type:'item.completed',item:{type:'web_search',query:'Codex JSON event schema'}}));",
       "console.log(JSON.stringify({type:'item.completed',item:{type:'agent_message',text:'done'}}));",
       "console.log(JSON.stringify({type:'turn.completed'}));",
     ].join('');
@@ -255,12 +259,23 @@ describe('handoff and facade contracts', () => {
     expect(readLocalConversationActivity(conversationId)).toMatchObject({
       conversationId, status: 'idle', toolActivityCount: 0, events: [],
     });
-    expect(completed.activity.toolActivityCount).toBe(1);
-    expect(completed.activity.events.filter((event) => event.phase === 'tool')).toEqual([
+    expect(completed.activity.toolActivityCount).toBe(4);
+    const toolEvents = completed.activity.events.filter((event) => event.phase === 'tool');
+    expect(toolEvents).toEqual([
       expect.objectContaining({
         phase: 'tool', label: '正在使用 forge · rh_status', status: 'completed',
       }),
+      expect.objectContaining({
+        phase: 'tool', label: '正在执行命令', detail: 'git status --short', status: 'completed',
+      }),
+      expect.objectContaining({
+        phase: 'tool', label: '正在修改文件', detail: 'update src/a.ts · create src/b.ts', status: 'completed',
+      }),
+      expect.objectContaining({
+        phase: 'tool', label: '正在搜索', detail: 'Codex JSON event schema', status: 'completed',
+      }),
     ]);
+    expect(JSON.stringify(completed.activity.events)).not.toContain('DO_NOT_PERSIST_COMMAND_OUTPUT');
   });
 
   test('cancel stops the exact locally owned Codex process and keeps live activity bounded', async () => {
