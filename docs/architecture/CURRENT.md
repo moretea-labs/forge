@@ -36,7 +36,7 @@ Retire autonomous model-turn continuation instead of adding another completion o
 
 Process Runtime resolves an explicit literal `xcodebuild -derivedDataPath` against the actual execution cwd, canonicalizes existing symlink ancestors, and claims the physical cache path through the existing Lease owner. Distinct caches retain independent cache identities across checkouts; equal or ancestor/child paths conflict across repositories. Host capacity additionally serializes native Xcode build/test actions through the existing `host-service:ios-build` Lease across repositories and plugin/terminal/check entrypoints; typed read-only Xcode inventory is exempt. This admission bound supersedes unrestricted disjoint-cache build concurrency, without widening checkout/cache ownership. Each concrete cache also holds a repository build-cache read claim, so an opaque/default-cache build's existing write claim remains exclusive. Dynamic or opaque compound shell commands, dangling symlinks, duplicate cache arguments and output/cache overrides retain that conservative repository claim. Native XCTest commands additionally retain the host-wide simulator-test write claim. This changes command resource admission only; it does not create a scheduler, build executor or progress authority.
 
-An exact argv-only `git push --force-with-lease=refs/heads/<review>:<sha> origin :refs/heads/<review>` is a remote-only deletion, not a local Checkout/HEAD/index mutation. Process Runtime may reuse its existing repository `remote:<repoId>` exclusive Lease instead of a workspace/Git-ref writer, allowing an unrelated dirty Work to retain its source ownership. Only a single, syntactically safe, non-protected branch whose deletion refspec exactly matches the expected SHA lease qualifies. Shell commands, unknown arguments, unleased or protected refs retain the previous conservative claims; Git command classification remains destructive/authorization-gated, and the remote's SHA CAS decides actual deletion. This optimization neither proves a GitHub PR was merged nor creates a remote branch cleanup authority; that decision stays with existing Git/GitHub evidence and the caller.
+An exact argv-only `git push --force-with-lease=refs/heads/<review>:<sha> origin :refs/heads/<review>` is a remote-only deletion, not a local Checkout/HEAD/index mutation. Process Runtime may reuse its existing repository `remote:<repoId>` exclusive Lease instead of a workspace/Git-ref writer, allowing an unrelated dirty checkout/EditSession to retain its source transaction. Only a single, syntactically safe, non-protected branch whose deletion refspec exactly matches the expected SHA lease qualifies. Shell commands, unknown arguments, unleased or protected refs retain the previous conservative claims; Git command classification remains destructive/authorization-gated, and the remote's SHA CAS decides actual deletion. This optimization neither proves a GitHub PR was merged nor creates a remote branch cleanup authority; that decision stays with existing Git/GitHub evidence and the caller.
 
 ### Warm iOS Simulator admission (Refs #192)
 
@@ -215,7 +215,7 @@ Commands that outlive the interactive admission window may expose an in-memory/l
 
 ### Durable Workflow / Process
 
-Persistent Work/Process state is reserved for actual continuity requirements: scheduled workflows, multi-session continuation, independent deliverables, explicit recoverability, long asynchronous workflows, release boundaries, or multi-controller coordination.
+Persistent Process/Schedule/effect state is reserved for actual continuity or recoverability requirements: independently executing commands, scheduled actions, replay-sensitive external effects, release boundaries, or explicit recovery. Complex planning alone does not justify durable execution state.
 
 ### External effects
 
@@ -434,20 +434,22 @@ This policy applies to **all Forge source development**. `AGENTS.md` is the entr
 
 ## Architecture
 
-**The model owns semantic decisions. Thin Forge owns capabilities, durable facts and mechanical correctness.** Preserve one repository, one Runtime release and a modular monolith. Standalone Recovery is an independent failure domain, not another Kernel. Signed OS-native services may be separate processes to preserve platform permission identity; they do not own Requirement, Plan or Work facts.
+**The model owns semantic decisions. Thin Forge owns capabilities, durable facts and mechanical correctness.** Preserve one repository, one Runtime release and a modular monolith. Standalone Recovery is an independent failure domain, not another Kernel. Signed OS-native services may be separate processes to preserve platform permission identity; they do not own Requirement or Plan facts.
 
 | Responsibility | Canonical source area | Ownership |
 | --- | --- | --- |
-| Requirement/Plan/Work | `packages/kernel/goal`, `packages/kernel/work` | stable semantic intent, plan and work |
-| Controller and ChatGPT effects | `packages/kernel/controller`, `supervisor` | controller identity/round; exact-send effect authority belongs to Supervisor |
-| Scheduling | `packages/kernel/scheduler` | occurrence and wake, not model workflow decisions |
+| Requirement / Plan | existing semantic stores and facades | stable semantic outcome/progress and optional planning context |
+| Historical Work | `packages/kernel/work` read API | compatibility/audit queries only; no current lifecycle writer |
+| Repository source/edit | Git, Checkout Registry, EditSession | source, placement, bounded patch transaction and CAS fences |
+| Process / Check | Process Runtime and Check evidence | command execution identity, attachment and exact-input validation receipts |
+| Scheduling | `packages/kernel/scheduler` | trigger, occurrence and one bounded action; not model workflow decisions |
 | Identity/grants | `packages/kernel/identity` | principal, permission and user requests |
-| Knowledge | `packages/kernel/cognition`, `packages/kernel/memory` | distinct scoped evidence and knowledge facts |
+| Knowledge | `packages/kernel/cognition`, `packages/kernel/memory` | scoped advisory evidence and knowledge facts |
+| External effects | provider/plugin effect/request owners | exact request identity and applied/not-applied/outcome-unknown reconciliation |
 | Wire contracts | `packages/protocols` | neutral typed contract only |
 | External interfaces | `adapters/**`, migrated `src/cli/**` | translate MCP/CLI/provider calls; no duplicate durable writer |
 | Runtime composition/GUI | runtime composition root, `apps/**` | wire implementations and render state, not business transitions |
-| Plugin mechanisms | existing plugin-runtime and Computer owner | typed actions, target binding, native provider primitives |
-| Recovery | standalone Recovery authority | restore crashed canonical release, not parallel semantic state |
+| Recovery | standalone Recovery authority | restore the canonical release, not parallel semantic state |
 
 Domain ownership is semantic, not just folder names. New cross-domain imports must use the target `packages/kernel/<domain>/api/index`; never reach into another domain's `domain/`, `application/`, `infrastructure/` or `ports/`. Kernel must not import concrete adapters, apps, Supervisor implementations or protocol transport writers. Only composition roots select implementations.
 
@@ -479,7 +481,7 @@ A file over 1,000 lines merits responsibility review, not an arbitrary failing s
 
 ### Workflow capability dependency authority (2026-10-21)
 
-The executable Workflow step graph is the sole source for capability and reconciliation dependencies. `workflowCapabilityDependencies()` in `packages/workflow-runtime/domain/workflow-asset.ts` derives a stable, deduplicated inventory from capability steps and their `reconcileWithCapabilityId`, and first-party installation binds those capabilities rather than a second authored list. Older `requiredCapabilities` fields remain in versioned content only for existing digest identity; they are not permission or provider-binding authority. This migration deliberately leaves installed asset bytes, existing content digests, Work and effect receipts unchanged. Changes to an asset's executable steps still require the existing content-digest/registry identity invalidation. Do not reintroduce a manually maintained executable-capability inventory in future Workflow integrations.
+The executable Workflow step graph is the sole source for capability and reconciliation dependencies. `workflowCapabilityDependencies()` in `packages/workflow-runtime/domain/workflow-asset.ts` derives a stable, deduplicated inventory from capability steps and their `reconcileWithCapabilityId`, and first-party installation binds those capabilities rather than a second authored list. Older `requiredCapabilities` fields remain in versioned content only for existing digest identity; they are not permission or provider-binding authority. This migration deliberately leaves installed asset bytes, existing content digests, historical Work compatibility records and effect receipts unchanged. Changes to an asset's executable steps still require the existing content-digest/registry identity invalidation. Do not reintroduce a manually maintained executable-capability inventory in future Workflow integrations.
 
 ## Historical autonomous-continuation regression evidence
 
