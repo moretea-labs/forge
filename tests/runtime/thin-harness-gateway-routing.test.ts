@@ -1385,8 +1385,8 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
     });
 
     expect(() => assertEditSessionDurableBinding(session, binding, { requireBoundIdentity: true })).not.toThrow();
-    expect(() => assertEditSessionDurableBinding(session, { ...binding, workId: 'work-other' }, { requireBoundIdentity: true }))
-      .toThrow('EDIT_SESSION_IDENTITY_MISMATCH: workId');
+    expect(() => assertEditSessionDurableBinding(session, { ...binding, repoId: 'repo-other' }, { requireBoundIdentity: true }))
+      .toThrow('EDIT_SESSION_IDENTITY_MISMATCH: repoId');
     expect(() => assertEditSessionDurableBinding(session, { ...binding, principalId: 'principal-other' }, { requireBoundIdentity: true }))
       .toThrow('EDIT_SESSION_IDENTITY_MISMATCH: principalId');
     expect(() => assertEditSessionDurableBinding(session, { ...binding, checkoutId: 'checkout_other' }, { requireBoundIdentity: true }))
