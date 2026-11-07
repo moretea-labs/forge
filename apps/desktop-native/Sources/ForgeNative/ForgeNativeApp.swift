@@ -540,7 +540,7 @@ private struct AgentPane: View {
                         ForEach(model.thread?.messages ?? []) { message in
                             if message.role == "user" {
                                 HStack(alignment:.top) {
-                                    Spacer(minLength:96)
+                                    Spacer(minLength:0)
                                     VStack(alignment:.leading,spacing:7) {
                                         Text(message.text)
                                             .font(.system(size:13))
@@ -572,7 +572,8 @@ private struct AgentPane: View {
                                         .disabled(model.busy)
                                     }
                                 }
-                                .frame(maxWidth:.infinity)
+                                .frame(maxWidth:620,alignment:.trailing)
+                                .frame(maxWidth:.infinity,alignment:.trailing)
                                 .id(message.id)
                             } else {
                                 HStack(alignment:.top,spacing:10) {
@@ -618,30 +619,11 @@ private struct AgentPane: View {
                                         .foregroundStyle(ForgePalette.secondary)
                                         if expandedMessageActivities.contains(message.id),
                                            let events = message.activityEvents, !events.isEmpty {
-                                            VStack(alignment:.leading,spacing:5) {
+                                            VStack(alignment:.leading,spacing:7) {
                                                 ForEach(events) { event in
-                                                    HStack(spacing:7) {
-                                                        Image(systemName:activityIcon(event.phase))
-                                                            .font(.system(size:9.5,weight:.medium))
-                                                            .frame(width:12)
-                                                        VStack(alignment:.leading,spacing:2) {
-                                                            Text(event.label).lineLimit(1)
-                                                            if let detail = event.detail, !detail.isEmpty {
-                                                                Text(detail)
-                                                                    .font(.system(size:9.5,design:.monospaced))
-                                                                    .foregroundStyle(.tertiary)
-                                                                    .lineLimit(2)
-                                                            }
-                                                        }
-                                                        Spacer(minLength:8)
-                                                        Image(systemName:activityStatusIcon(event))
-                                                            .font(.system(size:(event.status == "completed" || event.status == "failed") ? 8 : 5,weight:.semibold))
-                                                            .foregroundStyle(activityStatusColor(event))
-                                                    }
+                                                    activityTrailRow(event)
                                                 }
                                             }
-                                            .font(.system(size:10.5))
-                                            .foregroundStyle(ForgePalette.secondary)
                                             .padding(.horizontal,9).padding(.vertical,7)
                                             .background(ForgePalette.softFill,
                                                         in:RoundedRectangle(cornerRadius:9,style:.continuous))
