@@ -99,9 +99,7 @@ function directLearningAuthority(input: {
     assertMemoryWrite(memory: MemoryUnit) {
       if (!scopeAllowed(memory.scope)
         || memory.provenance.sourceKind !== 'controller'
-        || memory.provenance.sourceId !== input.sourceId
-        || memory.provenance.sourceWorkId
-        || memory.provenance.sourceRoundId) {
+        || memory.provenance.sourceId !== input.sourceId) {
         throw new Error('COGNITION_DIRECT_LEARNING_AUTHORITY_INVALID');
       }
       if (memory.scope.kind === 'workspace' && !memory.facets.includes('portability.portable')) {
