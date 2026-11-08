@@ -59,6 +59,7 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
         "read_project_autopilot_statuses" =>
             read_project_autopilot_statuses(
                 required(args, "repoId")?,
+                required(args, "checkoutId")?,
                 required_strings(args, "requirementIds", 100)?,
             ).await,
         "read_requirement_detail" =>
@@ -86,6 +87,7 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
         "autopilot_control" =>
             autopilot_control(
                 required(args,"repoId")?,
+                required(args,"checkoutId")?,
                 required(args,"requirementId")?,
                 required(args,"operation")?,
                 args.get("confirmAuthorization").and_then(Value::as_bool).unwrap_or(false),
@@ -438,6 +440,12 @@ mod tests {
     fn bridge_never_accepts_arbitrary_command_execution() {
         let invalid = tauri::async_runtime::block_on(dispatch("execute_command", &json!({})));
         assert_eq!(invalid.unwrap_err(), "FORGE_NATIVE_BRIDGE_OPERATION_UNSUPPORTED");
+        let missing_checkout = tauri::async_runtime::block_on(dispatch("autopilot_control", &json!({
+            "repoId":"repo_1",
+            "requirementId":"REQ-1",
+            "operation":"status"
+        })));
+        assert_eq!(missing_checkout.unwrap_err(), "FORGE_NATIVE_BRIDGE_checkoutId_REQUIRED");
         assert_eq!(required(&json!({"repoId":""}), "repoId").unwrap_err(),
                    "FORGE_NATIVE_BRIDGE_repoId_REQUIRED");
         assert_eq!(required_strings(&json!({"paths":["src/main.rs"]}), "paths", 32).unwrap(),

@@ -595,9 +595,11 @@ async fn create_plan(
 
 async fn read_project_autopilot_statuses(
     repo_id: String,
+    checkout_id: String,
     requirement_ids: Vec<String>,
 ) -> Result<Value, String> {
-    if repo_id.trim().is_empty() || requirement_ids.is_empty() || requirement_ids.len() > 100 {
+    if repo_id.trim().is_empty() || checkout_id.trim().is_empty()
+        || requirement_ids.is_empty() || requirement_ids.len() > 100 {
         return Err("FORGE_DESKTOP_AUTOPILOT_STATUS_ARGUMENT_INVALID".to_string());
     }
     let mut statuses = serde_json::Map::new();
@@ -608,6 +610,7 @@ async fn read_project_autopilot_statuses(
         if statuses.contains_key(&requirement_id) { continue; }
         let status = match call_runtime_tool("rh_autopilot", json!({
             "repo_id": repo_id.clone(),
+            "checkout_id": checkout_id.clone(),
             "requirement_id": requirement_id.clone(),
             "operation": "status",
             "request_id": request_id("project-autopilot-status")
@@ -623,6 +626,7 @@ async fn read_project_autopilot_statuses(
 #[tauri::command]
 async fn autopilot_control(
     repo_id: String,
+    checkout_id: String,
     requirement_id: String,
     operation: String,
     confirm_authorization: bool,
@@ -634,7 +638,7 @@ async fn autopilot_control(
     expires_in_minutes: Option<u64>,
     reason: Option<String>,
 ) -> Result<Value, String> {
-    if repo_id.trim().is_empty() || requirement_id.trim().is_empty() {
+    if repo_id.trim().is_empty() || checkout_id.trim().is_empty() || requirement_id.trim().is_empty() {
         return Err("FORGE_DESKTOP_AUTOPILOT_ARGUMENT_REQUIRED".to_string());
     }
     if !matches!(operation.as_str(), "status" | "authorize" | "start" | "pause" | "resume" | "revoke") {
@@ -642,6 +646,7 @@ async fn autopilot_control(
     }
     let result = call_runtime_tool("rh_autopilot", json!({
         "repo_id": repo_id,
+        "checkout_id": checkout_id,
         "requirement_id": requirement_id,
         "operation": operation,
         "confirm_authorization": confirm_authorization,

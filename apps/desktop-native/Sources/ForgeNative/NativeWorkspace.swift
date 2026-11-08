@@ -1475,7 +1475,7 @@ final class NativeWorkspace: ObservableObject {
     }
 
     func loadPlanningAutopilotStatuses(_ requirementIds:[String]) async {
-        guard let repoId,!requirementIds.isEmpty else {
+        guard let repoId,let checkoutId,!requirementIds.isEmpty else {
             planningAutopilotStatuses=[:]
             planningAutopilotStatusError=nil
             return
@@ -1483,9 +1483,10 @@ final class NativeWorkspace: ObservableObject {
         do {
             let value=try await ForgeBridge.request("read_project_autopilot_statuses",[
                 "repoId":repoId,
+                "checkoutId":checkoutId,
                 "requirementIds":requirementIds
             ])
-            guard self.repoId == repoId else { return }
+            guard self.repoId == repoId,self.checkoutId == checkoutId else { return }
             let raw=value["statuses"] as? [String:Any] ?? [:]
             let failed=raw.compactMap { requirementId,value -> (String,String)? in
                 guard let dictionary=value as? [String:Any],
@@ -1507,18 +1508,19 @@ final class NativeWorkspace: ObservableObject {
                 planningAutopilotStatusError=nil
             }
         } catch {
-            guard self.repoId == repoId else { return }
+            guard self.repoId == repoId,self.checkoutId == checkoutId else { return }
             planningAutopilotStatusError=error.localizedDescription
         }
     }
 
     func loadAutopilotStatus(_ requirementId:String) async {
-        guard let repoId else { autopilotStatus=nil; return }
+        guard let repoId,let checkoutId else { autopilotStatus=nil; return }
         autopilotLoading=true
         defer { autopilotLoading=false }
         do {
             let value=try await ForgeBridge.request("autopilot_control",[
-                "repoId":repoId,"requirementId":requirementId,"operation":"status"
+                "repoId":repoId,"checkoutId":checkoutId,
+                "requirementId":requirementId,"operation":"status"
             ])
             autopilotStatus=Self.autopilotStatusDetail(value)
             if let autopilotStatus { planningAutopilotStatuses[requirementId]=autopilotStatus }
@@ -1540,11 +1542,13 @@ final class NativeWorkspace: ObservableObject {
         checkpointPlanIds:[String]=[]
     ) async -> Bool {
         guard let repoId else { error="请先选择项目。"; return false }
+        guard let checkoutId else { error="当前项目没有 checkout。"; return false }
         guard !autopilotLoading else { return false }
         autopilotLoading=true
         defer { autopilotLoading=false }
         var args:[String:Any]=[
-            "repoId":repoId,"requirementId":requirementId,"operation":operation,
+            "repoId":repoId,"checkoutId":checkoutId,
+            "requirementId":requirementId,"operation":operation,
             "confirmAuthorization":confirmAuthorization,"checkpointPlanIds":checkpointPlanIds
         ]
         if let model,!model.isEmpty { args["model"]=model }
@@ -1554,7 +1558,8 @@ final class NativeWorkspace: ObservableObject {
         do {
             _=try await ForgeBridge.request("autopilot_control",args)
             let status=try await ForgeBridge.request("autopilot_control",[
-                "repoId":repoId,"requirementId":requirementId,"operation":"status"
+                "repoId":repoId,"checkoutId":checkoutId,
+                "requirementId":requirementId,"operation":"status"
             ])
             autopilotStatus=Self.autopilotStatusDetail(status)
             if let autopilotStatus { planningAutopilotStatuses[requirementId]=autopilotStatus }
