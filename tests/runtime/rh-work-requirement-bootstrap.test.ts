@@ -127,16 +127,38 @@ describe('rh_work Requirement bootstrap', () => {
     expect(listedB.data.requirements.map((entry:Record<string,unknown>) => entry.requirementId)).toContain('REQ-SCOPE-B');
     expect(listedB.data.requirements.map((entry:Record<string,unknown>) => entry.requirementId)).not.toContain('REQ-SCOPE-A');
 
+    const crossRepositoryGet = structured(await callRuntimeTool(ctxA, 'rh_work', {
+      operation:'requirement_get', requirement_id:'REQ-SCOPE-B',
+    }));
+    expect(crossRepositoryGet.status).toBe('not_found');
+    expect(crossRepositoryGet.data).toMatchObject({
+      requirementId:'REQ-SCOPE-B', repoId:repositoryA.repoId,
+    });
+
     const legacy = createRequirement({ controllerHome }, {
       requirementId:'REQ-LEGACY-PLAN-EDGE', title:'Legacy edge',
       outcomeStatement:'Remain visible only where an explicit Plan relationship exists.',
     });
     expect(legacy.repoId).toBeUndefined();
-    createPlanSemanticContext({ controllerHome, repoId:repositoryA.repoId }, {
+    createPlanSemanticContext({
+      controllerHome, repoId:repositoryA.repoId,
+      now:() => '2026-01-01T00:00:00.000Z',
+    }, {
       planId:'PLAN-LEGACY-EDGE', repoId:repositoryA.repoId,
       requirementId:legacy.requirementId, scopeKey:'legacy-edge', sourceBasisRevision:'legacy-source',
       goal:'Prove repository relevance through the durable Plan edge.', items:[],
     });
+    for (let index = 0; index < 100; index++) {
+      createPlanSemanticContext({
+        controllerHome, repoId:repositoryA.repoId,
+        now:() => '2026-02-01T00:00:00.000Z',
+      }, {
+        planId:`PLAN-SCOPE-FILLER-${index}`, repoId:repositoryA.repoId,
+        scopeKey:`scope-filler-${index}`, sourceBasisRevision:`source-filler-${index}`,
+        goal:`Keep legacy placement discovery complete beyond the public Plan list cap (${index}).`,
+        items:[],
+      });
+    }
     const legacyA = structured(await callRuntimeTool(ctxA, 'rh_work', { operation:'requirement_list', limit:100 }));
     const legacyB = structured(await callRuntimeTool(ctxB, 'rh_work', { operation:'requirement_list', limit:100 }));
     expect(legacyA.data.requirements.map((entry:Record<string,unknown>) => entry.requirementId)).toContain(legacy.requirementId);

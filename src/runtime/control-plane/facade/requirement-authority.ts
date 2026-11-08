@@ -8,7 +8,7 @@ import {
   type Requirement,
   type RequirementStoreOptions,
 } from '../persistence/requirement-store';
-import { listPlanContracts } from './plan-contract-store';
+import { readPlanContractStore } from './plan-contract-store';
 import { cognitionMemoryStore } from '../persistence/cognition-store';
 import { memoryAddressKey, type MemoryUnit } from '../../../../packages/kernel/cognition/api/index';
 
@@ -106,7 +106,7 @@ export function listRequirementsForRepository(
   const all = listRequirements(options, 1000);
   if (!repoId) return all.slice(0, limit);
   const relatedRequirementIds = new Set(
-    listPlanContracts({ controllerHome: options.controllerHome, repoId, status: 'all', limit: 100 })
+    readPlanContractStore({ controllerHome: options.controllerHome, repoId }).contracts
       .map((plan) => plan.requirementId?.trim())
       .filter((requirementId): requirementId is string => Boolean(requirementId)),
   );

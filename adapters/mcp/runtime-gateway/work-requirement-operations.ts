@@ -61,9 +61,18 @@ export async function callRhWorkRequirementOperation(
 
   if (operation === 'requirement_get') {
     const requirementId = typeof args.requirement_id === 'string' ? args.requirement_id.trim() : '';
-    const record = requirementId ? readRequirement({ controllerHome: ctx.controllerHome }, requirementId) : undefined;
+    const record = requirementId
+      ? repository?.repoId
+        ? listRequirementsForRepository({ controllerHome: ctx.controllerHome }, repository.repoId, 1000)
+            .find((candidate) => candidate.value.requirementId === requirementId)
+        : readRequirement({ controllerHome: ctx.controllerHome }, requirementId)
+      : undefined;
     if (!record) return result(buildFacadeResult({
-      status: 'not_found', summary: `Requirement ${requirementId || '(missing)'} not found.`, data: { requirementId },
+      status: 'not_found',
+      summary: repository?.repoId
+        ? `Requirement ${requirementId || '(missing)'} not found in repository ${repository.repoId}.`
+        : `Requirement ${requirementId || '(missing)'} not found.`,
+      data: { requirementId, ...(repository?.repoId ? { repoId: repository.repoId } : {}) },
     }) as unknown as Record<string, unknown>, true);
     const semantic = requirementSemanticView(record.value);
     return result(buildFacadeResult({
