@@ -792,6 +792,21 @@ final class NativeWorkspaceTests: XCTestCase {
     }
 
     @MainActor
+    func testNewThreadLeavesGlobalSearchAndSelectsVisibleDraft() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        model.showSearch = true
+        model.search = "no-matching-title"
+
+        model.newThread()
+
+        XCTAssertFalse(model.showSearch)
+        XCTAssertEqual(model.search,"")
+        XCTAssertEqual(model.visibleThreads.first?.id,model.selectedThreadId)
+    }
+
+    @MainActor
     func testThreadDeleteOnlyRemovesLocalTargetAndKeepsSelectionDeterministic() {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at:folder) }

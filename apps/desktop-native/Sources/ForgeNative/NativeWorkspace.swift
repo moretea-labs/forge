@@ -567,6 +567,10 @@ final class NativeWorkspace: ObservableObject {
                 : (provider == "joycode" ? localApiSettings?.joyCodeModel : nil)
         )
         threads.insert(item, at:0)
+        // A new conversation must be immediately visible, even when launched
+        // with ⌘N while an unrelated search query is active.
+        showSearch = false
+        search = ""
         if page != .agent { pushNavigationOrigin() }
         activateThreadContext(item)
         page = .agent
