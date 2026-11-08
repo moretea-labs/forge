@@ -960,6 +960,23 @@ final class NativeWorkspaceTests: XCTestCase {
         )
         XCTAssertEqual(distinct.count,2)
         XCTAssertNotEqual(distinct[0].id,distinct[1].id)
+
+        let pending = NativeWorkspace.apiToolProgressEvents(
+            [],
+            payload:["name":"run_command","phase":"running",
+                     "processId":"proc_abc_123","requestId":"effect-1","toolCallId":"call-3"],
+            now:"pending-at"
+        )
+        XCTAssertEqual(pending.first?.detail,"proc_abc_123")
+        let completed = NativeWorkspace.apiToolProgressEvents(
+            pending,
+            payload:["name":"run_command","phase":"completed",
+                     "processId":"proc_abc_123","requestId":"effect-1","toolCallId":"call-3"],
+            now:"completed-at"
+        )
+        XCTAssertEqual(completed.count,1)
+        XCTAssertEqual(completed.first?.detail,"proc_abc_123")
+        XCTAssertEqual(completed.first?.status,"completed")
     }
 
     func testFailedToolProgressIsPersistableAsUnknown() {

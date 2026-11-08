@@ -1928,7 +1928,8 @@ fn local_api_budget_pause(reason: &str, total_calls: usize, events: &[Value]) ->
 // A running Forge Process is an accepted, joinable operation, not an unknown outcome.
 fn local_running_process_id(receipt: &Value) -> Option<&str> {
     if receipt.get("ok").and_then(Value::as_bool) != Some(true)
-        || receipt.pointer("/result/status").and_then(Value::as_str) != Some("running")
+        || !matches!(receipt.pointer("/result/status").and_then(Value::as_str),
+            Some("starting" | "running" | "running_recovered"))
         || receipt.pointer("/result/accepted").and_then(Value::as_bool) != Some(true) {
         return None;
     }
@@ -1940,11 +1941,60 @@ fn local_running_process_id(receipt: &Value) -> Option<&str> {
 
 fn local_api_process_pause(process_id: &str, total_calls: usize, events: &[Value]) -> Value {
     json!({
-        "output": format!("Forge 命令已受理，仍在执行；尚无测试或构建终态，不能判定成功或失败。Process ID: {process_id}。不要重复执行该命令。继续时先使用 process_status 获取该 Process 的权威终态，再决定后续步骤。"),
+        "output": format!("Forge 命令已受理，但尚未确认终态：可能仍在执行，也可能已经结束而查询未成功。Process ID: {process_id}。不要重复执行该命令。继续时先使用 process_status 获取权威终态，再决定后续步骤。"),
         "incomplete":true,
         "toolActivityCount":total_calls,
         "toolEvents":events
     })
+}
+
+// Reconcile a long-running command through the same Forge Process record.
+// A terminal query is evidence, not a second execution of the command.
+fn local_terminal_process_receipt(process_id: &str, query: &Value) -> Option<Value> {
+    if query.get("ok").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    let handle = query.get("result")?;
+    if handle.get("processId").and_then(Value::as_str) != Some(process_id)
+        || handle.get("completed").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    Some(json!({"ok":true,"result":{
+        "accepted":true, "completed":true, "processId":process_id,
+        "status":handle["status"], "exitCode":handle["exitCode"],
+        "ok":handle["ok"], "timedOut":handle["timedOut"],
+        "stdoutTail":handle["stdoutTail"], "stderrTail":handle["stderrTail"]
+    }}))
+}
+
+async fn local_wait_running_process<H: LocalApiHost + Sync>(
+    host: &H, repo_id: &str, checkout_id: Option<&str>,
+    conversation_id: &str, process_id: &str, timeout_ms: u64,
+    cancel_receiver: &tokio::sync::watch::Receiver<bool>,
+) -> Option<Value> {
+    // A started effect belongs to Process Runtime. The Agent waits for its
+    // terminal receipt, never retries the original run_command.
+    let deadline = tokio::time::Instant::now()
+        + std::time::Duration::from_millis(timeout_ms.clamp(1_000, 600_000) + 15_000);
+    loop {
+        if *cancel_receiver.borrow() { return None; }
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() { return None; }
+        let wait_ms = (remaining.as_millis().min(10_000) as u64).max(1);
+        let query = run_local_forge_tool(
+            host, repo_id.to_string(), checkout_id.map(str::to_owned),
+            conversation_id.to_string(), "process_status".to_string(),
+            json!({"process_id":process_id,"wait_ms":wait_ms}), false
+        ).await.ok()?;
+        if let Some(terminal) = local_terminal_process_receipt(process_id, &query) {
+            return Some(terminal);
+        }
+        if query.get("ok").and_then(Value::as_bool) != Some(true)
+            || query.pointer("/result/processId").and_then(Value::as_str) != Some(process_id)
+            || query.pointer("/result/completed").and_then(Value::as_bool) != Some(false) {
+            return None;
+        }
+    }
 }
 
 fn local_tool_catalog(allow_effects: bool) -> Vec<Value> {
@@ -1981,10 +2031,13 @@ fn local_effect_outcome(name: &str, receipt: &Value) -> LocalEffectOutcome {
     let result = &receipt["result"];
     match name {
         "run_command" => match result.get("status").and_then(Value::as_str) {
-            Some("succeeded") if result.get("exitCode").and_then(Value::as_i64) == Some(0) => {
+            Some("succeeded") if result.get("exitCode").and_then(Value::as_i64) == Some(0)
+                && result.get("ok").and_then(Value::as_bool) != Some(false)
+                && result.get("timedOut").and_then(Value::as_bool) != Some(true) => {
                 LocalEffectOutcome::Succeeded
             }
-            Some("succeeded" | "failed" | "cancelled") => LocalEffectOutcome::TerminalFailure,
+            Some("succeeded" | "failed" | "timed_out" | "cancelled" | "orphaned") =>
+                LocalEffectOutcome::TerminalFailure,
             Some("running") => LocalEffectOutcome::Unknown,
             _ => LocalEffectOutcome::Unknown,
         },
@@ -2589,7 +2642,7 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
                     validation_prompt_sent = true;
                     history.push(json!({"role":"assistant","content":blocks}));
                     history.push(json!({"role":"user","content":
-                        "Source edits were applied, but no successful focused verification command was recorded. Use run_command for an appropriate test/build/check (or git diff --check when no test applies). If validation fails, inspect and repair. Do not claim the task is complete without a successful receipt."}));
+                        "Source edits were applied, but no successful focused test/build/check receipt was recorded. Use run_command for an appropriate verification. git diff --check only checks whitespace and is not sufficient. If verification fails, inspect and repair; if no applicable check exists, state that validation is incomplete. Do not claim verified completion without a successful receipt."}));
                     continue;
                 }
                 return Ok(json!({ "output": text, "toolActivityCount": total_calls, "toolEvents": tool_events }));
@@ -2621,7 +2674,7 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
                     validation_prompt_sent = true;
                     history.push(message);
                     history.push(json!({"role":"user","content":
-                        "Source edits were applied, but no successful focused verification command was recorded. Use run_command for an appropriate test/build/check (or git diff --check when no test applies). If validation fails, inspect and repair. Do not claim the task is complete without a successful receipt."}));
+                        "Source edits were applied, but no successful focused test/build/check receipt was recorded. Use run_command for an appropriate verification. git diff --check only checks whitespace and is not sufficient. If verification fails, inspect and repair; if no applicable check exists, state that validation is incomplete. Do not claim verified completion without a successful receipt."}));
                     continue;
                 }
                 return Ok(json!({ "output": text, "toolActivityCount": total_calls, "toolEvents": tool_events }));
@@ -2652,6 +2705,8 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
             }
             let effectful = matches!(name.as_str(), "apply_patch" | "run_command" | "git_commit");
             let verification_attempt = name == "run_command" && local_verification_command(&args);
+            let command_budget_ms = args.get("timeout_ms").and_then(Value::as_u64)
+                .unwrap_or(60_000).clamp(1_000, 600_000);
             let effect_request_id = if effectful {
                 let nonce = SystemTime::now().duration_since(UNIX_EPOCH)
                     .unwrap_or_default().as_nanos();
@@ -2683,22 +2738,30 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
                     });
                 }
             };
-            // A managed Process with a valid handle is known to be running, not
-            // an ambiguous effect. Preserve its identity and stop this turn
-            // without re-executing the accepted command.
-            if name == "run_command" {
+            // A running Process already owns the command: join its authoritative
+            // receipt and give the result back to the *same* model tool round.
+            // On cancel/timeout/read failure, stop safely with the Process ID.
+            let result = if name == "run_command" {
                 if let Some(process_id) = local_running_process_id(&result) {
-                    tool_events.push(json!({
-                        "name":name, "ok":false, "status":"running",
-                        "processId":process_id, "requestId":effect_request_id, "toolCallId":id
-                    }));
                     host.emit_tool_progress(json!({
                         "conversationId":conversation_id, "name":name, "phase":"running",
                         "processId":process_id, "requestId":effect_request_id, "toolCallId":id
                     }));
-                    return Ok(local_api_process_pause(process_id, total_calls + 1, &tool_events));
-                }
-            }
+                    match local_wait_running_process(
+                        host, repo_id.as_deref().unwrap_or_default(), checkout_id.as_deref(),
+                        &conversation_id, process_id, command_budget_ms, cancel_receiver
+                    ).await {
+                        Some(terminal) => terminal,
+                        None => {
+                            tool_events.push(json!({
+                                "name":name, "ok":false, "status":"running",
+                                "processId":process_id, "requestId":effect_request_id, "toolCallId":id
+                            }));
+                            return Ok(local_api_process_pause(process_id, total_calls + 1, &tool_events));
+                        }
+                    }
+                } else { result }
+            } else { result };
             let effect_outcome = effectful.then(|| local_effect_outcome(&name, &result));
             if name == "apply_patch" && matches!(
                 result.pointer("/result/status").and_then(Value::as_str), Some("applied" | "partial")
@@ -2722,12 +2785,13 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
                     cancellation, last_effect_request_id.as_deref()
                 ));
             }
+            let process_id = result.pointer("/result/processId").and_then(Value::as_str);
             tool_events.push(json!({ "name": name, "ok": ok,
-                "requestId": effect_request_id, "toolCallId": id }));
+                "processId":process_id, "requestId": effect_request_id, "toolCallId": id }));
             host.emit_tool_progress(json!({
                 "conversationId": conversation_id, "name": name,
                 "phase": if ok { "completed" } else { "failed" },
-                "requestId": effect_request_id, "toolCallId": id,
+                "processId":process_id, "requestId": effect_request_id, "toolCallId": id,
             }));
             total_calls += 1;
             if verification_attempt && ok {
@@ -3211,15 +3275,67 @@ mod tests {
         assert_eq!(local_running_process_id(&json!({"ok":true,"result":{
             "accepted":true,"status":"succeeded","processId":"proc_abc_123"
         }})),None);
+        for status in ["starting","running_recovered"] {
+            assert_eq!(local_running_process_id(&json!({"ok":true,"result":{
+                "accepted":true,"status":status,"processId":"proc_abc_123"
+            }})),Some("proc_abc_123"));
+        }
         let events = [json!({"name":"run_command","status":"running",
             "processId":"proc_abc_123","requestId":"effect-1"})];
         let paused = local_api_process_pause("proc_abc_123",1,&events);
         assert_eq!(paused["incomplete"],true);
         assert_eq!(paused["toolEvents"][0]["processId"],"proc_abc_123");
         assert!(paused["output"].as_str().unwrap().contains("process_status"));
+        assert!(paused["output"].as_str().unwrap().contains("尚未确认终态"));
         assert!(local_tool_catalog(false).iter().any(|tool|
             tool.pointer("/function/name").and_then(Value::as_str)==Some("process_status")
         ));
+    }
+
+    #[test]
+    fn managed_process_terminal_receipt_preserves_result_and_identity() {
+        let succeeded = json!({"ok":true,"result":{
+            "processId":"proc_abc_123","status":"succeeded",
+            "completed":true,"ok":true,"exitCode":0,
+            "stdoutTail":"tests passed","stderrTail":""
+        }});
+        let receipt = local_terminal_process_receipt("proc_abc_123",&succeeded).unwrap();
+        assert_eq!(receipt["result"]["stdoutTail"],"tests passed");
+        assert_eq!(receipt["result"]["processId"],"proc_abc_123");
+        assert_eq!(local_effect_outcome("run_command",&receipt),LocalEffectOutcome::Succeeded);
+        let contradictory = json!({"ok":true,"result":{
+            "status":"succeeded","exitCode":0,"ok":false
+        }});
+        assert_eq!(local_effect_outcome("run_command",&contradictory),LocalEffectOutcome::TerminalFailure);
+        let timed_out_success = json!({"ok":true,"result":{
+            "status":"succeeded","exitCode":0,"timedOut":true
+        }});
+        assert_eq!(local_effect_outcome("run_command",&timed_out_success),LocalEffectOutcome::TerminalFailure);
+        assert!(local_terminal_process_receipt("proc_other",&succeeded).is_none());
+        assert!(local_terminal_process_receipt("proc_abc_123",&json!({
+            "ok":true,"result":{"processId":"proc_abc_123","completed":false}
+        })).is_none());
+        assert!(local_terminal_process_receipt("proc_abc_123",&json!({
+            "ok":false,"result":{"processId":"proc_abc_123","completed":true}
+        })).is_none());
+        let failed = json!({"ok":true,"result":{
+            "processId":"proc_abc_123","status":"failed",
+            "completed":true,"ok":false,"exitCode":1
+        }});
+        let receipt = local_terminal_process_receipt("proc_abc_123",&failed).unwrap();
+        assert_eq!(local_effect_outcome("run_command",&receipt),LocalEffectOutcome::TerminalFailure);
+        let timed_out = json!({"ok":true,"result":{
+            "processId":"proc_abc_123","status":"timed_out",
+            "completed":true,"ok":false,"exitCode":null
+        }});
+        let timeout_receipt = local_terminal_process_receipt("proc_abc_123",&timed_out).unwrap();
+        assert_eq!(local_effect_outcome("run_command",&timeout_receipt),LocalEffectOutcome::TerminalFailure);
+        let unknown = json!({"ok":true,"result":{
+            "processId":"proc_abc_123","status":"completed_unknown",
+            "completed":true,"ok":false,"exitCode":null
+        }});
+        let unknown_receipt = local_terminal_process_receipt("proc_abc_123",&unknown).unwrap();
+        assert_eq!(local_effect_outcome("run_command",&unknown_receipt),LocalEffectOutcome::Unknown);
     }
 
     #[test]

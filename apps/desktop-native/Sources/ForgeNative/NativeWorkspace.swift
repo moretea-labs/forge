@@ -2181,7 +2181,7 @@ final class NativeWorkspace: ObservableObject {
         let transportPhase = payload["phase"] as? String ?? "running"
         let status = transportPhase == "started" ? "running" : transportPhase
         let toolCallId = payload["toolCallId"] as? String
-        let detail = payload["requestId"] as? String
+        let detail = payload["processId"] as? String ?? payload["requestId"] as? String
         var events = existing
         let matchingIndex = events.lastIndex { event in
             guard event.status == "running" else { return false }

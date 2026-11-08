@@ -41,7 +41,7 @@ async function run() {
     search_code: ['query','path'],
     git_status: ['refresh'],
     git_diff: ['paths','staged','max_bytes'],
-    process_status: ['process_id'],
+    process_status: ['process_id','wait_ms'],
     patch_plan: ['operations','chunk_size'],
     apply_patch: ['operations','purpose','allowed_paths','request_id'],
     run_command: ['command','timeout_ms','max_output_bytes','interactive_wait_ms','request_id'],
@@ -80,10 +80,17 @@ async function run() {
   if (input.tool === 'process_status') {
     const processId = requireId(args.process_id, 'PROCESS');
     if (!processId.startsWith('proc_')) throw Error('LOCAL_FORGE_PROCESS_INVALID');
-    // The canonical Process Runtime owns state and terminal receipts; this is read-only.
+    const waitMs = args.wait_ms;
+    if (waitMs !== undefined && (!Number.isSafeInteger(waitMs) || waitMs < 1 || waitMs > 15000)) {
+      throw Error('LOCAL_FORGE_PROCESS_WAIT_INVALID');
+    }
+    // The canonical Process Runtime owns status, durable receipts and bounded
+    // waits. No re-execution and no separate desktop polling authority.
     const entry = join(sourceRoot, 'src/runtime/execution/process-runtime/runtime.ts');
-    const { getProcessHandle } = await import(pathToFileURL(entry).href);
-    const handle = getProcessHandle(controllerHome, repoId, processId);
+    const { getProcessHandle, waitForProcess } = await import(pathToFileURL(entry).href);
+    const handle = waitMs === undefined
+      ? getProcessHandle(controllerHome, repoId, processId)
+      : await waitForProcess(controllerHome, repoId, processId, { timeoutMs: waitMs });
     if (!handle) throw Error('LOCAL_FORGE_PROCESS_NOT_FOUND');
     process.stdout.write(JSON.stringify({ ok: true, result: {
       processId: handle.processId, status: handle.status, completed: handle.completed,
