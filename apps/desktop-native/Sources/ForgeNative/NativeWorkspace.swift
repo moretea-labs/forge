@@ -378,6 +378,7 @@ enum NativePage: String, CaseIterable, Identifiable {
 @MainActor
 final class NativeWorkspace: ObservableObject {
     @Published var page: NativePage = .agent
+    @Published private(set) var navigationBackStack: [NativePage] = []
     @Published private(set) var projects: [ForgeProject] = []
     @Published var repoId: String?
     @Published var checkoutId: String?
@@ -441,6 +442,8 @@ final class NativeWorkspace: ObservableObject {
 
     var project: ForgeProject? { projects.first { $0.repoId == repoId } }
     var thread: ChatThread? { threads.first { $0.id == selectedThreadId } }
+    var canNavigateBack: Bool { !navigationBackStack.isEmpty }
+    var navigationBackLabel: String? { navigationBackStack.last?.rawValue }
     var selectedProvider: String {
         if let provider = thread?.provider { return provider }
         if thread?.messages.isEmpty == false { return "codex" }
@@ -530,7 +533,7 @@ final class NativeWorkspace: ObservableObject {
         )
         threads.insert(item, at:0)
         selectedThreadId = item.id
-        page = .agent
+        show(.agent)
         draft = ""
         pendingImageURLs = []
         pendingContextPaths = []
@@ -553,7 +556,7 @@ final class NativeWorkspace: ObservableObject {
         }
         guard let item = threads.first(where: { $0.id == id }) else { return }
         selectedThreadId = id
-        page = .agent
+        show(.agent)
         draft = ""
         pendingImageURLs = []
         pendingContextPaths = []
@@ -666,12 +669,34 @@ final class NativeWorkspace: ObservableObject {
         }
         self.error = notes.isEmpty ? nil : Array(Set(notes)).sorted().joined(separator:" ")
     }
-    func selectProject(_ id: String) {
+    func openProject(_ id: String) {
         guard !busy else {
             self.error = "请先停止正在运行的会话。"
             return
         }
-        guard thread?.repoId != id else { return }
+        if let recent = threads
+            .filter({ $0.repoId == id })
+            .sorted(by: { $0.updatedAt > $1.updatedAt })
+            .first {
+            selectThread(recent.id)
+        } else {
+            newThread(inProject:id)
+        }
+    }
+
+    func selectProject(_ id: String) {
+        openProject(id)
+    }
+
+    func newThread(inProject id: String) {
+        guard !busy else {
+            self.error = "请先停止正在运行的会话。"
+            return
+        }
+        if repoId == id, checkoutId != nil {
+            newThread()
+            return
+        }
         let sourceThreadId = selectedThreadId
         let sourceProvider = selectedProvider
         Task {
@@ -697,10 +722,47 @@ final class NativeWorkspace: ObservableObject {
             }
         }
     }
+
+    func registerProject(path: String) async -> Bool {
+        guard !busy else {
+            self.error = "请先停止正在运行的会话。"
+            return false
+        }
+        let target = URL(fileURLWithPath:path)
+            .resolvingSymlinksInPath().standardizedFileURL
+        do {
+            _ = try await ForgeBridge.request("register_project",["path":target.path])
+            await refresh()
+            if let project = projects.first(where: { project in
+                guard let root = project.localRoot else { return false }
+                return URL(fileURLWithPath:root).resolvingSymlinksInPath().standardizedFileURL == target
+            }) {
+                newThread(inProject:project.repoId)
+            }
+            self.error = nil
+            return true
+        } catch {
+            self.error = error.localizedDescription
+            return false
+        }
+    }
+
     func show(_ page: NativePage) {
-        if self.page != page { error = nil }
+        guard self.page != page else { return }
+        navigationBackStack.append(self.page)
+        if navigationBackStack.count > 24 {
+            navigationBackStack.removeFirst(navigationBackStack.count - 24)
+        }
+        error = nil
         self.page = page
         if page != .agent { Task { await loadPage() } }
+    }
+
+    func goBack() {
+        guard let target = navigationBackStack.popLast() else { return }
+        error = nil
+        page = target
+        if target != .agent { Task { await loadPage() } }
     }
     func toggleConversationSearch() {
         show(.agent)

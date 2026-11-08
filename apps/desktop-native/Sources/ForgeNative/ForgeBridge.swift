@@ -82,7 +82,7 @@ final class ForgeApiTurn: @unchecked Sendable {
 /// once, using a strict operation allowlist. No shell, daemon, or token copy.
 enum ForgeBridge {
     static let allowed: Set<String> = [
-        "read_projects", "read_project_repository", "read_repository_access", "set_repository_access", "read_project_overview",
+        "read_projects", "register_project", "read_project_repository", "read_repository_access", "set_repository_access", "read_project_overview",
         "read_project_requirement_list", "read_project_plan_list",
         "read_requirement_detail", "read_plan_detail", "create_requirement", "create_plan", "autopilot_control",
         "read_project_knowledge", "read_recovery_status", "verify_recovery_runtime",

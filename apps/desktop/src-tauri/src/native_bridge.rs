@@ -41,6 +41,9 @@ fn optional_strings(arguments: &Value, field: &str, max_items: usize) -> Result<
 async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
     match operation {
         "read_projects" => read_projects().await,
+        "register_project" => call_runtime_tool("repository_register", json!({
+            "path": required(args, "path")?
+        })).await,
         "read_project_repository" =>
             read_project_repository(required(args, "repoId")?).await,
         "read_repository_access" =>

@@ -14,6 +14,7 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertTrue(ForgeBridge.allowed.contains("read_local_api_settings"))
         XCTAssertTrue(ForgeBridge.allowed.contains("save_local_api_settings"))
         XCTAssertTrue(ForgeBridge.allowed.contains("read_project_requirement_list"))
+        XCTAssertTrue(ForgeBridge.allowed.contains("register_project"))
         XCTAssertTrue(ForgeBridge.allowed.contains("create_requirement"))
         XCTAssertTrue(ForgeBridge.allowed.contains("create_plan"))
         XCTAssertTrue(ForgeBridge.allowed.contains("autopilot_control"))
@@ -559,6 +560,89 @@ final class NativeWorkspaceTests: XCTestCase {
         model.selectProject("repo_b")
         XCTAssertEqual(model.repoId,"repo_a")
         XCTAssertTrue(model.error?.contains("停止正在运行") == true)
+    }
+
+    @MainActor
+    func testContextNavigationKeepsOriginAndSupportsBack() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+
+        model.page = .agent
+        model.show(.knowledge)
+        XCTAssertEqual(model.page,.knowledge)
+        XCTAssertEqual(model.navigationBackStack,[.agent])
+        XCTAssertTrue(model.canNavigateBack)
+        XCTAssertEqual(model.navigationBackLabel,NativePage.agent.rawValue)
+
+        model.show(.requirement)
+        XCTAssertEqual(model.navigationBackStack,[.agent,.knowledge])
+        model.goBack()
+        XCTAssertEqual(model.page,.knowledge)
+        model.goBack()
+        XCTAssertEqual(model.page,.agent)
+        XCTAssertFalse(model.canNavigateBack)
+    }
+
+    @MainActor
+    func testOpeningConversationFromProjectScopedPagePreservesReturnPath() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        let threadId = model.selectedThreadId!
+
+        model.page = .knowledge
+        model.selectThread(threadId)
+
+        XCTAssertEqual(model.page,.agent)
+        XCTAssertEqual(model.navigationBackStack,[.knowledge])
+        model.goBack()
+        XCTAssertEqual(model.page,.knowledge)
+    }
+
+    @MainActor
+    func testOpenProjectReusesMostRecentBoundConversation() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        model.threads[0].repoId = "repo_a"
+        model.threads[0].checkoutId = "checkout_a"
+        model.threads[0].updatedAt = Date(timeIntervalSince1970:10)
+        let older = model.threads[0].id
+
+        model.repoId = "repo_a"
+        model.checkoutId = "checkout_a"
+        model.newThread()
+        let newer = model.selectedThreadId!
+        model.threads[0].updatedAt = Date(timeIntervalSince1970:20)
+        model.repoId = "repo_b"
+        model.checkoutId = "checkout_b"
+        model.newThread()
+        let beforeCount = model.threads.count
+
+        model.openProject("repo_a")
+
+        XCTAssertEqual(model.selectedThreadId,newer)
+        XCTAssertNotEqual(model.selectedThreadId,older)
+        XCTAssertEqual(model.threads.count,beforeCount)
+        XCTAssertEqual(model.repoId,"repo_a")
+        XCTAssertEqual(model.checkoutId,"checkout_a")
+    }
+
+    @MainActor
+    func testNewThreadInCurrentProjectUsesExistingCheckoutWithoutSecondRegistryPath() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        model.repoId = "repo_a"
+        model.checkoutId = "checkout_a"
+        let beforeCount = model.threads.count
+
+        model.newThread(inProject:"repo_a")
+
+        XCTAssertEqual(model.threads.count,beforeCount + 1)
+        XCTAssertEqual(model.thread?.repoId,"repo_a")
+        XCTAssertEqual(model.thread?.checkoutId,"checkout_a")
     }
 
     @MainActor
