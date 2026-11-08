@@ -177,7 +177,7 @@ private struct ForgeWorkspaceView: View {
             }
 
             sectionLabel("工作空间").padding(.top,19)
-            ForEach(NativePage.allCases.filter { $0 != .settings }) { section in
+            ForEach(NativePage.allCases.filter { $0 != .settings && $0 != .plan }) { section in
                 navigationRow(section)
             }
 
@@ -244,6 +244,9 @@ private struct ForgeWorkspaceView: View {
         let deleting = deleteThreadId == thread.id
         let running = model.activeConversationId == thread.id
         let showDelete = hovered || deleting
+        let projectLabel = model.projects.first(where: { $0.repoId == thread.repoId })?.label
+            ?? thread.repoId.map { String($0.prefix(16)) }
+            ?? "未绑定项目"
 
         return HStack(spacing:4) {
             Button { model.selectThread(thread.id) } label: {
@@ -252,9 +255,21 @@ private struct ForgeWorkspaceView: View {
                         .symbolRenderingMode(.hierarchical)
                         .font(.system(size:11))
                         .frame(width:17)
-                    Text(thread.title)
-                        .font(.system(size:12,weight:selected ? .medium : .regular))
-                        .lineLimit(1)
+                    VStack(alignment:.leading,spacing:2) {
+                        Text(thread.title)
+                            .font(.system(size:12,weight:selected ? .medium : .regular))
+                            .lineLimit(1)
+                        HStack(spacing:5) {
+                            Text(projectLabel).lineLimit(1)
+                            if let planId = thread.planId, !planId.isEmpty {
+                                Text("· Plan \(String(planId.prefix(12)))").lineLimit(1)
+                            } else if let requirementId = thread.requirementId, !requirementId.isEmpty {
+                                Text("· Req \(String(requirementId.prefix(12)))").lineLimit(1)
+                            }
+                        }
+                        .font(.system(size:9.5))
+                        .foregroundStyle(ForgePalette.secondary.opacity(0.82))
+                    }
                     Spacer(minLength:0)
                 }
                 .frame(maxWidth:.infinity,alignment:.leading)
@@ -293,7 +308,7 @@ private struct ForgeWorkspaceView: View {
             }
         }
         .padding(.leading,10).padding(.trailing,5)
-        .frame(height:34)
+        .frame(height:44)
         .background(selected ? ForgePalette.selectionStrong : (hovered ? ForgePalette.softFill : .clear),
                     in:RoundedRectangle(cornerRadius:10,style:.continuous))
         .contentShape(RoundedRectangle(cornerRadius:10,style:.continuous))
@@ -914,6 +929,27 @@ private struct AgentPane: View {
                         .background(ForgePalette.softFill,
                                     in:RoundedRectangle(cornerRadius:7,style:.continuous))
                 }
+                if let planId = model.thread?.planId, !planId.isEmpty {
+                    Button { Task { await model.openPlan(planId) } } label: {
+                        Text("Plan · \(String(planId.prefix(12)))")
+                            .font(.system(size:9.5,weight:.medium,design:.monospaced))
+                            .lineLimit(1)
+                            .padding(.horizontal,7).frame(height:21)
+                            .background(ForgePalette.softFill,in:RoundedRectangle(cornerRadius:7,style:.continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .help("打开此会话附着的可选 Plan 上下文")
+                } else if let requirementId = model.thread?.requirementId, !requirementId.isEmpty {
+                    Button { Task { await model.openRequirement(requirementId) } } label: {
+                        Text("Req · \(String(requirementId.prefix(12)))")
+                            .font(.system(size:9.5,weight:.medium,design:.monospaced))
+                            .lineLimit(1)
+                            .padding(.horizontal,7).frame(height:21)
+                            .background(ForgePalette.softFill,in:RoundedRectangle(cornerRadius:7,style:.continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .help("打开此会话附着的可选 Requirement 上下文")
+                }
             }
             .help(model.checkoutId.map { "checkout: \($0)" } ?? "当前项目没有 checkout")
 
@@ -921,13 +957,11 @@ private struct AgentPane: View {
 
             ViewThatFits(in:.horizontal) {
                 HStack(spacing:3) {
-                    semanticContextButton("Requirement",page:.requirement,systemImage:"doc.text")
-                    semanticContextButton("Plan",page:.plan,systemImage:"list.bullet.rectangle")
+                    semanticContextButton("规划",page:.requirement,systemImage:"point.3.connected.trianglepath.dotted")
                     semanticContextButton("Knowledge",page:.knowledge,systemImage:"books.vertical")
                 }
                 HStack(spacing:3) {
-                    semanticContextButton("Requirement",page:.requirement,systemImage:"doc.text",compact:true)
-                    semanticContextButton("Plan",page:.plan,systemImage:"list.bullet.rectangle",compact:true)
+                    semanticContextButton("规划",page:.requirement,systemImage:"point.3.connected.trianglepath.dotted",compact:true)
                     semanticContextButton("Knowledge",page:.knowledge,systemImage:"books.vertical",compact:true)
                 }
             }
@@ -1862,40 +1896,102 @@ private struct AgentDiffPatchView: View {
     }
 }
 
+private struct PlanningAuthoringContext: Identifiable {
+    enum Kind { case requirement, plan }
+    let id = UUID()
+    let kind: Kind
+    let requirementId: String?
+    let parentPlanId: String?
+}
+
 private struct RecordsPane: View {
     @ObservedObject var model: NativeWorkspace
+    @State private var authoring: PlanningAuthoringContext?
+    @State private var draftTitle = ""
+    @State private var draftOutcome = ""
+    @State private var draftCriteria = ""
+    @State private var saving = false
 
     var body: some View {
         HStack(spacing:12) {
             ScrollView {
                 LazyVStack(alignment:.leading,spacing:5) {
-                    Text("\(model.records.count) 项")
-                        .font(.system(size:10.5,weight:.medium))
-                        .foregroundStyle(ForgePalette.secondary)
-                        .padding(.horizontal,3).padding(.bottom,9)
+                    VStack(alignment:.leading,spacing:7) {
+                        HStack(spacing:6) {
+                            Text("Requirement / Plan")
+                                .font(.system(size:12,weight:.semibold))
+                            Spacer(minLength:4)
+                            Button { beginRequirement() } label: {
+                                Image(systemName:"doc.badge.plus")
+                            }
+                            .buttonStyle(.plain)
+                            .help("新建 Requirement（可选）")
+                            .disabled(model.repoId == nil)
+                            Button { beginPlan(requirementId:nil,parentPlanId:nil) } label: {
+                                Image(systemName:"plus")
+                            }
+                            .buttonStyle(.plain)
+                            .help("直接新建独立 Plan；不要求 Requirement")
+                            .disabled(model.repoId == nil)
+                        }
+                        Text("可选规划层；不创建 Requirement 也可以直接使用 Agent。")
+                            .font(.system(size:10.5))
+                            .foregroundStyle(ForgePalette.secondary)
+                            .fixedSize(horizontal:false,vertical:true)
+                        Text("\(model.records.count) 个节点")
+                            .font(.system(size:10,weight:.medium))
+                            .foregroundStyle(ForgePalette.secondary.opacity(0.82))
+                    }
+                    .padding(.horizontal,3).padding(.bottom,9)
+                    if model.records.isEmpty {
+                        Text("当前项目还没有持久规划。直接回到「会话」即可工作；需要长期规划时再创建 Requirement / Plan。")
+                            .font(.system(size:11.5))
+                            .foregroundStyle(ForgePalette.secondary)
+                            .lineSpacing(3)
+                            .padding(12)
+                            .frame(maxWidth:.infinity,alignment:.leading)
+                            .background(ForgePalette.softFill,in:RoundedRectangle(cornerRadius:11,style:.continuous))
+                    }
                     ForEach(model.records) { item in
                         Button {
                             Task { await model.openRecord(item.id) }
                         } label: {
-                            VStack(alignment:.leading,spacing:6) {
-                                Text(item.title).font(.system(size:12,weight:.medium))
-                                    .lineLimit(2).multilineTextAlignment(.leading)
-                                HStack {
-                                    Text(item.id).lineLimit(1)
-                                    Spacer()
-                                    Text(item.state)
-                                }.font(.system(size:10)).foregroundStyle(ForgePalette.secondary)
+                            HStack(alignment:.top,spacing:8) {
+                                if item.depth > 0 {
+                                    Rectangle()
+                                        .fill(ForgePalette.secondary.opacity(0.18))
+                                        .frame(width:1)
+                                        .padding(.leading,CGFloat(max(0,item.depth - 1) * 14 + 5))
+                                }
+                                Image(systemName:item.kind == .requirement ? "doc.text.fill" : "arrow.turn.down.right")
+                                    .symbolRenderingMode(.hierarchical)
+                                    .font(.system(size:item.kind == .requirement ? 11 : 10))
+                                    .foregroundStyle(item.kind == .requirement ? ForgePalette.ink : ForgePalette.secondary)
+                                    .frame(width:16,height:18)
+                                VStack(alignment:.leading,spacing:5) {
+                                    Text(item.title)
+                                        .font(.system(size:12,weight:item.kind == .requirement ? .semibold : .medium))
+                                        .lineLimit(2).multilineTextAlignment(.leading)
+                                    HStack(spacing:6) {
+                                        Text(item.recordId).lineLimit(1)
+                                        Spacer(minLength:0)
+                                        if !item.state.isEmpty { Text(item.state) }
+                                    }
+                                    .font(.system(size:9.5,design:.monospaced))
+                                    .foregroundStyle(ForgePalette.secondary)
+                                }
                             }
-                            .padding(.horizontal,11).padding(.vertical,10)
+                            .padding(.leading,CGFloat(item.depth * 10))
+                            .padding(.horizontal,8).padding(.vertical,9)
                             .frame(maxWidth:.infinity,alignment:.leading)
                             .background(item.id == model.selectedRecord ?
                                 ForgePalette.selection : .clear,
-                                in:RoundedRectangle(cornerRadius:12,style:.continuous))
+                                in:RoundedRectangle(cornerRadius:11,style:.continuous))
                         }
                         .buttonStyle(.plain)
                         .accessibilityLabel(item.title)
-                        .accessibilityValue("\(item.id) · \(item.state)")
-                        .accessibilityIdentifier("semantic.record.\(item.id)")
+                        .accessibilityValue("\(item.recordId) · \(item.state)")
+                        .accessibilityIdentifier("semantic.record.\(item.kind.rawValue).\(item.recordId)")
                     }
                 }.padding(11)
             }
@@ -1910,7 +2006,7 @@ private struct RecordsPane: View {
                         HStack(alignment:.top,spacing:12) {
                             VStack(alignment:.leading,spacing:7) {
                                 Text(selected.title).font(.system(size:20,weight:.medium))
-                                Text(selected.id).font(.system(size:11,design:.monospaced))
+                                Text(selected.recordId).font(.system(size:11,design:.monospaced))
                                     .foregroundStyle(ForgePalette.secondary)
                             }
                             Spacer()
@@ -1942,7 +2038,116 @@ private struct RecordsPane: View {
                 .frame(maxWidth:.infinity,alignment:.leading)
                 .padding(.horizontal,22).padding(.vertical,24)
             }
-        }.background(ForgePalette.canvas)
+        }
+        .background(ForgePalette.canvas)
+        .sheet(item:$authoring) { context in
+            planningAuthoringSheet(context)
+        }
+    }
+
+    private func beginRequirement() {
+        draftTitle = ""
+        draftOutcome = ""
+        draftCriteria = ""
+        authoring = PlanningAuthoringContext(kind:.requirement,requirementId:nil,parentPlanId:nil)
+    }
+
+    private func beginPlan(requirementId:String?,parentPlanId:String?) {
+        draftTitle = ""
+        draftOutcome = ""
+        draftCriteria = ""
+        authoring = PlanningAuthoringContext(kind:.plan,requirementId:requirementId,parentPlanId:parentPlanId)
+    }
+
+    @ViewBuilder
+    private func planningAuthoringSheet(_ context: PlanningAuthoringContext) -> some View {
+        VStack(alignment:.leading,spacing:16) {
+            HStack {
+                VStack(alignment:.leading,spacing:4) {
+                    Text(context.kind == .requirement ? "新建 Requirement" : "新建 Plan")
+                        .font(.system(size:18,weight:.semibold))
+                    Text(authoringSubtitle(context))
+                        .font(.system(size:11)).foregroundStyle(ForgePalette.secondary)
+                }
+                Spacer()
+                Button { authoring = nil } label: { Image(systemName:"xmark") }
+                    .buttonStyle(.plain).disabled(saving)
+            }
+
+            if context.kind == .requirement {
+                VStack(alignment:.leading,spacing:6) {
+                    Text("标题").font(.system(size:11,weight:.medium))
+                    TextField("例如：实现无人值守规划",text:$draftTitle)
+                        .textFieldStyle(.roundedBorder)
+                }
+            }
+
+            VStack(alignment:.leading,spacing:6) {
+                Text(context.kind == .requirement ? "目标 / Outcome" : "Plan 目标")
+                    .font(.system(size:11,weight:.medium))
+                TextEditor(text:$draftOutcome)
+                    .font(.system(size:12))
+                    .frame(height:92)
+                    .padding(6)
+                    .background(ForgePalette.softFill,in:RoundedRectangle(cornerRadius:9,style:.continuous))
+            }
+
+            if context.kind == .requirement {
+                VStack(alignment:.leading,spacing:6) {
+                    Text("验收标准（每行一条，可选）").font(.system(size:11,weight:.medium))
+                    TextEditor(text:$draftCriteria)
+                        .font(.system(size:12))
+                        .frame(height:82)
+                        .padding(6)
+                        .background(ForgePalette.softFill,in:RoundedRectangle(cornerRadius:9,style:.continuous))
+                }
+            }
+
+            HStack {
+                Text("创建只写入 Forge canonical Requirement / Plan；不会启动执行。")
+                    .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
+                Spacer()
+                Button("取消") { authoring = nil }.disabled(saving)
+                Button(saving ? "创建中…" : "创建") { submitAuthoring(context) }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(saving || draftOutcome.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty ||
+                              (context.kind == .requirement && draftTitle.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty))
+            }
+        }
+        .padding(20)
+        .frame(width:460)
+        .interactiveDismissDisabled(saving)
+    }
+
+    private func authoringSubtitle(_ context: PlanningAuthoringContext) -> String {
+        if context.kind == .requirement { return "Requirement 是可选的持久需求根，不是使用 Forge 的前置条件。" }
+        if let parentPlanId = context.parentPlanId { return "作为 \(parentPlanId) 的子 Plan 继续细化。" }
+        if let requirementId = context.requirementId { return "在 \(requirementId) 下创建根 Plan。" }
+        return "独立 Plan；无需先创建 Requirement。"
+    }
+
+    private func submitAuthoring(_ context: PlanningAuthoringContext) {
+        guard !saving else { return }
+        saving = true
+        Task {
+            let created: String?
+            switch context.kind {
+            case .requirement:
+                created = await model.createRequirement(
+                    title:draftTitle,
+                    outcome:draftOutcome,
+                    acceptanceCriteria:draftCriteria.components(separatedBy:.newlines)
+                )
+            case .plan:
+                created = await model.createPlan(
+                    objective:draftOutcome,
+                    requirementId:context.requirementId,
+                    parentPlanId:context.parentPlanId
+                )
+            }
+            saving = false
+            if created != nil { authoring = nil }
+        }
     }
 
     @ViewBuilder
@@ -1950,6 +2155,22 @@ private struct RecordsPane: View {
         switch detail {
         case .requirement(let requirement):
             VStack(alignment:.leading,spacing:18) {
+                HStack(spacing:9) {
+                    Button {
+                        model.newThreadForRequirement(requirement.requirementId)
+                    } label: {
+                        Label("以此 Requirement 新建会话",systemImage:"bubble.left.and.bubble.right")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    Button {
+                        beginPlan(requirementId:requirement.requirementId,parentPlanId:nil)
+                    } label: {
+                        Label("添加根 Plan",systemImage:"plus")
+                    }
+                    .buttonStyle(.bordered)
+                    Text("可选上下文，不影响普通 Agent 会话。")
+                        .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
+                }
                 semanticSection("目标") {
                     Text(requirement.outcomeStatement.isEmpty ? "未提供 outcome。" : requirement.outcomeStatement)
                         .font(.system(size:12.5)).lineSpacing(4).textSelection(.enabled)
@@ -1975,8 +2196,41 @@ private struct RecordsPane: View {
             }
         case .plan(let plan):
             VStack(alignment:.leading,spacing:18) {
+                HStack(spacing:9) {
+                    Button {
+                        model.newThreadForPlan(plan)
+                    } label: {
+                        Label("以此 Plan 新建会话",systemImage:"bubble.left.and.bubble.right")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    Button {
+                        beginPlan(requirementId:plan.requirementId,parentPlanId:plan.planId)
+                    } label: {
+                        Label("细化子 Plan",systemImage:"arrow.turn.down.right")
+                    }
+                    .buttonStyle(.bordered)
+                    Text("会话仍由 Project / checkout 承载；Plan 只是附加语义上下文。")
+                        .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
+                }
                 semanticSection("目标") {
                     Text(plan.goal).font(.system(size:12.5)).lineSpacing(4).textSelection(.enabled)
+                }
+                if let parentPlanId = plan.parentPlanId, !parentPlanId.isEmpty {
+                    Button {
+                        Task { await model.openPlan(parentPlanId) }
+                    } label: {
+                        HStack(spacing:7) {
+                            Image(systemName:"arrow.turn.up.left")
+                            Text("上级 Plan")
+                            Text(parentPlanId).font(.system(size:10,design:.monospaced)).foregroundStyle(.secondary)
+                            Spacer(minLength:0)
+                            Image(systemName:"chevron.right").font(.system(size:9,weight:.semibold))
+                        }
+                        .font(.system(size:11,weight:.medium))
+                        .padding(.horizontal,11).frame(height:34)
+                        .background(ForgePalette.softFill,in:RoundedRectangle(cornerRadius:9,style:.continuous))
+                    }
+                    .buttonStyle(.plain)
                 }
                 if let requirementId = plan.requirementId, !requirementId.isEmpty {
                     Button {

@@ -13,6 +13,8 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertTrue(ForgeBridge.allowed.contains("repair_connection"))
         XCTAssertTrue(ForgeBridge.allowed.contains("read_local_api_settings"))
         XCTAssertTrue(ForgeBridge.allowed.contains("save_local_api_settings"))
+        XCTAssertTrue(ForgeBridge.allowed.contains("create_requirement"))
+        XCTAssertTrue(ForgeBridge.allowed.contains("create_plan"))
         XCTAssertTrue(ForgeBridge.allowed.contains("clear_local_api_key"))
         XCTAssertFalse(ForgeBridge.allowed.contains("send_local_api_conversation"))
         XCTAssertFalse(ForgeBridge.allowed.contains("cancel_local_api_conversation"))
@@ -40,8 +42,33 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertNil(restored.threads.first?.checkoutId)
         XCTAssertEqual(restored.threads.first?.model, "gpt-6.1-sol")
         XCTAssertEqual(restored.threads.first?.reasoningEffort, "high")
+        XCTAssertNil(restored.threads.first?.requirementId)
+        XCTAssertNil(restored.threads.first?.planId)
         let persisted = try String(contentsOf:store,encoding:.utf8)
         XCTAssertFalse(persisted.contains("workId"))
+    }
+
+    @MainActor
+    func testPlanningContextIsOptionalAndPersistsOnlyWhenExplicitlyAttached() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = folder.appendingPathComponent("conversations.json")
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:store)
+        XCTAssertNil(model.thread?.requirementId)
+        XCTAssertNil(model.thread?.planId)
+
+        model.repoId = "repo_a"
+        model.checkoutId = "checkout_a"
+        model.newThread(requirementId:"REQ-a",planId:"PLAN-a")
+        XCTAssertEqual(model.thread?.repoId,"repo_a")
+        XCTAssertEqual(model.thread?.checkoutId,"checkout_a")
+        XCTAssertEqual(model.thread?.requirementId,"REQ-a")
+        XCTAssertEqual(model.thread?.planId,"PLAN-a")
+        model.persist()
+
+        let restored = NativeWorkspace(store:store)
+        XCTAssertEqual(restored.thread?.requirementId,"REQ-a")
+        XCTAssertEqual(restored.thread?.planId,"PLAN-a")
     }
 
     func testLegacyMessageDecodesWithoutToolActivity() throws {
@@ -95,7 +122,15 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(messages[1]["content"],"old answer")
         XCTAssertTrue(messages[2]["content"]?.contains("Forge selected repository file context") == true)
         XCTAssertTrue(messages[2]["content"]?.contains("a.ts") == true)
+        XCTAssertFalse(messages[2]["content"]?.contains("Forge optional semantic planning context") == true)
         XCTAssertFalse(messages[0]["content"]?.contains("Forge selected repository file context") == true)
+
+        thread.requirementId = "REQ-a"
+        thread.planId = "PLAN-a"
+        let attached = NativeWorkspace.apiTurnMessages(thread,prompt:"continue",contextPaths:[])
+        XCTAssertTrue(attached.last?["content"]?.contains("Forge optional semantic planning context") == true)
+        XCTAssertTrue(attached.last?["content"]?.contains("REQ-a") == true)
+        XCTAssertTrue(attached.last?["content"]?.contains("PLAN-a") == true)
 
         XCTAssertTrue(NativeWorkspace.apiEffectsAuthorized(
             provider:"api",requested:true,repoId:"repo",checkoutId:"checkout"
@@ -202,7 +237,7 @@ final class NativeWorkspaceTests: XCTestCase {
 
         let plan = NativeWorkspace.planDetail([
             "data":["plan":[
-                "planId":"PLAN-a","revision":8,"requirementId":"REQ-a",
+                "planId":"PLAN-a","revision":8,"requirementId":"REQ-a","parentPlanId":"PLAN-root",
                 "sourceBasisRevision":"abcdef123456","goal":"Ship client",
                 "items":[["id":"p1","objective":"Polish UI"]],
                 "resolvedDecisions":["One native app"],"nonGoals":["No Work lifecycle"],
@@ -210,9 +245,34 @@ final class NativeWorkspaceTests: XCTestCase {
         ])
         XCTAssertEqual(plan?.planId,"PLAN-a")
         XCTAssertEqual(plan?.requirementId,"REQ-a")
+        XCTAssertEqual(plan?.parentPlanId,"PLAN-root")
         XCTAssertEqual(plan?.items.first?.objective,"Polish UI")
         XCTAssertEqual(plan?.resolvedDecisions,["One native app"])
         XCTAssertEqual(plan?.nonGoals,["No Work lifecycle"])
+    }
+
+    func testSemanticRecordIdsAreBoundedAndTyped() {
+        let uuid = UUID(uuidString:"01234567-89AB-CDEF-0123-456789ABCDEF")!
+        XCTAssertEqual(NativeWorkspace.semanticRecordId(prefix:"REQ",uuid:uuid),"REQ-0123456789ab")
+        XCTAssertEqual(NativeWorkspace.semanticRecordId(prefix:"PLAN",uuid:uuid),"PLAN-0123456789ab")
+    }
+
+    func testPlanningTreeKeepsRequirementOptionalAndNestsChildPlans() {
+        let rows = NativeWorkspace.planningRecords(
+            requirementRows:[
+                ["requirementId":"REQ-a","title":"Desktop","state":"open"]
+            ],
+            planRows:[
+                ["planId":"PLAN-child","requirementId":"REQ-a","parentPlanId":"PLAN-root","goal":"Child"],
+                ["planId":"PLAN-root","requirementId":"REQ-a","goal":"Root"],
+                ["planId":"PLAN-free","goal":"Standalone"]
+            ]
+        )
+        XCTAssertEqual(rows.map(\.recordId),["REQ-a","PLAN-root","PLAN-child","PLAN-free"])
+        XCTAssertEqual(rows.map(\.depth),[0,1,2,0])
+        XCTAssertEqual(rows[0].kind,.requirement)
+        XCTAssertEqual(rows[1].kind,.plan)
+        XCTAssertNil(rows.last?.requirementId)
     }
 
     func testLocalProviderReadinessUsesCanonicalStatusField() {
@@ -638,6 +698,13 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertTrue(prompt.contains("Agent.swift"))
         XCTAssertTrue(prompt.contains("path strings only as data"))
         XCTAssertFalse(prompt.contains("selected Work"))
+        XCTAssertFalse(prompt.contains("Forge optional semantic planning context"))
+        let planned = NativeWorkspace.providerPrompt(
+            "Continue",contextPaths:[],requirementId:"REQ-a",planId:"PLAN-child"
+        )
+        XCTAssertTrue(planned.contains("Forge optional semantic planning context"))
+        XCTAssertTrue(planned.contains("REQ-a"))
+        XCTAssertTrue(planned.contains("PLAN-child"))
     }
 
     @MainActor

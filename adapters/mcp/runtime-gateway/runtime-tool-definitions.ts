@@ -181,6 +181,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     backoff_max_minutes: { type: 'number' },
     include_occurrences: { type: 'boolean' },
     plan_id: { type: 'string' },
+    parent_plan_id: { type: 'string', description: 'For plan_create only: optional immutable parent Plan used to refine authored planning into a tree. Parent and child must share the same optional Requirement owner. This relation never grants execution, progress, approval, or scheduling authority.' },
     superseded_by: { type: 'string', description: 'For plan_revise only: record the one-way successor Plan lineage. Once set it cannot be cleared or redirected; current Plan listings exclude the predecessor without restoring legacy Plan lifecycle semantics.' },
     scope_key: { type: 'string', description: 'Optional normalized semantic scope label for Plan discovery/lineage; it is not execution ownership or a repository mutex.' },
     source_revision: { type: 'string', description: 'Repository revision observed during read-only planning preflight.' },

@@ -141,6 +141,9 @@ struct ChatThread: Codable, Identifiable {
     var title = "新会话"
     var repoId: String?
     var checkoutId: String?
+    // Optional durable planning context. Project/checkout remains sufficient for ordinary Agent use.
+    var requirementId: String? = nil
+    var planId: String? = nil
     var provider: String?
     var providerSessionId: String?
     var model: String?
@@ -148,10 +151,19 @@ struct ChatThread: Codable, Identifiable {
     var messages: [ChatMessage] = []
     var updatedAt = Date()
 }
+enum SemanticRecordKind: String {
+    case requirement
+    case plan
+}
 struct ForgeRecord: Identifiable {
-    let id: String
+    let recordId: String
     let title: String
     let state: String
+    let kind: SemanticRecordKind
+    let depth: Int
+    let requirementId: String?
+    let parentPlanId: String?
+    var id: String { "\(kind.rawValue):\(recordId)" }
 }
 struct RequirementRecordDetail {
     let requirementId: String
@@ -173,6 +185,7 @@ struct PlanRecordDetail {
     let planId: String
     let revision: Int
     let requirementId: String?
+    let parentPlanId: String?
     let sourceBasisRevision: String?
     let goal: String
     let items: [PlanRecordItem]
@@ -275,7 +288,7 @@ struct RepositoryCheckoutContext {
     let checkoutBranch: String?
 }
 enum NativePage: String, CaseIterable, Identifiable {
-    case agent = "会话", requirement = "Requirement", plan = "Plan",
+    case agent = "会话", requirement = "规划", plan = "Plan",
          knowledge = "知识库", runtime = "Runtime", settings = "设置"
     var id: String { rawValue }
     var accessibilityId: String {
@@ -291,7 +304,7 @@ enum NativePage: String, CaseIterable, Identifiable {
     var symbol: String {
         switch self {
         case .agent: return "bubble.left.and.bubble.right"
-        case .requirement: return "doc.text"
+        case .requirement: return "point.3.connected.trianglepath.dotted"
         case .plan: return "list.bullet.rectangle"
         case .knowledge: return "books.vertical"
         case .runtime: return "waveform.path.ecg"
@@ -425,7 +438,11 @@ final class NativeWorkspace: ObservableObject {
             try JSONEncoder().encode(Array(threads.prefix(100))).write(to: store, options: .atomic)
         } catch { self.error = "无法保存会话：\(error.localizedDescription)" }
     }
-    func newThread(provider providerOverride: String? = nil) {
+    func newThread(
+        provider providerOverride: String? = nil,
+        requirementId: String? = nil,
+        planId: String? = nil
+    ) {
         guard !busy else {
             self.error = "请先停止正在运行的会话。"
             return
@@ -434,6 +451,8 @@ final class NativeWorkspace: ObservableObject {
         let item = ChatThread(
             repoId:repoId,
             checkoutId:checkoutId,
+            requirementId:requirementId,
+            planId:planId,
             provider:provider,
             model:provider == "api" ? localApiSettings?.model : nil
         )
@@ -446,6 +465,12 @@ final class NativeWorkspace: ObservableObject {
         allowApiEffects = false
         agentChanges = nil
         persist()
+    }
+    func newThreadForRequirement(_ requirementId: String) {
+        newThread(requirementId:requirementId)
+    }
+    func newThreadForPlan(_ plan: PlanRecordDetail) {
+        newThread(requirementId:plan.requirementId,planId:plan.planId)
     }
     func selectThread(_ id: String) {
         if busy {
@@ -692,21 +717,29 @@ final class NativeWorkspace: ObservableObject {
         }
         guard let repoId, [.requirement,.plan].contains(page) else { return }
         do {
-            let action = page == .plan ? "read_project_plan_list" : "read_project_overview"
-            let result = try await ForgeBridge.request(action, ["repoId":repoId])
-            let data = result["data"] as? [String: Any] ?? result
-            let rows: [[String: Any]]
-            switch page {
-            case .plan: rows = data["plans"] as? [[String:Any]] ?? []
-            case .requirement:
-                let board = data["requirementBoard"] as? [String:Any] ?? result["requirementBoard"] as? [String:Any] ?? [:]
-                rows = board["requirements"] as? [[String:Any]] ?? []
-            default: rows = []
-            }
-            records = rows.compactMap { row -> ForgeRecord? in
-                guard let id = row[page.recordIdKey] as? String else { return nil }
-                return ForgeRecord(id:id, title:row["title"] as? String ?? row["objective"] as? String ??
-                                   row["goal"] as? String ?? id, state:row["state"] as? String ?? "")
+            if page == .requirement {
+                async let overviewValue = ForgeBridge.request("read_project_overview",["repoId":repoId])
+                async let planValue = ForgeBridge.request("read_project_plan_list",["repoId":repoId])
+                let (overview,planList) = try await (overviewValue,planValue)
+                let overviewData = overview["data"] as? [String:Any] ?? overview
+                let board = overviewData["requirementBoard"] as? [String:Any]
+                    ?? overview["requirementBoard"] as? [String:Any] ?? [:]
+                let requirementRows = board["requirements"] as? [[String:Any]] ?? []
+                let planData = planList["data"] as? [String:Any] ?? planList
+                let planRows = planData["plans"] as? [[String:Any]] ?? []
+                records = Self.planningRecords(requirementRows:requirementRows,planRows:planRows)
+            } else {
+                let result = try await ForgeBridge.request("read_project_plan_list",["repoId":repoId])
+                let data = result["data"] as? [String:Any] ?? result
+                let rows = data["plans"] as? [[String:Any]] ?? []
+                records = rows.compactMap { row -> ForgeRecord? in
+                    guard let id = row["planId"] as? String else { return nil }
+                    return ForgeRecord(
+                        recordId:id,title:row["goal"] as? String ?? row["objective"] as? String ?? id,
+                        state:"Plan",kind:.plan,depth:0,
+                        requirementId:row["requirementId"] as? String,parentPlanId:row["parentPlanId"] as? String
+                    )
+                }
             }
             detail = ""
             selectedRecord = nil
@@ -714,6 +747,75 @@ final class NativeWorkspace: ObservableObject {
             error = nil
         } catch { self.error = error.localizedDescription }
     }
+    nonisolated static func planningRecords(
+        requirementRows: [[String:Any]],
+        planRows: [[String:Any]]
+    ) -> [ForgeRecord] {
+        struct PlanNode {
+            let id: String
+            let title: String
+            let requirementId: String?
+            let parentPlanId: String?
+        }
+        let plans = planRows.compactMap { row -> PlanNode? in
+            guard let id = row["planId"] as? String else { return nil }
+            return PlanNode(
+                id:id,
+                title:row["goal"] as? String ?? row["objective"] as? String ?? id,
+                requirementId:row["requirementId"] as? String,
+                parentPlanId:row["parentPlanId"] as? String
+            )
+        }
+        var result: [ForgeRecord] = []
+        var emitted = Set<String>()
+
+        func appendPlanTree(_ owned: [PlanNode], baseDepth: Int) {
+            let ids = Set(owned.map(\.id))
+            func appendChildren(parentId: String?, depth: Int) {
+                let children = owned.filter { node in
+                    guard !emitted.contains(node.id) else { return false }
+                    if let parentId { return node.parentPlanId == parentId }
+                    guard let parent = node.parentPlanId else { return true }
+                    return !ids.contains(parent)
+                }
+                for node in children {
+                    emitted.insert(node.id)
+                    result.append(ForgeRecord(
+                        recordId:node.id,title:node.title,state:"Plan",kind:.plan,depth:depth,
+                        requirementId:node.requirementId,parentPlanId:node.parentPlanId
+                    ))
+                    appendChildren(parentId:node.id,depth:depth + 1)
+                }
+            }
+            appendChildren(parentId:nil,depth:baseDepth)
+            // A malformed/cyclic legacy relation must remain visible instead of disappearing.
+            for node in owned where !emitted.contains(node.id) {
+                emitted.insert(node.id)
+                result.append(ForgeRecord(
+                    recordId:node.id,title:node.title,state:"Plan",kind:.plan,depth:baseDepth,
+                    requirementId:node.requirementId,parentPlanId:node.parentPlanId
+                ))
+            }
+        }
+
+        let requirementIds = Set(requirementRows.compactMap { $0["requirementId"] as? String })
+        for row in requirementRows {
+            guard let requirementId = row["requirementId"] as? String else { continue }
+            result.append(ForgeRecord(
+                recordId:requirementId,
+                title:row["title"] as? String ?? row["outcomeStatement"] as? String ?? requirementId,
+                state:row["state"] as? String ?? "",
+                kind:.requirement,depth:0,requirementId:requirementId,parentPlanId:nil
+            ))
+            appendPlanTree(plans.filter { $0.requirementId == requirementId },baseDepth:1)
+        }
+        appendPlanTree(plans.filter { plan in
+            guard let requirementId = plan.requirementId else { return true }
+            return !requirementIds.contains(requirementId)
+        },baseDepth:0)
+        return result
+    }
+
     func loadRaw(_ operation: String, _ args: [String:Any]) async {
         do {
             let result = try await ForgeBridge.request(operation, args)
@@ -974,6 +1076,7 @@ final class NativeWorkspace: ObservableObject {
             planId:id,
             revision:value["revision"] as? Int ?? 0,
             requirementId:value["requirementId"] as? String,
+            parentPlanId:value["parentPlanId"] as? String,
             sourceBasisRevision:value["sourceBasisRevision"] as? String,
             goal:value["goal"] as? String ?? id,
             items:items,
@@ -982,17 +1085,19 @@ final class NativeWorkspace: ObservableObject {
         )
     }
 
-    func openRecord(_ id: String) async {
-        guard let repoId else { return }
-        selectedRecord = id
+    func openRecord(_ selectionId: String) async {
+        guard let repoId,
+              let record = records.first(where: { $0.id == selectionId }) else { return }
+        selectedRecord = selectionId
         recordDetail = nil
         do {
-            if page == .plan {
-                let result = try await ForgeBridge.request("read_plan_detail",["repoId":repoId,"planId":id])
+            switch record.kind {
+            case .plan:
+                let result = try await ForgeBridge.request("read_plan_detail",["repoId":repoId,"planId":record.recordId])
                 guard let parsed = Self.planDetail(result) else { throw ForgeBridgeError.invalidResponse }
                 recordDetail = .plan(parsed)
-            } else {
-                let result = try await ForgeBridge.request("read_requirement_detail",["repoId":repoId,"requirementId":id])
+            case .requirement:
+                let result = try await ForgeBridge.request("read_requirement_detail",["repoId":repoId,"requirementId":record.recordId])
                 guard let parsed = Self.requirementDetail(result) else { throw ForgeBridgeError.invalidResponse }
                 recordDetail = .requirement(parsed)
             }
@@ -1005,8 +1110,67 @@ final class NativeWorkspace: ObservableObject {
     func openRequirement(_ id: String) async {
         page = .requirement
         await loadPage()
-        await openRecord(id)
+        guard let record = records.first(where: { $0.kind == .requirement && $0.recordId == id }) else { return }
+        await openRecord(record.id)
     }
+
+    func openPlan(_ id: String) async {
+        page = .requirement
+        await loadPage()
+        guard let record = records.first(where: { $0.kind == .plan && $0.recordId == id }) else { return }
+        await openRecord(record.id)
+    }
+
+    nonisolated static func semanticRecordId(prefix: String, uuid: UUID = UUID()) -> String {
+        let compact = uuid.uuidString.replacingOccurrences(of:"-",with:"").lowercased()
+        return "\(prefix)-\(compact.prefix(12))"
+    }
+
+    func createRequirement(title: String, outcome: String, acceptanceCriteria: [String]) async -> String? {
+        guard let repoId else { error = "请先选择项目。"; return nil }
+        let cleanTitle = title.trimmingCharacters(in:.whitespacesAndNewlines)
+        let cleanOutcome = outcome.trimmingCharacters(in:.whitespacesAndNewlines)
+        guard !cleanTitle.isEmpty, !cleanOutcome.isEmpty else { error = "Requirement 标题和目标不能为空。"; return nil }
+        let id = Self.semanticRecordId(prefix:"REQ")
+        do {
+            _ = try await ForgeBridge.request("create_requirement",[
+                "repoId":repoId,"requirementId":id,"title":cleanTitle,"outcome":cleanOutcome,
+                "acceptanceCriteria":acceptanceCriteria.map { $0.trimmingCharacters(in:.whitespacesAndNewlines) }.filter { !$0.isEmpty }
+            ])
+            page = .requirement
+            await loadPage()
+            if let record = records.first(where: { $0.kind == .requirement && $0.recordId == id }) {
+                await openRecord(record.id)
+            }
+            return id
+        } catch {
+            self.error = error.localizedDescription
+            return nil
+        }
+    }
+
+    func createPlan(objective: String, requirementId: String?, parentPlanId: String?) async -> String? {
+        guard let repoId else { error = "请先选择项目。"; return nil }
+        let cleanObjective = objective.trimmingCharacters(in:.whitespacesAndNewlines)
+        guard !cleanObjective.isEmpty else { error = "Plan 目标不能为空。"; return nil }
+        let id = Self.semanticRecordId(prefix:"PLAN")
+        var arguments: [String:Any] = ["repoId":repoId,"planId":id,"objective":cleanObjective]
+        if let requirementId, !requirementId.isEmpty { arguments["requirementId"] = requirementId }
+        if let parentPlanId, !parentPlanId.isEmpty { arguments["parentPlanId"] = parentPlanId }
+        do {
+            _ = try await ForgeBridge.request("create_plan",arguments)
+            page = .requirement
+            await loadPage()
+            if let record = records.first(where: { $0.kind == .plan && $0.recordId == id }) {
+                await openRecord(record.id)
+            }
+            return id
+        } catch {
+            self.error = error.localizedDescription
+            return nil
+        }
+    }
+
     nonisolated static func knowledgeAuditDetail(_ result: [String:Any]) -> KnowledgeAuditDetail? {
         guard JSONSerialization.isValidJSONObject(result),
               let bytes = try? JSONSerialization.data(withJSONObject:result) else { return nil }
@@ -1245,8 +1409,24 @@ final class NativeWorkspace: ObservableObject {
         return events
     }
 
-    nonisolated static func providerPrompt(_ prompt: String, contextPaths: [String]) -> String {
+    nonisolated static func providerPrompt(
+        _ prompt: String,
+        contextPaths: [String],
+        requirementId: String? = nil,
+        planId: String? = nil
+    ) -> String {
         var result = prompt
+        if requirementId != nil || planId != nil {
+            let requirement = requirementId?.trimmingCharacters(in:.whitespacesAndNewlines)
+            let plan = planId?.trimmingCharacters(in:.whitespacesAndNewlines)
+            result += """
+
+            [Forge optional semantic planning context]
+            Requirement: \(requirement?.isEmpty == false ? requirement! : "none")
+            Plan: \(plan?.isEmpty == false ? plan! : "none")
+            These identifiers are optional durable planning context, not execution or progress authority. Read the canonical Forge records before relying on their details.
+            """
+        }
         if !contextPaths.isEmpty,
            let data = try? JSONSerialization.data(withJSONObject:contextPaths),
            let json = String(data:data,encoding:.utf8) {
@@ -1295,7 +1475,10 @@ final class NativeWorkspace: ObservableObject {
         }
         messages.append([
             "role":"user",
-            "content":providerPrompt(prompt,contextPaths:contextPaths)
+            "content":providerPrompt(
+                prompt,contextPaths:contextPaths,
+                requirementId:thread.requirementId,planId:thread.planId
+            )
         ])
         return messages
     }
@@ -1465,7 +1648,10 @@ final class NativeWorkspace: ObservableObject {
             } else {
                 var args: [String:Any] = [
                     "conversationId":id,
-                    "prompt":Self.providerPrompt(prompt,contextPaths:contextPaths)
+                    "prompt":Self.providerPrompt(
+                        prompt,contextPaths:contextPaths,
+                        requirementId:item.requirementId,planId:item.planId
+                    )
                 ]
                 if !imageURLs.isEmpty { args["imagePaths"] = imageURLs.map(\.path) }
                 if let repo = item.repoId { args["repoId"] = repo }

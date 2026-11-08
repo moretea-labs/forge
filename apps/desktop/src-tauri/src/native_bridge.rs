@@ -51,6 +51,24 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
             read_requirement_detail(required(args, "repoId")?, required(args, "requirementId")?).await,
         "read_plan_detail" =>
             read_plan_detail(required(args, "repoId")?, required(args, "planId")?).await,
+        "create_requirement" =>
+            create_requirement(
+                required(args,"repoId")?,
+                required(args,"requirementId")?,
+                required_bounded(args,"title",240)?,
+                required_bounded(args,"outcome",4000)?,
+                args.get("acceptanceCriteria").and_then(Value::as_array)
+                    .map(|values| values.iter().filter_map(Value::as_str).map(str::to_owned).take(32).collect())
+                    .unwrap_or_default(),
+            ).await,
+        "create_plan" =>
+            create_plan(
+                required(args,"repoId")?,
+                required(args,"planId")?,
+                required_bounded(args,"objective",4000)?,
+                args.get("requirementId").and_then(Value::as_str).map(str::to_owned),
+                args.get("parentPlanId").and_then(Value::as_str).map(str::to_owned),
+            ).await,
         "read_project_knowledge" =>
             read_project_knowledge(
                 required(args, "repoId")?,

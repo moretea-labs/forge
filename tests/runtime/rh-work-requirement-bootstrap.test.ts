@@ -483,6 +483,55 @@ describe('rh_work Requirement bootstrap', () => {
     expect(stored?.steps).toEqual([]);
     expect(stored?.semanticRevision).toBe(1);
 
+    const child = structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'plan_create',
+      plan_id: 'PLAN-THIN-CREATE-CHILD',
+      requirement_id: 'REQ-THIN-PLAN-CREATE',
+      parent_plan_id: 'PLAN-THIN-CREATE',
+      scope_key: 'thin-plan-create-child',
+      source_revision: sourceRevision,
+      objective: 'Refine the root Plan without creating execution authority.',
+      plan_items: [{ id: 'child-a', objective: 'Describe the child slice.', dependencies: [] }],
+    }));
+    expect(child.status).toBe('ok');
+    expect(child.data.plan).toMatchObject({
+      planId: 'PLAN-THIN-CREATE-CHILD',
+      requirementId: 'REQ-THIN-PLAN-CREATE',
+      parentPlanId: 'PLAN-THIN-CREATE',
+    });
+    expect(getPlanContract({ controllerHome, repoId: repository.repoId }, 'PLAN-THIN-CREATE-CHILD')?.parentPlanId)
+      .toBe('PLAN-THIN-CREATE');
+
+    const listed = structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'plan_list',
+      limit: 20,
+    }));
+    expect(listed.data.plans).toContainEqual(expect.objectContaining({
+      planId: 'PLAN-THIN-CREATE-CHILD', parentPlanId: 'PLAN-THIN-CREATE',
+    }));
+
+    expect(structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'requirement_create',
+      requirement_id: 'REQ-THIN-PLAN-OTHER',
+      requirement_title: 'Other Requirement',
+      requirement_outcome: 'Own an independent Plan tree.',
+    })).status).toBe('ok');
+    const wrongTree = structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'plan_create',
+      plan_id: 'PLAN-THIN-CREATE-WRONG-PARENT',
+      requirement_id: 'REQ-THIN-PLAN-OTHER',
+      parent_plan_id: 'PLAN-THIN-CREATE',
+      scope_key: 'thin-plan-wrong-parent',
+      source_revision: sourceRevision,
+      objective: 'Must not cross Requirement tree ownership.',
+    }));
+    expect(wrongTree.status).toBe('blocked');
+    expect(wrongTree.summary).toContain('PLAN_PARENT_REQUIREMENT_MISMATCH:PLAN-THIN-CREATE');
+
     const sameLabel = structured(await callRuntimeTool(ctx, 'rh_work', {
       repo_id: repository.repoId,
       operation: 'plan_create',

@@ -484,6 +484,52 @@ async fn read_plan_detail(repo_id: String, plan_id: String) -> Result<Value, Str
 }
 
 #[tauri::command]
+async fn create_requirement(
+    repo_id: String,
+    requirement_id: String,
+    title: String,
+    outcome: String,
+    acceptance_criteria: Vec<String>,
+) -> Result<Value, String> {
+    if repo_id.trim().is_empty() || requirement_id.trim().is_empty() || title.trim().is_empty() || outcome.trim().is_empty() {
+        return Err("FORGE_DESKTOP_REQUIREMENT_CREATE_ARGUMENT_REQUIRED".to_string());
+    }
+    call_runtime_tool("rh_work", json!({
+        "repo_id": repo_id,
+        "operation": "requirement_create",
+        "requirement_id": requirement_id,
+        "requirement_title": title,
+        "requirement_outcome": outcome,
+        "requirement_acceptance_criteria": acceptance_criteria,
+        "request_id": request_id("requirement-create")
+    })).await
+}
+
+#[tauri::command]
+async fn create_plan(
+    repo_id: String,
+    plan_id: String,
+    objective: String,
+    requirement_id: Option<String>,
+    parent_plan_id: Option<String>,
+) -> Result<Value, String> {
+    if repo_id.trim().is_empty() || plan_id.trim().is_empty() || objective.trim().is_empty() {
+        return Err("FORGE_DESKTOP_PLAN_CREATE_ARGUMENT_REQUIRED".to_string());
+    }
+    call_runtime_tool("rh_work", json!({
+        "repo_id": repo_id,
+        "operation": "plan_create",
+        "plan_id": plan_id,
+        "requirement_id": requirement_id,
+        "parent_plan_id": parent_plan_id,
+        "scope_key": plan_id,
+        "objective": objective,
+        "plan_items": [],
+        "request_id": request_id("plan-create")
+    })).await
+}
+
+#[tauri::command]
 async fn read_local_provider_status() -> Result<Value, String> {
     call_runtime_tool("capability_execute", json!({
         "capability_id": "controller.local_conversation",
@@ -1674,6 +1720,8 @@ fn main() {
             read_user_requests,
             read_requirement_detail,
             read_plan_detail,
+            create_requirement,
+            create_plan,
             read_local_provider_status,
             read_local_provider_models,
             read_project_knowledge,

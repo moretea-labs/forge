@@ -64,7 +64,10 @@ const EXPECTED_PREFERRED_TOOL_NAME_FINGERPRINT = 'f22e635a213b45fa';
 // 2026-11-07: #483 retires Work-specific outcome_record/experience_record input
 // fields and keeps lifecycle-free learning_record/learning_feedback as the
 // canonical advisory-memory write path.
-const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = 'b76899ee059d962b';
+// 2026-11-08: Forge Client planning adds optional parent_plan_id to rh_work
+// plan_create. This is an authored Plan refinement edge only; it adds no new
+// execution, approval, lifecycle, progress, or scheduling authority.
+const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = 'a7b5c4f833ff1aeb';
 
 const policy = runtimePolicy(process.cwd(), {
   profile: 'controller',
