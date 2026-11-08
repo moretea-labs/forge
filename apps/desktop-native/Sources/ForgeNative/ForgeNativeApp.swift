@@ -2266,8 +2266,9 @@ private struct RecordsPane: View {
 
     private let planningNodeWidth: CGFloat = 228
     private let planningNodeHeight: CGFloat = 92
-    private let planningColumnGap: CGFloat = 60
+    private let planningColumnGap: CGFloat = 66
     private let planningRowGap: CGFloat = 30
+    private let planningLaneHeaderHeight: CGFloat = 36
 
     var body: some View {
         HStack(spacing:12) {
@@ -2345,9 +2346,9 @@ private struct RecordsPane: View {
         VStack(alignment:.leading,spacing:0) {
             HStack(alignment:.top,spacing:8) {
                 VStack(alignment:.leading,spacing:4) {
-                    Text("工作链路")
+                    Text("规划结构")
                         .font(.system(size:13,weight:.semibold))
-                    Text("Requirement → Plan → 子 Plan")
+                    Text("从左到右表示语义层级；不是执行顺序")
                         .font(.system(size:10)).foregroundStyle(ForgePalette.secondary)
                 }
                 Spacer(minLength:4)
@@ -2500,10 +2501,13 @@ private struct RecordsPane: View {
                     .padding(.top,5)
             }
 
-            Text("搜索、折叠与缩放只改变视图；执行徽标只投影 canonical Autopilot Run，普通 Agent 会话不推断进度。")
-                .font(.system(size:9.5))
-                .foregroundStyle(ForgePalette.secondary)
-                .padding(.horizontal,13).padding(.top,6).padding(.bottom,9)
+            planningSelectionContext
+                .padding(.horizontal,13)
+                .padding(.top,6)
+
+            planningRelationLegend
+                .padding(.horizontal,13)
+                .padding(.top,6).padding(.bottom,9)
 
             Divider().opacity(0.55)
 
@@ -2574,6 +2578,104 @@ private struct RecordsPane: View {
         .background(.thinMaterial,in:RoundedRectangle(cornerRadius:9,style:.continuous))
     }
 
+    private func planningNodeRole(_ item:ForgeRecord) -> String {
+        if item.kind == .requirement { return "Requirement" }
+        if item.parentPlanId != nil { return "子 Plan" }
+        if item.requirementId != nil { return "根 Plan" }
+        return "独立 Plan"
+    }
+
+    private var planningSelectedPath: [ForgeRecord] {
+        guard let selectedId=model.selectedRecord,
+              let selected=model.records.first(where:{ $0.id == selectedId }) else { return [] }
+        var path:[ForgeRecord]=[selected]
+        var cursor:ForgeRecord?=selected
+        var visited:Set<String>=[selected.id]
+        while let current=cursor,
+              let parent=planningParent(of:current),
+              visited.insert(parent.id).inserted {
+            path.append(parent)
+            cursor=parent
+        }
+        return path.reversed()
+    }
+
+    private var planningSelectedPathIds: Set<String> {
+        Set(planningSelectedPath.map(\.id))
+    }
+
+    @ViewBuilder
+    private var planningSelectionContext: some View {
+        if let selectedId=model.selectedRecord,
+           let selected=model.records.first(where:{ $0.id == selectedId }) {
+            let children=planningChildrenByParent[selected.id] ?? []
+            HStack(spacing:8) {
+                Image(systemName:"point.3.connected.trianglepath.dotted")
+                    .font(.system(size:10,weight:.semibold))
+                    .foregroundStyle(ForgePalette.secondary)
+
+                ScrollView(.horizontal,showsIndicators:false) {
+                    HStack(spacing:5) {
+                        ForEach(Array(planningSelectedPath.enumerated()),id:\.element.id) { index,node in
+                            if index > 0 {
+                                Image(systemName:"chevron.right")
+                                    .font(.system(size:7,weight:.bold))
+                                    .foregroundStyle(ForgePalette.secondary.opacity(0.65))
+                            }
+                            Button {
+                                locatePlanningRecord(node)
+                            } label: {
+                                HStack(spacing:4) {
+                                    Image(systemName:node.kind == .requirement ? "scope" : "arrow.triangle.branch")
+                                        .font(.system(size:8.5,weight:.semibold))
+                                    Text(node.title)
+                                        .font(.system(size:9.5,weight:node.id == selected.id ? .semibold : .medium))
+                                        .lineLimit(1)
+                                }
+                                .foregroundStyle(node.id == selected.id ? ForgePalette.ink : ForgePalette.secondary)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+
+                Spacer(minLength:4)
+
+                HStack(spacing:5) {
+                    Text(planningNodeRole(selected))
+                    if !children.isEmpty {
+                        Text("·")
+                        Text("\(children.count) 个直接子节点")
+                    }
+                }
+                .font(.system(size:9,weight:.medium))
+                .foregroundStyle(ForgePalette.secondary)
+                .lineLimit(1)
+            }
+            .padding(.horizontal,9).padding(.vertical,7)
+            .background(ForgePalette.softFill,in:RoundedRectangle(cornerRadius:9,style:.continuous))
+            .accessibilityIdentifier("planning.selection.path")
+        }
+    }
+
+    private var planningRelationLegend: some View {
+        HStack(spacing:7) {
+            Label("Requirement",systemImage:"scope")
+            Image(systemName:"arrow.right")
+                .font(.system(size:8,weight:.bold))
+            Text("拥有根 Plan")
+            Image(systemName:"arrow.right")
+                .font(.system(size:8,weight:.bold))
+            Text("细化为子 Plan")
+            Spacer(minLength:4)
+            Text("箭头只表示结构关系")
+                .foregroundStyle(ForgePalette.secondary.opacity(0.82))
+        }
+        .font(.system(size:9.2,weight:.medium))
+        .foregroundStyle(ForgePalette.secondary)
+        .accessibilityIdentifier("planning.relationship.legend")
+    }
+
     private func locatePlanningRecord(_ item:ForgeRecord) {
         var cursor:ForgeRecord?=item
         var visited=Set<String>()
@@ -2603,26 +2705,56 @@ private struct RecordsPane: View {
     }
 
     private func planningListRow(_ item:ForgeRecord) -> some View {
-        Button {
+        let parent=planningParent(of:item)
+        let children=planningChildrenByParent[item.id] ?? []
+        return Button {
             Task { await model.openRecord(item.id) }
         } label: {
-            HStack(alignment:.top,spacing:8) {
-                Image(systemName:item.kind == .requirement ? "doc.text.fill" : "arrow.turn.down.right")
+            HStack(alignment:.center,spacing:8) {
+                if item.depth > 0 {
+                    Capsule()
+                        .fill(ForgePalette.secondary.opacity(0.22))
+                        .frame(width:2,height:34)
+                        .padding(.leading,CGFloat(max(0,item.depth - 1) * 14))
+                        .padding(.trailing,3)
+                }
+
+                Image(systemName:item.kind == .requirement ? "scope" : "arrow.triangle.branch")
                     .symbolRenderingMode(.hierarchical)
                     .font(.system(size:item.kind == .requirement ? 11 : 10))
                     .foregroundStyle(item.kind == .requirement ? ForgePalette.ink : ForgePalette.secondary)
                     .frame(width:16,height:18)
+
                 VStack(alignment:.leading,spacing:4) {
+                    HStack(spacing:6) {
+                        Text(planningNodeRole(item))
+                            .font(.system(size:8.5,weight:.bold))
+                            .foregroundStyle(item.kind == .requirement ? ForgePalette.ink : ForgePalette.secondary)
+                        if let parent {
+                            Text("← \(parent.title)")
+                                .font(.system(size:8.5))
+                                .foregroundStyle(ForgePalette.secondary)
+                                .lineLimit(1)
+                        }
+                    }
                     Text(item.title)
                         .font(.system(size:11.5,weight:item.kind == .requirement ? .semibold : .medium))
                         .lineLimit(2).multilineTextAlignment(.leading)
                     Text(item.recordId)
-                        .font(.system(size:9,design:.monospaced))
+                        .font(.system(size:8.7,design:.monospaced))
                         .foregroundStyle(ForgePalette.secondary).lineLimit(1)
                 }
                 Spacer(minLength:0)
+                if !children.isEmpty {
+                    Text("\(children.count)")
+                        .font(.system(size:9,weight:.semibold,design:.monospaced))
+                        .foregroundStyle(ForgePalette.secondary)
+                        .padding(.horizontal,7).padding(.vertical,4)
+                        .background(ForgePalette.softFill,in:Capsule())
+                        .help("\(children.count) 个直接子节点")
+                }
             }
-            .padding(.leading,CGFloat(item.depth * 15))
+            .padding(.leading,CGFloat(item.depth * 3))
             .padding(.horizontal,8).padding(.vertical,8)
             .frame(maxWidth:.infinity,alignment:.leading)
             .background(item.id == model.selectedRecord ? ForgePalette.selection : .clear,
@@ -2639,11 +2771,34 @@ private struct RecordsPane: View {
             let size = planningCanvasSize
             let scale = planningCanvasScale(viewport:viewport.size,content:size)
             let focusIds = planningFocusIds
+            let selectedPathIds = planningSelectedPathIds
             let hasSelection = model.selectedRecord != nil
+            let columnStep = planningNodeWidth + planningColumnGap
+            let maxX = positions.values.map(\.x).max() ?? 0
+            let maxDepth = max(0,Int((maxX / max(CGFloat(1),columnStep)).rounded()))
 
             ScrollViewReader { proxy in
                 ScrollView([.horizontal,.vertical]) {
                     ZStack(alignment:.topLeading) {
+                        ForEach(0...maxDepth,id:\.self) { depth in
+                            let x=CGFloat(depth) * columnStep
+                            RoundedRectangle(cornerRadius:12,style:.continuous)
+                                .fill(depth.isMultiple(of:2) ? Color.black.opacity(0.018) : Color.black.opacity(0.010))
+                                .frame(width:planningNodeWidth,height:size.height)
+                                .offset(x:x,y:0)
+
+                            VStack(alignment:.leading,spacing:2) {
+                                Text(depth == 0 ? "起点" : "层级 \(depth)")
+                                    .font(.system(size:9.5,weight:.semibold))
+                                    .foregroundStyle(ForgePalette.ink.opacity(0.82))
+                                Text(depth == 0 ? "Requirement / 独立 Plan" : "沿箭头继续细化")
+                                    .font(.system(size:8.3))
+                                    .foregroundStyle(ForgePalette.secondary)
+                            }
+                            .padding(.horizontal,9)
+                            .offset(x:x,y:7)
+                        }
+
                         Canvas { context, _ in
                             for item in planningVisibleRecords {
                                 guard let child = positions[item.id],
@@ -2665,19 +2820,58 @@ private struct RecordsPane: View {
                                     control1:CGPoint(x:bend,y:start.y),
                                     control2:CGPoint(x:bend,y:end.y)
                                 )
-                                let emphasized = !hasSelection || (focusIds.contains(item.id) && focusIds.contains(parent.id))
+                                let onSelectedPath = hasSelection
+                                    && selectedPathIds.contains(item.id)
+                                    && selectedPathIds.contains(parent.id)
+                                let structurallyRelated = !hasSelection
+                                    || (focusIds.contains(item.id) && focusIds.contains(parent.id))
+                                let edgeColor = onSelectedPath
+                                    ? ForgePalette.accent.opacity(0.78)
+                                    : (structurallyRelated
+                                        ? ForgePalette.accent.opacity(hasSelection ? 0.30 : 0.24)
+                                        : ForgePalette.secondary.opacity(0.07))
+                                let edgeWidth: CGFloat = onSelectedPath ? 2.35 : (structurallyRelated ? 1.45 : 1)
                                 context.stroke(
                                     path,
-                                    with:.color(
-                                        emphasized
-                                            ? ForgePalette.accent.opacity(hasSelection ? 0.34 : 0.22)
-                                            : ForgePalette.secondary.opacity(0.075)
-                                    ),
-                                    style:StrokeStyle(lineWidth:emphasized && hasSelection ? 1.7 : 1.15,lineCap:.round)
+                                    with:.color(edgeColor),
+                                    style:StrokeStyle(lineWidth:edgeWidth,lineCap:.round)
+                                )
+                                let arrowSize: CGFloat = onSelectedPath ? 7 : (structurallyRelated ? 6 : 5)
+                                var arrow = Path()
+                                arrow.move(to:end)
+                                arrow.addLine(to:CGPoint(x:end.x - arrowSize,y:end.y - arrowSize * 0.72))
+                                arrow.move(to:end)
+                                arrow.addLine(to:CGPoint(x:end.x - arrowSize,y:end.y + arrowSize * 0.72))
+                                context.stroke(
+                                    arrow,
+                                    with:.color(edgeColor),
+                                    style:StrokeStyle(lineWidth:edgeWidth,lineCap:.round,lineJoin:.round)
                                 )
                             }
                         }
                         .frame(width:size.width,height:size.height)
+
+                        if hasSelection {
+                            ForEach(planningVisibleRecords) { item in
+                                if let child=positions[item.id],
+                                   let parent=planningParent(of:item),
+                                   let parentPoint=positions[parent.id],
+                                   selectedPathIds.contains(item.id),
+                                   selectedPathIds.contains(parent.id) {
+                                    let startX=parentPoint.x + planningNodeWidth
+                                    let endX=child.x
+                                    let midX=(startX + endX) / 2
+                                    let midY=((parentPoint.y + child.y) / 2) + planningNodeHeight / 2
+                                    Text(parent.kind == .requirement ? "拥有" : "细化")
+                                        .font(.system(size:7.8,weight:.semibold))
+                                        .foregroundStyle(ForgePalette.accent)
+                                        .padding(.horizontal,5).padding(.vertical,2)
+                                        .background(ForgePalette.raisedSurface,in:Capsule())
+                                        .overlay(Capsule().stroke(ForgePalette.accent.opacity(0.16),lineWidth:0.6))
+                                        .position(x:midX,y:midY)
+                                }
+                            }
+                        }
 
                         ForEach(planningVisibleRecords) { item in
                             if let point = positions[item.id] {
@@ -2784,7 +2978,7 @@ private struct RecordsPane: View {
                 return existing.y + planningNodeHeight / 2
             }
             if visiting.contains(item.id) {
-                let center=nextLeaf * rowStep + planningNodeHeight / 2
+                let center=planningLaneHeaderHeight + nextLeaf * rowStep + planningNodeHeight / 2
                 nextLeaf += 1
                 positions[item.id]=CGPoint(x:CGFloat(depth) * columnStep,y:center - planningNodeHeight / 2)
                 placed.insert(item.id)
@@ -2797,7 +2991,7 @@ private struct RecordsPane: View {
             }
             let center:CGFloat
             if childItems.isEmpty {
-                center=nextLeaf * rowStep + planningNodeHeight / 2
+                center=planningLaneHeaderHeight + nextLeaf * rowStep + planningNodeHeight / 2
                 nextLeaf += 1
             } else {
                 let centers=childItems.map { place($0,depth:depth + 1) }
@@ -2944,6 +3138,12 @@ private struct RecordsPane: View {
         let children=planningChildrenByParent[item.id] ?? []
         let collapsed=collapsedPlanningRecordIds.contains(item.id)
         let execution=planningExecutionStatus(item)
+        let nodeBackground:Color = selected
+            ? ForgePalette.raisedSurface
+            : (item.kind == .requirement ? ForgePalette.accent.opacity(0.075) : Color.white.opacity(0.68))
+        let nodeBorder:Color = selected
+            ? ForgePalette.ink.opacity(0.34)
+            : (item.kind == .requirement ? ForgePalette.accent.opacity(0.22) : ForgePalette.secondary.opacity(0.13))
         return ZStack(alignment:.bottomTrailing) {
             Button {
                 Task { await model.openRecord(item.id) }
@@ -2953,9 +3153,9 @@ private struct RecordsPane: View {
                         Image(systemName:item.kind == .requirement ? "scope" : "arrow.triangle.branch")
                             .symbolRenderingMode(.hierarchical)
                             .font(.system(size:10.5,weight:.semibold))
-                        Text(item.kind == .requirement ? "REQUIREMENT" : "PLAN")
+                        Text(planningNodeRole(item).uppercased())
                             .font(.system(size:8.5,weight:.bold))
-                            .tracking(0.55)
+                            .tracking(0.45)
                         if item.kind == .requirement,!item.state.isEmpty {
                             Text(item.state.uppercased())
                                 .font(.system(size:7.5,weight:.medium))
@@ -2993,21 +3193,24 @@ private struct RecordsPane: View {
                 }
                 .padding(11)
                 .frame(width:planningNodeWidth,height:planningNodeHeight,alignment:.topLeading)
-                .background(selected ? ForgePalette.raisedSurface : Color.white.opacity(0.64),
-                            in:RoundedRectangle(cornerRadius:13,style:.continuous))
+                .background(nodeBackground,in:RoundedRectangle(cornerRadius:13,style:.continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius:13,style:.continuous)
-                        .stroke(
-                            selected ? ForgePalette.ink.opacity(0.32) : ForgePalette.secondary.opacity(0.13),
-                            lineWidth:selected ? 1.2 : 0.7
-                        )
+                        .stroke(nodeBorder,lineWidth:selected ? 1.25 : 0.75)
                 )
+                .overlay(alignment:.leading) {
+                    Capsule()
+                        .fill(item.kind == .requirement ? ForgePalette.accent.opacity(0.72) : ForgePalette.secondary.opacity(0.28))
+                        .frame(width:3)
+                        .padding(.vertical,12)
+                        .padding(.leading,2)
+                }
                 .shadow(color:Color.black.opacity(selected ? 0.07 : 0.035),radius:selected ? 8 : 4,y:2)
                 .contentShape(RoundedRectangle(cornerRadius:13,style:.continuous))
             }
             .buttonStyle(.plain)
 
-            if hovered || selected {
+            if !children.isEmpty || hovered || selected {
                 HStack(spacing:4) {
                     if !children.isEmpty {
                         Button {
@@ -3017,17 +3220,23 @@ private struct RecordsPane: View {
                                 collapsedPlanningRecordIds.insert(item.id)
                             }
                         } label: {
-                            Image(systemName:collapsed ? "chevron.right" : "chevron.down")
-                                .font(.system(size:9,weight:.bold))
-                                .frame(width:24,height:22)
-                                .background(.thinMaterial,in:RoundedRectangle(cornerRadius:7,style:.continuous))
+                            HStack(spacing:3) {
+                                Image(systemName:collapsed ? "chevron.right" : "chevron.down")
+                                Text("\(children.count)")
+                                    .font(.system(size:8.5,weight:.bold,design:.monospaced))
+                            }
+                            .font(.system(size:9,weight:.bold))
+                            .padding(.horizontal,6)
+                            .frame(height:22)
+                            .background(.thinMaterial,in:RoundedRectangle(cornerRadius:7,style:.continuous))
                         }
                         .buttonStyle(.plain)
                         .help(collapsed ? "展开 \(children.count) 个直接子节点" : "折叠 \(children.count) 个直接子节点")
                         .accessibilityIdentifier("planning.collapse.\(item.recordId)")
                     }
 
-                    Button {
+                    if hovered || selected {
+                        Button {
                         if item.kind == .requirement {
                             beginPlan(requirementId:item.recordId,parentPlanId:nil)
                         } else {
@@ -3054,14 +3263,15 @@ private struct RecordsPane: View {
                             .frame(width:24,height:22)
                             .background(.thinMaterial,in:RoundedRectangle(cornerRadius:7,style:.continuous))
                     }
-                    .buttonStyle(.plain)
-                    .help("以此节点新建会话")
+                        .buttonStyle(.plain)
+                        .help("以此节点新建会话")
+                    }
                 }
                 .padding(7)
                 .transition(.opacity)
             }
         }
-        .opacity(focused ? 1 : 0.34)
+        .opacity(focused ? 1 : 0.28)
         .onHover { inside in
             if inside { hoveredPlanningRecordId=item.id }
             else if hoveredPlanningRecordId == item.id { hoveredPlanningRecordId=nil }
@@ -3070,10 +3280,11 @@ private struct RecordsPane: View {
         .animation(.easeOut(duration:0.16),value:focused)
         .accessibilityLabel(item.title)
         .accessibilityValue({
+            let relation=planningNodeRole(item)
             if let execution {
-                return "\(item.recordId) · \(item.kind.rawValue) · \(planningExecutionLabel(item,execution))"
+                return "\(relation) · \(item.recordId) · \(planningExecutionLabel(item,execution))"
             }
-            return "\(item.recordId) · \(item.kind.rawValue)"
+            return "\(relation) · \(item.recordId)"
         }())
         .accessibilityIdentifier("semantic.canvas.\(item.kind.rawValue).\(item.recordId)")
     }
