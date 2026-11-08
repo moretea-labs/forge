@@ -141,6 +141,95 @@ function decisionFrom(args: Record<string, unknown>): AutopilotDecision {
   };
 }
 
+function responsesToolManifest(dependencies: AutopilotRunnerDependencies) {
+  return toolManifest(dependencies).map((tool) => ({
+    type: 'function',
+    name: tool.function.name,
+    description: tool.function.description,
+    parameters: tool.function.parameters,
+  }));
+}
+
+function responsesInput(messages: DeepSeekMessage[]): { instructions?: string; input: Array<Record<string, unknown>> } {
+  const instructions = messages
+    .filter((message) => message.role === 'system' && message.content)
+    .map((message) => message.content as string)
+    .join('\n\n');
+  const input: Array<Record<string, unknown>> = [];
+  for (const message of messages) {
+    if (message.role === 'system') continue;
+    if ((message.role === 'user' || message.role === 'assistant') && message.content?.trim()) {
+      input.push({ role: message.role, content: message.content });
+    }
+    if (message.role === 'assistant') {
+      for (const call of message.tool_calls ?? []) {
+        input.push({
+          type: 'function_call',
+          call_id: call.id,
+          name: call.function.name,
+          arguments: call.function.arguments,
+        });
+      }
+    } else if (message.role === 'tool') {
+      input.push({
+        type: 'function_call_output',
+        call_id: message.tool_call_id ?? '',
+        output: message.content ?? '',
+      });
+    }
+  }
+  return { ...(instructions ? { instructions } : {}), input };
+}
+
+function normalizeResponsesResponse(value: unknown): DeepSeekResponse {
+  if (!value || typeof value !== 'object') throw new Error('AUTOPILOT_MODEL_RESPONSE_INVALID');
+  const response = value as Record<string, unknown>;
+  const output = Array.isArray(response.output) ? response.output : [];
+  const text: string[] = [];
+  const toolCalls: DeepSeekToolCall[] = [];
+  for (const raw of output) {
+    if (!raw || typeof raw !== 'object') continue;
+    const item = raw as Record<string, unknown>;
+    if (item.type === 'message' && Array.isArray(item.content)) {
+      for (const rawBlock of item.content) {
+        if (!rawBlock || typeof rawBlock !== 'object') continue;
+        const block = rawBlock as Record<string, unknown>;
+        if (block.type === 'output_text' && typeof block.text === 'string' && block.text.trim()) {
+          text.push(block.text);
+        }
+      }
+    } else if (item.type === 'function_call') {
+      const id = typeof item.call_id === 'string'
+        ? item.call_id
+        : typeof item.id === 'string'
+          ? item.id
+          : '';
+      const name = typeof item.name === 'string' ? item.name : '';
+      const args = typeof item.arguments === 'string' ? item.arguments : '{}';
+      if (id && name) {
+        toolCalls.push({ id, type: 'function', function: { name, arguments: args } });
+      }
+    }
+  }
+  const usage = response.usage && typeof response.usage === 'object'
+    ? response.usage as Record<string, unknown>
+    : {};
+  return {
+    choices: [{
+      message: {
+        role: 'assistant',
+        content: text.length > 0 ? text.join('\n') : null,
+        ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+      },
+    }],
+    usage: {
+      prompt_tokens: typeof usage.input_tokens === 'number' ? usage.input_tokens : 0,
+      completion_tokens: typeof usage.output_tokens === 'number' ? usage.output_tokens : 0,
+      total_tokens: typeof usage.total_tokens === 'number' ? usage.total_tokens : 0,
+    },
+  };
+}
+
 async function requestDeepSeek(
   run: AutopilotRun,
   messages: DeepSeekMessage[],
@@ -156,10 +245,19 @@ async function requestDeepSeek(
   const timeout = setTimeout(() => requestController.abort(), 90_000);
   const remaining = Math.max(1, run.policy.maxTotalTokens - run.usage.totalTokens);
   try {
-    const response = await fetchImpl('https://api.deepseek.com/chat/completions', {
+    const endpoint = run.policy.endpoint.replace(/\/$/, '');
+    const responses = run.policy.protocol === 'responses';
+    const responseInput = responsesInput(messages);
+    const response = await fetchImpl(`${endpoint}/${responses ? 'responses' : 'chat/completions'}`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+      body: JSON.stringify(responses ? {
+        model: run.policy.model,
+        ...responseInput,
+        tools: responsesToolManifest(dependencies),
+        tool_choice: 'auto',
+        max_output_tokens: Math.min(65_536, remaining),
+      } : {
         model: run.policy.model,
         messages,
         tools: toolManifest(dependencies),
@@ -173,7 +271,8 @@ async function requestDeepSeek(
       const body = (await response.text()).slice(0, 500);
       throw new Error(`AUTOPILOT_MODEL_HTTP_${response.status}: ${body}`);
     }
-    return await response.json() as DeepSeekResponse;
+    const payload = await response.json();
+    return responses ? normalizeResponsesResponse(payload) : payload as DeepSeekResponse;
   } finally {
     clearTimeout(timeout);
     signal.removeEventListener('abort', forwardAbort);

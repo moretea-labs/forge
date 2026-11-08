@@ -22,6 +22,7 @@ import {
   readAutopilotRun,
 } from '../../src/runtime/autopilot/store';
 import { runAutopilotLoop } from '../../src/runtime/autopilot/runner';
+import { readAutopilotProviderApiKey, readAutopilotProviderProfile } from '../../src/runtime/autopilot/provider-config';
 
 const roots: string[] = [];
 afterEach(() => {
@@ -66,6 +67,19 @@ function response(toolName:string,args:Record<string,unknown>,usage={prompt_toke
     usage,
   }),{status:200,headers:{'content-type':'application/json'}});
 }
+function responsesResponse(toolName:string,args:Record<string,unknown>,usage={input_tokens:17,output_tokens:5,total_tokens:22}) {
+  return new Response(JSON.stringify({
+    output:[{
+      type:'function_call',
+      id:'fc-1',
+      call_id:'call-r1',
+      name:toolName,
+      arguments:JSON.stringify(args),
+    }],
+    usage,
+  }),{status:200,headers:{'content-type':'application/json'}});
+}
+
 const executeCommandDefinition=[{
   name:'execute_command',
   description:'Execute a bounded repository command.',
@@ -73,6 +87,29 @@ const executeCommandDefinition=[{
 }];
 
 describe('Requirement Autopilot',() => {
+  test('reads the shared Desktop provider profile without copying credentials',() => {
+    const home=tempRoot('forge-autopilot-provider-home-');
+    const profileDir=join(home,'Library','Application Support','com.moretea.forge.desktop');
+    mkdirSync(profileDir,{recursive:true});
+    writeFileSync(join(profileDir,'local-api.json'),JSON.stringify({
+      provider:'joycode',
+      endpoint:'https://zro.moonmath.ai/v1',
+      model:'deepseek-v4.1-flash',
+      apiProtocol:'responses',
+      joyCodeModel:'JoyAI-Code-1.6',
+    }));
+    expect(readAutopilotProviderProfile(home)).toEqual({
+      endpoint:'https://zro.moonmath.ai/v1',
+      protocol:'responses',
+      model:'deepseek-v4.1-flash',
+      source:'desktop-local-api',
+    });
+    const zroDir=join(home,'.config','zro');
+    mkdirSync(zroDir,{recursive:true});
+    writeFileSync(join(zroDir,'credentials.json'),JSON.stringify({apiKey:'fixture-zro-key'}));
+    expect(readAutopilotProviderApiKey('https://zro.moonmath.ai/v1',{},home)).toBe('fixture-zro-key');
+  });
+
   test('requires explicit authorization, binds the exact Requirement revision, and replaces prior grants',() => {
     const fx=fixture('authorization');
     expect(() => authorizeAutopilot({
@@ -209,6 +246,68 @@ describe('Requirement Autopilot',() => {
     const run=readAutopilotRun(fx.controllerHome,fx.repository.repoId,'REQ-AUTO')!.value;
     expect(run.status).toBe('completed');
     expect(run.evidenceRefs).toEqual(['commit:restart']);
+  });
+
+  test('uses the enrolled Responses endpoint, flattens tools, and normalizes provider usage',async() => {
+    const fx=fixture('responses');
+    const enrolled=authorizeAutopilot({
+      controllerHome:fx.controllerHome,
+      repoId:fx.repository.repoId,
+      requirementId:'REQ-AUTO',
+      confirmAuthorization:true,
+      policy:{
+        endpoint:'https://zro.moonmath.ai/v1',
+        protocol:'responses',
+        model:'deepseek-v4.1-flash',
+        maxTurns:2,
+        maxToolCalls:2,
+        maxTotalTokens:1000,
+      },
+    });
+    expect(enrolled.grant.constraints).toMatchObject({
+      endpoint:'https://zro.moonmath.ai/v1',
+      protocol:'responses',
+      model:'deepseek-v4.1-flash',
+    });
+    createAutopilotRun(fx.controllerHome,{
+      repoId:fx.repository.repoId,
+      checkoutId:enrolled.checkoutId,
+      requirementId:'REQ-AUTO',
+      requirementRevision:1,
+      grantId:enrolled.grant.grantId,
+      policy:enrolled.policy,
+    });
+    let observedUrl='';
+    let observedBody:Record<string,unknown>={};
+    await runAutopilotLoop(
+      fx.controllerHome,fx.repository.repoId,'REQ-AUTO',new AbortController().signal,
+      {
+        apiKey:'test-key',
+        toolDefinitions:executeCommandDefinition,
+        executeTool:async()=>({ok:true}),
+        validateAuthorization:()=>({ok:true}),
+        fetchImpl:async(input,init)=>{
+          observedUrl=String(input);
+          observedBody=JSON.parse(String(init?.body ?? '{}')) as Record<string,unknown>;
+          return responsesResponse('forge_autopilot_decision',{
+            action:'complete',
+            summary:'Responses provider completed the bounded slice.',
+            evidence_refs:['commit:responses'],
+          });
+        },
+      },
+    );
+    expect(observedUrl).toBe('https://zro.moonmath.ai/v1/responses');
+    expect(observedBody.model).toBe('deepseek-v4.1-flash');
+    expect(typeof observedBody.instructions).toBe('string');
+    expect(Array.isArray(observedBody.input)).toBe(true);
+    expect((observedBody.input as Array<Record<string,unknown>>)[0]?.role).toBe('user');
+    const tools=observedBody.tools as Array<Record<string,unknown>>;
+    expect(tools.some((tool)=>tool.name==='execute_command' && !('function' in tool))).toBe(true);
+    const run=readAutopilotRun(fx.controllerHome,fx.repository.repoId,'REQ-AUTO')!.value;
+    expect(run.status).toBe('completed');
+    expect(run.usage).toMatchObject({promptTokens:17,completionTokens:5,totalTokens:22,turns:1,toolCalls:1});
+    expect(run.evidenceRefs).toEqual(['commit:responses']);
   });
 
   test('rejects a remote-write command before the existing repository executor is invoked',async() => {

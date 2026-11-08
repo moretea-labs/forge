@@ -2899,7 +2899,8 @@ private struct SettingsPane: View {
                             Text("API 协议").font(.system(size:10.5,weight:.medium))
                                 .foregroundStyle(ForgePalette.secondary).frame(width:82,alignment:.leading)
                             Picker("API 协议",selection:$apiProtocol) {
-                                Text("OpenAI-compatible").tag("openai")
+                                Text("OpenAI Chat").tag("openai")
+                                Text("OpenAI Responses").tag("responses")
                                 Text("Anthropic").tag("anthropic")
                             }
                             .labelsHidden().pickerStyle(.menu).frame(maxWidth:260,alignment:.leading)

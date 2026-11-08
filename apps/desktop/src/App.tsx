@@ -787,7 +787,7 @@ export function App() {
     finally { setLocalApiLoading(false); }
   }, [preview]);
 
-  const saveLocalApi = useCallback(async (input: { provider: LocalProviderChoice; endpoint: string; model: string; apiProtocol: 'openai' | 'anthropic'; apiKey?: string; joyCodeModel?: string }) => {
+  const saveLocalApi = useCallback(async (input: { provider: LocalProviderChoice; endpoint: string; model: string; apiProtocol: 'openai' | 'anthropic' | 'responses'; apiKey?: string; joyCodeModel?: string }) => {
     setLocalApiSettings(await saveLocalApiSettings(input));
   }, []);
 

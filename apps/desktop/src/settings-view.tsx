@@ -109,6 +109,7 @@ export function SettingsView({
               setSaved(false);
             }}>
             <option value="openai">OpenAI-compatible · Chat Completions</option>
+            <option value="responses">OpenAI-compatible · Responses</option>
             <option value="anthropic">Claude · Anthropic Messages</option>
           </select></label>
           <label><span>API Endpoint</span><input type="url" spellCheck={false} autoComplete="off" value={endpoint} onChange={e => { setEndpoint(e.target.value); setSaved(false); }} placeholder="https://api.example.com/v1" /></label>

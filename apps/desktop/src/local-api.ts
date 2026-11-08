@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 export type LocalProviderChoice = 'codex' | 'api' | 'joycode';
-export type LocalApiProtocol = 'openai' | 'anthropic';
+export type LocalApiProtocol = 'openai' | 'anthropic' | 'responses';
 export interface LocalApiSettings {
   provider: LocalProviderChoice;
   endpoint: string;

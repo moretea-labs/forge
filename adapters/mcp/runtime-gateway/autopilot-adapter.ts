@@ -7,6 +7,7 @@ import {
   resumeAutopilot,
   revokeAutopilot,
   startAutopilot,
+  autopilotProviderReadiness,
 } from '../../../src/runtime/autopilot';
 import { callRepositoryTool, repositoryToolDefinitions } from '../tool-mapping/repository-tools';
 import { result } from './result-adapter';
@@ -28,12 +29,17 @@ export async function callAutopilotAdapter(
     const operation = typeof args.operation === 'string' ? args.operation : 'status';
     const repository = selected(ctx, args);
     const reqId = requirementId(args);
+    const provider = autopilotProviderReadiness();
     switch (operation) {
       case 'status':
         return result({
           ...autopilotStatus(ctx.controllerHome, repository.repoId, reqId),
           provider: 'deepseek',
-          providerReady: Boolean(process.env.FORGE_DEEPSEEK_API_KEY?.trim() || process.env.DEEPSEEK_API_KEY?.trim()),
+          providerReady: provider.ready,
+          providerEndpoint: provider.profile.endpoint,
+          providerProtocol: provider.profile.protocol,
+          providerModel: provider.profile.model,
+          providerProfileSource: provider.profile.source,
           authority: {
             approval: 'canonical-authorization-grant',
             execution: 'runtime-autopilot',
@@ -52,7 +58,9 @@ export async function callAutopilotAdapter(
           expiresInMinutes: typeof args.expires_in_minutes === 'number' ? args.expires_in_minutes : undefined,
           policy: {
             provider: 'deepseek',
-            model: typeof args.model === 'string' ? args.model : undefined,
+            endpoint: provider.profile.endpoint,
+            protocol: provider.profile.protocol,
+            model: typeof args.model === 'string' ? args.model : provider.profile.model,
             maxTotalTokens: typeof args.max_total_tokens === 'number' ? args.max_total_tokens : undefined,
             maxTurns: typeof args.max_turns === 'number' ? args.max_turns : undefined,
             maxToolCalls: typeof args.max_tool_calls === 'number' ? args.max_tool_calls : undefined,

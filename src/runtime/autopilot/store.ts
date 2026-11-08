@@ -11,6 +11,8 @@ const NAMESPACE = 'requirement_autopilot_run';
 export function defaultAutopilotPolicy(input: Partial<AutopilotPolicy> = {}): AutopilotPolicy {
   return {
     provider: 'deepseek',
+    endpoint: input.endpoint?.trim() || 'https://api.deepseek.com',
+    protocol: input.protocol === 'responses' ? 'responses' : 'chat_completions',
     model: input.model?.trim() || 'deepseek-chat',
     maxTotalTokens: Math.max(1_000, Math.min(Math.trunc(input.maxTotalTokens ?? 50_000), 500_000)),
     maxTurns: Math.max(1, Math.min(Math.trunc(input.maxTurns ?? 12), 48)),

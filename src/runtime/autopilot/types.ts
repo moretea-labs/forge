@@ -2,6 +2,8 @@ export type AutopilotRunStatus = 'running' | 'paused' | 'completed' | 'blocked' 
 
 export interface AutopilotPolicy {
   provider: 'deepseek';
+  endpoint: string;
+  protocol: 'chat_completions' | 'responses';
   model: string;
   maxTotalTokens: number;
   maxTurns: number;

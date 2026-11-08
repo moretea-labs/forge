@@ -814,6 +814,7 @@ async fn repair_connection() -> Result<Value, String> {
 
 
 const LOCAL_API_KEYCHAIN_SERVICE: &str = "com.moretea.forge.desktop.api";
+const ZRO_API_ENDPOINT: &str = "https://zro.moonmath.ai/v1";
 const JOYCODE_DEFAULT_MODEL: &str = "JoyAI-Code-1.6";
 const JOYCODE_COLOR_GATEWAY_ORIGIN: &str = "https://api-ai.jd.com";
 const JOYCODE_COLOR_GATEWAY_APP_ID: &str = "joycode_ide";
@@ -1006,8 +1007,26 @@ fn validated_local_api_endpoint(endpoint: &str) -> Result<String, String> {
     Ok(url.to_string().trim_end_matches('/').to_string())
 }
 
+fn read_zro_api_key() -> Result<Option<String>, String> {
+    let home = dirs::home_dir().ok_or("FORGE_DESKTOP_ZRO_CREDENTIAL_UNAVAILABLE")?;
+    let path = home.join(".config/zro/credentials.json");
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err("FORGE_DESKTOP_ZRO_CREDENTIAL_READ_FAILED".into()),
+    };
+    if text.len() > 64 * 1024 { return Err("FORGE_DESKTOP_ZRO_CREDENTIAL_INVALID".into()); }
+    let value: Value = serde_json::from_str(&text)
+        .map_err(|_| "FORGE_DESKTOP_ZRO_CREDENTIAL_INVALID")?;
+    let key = value.get("apiKey").and_then(Value::as_str).unwrap_or("").trim();
+    if key.is_empty() { return Ok(None); }
+    if key.len() > 4096 { return Err("FORGE_DESKTOP_ZRO_CREDENTIAL_INVALID".into()); }
+    Ok(Some(key.to_string()))
+}
+
 #[cfg(target_os = "macos")]
 fn read_local_api_key(endpoint: &str) -> Result<Option<String>, String> {
+    if endpoint == ZRO_API_ENDPOINT { return read_zro_api_key(); }
     use security_framework::passwords::{generic_password, PasswordOptions};
     match generic_password(PasswordOptions::new_generic_password(LOCAL_API_KEYCHAIN_SERVICE, endpoint)) {
         Ok(value) => String::from_utf8(value).map(Some).map_err(|_| "FORGE_DESKTOP_API_KEY_INVALID".to_string()),
@@ -1023,6 +1042,9 @@ fn read_local_api_key(_endpoint: &str) -> Result<Option<String>, String> {
 
 #[cfg(target_os = "macos")]
 fn store_local_api_key(endpoint: &str, secret: &str) -> Result<(), String> {
+    if endpoint == ZRO_API_ENDPOINT {
+        return Err("FORGE_DESKTOP_ZRO_CREDENTIAL_MANAGED_EXTERNALLY".into());
+    }
     security_framework::passwords::set_generic_password(
         LOCAL_API_KEYCHAIN_SERVICE, endpoint, secret.as_bytes()
     ).map_err(|_| "FORGE_DESKTOP_API_KEYCHAIN_WRITE_FAILED".to_string())
@@ -1035,6 +1057,7 @@ fn store_local_api_key(_endpoint: &str, _secret: &str) -> Result<(), String> {
 
 #[cfg(target_os = "macos")]
 fn delete_local_api_key(endpoint: &str) -> Result<(), String> {
+    if endpoint == ZRO_API_ENDPOINT { return Ok(()); }
     match security_framework::passwords::delete_generic_password(
         LOCAL_API_KEYCHAIN_SERVICE, endpoint
     ) {
@@ -1105,7 +1128,7 @@ fn save_local_api_settings(provider: String, endpoint: String, model: String, ap
     }
     let endpoint = validated_local_api_endpoint(&endpoint)?;
     let api_protocol = api_protocol.as_deref().unwrap_or("openai");
-    if !matches!(api_protocol, "openai" | "anthropic") {
+    if !matches!(api_protocol, "openai" | "anthropic" | "responses") {
         return Err("FORGE_DESKTOP_API_PROTOCOL_INVALID".into());
     }
     let model = model.trim();
@@ -1529,6 +1552,86 @@ async fn run_local_forge_tool<H: LocalApiHost + Sync>(
 
 // Provider-specific tool-call envelope parsing. Execution remains a single
 // canonical Forge path independent of the remote model protocol.
+fn responses_assistant_message(output: &Value) -> Result<Value, String> {
+    let items = output.get("output").and_then(Value::as_array)
+        .ok_or("FORGE_DESKTOP_API_RESPONSE_INVALID")?;
+    let mut texts = Vec::new();
+    let mut calls = Vec::new();
+    for item in items {
+        match item.get("type").and_then(Value::as_str) {
+            Some("message") => {
+                if let Some(blocks) = item.get("content").and_then(Value::as_array) {
+                    for block in blocks {
+                        if block.get("type").and_then(Value::as_str) == Some("output_text") {
+                            if let Some(text) = block.get("text").and_then(Value::as_str)
+                                .filter(|value| !value.trim().is_empty()) {
+                                texts.push(text.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+            Some("function_call") => {
+                let call_id = item.get("call_id").and_then(Value::as_str)
+                    .or_else(|| item.get("id").and_then(Value::as_str)).unwrap_or("");
+                let name = item.get("name").and_then(Value::as_str).unwrap_or("");
+                let arguments = item.get("arguments").and_then(Value::as_str).unwrap_or("{}");
+                if arguments.len() > 64 * 1024 {
+                    return Err("FORGE_DESKTOP_API_TOOL_ARGUMENTS_TOO_LARGE".into());
+                }
+                calls.push(json!({
+                    "id":call_id,
+                    "type":"function",
+                    "function":{"name":name,"arguments":arguments}
+                }));
+            }
+            _ => {}
+        }
+    }
+    if texts.is_empty() && calls.is_empty() {
+        return Err("FORGE_DESKTOP_API_RESPONSE_MISSING".into());
+    }
+    let mut message = json!({
+        "role":"assistant",
+        "content":if texts.is_empty(){Value::Null}else{Value::String(texts.join("\n"))}
+    });
+    if !calls.is_empty() { message["tool_calls"] = Value::Array(calls); }
+    Ok(message)
+}
+
+fn responses_input(history: &[Value]) -> Result<Vec<Value>, String> {
+    let mut input = Vec::new();
+    for item in history {
+        match item.get("role").and_then(Value::as_str) {
+            Some(role @ ("user" | "assistant")) => {
+                if let Some(content) = item.get("content").and_then(Value::as_str)
+                    .filter(|value| !value.trim().is_empty()) {
+                    input.push(json!({"role":role,"content":content}));
+                }
+                if role == "assistant" {
+                    if let Some(calls) = item.get("tool_calls").and_then(Value::as_array) {
+                        for call in calls {
+                            input.push(json!({
+                                "type":"function_call",
+                                "call_id":call.get("id").and_then(Value::as_str).unwrap_or(""),
+                                "name":call.pointer("/function/name").and_then(Value::as_str).unwrap_or(""),
+                                "arguments":call.pointer("/function/arguments").and_then(Value::as_str).unwrap_or("{}"),
+                            }));
+                        }
+                    }
+                }
+            }
+            Some("tool") => input.push(json!({
+                "type":"function_call_output",
+                "call_id":item.get("tool_call_id").and_then(Value::as_str).unwrap_or(""),
+                "output":item.get("content").and_then(Value::as_str).unwrap_or(""),
+            })),
+            _ => return Err("FORGE_DESKTOP_API_MESSAGES_INVALID".into()),
+        }
+    }
+    Ok(input)
+}
+
 fn provider_tool_calls(protocol: &str, output: &Value) -> Result<Vec<(String, String, Value)>, String> {
     let mut requests = Vec::new();
     if protocol == "anthropic" {
@@ -1544,8 +1647,12 @@ fn provider_tool_calls(protocol: &str, output: &Value) -> Result<Vec<(String, St
             }
         }
     } else {
-        let message = output.pointer("/choices/0/message")
-            .ok_or("FORGE_DESKTOP_API_RESPONSE_INVALID")?;
+        let message = if protocol == "responses" {
+            responses_assistant_message(output)?
+        } else {
+            output.pointer("/choices/0/message").cloned()
+                .ok_or("FORGE_DESKTOP_API_RESPONSE_INVALID")?
+        };
         if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
             for call in calls {
                 let arguments = call.pointer("/function/arguments").and_then(Value::as_str).unwrap_or("{}");
@@ -1602,6 +1709,7 @@ async fn request_local_api_round(
     let route = match protocol {
         "anthropic" => "messages",
         "openai" => "chat/completions",
+        "responses" => "responses",
         _ => return Err("FORGE_DESKTOP_API_PROTOCOL_INVALID".into()),
     };
     let mut payload = body.clone();
@@ -1729,7 +1837,7 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
             config.get("endpoint").and_then(Value::as_str).unwrap_or("")
         )?;
         let protocol = config.get("apiProtocol").and_then(Value::as_str).unwrap_or("openai");
-        if !matches!(protocol, "openai" | "anthropic") {
+        if !matches!(protocol, "openai" | "anthropic" | "responses") {
             return Err("FORGE_DESKTOP_API_PROTOCOL_INVALID".into());
         }
         let key = read_local_api_key(&endpoint)?;
@@ -1806,6 +1914,21 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
             });
             if !tools.is_empty() { body["tools"] = Value::Array(tools); }
             body
+        } else if protocol == "responses" {
+            let tools: Vec<Value> = available_tools.iter().map(|tool| json!({
+                "type":"function",
+                "name":tool.pointer("/function/name"),
+                "description":tool.pointer("/function/description"),
+                "parameters":tool.pointer("/function/parameters"),
+            })).collect();
+            let mut body = json!({
+                "model":model,
+                "instructions":system_instruction,
+                "input":responses_input(&history)?,
+                "stream":false,
+            });
+            if !tools.is_empty() { body["tools"] = Value::Array(tools); }
+            body
         } else {
             let mut upstream = Vec::with_capacity(history.len() + 1);
             upstream.push(json!({ "role": "system", "content": system_instruction }));
@@ -1846,11 +1969,17 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
             }
             history.push(json!({ "role": "assistant", "content": blocks }));
         } else {
-            let message = output.pointer("/choices/0/message")
-                .ok_or("FORGE_DESKTOP_API_RESPONSE_INVALID")
-                .map_err(|error| contextualize_api_turn_error(
-                    error.into(), last_effect_request_id.as_deref()
-                ))?;
+            let message = if protocol == "responses" {
+                responses_assistant_message(&output).map_err(|error| {
+                    contextualize_api_turn_error(error, last_effect_request_id.as_deref())
+                })?
+            } else {
+                output.pointer("/choices/0/message").cloned()
+                    .ok_or("FORGE_DESKTOP_API_RESPONSE_INVALID")
+                    .map_err(|error| contextualize_api_turn_error(
+                        error.into(), last_effect_request_id.as_deref()
+                    ))?
+            };
             if requests.is_empty() {
                 let text = message.get("content").and_then(Value::as_str)
                     .filter(|value| !value.trim().is_empty())
@@ -1860,7 +1989,7 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
                     ))?;
                 return Ok(json!({ "output": text, "toolActivityCount": total_calls, "toolEvents": tool_events }));
             }
-            history.push(message.clone());
+            history.push(message);
         }
         if repo_id.is_none() || requests.is_empty() || requests.len() > 4 || total_calls + requests.len() > 12 {
             return Err(contextualize_api_turn_error(
