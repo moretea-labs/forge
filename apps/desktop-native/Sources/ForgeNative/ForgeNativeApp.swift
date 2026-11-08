@@ -3042,10 +3042,10 @@ private struct RecordsPane: View {
                                 let structurallyRelated = !hasSelection
                                     || (focusIds.contains(item.id) && focusIds.contains(parent.id))
                                 let edgeColor = onSelectedPath
-                                    ? ForgePalette.accent.opacity(0.78)
+                                    ? ForgePalette.accent.opacity(0.82)
                                     : (structurallyRelated
-                                        ? ForgePalette.accent.opacity(hasSelection ? 0.30 : 0.24)
-                                        : ForgePalette.secondary.opacity(0.07))
+                                        ? ForgePalette.accent.opacity(hasSelection ? 0.34 : 0.26)
+                                        : ForgePalette.secondary.opacity(0.14))
                                 let edgeWidth: CGFloat = onSelectedPath ? 2.35 : (structurallyRelated ? 1.45 : 1)
                                 context.stroke(
                                     path,
@@ -3070,25 +3070,28 @@ private struct RecordsPane: View {
                         ForEach(planningVisibleRecords) { item in
                             if let child=positions[item.id],
                                let parent=planningParent(of:item),
-                               let parentPoint=positions[parent.id],
-                               !hasSelection || (
-                                   selectedPathIds.contains(item.id)
-                                   && selectedPathIds.contains(parent.id)
-                               ) {
+                               let parentPoint=positions[parent.id] {
+                                let onSelectedPath = hasSelection
+                                    && selectedPathIds.contains(item.id)
+                                    && selectedPathIds.contains(parent.id)
+                                let structurallyRelated = !hasSelection
+                                    || (focusIds.contains(item.id) && focusIds.contains(parent.id))
+                                if structurallyRelated {
                                 let startX=parentPoint.x + planningNodeWidth
                                 let endX=child.x
                                 let midX=(startX + endX) / 2
                                 let midY=((parentPoint.y + child.y) / 2) + planningNodeHeight / 2
                                 Text(parent.kind == .requirement ? "拥有" : "细化")
                                     .font(.system(size:7.8,weight:.semibold))
-                                    .foregroundStyle(hasSelection ? ForgePalette.accent : ForgePalette.secondary)
+                                    .foregroundStyle(onSelectedPath ? ForgePalette.accent : ForgePalette.secondary)
                                     .padding(.horizontal,5).padding(.vertical,2)
                                     .background(ForgePalette.raisedSurface.opacity(0.94),in:Capsule())
                                     .overlay(Capsule().stroke(
-                                        (hasSelection ? ForgePalette.accent : ForgePalette.secondary).opacity(0.16),
+                                        (onSelectedPath ? ForgePalette.accent : ForgePalette.secondary).opacity(0.18),
                                         lineWidth:0.6
                                     ))
                                     .position(x:midX,y:midY)
+                                }
                             }
                         }
 
@@ -3517,7 +3520,7 @@ private struct RecordsPane: View {
                 .transition(.opacity)
             }
         }
-        .opacity(focused ? 1 : 0.28)
+        .opacity(focused ? 1 : 0.52)
         .onHover { inside in
             if inside { hoveredPlanningRecordId=item.id }
             else if hoveredPlanningRecordId == item.id { hoveredPlanningRecordId=nil }
