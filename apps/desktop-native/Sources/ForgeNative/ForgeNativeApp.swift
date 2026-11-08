@@ -3209,6 +3209,15 @@ private struct RecordsPane: View {
                 .contentShape(RoundedRectangle(cornerRadius:13,style:.continuous))
             }
             .buttonStyle(.plain)
+            .accessibilityLabel(item.title)
+            .accessibilityValue({
+                let relation=planningNodeRole(item)
+                if let execution {
+                    return "\(relation) · \(item.recordId) · \(planningExecutionLabel(item,execution))"
+                }
+                return "\(relation) · \(item.recordId)"
+            }())
+            .accessibilityIdentifier("semantic.canvas.\(item.kind.rawValue).\(item.recordId)")
 
             if !children.isEmpty || hovered || selected {
                 HStack(spacing:4) {
@@ -3232,6 +3241,8 @@ private struct RecordsPane: View {
                         }
                         .buttonStyle(.plain)
                         .help(collapsed ? "展开 \(children.count) 个直接子节点" : "折叠 \(children.count) 个直接子节点")
+                        .accessibilityLabel(collapsed ? "展开分支" : "折叠分支")
+                        .accessibilityValue("\(children.count) 个直接子节点")
                         .accessibilityIdentifier("planning.collapse.\(item.recordId)")
                     }
 
@@ -3278,15 +3289,7 @@ private struct RecordsPane: View {
         }
         .animation(.easeOut(duration:0.12),value:hovered)
         .animation(.easeOut(duration:0.16),value:focused)
-        .accessibilityLabel(item.title)
-        .accessibilityValue({
-            let relation=planningNodeRole(item)
-            if let execution {
-                return "\(relation) · \(item.recordId) · \(planningExecutionLabel(item,execution))"
-            }
-            return "\(relation) · \(item.recordId)"
-        }())
-        .accessibilityIdentifier("semantic.canvas.\(item.kind.rawValue).\(item.recordId)")
+        .accessibilityElement(children:.contain)
     }
 
     private func beginRequirement() {
