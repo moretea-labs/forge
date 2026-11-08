@@ -1861,7 +1861,6 @@ fn local_verification_command(arguments: &Value) -> bool {
             matches!(suffix.first().copied(), Some("test" | "check" | "build"))
             || (suffix.first() == Some(&"run")
                 && matches!(suffix.get(1).copied(), Some("test" | "check" | "build"))),
-        "git" => suffix.starts_with(&["diff", "--check"]),
         "python" | "python3" => suffix.starts_with(&["-m", "pytest"])
             && !suffix.iter().any(|arg| matches!(*arg,
                 "--collect-only" | "--help" | "--version" | "-h" | "-V")),
@@ -1891,13 +1890,21 @@ fn local_verification_command(arguments: &Value) -> bool {
             };
             let commands = ["cargo test", "cargo check", "swift test", "swift build",
                 "pytest", "go test", "npm test", "npm run check", "npm run build",
-                "bun test", "git diff --check", "xcodebuild test", "xcodebuild build"];
+                "bun test", "xcodebuild test", "xcodebuild build"];
             commands.iter().any(|pattern|
                 command == *pattern || command.starts_with(&format!("{pattern} "))
             ) && !command.split_whitespace().any(|arg| matches!(arg,
                 "--help" | "--version" | "--collect-only" | "--list" | "-h" | "-V"))
         }
         _ => false,
+    }
+}
+
+fn local_api_access_mode_instruction(allow_effects: bool) -> &'static str {
+    if allow_effects {
+        "Request mode is Full Access for the selected checkout under the repository's persistent Forge AccessPolicy."
+    } else {
+        "Request mode is read-only; inspect but do not mutate repository content."
     }
 }
 
@@ -2491,7 +2498,8 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
     let available_tools = if repo_id.is_some() { local_tool_catalog(repository_effect_access) } else { Vec::new() };
     let system_instruction = if let Some(id) = repo_id.as_ref() {
         let checkout = checkout_id.as_deref().unwrap_or("unbound (read-only)");
-        format!("You are the Forge Desktop local API agent working in registered repository {id}, checkout {checkout}. Use the supplied tools for real facts and repository operations. All calls execute through the existing Forge repository authority in the local process, not MCP HTTP. Never invent a file, command result, Requirement or Plan state. Tools with effects require a pinned checkout and this repository's persistent Forge AccessPolicy to be Full Access. Request mode is read-only. Never claim an operation succeeded unless its tool result confirms it.")
+        let access_mode = local_api_access_mode_instruction(repository_effect_access);
+        format!("You are the Forge Desktop local API agent working in registered repository {id}, checkout {checkout}. Use the supplied tools for real facts and repository operations. All calls execute through the existing Forge repository authority in the local process, not MCP HTTP. Never invent a file, command result, Requirement or Plan state. Tools with effects require a pinned checkout and this repository's persistent Forge AccessPolicy to be Full Access. {access_mode} Never claim an operation succeeded unless its tool result confirms it.")
     } else {
         "You are the Forge Desktop assistant. No Forge project is attached: tools are disabled. Do not invent repository changes or imply that you ran a command. Ask the user to attach a project to work on files.".to_string()
     };
@@ -3284,7 +3292,8 @@ mod tests {
         assert!(local_verification_command(&json!({"command":["cargo","test","--manifest-path","x"]})));
         assert!(local_verification_command(&json!({"command":["swift","test"]})));
         assert!(local_verification_command(&json!({"command":["bash","-lc","cd app && npm run check"]})));
-        assert!(local_verification_command(&json!({"command":["git","diff","--check"]})));
+        assert!(!local_verification_command(&json!({"command":["git","diff","--check"]})));
+        assert!(!local_verification_command(&json!({"command":["bash","-lc","git diff --check"]})));
         assert!(local_verification_command(&json!({"command":["npm","run","check","--prefix","apps/desktop"]})));
         assert!(!local_verification_command(&json!({"command":["npm","config","get","test"]})));
         assert!(!local_verification_command(&json!({"command":["cargo","metadata","--features","test"]})));
@@ -3303,6 +3312,16 @@ mod tests {
         assert!(!local_verification_command(&json!({"command":["echo","tests passed"]})));
         assert!(!local_verification_command(&json!({"command":["bash","-lc","echo cargo test"]})));
         assert!(!local_verification_command(&json!({"command":[]})));
+    }
+
+    #[test]
+    fn local_api_access_mode_instruction_matches_repository_policy() {
+        let readonly = local_api_access_mode_instruction(false);
+        let full_access = local_api_access_mode_instruction(true);
+        assert!(readonly.contains("read-only"));
+        assert!(!readonly.contains("Full Access"));
+        assert!(full_access.contains("Full Access"));
+        assert!(!full_access.contains("read-only"));
     }
 
     #[test]
