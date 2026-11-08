@@ -8,7 +8,7 @@ import type { MultiRepositoryMcpToolContext } from '../../adapters/mcp/multi-rep
 import { ensureControllerHome, repositoryControllerRoot } from '../../src/effects/controller-home';
 import { addRepositoryCheckout, registerRepository } from '../../src/cli/repositories/registry';
 import { callRuntimeTool } from '../../adapters/mcp/runtime-gateway/runtime-tools';
-import { callContextAdapter, selectProgressiveSourcePaths } from '../../adapters/mcp/runtime-gateway/context-adapter';
+import { callContextAdapter } from '../../adapters/mcp/runtime-gateway/context-adapter';
 import { recordGatewayLatency } from '../../src/runtime/observability/gateway-contention-metrics';
 import { mintEngineeringAdmissionEvidence } from '../../adapters/mcp/runtime-gateway/engineering-preconditions';
 import {
@@ -979,7 +979,7 @@ printf '{"ok":true}\\n'
     expect(source?.content).toContain('END_OF_SOURCE_EVIDENCE');
   });
 
-  test('rh_context offers exact bounded follow-up when related source candidates were omitted', async () => {
+  test('rh_context exposes omitted evidence without choosing a follow-up query for the model', async () => {
     const business = tempRoot('forge-context-progressive-candidates-');
     const controllerHome = tempRoot('forge-home-context-progressive-candidates-');
     initGitRepo(business, 'context-progressive-candidates');
@@ -991,23 +991,19 @@ printf '{"ok":true}\\n'
       search_terms: ['progressiveOwner'], retrieval_mode: 'plan', structural_context: 'off',
       max_files: 1, max_snippets: 2, detail_level: 'detail', include_learning_recall: false,
     }));
-    const data = payload.data as { readiness?: { retrieval?: { omittedCandidateCount?: number } } };
+    const data = payload.data as { readiness?: { retrieval?: { omittedCandidateCount?: number } }; omitted?: Array<{ path: string; reason: string }> };
     expect(data.readiness?.retrieval?.omittedCandidateCount).toBeGreaterThan(0);
-    expect(payload.suggestedNextActions).toContainEqual(expect.objectContaining({
-      tool: 'rh_context', operation: 'search', risk: 'readonly',
-      payload: expect.objectContaining({
-        known_paths: expect.arrayContaining(['src/consumer.ts']),
-        include_learning_recall: false,
-      }),
-    }));
-    const action = (payload.suggestedNextActions as Array<{ payload: Record<string, unknown> }>)[0]!;
+    expect(data.omitted).toContainEqual(expect.objectContaining({ path: 'src/consumer.ts' }));
+    expect(payload.suggestedNextActions).toEqual([]);
+    // The caller, not Forge, chooses whether and how to retrieve this path.
     const followed = structured(await callRuntimeTool(mcpContext(controllerHome, repository), 'rh_context', {
-      ...action.payload, operation: 'search',
+      repo_id: repository.repoId, operation: 'search', query: 'Inspect progressiveOwner consumer',
+      known_paths: ['src/consumer.ts'], max_files: 3, max_snippets: 6,
+      retrieval_mode: 'implementation', include_learning_recall: false,
     }));
     expect((followed.data as { files: Array<{ path: string }> }).files.map(file => file.path))
       .toContain('src/consumer.ts');
-    expect((followed.suggestedNextActions as Array<{ payload?: { known_paths?: string[] } }> ?? [])
-      .every(entry => !entry.payload?.known_paths?.includes('src/consumer.ts'))).toBe(true);
+    expect(followed.suggestedNextActions).toEqual([]);
   });
 
   test('rh_context warns about Chinese-only cold-start and finds English owners after model-selected hints', async () => {
@@ -1028,7 +1024,7 @@ printf '{"ok":true}\\n'
       structural_context: 'off', max_files: 4, max_snippets: 8, include_learning_recall: false,
     }));
     expect((cold.data as { files: Array<{ path: string }> }).files.some(file => file.path.startsWith('src/'))).toBe(false);
-    expect((cold.warnings as string[] | undefined)?.some(warning => warning.includes('search_terms'))).toBe(true);
+    expect((cold.warnings as string[] | undefined)?.some(warning => warning.includes('source-language code terms'))).toBe(true);
     const grounded = structured(await callRuntimeTool(context, 'rh_context', {
       repo_id: repository.repoId, operation: 'search', query,
       search_terms: ['requirement', 'scheduler'], retrieval_mode: 'plan',
@@ -1036,17 +1032,6 @@ printf '{"ok":true}\\n'
     }));
     expect((grounded.data as { files: Array<{ path: string }> }).files.map(file => file.path))
       .toEqual(expect.arrayContaining(['src/authority.ts', 'src/scheduler.ts']));
-  });
-
-  test('omitted source follow-up excludes stale index entries and already materialized files', () => {
-    const selected = selectProgressiveSourcePaths([
-      { path: 'src/removed.ts', reason: 'structural provider reports file removed since index' },
-      { path: 'src/owner.ts', reason: 'max_files' },
-      { path: 'src/owner.ts', reason: 'max_snippets' },
-      { path: 'src/already.ts', reason: 'max_files' },
-      { path: 'src/next.ts', reason: 'max_files' },
-    ], ['src/already.ts']);
-    expect(selected).toEqual(['src/owner.ts', 'src/next.ts']);
   });
 
   test('rh_context runtime-issued closure round-trips into engineering preconditions without depth corruption', async () => {
