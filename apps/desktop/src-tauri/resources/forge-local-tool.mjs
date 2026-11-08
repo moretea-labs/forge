@@ -5,6 +5,7 @@ import { pathToFileURL } from 'node:url';
 // One-shot direct local adapter: no MCP HTTP, no separate Forge state owner.
 const tools = Object.freeze({
   read_file: { name: 'read_repository_file', effect: false },
+  search_code: { name: 'execute_command', effect: false },
   git_status: { name: 'repository_git_status', effect: false },
   git_diff: { name: 'repository_git_diff', effect: false },
   patch_plan: { name: 'repository_safe_patch_plan', effect: false },
@@ -36,6 +37,7 @@ async function run() {
   if (!args || typeof args !== 'object' || Array.isArray(args)) throw Error('LOCAL_FORGE_TOOL_ARGUMENTS_INVALID');
   const keys = {
     read_file: ['path','start_line','end_line'],
+    search_code: ['query','path'],
     git_status: ['refresh'],
     git_diff: ['paths','staged','max_bytes'],
     patch_plan: ['operations','chunk_size'],
@@ -56,6 +58,15 @@ async function run() {
       throw Error('LOCAL_FORGE_GIT_COMMIT_ARGUMENTS_INVALID');
     }
   }
+  if (input.tool === 'search_code') {
+    if (typeof args.query !== 'string' || !args.query.trim() || args.query.length > 160
+        || (args.path !== undefined && (
+          typeof args.path !== 'string' || !args.path || args.path.startsWith('/')
+          || args.path.split('/').includes('..') || args.path.includes('\\')
+        ))) {
+      throw Error('LOCAL_FORGE_SEARCH_INVALID');
+    }
+  }
   if (input.tool === 'run_command') {
     if (!Array.isArray(args.command) || args.command.length === 0 || args.command.length > 24
         || args.command.some((part) => typeof part !== 'string' || part.length > 2048)
@@ -68,8 +79,12 @@ async function run() {
   const { callRepositoryTool } = await import(pathToFileURL(entry).href);
   // Call the existing canonical Repository tool owner directly in this process.
   // Nothing is sent to MCP HTTP and there is no second filesystem writer.
+  const toolArgs = input.tool === 'search_code'
+    ? { command: ['rg', '-n', '-F', '--no-heading', '--max-count', '20', '--',
+        args.query, args.path ?? '.'], timeout_ms: 12_000, max_output_bytes: 10_000 }
+    : args;
   const result = await callRepositoryTool(controllerHome, tool.name, {
-    ...args, repo_id: repoId, ...(checkoutId ? { checkout_id: checkoutId } : {}),
+    ...toolArgs, repo_id: repoId, ...(checkoutId ? { checkout_id: checkoutId } : {}),
   }, {
     principalId: 'forge-desktop-local-api',
     sessionId: 'desktop-api:' + conversationId,

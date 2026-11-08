@@ -135,6 +135,7 @@ struct ChatMessage: Codable, Identifiable {
     var contextPaths: [String]?
     var toolActivityCount: Int?
     var activityEvents: [AgentLiveActivityEvent]?
+    var incomplete: Bool? = nil
     var createdAt = Date()
 }
 struct ChatThread: Codable, Identifiable {
@@ -2373,7 +2374,7 @@ final class NativeWorkspace: ObservableObject {
                 : Self.decodeActivityEvents(response["activityEvents"])
             threads[current].messages.append(ChatMessage(
                 role:"assistant", text:answer, toolActivityCount:toolActivityCount,
-                activityEvents:activityEvents
+                activityEvents:activityEvents, incomplete:response["incomplete"] as? Bool
             ))
             if turnProvider == "codex" {
                 threads[current].providerSessionId = response["providerSessionId"] as? String ??

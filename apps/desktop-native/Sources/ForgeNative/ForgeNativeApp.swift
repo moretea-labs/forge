@@ -918,6 +918,20 @@ private struct AgentPane: View {
                                         }
                                         .font(.system(size:10.5,weight:.medium))
                                         .foregroundStyle(ForgePalette.secondary)
+                                        if message.incomplete == true,
+                                           message.id == model.thread?.messages.last?.id {
+                                            Button {
+                                                model.draft = "继续执行上一次未完成的开发任务。先核对当前 checkout 的 Git 状态和最近工具回执，确认哪些操作已经完成；不要重放未知写操作。继续实施并执行必要验证。"
+                                                Task { await model.send() }
+                                            } label: {
+                                                Label("继续执行",systemImage:"play.fill")
+                                                    .font(.system(size:11,weight:.semibold))
+                                            }
+                                            .buttonStyle(.bordered)
+                                            .disabled(model.busy || !model.draft.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty
+                                                || (model.thread?.repoId != nil && !model.checkoutIsAvailable))
+                                            .accessibilityIdentifier("agent.continue-incomplete")
+                                        }
                                         if expandedMessageActivities.contains(message.id),
                                            let events = message.activityEvents, !events.isEmpty {
                                             VStack(alignment:.leading,spacing:7) {

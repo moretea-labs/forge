@@ -1786,8 +1786,69 @@ const LOCAL_API_TOOL_ROUNDS: usize = 16;
 const LOCAL_API_TOOL_CALLS_PER_ROUND: usize = 8;
 const LOCAL_API_TOOL_CALL_BUDGET: usize = 40;
 
+const LOCAL_API_HISTORY_MAX_BYTES: usize = 48_000;
+const LOCAL_API_TOOL_RESULT_MAX_CHARS: usize = 3_600;
+
+fn local_api_history_bytes(messages: &[Value]) -> usize {
+    messages.iter().map(|item| item.to_string().len()).sum()
+}
+
+// Same bounded-recent-context policy as Autopilot, within the existing native
+// model loop. This stores no new state and never treats model text as Git truth.
+fn compact_local_api_history(messages: &mut Vec<Value>) -> bool {
+    if messages.len() <= 18 && local_api_history_bytes(messages) <= LOCAL_API_HISTORY_MAX_BYTES {
+        return false;
+    }
+    let assistants: Vec<usize> = messages.iter().enumerate()
+        .filter(|(_, item)| item.get("role").and_then(Value::as_str) == Some("assistant"))
+        .map(|(index, _)| index).collect();
+    let Some(last_assistant) = assistants.last().copied() else {
+        if messages.len() <= 1 { return false; }
+        let last = messages.last().cloned().unwrap_or(Value::Null);
+        messages.clear();
+        messages.push(last);
+        return true;
+    };
+    let start = assistants.iter().rev().nth(1).copied().unwrap_or(last_assistant);
+    if start < 2 { return false; }
+    let first = messages[0].clone();
+    let recent = messages[start..].to_vec();
+    messages.clear();
+    messages.push(first);
+    messages.push(json!({"role":"user","content":
+        "Earlier conversation/tool output was compacted. Current Git checkout and Forge tool receipts are authoritative. Re-read facts before deciding or retrying a write."}));
+    messages.extend(recent);
+    if local_api_history_bytes(messages) > LOCAL_API_HISTORY_MAX_BYTES {
+        let last = messages.iter().enumerate().rev()
+            .find(|(_, item)| item.get("role").and_then(Value::as_str) == Some("assistant"))
+            .map(|(index, _)| index);
+        if let Some(last) = last.filter(|index| *index > 3) {
+            messages.drain(2..last);
+        }
+    }
+    true
+}
+
+fn local_api_budget_pause(reason: &str, total_calls: usize, events: &[Value]) -> Value {
+    let recent = events.iter().rev().take(4).rev().map(|event| {
+        let name = event.get("name").and_then(Value::as_str).unwrap_or("tool");
+        let outcome = if event.get("ok").and_then(Value::as_bool) == Some(true) {
+            "成功回执"
+        } else { "失败回执" };
+        let id = event.get("requestId").and_then(Value::as_str).unwrap_or("只读调用");
+        format!("- {name}: {outcome} · {id}")
+    }).collect::<Vec<_>>().join("\n");
+    json!({
+        "output": format!("本轮达到{reason}，任务尚未确认完成。已收到 {total_calls} 次工具调用回执。\n{recent}\n可点击「继续执行」：先重新读取 Git 状态和必要源码，不盲目重放此前的写操作。"),
+        "incomplete": true,
+        "toolActivityCount": total_calls,
+        "toolEvents": events,
+    })
+}
+
 fn local_tool_catalog(allow_effects: bool) -> Vec<Value> {
     let mut tools = vec![
+        json!({"type":"function","function":{"name":"search_code","description":"Search literal source text via a bounded readonly Forge command; optional repo-relative path narrows search.","parameters":{"type":"object","properties":{"query":{"type":"string","minLength":1,"maxLength":160},"path":{"type":"string"}},"required":["query"],"additionalProperties":false}}}),
         json!({"type":"function","function":{"name":"read_file","description":"Read bounded lines of a file in the user's selected registered Forge repository. Paths are repo-relative.","parameters":{"type":"object","properties":{"path":{"type":"string"},"start_line":{"type":"integer","minimum":1},"end_line":{"type":"integer","minimum":1}},"required":["path"],"additionalProperties":false}}}),
         json!({"type":"function","function":{"name":"git_status","description":"Read actual Git status of the selected Forge project, not a cached model guess.","parameters":{"type":"object","properties":{},"additionalProperties":false}}}),
         json!({"type":"function","function":{"name":"git_diff","description":"Inspect a bounded Git diff in the selected repository.","parameters":{"type":"object","properties":{"paths":{"type":"array","items":{"type":"string"}},"staged":{"type":"boolean"},"max_bytes":{"type":"integer","minimum":100,"maximum":16000}},"additionalProperties":false}}}),
@@ -2321,7 +2382,7 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
             return Err("FORGE_DESKTOP_API_MESSAGES_INVALID".into());
         }
         total += content.len();
-        if total > 60_000 { return Err("FORGE_DESKTOP_API_MESSAGES_TOO_LARGE".into()); }
+        if total > 600_000 { return Err("FORGE_DESKTOP_API_MESSAGES_TOO_LARGE".into()); }
         history.push(json!({ "role": role, "content": content }));
     }
     let client = reqwest::Client::builder()
@@ -2335,10 +2396,12 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
     } else {
         "You are the Forge Desktop assistant. No Forge project is attached: tools are disabled. Do not invent repository changes or imply that you ran a command. Ask the user to attach a project to work on files.".to_string()
     };
+    compact_local_api_history(&mut history);
     let mut tool_events: Vec<Value> = Vec::new();
     let mut total_calls = 0usize;
     let mut last_effect_request_id: Option<String> = None;
     for _round in 0..LOCAL_API_TOOL_ROUNDS {
+        compact_local_api_history(&mut history);
         if *cancel_receiver.borrow() {
             return Err(contextualize_api_turn_error(
                 "FORGE_DESKTOP_API_TURN_CANCELLED".into(), last_effect_request_id.as_deref()
@@ -2436,11 +2499,13 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
             history.push(message);
         }
         if repo_id.is_none() || requests.is_empty()
-            || requests.len() > LOCAL_API_TOOL_CALLS_PER_ROUND
-            || total_calls + requests.len() > LOCAL_API_TOOL_CALL_BUDGET {
+            || requests.len() > LOCAL_API_TOOL_CALLS_PER_ROUND {
             return Err(contextualize_api_turn_error(
                 "FORGE_DESKTOP_API_TOOL_BUDGET_EXCEEDED".into(), last_effect_request_id.as_deref()
             ));
+        }
+        if total_calls + requests.len() > LOCAL_API_TOOL_CALL_BUDGET {
+            return Ok(local_api_budget_pause("工具调用预算上限", total_calls, &tool_events));
         }
         let mut tool_results = Vec::new();
         for (id, name, mut args) in requests {
@@ -2514,8 +2579,9 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
             total_calls += 1;
             // A real tool result is the only source of truth sent back to the model.
             let serialized = result.to_string();
-            let bounded = if serialized.len() > 16_000 {
-                format!("{}...[truncated]", &serialized[..serialized.char_indices().map(|(idx, _)| idx).take_while(|idx| *idx <= 15_900).last().unwrap_or(0)])
+            let bounded = if serialized.chars().count() > LOCAL_API_TOOL_RESULT_MAX_CHARS {
+                format!("{}...[truncated; re-read from Forge if needed]",
+                    serialized.chars().take(LOCAL_API_TOOL_RESULT_MAX_CHARS - 60).collect::<String>())
             } else { serialized };
             if effect_outcome == Some(LocalEffectOutcome::Unknown) {
                 // Only a missing or ambiguous terminal receipt requires reconciliation.
@@ -2537,9 +2603,7 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
             history.push(json!({ "role": "user", "content": tool_results }));
         }
     }
-    Err(contextualize_api_turn_error(
-        "FORGE_DESKTOP_API_TOOL_ROUND_LIMIT".into(), last_effect_request_id.as_deref()
-    ))
+    Ok(local_api_budget_pause("模型交互轮次上限", total_calls, &tool_events))
 }
 
 #[tauri::command]
@@ -2992,6 +3056,39 @@ mod tests {
     }
 
     #[test]
+    fn local_api_history_keeps_recent_complete_tool_turns() {
+        let mut history = vec![json!({"role":"user","content":"implement a fix"})];
+        for index in 0..12 {
+            history.push(json!({"role":"assistant","tool_calls":[{
+                "id":format!("call-{index}"),"type":"function",
+                "function":{"name":"git_status","arguments":"{}"}
+            }]}));
+            history.push(json!({"role":"tool","tool_call_id":format!("call-{index}"),
+                "content":"bounded Forge receipt"}));
+        }
+        assert!(compact_local_api_history(&mut history));
+        assert!(history.len() <= 6);
+        assert_eq!(history[0]["content"], "implement a fix");
+        assert!(history[1]["content"].as_str().unwrap().contains("compacted"));
+        for tool in history.iter().filter(|message| message["role"] == "tool") {
+            let id = tool["tool_call_id"].as_str().unwrap();
+            assert!(history.iter().any(|assistant| assistant["role"] == "assistant"
+                && assistant["tool_calls"][0]["id"] == id));
+        }
+        assert_eq!(history.last().unwrap()["tool_call_id"], "call-11");
+    }
+
+    #[test]
+    fn local_api_budget_pause_is_explicit_and_keeps_effect_receipt() {
+        let events = [json!({"name":"apply_patch","ok":true,"requestId":"effect-123"})];
+        let value = local_api_budget_pause("工具调用预算上限", 40, &events);
+        assert_eq!(value["incomplete"], true);
+        assert_eq!(value["toolActivityCount"], 40);
+        assert_eq!(value["toolEvents"][0]["requestId"], "effect-123");
+        assert!(value["output"].as_str().unwrap().contains("尚未确认完成"));
+    }
+
+    #[test]
     fn local_tool_catalog_requires_user_grant_for_effects() {
         let readonly = local_tool_catalog(false);
         let names = |items: Vec<Value>| items.iter().filter_map(|item|
@@ -2999,6 +3096,7 @@ mod tests {
         ).collect::<Vec<_>>();
         let readonly_names = names(readonly);
         assert!(readonly_names.contains(&"read_file".to_string()));
+        assert!(readonly_names.contains(&"search_code".to_string()));
         assert!(readonly_names.contains(&"git_status".to_string()));
         assert!(!readonly_names.contains(&"run_command".to_string()));
         assert!(!readonly_names.contains(&"apply_patch".to_string()));

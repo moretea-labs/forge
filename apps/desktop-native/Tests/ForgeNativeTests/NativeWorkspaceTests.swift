@@ -1099,6 +1099,18 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertTrue(NativeWorkspace.checkoutPathIsGitWorktree(root))
     }
 
+    func testIncompleteAssistantTurnSurvivesPersistenceAndLegacyDecode() throws {
+        let message = ChatMessage(role:"assistant",text:"Still running",incomplete:true)
+        let data = try JSONEncoder().encode(message)
+        let restored = try JSONDecoder().decode(ChatMessage.self,from:data)
+        XCTAssertEqual(restored.incomplete,true)
+
+        var previous = try XCTUnwrap(JSONSerialization.jsonObject(with:data) as? [String:Any])
+        previous.removeValue(forKey:"incomplete")
+        let oldData = try JSONSerialization.data(withJSONObject:previous)
+        XCTAssertNil(try JSONDecoder().decode(ChatMessage.self,from:oldData).incomplete)
+    }
+
     func testRegistryProjectLabelDoesNotFabricateRepository() {
         let item = ForgeProject(repoId:"r",displayName:"Forge",localRoot:nil,checkoutId:nil,
                                 remoteUrl:"https://github.com/moretea-labs/forge.git",defaultBranch:"main")
