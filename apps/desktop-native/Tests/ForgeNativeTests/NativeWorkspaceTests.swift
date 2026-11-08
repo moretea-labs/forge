@@ -185,6 +185,16 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(thread.messages[1].incomplete,true)
     }
 
+    func testManagedProcessActivityRemainsRunningUntilTerminalReceipt() {
+        let events = NativeWorkspace.apiActivityEvents([[
+            "name":"run_command","ok":false,"status":"running",
+            "processId":"proc_abc_123","toolCallId":"call-1","requestId":"effect-1"
+        ]])
+        XCTAssertEqual(events?.count,1)
+        XCTAssertEqual(events?.first?.status,"running")
+        XCTAssertEqual(events?.first?.detail,"proc_abc_123")
+    }
+
     func testNativeApiTurnEventFramingIsTyped() {
         let progress = #"{"type":"progress","data":{"name":"read_file","phase":"started"}}"#.data(using:.utf8)!
         XCTAssertEqual(ForgeApiTurn.decodeEvent(progress)?["type"] as? String,"progress")

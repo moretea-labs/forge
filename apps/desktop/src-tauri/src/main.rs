@@ -1887,12 +1887,35 @@ fn local_api_budget_pause(reason: &str, total_calls: usize, events: &[Value]) ->
     })
 }
 
+// A running Forge Process is an accepted, joinable operation, not an unknown outcome.
+fn local_running_process_id(receipt: &Value) -> Option<&str> {
+    if receipt.get("ok").and_then(Value::as_bool) != Some(true)
+        || receipt.pointer("/result/status").and_then(Value::as_str) != Some("running")
+        || receipt.pointer("/result/accepted").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    let id = receipt.pointer("/result/processId").and_then(Value::as_str)?;
+    (id.starts_with("proc_") && id.len() <= 128
+        && id.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_'))
+        .then_some(id)
+}
+
+fn local_api_process_pause(process_id: &str, total_calls: usize, events: &[Value]) -> Value {
+    json!({
+        "output": format!("Forge 命令已受理，仍在执行；尚无测试或构建终态，不能判定成功或失败。Process ID: {process_id}。不要重复执行该命令。继续时先使用 process_status 获取该 Process 的权威终态，再决定后续步骤。"),
+        "incomplete":true,
+        "toolActivityCount":total_calls,
+        "toolEvents":events
+    })
+}
+
 fn local_tool_catalog(allow_effects: bool) -> Vec<Value> {
     let mut tools = vec![
         json!({"type":"function","function":{"name":"search_code","description":"Search literal source text via a bounded readonly Forge command; optional repo-relative path narrows search.","parameters":{"type":"object","properties":{"query":{"type":"string","minLength":1,"maxLength":160},"path":{"type":"string"}},"required":["query"],"additionalProperties":false}}}),
         json!({"type":"function","function":{"name":"read_file","description":"Read bounded lines of a file in the user's selected registered Forge repository. Paths are repo-relative.","parameters":{"type":"object","properties":{"path":{"type":"string"},"start_line":{"type":"integer","minimum":1},"end_line":{"type":"integer","minimum":1}},"required":["path"],"additionalProperties":false}}}),
         json!({"type":"function","function":{"name":"git_status","description":"Read actual Git status of the selected Forge project, not a cached model guess.","parameters":{"type":"object","properties":{},"additionalProperties":false}}}),
         json!({"type":"function","function":{"name":"git_diff","description":"Inspect a bounded Git diff in the selected repository.","parameters":{"type":"object","properties":{"paths":{"type":"array","items":{"type":"string"}},"staged":{"type":"boolean"},"max_bytes":{"type":"integer","minimum":100,"maximum":16000}},"additionalProperties":false}}}),
+        json!({"type":"function","function":{"name":"process_status","description":"Read the canonical Forge Process Runtime status for a previously returned managed process ID. Never re-run a pending command.","parameters":{"type":"object","properties":{"process_id":{"type":"string","minLength":5,"maxLength":128}},"required":["process_id"],"additionalProperties":false}}}),
         json!({"type":"function","function":{"name":"patch_plan","description":"Review the preconditions and affected paths of proposed canonical Forge edit operations before applying anything.","parameters":{"type":"object","properties":{"operations":{"type":"array","items":{"type":"object"}}},"required":["operations"],"additionalProperties":false}}}),
     ];
     if allow_effects {
@@ -2616,6 +2639,22 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
                     });
                 }
             };
+            // A managed Process with a valid handle is known to be running, not
+            // an ambiguous effect. Preserve its identity and stop this turn
+            // without re-executing the accepted command.
+            if name == "run_command" {
+                if let Some(process_id) = local_running_process_id(&result) {
+                    tool_events.push(json!({
+                        "name":name, "ok":false, "status":"running",
+                        "processId":process_id, "requestId":effect_request_id, "toolCallId":id
+                    }));
+                    host.emit_tool_progress(json!({
+                        "conversationId":conversation_id, "name":name, "phase":"running",
+                        "processId":process_id, "requestId":effect_request_id, "toolCallId":id
+                    }));
+                    return Ok(local_api_process_pause(process_id, total_calls + 1, &tool_events));
+                }
+            }
             let effect_outcome = effectful.then(|| local_effect_outcome(&name, &result));
             if name == "apply_patch" && matches!(
                 result.pointer("/result/status").and_then(Value::as_str), Some("applied" | "partial")
@@ -3108,6 +3147,29 @@ mod tests {
         assert_eq!(local_effect_outcome("apply_patch", &json!({"ok":false,"result":{
             "status":"failed","terminal":true
         }})), LocalEffectOutcome::TerminalFailure);
+    }
+
+    #[test]
+    fn managed_process_receipt_pauses_without_replaying_the_command() {
+        let pending = json!({"ok":true,"result":{
+            "accepted":true,"status":"running","processId":"proc_abc_123"
+        }});
+        assert_eq!(local_running_process_id(&pending),Some("proc_abc_123"));
+        assert_eq!(local_running_process_id(&json!({"ok":true,"result":{
+            "accepted":true,"status":"running"
+        }})),None);
+        assert_eq!(local_running_process_id(&json!({"ok":true,"result":{
+            "accepted":true,"status":"succeeded","processId":"proc_abc_123"
+        }})),None);
+        let events = [json!({"name":"run_command","status":"running",
+            "processId":"proc_abc_123","requestId":"effect-1"})];
+        let paused = local_api_process_pause("proc_abc_123",1,&events);
+        assert_eq!(paused["incomplete"],true);
+        assert_eq!(paused["toolEvents"][0]["processId"],"proc_abc_123");
+        assert!(paused["output"].as_str().unwrap().contains("process_status"));
+        assert!(local_tool_catalog(false).iter().any(|tool|
+            tool.pointer("/function/name").and_then(Value::as_str)==Some("process_status")
+        ));
     }
 
     #[test]

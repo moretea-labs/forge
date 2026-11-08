@@ -8,6 +8,7 @@ const tools = Object.freeze({
   search_code: { name: 'execute_command', effect: false },
   git_status: { name: 'repository_git_status', effect: false },
   git_diff: { name: 'repository_git_diff', effect: false },
+  process_status: { name: 'process_get', effect: false },
   patch_plan: { name: 'repository_safe_patch_plan', effect: false },
   apply_patch: { name: 'repository_safe_patch_apply', effect: true },
   run_command: { name: 'execute_command', effect: true },
@@ -40,6 +41,7 @@ async function run() {
     search_code: ['query','path'],
     git_status: ['refresh'],
     git_diff: ['paths','staged','max_bytes'],
+    process_status: ['process_id'],
     patch_plan: ['operations','chunk_size'],
     apply_patch: ['operations','purpose','allowed_paths','request_id'],
     run_command: ['command','timeout_ms','max_output_bytes','interactive_wait_ms','request_id'],
@@ -74,6 +76,23 @@ async function run() {
         || (args.max_output_bytes !== undefined && (!Number.isSafeInteger(args.max_output_bytes) || args.max_output_bytes < 1000 || args.max_output_bytes > 12000))) {
       throw Error('LOCAL_FORGE_COMMAND_INVALID');
     }
+  }
+  if (input.tool === 'process_status') {
+    const processId = requireId(args.process_id, 'PROCESS');
+    if (!processId.startsWith('proc_')) throw Error('LOCAL_FORGE_PROCESS_INVALID');
+    // The canonical Process Runtime owns state and terminal receipts; this is read-only.
+    const entry = join(sourceRoot, 'src/runtime/execution/process-runtime/runtime.ts');
+    const { getProcessHandle } = await import(pathToFileURL(entry).href);
+    const handle = getProcessHandle(controllerHome, repoId, processId);
+    if (!handle) throw Error('LOCAL_FORGE_PROCESS_NOT_FOUND');
+    process.stdout.write(JSON.stringify({ ok: true, result: {
+      processId: handle.processId, status: handle.status, completed: handle.completed,
+      ok: handle.ok ?? null, exitCode: handle.exitCode ?? null,
+      timedOut: handle.timedOut ?? false,
+      stdoutTail: String(handle.stdoutTail ?? '').slice(-2000),
+      stderrTail: String(handle.stderrTail ?? '').slice(-2000),
+    }}));
+    return;
   }
   const entry = join(sourceRoot, 'adapters/mcp/tool-mapping/repository-tools.ts');
   const { callRepositoryTool } = await import(pathToFileURL(entry).href);

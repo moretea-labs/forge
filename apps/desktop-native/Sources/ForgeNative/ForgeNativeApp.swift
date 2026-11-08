@@ -1067,7 +1067,7 @@ private struct AgentPane: View {
                                         if message.incomplete == true,
                                            message.id == model.thread?.messages.last?.id {
                                             Button {
-                                                model.draft = "继续执行上一次未完成的开发任务。先核对当前 checkout 的 Git 状态和最近工具回执，确认哪些操作已经完成；不要重放未知写操作。继续实施并执行必要验证。"
+                                                model.draft = "继续执行上一次未完成的开发任务。上次未完成回执（仅作线索）：\n\(String(message.text.prefix(1100)))\n若有 Process ID，先调用 process_status 获取终态；否则先核对 checkout 的 Git 状态和最近工具回执。不要重放未知或仍在运行的写操作，再继续实施和验证。"
                                                 Task { await model.send() }
                                             } label: {
                                                 Label("继续执行",systemImage:"play.fill")

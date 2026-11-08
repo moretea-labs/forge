@@ -2159,11 +2159,13 @@ final class NativeWorkspace: ObservableObject {
         let events = rows.compactMap { row -> AgentLiveActivityEvent? in
             guard let name = row["name"] as? String else { return nil }
             let ok = row["ok"] as? Bool == true
+            let receiptStatus = row["status"] as? String
+            let status = receiptStatus == "running" ? "running" : (ok ? "completed" : "failed")
             return AgentLiveActivityEvent(
                 phase:"tool", label:name,
-                detail:row["requestId"] as? String,
-                status:ok ? "completed" : "failed",
-                startedAt:now, completedAt:now,
+                detail:row["processId"] as? String ?? row["requestId"] as? String,
+                status:status,
+                startedAt:now, completedAt:status == "running" ? nil : now,
                 toolCallId:row["toolCallId"] as? String
             )
         }
