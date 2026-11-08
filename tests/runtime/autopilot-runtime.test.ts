@@ -20,6 +20,7 @@ import {
   createAutopilotRun,
   defaultAutopilotPolicy,
   readAutopilotRun,
+  updateAutopilotRun,
 } from '../../src/runtime/autopilot/store';
 import { runAutopilotLoop } from '../../src/runtime/autopilot/runner';
 import { readAutopilotProviderApiKey, readAutopilotProviderProfile } from '../../src/runtime/autopilot/provider-config';
@@ -366,6 +367,11 @@ describe('Requirement Autopilot',() => {
     expect(refreshed.grantId).toBe(second.grant.grantId);
     expect(refreshed.usage).toEqual(usage);
     expect(refreshed.policy.maxTotalTokens).toBe(4_000);
+    expect(refreshed.budgetBaseline).toEqual({
+      totalTokens: usage.totalTokens,
+      turns: usage.turns,
+      toolCalls: usage.toolCalls,
+    });
     expect(refreshed.status).toBe('paused');
 
     resumeAutopilot({
@@ -386,6 +392,64 @@ describe('Requirement Autopilot',() => {
     const completed=readAutopilotRun(fx.controllerHome,fx.repository.repoId,'REQ-AUTO')!.value;
     expect(completed.runId).toBe(runId);
     expect(completed.status).toBe('completed');
+  });
+
+  test('opens a new bounded budget window even when lifetime usage exceeds the policy hard caps',async() => {
+    const fx=fixture('budget-window');
+    const first=authorizeAutopilot({
+      controllerHome:fx.controllerHome,
+      repoId:fx.repository.repoId,
+      requirementId:'REQ-AUTO',
+      confirmAuthorization:true,
+      policy:{maxTotalTokens:500_000,maxTurns:48,maxToolCalls:128},
+    });
+    createAutopilotRun(fx.controllerHome,{
+      repoId:fx.repository.repoId,
+      checkoutId:first.checkoutId,
+      requirementId:'REQ-AUTO',
+      requirementRevision:1,
+      grantId:first.grant.grantId,
+      policy:first.policy,
+    });
+    updateAutopilotRun(fx.controllerHome,fx.repository.repoId,'REQ-AUTO',(run)=>({
+      ...run,
+      status:'paused',
+      stopReason:'max_total_tokens_reached',
+      usage:{promptTokens:610_000,completionTokens:15_000,totalTokens:625_000,turns:61,toolCalls:151},
+    }),'test_budget_window_fixture');
+    const runId=readAutopilotRun(fx.controllerHome,fx.repository.repoId,'REQ-AUTO')!.value.runId;
+    const second=authorizeAutopilot({
+      controllerHome:fx.controllerHome,
+      repoId:fx.repository.repoId,
+      requirementId:'REQ-AUTO',
+      confirmAuthorization:true,
+      policy:{maxTotalTokens:500_000,maxTurns:48,maxToolCalls:128},
+    });
+    const refreshed=readAutopilotRun(fx.controllerHome,fx.repository.repoId,'REQ-AUTO')!.value;
+    expect(refreshed.runId).toBe(runId);
+    expect(refreshed.grantId).toBe(second.grant.grantId);
+    expect(refreshed.budgetBaseline).toEqual({totalTokens:625_000,turns:61,toolCalls:151});
+    expect(refreshed.usage.totalTokens).toBe(625_000);
+
+    resumeAutopilot({
+      controllerHome:fx.controllerHome,
+      repoId:fx.repository.repoId,
+      requirementId:'REQ-AUTO',
+      dependencies:{
+        apiKey:'fixture-key',toolDefinitions:[],executeTool:async()=>({}),
+        fetchImpl:async()=>response('forge_autopilot_decision',{
+          action:'complete',summary:'new budget window completed',
+        },{prompt_tokens:100,completion_tokens:20,total_tokens:120}),
+      },
+    });
+    for (let attempt=0;attempt<50;attempt+=1) {
+      if (readAutopilotRun(fx.controllerHome,fx.repository.repoId,'REQ-AUTO')?.value.status === 'completed') break;
+      await Bun.sleep(10);
+    }
+    const completed=readAutopilotRun(fx.controllerHome,fx.repository.repoId,'REQ-AUTO')!.value;
+    expect(completed.runId).toBe(runId);
+    expect(completed.status).toBe('completed');
+    expect(completed.usage.totalTokens).toBe(625_120);
   });
 
   test('requires explicit authorization, binds the exact Requirement revision, and replaces prior grants',() => {

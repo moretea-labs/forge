@@ -86,9 +86,7 @@ function validateBudgetRefresh(current: NonNullable<ReturnType<typeof readAutopi
   if (!sameExecutionPolicy(current.policy, next)) {
     throw new Error('AUTOPILOT_BUDGET_REAUTHORIZATION_POLICY_CHANGED');
   }
-  if (next.maxTotalTokens <= current.usage.totalTokens
-      || next.maxTurns <= current.usage.turns
-      || next.maxToolCalls <= current.usage.toolCalls) {
+  if (next.maxTotalTokens < 1_000 || next.maxTurns < 1 || next.maxToolCalls < 1) {
     throw new Error('AUTOPILOT_BUDGET_REAUTHORIZATION_INSUFFICIENT');
   }
 }
@@ -155,6 +153,11 @@ export function authorizeAutopilot(input: {
         ...run,
         grantId: grant.grantId,
         policy,
+        budgetBaseline: {
+          totalTokens: run.usage.totalTokens,
+          turns: run.usage.turns,
+          toolCalls: run.usage.toolCalls,
+        },
       }),'autopilot_budget_reauthorized')
     : undefined;
   return { grant, requirement, policy, checkoutId: repository.activeCheckoutId, refreshedRun: refreshedRun?.value };

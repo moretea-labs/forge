@@ -141,6 +141,15 @@ function systemPrompt(run: AutopilotRun, requirement: ReturnType<typeof requirem
   ].join('\n\n');
 }
 
+function budgetUsage(run: AutopilotRun): { totalTokens: number; turns: number; toolCalls: number } {
+  const baseline = run.budgetBaseline ?? { totalTokens: 0, turns: 0, toolCalls: 0 };
+  return {
+    totalTokens: Math.max(0, run.usage.totalTokens - baseline.totalTokens),
+    turns: Math.max(0, run.usage.turns - baseline.turns),
+    toolCalls: Math.max(0, run.usage.toolCalls - baseline.toolCalls),
+  };
+}
+
 function usageOf(response: DeepSeekResponse): AutopilotModelUsage {
   return {
     promptTokens: Math.max(0, Math.trunc(response.usage?.prompt_tokens ?? 0)),
@@ -271,7 +280,7 @@ async function requestDeepSeek(
   const forwardAbort = () => requestController.abort();
   signal.addEventListener('abort', forwardAbort, { once: true });
   const timeout = setTimeout(() => requestController.abort(), 90_000);
-  const remaining = Math.max(1, run.policy.maxTotalTokens - run.usage.totalTokens);
+  const remaining = Math.max(1, run.policy.maxTotalTokens - budgetUsage(run).totalTokens);
   try {
     const endpoint = run.policy.endpoint.replace(/\/$/, '');
     const responses = run.policy.protocol === 'responses';
@@ -320,7 +329,7 @@ async function requestJoyCode(
   signal: AbortSignal,
   dependencies: AutopilotRunnerDependencies,
 ): Promise<DeepSeekResponse> {
-  const remaining = Math.max(1, run.policy.maxTotalTokens - run.usage.totalTokens);
+  const remaining = Math.max(1, run.policy.maxTotalTokens - budgetUsage(run).totalTokens);
   const body: Record<string, unknown> = {
     model: run.policy.model,
     messages,
@@ -499,15 +508,16 @@ export async function runAutopilotLoop(
       }), 'autopilot_authorization_paused');
       return;
     }
-    if (current.usage.turns >= current.policy.maxTurns) {
+    const windowUsage = budgetUsage(current);
+    if (windowUsage.turns >= current.policy.maxTurns) {
       updateAutopilotRun(controllerHome, repoId, requirementId, (run) => ({ ...run, status: 'paused', stopReason: 'max_turns_reached' }), 'autopilot_budget_paused');
       return;
     }
-    if (current.usage.toolCalls >= current.policy.maxToolCalls) {
+    if (windowUsage.toolCalls >= current.policy.maxToolCalls) {
       updateAutopilotRun(controllerHome, repoId, requirementId, (run) => ({ ...run, status: 'paused', stopReason: 'max_tool_calls_reached' }), 'autopilot_budget_paused');
       return;
     }
-    if (current.usage.totalTokens >= current.policy.maxTotalTokens) {
+    if (windowUsage.totalTokens >= current.policy.maxTotalTokens) {
       updateAutopilotRun(controllerHome, repoId, requirementId, (run) => ({ ...run, status: 'paused', stopReason: 'max_total_tokens_reached' }), 'autopilot_budget_paused');
       return;
     }
@@ -538,7 +548,7 @@ export async function runAutopilotLoop(
       if (signal.aborted) return;
       const latest = readAutopilotRun(controllerHome, repoId, requirementId)?.value;
       if (!latest || latest.status !== 'running') return;
-      if (latest.usage.toolCalls >= latest.policy.maxToolCalls) {
+      if (budgetUsage(latest).toolCalls >= latest.policy.maxToolCalls) {
         updateAutopilotRun(controllerHome, repoId, requirementId, (run) => ({ ...run, status: 'paused', stopReason: 'max_tool_calls_reached' }), 'autopilot_budget_paused');
         return;
       }

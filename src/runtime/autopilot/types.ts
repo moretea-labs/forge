@@ -36,6 +36,11 @@ export interface AutopilotRun {
   evidenceRefs: string[];
   inspectionStreak?: number;
   recentToolNames?: string[];
+  budgetBaseline?: {
+    totalTokens: number;
+    turns: number;
+    toolCalls: number;
+  };
   createdAt: string;
   updatedAt: string;
 }
