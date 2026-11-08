@@ -593,6 +593,33 @@ async fn create_plan(
     Ok(semantic_facade_data(result))
 }
 
+async fn read_project_autopilot_statuses(
+    repo_id: String,
+    requirement_ids: Vec<String>,
+) -> Result<Value, String> {
+    if repo_id.trim().is_empty() || requirement_ids.is_empty() || requirement_ids.len() > 100 {
+        return Err("FORGE_DESKTOP_AUTOPILOT_STATUS_ARGUMENT_INVALID".to_string());
+    }
+    let mut statuses = serde_json::Map::new();
+    for requirement_id in requirement_ids {
+        if requirement_id.trim().is_empty() || requirement_id.len() > 256 {
+            return Err("FORGE_DESKTOP_AUTOPILOT_STATUS_ARGUMENT_INVALID".to_string());
+        }
+        if statuses.contains_key(&requirement_id) { continue; }
+        let status = match call_runtime_tool("rh_autopilot", json!({
+            "repo_id": repo_id.clone(),
+            "requirement_id": requirement_id.clone(),
+            "operation": "status",
+            "request_id": request_id("project-autopilot-status")
+        })).await {
+            Ok(value) => semantic_facade_data(value),
+            Err(error) => json!({ "error": error }),
+        };
+        statuses.insert(requirement_id, status);
+    }
+    Ok(json!({ "statuses": statuses }))
+}
+
 #[tauri::command]
 async fn autopilot_control(
     repo_id: String,

@@ -2431,7 +2431,7 @@ private struct RecordsPane: View {
                     .padding(.top,5)
             }
 
-            Text("搜索用于定位并展开路径；折叠、缩放、适配都只是当前视图，不修改 Requirement / Plan。")
+            Text("搜索、折叠与缩放只改变视图；执行徽标只投影 canonical Autopilot Run，普通 Agent 会话不推断进度。")
                 .font(.system(size:9.5))
                 .foregroundStyle(ForgePalette.secondary)
                 .padding(.horizontal,13).padding(.top,6).padding(.bottom,9)
@@ -2800,11 +2800,65 @@ private struct RecordsPane: View {
         return nil
     }
 
+    private func planningExecutionStatus(_ item:ForgeRecord) -> AutopilotStatusDetail? {
+        let requirementId = item.kind == .requirement ? item.recordId : item.requirementId
+        guard let requirementId,
+              let status=model.planningAutopilotStatuses[requirementId] else { return nil }
+        if item.kind == .plan {
+            guard status.currentPlanId == item.recordId,
+                  ["running","paused","blocked","failed"].contains(status.runStatus ?? "") else { return nil }
+        } else if !status.authorized && status.runStatus == nil && !status.requiresReapproval {
+            return nil
+        }
+        return status
+    }
+
+    private func planningExecutionLabel(_ item:ForgeRecord,_ status:AutopilotStatusDetail) -> String {
+        if status.requiresReapproval { return "需重新批准" }
+        if item.kind == .plan,
+           status.runStatus == "paused",
+           status.stopReason == "human_checkpoint:\(item.recordId)" {
+            return "等待确认"
+        }
+        if item.kind == .requirement,
+           status.runStatus == "paused",
+           status.stopReason?.hasPrefix("human_checkpoint:") == true {
+            return "等待确认"
+        }
+        switch status.runStatus {
+        case "running": return status.runtimeActive ? (item.kind == .plan ? "当前执行" : "执行中") : "运行未激活"
+        case "paused": return item.kind == .plan ? "当前暂停" : "已暂停"
+        case "blocked": return item.kind == .plan ? "当前受阻" : "受阻"
+        case "failed": return item.kind == .plan ? "当前失败" : "失败"
+        case "completed": return "已完成"
+        case "cancelled": return "已取消"
+        default: return status.authorized ? "已批准" : "未授权"
+        }
+    }
+
+    private func planningExecutionColor(_ status:AutopilotStatusDetail) -> Color {
+        if status.requiresReapproval { return .orange }
+        switch status.runStatus {
+        case "running": return status.runtimeActive ? .green : .orange
+        case "paused","blocked","failed": return .orange
+        case "completed": return .green
+        default: return status.authorized ? ForgePalette.accent : ForgePalette.secondary
+        }
+    }
+
+    private func planningExecutionHelp(_ item:ForgeRecord,_ status:AutopilotStatusDetail) -> String {
+        var parts=[planningExecutionLabel(item,status)]
+        if let summary=status.lastSummary,!summary.isEmpty { parts.append(summary) }
+        if let reason=status.stopReason,!reason.isEmpty { parts.append(reason) }
+        return parts.joined(separator:" · ")
+    }
+
     private func planningCanvasNode(_ item:ForgeRecord,focused:Bool) -> some View {
         let selected = item.id == model.selectedRecord
         let hovered = hoveredPlanningRecordId == item.id
         let children=planningChildrenByParent[item.id] ?? []
         let collapsed=collapsedPlanningRecordIds.contains(item.id)
+        let execution=planningExecutionStatus(item)
         return ZStack(alignment:.bottomTrailing) {
             Button {
                 Task { await model.openRecord(item.id) }
@@ -2817,18 +2871,25 @@ private struct RecordsPane: View {
                         Text(item.kind == .requirement ? "REQUIREMENT" : "PLAN")
                             .font(.system(size:8.5,weight:.bold))
                             .tracking(0.55)
+                        if item.kind == .requirement,!item.state.isEmpty {
+                            Text(item.state.uppercased())
+                                .font(.system(size:7.5,weight:.medium))
+                                .foregroundStyle(ForgePalette.secondary)
+                                .lineLimit(1)
+                        }
                         Spacer(minLength:4)
-                        if item.kind == .requirement,selected {
-                            Circle()
-                                .fill(autopilotStatusColor(model.autopilotStatus))
-                                .frame(width:6,height:6)
-                            Text(autopilotStatusLabel(model.autopilotStatus))
-                                .font(.system(size:8.5,weight:.medium))
-                                .lineLimit(1)
-                        } else if !item.state.isEmpty {
-                            Text(item.state)
-                                .font(.system(size:8.5,weight:.medium))
-                                .lineLimit(1)
+                        if let execution {
+                            HStack(spacing:4) {
+                                Circle()
+                                    .fill(planningExecutionColor(execution))
+                                    .frame(width:5.5,height:5.5)
+                                Text(planningExecutionLabel(item,execution))
+                                    .font(.system(size:8,weight:.semibold))
+                                    .lineLimit(1)
+                            }
+                            .padding(.horizontal,6).padding(.vertical,3)
+                            .background(planningExecutionColor(execution).opacity(0.10),in:Capsule())
+                            .help(planningExecutionHelp(item,execution))
                         }
                     }
                     .foregroundStyle(item.kind == .requirement ? ForgePalette.ink : ForgePalette.secondary)
@@ -2923,7 +2984,12 @@ private struct RecordsPane: View {
         .animation(.easeOut(duration:0.12),value:hovered)
         .animation(.easeOut(duration:0.16),value:focused)
         .accessibilityLabel(item.title)
-        .accessibilityValue("\(item.recordId) · \(item.kind.rawValue)")
+        .accessibilityValue({
+            if let execution {
+                return "\(item.recordId) · \(item.kind.rawValue) · \(planningExecutionLabel(item,execution))"
+            }
+            return "\(item.recordId) · \(item.kind.rawValue)"
+        }())
         .accessibilityIdentifier("semantic.canvas.\(item.kind.rawValue).\(item.recordId)")
     }
 
@@ -3063,6 +3129,32 @@ private struct RecordsPane: View {
                         autopilotMetric("Tools","\(status.toolCalls) / \(status.maxToolCalls.map(String.init) ?? "—")")
                         if let modelName=status.model { autopilotMetric("Model",modelName) }
                     }
+                    if let currentPlanId=status.currentPlanId,!currentPlanId.isEmpty {
+                        HStack(spacing:7) {
+                            Image(systemName:"location.fill")
+                                .font(.system(size:9))
+                                .foregroundStyle(ForgePalette.accent)
+                            Text("当前 Plan")
+                                .font(.system(size:9.5,weight:.medium))
+                                .foregroundStyle(ForgePalette.secondary)
+                            Text(currentPlanId)
+                                .font(.system(size:9.5,design:.monospaced))
+                                .textSelection(.enabled)
+                            Spacer()
+                            if let plan=model.records.first(where:{ $0.kind == .plan && $0.recordId == currentPlanId }) {
+                                Button("定位") { locatePlanningRecord(plan) }
+                                    .buttonStyle(.plain)
+                                    .font(.system(size:9.5,weight:.medium))
+                                    .foregroundStyle(ForgePalette.accent)
+                            }
+                        }
+                    }
+                    if let summary=status.lastSummary,!summary.isEmpty {
+                        Text(summary)
+                            .font(.system(size:10.5))
+                            .foregroundStyle(ForgePalette.ink)
+                            .textSelection(.enabled)
+                    }
                     if let reason=status.stopReason,!reason.isEmpty {
                         Text(reason)
                             .font(.system(size:9.5,design:.monospaced))
@@ -3130,8 +3222,16 @@ private struct RecordsPane: View {
     private func autopilotStatusLabel(_ status:AutopilotStatusDetail?) -> String {
         guard let status else { return "未授权" }
         if status.requiresReapproval { return "需要重新批准" }
-        if let runStatus=status.runStatus { return runStatus == "running" && status.runtimeActive ? "执行中" : runStatus }
-        return status.authorized ? "已批准，未启动" : "未授权"
+        if status.runStatus == "paused",status.stopReason?.hasPrefix("human_checkpoint:") == true { return "等待确认" }
+        switch status.runStatus {
+        case "running": return status.runtimeActive ? "执行中" : "运行未激活"
+        case "paused": return "已暂停"
+        case "blocked": return "受阻"
+        case "failed": return "失败"
+        case "completed": return "已完成"
+        case "cancelled": return "已取消"
+        default: return status.authorized ? "已批准，未启动" : "未授权"
+        }
     }
 
     private func autopilotStatusColor(_ status:AutopilotStatusDetail?) -> Color {

@@ -190,6 +190,9 @@ struct AutopilotStatusDetail {
     let approvedRevision: Int?
     let runStatus: String?
     let stopReason: String?
+    let currentPlanId: String?
+    let lastSummary: String?
+    let updatedAt: String?
     let model: String?
     let promptTokens: Int
     let completionTokens: Int
@@ -416,6 +419,7 @@ final class NativeWorkspace: ObservableObject {
     @Published var selectedRecord: String?
     @Published var recordDetail: SemanticRecordDetail?
     @Published var autopilotStatus: AutopilotStatusDetail?
+    @Published var planningAutopilotStatuses: [String:AutopilotStatusDetail] = [:]
     @Published var autopilotLoading = false
     @Published var detail = ""
     @Published var runtimeStatus: RuntimeStatusDetail?
@@ -963,6 +967,9 @@ final class NativeWorkspace: ObservableObject {
                 let planData = planList["data"] as? [String:Any] ?? planList
                 let planRows = planData["plans"] as? [[String:Any]] ?? []
                 records = Self.planningRecords(requirementRows:requirementRows,planRows:planRows)
+                planningAutopilotStatuses=[:]
+                let requirementIds = records.filter { $0.kind == .requirement }.map(\.recordId)
+                Task { await self.loadPlanningAutopilotStatuses(requirementIds) }
             } else {
                 let result = try await ForgeBridge.request("read_project_plan_list",["repoId":repoId])
                 let data = result["data"] as? [String:Any] ?? result
@@ -1430,6 +1437,9 @@ final class NativeWorkspace: ObservableObject {
             approvedRevision:data["approvedRevision"] as? Int,
             runStatus:run?["status"] as? String,
             stopReason:run?["stopReason"] as? String,
+            currentPlanId:run?["currentPlanId"] as? String,
+            lastSummary:run?["lastSummary"] as? String,
+            updatedAt:run?["updatedAt"] as? String,
             model:(policy["model"] as? String),
             promptTokens:usage["promptTokens"] as? Int ?? 0,
             completionTokens:usage["completionTokens"] as? Int ?? 0,
@@ -1442,6 +1452,34 @@ final class NativeWorkspace: ObservableObject {
         )
     }
 
+    nonisolated static func autopilotStatusMap(_ result:[String:Any]) -> [String:AutopilotStatusDetail] {
+        let raw = result["statuses"] as? [String:Any] ?? [:]
+        var parsed:[String:AutopilotStatusDetail] = [:]
+        for (requirementId,value) in raw {
+            guard let dictionary=value as? [String:Any],
+                  let status=autopilotStatusDetail(dictionary) else { continue }
+            parsed[requirementId]=status
+        }
+        return parsed
+    }
+
+    func loadPlanningAutopilotStatuses(_ requirementIds:[String]) async {
+        guard let repoId,!requirementIds.isEmpty else {
+            planningAutopilotStatuses=[:]
+            return
+        }
+        do {
+            let value=try await ForgeBridge.request("read_project_autopilot_statuses",[
+                "repoId":repoId,
+                "requirementIds":requirementIds
+            ])
+            guard self.repoId == repoId else { return }
+            planningAutopilotStatuses=Self.autopilotStatusMap(value)
+        } catch {
+            if self.repoId == repoId { planningAutopilotStatuses=[:] }
+        }
+    }
+
     func loadAutopilotStatus(_ requirementId:String) async {
         guard let repoId else { autopilotStatus=nil; return }
         autopilotLoading=true
@@ -1451,6 +1489,7 @@ final class NativeWorkspace: ObservableObject {
                 "repoId":repoId,"requirementId":requirementId,"operation":"status"
             ])
             autopilotStatus=Self.autopilotStatusDetail(value)
+            if let autopilotStatus { planningAutopilotStatuses[requirementId]=autopilotStatus }
         } catch {
             autopilotStatus=nil
             self.error=error.localizedDescription
@@ -1485,6 +1524,7 @@ final class NativeWorkspace: ObservableObject {
                 "repoId":repoId,"requirementId":requirementId,"operation":"status"
             ])
             autopilotStatus=Self.autopilotStatusDetail(status)
+            if let autopilotStatus { planningAutopilotStatuses[requirementId]=autopilotStatus }
             error=nil
             return true
         } catch {

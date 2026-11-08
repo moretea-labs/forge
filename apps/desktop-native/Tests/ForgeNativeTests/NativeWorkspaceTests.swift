@@ -14,6 +14,7 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertTrue(ForgeBridge.allowed.contains("read_local_api_settings"))
         XCTAssertTrue(ForgeBridge.allowed.contains("save_local_api_settings"))
         XCTAssertTrue(ForgeBridge.allowed.contains("read_project_requirement_list"))
+        XCTAssertTrue(ForgeBridge.allowed.contains("read_project_autopilot_statuses"))
         XCTAssertTrue(ForgeBridge.allowed.contains("register_project"))
         XCTAssertTrue(ForgeBridge.allowed.contains("create_requirement"))
         XCTAssertTrue(ForgeBridge.allowed.contains("create_plan"))
@@ -275,6 +276,7 @@ final class NativeWorkspaceTests: XCTestCase {
                 ],
                 "run":[
                     "status":"paused","stopReason":"human_checkpoint:PLAN-a",
+                    "currentPlanId":"PLAN-a","lastSummary":"Checkpoint ready","updatedAt":"2026-11-08T03:00:00Z",
                     "policy":["model":"deepseek-chat","maxTotalTokens":50000,"maxTurns":12,"maxToolCalls":32],
                     "usage":["promptTokens":100,"completionTokens":50,"totalTokens":150,"turns":2,"toolCalls":4],
                 ],
@@ -286,10 +288,27 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(autopilot?.providerReady,true)
         XCTAssertEqual(autopilot?.runStatus,"paused")
         XCTAssertEqual(autopilot?.stopReason,"human_checkpoint:PLAN-a")
+        XCTAssertEqual(autopilot?.currentPlanId,"PLAN-a")
+        XCTAssertEqual(autopilot?.lastSummary,"Checkpoint ready")
+        XCTAssertEqual(autopilot?.updatedAt,"2026-11-08T03:00:00Z")
         XCTAssertEqual(autopilot?.totalTokens,150)
         XCTAssertEqual(autopilot?.maxTotalTokens,50000)
         XCTAssertEqual(autopilot?.turns,2)
         XCTAssertEqual(autopilot?.toolCalls,4)
+
+        let map = NativeWorkspace.autopilotStatusMap([
+            "statuses":[
+                "REQ-a":[
+                    "grant":["grantId":"grant-a","constraints":["requirementRevision":3]],
+                    "run":["status":"running","currentPlanId":"PLAN-a"],
+                    "providerReady":true,"runtimeActive":true,"requiresReapproval":false
+                ],
+                "REQ-b":["error":"AUTOPILOT_REQUIREMENT_NOT_FOUND"]
+            ]
+        ])
+        XCTAssertEqual(map["REQ-a"]?.runStatus,"running")
+        XCTAssertEqual(map["REQ-a"]?.currentPlanId,"PLAN-a")
+        XCTAssertNil(map["REQ-b"])
     }
 
     func testSemanticRecordIdsAreBoundedAndTyped() {
