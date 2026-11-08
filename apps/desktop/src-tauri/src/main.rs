@@ -1846,25 +1846,56 @@ fn local_verification_command(arguments: &Value) -> bool {
     let Some(parts) = parts.filter(|parts| !parts.is_empty()) else { return false };
     let executable = parts[0].rsplit('/').next().unwrap_or(parts[0]);
     let suffix = &parts[1..];
+    // Listing or describing a check is not validation evidence.
+    if suffix.iter().any(|arg| matches!(*arg,
+        "--help" | "--version" | "--collect-only" | "--list" | "-h" | "-V")) {
+        return false;
+    }
     match executable {
-        "cargo" => suffix.iter().any(|part| matches!(*part, "test" | "check" | "clippy")),
-        "swift" => suffix.iter().any(|part| matches!(*part, "test" | "build")),
-        "pytest" | "py.test" => true,
-        "go" => suffix.contains(&"test"),
-        "npm" | "pnpm" | "yarn" | "bun" => suffix.iter()
-            .any(|part| matches!(*part, "test" | "check" | "build")),
+        "cargo" => matches!(suffix.first().copied(), Some("test" | "check" | "clippy")),
+        "swift" => matches!(suffix.first().copied(), Some("test" | "build")),
+        "pytest" | "py.test" => !suffix.iter().any(|arg| matches!(*arg,
+            "--collect-only" | "--help" | "--version" | "-h" | "-V")),
+        "go" => suffix.first() == Some(&"test"),
+        "npm" | "pnpm" | "yarn" | "bun" =>
+            matches!(suffix.first().copied(), Some("test" | "check" | "build"))
+            || (suffix.first() == Some(&"run")
+                && matches!(suffix.get(1).copied(), Some("test" | "check" | "build"))),
         "git" => suffix.starts_with(&["diff", "--check"]),
-        "python" | "python3" => suffix.starts_with(&["-m", "pytest"]),
-        "xcodebuild" => suffix.iter().any(|part| matches!(*part, "test" | "build")),
+        "python" | "python3" => suffix.starts_with(&["-m", "pytest"])
+            && !suffix.iter().any(|arg| matches!(*arg,
+                "--collect-only" | "--help" | "--version" | "-h" | "-V")),
+        "xcodebuild" => !suffix.iter().any(|arg| matches!(*arg,
+            "-showBuildSettings" | "-list" | "-version" | "-help"))
+            && suffix.iter().enumerate().any(|(index, part)|
+                matches!(*part, "test" | "build")
+                && (index == 0 || !matches!(suffix[index - 1],
+                    "-scheme" | "-configuration" | "-project" | "-workspace"
+                    | "-destination" | "-derivedDataPath" | "-resultBundlePath"))),
         "bash" | "zsh" | "sh" if suffix.first() == Some(&"-lc") || suffix.first() == Some(&"-c") => {
-            let script = suffix.get(1).copied().unwrap_or("");
+            if suffix.len() != 2 { return false; }
+            let script = suffix[1];
+            // Reject shell forms that can mask a check's exit code. Straight
+            // "cd subdir && npm run check" remains valid.
+            if script.chars().any(|ch| ";|$<>".contains(ch)
+                || ch == '#' || ch == '"' || ch == char::from(39)
+                || ch == char::from(92) || ch == char::from(96)
+                || ch == '\n' || ch == '\r') { return false; }
+            let segments: Vec<_> = script.split("&&").map(str::trim).collect();
+            let command = match segments.as_slice() {
+                [check] => *check,
+                [directory, check] if directory.strip_prefix("cd ").is_some_and(|dir|
+                    !dir.is_empty() && !dir.chars().any(char::is_whitespace)
+                ) => *check,
+                _ => return false,
+            };
             let commands = ["cargo test", "cargo check", "swift test", "swift build",
                 "pytest", "go test", "npm test", "npm run check", "npm run build",
                 "bun test", "git diff --check", "xcodebuild test", "xcodebuild build"];
-            script.split("&&").map(str::trim)
-                .any(|segment| commands.iter().any(|pattern| {
-                    segment == *pattern || segment.starts_with(&format!("{pattern} "))
-                }))
+            commands.iter().any(|pattern|
+                command == *pattern || command.starts_with(&format!("{pattern} "))
+            ) && !command.split_whitespace().any(|arg| matches!(arg,
+                "--help" | "--version" | "--collect-only" | "--list" | "-h" | "-V"))
         }
         _ => false,
     }
@@ -1936,6 +1967,10 @@ enum LocalEffectOutcome {
 }
 
 fn local_effect_outcome(name: &str, receipt: &Value) -> LocalEffectOutcome {
+    // A nested success-looking result cannot override a failed Forge envelope.
+    if receipt.get("ok").and_then(Value::as_bool) != Some(true) {
+        return LocalEffectOutcome::TerminalFailure;
+    }
     let result = &receipt["result"];
     match name {
         "run_command" => match result.get("status").and_then(Value::as_str) {
@@ -3132,6 +3167,12 @@ mod tests {
         assert_eq!(local_effect_outcome("run_command", &json!({"ok":true,"result":{
             "accepted":true,"status":"succeeded","exitCode":0
         }})), LocalEffectOutcome::Succeeded);
+        assert_eq!(local_effect_outcome("run_command", &json!({"ok":false,"result":{
+            "status":"succeeded","exitCode":0
+        }})), LocalEffectOutcome::TerminalFailure);
+        assert_eq!(local_effect_outcome("run_command", &json!({"result":{
+            "status":"succeeded","exitCode":0
+        }})), LocalEffectOutcome::TerminalFailure);
         assert_eq!(local_effect_outcome("run_command", &json!({"ok":true,"result":{
             "accepted":true,"status":"running"
         }})), LocalEffectOutcome::Unknown);
@@ -3244,6 +3285,20 @@ mod tests {
         assert!(local_verification_command(&json!({"command":["swift","test"]})));
         assert!(local_verification_command(&json!({"command":["bash","-lc","cd app && npm run check"]})));
         assert!(local_verification_command(&json!({"command":["git","diff","--check"]})));
+        assert!(local_verification_command(&json!({"command":["npm","run","check","--prefix","apps/desktop"]})));
+        assert!(!local_verification_command(&json!({"command":["npm","config","get","test"]})));
+        assert!(!local_verification_command(&json!({"command":["cargo","metadata","--features","test"]})));
+        assert!(!local_verification_command(&json!({"command":["swift","package","describe","build"]})));
+        assert!(!local_verification_command(&json!({"command":["python3","-m","pytest","--collect-only"]})));
+        assert!(!local_verification_command(&json!({"command":["pytest","--collect-only"]})));
+        assert!(!local_verification_command(&json!({"command":["bash","-lc","npm run check --silent; true"]})));
+        assert!(!local_verification_command(&json!({"command":["bash","-lc","npm run check || true"]})));
+        assert!(!local_verification_command(&json!({"command":["bash","-lc","echo \"fake && npm run check && output\""]})));
+        assert!(!local_verification_command(&json!({"command":["bash","-lc","echo fake # && npm run check"]})));
+        assert!(!local_verification_command(&json!({"command":["bash","-lc","echo fake && npm run check"]})));
+        assert!(!local_verification_command(&json!({"command":["cargo","test","--help"]})));
+        assert!(!local_verification_command(&json!({"command":["xcodebuild","-destination","build","-showBuildSettings"]})));
+        assert!(!local_verification_command(&json!({"command":["xcodebuild","-scheme","build","-showBuildSettings"]})));
         assert!(!local_verification_command(&json!({"command":["git","status"]})));
         assert!(!local_verification_command(&json!({"command":["echo","tests passed"]})));
         assert!(!local_verification_command(&json!({"command":["bash","-lc","echo cargo test"]})));
