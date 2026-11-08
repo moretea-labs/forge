@@ -191,7 +191,7 @@ private struct ForgeWorkspaceView: View {
                 navigationRow(section)
             }
 
-            sectionLabel("最近会话")
+            sectionLabel(isGlobalThreadSearch ? "搜索结果" : "会话")
                 .padding(.top,21)
                 .padding(.bottom,4)
             ScrollView {
@@ -199,7 +199,7 @@ private struct ForgeWorkspaceView: View {
                     if model.visibleThreads.isEmpty {
                         threadListEmptyState
                     } else {
-                        ForEach(threadSections) { section in
+                        ForEach(sidebarThreadSections) { section in
                             HStack(spacing:6) {
                                 Text(section.title)
                                     .font(.system(size:9.5,weight:.semibold))
@@ -425,6 +425,10 @@ private struct ForgeWorkspaceView: View {
             .padding(.horizontal,21).padding(.bottom,7)
     }
 
+    private var isGlobalThreadSearch: Bool {
+        model.showSearch
+    }
+
     private var threadSections: [SidebarThreadSection] {
         let grouped = Dictionary(grouping:model.visibleThreads) { $0.repoId ?? "__unbound__" }
         return grouped.map { key, threads in
@@ -445,13 +449,69 @@ private struct ForgeWorkspaceView: View {
         }
     }
 
+    private var sidebarThreadSections: [SidebarThreadSection] {
+        if isGlobalThreadSearch { return threadSections }
+
+        let ordered=model.visibleThreads
+        let currentRepoId=model.repoId
+        let currentThreads=Array(ordered.filter { $0.repoId == currentRepoId }.prefix(12))
+        var result:[SidebarThreadSection]=[]
+        if !currentThreads.isEmpty {
+            let title = currentRepoId.flatMap { id in
+                model.projects.first(where:{ $0.repoId == id })?.label
+            } ?? "未绑定项目"
+            result.append(SidebarThreadSection(
+                id:"__current__",
+                title:"当前 · \(title)",
+                repoId:currentRepoId,
+                threads:currentThreads
+            ))
+        }
+
+        var seenProjects=Set<String>()
+        var recentOther:[ChatThread]=[]
+        for thread in ordered where thread.repoId != currentRepoId {
+            let key=thread.repoId ?? "__unbound__"
+            guard seenProjects.insert(key).inserted else { continue }
+            recentOther.append(thread)
+            if recentOther.count == 5 { break }
+        }
+        if !recentOther.isEmpty {
+            result.append(SidebarThreadSection(
+                id:"__recent-other__",
+                title:"其他项目 · 最近",
+                repoId:nil,
+                threads:recentOther
+            ))
+        }
+        return result
+    }
+
+    private func projectConversationCount(_ repoId:String) -> Int {
+        model.threads.filter { $0.repoId == repoId }.count
+    }
+
+    private func projectLastActivity(_ repoId:String) -> Date {
+        model.threads
+            .filter { $0.repoId == repoId }
+            .map(\.updatedAt)
+            .max() ?? .distantPast
+    }
+
     private var filteredProjects: [ForgeProject] {
         let needle = projectSearch.trimmingCharacters(in:.whitespacesAndNewlines)
-        guard !needle.isEmpty else { return model.projects }
-        return model.projects.filter {
+        let candidates = needle.isEmpty ? model.projects : model.projects.filter {
             $0.label.localizedCaseInsensitiveContains(needle)
                 || $0.displayName.localizedCaseInsensitiveContains(needle)
                 || ($0.localRoot?.localizedCaseInsensitiveContains(needle) ?? false)
+        }
+        return candidates.sorted { lhs,rhs in
+            if lhs.repoId == model.repoId { return true }
+            if rhs.repoId == model.repoId { return false }
+            let leftActivity=projectLastActivity(lhs.repoId)
+            let rightActivity=projectLastActivity(rhs.repoId)
+            if leftActivity != rightActivity { return leftActivity > rightActivity }
+            return lhs.label.localizedStandardCompare(rhs.label) == .orderedAscending
         }
     }
 
@@ -529,9 +589,17 @@ private struct ForgeWorkspaceView: View {
                                     VStack(alignment:.leading,spacing:2) {
                                         Text(project.label)
                                             .font(.system(size:11.5,weight:.medium)).lineLimit(1)
-                                        Text(project.localRoot ?? project.defaultBranch ?? project.repoId)
-                                            .font(.system(size:9.5)).foregroundStyle(ForgePalette.secondary)
-                                            .lineLimit(1).truncationMode(.middle)
+                                        HStack(spacing:6) {
+                                            Text(project.localRoot ?? project.defaultBranch ?? project.repoId)
+                                                .lineLimit(1).truncationMode(.middle)
+                                            let count=projectConversationCount(project.repoId)
+                                            if count > 0 {
+                                                Text("· \(count) 会话")
+                                                    .lineLimit(1)
+                                            }
+                                        }
+                                        .font(.system(size:9.5))
+                                        .foregroundStyle(ForgePalette.secondary)
                                     }
                                     Spacer()
                                 }
@@ -2167,11 +2235,12 @@ private struct RecordsPane: View {
     @State private var autopilotSaving = false
 
     @State private var planningViewMode = "map"
+    @State private var hoveredPlanningRecordId: String?
 
-    private let planningNodeWidth: CGFloat = 220
-    private let planningNodeHeight: CGFloat = 86
-    private let planningColumnGap: CGFloat = 54
-    private let planningRowGap: CGFloat = 26
+    private let planningNodeWidth: CGFloat = 228
+    private let planningNodeHeight: CGFloat = 92
+    private let planningColumnGap: CGFloat = 60
+    private let planningRowGap: CGFloat = 30
 
     var body: some View {
         HStack(spacing:12) {
@@ -2270,8 +2339,18 @@ private struct RecordsPane: View {
                 Text("\(model.records.count) 节点")
                     .font(.system(size:9.5,weight:.medium))
                     .foregroundStyle(ForgePalette.secondary)
+                if model.selectedRecord != nil {
+                    Button("显示全部") { model.clearRecordSelection() }
+                        .buttonStyle(.plain)
+                        .font(.system(size:9.5,weight:.medium))
+                        .foregroundStyle(ForgePalette.accent)
+                }
             }
-            .padding(.horizontal,13).padding(.bottom,9)
+            .padding(.horizontal,13).padding(.bottom,4)
+            Text("选择节点会突出当前工作链路；悬停节点可直接继续细化或开启带上下文的新会话。")
+                .font(.system(size:9.5))
+                .foregroundStyle(ForgePalette.secondary)
+                .padding(.horizontal,13).padding(.bottom,9)
 
             Divider().opacity(0.55)
 
@@ -2342,6 +2421,8 @@ private struct RecordsPane: View {
     private var planningCanvas: some View {
         let positions = planningCanvasPositions
         let size = planningCanvasSize
+        let focusIds = planningFocusIds
+        let hasSelection = model.selectedRecord != nil
         return ScrollView([.horizontal,.vertical]) {
             ZStack(alignment:.topLeading) {
                 Canvas { context, _ in
@@ -2365,10 +2446,15 @@ private struct RecordsPane: View {
                             control1:CGPoint(x:bend,y:start.y),
                             control2:CGPoint(x:bend,y:end.y)
                         )
+                        let emphasized = !hasSelection || (focusIds.contains(item.id) && focusIds.contains(parent.id))
                         context.stroke(
                             path,
-                            with:.color(ForgePalette.secondary.opacity(0.22)),
-                            style:StrokeStyle(lineWidth:1.2,lineCap:.round)
+                            with:.color(
+                                emphasized
+                                    ? ForgePalette.accent.opacity(hasSelection ? 0.34 : 0.22)
+                                    : ForgePalette.secondary.opacity(0.075)
+                            ),
+                            style:StrokeStyle(lineWidth:emphasized && hasSelection ? 1.7 : 1.15,lineCap:.round)
                         )
                     }
                 }
@@ -2376,7 +2462,7 @@ private struct RecordsPane: View {
 
                 ForEach(model.records) { item in
                     if let point = positions[item.id] {
-                        planningCanvasNode(item)
+                        planningCanvasNode(item,focused:!hasSelection || focusIds.contains(item.id))
                             .offset(x:point.x,y:point.y)
                     }
                 }
@@ -2386,7 +2472,7 @@ private struct RecordsPane: View {
         }
         .scrollIndicators(.visible)
         .overlay(alignment:.bottomLeading) {
-            Text("布局只投影 canonical Requirement / Plan 关系；拖动浏览不会产生第二份工作流状态。")
+            Text("画布只投影 canonical Requirement / Plan 关系；布局、聚焦与悬停操作都不产生第二份工作流状态。")
                 .font(.system(size:9))
                 .foregroundStyle(ForgePalette.secondary.opacity(0.82))
                 .padding(.horizontal,10).padding(.vertical,6)
@@ -2396,29 +2482,99 @@ private struct RecordsPane: View {
         }
     }
 
-    private var planningCanvasPositions: [String:CGPoint] {
-        var rowsByDepth:[Int:Int] = [:]
-        var positions:[String:CGPoint] = [:]
+    private var planningChildrenByParent: [String:[ForgeRecord]] {
+        var result:[String:[ForgeRecord]] = [:]
         for item in model.records {
-            let row = rowsByDepth[item.depth,default:0]
-            positions[item.id] = CGPoint(
-                x:CGFloat(item.depth) * (planningNodeWidth + planningColumnGap),
-                y:CGFloat(row) * (planningNodeHeight + planningRowGap)
-            )
-            rowsByDepth[item.depth] = row + 1
+            guard let parent=planningParent(of:item) else { continue }
+            result[parent.id,default:[]].append(item)
+        }
+        return result
+    }
+
+    private var planningCanvasPositions: [String:CGPoint] {
+        let children=planningChildrenByParent
+        let rowStep=planningNodeHeight + planningRowGap
+        let columnStep=planningNodeWidth + planningColumnGap
+        var positions:[String:CGPoint] = [:]
+        var placed=Set<String>()
+        var visiting=Set<String>()
+        var nextLeaf:CGFloat=0
+
+        func place(_ item:ForgeRecord,depth:Int) -> CGFloat {
+            if let existing=positions[item.id] {
+                return existing.y + planningNodeHeight / 2
+            }
+            if visiting.contains(item.id) {
+                let center=nextLeaf * rowStep + planningNodeHeight / 2
+                nextLeaf += 1
+                positions[item.id]=CGPoint(x:CGFloat(depth) * columnStep,y:center - planningNodeHeight / 2)
+                placed.insert(item.id)
+                return center
+            }
+
+            visiting.insert(item.id)
+            let childItems=(children[item.id] ?? []).filter { !placed.contains($0.id) }
+            let center:CGFloat
+            if childItems.isEmpty {
+                center=nextLeaf * rowStep + planningNodeHeight / 2
+                nextLeaf += 1
+            } else {
+                let centers=childItems.map { place($0,depth:depth + 1) }
+                center=((centers.first ?? 0) + (centers.last ?? 0)) / 2
+            }
+            visiting.remove(item.id)
+            if !placed.contains(item.id) {
+                positions[item.id]=CGPoint(x:CGFloat(depth) * columnStep,y:center - planningNodeHeight / 2)
+                placed.insert(item.id)
+            }
+            return positions[item.id]!.y + planningNodeHeight / 2
+        }
+
+        let roots=model.records.filter { planningParent(of:$0) == nil }
+        for root in roots where !placed.contains(root.id) {
+            _=place(root,depth:0)
+            nextLeaf += 0.35
+        }
+        for item in model.records where !placed.contains(item.id) {
+            _=place(item,depth:0)
+            nextLeaf += 0.35
         }
         return positions
     }
 
     private var planningCanvasSize: CGSize {
-        let maxDepth = model.records.map(\.depth).max() ?? 0
-        var rowsByDepth:[Int:Int] = [:]
-        for item in model.records { rowsByDepth[item.depth,default:0] += 1 }
-        let maxRows = max(1,rowsByDepth.values.max() ?? 1)
+        let positions=planningCanvasPositions
+        let maxX=positions.values.map(\.x).max() ?? 0
+        let maxY=positions.values.map(\.y).max() ?? 0
         return CGSize(
-            width:max(360,CGFloat(maxDepth + 1) * planningNodeWidth + CGFloat(maxDepth) * planningColumnGap),
-            height:max(300,CGFloat(maxRows) * planningNodeHeight + CGFloat(maxRows - 1) * planningRowGap)
+            width:max(380,maxX + planningNodeWidth),
+            height:max(300,maxY + planningNodeHeight)
         )
+    }
+
+    private var planningFocusIds: Set<String> {
+        guard let selectedId=model.selectedRecord,
+              let selected=model.records.first(where:{ $0.id == selectedId }) else {
+            return Set(model.records.map(\.id))
+        }
+        let children=planningChildrenByParent
+        var result:Set<String>=[selected.id]
+
+        var cursor:ForgeRecord?=selected
+        var ancestorGuard=Set<String>()
+        while let current=cursor,
+              ancestorGuard.insert(current.id).inserted,
+              let parent=planningParent(of:current) {
+            result.insert(parent.id)
+            cursor=parent
+        }
+
+        var stack=children[selected.id] ?? []
+        while let child=stack.popLast() {
+            guard result.insert(child.id).inserted else { continue }
+            stack.append(contentsOf:children[child.id] ?? [])
+        }
+        return result
     }
 
     private func planningParent(of item:ForgeRecord) -> ForgeRecord? {
@@ -2432,62 +2588,108 @@ private struct RecordsPane: View {
         return nil
     }
 
-    private func planningCanvasNode(_ item:ForgeRecord) -> some View {
+    private func planningCanvasNode(_ item:ForgeRecord,focused:Bool) -> some View {
         let selected = item.id == model.selectedRecord
-        return Button {
-            Task { await model.openRecord(item.id) }
-        } label: {
-            VStack(alignment:.leading,spacing:7) {
-                HStack(spacing:6) {
-                    Image(systemName:item.kind == .requirement ? "scope" : "arrow.triangle.branch")
-                        .symbolRenderingMode(.hierarchical)
-                        .font(.system(size:10.5,weight:.semibold))
-                    Text(item.kind == .requirement ? "REQUIREMENT" : "PLAN")
-                        .font(.system(size:8.5,weight:.bold))
-                        .tracking(0.55)
-                    Spacer(minLength:4)
-                    if item.kind == .requirement,selected {
-                        Circle()
-                            .fill(autopilotStatusColor(model.autopilotStatus))
-                            .frame(width:6,height:6)
-                        Text(autopilotStatusLabel(model.autopilotStatus))
-                            .font(.system(size:8.5,weight:.medium))
-                            .lineLimit(1)
-                    } else if !item.state.isEmpty {
-                        Text(item.state)
-                            .font(.system(size:8.5,weight:.medium))
-                            .lineLimit(1)
+        let hovered = hoveredPlanningRecordId == item.id
+        return ZStack(alignment:.bottomTrailing) {
+            Button {
+                Task { await model.openRecord(item.id) }
+            } label: {
+                VStack(alignment:.leading,spacing:7) {
+                    HStack(spacing:6) {
+                        Image(systemName:item.kind == .requirement ? "scope" : "arrow.triangle.branch")
+                            .symbolRenderingMode(.hierarchical)
+                            .font(.system(size:10.5,weight:.semibold))
+                        Text(item.kind == .requirement ? "REQUIREMENT" : "PLAN")
+                            .font(.system(size:8.5,weight:.bold))
+                            .tracking(0.55)
+                        Spacer(minLength:4)
+                        if item.kind == .requirement,selected {
+                            Circle()
+                                .fill(autopilotStatusColor(model.autopilotStatus))
+                                .frame(width:6,height:6)
+                            Text(autopilotStatusLabel(model.autopilotStatus))
+                                .font(.system(size:8.5,weight:.medium))
+                                .lineLimit(1)
+                        } else if !item.state.isEmpty {
+                            Text(item.state)
+                                .font(.system(size:8.5,weight:.medium))
+                                .lineLimit(1)
+                        }
                     }
+                    .foregroundStyle(item.kind == .requirement ? ForgePalette.ink : ForgePalette.secondary)
+
+                    Text(item.title)
+                        .font(.system(size:11.5,weight:item.kind == .requirement ? .semibold : .medium))
+                        .foregroundStyle(ForgePalette.ink)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                        .frame(maxWidth:.infinity,alignment:.leading)
+
+                    Text(item.recordId)
+                        .font(.system(size:8.5,design:.monospaced))
+                        .foregroundStyle(ForgePalette.secondary)
+                        .lineLimit(1).truncationMode(.middle)
                 }
-                .foregroundStyle(item.kind == .requirement ? ForgePalette.ink : ForgePalette.secondary)
-
-                Text(item.title)
-                    .font(.system(size:11.5,weight:item.kind == .requirement ? .semibold : .medium))
-                    .foregroundStyle(ForgePalette.ink)
-                    .lineLimit(2)
-                    .multilineTextAlignment(.leading)
-                    .frame(maxWidth:.infinity,alignment:.leading)
-
-                Text(item.recordId)
-                    .font(.system(size:8.5,design:.monospaced))
-                    .foregroundStyle(ForgePalette.secondary)
-                    .lineLimit(1).truncationMode(.middle)
+                .padding(11)
+                .frame(width:planningNodeWidth,height:planningNodeHeight,alignment:.topLeading)
+                .background(selected ? ForgePalette.raisedSurface : Color.white.opacity(0.64),
+                            in:RoundedRectangle(cornerRadius:13,style:.continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius:13,style:.continuous)
+                        .stroke(
+                            selected ? ForgePalette.ink.opacity(0.32) : ForgePalette.secondary.opacity(0.13),
+                            lineWidth:selected ? 1.2 : 0.7
+                        )
+                )
+                .shadow(color:Color.black.opacity(selected ? 0.07 : 0.035),radius:selected ? 8 : 4,y:2)
+                .contentShape(RoundedRectangle(cornerRadius:13,style:.continuous))
             }
-            .padding(11)
-            .frame(width:planningNodeWidth,height:planningNodeHeight,alignment:.topLeading)
-            .background(selected ? ForgePalette.raisedSurface : Color.white.opacity(0.64),
-                        in:RoundedRectangle(cornerRadius:13,style:.continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius:13,style:.continuous)
-                    .stroke(
-                        selected ? ForgePalette.ink.opacity(0.32) : ForgePalette.secondary.opacity(0.13),
-                        lineWidth:selected ? 1.2 : 0.7
-                    )
-            )
-            .shadow(color:Color.black.opacity(selected ? 0.07 : 0.035),radius:selected ? 8 : 4,y:2)
-            .contentShape(RoundedRectangle(cornerRadius:13,style:.continuous))
+            .buttonStyle(.plain)
+
+            if hovered || selected {
+                HStack(spacing:4) {
+                    Button {
+                        if item.kind == .requirement {
+                            beginPlan(requirementId:item.recordId,parentPlanId:nil)
+                        } else {
+                            beginPlan(requirementId:item.requirementId,parentPlanId:item.recordId)
+                        }
+                    } label: {
+                        Image(systemName:"plus")
+                            .font(.system(size:9.5,weight:.bold))
+                            .frame(width:24,height:22)
+                            .background(.thinMaterial,in:RoundedRectangle(cornerRadius:7,style:.continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .help(item.kind == .requirement ? "添加根 Plan" : "细化子 Plan")
+
+                    Button {
+                        if item.kind == .requirement {
+                            model.newThreadForRequirement(item.recordId)
+                        } else {
+                            model.newThread(requirementId:item.requirementId,planId:item.recordId)
+                        }
+                    } label: {
+                        Image(systemName:"bubble.left")
+                            .font(.system(size:9.5,weight:.semibold))
+                            .frame(width:24,height:22)
+                            .background(.thinMaterial,in:RoundedRectangle(cornerRadius:7,style:.continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .help("以此节点新建会话")
+                }
+                .padding(7)
+                .transition(.opacity)
+            }
         }
-        .buttonStyle(.plain)
+        .opacity(focused ? 1 : 0.34)
+        .onHover { inside in
+            if inside { hoveredPlanningRecordId=item.id }
+            else if hoveredPlanningRecordId == item.id { hoveredPlanningRecordId=nil }
+        }
+        .animation(.easeOut(duration:0.12),value:hovered)
+        .animation(.easeOut(duration:0.16),value:focused)
         .accessibilityLabel(item.title)
         .accessibilityValue("\(item.recordId) · \(item.kind.rawValue)")
         .accessibilityIdentifier("semantic.canvas.\(item.kind.rawValue).\(item.recordId)")

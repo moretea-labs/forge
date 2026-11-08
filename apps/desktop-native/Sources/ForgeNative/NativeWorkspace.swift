@@ -375,10 +375,16 @@ enum NativePage: String, CaseIterable, Identifiable {
     }
 }
 
+struct NativeNavigationEntry: Equatable {
+    let page: NativePage
+    let threadId: String?
+    let recordId: String?
+}
+
 @MainActor
 final class NativeWorkspace: ObservableObject {
     @Published var page: NativePage = .agent
-    @Published private(set) var navigationBackStack: [NativePage] = []
+    @Published private(set) var navigationBackStack: [NativeNavigationEntry] = []
     @Published private(set) var projects: [ForgeProject] = []
     @Published var repoId: String?
     @Published var checkoutId: String?
@@ -443,7 +449,24 @@ final class NativeWorkspace: ObservableObject {
     var project: ForgeProject? { projects.first { $0.repoId == repoId } }
     var thread: ChatThread? { threads.first { $0.id == selectedThreadId } }
     var canNavigateBack: Bool { !navigationBackStack.isEmpty }
-    var navigationBackLabel: String? { navigationBackStack.last?.rawValue }
+    var navigationBackLabel: String? { navigationBackStack.last?.page.rawValue }
+
+    private var currentNavigationEntry: NativeNavigationEntry {
+        NativeNavigationEntry(
+            page:page,
+            threadId:selectedThreadId,
+            recordId:[.requirement,.plan].contains(page) ? selectedRecord : nil
+        )
+    }
+
+    private func pushNavigationOrigin() {
+        let entry=currentNavigationEntry
+        guard navigationBackStack.last != entry else { return }
+        navigationBackStack.append(entry)
+        if navigationBackStack.count > 24 {
+            navigationBackStack.removeFirst(navigationBackStack.count - 24)
+        }
+    }
     var selectedProvider: String {
         if let provider = thread?.provider { return provider }
         if thread?.messages.isEmpty == false { return "codex" }
@@ -532,12 +555,10 @@ final class NativeWorkspace: ObservableObject {
                 : (provider == "joycode" ? localApiSettings?.joyCodeModel : nil)
         )
         threads.insert(item, at:0)
-        selectedThreadId = item.id
-        show(.agent)
-        draft = ""
-        pendingImageURLs = []
-        pendingContextPaths = []
-        agentChanges = nil
+        if page != .agent { pushNavigationOrigin() }
+        activateThreadContext(item)
+        page = .agent
+        error = nil
         persist()
     }
     func newThreadForRequirement(_ requirementId: String) {
@@ -546,17 +567,8 @@ final class NativeWorkspace: ObservableObject {
     func newThreadForPlan(_ plan: PlanRecordDetail) {
         newThread(requirementId:plan.requirementId,planId:plan.planId)
     }
-    func selectThread(_ id: String) {
-        if busy {
-            guard id == activeConversationId else {
-                self.error = "请先停止正在运行的会话。"
-                return
-            }
-            return
-        }
-        guard let item = threads.first(where: { $0.id == id }) else { return }
-        selectedThreadId = id
-        show(.agent)
+    private func activateThreadContext(_ item: ChatThread, refreshProjectContext: Bool = true) {
+        selectedThreadId = item.id
         draft = ""
         pendingImageURLs = []
         pendingContextPaths = []
@@ -566,12 +578,27 @@ final class NativeWorkspace: ObservableObject {
         if let boundRepoId = item.repoId {
             repoId = boundRepoId
             checkoutId = item.checkoutId
-            Task { await refreshProject() }
+            if refreshProjectContext { Task { await refreshProject() } }
         } else {
             repoId = nil
             checkoutId = nil
             repositoryAccessMode = "request"
         }
+    }
+
+    func selectThread(_ id: String) {
+        if busy {
+            guard id == activeConversationId else {
+                self.error = "请先停止正在运行的会话。"
+                return
+            }
+            return
+        }
+        guard let item = threads.first(where: { $0.id == id }) else { return }
+        if page != .agent { pushNavigationOrigin() }
+        activateThreadContext(item)
+        page = .agent
+        error = nil
     }
     func selectThreadProvider(_ value: String) {
         guard !busy, matchesProvider(value),
@@ -749,10 +776,7 @@ final class NativeWorkspace: ObservableObject {
 
     func show(_ page: NativePage) {
         guard self.page != page else { return }
-        navigationBackStack.append(self.page)
-        if navigationBackStack.count > 24 {
-            navigationBackStack.removeFirst(navigationBackStack.count - 24)
-        }
+        pushNavigationOrigin()
         error = nil
         self.page = page
         if page != .agent { Task { await loadPage() } }
@@ -760,9 +784,31 @@ final class NativeWorkspace: ObservableObject {
 
     func goBack() {
         guard let target = navigationBackStack.popLast() else { return }
+        let threadChanged = target.threadId != selectedThreadId
+        if let targetThreadId=target.threadId,
+           let targetThread=threads.first(where:{ $0.id == targetThreadId }) {
+            activateThreadContext(targetThread,refreshProjectContext:false)
+        }
         error = nil
-        page = target
-        if target != .agent { Task { await loadPage() } }
+        page = target.page
+        Task {
+            if threadChanged, repoId != nil {
+                await refreshProject()
+            } else if target.page != .agent {
+                await loadPage()
+            }
+            if let recordId=target.recordId,
+               [.requirement,.plan].contains(target.page),
+               records.contains(where:{ $0.id == recordId }) {
+                await openRecord(recordId)
+            }
+        }
+    }
+
+    func clearRecordSelection() {
+        selectedRecord=nil
+        recordDetail=nil
+        autopilotStatus=nil
     }
     func toggleConversationSearch() {
         show(.agent)
@@ -1493,14 +1539,22 @@ final class NativeWorkspace: ObservableObject {
     }
 
     func openRequirement(_ id: String) async {
-        page = .requirement
+        if page != .requirement {
+            pushNavigationOrigin()
+            page = .requirement
+            error = nil
+        }
         await loadPage()
         guard let record = records.first(where: { $0.kind == .requirement && $0.recordId == id }) else { return }
         await openRecord(record.id)
     }
 
     func openPlan(_ id: String) async {
-        page = .requirement
+        if page != .requirement {
+            pushNavigationOrigin()
+            page = .requirement
+            error = nil
+        }
         await loadPage()
         guard let record = records.first(where: { $0.kind == .plan && $0.recordId == id }) else { return }
         await openRecord(record.id)

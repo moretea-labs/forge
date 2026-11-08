@@ -568,15 +568,21 @@ final class NativeWorkspaceTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at:folder) }
         let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
 
+        let threadId=model.selectedThreadId
         model.page = .agent
         model.show(.knowledge)
         XCTAssertEqual(model.page,.knowledge)
-        XCTAssertEqual(model.navigationBackStack,[.agent])
+        XCTAssertEqual(model.navigationBackStack,[
+            NativeNavigationEntry(page:.agent,threadId:threadId,recordId:nil)
+        ])
         XCTAssertTrue(model.canNavigateBack)
         XCTAssertEqual(model.navigationBackLabel,NativePage.agent.rawValue)
 
         model.show(.requirement)
-        XCTAssertEqual(model.navigationBackStack,[.agent,.knowledge])
+        XCTAssertEqual(model.navigationBackStack,[
+            NativeNavigationEntry(page:.agent,threadId:threadId,recordId:nil),
+            NativeNavigationEntry(page:.knowledge,threadId:threadId,recordId:nil)
+        ])
         model.goBack()
         XCTAssertEqual(model.page,.knowledge)
         model.goBack()
@@ -595,9 +601,58 @@ final class NativeWorkspaceTests: XCTestCase {
         model.selectThread(threadId)
 
         XCTAssertEqual(model.page,.agent)
-        XCTAssertEqual(model.navigationBackStack,[.knowledge])
+        XCTAssertEqual(model.navigationBackStack,[
+            NativeNavigationEntry(page:.knowledge,threadId:threadId,recordId:nil)
+        ])
         model.goBack()
         XCTAssertEqual(model.page,.knowledge)
+    }
+
+    @MainActor
+    func testNavigationEntryPreservesPlanningSelection() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        let threadId=model.selectedThreadId
+
+        model.page = .requirement
+        model.selectedRecord = "plan:PLAN-123"
+        model.show(.knowledge)
+
+        XCTAssertEqual(model.navigationBackStack.last,
+                       NativeNavigationEntry(page:.requirement,threadId:threadId,recordId:"plan:PLAN-123"))
+    }
+
+    @MainActor
+    func testBackRestoresSourceConversationProjectAfterCrossProjectJump() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+
+        model.threads[0].repoId = "repo_a"
+        model.threads[0].checkoutId = "checkout_a"
+        let threadA=model.threads[0].id
+
+        model.repoId = "repo_b"
+        model.checkoutId = "checkout_b"
+        model.newThread()
+        let threadB=model.selectedThreadId!
+
+        model.selectThread(threadA)
+        model.page = .knowledge
+        model.selectThread(threadB)
+
+        XCTAssertEqual(model.page,.agent)
+        XCTAssertEqual(model.repoId,"repo_b")
+        XCTAssertEqual(model.navigationBackStack.last,
+                       NativeNavigationEntry(page:.knowledge,threadId:threadA,recordId:nil))
+
+        model.goBack()
+
+        XCTAssertEqual(model.page,.knowledge)
+        XCTAssertEqual(model.selectedThreadId,threadA)
+        XCTAssertEqual(model.repoId,"repo_a")
+        XCTAssertEqual(model.checkoutId,"checkout_a")
     }
 
     @MainActor
