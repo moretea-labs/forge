@@ -1,4 +1,5 @@
 import { spawn } from 'child_process';
+import { randomUUID } from 'crypto';
 import { homedir } from 'os';
 import { join } from 'path';
 import { classifyRepositoryCommand } from '../../cli/repositories/command-classifier';
@@ -540,6 +541,16 @@ export async function runAutopilotLoop(
 
   // Run persistence stores only the correlation ID, not Process truth.
   // After a Runtime restart, reconcile it before another model/tool round.
+  if (initialRecord.value.pendingCommandRequestId && !initialRecord.value.pendingProcessId) {
+    // The request may have reached Process Runtime before the caller received
+    // its handle. No safe replay is possible without confirming that admission.
+    updateAutopilotRun(controllerHome, repoId, requirementId, (run) => ({
+      ...run, status:'paused',
+      stopReason:'process_admission_unconfirmed:' + run.pendingCommandRequestId,
+      lastSummary:'Command admission may have occurred without an acknowledged Process ID. Reconcile the canonical request ID before resuming; do not repeat the command.',
+    }), 'autopilot_process_admission_unconfirmed');
+    return;
+  }
   if (initialRecord.value.pendingProcessId) {
     const processId = initialRecord.value.pendingProcessId;
     const valid = autopilotPendingProcess({accepted:true,status:'running',processId}).processId === processId;
@@ -611,6 +622,7 @@ export async function runAutopilotLoop(
       ...run,
       // The next model response has now consumed the prior Process receipt.
       pendingProcessId: undefined,
+      pendingCommandRequestId: undefined,
       usage: {
         promptTokens: run.usage.promptTokens + usage.promptTokens,
         completionTokens: run.usage.completionTokens + usage.completionTokens,
@@ -733,7 +745,26 @@ export async function runAutopilotLoop(
       }
 
       if (!dependencies.executeTool) throw new Error('AUTOPILOT_TOOL_EXECUTOR_REQUIRED');
+      if (toolCall.function.name === 'execute_command' && !inspection) {
+        // The Run records the request before external admission. The existing
+        // Process Runtime owns dedupe and command effects; the Run owns only a
+        // recovery pointer if an accepted handle never reaches this caller.
+        const requestId = 'autopilot_' + randomUUID().replaceAll('-', '');
+        updateAutopilotRun(controllerHome, repoId, requirementId, (run) => ({
+          ...run, pendingCommandRequestId:requestId,
+        }), 'autopilot_command_request_recorded');
+        args.request_id = requestId;
+      }
       let toolResult = await dependencies.executeTool(toolCall.function.name, args);
+      const commandReceipt = (toolResult && typeof toolResult === 'object'
+        ? (toolResult as Record<string, unknown>).structuredContent ?? toolResult : {}) as Record<string, unknown>;
+      const receiptProcessId = typeof commandReceipt.processId === 'string' ? commandReceipt.processId : undefined;
+      if (toolCall.function.name === 'execute_command' && commandReceipt.accepted === true && receiptProcessId
+        && autopilotPendingProcess({accepted:true,status:'running',processId:receiptProcessId}).processId) {
+        updateAutopilotRun(controllerHome, repoId, requirementId, (run) => ({
+          ...run, pendingProcessId:receiptProcessId,
+        }), 'autopilot_process_handle_recorded');
+      }
       const pending = toolCall.function.name === 'execute_command'
         ? autopilotPendingProcess(toolResult) : { pending:false };
       if (pending.pending) {
@@ -763,6 +794,9 @@ export async function runAutopilotLoop(
         needsNextModelRound = true;
       }
       if (signal.aborted) return;
+      if (toolCall.function.name === 'execute_command' && !inspection) {
+        needsNextModelRound = true;
+      }
       updateAutopilotRun(controllerHome, repoId, requirementId, (run) => ({
         ...run,
         inspectionStreak: inspection ? Math.min(MAX_INSPECTION_STREAK, (run.inspectionStreak ?? 0) + 1) : 0,

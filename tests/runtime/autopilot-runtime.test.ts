@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { execFileSync } from 'child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { ensureControllerHome } from '../../src/effects/controller-home';
@@ -27,6 +27,7 @@ import type { ProcessHandle } from '../../src/runtime/execution/process-runtime/
 import { spawnManagedProcess } from '../../src/runtime/execution/process-runtime/runtime';
 import { startLightweightRepositoryCommand } from '../../src/runtime/execution/process-runtime/lightweight-managed';
 import { executionIdentityForRepository } from '../../src/runtime/control-plane/execution/execution-identity';
+import { waitRepositoryCommandProcess } from '../../src/runtime/execution/process-runtime/command-facade';
 import { readAutopilotProviderApiKey, readAutopilotProviderProfile } from '../../src/runtime/autopilot/provider-config';
 
 const roots: string[] = [];
@@ -357,6 +358,75 @@ describe('Requirement Autopilot',() => {
     expect(paused?.pendingProcessId).toBe(missing);
     await runAutopilotLoop(fx.controllerHome,fx.repository.repoId,'REQ-AUTO',new AbortController().signal,deps);
     expect(calls).toBe(0);
+  });
+
+  test('persists the request identity before command admission and never replays when its receipt is lost',async() => {
+    const fx=fixture('lost-command-receipt');
+    const enrolled=authorizeAutopilot({
+      controllerHome:fx.controllerHome,repoId:fx.repository.repoId,
+      requirementId:'REQ-AUTO',confirmAuthorization:true,
+      policy:{provider:'joycode',endpoint:'https://api-ai.jd.com',protocol:'chat_completions',
+        model:'JoyAI-Code-1.6',maxTurns:3,maxToolCalls:3,maxTotalTokens:20_000},
+    });
+    createAutopilotRun(fx.controllerHome,{
+      repoId:fx.repository.repoId,checkoutId:enrolled.checkoutId,
+      requirementId:'REQ-AUTO',requirementRevision:1,grantId:enrolled.grant.grantId,policy:enrolled.policy,
+    });
+    const command=['node','-e',"require('fs').appendFileSync('once.txt','x')"];
+    let admittedProcessId='';
+    let admittedRequestId='';
+    let toolCalls=0;
+    const firstModel=async()=>({choices:[{message:{role:'assistant',content:null,tool_calls:[{
+      id:'lost-command',type:'function',function:{name:'execute_command',arguments:JSON.stringify({command})},
+    }]}}],usage:{prompt_tokens:100,completion_tokens:30,total_tokens:130}});
+    await expect(runAutopilotLoop(
+      fx.controllerHome,fx.repository.repoId,'REQ-AUTO',new AbortController().signal,{
+        toolDefinitions:executeCommandDefinition,validateAuthorization:()=>({ok:true}),modelRound:firstModel,
+        executeTool:async(name,args)=>{
+          expect(name).toBe('execute_command');
+          toolCalls+=1;
+          admittedRequestId=String(args.request_id??'');
+          expect(admittedRequestId).toStartWith('autopilot_');
+          expect(readAutopilotRun(fx.controllerHome,fx.repository.repoId,'REQ-AUTO')?.value.pendingCommandRequestId)
+            .toBe(admittedRequestId);
+          const started=await startLightweightRepositoryCommand({
+            controllerHome:fx.controllerHome,repository:fx.repository,
+            execution:{command},commandId:admittedRequestId,
+            interactiveWaitMs:0,timeoutMs:15_000,deferStart:true,
+          });
+          admittedProcessId=started.handle.processId;
+          throw new Error('SIMULATED_TOOL_RESPONSE_LOST_AFTER_ADMISSION');
+        },
+      }
+    )).rejects.toThrow('SIMULATED_TOOL_RESPONSE_LOST_AFTER_ADMISSION');
+    const interrupted=readAutopilotRun(fx.controllerHome,fx.repository.repoId,'REQ-AUTO')?.value;
+    expect(interrupted?.pendingCommandRequestId).toBe(admittedRequestId);
+    expect(interrupted?.pendingProcessId).toBeUndefined();
+    expect(interrupted?.status).toBe('running');
+
+    let restartedModelCalls=0;
+    await runAutopilotLoop(fx.controllerHome,fx.repository.repoId,'REQ-AUTO',new AbortController().signal,{
+      toolDefinitions:executeCommandDefinition,validateAuthorization:()=>({ok:true}),
+      modelRound:async()=>{restartedModelCalls+=1;throw new Error('RESTART_MUST_NOT_INVOKE_MODEL');},
+      executeTool:async()=>{toolCalls+=1;throw new Error('RESTART_MUST_NOT_INVOKE_TOOL');},
+    });
+    const halted=readAutopilotRun(fx.controllerHome,fx.repository.repoId,'REQ-AUTO')?.value;
+    expect(halted?.status).toBe('paused');
+    expect(halted?.stopReason).toBe('process_admission_unconfirmed:'+admittedRequestId);
+    expect(toolCalls).toBe(1);
+    expect(restartedModelCalls).toBe(0);
+    const original=await waitRepositoryCommandProcess(fx.controllerHome,fx.repository.repoId,admittedProcessId,{timeoutMs:5_000});
+    expect(original).toMatchObject({completed:true,status:'succeeded',ok:true,exitCode:0});
+    expect(readFileSync(join(fx.repoRoot,'once.txt'),'utf8')).toBe('x');
+    // Canonical Process Runtime must also bind the same request/command identity
+    // back to the original receipt, never start a second physical command.
+    const retried=await startLightweightRepositoryCommand({
+      controllerHome:fx.controllerHome,repository:fx.repository,
+      execution:{command},commandId:admittedRequestId,
+      interactiveWaitMs:0,timeoutMs:15_000,deferStart:true,
+    });
+    expect(retried.handle.processId).toBe(admittedProcessId);
+    expect(readFileSync(join(fx.repoRoot,'once.txt'),'utf8')).toBe('x');
   });
 
   test('reads the shared Desktop provider profile without copying credentials',() => {

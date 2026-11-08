@@ -35,6 +35,8 @@ export interface AutopilotRun {
   stopReason?: string;
   /** Recovery-only correlation to Forge's canonical Process; not a second execution status owner. */
   pendingProcessId?: string;
+  /** Stable request identity written before effect admission; Process Runtime owns dedupe. */
+  pendingCommandRequestId?: string;
   evidenceRefs: string[];
   inspectionStreak?: number;
   recentToolNames?: string[];
