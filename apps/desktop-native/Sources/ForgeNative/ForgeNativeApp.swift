@@ -2221,6 +2221,7 @@ private struct AutopilotApprovalContext: Identifiable {
 
 private struct RecordsPane: View {
     @ObservedObject var model: NativeWorkspace
+    @Environment(\.scenePhase) private var scenePhase
     @State private var authoring: PlanningAuthoringContext?
     @State private var autopilotApproval: AutopilotApprovalContext?
     @State private var draftTitle = ""
@@ -2304,6 +2305,20 @@ private struct RecordsPane: View {
         .sheet(item:$autopilotApproval) { context in
             autopilotApprovalSheet(context)
         }
+        .task(id:planningOperationalRefreshKey) {
+            guard scenePhase == .active,!model.planningRequirementIds.isEmpty else { return }
+            await model.refreshPlanningAutopilotStatuses()
+            while !Task.isCancelled {
+                do { try await Task.sleep(for:.seconds(12)) }
+                catch { return }
+                guard !Task.isCancelled else { return }
+                await model.refreshPlanningAutopilotStatuses()
+            }
+        }
+    }
+
+    private var planningOperationalRefreshKey: String {
+        "\(model.repoId ?? "none")|\(scenePhase == .active ? "active" : "inactive")|\(model.planningRequirementIds.joined(separator:"|"))"
     }
 
     private var planningNavigator: some View {
@@ -2342,6 +2357,40 @@ private struct RecordsPane: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
+
+                if let focus=planningExecutionFocusRecord,
+                   let status=planningExecutionStatus(focus) {
+                    Button {
+                        locatePlanningRecord(focus)
+                    } label: {
+                        HStack(spacing:4) {
+                            Circle()
+                                .fill(planningExecutionColor(status))
+                                .frame(width:5.5,height:5.5)
+                            Image(systemName:"scope")
+                                .font(.system(size:10,weight:.semibold))
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .help("定位执行焦点 · \(planningExecutionLabel(focus,status)) · \(focus.recordId)")
+                    .accessibilityLabel("定位执行焦点")
+                    .accessibilityValue("\(planningExecutionLabel(focus,status)) · \(focus.recordId)")
+                    .accessibilityIdentifier("planning.execution.focus")
+                }
+
+                if let refreshError=model.planningAutopilotStatusError {
+                    Button {
+                        Task { await model.refreshPlanningAutopilotStatuses() }
+                    } label: {
+                        Image(systemName:"exclamationmark.triangle.fill")
+                            .font(.system(size:10))
+                            .foregroundStyle(.orange)
+                    }
+                    .buttonStyle(.plain)
+                    .help("执行态刷新失败，点击重试\n\(refreshError)")
+                    .accessibilityLabel("执行态刷新失败，点击重试")
+                    .accessibilityIdentifier("planning.execution.refresh-error")
+                }
 
                 if planningViewMode == "map" {
                     Button {
@@ -2796,6 +2845,22 @@ private struct RecordsPane: View {
         }
         if let requirementId = item.requirementId,!requirementId.isEmpty {
             return model.records.first { $0.kind == .requirement && $0.recordId == requirementId }
+        }
+        return nil
+    }
+
+    private var planningExecutionFocusRecord: ForgeRecord? {
+        let activeStates:Set<String>=["running","paused","blocked","failed"]
+        for item in model.records where item.kind == .plan {
+            guard let status=planningExecutionStatus(item),
+                  activeStates.contains(status.runStatus ?? "") else { continue }
+            return item
+        }
+        for item in model.records where item.kind == .requirement {
+            guard let status=model.planningAutopilotStatuses[item.recordId] else { continue }
+            if status.requiresReapproval || activeStates.contains(status.runStatus ?? "") {
+                return item
+            }
         }
         return nil
     }

@@ -420,6 +420,7 @@ final class NativeWorkspace: ObservableObject {
     @Published var recordDetail: SemanticRecordDetail?
     @Published var autopilotStatus: AutopilotStatusDetail?
     @Published var planningAutopilotStatuses: [String:AutopilotStatusDetail] = [:]
+    @Published var planningAutopilotStatusError: String?
     @Published var autopilotLoading = false
     @Published var detail = ""
     @Published var runtimeStatus: RuntimeStatusDetail?
@@ -967,9 +968,6 @@ final class NativeWorkspace: ObservableObject {
                 let planData = planList["data"] as? [String:Any] ?? planList
                 let planRows = planData["plans"] as? [[String:Any]] ?? []
                 records = Self.planningRecords(requirementRows:requirementRows,planRows:planRows)
-                planningAutopilotStatuses=[:]
-                let requirementIds = records.filter { $0.kind == .requirement }.map(\.recordId)
-                Task { await self.loadPlanningAutopilotStatuses(requirementIds) }
             } else {
                 let result = try await ForgeBridge.request("read_project_plan_list",["repoId":repoId])
                 let data = result["data"] as? [String:Any] ?? result
@@ -983,6 +981,8 @@ final class NativeWorkspace: ObservableObject {
                     )
                 }
             }
+            planningAutopilotStatuses=[:]
+            planningAutopilotStatusError=nil
             detail = ""
             selectedRecord = nil
             recordDetail = nil
@@ -1463,9 +1463,21 @@ final class NativeWorkspace: ObservableObject {
         return parsed
     }
 
+    var planningRequirementIds: [String] {
+        Array(Set(records.compactMap { item in
+            if item.kind == .requirement { return item.recordId }
+            return item.requirementId
+        })).sorted()
+    }
+
+    func refreshPlanningAutopilotStatuses() async {
+        await loadPlanningAutopilotStatuses(planningRequirementIds)
+    }
+
     func loadPlanningAutopilotStatuses(_ requirementIds:[String]) async {
         guard let repoId,!requirementIds.isEmpty else {
             planningAutopilotStatuses=[:]
+            planningAutopilotStatusError=nil
             return
         }
         do {
@@ -1474,9 +1486,29 @@ final class NativeWorkspace: ObservableObject {
                 "requirementIds":requirementIds
             ])
             guard self.repoId == repoId else { return }
-            planningAutopilotStatuses=Self.autopilotStatusMap(value)
+            let raw=value["statuses"] as? [String:Any] ?? [:]
+            let failed=raw.compactMap { requirementId,value -> (String,String)? in
+                guard let dictionary=value as? [String:Any],
+                      let message=dictionary["error"] as? String,!message.isEmpty else { return nil }
+                return (requirementId,message)
+            }
+            var next=Self.autopilotStatusMap(value)
+            for (requirementId,_) in failed {
+                if let previous=planningAutopilotStatuses[requirementId] {
+                    next[requirementId]=previous
+                }
+            }
+            planningAutopilotStatuses=next
+            if let first=failed.first {
+                planningAutopilotStatusError=failed.count == 1
+                    ? "\(first.0): \(first.1)"
+                    : "部分执行态刷新失败（\(failed.count)）· \(first.0): \(first.1)"
+            } else {
+                planningAutopilotStatusError=nil
+            }
         } catch {
-            if self.repoId == repoId { planningAutopilotStatuses=[:] }
+            guard self.repoId == repoId else { return }
+            planningAutopilotStatusError=error.localizedDescription
         }
     }
 
@@ -1490,6 +1522,7 @@ final class NativeWorkspace: ObservableObject {
             ])
             autopilotStatus=Self.autopilotStatusDetail(value)
             if let autopilotStatus { planningAutopilotStatuses[requirementId]=autopilotStatus }
+            planningAutopilotStatusError=nil
         } catch {
             autopilotStatus=nil
             self.error=error.localizedDescription
@@ -1525,6 +1558,7 @@ final class NativeWorkspace: ObservableObject {
             ])
             autopilotStatus=Self.autopilotStatusDetail(status)
             if let autopilotStatus { planningAutopilotStatuses[requirementId]=autopilotStatus }
+            planningAutopilotStatusError=nil
             error=nil
             return true
         } catch {
