@@ -40,7 +40,7 @@ async function run() {
     git_diff: ['paths','staged','max_bytes'],
     patch_plan: ['operations','chunk_size'],
     apply_patch: ['operations','purpose','allowed_paths','request_id'],
-    run_command: ['command','timeout_ms','max_output_bytes','request_id'],
+    run_command: ['command','timeout_ms','max_output_bytes','interactive_wait_ms','request_id'],
     git_commit: ['message','paths','request_id'],
   };
   if (Object.keys(args).some((key) => !keys[input.tool]?.includes(key))) {

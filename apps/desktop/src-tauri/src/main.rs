@@ -1418,6 +1418,22 @@ fn local_effect_completed(name: &str, receipt: &Value) -> bool {
     }
 }
 
+fn prepare_local_tool_arguments(name: &str, mut arguments: Value) -> Result<Value, String> {
+    if name != "run_command" {
+        return Ok(arguments);
+    }
+    let object = arguments.as_object_mut()
+        .ok_or("FORGE_DESKTOP_LOCAL_TOOL_ARGUMENTS_INVALID")?;
+    let timeout_ms = object.get("timeout_ms").and_then(Value::as_u64)
+        .unwrap_or(60_000).clamp(1_000, 60_000);
+    // The local Agent owns a synchronous turn. Let the canonical Process
+    // Runtime settle the exact admitted command within the command's own
+    // bounded timeout instead of treating its normal running handle as an
+    // unknown effect. Commands that still do not settle remain fail-closed.
+    object.insert("interactive_wait_ms".into(), Value::from(timeout_ms));
+    Ok(arguments)
+}
+
 trait LocalApiHost {
     fn packaged_tool_script(&self) -> Result<PathBuf, String>;
     fn emit_tool_progress(&self, payload: Value);
@@ -1469,6 +1485,7 @@ async fn run_local_forge_tool<H: LocalApiHost + Sync>(
             .map(|home| home.join(".bun/bin/bun"))
             .filter(|candidate| candidate.is_file());
         let bun = home_bun.unwrap_or_else(|| PathBuf::from("bun"));
+        let arguments = prepare_local_tool_arguments(&tool_name, arguments)?;
         let payload = json!({
             "controllerHome": home.to_string_lossy(),
             "sourceRoot": source_root,
@@ -2366,6 +2383,27 @@ mod tests {
         assert!(!local_effect_completed("apply_patch", &json!({"ok":true,"result":{
             "status":"partial"
         }})));
+    }
+
+    #[test]
+    fn local_run_command_waits_for_its_bounded_process_terminal_receipt() {
+        let args = prepare_local_tool_arguments(
+            "run_command",
+            json!({"command":["/bin/echo","ok"],"timeout_ms":12_345})
+        ).expect("prepared run command");
+        assert_eq!(args.get("interactive_wait_ms").and_then(Value::as_u64), Some(12_345));
+
+        let defaulted = prepare_local_tool_arguments(
+            "run_command",
+            json!({"command":["/bin/echo","ok"]})
+        ).expect("default wait");
+        assert_eq!(defaulted.get("interactive_wait_ms").and_then(Value::as_u64), Some(60_000));
+
+        let untouched = prepare_local_tool_arguments(
+            "apply_patch",
+            json!({"purpose":"test","operations":[]})
+        ).expect("non-command arguments");
+        assert!(untouched.get("interactive_wait_ms").is_none());
     }
 
     #[test]
