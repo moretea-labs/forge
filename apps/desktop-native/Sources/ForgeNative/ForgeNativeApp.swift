@@ -1314,7 +1314,7 @@ private struct AgentPane: View {
         .menuStyle(.borderlessButton)
         .fixedSize(horizontal:false,vertical:true)
         .disabled(model.projects.isEmpty || model.busy)
-        .help("切换项目会创建新的会话，避免改变已有 Agent 上下文")
+        .help("切换项目会打开该项目最近会话；没有历史会话时创建新会话")
         .accessibilityLabel("项目")
         .accessibilityValue(model.project?.label ?? "未选择")
         .accessibilityIdentifier("agent.project")

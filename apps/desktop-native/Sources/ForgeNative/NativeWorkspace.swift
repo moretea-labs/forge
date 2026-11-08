@@ -578,6 +578,7 @@ final class NativeWorkspace: ObservableObject {
         pendingImageURLs = []
         pendingContextPaths = []
         agentChanges = nil
+        changesLoading = false
         checkoutRoot = nil
         checkoutBranch = nil
         if let boundRepoId = item.repoId {
@@ -1746,15 +1747,28 @@ final class NativeWorkspace: ObservableObject {
     }
 
     func refreshAgentChanges(staged: Bool = false) async {
-        guard repoId != nil, checkoutId != nil else {
+        guard let targetRepoId = repoId, let targetCheckoutId = checkoutId else {
             agentChanges = nil
+            changesLoading = false
             return
         }
+        guard !changesLoading else { return }
         changesLoading = true
-        defer { changesLoading = false }
+        defer {
+            if repoId == targetRepoId, checkoutId == targetCheckoutId {
+                changesLoading = false
+            }
+        }
         do {
-            agentChanges = try await loadAgentChanges(staged:staged)
+            let changes = try await loadAgentChanges(staged:staged)
+            guard repoId == targetRepoId, checkoutId == targetCheckoutId else { return }
+            guard changes.repoId == targetRepoId, changes.checkoutId == targetCheckoutId else {
+                self.error = "Changes 返回了不同 repository / checkout 的快照。"
+                return
+            }
+            agentChanges = changes
         } catch {
+            guard repoId == targetRepoId, checkoutId == targetCheckoutId else { return }
             self.error = error.localizedDescription
         }
     }
