@@ -1,7 +1,7 @@
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
-import { admitRequirement, promoteRequirementCandidate } from '../../../src/runtime/control-plane/facade/requirement-authority';
-import { listRequirements, readRequirement, requirementSemanticView, reviseRequirementSemantic } from '../../../src/runtime/control-plane/persistence/requirement-store';
+import { admitRequirement, listRequirementsForRepository, promoteRequirementCandidate } from '../../../src/runtime/control-plane/facade/requirement-authority';
+import { readRequirement, requirementSemanticView, reviseRequirementSemantic } from '../../../src/runtime/control-plane/persistence/requirement-store';
 import { readForgeInstanceIdentity } from '../../../packages/kernel/identity/api/index';
 import { resolveProjectForRepositoryPlacement } from '../../../src/runtime/control-plane/workspace/workspace-store';
 import { buildFacadeResult } from '../../../src/runtime/control-plane/facade';
@@ -29,13 +29,18 @@ export async function callRhWorkRequirementOperation(
 
   if (operation === 'requirement_list') {
     const limit = Math.max(1, Math.min(Math.trunc(typeof args.limit === 'number' ? args.limit : 20), 100));
-    const requirements = listRequirements({ controllerHome: ctx.controllerHome }, 500)
+    const requirements = listRequirementsForRepository(
+      { controllerHome: ctx.controllerHome },
+      repository?.repoId,
+      500,
+    )
       .map((record) => requirementSemanticView(record.value))
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
       .slice(0, limit)
       .map((semantic) => ({
         requirementId: semantic.requirementId,
         revision: semantic.revision,
+        ...(semantic.repoId ? { repoId: semantic.repoId } : {}),
         title: semantic.title.slice(0, 240),
         outcomeStatement: semantic.outcomeStatement.slice(0, 500),
         state: semantic.state,
@@ -82,6 +87,7 @@ export async function callRhWorkRequirementOperation(
     try {
       const revised = reviseRequirementSemantic({ controllerHome: ctx.controllerHome }, requirementId, {
         expectedRevision,
+        ...(repository?.repoId ? { repoId: repository.repoId } : {}),
         ...(typeof args.requirement_title === 'string' ? { title: args.requirement_title } : {}),
         ...(typeof args.requirement_outcome === 'string' ? { outcomeStatement: args.requirement_outcome } : {}),
         ...(Array.isArray(args.requirement_acceptance_criteria) ? { acceptanceCriteria: args.requirement_acceptance_criteria.map(String) } : {}),
@@ -118,6 +124,7 @@ export async function callRhWorkRequirementOperation(
   try {
     const requirementInput = {
       requirementId,
+      ...(repository?.repoId ? { repoId: repository.repoId } : {}),
       title,
       outcomeStatement,
       acceptanceCriteria: Array.isArray(args.requirement_acceptance_criteria) ? args.requirement_acceptance_criteria.map(String) : [],
