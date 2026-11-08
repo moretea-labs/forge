@@ -38,6 +38,16 @@ export function discoverExecutable(input: {
     return { id: input.id, status: 'missing', recovery: input.recovery };
   }
   const pathEntries = (env.PATH ?? '').split(delimiter).map((entry) => entry.trim()).filter(Boolean);
+  if (platform === 'darwin') {
+    const home = env.HOME?.trim();
+    for (const directory of [
+      '/opt/homebrew/bin',
+      '/usr/local/bin',
+      ...(home ? [join(home, '.local', 'bin')] : []),
+    ]) {
+      if (!pathEntries.includes(directory)) pathEntries.push(directory);
+    }
+  }
   for (const candidate of input.candidates) {
     if (isAbsolute(candidate)) {
       if (fileExists(candidate)) return { id: input.id, status: 'ready', executable: candidate, source: 'path' };

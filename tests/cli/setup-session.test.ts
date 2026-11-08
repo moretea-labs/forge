@@ -210,8 +210,17 @@ exit 1
 `);
       chmodSync(tunnelClient, 0o700);
       const profile = configureSetupProfile({ setupRoot: root, controller: 'chatgpt', tunnel: 'openai', tunnelId });
-      const tunnelPlatform = { ...platform, commands: { ...platform.commands, tunnelClient: true } };
-      const guidance = resolveTunnelGuidance(profile, tunnelPlatform, { controllerHome, env: { ...process.env, PATH: `${binDir}:${process.env.PATH ?? ''}` } });
+      const tunnelPlatform: SetupPlatformSnapshot = {
+        ...platform,
+        commands: { ...platform.commands, tunnelClient: true },
+        prerequisites: {
+          tunnelClient: { id: 'tunnel-client', status: 'ready', executable: tunnelClient, source: 'path' },
+        },
+      };
+      const guidance = resolveTunnelGuidance(profile, tunnelPlatform, {
+        controllerHome,
+        env: { ...process.env, PATH: '/usr/bin:/bin' },
+      });
       expect(guidance).toMatchObject({ provider: 'openai', ready: true, title: 'OpenAI Secure MCP Tunnel' }); expect(guidance.detail).toContain('forge-openai-test');
     } finally {
       rmSync(root, { recursive: true, force: true });
