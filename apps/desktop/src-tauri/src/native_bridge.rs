@@ -302,6 +302,58 @@ pub fn run_api_turn() -> i32 {
     0
 }
 
+fn parse_native_model_round_request(value: &Value) -> Result<Value, String> {
+    if value.get("provider").and_then(Value::as_str) != Some("joycode") {
+        return Err("FORGE_NATIVE_MODEL_PROVIDER_INVALID".into());
+    }
+    let body = value.get("body").and_then(Value::as_object)
+        .ok_or("FORGE_NATIVE_MODEL_BODY_REQUIRED")?;
+    let model = body.get("model").and_then(Value::as_str).unwrap_or("").trim();
+    if model.is_empty() || model.len() > 120 {
+        return Err("FORGE_NATIVE_MODEL_MODEL_INVALID".into());
+    }
+    if !body.get("messages").is_some_and(Value::is_array)
+        || !body.get("tools").is_some_and(Value::is_array) {
+        return Err("FORGE_NATIVE_MODEL_BODY_INVALID".into());
+    }
+    Ok(Value::Object(body.clone()))
+}
+
+pub fn run_model_round() -> i32 {
+    let result = (|| -> Result<Value, String> {
+        let mut input = String::new();
+        std::io::stdin().take(8 * 1024 * 1024 + 1)
+            .read_to_string(&mut input)
+            .map_err(|_| "FORGE_NATIVE_MODEL_READ_FAILED")?;
+        if input.len() > 8 * 1024 * 1024 {
+            return Err("FORGE_NATIVE_MODEL_REQUEST_TOO_LARGE".into());
+        }
+        let value: Value = serde_json::from_str(&input)
+            .map_err(|_| "FORGE_NATIVE_MODEL_JSON_INVALID")?;
+        let body = parse_native_model_round_request(&value)?;
+        let session = read_joycode_session()?;
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(180))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|_| "FORGE_NATIVE_MODEL_CLIENT_FAILED")?;
+        tauri::async_runtime::block_on(request_local_api_round(
+            &client,
+            JOYCODE_COLOR_GATEWAY_ORIGIN,
+            "openai",
+            None,
+            Some(&session),
+            &body,
+        ))
+    })();
+    let envelope = match result {
+        Ok(data) => json!({ "ok": true, "data": data }),
+        Err(error) => json!({ "ok": false, "error": error }),
+    };
+    println!("{envelope}");
+    0
+}
+
 pub fn run() -> i32 {
     let result = (|| -> Result<Value, String> {
         let mut input = String::new();
@@ -328,6 +380,27 @@ pub fn run() -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_model_round_accepts_only_bounded_joycode_chat_payloads() {
+        let body = parse_native_model_round_request(&json!({
+            "provider":"joycode",
+            "body":{
+                "model":"JoyAI-Code-1.6",
+                "messages":[{"role":"user","content":"continue"}],
+                "tools":[]
+            }
+        })).expect("valid JoyCode model round");
+        assert_eq!(body.get("model").and_then(Value::as_str), Some("JoyAI-Code-1.6"));
+        assert!(parse_native_model_round_request(&json!({
+            "provider":"api",
+            "body":{"model":"x","messages":[],"tools":[]}
+        })).is_err());
+        assert!(parse_native_model_round_request(&json!({
+            "provider":"joycode",
+            "body":{"model":"JoyAI-Code-1.6","messages":[]}
+        })).is_err());
+    }
+
     #[test]
     fn native_api_turn_protocol_is_typed_and_separate_from_one_shot_bridge() {
         let request = parse_api_turn_request(&json!({

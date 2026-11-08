@@ -1,7 +1,7 @@
 export type AutopilotRunStatus = 'running' | 'paused' | 'completed' | 'blocked' | 'failed' | 'cancelled';
 
 export interface AutopilotPolicy {
-  provider: 'deepseek';
+  provider: 'deepseek' | 'joycode';
   endpoint: string;
   protocol: 'chat_completions' | 'responses';
   model: string;

@@ -34,7 +34,7 @@ export async function callAutopilotAdapter(
       case 'status':
         return result({
           ...autopilotStatus(ctx.controllerHome, repository.repoId, reqId),
-          provider: 'deepseek',
+          provider: provider.profile.provider,
           providerReady: provider.ready,
           providerEndpoint: provider.profile.endpoint,
           providerProtocol: provider.profile.protocol,
@@ -57,7 +57,7 @@ export async function callAutopilotAdapter(
           confirmAuthorization: args.confirm_authorization === true,
           expiresInMinutes: typeof args.expires_in_minutes === 'number' ? args.expires_in_minutes : undefined,
           policy: {
-            provider: 'deepseek',
+            provider: provider.profile.provider,
             endpoint: provider.profile.endpoint,
             protocol: provider.profile.protocol,
             model: typeof args.model === 'string' ? args.model : provider.profile.model,

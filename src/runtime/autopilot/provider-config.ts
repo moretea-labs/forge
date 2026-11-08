@@ -5,16 +5,22 @@ import { join } from 'path';
 
 export type AutopilotProviderProtocol = 'chat_completions' | 'responses';
 
+export type AutopilotProvider = 'deepseek' | 'joycode';
+
 export interface AutopilotProviderProfile {
+  provider: AutopilotProvider;
   endpoint: string;
   protocol: AutopilotProviderProtocol;
   model: string;
-  source: 'desktop-local-api' | 'default';
+  source: 'desktop-local-api' | 'desktop-joycode' | 'default';
 }
 
 const KEYCHAIN_SERVICE = 'com.moretea.forge.desktop.api';
 const ZRO_ENDPOINT = 'https://zro.moonmath.ai/v1';
+const JOYCODE_ENDPOINT = 'https://api-ai.jd.com';
+const JOYCODE_DEFAULT_MODEL = 'JoyAI-Code-1.6';
 const DEFAULT_PROFILE: AutopilotProviderProfile = {
+  provider: 'deepseek',
   endpoint: 'https://api.deepseek.com',
   protocol: 'chat_completions',
   model: 'deepseek-chat',
@@ -41,6 +47,16 @@ export function readAutopilotProviderProfile(homeDir = homedir()): AutopilotProv
   if (!existsSync(path)) return { ...DEFAULT_PROFILE };
   try {
     const parsed = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
+    if (parsed.provider === 'joycode') {
+      const model = typeof parsed.joyCodeModel === 'string' ? parsed.joyCodeModel.trim() : '';
+      return {
+        provider: 'joycode',
+        endpoint: JOYCODE_ENDPOINT,
+        protocol: 'chat_completions',
+        model: model && model.length <= 120 ? model : JOYCODE_DEFAULT_MODEL,
+        source: 'desktop-joycode',
+      };
+    }
     const endpoint = validatedEndpoint(parsed.endpoint);
     const model = typeof parsed.model === 'string' ? parsed.model.trim() : '';
     const protocol = parsed.apiProtocol === 'responses'
@@ -49,7 +65,7 @@ export function readAutopilotProviderProfile(homeDir = homedir()): AutopilotProv
         ? 'chat_completions'
         : undefined;
     if (!endpoint || !model || model.length > 120 || !protocol) return { ...DEFAULT_PROFILE };
-    return { endpoint, protocol, model, source: 'desktop-local-api' };
+    return { provider: 'deepseek', endpoint, protocol, model, source: 'desktop-local-api' };
   } catch {
     return { ...DEFAULT_PROFILE };
   }
@@ -100,12 +116,35 @@ export function readAutopilotProviderApiKey(
     || undefined;
 }
 
+function joyCodeReady(homeDir = homedir()): boolean {
+  const helper = process.env.FORGE_DESKTOP_HELPER_PATH?.trim()
+    || join(homeDir, 'Applications', 'Forge.app', 'Contents', 'MacOS', 'forge-desktop');
+  if (!existsSync(helper)) return false;
+  try {
+    const output = execFileSync(helper, ['--native-bridge'], {
+      input: JSON.stringify({ operation:'read_local_api_settings', arguments:{} }),
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'ignore'],
+      timeout: 5_000,
+      maxBuffer: 256 * 1024,
+    });
+    const envelope = JSON.parse(output) as { ok?: boolean; data?: Record<string, unknown> };
+    return envelope.ok === true && envelope.data?.joyCodeReady === true;
+  } catch {
+    return false;
+  }
+}
+
 export function autopilotProviderReadiness(): {
   profile: AutopilotProviderProfile;
   ready: boolean;
-  credentialSource: 'zro-local-config' | 'macos-keychain-or-env' | 'missing';
+  credentialSource: 'zro-local-config' | 'macos-keychain-or-env' | 'desktop-joycode-session' | 'missing';
 } {
   const profile = readAutopilotProviderProfile();
+  if (profile.provider === 'joycode') {
+    const ready = joyCodeReady();
+    return { profile, ready, credentialSource: ready ? 'desktop-joycode-session' : 'missing' };
+  }
   const ready = Boolean(readAutopilotProviderApiKey(profile.endpoint));
   const credentialSource = ready
     ? profile.endpoint === ZRO_ENDPOINT ? 'zro-local-config' : 'macos-keychain-or-env'

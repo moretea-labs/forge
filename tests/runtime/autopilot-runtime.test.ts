@@ -99,15 +99,82 @@ describe('Requirement Autopilot',() => {
       joyCodeModel:'JoyAI-Code-1.6',
     }));
     expect(readAutopilotProviderProfile(home)).toEqual({
-      endpoint:'https://zro.moonmath.ai/v1',
-      protocol:'responses',
-      model:'deepseek-v4.1-flash',
-      source:'desktop-local-api',
+      provider:'joycode',
+      endpoint:'https://api-ai.jd.com',
+      protocol:'chat_completions',
+      model:'JoyAI-Code-1.6',
+      source:'desktop-joycode',
     });
     const zroDir=join(home,'.config','zro');
     mkdirSync(zroDir,{recursive:true});
     writeFileSync(join(zroDir,'credentials.json'),JSON.stringify({apiKey:'fixture-zro-key'}));
     expect(readAutopilotProviderApiKey('https://zro.moonmath.ai/v1',{},home)).toBe('fixture-zro-key');
+  });
+
+  test('runs an authorized JoyCode policy through the Desktop model-round authority without an API key',async() => {
+    const fx=fixture('joycode');
+    const enrolled=authorizeAutopilot({
+      controllerHome:fx.controllerHome,
+      repoId:fx.repository.repoId,
+      requirementId:'REQ-AUTO',
+      confirmAuthorization:true,
+      policy:{
+        provider:'joycode',
+        endpoint:'https://api-ai.jd.com',
+        protocol:'chat_completions',
+        model:'JoyAI-Code-1.6',
+        maxTurns:2,
+        maxToolCalls:2,
+        maxTotalTokens:4000,
+      },
+    });
+    expect(enrolled.grant.constraints).toMatchObject({
+      provider:'joycode',
+      endpoint:'https://api-ai.jd.com',
+      model:'JoyAI-Code-1.6',
+    });
+    let observed:Record<string,unknown>|undefined;
+    startAutopilot({
+      controllerHome:fx.controllerHome,
+      repoId:fx.repository.repoId,
+      requirementId:'REQ-AUTO',
+      dependencies:{
+        toolDefinitions:[],
+        executeTool:async()=>({ok:true}),
+        modelRound:async(input)=>{
+          observed=input.body;
+          return {
+            choices:[{message:{
+              role:'assistant',
+              content:null,
+              tool_calls:[{
+                id:'joycode-decision',
+                type:'function',
+                function:{
+                  name:'forge_autopilot_decision',
+                  arguments:JSON.stringify({
+                    action:'complete',
+                    summary:'JoyCode completed the authorized slice.',
+                    evidence_refs:['commit:joycode'],
+                  }),
+                },
+              }],
+            }}],
+            usage:{prompt_tokens:10,completion_tokens:5,total_tokens:15},
+          };
+        },
+      },
+    });
+    for (let attempt=0;attempt<50;attempt+=1) {
+      if (readAutopilotRun(fx.controllerHome,fx.repository.repoId,'REQ-AUTO')?.value.status === 'completed') break;
+      await Bun.sleep(10);
+    }
+    expect(observed?.model).toBe('JoyAI-Code-1.6');
+    expect(Array.isArray(observed?.tools)).toBe(true);
+    const run=readAutopilotRun(fx.controllerHome,fx.repository.repoId,'REQ-AUTO')!.value;
+    expect(run.status).toBe('completed');
+    expect(run.policy.provider).toBe('joycode');
+    expect(run.evidenceRefs).toEqual(['commit:joycode']);
   });
 
   test('requires explicit authorization, binds the exact Requirement revision, and replaces prior grants',() => {

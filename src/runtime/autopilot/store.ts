@@ -9,11 +9,12 @@ import type { AutopilotPolicy, AutopilotRun, AutopilotRunStatus } from './types'
 const NAMESPACE = 'requirement_autopilot_run';
 
 export function defaultAutopilotPolicy(input: Partial<AutopilotPolicy> = {}): AutopilotPolicy {
+  const provider = input.provider === 'joycode' ? 'joycode' : 'deepseek';
   return {
-    provider: 'deepseek',
-    endpoint: input.endpoint?.trim() || 'https://api.deepseek.com',
-    protocol: input.protocol === 'responses' ? 'responses' : 'chat_completions',
-    model: input.model?.trim() || 'deepseek-chat',
+    provider,
+    endpoint: input.endpoint?.trim() || (provider === 'joycode' ? 'https://api-ai.jd.com' : 'https://api.deepseek.com'),
+    protocol: provider === 'joycode' ? 'chat_completions' : (input.protocol === 'responses' ? 'responses' : 'chat_completions'),
+    model: input.model?.trim() || (provider === 'joycode' ? 'JoyAI-Code-1.6' : 'deepseek-chat'),
     maxTotalTokens: Math.max(1_000, Math.min(Math.trunc(input.maxTotalTokens ?? 50_000), 500_000)),
     maxTurns: Math.max(1, Math.min(Math.trunc(input.maxTurns ?? 12), 48)),
     maxToolCalls: Math.max(1, Math.min(Math.trunc(input.maxToolCalls ?? 32), 128)),

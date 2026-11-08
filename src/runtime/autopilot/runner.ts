@@ -1,3 +1,6 @@
+import { spawn } from 'child_process';
+import { homedir } from 'os';
+import { join } from 'path';
 import { classifyRepositoryCommand } from '../../cli/repositories/command-classifier';
 import { getRepository } from '../../cli/repositories/registry';
 import { readRequirement, requirementSemanticView } from '../control-plane/persistence/requirement-store';
@@ -37,9 +40,16 @@ export interface AutopilotToolDefinition {
   inputSchema: Record<string, unknown>;
 }
 
+export interface AutopilotModelRoundInput {
+  provider: 'joycode';
+  body: Record<string, unknown>;
+}
+
 export interface AutopilotRunnerDependencies {
   fetchImpl?: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
   apiKey?: string;
+  helperPath?: string;
+  modelRound?: (input: AutopilotModelRoundInput, signal: AbortSignal) => Promise<unknown>;
   executeTool?: (name: string, args: Record<string, unknown>) => Promise<unknown>;
   toolDefinitions?: AutopilotToolDefinition[];
   validateAuthorization?: () => { ok: boolean; reason?: string };
@@ -279,6 +289,101 @@ async function requestDeepSeek(
   }
 }
 
+
+function forgeDesktopHelperPath(dependencies: AutopilotRunnerDependencies): string {
+  return dependencies.helperPath?.trim()
+    || process.env.FORGE_DESKTOP_HELPER_PATH?.trim()
+    || join(homedir(), 'Applications', 'Forge.app', 'Contents', 'MacOS', 'forge-desktop');
+}
+
+async function requestJoyCode(
+  run: AutopilotRun,
+  messages: DeepSeekMessage[],
+  signal: AbortSignal,
+  dependencies: AutopilotRunnerDependencies,
+): Promise<DeepSeekResponse> {
+  const remaining = Math.max(1, run.policy.maxTotalTokens - run.usage.totalTokens);
+  const body: Record<string, unknown> = {
+    model: run.policy.model,
+    messages,
+    tools: toolManifest(dependencies),
+    tool_choice: 'auto',
+    temperature: 0.1,
+    max_tokens: Math.min(16_384, remaining),
+  };
+  if (dependencies.modelRound) {
+    return await dependencies.modelRound({ provider:'joycode', body }, signal) as DeepSeekResponse;
+  }
+  if (signal.aborted) throw new Error('AUTOPILOT_MODEL_ABORTED');
+  const helper = forgeDesktopHelperPath(dependencies);
+  return await new Promise<DeepSeekResponse>((resolve, reject) => {
+    const child = spawn(helper, ['--native-model-round'], { stdio:['pipe','pipe','pipe'] });
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    const finish = (error?: Error, value?: DeepSeekResponse) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      signal.removeEventListener('abort', abort);
+      if (error) reject(error);
+      else resolve(value as DeepSeekResponse);
+    };
+    const abort = () => {
+      child.kill('SIGTERM');
+      finish(new Error('AUTOPILOT_MODEL_ABORTED'));
+    };
+    const timeout = setTimeout(() => {
+      child.kill('SIGTERM');
+      finish(new Error('AUTOPILOT_JOYCODE_MODEL_TIMEOUT'));
+    }, 180_000);
+    signal.addEventListener('abort', abort, { once:true });
+    child.on('error', (error) => finish(new Error('AUTOPILOT_JOYCODE_HELPER_FAILED: ' + error.message)));
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => {
+      stdout += chunk;
+      if (stdout.length > 8 * 1024 * 1024) {
+        child.kill('SIGTERM');
+        finish(new Error('AUTOPILOT_JOYCODE_RESPONSE_TOO_LARGE'));
+      }
+    });
+    child.stderr.on('data', (chunk: string) => {
+      if (stderr.length < 64 * 1024) stderr += chunk;
+    });
+    child.on('close', (code) => {
+      if (settled) return;
+      if (code !== 0) {
+        finish(new Error('AUTOPILOT_JOYCODE_HELPER_FAILED: ' + stderr.slice(-500)));
+        return;
+      }
+      try {
+        const envelope = JSON.parse(stdout) as { ok?: boolean; data?: unknown; error?: string };
+        if (envelope.ok !== true || !envelope.data) {
+          finish(new Error(envelope.error || 'AUTOPILOT_JOYCODE_MODEL_FAILED'));
+          return;
+        }
+        finish(undefined, envelope.data as DeepSeekResponse);
+      } catch {
+        finish(new Error('AUTOPILOT_JOYCODE_RESPONSE_INVALID'));
+      }
+    });
+    child.stdin.on('error', (error) => finish(new Error('AUTOPILOT_JOYCODE_HELPER_FAILED: ' + error.message)));
+    child.stdin.end(JSON.stringify({ provider:'joycode', body }));
+  });
+}
+
+async function requestModel(
+  run: AutopilotRun,
+  messages: DeepSeekMessage[],
+  signal: AbortSignal,
+  dependencies: AutopilotRunnerDependencies,
+): Promise<DeepSeekResponse> {
+  return run.policy.provider === 'joycode'
+    ? requestJoyCode(run, messages, signal, dependencies)
+    : requestDeepSeek(run, messages, signal, dependencies);
+}
+
 function boundedToolResult(value: unknown): string {
   const text = JSON.stringify(value);
   return text.length <= 24_000 ? text : `${text.slice(0, 23_900)}...<truncated>`;
@@ -345,7 +450,7 @@ export async function runAutopilotLoop(
       return;
     }
 
-    const response = await requestDeepSeek(current, messages, signal, dependencies);
+    const response = await requestModel(current, messages, signal, dependencies);
     const assistant = response.choices?.[0]?.message;
     if (!assistant) throw new Error('AUTOPILOT_MODEL_RESPONSE_INVALID');
     const usage = usageOf(response);

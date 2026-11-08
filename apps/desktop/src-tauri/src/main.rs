@@ -2540,6 +2540,9 @@ fn main() {
     if mode.as_deref() == Some("--native-api-turn") {
         std::process::exit(native_bridge::run_api_turn());
     }
+    if mode.as_deref() == Some("--native-model-round") {
+        std::process::exit(native_bridge::run_model_round());
+    }
     if mode.as_deref() == Some("--native-bridge") {
         std::process::exit(native_bridge::run());
     }

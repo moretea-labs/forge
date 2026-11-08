@@ -46,6 +46,28 @@ export function activeAutopilotGrant(controllerHome: string, repoId: string, req
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt))[0];
 }
 
+
+function policyFromGrant(constraints: Record<string, unknown>): AutopilotPolicy {
+  const provider = constraints.provider === 'joycode' ? 'joycode' : 'deepseek';
+  return defaultAutopilotPolicy({
+    provider,
+    endpoint: String(constraints.endpoint ?? (provider === 'joycode' ? 'https://api-ai.jd.com' : 'https://api.deepseek.com')),
+    protocol: provider === 'joycode' ? 'chat_completions' : (constraints.protocol === 'responses' ? 'responses' : 'chat_completions'),
+    model: String(constraints.model ?? (provider === 'joycode' ? 'JoyAI-Code-1.6' : 'deepseek-chat')),
+    maxTotalTokens: Number(constraints.maxTotalTokens),
+    maxTurns: Number(constraints.maxTurns),
+    maxToolCalls: Number(constraints.maxToolCalls),
+    checkpointPlanIds: Array.isArray(constraints.checkpointPlanIds) ? constraints.checkpointPlanIds.map(String) : [],
+  });
+}
+
+function providerApiKey(policy: AutopilotPolicy, supplied?: string): string | undefined {
+  if (policy.provider === 'joycode') return undefined;
+  const apiKey = supplied ?? readAutopilotProviderApiKey(policy.endpoint);
+  if (!apiKey?.trim()) throw new Error('AUTOPILOT_DEEPSEEK_API_KEY_MISSING');
+  return apiKey;
+}
+
 export function authorizeAutopilot(input: {
   controllerHome: string;
   repoId: string;
@@ -168,18 +190,8 @@ export function startAutopilot(input: {
   }
   const checkoutId = String(enrolled.checkoutId ?? '').trim();
   if (!checkoutId) throw new Error('AUTOPILOT_GRANT_CHECKOUT_MISSING');
-  const policy = defaultAutopilotPolicy({
-    provider: 'deepseek',
-    endpoint: String(enrolled.endpoint ?? 'https://api.deepseek.com'),
-    protocol: enrolled.protocol === 'responses' ? 'responses' : 'chat_completions',
-    model: String(enrolled.model ?? 'deepseek-chat'),
-    maxTotalTokens: Number(enrolled.maxTotalTokens),
-    maxTurns: Number(enrolled.maxTurns),
-    maxToolCalls: Number(enrolled.maxToolCalls),
-    checkpointPlanIds: Array.isArray(enrolled.checkpointPlanIds) ? enrolled.checkpointPlanIds.map(String) : [],
-  });
-  const apiKey = input.dependencies?.apiKey ?? readAutopilotProviderApiKey(policy.endpoint);
-  if (!apiKey?.trim()) throw new Error('AUTOPILOT_DEEPSEEK_API_KEY_MISSING');
+  const policy = policyFromGrant(enrolled as Record<string, unknown>);
+  const apiKey = providerApiKey(policy, input.dependencies?.apiKey);
   const run = createAutopilotRun(input.controllerHome, {
     repoId: input.repoId,
     checkoutId,
@@ -214,8 +226,7 @@ export function resumeAutopilot(input: {
   if (!['paused','blocked','failed','running'].includes(run.value.status)) {
     throw new Error(`AUTOPILOT_RESUME_STATE_INVALID: ${run.value.status}`);
   }
-  const apiKey = input.dependencies?.apiKey ?? readAutopilotProviderApiKey(run.value.policy.endpoint || 'https://api.deepseek.com');
-  if (!apiKey?.trim()) throw new Error('AUTOPILOT_DEEPSEEK_API_KEY_MISSING');
+  const apiKey = providerApiKey(run.value.policy, input.dependencies?.apiKey);
   const requirementRecord = readRequirement({ controllerHome: input.controllerHome }, input.requirementId);
   if (!requirementRecord) throw new Error('AUTOPILOT_REQUIREMENT_NOT_FOUND');
   const requirement = requirementSemanticView(requirementRecord.value);
