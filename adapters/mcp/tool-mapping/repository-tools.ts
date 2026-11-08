@@ -52,7 +52,6 @@ import {
   extractPatchPaths,
 } from '../../../src/runtime/execution/thin-harness';
 import {
-  classifyRawGitCommitScope,
   classifyRepositoryCommandRoute,
   executeRepositoryCommandViaProcessRuntime,
 } from '../../../src/runtime/execution/process-runtime/command-facade';
@@ -1074,7 +1073,6 @@ export async function callRepositoryTool(
         const forceDurable = fromDurableWorker
           || args.mode === 'durable'
           || args.force_durable === true;
-        const rawCommitScope = classifyRawGitCommitScope(args.command as string | string[]);
         const routeClass = classifyRepositoryCommandRoute(args.command as string | string[], {
           forceDurable,
           defaultBranch: commandTarget.defaultBranch,

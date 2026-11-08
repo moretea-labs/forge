@@ -12,7 +12,7 @@ import {
   commandExecutionScopeKey,
   type RepositoryCommandScopeTarget,
 } from '../../../cli/repositories/command-scope';
-import { classifyRepositoryCommand, fixedShellWrapperCommand, shellSegments, shellWordsPreservingQuotes } from '../../../cli/repositories/command-classifier';
+import { classifyRepositoryCommand, fixedShellWrapperCommand } from '../../../cli/repositories/command-classifier';
 import {
   executeRepositoryCommandAsync,
   executeRepositoryReadOnlyCommandDirect,
@@ -171,64 +171,6 @@ function repositoryCommandRecoveryLifecycle(command: string | readonly string[])
   return wrapped ? recoveryLifecycleFromShell(wrapped) : undefined;
 }
 
-export type RepositoryGitCommitCommandScope =
-  | { kind: 'not_commit' }
-  | { kind: 'explicit_paths'; paths: string[] }
-  | { kind: 'staged_index' }
-  | { kind: 'unsafe'; reason: 'scope_widening' | 'compound_unscoped_commit' };
-
-function gitCommitWordsScope(words: readonly string[]): RepositoryGitCommitCommandScope {
-  const executable = commandBasename(words[0] ?? '');
-  if (executable !== 'git') return { kind: 'not_commit' };
-  const args = words.slice(1);
-  let index = 0;
-  while (index < args.length && args[index]?.startsWith('-')) {
-    const option = args[index]!;
-    if (['-c', '-C', '--git-dir', '--work-tree', '--namespace'].includes(option)) index += 2;
-    else if (['--git-dir=', '--work-tree=', '--namespace='].some((prefix) => option.startsWith(prefix))) index += 1;
-    else index += 1;
-  }
-  if (args[index]?.toLowerCase() !== 'commit') return { kind: 'not_commit' };
-  const commitArgs = args.slice(index + 1);
-  const pathSeparator = commitArgs.indexOf('--');
-  const paths = pathSeparator >= 0 ? commitArgs.slice(pathSeparator + 1).filter(Boolean) : [];
-  const wideningFlags = ['-a', '--all', '-i', '--include', '--interactive', '-p', '--patch', '--amend', '--pathspec-from-file'];
-  const widensScope = commitArgs.some((arg) => wideningFlags.some((flag) => arg === flag || arg.startsWith(`${flag}=`)));
-  if (widensScope) return { kind: 'unsafe', reason: 'scope_widening' };
-  return paths.length > 0 ? { kind: 'explicit_paths', paths } : { kind: 'staged_index' };
-}
-
-function aggregateShellCommitScope(shellCommand: string): RepositoryGitCommitCommandScope {
-  const segments = shellSegments(shellCommand);
-  const commits = segments
-    .map((segment) => gitCommitWordsScope(shellWordsPreservingQuotes(segment)))
-    .filter((scope) => scope.kind !== 'not_commit');
-  if (commits.length === 0) return { kind: 'not_commit' };
-  const unsafe = commits.find((scope): scope is Extract<RepositoryGitCommitCommandScope, { kind: 'unsafe' }> => scope.kind === 'unsafe');
-  if (unsafe) return unsafe;
-  if (segments.length > 1 && commits.some((scope) => scope.kind === 'staged_index')) {
-    return { kind: 'unsafe', reason: 'compound_unscoped_commit' };
-  }
-  const staged = commits.find((scope) => scope.kind === 'staged_index');
-  if (staged) return staged;
-  const paths = commits.flatMap((scope) => scope.kind === 'explicit_paths' ? scope.paths : []);
-  return { kind: 'explicit_paths', paths: [...new Set(paths)] };
-}
-
-export function classifyRawGitCommitScope(command: string | readonly string[]): RepositoryGitCommitCommandScope {
-  const normalized = normalizeRepositoryCommand(command);
-  if (normalized.kind === 'argv') {
-    const direct = gitCommitWordsScope([
-      normalized.executable ?? '',
-      ...(normalized.args ?? []),
-    ]);
-    if (direct.kind !== 'not_commit') return direct;
-    const wrapped = fixedShellWrapperCommand(normalized.value as string[]);
-    return wrapped ? aggregateShellCommitScope(wrapped) : { kind: 'not_commit' };
-  }
-  return aggregateShellCommitScope(normalized.shellCommand ?? '');
-}
-
 function toProcessCommand(command: string | readonly string[], cwd: string): ProcessCommandSpec {
   const normalized = normalizeRepositoryCommand(command);
   if (normalized.kind === 'argv') {
@@ -260,10 +202,6 @@ export function classifyRepositoryCommandRoute(
 ): { route: RepositoryCommandRoute; reason: string } {
   if (repositoryCommandRecoveryLifecycle(command)) {
     return { route: 'reject', reason: 'standalone_recovery_lifecycle_required' };
-  }
-  const commitScope = classifyRawGitCommitScope(command);
-  if (commitScope.kind === 'unsafe') {
-    return { route: 'reject', reason: 'git_commit_requires_explicit_path_scope' };
   }
   if (options.forceDurable) {
     return { route: 'durable', reason: 'force_durable_or_async' };
