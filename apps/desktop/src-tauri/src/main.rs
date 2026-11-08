@@ -1812,21 +1812,62 @@ fn compact_local_api_history(messages: &mut Vec<Value>) -> bool {
     let start = assistants.iter().rev().nth(1).copied().unwrap_or(last_assistant);
     if start < 2 { return false; }
     let first = messages[0].clone();
+    // Latest explicit user request (often a task change) is more authoritative
+    // than the conversation's original prompt. Keep it when old tool rounds go.
+    let latest_task = messages[..start].iter().rev()
+        .find(|item| item.get("role").and_then(Value::as_str) == Some("user"))
+        .cloned();
     let recent = messages[start..].to_vec();
     messages.clear();
-    messages.push(first);
+    messages.push(first.clone());
+    if let Some(task) = latest_task.filter(|task| *task != first) {
+        messages.push(task);
+    }
     messages.push(json!({"role":"user","content":
-        "Earlier conversation/tool output was compacted. Current Git checkout and Forge tool receipts are authoritative. Re-read facts before deciding or retrying a write."}));
+        "Earlier tool output was compacted. The latest user request supersedes earlier tasks. Current Git checkout and Forge tool receipts are authoritative; re-read facts before deciding or retrying a write."}));
+    let preserved_prefix = messages.len();
     messages.extend(recent);
     if local_api_history_bytes(messages) > LOCAL_API_HISTORY_MAX_BYTES {
         let last = messages.iter().enumerate().rev()
             .find(|(_, item)| item.get("role").and_then(Value::as_str) == Some("assistant"))
             .map(|(index, _)| index);
-        if let Some(last) = last.filter(|index| *index > 3) {
-            messages.drain(2..last);
+        if let Some(last) = last.filter(|index| *index > preserved_prefix) {
+            messages.drain(preserved_prefix..last);
         }
     }
     true
+}
+
+// Verification is evidence from a successful Forge Process receipt, never
+// the model merely claiming it ran tests. Keep this list small and mechanical.
+fn local_verification_command(arguments: &Value) -> bool {
+    let Some(argv) = arguments.get("command").and_then(Value::as_array) else { return false };
+    let parts = argv.iter().map(|item| item.as_str()).collect::<Option<Vec<_>>>();
+    let Some(parts) = parts.filter(|parts| !parts.is_empty()) else { return false };
+    let executable = parts[0].rsplit('/').next().unwrap_or(parts[0]);
+    let suffix = &parts[1..];
+    match executable {
+        "cargo" => suffix.iter().any(|part| matches!(*part, "test" | "check" | "clippy")),
+        "swift" => suffix.iter().any(|part| matches!(*part, "test" | "build")),
+        "pytest" | "py.test" => true,
+        "go" => suffix.contains(&"test"),
+        "npm" | "pnpm" | "yarn" | "bun" => suffix.iter()
+            .any(|part| matches!(*part, "test" | "check" | "build")),
+        "git" => suffix.starts_with(&["diff", "--check"]),
+        "python" | "python3" => suffix.starts_with(&["-m", "pytest"]),
+        "xcodebuild" => suffix.iter().any(|part| matches!(*part, "test" | "build")),
+        "bash" | "zsh" | "sh" if suffix.first() == Some(&"-lc") || suffix.first() == Some(&"-c") => {
+            let script = suffix.get(1).copied().unwrap_or("");
+            let commands = ["cargo test", "cargo check", "swift test", "swift build",
+                "pytest", "go test", "npm test", "npm run check", "npm run build",
+                "bun test", "git diff --check", "xcodebuild test", "xcodebuild build"];
+            script.split("&&").map(str::trim)
+                .any(|segment| commands.iter().any(|pattern| {
+                    segment == *pattern || segment.starts_with(&format!("{pattern} "))
+                }))
+        }
+        _ => false,
+    }
 }
 
 fn local_api_budget_pause(reason: &str, total_calls: usize, events: &[Value]) -> Value {
@@ -2400,6 +2441,8 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
     let mut tool_events: Vec<Value> = Vec::new();
     let mut total_calls = 0usize;
     let mut last_effect_request_id: Option<String> = None;
+    let mut patch_needs_verification = false;
+    let mut validation_prompt_sent = false;
     for _round in 0..LOCAL_API_TOOL_ROUNDS {
         compact_local_api_history(&mut history);
         if *cancel_receiver.borrow() {
@@ -2472,6 +2515,16 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
                         "FORGE_DESKTOP_API_RESPONSE_MISSING".into(), last_effect_request_id.as_deref()
                     ));
                 }
+                if patch_needs_verification {
+                    if validation_prompt_sent {
+                        return Ok(local_api_budget_pause("修改后仍未取得成功的验证命令回执", total_calls, &tool_events));
+                    }
+                    validation_prompt_sent = true;
+                    history.push(json!({"role":"assistant","content":blocks}));
+                    history.push(json!({"role":"user","content":
+                        "Source edits were applied, but no successful focused verification command was recorded. Use run_command for an appropriate test/build/check (or git diff --check when no test applies). If validation fails, inspect and repair. Do not claim the task is complete without a successful receipt."}));
+                    continue;
+                }
                 return Ok(json!({ "output": text, "toolActivityCount": total_calls, "toolEvents": tool_events }));
             }
             history.push(json!({ "role": "assistant", "content": blocks }));
@@ -2494,6 +2547,16 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
                     .map_err(|error| contextualize_api_turn_error(
                         error.into(), last_effect_request_id.as_deref()
                     ))?;
+                if patch_needs_verification {
+                    if validation_prompt_sent {
+                        return Ok(local_api_budget_pause("修改后仍未取得成功的验证命令回执", total_calls, &tool_events));
+                    }
+                    validation_prompt_sent = true;
+                    history.push(message);
+                    history.push(json!({"role":"user","content":
+                        "Source edits were applied, but no successful focused verification command was recorded. Use run_command for an appropriate test/build/check (or git diff --check when no test applies). If validation fails, inspect and repair. Do not claim the task is complete without a successful receipt."}));
+                    continue;
+                }
                 return Ok(json!({ "output": text, "toolActivityCount": total_calls, "toolEvents": tool_events }));
             }
             history.push(message);
@@ -2521,6 +2584,7 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
                 ));
             }
             let effectful = matches!(name.as_str(), "apply_patch" | "run_command" | "git_commit");
+            let verification_attempt = name == "run_command" && local_verification_command(&args);
             let effect_request_id = if effectful {
                 let nonce = SystemTime::now().duration_since(UNIX_EPOCH)
                     .unwrap_or_default().as_nanos();
@@ -2553,6 +2617,12 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
                 }
             };
             let effect_outcome = effectful.then(|| local_effect_outcome(&name, &result));
+            if name == "apply_patch" && matches!(
+                result.pointer("/result/status").and_then(Value::as_str), Some("applied" | "partial")
+            ) {
+                patch_needs_verification = true;
+                validation_prompt_sent = false;
+            }
             let ok = match effect_outcome {
                 Some(LocalEffectOutcome::Succeeded) => true,
                 Some(LocalEffectOutcome::TerminalFailure | LocalEffectOutcome::Unknown) => false,
@@ -2577,6 +2647,9 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
                 "requestId": effect_request_id, "toolCallId": id,
             }));
             total_calls += 1;
+            if verification_attempt && ok {
+                patch_needs_verification = false;
+            }
             // A real tool result is the only source of truth sent back to the model.
             let serialized = result.to_string();
             let bounded = if serialized.chars().count() > LOCAL_API_TOOL_RESULT_MAX_CHARS {
@@ -2603,7 +2676,10 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
             history.push(json!({ "role": "user", "content": tool_results }));
         }
     }
-    Ok(local_api_budget_pause("模型交互轮次上限", total_calls, &tool_events))
+    Ok(local_api_budget_pause(
+        if patch_needs_verification { "模型轮次上限且写入尚未取得验证回执" }
+        else { "模型交互轮次上限" }, total_calls, &tool_events
+    ))
 }
 
 #[tauri::command]
@@ -2614,7 +2690,7 @@ async fn send_local_api_conversation(
     checkout_id: Option<String>,
     conversation_id: String,
     provider: Option<String>,
-    _allow_effects: Option<bool>,
+    allow_effects: Option<bool>,
 ) -> Result<Value, String> {
     let (cancel_sender, mut cancel_receiver) = tokio::sync::watch::channel(false);
     {
@@ -2635,8 +2711,8 @@ async fn send_local_api_conversation(
     }
     let repository_effect_access = resolve_repository_effect_access(repo_id.as_deref(), checkout_id.as_deref()).await?;
     run_local_api_turn(
-        &host, messages, repo_id, checkout_id, conversation_id, Some(provider), None, repository_effect_access,
-        &mut cancel_receiver,
+        &host, messages, repo_id, checkout_id, conversation_id, Some(provider), None,
+        repository_effect_access && allow_effects.unwrap_or(true), &mut cancel_receiver,
     ).await
 }
 
@@ -3076,6 +3152,40 @@ mod tests {
                 && assistant["tool_calls"][0]["id"] == id));
         }
         assert_eq!(history.last().unwrap()["tool_call_id"], "call-11");
+    }
+
+    #[test]
+    fn local_api_compaction_preserves_latest_user_task_across_tool_rounds() {
+        let mut history = vec![
+            json!({"role":"user","content":"old task: add feature A"}),
+            json!({"role":"assistant","content":"done"}),
+            json!({"role":"user","content":"new task: fix bug B"}),
+        ];
+        for index in 0..14 {
+            history.push(json!({"role":"assistant","tool_calls":[{
+                "id":format!("call-{index}"),"type":"function",
+                "function":{"name":"search_code","arguments":"{}"}
+            }]}));
+            history.push(json!({"role":"tool","tool_call_id":format!("call-{index}"),
+                "content":"actual Forge receipt"}));
+        }
+        assert!(compact_local_api_history(&mut history));
+        assert_eq!(history[0]["content"], "old task: add feature A");
+        assert_eq!(history[1]["content"], "new task: fix bug B");
+        assert!(history[2]["content"].as_str().unwrap().contains("supersedes"));
+        assert_eq!(history.last().unwrap()["tool_call_id"], "call-13");
+    }
+
+    #[test]
+    fn local_verification_requires_focused_command_evidence() {
+        assert!(local_verification_command(&json!({"command":["cargo","test","--manifest-path","x"]})));
+        assert!(local_verification_command(&json!({"command":["swift","test"]})));
+        assert!(local_verification_command(&json!({"command":["bash","-lc","cd app && npm run check"]})));
+        assert!(local_verification_command(&json!({"command":["git","diff","--check"]})));
+        assert!(!local_verification_command(&json!({"command":["git","status"]})));
+        assert!(!local_verification_command(&json!({"command":["echo","tests passed"]})));
+        assert!(!local_verification_command(&json!({"command":["bash","-lc","echo cargo test"]})));
+        assert!(!local_verification_command(&json!({"command":[]})));
     }
 
     #[test]

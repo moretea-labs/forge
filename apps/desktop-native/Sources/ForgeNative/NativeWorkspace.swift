@@ -2331,6 +2331,10 @@ final class NativeWorkspace: ObservableObject {
                 var apiArguments: [String:Any] = [
                     "conversationId":id,
                     "provider":turnProvider,
+                    "allowEffects":Self.repositoryAccessAllowsEffects(
+                        provider:turnProvider,accessMode:repositoryAccessMode,
+                        repoId:item.repoId,checkoutId:item.checkoutId
+                    ),
                     "messages":Self.apiTurnMessages(item,prompt:prompt,contextPaths:contextPaths),
                     "model":item.model ?? ""
                 ]

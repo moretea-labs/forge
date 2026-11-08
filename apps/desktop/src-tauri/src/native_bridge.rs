@@ -193,6 +193,9 @@ struct NativeApiTurnRequest {
     conversation_id: String,
     provider: String,
     model: Option<String>,
+    // Request-scoped ceiling only; the canonical repository AccessPolicy
+    // remains the sole source of write authority.
+    allow_effects: bool,
 }
 
 fn parse_api_turn_request(value: &Value) -> Result<NativeApiTurnRequest, String> {
@@ -207,6 +210,11 @@ fn parse_api_turn_request(value: &Value) -> Result<NativeApiTurnRequest, String>
     if !matches!(provider, "api" | "joycode") {
         return Err("FORGE_NATIVE_API_PROVIDER_INVALID".into());
     }
+    let allow_effects = match value.get("allowEffects") {
+        None => true, // Old clients still receive no more than canonical Forge policy.
+        Some(Value::Bool(enabled)) => *enabled,
+        Some(_) => return Err("FORGE_NATIVE_API_EFFECTS_INVALID".into()),
+    };
     Ok(NativeApiTurnRequest {
         messages,
         repo_id,
@@ -215,6 +223,7 @@ fn parse_api_turn_request(value: &Value) -> Result<NativeApiTurnRequest, String>
         provider:provider.to_string(),
         model:value.get("model").and_then(Value::as_str)
             .map(str::trim).filter(|value| !value.is_empty()).map(str::to_owned),
+        allow_effects,
     })
 }
 
@@ -293,7 +302,7 @@ pub fn run_api_turn() -> i32 {
             request.conversation_id,
             Some(request.provider),
             request.model,
-            repository_effect_access,
+            repository_effect_access && request.allow_effects,
             &mut cancel_receiver,
         ).await
     });
@@ -418,11 +427,22 @@ mod tests {
         assert_eq!(request.checkout_id.as_deref(), Some("checkout_1"));
         assert_eq!(request.model.as_deref(), Some("thread-model"));
         assert_eq!(request.messages.len(), 1);
+        assert!(request.allow_effects);
+        let read_only = parse_api_turn_request(&json!({
+            "conversationId":"thread-1","repoId":"repo_1","checkoutId":"checkout_1",
+            "allowEffects":false,
+            "messages":[{"role":"user","content":"inspect only"}]
+        })).expect("read only native turn");
+        assert!(!read_only.allow_effects);
+        assert!(parse_api_turn_request(&json!({
+            "conversationId":"thread-1","allowEffects":"false", "messages":[]
+        })).is_err());
         let without_legacy_flag = parse_api_turn_request(&json!({
             "conversationId":"thread-1","repoId":"repo_1","checkoutId":"checkout_1",
             "messages":[{"role":"user","content":"hello"}]
-        })).expect("legacy allowEffects is not an authority");
+        })).expect("missing allowEffects cannot elevate canonical policy");
         assert_eq!(without_legacy_flag.repo_id.as_deref(), Some("repo_1"));
+        assert!(without_legacy_flag.allow_effects);
         assert!(parse_api_turn_request(&json!({"conversationId":"thread-1"})).is_err());
 
         let helper = Path::new("/Applications/Forge.app/Contents/MacOS/forge-desktop");
