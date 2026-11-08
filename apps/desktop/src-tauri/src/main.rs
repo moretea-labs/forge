@@ -4,6 +4,7 @@ mod native_bridge;
 
 use serde::Deserialize;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use tauri::{Emitter, Manager};
 use std::{collections::HashMap, env, fs, path::{Path, PathBuf}, process::Command, sync::Mutex, time::{SystemTime, UNIX_EPOCH}};
 
@@ -814,15 +815,19 @@ async fn repair_connection() -> Result<Value, String> {
 
 const LOCAL_API_KEYCHAIN_SERVICE: &str = "com.moretea.forge.desktop.api";
 const JOYCODE_DEFAULT_MODEL: &str = "JoyAI-Code-1.6";
-const JOYCODE_API_ENDPOINT: &str = "https://joycode-api-saas.jd.com/api/saas/openai/v2";
+const JOYCODE_COLOR_GATEWAY_ORIGIN: &str = "https://api-ai.jd.com";
+const JOYCODE_COLOR_GATEWAY_APP_ID: &str = "joycode_ide";
+const JOYCODE_EXTENSION_PATH: &str = "/Applications/JoyCode.app/Contents/Resources/app/extensions/joycoder-editor/dist/extension.js";
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 struct JoyCodeSession {
     pt_key: String,
     login_type: String,
     tenant: String,
     user_id: String,
     org_full_name: String,
+    color_base_url: String,
+    signing_key: Vec<u8>,
 }
 
 fn parse_joycode_session(state: &Value) -> Result<JoyCodeSession, String> {
@@ -843,13 +848,95 @@ fn parse_joycode_session(state: &Value) -> Result<JoyCodeSession, String> {
         || user_id.is_empty() || user_id.len() > 240 {
         return Err("FORGE_DESKTOP_JOYCODE_LOGIN_UNAVAILABLE".into());
     }
+    let color_base_url = text("colorBaseUrl", None);
+    let color_url = reqwest::Url::parse(&color_base_url)
+        .map_err(|_| "FORGE_DESKTOP_JOYCODE_GATEWAY_INVALID")?;
+    if color_url.scheme() != "https" || color_url.host_str() != Some("api-ai.jd.com") {
+        return Err("FORGE_DESKTOP_JOYCODE_GATEWAY_INVALID".into());
+    }
     Ok(JoyCodeSession {
         pt_key,
         login_type,
         tenant,
         user_id,
         org_full_name:text("orgFullName", None),
+        color_base_url:color_url.origin().ascii_serialization(),
+        signing_key:Vec::new(),
     })
+}
+
+#[cfg(target_os = "macos")]
+fn read_joycode_gateway_signing_key() -> Result<Vec<u8>, String> {
+    let path = Path::new(JOYCODE_EXTENSION_PATH);
+    let metadata = fs::metadata(path).map_err(|_| "FORGE_DESKTOP_JOYCODE_SIGNER_UNAVAILABLE")?;
+    if metadata.len() > 128 * 1024 * 1024 {
+        return Err("FORGE_DESKTOP_JOYCODE_SIGNER_UNAVAILABLE".into());
+    }
+    let source = fs::read_to_string(path).map_err(|_| "FORGE_DESKTOP_JOYCODE_SIGNER_UNAVAILABLE")?;
+    let marker = "HmacSHA256";
+    let mut offset = 0usize;
+    while let Some(relative) = source[offset..].find(marker) {
+        let start = offset + relative;
+        let end = (start + 320).min(source.len());
+        let window = &source[start..end];
+        let bytes = window.as_bytes();
+        for index in 0..bytes.len().saturating_sub(42) {
+            if bytes[index] != b'"' { continue; }
+            let candidate = &window[index + 1..index + 41];
+            if bytes.get(index + 41) == Some(&b'"')
+                && candidate.len() == 40
+                && candidate.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return Ok(candidate.as_bytes().to_vec());
+            }
+        }
+        offset = start + marker.len();
+    }
+    Err("FORGE_DESKTOP_JOYCODE_SIGNER_UNAVAILABLE".into())
+}
+
+fn hmac_sha256_hex(key: &[u8], message: &[u8]) -> String {
+    const BLOCK: usize = 64;
+    let mut normalized = [0u8; BLOCK];
+    if key.len() > BLOCK {
+        let digest = Sha256::digest(key);
+        normalized[..digest.len()].copy_from_slice(&digest);
+    } else {
+        normalized[..key.len()].copy_from_slice(key);
+    }
+    let mut inner_key = [0x36u8; BLOCK];
+    let mut outer_key = [0x5cu8; BLOCK];
+    for index in 0..BLOCK {
+        inner_key[index] ^= normalized[index];
+        outer_key[index] ^= normalized[index];
+    }
+    let mut inner = Sha256::new();
+    inner.update(inner_key);
+    inner.update(message);
+    let inner_digest = inner.finalize();
+
+    let mut outer = Sha256::new();
+    outer.update(outer_key);
+    outer.update(inner_digest);
+    hex::encode(outer.finalize())
+}
+
+fn joycode_gateway_url(session: &JoyCodeSession, function_id: &str, timestamp_ms: u128) -> Result<String, String> {
+    if function_id.is_empty() || function_id.len() > 120 {
+        return Err("FORGE_DESKTOP_JOYCODE_FUNCTION_INVALID".into());
+    }
+    let message = format!("{JOYCODE_COLOR_GATEWAY_APP_ID}&{function_id}&{timestamp_ms}");
+    if session.signing_key.is_empty() {
+        return Err("FORGE_DESKTOP_JOYCODE_SIGNER_UNAVAILABLE".into());
+    }
+    let sign = hmac_sha256_hex(&session.signing_key, message.as_bytes());
+    let mut url = reqwest::Url::parse(&format!("{}/api", session.color_base_url.trim_end_matches('/')))
+        .map_err(|_| "FORGE_DESKTOP_JOYCODE_GATEWAY_INVALID")?;
+    url.query_pairs_mut()
+        .append_pair("appid", JOYCODE_COLOR_GATEWAY_APP_ID)
+        .append_pair("functionId", function_id)
+        .append_pair("t", &timestamp_ms.to_string())
+        .append_pair("sign", &sign);
+    Ok(url.to_string())
 }
 
 #[cfg(target_os = "macos")]
@@ -870,7 +957,9 @@ fn read_joycode_session() -> Result<JoyCodeSession, String> {
         .map_err(|_| "FORGE_DESKTOP_JOYCODE_LOGIN_UNAVAILABLE")?;
     let state: Value = serde_json::from_str(raw.trim())
         .map_err(|_| "FORGE_DESKTOP_JOYCODE_LOGIN_UNAVAILABLE")?;
-    parse_joycode_session(&state)
+    let mut session = parse_joycode_session(&state)?;
+    session.signing_key = read_joycode_gateway_signing_key()?;
+    Ok(session)
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -1501,7 +1590,14 @@ async fn request_local_api_round(
             object.insert("orgFullName".into(), Value::String(session.org_full_name.clone()));
         }
     }
-    let mut request = client.post(format!("{}/{}", endpoint.trim_end_matches('/'), route)).json(&payload);
+    let request_url = if let Some(session) = joycode {
+        let timestamp_ms = SystemTime::now().duration_since(UNIX_EPOCH)
+            .map_err(|_| "FORGE_DESKTOP_CLOCK_INVALID")?.as_millis();
+        joycode_gateway_url(session, "chat_completions", timestamp_ms)?
+    } else {
+        format!("{}/{}", endpoint.trim_end_matches('/'), route)
+    };
+    let mut request = client.post(request_url).json(&payload);
     if protocol == "anthropic" {
         request = request.header("anthropic-version", "2023-06-01");
     }
@@ -1602,7 +1698,7 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
         let session = read_joycode_session()?;
         let model = config.get("joyCodeModel").and_then(Value::as_str)
             .filter(|value| !value.trim().is_empty()).unwrap_or(JOYCODE_DEFAULT_MODEL);
-        (JOYCODE_API_ENDPOINT.to_string(), "openai", None, Some(session), model)
+        (JOYCODE_COLOR_GATEWAY_ORIGIN.to_string(), "openai", None, Some(session), model)
     } else {
         let endpoint = validated_local_api_endpoint(
             config.get("endpoint").and_then(Value::as_str).unwrap_or("")
@@ -1934,7 +2030,8 @@ mod tests {
                 "loginType": "PIN_JD_CLOUD",
                 "tenant": "tenant_test",
                 "userId": "user_test",
-                "orgFullName": "Test Org"
+                "orgFullName": "Test Org",
+                "colorBaseUrl": "https://api-ai.jd.com"
             }
         })).expect("fake JoyCode session");
         assert_eq!(session.login_type, "PIN_JD_CLOUD");
@@ -1942,6 +2039,20 @@ mod tests {
         assert_eq!(session.user_id, "user_test");
         assert_eq!(session.org_full_name, "Test Org");
         assert_eq!(session.pt_key, "fake-session-token");
+        assert_eq!(session.color_base_url, "https://api-ai.jd.com");
+        assert_eq!(
+            hmac_sha256_hex(b"key", b"The quick brown fox jumps over the lazy dog"),
+            "f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8"
+        );
+
+        let mut session = session;
+        session.signing_key = b"key".to_vec();
+        let url = joycode_gateway_url(&session, "chat_completions", 123).expect("signed gateway URL");
+        assert!(url.starts_with("https://api-ai.jd.com/api?"));
+        assert!(url.contains("appid=joycode_ide"));
+        assert!(url.contains("functionId=chat_completions"));
+        assert!(url.contains("t=123"));
+        assert!(url.contains("sign=5f785c6166e27cfd3cde642443b02d57ece51ce47cc30482151722ce59a79dc5"));
     }
     #[test]
     fn local_conversation_binds_checkout_or_rejects_incomplete_context() {
