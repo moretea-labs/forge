@@ -42,3 +42,35 @@ test("linked worktree registered before primary keeps one canonical Repository",
     rmSync(sandbox, { recursive: true, force: true });
   }
 });
+
+
+test("independent clones sharing the same remote remain separate Repositories", () => {
+  const sandbox = mkdtempSync(join(tmpdir(), "forge-independent-clones-"));
+  const controllerHome = join(sandbox, "controller");
+  const cloneA = join(sandbox, "clone-a");
+  const cloneB = join(sandbox, "clone-b");
+  const remote = "https://github.com/moretea-labs/forge-shared-remote-fixture.git";
+  try {
+    mkdirSync(controllerHome, { recursive: true });
+    for (const root of [cloneA, cloneB]) {
+      mkdirSync(root);
+      git(root, "init", "-q", "-b", "main");
+      git(root, "config", "user.email", "forge@example.invalid");
+      git(root, "config", "user.name", "Forge Test");
+      git(root, "remote", "add", "origin", remote);
+      writeFileSync(join(root, "README.md"), `fixture ${root}\n`);
+      git(root, "add", "README.md");
+      git(root, "commit", "-qm", "initial");
+    }
+
+    const repositoryA = registerRepository({ path: cloneA, controllerHome });
+    const repositoryB = registerRepository({ path: cloneB, controllerHome });
+
+    expect(repositoryB.repoId).not.toBe(repositoryA.repoId);
+    expect(getRepository(repositoryA.repoId, controllerHome).canonicalRoot).toBe(realpathSync(cloneA));
+    expect(getRepository(repositoryB.repoId, controllerHome).canonicalRoot).toBe(realpathSync(cloneB));
+    expect(listRepositories(controllerHome)).toHaveLength(2);
+  } finally {
+    rmSync(sandbox, { recursive: true, force: true });
+  }
+});
