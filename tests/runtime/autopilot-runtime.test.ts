@@ -177,6 +177,149 @@ describe('Requirement Autopilot',() => {
     expect(run.evidenceRefs).toEqual(['commit:joycode']);
   });
 
+  test('bounds JoyCode context by projecting Requirement state and retaining only recent tool rounds',async() => {
+    const fx=fixture('bounded-context');
+    reviseRequirementSemantic({controllerHome:fx.controllerHome},'REQ-AUTO',{
+      expectedRevision:1,
+      progressSummary:'progress-secret-marker '.repeat(600),
+      remainingWork:['remaining-work-marker'],
+      acceptedEvidenceRefs:Array.from({length:40},(_,index)=>'accepted-evidence-marker-'+index),
+    });
+    const enrolled=authorizeAutopilot({
+      controllerHome:fx.controllerHome,
+      repoId:fx.repository.repoId,
+      requirementId:'REQ-AUTO',
+      confirmAuthorization:true,
+      policy:{
+        provider:'joycode',
+        endpoint:'https://api-ai.jd.com',
+        protocol:'chat_completions',
+        model:'JoyAI-Code-1.6',
+        maxTurns:8,
+        maxToolCalls:12,
+        maxTotalTokens:20_000,
+      },
+    });
+    createAutopilotRun(fx.controllerHome,{
+      repoId:fx.repository.repoId,
+      checkoutId:enrolled.checkoutId,
+      requirementId:'REQ-AUTO',
+      requirementRevision:2,
+      grantId:enrolled.grant.grantId,
+      policy:enrolled.policy,
+    });
+    const observedBodies:Record<string,unknown>[]=[];
+    let round=0;
+    await runAutopilotLoop(
+      fx.controllerHome,fx.repository.repoId,'REQ-AUTO',new AbortController().signal,
+      {
+        toolDefinitions:executeCommandDefinition,
+        executeTool:async()=>({ok:true,large:'x'.repeat(20_000)}),
+        validateAuthorization:()=>({ok:true}),
+        modelRound:async(input)=>{
+          observedBodies.push(input.body);
+          round+=1;
+          const decision=round >= 5;
+          return {
+            choices:[{message:{
+              role:'assistant',
+              content:null,
+              tool_calls:[{
+                id:'call-'+round,
+                type:'function',
+                function:{
+                  name:decision ? 'forge_autopilot_decision' : 'execute_command',
+                  arguments:JSON.stringify(decision
+                    ? {action:'complete',summary:'bounded context verified'}
+                    : {command:['git','status','--short']}),
+                },
+              }],
+            }}],
+            usage:{prompt_tokens:100,completion_tokens:20,total_tokens:120},
+          };
+        },
+      },
+    );
+    const firstMessages=observedBodies[0].messages as Array<Record<string,unknown>>;
+    const system=String(firstMessages[0]?.content ?? '');
+    expect(system).toContain('remaining-work-marker');
+    expect(system).not.toContain('progress-secret-marker');
+    expect(system).not.toContain('accepted-evidence-marker');
+    const finalMessages=observedBodies.at(-1)?.messages as Array<Record<string,unknown>>;
+    expect(finalMessages.length).toBeLessThanOrEqual(7);
+    const toolContents=finalMessages.filter((message)=>message.role==='tool').map((message)=>String(message.content ?? ''));
+    expect(toolContents.every((content)=>content.length <= 6_000)).toBe(true);
+  });
+
+  test('reauthorizes a budget-paused run in place and preserves its lifecycle identity',async() => {
+    const fx=fixture('budget-refresh');
+    const first=authorizeAutopilot({
+      controllerHome:fx.controllerHome,
+      repoId:fx.repository.repoId,
+      requirementId:'REQ-AUTO',
+      confirmAuthorization:true,
+      policy:{maxTotalTokens:1_000,maxTurns:4,maxToolCalls:6},
+    });
+    createAutopilotRun(fx.controllerHome,{
+      repoId:fx.repository.repoId,
+      checkoutId:first.checkoutId,
+      requirementId:'REQ-AUTO',
+      requirementRevision:1,
+      grantId:first.grant.grantId,
+      policy:first.policy,
+    });
+    await runAutopilotLoop(
+      fx.controllerHome,fx.repository.repoId,'REQ-AUTO',new AbortController().signal,
+      {
+        apiKey:'fixture-key',
+        toolDefinitions:[],
+        executeTool:async()=>({}),
+        validateAuthorization:()=>({ok:true}),
+        fetchImpl:async()=>response('forge_autopilot_decision',{
+          action:'continue',summary:'continue after budget refresh',
+        },{prompt_tokens:900,completion_tokens:200,total_tokens:1_100}),
+      },
+    );
+    const paused=readAutopilotRun(fx.controllerHome,fx.repository.repoId,'REQ-AUTO')!.value;
+    expect(paused.status).toBe('paused');
+    expect(paused.stopReason).toBe('max_total_tokens_reached');
+    const runId=paused.runId;
+    const usage={...paused.usage};
+
+    const second=authorizeAutopilot({
+      controllerHome:fx.controllerHome,
+      repoId:fx.repository.repoId,
+      requirementId:'REQ-AUTO',
+      confirmAuthorization:true,
+      policy:{maxTotalTokens:4_000,maxTurns:6,maxToolCalls:8},
+    });
+    const refreshed=readAutopilotRun(fx.controllerHome,fx.repository.repoId,'REQ-AUTO')!.value;
+    expect(refreshed.runId).toBe(runId);
+    expect(refreshed.grantId).toBe(second.grant.grantId);
+    expect(refreshed.usage).toEqual(usage);
+    expect(refreshed.policy.maxTotalTokens).toBe(4_000);
+    expect(refreshed.status).toBe('paused');
+
+    resumeAutopilot({
+      controllerHome:fx.controllerHome,
+      repoId:fx.repository.repoId,
+      requirementId:'REQ-AUTO',
+      dependencies:{
+        apiKey:'fixture-key',toolDefinitions:[],executeTool:async()=>({}),
+        fetchImpl:async()=>response('forge_autopilot_decision',{
+          action:'complete',summary:'same run completed after budget refresh',
+        }),
+      },
+    });
+    for (let attempt=0;attempt<50;attempt+=1) {
+      if (readAutopilotRun(fx.controllerHome,fx.repository.repoId,'REQ-AUTO')?.value.status === 'completed') break;
+      await Bun.sleep(10);
+    }
+    const completed=readAutopilotRun(fx.controllerHome,fx.repository.repoId,'REQ-AUTO')!.value;
+    expect(completed.runId).toBe(runId);
+    expect(completed.status).toBe('completed');
+  });
+
   test('requires explicit authorization, binds the exact Requirement revision, and replaces prior grants',() => {
     const fx=fixture('authorization');
     expect(() => authorizeAutopilot({

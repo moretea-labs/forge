@@ -2,7 +2,7 @@ import { recordCanonicalGrant, revokeCanonicalGrant, listCanonicalGrants } from 
 import { readRequirement, requirementSemanticView } from '../control-plane/persistence/requirement-store';
 import { resolveRepositorySelection } from '../../cli/repositories/registry';
 import { listPlanContracts } from '../control-plane/facade/plan-contract-store';
-import { createAutopilotRun, defaultAutopilotPolicy, readAutopilotRun, setAutopilotRunStatus } from './store';
+import { createAutopilotRun, defaultAutopilotPolicy, readAutopilotRun, setAutopilotRunStatus, updateAutopilotRun } from './store';
 import { runAutopilotLoop, type AutopilotRunnerDependencies } from './runner';
 import type { AutopilotPolicy } from './types';
 import { readAutopilotProviderApiKey } from './provider-config';
@@ -68,6 +68,31 @@ function providerApiKey(policy: AutopilotPolicy, supplied?: string): string | un
   return apiKey;
 }
 
+function isBudgetPause(reason: string | undefined): boolean {
+  return reason === 'max_total_tokens_reached'
+    || reason === 'max_turns_reached'
+    || reason === 'max_tool_calls_reached';
+}
+
+function sameExecutionPolicy(left: AutopilotPolicy, right: AutopilotPolicy): boolean {
+  return left.provider === right.provider
+    && left.endpoint === right.endpoint
+    && left.protocol === right.protocol
+    && left.model === right.model
+    && JSON.stringify(left.checkpointPlanIds) === JSON.stringify(right.checkpointPlanIds);
+}
+
+function validateBudgetRefresh(current: NonNullable<ReturnType<typeof readAutopilotRun>>['value'], next: AutopilotPolicy): void {
+  if (!sameExecutionPolicy(current.policy, next)) {
+    throw new Error('AUTOPILOT_BUDGET_REAUTHORIZATION_POLICY_CHANGED');
+  }
+  if (next.maxTotalTokens <= current.usage.totalTokens
+      || next.maxTurns <= current.usage.turns
+      || next.maxToolCalls <= current.usage.toolCalls) {
+    throw new Error('AUTOPILOT_BUDGET_REAUTHORIZATION_INSUFFICIENT');
+  }
+}
+
 export function authorizeAutopilot(input: {
   controllerHome: string;
   repoId: string;
@@ -97,6 +122,17 @@ export function authorizeAutopilot(input: {
     const invalid = policy.checkpointPlanIds.filter((planId) => !ownedPlanIds.has(planId));
     if (invalid.length > 0) throw new Error(`AUTOPILOT_CHECKPOINT_PLAN_MISMATCH: ${invalid.join(',')}`);
   }
+  const existingRun = readAutopilotRun(input.controllerHome,input.repoId,input.requirementId);
+  const budgetRefresh = existingRun?.value.status === 'paused' && isBudgetPause(existingRun.value.stopReason)
+    ? existingRun
+    : undefined;
+  if (budgetRefresh) {
+    if (budgetRefresh.value.requirementRevision !== requirement.revision
+        || budgetRefresh.value.checkoutId !== repository.activeCheckoutId) {
+      throw new Error('AUTOPILOT_BUDGET_REAUTHORIZATION_SCOPE_CHANGED');
+    }
+    validateBudgetRefresh(budgetRefresh.value, policy);
+  }
   const previous = activeAutopilotGrant(input.controllerHome,input.repoId,input.requirementId);
   if (previous) {
     revokeCanonicalGrant(input.controllerHome,{
@@ -114,7 +150,14 @@ export function authorizeAutopilot(input: {
     constraints: constraints(requirement.revision, repository.activeCheckoutId, policy),
     expiresInMinutes: input.expiresInMinutes,
   });
-  return { grant, requirement, policy, checkoutId: repository.activeCheckoutId };
+  const refreshedRun = budgetRefresh
+    ? updateAutopilotRun(input.controllerHome,input.repoId,input.requirementId,(run) => ({
+        ...run,
+        grantId: grant.grantId,
+        policy,
+      }),'autopilot_budget_reauthorized')
+    : undefined;
+  return { grant, requirement, policy, checkoutId: repository.activeCheckoutId, refreshedRun: refreshedRun?.value };
 }
 
 export function revokeAutopilot(input: {

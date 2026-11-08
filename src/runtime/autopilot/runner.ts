@@ -17,6 +17,8 @@ const ALLOWED_REPOSITORY_TOOLS = new Set([
   'execute_command',
 ]);
 const RISK_RANK = { readonly: 0, workspace_write: 1, remote_write: 2, destructive: 3 } as const;
+const TOOL_RESULT_MAX_CHARS = 6_000;
+const RECENT_ASSISTANT_ROUNDS = 2;
 
 type DeepSeekToolCall = {
   id: string;
@@ -91,14 +93,24 @@ function toolManifest(dependencies: AutopilotRunnerDependencies) {
 }
 
 function systemPrompt(run: AutopilotRun, requirement: ReturnType<typeof requirementSemanticView>, plans: ReturnType<typeof listPlanContracts>): string {
-  const tree = plans
-    .filter((plan) => plan.requirementId === run.requirementId)
-    .map((plan) => ({
-      planId: plan.planId,
-      parentPlanId: plan.parentPlanId,
-      goal: plan.goal,
-      steps: plan.steps.map((step) => ({ id: step.id, objective: step.objective })),
-    }));
+  const requirementContext = {
+    requirementId: requirement.requirementId,
+    revision: requirement.revision,
+    title: requirement.title,
+    outcomeStatement: requirement.outcomeStatement,
+    acceptanceCriteria: requirement.acceptanceCriteria,
+    requiredDeliveryReferences: requirement.requiredDeliveryReferences,
+    remainingWork: requirement.remainingWork,
+    state: requirement.state,
+  };
+  const ownedPlans = plans.filter((plan) => plan.requirementId === run.requirementId);
+  const tree = ownedPlans.slice(0, 32).map((plan) => ({
+    planId: plan.planId,
+    parentPlanId: plan.parentPlanId,
+    goal: plan.goal,
+    steps: plan.steps.slice(0, 12).map((step) => ({ id: step.id, objective: step.objective })),
+    stepsTruncated: plan.steps.length > 12,
+  }));
   return [
     'You are Forge Autopilot, an autonomous implementation agent operating inside one explicitly authorized repository checkout.',
     'Requirement and Plan are semantic context only. Never invent or mutate their completion/progress state through repository tools.',
@@ -111,8 +123,9 @@ function systemPrompt(run: AutopilotRun, requirement: ReturnType<typeof requirem
     'action=complete means this autonomous run believes the authorized implementation slice is complete; it does NOT complete the Requirement.',
     JSON.stringify({
       repository: { repoId: run.repoId, checkoutId: run.checkoutId },
-      requirement,
+      requirement: requirementContext,
       planTree: tree,
+      planTreeTruncated: ownedPlans.length > tree.length,
       checkpointPlanIds: run.policy.checkpointPlanIds,
       budgets: {
         maxTotalTokens: run.policy.maxTotalTokens,
@@ -386,7 +399,27 @@ async function requestModel(
 
 function boundedToolResult(value: unknown): string {
   const text = JSON.stringify(value);
-  return text.length <= 24_000 ? text : `${text.slice(0, 23_900)}...<truncated>`;
+  return text.length <= TOOL_RESULT_MAX_CHARS
+    ? text
+    : text.slice(0, TOOL_RESULT_MAX_CHARS - 100) + '...<truncated>';
+}
+
+function recentModelMessages(messages: DeepSeekMessage[]): DeepSeekMessage[] {
+  if (messages.length <= 2) return messages;
+  const assistantIndexes = messages
+    .map((message, index) => message.role === 'assistant' ? index : -1)
+    .filter((index) => index >= 2);
+  if (assistantIndexes.length <= RECENT_ASSISTANT_ROUNDS) return messages;
+  const start = assistantIndexes[assistantIndexes.length - RECENT_ASSISTANT_ROUNDS];
+  return [
+    messages[0],
+    messages[1],
+    {
+      role: 'user',
+      content: 'Earlier repository exploration was compacted to control context growth. Re-read any repository fact you still need; do not assume omitted tool output remains current.',
+    },
+    ...messages.slice(start),
+  ];
 }
 
 export async function runAutopilotLoop(
@@ -450,7 +483,7 @@ export async function runAutopilotLoop(
       return;
     }
 
-    const response = await requestModel(current, messages, signal, dependencies);
+    const response = await requestModel(current, recentModelMessages(messages), signal, dependencies);
     const assistant = response.choices?.[0]?.message;
     if (!assistant) throw new Error('AUTOPILOT_MODEL_RESPONSE_INVALID');
     const usage = usageOf(response);
