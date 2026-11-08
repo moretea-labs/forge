@@ -22,7 +22,10 @@ import {
   readAutopilotRun,
   updateAutopilotRun,
 } from '../../src/runtime/autopilot/store';
-import { runAutopilotLoop } from '../../src/runtime/autopilot/runner';
+import { autopilotPendingProcess, autopilotTerminalProcessEvidence, runAutopilotLoop } from '../../src/runtime/autopilot/runner';
+import type { ProcessHandle } from '../../src/runtime/execution/process-runtime/types';
+import { spawnManagedProcess } from '../../src/runtime/execution/process-runtime/runtime';
+import { executionIdentityForRepository } from '../../src/runtime/control-plane/execution/execution-identity';
 import { readAutopilotProviderApiKey, readAutopilotProviderProfile } from '../../src/runtime/autopilot/provider-config';
 
 const roots: string[] = [];
@@ -88,6 +91,109 @@ const executeCommandDefinition=[{
 }];
 
 describe('Requirement Autopilot',() => {
+  test('distinguishes accepted Process handles from terminal command evidence',() => {
+    expect(autopilotPendingProcess({structuredContent:{accepted:true,status:'running',processId:'proc_test_123',timeoutMs:300_000}}))
+      .toEqual({pending:true,processId:'proc_test_123',timeoutMs:300_000});
+    expect(autopilotPendingProcess({accepted:true,status:'succeeded',processId:'proc_test_123'}))
+      .toEqual({pending:false});
+    expect(autopilotPendingProcess({accepted:true,status:'running',processId:'bad-id'}))
+      .toEqual({pending:true});
+    const terminal = (status:string,completed:boolean,exitCode:number): ProcessHandle => ({
+      processId:'proc_test_123',commandId:'test',status:status as ProcessHandle['status'],
+      completed,exitCode,ok:status==='succeeded',route:'managed',contractStatus:'succeeded',
+      startedAt:'2026-11-09T00:00:00Z',interactiveWaitMs:0,timeoutMs:30_000,
+      durableSideEffects:{executionJobCount:0,localJobCount:0,workerSpawnCount:0,projectionUpdateCount:0},
+    });
+    expect(autopilotTerminalProcessEvidence(terminal('running',false,0))).toBeUndefined();
+    expect(autopilotTerminalProcessEvidence(terminal('completed_unknown',true,0))).toBeUndefined();
+    expect(autopilotTerminalProcessEvidence(terminal('succeeded',true,0)))?.toMatchObject({
+      completed:true,status:'succeeded',ok:true,processId:'proc_test_123',exitCode:0,
+    });
+    expect(autopilotTerminalProcessEvidence(terminal('failed',true,1)))?.toMatchObject({
+      completed:true,status:'failed',ok:false,processId:'proc_test_123',exitCode:1,
+    });
+  });
+
+  test('pauses on an accepted command with missing Process identity instead of treating it as completed',async() => {
+    const fx=fixture('pending-without-identity');
+    const enrolled=authorizeAutopilot({controllerHome:fx.controllerHome,repoId:fx.repository.repoId,
+      requirementId:'REQ-AUTO',confirmAuthorization:true,policy:{
+        provider:'joycode',endpoint:'https://api-ai.jd.com',protocol:'chat_completions',model:'JoyAI-Code-1.6',
+        maxTurns:3,maxToolCalls:3,maxTotalTokens:20_000,
+      }});
+    createAutopilotRun(fx.controllerHome,{
+      repoId:fx.repository.repoId,checkoutId:enrolled.checkoutId,
+      requirementId:'REQ-AUTO',requirementRevision:1,grantId:enrolled.grant.grantId,policy:enrolled.policy,
+    });
+    let modelRounds=0;
+    await runAutopilotLoop(fx.controllerHome,fx.repository.repoId,'REQ-AUTO',new AbortController().signal,{
+      toolDefinitions:executeCommandDefinition,
+      executeTool:async()=>({structuredContent:{accepted:true,status:'running'}}),
+      validateAuthorization:()=>({ok:true}),
+      modelRound:async()=>{
+        modelRounds+=1;
+        return {choices:[{message:{role:'assistant',content:null,tool_calls:[{
+          id:'call-running',type:'function',function:{name:'execute_command',arguments:JSON.stringify({command:['cargo','test']})},
+        }]}}],usage:{prompt_tokens:100,completion_tokens:30,total_tokens:130}};
+      },
+    });
+    const run=readAutopilotRun(fx.controllerHome,fx.repository.repoId,'REQ-AUTO')?.value;
+    expect(modelRounds).toBe(1);
+    expect(run?.status).toBe('paused');
+    expect(run?.stopReason).toBe('process_identity_missing');
+  });
+  test('joins a real managed Process terminal before the model makes a completion decision',async() => {
+    const fx=fixture('real-process-join');
+    const enrolled=authorizeAutopilot({controllerHome:fx.controllerHome,repoId:fx.repository.repoId,
+      requirementId:'REQ-AUTO',confirmAuthorization:true,policy:{
+        provider:'joycode',endpoint:'https://api-ai.jd.com',protocol:'chat_completions',model:'JoyAI-Code-1.6',
+        maxTurns:3,maxToolCalls:3,maxTotalTokens:20_000,
+      }});
+    createAutopilotRun(fx.controllerHome,{
+      repoId:fx.repository.repoId,checkoutId:enrolled.checkoutId,
+      requirementId:'REQ-AUTO',requirementRevision:1,grantId:enrolled.grant.grantId,policy:enrolled.policy,
+    });
+    let modelRounds=0;
+    let acceptedProcessId:string|undefined;
+    await runAutopilotLoop(fx.controllerHome,fx.repository.repoId,'REQ-AUTO',new AbortController().signal,{
+      toolDefinitions:executeCommandDefinition,
+      validateAuthorization:()=>({ok:true}),
+      executeTool:async()=>{
+        const process=await spawnManagedProcess({
+          controllerHome:fx.controllerHome,repoId:fx.repository.repoId,checkoutId:fx.repository.activeCheckoutId,
+          executionIdentity:executionIdentityForRepository(fx.repository),
+          command:{kind:'argv',executable:'node',
+            args:['-e','setTimeout(()=>{process.stdout.write("autopilot-joined");},100)'],
+            cwd:fx.repoRoot},
+          interactiveWaitMs:0,timeoutMs:15_000,returnHandleImmediately:true,
+        });
+        acceptedProcessId=process.processId;
+        return {structuredContent:{accepted:true,status:'running',processId:process.processId,timeoutMs:process.timeoutMs}};
+      },
+      modelRound:async(input)=>{
+        modelRounds+=1;
+        if (modelRounds===2) {
+          const messages=input.body.messages as Array<{role:string;content?:string}>;
+          const terminal=JSON.parse(messages.find((message)=>message.role==='tool')?.content ?? '{}');
+          expect(terminal).toMatchObject({
+            processId:acceptedProcessId,completed:true,status:'succeeded',ok:true,exitCode:0,
+          });
+          expect(terminal.stdoutTail).toContain('autopilot-joined');
+        }
+        const name=modelRounds===1 ? 'execute_command' : 'forge_autopilot_decision';
+        const args=modelRounds===1 ? {command:['node','-e','process.stdout.write("autopilot-joined")']}
+          : {action:'complete',summary:'Real Process terminal receipt was observed.'};
+        return {choices:[{message:{role:'assistant',content:null,tool_calls:[{
+          id:'call-'+modelRounds,type:'function',function:{name,arguments:JSON.stringify(args)},
+        }]}}],usage:{prompt_tokens:100,completion_tokens:30,total_tokens:130}};
+      },
+    });
+    expect(modelRounds).toBe(2);
+    const run=readAutopilotRun(fx.controllerHome,fx.repository.repoId,'REQ-AUTO')?.value;
+    expect(run?.status).toBe('completed');
+    expect(run?.usage.toolCalls).toBe(2);
+  });
+
   test('reads the shared Desktop provider profile without copying credentials',() => {
     const home=tempRoot('forge-autopilot-provider-home-');
     const profileDir=join(home,'Library','Application Support','com.moretea.forge.desktop');

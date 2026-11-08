@@ -5,6 +5,8 @@ import { classifyRepositoryCommand } from '../../cli/repositories/command-classi
 import { getRepository } from '../../cli/repositories/registry';
 import { readRequirement, requirementSemanticView } from '../control-plane/persistence/requirement-store';
 import { listPlanContracts } from '../control-plane/facade/plan-contract-store';
+import { waitForProcess } from '../execution/process-runtime/runtime';
+import type { ProcessHandle } from '../execution/process-runtime/types';
 import { readAutopilotRun, updateAutopilotRun } from './store';
 import type { AutopilotDecision, AutopilotModelUsage, AutopilotRun } from './types';
 
@@ -435,6 +437,35 @@ function appendRecentToolName(current: string[] | undefined, name: string): stri
   return [...(current ?? []), name].slice(-RECENT_TOOL_TRACE_LIMIT);
 }
 
+// A Process acceptance receipt is not evidence that a command has finished.
+// Reuse the canonical Process owner; never reissue the accepted command.
+export function autopilotPendingProcess(value: unknown): { pending: boolean; processId?: string; timeoutMs?: number } {
+  const envelope = value && typeof value === 'object' ? value as Record<string, unknown> : {};
+  const receipt = envelope.structuredContent && typeof envelope.structuredContent === 'object'
+    ? envelope.structuredContent as Record<string, unknown> : envelope;
+  const pending = receipt.accepted === true && ['starting','running','running_recovered'].includes(String(receipt.status ?? ''));
+  if (!pending) return { pending:false };
+  const id = receipt.processId;
+  const validId = typeof id === 'string' && /^proc_[A-Za-z0-9_]{1,123}$/.test(id);
+  const timeout = receipt.timeoutMs;
+  return {
+    pending:true,
+    ...(validId ? {processId:id as string} : {}),
+    ...(typeof timeout === 'number' && Number.isSafeInteger(timeout) && timeout > 0 ? {timeoutMs:timeout} : {}),
+  };
+}
+
+export function autopilotTerminalProcessEvidence(handle: ProcessHandle): Record<string, unknown> | undefined {
+  if (!handle.completed || !['succeeded','failed','timed_out','cancelled','orphaned'].includes(handle.status)) return undefined;
+  return {
+    processId: handle.processId, completed:true, status:handle.status,
+    ok:handle.ok === true && handle.status === 'succeeded' && handle.exitCode === 0 && !handle.timedOut,
+    exitCode:handle.exitCode ?? null, timedOut:handle.timedOut ?? false,
+    stdoutTail:handle.stdoutTail ?? handle.stdout ?? '',
+    stderrTail:handle.stderrTail ?? handle.stderr ?? '',
+  };
+}
+
 function boundedToolResult(value: unknown): string {
   const text = JSON.stringify(value);
   return text.length <= TOOL_RESULT_MAX_CHARS
@@ -640,7 +671,35 @@ export async function runAutopilotLoop(
       }
 
       if (!dependencies.executeTool) throw new Error('AUTOPILOT_TOOL_EXECUTOR_REQUIRED');
-      const toolResult = await dependencies.executeTool(toolCall.function.name, args);
+      let toolResult = await dependencies.executeTool(toolCall.function.name, args);
+      const pending = toolCall.function.name === 'execute_command'
+        ? autopilotPendingProcess(toolResult) : { pending:false };
+      if (pending.pending) {
+        let terminal: Record<string, unknown> | undefined;
+        if (pending.processId) {
+          try {
+            const handle = await waitForProcess(controllerHome, repoId, pending.processId, {
+              timeoutMs: Math.min(600_000, pending.timeoutMs ?? 60_000) + 15_000,
+            });
+            terminal = autopilotTerminalProcessEvidence(handle);
+          } catch {
+            // Preserve the Process identity and stop; never replay an uncertain effect.
+          }
+        }
+        if (!terminal) {
+          const current = readAutopilotRun(controllerHome, repoId, requirementId)?.value;
+          if (current?.status === 'running') {
+            updateAutopilotRun(controllerHome, repoId, requirementId, (run) => ({
+              ...run, status:'paused',
+              stopReason:pending.processId ? 'process_terminal_unconfirmed:' + pending.processId : 'process_identity_missing',
+              lastSummary:'Accepted command has no confirmed terminal Process receipt. Inspect the canonical Process ID before resuming; never replay this command.',
+            }), 'autopilot_process_reconciliation_required');
+          }
+          return;
+        }
+        toolResult = terminal;
+      }
+      if (signal.aborted) return;
       updateAutopilotRun(controllerHome, repoId, requirementId, (run) => ({
         ...run,
         inspectionStreak: inspection ? Math.min(MAX_INSPECTION_STREAK, (run.inspectionStreak ?? 0) + 1) : 0,
