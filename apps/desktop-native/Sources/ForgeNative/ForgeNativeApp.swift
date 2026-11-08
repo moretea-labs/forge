@@ -88,7 +88,7 @@ private struct ForgeWorkspaceView: View {
             }
             ToolbarItem(placement:.automatic) {
                 HStack(spacing:7) {
-                    Circle().fill(model.connection == "已连接" ? Color.green : Color.orange)
+                    Circle().fill(model.connection == "MCP 已连接" ? Color.green : Color.orange)
                         .frame(width:6,height:6)
                     Text(model.connection).font(.system(size:11))
                 }.foregroundStyle(ForgePalette.secondary)
@@ -530,7 +530,7 @@ private struct ForgeWorkspaceView: View {
                     Text(model.project?.label ?? "选择项目")
                         .font(.system(size:12,weight:.semibold))
                         .lineLimit(1)
-                    Text("\(model.projects.count) 个项目 · \(model.project?.defaultBranch ?? "Forge Registry")")
+                    Text("\(model.projects.count) 个项目 · 默认分支 \(model.project?.defaultBranch ?? "未设置")")
                         .font(.system(size:10)).foregroundStyle(ForgePalette.secondary)
                         .lineLimit(1)
                 }
@@ -750,8 +750,13 @@ private struct ForgeWorkspaceView: View {
                         }
                         .font(.system(size:12.5,weight:.semibold))
                         if let branch = model.checkoutBranch, !branch.isEmpty {
-                            Text(branch)
-                                .font(.system(size:9.5,design:.monospaced))
+                            Text("当前分支 · \(branch)")
+                                .font(.system(size:10.5,weight:.medium,design:.monospaced))
+                                .foregroundStyle(ForgePalette.secondary)
+                                .lineLimit(1)
+                        } else if let checkout = model.checkoutId {
+                            Text("Checkout · \(checkout.prefix(8))")
+                                .font(.system(size:10.5,design:.monospaced))
                                 .foregroundStyle(ForgePalette.secondary)
                                 .lineLimit(1)
                         }
@@ -1168,12 +1173,17 @@ private struct AgentPane: View {
         }
         if model.thread?.repoId != nil && model.thread?.checkoutId == nil { return "缺 checkout" }
         if model.thread?.repoId == nil { return "未绑定项目" }
-        return "可执行"
+        if model.checkoutContextLoading { return "验证 checkout" }
+        if !model.checkoutIsAvailable { return "checkout 不可用" }
+        return "本地可执行"
     }
 
     private var agentWorkspaceStatusColor: Color {
         if model.busy { return ForgePalette.accent }
-        if !model.selectedProviderReady || (model.thread?.repoId != nil && model.thread?.checkoutId == nil) {
+        if !model.selectedProviderReady
+            || (model.thread?.repoId != nil && (
+                model.thread?.checkoutId == nil || model.checkoutContextLoading || !model.checkoutIsAvailable
+            )) {
             return Color.orange
         }
         return model.thread?.repoId == nil ? Color.secondary : Color.green
@@ -1190,8 +1200,12 @@ private struct AgentPane: View {
         if model.thread?.repoId != nil && model.thread?.checkoutId == nil {
             return "当前会话绑定了项目，但没有有效 checkout；请选择项目后新建会话。"
         }
+        if model.checkoutContextLoading { return "正在从 Forge Registry 验证当前会话绑定的 checkout。" }
+        if model.thread?.repoId != nil && !model.checkoutIsAvailable {
+            return "当前 checkout 路径不可用或缺少 Git 元数据；请切换到有效 checkout，避免在未验证的项目上执行。"
+        }
         if model.thread?.repoId == nil { return "当前会话可以对话，但没有项目/checkout 执行上下文。" }
-        return "当前 Provider、项目与 checkout 均可用于执行。"
+        return "本地 Provider 与当前 Git checkout 可用于执行；远程 MCP 隧道状态单独显示。"
     }
 
     private var agentWorkspaceBar: some View {
@@ -1426,6 +1440,10 @@ private struct AgentPane: View {
                 Text("失败")
                     .font(.system(size:9.5,weight:.semibold))
                     .foregroundStyle(Color.red)
+            } else if event.status == "unknown" {
+                Text("结果未知")
+                    .font(.system(size:9.5,weight:.semibold))
+                    .foregroundStyle(Color.orange)
             }
         }
     }
@@ -1434,6 +1452,7 @@ private struct AgentPane: View {
         switch event.status {
         case "completed": return Color.green
         case "failed": return Color.red
+        case "unknown": return Color.orange
         default: return ForgePalette.secondary
         }
     }
@@ -1442,6 +1461,7 @@ private struct AgentPane: View {
         switch event.status {
         case "completed": return "checkmark"
         case "failed": return "exclamationmark"
+        case "unknown": return "questionmark.circle"
         default: return activityIcon(event.phase)
         }
     }

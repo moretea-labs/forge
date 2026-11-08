@@ -51,7 +51,8 @@ struct AgentLiveActivityEvent: Codable, Identifiable {
     let status: String
     let startedAt: String
     let completedAt: String?
-    var id: String { "\(startedAt)|\(phase)|\(label)" }
+    let toolCallId: String?
+    var id: String { toolCallId ?? "\(startedAt)|\(phase)|\(label)|\(detail ?? "")" }
 }
 
 struct AgentLiveActivity: Codable {
@@ -409,11 +410,16 @@ final class NativeWorkspace: ObservableObject {
     @Published var pendingContextPaths: [String] = []
     @Published var checkoutRoot: URL?
     @Published var checkoutBranch: String?
+    @Published var checkoutContextLoading = false
     @Published private(set) var agentModels: [AgentModelOption] = []
+
+    var checkoutIsAvailable: Bool {
+        checkoutId != nil && Self.checkoutPathIsGitWorktree(checkoutRoot)
+    }
     @Published var agentChanges: AgentGitDiff?
     @Published var changesLoading = false
     @Published var liveActivity: AgentLiveActivity?
-    @Published var connection = "未检测"
+    @Published var connection = "MCP 状态未知"
     @Published var error: String?
     @Published var records: [ForgeRecord] = []
     @Published var selectedRecord: String?
@@ -573,23 +579,33 @@ final class NativeWorkspace: ObservableObject {
         newThread(requirementId:plan.requirementId,planId:plan.planId)
     }
     private func activateThreadContext(_ item: ChatThread, refreshProjectContext: Bool = true) {
+        let contextChanged = item.repoId != repoId || item.checkoutId != checkoutId
         selectedThreadId = item.id
         draft = ""
         pendingImageURLs = []
         pendingContextPaths = []
-        agentChanges = nil
         changesLoading = false
         knowledgeLoading = false
         knowledgeResult = nil
-        checkoutRoot = nil
-        checkoutBranch = nil
+        if contextChanged || refreshProjectContext {
+            agentChanges = nil
+            checkoutRoot = nil
+            checkoutBranch = nil
+        }
+        checkoutContextLoading = item.repoId != nil && (contextChanged || refreshProjectContext)
         if let boundRepoId = item.repoId {
             repoId = boundRepoId
             checkoutId = item.checkoutId
-            if refreshProjectContext { Task { await refreshProject() } }
+            if refreshProjectContext && (contextChanged || checkoutRoot == nil) {
+                Task { await refreshProject() }
+            }
         } else {
             repoId = nil
             checkoutId = nil
+            agentChanges = nil
+            checkoutRoot = nil
+            checkoutBranch = nil
+            checkoutContextLoading = false
             repositoryAccessMode = "request"
         }
     }
@@ -860,8 +876,14 @@ final class NativeWorkspace: ObservableObject {
                let decoded = try? JSONDecoder().decode([AgentModelOption].self, from: bytes) {
                 agentModels = decoded
             }
-            let health = try? await ForgeBridge.request("read_connection_status")
-            connection = health?["ready"] as? Bool == true ? "已连接" : "未就绪"
+            let connectionValue = try? await ForgeBridge.request("read_connection_status")
+            if let connectionValue, let parsed = Self.controllerConnectionDetail(connectionValue) {
+                connectionStatus = parsed
+                connection = Self.connectionLabel(parsed)
+            } else {
+                connectionStatus = nil
+                connection = "MCP 状态未知"
+            }
             await refreshProject()
             error = nil
         } catch { self.error = error.localizedDescription }
@@ -930,7 +952,11 @@ final class NativeWorkspace: ObservableObject {
     }
 
     func refreshProject() async {
-        guard let repoId else { return }
+        guard let repoId else {
+            checkoutContextLoading = false
+            return
+        }
+        checkoutContextLoading = true
         let requestedCheckoutId = checkoutId
         do {
             let result = try await ForgeBridge.request("read_project_repository", ["repoId":repoId])
@@ -939,11 +965,14 @@ final class NativeWorkspace: ObservableObject {
             checkoutId = context.checkoutId
             checkoutRoot = context.checkoutRoot
             checkoutBranch = context.checkoutBranch
+            checkoutContextLoading = false
             await loadRepositoryAccess(for:repoId)
             if page != .agent { await loadPage() }
         } catch {
+            guard self.repoId == repoId, self.checkoutId == requestedCheckoutId else { return }
             checkoutRoot = nil
             checkoutBranch = nil
+            checkoutContextLoading = false
             self.error = error.localizedDescription
         }
     }
@@ -1108,6 +1137,15 @@ final class NativeWorkspace: ObservableObject {
         )
     }
 
+    nonisolated static func checkoutPathIsGitWorktree(_ root: URL?) -> Bool {
+        guard let root else { return false }
+        let resolved = root.resolvingSymlinksInPath().standardizedFileURL
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath:resolved.path,isDirectory:&isDirectory),
+              isDirectory.boolValue else { return false }
+        return FileManager.default.fileExists(atPath:resolved.appendingPathComponent(".git").path)
+    }
+
     nonisolated static func runtimeDiagnosticsDetail(_ result: [String:Any]) -> RuntimeDiagnosticsDetail {
         let raw = result["data"] as? [String:Any] ?? result
         let labels = [
@@ -1154,6 +1192,15 @@ final class NativeWorkspace: ObservableObject {
         )
     }
 
+    nonisolated static func connectionLabel(_ detail: ControllerConnectionDetail?) -> String {
+        guard let detail else { return "MCP 状态未知" }
+        if detail.ready { return "MCP 已连接" }
+        if !detail.configured { return "MCP 未配置" }
+        if !detail.controller.ready { return "控制器未就绪" }
+        if !detail.tunnel.ready { return "MCP 隧道未就绪" }
+        return "MCP 未就绪"
+    }
+
     func loadRuntimePage() async {
         runtimeLoading = true
         connectionLoading = true
@@ -1170,10 +1217,10 @@ final class NativeWorkspace: ObservableObject {
             let value = try await ForgeBridge.request("read_connection_status")
             guard let parsed = Self.controllerConnectionDetail(value) else { throw ForgeBridgeError.invalidResponse }
             connectionStatus = parsed
-            connection = parsed.ready ? "已连接" : "未就绪"
+            connection = Self.connectionLabel(parsed)
         } catch {
             connectionStatus = nil
-            connection = "未就绪"
+            connection = "MCP 状态未知"
             failures.append("连接：\(error.localizedDescription)")
         }
         self.error = failures.isEmpty ? nil : failures.joined(separator:"\n")
@@ -1198,7 +1245,7 @@ final class NativeWorkspace: ObservableObject {
             let value = try await ForgeBridge.request("repair_connection")
             guard let parsed = Self.controllerConnectionDetail(value) else { throw ForgeBridgeError.invalidResponse }
             connectionStatus = parsed
-            connection = parsed.ready ? "已连接" : "未就绪"
+            connection = Self.connectionLabel(parsed)
             error = nil
         } catch { self.error = error.localizedDescription }
     }
@@ -2063,26 +2110,75 @@ final class NativeWorkspace: ObservableObject {
                 phase:"tool", label:name,
                 detail:row["requestId"] as? String,
                 status:ok ? "completed" : "failed",
-                startedAt:now, completedAt:now
+                startedAt:now, completedAt:now,
+                toolCallId:row["toolCallId"] as? String
             )
         }
         return events.isEmpty ? nil : events
     }
 
+    nonisolated static func apiToolProgressEvents(
+        _ existing:[AgentLiveActivityEvent],
+        payload:[String:Any],
+        now:String
+    ) -> [AgentLiveActivityEvent] {
+        guard let name = payload["name"] as? String else { return existing }
+        let transportPhase = payload["phase"] as? String ?? "running"
+        let status = transportPhase == "started" ? "running" : transportPhase
+        let toolCallId = payload["toolCallId"] as? String
+        let detail = payload["requestId"] as? String
+        var events = existing
+        let matchingIndex = events.lastIndex { event in
+            guard event.status == "running" else { return false }
+            if let toolCallId { return event.toolCallId == toolCallId }
+            return event.label == name
+        }
+        if let matchingIndex {
+            let started = events[matchingIndex]
+            events[matchingIndex] = AgentLiveActivityEvent(
+                phase:"tool", label:name,
+                detail:detail ?? started.detail,
+                status:status, startedAt:started.startedAt,
+                completedAt:status == "running" ? nil : now,
+                toolCallId:toolCallId ?? started.toolCallId
+            )
+            return events
+        }
+        if status == "running", let toolCallId,
+           events.contains(where: { $0.toolCallId == toolCallId }) {
+            return events
+        }
+        events.append(AgentLiveActivityEvent(
+            phase:"tool", label:name,
+            detail:detail, status:status,
+            startedAt:now, completedAt:status == "running" ? nil : now,
+            toolCallId:toolCallId
+        ))
+        return events
+    }
+
+    nonisolated static func finalizeFailedToolEvents(
+        _ events:[AgentLiveActivityEvent],
+        now:String
+    ) -> [AgentLiveActivityEvent] {
+        events.map { event in
+            guard event.status == "running" else { return event }
+            return AgentLiveActivityEvent(
+                phase:event.phase, label:event.label, detail:event.detail,
+                status:"unknown", startedAt:event.startedAt, completedAt:now,
+                toolCallId:event.toolCallId
+            )
+        }
+    }
+
     func applyApiToolProgress(_ payload:[String:Any], conversationId:String) {
         guard activeConversationId == conversationId,
               let name = payload["name"] as? String else { return }
-        let transportPhase = payload["phase"] as? String ?? "running"
-        let status = transportPhase == "started" ? "running" : transportPhase
         let now = ISO8601DateFormatter().string(from:Date())
-        var events = liveActivity?.events ?? []
-        events.append(AgentLiveActivityEvent(
-            phase:"tool", label:name,
-            detail:payload["requestId"] as? String,
-            status:status, startedAt:now,
-            completedAt:status == "running" ? nil : now
-        ))
-        let completedCount = events.filter { $0.status == "completed" || $0.status == "failed" }.count
+        let events = Self.apiToolProgressEvents(
+            liveActivity?.events ?? [], payload:payload, now:now
+        )
+        let completedCount = events.filter { $0.status != "running" }.count
         liveActivity = AgentLiveActivity(
             conversationId:conversationId,
             status:"running", phase:"tool",
@@ -2094,7 +2190,10 @@ final class NativeWorkspace: ObservableObject {
         )
     }
 
-    nonisolated static func agentTurnFailure(_ raw: String) -> (message:String, effectReviewRequired:Bool) {
+    nonisolated static func agentTurnFailure(
+        _ raw: String,
+        toolName: String? = nil
+    ) -> (message:String, effectReviewRequired:Bool) {
         if raw == "FORGE_DESKTOP_API_TURN_CANCELLED" {
             return ("请求已取消。",false)
         }
@@ -2113,7 +2212,23 @@ final class NativeWorkspace: ObservableObject {
             let requestId = String(raw.dropFirst(reconciliation.count)).split(separator:":",maxSplits:1).first.map(String.init) ?? "unknown"
             return ("写操作结果需要核对，未自动重试。操作请求：\(requestId)",true)
         }
-        return (raw,true)
+        let tool = toolName.map { "「\($0)」" } ?? "本地工具"
+        switch raw {
+        case "FORGE_DESKTOP_LOCAL_TOOL_OUTCOME_UNKNOWN":
+            return ("\(tool) 在 90 秒内没有返回结果；本次结果未知，未自动重试。",false)
+        case "FORGE_DESKTOP_LOCAL_TOOL_DELIVERY_UNKNOWN":
+            return ("\(tool) 的请求传递状态未知；本次未自动重试。",false)
+        case "FORGE_DESKTOP_LOCAL_TOOL_RESULT_INVALID":
+            return ("\(tool) 返回的结果无法解析；本次未自动重试。",false)
+        case "FORGE_DESKTOP_LOCAL_TOOL_RESULT_TOO_LARGE":
+            return ("\(tool) 返回的数据超过本地上限；请缩小读取范围后重试。",false)
+        case "FORGE_DESKTOP_LOCAL_TOOL_RUNNER_FAILED":
+            return ("\(tool) 的本地运行器异常退出；本次未自动重试。",false)
+        case "FORGE_DESKTOP_LOCAL_TOOL_RUNNER_UNAVAILABLE":
+            return ("本地 Forge 工具运行器不可用；请检查已安装的 Forge Helper。",false)
+        default:
+            return (raw,true)
+        }
     }
 
     func send() async {
@@ -2152,6 +2267,14 @@ final class NativeWorkspace: ObservableObject {
         }
         if item.repoId != nil && item.checkoutId == nil {
             self.error = "此会话没有有效 checkout；请选择项目后新建会话。"
+            return
+        }
+        if item.repoId != nil && checkoutContextLoading {
+            self.error = "正在验证当前 checkout，请稍后再发送。"
+            return
+        }
+        if item.repoId != nil && !checkoutIsAvailable {
+            self.error = "当前 checkout 不可用（路径不存在或缺少 Git 元数据）；请切换到有效 checkout 后再发送。"
             return
         }
         busy = true
@@ -2256,20 +2379,34 @@ final class NativeWorkspace: ObservableObject {
             error = nil
             await refreshAgentChanges()
         } catch {
-            // Keep the failed user message as truthful history. Never auto-resend because tools may have side effects.
-            let failure = Self.agentTurnFailure(error.localizedDescription)
+            // Keep the failed user message and its tool evidence as truthful history.
+            // Never auto-resend because a tool may have produced a side effect.
+            let rawError = error.localizedDescription
+            let now = ISO8601DateFormatter().string(from:Date())
+            let activityEvents = Self.finalizeFailedToolEvents(liveActivity?.events ?? [], now:now)
+            let failure = Self.agentTurnFailure(rawError, toolName:activityEvents.last?.label)
+            if let current = threads.firstIndex(where:{$0.id == id}) {
+                let completedCount = activityEvents.filter { $0.status != "running" }.count
+                threads[current].messages.append(ChatMessage(
+                    role:"assistant", text:failure.message,
+                    toolActivityCount:completedCount > 0 ? completedCount : nil,
+                    activityEvents:activityEvents.isEmpty ? nil : activityEvents
+                ))
+                threads[current].updatedAt = Date()
+                persist()
+            }
             let restored = restoreFailedComposer(
                 conversationId:id, prompt:prompt, imageURLs:imageURLs, contextPaths:contextPaths
             )
             let recoveryNote: String
             if restored && !failure.effectReviewRequired {
-                recoveryNote = "请求内容已恢复到输入框；再次发送会创建新的请求。"
+                recoveryNote = "请求内容已恢复到输入框；本次没有未确认的写入操作，可以修改后重试。"
             } else if restored {
-                recoveryNote = "请求内容已恢复到输入框；再次发送前请先核对 Changes 与工具记录。"
+                recoveryNote = "请求内容已恢复到输入框；请先查看下方执行记录和 Changes，确认写入结果后再重试。"
             } else {
                 recoveryNote = "未覆盖当前输入；如需重试，可从历史消息选择“重新编辑”。"
             }
-            self.error = "\(failure.message)\n\(recoveryNote)"
+            self.error = recoveryNote
         }
     }
 

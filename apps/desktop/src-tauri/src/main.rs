@@ -1851,6 +1851,17 @@ fn prepare_local_tool_arguments(name: &str, mut arguments: Value) -> Result<Valu
     Ok(arguments)
 }
 
+fn local_tool_failure_phase(error: &str) -> &'static str {
+    match error {
+        "FORGE_DESKTOP_LOCAL_TOOL_DELIVERY_UNKNOWN"
+        | "FORGE_DESKTOP_LOCAL_TOOL_OUTCOME_UNKNOWN"
+        | "FORGE_DESKTOP_LOCAL_TOOL_RUNNER_FAILED"
+        | "FORGE_DESKTOP_LOCAL_TOOL_RESULT_TOO_LARGE"
+        | "FORGE_DESKTOP_LOCAL_TOOL_RESULT_INVALID" => "unknown",
+        _ => "failed",
+    }
+}
+
 trait LocalApiHost {
     fn packaged_tool_script(&self) -> Result<PathBuf, String>;
     fn emit_tool_progress(&self, payload: Value);
@@ -1932,8 +1943,11 @@ async fn run_local_forge_tool<H: LocalApiHost + Sync>(
         let completed = timeout(std::time::Duration::from_secs(90), child.wait_with_output())
             .await.map_err(|_| "FORGE_DESKTOP_LOCAL_TOOL_OUTCOME_UNKNOWN")?
             .map_err(|_| "FORGE_DESKTOP_LOCAL_TOOL_OUTCOME_UNKNOWN")?;
-        if !completed.status.success() || completed.stdout.len() > 128 * 1024 {
-            return Err("FORGE_DESKTOP_LOCAL_TOOL_OUTCOME_UNKNOWN".to_string());
+        if !completed.status.success() {
+            return Err("FORGE_DESKTOP_LOCAL_TOOL_RUNNER_FAILED".to_string());
+        }
+        if completed.stdout.len() > 128 * 1024 {
+            return Err("FORGE_DESKTOP_LOCAL_TOOL_RESULT_TOO_LARGE".to_string());
         }
         let result: Value = serde_json::from_slice(&completed.stdout)
             .map_err(|_| "FORGE_DESKTOP_LOCAL_TOOL_RESULT_INVALID")?;
@@ -2429,7 +2443,7 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
             } else { None };
             host.emit_tool_progress(json!({
                 "conversationId": conversation_id, "name": name, "phase": "started",
-                "requestId": effect_request_id,
+                "requestId": effect_request_id, "toolCallId": id,
             }));
             let tool_result = run_local_forge_tool(
                 host, repo_id.clone().unwrap_or_default(), checkout_id.clone(),
@@ -2439,8 +2453,9 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
                 Ok(receipt) => receipt,
                 Err(error) => {
                     host.emit_tool_progress(json!({
-                        "conversationId": conversation_id, "name": name, "phase": "failed",
-                        "requestId": effect_request_id,
+                        "conversationId": conversation_id, "name": name,
+                        "phase": local_tool_failure_phase(&error),
+                        "requestId": effect_request_id, "toolCallId": id,
                     }));
                     return Err(if effectful {
                         format!("FORGE_DESKTOP_LOCAL_EFFECT_RECONCILIATION_REQUIRED:{}:{}",
@@ -2468,11 +2483,11 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
                 ));
             }
             tool_events.push(json!({ "name": name, "ok": ok,
-                "requestId": effect_request_id }));
+                "requestId": effect_request_id, "toolCallId": id }));
             host.emit_tool_progress(json!({
                 "conversationId": conversation_id, "name": name,
                 "phase": if ok { "completed" } else { "failed" },
-                "requestId": effect_request_id,
+                "requestId": effect_request_id, "toolCallId": id,
             }));
             total_calls += 1;
             // A real tool result is the only source of truth sent back to the model.
@@ -2968,6 +2983,17 @@ mod tests {
         let with_permission = names(local_tool_catalog(true));
         assert!(with_permission.contains(&"run_command".to_string()));
         assert!(with_permission.contains(&"apply_patch".to_string()));
+    }
+
+    #[test]
+    fn local_tool_failure_phase_distinguishes_unknown_results_from_terminal_failures() {
+        assert_eq!(local_tool_failure_phase("FORGE_DESKTOP_LOCAL_TOOL_OUTCOME_UNKNOWN"), "unknown");
+        assert_eq!(local_tool_failure_phase("FORGE_DESKTOP_LOCAL_TOOL_DELIVERY_UNKNOWN"), "unknown");
+        assert_eq!(local_tool_failure_phase("FORGE_DESKTOP_LOCAL_TOOL_RUNNER_FAILED"), "unknown");
+        assert_eq!(local_tool_failure_phase("FORGE_DESKTOP_LOCAL_TOOL_RESULT_TOO_LARGE"), "unknown");
+        assert_eq!(local_tool_failure_phase("FORGE_DESKTOP_LOCAL_TOOL_RESULT_INVALID"), "unknown");
+        assert_eq!(local_tool_failure_phase("FORGE_DESKTOP_LOCAL_TOOL_RUNNER_UNAVAILABLE"), "failed");
+        assert_eq!(local_tool_failure_phase("FORGE_DESKTOP_LOCAL_TOOL_ARGUMENTS_INVALID"), "failed");
     }
 
     #[test]

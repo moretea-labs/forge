@@ -378,6 +378,8 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(connection?.tunnel.ready,false)
         XCTAssertEqual(connection?.repairAvailable,true)
         XCTAssertEqual(connection?.repairLabel,"Refresh Forge Connector")
+        XCTAssertEqual(NativeWorkspace.connectionLabel(connection),"MCP 隧道未就绪")
+        XCTAssertEqual(NativeWorkspace.connectionLabel(nil),"MCP 状态未知")
         XCTAssertNil(NativeWorkspace.controllerConnectionDetail(["unexpected":true]))
     }
 
@@ -821,9 +823,65 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertFalse(reconcile.message.contains("timeout"))
         XCTAssertTrue(reconcile.effectReviewRequired)
 
+        let readOnlyTimeout = NativeWorkspace.agentTurnFailure(
+            "FORGE_DESKTOP_LOCAL_TOOL_OUTCOME_UNKNOWN", toolName:"git_status"
+        )
+        XCTAssertTrue(readOnlyTimeout.message.contains("git_status"))
+        XCTAssertTrue(readOnlyTimeout.message.contains("90 秒"))
+        XCTAssertFalse(readOnlyTimeout.effectReviewRequired)
+
+        let effectTimeout = NativeWorkspace.agentTurnFailure(
+            "FORGE_DESKTOP_LOCAL_EFFECT_RECONCILIATION_REQUIRED:forge-desktop-api-101:FORGE_DESKTOP_LOCAL_TOOL_OUTCOME_UNKNOWN",
+            toolName:"apply_patch"
+        )
+        XCTAssertTrue(effectTimeout.message.contains("forge-desktop-api-101"))
+        XCTAssertTrue(effectTimeout.effectReviewRequired)
+
         let unknown = NativeWorkspace.agentTurnFailure("CUSTOM_PROVIDER_ERROR")
         XCTAssertEqual(unknown.message,"CUSTOM_PROVIDER_ERROR")
         XCTAssertTrue(unknown.effectReviewRequired)
+    }
+
+    func testApiToolProgressEventsReconcileByToolCallId() {
+        let started = NativeWorkspace.apiToolProgressEvents(
+            [],
+            payload:["name":"git_status","phase":"started","toolCallId":"call-1"],
+            now:"started-at"
+        )
+        XCTAssertEqual(started.count,1)
+        XCTAssertEqual(started.first?.status,"running")
+
+        let finished = NativeWorkspace.apiToolProgressEvents(
+            started,
+            payload:["name":"git_status","phase":"unknown","toolCallId":"call-1"],
+            now:"finished-at"
+        )
+        XCTAssertEqual(finished.count,1)
+        XCTAssertEqual(finished.first?.status,"unknown")
+        XCTAssertEqual(finished.first?.startedAt,"started-at")
+        XCTAssertEqual(finished.first?.completedAt,"finished-at")
+        XCTAssertEqual(finished.first?.toolCallId,"call-1")
+
+        let distinct = NativeWorkspace.apiToolProgressEvents(
+            finished,
+            payload:["name":"git_status","phase":"started","toolCallId":"call-2"],
+            now:"second-start"
+        )
+        XCTAssertEqual(distinct.count,2)
+        XCTAssertNotEqual(distinct[0].id,distinct[1].id)
+    }
+
+    func testFailedToolProgressIsPersistableAsUnknown() {
+        let running = AgentLiveActivityEvent(
+            phase:"tool", label:"apply_patch", detail:"request-1",
+            status:"running", startedAt:"started-at", completedAt:nil,
+            toolCallId:"call-1"
+        )
+        let finalized = NativeWorkspace.finalizeFailedToolEvents([running],now:"failed-at")
+        XCTAssertEqual(finalized.count,1)
+        XCTAssertEqual(finalized.first?.status,"unknown")
+        XCTAssertEqual(finalized.first?.completedAt,"failed-at")
+        XCTAssertEqual(finalized.first?.detail,"request-1")
     }
 
     @MainActor
@@ -1019,6 +1077,16 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(requested.checkoutId,"checkout_requested")
         XCTAssertEqual(requested.checkoutBranch,"feature")
         XCTAssertEqual(requested.checkoutRoot?.path,"/tmp/requested")
+    }
+
+    func testCheckoutPathValidationRequiresGitMetadata() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at:root,withIntermediateDirectories:true)
+        defer { try? FileManager.default.removeItem(at:root) }
+
+        XCTAssertFalse(NativeWorkspace.checkoutPathIsGitWorktree(root))
+        try Data("gitdir: /tmp/worktree".utf8).write(to:root.appendingPathComponent(".git"))
+        XCTAssertTrue(NativeWorkspace.checkoutPathIsGitWorktree(root))
     }
 
     func testRegistryProjectLabelDoesNotFabricateRepository() {
