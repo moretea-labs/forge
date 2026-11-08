@@ -185,6 +185,53 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(thread.messages[1].incomplete,true)
     }
 
+    func testRetryOfIncompleteTurnDoesNotDuplicateUserPromptInModelHistory() {
+        var thread = ChatThread(provider:"api")
+        thread.messages = [
+            ChatMessage(role:"user",text:"previous task"),
+            ChatMessage(role:"assistant",text:"previous result"),
+            ChatMessage(role:"user",text:"build the feature"),
+            ChatMessage(role:"assistant",text:"tool delivery unknown",incomplete:true)
+        ]
+        let retry = NativeWorkspace.apiTurnMessages(thread,prompt:"build the feature",contextPaths:[])
+        XCTAssertEqual(retry.map { $0["role"] },["user","assistant","user"])
+        XCTAssertEqual(retry.map { $0["content"] },[
+            "previous task","previous result","build the feature"
+        ])
+        let continuation = NativeWorkspace.apiTurnMessages(thread,prompt:"继续",contextPaths:[])
+        XCTAssertEqual(continuation.map { $0["content"] },[
+            "previous task","previous result","build the feature","继续"
+        ])
+        // The source of audit evidence is unchanged, even when history is compacted.
+        XCTAssertEqual(thread.messages.count,4)
+        XCTAssertEqual(thread.messages[3].incomplete,true)
+    }
+
+    @MainActor
+    func testAgentComposerUsesSameCheckoutAndProviderReadinessAsSend() async {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        XCTAssertEqual(model.agentSendBlockReason,"Codex 未就绪，请刷新 Provider 状态。")
+
+        model.threads[0].repoId = "repo-test"
+        model.threads[0].checkoutId = nil
+        XCTAssertEqual(model.agentSendBlockReason,"当前会话缺少 checkout，请重新选择项目。")
+        model.threads[0].checkoutId = "checkout-test"
+        model.checkoutContextLoading = true
+        XCTAssertEqual(model.agentSendBlockReason,"正在验证 checkout，完成后即可发送。")
+
+        model.checkoutContextLoading = false
+        XCTAssertEqual(model.agentSendBlockReason,"checkout 不可用，请切换到有效的工作区。")
+        model.draft = "implement feature"
+        await model.send()
+        XCTAssertEqual(model.error,model.agentSendBlockReason)
+        XCTAssertEqual(model.draft,"implement feature")
+        XCTAssertTrue(model.threads[0].messages.isEmpty)
+        model.busy = true
+        XCTAssertEqual(model.agentSendBlockReason,"Agent 正在执行当前任务。")
+    }
+
     func testIncompleteManagedProcessIsAvailableToOrdinaryFollowUpWithoutReplaying() {
         var thread = ChatThread(provider:"api")
         thread.messages = [

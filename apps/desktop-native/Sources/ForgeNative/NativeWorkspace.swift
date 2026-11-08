@@ -503,6 +503,29 @@ final class NativeWorkspace: ObservableObject {
         }
         return localProviderReady
     }
+    // Single send-readiness boundary shared by the composer and send().
+    // A projectless conversation remains valid; repository effects still
+    // require the thread's bound checkout to pass physical verification.
+    var agentSendBlockReason: String? {
+        if busy { return "Agent 正在执行当前任务。" }
+        guard let thread else { return "请先选择会话。" }
+        if thread.repoId != nil {
+            if thread.checkoutId == nil { return "当前会话缺少 checkout，请重新选择项目。" }
+            if checkoutContextLoading { return "正在验证 checkout，完成后即可发送。" }
+            if !checkoutIsAvailable { return "checkout 不可用，请切换到有效的工作区。" }
+        }
+        if !selectedProviderReady {
+            switch selectedProvider {
+            case "joycode": return "JoyCode 未就绪，请检查登录与模型配置。"
+            case "api": return "兼容 API 未就绪，请检查 Endpoint、Key 和模型。"
+            default: return "Codex 未就绪，请刷新 Provider 状态。"
+            }
+        }
+        if !pendingImageURLs.isEmpty && !selectedProviderSupportsImages {
+            return "当前模型不支持图片输入，请移除图片后发送。"
+        }
+        return nil
+    }
     var selectedApiModel: String {
         let threadModel = thread?.model?.trimmingCharacters(in:.whitespacesAndNewlines) ?? ""
         if Self.matchesExternalProvider(selectedProvider) && !threadModel.isEmpty { return threadModel }
@@ -2138,7 +2161,20 @@ final class NativeWorkspace: ObservableObject {
         prompt: String,
         contextPaths: [String]
     ) -> [[String:String]] {
-        var messages = thread.messages.suffix(39).compactMap { message -> [String:String]? in
+        // An immediately retried failed turn must not put the same user
+        // request into model history twice. Keep the failed UI/audit record
+        // intact, and retain the previous request when the user instead says
+        // "continue" so the original objective remains in context.
+        let count = thread.messages.count
+        let redundantRetryIndex: Int? = count >= 2
+            && thread.messages[count - 1].role == "assistant"
+            && thread.messages[count - 1].incomplete == true
+            && thread.messages[count - 2].role == "user"
+            && thread.messages[count - 2].text.trimmingCharacters(in:.whitespacesAndNewlines)
+                == prompt.trimmingCharacters(in:.whitespacesAndNewlines)
+            ? count - 2 : nil
+        var messages = thread.messages.enumerated().suffix(39).compactMap { index, message -> [String:String]? in
+            if redundantRetryIndex == index { return nil }
             // Incomplete assistant messages are UI/evidence, not authoritative model replies.
             guard message.role == "user" || (message.role == "assistant" && message.incomplete != true) else { return nil }
             return ["role":message.role,"content":message.text]
@@ -2313,6 +2349,10 @@ final class NativeWorkspace: ObservableObject {
         guard !prompt.isEmpty, !busy, let id = selectedThreadId,
               let index = threads.firstIndex(where:{$0.id == id}) else { return }
         let turnProvider = selectedProvider
+        if let reason = agentSendBlockReason {
+            self.error = reason
+            return
+        }
         if Self.matchesExternalProvider(turnProvider) {
             let current = threads[index].model?.trimmingCharacters(in:.whitespacesAndNewlines) ?? ""
             let configured = turnProvider == "joycode"
@@ -2326,34 +2366,6 @@ final class NativeWorkspace: ObservableObject {
         let item = threads[index]
         let imageURLs = pendingImageURLs
         let contextPaths = pendingContextPaths
-        if !imageURLs.isEmpty && !(turnProvider == "codex" && imageInputAvailable) {
-            self.error = Self.matchesExternalProvider(turnProvider)
-                ? "当前外部模型 Agent 尚不支持图片输入。"
-                : "当前 Runtime 尚未启用图片输入。"
-            return
-        }
-        if Self.matchesExternalProvider(turnProvider) && !selectedProviderReady {
-            self.error = turnProvider == "joycode"
-                ? "JoyCode 尚未就绪；请确认本机 JoyCode 已登录且当前会话模型有效。"
-                : "兼容 API 尚未就绪；请检查 Endpoint、必要的 API Key 与当前会话模型。"
-            return
-        }
-        if turnProvider == "codex" && !localProviderReady {
-            self.error = "Codex Provider 尚未就绪，请刷新状态后重试。"
-            return
-        }
-        if item.repoId != nil && item.checkoutId == nil {
-            self.error = "此会话没有有效 checkout；请选择项目后新建会话。"
-            return
-        }
-        if item.repoId != nil && checkoutContextLoading {
-            self.error = "正在验证当前 checkout，请稍后再发送。"
-            return
-        }
-        if item.repoId != nil && !checkoutIsAvailable {
-            self.error = "当前 checkout 不可用（路径不存在或缺少 Git 元数据）；请切换到有效 checkout 后再发送。"
-            return
-        }
         busy = true
         activeConversationId = id
         activeTurnProvider = turnProvider

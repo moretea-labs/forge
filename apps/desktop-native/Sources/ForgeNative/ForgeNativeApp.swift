@@ -2,6 +2,8 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 
+// Native visual contract: content first, icon-only secondary actions, quiet selection,
+// one consistent input surface; avoid decorative cards around navigation and status.
 private enum ForgePalette {
     static let canvas = Color(nsColor:.textBackgroundColor)
     static let ink = Color(red:0.16,green:0.18,blue:0.17)
@@ -131,110 +133,71 @@ private struct ForgeWorkspaceView: View {
 
     private var sidebar: some View {
         VStack(alignment:.leading,spacing:0) {
-            HStack(spacing:9) {
-                Image(systemName:"bolt.horizontal.circle.fill")
-                    .symbolRenderingMode(.hierarchical)
-                    .font(.system(size:20,weight:.medium))
-                    .foregroundStyle(ForgePalette.ink)
-                    .accessibilityHidden(true)
-                Text("Forge")
-                    .font(.system(size:14,weight:.semibold))
-                Spacer()
-                Text("Agent")
-                    .font(.system(size:10,weight:.medium))
-                    .foregroundStyle(ForgePalette.secondary)
-            }
-            .padding(.horizontal,13).padding(.top,13).padding(.bottom,14)
-
-            HStack(spacing:7) {
-                if model.showSearch {
-                    HStack(spacing:8) {
-                        Image(systemName:"magnifyingglass")
-                            .foregroundStyle(ForgePalette.secondary)
-                        TextField("搜索会话标题或消息",text:$model.search)
-                            .focused($sidebarSearchFocused)
-                            .textFieldStyle(.plain)
-                            .font(.system(size:12))
-                            .onSubmit {
-                                if !model.busy,
-                                   !model.search.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty,
-                                   let first=model.visibleThreads.first {
-                                    model.selectThread(first.id)
-                                    model.toggleConversationSearch()
-                                }
-                            }
-                            .onExitCommand { model.toggleConversationSearch() }
-                            .accessibilityIdentifier("sidebar.search.field")
-                        if !model.search.isEmpty {
-                            Button { model.search = "" } label: {
-                                Image(systemName:"xmark.circle.fill")
-                            }
-                            .help("清除搜索")
-                            .accessibilityLabel("清除搜索")
-                            .buttonStyle(.plain)
-                        }
-                        Button { model.toggleConversationSearch() } label: {
-                            Image(systemName:"xmark")
-                                .frame(width:22,height:24)
-                        }
-                        .help("关闭搜索")
-                        .accessibilityLabel("关闭搜索")
-                        .accessibilityIdentifier("sidebar.search.close")
-                        .buttonStyle(.plain)
-                    }
-                    .font(.system(size:11))
-                    .padding(.horizontal,11)
-                    .frame(height:40)
-                    .frame(maxWidth:.infinity)
-                    .background(ForgePalette.raisedSurface,
-                                in:RoundedRectangle(cornerRadius:11,style:.continuous))
-                } else {
-                    Button {
-                        model.show(.agent)
-                        model.newThread()
-                    } label: {
-                        HStack(spacing:9) {
-                            Image(systemName:"plus")
-                                .font(.system(size:11,weight:.semibold))
-                                .frame(width:19,height:19)
-                            VStack(alignment:.leading,spacing:2) {
-                                Text("新会话").font(.system(size:12,weight:.semibold))
-                                Text(model.project?.label ?? "未绑定项目")
-                                    .font(.system(size:9))
-                                    .foregroundStyle(ForgePalette.secondary)
-                                    .lineLimit(1)
-                            }
-                            Spacer(minLength:0)
-                            Text("⌘N").font(.system(size:10)).foregroundStyle(.tertiary)
-                        }
-                        .padding(.horizontal,11)
-                        .frame(height:40)
-                        .frame(maxWidth:.infinity)
-                        .background(ForgePalette.raisedSurface,
-                                    in:RoundedRectangle(cornerRadius:11,style:.continuous))
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(model.busy)
-                    .help(model.repoId == nil ? "创建不绑定项目的会话" : "在当前项目新建会话")
-                    .accessibilityIdentifier("sidebar.thread.new")
-
-                    Button { model.toggleConversationSearch() } label: {
-                        Image(systemName:"magnifyingglass")
-                            .font(.system(size:13,weight:.medium))
-                            .frame(width:38,height:40)
-                            .background(ForgePalette.softFill,
-                                        in:RoundedRectangle(cornerRadius:11,style:.continuous))
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("搜索会话")
-                    .help("搜索全部项目的会话 (⌘K)")
-                    .accessibilityIdentifier("sidebar.search.open")
+            HStack(spacing:6) {
+                Button {
+                    model.newThread()
+                } label: {
+                    Label("新会话",systemImage:"square.and.pencil")
+                        .font(.system(size:12.5,weight:.medium))
+                        .frame(maxWidth:.infinity,alignment:.leading)
+                        .contentShape(Rectangle())
                 }
-            }
-            .padding(.horizontal,10).padding(.bottom,7)
+                .buttonStyle(.plain)
+                .disabled(model.busy)
+                .help(model.repoId == nil ? "创建不绑定项目的会话 (⌘N)" : "在当前项目新建会话 (⌘N)")
+                .accessibilityIdentifier("sidebar.thread.new")
 
-            sectionLabel("工作空间").padding(.top,19)
-            ForEach(NativePage.allCases.filter { $0 != .settings && $0 != .plan }) { section in
+                Button { model.toggleConversationSearch() } label: {
+                    Image(systemName:model.showSearch ? "xmark" : "magnifyingglass")
+                        .font(.system(size:12.5,weight:.medium))
+                        .frame(width:28,height:30)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(model.showSearch ? "关闭会话搜索 (Esc)" : "搜索全部会话 (⌘K)")
+                .accessibilityLabel(model.showSearch ? "关闭搜索" : "搜索会话")
+                .accessibilityIdentifier(model.showSearch ? "sidebar.search.close" : "sidebar.search.open")
+            }
+            .padding(.horizontal,18)
+            .frame(height:34)
+            .padding(.top,17).padding(.bottom,6)
+
+            if model.showSearch {
+                HStack(spacing:7) {
+                    TextField("搜索会话",text:$model.search)
+                        .focused($sidebarSearchFocused)
+                        .textFieldStyle(.plain)
+                        .font(.system(size:12))
+                        .onSubmit {
+                            if !model.busy,
+                               !model.search.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty,
+                               let first=model.visibleThreads.first {
+                                model.selectThread(first.id)
+                                model.toggleConversationSearch()
+                            }
+                        }
+                        .onExitCommand { model.toggleConversationSearch() }
+                        .accessibilityIdentifier("sidebar.search.field")
+                    if !model.search.isEmpty {
+                        Button { model.search = "" } label: {
+                            Image(systemName:"xmark.circle.fill")
+                                .font(.system(size:10))
+                        }
+                        .buttonStyle(.plain)
+                        .help("清除搜索")
+                        .accessibilityLabel("清除搜索")
+                    }
+                }
+                .padding(.horizontal,7)
+                .frame(height:30)
+                .overlay(alignment:.bottom) {
+                    Rectangle().fill(ForgePalette.secondary.opacity(0.25)).frame(height:0.5)
+                }
+                .padding(.horizontal,16).padding(.bottom,4)
+            }
+
+            sectionLabel("工作区").padding(.top,15)
+            ForEach(NativePage.allCases.filter { $0 != .settings && $0 != .plan && $0 != .agent }) { section in
                 navigationRow(section)
             }
 
@@ -356,11 +319,11 @@ private struct ForgeWorkspaceView: View {
                 deleteConfirmation(thread)
             }
         }
-        .padding(.leading,10).padding(.trailing,5)
-        .frame(height:44)
-        .background(selected ? ForgePalette.selectionStrong : (hovered ? ForgePalette.softFill : .clear),
-                    in:RoundedRectangle(cornerRadius:10,style:.continuous))
-        .contentShape(RoundedRectangle(cornerRadius:10,style:.continuous))
+        .padding(.leading,9).padding(.trailing,5)
+        .frame(height:40)
+        .background(selected ? ForgePalette.selection.opacity(0.75) : (hovered ? ForgePalette.softFill.opacity(0.5) : .clear),
+                    in:RoundedRectangle(cornerRadius:7,style:.continuous))
+        .contentShape(RoundedRectangle(cornerRadius:7,style:.continuous))
         .onHover { inside in
             if inside {
                 hoveredThreadId = thread.id
@@ -587,9 +550,7 @@ private struct ForgeWorkspaceView: View {
                 Spacer()
                 Image(systemName:"chevron.up.chevron.down").font(.system(size:10))
             }
-            .padding(.horizontal,11).frame(height:50)
-            .background(ForgePalette.softFill,
-                        in:RoundedRectangle(cornerRadius:13,style:.continuous))
+            .padding(.horizontal,9).frame(height:42)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -833,10 +794,10 @@ private struct ForgeWorkspaceView: View {
                 Text(section.rawValue).font(.system(size:12,weight:model.page == section ? .semibold : .regular))
                 Spacer()
             }
-            .padding(.horizontal,12)
-            .frame(height:36)
-            .background(model.page == section ? ForgePalette.selection : .clear,
-                        in:RoundedRectangle(cornerRadius:11,style:.continuous))
+            .padding(.horizontal,10)
+            .frame(height:32)
+            .background(model.page == section ? ForgePalette.selection.opacity(0.62) : .clear,
+                        in:RoundedRectangle(cornerRadius:8,style:.continuous))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -953,17 +914,12 @@ private struct AgentPane: View {
                     LazyVStack(alignment:.leading,spacing:20) {
                         if model.thread?.messages.isEmpty != false {
                             VStack(spacing:16) {
-                                ZStack {
-                                    Circle()
-                                        .fill(ForgePalette.accent.opacity(0.09))
-                                        .frame(width:54,height:54)
-                                    Image(systemName:"bolt.fill")
-                                        .font(.system(size:20,weight:.medium))
-                                        .foregroundStyle(ForgePalette.accent)
-                                }
+                                Image(systemName:"bolt")
+                                    .font(.system(size:25,weight:.light))
+                                    .foregroundStyle(ForgePalette.secondary)
                                 .accessibilityHidden(true)
                                 VStack(spacing:7) {
-                                    Text("把结果交给 Forge")
+                                    Text("开始一个任务")
                                         .font(.system(size:24,weight:.medium)).tracking(-0.45)
                                     Text(agentEmptyStateDescription)
                                         .font(.system(size:12))
@@ -981,8 +937,7 @@ private struct AgentPane: View {
                                                         prompt:"读取当前 Requirement / Plan 与代码现状，选择最高价值的下一项实现并完成验证。")
                                 }
                             }
-                            .padding(.top,70)
-                            .frame(maxWidth:.infinity)
+                            .frame(maxWidth:.infinity,minHeight:360)
                         }
                         ForEach(model.thread?.messages ?? []) { message in
                             if message.role == "user" {
@@ -1019,7 +974,7 @@ private struct AgentPane: View {
                                         .disabled(model.busy)
                                     }
                                 }
-                                .frame(maxWidth:620,alignment:.trailing)
+                                .frame(maxWidth:920,alignment:.trailing)
                                 .frame(maxWidth:.infinity,alignment:.trailing)
                                 .id(message.id)
                             } else {
@@ -1066,17 +1021,43 @@ private struct AgentPane: View {
                                         .foregroundStyle(ForgePalette.secondary)
                                         if message.incomplete == true,
                                            message.id == model.thread?.messages.last?.id {
-                                            Button {
-                                                model.draft = "继续执行上一次未完成的开发任务。上次未完成回执（仅作线索）：\n\(String(message.text.prefix(1100)))\n若有 Process ID，先调用 process_status 获取终态；否则先核对 checkout 的 Git 状态和最近工具回执。不要重放未知或仍在运行的写操作，再继续实施和验证。"
-                                                Task { await model.send() }
-                                            } label: {
-                                                Label("继续执行",systemImage:"play.fill")
-                                                    .font(.system(size:11,weight:.semibold))
+                                            HStack(alignment:.center,spacing:9) {
+                                                Image(systemName:"exclamationmark.arrow.triangle.2.circlepath")
+                                                    .font(.system(size:15))
+                                                    .foregroundStyle(ForgePalette.secondary)
+                                                    .accessibilityHidden(true)
+                                                VStack(alignment:.leading,spacing:3) {
+                                                    Text("上次执行未完成")
+                                                        .font(.system(size:11,weight:.semibold))
+                                                        .foregroundStyle(ForgePalette.ink)
+                                                    Text("继续时先核对 Process 终态与当前改动。")
+                                                        .font(.system(size:10))
+                                                        .foregroundStyle(ForgePalette.secondary)
+                                                }
+                                                Spacer(minLength:6)
+                                                Button("查看改动") {
+                                                    showChanges = true
+                                                    Task { await model.refreshAgentChanges() }
+                                                }
+                                                .buttonStyle(.plain)
+                                                .font(.system(size:10.5,weight:.medium))
+                                                .disabled(model.checkoutId == nil)
+                                                Button {
+                                                    model.draft = "继续执行上一次未完成的开发任务。上次未完成回执（仅作线索）：\n\(String(message.text.prefix(1100)))\n若有 Process ID，先调用 process_status 获取终态；否则先核对 checkout 的 Git 状态和最近工具回执。不要重放未知或仍在运行的写操作，再继续实施和验证。"
+                                                    Task { await model.send() }
+                                                } label: {
+                                                    Label("继续执行",systemImage:"play.fill")
+                                                        .font(.system(size:10.5,weight:.medium))
+                                                }
+                                                .buttonStyle(.bordered)
+                                                .disabled(model.busy || !model.draft.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty
+                                                    || model.agentSendBlockReason != nil)
+                                                .accessibilityIdentifier("agent.continue-incomplete")
                                             }
-                                            .buttonStyle(.bordered)
-                                            .disabled(model.busy || !model.draft.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty
-                                                || (model.thread?.repoId != nil && !model.checkoutIsAvailable))
-                                            .accessibilityIdentifier("agent.continue-incomplete")
+                                            .padding(10)
+                                            .background(ForgePalette.softFill,
+                                                        in:RoundedRectangle(cornerRadius:10,style:.continuous))
+                                            .accessibilityIdentifier("agent.incomplete-recovery")
                                         }
                                         if expandedMessageActivities.contains(message.id),
                                            let events = message.activityEvents, !events.isEmpty {
@@ -1142,19 +1123,40 @@ private struct AgentPane: View {
                                     }
                                 }
                             }
-                            .padding(11)
-                            .background(ForgePalette.raisedSurface,
-                                        in:RoundedRectangle(cornerRadius:12,style:.continuous))
-                            .overlay(RoundedRectangle(cornerRadius:12,style:.continuous)
-                                .stroke(Color.black.opacity(0.055),lineWidth:0.7))
-                            .shadow(color:Color.black.opacity(0.025),radius:5,y:2)
+                            .padding(.vertical,9).padding(.horizontal,12)
+                            .background(ForgePalette.softFill.opacity(0.55),
+                                        in:RoundedRectangle(cornerRadius:9,style:.continuous))
                             .id("pending")
                         }
                     }
-                    .frame(maxWidth:790,alignment:.leading)
+                    .frame(maxWidth:1320,alignment:.leading)
                     .frame(maxWidth:.infinity)
-                    .padding(.horizontal,34).padding(.top,24).padding(.bottom,26)
+                    .padding(.horizontal,28).padding(.top,18).padding(.bottom,22)
                 }.scrollIndicators(.automatic)
+                .overlay(alignment:.bottomTrailing) {
+                    if model.busy {
+                        Button {
+                            withAnimation(.easeOut(duration:0.18)) {
+                                reader.scrollTo("pending",anchor:.bottom)
+                            }
+                        } label: {
+                            Label("最新进度",systemImage:"arrow.down.to.line")
+                                .font(.system(size:10.5,weight:.medium))
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .padding(.trailing,16).padding(.bottom,12)
+                        .accessibilityIdentifier("agent.scroll-to-progress")
+                    }
+                }
+                .onChange(of:model.selectedThreadId) { _ in
+                    Task { @MainActor in
+                        await Task.yield()
+                        if let last = model.thread?.messages.last {
+                            reader.scrollTo(last.id,anchor:.bottom)
+                        }
+                    }
+                }
                 .onChange(of:model.thread?.messages.count) { _ in
                     if let last = model.thread?.messages.last {
                         withAnimation(.easeOut(duration:0.2)) { reader.scrollTo(last.id,anchor:.bottom) }
@@ -1256,8 +1258,7 @@ private struct AgentPane: View {
                         .accessibilityIdentifier("agent.cancel")
                     } else {
                         let sendDisabled = model.draft.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty
-                            || !model.selectedProviderReady
-                            || (model.thread?.repoId != nil && model.thread?.checkoutId == nil)
+                            || model.agentSendBlockReason != nil
                         Button { Task { await model.send() } } label: {
                             Image(systemName:"arrow.up")
                                 .font(.system(size:11,weight:.bold))
@@ -1269,21 +1270,47 @@ private struct AgentPane: View {
                         .buttonStyle(.plain)
                         .disabled(sendDisabled)
                         .keyboardShortcut(.return,modifiers:.command)
-                        .help("发送消息（⌘↵）")
+                        .help(model.agentSendBlockReason ?? "发送消息（⌘↵）")
                         .accessibilityLabel("发送消息")
                         .accessibilityValue(sendDisabled ? "不可发送" : "可发送")
                         .accessibilityHint("按 Command Return 发送")
                         .accessibilityIdentifier("agent.send")
                     }
                 }.padding(.horizontal,13).padding(.bottom,11)
+                if !model.busy, let reason = model.agentSendBlockReason {
+                    HStack(alignment:.firstTextBaseline,spacing:6) {
+                        Image(systemName:"info.circle")
+                            .accessibilityHidden(true)
+                        Text(reason)
+                            .lineLimit(2)
+                        Spacer(minLength:6)
+                        if !model.selectedProviderReady {
+                            Button(model.selectedProvider == "codex" ? "刷新状态" : "打开设置") {
+                                if model.selectedProvider == "codex" {
+                                    Task { await model.refresh() }
+                                } else {
+                                    model.show(.settings)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .fontWeight(.semibold)
+                            .foregroundStyle(ForgePalette.accent)
+                            .accessibilityIdentifier("agent.configure-provider")
+                        }
+                    }
+                    .font(.system(size:10.5))
+                    .foregroundStyle(ForgePalette.secondary)
+                    .padding(.horizontal,16).padding(.bottom,11)
+                    .frame(maxWidth:.infinity,alignment:.leading)
+                    .accessibilityIdentifier("agent.send-block-reason")
+                }
             }
-            .background(ForgePalette.composer,
-                        in:RoundedRectangle(cornerRadius:19,style:.continuous))
             .background(.ultraThinMaterial,
-                        in:RoundedRectangle(cornerRadius:19,style:.continuous))
+                        in:RoundedRectangle(cornerRadius:15,style:.continuous))
             .overlay {
-                RoundedRectangle(cornerRadius:19,style:.continuous)
-                    .stroke(isComposerDropTarget ? ForgePalette.accent.opacity(0.55) : .clear,lineWidth:1.25)
+                RoundedRectangle(cornerRadius:15,style:.continuous)
+                    .stroke(isComposerDropTarget ? ForgePalette.accent.opacity(0.55)
+                            : Color.primary.opacity(0.075),lineWidth:isComposerDropTarget ? 1.25 : 0.7)
             }
             .dropDestination(for:URL.self) { urls, _ in
                 guard !model.busy, !urls.isEmpty else { return false }
@@ -1292,9 +1319,9 @@ private struct AgentPane: View {
             } isTargeted: { targeted in
                 isComposerDropTarget = targeted && !model.busy
             }
-            .shadow(color:Color.black.opacity(0.060),radius:18,y:7)
-            .frame(maxWidth:760)
-            .padding(.horizontal,30).padding(.bottom,20)
+            .shadow(color:Color.black.opacity(0.025),radius:6,y:2)
+            .frame(maxWidth:1280)
+            .padding(.horizontal,28).padding(.bottom,16)
             .frame(maxWidth:.infinity)
         }
         .background(ForgePalette.canvas)
@@ -1564,11 +1591,8 @@ private struct AgentPane: View {
             .font(.system(size:10.5,weight:.medium))
             .foregroundStyle(ForgePalette.secondary)
             .padding(.horizontal,10)
-            .frame(height:30)
-            .background(ForgePalette.raisedSurface,
-                        in:RoundedRectangle(cornerRadius:9,style:.continuous))
-            .overlay(RoundedRectangle(cornerRadius:9,style:.continuous)
-                .stroke(Color.black.opacity(0.055),lineWidth:0.7))
+            .frame(height:28)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(model.busy || model.checkoutId == nil)
@@ -1694,8 +1718,9 @@ private struct AgentPane: View {
                 }
                 .disabled(model.selectedReasoningOptions.isEmpty || model.busy)
             } else {
-                Button("模型 · \(model.selectedApiModel.isEmpty ? "外部模型" : model.selectedApiModel)") {}
-                    .disabled(true)
+                Text("当前模型 · \(model.selectedApiModel.isEmpty ? "未配置" : model.selectedApiModel)")
+                Button("打开 Provider 设置") { model.show(.settings) }
+                    .disabled(model.busy)
                 if model.checkoutId != nil {
                     Divider()
                     Menu("仓库权限") {
