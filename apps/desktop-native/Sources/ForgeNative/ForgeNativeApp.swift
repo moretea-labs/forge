@@ -262,33 +262,22 @@ private struct ForgeWorkspaceView: View {
                 model.selectThread(thread.id)
                 if model.showSearch { model.toggleConversationSearch() }
             } label: {
-                HStack(spacing:8) {
-                    Image(systemName:selected ? "bubble.left.fill" : "bubble.left")
-                        .symbolRenderingMode(.hierarchical)
-                        .font(.system(size:11))
-                        .frame(width:17)
-                    VStack(alignment:.leading,spacing:2) {
-                        Text(thread.title)
-                            .font(.system(size:12,weight:selected ? .medium : .regular))
-                            .lineLimit(1)
-                        HStack(spacing:5) {
-                            Text(projectLabel).lineLimit(1)
-                            if let planId = thread.planId, !planId.isEmpty {
-                                Text("· Plan \(String(planId.prefix(12)))").lineLimit(1)
-                            } else if let requirementId = thread.requirementId, !requirementId.isEmpty {
-                                Text("· Req \(String(requirementId.prefix(12)))").lineLimit(1)
-                            }
-                        }
-                        .font(.system(size:9.5))
-                        .foregroundStyle(ForgePalette.secondary.opacity(0.82))
-                    }
+                HStack(spacing:7) {
+                    Text(thread.title)
+                        .font(.system(size:12,weight:selected ? .medium : .regular))
+                        .lineLimit(1)
                     Spacer(minLength:0)
+                    if running {
+                        ProgressView().controlSize(.mini)
+                            .accessibilityLabel("执行中")
+                    }
                 }
                 .frame(maxWidth:.infinity,alignment:.leading)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .disabled(model.busy && !running)
+            .help(projectLabel + " · " + thread.title)
             .popover(isPresented:Binding(
                 get:{ renameThreadId == thread.id },
                 set:{ if !$0 && renameThreadId == thread.id { renameThreadId = nil } }
@@ -320,7 +309,7 @@ private struct ForgeWorkspaceView: View {
             }
         }
         .padding(.leading,9).padding(.trailing,5)
-        .frame(height:40)
+        .frame(height:32)
         .background(selected ? ForgePalette.selection.opacity(0.75) : (hovered ? ForgePalette.softFill.opacity(0.5) : .clear),
                     in:RoundedRectangle(cornerRadius:7,style:.continuous))
         .contentShape(RoundedRectangle(cornerRadius:7,style:.continuous))
