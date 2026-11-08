@@ -2276,6 +2276,7 @@ private struct RecordsPane: View {
     @State private var planningZoom: CGFloat = 1
     @State private var planningFitToView = false
     @State private var planningFitScale: CGFloat = 1
+    @State private var planningShowUnlinked = false
     @State private var planningScrollTarget: String?
 
     private let planningNodeWidth: CGFloat = 228
@@ -2287,50 +2288,50 @@ private struct RecordsPane: View {
     var body: some View {
         HStack(spacing:12) {
             planningNavigator
-                .frame(minWidth:410,idealWidth:480,maxWidth:560)
+                .frame(minWidth:620,maxWidth:.infinity)
                 .background(.ultraThinMaterial,
                             in:RoundedRectangle(cornerRadius:16,style:.continuous))
                 .padding(.leading,12).padding(.vertical,12)
 
-            ScrollView {
-                VStack(alignment:.leading,spacing:17) {
-                    if let selected = model.records.first(where:{$0.id == model.selectedRecord}) {
+            if let selected = model.records.first(where:{$0.id == model.selectedRecord}) {
+                ScrollView {
+                    VStack(alignment:.leading,spacing:17) {
                         HStack(alignment:.top,spacing:12) {
                             VStack(alignment:.leading,spacing:7) {
-                                Text(selected.title).font(.system(size:20,weight:.medium))
-                                Text(selected.recordId).font(.system(size:11,design:.monospaced))
+                                Text(selected.title).font(.system(size:18,weight:.medium))
+                                Text(planningNodeRole(selected))
+                                    .font(.system(size:10,weight:.semibold))
                                     .foregroundStyle(ForgePalette.secondary)
+                                Text(selected.recordId).font(.system(size:9.5,design:.monospaced))
+                                    .foregroundStyle(ForgePalette.secondary)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
                             }
                             Spacer()
-                            Text(selected.state.isEmpty ? (selected.kind == .requirement ? "Requirement" : "Plan") : selected.state)
-                                .font(.system(size:10,weight:.medium))
-                                .foregroundStyle(ForgePalette.secondary)
-                                .padding(.horizontal,9).frame(height:24)
-                                .background(ForgePalette.softFill,
-                                            in:Capsule())
+                            Button {
+                                model.clearRecordSelection()
+                            } label: {
+                                Image(systemName:"xmark")
+                                    .font(.system(size:9,weight:.semibold))
+                                    .frame(width:24,height:24)
+                                    .background(ForgePalette.softFill,in:RoundedRectangle(cornerRadius:8,style:.continuous))
+                            }
+                            .buttonStyle(.plain)
+                            .help("关闭详情，返回完整关系图")
                         }
-                    } else {
-                        VStack(alignment:.leading,spacing:11) {
-                            Image(systemName:"point.3.connected.trianglepath.dotted")
-                                .symbolRenderingMode(.hierarchical)
-                                .font(.system(size:21))
-                                .foregroundStyle(ForgePalette.secondary)
-                                .frame(width:42,height:42)
-                                .background(ForgePalette.softFill,
-                                            in:RoundedRectangle(cornerRadius:13,style:.continuous))
-                            Text("从关系图选择一个节点")
-                                .font(.system(size:14)).foregroundStyle(ForgePalette.secondary)
-                            Text("Requirement 是目标根节点；Plan 可以从 Requirement 或任意 Plan 继续细化。")
-                                .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
-                        }.padding(.top,16)
+
+                        if let recordDetail = model.recordDetail {
+                            semanticRecordDetail(recordDetail)
+                        }
                     }
-                    if let recordDetail = model.recordDetail {
-                        semanticRecordDetail(recordDetail)
-                    }
+                    .frame(maxWidth:.infinity,alignment:.leading)
+                    .padding(.horizontal,18).padding(.vertical,20)
                 }
-                .frame(maxWidth:790,alignment:.leading)
-                .frame(maxWidth:.infinity,alignment:.leading)
-                .padding(.horizontal,22).padding(.vertical,24)
+                .frame(minWidth:310,idealWidth:350,maxWidth:390)
+                .background(ForgePalette.raisedSurface.opacity(0.72),
+                            in:RoundedRectangle(cornerRadius:16,style:.continuous))
+                .padding(.trailing,12).padding(.vertical,12)
+                .transition(.move(edge:.trailing).combined(with:.opacity))
             }
         }
         .background(ForgePalette.canvas)
@@ -2392,6 +2393,15 @@ private struct RecordsPane: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
+                .onChange(of:planningViewMode) { mode in
+                    guard mode == "map",
+                          let selectedId=model.selectedRecord,
+                          let selected=model.records.first(where:{$0.id == selectedId}),
+                          planningParent(of:selected) == nil,
+                          (planningChildrenByParent[selected.id] ?? []).isEmpty else { return }
+                    planningShowUnlinked = true
+                    planningScrollTarget = selected.id
+                }
 
                 if let focus=planningExecutionFocusRecord,
                    let status=planningExecutionStatus(focus) {
@@ -2430,11 +2440,12 @@ private struct RecordsPane: View {
                 if planningViewMode == "map" {
                     Button {
                         planningFitToView = true
+                        planningScrollTarget = "planning.origin"
                     } label: {
-                        Image(systemName:"arrow.up.left.and.arrow.down.right")
+                        Image(systemName:"arrow.left.and.right")
                     }
                     .buttonStyle(.plain)
-                    .help("适配当前可见工作链路")
+                    .help("适配关系宽度并回到起点")
                     .accessibilityIdentifier("planning.zoom.fit")
 
                     Button {
@@ -2448,7 +2459,7 @@ private struct RecordsPane: View {
                     .help("缩小")
                     .accessibilityIdentifier("planning.zoom.out")
 
-                    Text(planningFitToView ? "适配" : "\(Int(planningZoom * 100))%")
+                    Text(planningFitToView ? "适配宽度" : "\(Int(planningZoom * 100))%")
                         .font(.system(size:9,design:.monospaced))
                         .foregroundStyle(ForgePalette.secondary)
                         .frame(minWidth:32)
@@ -2466,10 +2477,32 @@ private struct RecordsPane: View {
                 }
 
                 Spacer(minLength:0)
-                Text("\(planningVisibleRecords.count)/\(model.records.count)")
+
+                if planningViewMode == "map",!planningUnlinkedRecords.isEmpty {
+                    Button {
+                        planningShowUnlinked.toggle()
+                        planningFitToView = false
+                        planningScrollTarget = "planning.origin"
+                    } label: {
+                        HStack(spacing:4) {
+                            Image(systemName:planningShowUnlinked ? "eye.slash" : "circle.dashed")
+                                .font(.system(size:8.5,weight:.semibold))
+                            Text(planningShowUnlinked ? "隐藏未关联" : "未关联 \(planningUnlinkedRecords.count)")
+                        }
+                        .font(.system(size:9,weight:.medium))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(ForgePalette.secondary)
+                    .help(planningShowUnlinked
+                          ? "隐藏没有父子关系的 Requirement / Plan"
+                          : "显示 \(planningUnlinkedRecords.count) 个没有父子关系的节点")
+                    .accessibilityIdentifier("planning.unlinked.toggle")
+                }
+
+                Text("\(planningViewMode == "map" ? planningVisibleRecords.count : model.records.count)/\(model.records.count)")
                     .font(.system(size:9.5,weight:.medium))
                     .foregroundStyle(ForgePalette.secondary)
-                    .help("当前可见节点 / 全部节点")
+                    .help(planningViewMode == "map" ? "关系图当前节点 / 全部规划节点" : "列表显示全部规划节点")
                 if model.selectedRecord != nil {
                     Button("显示全部") { model.clearRecordSelection() }
                         .buttonStyle(.plain)
@@ -2519,9 +2552,21 @@ private struct RecordsPane: View {
                 .padding(.horizontal,13)
                 .padding(.top,6)
 
-            planningRelationLegend
+            if planningViewMode == "map" {
+                planningRelationLegend
+                    .padding(.horizontal,13)
+                    .padding(.top,6).padding(.bottom,9)
+            } else {
+                HStack(spacing:6) {
+                    Image(systemName:"list.bullet.indent")
+                    Text("列表显示全部规划节点；父级关系写在每一行标题上方")
+                    Spacer(minLength:0)
+                }
+                .font(.system(size:9.2,weight:.medium))
+                .foregroundStyle(ForgePalette.secondary)
                 .padding(.horizontal,13)
                 .padding(.top,6).padding(.bottom,9)
+            }
 
             Divider().opacity(0.55)
 
@@ -2540,7 +2585,31 @@ private struct RecordsPane: View {
                 .frame(maxWidth:.infinity,alignment:.leading)
                 Spacer(minLength:0)
             } else if planningViewMode == "map" {
-                planningCanvas
+                if planningVisibleRecords.isEmpty {
+                    VStack(alignment:.leading,spacing:10) {
+                        Image(systemName:"point.3.connected.trianglepath.dotted")
+                            .font(.system(size:20))
+                            .foregroundStyle(ForgePalette.secondary)
+                        Text("当前没有父子关系可画")
+                            .font(.system(size:12,weight:.semibold))
+                        Text("关系图只显示 Requirement → 根 Plan / Plan → 子 Plan。没有关系的节点仍可在列表、搜索或“未关联”中访问。")
+                            .font(.system(size:10.5))
+                            .foregroundStyle(ForgePalette.secondary)
+                            .fixedSize(horizontal:false,vertical:true)
+                        if !planningUnlinkedRecords.isEmpty {
+                            Button("显示 \(planningUnlinkedRecords.count) 个未关联节点") {
+                                planningShowUnlinked = true
+                            }
+                            .buttonStyle(.plain)
+                            .font(.system(size:10,weight:.semibold))
+                            .foregroundStyle(ForgePalette.accent)
+                        }
+                    }
+                    .padding(18)
+                    .frame(maxWidth:.infinity,maxHeight:.infinity,alignment:.topLeading)
+                } else {
+                    planningCanvas
+                }
             } else {
                 planningList
             }
@@ -2682,7 +2751,7 @@ private struct RecordsPane: View {
                 .font(.system(size:8,weight:.bold))
             Text("细化为子 Plan")
             Spacer(minLength:4)
-            Text("箭头只表示结构关系")
+            Text(planningShowUnlinked ? "包含未关联节点" : "默认隐藏无关系节点")
                 .foregroundStyle(ForgePalette.secondary.opacity(0.82))
         }
         .font(.system(size:9.2,weight:.medium))
@@ -2700,6 +2769,10 @@ private struct RecordsPane: View {
             } else {
                 cursor=nil
             }
+        }
+        if planningParent(of:item) == nil,
+           (planningChildrenByParent[item.id] ?? []).isEmpty {
+            planningShowUnlinked = true
         }
         planningViewMode="map"
         planningSearch=""
@@ -2794,6 +2867,11 @@ private struct RecordsPane: View {
             ScrollViewReader { proxy in
                 ScrollView([.horizontal,.vertical]) {
                     ZStack(alignment:.topLeading) {
+                        Color.clear
+                            .frame(width:1,height:1)
+                            .position(x:1,y:1)
+                            .id("planning.origin")
+
                         ForEach(0...maxDepth,id:\.self) { depth in
                             let x=CGFloat(depth) * columnStep
                             RoundedRectangle(cornerRadius:12,style:.continuous)
@@ -2927,7 +3005,7 @@ private struct RecordsPane: View {
                             .accessibilityIdentifier("planning.expand.all")
                             Divider().frame(height:10)
                         }
-                        Text(planningFitToView ? "适配 · \(Int(scale * 100))%" : "\(Int(scale * 100))%")
+                        Text(planningFitToView ? "适配宽度 · \(Int(scale * 100))%" : "\(Int(scale * 100))%")
                     }
                     .font(.system(size:9,design:.monospaced))
                     .foregroundStyle(ForgePalette.secondary.opacity(0.86))
@@ -2942,9 +3020,8 @@ private struct RecordsPane: View {
     private func planningCanvasScale(viewport:CGSize,content:CGSize) -> CGFloat {
         guard planningFitToView else { return planningZoom }
         let width=max(1,viewport.width - 28)
-        let height=max(1,viewport.height - 28)
-        let fit=min(width / max(1,content.width),height / max(1,content.height))
-        return min(1,max(0.55,fit))
+        let fit=width / max(1,content.width)
+        return min(1,max(0.72,fit))
     }
 
     private var planningChildrenByParent: [String:[ForgeRecord]] {
@@ -2956,21 +3033,38 @@ private struct RecordsPane: View {
         return result
     }
 
+    private var planningUnlinkedRecords: [ForgeRecord] {
+        let children=planningChildrenByParent
+        return model.records.filter {
+            planningParent(of:$0) == nil && (children[$0.id] ?? []).isEmpty
+        }
+    }
+
+    private var planningGraphRecords: [ForgeRecord] {
+        guard !planningShowUnlinked else { return model.records }
+        let children=planningChildrenByParent
+        return model.records.filter {
+            planningParent(of:$0) != nil || !(children[$0.id] ?? []).isEmpty
+        }
+    }
+
     private var planningVisibleRecords: [ForgeRecord] {
         let children=planningChildrenByParent
+        let graphRecords=planningGraphRecords
+        let graphIds=Set(graphRecords.map(\.id))
         var result:[ForgeRecord]=[]
         var visited=Set<String>()
 
         func append(_ item:ForgeRecord) {
-            guard visited.insert(item.id).inserted else { return }
+            guard graphIds.contains(item.id),visited.insert(item.id).inserted else { return }
             result.append(item)
             guard !collapsedPlanningRecordIds.contains(item.id) else { return }
-            for child in children[item.id] ?? [] {
+            for child in children[item.id] ?? [] where graphIds.contains(child.id) {
                 append(child)
             }
         }
 
-        for root in model.records where planningParent(of:root) == nil {
+        for root in graphRecords where planningParent(of:root) == nil {
             append(root)
         }
         return result
