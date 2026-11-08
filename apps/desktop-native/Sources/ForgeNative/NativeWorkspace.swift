@@ -2143,13 +2143,33 @@ final class NativeWorkspace: ObservableObject {
             guard message.role == "user" || (message.role == "assistant" && message.incomplete != true) else { return nil }
             return ["role":message.role,"content":message.text]
         }
-        messages.append([
-            "role":"user",
-            "content":providerPrompt(
-                prompt,contextPaths:contextPaths,
-                requirementId:thread.requirementId,planId:thread.planId
-            )
-        ])
+        var content = providerPrompt(
+            prompt,contextPaths:contextPaths,
+            requirementId:thread.requirementId,planId:thread.planId
+        )
+        // A stopped turn is audit evidence, not an authoritative assistant
+        // reply. Carry only canonical Process IDs into the next user turn so
+        // an ordinary "continue" can reconcile before repeating any effect.
+        if let last = thread.messages.last, last.role == "assistant",
+           last.incomplete == true {
+            let ids = (last.activityEvents ?? []).compactMap { event -> String? in
+                guard event.label == "run_command",
+                      event.status == "running" || event.status == "unknown",
+                      let id = event.detail, id.hasPrefix("proc_"), id.count <= 128,
+                      id.utf8.allSatisfy({ byte in
+                          byte == 95 || (48...57).contains(byte)
+                              || (65...90).contains(byte) || (97...122).contains(byte)
+                      }) else { return nil }
+                return id
+            }
+            let uniqueIDs = Array(Set(ids)).sorted().prefix(3)
+            if !uniqueIDs.isEmpty {
+                content += "\nPrior incomplete run_command Process IDs (not completion evidence): "
+                    + uniqueIDs.joined(separator:", ")
+                    + ". First use process_status for authoritative terminal receipts. Do not re-run these commands."
+            }
+        }
+        messages.append(["role":"user","content":content])
         return messages
     }
 

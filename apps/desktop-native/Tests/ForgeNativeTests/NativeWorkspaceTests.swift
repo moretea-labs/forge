@@ -185,6 +185,45 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(thread.messages[1].incomplete,true)
     }
 
+    func testIncompleteManagedProcessIsAvailableToOrdinaryFollowUpWithoutReplaying() {
+        var thread = ChatThread(provider:"api")
+        thread.messages = [
+            ChatMessage(role:"user",text:"run build"),
+            ChatMessage(
+                role:"assistant",text:"Process accepted",activityEvents:[
+                    AgentLiveActivityEvent(
+                        phase:"tool",label:"run_command",detail:"proc_abc_123",
+                        status:"running",startedAt:"now",completedAt:nil,toolCallId:"call-1"
+                    ),
+                    AgentLiveActivityEvent(
+                        phase:"tool",label:"run_command",detail:"proc_abc_123",
+                        status:"unknown",startedAt:"now",completedAt:nil,toolCallId:"call-2"
+                    ),
+                    AgentLiveActivityEvent(
+                        phase:"tool",label:"read_file",detail:"proc_not_ours",
+                        status:"running",startedAt:"now",completedAt:nil,toolCallId:"call-3"
+                    )
+                ],incomplete:true
+            )
+        ]
+        let resumed = NativeWorkspace.apiTurnMessages(thread,prompt:"继续",contextPaths:[])
+        XCTAssertEqual(resumed.count,2)
+        XCTAssertTrue(resumed[1]["content"]?.contains("proc_abc_123") == true)
+        XCTAssertTrue(resumed[1]["content"]?.contains("process_status") == true)
+        XCTAssertEqual(resumed[1]["content"]?.components(separatedBy:"proc_abc_123").count,2)
+        XCTAssertFalse(resumed[1]["content"]?.contains("proc_not_ours") == true)
+        XCTAssertFalse(resumed[1]["content"]?.contains("Process accepted") == true)
+
+        thread.messages[1].activityEvents = [
+            AgentLiveActivityEvent(
+                phase:"tool",label:"run_command",detail:"proc_wrong;rm",
+                status:"running",startedAt:"now",completedAt:nil,toolCallId:"call-4"
+            )
+        ]
+        let invalid = NativeWorkspace.apiTurnMessages(thread,prompt:"继续",contextPaths:[])
+        XCTAssertFalse(invalid[1]["content"]?.contains("process_status") == true)
+    }
+
     func testManagedProcessActivityRemainsRunningUntilTerminalReceipt() {
         let events = NativeWorkspace.apiActivityEvents([[
             "name":"run_command","ok":false,"status":"running",
