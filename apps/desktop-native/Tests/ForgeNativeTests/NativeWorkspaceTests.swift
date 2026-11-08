@@ -378,7 +378,7 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(connection?.tunnel.ready,false)
         XCTAssertEqual(connection?.repairAvailable,true)
         XCTAssertEqual(connection?.repairLabel,"Refresh Forge Connector")
-        XCTAssertEqual(NativeWorkspace.connectionLabel(connection),"MCP 隧道未就绪")
+        XCTAssertEqual(NativeWorkspace.connectionLabel(connection),"远程 MCP 未连接")
         XCTAssertEqual(NativeWorkspace.connectionLabel(nil),"MCP 状态未知")
         XCTAssertNil(NativeWorkspace.controllerConnectionDetail(["unexpected":true]))
     }
@@ -827,7 +827,12 @@ final class NativeWorkspaceTests: XCTestCase {
             "FORGE_DESKTOP_LOCAL_TOOL_OUTCOME_UNKNOWN", toolName:"git_status"
         )
         XCTAssertTrue(readOnlyTimeout.message.contains("git_status"))
-        XCTAssertTrue(readOnlyTimeout.message.contains("90 秒"))
+        XCTAssertTrue(readOnlyTimeout.message.contains("结果未确认"))
+        let readTimeout = NativeWorkspace.agentTurnFailure(
+            "FORGE_DESKTOP_LOCAL_TOOL_TIMEOUT", toolName:"git_status"
+        )
+        XCTAssertTrue(readTimeout.message.contains("只读查询超时"))
+        XCTAssertFalse(readTimeout.effectReviewRequired)
         XCTAssertFalse(readOnlyTimeout.effectReviewRequired)
 
         let effectTimeout = NativeWorkspace.agentTurnFailure(
@@ -1065,7 +1070,8 @@ final class NativeWorkspaceTests: XCTestCase {
             "activeCheckoutId":"checkout_active",
             "checkouts":[
                 ["checkoutId":"checkout_active","path":"/tmp/active","branch":"main"],
-                ["checkoutId":"checkout_requested","path":"/tmp/requested","branch":"feature"]
+                ["checkoutId":"checkout_requested","path":"/tmp/requested","branch":"feature"],
+                ["checkoutId":"checkout_removed","path":"/tmp/removed","branch":"old","lifecycle":"removed"]
             ]
         ]]
         let active = NativeWorkspace.repositoryCheckoutContext(result,requestedCheckoutId:nil)
@@ -1077,6 +1083,10 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(requested.checkoutId,"checkout_requested")
         XCTAssertEqual(requested.checkoutBranch,"feature")
         XCTAssertEqual(requested.checkoutRoot?.path,"/tmp/requested")
+
+        let removed = NativeWorkspace.repositoryCheckoutContext(result,requestedCheckoutId:"checkout_removed")
+        XCTAssertNil(removed.checkoutRoot)
+        XCTAssertNil(removed.checkoutBranch)
     }
 
     func testCheckoutPathValidationRequiresGitMetadata() throws {

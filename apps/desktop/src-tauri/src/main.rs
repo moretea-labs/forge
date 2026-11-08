@@ -1851,6 +1851,27 @@ fn prepare_local_tool_arguments(name: &str, mut arguments: Value) -> Result<Valu
     Ok(arguments)
 }
 
+fn local_tool_execution_timeout(name: &str, arguments: &Value) -> std::time::Duration {
+    match name {
+        // Admit and await a command's actual Process Runtime terminal receipt.
+        "run_command" => std::time::Duration::from_millis(
+            arguments.get("timeout_ms").and_then(Value::as_u64)
+                .unwrap_or(60_000).clamp(1_000, 60_000) + 60_000
+        ),
+        "apply_patch" => std::time::Duration::from_secs(180),
+        "git_commit" => std::time::Duration::from_secs(150),
+        _ => std::time::Duration::from_secs(90),
+    }
+}
+
+fn local_tool_timeout_error(name: &str) -> &'static str {
+    if matches!(name, "run_command" | "apply_patch" | "git_commit") {
+        "FORGE_DESKTOP_LOCAL_TOOL_OUTCOME_UNKNOWN"
+    } else {
+        "FORGE_DESKTOP_LOCAL_TOOL_TIMEOUT"
+    }
+}
+
 fn local_tool_failure_phase(error: &str) -> &'static str {
     match error {
         "FORGE_DESKTOP_LOCAL_TOOL_DELIVERY_UNKNOWN"
@@ -1913,6 +1934,7 @@ async fn run_local_forge_tool<H: LocalApiHost + Sync>(
             .map(|home| home.join(".bun/bin/bun"))
             .filter(|candidate| candidate.is_file());
         let bun = home_bun.unwrap_or_else(|| PathBuf::from("bun"));
+        let tool_timeout = local_tool_execution_timeout(&tool_name, &arguments);
         let arguments = prepare_local_tool_arguments(&tool_name, arguments)?;
         let payload = json!({
             "controllerHome": home.to_string_lossy(),
@@ -1940,8 +1962,8 @@ async fn run_local_forge_tool<H: LocalApiHost + Sync>(
         // A lost or unresponsive tool process cannot hold the GUI's worker
         // indefinitely. Drop kills the child; effect outcomes remain unknown
         // until the single Forge Process authority is inspected.
-        let completed = timeout(std::time::Duration::from_secs(90), child.wait_with_output())
-            .await.map_err(|_| "FORGE_DESKTOP_LOCAL_TOOL_OUTCOME_UNKNOWN")?
+        let completed = timeout(tool_timeout, child.wait_with_output())
+            .await.map_err(|_| local_tool_timeout_error(&tool_name))?
             .map_err(|_| "FORGE_DESKTOP_LOCAL_TOOL_OUTCOME_UNKNOWN")?;
         if !completed.status.success() {
             return Err("FORGE_DESKTOP_LOCAL_TOOL_RUNNER_FAILED".to_string());
@@ -2986,6 +3008,16 @@ mod tests {
     }
 
     #[test]
+    fn local_tool_timeout_matches_tool_budget_and_effect_safety() {
+        assert_eq!(local_tool_execution_timeout("read_file", &json!({})).as_secs(), 90);
+        assert_eq!(local_tool_execution_timeout("run_command", &json!({"timeout_ms":1000})).as_secs(), 61);
+        assert_eq!(local_tool_execution_timeout("run_command", &json!({})).as_secs(), 120);
+        assert_eq!(local_tool_execution_timeout("apply_patch", &json!({})).as_secs(), 180);
+        assert_eq!(local_tool_timeout_error("git_status"), "FORGE_DESKTOP_LOCAL_TOOL_TIMEOUT");
+        assert_eq!(local_tool_timeout_error("apply_patch"), "FORGE_DESKTOP_LOCAL_TOOL_OUTCOME_UNKNOWN");
+    }
+
+    #[test]
     fn local_tool_failure_phase_distinguishes_unknown_results_from_terminal_failures() {
         assert_eq!(local_tool_failure_phase("FORGE_DESKTOP_LOCAL_TOOL_OUTCOME_UNKNOWN"), "unknown");
         assert_eq!(local_tool_failure_phase("FORGE_DESKTOP_LOCAL_TOOL_DELIVERY_UNKNOWN"), "unknown");
@@ -2994,6 +3026,7 @@ mod tests {
         assert_eq!(local_tool_failure_phase("FORGE_DESKTOP_LOCAL_TOOL_RESULT_INVALID"), "unknown");
         assert_eq!(local_tool_failure_phase("FORGE_DESKTOP_LOCAL_TOOL_RUNNER_UNAVAILABLE"), "failed");
         assert_eq!(local_tool_failure_phase("FORGE_DESKTOP_LOCAL_TOOL_ARGUMENTS_INVALID"), "failed");
+        assert_eq!(local_tool_failure_phase("FORGE_DESKTOP_LOCAL_TOOL_TIMEOUT"), "failed");
     }
 
     #[test]

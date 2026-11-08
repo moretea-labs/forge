@@ -894,7 +894,10 @@ final class NativeWorkspace: ObservableObject {
         let repository = result["repository"] as? [String:Any] ?? [:]
         let targetCheckoutId = requestedCheckoutId ?? repository["activeCheckoutId"] as? String
         let checkouts = repository["checkouts"] as? [[String:Any]] ?? []
-        let target = checkouts.first { $0["checkoutId"] as? String == targetCheckoutId }
+        let target = checkouts.first {
+            $0["checkoutId"] as? String == targetCheckoutId
+                && ($0["lifecycle"] as? String ?? "active") == "active"
+        }
         let root = target.flatMap { $0["path"] as? String }
             .map { URL(fileURLWithPath:$0).resolvingSymlinksInPath().standardizedFileURL }
         return RepositoryCheckoutContext(
@@ -1197,7 +1200,7 @@ final class NativeWorkspace: ObservableObject {
         if detail.ready { return "MCP 已连接" }
         if !detail.configured { return "MCP 未配置" }
         if !detail.controller.ready { return "控制器未就绪" }
-        if !detail.tunnel.ready { return "MCP 隧道未就绪" }
+        if !detail.tunnel.ready { return "远程 MCP 未连接" }
         return "MCP 未就绪"
     }
 
@@ -2214,8 +2217,10 @@ final class NativeWorkspace: ObservableObject {
         }
         let tool = toolName.map { "「\($0)」" } ?? "本地工具"
         switch raw {
+        case "FORGE_DESKTOP_LOCAL_TOOL_TIMEOUT":
+            return ("\(tool) 的只读查询超时；没有执行写入，可以缩小查询范围后重试。",false)
         case "FORGE_DESKTOP_LOCAL_TOOL_OUTCOME_UNKNOWN":
-            return ("\(tool) 在 90 秒内没有返回结果；本次结果未知，未自动重试。",false)
+            return ("\(tool) 的执行结果未确认；本次未自动重试。",false)
         case "FORGE_DESKTOP_LOCAL_TOOL_DELIVERY_UNKNOWN":
             return ("\(tool) 的请求传递状态未知；本次未自动重试。",false)
         case "FORGE_DESKTOP_LOCAL_TOOL_RESULT_INVALID":
@@ -2400,9 +2405,9 @@ final class NativeWorkspace: ObservableObject {
             )
             let recoveryNote: String
             if restored && !failure.effectReviewRequired {
-                recoveryNote = "请求内容已恢复到输入框；本次没有未确认的写入操作，可以修改后重试。"
+                recoveryNote = "原请求已恢复到输入框；本次没有未确认的写入操作，可以修改后重试。"
             } else if restored {
-                recoveryNote = "请求内容已恢复到输入框；请先查看下方执行记录和 Changes，确认写入结果后再重试。"
+                recoveryNote = "原请求已恢复到输入框。请先展开上方最近一条回复中的工具调用记录，并检查 Changes；写入结果未确认前不要重复发送。"
             } else {
                 recoveryNote = "未覆盖当前输入；如需重试，可从历史消息选择“重新编辑”。"
             }
