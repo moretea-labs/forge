@@ -865,6 +865,32 @@ fn parse_joycode_session(state: &Value) -> Result<JoyCodeSession, String> {
     })
 }
 
+fn parse_joycode_gateway_signing_key(source: &str) -> Result<Vec<u8>, String> {
+    const NEEDLE: &str = "HmacSHA256(e,\"";
+    let mut candidates: Vec<Vec<u8>> = Vec::new();
+    let mut offset = 0usize;
+    while let Some(relative) = source[offset..].find(NEEDLE) {
+        let value_start = offset + relative + NEEDLE.len();
+        let tail = &source[value_start..];
+        if let Some(value_end) = tail.find('"') {
+            let candidate = &tail[..value_end];
+            if candidate.len() == 32
+                && candidate.is_ascii()
+                && !candidate.contains('\\') {
+                let bytes = candidate.as_bytes().to_vec();
+                if !candidates.iter().any(|existing| existing == &bytes) {
+                    candidates.push(bytes);
+                }
+            }
+        }
+        offset = value_start;
+    }
+    if candidates.len() == 1 {
+        return Ok(candidates.remove(0));
+    }
+    Err("FORGE_DESKTOP_JOYCODE_SIGNER_UNAVAILABLE".into())
+}
+
 #[cfg(target_os = "macos")]
 fn read_joycode_gateway_signing_key() -> Result<Vec<u8>, String> {
     let path = Path::new(JOYCODE_EXTENSION_PATH);
@@ -873,25 +899,7 @@ fn read_joycode_gateway_signing_key() -> Result<Vec<u8>, String> {
         return Err("FORGE_DESKTOP_JOYCODE_SIGNER_UNAVAILABLE".into());
     }
     let source = fs::read_to_string(path).map_err(|_| "FORGE_DESKTOP_JOYCODE_SIGNER_UNAVAILABLE")?;
-    let marker = "HmacSHA256";
-    let mut offset = 0usize;
-    while let Some(relative) = source[offset..].find(marker) {
-        let start = offset + relative;
-        let end = (start + 320).min(source.len());
-        let window = &source[start..end];
-        let bytes = window.as_bytes();
-        for index in 0..bytes.len().saturating_sub(42) {
-            if bytes[index] != b'"' { continue; }
-            let candidate = &window[index + 1..index + 41];
-            if bytes.get(index + 41) == Some(&b'"')
-                && candidate.len() == 40
-                && candidate.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-                return Ok(candidate.as_bytes().to_vec());
-            }
-        }
-        offset = start + marker.len();
-    }
-    Err("FORGE_DESKTOP_JOYCODE_SIGNER_UNAVAILABLE".into())
+    parse_joycode_gateway_signing_key(&source)
 }
 
 fn hmac_sha256_hex(key: &[u8], message: &[u8]) -> String {
@@ -2043,6 +2051,11 @@ mod tests {
         assert_eq!(
             hmac_sha256_hex(b"key", b"The quick brown fox jumps over the lazy dog"),
             "f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8"
+        );
+        let fake_source = r#"function g(e){return crypto.HmacSHA256(e,"0123456789abcdefghijklmnopqrstuv")}"#;
+        assert_eq!(
+            parse_joycode_gateway_signing_key(fake_source).expect("fake signer"),
+            b"0123456789abcdefghijklmnopqrstuv"
         );
 
         let mut session = session;
