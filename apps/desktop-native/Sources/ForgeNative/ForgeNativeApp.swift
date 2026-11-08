@@ -1528,6 +1528,8 @@ private struct AgentPane: View {
         .buttonStyle(.plain)
         .disabled(model.repoId == nil)
         .help("打开当前项目的 \(title)")
+        .accessibilityLabel(title)
+        .accessibilityIdentifier("agent.semantic-context.\(page.rawValue)")
     }
 
     private func starterPromptButton(_ title: String, systemImage: String, prompt: String) -> some View {
@@ -2519,6 +2521,7 @@ private struct RecordsPane: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
+                .frame(width:168)
                 .onChange(of:planningViewMode) { mode in
                     guard mode == "map",
                           let selectedId=model.selectedRecord,
@@ -3006,10 +3009,10 @@ private struct RecordsPane: View {
                                 .offset(x:x,y:0)
 
                             VStack(alignment:.leading,spacing:2) {
-                                Text(depth == 0 ? "起点" : "层级 \(depth)")
+                                Text(depth == 0 ? "起点" : "Plan 第 \(depth) 层")
                                     .font(.system(size:9.5,weight:.semibold))
                                     .foregroundStyle(ForgePalette.ink.opacity(0.82))
-                                Text(depth == 0 ? "Requirement / 独立 Plan" : "沿箭头继续细化")
+                                Text(depth == 0 ? "Requirement / 独立 Plan" : "沿箭头读取父子关系")
                                     .font(.system(size:8.3))
                                     .foregroundStyle(ForgePalette.secondary)
                             }
@@ -3069,25 +3072,28 @@ private struct RecordsPane: View {
                         }
                         .frame(width:size.width,height:size.height)
 
-                        if hasSelection {
-                            ForEach(planningVisibleRecords) { item in
-                                if let child=positions[item.id],
-                                   let parent=planningParent(of:item),
-                                   let parentPoint=positions[parent.id],
-                                   selectedPathIds.contains(item.id),
-                                   selectedPathIds.contains(parent.id) {
-                                    let startX=parentPoint.x + planningNodeWidth
-                                    let endX=child.x
-                                    let midX=(startX + endX) / 2
-                                    let midY=((parentPoint.y + child.y) / 2) + planningNodeHeight / 2
-                                    Text(parent.kind == .requirement ? "拥有" : "细化")
-                                        .font(.system(size:7.8,weight:.semibold))
-                                        .foregroundStyle(ForgePalette.accent)
-                                        .padding(.horizontal,5).padding(.vertical,2)
-                                        .background(ForgePalette.raisedSurface,in:Capsule())
-                                        .overlay(Capsule().stroke(ForgePalette.accent.opacity(0.16),lineWidth:0.6))
-                                        .position(x:midX,y:midY)
-                                }
+                        ForEach(planningVisibleRecords) { item in
+                            if let child=positions[item.id],
+                               let parent=planningParent(of:item),
+                               let parentPoint=positions[parent.id],
+                               !hasSelection || (
+                                   selectedPathIds.contains(item.id)
+                                   && selectedPathIds.contains(parent.id)
+                               ) {
+                                let startX=parentPoint.x + planningNodeWidth
+                                let endX=child.x
+                                let midX=(startX + endX) / 2
+                                let midY=((parentPoint.y + child.y) / 2) + planningNodeHeight / 2
+                                Text(parent.kind == .requirement ? "拥有" : "细化")
+                                    .font(.system(size:7.8,weight:.semibold))
+                                    .foregroundStyle(hasSelection ? ForgePalette.accent : ForgePalette.secondary)
+                                    .padding(.horizontal,5).padding(.vertical,2)
+                                    .background(ForgePalette.raisedSurface.opacity(0.94),in:Capsule())
+                                    .overlay(Capsule().stroke(
+                                        (hasSelection ? ForgePalette.accent : ForgePalette.secondary).opacity(0.16),
+                                        lineWidth:0.6
+                                    ))
+                                    .position(x:midX,y:midY)
                             }
                         }
 
