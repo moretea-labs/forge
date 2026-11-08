@@ -161,6 +161,30 @@ final class NativeWorkspaceTests: XCTestCase {
         ]),"request")
     }
 
+    func testApiTurnHistoryExcludesIncompleteAssistantEvidence() {
+        var thread = ChatThread(provider:"api")
+        thread.messages = [
+            ChatMessage(role:"user",text:"implement the change"),
+            ChatMessage(role:"assistant",text:"工具结果需要核对",incomplete:true),
+            ChatMessage(role:"user",text:"continue after inspecting the changes"),
+            ChatMessage(role:"assistant",text:"Checked the current repository status."),
+            ChatMessage(role:"assistant",text:"partial output",incomplete:true)
+        ]
+        let messages = NativeWorkspace.apiTurnMessages(
+            thread,prompt:"finish verification",contextPaths:[]
+        )
+        XCTAssertEqual(messages.map { $0["role"] },["user","user","assistant","user"])
+        XCTAssertEqual(messages.map { $0["content"] },[
+            "implement the change",
+            "continue after inspecting the changes",
+            "Checked the current repository status.",
+            "finish verification"
+        ])
+        // Audit evidence remains intact in the persisted ChatThread.
+        XCTAssertEqual(thread.messages.count,5)
+        XCTAssertEqual(thread.messages[1].incomplete,true)
+    }
+
     func testNativeApiTurnEventFramingIsTyped() {
         let progress = #"{"type":"progress","data":{"name":"read_file","phase":"started"}}"#.data(using:.utf8)!
         XCTAssertEqual(ForgeApiTurn.decodeEvent(progress)?["type"] as? String,"progress")

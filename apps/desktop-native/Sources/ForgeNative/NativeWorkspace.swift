@@ -2139,7 +2139,8 @@ final class NativeWorkspace: ObservableObject {
         contextPaths: [String]
     ) -> [[String:String]] {
         var messages = thread.messages.suffix(39).compactMap { message -> [String:String]? in
-            guard message.role == "user" || message.role == "assistant" else { return nil }
+            // Incomplete assistant messages are UI/evidence, not authoritative model replies.
+            guard message.role == "user" || (message.role == "assistant" && message.incomplete != true) else { return nil }
             return ["role":message.role,"content":message.text]
         }
         messages.append([
@@ -2448,7 +2449,8 @@ final class NativeWorkspace: ObservableObject {
                 threads[current].messages.append(ChatMessage(
                     role:"assistant", text:failure.message,
                     toolActivityCount:completedCount > 0 ? completedCount : nil,
-                    activityEvents:activityEvents.isEmpty ? nil : activityEvents
+                    activityEvents:activityEvents.isEmpty ? nil : activityEvents,
+                    incomplete:true
                 ))
                 threads[current].updatedAt = Date()
                 persist()
