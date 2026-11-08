@@ -112,6 +112,16 @@ async function run() {
   const value = result.structuredContent ?? {
     content: result.content?.filter((part) => part.type === 'text').map((part) => part.text).join('\n') ?? '',
   };
+  // ripgrep exit 1 means a successful search with zero matches, not a broken
+  // tool. Preserve other failures (including permissions and exit 2) as errors.
+  if (input.tool === 'search_code' && value.exitCode === 1
+      && value.stdout === '' && value.stderr === ''
+      && value.error?.code === 'PROCESS_COMMAND_FAILED') {
+    process.stdout.write(JSON.stringify({ ok: true, result: {
+      query: args.query, path: args.path ?? '.', matches: [], exitCode: 1,
+    }}));
+    return;
+  }
   process.stdout.write(JSON.stringify({ ok: result.isError !== true, result: value }));
 }
 try {
