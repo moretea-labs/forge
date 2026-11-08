@@ -317,6 +317,22 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(NativeWorkspace.semanticRecordId(prefix:"PLAN",uuid:uuid),"PLAN-0123456789ab")
     }
 
+    func testProjectRequirementRowsExcludeForeignGlobalRequirementsWithoutGuessing() {
+        let rows = NativeWorkspace.projectRequirementRows(
+            requirementRows:[
+                ["requirementId":"REQ-linked","title":"Linked"],
+                ["requirementId":"REQ-local","repoId":"repo-forge","title":"Local standalone"],
+                ["requirementId":"REQ-foreign","repoId":"repo-other","title":"Foreign"],
+                ["requirementId":"REQ-global","title":"Unscoped global"]
+            ],
+            planRows:[
+                ["planId":"PLAN-a","requirementId":"REQ-linked","goal":"Plan A"]
+            ],
+            repoId:"repo-forge"
+        )
+        XCTAssertEqual(rows.compactMap { $0["requirementId"] as? String },["REQ-linked","REQ-local"])
+    }
+
     func testPlanningTreeKeepsRequirementOptionalAndNestsChildPlans() {
         let rows = NativeWorkspace.planningRecords(
             requirementRows:[

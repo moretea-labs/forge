@@ -1031,7 +1031,12 @@ final class NativeWorkspace: ObservableObject {
                 let requirementRows = requirementData["requirements"] as? [[String:Any]] ?? []
                 let planData = planList["data"] as? [String:Any] ?? planList
                 let planRows = planData["plans"] as? [[String:Any]] ?? []
-                records = Self.planningRecords(requirementRows:requirementRows,planRows:planRows)
+                let projectRequirements = Self.projectRequirementRows(
+                    requirementRows:requirementRows,
+                    planRows:planRows,
+                    repoId:repoId
+                )
+                records = Self.planningRecords(requirementRows:projectRequirements,planRows:planRows)
             } else {
                 let result = try await ForgeBridge.request("read_project_plan_list",["repoId":repoId])
                 guard self.repoId == repoId,self.page == targetPage else { return }
@@ -1058,6 +1063,19 @@ final class NativeWorkspace: ObservableObject {
             self.error = error.localizedDescription
         }
     }
+    nonisolated static func projectRequirementRows(
+        requirementRows: [[String:Any]],
+        planRows: [[String:Any]],
+        repoId: String
+    ) -> [[String:Any]] {
+        let linkedRequirementIds = Set(planRows.compactMap { $0["requirementId"] as? String })
+        return requirementRows.filter { row in
+            guard let requirementId = row["requirementId"] as? String else { return false }
+            let placedRepoId = row["repoId"] as? String
+            return placedRepoId == repoId || linkedRequirementIds.contains(requirementId)
+        }
+    }
+
     nonisolated static func planningRecords(
         requirementRows: [[String:Any]],
         planRows: [[String:Any]]
