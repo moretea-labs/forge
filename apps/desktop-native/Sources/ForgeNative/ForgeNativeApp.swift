@@ -1239,26 +1239,40 @@ private struct AgentPane: View {
                     .disabled(true)
                 if model.checkoutId != nil {
                     Divider()
-                    Button {
-                        model.allowApiEffects.toggle()
-                    } label: {
-                        Label(model.allowApiEffects ? "下一次发送已授权写操作" : "仅下一次发送允许写操作",
-                              systemImage:model.allowApiEffects ? "checkmark.shield.fill" : "shield")
+                    Menu("仓库权限") {
+                        Button {
+                            Task { _ = await model.setRepositoryAccessMode("request") }
+                        } label: {
+                            if model.repositoryAccessMode == "request" {
+                                Label("Request · 只读外部 Agent",systemImage:"checkmark")
+                            } else {
+                                Text("Request · 只读外部 Agent")
+                            }
+                        }
+                        Button {
+                            Task { _ = await model.setRepositoryAccessMode("full_access") }
+                        } label: {
+                            if model.repositoryAccessMode == "full_access" {
+                                Label("Full Access · 持续允许普通仓库写入",systemImage:"checkmark")
+                            } else {
+                                Text("Full Access · 持续允许普通仓库写入")
+                            }
+                        }
                     }
-                    .disabled(model.busy)
-                    .accessibilityLabel("API 写操作授权")
-                    .accessibilityValue(model.allowApiEffects ? "下一次发送已授权" : "未授权")
-                    .accessibilityHint("授权仅对下一次 API 发送有效")
-                    .accessibilityIdentifier("agent.api-effects")
+                    .disabled(model.busy || model.repositoryAccessLoading)
+                    .accessibilityLabel("仓库访问权限")
+                    .accessibilityValue(model.repositoryAccessMode == "full_access" ? "Full Access" : "Request")
+                    .accessibilityHint("权限属于当前仓库并持续生效，直到再次修改；密钥和破坏性操作仍使用独立安全边界")
+                    .accessibilityIdentifier("agent.repository-access")
                 }
             }
         } label: {
             HStack(spacing:5) {
-                Image(systemName:model.allowApiEffects && NativeWorkspace.matchesExternalProvider(model.selectedProvider)
+                Image(systemName:model.repositoryAccessMode == "full_access" && NativeWorkspace.matchesExternalProvider(model.selectedProvider)
                       ? "checkmark.shield.fill"
                       : (NativeWorkspace.matchesExternalProvider(model.selectedProvider) ? "server.rack" : "cpu"))
                     .font(.system(size:9.5,weight:.medium))
-                    .foregroundStyle(model.allowApiEffects && NativeWorkspace.matchesExternalProvider(model.selectedProvider)
+                    .foregroundStyle(model.repositoryAccessMode == "full_access" && NativeWorkspace.matchesExternalProvider(model.selectedProvider)
                                      ? ForgePalette.accent : ForgePalette.secondary)
                 Text(composerConfigurationLabel)
                     .lineLimit(1)
@@ -1277,9 +1291,9 @@ private struct AgentPane: View {
         }
         .menuStyle(.borderlessButton)
         .fixedSize(horizontal:false,vertical:true)
-        .help(model.allowApiEffects && NativeWorkspace.matchesExternalProvider(model.selectedProvider)
-              ? "下一次外部模型发送已授权受 Forge 约束的写操作"
-              : "选择 Provider、模型与推理强度")
+        .help(model.repositoryAccessMode == "full_access" && NativeWorkspace.matchesExternalProvider(model.selectedProvider)
+              ? "当前仓库为 Full Access：普通仓库操作持续允许；密钥与破坏性操作仍单独受保护"
+              : "选择 Provider、模型、推理强度与仓库访问权限")
         .accessibilityLabel("Agent 配置")
         .accessibilityValue(compactConfigurationAccessibilityValue)
         .accessibilityIdentifier("agent.configuration.compact")
@@ -1301,8 +1315,8 @@ private struct AgentPane: View {
         let provider = model.selectedProvider == "joycode"
             ? "JoyCode"
             : (model.selectedProvider == "api" ? "兼容 API" : "Codex CLI")
-        let writeScope = NativeWorkspace.matchesExternalProvider(model.selectedProvider) && model.allowApiEffects
-            ? "，下一次发送允许写操作" : ""
+        let writeScope = NativeWorkspace.matchesExternalProvider(model.selectedProvider)
+            ? (model.repositoryAccessMode == "full_access" ? "，仓库 Full Access" : "，仓库 Request") : ""
         return "\(provider)，\(composerConfigurationLabel)\(writeScope)"
     }
 
@@ -2808,7 +2822,7 @@ private struct SettingsPane: View {
     @State private var endpoint = "https://api.openai.com/v1"
     @State private var apiModel = ""
     @State private var joyCodeModel = "JoyAI-Code-1.6"
-    @State private var apiKey = ""
+    @State private var selectedCredentialRef = ""
     @State private var saving = false
 
     var body: some View {
@@ -2846,7 +2860,7 @@ private struct SettingsPane: View {
                     Text(model.selectedProvider == "joycode"
                          ? (model.joyCodeProfileReady ? "复用本机 JoyCode 登录态；凭据不会写入 Forge 配置。" : "JoyCode 登录态尚未就绪。")
                          : (model.selectedProvider == "api"
-                            ? (model.apiProfileReady ? "使用保存的兼容 API profile；写操作仍需每轮显式授权。" : "API profile 尚未完成。")
+                            ? (model.apiProfileReady ? "使用保存的兼容 API profile；仓库写权限按 Repository AccessPolicy 持续生效，密钥授权按 Grant 复用。" : "API profile 尚未完成。")
                             : model.provider))
                         .font(.system(size:12)).foregroundStyle(ForgePalette.secondary)
                     HStack(spacing:16) {
@@ -2876,7 +2890,7 @@ private struct SettingsPane: View {
                         HStack(spacing:16) {
                             settingMeta("新会话默认",settings.provider == "joycode" ? "JoyCode" : (settings.provider == "api" ? "兼容 API" : "Codex CLI"))
                             settingMeta("协议",settings.apiProtocol)
-                            settingMeta("Keychain",settings.hasKey ? "已存密钥" : "无密钥")
+                            settingMeta("Credential",settings.credentialRef ?? (settings.endpoint == "https://zro.moonmath.ai/v1" ? "zro 管理" : "未选择"))
                         }
                     } else {
                         Text(model.settingsLoading ? "正在读取本地配置…" : "尚未读取本地 API 配置。")
@@ -2929,20 +2943,47 @@ private struct SettingsPane: View {
                                  : "未检测到 JoyCode 登录态，请先在 JoyCode 客户端登录。")
                                 .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
                         }
-                        settingsField("API Key") {
-                            SecureField(model.localApiSettings?.hasKey == true ? "已存 Key；留空保持" : "本机服务可留空",text:$apiKey)
-                                .textFieldStyle(.plain).font(.system(size:11.5,design:.monospaced))
-                                .accessibilityIdentifier("settings.api-key")
+                        if endpoint.trimmingCharacters(in:.whitespacesAndNewlines) == "https://zro.moonmath.ai/v1" {
+                            Text("DeepSeek / zro 凭据由 zro 本机配置管理，Forge 不复制、不展示，也不创建第二份 secret。")
+                                .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
+                        } else if endpoint.lowercased().hasPrefix("http://localhost")
+                                    || endpoint.lowercased().hasPrefix("http://127.0.0.1") {
+                            Text("本机 loopback Endpoint 不要求受管密钥。")
+                                .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
+                        } else {
+                            settingsField("受管密钥") {
+                                Picker("受管密钥",selection:$selectedCredentialRef) {
+                                    Text("未选择").tag("")
+                                    ForEach(model.managedApiCredentials.filter { $0.endpoint == endpoint.trimmingCharacters(in:.whitespacesAndNewlines) }) { credential in
+                                        Text("\(credential.label) · \(credential.authorized ? "已授权" : "未授权")")
+                                            .tag(credential.credentialRef)
+                                    }
+                                }
+                                .labelsHidden().pickerStyle(.menu)
+                                .accessibilityIdentifier("settings.credential")
+                            }
+                            HStack(spacing:10) {
+                                Button("从剪贴板导入并授权") { importCredential() }
+                                    .buttonStyle(.bordered)
+                                    .disabled(saving || model.settingsLoading || endpoint.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty)
+                                if let credential = selectedCredential {
+                                    Button("从剪贴板轮换") { rotateCredential(credential.credentialRef) }
+                                        .buttonStyle(.plain)
+                                    Button(credential.authorized ? "撤销使用授权" : "授权使用") {
+                                        setCredentialAuthorization(credential.credentialRef,!credential.authorized)
+                                    }
+                                    .buttonStyle(.plain)
+                                    Button("删除",role:.destructive) { deleteCredential(credential.credentialRef) }
+                                        .buttonStyle(.plain).foregroundStyle(.red)
+                                }
+                            }
+                            if let credential = selectedCredential {
+                                Text("Ref \(credential.credentialRef) · Keychain \(credential.hasSecret ? "已存" : "缺失") · \(credential.authorized ? "授权可复用" : "未授权")")
+                                    .font(.system(size:9.5,design:.monospaced)).foregroundStyle(.tertiary)
+                                    .textSelection(.enabled)
+                            }
                         }
                         HStack(spacing:10) {
-                            if model.localApiSettings?.hasKey == true {
-                                Button("删除已存 Key",role:.destructive) {
-                                    clearApiKey()
-                                }
-                                .buttonStyle(.plain).foregroundStyle(.red)
-                                .disabled(saving || model.settingsLoading)
-                                .accessibilityIdentifier("settings.clear-key")
-                            }
                             Spacer()
                             Button(saving ? "保存中…" : "保存配置") {
                                 saveApiSettings()
@@ -2960,7 +3001,7 @@ private struct SettingsPane: View {
                     .padding(13)
                     .background(ForgePalette.canvas,in:RoundedRectangle(cornerRadius:12,style:.continuous))
 
-                    Text("API Key 只写入 macOS Keychain；JoyCode 凭据不写入 Forge，只在请求时读取本机登录态。JSON 配置只保存 Provider 与模型等非敏感设置。新会话读取默认 Provider，已有会话继续使用自己的 Provider。写操作授权仍只对下一次外部模型发送有效。")
+                    Text("Forge-managed secret 只存在 macOS Keychain；配置只保存 opaque credential ref、Endpoint、Provider 与模型。创建/轮换从剪贴板导入后立即清空剪贴板，模型与 MCP 永不获得 raw secret。JoyCode、Codex、zro 继续由各自本机凭据 Authority 管理。仓库写权限按 Repository AccessPolicy 持续生效，密钥使用按 canonical AuthorizationGrant 复用直到到期或撤销。")
                         .font(.system(size:10.5)).foregroundStyle(.tertiary).lineSpacing(3)
                 }
                 .padding(16)
@@ -2978,7 +3019,7 @@ private struct SettingsPane: View {
     private var settingsSignature: String {
         guard let settings = model.localApiSettings else { return "none" }
         return [settings.provider,settings.endpoint,settings.model,settings.apiProtocol,
-                settings.joyCodeModel,settings.hasKey ? "1" : "0",settings.joyCodeReady ? "1" : "0"].joined(separator:"|")
+                settings.credentialRef ?? "",settings.joyCodeModel,settings.hasKey ? "1" : "0",settings.joyCodeReady ? "1" : "0"].joined(separator:"|")
     }
 
     private func syncSettingsDraft() {
@@ -2988,7 +3029,7 @@ private struct SettingsPane: View {
         apiModel = settings.model
         joyCodeModel = settings.joyCodeModel
         apiProtocol = settings.apiProtocol
-        apiKey = ""
+        selectedCredentialRef = settings.credentialRef ?? ""
     }
 
     private func saveApiSettings() {
@@ -3000,20 +3041,48 @@ private struct SettingsPane: View {
                 endpoint:endpoint,
                 model:apiModel,
                 apiProtocol:apiProtocol,
-                apiKey:apiKey,
+                credentialRef:selectedCredentialRef.isEmpty ? nil : selectedCredentialRef,
                 joyCodeModel:joyCodeModel
             )
-            if saved { apiKey = "" }
+            _ = saved
             saving = false
         }
     }
 
-    private func clearApiKey() {
+    private var selectedCredential: ManagedApiCredentialDetail? {
+        model.managedApiCredentials.first { $0.credentialRef == selectedCredentialRef }
+    }
+
+    private func importCredential() {
         guard !saving else { return }
         saving = true
         Task {
-            _ = await model.clearLocalApiKey()
-            apiKey = ""
+            if let credentialRef = await model.createManagedApiCredential(endpoint:endpoint,label:URL(string:endpoint)?.host) {
+                selectedCredentialRef = credentialRef
+            }
+            saving = false
+        }
+    }
+
+    private func rotateCredential(_ credentialRef:String) {
+        guard !saving else { return }
+        saving = true
+        Task { _ = await model.rotateManagedApiCredential(credentialRef); saving = false }
+    }
+
+    private func setCredentialAuthorization(_ credentialRef:String,_ authorized:Bool) {
+        guard !saving else { return }
+        saving = true
+        Task { _ = await model.setManagedApiCredentialAuthorization(credentialRef,authorized:authorized); saving = false }
+    }
+
+    private func deleteCredential(_ credentialRef:String) {
+        guard !saving else { return }
+        saving = true
+        Task {
+            if await model.deleteManagedApiCredential(credentialRef), selectedCredentialRef == credentialRef {
+                selectedCredentialRef = ""
+            }
             saving = false
         }
     }

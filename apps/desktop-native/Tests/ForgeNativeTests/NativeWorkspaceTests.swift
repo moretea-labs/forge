@@ -17,12 +17,14 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertTrue(ForgeBridge.allowed.contains("create_requirement"))
         XCTAssertTrue(ForgeBridge.allowed.contains("create_plan"))
         XCTAssertTrue(ForgeBridge.allowed.contains("autopilot_control"))
-        XCTAssertTrue(ForgeBridge.allowed.contains("clear_local_api_key"))
+        XCTAssertTrue(ForgeBridge.allowed.contains("managed_api_credential_control"))
         XCTAssertFalse(ForgeBridge.allowed.contains("send_local_api_conversation"))
         XCTAssertFalse(ForgeBridge.allowed.contains("cancel_local_api_conversation"))
         XCTAssertFalse(ForgeBridge.allowed.contains("read_project_work_list"))
         XCTAssertFalse(ForgeBridge.allowed.contains("read_work_detail"))
         XCTAssertFalse(ForgeBridge.allowed.contains("execute_command"))
+        XCTAssertTrue(ForgeBridge.allowed.contains("read_repository_access"))
+        XCTAssertTrue(ForgeBridge.allowed.contains("set_repository_access"))
         XCTAssertFalse(ForgeBridge.allowed.contains("perform_recovery_action"))
     }
 
@@ -134,18 +136,27 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertTrue(attached.last?["content"]?.contains("REQ-a") == true)
         XCTAssertTrue(attached.last?["content"]?.contains("PLAN-a") == true)
 
-        XCTAssertTrue(NativeWorkspace.apiEffectsAuthorized(
-            provider:"api",requested:true,repoId:"repo",checkoutId:"checkout"
+        XCTAssertTrue(NativeWorkspace.repositoryAccessAllowsEffects(
+            provider:"api",accessMode:"full_access",repoId:"repo",checkoutId:"checkout"
         ))
-        XCTAssertFalse(NativeWorkspace.apiEffectsAuthorized(
-            provider:"codex",requested:true,repoId:"repo",checkoutId:"checkout"
+        XCTAssertTrue(NativeWorkspace.repositoryAccessAllowsEffects(
+            provider:"joycode",accessMode:"full_access",repoId:"repo",checkoutId:"checkout"
         ))
-        XCTAssertFalse(NativeWorkspace.apiEffectsAuthorized(
-            provider:"api",requested:false,repoId:"repo",checkoutId:"checkout"
+        XCTAssertFalse(NativeWorkspace.repositoryAccessAllowsEffects(
+            provider:"codex",accessMode:"full_access",repoId:"repo",checkoutId:"checkout"
         ))
-        XCTAssertFalse(NativeWorkspace.apiEffectsAuthorized(
-            provider:"api",requested:true,repoId:"repo",checkoutId:nil
+        XCTAssertFalse(NativeWorkspace.repositoryAccessAllowsEffects(
+            provider:"api",accessMode:"request",repoId:"repo",checkoutId:"checkout"
         ))
+        XCTAssertFalse(NativeWorkspace.repositoryAccessAllowsEffects(
+            provider:"api",accessMode:"full_access",repoId:"repo",checkoutId:nil
+        ))
+        XCTAssertEqual(NativeWorkspace.repositoryAccessMode([
+            "repositoryPolicy":["mode":"full_access"]
+        ]),"full_access")
+        XCTAssertEqual(NativeWorkspace.repositoryAccessMode([
+            "repositoryPolicy":["mode":"request"]
+        ]),"request")
     }
 
     func testNativeApiTurnEventFramingIsTyped() {
@@ -372,17 +383,31 @@ final class NativeWorkspaceTests: XCTestCase {
     func testSavedApiProfileProjectionAndOneShotBridgeBoundary() {
         let settings = NativeWorkspace.localApiSettingsDetail([
             "provider":"api","endpoint":"https://api.example.com/v1",
-            "model":"model-a","apiProtocol":"openai","hasKey":true,"endpointReady":true
+            "model":"model-a","apiProtocol":"openai","credentialRef":"cred_fixture","hasKey":true,"endpointReady":true
         ])
         XCTAssertEqual(settings?.provider,"api")
         XCTAssertEqual(settings?.endpoint,"https://api.example.com/v1")
         XCTAssertEqual(settings?.model,"model-a")
         XCTAssertEqual(settings?.apiProtocol,"openai")
+        XCTAssertEqual(settings?.credentialRef,"cred_fixture")
         XCTAssertEqual(settings?.hasKey,true)
         XCTAssertEqual(settings?.endpointReady,true)
         XCTAssertEqual(settings?.joyCodeModel,"JoyAI-Code-1.6")
         XCTAssertEqual(settings?.joyCodeReady,false)
         XCTAssertFalse(ForgeBridge.allowed.contains("send_local_api_conversation"))
+        let credential = NativeWorkspace.managedCredentialDetail([
+            "credentialRef":"cred_fixture",
+            "label":"Fixture",
+            "endpoint":"https://api.example.com/v1",
+            "hasSecret":true,
+            "authorized":true,
+            "expiresAt":"2026-12-01T00:00:00.000Z"
+        ])
+        XCTAssertEqual(credential?.credentialRef,"cred_fixture")
+        XCTAssertEqual(credential?.label,"Fixture")
+        XCTAssertEqual(credential?.authorized,true)
+        XCTAssertEqual(credential?.hasSecret,true)
+        XCTAssertEqual(credential?.expiresAt,"2026-12-01T00:00:00.000Z")
     }
 
     @MainActor
@@ -401,7 +426,7 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(model.thread?.model,"JoyAI-Code-1.6")
         XCTAssertEqual(model.selectedApiModel,"JoyAI-Code-1.6")
         XCTAssertTrue(model.selectedProviderReady)
-        XCTAssertTrue(NativeWorkspace.apiEffectsAuthorized(provider:"joycode", requested:true, repoId:"repo", checkoutId:"checkout"))
+        XCTAssertTrue(NativeWorkspace.repositoryAccessAllowsEffects(provider:"joycode", accessMode:"full_access", repoId:"repo", checkoutId:"checkout"))
     }
 
     @MainActor

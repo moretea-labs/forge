@@ -89,6 +89,14 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     work_id: { type: 'string', description: 'Legacy historical Work identifier for list/get/get_contract compatibility only. New execution, scheduling, learning, UserRequest, Git and Workflow paths reject Work authority.' },
     detail_level: { type: 'string', enum: ['summary', 'detail', 'raw'], description: 'Defaults to summary. Source search keeps snippets, exact provenance and readiness/gaps; detail/raw adds retrieval diagnostics and candidate lists. Expand only when those diagnostics can change the next decision; raw is still bounded.' },
   }),
+  definition('rh_credential', 'Authorize or revoke use of one Forge-managed credential reference. This tool never creates, reads, returns, or transports secret material; macOS Keychain remains the secret authority. Authorization is a canonical Identity AuthorizationGrant and is reused until expiry or revocation.', {
+    operation: { type: 'string', enum: ['status', 'authorize', 'revoke'], description: 'Defaults to status.' },
+    credential_ref: { type: 'string', description: 'Opaque Forge-managed credential reference. Never secret material.' },
+    endpoint: { type: 'string', description: 'Exact non-secret endpoint bound to this credential authorization. Required for status/authorize.' },
+    confirm_authorization: { type: 'boolean', description: 'Must be true for authorize.' },
+    expires_in_minutes: { type: 'number', minimum: 1, description: 'Authorization TTL; canonical Grant limits apply.' },
+    reason: { type: 'string', description: 'Optional revoke reason.' },
+  }, ['credential_ref'], false),
   definition('rh_autopilot', 'Explicit optional Requirement Autopilot. Ordinary Forge use never requires a Requirement. authorize binds one exact Requirement revision to a canonical AuthorizationGrant; start/resume run a bounded Runtime-owned local execution loop over existing Repository/Git/Process owners. This tool does not create Plan progress/lifecycle state and never grants remote-write or destructive authority.', {
     repo_id: repoId,
     checkout_id: { type: 'string', description: 'Exact checkout selected for the authorization/execution placement.' },

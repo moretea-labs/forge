@@ -293,11 +293,22 @@ struct KnowledgeAuditDetail: Codable {
     let gaps: [String]
 }
 
+struct ManagedApiCredentialDetail: Identifiable, Equatable {
+    let credentialRef: String
+    let label: String
+    let endpoint: String
+    let hasSecret: Bool
+    let authorized: Bool
+    let expiresAt: String?
+    var id: String { credentialRef }
+}
+
 struct LocalApiSettingsDetail {
     let provider: String
     let endpoint: String
     let model: String
     let apiProtocol: String
+    let credentialRef: String?
     let hasKey: Bool
     let endpointReady: Bool
     let joyCodeModel: String
@@ -308,6 +319,7 @@ struct LocalApiSettingsDetail {
         endpoint:String,
         model:String,
         apiProtocol:String,
+        credentialRef:String? = nil,
         hasKey:Bool,
         endpointReady:Bool,
         joyCodeModel:String = "JoyAI-Code-1.6",
@@ -317,6 +329,7 @@ struct LocalApiSettingsDetail {
         self.endpoint = endpoint
         self.model = model
         self.apiProtocol = apiProtocol
+        self.credentialRef = credentialRef
         self.hasKey = hasKey
         self.endpointReady = endpointReady
         self.joyCodeModel = joyCodeModel
@@ -380,7 +393,8 @@ final class NativeWorkspace: ObservableObject {
     @Published var provider = "未检测"
     @Published private(set) var localProviderReady = false
     @Published var imageInputAvailable = false
-    @Published var allowApiEffects = false
+    @Published private(set) var repositoryAccessMode = "request"
+    @Published var repositoryAccessLoading = false
     @Published var pendingImageURLs: [URL] = []
     @Published var pendingContextPaths: [String] = []
     @Published var checkoutRoot: URL?
@@ -406,6 +420,7 @@ final class NativeWorkspace: ObservableObject {
     @Published var knowledgeResult: KnowledgeAuditDetail?
     @Published var knowledgeLoading = false
     @Published var localApiSettings: LocalApiSettingsDetail?
+    @Published private(set) var managedApiCredentials: [ManagedApiCredentialDetail] = []
     @Published var settingsLoading = false
     let store: URL
 
@@ -519,7 +534,6 @@ final class NativeWorkspace: ObservableObject {
         draft = ""
         pendingImageURLs = []
         pendingContextPaths = []
-        allowApiEffects = false
         agentChanges = nil
         persist()
     }
@@ -543,7 +557,6 @@ final class NativeWorkspace: ObservableObject {
         draft = ""
         pendingImageURLs = []
         pendingContextPaths = []
-        allowApiEffects = false
         agentChanges = nil
         checkoutRoot = nil
         checkoutBranch = nil
@@ -554,6 +567,7 @@ final class NativeWorkspace: ObservableObject {
         } else {
             repoId = nil
             checkoutId = nil
+            repositoryAccessMode = "request"
         }
     }
     func selectThreadProvider(_ value: String) {
@@ -576,7 +590,6 @@ final class NativeWorkspace: ObservableObject {
         threads[index].reasoningEffort = nil
         threads[index].updatedAt = Date()
         pendingImageURLs = []
-        allowApiEffects = false
         persist()
         self.error = nil
     }
@@ -678,6 +691,7 @@ final class NativeWorkspace: ObservableObject {
                 checkoutBranch = context.checkoutBranch
                 pendingContextPaths = []
                 newThread(provider:sourceProvider)
+                await loadRepositoryAccess(for:id)
             } catch {
                 self.error = error.localizedDescription
             }
@@ -752,6 +766,53 @@ final class NativeWorkspace: ObservableObject {
         )
     }
 
+    nonisolated static func repositoryAccessMode(_ result:[String:Any]) -> String {
+        let policy = result["repositoryPolicy"] as? [String:Any] ?? [:]
+        return policy["mode"] as? String == "full_access" ? "full_access" : "request"
+    }
+
+    func loadRepositoryAccess(for targetRepoId:String?=nil) async {
+        guard let targetRepoId = targetRepoId ?? repoId else {
+            repositoryAccessMode = "request"
+            return
+        }
+        repositoryAccessLoading = true
+        defer { repositoryAccessLoading = false }
+        do {
+            let value = try await ForgeBridge.request("read_repository_access",["repoId":targetRepoId])
+            guard repoId == targetRepoId else { return }
+            repositoryAccessMode = Self.repositoryAccessMode(value)
+        } catch {
+            guard repoId == targetRepoId else { return }
+            repositoryAccessMode = "request"
+            self.error = error.localizedDescription
+        }
+    }
+
+    func setRepositoryAccessMode(_ mode:String) async -> Bool {
+        guard let repoId else {
+            repositoryAccessMode = "request"
+            self.error = "请先选择项目。"
+            return false
+        }
+        guard mode == "request" || mode == "full_access" else { return false }
+        guard !repositoryAccessLoading else { return false }
+        repositoryAccessLoading = true
+        defer { repositoryAccessLoading = false }
+        do {
+            let value = try await ForgeBridge.request("set_repository_access",[
+                "repoId":repoId,"mode":mode
+            ])
+            guard self.repoId == repoId else { return false }
+            repositoryAccessMode = Self.repositoryAccessMode(value)
+            self.error = nil
+            return repositoryAccessMode == mode
+        } catch {
+            self.error = error.localizedDescription
+            return false
+        }
+    }
+
     func refreshProject() async {
         guard let repoId else { return }
         let requestedCheckoutId = checkoutId
@@ -762,6 +823,7 @@ final class NativeWorkspace: ObservableObject {
             checkoutId = context.checkoutId
             checkoutRoot = context.checkoutRoot
             checkoutBranch = context.checkoutBranch
+            await loadRepositoryAccess(for:repoId)
             if page != .agent { await loadPage() }
         } catch {
             checkoutRoot = nil
@@ -1024,10 +1086,25 @@ final class NativeWorkspace: ObservableObject {
         return LocalApiSettingsDetail(
             provider:provider, endpoint:endpoint, model:model,
             apiProtocol:apiProtocol,
+            credentialRef:result["credentialRef"] as? String,
             hasKey:result["hasKey"] as? Bool == true,
             endpointReady:result["endpointReady"] as? Bool == true,
             joyCodeModel:(result["joyCodeModel"] as? String) ?? "JoyAI-Code-1.6",
             joyCodeReady:result["joyCodeReady"] as? Bool == true
+        )
+    }
+
+    nonisolated static func managedCredentialDetail(_ result:[String:Any]) -> ManagedApiCredentialDetail? {
+        guard let credentialRef = result["credentialRef"] as? String,
+              let label = result["label"] as? String,
+              let endpoint = result["endpoint"] as? String else { return nil }
+        return ManagedApiCredentialDetail(
+            credentialRef:credentialRef,
+            label:label,
+            endpoint:endpoint,
+            hasSecret:result["hasSecret"] as? Bool == true,
+            authorized:result["authorized"] as? Bool == true,
+            expiresAt:result["expiresAt"] as? String
         )
     }
 
@@ -1038,6 +1115,7 @@ final class NativeWorkspace: ObservableObject {
 
         async let statusRequest = ForgeBridge.request("read_local_provider_status")
         async let settingsRequest = ForgeBridge.request("read_local_api_settings")
+        async let credentialRequest = ForgeBridge.request("managed_api_credential_control",["operation":"list"])
         var failures: [String] = []
 
         do {
@@ -1057,6 +1135,14 @@ final class NativeWorkspace: ObservableObject {
             localApiSettings = nil
             failures.append("API 配置：\(error.localizedDescription)")
         }
+        do {
+            let value = try await credentialRequest
+            let rows = value["credentials"] as? [[String:Any]] ?? []
+            managedApiCredentials = rows.compactMap(Self.managedCredentialDetail)
+        } catch {
+            managedApiCredentials = []
+            failures.append("密钥：\(error.localizedDescription)")
+        }
 
         self.error = failures.isEmpty ? nil : failures.joined(separator:"\n")
     }
@@ -1066,7 +1152,7 @@ final class NativeWorkspace: ObservableObject {
         endpoint:String,
         model:String,
         apiProtocol:String,
-        apiKey:String,
+        credentialRef:String?,
         joyCodeModel:String
     ) async -> Bool {
         guard !settingsLoading else { return false }
@@ -1080,8 +1166,7 @@ final class NativeWorkspace: ObservableObject {
                 "apiProtocol":apiProtocol,
                 "joyCodeModel":joyCodeModel.trimmingCharacters(in:.whitespacesAndNewlines)
             ]
-            let secret = apiKey.trimmingCharacters(in:.whitespacesAndNewlines)
-            if !secret.isEmpty { arguments["apiKey"] = secret }
+            if let credentialRef, !credentialRef.isEmpty { arguments["credentialRef"] = credentialRef }
             let value = try await ForgeBridge.request("save_local_api_settings",arguments)
             guard let parsed = Self.localApiSettingsDetail(value) else { throw ForgeBridgeError.invalidResponse }
             localApiSettings = parsed
@@ -1090,20 +1175,57 @@ final class NativeWorkspace: ObservableObject {
         } catch {
             let message = error.localizedDescription
             self.error = message == "FORGE_DESKTOP_API_KEY_MISSING"
-                ? "远程 API Endpoint 需要 API Key；本机 loopback Endpoint 可留空。"
+                ? "远程 API Endpoint 需要已创建的受管密钥；本机 loopback Endpoint 可留空。"
                 : message
             return false
         }
     }
 
-    func clearLocalApiKey() async -> Bool {
+    private func reloadManagedApiCredentials() async throws {
+        let value = try await ForgeBridge.request("managed_api_credential_control",["operation":"list"])
+        let rows = value["credentials"] as? [[String:Any]] ?? []
+        managedApiCredentials = rows.compactMap(Self.managedCredentialDetail)
+    }
+
+    func createManagedApiCredential(endpoint:String,label:String?=nil) async -> String? {
+        guard !settingsLoading else { return nil }
+        settingsLoading = true
+        defer { settingsLoading = false }
+        do {
+            var arguments:[String:Any] = [
+                "operation":"create",
+                "endpoint":endpoint.trimmingCharacters(in:.whitespacesAndNewlines)
+            ]
+            if let label, !label.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty {
+                arguments["label"] = label.trimmingCharacters(in:.whitespacesAndNewlines)
+            }
+            let created = try await ForgeBridge.request("managed_api_credential_control",arguments)
+            guard let credentialRef = created["credentialRef"] as? String else {
+                throw ForgeBridgeError.invalidResponse
+            }
+            _ = try await ForgeBridge.request("managed_api_credential_control",[
+                "operation":"authorize",
+                "credentialRef":credentialRef,
+                "confirmAuthorization":true
+            ])
+            try await reloadManagedApiCredentials()
+            error = nil
+            return credentialRef
+        } catch {
+            self.error = error.localizedDescription
+            return nil
+        }
+    }
+
+    func rotateManagedApiCredential(_ credentialRef:String) async -> Bool {
         guard !settingsLoading else { return false }
         settingsLoading = true
         defer { settingsLoading = false }
         do {
-            let value = try await ForgeBridge.request("clear_local_api_key")
-            guard let parsed = Self.localApiSettingsDetail(value) else { throw ForgeBridgeError.invalidResponse }
-            localApiSettings = parsed
+            _ = try await ForgeBridge.request("managed_api_credential_control",[
+                "operation":"rotate","credentialRef":credentialRef
+            ])
+            try await reloadManagedApiCredentials()
             error = nil
             return true
         } catch {
@@ -1111,6 +1233,57 @@ final class NativeWorkspace: ObservableObject {
             return false
         }
     }
+
+    func setManagedApiCredentialAuthorization(_ credentialRef:String,authorized:Bool) async -> Bool {
+        guard !settingsLoading else { return false }
+        settingsLoading = true
+        defer { settingsLoading = false }
+        do {
+            var arguments:[String:Any] = [
+                "operation":authorized ? "authorize" : "revoke",
+                "credentialRef":credentialRef
+            ]
+            if authorized { arguments["confirmAuthorization"] = true }
+            _ = try await ForgeBridge.request("managed_api_credential_control",arguments)
+            try await reloadManagedApiCredentials()
+            error = nil
+            return true
+        } catch {
+            self.error = error.localizedDescription
+            return false
+        }
+    }
+
+    func deleteManagedApiCredential(_ credentialRef:String) async -> Bool {
+        guard !settingsLoading else { return false }
+        settingsLoading = true
+        defer { settingsLoading = false }
+        do {
+            _ = try await ForgeBridge.request("managed_api_credential_control",[
+                "operation":"delete","credentialRef":credentialRef
+            ])
+            try await reloadManagedApiCredentials()
+            if localApiSettings?.credentialRef == credentialRef {
+                localApiSettings = LocalApiSettingsDetail(
+                    provider:localApiSettings?.provider ?? "codex",
+                    endpoint:localApiSettings?.endpoint ?? "https://api.openai.com/v1",
+                    model:localApiSettings?.model ?? "",
+                    apiProtocol:localApiSettings?.apiProtocol ?? "openai",
+                    credentialRef:nil,
+                    hasKey:false,
+                    endpointReady:false,
+                    joyCodeModel:localApiSettings?.joyCodeModel ?? "JoyAI-Code-1.6",
+                    joyCodeReady:localApiSettings?.joyCodeReady ?? false
+                )
+            }
+            error = nil
+            return true
+        } catch {
+            self.error = error.localizedDescription
+            return false
+        }
+    }
+
     static func prettyJSON(_ value: Any) -> String {
         guard JSONSerialization.isValidJSONObject(value),
               let bytes = try? JSONSerialization.data(withJSONObject: value, options:[.prettyPrinted,.sortedKeys])
@@ -1605,13 +1778,16 @@ final class NativeWorkspace: ObservableObject {
         return true
     }
 
-    nonisolated static func apiEffectsAuthorized(
+    nonisolated static func repositoryAccessAllowsEffects(
         provider:String,
-        requested:Bool,
+        accessMode:String,
         repoId:String?,
         checkoutId:String?
     ) -> Bool {
-        matchesExternalProvider(provider) && requested && repoId != nil && checkoutId != nil
+        matchesExternalProvider(provider)
+            && accessMode == "full_access"
+            && repoId != nil
+            && checkoutId != nil
     }
 
     nonisolated static func apiTurnMessages(
@@ -1734,19 +1910,12 @@ final class NativeWorkspace: ObservableObject {
             self.error = "此会话没有有效 checkout；请选择项目后新建会话。"
             return
         }
-        let authorizedApiEffects = Self.apiEffectsAuthorized(
-            provider:turnProvider,
-            requested:allowApiEffects,
-            repoId:item.repoId,
-            checkoutId:item.checkoutId
-        )
         busy = true
         activeConversationId = id
         activeTurnProvider = turnProvider
         draft = ""
         pendingImageURLs = []
         pendingContextPaths = []
-        allowApiEffects = false
         threads[index].provider = turnProvider
         threads[index].messages.append(ChatMessage(
             role:"user", text:prompt,
@@ -1790,7 +1959,6 @@ final class NativeWorkspace: ObservableObject {
                     "conversationId":id,
                     "provider":turnProvider,
                     "messages":Self.apiTurnMessages(item,prompt:prompt,contextPaths:contextPaths),
-                    "allowEffects":authorizedApiEffects,
                     "model":item.model ?? ""
                 ]
                 if let repo = item.repoId { apiArguments["repoId"] = repo }

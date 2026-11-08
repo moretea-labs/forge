@@ -31,8 +31,10 @@ const MAX_PREFERRED_TOOL_COUNT = 24;
 // 2026-11-08: Requirement Autopilot adds one explicit optional rh_autopilot facade.
 // It is revision-bound and Runtime-owned; it does not restore Work/Supervisor continuation
 // or make Requirement a prerequisite for ordinary Forge use.
+// 2026-11-08: managed generic API credentials add one metadata-only rh_credential facade.
+// It owns only credential-use AuthorizationGrant lifecycle; macOS Keychain/provider stores remain secret authorities.
 // Preferred facade names stay stable; any further complete-registry drift fails closed.
-const EXPECTED_EXPOSED_NAME_FINGERPRINT = 'b997ad780a9ec4dc';
+const EXPECTED_EXPOSED_NAME_FINGERPRINT = '78c48cae45a994ba';
 
 // #197 decomposition authority: the public/frozen Tool Contract is an explicit
 // baseline, independent from whichever internal adapter currently defines a

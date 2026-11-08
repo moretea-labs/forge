@@ -43,6 +43,10 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
         "read_projects" => read_projects().await,
         "read_project_repository" =>
             read_project_repository(required(args, "repoId")?).await,
+        "read_repository_access" =>
+            read_repository_access(required(args, "repoId")?).await,
+        "set_repository_access" =>
+            set_repository_access(required(args, "repoId")?, required(args, "mode")?).await,
         "read_project_overview" =>
             read_project_overview(required(args, "repoId")?).await,
         "read_project_requirement_list" =>
@@ -144,11 +148,17 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
             required(args,"provider")?,
             required(args,"endpoint")?,
             args.get("model").and_then(Value::as_str).unwrap_or("").to_string(),
-            args.get("apiKey").and_then(Value::as_str).map(str::to_owned),
+            args.get("credentialRef").and_then(Value::as_str).map(str::to_owned),
             args.get("apiProtocol").and_then(Value::as_str).map(str::to_owned),
             args.get("joyCodeModel").and_then(Value::as_str).map(str::to_owned),
         ),
-        "clear_local_api_key" => clear_local_api_key(),
+        "managed_api_credential_control" => managed_api_credential_control(
+            required(args,"operation")?,
+            args.get("credentialRef").and_then(Value::as_str).map(str::to_owned),
+            args.get("endpoint").and_then(Value::as_str).map(str::to_owned),
+            args.get("label").and_then(Value::as_str).map(str::to_owned),
+            args.get("confirmAuthorization").and_then(Value::as_bool),
+        ).await,
         "send_local_conversation" =>
             send_local_conversation(
                 required(args, "conversationId")?,
@@ -173,7 +183,6 @@ struct NativeApiTurnRequest {
     conversation_id: String,
     provider: String,
     model: Option<String>,
-    allow_effects: bool,
 }
 
 fn parse_api_turn_request(value: &Value) -> Result<NativeApiTurnRequest, String> {
@@ -196,7 +205,6 @@ fn parse_api_turn_request(value: &Value) -> Result<NativeApiTurnRequest, String>
         provider:provider.to_string(),
         model:value.get("model").and_then(Value::as_str)
             .map(str::trim).filter(|value| !value.is_empty()).map(str::to_owned),
-        allow_effects:value.get("allowEffects").and_then(Value::as_bool).unwrap_or(false),
     })
 }
 
@@ -263,17 +271,22 @@ pub fn run_api_turn() -> i32 {
     // "no more control frames", not "cancel channel failed".
     let _cancel_channel_lifetime = cancel_sender;
     let host = NativeApiHost;
-    let result = tauri::async_runtime::block_on(run_local_api_turn(
-        &host,
-        request.messages,
-        request.repo_id,
-        request.checkout_id,
-        request.conversation_id,
-        Some(request.provider),
-        request.model,
-        request.allow_effects,
-        &mut cancel_receiver,
-    ));
+    let result = tauri::async_runtime::block_on(async {
+        let repository_effect_access = resolve_repository_effect_access(
+            request.repo_id.as_deref(), request.checkout_id.as_deref()
+        ).await?;
+        run_local_api_turn(
+            &host,
+            request.messages,
+            request.repo_id,
+            request.checkout_id,
+            request.conversation_id,
+            Some(request.provider),
+            request.model,
+            repository_effect_access,
+            &mut cancel_receiver,
+        ).await
+    });
     match result {
         Ok(data) => write_api_turn_event(json!({ "type":"result", "ok":true, "data":data })),
         Err(error) => write_api_turn_event(json!({ "type":"result", "ok":false, "error":error })),
@@ -321,8 +334,12 @@ mod tests {
         assert_eq!(request.repo_id.as_deref(), Some("repo_1"));
         assert_eq!(request.checkout_id.as_deref(), Some("checkout_1"));
         assert_eq!(request.model.as_deref(), Some("thread-model"));
-        assert!(request.allow_effects);
         assert_eq!(request.messages.len(), 1);
+        let without_legacy_flag = parse_api_turn_request(&json!({
+            "conversationId":"thread-1","repoId":"repo_1","checkoutId":"checkout_1",
+            "messages":[{"role":"user","content":"hello"}]
+        })).expect("legacy allowEffects is not an authority");
+        assert_eq!(without_legacy_flag.repo_id.as_deref(), Some("repo_1"));
         assert!(parse_api_turn_request(&json!({"conversationId":"thread-1"})).is_err());
 
         let helper = Path::new("/Applications/Forge.app/Contents/MacOS/forge-desktop");

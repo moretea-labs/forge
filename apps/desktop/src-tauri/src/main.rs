@@ -382,6 +382,47 @@ async fn read_projects() -> Result<Value, String> {
 }
 
 #[tauri::command]
+async fn read_repository_access(repo_id: String) -> Result<Value, String> {
+    let repo_id = repo_id.trim().to_string();
+    if repo_id.is_empty() { return Err("FORGE_DESKTOP_REPOSITORY_REQUIRED".into()); }
+    call_runtime_tool("rh_access", json!({
+        "operation":"get",
+        "repo_id":repo_id,
+        "request_id":request_id("desktop-repository-access")
+    })).await
+}
+
+#[tauri::command]
+async fn set_repository_access(repo_id: String, mode: String) -> Result<Value, String> {
+    let repo_id = repo_id.trim().to_string();
+    if repo_id.is_empty() { return Err("FORGE_DESKTOP_REPOSITORY_REQUIRED".into()); }
+    if !matches!(mode.as_str(), "request" | "full_access") {
+        return Err("FORGE_DESKTOP_REPOSITORY_ACCESS_MODE_INVALID".into());
+    }
+    call_runtime_tool("rh_access", json!({
+        "operation":"set",
+        "repo_id":repo_id,
+        "mode":mode,
+        "request_id":request_id("desktop-repository-access-set")
+    })).await
+}
+
+fn repository_access_allows_effects(value: &Value, expected_repo_id: &str) -> bool {
+    value.pointer("/repository/repoId").and_then(Value::as_str) == Some(expected_repo_id)
+        && value.pointer("/repositoryPolicy/repoId").and_then(Value::as_str) == Some(expected_repo_id)
+        && value.pointer("/repositoryPolicy/mode").and_then(Value::as_str) == Some("full_access")
+}
+
+async fn resolve_repository_effect_access(
+    repo_id: Option<&str>,
+    checkout_id: Option<&str>,
+) -> Result<bool, String> {
+    let (Some(repo_id), Some(_checkout_id)) = (repo_id, checkout_id) else { return Ok(false); };
+    let value = read_repository_access(repo_id.to_string()).await?;
+    Ok(repository_access_allows_effects(&value, repo_id))
+}
+
+#[tauri::command]
 async fn read_project_overview(repo_id: String) -> Result<Value, String> {
     if repo_id.trim().is_empty() { return Err("FORGE_DESKTOP_REPOSITORY_REQUIRED".to_string()); }
     call_runtime_tool("rh_status", json!({
@@ -813,7 +854,6 @@ async fn repair_connection() -> Result<Value, String> {
 }
 
 
-const LOCAL_API_KEYCHAIN_SERVICE: &str = "com.moretea.forge.desktop.api";
 const ZRO_API_ENDPOINT: &str = "https://zro.moonmath.ai/v1";
 const JOYCODE_DEFAULT_MODEL: &str = "JoyAI-Code-1.6";
 const JOYCODE_COLOR_GATEWAY_ORIGIN: &str = "https://api-ai.jd.com";
@@ -1024,62 +1064,365 @@ fn read_zro_api_key() -> Result<Option<String>, String> {
     Ok(Some(key.to_string()))
 }
 
+const MANAGED_API_CREDENTIAL_SERVICE: &str = "com.moretea.forge.desktop.credential";
+
+fn managed_api_credential_registry_path() -> Result<PathBuf, String> {
+    let root = dirs::config_dir().ok_or("FORGE_DESKTOP_LOCAL_SETTINGS_DIR_UNAVAILABLE")?;
+    Ok(root.join("com.moretea.forge.desktop").join("credentials.json"))
+}
+
+fn load_managed_api_credential_registry() -> Result<Vec<Value>, String> {
+    let path = managed_api_credential_registry_path()?;
+    let text = match fs::read_to_string(path) {
+        Ok(value) => value,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(_) => return Err("FORGE_DESKTOP_CREDENTIAL_REGISTRY_READ_FAILED".into()),
+    };
+    if text.len() > 512 * 1024 { return Err("FORGE_DESKTOP_CREDENTIAL_REGISTRY_INVALID".into()); }
+    let value: Value = serde_json::from_str(&text)
+        .map_err(|_| "FORGE_DESKTOP_CREDENTIAL_REGISTRY_INVALID")?;
+    if value.get("schemaVersion").and_then(Value::as_u64) != Some(1) {
+        return Err("FORGE_DESKTOP_CREDENTIAL_REGISTRY_INVALID".into());
+    }
+    let rows = value.get("credentials").and_then(Value::as_array)
+        .ok_or("FORGE_DESKTOP_CREDENTIAL_REGISTRY_INVALID")?;
+    let mut result = Vec::new();
+    for row in rows {
+        let credential_ref = row.get("credentialRef").and_then(Value::as_str).unwrap_or("");
+        let endpoint = row.get("endpoint").and_then(Value::as_str).unwrap_or("");
+        if !valid_managed_credential_ref(credential_ref) || validated_local_api_endpoint(endpoint).is_err() {
+            return Err("FORGE_DESKTOP_CREDENTIAL_REGISTRY_INVALID".into());
+        }
+        result.push(row.clone());
+    }
+    Ok(result)
+}
+
+fn save_managed_api_credential_registry(rows: &[Value]) -> Result<(), String> {
+    let path = managed_api_credential_registry_path()?;
+    let parent = path.parent().ok_or("FORGE_DESKTOP_CREDENTIAL_REGISTRY_WRITE_FAILED")?;
+    fs::create_dir_all(parent).map_err(|_| "FORGE_DESKTOP_CREDENTIAL_REGISTRY_WRITE_FAILED")?;
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        fs::set_permissions(parent, fs::Permissions::from_mode(0o700))
+            .map_err(|_| "FORGE_DESKTOP_CREDENTIAL_REGISTRY_WRITE_FAILED")?;
+        let temp = path.with_extension("json.tmp");
+        let mut file = fs::OpenOptions::new().write(true).truncate(true).create(true)
+            .mode(0o600).open(&temp)
+            .map_err(|_| "FORGE_DESKTOP_CREDENTIAL_REGISTRY_WRITE_FAILED")?;
+        file.write_all(json!({"schemaVersion":1,"credentials":rows}).to_string().as_bytes())
+            .map_err(|_| "FORGE_DESKTOP_CREDENTIAL_REGISTRY_WRITE_FAILED")?;
+        fs::rename(temp, path).map_err(|_| "FORGE_DESKTOP_CREDENTIAL_REGISTRY_WRITE_FAILED")?;
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    { Err("FORGE_DESKTOP_CREDENTIAL_REGISTRY_UNSUPPORTED".into()) }
+}
+
+fn valid_managed_credential_ref(value: &str) -> bool {
+    value.starts_with("cred_") && value.len() <= 96
+        && value.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+}
+
+fn new_managed_credential_ref() -> String {
+    let seed = request_id("credential");
+    let digest = Sha256::digest(seed.as_bytes());
+    format!("cred_{}", hex::encode(&digest[..12]))
+}
+
+fn managed_credential_row<'a>(rows: &'a [Value], credential_ref: &str) -> Option<&'a Value> {
+    rows.iter().find(|row| row.get("credentialRef").and_then(Value::as_str) == Some(credential_ref))
+}
+
 #[cfg(target_os = "macos")]
-fn read_local_api_key(endpoint: &str) -> Result<Option<String>, String> {
-    if endpoint == ZRO_API_ENDPOINT { return read_zro_api_key(); }
+fn read_managed_api_credential_secret(credential_ref: &str) -> Result<Option<String>, String> {
+    if !valid_managed_credential_ref(credential_ref) {
+        return Err("FORGE_DESKTOP_CREDENTIAL_REF_INVALID".into());
+    }
     use security_framework::passwords::{generic_password, PasswordOptions};
-    match generic_password(PasswordOptions::new_generic_password(LOCAL_API_KEYCHAIN_SERVICE, endpoint)) {
-        Ok(value) => String::from_utf8(value).map(Some).map_err(|_| "FORGE_DESKTOP_API_KEY_INVALID".to_string()),
+    match generic_password(PasswordOptions::new_generic_password(MANAGED_API_CREDENTIAL_SERVICE, credential_ref)) {
+        Ok(value) => String::from_utf8(value).map(Some)
+            .map_err(|_| "FORGE_DESKTOP_CREDENTIAL_SECRET_INVALID".to_string()),
         Err(error) if error.code() == -25300 => Ok(None),
-        Err(_) => Err("FORGE_DESKTOP_API_KEYCHAIN_READ_FAILED".to_string()),
+        Err(_) => Err("FORGE_DESKTOP_CREDENTIAL_KEYCHAIN_READ_FAILED".into()),
     }
 }
-
 #[cfg(not(target_os = "macos"))]
-fn read_local_api_key(_endpoint: &str) -> Result<Option<String>, String> {
-    Err("FORGE_DESKTOP_API_KEYCHAIN_UNSUPPORTED".into())
+fn read_managed_api_credential_secret(_credential_ref: &str) -> Result<Option<String>, String> {
+    Err("FORGE_DESKTOP_CREDENTIAL_KEYCHAIN_UNSUPPORTED".into())
 }
 
 #[cfg(target_os = "macos")]
-fn store_local_api_key(endpoint: &str, secret: &str) -> Result<(), String> {
-    if endpoint == ZRO_API_ENDPOINT {
-        return Err("FORGE_DESKTOP_ZRO_CREDENTIAL_MANAGED_EXTERNALLY".into());
+fn write_managed_api_credential_secret(credential_ref: &str, secret: &str) -> Result<(), String> {
+    if !valid_managed_credential_ref(credential_ref) || secret.is_empty() || secret.len() > 8192 {
+        return Err("FORGE_DESKTOP_CREDENTIAL_SECRET_INVALID".into());
     }
     security_framework::passwords::set_generic_password(
-        LOCAL_API_KEYCHAIN_SERVICE, endpoint, secret.as_bytes()
-    ).map_err(|_| "FORGE_DESKTOP_API_KEYCHAIN_WRITE_FAILED".to_string())
+        MANAGED_API_CREDENTIAL_SERVICE, credential_ref, secret.as_bytes()
+    ).map_err(|_| "FORGE_DESKTOP_CREDENTIAL_KEYCHAIN_WRITE_FAILED".to_string())
 }
-
 #[cfg(not(target_os = "macos"))]
-fn store_local_api_key(_endpoint: &str, _secret: &str) -> Result<(), String> {
-    Err("FORGE_DESKTOP_API_KEYCHAIN_UNSUPPORTED".into())
+fn write_managed_api_credential_secret(_credential_ref: &str, _secret: &str) -> Result<(), String> {
+    Err("FORGE_DESKTOP_CREDENTIAL_KEYCHAIN_UNSUPPORTED".into())
 }
 
 #[cfg(target_os = "macos")]
-fn delete_local_api_key(endpoint: &str) -> Result<(), String> {
-    if endpoint == ZRO_API_ENDPOINT { return Ok(()); }
+fn delete_managed_api_credential_secret(credential_ref: &str) -> Result<(), String> {
+    if !valid_managed_credential_ref(credential_ref) {
+        return Err("FORGE_DESKTOP_CREDENTIAL_REF_INVALID".into());
+    }
     match security_framework::passwords::delete_generic_password(
-        LOCAL_API_KEYCHAIN_SERVICE, endpoint
+        MANAGED_API_CREDENTIAL_SERVICE, credential_ref
     ) {
         Ok(()) => Ok(()),
         Err(error) if error.code() == -25300 => Ok(()),
-        Err(_) => Err("FORGE_DESKTOP_API_KEYCHAIN_DELETE_FAILED".to_string()),
+        Err(_) => Err("FORGE_DESKTOP_CREDENTIAL_KEYCHAIN_DELETE_FAILED".into()),
     }
 }
-
 #[cfg(not(target_os = "macos"))]
-fn delete_local_api_key(_endpoint: &str) -> Result<(), String> {
-    Err("FORGE_DESKTOP_API_KEYCHAIN_UNSUPPORTED".into())
+fn delete_managed_api_credential_secret(_credential_ref: &str) -> Result<(), String> {
+    Err("FORGE_DESKTOP_CREDENTIAL_KEYCHAIN_UNSUPPORTED".into())
+}
+
+#[cfg(target_os = "macos")]
+fn credential_from_clipboard() -> Result<String, String> {
+    let output = Command::new("/usr/bin/pbpaste").output()
+        .map_err(|_| "FORGE_DESKTOP_CREDENTIAL_CLIPBOARD_UNAVAILABLE")?;
+    if !output.status.success() || output.stdout.len() > 8192 {
+        return Err("FORGE_DESKTOP_CREDENTIAL_CLIPBOARD_INVALID".into());
+    }
+    let secret = String::from_utf8(output.stdout)
+        .map_err(|_| "FORGE_DESKTOP_CREDENTIAL_CLIPBOARD_INVALID")?;
+    let normalized = secret.trim().to_string();
+    if normalized.is_empty() || normalized.len() > 8192
+        || normalized.chars().any(|ch| ch.is_control()) {
+        return Err("FORGE_DESKTOP_CREDENTIAL_CLIPBOARD_INVALID".into());
+    }
+    Ok(normalized)
+}
+#[cfg(not(target_os = "macos"))]
+fn credential_from_clipboard() -> Result<String, String> {
+    Err("FORGE_DESKTOP_CREDENTIAL_CLIPBOARD_UNSUPPORTED".into())
+}
+
+#[cfg(target_os = "macos")]
+fn clear_credential_clipboard() -> Result<(), String> {
+    let mut child = Command::new("/usr/bin/pbcopy")
+        .stdin(std::process::Stdio::piped())
+        .spawn().map_err(|_| "FORGE_DESKTOP_CREDENTIAL_CLIPBOARD_CLEAR_FAILED")?;
+    drop(child.stdin.take());
+    let status = child.wait().map_err(|_| "FORGE_DESKTOP_CREDENTIAL_CLIPBOARD_CLEAR_FAILED")?;
+    if !status.success() { return Err("FORGE_DESKTOP_CREDENTIAL_CLIPBOARD_CLEAR_FAILED".into()); }
+    Ok(())
+}
+#[cfg(not(target_os = "macos"))]
+fn clear_credential_clipboard() -> Result<(), String> {
+    Err("FORGE_DESKTOP_CREDENTIAL_CLIPBOARD_UNSUPPORTED".into())
+}
+
+fn managed_credential_metadata(row: &Value, has_secret: bool) -> Value {
+    json!({
+        "credentialRef":row.get("credentialRef").and_then(Value::as_str).unwrap_or(""),
+        "label":row.get("label").and_then(Value::as_str).unwrap_or(""),
+        "endpoint":row.get("endpoint").and_then(Value::as_str).unwrap_or(""),
+        "backend":"macos-keychain",
+        "hasSecret":has_secret,
+        "createdAtMs":row.get("createdAtMs").and_then(Value::as_u64),
+        "updatedAtMs":row.get("updatedAtMs").and_then(Value::as_u64),
+        "credentialMaterialReturned":false
+    })
+}
+
+fn import_managed_api_credential(endpoint: String, label: Option<String>) -> Result<Value, String> {
+    let endpoint = validated_local_api_endpoint(&endpoint)?;
+    if endpoint == ZRO_API_ENDPOINT {
+        return Err("FORGE_DESKTOP_CREDENTIAL_PROVIDER_OWNED".into());
+    }
+    let label = label.unwrap_or_else(|| endpoint.clone()).trim().to_string();
+    if label.is_empty() || label.len() > 120 { return Err("FORGE_DESKTOP_CREDENTIAL_LABEL_INVALID".into()); }
+    let secret = credential_from_clipboard()?;
+    let credential_ref = new_managed_credential_ref();
+    let write_result = write_managed_api_credential_secret(&credential_ref, &secret);
+    let clear_result = clear_credential_clipboard();
+    drop(secret);
+    if let Err(error) = write_result { return Err(error); }
+    if let Err(error) = clear_result {
+        let _ = delete_managed_api_credential_secret(&credential_ref);
+        return Err(error);
+    }
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+    let row = json!({
+        "credentialRef":credential_ref,
+        "label":label,
+        "endpoint":endpoint,
+        "createdAtMs":now,
+        "updatedAtMs":now
+    });
+    let mut rows = load_managed_api_credential_registry()?;
+    rows.push(row.clone());
+    if let Err(error) = save_managed_api_credential_registry(&rows) {
+        let _ = delete_managed_api_credential_secret(&credential_ref);
+        return Err(error);
+    }
+    Ok(managed_credential_metadata(&row, true))
+}
+
+fn rotate_managed_api_credential(credential_ref: String) -> Result<Value, String> {
+    if !valid_managed_credential_ref(&credential_ref) { return Err("FORGE_DESKTOP_CREDENTIAL_REF_INVALID".into()); }
+    let mut rows = load_managed_api_credential_registry()?;
+    let index = rows.iter().position(|row| row.get("credentialRef").and_then(Value::as_str) == Some(credential_ref.as_str()))
+        .ok_or("FORGE_DESKTOP_CREDENTIAL_NOT_FOUND")?;
+    let previous = read_managed_api_credential_secret(&credential_ref)?;
+    let secret = credential_from_clipboard()?;
+    let write_result = write_managed_api_credential_secret(&credential_ref, &secret);
+    let clear_result = clear_credential_clipboard();
+    drop(secret);
+    if let Err(error) = write_result { return Err(error); }
+    if let Err(error) = clear_result {
+        if let Some(previous) = previous.as_deref() {
+            let _ = write_managed_api_credential_secret(&credential_ref, previous);
+        } else {
+            let _ = delete_managed_api_credential_secret(&credential_ref);
+        }
+        return Err(error);
+    }
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+    rows[index]["updatedAtMs"] = Value::from(now);
+    if let Err(error) = save_managed_api_credential_registry(&rows) {
+        if let Some(previous) = previous.as_deref() {
+            let _ = write_managed_api_credential_secret(&credential_ref, previous);
+        } else {
+            let _ = delete_managed_api_credential_secret(&credential_ref);
+        }
+        return Err(error);
+    }
+    Ok(managed_credential_metadata(&rows[index], true))
+}
+
+fn managed_credential_record(credential_ref: &str) -> Result<Value, String> {
+    if !valid_managed_credential_ref(credential_ref) {
+        return Err("FORGE_DESKTOP_CREDENTIAL_REF_INVALID".into());
+    }
+    let rows = load_managed_api_credential_registry()?;
+    managed_credential_row(&rows, credential_ref).cloned()
+        .ok_or_else(|| "FORGE_DESKTOP_CREDENTIAL_NOT_FOUND".to_string())
+}
+
+fn managed_credential_matches_endpoint(credential_ref: &str, endpoint: &str) -> Result<Value, String> {
+    let row = managed_credential_record(credential_ref)?;
+    let stored_endpoint = row.get("endpoint").and_then(Value::as_str).unwrap_or("");
+    if stored_endpoint != endpoint {
+        return Err("FORGE_DESKTOP_CREDENTIAL_ENDPOINT_MISMATCH".into());
+    }
+    Ok(row)
+}
+
+async fn credential_authorization_status(credential_ref: &str, endpoint: &str) -> Result<Value, String> {
+    call_runtime_tool("rh_credential", json!({
+        "operation":"status",
+        "credential_ref":credential_ref,
+        "endpoint":endpoint,
+        "request_id":request_id("credential-status")
+    })).await
 }
 
 #[tauri::command]
-fn clear_local_api_key() -> Result<Value, String> {
-    let config = local_api_config()?;
-    let endpoint = validated_local_api_endpoint(
-        config.get("endpoint").and_then(Value::as_str).unwrap_or("")
-    )?;
-    delete_local_api_key(&endpoint)?;
-    read_local_api_settings()
+async fn managed_api_credential_control(
+    operation: String,
+    credential_ref: Option<String>,
+    endpoint: Option<String>,
+    label: Option<String>,
+    confirm_authorization: Option<bool>,
+) -> Result<Value, String> {
+    match operation.as_str() {
+        "list" => {
+            let rows = load_managed_api_credential_registry()?;
+            let mut items = Vec::with_capacity(rows.len());
+            for row in rows {
+                let credential_ref = row.get("credentialRef").and_then(Value::as_str).unwrap_or("");
+                let endpoint = row.get("endpoint").and_then(Value::as_str).unwrap_or("");
+                let has_secret = read_managed_api_credential_secret(credential_ref)?.is_some();
+                let status = credential_authorization_status(credential_ref, endpoint).await
+                    .unwrap_or_else(|_| json!({"authorized":false}));
+                let mut metadata = managed_credential_metadata(&row, has_secret);
+                metadata["authorized"] = Value::Bool(status.get("authorized").and_then(Value::as_bool) == Some(true));
+                metadata["expiresAt"] = status.get("expiresAt").cloned().unwrap_or(Value::Null);
+                items.push(metadata);
+            }
+            Ok(json!({"credentials":items,"credentialMaterialReturned":false}))
+        }
+        "create" => {
+            let endpoint = endpoint.ok_or("FORGE_DESKTOP_CREDENTIAL_ENDPOINT_REQUIRED")?;
+            import_managed_api_credential(endpoint, label)
+        }
+        "rotate" => rotate_managed_api_credential(
+            credential_ref.ok_or("FORGE_DESKTOP_CREDENTIAL_REF_REQUIRED")?
+        ),
+        "status" => {
+            let credential_ref = credential_ref.ok_or("FORGE_DESKTOP_CREDENTIAL_REF_REQUIRED")?;
+            let row = managed_credential_record(&credential_ref)?;
+            let endpoint = row.get("endpoint").and_then(Value::as_str).unwrap_or("").to_string();
+            let has_secret = read_managed_api_credential_secret(&credential_ref)?.is_some();
+            let auth = credential_authorization_status(&credential_ref, &endpoint).await?;
+            let mut metadata = managed_credential_metadata(&row, has_secret);
+            metadata["authorized"] = Value::Bool(auth.get("authorized").and_then(Value::as_bool) == Some(true));
+            metadata["expiresAt"] = auth.get("expiresAt").cloned().unwrap_or(Value::Null);
+            Ok(metadata)
+        }
+        "authorize" => {
+            if confirm_authorization != Some(true) {
+                return Err("FORGE_DESKTOP_CREDENTIAL_AUTHORIZATION_CONFIRMATION_REQUIRED".into());
+            }
+            let credential_ref = credential_ref.ok_or("FORGE_DESKTOP_CREDENTIAL_REF_REQUIRED")?;
+            let row = managed_credential_record(&credential_ref)?;
+            let endpoint = row.get("endpoint").and_then(Value::as_str).unwrap_or("").to_string();
+            if read_managed_api_credential_secret(&credential_ref)?.is_none() {
+                return Err("FORGE_DESKTOP_CREDENTIAL_SECRET_MISSING".into());
+            }
+            call_runtime_tool("rh_credential", json!({
+                "operation":"authorize",
+                "credential_ref":credential_ref,
+                "endpoint":endpoint,
+                "confirm_authorization":true,
+                "request_id":request_id("credential-authorize")
+            })).await
+        }
+        "revoke" => {
+            let credential_ref = credential_ref.ok_or("FORGE_DESKTOP_CREDENTIAL_REF_REQUIRED")?;
+            call_runtime_tool("rh_credential", json!({
+                "operation":"revoke",
+                "credential_ref":credential_ref,
+                "reason":"revoked from Forge Desktop",
+                "request_id":request_id("credential-revoke")
+            })).await
+        }
+        "delete" => {
+            let credential_ref = credential_ref.ok_or("FORGE_DESKTOP_CREDENTIAL_REF_REQUIRED")?;
+            let rows = load_managed_api_credential_registry()?;
+            let row = managed_credential_row(&rows, &credential_ref).cloned()
+                .ok_or("FORGE_DESKTOP_CREDENTIAL_NOT_FOUND")?;
+            let _ = call_runtime_tool("rh_credential", json!({
+                "operation":"revoke",
+                "credential_ref":credential_ref,
+                "reason":"credential deleted from Forge Desktop",
+                "request_id":request_id("credential-delete-revoke")
+            })).await?;
+            delete_managed_api_credential_secret(&credential_ref)?;
+            let next: Vec<Value> = rows.into_iter()
+                .filter(|item| item.get("credentialRef").and_then(Value::as_str) != Some(credential_ref.as_str()))
+                .collect();
+            save_managed_api_credential_registry(&next)?;
+            Ok(json!({
+                "deleted":true,
+                "credentialRef":credential_ref,
+                "endpoint":row.get("endpoint").and_then(Value::as_str).unwrap_or(""),
+                "credentialMaterialReturned":false
+            }))
+        }
+        _ => Err("FORGE_DESKTOP_CREDENTIAL_OPERATION_UNSUPPORTED".into()),
+    }
 }
 
 fn local_api_endpoint_ready(endpoint: &str, has_key: bool) -> bool {
@@ -1105,24 +1448,31 @@ fn read_local_api_settings() -> Result<Value, String> {
     let api_protocol = config.get("apiProtocol").and_then(Value::as_str).unwrap_or("openai");
     let joycode_model = config.get("joyCodeModel").and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty()).unwrap_or(JOYCODE_DEFAULT_MODEL);
-    let has_key = read_local_api_key(endpoint)?.is_some();
+    let credential_ref = config.get("credentialRef").and_then(Value::as_str)
+        .filter(|value| valid_managed_credential_ref(value));
+    let has_key = if endpoint == ZRO_API_ENDPOINT {
+        read_zro_api_key()?.is_some()
+    } else if let Some(credential_ref) = credential_ref {
+        managed_credential_matches_endpoint(credential_ref, endpoint)?;
+        read_managed_api_credential_secret(credential_ref)?.is_some()
+    } else {
+        false
+    };
     Ok(json!({
         "provider": provider,
         "endpoint": endpoint,
         "model": model,
         "apiProtocol": api_protocol,
+        "credentialRef": credential_ref,
         "joyCodeModel": joycode_model,
         "joyCodeReady": read_joycode_session().is_ok(),
-        // Provider is a new-conversation default, not an execution-mode gate.
-        // Existing API threads may remain valid when Codex becomes the default,
-        // so endpoint/key readiness belongs to the configured endpoint itself.
         "hasKey": has_key,
         "endpointReady": local_api_endpoint_ready(endpoint, has_key),
     }))
 }
 
 #[tauri::command]
-fn save_local_api_settings(provider: String, endpoint: String, model: String, api_key: Option<String>, api_protocol: Option<String>, joy_code_model: Option<String>) -> Result<Value, String> {
+fn save_local_api_settings(provider: String, endpoint: String, model: String, credential_ref: Option<String>, api_protocol: Option<String>, joy_code_model: Option<String>) -> Result<Value, String> {
     if !matches!(provider.as_str(), "codex" | "api" | "joycode") {
         return Err("FORGE_DESKTOP_API_PROVIDER_INVALID".into());
     }
@@ -1145,15 +1495,18 @@ fn save_local_api_settings(provider: String, endpoint: String, model: String, ap
     if provider == "joycode" {
         read_joycode_session()?;
     }
-    let api_key = api_key.filter(|secret| !secret.trim().is_empty());
-    if api_key.as_ref().is_some_and(|secret| secret.len() > 4096) {
-        return Err("FORGE_DESKTOP_API_KEY_INVALID".into());
-    }
-    let has_key = api_key.is_some() || read_local_api_key(&endpoint)?.is_some();
+    let credential_ref = credential_ref.map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let has_key = if endpoint == ZRO_API_ENDPOINT {
+        if credential_ref.is_some() { return Err("FORGE_DESKTOP_CREDENTIAL_PROVIDER_OWNED".into()); }
+        read_zro_api_key()?.is_some()
+    } else if let Some(ref credential_ref) = credential_ref {
+        managed_credential_matches_endpoint(credential_ref, &endpoint)?;
+        read_managed_api_credential_secret(credential_ref)?.is_some()
+    } else {
+        false
+    };
     validate_local_api_default_endpoint(&provider, &endpoint, has_key)?;
-    if let Some(secret) = api_key {
-        store_local_api_key(&endpoint, &secret)?;
-    }
     let path = local_api_config_path()?;
     let parent = path.parent().ok_or("FORGE_DESKTOP_LOCAL_SETTINGS_DIR_UNAVAILABLE")?;
     fs::create_dir_all(parent).map_err(|_| "FORGE_DESKTOP_LOCAL_SETTINGS_WRITE_FAILED")?;
@@ -1166,7 +1519,7 @@ fn save_local_api_settings(provider: String, endpoint: String, model: String, ap
         let temp = path.with_extension("json.tmp");
         let mut file = fs::OpenOptions::new().write(true).truncate(true).create(true)
             .mode(0o600).open(&temp).map_err(|_| "FORGE_DESKTOP_LOCAL_SETTINGS_WRITE_FAILED")?;
-        file.write_all(json!({ "provider": provider, "endpoint": endpoint, "model": model, "apiProtocol": api_protocol, "joyCodeModel": joycode_model }).to_string().as_bytes())
+        file.write_all(json!({ "provider": provider, "endpoint": endpoint, "model": model, "apiProtocol": api_protocol, "credentialRef": credential_ref, "joyCodeModel": joycode_model }).to_string().as_bytes())
             .map_err(|_| "FORGE_DESKTOP_LOCAL_SETTINGS_WRITE_FAILED")?;
         fs::rename(&temp, &path).map_err(|_| "FORGE_DESKTOP_LOCAL_SETTINGS_WRITE_FAILED")?;
     }
@@ -1409,6 +1762,10 @@ async fn commit_agent_git_files(
         expected_patch, expected_head, expected_branch,
     ).await
 }
+
+const LOCAL_API_TOOL_ROUNDS: usize = 16;
+const LOCAL_API_TOOL_CALLS_PER_ROUND: usize = 8;
+const LOCAL_API_TOOL_CALL_BUDGET: usize = 40;
 
 fn local_tool_catalog(allow_effects: bool) -> Vec<Value> {
     let mut tools = vec![
@@ -1834,7 +2191,7 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
     conversation_id: String,
     provider_override: Option<String>,
     model_override: Option<String>,
-    allow_effects: bool,
+    repository_effect_access: bool,
     cancel_receiver: &mut tokio::sync::watch::Receiver<bool>,
 ) -> Result<Value, String> {
     // The saved provider is a new-session default. The thread provider is
@@ -1858,13 +2215,27 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
         if !matches!(protocol, "openai" | "anthropic" | "responses") {
             return Err("FORGE_DESKTOP_API_PROTOCOL_INVALID".into());
         }
-        let key = read_local_api_key(&endpoint)?;
         let endpoint_url = reqwest::Url::parse(&endpoint)
             .map_err(|_| "FORGE_DESKTOP_API_ENDPOINT_INVALID")?;
         let local = matches!(
             endpoint_url.host_str().unwrap_or(""),
             "localhost" | "127.0.0.1" | "[::1]"
         );
+        let key = if endpoint == ZRO_API_ENDPOINT {
+            read_zro_api_key()?
+        } else if local {
+            None
+        } else {
+            let credential_ref = config.get("credentialRef").and_then(Value::as_str)
+                .filter(|value| valid_managed_credential_ref(value))
+                .ok_or("FORGE_DESKTOP_CREDENTIAL_REF_REQUIRED")?;
+            managed_credential_matches_endpoint(credential_ref, &endpoint)?;
+            let authorization = credential_authorization_status(credential_ref, &endpoint).await?;
+            if authorization.get("authorized").and_then(Value::as_bool) != Some(true) {
+                return Err("FORGE_DESKTOP_CREDENTIAL_USE_NOT_AUTHORIZED".into());
+            }
+            read_managed_api_credential_secret(credential_ref)?
+        };
         if key.is_none() && !local { return Err("FORGE_DESKTOP_API_KEY_MISSING".into()); }
         let model = config.get("model").and_then(Value::as_str).unwrap_or("");
         (endpoint, protocol, key, None, model)
@@ -1885,7 +2256,7 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
         return Err("FORGE_DESKTOP_API_REPOSITORY_INVALID".into());
     }
     let checkout_id = checkout_id.filter(|value| !value.trim().is_empty());
-    validate_agent_checkout_binding(repo_id.as_deref(), checkout_id.as_deref(), allow_effects)?;
+    validate_agent_checkout_binding(repo_id.as_deref(), checkout_id.as_deref(), repository_effect_access)?;
     let mut total = 0usize;
     let mut history = Vec::with_capacity(messages.len() + 15);
     for item in messages {
@@ -1902,17 +2273,17 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
         .timeout(std::time::Duration::from_secs(120))
         .redirect(reqwest::redirect::Policy::none())
         .build().map_err(|_| "FORGE_DESKTOP_API_CLIENT_FAILED")?;
-    let available_tools = if repo_id.is_some() { local_tool_catalog(allow_effects) } else { Vec::new() };
+    let available_tools = if repo_id.is_some() { local_tool_catalog(repository_effect_access) } else { Vec::new() };
     let system_instruction = if let Some(id) = repo_id.as_ref() {
         let checkout = checkout_id.as_deref().unwrap_or("unbound (read-only)");
-        format!("You are the Forge Desktop local API agent working in registered repository {id}, checkout {checkout}. Use the supplied tools for real facts and repository operations. All calls execute through the existing Forge repository authority in the local process, not MCP HTTP. Never invent a file, command result, Requirement or Plan state. Tools with effects require a pinned checkout and the user's approval for this turn. Never claim an operation succeeded unless its tool result confirms it.")
+        format!("You are the Forge Desktop local API agent working in registered repository {id}, checkout {checkout}. Use the supplied tools for real facts and repository operations. All calls execute through the existing Forge repository authority in the local process, not MCP HTTP. Never invent a file, command result, Requirement or Plan state. Tools with effects require a pinned checkout and this repository's persistent Forge AccessPolicy to be Full Access. Request mode is read-only. Never claim an operation succeeded unless its tool result confirms it.")
     } else {
         "You are the Forge Desktop assistant. No Forge project is attached: tools are disabled. Do not invent repository changes or imply that you ran a command. Ask the user to attach a project to work on files.".to_string()
     };
     let mut tool_events: Vec<Value> = Vec::new();
     let mut total_calls = 0usize;
     let mut last_effect_request_id: Option<String> = None;
-    for _round in 0..6 {
+    for _round in 0..LOCAL_API_TOOL_ROUNDS {
         if *cancel_receiver.borrow() {
             return Err(contextualize_api_turn_error(
                 "FORGE_DESKTOP_API_TURN_CANCELLED".into(), last_effect_request_id.as_deref()
@@ -2009,7 +2380,9 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
             }
             history.push(message);
         }
-        if repo_id.is_none() || requests.is_empty() || requests.len() > 4 || total_calls + requests.len() > 12 {
+        if repo_id.is_none() || requests.is_empty()
+            || requests.len() > LOCAL_API_TOOL_CALLS_PER_ROUND
+            || total_calls + requests.len() > LOCAL_API_TOOL_CALL_BUDGET {
             return Err(contextualize_api_turn_error(
                 "FORGE_DESKTOP_API_TOOL_BUDGET_EXCEEDED".into(), last_effect_request_id.as_deref()
             ));
@@ -2041,7 +2414,7 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
             }));
             let tool_result = run_local_forge_tool(
                 host, repo_id.clone().unwrap_or_default(), checkout_id.clone(),
-                conversation_id.clone(), name.clone(), args, allow_effects
+                conversation_id.clone(), name.clone(), args, repository_effect_access
             ).await;
             let result = match tool_result {
                 Ok(receipt) => receipt,
@@ -2121,7 +2494,7 @@ async fn send_local_api_conversation(
     checkout_id: Option<String>,
     conversation_id: String,
     provider: Option<String>,
-    allow_effects: bool,
+    _allow_effects: Option<bool>,
 ) -> Result<Value, String> {
     let (cancel_sender, mut cancel_receiver) = tokio::sync::watch::channel(false);
     {
@@ -2140,8 +2513,9 @@ async fn send_local_api_conversation(
     if !matches!(provider.as_str(), "api" | "joycode") {
         return Err("FORGE_DESKTOP_API_PROVIDER_INVALID".into());
     }
+    let repository_effect_access = resolve_repository_effect_access(repo_id.as_deref(), checkout_id.as_deref()).await?;
     run_local_api_turn(
-        &host, messages, repo_id, checkout_id, conversation_id, Some(provider), None, allow_effects,
+        &host, messages, repo_id, checkout_id, conversation_id, Some(provider), None, repository_effect_access,
         &mut cancel_receiver,
     ).await
 }
@@ -2182,7 +2556,7 @@ fn main() {
             cancel_local_conversation,
             read_local_api_settings,
             save_local_api_settings,
-            clear_local_api_key,
+            managed_api_credential_control,
             send_local_api_conversation,
             cancel_local_api_conversation,
             read_connection_status,
@@ -2572,6 +2946,40 @@ mod tests {
         let with_permission = names(local_tool_catalog(true));
         assert!(with_permission.contains(&"run_command".to_string()));
         assert!(with_permission.contains(&"apply_patch".to_string()));
+    }
+
+    #[test]
+    fn repository_access_policy_is_the_effect_authority() {
+        let full = json!({
+            "repository":{"repoId":"repo_a"},
+            "repositoryPolicy":{"repoId":"repo_a","mode":"full_access"}
+        });
+        assert!(repository_access_allows_effects(&full, "repo_a"));
+        let request = json!({
+            "repository":{"repoId":"repo_a"},
+            "repositoryPolicy":{"repoId":"repo_a","mode":"request"}
+        });
+        assert!(!repository_access_allows_effects(&request, "repo_a"));
+        assert!(!repository_access_allows_effects(&full, "repo_b"));
+    }
+
+    #[test]
+    fn managed_credential_metadata_never_contains_secret_material() {
+        let row = json!({
+            "credentialRef":"cred_fixture",
+            "label":"Fixture",
+            "endpoint":"https://api.example.com/v1",
+            "createdAtMs":1,
+            "updatedAtMs":2
+        });
+        let metadata = managed_credential_metadata(&row, true);
+        assert_eq!(metadata.get("credentialRef").and_then(Value::as_str), Some("cred_fixture"));
+        assert_eq!(metadata.get("hasSecret").and_then(Value::as_bool), Some(true));
+        assert_eq!(metadata.get("credentialMaterialReturned").and_then(Value::as_bool), Some(false));
+        let serialized = metadata.to_string();
+        assert!(!serialized.contains("apiKey"));
+        assert!(!serialized.contains("secretValue"));
+        assert!(!serialized.contains("tokenValue"));
     }
 
     #[test]

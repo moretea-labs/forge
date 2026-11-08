@@ -355,7 +355,7 @@ export function LocalConversationSurface({
   onOpenThreadHandled: () => void;
   onThreadsChange: (items: LocalConversationNavItem[], selectedId?: string, activeRepoId?: string) => void;
   onRefreshProvider: () => Promise<void>;
-  onSend?: (input: { thread: LocalConversationThread; prompt: string; allowEffects: boolean }) => Promise<LocalConversationReply>;
+  onSend?: (input: { thread: LocalConversationThread; prompt: string }) => Promise<LocalConversationReply>;
   onCancel?: (thread: LocalConversationThread) => Promise<void>;
 }) {
   const [threads, setThreads] = useState<LocalConversationThread[]>(() => loadThreads());
@@ -368,7 +368,6 @@ export function LocalConversationSurface({
   }>>({});
   const pendingTurnIds = useRef(new Set<string>());
   const [sendErrors, setSendErrors] = useState<Record<string, string | null>>({});
-  const [allowEffects, setAllowEffects] = useState(false);
   const [diffVisible, setDiffVisible] = useState(false);
   const [diffStaged, setDiffStaged] = useState(false);
   const [diffRepoId, setDiffRepoId] = useState<string>();
@@ -524,10 +523,6 @@ export function LocalConversationSurface({
   const selectedProject = projects.find((project) => project.repoId === selectedThread?.projectRepoId);
   const selectedRepoId = selectedThread?.projectRepoId;
 
-  // An effect permission is for exactly one conversation repository/checkout context.
-  useEffect(() => { setAllowEffects(false); },
-    [selectedThread?.id, selectedRepoId, selectedThread?.checkoutId]);
-
   // Catalog load may complete after an empty draft was first created.
   // Never rewrite a conversation with messages or a provider resume handle.
   useEffect(() => {
@@ -635,7 +630,6 @@ export function LocalConversationSurface({
       setDrafts((current) => ({ ...current,
         [choice.thread.id]: current[selectedThread.id] ?? '' }));
     } else updateSelected(() => choice.thread);
-    setAllowEffects(false);
     setSendError(null);
     diffRequest.current += 1;
     setDiffVisible(false);
@@ -651,7 +645,6 @@ export function LocalConversationSurface({
       setDrafts((current) => ({ ...current,
         [choice.thread.id]: current[selectedThread.id] ?? '' }));
     } else updateSelected(() => choice.thread);
-    setAllowEffects(false);
     setSendError(null);
     diffRequest.current += 1;
     setDiffVisible(false);
@@ -675,7 +668,6 @@ export function LocalConversationSurface({
       return next;
     });
     setSelectedThreadId(activeThreads.find((thread) => thread.id !== deletedId)?.id);
-    setAllowEffects(false);
   };
 
   async function toggleDiff(forceRefresh = false, staged = diffStaged) {
@@ -754,10 +746,6 @@ export function LocalConversationSurface({
     const prompt = draft.trim();
     if (!selectedThread || !providerReady || !onSend || !prompt || sending || committing
       || pendingTurnIds.current.has(selectedThread.id)) return;
-    const authorizedEffects = externalSelected && allowEffects && Boolean(selectedProject && checkoutBindingReady);
-    if (authorizedEffects && !window.confirm(
-      '仅本次回复：允许当前 API 模型通过 Forge 修改所选仓库及执行命令。Forge 原有安全检查仍生效。确认授权？'
-    )) return;
     const createdAt = new Date().toISOString();
     const userMessage: LocalConversationMessage = { id: localId('message'), role: 'user', content: prompt, createdAt };
     const pendingThread: LocalConversationThread = {
@@ -774,7 +762,7 @@ export function LocalConversationSurface({
       ...current, [selectedThread.id]: { cancelRequested: false, toolProgress: [] },
     }));
     try {
-      const reply = await onSend({ thread: pendingThread, prompt, allowEffects: authorizedEffects });
+      const reply = await onSend({ thread: pendingThread, prompt });
       const repliedAt = new Date().toISOString();
       const assistantMessage: LocalConversationMessage = {
         id: localId('message'), role: 'assistant', content: reply.content, createdAt: repliedAt,
@@ -812,7 +800,6 @@ export function LocalConversationSurface({
         setSendError('本次回复未确认：' + reason + '。若可能涉及工具操作，请先检查 Forge 结果再决定是否重新发送。');
       }
     } finally {
-      if (currentThreadIdRef.current === selectedThread.id) setAllowEffects(false);
       pendingTurnIds.current.delete(selectedThread.id);
       setPendingTurns((current) => {
         const next = { ...current };
@@ -1069,15 +1056,6 @@ export function LocalConversationSurface({
                     : apiSelected ? (apiSettings?.model || '兼容 API') : 'Codex'}</span>
                   <AgentControlIcon name="chevron" />
                 </button>
-                {externalSelected && selectedProject && <button type="button"
-                  className={'agent-icon-button agent-permission-control' + (allowEffects && checkoutBindingReady ? ' active' : '')}
-                  title={allowEffects && checkoutBindingReady ? '已允许本轮仓库写入，发送时仍会再次确认' : '允许本轮编辑文件和执行命令'}
-                  aria-label="允许本轮编辑文件和执行命令"
-                  aria-pressed={allowEffects && checkoutBindingReady}
-                  disabled={sending || !checkoutBindingReady}
-                  onClick={() => setAllowEffects((current) => !current)}>
-                  <AgentControlIcon name="shield" />
-                </button>}
                 {sending ? (
                   <button className="local-send-button agent-stop-control" type="button"
                     aria-label={cancelRequested ? '已请求停止' : '请求停止当前 Agent 回复'}

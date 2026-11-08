@@ -2,13 +2,13 @@ import { useEffect, useState } from 'react';
 import type { LocalApiSettings, LocalProviderChoice, LocalApiProtocol } from './local-api';
 import type { LocalProviderStatusProjection } from './runtime-client';
 import { ForgeIcon } from './ui-icons';
-type SaveInput = { provider: LocalProviderChoice; endpoint: string; model: string; apiProtocol: LocalApiProtocol; apiKey?: string; joyCodeModel?: string };
+type SaveInput = { provider: LocalProviderChoice; endpoint: string; model: string; apiProtocol: LocalApiProtocol; credentialRef?: string; joyCodeModel?: string };
 export function SettingsView({
-  settings, loading, error, onRefresh, onSave, onClearKey,
+  settings, loading, error, onRefresh, onSave,
   codexStatus, codexError, onRefreshCodex, onOpenMcp, mcpReady,
 }: {
   settings: LocalApiSettings | null; loading: boolean; error: string | null;
-  onRefresh: () => Promise<void>; onSave: (input: SaveInput) => Promise<void>; onClearKey: () => Promise<void>;
+  onRefresh: () => Promise<void>; onSave: (input: SaveInput) => Promise<void>;
   codexStatus: LocalProviderStatusProjection | null; codexError: string | null;
   onRefreshCodex: () => Promise<void>;
   onOpenMcp: () => void;
@@ -19,31 +19,22 @@ export function SettingsView({
   const [endpoint, setEndpoint] = useState(settings?.endpoint ?? 'https://api.openai.com/v1');
   const [model, setModel] = useState(settings?.model ?? '');
   const [joyCodeModel, setJoyCodeModel] = useState(settings?.joyCodeModel ?? 'JoyAI-Code-1.6');
-  const [key, setKey] = useState('');
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   useEffect(() => { if (settings) { setProvider(settings.provider); setEndpoint(settings.endpoint); setModel(settings.model); setJoyCodeModel(settings.joyCodeModel ?? 'JoyAI-Code-1.6'); setApiProtocol(settings.apiProtocol ?? 'openai'); } }, [settings]);
-  const currentHasKey = Boolean(settings?.hasKey && endpoint.trim() === settings.endpoint);
   const isDirty = Boolean(settings && (
     provider !== settings.provider || (provider === 'api' && (
       endpoint.trim() !== settings.endpoint || model.trim() !== settings.model
-      || apiProtocol !== settings.apiProtocol || Boolean(key)
+      || apiProtocol !== settings.apiProtocol
     )) || (provider === 'joycode' && joyCodeModel.trim() !== settings.joyCodeModel)
   ));
-  const clearKey = async () => {
-    if (!currentHasKey || saving || !window.confirm('从 macOS 钥匙串删除此 Endpoint 的 API Key？')) return;
-    setSaving(true); setSaveError(null); setSaved(false);
-    try { await onClearKey(); setKey(''); setSaved(true); }
-    catch (cause) { setSaveError(cause instanceof Error ? cause.message : String(cause)); }
-    finally { setSaving(false); }
-  };
   const save = async () => {
     if (saving) return;
     setSaving(true); setSaveError(null); setSaved(false);
     try {
-      await onSave({ provider, endpoint: endpoint.trim(), model: model.trim(), apiProtocol, joyCodeModel: joyCodeModel.trim(), ...(key ? { apiKey: key } : {}) });
-      setKey(''); setSaved(true);
+      await onSave({ provider, endpoint: endpoint.trim(), model: model.trim(), apiProtocol, joyCodeModel: joyCodeModel.trim(), ...(settings?.credentialRef ? { credentialRef: settings.credentialRef } : {}) });
+      setSaved(true);
     } catch (cause) { setSaveError(cause instanceof Error ? cause.message : String(cause)); }
     finally { setSaving(false); }
   };
@@ -114,10 +105,8 @@ export function SettingsView({
           </select></label>
           <label><span>API Endpoint</span><input type="url" spellCheck={false} autoComplete="off" value={endpoint} onChange={e => { setEndpoint(e.target.value); setSaved(false); }} placeholder="https://api.example.com/v1" /></label>
           <label><span>模型 ID</span><input spellCheck={false} autoComplete="off" value={model} onChange={e => { setModel(e.target.value); setSaved(false); }} placeholder="API 提供商的模型名称" /></label>
-          <label><span>API Key</span><input type="password" autoComplete="new-password" value={key} onChange={e => { setKey(e.target.value); setSaved(false); }} placeholder={currentHasKey ? '已保存在钥匙串；留空保持' : '填写密钥，本地服务可留空'} /></label>
-          <p className="settings-hint">远端接口必须使用 HTTPS，本机服务可用 localhost HTTP。API Key 仅保存在 macOS Keychain。API 模型使用 Forge 本地工具；写文件、运行命令必须逐次授权。</p>
-          <div className="settings-secret-state">{currentHasKey ? '钥匙串：已存密钥' : '钥匙串：无密钥'}</div>
-          {currentHasKey && <button className="plain-action settings-remove-secret" type="button" disabled={saving} onClick={() => void clearKey()}>删除此 Endpoint 的密钥</button>}
+          <div className="settings-secret-state">Credential：{settings?.credentialRef ?? (endpoint === 'https://zro.moonmath.ai/v1' ? 'zro 管理' : '未选择')}</div>
+          <p className="settings-hint">开发面不接收 raw API Key。Forge-managed credential 的导入、轮换、授权和删除由安装版 SwiftUI 设置页完成；这里只保存 opaque credential ref。仓库写权限由持久 Repository AccessPolicy 决定。</p>
         </div>}
       {error && <p className="inline-error" role="alert">{error}</p>}
       {saveError && <p className="inline-error" role="alert">{saveError}</p>}

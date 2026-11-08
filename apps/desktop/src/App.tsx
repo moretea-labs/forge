@@ -26,7 +26,7 @@ import forgeAppIcon from '../src-tauri/icons/128x128.png';
 import { ProjectRecordsView } from './project-records-view';
 import { KnowledgeView } from './knowledge-view';
 import { SettingsView } from './settings-view';
-import { readLocalApiSettings, saveLocalApiSettings, clearLocalApiKey, sendLocalApiConversation, cancelLocalApiConversation, type LocalApiSettings, type LocalProviderChoice } from './local-api';
+import { readLocalApiSettings, saveLocalApiSettings, sendLocalApiConversation, cancelLocalApiConversation, type LocalApiSettings, type LocalProviderChoice } from './local-api';
 import {
   performRecoveryAction,
   readRecoveryStatus,
@@ -475,7 +475,7 @@ function AssistantView({
   onOpenThreadHandled: () => void;
   onThreadsChange: (items: LocalConversationNavItem[], selectedId?: string, activeRepoId?: string) => void;
   onRefreshProvider: () => Promise<void>;
-  onSendLocal: (input: { thread: LocalConversationThread; prompt: string; allowEffects: boolean }) => Promise<LocalConversationReply>;
+  onSendLocal: (input: { thread: LocalConversationThread; prompt: string }) => Promise<LocalConversationReply>;
   onCancelLocal: (thread: LocalConversationThread) => Promise<void>;
 }) {
   return (
@@ -787,21 +787,17 @@ export function App() {
     finally { setLocalApiLoading(false); }
   }, [preview]);
 
-  const saveLocalApi = useCallback(async (input: { provider: LocalProviderChoice; endpoint: string; model: string; apiProtocol: 'openai' | 'anthropic' | 'responses'; apiKey?: string; joyCodeModel?: string }) => {
+  const saveLocalApi = useCallback(async (input: { provider: LocalProviderChoice; endpoint: string; model: string; apiProtocol: 'openai' | 'anthropic' | 'responses'; credentialRef?: string; joyCodeModel?: string }) => {
     setLocalApiSettings(await saveLocalApiSettings(input));
   }, []);
 
-  const clearLocalApi = useCallback(async () => {
-    setLocalApiSettings(await clearLocalApiKey());
-  }, []);
-
-  const sendLocal = useCallback(async ({ thread, prompt, allowEffects }: { thread: LocalConversationThread; prompt: string; allowEffects: boolean }): Promise<LocalConversationReply> => {
+  const sendLocal = useCallback(async ({ thread, prompt }: { thread: LocalConversationThread; prompt: string }): Promise<LocalConversationReply> => {
     if (thread.provider === 'api' || thread.provider === 'joycode') {
       const messages = thread.messages.filter(message => message.role === 'user' || message.role === 'assistant')
         .slice(-40).map(message => ({ role: message.role as 'user' | 'assistant', content: message.content }));
       const reply = await sendLocalApiConversation({
         messages, repoId: thread.projectRepoId, checkoutId: thread.checkoutId,
-        conversationId: thread.id, provider: thread.provider, allowEffects,
+        conversationId: thread.id, provider: thread.provider,
       });
       return { content: reply.output, toolActivityCount: reply.toolActivityCount, toolEvents: reply.toolEvents };
     }
@@ -1209,7 +1205,7 @@ export function App() {
           projectName={projects.find((project) => project.repoId === (selectedRepoId ?? projects[0]?.repoId))?.name} />
       ) : activeView === 'settings' ? (
         <SettingsView settings={localApiSettings} loading={localApiLoading} error={localApiError}
-          onRefresh={refreshLocalApi} onSave={saveLocalApi} onClearKey={clearLocalApi}
+          onRefresh={refreshLocalApi} onSave={saveLocalApi}
           codexStatus={localProvider} codexError={localProviderError}
           onRefreshCodex={refreshLocalProvider}
           onOpenMcp={() => { void handleOpenRuntime(); }}

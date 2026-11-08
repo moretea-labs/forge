@@ -6,7 +6,9 @@ export interface LocalApiSettings {
   endpoint: string;
   model: string;
   apiProtocol: LocalApiProtocol;
+  credentialRef?: string | null;
   hasKey: boolean;
+  endpointReady: boolean;
   joyCodeModel: string;
   joyCodeReady: boolean;
 }
@@ -17,10 +19,9 @@ export interface LocalApiConversationResponse {
   toolEvents: LocalApiToolEvent[];
 }
 export const readLocalApiSettings = (): Promise<LocalApiSettings> => invoke('read_local_api_settings');
-export const clearLocalApiKey = (): Promise<LocalApiSettings> => invoke('clear_local_api_key');
 export const saveLocalApiSettings = (input: {
   provider: LocalProviderChoice; endpoint: string; model: string;
-  apiProtocol: LocalApiProtocol; apiKey?: string; joyCodeModel?: string;
+  apiProtocol: LocalApiProtocol; credentialRef?: string; joyCodeModel?: string;
 }): Promise<LocalApiSettings> => invoke('save_local_api_settings', input);
 export const sendLocalApiConversation = (input: {
   messages: Array<{ role: 'user' | 'assistant'; content: string }>;
@@ -28,7 +29,6 @@ export const sendLocalApiConversation = (input: {
   checkoutId?: string;
   conversationId: string;
   provider?: 'api' | 'joycode';
-  allowEffects: boolean;
 }): Promise<LocalApiConversationResponse> => invoke('send_local_api_conversation', input);
 
 export const cancelLocalApiConversation = (conversationId: string):
