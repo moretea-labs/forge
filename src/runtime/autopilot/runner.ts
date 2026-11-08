@@ -677,15 +677,24 @@ export async function runAutopilotLoop(
       if (pending.pending) {
         let terminal: Record<string, unknown> | undefined;
         if (pending.processId) {
-          try {
-            const handle = await waitForProcess(controllerHome, repoId, pending.processId, {
-              timeoutMs: Math.min(600_000, pending.timeoutMs ?? 60_000) + 15_000,
-            });
-            terminal = autopilotTerminalProcessEvidence(handle);
-          } catch {
-            // Preserve the Process identity and stop; never replay an uncertain effect.
+          // The Process continues under Forge authority if Autopilot is paused.
+          // Join in bounded slices so pause/revoke can release the Agent loop
+          // promptly without signalling or replaying the already accepted command.
+          const deadline = Date.now() + Math.min(600_000, pending.timeoutMs ?? 60_000) + 15_000;
+          while (!signal.aborted && Date.now() < deadline) {
+            try {
+              const handle = await waitForProcess(controllerHome, repoId, pending.processId, {
+                timeoutMs: Math.min(2_000, Math.max(1, deadline - Date.now())),
+              });
+              terminal = autopilotTerminalProcessEvidence(handle);
+              if (terminal || handle.completed) break;
+            } catch {
+              // Preserve Process identity and stop if canonical receipt is unavailable.
+              break;
+            }
           }
         }
+        if (signal.aborted) return;
         if (!terminal) {
           const current = readAutopilotRun(controllerHome, repoId, requirementId)?.value;
           if (current?.status === 'running') {
