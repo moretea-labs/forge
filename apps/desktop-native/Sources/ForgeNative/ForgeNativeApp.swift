@@ -146,82 +146,99 @@ private struct ForgeWorkspaceView: View {
             }
             .padding(.horizontal,13).padding(.top,13).padding(.bottom,14)
 
-            Button {
-                model.show(.agent)
-                model.newThread()
-            } label: {
-                HStack(spacing:10) {
-                    Image(systemName:"plus")
-                        .font(.system(size:10,weight:.semibold))
-                        .frame(width:21,height:21)
-                        .background(ForgePalette.accent.opacity(0.09),
-                                    in:RoundedRectangle(cornerRadius:7,style:.continuous))
-                    Text("新会话")
-                    Spacer()
-                    Text("⌘N").font(.system(size:10)).foregroundStyle(.tertiary)
-                }
-                .font(.system(size:12,weight:.medium)).padding(.horizontal,10)
-                .frame(height:40)
-                .background(ForgePalette.raisedSurface,
-                            in:RoundedRectangle(cornerRadius:13,style:.continuous))
-                .shadow(color:Color.black.opacity(0.035),radius:7,y:2)
-            }
-            .buttonStyle(.plain)
-            .disabled(model.busy)
-            .padding(.horizontal,10).padding(.bottom,6)
-
-            Button {
-                model.toggleConversationSearch()
-            } label: {
-                HStack(spacing:10) {
-                    Image(systemName:"magnifyingglass")
-                        .symbolRenderingMode(.hierarchical)
-                        .frame(width:17)
-                    Text("搜索会话")
-                    Spacer()
-                    Text("⌘K").font(.system(size:10)).foregroundStyle(.tertiary)
-                }
-                .font(.system(size:12)).padding(.horizontal,12).frame(height:35)
-                .background(model.showSearch ? ForgePalette.softFill : .clear,
-                            in:RoundedRectangle(cornerRadius:10,style:.continuous))
-                .contentShape(Rectangle())
-            }.buttonStyle(.plain).foregroundStyle(ForgePalette.secondary)
-                .padding(.horizontal,10)
-
-            if model.showSearch {
-                HStack(spacing:7) {
-                    Image(systemName:"magnifyingglass")
-                        .font(.system(size:10.5))
-                        .foregroundStyle(ForgePalette.secondary.opacity(0.8))
-                    TextField("搜索标题或消息",text:$model.search)
-                        .focused($sidebarSearchFocused)
-                        .textFieldStyle(.plain)
-                        .font(.system(size:12))
-                    if !model.search.isEmpty {
-                        Button { model.search = "" } label: {
-                            Image(systemName:"xmark.circle.fill")
-                                .font(.system(size:11))
-                                .foregroundStyle(ForgePalette.secondary.opacity(0.72))
+            HStack(spacing:7) {
+                if model.showSearch {
+                    HStack(spacing:8) {
+                        Image(systemName:"magnifyingglass")
+                            .foregroundStyle(ForgePalette.secondary)
+                        TextField("搜索会话标题或消息",text:$model.search)
+                            .focused($sidebarSearchFocused)
+                            .textFieldStyle(.plain)
+                            .font(.system(size:12))
+                            .onSubmit {
+                                if !model.busy,
+                                   !model.search.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty,
+                                   let first=model.visibleThreads.first {
+                                    model.selectThread(first.id)
+                                    model.toggleConversationSearch()
+                                }
+                            }
+                            .onExitCommand { model.toggleConversationSearch() }
+                            .accessibilityIdentifier("sidebar.search.field")
+                        if !model.search.isEmpty {
+                            Button { model.search = "" } label: {
+                                Image(systemName:"xmark.circle.fill")
+                            }
+                            .help("清除搜索")
+                            .accessibilityLabel("清除搜索")
+                            .buttonStyle(.plain)
                         }
+                        Button { model.toggleConversationSearch() } label: {
+                            Image(systemName:"xmark")
+                                .frame(width:22,height:24)
+                        }
+                        .help("关闭搜索")
+                        .accessibilityLabel("关闭搜索")
+                        .accessibilityIdentifier("sidebar.search.close")
                         .buttonStyle(.plain)
-                        .help("清除搜索")
                     }
+                    .font(.system(size:11))
+                    .padding(.horizontal,11)
+                    .frame(height:40)
+                    .frame(maxWidth:.infinity)
+                    .background(ForgePalette.raisedSurface,
+                                in:RoundedRectangle(cornerRadius:11,style:.continuous))
+                } else {
+                    Button {
+                        model.show(.agent)
+                        model.newThread()
+                    } label: {
+                        HStack(spacing:9) {
+                            Image(systemName:"plus")
+                                .font(.system(size:11,weight:.semibold))
+                                .frame(width:19,height:19)
+                            VStack(alignment:.leading,spacing:2) {
+                                Text("新会话").font(.system(size:12,weight:.semibold))
+                                Text(model.project?.label ?? "未绑定项目")
+                                    .font(.system(size:9))
+                                    .foregroundStyle(ForgePalette.secondary)
+                                    .lineLimit(1)
+                            }
+                            Spacer(minLength:0)
+                            Text("⌘N").font(.system(size:10)).foregroundStyle(.tertiary)
+                        }
+                        .padding(.horizontal,11)
+                        .frame(height:40)
+                        .frame(maxWidth:.infinity)
+                        .background(ForgePalette.raisedSurface,
+                                    in:RoundedRectangle(cornerRadius:11,style:.continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(model.busy)
+                    .help(model.repoId == nil ? "创建不绑定项目的会话" : "在当前项目新建会话")
+                    .accessibilityIdentifier("sidebar.thread.new")
+
+                    Button { model.toggleConversationSearch() } label: {
+                        Image(systemName:"magnifyingglass")
+                            .font(.system(size:13,weight:.medium))
+                            .frame(width:38,height:40)
+                            .background(ForgePalette.softFill,
+                                        in:RoundedRectangle(cornerRadius:11,style:.continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("搜索会话")
+                    .help("搜索全部项目的会话 (⌘K)")
+                    .accessibilityIdentifier("sidebar.search.open")
                 }
-                .padding(.horizontal,10)
-                .frame(height:34)
-                .background(ForgePalette.raisedSurface,
-                            in:RoundedRectangle(cornerRadius:11,style:.continuous))
-                .overlay(RoundedRectangle(cornerRadius:11,style:.continuous)
-                    .stroke(Color.black.opacity(0.055),lineWidth:0.7))
-                .padding(.horizontal,12).padding(.vertical,7)
             }
+            .padding(.horizontal,10).padding(.bottom,7)
 
             sectionLabel("工作空间").padding(.top,19)
             ForEach(NativePage.allCases.filter { $0 != .settings && $0 != .plan }) { section in
                 navigationRow(section)
             }
 
-            sectionLabel(isGlobalThreadSearch ? "搜索结果" : "会话")
+            sectionLabel(isGlobalThreadSearch ? "搜索结果 · \(model.visibleThreads.count)" : "会话")
                 .padding(.top,21)
                 .padding(.bottom,4)
             ScrollView {
@@ -278,7 +295,10 @@ private struct ForgeWorkspaceView: View {
             ?? "未绑定项目"
 
         return HStack(spacing:4) {
-            Button { model.selectThread(thread.id) } label: {
+            Button {
+                model.selectThread(thread.id)
+                if model.showSearch { model.toggleConversationSearch() }
+            } label: {
                 HStack(spacing:8) {
                     Image(systemName:selected ? "bubble.left.fill" : "bubble.left")
                         .symbolRenderingMode(.hierarchical)
@@ -2397,7 +2417,7 @@ private struct RecordsPane: View {
     @State private var saving = false
     @State private var autopilotSaving = false
 
-    @State private var planningViewMode = "map"
+    @State private var planningViewMode = "list"
     @State private var hoveredPlanningRecordId: String?
     @State private var planningSearch = ""
     @State private var collapsedPlanningRecordIds = Set<String>()
@@ -2485,6 +2505,38 @@ private struct RecordsPane: View {
         "\(model.repoId ?? "none")|\(scenePhase == .active ? "active" : "inactive")|\(model.planningRequirementIds.joined(separator:"|"))"
     }
 
+    private var planningOverview: some View {
+        let requirements=model.records.filter { $0.kind == .requirement }
+        let plans=model.records.filter { $0.kind == .plan }
+        let openCount=requirements.filter { $0.state == "open" }.count
+        let completedCount=requirements.filter { $0.state == "completed" }.count
+        return HStack(spacing:12) {
+            Image(systemName:"folder")
+                .foregroundStyle(ForgePalette.secondary)
+            VStack(alignment:.leading,spacing:2) {
+                Text("当前项目")
+                    .font(.system(size:9))
+                    .foregroundStyle(ForgePalette.secondary)
+                Text(model.project?.label ?? model.repoId ?? "未选择项目")
+                    .font(.system(size:11,weight:.semibold))
+                    .lineLimit(1)
+            }
+            Spacer(minLength:4)
+            VStack(alignment:.trailing,spacing:3) {
+                Text("Requirement \(requirements.count)  ·  Plan \(plans.count)")
+                    .font(.system(size:10,weight:.medium))
+                Text("开放 \(openCount)  ·  已完成 \(completedCount)  ·  执行进度以真实验收为准")
+                    .font(.system(size:9))
+                    .foregroundStyle(ForgePalette.secondary)
+                    .lineLimit(1)
+            }
+        }
+        .padding(.horizontal,12).padding(.vertical,10)
+        .background(ForgePalette.softFill,
+                    in:RoundedRectangle(cornerRadius:10,style:.continuous))
+        .accessibilityIdentifier("planning.project.overview")
+    }
+
     private var planningNavigator: some View {
         VStack(alignment:.leading,spacing:0) {
             HStack(alignment:.top,spacing:8) {
@@ -2513,6 +2565,9 @@ private struct RecordsPane: View {
                 .disabled(model.repoId == nil)
             }
             .padding(.horizontal,13).padding(.top,13).padding(.bottom,9)
+
+            planningOverview
+                .padding(.horizontal,13).padding(.bottom,12)
 
             HStack(spacing:8) {
                 Picker("规划视图",selection:$planningViewMode) {
@@ -2898,82 +2953,139 @@ private struct RecordsPane: View {
            (planningChildrenByParent[item.id] ?? []).isEmpty {
             planningShowUnlinked = true
         }
-        planningViewMode="map"
         planningSearch=""
         planningScrollTarget=item.id
         Task { await model.openRecord(item.id) }
     }
 
+    private var planningListVisibleRecords: [ForgeRecord] {
+        // planningRecords is canonical preorder: hiding a collapsed parent's
+        // descendants requires no second graph or relationship state.
+        var result:[ForgeRecord]=[]
+        var hiddenBelowDepth:Int?
+        for item in model.records {
+            if let depth=hiddenBelowDepth {
+                if item.depth > depth { continue }
+                hiddenBelowDepth=nil
+            }
+            result.append(item)
+            if collapsedPlanningRecordIds.contains(item.id) {
+                hiddenBelowDepth=item.depth
+            }
+        }
+        return result
+    }
+
     private var planningList: some View {
-        ScrollView {
-            LazyVStack(alignment:.leading,spacing:4) {
-                ForEach(model.records) { item in
-                    planningListRow(item)
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment:.leading,spacing:5) {
+                    ForEach(planningListVisibleRecords) { item in
+                        planningListRow(item).id(item.id)
+                    }
+                }
+                .padding(10)
+            }
+            .scrollIndicators(.visible)
+            .onChange(of:planningScrollTarget) { target in
+                guard planningViewMode == "list",let target else { return }
+                DispatchQueue.main.async {
+                    withAnimation(.easeInOut(duration:0.18)) {
+                        proxy.scrollTo(target,anchor:.center)
+                    }
+                    planningScrollTarget=nil
                 }
             }
-            .padding(10)
         }
     }
 
     private func planningListRow(_ item:ForgeRecord) -> some View {
         let parent=planningParent(of:item)
         let children=planningChildrenByParent[item.id] ?? []
-        return Button {
-            Task { await model.openRecord(item.id) }
-        } label: {
-            HStack(alignment:.center,spacing:8) {
-                if item.depth > 0 {
-                    Capsule()
-                        .fill(ForgePalette.secondary.opacity(0.22))
-                        .frame(width:2,height:34)
-                        .padding(.leading,CGFloat(max(0,item.depth - 1) * 14))
-                        .padding(.trailing,3)
-                }
-
-                Image(systemName:item.kind == .requirement ? "scope" : "arrow.triangle.branch")
-                    .symbolRenderingMode(.hierarchical)
-                    .font(.system(size:item.kind == .requirement ? 11 : 10))
-                    .foregroundStyle(item.kind == .requirement ? ForgePalette.ink : ForgePalette.secondary)
-                    .frame(width:16,height:18)
-
-                VStack(alignment:.leading,spacing:4) {
-                    HStack(spacing:6) {
-                        Text(planningNodeRole(item))
-                            .font(.system(size:8.5,weight:.bold))
-                            .foregroundStyle(item.kind == .requirement ? ForgePalette.ink : ForgePalette.secondary)
-                        if let parent {
-                            Text("← \(parent.title)")
-                                .font(.system(size:8.5))
+        let collapsed=collapsedPlanningRecordIds.contains(item.id)
+        return HStack(spacing:4) {
+            Button {
+                Task { await model.openRecord(item.id) }
+            } label: {
+                HStack(alignment:.center,spacing:10) {
+                    Image(systemName:item.kind == .requirement ? "scope" :
+                          item.parentPlanId != nil ? "arrow.turn.down.right" : "arrow.triangle.branch")
+                        .symbolRenderingMode(.hierarchical)
+                        .font(.system(size:12,weight:.medium))
+                        .foregroundStyle(item.kind == .requirement ? ForgePalette.ink : ForgePalette.secondary)
+                        .frame(width:19,height:20)
+                    VStack(alignment:.leading,spacing:4) {
+                        HStack(spacing:7) {
+                            Text(planningNodeRole(item))
+                                .font(.system(size:9,weight:.semibold))
                                 .foregroundStyle(ForgePalette.secondary)
-                                .lineLimit(1)
+                            if item.kind == .requirement,!item.state.isEmpty {
+                                Text(item.state == "completed" ? "已完成" :
+                                     item.state == "open" ? "开放" :
+                                     item.state == "cancelled" ? "已取消" : item.state)
+                                    .font(.system(size:9,weight:.medium))
+                                    .foregroundStyle(ForgePalette.secondary)
+                            }
+                            if let status=planningExecutionStatus(item) {
+                                Text(planningExecutionLabel(item,status))
+                                    .font(.system(size:9,weight:.semibold))
+                                    .foregroundStyle(planningExecutionColor(status))
+                                    .help(planningExecutionHelp(item,status))
+                            }
+                            if let parent {
+                                Text("属于 \(parent.title)")
+                                    .font(.system(size:9))
+                                    .foregroundStyle(ForgePalette.secondary)
+                                    .lineLimit(1)
+                            }
                         }
+                        Text(item.title)
+                            .font(.system(size:12,weight:item.kind == .requirement ? .semibold : .medium))
+                            .foregroundStyle(ForgePalette.ink)
+                            .lineLimit(2).multilineTextAlignment(.leading)
+                        Text(item.recordId)
+                            .font(.system(size:9,design:.monospaced))
+                            .foregroundStyle(ForgePalette.secondary)
+                            .lineLimit(1)
                     }
-                    Text(item.title)
-                        .font(.system(size:11.5,weight:item.kind == .requirement ? .semibold : .medium))
-                        .lineLimit(2).multilineTextAlignment(.leading)
-                    Text(item.recordId)
-                        .font(.system(size:8.7,design:.monospaced))
-                        .foregroundStyle(ForgePalette.secondary).lineLimit(1)
+                    Spacer(minLength:0)
                 }
-                Spacer(minLength:0)
-                if !children.isEmpty {
-                    Text("\(children.count)")
-                        .font(.system(size:9,weight:.semibold,design:.monospaced))
-                        .foregroundStyle(ForgePalette.secondary)
-                        .padding(.horizontal,7).padding(.vertical,4)
-                        .background(ForgePalette.softFill,in:Capsule())
-                        .help("\(children.count) 个直接子节点")
-                }
+                .padding(.horizontal,8).padding(.vertical,9)
+                .contentShape(Rectangle())
             }
-            .padding(.leading,CGFloat(item.depth * 3))
-            .padding(.horizontal,8).padding(.vertical,8)
-            .frame(maxWidth:.infinity,alignment:.leading)
-            .background(item.id == model.selectedRecord ? ForgePalette.selection : .clear,
-                        in:RoundedRectangle(cornerRadius:10,style:.continuous))
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("semantic.record.\(item.kind.rawValue).\(item.recordId)")
+
+            if !children.isEmpty {
+                Button {
+                    if collapsed {
+                        collapsedPlanningRecordIds.remove(item.id)
+                    } else {
+                        collapsedPlanningRecordIds.insert(item.id)
+                    }
+                } label: {
+                    HStack(spacing:4) {
+                        Text("\(children.count)")
+                            .font(.system(size:9,weight:.medium,design:.monospaced))
+                        Image(systemName:collapsed ? "chevron.right" : "chevron.down")
+                            .font(.system(size:9,weight:.semibold))
+                    }
+                    .foregroundStyle(ForgePalette.secondary)
+                    .frame(minWidth:38,minHeight:34)
+                    .background(ForgePalette.softFill,
+                                in:RoundedRectangle(cornerRadius:8,style:.continuous))
+                }
+                .buttonStyle(.plain)
+                .help(collapsed ? "展开 \(children.count) 个直接子节点" : "折叠 \(children.count) 个直接子节点")
+                .accessibilityLabel(collapsed ? "展开子节点" : "折叠子节点")
+                .accessibilityIdentifier("planning.list.children.\(item.recordId)")
+                .padding(.trailing,8)
+            }
         }
-        .buttonStyle(.plain)
-        .accessibilityIdentifier("semantic.record.\(item.kind.rawValue).\(item.recordId)")
+        .padding(.leading,CGFloat(min(item.depth,6) * 16))
+        .frame(maxWidth:.infinity,alignment:.leading)
+        .background(item.id == model.selectedRecord ? ForgePalette.selectionStrong : ForgePalette.softFill.opacity(0.45),
+                    in:RoundedRectangle(cornerRadius:10,style:.continuous))
     }
 
     private var planningCanvas: some View {
