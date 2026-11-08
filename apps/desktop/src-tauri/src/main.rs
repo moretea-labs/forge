@@ -1959,7 +1959,7 @@ fn local_tool_catalog(allow_effects: bool) -> Vec<Value> {
     if allow_effects {
         tools.extend([
             json!({"type":"function","function":{"name":"apply_patch","description":"Apply typed Forge safe-patch operations to the selected registered repository. Forge owns mutation exclusion, fingerprint validation and evidence.","parameters":{"type":"object","properties":{"purpose":{"type":"string"},"operations":{"type":"array","items":{"type":"object"},"minItems":1,"maxItems":16},"allowed_paths":{"type":"array","items":{"type":"string"}}},"required":["purpose","operations"],"additionalProperties":false}}}),
-            json!({"type":"function","function":{"name":"run_command","description":"Execute an argument-array command through Forge's existing authorized Process Runtime and checkout/resource leases. No shell command strings or host scope.","parameters":{"type":"object","properties":{"command":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":24},"timeout_ms":{"type":"integer","minimum":1000,"maximum":60000},"max_output_bytes":{"type":"integer","minimum":1000,"maximum":12000}},"required":["command"],"additionalProperties":false}}}),
+            json!({"type":"function","function":{"name":"run_command","description":"Execute typed command arguments via Forge's authorized Process Runtime and checkout leases. Up to 10 minutes execution; if a managed Process ID is returned, inspect it with process_status before proceeding, never replay the command. No host scope.","parameters":{"type":"object","properties":{"command":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":24},"timeout_ms":{"type":"integer","minimum":1000,"maximum":600000},"max_output_bytes":{"type":"integer","minimum":1000,"maximum":12000}},"required":["command"],"additionalProperties":false}}}),
             json!({"type":"function","function":{"name":"git_commit","description":"Commit only explicitly listed repository-relative paths using Forge's canonical structured Git authority. Examine the diff first and supply a nonempty commit message. Never implicitly commit the entire index.","parameters":{"type":"object","properties":{"message":{"type":"string","minLength":1,"maxLength":500},"paths":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":32}},"required":["message","paths"],"additionalProperties":false}}}),
         ]);
     }
@@ -2009,21 +2009,22 @@ fn prepare_local_tool_arguments(name: &str, mut arguments: Value) -> Result<Valu
     let object = arguments.as_object_mut()
         .ok_or("FORGE_DESKTOP_LOCAL_TOOL_ARGUMENTS_INVALID")?;
     let timeout_ms = object.get("timeout_ms").and_then(Value::as_u64)
-        .unwrap_or(60_000).clamp(1_000, 60_000);
-    // The local Agent owns a synchronous turn. Let the canonical Process
-    // Runtime settle the exact admitted command within the command's own
-    // bounded timeout instead of treating its normal running handle as an
-    // unknown effect. Commands that still do not settle remain fail-closed.
-    object.insert("interactive_wait_ms".into(), Value::from(timeout_ms));
+        .unwrap_or(60_000).clamp(1_000, 600_000);
+    // A slow build keeps its canonical Process lease and runs to its own
+    // timeout; the foreground model turn never waits more than one minute.
+    // An accepted running receipt is resumed by Process ID, not re-executed.
+    object.insert("timeout_ms".into(), Value::from(timeout_ms));
+    object.insert("interactive_wait_ms".into(), Value::from(timeout_ms.min(60_000)));
     Ok(arguments)
 }
 
 fn local_tool_execution_timeout(name: &str, arguments: &Value) -> std::time::Duration {
     match name {
-        // Admit and await a command's actual Process Runtime terminal receipt.
+        // Allow Process Runtime to accept the command and return a running
+        // handle, rather than blocking the GUI for a long build.
         "run_command" => std::time::Duration::from_millis(
             arguments.get("timeout_ms").and_then(Value::as_u64)
-                .unwrap_or(60_000).clamp(1_000, 60_000) + 60_000
+                .unwrap_or(60_000).clamp(1_000, 600_000).min(60_000) + 60_000
         ),
         "apply_patch" => std::time::Duration::from_secs(180),
         "git_commit" => std::time::Duration::from_secs(150),
@@ -3234,6 +3235,16 @@ mod tests {
             json!({"command":["/bin/echo","ok"]})
         ).expect("default wait");
         assert_eq!(defaulted.get("interactive_wait_ms").and_then(Value::as_u64), Some(60_000));
+        let long = prepare_local_tool_arguments(
+            "run_command", json!({"command":["cargo","test"],"timeout_ms":300_000})
+        ).expect("managed long command");
+        assert_eq!(long["timeout_ms"],300_000);
+        assert_eq!(long["interactive_wait_ms"],60_000);
+        let capped = prepare_local_tool_arguments(
+            "run_command", json!({"command":["cargo","test"],"timeout_ms":800_000})
+        ).expect("bounded managed command");
+        assert_eq!(capped["timeout_ms"],600_000);
+        assert_eq!(capped["interactive_wait_ms"],60_000);
 
         let untouched = prepare_local_tool_arguments(
             "apply_patch",
@@ -3356,6 +3367,7 @@ mod tests {
         assert_eq!(local_tool_execution_timeout("read_file", &json!({})).as_secs(), 90);
         assert_eq!(local_tool_execution_timeout("run_command", &json!({"timeout_ms":1000})).as_secs(), 61);
         assert_eq!(local_tool_execution_timeout("run_command", &json!({})).as_secs(), 120);
+        assert_eq!(local_tool_execution_timeout("run_command", &json!({"timeout_ms":300_000})).as_secs(), 120);
         assert_eq!(local_tool_execution_timeout("apply_patch", &json!({})).as_secs(), 180);
         assert_eq!(local_tool_timeout_error("git_status"), "FORGE_DESKTOP_LOCAL_TOOL_TIMEOUT");
         assert_eq!(local_tool_timeout_error("apply_patch"), "FORGE_DESKTOP_LOCAL_TOOL_OUTCOME_UNKNOWN");

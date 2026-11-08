@@ -72,7 +72,7 @@ async function run() {
   if (input.tool === 'run_command') {
     if (!Array.isArray(args.command) || args.command.length === 0 || args.command.length > 24
         || args.command.some((part) => typeof part !== 'string' || part.length > 2048)
-        || (args.timeout_ms !== undefined && (!Number.isSafeInteger(args.timeout_ms) || args.timeout_ms < 1000 || args.timeout_ms > 60000))
+        || (args.timeout_ms !== undefined && (!Number.isSafeInteger(args.timeout_ms) || args.timeout_ms < 1000 || args.timeout_ms > 600000))
         || (args.max_output_bytes !== undefined && (!Number.isSafeInteger(args.max_output_bytes) || args.max_output_bytes < 1000 || args.max_output_bytes > 12000))) {
       throw Error('LOCAL_FORGE_COMMAND_INVALID');
     }
