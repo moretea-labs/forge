@@ -2532,6 +2532,35 @@ private struct RecordsPane: View {
                     planningScrollTarget = selected.id
                 }
 
+                HStack(spacing:6) {
+                    Image(systemName:"magnifyingglass")
+                        .font(.system(size:9.5))
+                        .foregroundStyle(ForgePalette.secondary)
+                    TextField("查找 Requirement / Plan",text:$planningSearch)
+                        .textFieldStyle(.plain)
+                        .font(.system(size:10.5))
+                        .onSubmit {
+                            if let first=planningSearchMatches.first {
+                                locatePlanningRecord(first)
+                            }
+                        }
+                        .accessibilityIdentifier("planning.search.field")
+                    if !planningSearch.isEmpty {
+                        Button {
+                            planningSearch = ""
+                        } label: {
+                            Image(systemName:"xmark.circle.fill")
+                                .font(.system(size:9.5))
+                                .foregroundStyle(ForgePalette.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .help("清除")
+                    }
+                }
+                .padding(.horizontal,8)
+                .frame(minWidth:110,idealWidth:155,maxWidth:190,minHeight:25)
+                .background(ForgePalette.softFill,in:RoundedRectangle(cornerRadius:8,style:.continuous))
+
                 if let focus=planningExecutionFocusRecord,
                    let status=planningExecutionStatus(focus) {
                     Button {
@@ -2628,10 +2657,6 @@ private struct RecordsPane: View {
                     .accessibilityIdentifier("planning.unlinked.toggle")
                 }
 
-                Text("\(planningViewMode == "map" ? planningVisibleRecords.count : model.records.count)/\(model.records.count)")
-                    .font(.system(size:9.5,weight:.medium))
-                    .foregroundStyle(ForgePalette.secondary)
-                    .help(planningViewMode == "map" ? "关系图当前节点 / 全部规划节点" : "列表显示全部规划节点")
                 if model.selectedRecord != nil {
                     Button("显示全部") { model.clearRecordSelection() }
                         .buttonStyle(.plain)
@@ -2640,36 +2665,6 @@ private struct RecordsPane: View {
                 }
             }
             .padding(.horizontal,13).padding(.bottom,7)
-
-            HStack(spacing:7) {
-                Image(systemName:"magnifyingglass")
-                    .font(.system(size:10))
-                    .foregroundStyle(ForgePalette.secondary)
-                TextField("查找 Requirement / Plan",text:$planningSearch)
-                    .textFieldStyle(.plain)
-                    .font(.system(size:10.5))
-                    .onSubmit {
-                        if let first=planningSearchMatches.first {
-                            locatePlanningRecord(first)
-                        }
-                    }
-                    .accessibilityIdentifier("planning.search.field")
-                if !planningSearch.isEmpty {
-                    Button {
-                        planningSearch = ""
-                    } label: {
-                        Image(systemName:"xmark.circle.fill")
-                            .font(.system(size:10))
-                            .foregroundStyle(ForgePalette.secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .help("清除")
-                }
-            }
-            .padding(.horizontal,9)
-            .frame(height:29)
-            .background(ForgePalette.softFill,in:RoundedRectangle(cornerRadius:9,style:.continuous))
-            .padding(.horizontal,13)
 
             if !planningSearch.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty {
                 planningSearchResults
@@ -2684,7 +2679,7 @@ private struct RecordsPane: View {
             if planningViewMode == "map" {
                 planningRelationLegend
                     .padding(.horizontal,13)
-                    .padding(.top,6).padding(.bottom,9)
+                    .padding(.top,4).padding(.bottom,7)
             } else {
                 HStack(spacing:6) {
                     Image(systemName:"list.bullet.indent")
