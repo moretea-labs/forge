@@ -2236,6 +2236,12 @@ private struct RecordsPane: View {
 
     @State private var planningViewMode = "map"
     @State private var hoveredPlanningRecordId: String?
+    @State private var planningSearch = ""
+    @State private var collapsedPlanningRecordIds = Set<String>()
+    @State private var planningZoom: CGFloat = 1
+    @State private var planningFitToView = false
+    @State private var planningFitScale: CGFloat = 1
+    @State private var planningScrollTarget: String?
 
     private let planningNodeWidth: CGFloat = 228
     private let planningNodeHeight: CGFloat = 92
@@ -2336,9 +2342,50 @@ private struct RecordsPane: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                Text("\(model.records.count) 节点")
+
+                if planningViewMode == "map" {
+                    Button {
+                        planningFitToView = true
+                    } label: {
+                        Image(systemName:"arrow.up.left.and.arrow.down.right")
+                    }
+                    .buttonStyle(.plain)
+                    .help("适配当前可见工作链路")
+                    .accessibilityIdentifier("planning.zoom.fit")
+
+                    Button {
+                        let base=planningFitToView ? planningFitScale : planningZoom
+                        planningZoom = max(0.55,base - 0.1)
+                        planningFitToView = false
+                    } label: {
+                        Image(systemName:"minus.magnifyingglass")
+                    }
+                    .buttonStyle(.plain)
+                    .help("缩小")
+                    .accessibilityIdentifier("planning.zoom.out")
+
+                    Text(planningFitToView ? "适配" : "\(Int(planningZoom * 100))%")
+                        .font(.system(size:9,design:.monospaced))
+                        .foregroundStyle(ForgePalette.secondary)
+                        .frame(minWidth:32)
+
+                    Button {
+                        let base=planningFitToView ? planningFitScale : planningZoom
+                        planningZoom = min(1.6,base + 0.1)
+                        planningFitToView = false
+                    } label: {
+                        Image(systemName:"plus.magnifyingglass")
+                    }
+                    .buttonStyle(.plain)
+                    .help("放大")
+                    .accessibilityIdentifier("planning.zoom.in")
+                }
+
+                Spacer(minLength:0)
+                Text("\(planningVisibleRecords.count)/\(model.records.count)")
                     .font(.system(size:9.5,weight:.medium))
                     .foregroundStyle(ForgePalette.secondary)
+                    .help("当前可见节点 / 全部节点")
                 if model.selectedRecord != nil {
                     Button("显示全部") { model.clearRecordSelection() }
                         .buttonStyle(.plain)
@@ -2346,11 +2393,48 @@ private struct RecordsPane: View {
                         .foregroundStyle(ForgePalette.accent)
                 }
             }
-            .padding(.horizontal,13).padding(.bottom,4)
-            Text("选择节点会突出当前工作链路；悬停节点可直接继续细化或开启带上下文的新会话。")
+            .padding(.horizontal,13).padding(.bottom,7)
+
+            HStack(spacing:7) {
+                Image(systemName:"magnifyingglass")
+                    .font(.system(size:10))
+                    .foregroundStyle(ForgePalette.secondary)
+                TextField("查找 Requirement / Plan",text:$planningSearch)
+                    .textFieldStyle(.plain)
+                    .font(.system(size:10.5))
+                    .onSubmit {
+                        if let first=planningSearchMatches.first {
+                            locatePlanningRecord(first)
+                        }
+                    }
+                    .accessibilityIdentifier("planning.search.field")
+                if !planningSearch.isEmpty {
+                    Button {
+                        planningSearch = ""
+                    } label: {
+                        Image(systemName:"xmark.circle.fill")
+                            .font(.system(size:10))
+                            .foregroundStyle(ForgePalette.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("清除")
+                }
+            }
+            .padding(.horizontal,9)
+            .frame(height:29)
+            .background(ForgePalette.softFill,in:RoundedRectangle(cornerRadius:9,style:.continuous))
+            .padding(.horizontal,13)
+
+            if !planningSearch.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty {
+                planningSearchResults
+                    .padding(.horizontal,13)
+                    .padding(.top,5)
+            }
+
+            Text("搜索用于定位并展开路径；折叠、缩放、适配都只是当前视图，不修改 Requirement / Plan。")
                 .font(.system(size:9.5))
                 .foregroundStyle(ForgePalette.secondary)
-                .padding(.horizontal,13).padding(.bottom,9)
+                .padding(.horizontal,13).padding(.top,6).padding(.bottom,9)
 
             Divider().opacity(0.55)
 
@@ -2374,6 +2458,68 @@ private struct RecordsPane: View {
                 planningList
             }
         }
+    }
+
+    private var planningSearchMatches: [ForgeRecord] {
+        let needle=planningSearch.trimmingCharacters(in:.whitespacesAndNewlines)
+        guard !needle.isEmpty else { return [] }
+        return Array(model.records.filter {
+            $0.title.localizedCaseInsensitiveContains(needle)
+                || $0.recordId.localizedCaseInsensitiveContains(needle)
+        }.prefix(5))
+    }
+
+    private var planningSearchResults: some View {
+        VStack(alignment:.leading,spacing:2) {
+            if planningSearchMatches.isEmpty {
+                Text("没有匹配节点")
+                    .font(.system(size:9.5))
+                    .foregroundStyle(ForgePalette.secondary)
+                    .padding(.horizontal,8).padding(.vertical,6)
+            } else {
+                ForEach(planningSearchMatches) { item in
+                    Button {
+                        locatePlanningRecord(item)
+                    } label: {
+                        HStack(spacing:7) {
+                            Image(systemName:item.kind == .requirement ? "scope" : "arrow.triangle.branch")
+                                .font(.system(size:9.5,weight:.semibold))
+                            Text(item.title)
+                                .font(.system(size:10.5,weight:.medium))
+                                .lineLimit(1)
+                            Spacer(minLength:4)
+                            Text(item.recordId)
+                                .font(.system(size:8.5,design:.monospaced))
+                                .foregroundStyle(ForgePalette.secondary)
+                                .lineLimit(1)
+                        }
+                        .padding(.horizontal,8).frame(height:27)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("planning.search.result.\(item.recordId)")
+                }
+            }
+        }
+        .padding(3)
+        .background(.thinMaterial,in:RoundedRectangle(cornerRadius:9,style:.continuous))
+    }
+
+    private func locatePlanningRecord(_ item:ForgeRecord) {
+        var cursor:ForgeRecord?=item
+        var visited=Set<String>()
+        while let current=cursor,visited.insert(current.id).inserted {
+            if let parent=planningParent(of:current) {
+                collapsedPlanningRecordIds.remove(parent.id)
+                cursor=parent
+            } else {
+                cursor=nil
+            }
+        }
+        planningViewMode="map"
+        planningSearch=""
+        planningScrollTarget=item.id
+        Task { await model.openRecord(item.id) }
     }
 
     private var planningList: some View {
@@ -2419,67 +2565,109 @@ private struct RecordsPane: View {
     }
 
     private var planningCanvas: some View {
-        let positions = planningCanvasPositions
-        let size = planningCanvasSize
-        let focusIds = planningFocusIds
-        let hasSelection = model.selectedRecord != nil
-        return ScrollView([.horizontal,.vertical]) {
-            ZStack(alignment:.topLeading) {
-                Canvas { context, _ in
-                    for item in model.records {
-                        guard let child = positions[item.id],
-                              let parent = planningParent(of:item),
-                              let parentPoint = positions[parent.id] else { continue }
-                        let start = CGPoint(
-                            x:parentPoint.x + planningNodeWidth,
-                            y:parentPoint.y + planningNodeHeight / 2
-                        )
-                        let end = CGPoint(
-                            x:child.x,
-                            y:child.y + planningNodeHeight / 2
-                        )
-                        let bend = max(start.x + 24,(start.x + end.x) / 2)
-                        var path = Path()
-                        path.move(to:start)
-                        path.addCurve(
-                            to:end,
-                            control1:CGPoint(x:bend,y:start.y),
-                            control2:CGPoint(x:bend,y:end.y)
-                        )
-                        let emphasized = !hasSelection || (focusIds.contains(item.id) && focusIds.contains(parent.id))
-                        context.stroke(
-                            path,
-                            with:.color(
-                                emphasized
-                                    ? ForgePalette.accent.opacity(hasSelection ? 0.34 : 0.22)
-                                    : ForgePalette.secondary.opacity(0.075)
-                            ),
-                            style:StrokeStyle(lineWidth:emphasized && hasSelection ? 1.7 : 1.15,lineCap:.round)
-                        )
+        GeometryReader { viewport in
+            let positions = planningCanvasPositions
+            let size = planningCanvasSize
+            let scale = planningCanvasScale(viewport:viewport.size,content:size)
+            let focusIds = planningFocusIds
+            let hasSelection = model.selectedRecord != nil
+
+            ScrollViewReader { proxy in
+                ScrollView([.horizontal,.vertical]) {
+                    ZStack(alignment:.topLeading) {
+                        Canvas { context, _ in
+                            for item in planningVisibleRecords {
+                                guard let child = positions[item.id],
+                                      let parent = planningParent(of:item),
+                                      let parentPoint = positions[parent.id] else { continue }
+                                let start = CGPoint(
+                                    x:parentPoint.x + planningNodeWidth,
+                                    y:parentPoint.y + planningNodeHeight / 2
+                                )
+                                let end = CGPoint(
+                                    x:child.x,
+                                    y:child.y + planningNodeHeight / 2
+                                )
+                                let bend = max(start.x + 24,(start.x + end.x) / 2)
+                                var path = Path()
+                                path.move(to:start)
+                                path.addCurve(
+                                    to:end,
+                                    control1:CGPoint(x:bend,y:start.y),
+                                    control2:CGPoint(x:bend,y:end.y)
+                                )
+                                let emphasized = !hasSelection || (focusIds.contains(item.id) && focusIds.contains(parent.id))
+                                context.stroke(
+                                    path,
+                                    with:.color(
+                                        emphasized
+                                            ? ForgePalette.accent.opacity(hasSelection ? 0.34 : 0.22)
+                                            : ForgePalette.secondary.opacity(0.075)
+                                    ),
+                                    style:StrokeStyle(lineWidth:emphasized && hasSelection ? 1.7 : 1.15,lineCap:.round)
+                                )
+                            }
+                        }
+                        .frame(width:size.width,height:size.height)
+
+                        ForEach(planningVisibleRecords) { item in
+                            if let point = positions[item.id] {
+                                planningCanvasNode(item,focused:!hasSelection || focusIds.contains(item.id))
+                                    .offset(x:point.x,y:point.y)
+                                    .id(item.id)
+                            }
+                        }
+                    }
+                    .frame(width:size.width,height:size.height,alignment:.topLeading)
+                    .scaleEffect(scale,anchor:.topLeading)
+                    .frame(width:size.width * scale,height:size.height * scale,alignment:.topLeading)
+                    .padding(12)
+                }
+                .scrollIndicators(.visible)
+                .onChange(of:planningScrollTarget) { target in
+                    guard let target else { return }
+                    DispatchQueue.main.async {
+                        withAnimation(.easeInOut(duration:0.18)) {
+                            proxy.scrollTo(target,anchor:.center)
+                        }
+                        planningScrollTarget=nil
                     }
                 }
-                .frame(width:size.width,height:size.height)
-
-                ForEach(model.records) { item in
-                    if let point = positions[item.id] {
-                        planningCanvasNode(item,focused:!hasSelection || focusIds.contains(item.id))
-                            .offset(x:point.x,y:point.y)
+                .onAppear {
+                    planningFitScale=scale
+                }
+                .onChange(of:scale) { newScale in
+                    planningFitScale=newScale
+                }
+                .overlay(alignment:.bottomLeading) {
+                    HStack(spacing:7) {
+                        if !collapsedPlanningRecordIds.isEmpty {
+                            Button("展开全部") {
+                                collapsedPlanningRecordIds.removeAll()
+                            }
+                            .buttonStyle(.plain)
+                            .font(.system(size:9,weight:.medium))
+                            .accessibilityIdentifier("planning.expand.all")
+                            Divider().frame(height:10)
+                        }
+                        Text(planningFitToView ? "适配 · \(Int(scale * 100))%" : "\(Int(scale * 100))%")
                     }
+                    .font(.system(size:9,design:.monospaced))
+                    .foregroundStyle(ForgePalette.secondary.opacity(0.86))
+                    .padding(.horizontal,10).padding(.vertical,6)
+                    .background(.thinMaterial,in:Capsule())
+                    .padding(10)
                 }
             }
-            .frame(width:size.width,height:size.height,alignment:.topLeading)
-            .padding(12)
         }
-        .scrollIndicators(.visible)
-        .overlay(alignment:.bottomLeading) {
-            Text("画布只投影 canonical Requirement / Plan 关系；布局、聚焦与悬停操作都不产生第二份工作流状态。")
-                .font(.system(size:9))
-                .foregroundStyle(ForgePalette.secondary.opacity(0.82))
-                .padding(.horizontal,10).padding(.vertical,6)
-                .background(.thinMaterial,in:Capsule())
-                .padding(10)
-                .allowsHitTesting(false)
-        }
+    }
+
+    private func planningCanvasScale(viewport:CGSize,content:CGSize) -> CGFloat {
+        guard planningFitToView else { return planningZoom }
+        let width=max(1,viewport.width - 28)
+        let height=max(1,viewport.height - 28)
+        let fit=min(width / max(1,content.width),height / max(1,content.height))
+        return min(1,max(0.55,fit))
     }
 
     private var planningChildrenByParent: [String:[ForgeRecord]] {
@@ -2491,8 +2679,30 @@ private struct RecordsPane: View {
         return result
     }
 
+    private var planningVisibleRecords: [ForgeRecord] {
+        let children=planningChildrenByParent
+        var result:[ForgeRecord]=[]
+        var visited=Set<String>()
+
+        func append(_ item:ForgeRecord) {
+            guard visited.insert(item.id).inserted else { return }
+            result.append(item)
+            guard !collapsedPlanningRecordIds.contains(item.id) else { return }
+            for child in children[item.id] ?? [] {
+                append(child)
+            }
+        }
+
+        for root in model.records where planningParent(of:root) == nil {
+            append(root)
+        }
+        return result
+    }
+
     private var planningCanvasPositions: [String:CGPoint] {
         let children=planningChildrenByParent
+        let visible=planningVisibleRecords
+        let visibleIds=Set(visible.map(\.id))
         let rowStep=planningNodeHeight + planningRowGap
         let columnStep=planningNodeWidth + planningColumnGap
         var positions:[String:CGPoint] = [:]
@@ -2513,7 +2723,9 @@ private struct RecordsPane: View {
             }
 
             visiting.insert(item.id)
-            let childItems=(children[item.id] ?? []).filter { !placed.contains($0.id) }
+            let childItems=(children[item.id] ?? []).filter {
+                visibleIds.contains($0.id) && !placed.contains($0.id)
+            }
             let center:CGFloat
             if childItems.isEmpty {
                 center=nextLeaf * rowStep + planningNodeHeight / 2
@@ -2530,12 +2742,12 @@ private struct RecordsPane: View {
             return positions[item.id]!.y + planningNodeHeight / 2
         }
 
-        let roots=model.records.filter { planningParent(of:$0) == nil }
+        let roots=visible.filter { planningParent(of:$0) == nil }
         for root in roots where !placed.contains(root.id) {
             _=place(root,depth:0)
             nextLeaf += 0.35
         }
-        for item in model.records where !placed.contains(item.id) {
+        for item in visible where !placed.contains(item.id) {
             _=place(item,depth:0)
             nextLeaf += 0.35
         }
@@ -2591,6 +2803,8 @@ private struct RecordsPane: View {
     private func planningCanvasNode(_ item:ForgeRecord,focused:Bool) -> some View {
         let selected = item.id == model.selectedRecord
         let hovered = hoveredPlanningRecordId == item.id
+        let children=planningChildrenByParent[item.id] ?? []
+        let collapsed=collapsedPlanningRecordIds.contains(item.id)
         return ZStack(alignment:.bottomTrailing) {
             Button {
                 Task { await model.openRecord(item.id) }
@@ -2649,6 +2863,24 @@ private struct RecordsPane: View {
 
             if hovered || selected {
                 HStack(spacing:4) {
+                    if !children.isEmpty {
+                        Button {
+                            if collapsed {
+                                collapsedPlanningRecordIds.remove(item.id)
+                            } else {
+                                collapsedPlanningRecordIds.insert(item.id)
+                            }
+                        } label: {
+                            Image(systemName:collapsed ? "chevron.right" : "chevron.down")
+                                .font(.system(size:9,weight:.bold))
+                                .frame(width:24,height:22)
+                                .background(.thinMaterial,in:RoundedRectangle(cornerRadius:7,style:.continuous))
+                        }
+                        .buttonStyle(.plain)
+                        .help(collapsed ? "展开 \(children.count) 个直接子节点" : "折叠 \(children.count) 个直接子节点")
+                        .accessibilityIdentifier("planning.collapse.\(item.recordId)")
+                    }
+
                     Button {
                         if item.kind == .requirement {
                             beginPlan(requirementId:item.recordId,parentPlanId:nil)
