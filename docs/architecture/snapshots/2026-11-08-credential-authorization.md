@@ -58,6 +58,16 @@ Create and rotate:
 
 Clipboard clearing is attempted even when Keychain mutation fails. Create removes a partially written Keychain item if clearing fails. Rotate restores the previous Keychain value if clipboard clearing or metadata persistence fails.
 
+## macOS Keychain access
+
+Forge-managed credential reads and deletes are always non-interactive. The Desktop helper disables Keychain user interaction around each secret operation; an ACL mismatch fails closed as `access_not_trusted` instead of displaying or waiting on a macOS Keychain Allow dialog.
+
+New managed generic-password items are created atomically with their initial `SecAccess` trusted-application ACL. Forge does not create an item and then mutate its ACL. Rotation updates only the secret value and preserves the existing ACL.
+
+The trusted application is the installed Forge Rust helper at `~/Applications/Forge.app/Contents/MacOS/forge-desktop`. The preview installer prefers an existing stable Developer ID Application signing identity for the Swift app, Rust helper and enclosing bundle. If no stable identity exists it falls back to ad-hoc signing, but managed credentials then fail closed after an incompatible binary identity change rather than prompting interactively.
+
+Credentials created by an older ad-hoc build can therefore appear as `keychainState=access_not_trusted`. They remain visible as metadata, are never silently copied or opened through another authority, and must be re-imported by the user into the current trusted helper identity.
+
 ## UI ownership
 
 The installed SwiftUI product owns credential-management interaction:

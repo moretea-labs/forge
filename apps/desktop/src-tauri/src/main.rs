@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod native_bridge;
+mod managed_keychain;
 
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -1064,8 +1065,6 @@ fn read_zro_api_key() -> Result<Option<String>, String> {
     Ok(Some(key.to_string()))
 }
 
-const MANAGED_API_CREDENTIAL_SERVICE: &str = "com.moretea.forge.desktop.credential";
-
 fn managed_api_credential_registry_path() -> Result<PathBuf, String> {
     let root = dirs::config_dir().ok_or("FORGE_DESKTOP_LOCAL_SETTINGS_DIR_UNAVAILABLE")?;
     Ok(root.join("com.moretea.forge.desktop").join("credentials.json"))
@@ -1136,54 +1135,25 @@ fn managed_credential_row<'a>(rows: &'a [Value], credential_ref: &str) -> Option
     rows.iter().find(|row| row.get("credentialRef").and_then(Value::as_str) == Some(credential_ref))
 }
 
-#[cfg(target_os = "macos")]
 fn read_managed_api_credential_secret(credential_ref: &str) -> Result<Option<String>, String> {
     if !valid_managed_credential_ref(credential_ref) {
         return Err("FORGE_DESKTOP_CREDENTIAL_REF_INVALID".into());
     }
-    use security_framework::passwords::{generic_password, PasswordOptions};
-    match generic_password(PasswordOptions::new_generic_password(MANAGED_API_CREDENTIAL_SERVICE, credential_ref)) {
-        Ok(value) => String::from_utf8(value).map(Some)
-            .map_err(|_| "FORGE_DESKTOP_CREDENTIAL_SECRET_INVALID".to_string()),
-        Err(error) if error.code() == -25300 => Ok(None),
-        Err(_) => Err("FORGE_DESKTOP_CREDENTIAL_KEYCHAIN_READ_FAILED".into()),
-    }
-}
-#[cfg(not(target_os = "macos"))]
-fn read_managed_api_credential_secret(_credential_ref: &str) -> Result<Option<String>, String> {
-    Err("FORGE_DESKTOP_CREDENTIAL_KEYCHAIN_UNSUPPORTED".into())
+    managed_keychain::read(credential_ref)
 }
 
-#[cfg(target_os = "macos")]
 fn write_managed_api_credential_secret(credential_ref: &str, secret: &str) -> Result<(), String> {
     if !valid_managed_credential_ref(credential_ref) || secret.is_empty() || secret.len() > 8192 {
         return Err("FORGE_DESKTOP_CREDENTIAL_SECRET_INVALID".into());
     }
-    security_framework::passwords::set_generic_password(
-        MANAGED_API_CREDENTIAL_SERVICE, credential_ref, secret.as_bytes()
-    ).map_err(|_| "FORGE_DESKTOP_CREDENTIAL_KEYCHAIN_WRITE_FAILED".to_string())
-}
-#[cfg(not(target_os = "macos"))]
-fn write_managed_api_credential_secret(_credential_ref: &str, _secret: &str) -> Result<(), String> {
-    Err("FORGE_DESKTOP_CREDENTIAL_KEYCHAIN_UNSUPPORTED".into())
+    managed_keychain::write(credential_ref, secret)
 }
 
-#[cfg(target_os = "macos")]
 fn delete_managed_api_credential_secret(credential_ref: &str) -> Result<(), String> {
     if !valid_managed_credential_ref(credential_ref) {
         return Err("FORGE_DESKTOP_CREDENTIAL_REF_INVALID".into());
     }
-    match security_framework::passwords::delete_generic_password(
-        MANAGED_API_CREDENTIAL_SERVICE, credential_ref
-    ) {
-        Ok(()) => Ok(()),
-        Err(error) if error.code() == -25300 => Ok(()),
-        Err(_) => Err("FORGE_DESKTOP_CREDENTIAL_KEYCHAIN_DELETE_FAILED".into()),
-    }
-}
-#[cfg(not(target_os = "macos"))]
-fn delete_managed_api_credential_secret(_credential_ref: &str) -> Result<(), String> {
-    Err("FORGE_DESKTOP_CREDENTIAL_KEYCHAIN_UNSUPPORTED".into())
+    managed_keychain::delete(credential_ref)
 }
 
 #[cfg(target_os = "macos")]
@@ -1220,6 +1190,17 @@ fn clear_credential_clipboard() -> Result<(), String> {
 #[cfg(not(target_os = "macos"))]
 fn clear_credential_clipboard() -> Result<(), String> {
     Err("FORGE_DESKTOP_CREDENTIAL_CLIPBOARD_UNSUPPORTED".into())
+}
+
+fn managed_credential_secret_state(credential_ref: &str) -> Result<(bool, &'static str), String> {
+    match read_managed_api_credential_secret(credential_ref) {
+        Ok(Some(_)) => Ok((true, "ready")),
+        Ok(None) => Ok((false, "missing")),
+        Err(error) if error == "FORGE_DESKTOP_CREDENTIAL_KEYCHAIN_ACCESS_NOT_TRUSTED" => {
+            Ok((false, "access_not_trusted"))
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn managed_credential_metadata(row: &Value, has_secret: bool) -> Value {
@@ -1343,10 +1324,11 @@ async fn managed_api_credential_control(
             for row in rows {
                 let credential_ref = row.get("credentialRef").and_then(Value::as_str).unwrap_or("");
                 let endpoint = row.get("endpoint").and_then(Value::as_str).unwrap_or("");
-                let has_secret = read_managed_api_credential_secret(credential_ref)?.is_some();
+                let (has_secret, keychain_state) = managed_credential_secret_state(credential_ref)?;
                 let status = credential_authorization_status(credential_ref, endpoint).await
                     .unwrap_or_else(|_| json!({"authorized":false}));
                 let mut metadata = managed_credential_metadata(&row, has_secret);
+                metadata["keychainState"] = Value::String(keychain_state.to_string());
                 metadata["authorized"] = Value::Bool(status.get("authorized").and_then(Value::as_bool) == Some(true));
                 metadata["expiresAt"] = status.get("expiresAt").cloned().unwrap_or(Value::Null);
                 items.push(metadata);
@@ -1364,9 +1346,10 @@ async fn managed_api_credential_control(
             let credential_ref = credential_ref.ok_or("FORGE_DESKTOP_CREDENTIAL_REF_REQUIRED")?;
             let row = managed_credential_record(&credential_ref)?;
             let endpoint = row.get("endpoint").and_then(Value::as_str).unwrap_or("").to_string();
-            let has_secret = read_managed_api_credential_secret(&credential_ref)?.is_some();
+            let (has_secret, keychain_state) = managed_credential_secret_state(&credential_ref)?;
             let auth = credential_authorization_status(&credential_ref, &endpoint).await?;
             let mut metadata = managed_credential_metadata(&row, has_secret);
+            metadata["keychainState"] = Value::String(keychain_state.to_string());
             metadata["authorized"] = Value::Bool(auth.get("authorized").and_then(Value::as_bool) == Some(true));
             metadata["expiresAt"] = auth.get("expiresAt").cloned().unwrap_or(Value::Null);
             Ok(metadata)
@@ -1450,11 +1433,14 @@ fn read_local_api_settings() -> Result<Value, String> {
         .filter(|value| !value.trim().is_empty()).unwrap_or(JOYCODE_DEFAULT_MODEL);
     let credential_ref = config.get("credentialRef").and_then(Value::as_str)
         .filter(|value| valid_managed_credential_ref(value));
+    let mut keychain_state = Value::Null;
     let has_key = if endpoint == ZRO_API_ENDPOINT {
         read_zro_api_key()?.is_some()
     } else if let Some(credential_ref) = credential_ref {
         managed_credential_matches_endpoint(credential_ref, endpoint)?;
-        read_managed_api_credential_secret(credential_ref)?.is_some()
+        let (has_secret, state) = managed_credential_secret_state(credential_ref)?;
+        keychain_state = Value::String(state.to_string());
+        has_secret
     } else {
         false
     };
@@ -1467,6 +1453,7 @@ fn read_local_api_settings() -> Result<Value, String> {
         "joyCodeModel": joycode_model,
         "joyCodeReady": read_joycode_session().is_ok(),
         "hasKey": has_key,
+        "keychainState": keychain_state,
         "endpointReady": local_api_endpoint_ready(endpoint, has_key),
     }))
 }

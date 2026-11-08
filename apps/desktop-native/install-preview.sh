@@ -43,7 +43,25 @@ cat > "$TMP/Contents/Info.plist" <<'PLIST'
 PLIST
 
 chmod +x "$TMP/Contents/MacOS/Forge" "$TMP/Contents/MacOS/forge-desktop"
-codesign --force --deep --sign - "$TMP"
+
+# A stable signing identity is required for persistent macOS Keychain trusted-app
+# ACLs. Prefer an explicit override, then a locally installed Developer ID
+# Application identity. Fall back to ad-hoc only for machines without one;
+# managed credentials then fail closed after a binary identity change instead of
+# showing an interactive Keychain Allow prompt.
+SIGN_IDENTITY="${FORGE_CODESIGN_IDENTITY:-}"
+if [ -z "$SIGN_IDENTITY" ]; then
+  SIGN_IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null     | sed -n 's/^[[:space:]]*[0-9][0-9]*) [0-9A-F]* "\(Developer ID Application:[^"]*\)".*/\1/p'     | head -1)"
+fi
+if [ -n "$SIGN_IDENTITY" ]; then
+  codesign --force --sign "$SIGN_IDENTITY" "$TMP/Contents/MacOS/Forge"
+  codesign --force --sign "$SIGN_IDENTITY" "$TMP/Contents/MacOS/forge-desktop"
+  codesign --force --sign "$SIGN_IDENTITY" "$TMP"
+  echo "Forge preview signed with stable identity: $SIGN_IDENTITY"
+else
+  codesign --force --deep --sign - "$TMP"
+  echo "Forge preview warning: no stable code-signing identity; managed Keychain credentials may require re-import after rebuild" >&2
+fi
 codesign --verify --deep --strict "$TMP"
 
 # Only retire client previews. Forge Runtime and Forge Desktop Operator are separate products.

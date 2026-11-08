@@ -20,6 +20,8 @@ tokio = { version = "1", features = ["process", "time", "io-util", "macros"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3.7"
+security-framework-sys = "2.17"
+core-foundation-sys = "0.8.7"
 
 [features]
 default = ["custom-protocol"]
