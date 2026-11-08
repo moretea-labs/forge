@@ -579,6 +579,8 @@ final class NativeWorkspace: ObservableObject {
         pendingContextPaths = []
         agentChanges = nil
         changesLoading = false
+        knowledgeLoading = false
+        knowledgeResult = nil
         checkoutRoot = nil
         checkoutBranch = nil
         if let boundRepoId = item.repoId {
@@ -959,11 +961,13 @@ final class NativeWorkspace: ObservableObject {
             return
         }
         guard let repoId, [.requirement,.plan].contains(page) else { return }
+        let targetPage=page
         do {
-            if page == .requirement {
+            if targetPage == .requirement {
                 async let requirementValue = ForgeBridge.request("read_project_requirement_list",["repoId":repoId])
                 async let planValue = ForgeBridge.request("read_project_plan_list",["repoId":repoId])
                 let (requirementList,planList) = try await (requirementValue,planValue)
+                guard self.repoId == repoId,self.page == targetPage else { return }
                 let requirementData = requirementList["data"] as? [String:Any] ?? requirementList
                 let requirementRows = requirementData["requirements"] as? [[String:Any]] ?? []
                 let planData = planList["data"] as? [String:Any] ?? planList
@@ -971,6 +975,7 @@ final class NativeWorkspace: ObservableObject {
                 records = Self.planningRecords(requirementRows:requirementRows,planRows:planRows)
             } else {
                 let result = try await ForgeBridge.request("read_project_plan_list",["repoId":repoId])
+                guard self.repoId == repoId,self.page == targetPage else { return }
                 let data = result["data"] as? [String:Any] ?? result
                 let rows = data["plans"] as? [[String:Any]] ?? []
                 records = rows.compactMap { row -> ForgeRecord? in
@@ -982,13 +987,17 @@ final class NativeWorkspace: ObservableObject {
                     )
                 }
             }
+            guard self.repoId == repoId,self.page == targetPage else { return }
             planningAutopilotStatuses=[:]
             planningAutopilotStatusError=nil
             detail = ""
             selectedRecord = nil
             recordDetail = nil
             error = nil
-        } catch { self.error = error.localizedDescription }
+        } catch {
+            guard self.repoId == repoId,self.page == targetPage else { return }
+            self.error = error.localizedDescription
+        }
     }
     nonisolated static func planningRecords(
         requirementRows: [[String:Any]],
@@ -1515,18 +1524,31 @@ final class NativeWorkspace: ObservableObject {
     }
 
     func loadAutopilotStatus(_ requirementId:String) async {
-        guard let repoId,let checkoutId else { autopilotStatus=nil; return }
+        guard let repoId,let checkoutId,
+              let selectionId=selectedRecord,
+              let selected=records.first(where:{$0.id == selectionId}),
+              selected.kind == .requirement,selected.recordId == requirementId else {
+            autopilotStatus=nil
+            autopilotLoading=false
+            return
+        }
         autopilotLoading=true
-        defer { autopilotLoading=false }
+        defer {
+            if self.repoId == repoId,self.checkoutId == checkoutId,self.selectedRecord == selectionId {
+                autopilotLoading=false
+            }
+        }
         do {
             let value=try await ForgeBridge.request("autopilot_control",[
                 "repoId":repoId,"checkoutId":checkoutId,
                 "requirementId":requirementId,"operation":"status"
             ])
+            guard self.repoId == repoId,self.checkoutId == checkoutId,self.selectedRecord == selectionId else { return }
             autopilotStatus=Self.autopilotStatusDetail(value)
             if let autopilotStatus { planningAutopilotStatuses[requirementId]=autopilotStatus }
             planningAutopilotStatusError=nil
         } catch {
+            guard self.repoId == repoId,self.checkoutId == checkoutId,self.selectedRecord == selectionId else { return }
             autopilotStatus=nil
             self.error=error.localizedDescription
         }
@@ -1599,21 +1621,26 @@ final class NativeWorkspace: ObservableObject {
               let record = records.first(where: { $0.id == selectionId }) else { return }
         selectedRecord = selectionId
         recordDetail = nil
+        autopilotLoading=false
         do {
             switch record.kind {
             case .plan:
                 autopilotStatus=nil
                 let result = try await ForgeBridge.request("read_plan_detail",["repoId":repoId,"planId":record.recordId])
+                guard self.repoId == repoId,self.selectedRecord == selectionId else { return }
                 guard let parsed = Self.planDetail(result) else { throw ForgeBridgeError.invalidResponse }
                 recordDetail = .plan(parsed)
             case .requirement:
                 let result = try await ForgeBridge.request("read_requirement_detail",["repoId":repoId,"requirementId":record.recordId])
+                guard self.repoId == repoId,self.selectedRecord == selectionId else { return }
                 guard let parsed = Self.requirementDetail(result) else { throw ForgeBridgeError.invalidResponse }
                 recordDetail = .requirement(parsed)
                 await loadAutopilotStatus(record.recordId)
+                guard self.repoId == repoId,self.selectedRecord == selectionId else { return }
             }
             error = nil
         } catch {
+            guard self.repoId == repoId,self.selectedRecord == selectionId else { return }
             self.error = error.localizedDescription
         }
     }
@@ -1699,20 +1726,28 @@ final class NativeWorkspace: ObservableObject {
     func searchKnowledge() async {
         guard let repoId else {
             knowledgeResult = nil
+            knowledgeLoading = false
             return
         }
         guard !knowledgeLoading else { return }
+        let targetQuery=knowledgeQuery
         knowledgeLoading = true
         knowledgeResult = nil
-        defer { knowledgeLoading = false }
+        defer {
+            if self.repoId == repoId {
+                knowledgeLoading = false
+            }
+        }
         do {
             let value = try await ForgeBridge.request("read_project_knowledge",[
-                "repoId":repoId,"query":knowledgeQuery
+                "repoId":repoId,"query":targetQuery
             ])
+            guard self.repoId == repoId,self.page == .knowledge,self.knowledgeQuery == targetQuery else { return }
             guard let parsed = Self.knowledgeAuditDetail(value) else { throw ForgeBridgeError.invalidResponse }
             knowledgeResult = parsed
             error = nil
         } catch {
+            guard self.repoId == repoId,self.page == .knowledge,self.knowledgeQuery == targetQuery else { return }
             knowledgeResult = nil
             self.error = error.localizedDescription
         }

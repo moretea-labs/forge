@@ -778,6 +778,7 @@ final class NativeWorkspaceTests: XCTestCase {
             stat:"",patch:"diff",truncated:false,untracked:[]
         )
         model.changesLoading = true
+        model.knowledgeLoading = true
         model.threads.append(ChatThread(repoId:"repo_c",checkoutId:"checkout_c"))
         let fallback = model.threads.last!.id
         model.deleteThread(selected)
@@ -787,6 +788,7 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(model.draft,"")
         XCTAssertNil(model.agentChanges)
         XCTAssertFalse(model.changesLoading)
+        XCTAssertFalse(model.knowledgeLoading)
 
         model.deleteThread(fallback)
         XCTAssertEqual(model.threads.count,1)
