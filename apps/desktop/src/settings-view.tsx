@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import type { LocalApiSettings, LocalProviderChoice, LocalApiProtocol } from './local-api';
 import type { LocalProviderStatusProjection } from './runtime-client';
 import { ForgeIcon } from './ui-icons';
-type SaveInput = { provider: LocalProviderChoice; endpoint: string; model: string; apiProtocol: LocalApiProtocol; apiKey?: string };
+type SaveInput = { provider: LocalProviderChoice; endpoint: string; model: string; apiProtocol: LocalApiProtocol; apiKey?: string; joyCodeModel?: string };
 export function SettingsView({
   settings, loading, error, onRefresh, onSave, onClearKey,
   codexStatus, codexError, onRefreshCodex, onOpenMcp, mcpReady,
@@ -18,17 +18,18 @@ export function SettingsView({
   const [apiProtocol, setApiProtocol] = useState<LocalApiProtocol>(settings?.apiProtocol ?? 'openai');
   const [endpoint, setEndpoint] = useState(settings?.endpoint ?? 'https://api.openai.com/v1');
   const [model, setModel] = useState(settings?.model ?? '');
+  const [joyCodeModel, setJoyCodeModel] = useState(settings?.joyCodeModel ?? 'JoyAI-Code-1.6');
   const [key, setKey] = useState('');
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
-  useEffect(() => { if (settings) { setProvider(settings.provider); setEndpoint(settings.endpoint); setModel(settings.model); setApiProtocol(settings.apiProtocol ?? 'openai'); } }, [settings]);
+  useEffect(() => { if (settings) { setProvider(settings.provider); setEndpoint(settings.endpoint); setModel(settings.model); setJoyCodeModel(settings.joyCodeModel ?? 'JoyAI-Code-1.6'); setApiProtocol(settings.apiProtocol ?? 'openai'); } }, [settings]);
   const currentHasKey = Boolean(settings?.hasKey && endpoint.trim() === settings.endpoint);
   const isDirty = Boolean(settings && (
     provider !== settings.provider || (provider === 'api' && (
       endpoint.trim() !== settings.endpoint || model.trim() !== settings.model
       || apiProtocol !== settings.apiProtocol || Boolean(key)
-    ))
+    )) || (provider === 'joycode' && joyCodeModel.trim() !== settings.joyCodeModel)
   ));
   const clearKey = async () => {
     if (!currentHasKey || saving || !window.confirm('从 macOS 钥匙串删除此 Endpoint 的 API Key？')) return;
@@ -41,7 +42,7 @@ export function SettingsView({
     if (saving) return;
     setSaving(true); setSaveError(null); setSaved(false);
     try {
-      await onSave({ provider, endpoint: endpoint.trim(), model: model.trim(), apiProtocol, ...(key ? { apiKey: key } : {}) });
+      await onSave({ provider, endpoint: endpoint.trim(), model: model.trim(), apiProtocol, joyCodeModel: joyCodeModel.trim(), ...(key ? { apiKey: key } : {}) });
       setKey(''); setSaved(true);
     } catch (cause) { setSaveError(cause instanceof Error ? cause.message : String(cause)); }
     finally { setSaving(false); }
@@ -72,6 +73,17 @@ export function SettingsView({
           <small>自定义 OpenAI / Anthropic 接口、模型与密钥。工具调用使用 Forge 本地执行器。</small>
           <span className="settings-option-status">自定义模型</span>
         </button>
+        <button type="button" aria-pressed={provider === 'joycode'}
+          className={provider === 'joycode' ? 'settings-option selected' : 'settings-option'}
+          onClick={() => { setProvider('joycode'); setSaved(false); }}>
+          <span className="settings-option-icon"><ForgeIcon name="runtime" size={19} /></span>
+          <strong>JoyCode</strong>
+          <small>复用本机 JoyCode 登录态；凭据不写入 Forge 配置。</small>
+          <span className="settings-option-status">
+            <span className={'health-dot ' + (settings?.joyCodeReady ? 'connected' : 'degraded')} />
+            {settings?.joyCodeReady ? '已登录' : '未检测到登录'}
+          </span>
+        </button>
       </div>
       {provider === 'codex' ? <div className="settings-readout settings-provider-status">
         <span className={'health-dot ' + (codexStatus?.status === 'ready' ? 'connected' : 'degraded')} />
@@ -79,7 +91,13 @@ export function SettingsView({
           <p>{codexError ?? codexStatus?.detail ?? '使用当前 Mac 的 Codex CLI 登录，执行由 Forge Runtime 管理。'}</p>
           <button type="button" className="plain-action" onClick={() => void onRefreshCodex()}>重新检查 Codex</button>
         </div>
-      </div> :
+      </div> : provider === 'joycode' ?
+        <div className="settings-fields">
+          <label><span>JoyCode 模型</span><input spellCheck={false} autoComplete="off" value={joyCodeModel}
+            onChange={e => { setJoyCodeModel(e.target.value); setSaved(false); }} placeholder="JoyAI-Code-1.6" /></label>
+          <p className="settings-hint">Forge 运行时只读取本机 JoyCode 当前登录态并在内存中使用；不会把 JoyCode 凭据复制到 local-api.json 或 Keychain。</p>
+          <div className="settings-secret-state">{settings?.joyCodeReady ? 'JoyCode：已检测到登录态' : 'JoyCode：请先在 JoyCode 客户端登录'}</div>
+        </div> :
         <div className="settings-fields">
           <label><span>API 协议</span><select aria-label="API 协议" value={apiProtocol}
             onChange={(event) => {
@@ -102,7 +120,7 @@ export function SettingsView({
         </div>}
       {error && <p className="inline-error" role="alert">{error}</p>}
       {saveError && <p className="inline-error" role="alert">{saveError}</p>}
-      <div className="settings-actions"><button type="button" className="plain-action" disabled={loading || saving} onClick={() => void onRefresh()}>重新读取配置</button><button type="button" className="settings-save" disabled={loading || saving || !settings || !isDirty || (provider === 'api' && (!endpoint.trim() || !model.trim()))} onClick={() => void save()}>{saving ? '保存中…' : provider === 'codex' ? '使用 Codex CLI' : '保存 API 配置'}</button>{saved && <span className="settings-saved" role="status">已保存</span>}</div>
+      <div className="settings-actions"><button type="button" className="plain-action" disabled={loading || saving} onClick={() => void onRefresh()}>重新读取配置</button><button type="button" className="settings-save" disabled={loading || saving || !settings || !isDirty || (provider === 'api' && (!endpoint.trim() || !model.trim())) || (provider === 'joycode' && (!joyCodeModel.trim() || !settings.joyCodeReady))} onClick={() => void save()}>{saving ? '保存中…' : provider === 'codex' ? '使用 Codex CLI' : provider === 'joycode' ? '使用 JoyCode' : '保存 API 配置'}</button>{saved && <span className="settings-saved" role="status">已保存</span>}</div>
     </section>
     <section className="settings-group settings-mcp-entry" aria-label="外部 MCP 连接">
       <div className="settings-group-heading"><strong>外部 MCP 服务</strong><span>与本地 Agent 分离</span></div>

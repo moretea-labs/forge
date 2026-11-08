@@ -886,6 +886,7 @@ private struct AgentPane: View {
     private var agentWorkspaceStatusLabel: String {
         if model.busy { return "执行中" }
         if !model.selectedProviderReady {
+            if model.selectedProvider == "joycode" { return "JoyCode 未就绪" }
             return model.selectedProvider == "api" ? "API 未配置" : "Codex 未就绪"
         }
         if model.thread?.repoId != nil && model.thread?.checkoutId == nil { return "缺 checkout" }
@@ -904,6 +905,9 @@ private struct AgentPane: View {
     private var agentWorkspaceStatusDetail: String {
         if model.busy { return model.liveActivity?.lastActivity ?? "Agent 正在执行" }
         if !model.selectedProviderReady {
+            if model.selectedProvider == "joycode" {
+                return "JoyCode 尚未就绪；请先在本机 JoyCode 登录并确认模型配置。"
+            }
             return model.selectedProvider == "api" ? "兼容 API 配置尚未就绪；请检查 Endpoint、必要的 API Key 与模型" : model.provider
         }
         if model.thread?.repoId != nil && model.thread?.checkoutId == nil {
@@ -1187,6 +1191,16 @@ private struct AgentPane: View {
                     }
                 }
                 .disabled(!model.apiProfileReady)
+                Button {
+                    model.selectThreadProvider("joycode")
+                } label: {
+                    if model.selectedProvider == "joycode" {
+                        Label("JoyCode",systemImage:"checkmark")
+                    } else {
+                        Text("JoyCode")
+                    }
+                }
+                .disabled(!model.joyCodeProfileReady)
             }
             .disabled(model.busy || model.thread?.messages.isEmpty == false)
 
@@ -1221,7 +1235,7 @@ private struct AgentPane: View {
                 }
                 .disabled(model.selectedReasoningOptions.isEmpty || model.busy)
             } else {
-                Button("模型 · \(model.selectedApiModel.isEmpty ? "API 模型" : model.selectedApiModel)") {}
+                Button("模型 · \(model.selectedApiModel.isEmpty ? "外部模型" : model.selectedApiModel)") {}
                     .disabled(true)
                 if model.checkoutId != nil {
                     Divider()
@@ -1240,11 +1254,11 @@ private struct AgentPane: View {
             }
         } label: {
             HStack(spacing:5) {
-                Image(systemName:model.allowApiEffects && model.selectedProvider == "api"
+                Image(systemName:model.allowApiEffects && NativeWorkspace.matchesExternalProvider(model.selectedProvider)
                       ? "checkmark.shield.fill"
-                      : (model.selectedProvider == "api" ? "server.rack" : "cpu"))
+                      : (NativeWorkspace.matchesExternalProvider(model.selectedProvider) ? "server.rack" : "cpu"))
                     .font(.system(size:9.5,weight:.medium))
-                    .foregroundStyle(model.allowApiEffects && model.selectedProvider == "api"
+                    .foregroundStyle(model.allowApiEffects && NativeWorkspace.matchesExternalProvider(model.selectedProvider)
                                      ? ForgePalette.accent : ForgePalette.secondary)
                 Text(composerConfigurationLabel)
                     .lineLimit(1)
@@ -1263,8 +1277,8 @@ private struct AgentPane: View {
         }
         .menuStyle(.borderlessButton)
         .fixedSize(horizontal:false,vertical:true)
-        .help(model.allowApiEffects && model.selectedProvider == "api"
-              ? "下一次 API 发送已授权受 Forge 约束的写操作"
+        .help(model.allowApiEffects && NativeWorkspace.matchesExternalProvider(model.selectedProvider)
+              ? "下一次外部模型发送已授权受 Forge 约束的写操作"
               : "选择 Provider、模型与推理强度")
         .accessibilityLabel("Agent 配置")
         .accessibilityValue(compactConfigurationAccessibilityValue)
@@ -1272,9 +1286,11 @@ private struct AgentPane: View {
     }
 
     private var composerConfigurationLabel: String {
-        if model.selectedProvider == "api" {
-            let apiModel = model.selectedApiModel.isEmpty ? "API 模型" : model.selectedApiModel
-            return "API · \(apiModel)"
+        if NativeWorkspace.matchesExternalProvider(model.selectedProvider) {
+            let externalModel = model.selectedApiModel.isEmpty ? "外部模型" : model.selectedApiModel
+            return model.selectedProvider == "joycode"
+                ? "JoyCode · \(externalModel)"
+                : "API · \(externalModel)"
         }
         let modelName = model.selectedAgentModel?.displayName ?? "Codex"
         let reasoning = reasoningLabel(model.selectedReasoningEffort)
@@ -1282,8 +1298,11 @@ private struct AgentPane: View {
     }
 
     private var compactConfigurationAccessibilityValue: String {
-        let provider = model.selectedProvider == "api" ? "兼容 API" : "Codex CLI"
-        let writeScope = model.selectedProvider == "api" && model.allowApiEffects ? "，下一次发送允许写操作" : ""
+        let provider = model.selectedProvider == "joycode"
+            ? "JoyCode"
+            : (model.selectedProvider == "api" ? "兼容 API" : "Codex CLI")
+        let writeScope = NativeWorkspace.matchesExternalProvider(model.selectedProvider) && model.allowApiEffects
+            ? "，下一次发送允许写操作" : ""
         return "\(provider)，\(composerConfigurationLabel)\(writeScope)"
     }
 
@@ -2788,6 +2807,7 @@ private struct SettingsPane: View {
     @State private var apiProtocol = "openai"
     @State private var endpoint = "https://api.openai.com/v1"
     @State private var apiModel = ""
+    @State private var joyCodeModel = "JoyAI-Code-1.6"
     @State private var apiKey = ""
     @State private var saving = false
 
@@ -2797,7 +2817,7 @@ private struct SettingsPane: View {
                 HStack(alignment:.top) {
                     VStack(alignment:.leading,spacing:6) {
                         Text("Agent 设置").font(.system(size:22,weight:.medium))
-                        Text("Provider 按会话固定：Codex 继续使用 Forge controller.local_conversation；兼容 API 复用同一 Rust Agent 核心、取消与工具事件协议。已有历史不会因默认配置改变而切换 Provider。")
+                        Text("Provider 按会话固定：Codex 使用 Forge controller.local_conversation；兼容 API 与 JoyCode 共用同一 Rust Agent 核心、取消与工具事件协议。已有历史不会因默认配置改变而切换 Provider。")
                             .font(.system(size:12)).foregroundStyle(ForgePalette.secondary)
                     }
                     Spacer()
@@ -2815,7 +2835,7 @@ private struct SettingsPane: View {
                     HStack(spacing:9) {
                         Circle().fill(model.selectedProviderReady ? Color.green : Color.orange)
                             .frame(width:8,height:8)
-                        Text("当前会话 · \(model.selectedProvider == "api" ? "兼容 API" : "Codex CLI")")
+                        Text("当前会话 · \(model.selectedProvider == "joycode" ? "JoyCode" : (model.selectedProvider == "api" ? "兼容 API" : "Codex CLI"))")
                             .font(.system(size:14,weight:.semibold))
                         Spacer()
                         Text("当前执行 Provider")
@@ -2823,16 +2843,18 @@ private struct SettingsPane: View {
                             .padding(.horizontal,8).frame(height:22)
                             .background(ForgePalette.selection,in:Capsule())
                     }
-                    Text(model.selectedProvider == "api"
-                         ? (model.apiProfileReady ? "使用保存的兼容 API profile；写操作仍需每轮显式授权。" : "API profile 尚未完成。")
-                         : model.provider)
+                    Text(model.selectedProvider == "joycode"
+                         ? (model.joyCodeProfileReady ? "复用本机 JoyCode 登录态；凭据不会写入 Forge 配置。" : "JoyCode 登录态尚未就绪。")
+                         : (model.selectedProvider == "api"
+                            ? (model.apiProfileReady ? "使用保存的兼容 API profile；写操作仍需每轮显式授权。" : "API profile 尚未完成。")
+                            : model.provider))
                         .font(.system(size:12)).foregroundStyle(ForgePalette.secondary)
                     HStack(spacing:16) {
-                        settingMeta("会话模型",model.selectedProvider == "api"
+                        settingMeta("会话模型",NativeWorkspace.matchesExternalProvider(model.selectedProvider)
                                     ? (model.selectedApiModel.isEmpty ? "未配置" : model.selectedApiModel)
                                     : (model.selectedAgentModel?.displayName ?? "Codex 默认"))
-                        settingMeta("Reasoning",model.selectedProvider == "api"
-                                    ? "API profile"
+                        settingMeta("Reasoning",NativeWorkspace.matchesExternalProvider(model.selectedProvider)
+                                    ? (model.selectedProvider == "joycode" ? "JoyCode" : "API profile")
                                     : (model.selectedReasoningEffort.isEmpty ? "默认" : model.selectedReasoningEffort))
                         settingMeta("图片输入",model.selectedProviderSupportsImages ? "可用" : "不可用")
                     }
@@ -2852,7 +2874,7 @@ private struct SettingsPane: View {
                     }
                     if let settings = model.localApiSettings {
                         HStack(spacing:16) {
-                            settingMeta("新会话默认",settings.provider == "api" ? "兼容 API" : "Codex CLI")
+                            settingMeta("新会话默认",settings.provider == "joycode" ? "JoyCode" : (settings.provider == "api" ? "兼容 API" : "Codex CLI"))
                             settingMeta("协议",settings.apiProtocol)
                             settingMeta("Keychain",settings.hasKey ? "已存密钥" : "无密钥")
                         }
@@ -2868,6 +2890,7 @@ private struct SettingsPane: View {
                             Picker("新会话默认",selection:$defaultProvider) {
                                 Text("Codex CLI").tag("codex")
                                 Text("兼容 API").tag("api")
+                                Text("JoyCode").tag("joycode")
                             }
                             .labelsHidden().pickerStyle(.segmented).frame(maxWidth:260)
                             .accessibilityIdentifier("settings.default-provider")
@@ -2892,6 +2915,19 @@ private struct SettingsPane: View {
                                 .textFieldStyle(.plain).font(.system(size:11.5,design:.monospaced))
                                 .accessibilityIdentifier("settings.model")
                         }
+                        settingsField("JoyCode 模型") {
+                            TextField("JoyAI-Code-1.6",text:$joyCodeModel)
+                                .textFieldStyle(.plain).font(.system(size:11.5,design:.monospaced))
+                                .accessibilityIdentifier("settings.joycode-model")
+                        }
+                        HStack(spacing:7) {
+                            Circle().fill(model.localApiSettings?.joyCodeReady == true ? Color.green : Color.orange)
+                                .frame(width:7,height:7)
+                            Text(model.localApiSettings?.joyCodeReady == true
+                                 ? "已检测到本机 JoyCode 登录态；凭据仅在请求时读取到内存。"
+                                 : "未检测到 JoyCode 登录态，请先在 JoyCode 客户端登录。")
+                                .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
+                        }
                         settingsField("API Key") {
                             SecureField(model.localApiSettings?.hasKey == true ? "已存 Key；留空保持" : "本机服务可留空",text:$apiKey)
                                 .textFieldStyle(.plain).font(.system(size:11.5,design:.monospaced))
@@ -2913,14 +2949,17 @@ private struct SettingsPane: View {
                             .buttonStyle(.borderedProminent)
                             .disabled(saving || model.settingsLoading
                                       || endpoint.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty
-                                      || (defaultProvider == "api" && apiModel.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty))
+                                      || (defaultProvider == "api" && apiModel.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty)
+                                      || (defaultProvider == "joycode"
+                                          && (joyCodeModel.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty
+                                              || model.localApiSettings?.joyCodeReady != true)))
                             .accessibilityIdentifier("settings.save")
                         }
                     }
                     .padding(13)
                     .background(ForgePalette.canvas,in:RoundedRectangle(cornerRadius:12,style:.continuous))
 
-                    Text("API Key 只写入 macOS Keychain；远程 Endpoint 需要 Key，本机 loopback Endpoint 可留空。JSON 配置只保存 Provider、Endpoint、模型与协议。新会话读取默认 Provider，已有会话继续使用自己的 Provider。写操作授权仍只对下一次 API 发送有效。")
+                    Text("API Key 只写入 macOS Keychain；JoyCode 凭据不写入 Forge，只在请求时读取本机登录态。JSON 配置只保存 Provider 与模型等非敏感设置。新会话读取默认 Provider，已有会话继续使用自己的 Provider。写操作授权仍只对下一次外部模型发送有效。")
                         .font(.system(size:10.5)).foregroundStyle(.tertiary).lineSpacing(3)
                 }
                 .padding(16)
@@ -2937,7 +2976,8 @@ private struct SettingsPane: View {
 
     private var settingsSignature: String {
         guard let settings = model.localApiSettings else { return "none" }
-        return [settings.provider,settings.endpoint,settings.model,settings.apiProtocol,settings.hasKey ? "1" : "0"].joined(separator:"|")
+        return [settings.provider,settings.endpoint,settings.model,settings.apiProtocol,
+                settings.joyCodeModel,settings.hasKey ? "1" : "0",settings.joyCodeReady ? "1" : "0"].joined(separator:"|")
     }
 
     private func syncSettingsDraft() {
@@ -2945,6 +2985,7 @@ private struct SettingsPane: View {
         defaultProvider = settings.provider
         endpoint = settings.endpoint
         apiModel = settings.model
+        joyCodeModel = settings.joyCodeModel
         apiProtocol = settings.apiProtocol
         apiKey = ""
     }
@@ -2958,7 +2999,8 @@ private struct SettingsPane: View {
                 endpoint:endpoint,
                 model:apiModel,
                 apiProtocol:apiProtocol,
-                apiKey:apiKey
+                apiKey:apiKey,
+                joyCodeModel:joyCodeModel
             )
             if saved { apiKey = "" }
             saving = false

@@ -300,6 +300,28 @@ struct LocalApiSettingsDetail {
     let apiProtocol: String
     let hasKey: Bool
     let endpointReady: Bool
+    let joyCodeModel: String
+    let joyCodeReady: Bool
+
+    init(
+        provider:String,
+        endpoint:String,
+        model:String,
+        apiProtocol:String,
+        hasKey:Bool,
+        endpointReady:Bool,
+        joyCodeModel:String = "JoyAI-Code-1.6",
+        joyCodeReady:Bool = false
+    ) {
+        self.provider = provider
+        self.endpoint = endpoint
+        self.model = model
+        self.apiProtocol = apiProtocol
+        self.hasKey = hasKey
+        self.endpointReady = endpointReady
+        self.joyCodeModel = joyCodeModel
+        self.joyCodeReady = joyCodeReady
+    }
 }
 
 struct RepositoryCheckoutContext {
@@ -414,15 +436,26 @@ final class NativeWorkspace: ObservableObject {
         return settings.endpointReady
             && !settings.model.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty
     }
+    var joyCodeProfileReady: Bool {
+        guard let settings = localApiSettings else { return false }
+        return settings.joyCodeReady
+            && !settings.joyCodeModel.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty
+    }
     var selectedProviderReady: Bool {
         if selectedProvider == "api" {
             return localApiSettings?.endpointReady == true && !selectedApiModel.isEmpty
+        }
+        if selectedProvider == "joycode" {
+            return localApiSettings?.joyCodeReady == true && !selectedApiModel.isEmpty
         }
         return localProviderReady
     }
     var selectedApiModel: String {
         let threadModel = thread?.model?.trimmingCharacters(in:.whitespacesAndNewlines) ?? ""
-        if selectedProvider == "api" && !threadModel.isEmpty { return threadModel }
+        if Self.matchesExternalProvider(selectedProvider) && !threadModel.isEmpty { return threadModel }
+        if selectedProvider == "joycode" {
+            return localApiSettings?.joyCodeModel.trimmingCharacters(in:.whitespacesAndNewlines) ?? ""
+        }
         return localApiSettings?.model.trimmingCharacters(in:.whitespacesAndNewlines) ?? ""
     }
     var selectedProviderSupportsImages: Bool {
@@ -476,7 +509,9 @@ final class NativeWorkspace: ObservableObject {
             requirementId:requirementId,
             planId:planId,
             provider:provider,
-            model:provider == "api" ? localApiSettings?.model : nil
+            model:provider == "api"
+                ? localApiSettings?.model
+                : (provider == "joycode" ? localApiSettings?.joyCodeModel : nil)
         )
         threads.insert(item, at:0)
         selectedThreadId = item.id
@@ -529,9 +564,15 @@ final class NativeWorkspace: ObservableObject {
             self.error = "请先在设置中完成可用的 API Endpoint、必要的 API Key 与模型配置。"
             return
         }
+        if value == "joycode" && !joyCodeProfileReady {
+            self.error = "请先登录本机 JoyCode，并确认 JoyCode 模型配置可用。"
+            return
+        }
         threads[index].provider = value
         threads[index].providerSessionId = nil
-        threads[index].model = value == "api" ? localApiSettings?.model : nil
+        threads[index].model = value == "api"
+            ? localApiSettings?.model
+            : (value == "joycode" ? localApiSettings?.joyCodeModel : nil)
         threads[index].reasoningEffort = nil
         threads[index].updatedAt = Date()
         pendingImageURLs = []
@@ -541,7 +582,11 @@ final class NativeWorkspace: ObservableObject {
     }
 
     private func matchesProvider(_ value:String) -> Bool {
-        value == "codex" || value == "api"
+        value == "codex" || Self.matchesExternalProvider(value)
+    }
+
+    nonisolated static func matchesExternalProvider(_ value:String) -> Bool {
+        value == "api" || value == "joycode"
     }
 
     func selectAgentModel(_ slug: String) {
@@ -740,13 +785,11 @@ final class NativeWorkspace: ObservableObject {
         guard let repoId, [.requirement,.plan].contains(page) else { return }
         do {
             if page == .requirement {
-                async let overviewValue = ForgeBridge.request("read_project_overview",["repoId":repoId])
+                async let requirementValue = ForgeBridge.request("read_project_requirement_list",["repoId":repoId])
                 async let planValue = ForgeBridge.request("read_project_plan_list",["repoId":repoId])
-                let (overview,planList) = try await (overviewValue,planValue)
-                let overviewData = overview["data"] as? [String:Any] ?? overview
-                let board = overviewData["requirementBoard"] as? [String:Any]
-                    ?? overview["requirementBoard"] as? [String:Any] ?? [:]
-                let requirementRows = board["requirements"] as? [[String:Any]] ?? []
+                let (requirementList,planList) = try await (requirementValue,planValue)
+                let requirementData = requirementList["data"] as? [String:Any] ?? requirementList
+                let requirementRows = requirementData["requirements"] as? [[String:Any]] ?? []
                 let planData = planList["data"] as? [String:Any] ?? planList
                 let planRows = planData["plans"] as? [[String:Any]] ?? []
                 records = Self.planningRecords(requirementRows:requirementRows,planRows:planRows)
@@ -982,7 +1025,9 @@ final class NativeWorkspace: ObservableObject {
             provider:provider, endpoint:endpoint, model:model,
             apiProtocol:apiProtocol,
             hasKey:result["hasKey"] as? Bool == true,
-            endpointReady:result["endpointReady"] as? Bool == true
+            endpointReady:result["endpointReady"] as? Bool == true,
+            joyCodeModel:(result["joyCodeModel"] as? String) ?? "JoyAI-Code-1.6",
+            joyCodeReady:result["joyCodeReady"] as? Bool == true
         )
     }
 
@@ -1021,7 +1066,8 @@ final class NativeWorkspace: ObservableObject {
         endpoint:String,
         model:String,
         apiProtocol:String,
-        apiKey:String
+        apiKey:String,
+        joyCodeModel:String
     ) async -> Bool {
         guard !settingsLoading else { return false }
         settingsLoading = true
@@ -1031,7 +1077,8 @@ final class NativeWorkspace: ObservableObject {
                 "provider":provider,
                 "endpoint":endpoint.trimmingCharacters(in:.whitespacesAndNewlines),
                 "model":model.trimmingCharacters(in:.whitespacesAndNewlines),
-                "apiProtocol":apiProtocol
+                "apiProtocol":apiProtocol,
+                "joyCodeModel":joyCodeModel.trimmingCharacters(in:.whitespacesAndNewlines)
             ]
             let secret = apiKey.trimmingCharacters(in:.whitespacesAndNewlines)
             if !secret.isEmpty { arguments["apiKey"] = secret }
@@ -1440,8 +1487,8 @@ final class NativeWorkspace: ObservableObject {
 
     func addPendingImages(_ urls: [URL]) {
         guard selectedProviderSupportsImages else {
-            self.error = selectedProvider == "api"
-                ? "当前兼容 API Agent 尚不支持图片输入。"
+            self.error = Self.matchesExternalProvider(selectedProvider)
+                ? "当前外部模型 Agent 尚不支持图片输入。"
                 : "当前 Runtime 尚未启用图片输入。"
             return
         }
@@ -1564,7 +1611,7 @@ final class NativeWorkspace: ObservableObject {
         repoId:String?,
         checkoutId:String?
     ) -> Bool {
-        provider == "api" && requested && repoId != nil && checkoutId != nil
+        matchesExternalProvider(provider) && requested && repoId != nil && checkoutId != nil
     }
 
     nonisolated static func apiTurnMessages(
@@ -1654,9 +1701,11 @@ final class NativeWorkspace: ObservableObject {
         guard !prompt.isEmpty, !busy, let id = selectedThreadId,
               let index = threads.firstIndex(where:{$0.id == id}) else { return }
         let turnProvider = selectedProvider
-        if turnProvider == "api" {
+        if Self.matchesExternalProvider(turnProvider) {
             let current = threads[index].model?.trimmingCharacters(in:.whitespacesAndNewlines) ?? ""
-            let configured = localApiSettings?.model.trimmingCharacters(in:.whitespacesAndNewlines) ?? ""
+            let configured = turnProvider == "joycode"
+                ? (localApiSettings?.joyCodeModel.trimmingCharacters(in:.whitespacesAndNewlines) ?? "")
+                : (localApiSettings?.model.trimmingCharacters(in:.whitespacesAndNewlines) ?? "")
             if current.isEmpty && !configured.isEmpty {
                 threads[index].model = configured
                 persist()
@@ -1666,13 +1715,15 @@ final class NativeWorkspace: ObservableObject {
         let imageURLs = pendingImageURLs
         let contextPaths = pendingContextPaths
         if !imageURLs.isEmpty && !(turnProvider == "codex" && imageInputAvailable) {
-            self.error = turnProvider == "api"
-                ? "当前兼容 API Agent 尚不支持图片输入。"
+            self.error = Self.matchesExternalProvider(turnProvider)
+                ? "当前外部模型 Agent 尚不支持图片输入。"
                 : "当前 Runtime 尚未启用图片输入。"
             return
         }
-        if turnProvider == "api" && !selectedProviderReady {
-            self.error = "兼容 API 尚未就绪；请检查 Endpoint、必要的 API Key 与当前会话模型。"
+        if Self.matchesExternalProvider(turnProvider) && !selectedProviderReady {
+            self.error = turnProvider == "joycode"
+                ? "JoyCode 尚未就绪；请确认本机 JoyCode 已登录且当前会话模型有效。"
+                : "兼容 API 尚未就绪；请检查 Endpoint、必要的 API Key 与当前会话模型。"
             return
         }
         if turnProvider == "codex" && !localProviderReady {
@@ -1710,7 +1761,9 @@ final class NativeWorkspace: ObservableObject {
         liveActivity = AgentLiveActivity(
             conversationId:id, status:"running", phase:"starting",
             toolActivityCount:0,
-            lastActivity:turnProvider == "api" ? "正在连接兼容 API" : "正在启动 Codex",
+            lastActivity:turnProvider == "joycode"
+                ? "正在连接 JoyCode"
+                : (turnProvider == "api" ? "正在连接兼容 API" : "正在启动 Codex"),
             startedAt:nil, updatedAt:nil, events:[]
         )
         if turnProvider == "codex" {
@@ -1732,9 +1785,10 @@ final class NativeWorkspace: ObservableObject {
 
         do {
             let response: [String:Any]
-            if turnProvider == "api" {
+            if Self.matchesExternalProvider(turnProvider) {
                 var apiArguments: [String:Any] = [
                     "conversationId":id,
+                    "provider":turnProvider,
                     "messages":Self.apiTurnMessages(item,prompt:prompt,contextPaths:contextPaths),
                     "allowEffects":authorizedApiEffects,
                     "model":item.model ?? ""
@@ -1774,7 +1828,7 @@ final class NativeWorkspace: ObservableObject {
             guard let current = threads.firstIndex(where:{$0.id == id}) else { return }
             let answer = response["output"] as? String ?? ""
             let toolActivityCount = response["toolActivityCount"] as? Int
-            let activityEvents = turnProvider == "api"
+            let activityEvents = Self.matchesExternalProvider(turnProvider)
                 ? Self.apiActivityEvents(response["toolEvents"])
                 : Self.decodeActivityEvents(response["activityEvents"])
             threads[current].messages.append(ChatMessage(
@@ -1809,7 +1863,7 @@ final class NativeWorkspace: ObservableObject {
 
     func cancel() async {
         guard busy, let id = activeConversationId else { return }
-        if activeTurnProvider == "api" {
+        if activeTurnProvider.map(Self.matchesExternalProvider) == true {
             activeApiTurn?.cancel()
             return
         }

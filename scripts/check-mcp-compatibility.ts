@@ -70,7 +70,10 @@ const EXPECTED_PREFERRED_TOOL_NAME_FINGERPRINT = 'f22e635a213b45fa';
 // 2026-11-08: Forge Client planning adds optional parent_plan_id to rh_work
 // plan_create. This is an authored Plan refinement edge only; it adds no new
 // execution, approval, lifecycle, progress, or scheduling authority.
-const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = 'a7b5c4f833ff1aeb';
+// 2026-11-08: rh_work adds bounded requirement_list discovery so the native
+// Planning client reads current Requirement semantics from their canonical owner
+// instead of depending on the retired rh_status requirementBoard projection.
+const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = '18dd06882d86c36b';
 
 const policy = runtimePolicy(process.cwd(), {
   profile: 'controller',

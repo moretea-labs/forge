@@ -13,6 +13,7 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertTrue(ForgeBridge.allowed.contains("repair_connection"))
         XCTAssertTrue(ForgeBridge.allowed.contains("read_local_api_settings"))
         XCTAssertTrue(ForgeBridge.allowed.contains("save_local_api_settings"))
+        XCTAssertTrue(ForgeBridge.allowed.contains("read_project_requirement_list"))
         XCTAssertTrue(ForgeBridge.allowed.contains("create_requirement"))
         XCTAssertTrue(ForgeBridge.allowed.contains("create_plan"))
         XCTAssertTrue(ForgeBridge.allowed.contains("autopilot_control"))
@@ -379,7 +380,28 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(settings?.apiProtocol,"openai")
         XCTAssertEqual(settings?.hasKey,true)
         XCTAssertEqual(settings?.endpointReady,true)
+        XCTAssertEqual(settings?.joyCodeModel,"JoyAI-Code-1.6")
+        XCTAssertEqual(settings?.joyCodeReady,false)
         XCTAssertFalse(ForgeBridge.allowed.contains("send_local_api_conversation"))
+    }
+
+    @MainActor
+    func testJoyCodeThreadOwnsProviderAndSnapshotsConfiguredModel() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        model.localApiSettings = LocalApiSettingsDetail(
+            provider:"joycode", endpoint:"https://api.example.com/v1",
+            model:"api-model", apiProtocol:"openai", hasKey:true, endpointReady:true,
+            joyCodeModel:"JoyAI-Code-1.6", joyCodeReady:true
+        )
+
+        model.newThread(provider:"joycode")
+        XCTAssertEqual(model.thread?.provider,"joycode")
+        XCTAssertEqual(model.thread?.model,"JoyAI-Code-1.6")
+        XCTAssertEqual(model.selectedApiModel,"JoyAI-Code-1.6")
+        XCTAssertTrue(model.selectedProviderReady)
+        XCTAssertTrue(NativeWorkspace.apiEffectsAuthorized(provider:"joycode", requested:true, repoId:"repo", checkoutId:"checkout"))
     }
 
     @MainActor

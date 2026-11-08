@@ -73,6 +73,33 @@ function structured(result: Awaited<ReturnType<typeof callRuntimeTool>>): Record
 }
 
 describe('rh_work Requirement bootstrap', () => {
+  test('lists canonical Requirements without requiring Work or Plan authority', async () => {
+    const repoRoot = tempRoot('forge-requirement-list-repo-');
+    const controllerHome = tempRoot('forge-requirement-list-home-');
+    initRepo(repoRoot);
+    ensureControllerHome(controllerHome);
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'Requirement list fixture' });
+    const ctx = mcpContext(controllerHome, repository);
+
+    for (const [id,title] of [['REQ-LIST-A','List A'],['REQ-LIST-B','List B']] as const) {
+      const created = structured(await callRuntimeTool(ctx, 'rh_work', {
+        operation:'requirement_create', requirement_id:id, requirement_title:title,
+        requirement_outcome:`Deliver ${title}.`,
+      }));
+      expect(created.status).toBe('ok');
+    }
+    const listed = structured(await callRuntimeTool(ctx, 'rh_work', {
+      operation:'requirement_list', limit:100,
+    }));
+    expect(listed.status).toBe('ok');
+    expect(listed.data).toMatchObject({ bounded:true, limit:100, authority:'semantic_context_only' });
+    expect(listed.data.requirements).toEqual(expect.arrayContaining([
+      expect.objectContaining({ requirementId:'REQ-LIST-A', revision:1, title:'List A', state:'open' }),
+      expect.objectContaining({ requirementId:'REQ-LIST-B', revision:1, title:'List B', state:'open' }),
+    ]));
+    expect(listed.data.requirements.some((entry:Record<string,unknown>) => 'workId' in entry)).toBe(false);
+  });
+
   test('exposes typed Requirement progress and CAS through rh_work without a Work or legacy carrier', async () => {
     const schema = runtimeToolDefinitions.find((definition) => definition.name === 'rh_work')?.inputSchema;
     expect(schema).toBeDefined();

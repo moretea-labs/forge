@@ -83,7 +83,7 @@ final class ForgeApiTurn: @unchecked Sendable {
 enum ForgeBridge {
     static let allowed: Set<String> = [
         "read_projects", "read_project_repository", "read_project_overview",
-        "read_project_plan_list",
+        "read_project_requirement_list", "read_project_plan_list",
         "read_requirement_detail", "read_plan_detail", "create_requirement", "create_plan", "autopilot_control",
         "read_project_knowledge", "read_recovery_status", "verify_recovery_runtime",
         "read_connection_status", "repair_connection",

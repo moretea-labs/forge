@@ -45,6 +45,8 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
             read_project_repository(required(args, "repoId")?).await,
         "read_project_overview" =>
             read_project_overview(required(args, "repoId")?).await,
+        "read_project_requirement_list" =>
+            read_project_requirement_list(required(args, "repoId")?).await,
         "read_project_plan_list" =>
             read_project_plan_list(required(args, "repoId")?).await,
         "read_requirement_detail" =>
@@ -144,6 +146,7 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
             args.get("model").and_then(Value::as_str).unwrap_or("").to_string(),
             args.get("apiKey").and_then(Value::as_str).map(str::to_owned),
             args.get("apiProtocol").and_then(Value::as_str).map(str::to_owned),
+            args.get("joyCodeModel").and_then(Value::as_str).map(str::to_owned),
         ),
         "clear_local_api_key" => clear_local_api_key(),
         "send_local_conversation" =>
@@ -168,6 +171,7 @@ struct NativeApiTurnRequest {
     repo_id: Option<String>,
     checkout_id: Option<String>,
     conversation_id: String,
+    provider: String,
     model: Option<String>,
     allow_effects: bool,
 }
@@ -180,11 +184,16 @@ fn parse_api_turn_request(value: &Value) -> Result<NativeApiTurnRequest, String>
         .filter(|value| !value.trim().is_empty()).map(str::to_owned);
     let checkout_id = value.get("checkoutId").and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty()).map(str::to_owned);
+    let provider = value.get("provider").and_then(Value::as_str).unwrap_or("api");
+    if !matches!(provider, "api" | "joycode") {
+        return Err("FORGE_NATIVE_API_PROVIDER_INVALID".into());
+    }
     Ok(NativeApiTurnRequest {
         messages,
         repo_id,
         checkout_id,
         conversation_id,
+        provider:provider.to_string(),
         model:value.get("model").and_then(Value::as_str)
             .map(str::trim).filter(|value| !value.is_empty()).map(str::to_owned),
         allow_effects:value.get("allowEffects").and_then(Value::as_bool).unwrap_or(false),
@@ -260,6 +269,7 @@ pub fn run_api_turn() -> i32 {
         request.repo_id,
         request.checkout_id,
         request.conversation_id,
+        Some(request.provider),
         request.model,
         request.allow_effects,
         &mut cancel_receiver,

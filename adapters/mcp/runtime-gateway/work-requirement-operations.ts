@@ -1,7 +1,7 @@
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 import { admitRequirement, promoteRequirementCandidate } from '../../../src/runtime/control-plane/facade/requirement-authority';
-import { readRequirement, requirementSemanticView, reviseRequirementSemantic } from '../../../src/runtime/control-plane/persistence/requirement-store';
+import { listRequirements, readRequirement, requirementSemanticView, reviseRequirementSemantic } from '../../../src/runtime/control-plane/persistence/requirement-store';
 import { readForgeInstanceIdentity } from '../../../packages/kernel/identity/api/index';
 import { resolveProjectForRepositoryPlacement } from '../../../src/runtime/control-plane/workspace/workspace-store';
 import { buildFacadeResult } from '../../../src/runtime/control-plane/facade';
@@ -9,6 +9,7 @@ import { result } from './result-adapter';
 
 const RH_WORK_REQUIREMENT_OPERATIONS = new Set([
   'requirement_create',
+  'requirement_list',
   'requirement_get',
   'requirement_revise',
   'requirement_promote_candidate',
@@ -25,6 +26,33 @@ export async function callRhWorkRequirementOperation(
   args: Record<string, unknown>,
 ): Promise<CallToolResult | undefined> {
   if (!isRhWorkRequirementOperation(operation)) return undefined;
+
+  if (operation === 'requirement_list') {
+    const limit = Math.max(1, Math.min(Math.trunc(typeof args.limit === 'number' ? args.limit : 20), 100));
+    const requirements = listRequirements({ controllerHome: ctx.controllerHome }, 500)
+      .map((record) => requirementSemanticView(record.value))
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+      .slice(0, limit)
+      .map((semantic) => ({
+        requirementId: semantic.requirementId,
+        revision: semantic.revision,
+        title: semantic.title.slice(0, 240),
+        outcomeStatement: semantic.outcomeStatement.slice(0, 500),
+        state: semantic.state,
+        updatedAt: semantic.updatedAt,
+      }));
+    return result(buildFacadeResult({
+      summary: `${requirements.length} canonical Requirement(s); use requirement_get for full semantic context.`,
+      data: {
+        requirements,
+        bounded: true,
+        limit,
+        authority: 'semantic_context_only',
+        progressAuthority: 'github_issue_project',
+        detailOperation: 'requirement_get',
+      },
+    }) as unknown as Record<string, unknown>);
+  }
 
   if (operation === 'requirement_get') {
     const requirementId = typeof args.requirement_id === 'string' ? args.requirement_id.trim() : '';

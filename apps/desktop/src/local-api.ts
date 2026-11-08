@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-export type LocalProviderChoice = 'codex' | 'api';
+export type LocalProviderChoice = 'codex' | 'api' | 'joycode';
 export type LocalApiProtocol = 'openai' | 'anthropic';
 export interface LocalApiSettings {
   provider: LocalProviderChoice;
@@ -7,6 +7,8 @@ export interface LocalApiSettings {
   model: string;
   apiProtocol: LocalApiProtocol;
   hasKey: boolean;
+  joyCodeModel: string;
+  joyCodeReady: boolean;
 }
 export interface LocalApiToolEvent { name: string; ok: boolean; requestId?: string }
 export interface LocalApiConversationResponse {
@@ -18,13 +20,14 @@ export const readLocalApiSettings = (): Promise<LocalApiSettings> => invoke('rea
 export const clearLocalApiKey = (): Promise<LocalApiSettings> => invoke('clear_local_api_key');
 export const saveLocalApiSettings = (input: {
   provider: LocalProviderChoice; endpoint: string; model: string;
-  apiProtocol: LocalApiProtocol; apiKey?: string;
+  apiProtocol: LocalApiProtocol; apiKey?: string; joyCodeModel?: string;
 }): Promise<LocalApiSettings> => invoke('save_local_api_settings', input);
 export const sendLocalApiConversation = (input: {
   messages: Array<{ role: 'user' | 'assistant'; content: string }>;
   repoId?: string;
   checkoutId?: string;
   conversationId: string;
+  provider?: 'api' | 'joycode';
   allowEffects: boolean;
 }): Promise<LocalApiConversationResponse> => invoke('send_local_api_conversation', input);
 

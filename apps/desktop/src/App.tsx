@@ -787,7 +787,7 @@ export function App() {
     finally { setLocalApiLoading(false); }
   }, [preview]);
 
-  const saveLocalApi = useCallback(async (input: { provider: LocalProviderChoice; endpoint: string; model: string; apiProtocol: 'openai' | 'anthropic'; apiKey?: string }) => {
+  const saveLocalApi = useCallback(async (input: { provider: LocalProviderChoice; endpoint: string; model: string; apiProtocol: 'openai' | 'anthropic'; apiKey?: string; joyCodeModel?: string }) => {
     setLocalApiSettings(await saveLocalApiSettings(input));
   }, []);
 
@@ -796,12 +796,12 @@ export function App() {
   }, []);
 
   const sendLocal = useCallback(async ({ thread, prompt, allowEffects }: { thread: LocalConversationThread; prompt: string; allowEffects: boolean }): Promise<LocalConversationReply> => {
-    if (thread.provider === 'api') {
+    if (thread.provider === 'api' || thread.provider === 'joycode') {
       const messages = thread.messages.filter(message => message.role === 'user' || message.role === 'assistant')
         .slice(-40).map(message => ({ role: message.role as 'user' | 'assistant', content: message.content }));
       const reply = await sendLocalApiConversation({
         messages, repoId: thread.projectRepoId, checkoutId: thread.checkoutId,
-        conversationId: thread.id, allowEffects,
+        conversationId: thread.id, provider: thread.provider, allowEffects,
       });
       return { content: reply.output, toolActivityCount: reply.toolActivityCount, toolEvents: reply.toolEvents };
     }
