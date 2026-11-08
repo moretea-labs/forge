@@ -1427,17 +1427,35 @@ fn local_tool_catalog(allow_effects: bool) -> Vec<Value> {
     tools
 }
 
-fn local_effect_completed(name: &str, receipt: &Value) -> bool {
-    if receipt.get("ok").and_then(Value::as_bool) != Some(true) {
-        return false;
-    }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LocalEffectOutcome {
+    Succeeded,
+    TerminalFailure,
+    Unknown,
+}
+
+fn local_effect_outcome(name: &str, receipt: &Value) -> LocalEffectOutcome {
     let result = &receipt["result"];
     match name {
-        "run_command" => result.get("status").and_then(Value::as_str) == Some("succeeded")
-            && result.get("exitCode").and_then(Value::as_i64) == Some(0),
-        "apply_patch" => result.get("status").and_then(Value::as_str) == Some("applied"),
-        "git_commit" => result.pointer("/commit/committed").and_then(Value::as_bool) == Some(true),
-        _ => false,
+        "run_command" => match result.get("status").and_then(Value::as_str) {
+            Some("succeeded") if result.get("exitCode").and_then(Value::as_i64) == Some(0) => {
+                LocalEffectOutcome::Succeeded
+            }
+            Some("succeeded" | "failed" | "cancelled") => LocalEffectOutcome::TerminalFailure,
+            Some("running") => LocalEffectOutcome::Unknown,
+            _ => LocalEffectOutcome::Unknown,
+        },
+        "apply_patch" => match result.get("status").and_then(Value::as_str) {
+            Some("applied") => LocalEffectOutcome::Succeeded,
+            Some("partial" | "failed") => LocalEffectOutcome::TerminalFailure,
+            _ => LocalEffectOutcome::Unknown,
+        },
+        "git_commit" => match result.pointer("/commit/committed").and_then(Value::as_bool) {
+            Some(true) => LocalEffectOutcome::Succeeded,
+            Some(false) => LocalEffectOutcome::TerminalFailure,
+            None => LocalEffectOutcome::Unknown,
+        },
+        _ => LocalEffectOutcome::Unknown,
     }
 }
 
@@ -2040,10 +2058,11 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
                     });
                 }
             };
-            let ok = if effectful {
-                local_effect_completed(&name, &result)
-            } else {
-                result.get("ok").and_then(Value::as_bool) == Some(true)
+            let effect_outcome = effectful.then(|| local_effect_outcome(&name, &result));
+            let ok = match effect_outcome {
+                Some(LocalEffectOutcome::Succeeded) => true,
+                Some(LocalEffectOutcome::TerminalFailure | LocalEffectOutcome::Unknown) => false,
+                None => result.get("ok").and_then(Value::as_bool) == Some(true),
             };
             // A cancel that arrives during a Forge tool must wait for the tool
             // receipt. Never report the effect itself as rolled back.
@@ -2069,9 +2088,10 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
             let bounded = if serialized.len() > 16_000 {
                 format!("{}...[truncated]", &serialized[..serialized.char_indices().map(|(idx, _)| idx).take_while(|idx| *idx <= 15_900).last().unwrap_or(0)])
             } else { serialized };
-            if !ok && effectful {
-                // The Forge Process/edit authority, not the model, reconciles effects.
-                // Keep this exact request identity for read-only outcome inspection.
+            if effect_outcome == Some(LocalEffectOutcome::Unknown) {
+                // Only a missing or ambiguous terminal receipt requires reconciliation.
+                // Known failures and partial outcomes are sent back to the model verbatim
+                // so it can inspect the canonical Forge receipt without blind replay.
                 return Err(format!("FORGE_DESKTOP_LOCAL_EFFECT_RECONCILIATION_REQUIRED:{}",
                     effect_request_id.as_deref().unwrap_or("unknown")));
             }
@@ -2488,30 +2508,33 @@ mod tests {
 
     #[test]
     fn effect_acceptance_is_not_completion() {
-        assert!(local_effect_completed("git_commit", &json!({"ok":true,"result":{
+        assert_eq!(local_effect_outcome("git_commit", &json!({"ok":true,"result":{
             "commit":{"committed":true,"checkoutId":"checkout_a","after":{"head":"abc123"}}
-        }})));
-        assert!(!local_effect_completed("git_commit", &json!({"ok":true,"result":{
-            "commit":{"committed":false}
-        }})));
-        assert!(!local_effect_completed("git_commit", &json!({"ok":true,"result":{
+        }})), LocalEffectOutcome::Succeeded);
+        assert_eq!(local_effect_outcome("git_commit", &json!({"ok":true,"result":{
+            "commit":{"committed":false,"error":{"code":"GIT_NOTHING_STAGED"}}
+        }})), LocalEffectOutcome::TerminalFailure);
+        assert_eq!(local_effect_outcome("git_commit", &json!({"ok":true,"result":{
             "accepted":true,"status":"running"
-        }})));
-        assert!(local_effect_completed("run_command", &json!({"ok":true,"result":{
+        }})), LocalEffectOutcome::Unknown);
+        assert_eq!(local_effect_outcome("run_command", &json!({"ok":true,"result":{
             "accepted":true,"status":"succeeded","exitCode":0
-        }})));
-        assert!(!local_effect_completed("run_command", &json!({"ok":true,"result":{
+        }})), LocalEffectOutcome::Succeeded);
+        assert_eq!(local_effect_outcome("run_command", &json!({"ok":true,"result":{
             "accepted":true,"status":"running"
-        }})));
-        assert!(!local_effect_completed("run_command", &json!({"ok":true,"result":{
+        }})), LocalEffectOutcome::Unknown);
+        assert_eq!(local_effect_outcome("run_command", &json!({"ok":true,"result":{
             "accepted":true,"status":"failed","exitCode":1
-        }})));
-        assert!(local_effect_completed("apply_patch", &json!({"ok":true,"result":{
+        }})), LocalEffectOutcome::TerminalFailure);
+        assert_eq!(local_effect_outcome("apply_patch", &json!({"ok":true,"result":{
             "status":"applied"
-        }})));
-        assert!(!local_effect_completed("apply_patch", &json!({"ok":true,"result":{
-            "status":"partial"
-        }})));
+        }})), LocalEffectOutcome::Succeeded);
+        assert_eq!(local_effect_outcome("apply_patch", &json!({"ok":false,"result":{
+            "status":"partial","terminal":true
+        }})), LocalEffectOutcome::TerminalFailure);
+        assert_eq!(local_effect_outcome("apply_patch", &json!({"ok":false,"result":{
+            "status":"failed","terminal":true
+        }})), LocalEffectOutcome::TerminalFailure);
     }
 
     #[test]
