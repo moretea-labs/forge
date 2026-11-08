@@ -34,6 +34,8 @@ export interface AutopilotRun {
   lastSummary?: string;
   stopReason?: string;
   evidenceRefs: string[];
+  inspectionStreak?: number;
+  recentToolNames?: string[];
   createdAt: string;
   updatedAt: string;
 }

@@ -251,6 +251,74 @@ describe('Requirement Autopilot',() => {
     expect(toolContents.every((content)=>content.length <= 6_000)).toBe(true);
   });
 
+  test('normalizes JoyCode argv strings and stops repeated read-only exploration after six calls',async() => {
+    const fx=fixture('inspection-guard');
+    const enrolled=authorizeAutopilot({
+      controllerHome:fx.controllerHome,
+      repoId:fx.repository.repoId,
+      requirementId:'REQ-AUTO',
+      confirmAuthorization:true,
+      policy:{
+        provider:'joycode',
+        endpoint:'https://api-ai.jd.com',
+        protocol:'chat_completions',
+        model:'JoyAI-Code-1.6',
+        maxTurns:10,
+        maxToolCalls:12,
+        maxTotalTokens:20_000,
+      },
+    });
+    createAutopilotRun(fx.controllerHome,{
+      repoId:fx.repository.repoId,
+      checkoutId:enrolled.checkoutId,
+      requirementId:'REQ-AUTO',
+      requirementRevision:1,
+      grantId:enrolled.grant.grantId,
+      policy:enrolled.policy,
+    });
+    const observedCommands:unknown[]=[];
+    let round=0;
+    await runAutopilotLoop(
+      fx.controllerHome,fx.repository.repoId,'REQ-AUTO',new AbortController().signal,
+      {
+        toolDefinitions:executeCommandDefinition,
+        validateAuthorization:()=>({ok:true}),
+        executeTool:async(_name,args)=>{
+          observedCommands.push(args.command);
+          return {ok:true};
+        },
+        modelRound:async()=>{
+          round+=1;
+          const decision=round >= 8;
+          return {
+            choices:[{message:{
+              role:'assistant',
+              content:null,
+              tool_calls:[{
+                id:'guard-'+round,
+                type:'function',
+                function:{
+                  name:decision ? 'forge_autopilot_decision' : 'execute_command',
+                  arguments:JSON.stringify(decision
+                    ? {action:'complete',summary:'inspection guard converged'}
+                    : {command:JSON.stringify(['git','status','--short'])}),
+                },
+              }],
+            }}],
+            usage:{prompt_tokens:100,completion_tokens:20,total_tokens:120},
+          };
+        },
+      },
+    );
+    expect(observedCommands).toHaveLength(6);
+    expect(observedCommands[0]).toEqual(['git','status','--short']);
+    const run=readAutopilotRun(fx.controllerHome,fx.repository.repoId,'REQ-AUTO')!.value;
+    expect(run.status).toBe('completed');
+    expect(run.inspectionStreak).toBe(0);
+    expect(run.recentToolNames).toContain('execute_command:inspection_blocked');
+    expect(run.recentToolNames?.at(-1)).toBe('forge_autopilot_decision');
+  });
+
   test('reauthorizes a budget-paused run in place and preserves its lifecycle identity',async() => {
     const fx=fixture('budget-refresh');
     const first=authorizeAutopilot({
@@ -557,6 +625,6 @@ describe('Requirement Autopilot',() => {
     const run=readAutopilotRun(fx.controllerHome,fx.repository.repoId,'REQ-AUTO')!.value;
     expect(run.status).toBe('blocked');
     expect(run.usage.turns).toBe(2);
-    expect(run.usage.toolCalls).toBe(1);
+    expect(run.usage.toolCalls).toBe(2);
   });
 });

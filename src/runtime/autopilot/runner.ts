@@ -19,6 +19,8 @@ const ALLOWED_REPOSITORY_TOOLS = new Set([
 const RISK_RANK = { readonly: 0, workspace_write: 1, remote_write: 2, destructive: 3 } as const;
 const TOOL_RESULT_MAX_CHARS = 6_000;
 const RECENT_ASSISTANT_ROUNDS = 2;
+const MAX_INSPECTION_STREAK = 6;
+const RECENT_TOOL_TRACE_LIMIT = 12;
 
 type DeepSeekToolCall = {
   id: string;
@@ -119,6 +121,9 @@ function systemPrompt(run: AutopilotRun, requirement: ReturnType<typeof requirem
     'Never perform remote-write or destructive actions. Never push, publish, delete remotes, deploy, release, install, activate, rollback, or change Runtime.',
     'Prefer coherent small batches and focused validation. Do not create a second task/progress ledger.',
     'When you need a terminal/build/test command, execute_command is allowed only when Forge classifies it readonly or workspace_write.',
+    'Use at most 6 consecutive read-only discovery calls. Inspect only the files needed for one concrete remaining-work slice; do not repeat broad find/grep/git-history scans.',
+    'After that bounded inspection, either make a workspace change, run a targeted workspace-write validation, or call forge_autopilot_decision with complete/blocked/pause.',
+    'For execute_command, pass command as a shell string or an actual string array; never JSON-encode an argv array inside a string.',
     'After meaningful progress or when a stop condition is reached, call forge_autopilot_decision.',
     'action=complete means this autonomous run believes the authorized implementation slice is complete; it does NOT complete the Requirement.',
     JSON.stringify({
@@ -397,6 +402,30 @@ async function requestModel(
     : requestDeepSeek(run, messages, signal, dependencies);
 }
 
+function normalizeAutopilotCommand(value: unknown): string | string[] | undefined {
+  if (Array.isArray(value) && value.length > 0 && value.every((item) => typeof item === 'string')) {
+    return value as string[];
+  }
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (Array.isArray(parsed) && parsed.length > 0 && parsed.every((item) => typeof item === 'string')) {
+        return parsed as string[];
+      }
+    } catch {
+      // Preserve ordinary shell strings even when they begin with '['.
+    }
+  }
+  return value;
+}
+
+function appendRecentToolName(current: string[] | undefined, name: string): string[] {
+  return [...(current ?? []), name].slice(-RECENT_TOOL_TRACE_LIMIT);
+}
+
 function boundedToolResult(value: unknown): string {
   const text = JSON.stringify(value);
   return text.length <= TOOL_RESULT_MAX_CHARS
@@ -442,7 +471,7 @@ export async function runAutopilotLoop(
   const plans = listPlanContracts({ controllerHome, repoId, status: 'active', limit: 100 });
   const messages: DeepSeekMessage[] = [
     { role: 'system', content: systemPrompt(initialRecord.value, requirement, plans) },
-    { role: 'user', content: 'Continue the approved Requirement autonomously. Inspect current repository facts first, choose the highest-value next implementation slice, execute it safely, validate it, and record a structured decision.' },
+    { role: 'user', content: 'Continue the approved Requirement autonomously. Choose one concrete highest-value remaining-work slice. Use no more than six consecutive read-only inspections, then implement or validate that slice and record a structured decision. Do not spend the run rediscovering the whole repository.' },
   ];
 
   while (!signal.aborted) {
@@ -538,6 +567,8 @@ export async function runAutopilotLoop(
           lastSummary: decision.summary,
           stopReason: checkpoint ? `human_checkpoint:${decision.currentPlanId}` : status === 'running' ? undefined : decision.action,
           evidenceRefs: [...new Set([...run.evidenceRefs, ...(decision.evidenceRefs ?? [])])].slice(-100),
+          inspectionStreak: 0,
+          recentToolNames: appendRecentToolName(run.recentToolNames, 'forge_autopilot_decision'),
           usage: { ...run.usage, toolCalls: run.usage.toolCalls + 1 },
         }), 'autopilot_decision_recorded');
         messages.push({ role: 'tool', tool_call_id: toolCall.id, content: JSON.stringify({ accepted: true, status, checkpoint: Boolean(checkpoint) }) });
@@ -551,19 +582,59 @@ export async function runAutopilotLoop(
       }
       args.repo_id = repoId;
       args.checkout_id = latest.checkoutId;
+      let inspection = toolCall.function.name === 'read_repository_file'
+        || toolCall.function.name === 'repository_git_status'
+        || toolCall.function.name === 'repository_git_diff';
       if (toolCall.function.name === 'execute_command') {
         args.scope = 'repository';
-        const classification = classifyRepositoryCommand(args.command as string | string[], repository.defaultBranch);
+        const normalizedCommand = normalizeAutopilotCommand(args.command);
+        if (!normalizedCommand) {
+          updateAutopilotRun(controllerHome, repoId, requirementId, (run) => ({
+            ...run,
+            recentToolNames: appendRecentToolName(run.recentToolNames, 'execute_command:invalid'),
+            usage: { ...run.usage, toolCalls: run.usage.toolCalls + 1 },
+          }), 'autopilot_tool_call_rejected');
+          messages.push({ role: 'tool', tool_call_id: toolCall.id, content: JSON.stringify({ error: 'AUTOPILOT_COMMAND_INVALID' }) });
+          continue;
+        }
+        args.command = normalizedCommand;
+        const classification = classifyRepositoryCommand(normalizedCommand, repository.defaultBranch);
         if ((RISK_RANK[classification.risk] ?? 99) > RISK_RANK.workspace_write) {
+          updateAutopilotRun(controllerHome, repoId, requirementId, (run) => ({
+            ...run,
+            recentToolNames: appendRecentToolName(run.recentToolNames, 'execute_command:risk_denied'),
+            usage: { ...run.usage, toolCalls: run.usage.toolCalls + 1 },
+          }), 'autopilot_tool_call_rejected');
           messages.push({ role: 'tool', tool_call_id: toolCall.id, content: JSON.stringify({ error: 'AUTOPILOT_COMMAND_RISK_DENIED', classification }) });
           continue;
         }
+        inspection = classification.risk === 'readonly';
+      }
+
+      if (inspection && (latest.inspectionStreak ?? 0) >= MAX_INSPECTION_STREAK) {
+        updateAutopilotRun(controllerHome, repoId, requirementId, (run) => ({
+          ...run,
+          inspectionStreak: MAX_INSPECTION_STREAK,
+          recentToolNames: appendRecentToolName(run.recentToolNames, toolCall.function.name + ':inspection_blocked'),
+          usage: { ...run.usage, toolCalls: run.usage.toolCalls + 1 },
+        }), 'autopilot_inspection_guard_rejected');
+        messages.push({
+          role: 'tool',
+          tool_call_id: toolCall.id,
+          content: JSON.stringify({
+            error: 'AUTOPILOT_INSPECTION_BUDGET_EXHAUSTED',
+            message: 'Six consecutive read-only inspections are enough. Make a workspace change, run a targeted workspace-write validation, or record a structured blocked/complete/pause decision.',
+          }),
+        });
+        continue;
       }
 
       if (!dependencies.executeTool) throw new Error('AUTOPILOT_TOOL_EXECUTOR_REQUIRED');
       const toolResult = await dependencies.executeTool(toolCall.function.name, args);
       updateAutopilotRun(controllerHome, repoId, requirementId, (run) => ({
         ...run,
+        inspectionStreak: inspection ? Math.min(MAX_INSPECTION_STREAK, (run.inspectionStreak ?? 0) + 1) : 0,
+        recentToolNames: appendRecentToolName(run.recentToolNames, toolCall.function.name),
         usage: { ...run.usage, toolCalls: run.usage.toolCalls + 1 },
       }), 'autopilot_tool_call_recorded');
       messages.push({ role: 'tool', tool_call_id: toolCall.id, content: boundedToolResult(toolResult) });
