@@ -84,7 +84,7 @@ enum ForgeBridge {
     static let allowed: Set<String> = [
         "read_projects", "read_project_repository", "read_project_overview",
         "read_project_plan_list",
-        "read_requirement_detail", "read_plan_detail", "create_requirement", "create_plan",
+        "read_requirement_detail", "read_plan_detail", "create_requirement", "create_plan", "autopilot_control",
         "read_project_knowledge", "read_recovery_status", "verify_recovery_runtime",
         "read_connection_status", "repair_connection",
         "read_local_provider_status", "read_local_provider_models", "read_local_conversation_activity",

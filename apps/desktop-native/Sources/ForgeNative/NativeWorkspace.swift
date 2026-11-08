@@ -181,6 +181,26 @@ struct PlanRecordItem: Identifiable {
     let objective: String
 }
 
+struct AutopilotStatusDetail {
+    let authorized: Bool
+    let providerReady: Bool
+    let runtimeActive: Bool
+    let requiresReapproval: Bool
+    let requirementRevision: Int?
+    let approvedRevision: Int?
+    let runStatus: String?
+    let stopReason: String?
+    let model: String?
+    let promptTokens: Int
+    let completionTokens: Int
+    let totalTokens: Int
+    let maxTotalTokens: Int?
+    let turns: Int
+    let maxTurns: Int?
+    let toolCalls: Int
+    let maxToolCalls: Int?
+}
+
 struct PlanRecordDetail {
     let planId: String
     let revision: Int
@@ -352,6 +372,8 @@ final class NativeWorkspace: ObservableObject {
     @Published var records: [ForgeRecord] = []
     @Published var selectedRecord: String?
     @Published var recordDetail: SemanticRecordDetail?
+    @Published var autopilotStatus: AutopilotStatusDetail?
+    @Published var autopilotLoading = false
     @Published var detail = ""
     @Published var runtimeStatus: RuntimeStatusDetail?
     @Published var runtimeDiagnostics: RuntimeDiagnosticsDetail?
@@ -1064,6 +1086,85 @@ final class NativeWorkspace: ObservableObject {
         )
     }
 
+    nonisolated static func autopilotStatusDetail(_ result:[String:Any]) -> AutopilotStatusDetail? {
+        let data = result["data"] as? [String:Any] ?? result
+        if data["error"] != nil { return nil }
+        let grant = data["grant"] as? [String:Any]
+        let run = data["run"] as? [String:Any]
+        let usage = run?["usage"] as? [String:Any] ?? [:]
+        let policy = run?["policy"] as? [String:Any] ?? grant?["constraints"] as? [String:Any] ?? [:]
+        return AutopilotStatusDetail(
+            authorized:grant != nil,
+            providerReady:data["providerReady"] as? Bool ?? false,
+            runtimeActive:data["runtimeActive"] as? Bool ?? false,
+            requiresReapproval:data["requiresReapproval"] as? Bool ?? false,
+            requirementRevision:data["requirementRevision"] as? Int,
+            approvedRevision:data["approvedRevision"] as? Int,
+            runStatus:run?["status"] as? String,
+            stopReason:run?["stopReason"] as? String,
+            model:(policy["model"] as? String),
+            promptTokens:usage["promptTokens"] as? Int ?? 0,
+            completionTokens:usage["completionTokens"] as? Int ?? 0,
+            totalTokens:usage["totalTokens"] as? Int ?? 0,
+            maxTotalTokens:policy["maxTotalTokens"] as? Int,
+            turns:usage["turns"] as? Int ?? 0,
+            maxTurns:policy["maxTurns"] as? Int,
+            toolCalls:usage["toolCalls"] as? Int ?? 0,
+            maxToolCalls:policy["maxToolCalls"] as? Int
+        )
+    }
+
+    func loadAutopilotStatus(_ requirementId:String) async {
+        guard let repoId else { autopilotStatus=nil; return }
+        autopilotLoading=true
+        defer { autopilotLoading=false }
+        do {
+            let value=try await ForgeBridge.request("autopilot_control",[
+                "repoId":repoId,"requirementId":requirementId,"operation":"status"
+            ])
+            autopilotStatus=Self.autopilotStatusDetail(value)
+        } catch {
+            autopilotStatus=nil
+            self.error=error.localizedDescription
+        }
+    }
+
+    func controlAutopilot(
+        requirementId:String,
+        operation:String,
+        confirmAuthorization:Bool=false,
+        model:String?=nil,
+        maxTotalTokens:Int?=nil,
+        maxTurns:Int?=nil,
+        maxToolCalls:Int?=nil,
+        checkpointPlanIds:[String]=[]
+    ) async -> Bool {
+        guard let repoId else { error="请先选择项目。"; return false }
+        guard !autopilotLoading else { return false }
+        autopilotLoading=true
+        defer { autopilotLoading=false }
+        var args:[String:Any]=[
+            "repoId":repoId,"requirementId":requirementId,"operation":operation,
+            "confirmAuthorization":confirmAuthorization,"checkpointPlanIds":checkpointPlanIds
+        ]
+        if let model,!model.isEmpty { args["model"]=model }
+        if let maxTotalTokens { args["maxTotalTokens"]=maxTotalTokens }
+        if let maxTurns { args["maxTurns"]=maxTurns }
+        if let maxToolCalls { args["maxToolCalls"]=maxToolCalls }
+        do {
+            _=try await ForgeBridge.request("autopilot_control",args)
+            let status=try await ForgeBridge.request("autopilot_control",[
+                "repoId":repoId,"requirementId":requirementId,"operation":"status"
+            ])
+            autopilotStatus=Self.autopilotStatusDetail(status)
+            error=nil
+            return true
+        } catch {
+            self.error=error.localizedDescription
+            return false
+        }
+    }
+
     nonisolated static func planDetail(_ result: [String:Any]) -> PlanRecordDetail? {
         let data = result["data"] as? [String:Any] ?? result
         guard let value = data["plan"] as? [String:Any],
@@ -1093,6 +1194,7 @@ final class NativeWorkspace: ObservableObject {
         do {
             switch record.kind {
             case .plan:
+                autopilotStatus=nil
                 let result = try await ForgeBridge.request("read_plan_detail",["repoId":repoId,"planId":record.recordId])
                 guard let parsed = Self.planDetail(result) else { throw ForgeBridgeError.invalidResponse }
                 recordDetail = .plan(parsed)
@@ -1100,6 +1202,7 @@ final class NativeWorkspace: ObservableObject {
                 let result = try await ForgeBridge.request("read_requirement_detail",["repoId":repoId,"requirementId":record.recordId])
                 guard let parsed = Self.requirementDetail(result) else { throw ForgeBridgeError.invalidResponse }
                 recordDetail = .requirement(parsed)
+                await loadAutopilotStatus(record.recordId)
             }
             error = nil
         } catch {

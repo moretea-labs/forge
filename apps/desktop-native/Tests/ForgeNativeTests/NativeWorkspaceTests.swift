@@ -15,6 +15,7 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertTrue(ForgeBridge.allowed.contains("save_local_api_settings"))
         XCTAssertTrue(ForgeBridge.allowed.contains("create_requirement"))
         XCTAssertTrue(ForgeBridge.allowed.contains("create_plan"))
+        XCTAssertTrue(ForgeBridge.allowed.contains("autopilot_control"))
         XCTAssertTrue(ForgeBridge.allowed.contains("clear_local_api_key"))
         XCTAssertFalse(ForgeBridge.allowed.contains("send_local_api_conversation"))
         XCTAssertFalse(ForgeBridge.allowed.contains("cancel_local_api_conversation"))
@@ -249,6 +250,33 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(plan?.items.first?.objective,"Polish UI")
         XCTAssertEqual(plan?.resolvedDecisions,["One native app"])
         XCTAssertEqual(plan?.nonGoals,["No Work lifecycle"])
+
+        let autopilot = NativeWorkspace.autopilotStatusDetail([
+            "data":[
+                "grant":[
+                    "grantId":"grant-a",
+                    "constraints":[
+                        "requirementRevision":3,"model":"deepseek-chat",
+                        "maxTotalTokens":50000,"maxTurns":12,"maxToolCalls":32,
+                    ],
+                ],
+                "run":[
+                    "status":"paused","stopReason":"human_checkpoint:PLAN-a",
+                    "policy":["model":"deepseek-chat","maxTotalTokens":50000,"maxTurns":12,"maxToolCalls":32],
+                    "usage":["promptTokens":100,"completionTokens":50,"totalTokens":150,"turns":2,"toolCalls":4],
+                ],
+                "providerReady":true,"runtimeActive":false,"requiresReapproval":false,
+                "requirementRevision":3,"approvedRevision":3,
+            ]
+        ])
+        XCTAssertEqual(autopilot?.authorized,true)
+        XCTAssertEqual(autopilot?.providerReady,true)
+        XCTAssertEqual(autopilot?.runStatus,"paused")
+        XCTAssertEqual(autopilot?.stopReason,"human_checkpoint:PLAN-a")
+        XCTAssertEqual(autopilot?.totalTokens,150)
+        XCTAssertEqual(autopilot?.maxTotalTokens,50000)
+        XCTAssertEqual(autopilot?.turns,2)
+        XCTAssertEqual(autopilot?.toolCalls,4)
     }
 
     func testSemanticRecordIdsAreBoundedAndTyped() {

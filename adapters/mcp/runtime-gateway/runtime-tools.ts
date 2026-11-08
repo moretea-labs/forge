@@ -11,6 +11,7 @@ import { callExecutionControlAdapter } from './execution-control-adapter';
 import { callMaintenanceAdapter } from './maintenance-adapter';
 import { callStatusInboxAdapter } from './status-inbox-adapter';
 import { callCoreCapabilityAdapter } from './core-capability-adapter';
+import { callAutopilotAdapter } from './autopilot-adapter';
 export { boundedPluginArtifactImageContent } from './result-adapter';
 export { classifyTerminalCheckEvidence } from '../../../src/runtime/execution/process-runtime/check-result';
 
@@ -51,6 +52,8 @@ async function callRuntimeToolUnchecked(ctx: MultiRepositoryMcpToolContext, name
     if (executionControl) return executionControl;
     const maintenance = await callMaintenanceAdapter(ctx, name, args);
     if (maintenance) return maintenance;
+    const autopilot = await callAutopilotAdapter(ctx, name, args);
+    if (autopilot) return autopilot;
     if (name === 'rh_work') return callWorkAdapter(ctx, args);
     return undefined;
   } catch (error) {

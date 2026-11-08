@@ -28,8 +28,11 @@ const MAX_PREFERRED_TOOL_COUNT = 24;
 // supervisor_task public tool.
 // Forge #483 (2026-11-07): Work/WorkHandle/ControllerRound retirement removes
 // the remaining Work-bound compatibility tools from the complete registry.
+// 2026-11-08: Requirement Autopilot adds one explicit optional rh_autopilot facade.
+// It is revision-bound and Runtime-owned; it does not restore Work/Supervisor continuation
+// or make Requirement a prerequisite for ordinary Forge use.
 // Preferred facade names stay stable; any further complete-registry drift fails closed.
-const EXPECTED_EXPOSED_NAME_FINGERPRINT = 'c9d5a4f3128a8702';
+const EXPECTED_EXPOSED_NAME_FINGERPRINT = 'b997ad780a9ec4dc';
 
 // #197 decomposition authority: the public/frozen Tool Contract is an explicit
 // baseline, independent from whichever internal adapter currently defines a

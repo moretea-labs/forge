@@ -530,6 +530,42 @@ async fn create_plan(
 }
 
 #[tauri::command]
+async fn autopilot_control(
+    repo_id: String,
+    requirement_id: String,
+    operation: String,
+    confirm_authorization: bool,
+    model: Option<String>,
+    max_total_tokens: Option<u64>,
+    max_turns: Option<u64>,
+    max_tool_calls: Option<u64>,
+    checkpoint_plan_ids: Vec<String>,
+    expires_in_minutes: Option<u64>,
+    reason: Option<String>,
+) -> Result<Value, String> {
+    if repo_id.trim().is_empty() || requirement_id.trim().is_empty() {
+        return Err("FORGE_DESKTOP_AUTOPILOT_ARGUMENT_REQUIRED".to_string());
+    }
+    if !matches!(operation.as_str(), "status" | "authorize" | "start" | "pause" | "resume" | "revoke") {
+        return Err("FORGE_DESKTOP_AUTOPILOT_OPERATION_UNSUPPORTED".to_string());
+    }
+    call_runtime_tool("rh_autopilot", json!({
+        "repo_id": repo_id,
+        "requirement_id": requirement_id,
+        "operation": operation,
+        "confirm_authorization": confirm_authorization,
+        "model": model,
+        "max_total_tokens": max_total_tokens,
+        "max_turns": max_turns,
+        "max_tool_calls": max_tool_calls,
+        "checkpoint_plan_ids": checkpoint_plan_ids,
+        "expires_in_minutes": expires_in_minutes,
+        "reason": reason,
+        "request_id": request_id("autopilot-control")
+    })).await
+}
+
+#[tauri::command]
 async fn read_local_provider_status() -> Result<Value, String> {
     call_runtime_tool("capability_execute", json!({
         "capability_id": "controller.local_conversation",
@@ -1722,6 +1758,7 @@ fn main() {
             read_plan_detail,
             create_requirement,
             create_plan,
+            autopilot_control,
             read_local_provider_status,
             read_local_provider_models,
             read_project_knowledge,

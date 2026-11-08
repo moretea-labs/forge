@@ -56,7 +56,7 @@ export function isGatewayIsolatedTool(name: string): boolean {
 }
 
 /** Canonical typed plugin execution owns its own authorization and dispatch boundary. */
-const SELF_MANAGED_DURABLE_TOOLS = new Set(['plugin_action_execute']);
+const SELF_MANAGED_DURABLE_TOOLS = new Set(['plugin_action_execute', 'rh_autopilot']);
 
 export function isSelfManagedDurableTool(name: string): boolean {
   return SELF_MANAGED_DURABLE_TOOLS.has(name);

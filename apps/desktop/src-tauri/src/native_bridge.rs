@@ -69,6 +69,22 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
                 args.get("requirementId").and_then(Value::as_str).map(str::to_owned),
                 args.get("parentPlanId").and_then(Value::as_str).map(str::to_owned),
             ).await,
+        "autopilot_control" =>
+            autopilot_control(
+                required(args,"repoId")?,
+                required(args,"requirementId")?,
+                required(args,"operation")?,
+                args.get("confirmAuthorization").and_then(Value::as_bool).unwrap_or(false),
+                args.get("model").and_then(Value::as_str).map(str::to_owned),
+                args.get("maxTotalTokens").and_then(Value::as_u64),
+                args.get("maxTurns").and_then(Value::as_u64),
+                args.get("maxToolCalls").and_then(Value::as_u64),
+                args.get("checkpointPlanIds").and_then(Value::as_array)
+                    .map(|values| values.iter().filter_map(Value::as_str).map(str::to_owned).take(64).collect())
+                    .unwrap_or_default(),
+                args.get("expiresInMinutes").and_then(Value::as_u64),
+                args.get("reason").and_then(Value::as_str).map(str::to_owned),
+            ).await,
         "read_project_knowledge" =>
             read_project_knowledge(
                 required(args, "repoId")?,

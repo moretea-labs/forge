@@ -1904,13 +1904,25 @@ private struct PlanningAuthoringContext: Identifiable {
     let parentPlanId: String?
 }
 
+private struct AutopilotApprovalContext: Identifiable {
+    let requirement: RequirementRecordDetail
+    var id: String { requirement.requirementId }
+}
+
 private struct RecordsPane: View {
     @ObservedObject var model: NativeWorkspace
     @State private var authoring: PlanningAuthoringContext?
+    @State private var autopilotApproval: AutopilotApprovalContext?
     @State private var draftTitle = ""
     @State private var draftOutcome = ""
     @State private var draftCriteria = ""
+    @State private var autopilotModel = "deepseek-chat"
+    @State private var autopilotTokenBudget = "50000"
+    @State private var autopilotTurnBudget = "12"
+    @State private var autopilotToolBudget = "32"
+    @State private var autopilotCheckpoints = Set<String>()
     @State private var saving = false
+    @State private var autopilotSaving = false
 
     var body: some View {
         HStack(spacing:12) {
@@ -2043,6 +2055,9 @@ private struct RecordsPane: View {
         .sheet(item:$authoring) { context in
             planningAuthoringSheet(context)
         }
+        .sheet(item:$autopilotApproval) { context in
+            autopilotApprovalSheet(context)
+        }
     }
 
     private func beginRequirement() {
@@ -2151,6 +2166,220 @@ private struct RecordsPane: View {
     }
 
     @ViewBuilder
+    private func autopilotSection(_ requirement:RequirementRecordDetail) -> some View {
+        semanticSection("Autopilot · 无人值守") {
+            VStack(alignment:.leading,spacing:11) {
+                HStack(spacing:8) {
+                    Circle()
+                        .fill(autopilotStatusColor(model.autopilotStatus))
+                        .frame(width:7,height:7)
+                    Text(autopilotStatusLabel(model.autopilotStatus))
+                        .font(.system(size:12,weight:.semibold))
+                    if let status=model.autopilotStatus,
+                       let approved=status.approvedRevision {
+                        Text("批准 r\(approved)")
+                            .font(.system(size:9.5,design:.monospaced))
+                            .foregroundStyle(ForgePalette.secondary)
+                    }
+                    Spacer()
+                    if model.autopilotLoading { ProgressView().controlSize(.small) }
+                }
+
+                if let status=model.autopilotStatus {
+                    if status.requiresReapproval {
+                        Label("Requirement 已修订到 r\(status.requirementRevision ?? requirement.revision)，旧授权失效，需要重新批准。",systemImage:"exclamationmark.triangle.fill")
+                            .font(.system(size:10.5)).foregroundStyle(.orange)
+                    }
+                    HStack(spacing:14) {
+                        autopilotMetric("Token","\(status.totalTokens) / \(status.maxTotalTokens.map(String.init) ?? "—")")
+                        autopilotMetric("Turns","\(status.turns) / \(status.maxTurns.map(String.init) ?? "—")")
+                        autopilotMetric("Tools","\(status.toolCalls) / \(status.maxToolCalls.map(String.init) ?? "—")")
+                        if let modelName=status.model { autopilotMetric("Model",modelName) }
+                    }
+                    if let reason=status.stopReason,!reason.isEmpty {
+                        Text(reason)
+                            .font(.system(size:9.5,design:.monospaced))
+                            .foregroundStyle(ForgePalette.secondary)
+                            .textSelection(.enabled)
+                    }
+                    if !status.providerReady {
+                        Text("Runtime 尚未检测到 DeepSeek 凭据；可以先批准，但开始执行前需要 Runtime provider 就绪。")
+                            .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
+                    }
+                } else {
+                    Text("Requirement 才需要显式批准无人值守；普通会话与独立 Plan 不受影响。")
+                        .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
+                }
+
+                HStack(spacing:8) {
+                    let status=model.autopilotStatus
+                    if status?.authorized != true || status?.requiresReapproval == true {
+                        Button(status?.requiresReapproval == true ? "重新配置并批准" : "配置并批准") {
+                            beginAutopilotApproval(requirement)
+                        }
+                        .buttonStyle(.borderedProminent)
+                    } else {
+                        switch status?.runStatus {
+                        case "running":
+                            Button("暂停") { runAutopilotAction(requirement.requirementId,"pause") }
+                                .buttonStyle(.borderedProminent)
+                        case "paused", "blocked", "failed":
+                            Button("继续") { runAutopilotAction(requirement.requirementId,"resume") }
+                                .buttonStyle(.borderedProminent)
+                                .disabled(status?.providerReady != true)
+                        default:
+                            Button(status?.runStatus == "completed" ? "再次运行" : "开始无人值守") {
+                                runAutopilotAction(requirement.requirementId,"start")
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(status?.providerReady != true)
+                        }
+                        Button("重新配置") { beginAutopilotApproval(requirement) }
+                            .buttonStyle(.bordered)
+                        Button("撤销授权",role:.destructive) {
+                            runAutopilotAction(requirement.requirementId,"revoke")
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                    Button { Task { await model.loadAutopilotStatus(requirement.requirementId) } } label: {
+                        Image(systemName:"arrow.clockwise")
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(model.autopilotLoading)
+                }
+                Text("批准与开始执行是两个动作。Autopilot 只拥有 workspace-write 上限，不允许 push、发布、部署、Runtime 切换或破坏性操作。")
+                    .font(.system(size:9.5)).foregroundStyle(ForgePalette.secondary)
+            }
+        }
+    }
+
+    private func autopilotMetric(_ label:String,_ value:String) -> some View {
+        VStack(alignment:.leading,spacing:2) {
+            Text(label).font(.system(size:9)).foregroundStyle(ForgePalette.secondary)
+            Text(value).font(.system(size:10.5,weight:.medium,design:.monospaced)).lineLimit(1)
+        }
+    }
+
+    private func autopilotStatusLabel(_ status:AutopilotStatusDetail?) -> String {
+        guard let status else { return "未授权" }
+        if status.requiresReapproval { return "需要重新批准" }
+        if let runStatus=status.runStatus { return runStatus == "running" && status.runtimeActive ? "执行中" : runStatus }
+        return status.authorized ? "已批准，未启动" : "未授权"
+    }
+
+    private func autopilotStatusColor(_ status:AutopilotStatusDetail?) -> Color {
+        guard let status else { return ForgePalette.secondary }
+        if status.requiresReapproval || status.runStatus == "failed" || status.runStatus == "blocked" { return .orange }
+        if status.runStatus == "running" && status.runtimeActive { return .green }
+        if status.authorized { return ForgePalette.ink }
+        return ForgePalette.secondary
+    }
+
+    private func beginAutopilotApproval(_ requirement:RequirementRecordDetail) {
+        let status=model.autopilotStatus
+        autopilotModel=status?.model ?? "deepseek-chat"
+        autopilotTokenBudget=status?.maxTotalTokens.map(String.init) ?? "50000"
+        autopilotTurnBudget=status?.maxTurns.map(String.init) ?? "12"
+        autopilotToolBudget=status?.maxToolCalls.map(String.init) ?? "32"
+        autopilotCheckpoints=[]
+        autopilotApproval=AutopilotApprovalContext(requirement:requirement)
+    }
+
+    @ViewBuilder
+    private func autopilotApprovalSheet(_ context:AutopilotApprovalContext) -> some View {
+        VStack(alignment:.leading,spacing:16) {
+            HStack {
+                VStack(alignment:.leading,spacing:4) {
+                    Text("批准无人值守执行").font(.system(size:18,weight:.semibold))
+                    Text("绑定 \(context.requirement.requirementId) · revision \(context.requirement.revision)")
+                        .font(.system(size:10.5,design:.monospaced)).foregroundStyle(ForgePalette.secondary)
+                }
+                Spacer()
+                Button { autopilotApproval=nil } label:{ Image(systemName:"xmark") }
+                    .buttonStyle(.plain).disabled(autopilotSaving)
+            }
+            Text("Requirement 的任何后续语义修订都会使本次授权失效；普通 Forge 使用不需要此授权。")
+                .font(.system(size:11)).foregroundStyle(ForgePalette.secondary)
+            Grid(alignment:.leading,horizontalSpacing:12,verticalSpacing:10) {
+                GridRow { Text("模型"); TextField("deepseek-chat",text:$autopilotModel).textFieldStyle(.roundedBorder) }
+                GridRow { Text("Token 上限"); TextField("50000",text:$autopilotTokenBudget).textFieldStyle(.roundedBorder) }
+                GridRow { Text("最大 turns"); TextField("12",text:$autopilotTurnBudget).textFieldStyle(.roundedBorder) }
+                GridRow { Text("最大 tool calls"); TextField("32",text:$autopilotToolBudget).textFieldStyle(.roundedBorder) }
+            }
+            .font(.system(size:11))
+
+            let plans=model.records.filter { $0.kind == .plan && $0.requirementId == context.requirement.requirementId }
+            if !plans.isEmpty {
+                VStack(alignment:.leading,spacing:7) {
+                    Text("人工验收检查点").font(.system(size:11,weight:.semibold))
+                    Text("模型推进到选中的 Plan 节点并报告阶段完成时会暂停。")
+                        .font(.system(size:10)).foregroundStyle(ForgePalette.secondary)
+                    ScrollView {
+                        VStack(alignment:.leading,spacing:5) {
+                            ForEach(plans) { plan in
+                                Toggle(isOn:Binding(
+                                    get:{ autopilotCheckpoints.contains(plan.recordId) },
+                                    set:{ enabled in
+                                        if enabled { autopilotCheckpoints.insert(plan.recordId) }
+                                        else { autopilotCheckpoints.remove(plan.recordId) }
+                                    }
+                                )) {
+                                    Text(plan.title).font(.system(size:11)).lineLimit(1)
+                                }
+                                .toggleStyle(.checkbox)
+                            }
+                        }
+                    }
+                    .frame(maxHeight:130)
+                }
+            }
+            HStack {
+                Text("这里只授予 workspace-write；不会自动 push / release / deploy。")
+                    .font(.system(size:10)).foregroundStyle(ForgePalette.secondary)
+                Spacer()
+                Button("取消") { autopilotApproval=nil }.disabled(autopilotSaving)
+                Button(autopilotSaving ? "批准中…" : "批准") { submitAutopilotApproval(context) }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(autopilotSaving || parsedAutopilotBudgets() == nil || autopilotModel.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(20).frame(width:520)
+        .interactiveDismissDisabled(autopilotSaving)
+    }
+
+    private func parsedAutopilotBudgets() -> (Int,Int,Int)? {
+        guard let tokens=Int(autopilotTokenBudget),tokens >= 1000,tokens <= 500000,
+              let turns=Int(autopilotTurnBudget),turns >= 1,turns <= 48,
+              let tools=Int(autopilotToolBudget),tools >= 1,tools <= 128 else { return nil }
+        return (tokens,turns,tools)
+    }
+
+    private func submitAutopilotApproval(_ context:AutopilotApprovalContext) {
+        guard let budgets=parsedAutopilotBudgets(),!autopilotSaving else { return }
+        autopilotSaving=true
+        Task {
+            let ok=await model.controlAutopilot(
+                requirementId:context.requirement.requirementId,
+                operation:"authorize",confirmAuthorization:true,
+                model:autopilotModel.trimmingCharacters(in:.whitespacesAndNewlines),
+                maxTotalTokens:budgets.0,maxTurns:budgets.1,maxToolCalls:budgets.2,
+                checkpointPlanIds:Array(autopilotCheckpoints).sorted()
+            )
+            autopilotSaving=false
+            if ok { autopilotApproval=nil }
+        }
+    }
+
+    private func runAutopilotAction(_ requirementId:String,_ operation:String) {
+        guard !autopilotSaving else { return }
+        autopilotSaving=true
+        Task {
+            _=await model.controlAutopilot(requirementId:requirementId,operation:operation)
+            autopilotSaving=false
+        }
+    }
+
+    @ViewBuilder
     private func semanticRecordDetail(_ detail: SemanticRecordDetail) -> some View {
         switch detail {
         case .requirement(let requirement):
@@ -2171,6 +2400,7 @@ private struct RecordsPane: View {
                     Text("可选上下文，不影响普通 Agent 会话。")
                         .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
                 }
+                autopilotSection(requirement)
                 semanticSection("目标") {
                     Text(requirement.outcomeStatement.isEmpty ? "未提供 outcome。" : requirement.outcomeStatement)
                         .font(.system(size:12.5)).lineSpacing(4).textSelection(.enabled)
