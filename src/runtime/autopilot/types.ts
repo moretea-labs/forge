@@ -33,6 +33,8 @@ export interface AutopilotRun {
   currentPlanId?: string;
   lastSummary?: string;
   stopReason?: string;
+  /** Recovery-only correlation to Forge's canonical Process; not a second execution status owner. */
+  pendingProcessId?: string;
   evidenceRefs: string[];
   inspectionStreak?: number;
   recentToolNames?: string[];

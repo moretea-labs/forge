@@ -25,6 +25,7 @@ import {
 import { autopilotPendingProcess, autopilotTerminalProcessEvidence, runAutopilotLoop } from '../../src/runtime/autopilot/runner';
 import type { ProcessHandle } from '../../src/runtime/execution/process-runtime/types';
 import { spawnManagedProcess } from '../../src/runtime/execution/process-runtime/runtime';
+import { startLightweightRepositoryCommand } from '../../src/runtime/execution/process-runtime/lightweight-managed';
 import { executionIdentityForRepository } from '../../src/runtime/control-plane/execution/execution-identity';
 import { readAutopilotProviderApiKey, readAutopilotProviderProfile } from '../../src/runtime/autopilot/provider-config';
 
@@ -98,6 +99,9 @@ describe('Requirement Autopilot',() => {
       .toEqual({pending:false});
     expect(autopilotPendingProcess({accepted:true,status:'running',processId:'bad-id'}))
       .toEqual({pending:true});
+    const lightweightId = 'lightweight:12345678-1234-1234-1234-123456789abc';
+    expect(autopilotPendingProcess({structuredContent:{accepted:true,status:'running',processId:lightweightId}}))
+      .toEqual({pending:true,processId:lightweightId});
     const terminal = (status:string,completed:boolean,exitCode:number): ProcessHandle => ({
       processId:'proc_test_123',commandId:'test',status:status as ProcessHandle['status'],
       completed,exitCode,ok:status==='succeeded',route:'managed',contractStatus:'succeeded',
@@ -192,6 +196,167 @@ describe('Requirement Autopilot',() => {
     const run=readAutopilotRun(fx.controllerHome,fx.repository.repoId,'REQ-AUTO')?.value;
     expect(run?.status).toBe('completed');
     expect(run?.usage.toolCalls).toBe(2);
+  });
+
+  test('joins a real lightweight repository Process without duplicating the command',async() => {
+    const fx=fixture('lightweight-process-join');
+    const enrolled=authorizeAutopilot({
+      controllerHome:fx.controllerHome,repoId:fx.repository.repoId,
+      requirementId:'REQ-AUTO',confirmAuthorization:true,
+      policy:{provider:'joycode',endpoint:'https://api-ai.jd.com',protocol:'chat_completions',
+        model:'JoyAI-Code-1.6',maxTurns:3,maxToolCalls:3,maxTotalTokens:20_000},
+    });
+    createAutopilotRun(fx.controllerHome,{
+      repoId:fx.repository.repoId,checkoutId:enrolled.checkoutId,
+      requirementId:'REQ-AUTO',requirementRevision:1,grantId:enrolled.grant.grantId,policy:enrolled.policy,
+    });
+    let invoked=0;
+    let round=0;
+    let processId='';
+    await runAutopilotLoop(fx.controllerHome,fx.repository.repoId,'REQ-AUTO',new AbortController().signal,{
+      toolDefinitions:executeCommandDefinition,validateAuthorization:()=>({ok:true}),
+      executeTool:async()=>{
+        invoked+=1;
+        const started=await startLightweightRepositoryCommand({
+          controllerHome:fx.controllerHome,repository:fx.repository,
+          execution:{command:['node','-e','setTimeout(()=>console.log("lightweight-joined"),120)']},
+          interactiveWaitMs:0,timeoutMs:15_000,deferStart:true,
+        });
+        processId=started.handle.processId;
+        expect(processId).toStartWith('lightweight:');
+        return {structuredContent:{accepted:true,status:'running',processId,timeoutMs:15_000}};
+      },
+      modelRound:async(input)=>{
+        round+=1;
+        if(round===2){
+          const messages=input.body.messages as Array<{role:string;content?:string}>;
+          const terminal=JSON.parse(messages.find((message)=>message.role==='tool')?.content??'{}');
+          expect(terminal).toMatchObject({
+            processId,completed:true,status:'succeeded',ok:true,exitCode:0,
+          });
+          expect(terminal.stdoutTail).toContain('lightweight-joined');
+          expect(messages.some((message)=>message.role==='tool'
+            && message.content?.includes('AUTOPILOT_PROCESS_RESULT_REQUIRES_NEXT_MODEL_ROUND'))).toBe(true);
+          expect(readAutopilotRun(fx.controllerHome,fx.repository.repoId,'REQ-AUTO')?.value.pendingProcessId)
+            .toBe(processId);
+        }
+        return {choices:[{message:{
+          role:'assistant',content:null,tool_calls:[{
+            id:'lightweight-round-'+round,type:'function',function:{
+              name:round===1?'execute_command':'forge_autopilot_decision',
+              arguments:JSON.stringify(round===1?
+                {command:['node','-e','console.log("lightweight-joined")']}:
+                {action:'complete',summary:'Canonical lightweight Process terminal confirmed.'}),
+            },
+          },...(round===1?[{
+            id:'later-command-skipped',type:'function',function:{
+              name:'execute_command',
+              arguments:JSON.stringify({command:['node','-e','console.log("SHOULD_NOT_RUN")']}),
+            },
+          }]:[])],
+        }}],usage:{prompt_tokens:100,completion_tokens:30,total_tokens:130}};
+      },
+    });
+    expect(round).toBe(2);
+    expect(invoked).toBe(1);
+    expect(readAutopilotRun(fx.controllerHome,fx.repository.repoId,'REQ-AUTO')?.value.status).toBe('completed');
+    expect(readAutopilotRun(fx.controllerHome,fx.repository.repoId,'REQ-AUTO')?.value.pendingProcessId).toBeUndefined();
+  });
+
+  test('reconciles persisted lightweight Process after interrupted Agent loop without replay',async() => {
+    const fx=fixture('interrupted-process-join');
+    const enrolled=authorizeAutopilot({
+      controllerHome:fx.controllerHome,repoId:fx.repository.repoId,
+      requirementId:'REQ-AUTO',confirmAuthorization:true,
+      policy:{provider:'joycode',endpoint:'https://api-ai.jd.com',protocol:'chat_completions',
+        model:'JoyAI-Code-1.6',maxTurns:3,maxToolCalls:3,maxTotalTokens:20_000},
+    });
+    createAutopilotRun(fx.controllerHome,{
+      repoId:fx.repository.repoId,checkoutId:enrolled.checkoutId,
+      requirementId:'REQ-AUTO',requirementRevision:1,grantId:enrolled.grant.grantId,policy:enrolled.policy,
+    });
+    let invoked=0;
+    let processId='';
+    const interruption=new AbortController();
+    await runAutopilotLoop(fx.controllerHome,fx.repository.repoId,'REQ-AUTO',interruption.signal,{
+      toolDefinitions:executeCommandDefinition,validateAuthorization:()=>({ok:true}),
+      executeTool:async()=>{
+        invoked+=1;
+        const started=await startLightweightRepositoryCommand({
+          controllerHome:fx.controllerHome,repository:fx.repository,
+          execution:{command:['node','-e','setTimeout(()=>console.log("restarted-agent-evidence"),120)']},
+          interactiveWaitMs:0,timeoutMs:15_000,deferStart:true,
+        });
+        processId=started.handle.processId;
+        interruption.abort(); // Transport/Agent stops after admission, not the Process.
+        return {structuredContent:{accepted:true,status:'running',processId,timeoutMs:15_000}};
+      },
+      modelRound:async()=>({choices:[{message:{role:'assistant',content:null,tool_calls:[{
+        id:'interrupted-command',type:'function',function:{
+          name:'execute_command',arguments:JSON.stringify({command:['node','-e','console.log("restarted-agent-evidence")']}),
+        },
+      }]}}],usage:{prompt_tokens:100,completion_tokens:30,total_tokens:130}}),
+    });
+    expect(readAutopilotRun(fx.controllerHome,fx.repository.repoId,'REQ-AUTO')?.value.pendingProcessId).toBe(processId);
+    expect(readAutopilotRun(fx.controllerHome,fx.repository.repoId,'REQ-AUTO')?.value.status).toBe('running');
+
+    let recoveryRounds=0;
+    await runAutopilotLoop(fx.controllerHome,fx.repository.repoId,'REQ-AUTO',new AbortController().signal,{
+      toolDefinitions:executeCommandDefinition,validateAuthorization:()=>({ok:true}),
+      executeTool:async()=>{ invoked+=1; throw new Error('MUST_NOT_REPLAY_PREVIOUS_COMMAND'); },
+      modelRound:async(input)=>{
+        recoveryRounds+=1;
+        const messages=input.body.messages as Array<{role:string;content?:string}>;
+        const receipt=messages.find((message)=>message.content?.includes('Recovered terminal receipt'));
+        expect(receipt?.content).toContain(processId);
+        expect(receipt?.content).toContain('restarted-agent-evidence');
+        expect(receipt?.content).toContain('"status":"succeeded"');
+        return {choices:[{message:{role:'assistant',content:null,tool_calls:[{
+          id:'recovered-decision',type:'function',function:{
+            name:'forge_autopilot_decision',arguments:JSON.stringify({
+              action:'complete',summary:'Prior command terminal receipt reconciled from Process authority.',
+            }),
+          },
+        }]}}],usage:{prompt_tokens:100,completion_tokens:30,total_tokens:130}};
+      },
+    });
+    expect(invoked).toBe(1);
+    expect(recoveryRounds).toBe(1);
+    const completed=readAutopilotRun(fx.controllerHome,fx.repository.repoId,'REQ-AUTO')?.value;
+    expect(completed?.status).toBe('completed');
+    expect(completed?.pendingProcessId).toBeUndefined();
+  });
+
+  test('fails closed on an unavailable persisted Process and does not run model or tools',async() => {
+    const fx=fixture('unknown-process-on-resume');
+    const enrolled=authorizeAutopilot({
+      controllerHome:fx.controllerHome,repoId:fx.repository.repoId,
+      requirementId:'REQ-AUTO',confirmAuthorization:true,
+      policy:{provider:'joycode',endpoint:'https://api-ai.jd.com',protocol:'chat_completions',
+        model:'JoyAI-Code-1.6',maxTurns:3,maxToolCalls:3,maxTotalTokens:20_000},
+    });
+    createAutopilotRun(fx.controllerHome,{
+      repoId:fx.repository.repoId,checkoutId:enrolled.checkoutId,
+      requirementId:'REQ-AUTO',requirementRevision:1,grantId:enrolled.grant.grantId,policy:enrolled.policy,
+    });
+    const missing='lightweight:12345678-1234-1234-1234-123456789abc';
+    updateAutopilotRun(fx.controllerHome,fx.repository.repoId,'REQ-AUTO',run=>({
+      ...run,pendingProcessId:missing,
+    }));
+    let calls=0;
+    const deps={
+      toolDefinitions:executeCommandDefinition,validateAuthorization:()=>({ok:true}),
+      executeTool:async()=>{calls+=1;throw new Error('UNEXPECTED_REPLAY');},
+      modelRound:async()=>{calls+=1;throw new Error('UNEXPECTED_MODEL_ROUND');},
+    };
+    await runAutopilotLoop(fx.controllerHome,fx.repository.repoId,'REQ-AUTO',new AbortController().signal,deps);
+    const paused=readAutopilotRun(fx.controllerHome,fx.repository.repoId,'REQ-AUTO')?.value;
+    expect(calls).toBe(0);
+    expect(paused?.status).toBe('paused');
+    expect(paused?.stopReason).toBe('process_terminal_unconfirmed:'+missing);
+    expect(paused?.pendingProcessId).toBe(missing);
+    await runAutopilotLoop(fx.controllerHome,fx.repository.repoId,'REQ-AUTO',new AbortController().signal,deps);
+    expect(calls).toBe(0);
   });
 
   test('reads the shared Desktop provider profile without copying credentials',() => {

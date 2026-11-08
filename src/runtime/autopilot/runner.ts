@@ -5,7 +5,7 @@ import { classifyRepositoryCommand } from '../../cli/repositories/command-classi
 import { getRepository } from '../../cli/repositories/registry';
 import { readRequirement, requirementSemanticView } from '../control-plane/persistence/requirement-store';
 import { listPlanContracts } from '../control-plane/facade/plan-contract-store';
-import { waitForProcess } from '../execution/process-runtime/runtime';
+import { waitRepositoryCommandProcess } from '../execution/process-runtime/command-facade';
 import type { ProcessHandle } from '../execution/process-runtime/types';
 import { readAutopilotRun, updateAutopilotRun } from './store';
 import type { AutopilotDecision, AutopilotModelUsage, AutopilotRun } from './types';
@@ -446,7 +446,8 @@ export function autopilotPendingProcess(value: unknown): { pending: boolean; pro
   const pending = receipt.accepted === true && ['starting','running','running_recovered'].includes(String(receipt.status ?? ''));
   if (!pending) return { pending:false };
   const id = receipt.processId;
-  const validId = typeof id === 'string' && /^proc_[A-Za-z0-9_]{1,123}$/.test(id);
+  const validId = typeof id === 'string' && (/^proc_[A-Za-z0-9_]{1,123}$/.test(id)
+    || /^lightweight:[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(id));
   const timeout = receipt.timeoutMs;
   return {
     pending:true,
@@ -464,6 +465,28 @@ export function autopilotTerminalProcessEvidence(handle: ProcessHandle): Record<
     stdoutTail:handle.stdoutTail ?? handle.stdout ?? '',
     stderrTail:handle.stderrTail ?? handle.stderr ?? '',
   };
+}
+
+async function joinAutopilotProcess(
+  controllerHome: string, repoId: string, processId: string,
+  timeoutMs: number | undefined, signal: AbortSignal,
+): Promise<Record<string, unknown> | undefined> {
+  const deadline = Date.now() + Math.min(600_000, timeoutMs ?? 60_000) + 15_000;
+  // Read only the authoritative Process; do not pass cancellation to it,
+  // because pausing the Agent must not kill an already accepted command.
+  while (!signal.aborted && Date.now() < deadline) {
+    try {
+      const handle = await waitRepositoryCommandProcess(controllerHome, repoId, processId, {
+        timeoutMs: Math.min(2_000, Math.max(1, deadline - Date.now())),
+      });
+      const terminal = autopilotTerminalProcessEvidence(handle);
+      if (terminal) return terminal;
+      if (handle.completed) break;
+    } catch {
+      break;
+    }
+  }
+  return undefined;
 }
 
 function boundedToolResult(value: unknown): string {
@@ -503,6 +526,7 @@ export async function runAutopilotLoop(
   const requirement = requirementSemanticView(requirementRecord.value);
   const initialRecord = readAutopilotRun(controllerHome, repoId, requirementId);
   if (!initialRecord) throw new Error(`AUTOPILOT_RUN_NOT_FOUND: ${requirementId}`);
+  if (signal.aborted || initialRecord.value.status !== 'running') return;
   if (requirement.revision !== initialRecord.value.requirementRevision) {
     throw new Error(`AUTOPILOT_REQUIREMENT_REVISION_CHANGED: approved=${initialRecord.value.requirementRevision},current=${requirement.revision}`);
   }
@@ -513,6 +537,32 @@ export async function runAutopilotLoop(
     { role: 'system', content: systemPrompt(initialRecord.value, requirement, plans) },
     { role: 'user', content: 'Continue the approved Requirement autonomously. Choose one concrete highest-value remaining-work slice. Use no more than six consecutive read-only inspections, then implement or validate that slice and record a structured decision. Do not spend the run rediscovering the whole repository.' },
   ];
+
+  // Run persistence stores only the correlation ID, not Process truth.
+  // After a Runtime restart, reconcile it before another model/tool round.
+  if (initialRecord.value.pendingProcessId) {
+    const processId = initialRecord.value.pendingProcessId;
+    const valid = autopilotPendingProcess({accepted:true,status:'running',processId}).processId === processId;
+    const terminal = valid
+      ? await joinAutopilotProcess(controllerHome, repoId, processId, undefined, signal)
+      : undefined;
+    if (signal.aborted) return;
+    if (!terminal) {
+      const current = readAutopilotRun(controllerHome, repoId, requirementId)?.value;
+      if (current?.status === 'running') {
+        updateAutopilotRun(controllerHome, repoId, requirementId, (run) => ({
+          ...run, status:'paused', stopReason:'process_terminal_unconfirmed:' + processId,
+          lastSummary:'Reconcile the persisted Process ID with Forge Process Runtime before resuming. Never replay the command.',
+        }), 'autopilot_process_reconciliation_required');
+      }
+      return;
+    }
+    messages.push({
+      role:'user',
+      content:'Recovered terminal receipt for the previously accepted execute_command from Forge Process Runtime (not a new command): '
+        + boundedToolResult(terminal) + '. Use this evidence; do not reissue that command.',
+    });
+  }
 
   while (!signal.aborted) {
     const currentRecord = readAutopilotRun(controllerHome, repoId, requirementId);
@@ -559,6 +609,8 @@ export async function runAutopilotLoop(
     const usage = usageOf(response);
     updateAutopilotRun(controllerHome, repoId, requirementId, (run) => ({
       ...run,
+      // The next model response has now consumed the prior Process receipt.
+      pendingProcessId: undefined,
       usage: {
         promptTokens: run.usage.promptTokens + usage.promptTokens,
         completionTokens: run.usage.completionTokens + usage.completionTokens,
@@ -575,10 +627,20 @@ export async function runAutopilotLoop(
       continue;
     }
 
+    let needsNextModelRound = false;
     for (const toolCall of toolCalls) {
       if (signal.aborted) return;
       const latest = readAutopilotRun(controllerHome, repoId, requirementId)?.value;
       if (!latest || latest.status !== 'running') return;
+      // A long command's terminal result must be consumed by the model before
+      // another tool from the same response can perform a second effect.
+      if (needsNextModelRound) {
+        messages.push({ role:'tool', tool_call_id:toolCall.id, content:JSON.stringify({
+          error:'AUTOPILOT_PROCESS_RESULT_REQUIRES_NEXT_MODEL_ROUND',
+          message:'This tool was not executed. Inspect the preceding Process terminal receipt, then decide again.',
+        }) });
+        continue;
+      }
       if (budgetUsage(latest).toolCalls >= latest.policy.maxToolCalls) {
         updateAutopilotRun(controllerHome, repoId, requirementId, (run) => ({ ...run, status: 'paused', stopReason: 'max_tool_calls_reached' }), 'autopilot_budget_paused');
         return;
@@ -675,25 +737,16 @@ export async function runAutopilotLoop(
       const pending = toolCall.function.name === 'execute_command'
         ? autopilotPendingProcess(toolResult) : { pending:false };
       if (pending.pending) {
-        let terminal: Record<string, unknown> | undefined;
+        // Persist the correlation before joining. The same Run can reconcile
+        // this Process after the Runtime or model transport is restarted.
         if (pending.processId) {
-          // The Process continues under Forge authority if Autopilot is paused.
-          // Join in bounded slices so pause/revoke can release the Agent loop
-          // promptly without signalling or replaying the already accepted command.
-          const deadline = Date.now() + Math.min(600_000, pending.timeoutMs ?? 60_000) + 15_000;
-          while (!signal.aborted && Date.now() < deadline) {
-            try {
-              const handle = await waitForProcess(controllerHome, repoId, pending.processId, {
-                timeoutMs: Math.min(2_000, Math.max(1, deadline - Date.now())),
-              });
-              terminal = autopilotTerminalProcessEvidence(handle);
-              if (terminal || handle.completed) break;
-            } catch {
-              // Preserve Process identity and stop if canonical receipt is unavailable.
-              break;
-            }
-          }
+          updateAutopilotRun(controllerHome, repoId, requirementId, (run) => ({
+            ...run, pendingProcessId:pending.processId,
+          }), 'autopilot_process_accepted');
         }
+        const terminal = pending.processId
+          ? await joinAutopilotProcess(controllerHome, repoId, pending.processId, pending.timeoutMs, signal)
+          : undefined;
         if (signal.aborted) return;
         if (!terminal) {
           const current = readAutopilotRun(controllerHome, repoId, requirementId)?.value;
@@ -707,6 +760,7 @@ export async function runAutopilotLoop(
           return;
         }
         toolResult = terminal;
+        needsNextModelRound = true;
       }
       if (signal.aborted) return;
       updateAutopilotRun(controllerHome, repoId, requirementId, (run) => ({
