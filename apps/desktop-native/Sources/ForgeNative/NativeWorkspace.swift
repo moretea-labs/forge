@@ -740,12 +740,27 @@ final class NativeWorkspace: ObservableObject {
         openProject(id)
     }
 
-    func newThread(inProject id: String) {
+    func openCheckout(inProject id: String, checkoutId targetCheckoutId: String) {
         guard !busy else {
             self.error = "请先停止正在运行的会话。"
             return
         }
-        if repoId == id, checkoutId != nil {
+        if let recent = threads
+            .filter({ $0.repoId == id && $0.checkoutId == targetCheckoutId })
+            .max(by: { $0.updatedAt < $1.updatedAt }) {
+            selectThread(recent.id)
+        } else {
+            newThread(inProject:id,checkoutId:targetCheckoutId)
+        }
+    }
+
+    func newThread(inProject id: String, checkoutId requestedCheckoutId: String? = nil) {
+        guard !busy else {
+            self.error = "请先停止正在运行的会话。"
+            return
+        }
+        if repoId == id, checkoutId != nil,
+           requestedCheckoutId == nil || requestedCheckoutId == checkoutId {
             newThread()
             return
         }
@@ -755,9 +770,13 @@ final class NativeWorkspace: ObservableObject {
             do {
                 let result = try await ForgeBridge.request("read_project_repository",["repoId":id])
                 guard selectedThreadId == sourceThreadId, !busy else { return }
-                let context = Self.repositoryCheckoutContext(result,requestedCheckoutId:nil)
-                guard let targetCheckoutId = context.checkoutId else {
-                    self.error = "目标项目没有可用的 active checkout。"
+                let context = Self.repositoryCheckoutContext(
+                    result,requestedCheckoutId:requestedCheckoutId
+                )
+                guard let targetCheckoutId = context.checkoutId,
+                      let root = context.checkoutRoot,
+                      Self.checkoutPathIsGitWorktree(root) else {
+                    self.error = "目标仓库没有对应的有效 Checkout；无法创建会话。"
                     return
                 }
                 // Resolve first, then create a new conversation identity. The old selected
@@ -783,15 +802,22 @@ final class NativeWorkspace: ObservableObject {
         let target = URL(fileURLWithPath:path)
             .resolvingSymlinksInPath().standardizedFileURL
         do {
-            _ = try await ForgeBridge.request("register_project",["path":target.path])
-            await refresh()
-            if let project = projects.first(where: { project in
-                guard let root = project.localRoot else { return false }
-                return URL(fileURLWithPath:root).resolvingSymlinksInPath().standardizedFileURL == target
-            }) {
-                newThread(inProject:project.repoId)
+            let value = try await ForgeBridge.request("register_project",["path":target.path])
+            guard let repository = value["repository"] as? [String:Any],
+                  let registeredRepoId = repository["repoId"] as? String,
+                  let registeredCheckoutId = repository["activeCheckoutId"] as? String else {
+                self.error = "Forge 注册成功响应缺少 Repository / Checkout 身份，未切换会话。"
+                return false
             }
-            self.error = nil
+            await refresh()
+            guard projects.contains(where: { $0.repoId == registeredRepoId }) else {
+                self.error = "新注册仓库尚未出现在 Forge Registry 中。"
+                return false
+            }
+            // A linked worktree may share the primary repository's display
+            // root. Always select the checkout returned by the canonical
+            // registration receipt rather than comparing localRoot strings.
+            newThread(inProject:registeredRepoId,checkoutId:registeredCheckoutId)
             return true
         } catch {
             self.error = error.localizedDescription

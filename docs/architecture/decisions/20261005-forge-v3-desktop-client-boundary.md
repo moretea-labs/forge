@@ -12,6 +12,22 @@ The interactive JoyCode/API conversation keeps one bounded in-process model/tool
 
 The current macOS product is **Agent-first**: one local coding conversation and tool activity surface is primary, with a single sidebar to navigate independently to Project Requirement, Plan, Work, Knowledge, settings and Runtime/Recovery views. MCP is a separate outward integration/service, **not** a local execution mode or a second set of screens. Plan, evidence, IDs and mechanical Runtime facts are disclosed on demand rather than occupying a permanent inspector. These are typed projections of canonical Forge facts, not client-owned lifecycle state machines.
 
+## Repository and Checkout identity in the native client
+
+One Git common directory defines a Repository identity, independent of whether the
+primary checkout or a linked worktree was registered first. Each checkout keeps its
+own stable Checkout ID, path, branch and conversation binding. Adding an existing
+worktree returns the canonical Registry's Repository/Checkout IDs; selecting it
+must never fall back to the registered repository's default checkout. Independent
+clones of the same remote retain distinct Repository IDs and access boundaries.
+
+The client projects menu lists each Repository once and expands canonical
+Checkouts on demand via `read_project_repository`, with no client-owned second
+registry. A thread is bound to one specific checkout, while its Requirement/Plan
+context remains optional. Existing legacy duplicate Repository IDs are not
+silently merged because persistent references and policy would require a
+separate verified migration.
+
 ## Authority boundary
 
 - Requirement, Plan, Work, ControllerSession/ControllerRound, Scheduler, repository/worktree identity, connections and Runtime/Recovery lifecycle remain authoritative in their existing Forge owners. The retired Workflow Supervisor/automatic continuation is not a new Client feature.

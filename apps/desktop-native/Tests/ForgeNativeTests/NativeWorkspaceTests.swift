@@ -706,6 +706,27 @@ final class NativeWorkspaceTests: XCTestCase {
     }
 
     @MainActor
+    func testOpeningCheckoutReusesConversationFromExactWorktreeOnly() {
+        let folder=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model=NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        model.repoId="repo_a"
+        model.checkoutId="checkout_primary"
+        model.newThread()
+        let primaryThread=model.selectedThreadId!
+        model.repoId="repo_a"
+        model.checkoutId="checkout_linked"
+        model.newThread()
+        let linkedThread=model.selectedThreadId!
+        let originalCount=model.threads.count
+        model.openCheckout(inProject:"repo_a",checkoutId:"checkout_primary")
+        XCTAssertEqual(model.selectedThreadId,primaryThread)
+        XCTAssertNotEqual(model.selectedThreadId,linkedThread)
+        XCTAssertEqual(model.checkoutId,"checkout_primary")
+        XCTAssertEqual(model.threads.count,originalCount)
+    }
+
+    @MainActor
     func testNewThreadInCurrentProjectUsesExistingCheckoutWithoutSecondRegistryPath() {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at:folder) }

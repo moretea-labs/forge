@@ -58,6 +58,32 @@ private struct SidebarThreadSection: Identifiable {
     let threads: [ChatThread]
 }
 
+private struct ProjectCheckoutChoice: Identifiable {
+    let id: String
+    let path: String
+    let branch: String?
+    let worktree: Bool
+    let active: Bool
+
+    static func fromRepository(_ value:[String:Any]) -> [ProjectCheckoutChoice] {
+        let data = value["repository"] as? [String:Any] ?? [:]
+        let rows = data["checkouts"] as? [[String:Any]] ?? []
+        return rows.compactMap { row -> ProjectCheckoutChoice? in
+            guard let id = row["checkoutId"] as? String, !id.isEmpty,
+                  let path = row["path"] as? String, !path.isEmpty,
+                  (row["lifecycle"] as? String ?? "active") == "active" else { return nil }
+            return ProjectCheckoutChoice(
+                id:id,path:path,branch:row["branch"] as? String,
+                worktree:row["worktree"] as? Bool ?? false,
+                active:row["active"] as? Bool ?? false
+            )
+        }.sorted { left,right in
+            if left.active != right.active { return left.active }
+            return left.path.localizedStandardCompare(right.path) == .orderedAscending
+        }
+    }
+}
+
 private struct ForgeWorkspaceView: View {
     @ObservedObject var model: NativeWorkspace
     @State private var visibility: NavigationSplitViewVisibility = .all
@@ -68,6 +94,10 @@ private struct ForgeWorkspaceView: View {
     @State private var projectPickerShown = false
     @State private var projectSearch = ""
     @State private var registeringProject = false
+    @State private var expandedProjectRepoId: String?
+    @State private var expandedProjectCheckouts: [ProjectCheckoutChoice] = []
+    @State private var projectCheckoutsLoading = false
+    @State private var projectCheckoutError: String?
     @FocusState private var sidebarSearchFocused: Bool
 
     var body: some View {
@@ -530,7 +560,7 @@ private struct ForgeWorkspaceView: View {
                     Text(model.project?.label ?? "选择项目")
                         .font(.system(size:12,weight:.semibold))
                         .lineLimit(1)
-                    Text("\(model.projects.count) 个项目 · 默认分支 \(model.project?.defaultBranch ?? "未设置")")
+                    Text("\(model.projects.count) 个仓库 · 当前 \(model.checkoutBranch ?? "无 Checkout")")
                         .font(.system(size:10)).foregroundStyle(ForgePalette.secondary)
                         .lineLimit(1)
                 }
@@ -552,8 +582,8 @@ private struct ForgeWorkspaceView: View {
         VStack(alignment:.leading,spacing:10) {
             HStack {
                 VStack(alignment:.leading,spacing:2) {
-                    Text("项目").font(.system(size:14,weight:.semibold))
-                    Text("直接打开任意项目的最近会话；无需先切项目再找会话。")
+                    Text("仓库与工作树").font(.system(size:14,weight:.semibold))
+                    Text("一个仓库可包含多个 Checkout；展开后选择工作树。")
                         .font(.system(size:10)).foregroundStyle(ForgePalette.secondary)
                 }
                 Spacer()
@@ -576,53 +606,122 @@ private struct ForgeWorkspaceView: View {
             ScrollView {
                 LazyVStack(spacing:4) {
                     ForEach(filteredProjects) { project in
-                        HStack(spacing:6) {
-                            Button {
-                                model.openProject(project.repoId)
-                                projectPickerShown = false
-                                projectSearch = ""
-                            } label: {
-                                HStack(spacing:9) {
-                                    Image(systemName:project.repoId == model.repoId ? "folder.fill" : "folder")
-                                        .symbolRenderingMode(.hierarchical)
-                                        .frame(width:18)
-                                    VStack(alignment:.leading,spacing:2) {
-                                        Text(project.label)
-                                            .font(.system(size:11.5,weight:.medium)).lineLimit(1)
-                                        HStack(spacing:6) {
-                                            Text(project.localRoot ?? project.defaultBranch ?? project.repoId)
-                                                .lineLimit(1).truncationMode(.middle)
-                                            let count=projectConversationCount(project.repoId)
-                                            if count > 0 {
-                                                Text("· \(count) 会话")
-                                                    .lineLimit(1)
+                        VStack(spacing:3) {
+                            HStack(spacing:6) {
+                                Button {
+                                    model.openProject(project.repoId)
+                                    projectPickerShown = false
+                                    projectSearch = ""
+                                } label: {
+                                    HStack(spacing:9) {
+                                        Image(systemName:project.repoId == model.repoId ? "folder.fill" : "folder")
+                                            .symbolRenderingMode(.hierarchical)
+                                            .frame(width:18)
+                                        VStack(alignment:.leading,spacing:2) {
+                                            Text(project.label)
+                                                .font(.system(size:11.5,weight:.medium)).lineLimit(1)
+                                            HStack(spacing:6) {
+                                                Text(project.localRoot ?? project.defaultBranch ?? project.repoId)
+                                                    .lineLimit(1).truncationMode(.middle)
+                                                let count=projectConversationCount(project.repoId)
+                                                if count > 0 { Text("· \(count) 会话").lineLimit(1) }
                                             }
+                                            .font(.system(size:9.5))
+                                            .foregroundStyle(ForgePalette.secondary)
                                         }
-                                        .font(.system(size:9.5))
-                                        .foregroundStyle(ForgePalette.secondary)
+                                        Spacer()
                                     }
-                                    Spacer()
+                                    .contentShape(Rectangle())
                                 }
-                                .contentShape(Rectangle())
+                                .buttonStyle(.plain)
+                                Button {
+                                    model.newThread(inProject:project.repoId)
+                                    projectPickerShown = false
+                                    projectSearch = ""
+                                } label: {
+                                    Image(systemName:"plus")
+                                        .font(.system(size:10,weight:.semibold))
+                                        .frame(width:25,height:25)
+                                        .background(ForgePalette.softFill,in:RoundedRectangle(cornerRadius:8,style:.continuous))
+                                }
+                                .buttonStyle(.plain)
+                                .help("在此仓库当前 Checkout 新建会话")
+                                .disabled(model.busy)
+                                Button {
+                                    toggleProjectCheckouts(project.repoId)
+                                } label: {
+                                    Image(systemName:expandedProjectRepoId == project.repoId ? "chevron.up" : "chevron.down")
+                                        .font(.system(size:10,weight:.medium))
+                                        .frame(width:24,height:25)
+                                }
+                                .buttonStyle(.plain)
+                                .help("展开仓库的工作树 / Checkout")
+                                .accessibilityIdentifier("project.checkouts.\(project.repoId)")
                             }
-                            .buttonStyle(.plain)
-                            Button {
-                                model.newThread(inProject:project.repoId)
-                                projectPickerShown = false
-                                projectSearch = ""
-                            } label: {
-                                Image(systemName:"plus")
-                                    .font(.system(size:10,weight:.semibold))
-                                    .frame(width:26,height:26)
-                                    .background(ForgePalette.softFill,in:RoundedRectangle(cornerRadius:8,style:.continuous))
+                            .padding(.horizontal,8).frame(height:46)
+                            .background(project.repoId == model.repoId ? ForgePalette.selection : .clear,
+                                        in:RoundedRectangle(cornerRadius:10,style:.continuous))
+
+                            if expandedProjectRepoId == project.repoId {
+                                if projectCheckoutsLoading {
+                                    ProgressView().controlSize(.small).padding(.vertical,10)
+                                } else if let projectCheckoutError {
+                                    Text(projectCheckoutError)
+                                        .font(.system(size:10)).foregroundStyle(ForgePalette.secondary)
+                                        .padding(.horizontal,14).padding(.vertical,7)
+                                } else {
+                                    ForEach(expandedProjectCheckouts) { checkout in
+                                        HStack(spacing:4) {
+                                            Button {
+                                                model.openCheckout(inProject:project.repoId,checkoutId:checkout.id)
+                                                projectPickerShown = false
+                                                projectSearch = ""
+                                            } label: {
+                                                HStack(spacing:8) {
+                                                    Image(systemName:checkout.worktree ? "arrow.triangle.branch" : "house")
+                                                        .font(.system(size:10))
+                                                    VStack(alignment:.leading,spacing:2) {
+                                                        HStack(spacing:5) {
+                                                            Text(checkout.branch ?? "detached HEAD")
+                                                                .font(.system(size:10.5,weight:.medium))
+                                                            if checkout.active {
+                                                                Text("默认").font(.system(size:9))
+                                                                    .foregroundStyle(ForgePalette.secondary)
+                                                            }
+                                                        }
+                                                        Text(checkout.path)
+                                                            .font(.system(size:9))
+                                                            .lineLimit(1).truncationMode(.middle)
+                                                            .foregroundStyle(ForgePalette.secondary)
+                                                    }
+                                                    Spacer()
+                                                    if project.repoId == model.repoId && checkout.id == model.checkoutId {
+                                                        Image(systemName:"checkmark").font(.system(size:10))
+                                                    }
+                                                }
+                                                .contentShape(Rectangle())
+                                            }
+                                            .buttonStyle(.plain)
+                                            Button {
+                                                model.newThread(inProject:project.repoId,checkoutId:checkout.id)
+                                                projectPickerShown = false
+                                                projectSearch = ""
+                                            } label: {
+                                                Image(systemName:"plus")
+                                                    .font(.system(size:10,weight:.medium))
+                                                    .frame(width:24,height:24)
+                                            }
+                                            .buttonStyle(.plain)
+                                            .help("在此 Checkout 创建会话")
+                                            .disabled(model.busy)
+                                        }
+                                        .padding(.leading,21).padding(.trailing,10)
+                                        .frame(height:39)
+                                        .accessibilityIdentifier("project.checkout.\(checkout.id)")
+                                    }
+                                }
                             }
-                            .buttonStyle(.plain)
-                            .help("在此项目中新建会话")
-                            .disabled(model.busy)
                         }
-                        .padding(.horizontal,8).frame(height:46)
-                        .background(project.repoId == model.repoId ? ForgePalette.selection : .clear,
-                                    in:RoundedRectangle(cornerRadius:10,style:.continuous))
                     }
                     if filteredProjects.isEmpty {
                         Text("没有匹配的已注册项目")
@@ -654,6 +753,33 @@ private struct ForgeWorkspaceView: View {
                 .font(.system(size:9.5)).foregroundStyle(ForgePalette.secondary)
         }
         .padding(14).frame(width:380)
+    }
+
+    private func toggleProjectCheckouts(_ targetRepoId:String) {
+        if expandedProjectRepoId == targetRepoId {
+            expandedProjectRepoId = nil
+            expandedProjectCheckouts = []
+            projectCheckoutError = nil
+            return
+        }
+        expandedProjectRepoId = targetRepoId
+        expandedProjectCheckouts = []
+        projectCheckoutError = nil
+        projectCheckoutsLoading = true
+        Task {
+            do {
+                let value = try await ForgeBridge.request("read_project_repository",["repoId":targetRepoId])
+                guard expandedProjectRepoId == targetRepoId else { return }
+                expandedProjectCheckouts = ProjectCheckoutChoice.fromRepository(value)
+                if expandedProjectCheckouts.isEmpty {
+                    projectCheckoutError = "此仓库没有可用的 Checkout。"
+                }
+            } catch {
+                guard expandedProjectRepoId == targetRepoId else { return }
+                projectCheckoutError = error.localizedDescription
+            }
+            if expandedProjectRepoId == targetRepoId { projectCheckoutsLoading = false }
+        }
     }
 
     private func chooseProjectDirectory() {

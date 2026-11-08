@@ -675,15 +675,15 @@ export function registerRepository(input: RegisterRepositoryInput): RepositoryRe
   const gitDirectory = git(canonicalRoot, ['rev-parse', '--git-dir']);
   const commonDirectory = git(canonicalRoot, ['rev-parse', '--git-common-dir']);
   const worktree = Boolean(commonDirectory && gitDirectory !== commonDirectory);
-  // Historical/controller-issued repository ids are allowed to differ from the
-  // later remote-derived hash. A Git worktree belongs to the repository that
-  // owns the same Git common directory; equal remotes alone are not sufficient
-  // because independent clones of one remote are separate checkout families.
-  const existingByCommonDirectory = !existingByRoot && worktree
+  const explicitRepoId = input.repoIdOverride?.trim();
+  // Both registration orders share one Git identity: primary -> linked and
+  // linked -> primary. Comparing remote URLs is insufficient: independent
+  // clones have distinct Git common directories and remain separate repos.
+  // Explicit primary-repository overrides retain historical migration rules.
+  const existingByCommonDirectory = !existingByRoot && (worktree || !explicitRepoId)
     ? repositoryByGitCommonDirectory(registry.repositories, canonicalRoot)
     : undefined;
   const existingIdentity = existingByRoot ?? existingByCommonDirectory;
-  const explicitRepoId = input.repoIdOverride?.trim();
   const derivedRepoId = explicitRepoId
     || existingIdentity?.repoId
     || localIdentity.repoId
@@ -721,10 +721,10 @@ export function registerRepository(input: RegisterRepositoryInput): RepositoryRe
   const enabled = input.enabled ?? (restoringExisting ? true : existing?.enabled ?? true);
 
   // A repository-scoped command may start from a managed checkout (for example
-  // immutable release construction). Registering that path must add/update the
-  // checkout only; it must never promote the ephemeral worktree to repository
-  // canonical authority. Active checkout selection is separate authority held
-  // by activeCheckoutId; canonicalRoot remains the repository registration root.
+  // immutable release construction). Registering a linked worktree only adds a
+  // checkout. Registering the primary later may promote the true primary root,
+  // keeping the existing repo id and all linked checkout bindings. Active
+  // checkout selection stays separate from canonical repository authority.
   if (existing && worktree && existing.canonicalRemote && canonicalRemote !== existing.canonicalRemote) {
     throw new Error(`CHECKOUT_REPOSITORY_MISMATCH: ${canonicalRoot}`);
   }
