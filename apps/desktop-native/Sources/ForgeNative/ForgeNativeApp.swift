@@ -2434,9 +2434,10 @@ private struct RecordsPane: View {
     private let planningLaneHeaderHeight: CGFloat = 36
 
     var body: some View {
-        HStack(spacing:12) {
+        GeometryReader { geometry in
+            HStack(spacing:12) {
             planningNavigator
-                .frame(minWidth:620,maxWidth:.infinity)
+                .frame(minWidth:geometry.size.width < 960 ? 330 : 620,maxWidth:.infinity)
                 .background(.ultraThinMaterial,
                             in:RoundedRectangle(cornerRadius:16,style:.continuous))
                 .padding(.leading,12).padding(.vertical,12)
@@ -2475,11 +2476,14 @@ private struct RecordsPane: View {
                     .frame(maxWidth:.infinity,alignment:.leading)
                     .padding(.horizontal,18).padding(.vertical,20)
                 }
-                .frame(minWidth:310,idealWidth:350,maxWidth:390)
+                .frame(minWidth:geometry.size.width < 960 ? 240 : 310,
+                       idealWidth:geometry.size.width < 960 ? 260 : 350,
+                       maxWidth:geometry.size.width < 960 ? 290 : 390)
                 .background(ForgePalette.raisedSurface.opacity(0.72),
                             in:RoundedRectangle(cornerRadius:16,style:.continuous))
                 .padding(.trailing,12).padding(.vertical,12)
                 .transition(.move(edge:.trailing).combined(with:.opacity))
+            }
             }
         }
         .background(ForgePalette.canvas)
@@ -2841,10 +2845,10 @@ private struct RecordsPane: View {
     }
 
     private func planningNodeRole(_ item:ForgeRecord) -> String {
-        if item.kind == .requirement { return "Requirement" }
-        if item.parentPlanId != nil { return "子 Plan" }
-        if item.requirementId != nil { return "根 Plan" }
-        return "独立 Plan"
+        if item.kind == .requirement { return "需求 · Requirement" }
+        if item.parentPlanId != nil { return "子计划 · Plan" }
+        if item.requirementId != nil { return "主计划 · Plan" }
+        return "独立计划 · Plan"
     }
 
     private var planningSelectedPath: [ForgeRecord] {
@@ -3040,7 +3044,8 @@ private struct RecordsPane: View {
                             }
                         }
                         Text(item.title)
-                            .font(.system(size:12,weight:item.kind == .requirement ? .semibold : .medium))
+                            .font(.system(size:item.kind == .requirement ? 13 : 12.5,
+                                          weight:item.kind == .requirement ? .semibold : .medium))
                             .foregroundStyle(ForgePalette.ink)
                             .lineLimit(2).multilineTextAlignment(.leading)
                         Text(item.recordId)
@@ -3082,10 +3087,19 @@ private struct RecordsPane: View {
                 .padding(.trailing,8)
             }
         }
-        .padding(.leading,CGFloat(min(item.depth,6) * 16))
+        .padding(.leading,CGFloat(min(item.depth,6) * 18))
         .frame(maxWidth:.infinity,alignment:.leading)
-        .background(item.id == model.selectedRecord ? ForgePalette.selectionStrong : ForgePalette.softFill.opacity(0.45),
+        .background(item.id == model.selectedRecord ? ForgePalette.selectionStrong :
+                    item.kind == .requirement ? ForgePalette.raisedSurface : ForgePalette.softFill.opacity(0.45),
                     in:RoundedRectangle(cornerRadius:10,style:.continuous))
+        .overlay(alignment:.leading) {
+            if item.kind == .requirement {
+                RoundedRectangle(cornerRadius:1.5)
+                    .fill(ForgePalette.accent.opacity(0.46))
+                    .frame(width:3)
+                    .padding(.leading,2)
+            }
+        }
     }
 
     private var planningCanvas: some View {
