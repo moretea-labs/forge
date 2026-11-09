@@ -443,6 +443,14 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertFalse(ForgeBridge.allowed.contains("read_work_detail"))
     }
 
+    func testPrimaryWorkspaceNavigationKeepsRuntimeOutOfPeerDestinations() {
+        XCTAssertFalse(NativePage.allCases.contains { $0.rawValue.lowercased().contains("runtime") })
+        XCTAssertTrue(NativePage.allCases.contains(.schedule))
+        XCTAssertTrue(NativePage.allCases.contains(.plugins))
+        XCTAssertTrue(NativePage.allCases.contains(.knowledge))
+        XCTAssertTrue(NativePage.allCases.contains(.settings))
+    }
+
     func testSemanticRecordDetailParsersProjectCanonicalFieldsWithoutWork() {
         let requirement = NativeWorkspace.requirementDetail([
             "data":["requirement":[

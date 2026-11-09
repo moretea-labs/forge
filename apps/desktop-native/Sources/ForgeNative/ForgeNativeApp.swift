@@ -6292,7 +6292,7 @@ private struct SettingsPane: View {
                 HStack(alignment:.top) {
                     VStack(alignment:.leading,spacing:6) {
                         Text("设置").font(.system(size:22,weight:.medium))
-                        Text("Agent、MCP 连接与 Runtime 的本机配置。Runtime 不再占用工作区主导航。")
+                        Text("常用 Agent 与 Provider 配置优先；连接、插件与 Runtime 诊断集中在页面后半部分。")
                             .font(.system(size:12)).foregroundStyle(ForgePalette.secondary)
                     }
                     Spacer()
@@ -6305,11 +6305,6 @@ private struct SettingsPane: View {
                     .buttonStyle(.bordered).disabled(model.settingsLoading)
                     .accessibilityIdentifier("settings.refresh")
                 }
-
-                RuntimeSettingsSection(model:model)
-                Divider()
-                PluginSettingsSection(model:model)
-                Divider()
 
                 VStack(alignment:.leading,spacing:13) {
                     HStack(spacing:9) {
@@ -6468,6 +6463,21 @@ private struct SettingsPane: View {
                         .font(.system(size:10.5)).foregroundStyle(.tertiary).lineSpacing(3)
                 }
                 .padding(.vertical,12)
+
+                Divider()
+
+                VStack(alignment:.leading,spacing:4) {
+                    Text("系统与扩展")
+                        .font(.system(size:13,weight:.semibold))
+                    Text("低频连接、插件和 Runtime 诊断集中在这里，不打断日常会话配置。")
+                        .font(.system(size:10.5))
+                        .foregroundStyle(.tertiary)
+                }
+                .padding(.top,4)
+
+                RuntimeSettingsSection(model:model)
+                Divider()
+                PluginSettingsSection(model:model)
             }
             .frame(maxWidth:960,alignment:.leading)
             .frame(maxWidth:.infinity,alignment:.leading)
