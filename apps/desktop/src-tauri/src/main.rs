@@ -2556,6 +2556,7 @@ fn local_tool_failure_phase(error: &str) -> &'static str {
 trait LocalApiHost {
     fn packaged_tool_script(&self) -> Result<PathBuf, String>;
     fn emit_tool_progress(&self, payload: Value);
+    fn emit_model_progress(&self, payload: Value);
 }
 
 struct TauriLocalApiHost {
@@ -2570,6 +2571,9 @@ impl LocalApiHost for TauriLocalApiHost {
 
     fn emit_tool_progress(&self, payload: Value) {
         let _ = self.app.emit("forge-agent-tool-progress", payload);
+    }
+    fn emit_model_progress(&self, payload: Value) {
+        let _ = self.app.emit("forge-agent-model-progress", payload);
     }
 }
 
@@ -2830,14 +2834,14 @@ async fn cancel_local_api_conversation(
     Ok(json!({"requested":true,"conversationId":conversation_id}))
 }
 
-async fn request_local_api_round(
+fn build_local_api_request(
     client: &reqwest::Client,
     endpoint: &str,
     protocol: &str,
     key: Option<&str>,
     joycode: Option<&JoyCodeSession>,
     body: &Value,
-) -> Result<Value, String> {
+) -> Result<reqwest::RequestBuilder, String> {
     let route = match protocol {
         "anthropic" => "messages",
         "openai" => "chat/completions",
@@ -2879,7 +2883,19 @@ async fn request_local_api_round(
             request.bearer_auth(key)
         };
     }
-    let response = request.send().await.map_err(|_| "FORGE_DESKTOP_API_REQUEST_FAILED")?;
+    Ok(request)
+}
+
+async fn request_local_api_round(
+    client: &reqwest::Client,
+    endpoint: &str,
+    protocol: &str,
+    key: Option<&str>,
+    joycode: Option<&JoyCodeSession>,
+    body: &Value,
+) -> Result<Value, String> {
+    let response = build_local_api_request(client, endpoint, protocol, key, joycode, body)?
+        .send().await.map_err(|_| "FORGE_DESKTOP_API_REQUEST_FAILED")?;
     if !response.status().is_success() {
         return Err(format!("FORGE_DESKTOP_API_HTTP_{}", response.status().as_u16()));
     }
@@ -2888,6 +2904,259 @@ async fn request_local_api_round(
         return Err("FORGE_DESKTOP_API_RESPONSE_TOO_LARGE".into());
     }
     serde_json::from_slice(&bytes).map_err(|_| "FORGE_DESKTOP_API_RESPONSE_INVALID".into())
+}
+
+// One stream reducer per model round. It reconstructs the provider's canonical
+// assistant/tool message; UI deltas are previews and never become tool authority.
+#[derive(Default)]
+struct StreamToolCall {
+    id: String,
+    name: String,
+    arguments: String,
+}
+#[derive(Default)]
+struct StreamedModelRound {
+    text: String,
+    tool_calls: std::collections::BTreeMap<usize, StreamToolCall>,
+    anthropic_blocks: std::collections::BTreeMap<usize, Value>,
+    anthropic_json: std::collections::BTreeMap<usize, String>,
+    completed_response: Option<Value>,
+    finished: bool,
+}
+
+impl StreamedModelRound {
+    fn emit_delta<H: LocalApiHost + Sync>(host: &H, conversation_id: &str, kind: &str, delta: &str) {
+        if !delta.is_empty() {
+            host.emit_model_progress(json!({
+                "conversationId":conversation_id, "kind":kind, "delta":delta
+            }));
+        }
+    }
+
+    fn consume<H: LocalApiHost + Sync>(
+        &mut self, protocol: &str, data: &str, host: &H, conversation_id: &str,
+    ) -> Result<(), String> {
+        if data == "[DONE]" {
+            self.finished = true;
+            return Ok(());
+        }
+        let value: Value = serde_json::from_str(data)
+            .map_err(|_| "FORGE_DESKTOP_API_STREAM_EVENT_INVALID")?;
+        if value.get("error").is_some() || value.get("type").and_then(Value::as_str) == Some("error") {
+            return Err("FORGE_DESKTOP_API_STREAM_PROVIDER_ERROR".into());
+        }
+        match protocol {
+            "openai" => {
+                let delta = &value["choices"][0]["delta"];
+                if let Some(text) = delta.get("content").and_then(Value::as_str) {
+                    self.text.push_str(text);
+                    Self::emit_delta(host, conversation_id, "text_delta", text);
+                }
+                if let Some(reasoning) = delta.get("reasoning_content").and_then(Value::as_str) {
+                    Self::emit_delta(host, conversation_id, "reasoning_delta", reasoning);
+                }
+                if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
+                    for call in calls {
+                        let index = call.get("index").and_then(Value::as_u64)
+                            .ok_or("FORGE_DESKTOP_API_STREAM_TOOL_INVALID")? as usize;
+                        if index >= 32 { return Err("FORGE_DESKTOP_API_STREAM_TOOL_INVALID".into()); }
+                        let entry = self.tool_calls.entry(index).or_default();
+                        if let Some(id) = call.get("id").and_then(Value::as_str) {
+                            entry.id.push_str(id);
+                        }
+                        if let Some(name) = call.pointer("/function/name").and_then(Value::as_str) {
+                            entry.name.push_str(name);
+                        }
+                        if let Some(args) = call.pointer("/function/arguments").and_then(Value::as_str) {
+                            entry.arguments.push_str(args);
+                            if entry.arguments.len() > 64 * 1024 {
+                                return Err("FORGE_DESKTOP_API_TOOL_ARGUMENTS_TOO_LARGE".into());
+                            }
+                        }
+                    }
+                }
+            }
+            "responses" => match value.get("type").and_then(Value::as_str) {
+                Some("response.output_text.delta") => {
+                    if let Some(delta) = value.get("delta").and_then(Value::as_str) {
+                        Self::emit_delta(host, conversation_id, "text_delta", delta);
+                    }
+                }
+                Some("response.reasoning_summary_text.delta") => {
+                    if let Some(delta) = value.get("delta").and_then(Value::as_str) {
+                        Self::emit_delta(host, conversation_id, "reasoning_delta", delta);
+                    }
+                }
+                Some("response.completed") => {
+                    self.completed_response = value.get("response").cloned();
+                    self.finished = true;
+                }
+                Some("response.failed" | "response.incomplete") =>
+                    return Err("FORGE_DESKTOP_API_STREAM_PROVIDER_ERROR".into()),
+                _ => {}
+            },
+            "anthropic" => match value.get("type").and_then(Value::as_str) {
+                Some("content_block_start") => {
+                    let index = value.get("index").and_then(Value::as_u64)
+                        .ok_or("FORGE_DESKTOP_API_STREAM_EVENT_INVALID")? as usize;
+                    if index >= 128 { return Err("FORGE_DESKTOP_API_STREAM_EVENT_INVALID".into()); }
+                    if let Some(block) = value.get("content_block") {
+                        self.anthropic_blocks.insert(index, block.clone());
+                    }
+                }
+                Some("content_block_delta") => {
+                    let index = value.get("index").and_then(Value::as_u64)
+                        .ok_or("FORGE_DESKTOP_API_STREAM_EVENT_INVALID")? as usize;
+                    let delta = &value["delta"];
+                    match delta.get("type").and_then(Value::as_str) {
+                        Some("text_delta") => {
+                            if let Some(text) = delta.get("text").and_then(Value::as_str) {
+                                let block = self.anthropic_blocks.entry(index)
+                                    .or_insert_with(|| json!({"type":"text","text":""}));
+                                let content = block.get("text").and_then(Value::as_str).unwrap_or("");
+                                block["text"] = Value::String(format!("{content}{text}"));
+                                Self::emit_delta(host, conversation_id, "text_delta", text);
+                            }
+                        }
+                        Some("thinking_delta") => {
+                            if let Some(text) = delta.get("thinking").and_then(Value::as_str) {
+                                Self::emit_delta(host, conversation_id, "reasoning_delta", text);
+                            }
+                        }
+                        Some("signature_delta") => {
+                            if let Some(signature) = delta.get("signature").and_then(Value::as_str) {
+                                let block = self.anthropic_blocks.get_mut(&index)
+                                    .ok_or("FORGE_DESKTOP_API_STREAM_EVENT_INVALID")?;
+                                let previous = block.get("signature").and_then(Value::as_str).unwrap_or("");
+                                block["signature"] = Value::String(format!("{previous}{signature}"));
+                            }
+                        }
+                        Some("input_json_delta") => {
+                            if let Some(partial) = delta.get("partial_json").and_then(Value::as_str) {
+                                let json = self.anthropic_json.entry(index).or_default();
+                                json.push_str(partial);
+                                if json.len() > 64 * 1024 {
+                                    return Err("FORGE_DESKTOP_API_TOOL_ARGUMENTS_TOO_LARGE".into());
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                Some("message_stop") => self.finished = true,
+                _ => {}
+            },
+            _ => return Err("FORGE_DESKTOP_API_PROTOCOL_INVALID".into()),
+        }
+        if self.text.len() > 1_000_000 {
+            return Err("FORGE_DESKTOP_API_RESPONSE_TOO_LARGE".into());
+        }
+        Ok(())
+    }
+
+    fn finish(mut self, protocol: &str) -> Result<Value, String> {
+        if !self.finished { return Err("FORGE_DESKTOP_API_STREAM_INCOMPLETE".into()); }
+        match protocol {
+            "responses" => self.completed_response
+                .ok_or("FORGE_DESKTOP_API_STREAM_INCOMPLETE".into()),
+            "anthropic" => {
+                for (index, input) in &self.anthropic_json {
+                    let value: Value = serde_json::from_str(input)
+                        .map_err(|_| "FORGE_DESKTOP_API_TOOL_ARGUMENTS_INVALID")?;
+                    let block = self.anthropic_blocks.get_mut(index)
+                        .ok_or("FORGE_DESKTOP_API_STREAM_EVENT_INVALID")?;
+                    block["input"] = value;
+                }
+                Ok(json!({"content":self.anthropic_blocks.into_values().collect::<Vec<_>>()}))
+            }
+            "openai" => {
+                let calls = self.tool_calls.into_values().map(|call| json!({
+                    "id":call.id, "type":"function",
+                    "function":{"name":call.name,"arguments":call.arguments}
+                })).collect::<Vec<_>>();
+                Ok(json!({"choices":[{"message":{
+                    "role":"assistant",
+                    "content":if self.text.is_empty(){Value::Null}else{Value::String(self.text)},
+                    "tool_calls":calls
+                }}]}))
+            }
+            _ => Err("FORGE_DESKTOP_API_PROTOCOL_INVALID".into()),
+        }
+    }
+}
+
+async fn request_local_api_round_stream<H: LocalApiHost + Sync>(
+    host: &H, conversation_id: &str,
+    client: &reqwest::Client, endpoint: &str, protocol: &str,
+    key: Option<&str>, joycode: Option<&JoyCodeSession>, body: &Value,
+) -> Result<Value, String> {
+    let mut response = build_local_api_request(client, endpoint, protocol, key, joycode, body)?
+        .header("Accept", "text/event-stream")
+        .send().await.map_err(|_| "FORGE_DESKTOP_API_REQUEST_FAILED")?;
+    if !response.status().is_success() {
+        return Err(format!("FORGE_DESKTOP_API_HTTP_{}", response.status().as_u16()));
+    }
+    let content_type = response.headers().get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok()).unwrap_or("");
+    if !content_type.contains("text/event-stream") {
+        return Err("FORGE_DESKTOP_API_STREAM_UNSUPPORTED".into());
+    }
+    let mut stream = StreamedModelRound::default();
+    let mut buffer = Vec::new();
+    let mut data = Vec::new();
+    let mut total_bytes = 0usize;
+    while let Some(chunk) = response.chunk().await
+        .map_err(|_| "FORGE_DESKTOP_API_STREAM_INTERRUPTED")? {
+        total_bytes += chunk.len();
+        if total_bytes > 8 * 1024 * 1024 {
+            return Err("FORGE_DESKTOP_API_RESPONSE_TOO_LARGE".into());
+        }
+        buffer.extend_from_slice(&chunk);
+        while let Some(end) = buffer.iter().position(|byte| *byte == b'\n') {
+            let line = buffer.drain(..=end).collect::<Vec<_>>();
+            let line = String::from_utf8(line)
+                .map_err(|_| "FORGE_DESKTOP_API_STREAM_EVENT_INVALID")?;
+            let line = line.trim_end_matches(['\n','\r']);
+            if line.is_empty() {
+                if !data.is_empty() {
+                    stream.consume(protocol, &data.join("\n"), host, conversation_id)?;
+                    data.clear();
+                }
+            } else if let Some(value) = line.strip_prefix("data:") {
+                data.push(value.trim_start().to_string());
+            }
+        }
+        if buffer.len() > 256 * 1024 {
+            return Err("FORGE_DESKTOP_API_STREAM_EVENT_TOO_LARGE".into());
+        }
+        if stream.finished { break; }
+    }
+    if !data.is_empty() {
+        stream.consume(protocol, &data.join("\n"), host, conversation_id)?;
+    }
+    stream.finish(protocol)
+}
+
+async fn request_local_api_round_stream_cancellable<H: LocalApiHost + Sync>(
+    host: &H, conversation_id: &str,
+    client: &reqwest::Client, endpoint: &str, protocol: &str,
+    key: Option<&str>, joycode: Option<&JoyCodeSession>, body: &Value,
+    cancellation: &mut tokio::sync::watch::Receiver<bool>,
+) -> Result<Value, String> {
+    if *cancellation.borrow() { return Err("FORGE_DESKTOP_API_TURN_CANCELLED".into()); }
+    tokio::select! {
+        biased;
+        changed = cancellation.changed() => {
+            if changed.is_ok() && *cancellation.borrow() {
+                Err("FORGE_DESKTOP_API_TURN_CANCELLED".into())
+            } else {
+                Err("FORGE_DESKTOP_API_CANCEL_CHANNEL_CLOSED".into())
+            }
+        }
+        value = request_local_api_round_stream(
+            host, conversation_id, client, endpoint, protocol, key, joycode, body
+        ) => value,
+    }
 }
 
 async fn request_local_api_round_cancellable(
@@ -3049,7 +3318,7 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
     let mut last_effect_request_id: Option<String> = None;
     let mut patch_needs_verification = false;
     let mut validation_prompt_sent = false;
-    for _round in 0..LOCAL_API_TOOL_ROUNDS {
+    for round in 0..LOCAL_API_TOOL_ROUNDS {
         compact_local_api_history(&mut history);
         if *cancel_receiver.borrow() {
             return Err(contextualize_api_turn_error(
@@ -3067,6 +3336,7 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
                 "max_tokens": 3000,
                 "system": system_instruction,
                 "messages": history,
+                "stream": true,
             });
             if !tools.is_empty() { body["tools"] = Value::Array(tools); }
             body
@@ -3081,7 +3351,7 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
                 "model":model,
                 "instructions":system_instruction,
                 "input":responses_input(&history)?,
-                "stream":false,
+                "stream":true,
             });
             if !tools.is_empty() { body["tools"] = Value::Array(tools); }
             body
@@ -3089,15 +3359,18 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
             let mut upstream = Vec::with_capacity(history.len() + 1);
             upstream.push(json!({ "role": "system", "content": system_instruction }));
             upstream.extend(history.iter().cloned());
-            let mut body = json!({ "model": model, "messages": upstream, "stream": false });
+            let mut body = json!({ "model": model, "messages": upstream, "stream": true });
             if !available_tools.is_empty() { body["tools"] = Value::Array(available_tools.clone()); }
             body
         };
         // Cancel only the in-flight *model request*, never a started Forge
         // repository effect. Requests may already have reached a provider.
-        let output = request_local_api_round_cancellable(
-            &client, &endpoint, protocol, key.as_deref(), joycode_session.as_ref(), &provider_body,
-            cancel_receiver,
+        host.emit_model_progress(json!({
+            "conversationId":conversation_id, "kind":"round_start", "round":round + 1
+        }));
+        let output = request_local_api_round_stream_cancellable(
+            host, &conversation_id, &client, &endpoint, protocol,
+            key.as_deref(), joycode_session.as_ref(), &provider_body, cancel_receiver,
         ).await.map_err(|error| contextualize_api_turn_error(
             error, last_effect_request_id.as_deref()
         ))?;
@@ -3409,6 +3682,154 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Default)]
+    struct RecordingStreamHost {
+        events: std::sync::Mutex<Vec<Value>>,
+    }
+    impl LocalApiHost for RecordingStreamHost {
+        fn packaged_tool_script(&self) -> Result<PathBuf, String> {
+            Err("not needed in model streaming tests".into())
+        }
+        fn emit_tool_progress(&self, _: Value) {}
+        fn emit_model_progress(&self, event: Value) {
+            self.events.lock().unwrap().push(event);
+        }
+    }
+
+    #[test]
+    fn streamed_openai_reassembles_answer_reasoning_and_incremental_tool_arguments() {
+        let host = RecordingStreamHost::default();
+        let mut round = StreamedModelRound::default();
+        let frames = vec![
+            json!({"choices":[{"delta":{"reasoning_content":"Checking facts"}}]}).to_string(),
+            json!({"choices":[{"delta":{"content":"I will ","tool_calls":[{
+                "index":0,"id":"call-1","function":{"name":"read_","arguments":r#"{"path":"#}
+            }]}}]}).to_string(),
+            json!({"choices":[{"delta":{"content":"inspect.","tool_calls":[{
+                "index":0,"function":{"name":"file","arguments":r#""AGENTS.md"}"#}
+            }]}}]}).to_string(),
+            "[DONE]".to_string(),
+        ];
+        for data in frames {
+            round.consume("openai",&data,&host,"conv-1").expect("stream frame");
+        }
+        let output = round.finish("openai").expect("finished model round");
+        assert_eq!(output["choices"][0]["message"]["content"],"I will inspect.");
+        let calls = provider_tool_calls("openai",&output).expect("complete tool invocation");
+        assert_eq!(calls.len(),1);
+        assert_eq!(calls[0].1,"read_file");
+        assert_eq!(calls[0].2["path"],"AGENTS.md");
+        let events = host.events.lock().unwrap();
+        assert!(events.iter().any(|event| event["kind"] == "reasoning_delta"));
+        assert!(events.iter().any(|event| event["kind"] == "text_delta"));
+    }
+
+    #[test]
+    fn streamed_http_delivers_first_delta_before_round_finishes() {
+        use std::{io::{Read, Write}, net::TcpListener, thread, time::Duration};
+        let listener = TcpListener::bind("127.0.0.1:0").expect("mock SSE endpoint");
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let mut bytes = Vec::new();
+            let mut chunk = [0u8; 4096];
+            let header_end = loop {
+                let n = socket.read(&mut chunk).unwrap();
+                assert!(n > 0);
+                bytes.extend_from_slice(&chunk[..n]);
+                if let Some(pos) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
+                    break pos + 4;
+                }
+            };
+            let headers = String::from_utf8_lossy(&bytes[..header_end]);
+            let length = headers.lines().find_map(|line| {
+                line.to_ascii_lowercase().strip_prefix("content-length:")
+                    .and_then(|number| number.trim().parse::<usize>().ok())
+            }).expect("request Content-Length");
+            while bytes.len() - header_end < length {
+                let n = socket.read(&mut chunk).unwrap();
+                assert!(n > 0);
+                bytes.extend_from_slice(&chunk[..n]);
+            }
+            let request: Value = serde_json::from_slice(&bytes[header_end..header_end+length]).unwrap();
+            assert_eq!(request["stream"],true);
+
+            let first = format!("data: {}\r\n\r\n",
+                json!({"choices":[{"delta":{"content":"first "}}]}));
+            let rest = format!("data: {}\r\n\r\ndata: [DONE]\r\n\r\n",
+                json!({"choices":[{"delta":{"content":"second"}}]}));
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                first.len() + rest.len()
+            );
+            socket.write_all(response.as_bytes()).unwrap();
+            socket.write_all(first.as_bytes()).unwrap();
+            socket.flush().unwrap();
+            thread::sleep(Duration::from_millis(180));
+            socket.write_all(rest.as_bytes()).unwrap();
+            socket.flush().unwrap();
+        });
+        let host = RecordingStreamHost::default();
+        let output = tauri::async_runtime::block_on(async {
+            let client = reqwest::Client::new();
+            let endpoint = format!("http://127.0.0.1:{port}/v1");
+            let body = json!({"stream":true,"model":"mock","messages":[]});
+            let round = request_local_api_round_stream(
+                &host,"conv-http",&client,&endpoint,"openai",None,None,&body
+            );
+            tokio::pin!(round);
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_millis(90)) => {
+                    assert!(host.events.lock().unwrap().iter().any(|item|
+                        item["kind"] == "text_delta" && item["delta"] == "first "
+                    ), "first SSE delta must reach UI before the response completes");
+                }
+                result = &mut round => panic!("model round finished early: {result:?}"),
+            }
+            round.await.expect("SSE round completed")
+        });
+        assert_eq!(output["choices"][0]["message"]["content"],"first second");
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn streamed_anthropic_and_responses_preserve_provider_tool_contracts() {
+        let host = RecordingStreamHost::default();
+        let mut claude = StreamedModelRound::default();
+        let frames = vec![
+            json!({"type":"content_block_start","index":0,
+                "content_block":{"type":"text","text":""}}).to_string(),
+            json!({"type":"content_block_delta","index":0,
+                "delta":{"type":"text_delta","text":"Checking"}}).to_string(),
+            json!({"type":"content_block_start","index":1,
+                "content_block":{"type":"tool_use","id":"tool-1","name":"git_status","input":{}}}).to_string(),
+            json!({"type":"content_block_delta","index":1,
+                "delta":{"type":"input_json_delta","partial_json":"{}"}}).to_string(),
+            json!({"type":"message_stop"}).to_string(),
+        ];
+        for data in frames {
+            claude.consume("anthropic",&data,&host,"conv-2").expect("Anthropic stream frame");
+        }
+        let output = claude.finish("anthropic").expect("Anthropic finished");
+        assert_eq!(output["content"][0]["text"],"Checking");
+        assert_eq!(provider_tool_calls("anthropic",&output).unwrap()[0].1,"git_status");
+
+        let mut responses = StreamedModelRound::default();
+        let completed = json!({"output":[{"type":"message","content":[
+            {"type":"output_text","text":"Final answer"}
+        ]}]});
+        responses.consume("responses",&json!({
+            "type":"response.completed","response":completed
+        }).to_string(),&host,"conv-3").expect("Responses complete");
+        assert_eq!(responses.finish("responses").unwrap(),completed);
+
+        assert_eq!(
+            StreamedModelRound::default().finish("openai").unwrap_err(),
+            "FORGE_DESKTOP_API_STREAM_INCOMPLETE"
+        );
+    }
 
     #[test]
     fn joycode_session_parser_reads_only_required_login_fields() {

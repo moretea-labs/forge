@@ -368,6 +368,14 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(events?.first?.detail,"proc_abc_123")
     }
 
+    func testApiStreamingPreviewIsBoundedAndBridgePreservesModelEvents() {
+        XCTAssertEqual(NativeWorkspace.appendBoundedPreview("ab",delta:"cdef",limit:4),"abcd")
+        XCTAssertEqual(NativeWorkspace.appendBoundedPreview("abcd",delta:"next",limit:4),"abcd")
+        let modelEvent = #"{"type":"progress","data":{"kind":"text_delta","delta":"Hello","conversationId":"c1"}}"#.data(using:.utf8)!
+        let decoded = ForgeApiTurn.decodeEvent(modelEvent)
+        XCTAssertEqual((decoded?["data"] as? [String:Any])?["delta"] as? String,"Hello")
+    }
+
     func testNativeApiTurnEventFramingIsTyped() {
         let progress = #"{"type":"progress","data":{"name":"read_file","phase":"started"}}"#.data(using:.utf8)!
         XCTAssertEqual(ForgeApiTurn.decodeEvent(progress)?["type"] as? String,"progress")

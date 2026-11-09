@@ -1362,7 +1362,7 @@ private struct AgentPane: View {
                                             .font(.system(size:9.5,weight:.medium))
                                             .foregroundStyle(.tertiary)
                                     }
-                                    if let count = model.liveActivity?.priorEvents.count, count > 4 {
+                                    if let count = model.liveActivity?.events?.count, count > 4 {
                                         Button(showActivityDetails ? "收起" : "全部") {
                                             withAnimation(.easeOut(duration:0.16)) {
                                                 showActivityDetails.toggle()
@@ -1373,9 +1373,33 @@ private struct AgentPane: View {
                                     }
                                 }
 
+                                if !model.streamedReasoning.isEmpty {
+                                    VStack(alignment:.leading,spacing:4) {
+                                        Label("Provider Thinking",systemImage:"brain.head.profile")
+                                            .font(.system(size:10,weight:.medium))
+                                            .foregroundStyle(ForgePalette.secondary)
+                                        Text(model.streamedReasoning)
+                                            .font(.system(size:11))
+                                            .foregroundStyle(ForgePalette.secondary)
+                                            .lineSpacing(3)
+                                            .lineLimit(5)
+                                            .textSelection(.enabled)
+                                    }
+                                    .accessibilityIdentifier("agent.streaming-reasoning")
+                                }
+                                if !model.streamedAnswer.isEmpty {
+                                    Text(model.streamedAnswer)
+                                        .font(.system(size:13))
+                                        .foregroundStyle(ForgePalette.ink)
+                                        .lineSpacing(5)
+                                        .textSelection(.enabled)
+                                        .accessibilityIdentifier("agent.streaming-response")
+                                }
+
+                                let allActivityEvents = model.liveActivity?.events ?? []
                                 let activityEvents = showActivityDetails
-                                    ? model.liveActivity?.priorEvents ?? []
-                                    : model.liveActivity?.recentPriorEvents ?? []
+                                    ? allActivityEvents
+                                    : Array(allActivityEvents.suffix(4))
                                 if !activityEvents.isEmpty {
                                     Divider().opacity(0.45)
                                     VStack(alignment:.leading,spacing:7) {

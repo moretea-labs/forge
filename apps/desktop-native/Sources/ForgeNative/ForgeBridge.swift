@@ -40,16 +40,16 @@ final class ForgeApiTurn: @unchecked Sendable {
         return value
     }
 
-    func wait(onProgress: @escaping ([String:Any]) -> Void) async throws -> [String:Any] {
+    func wait(onProgress: @escaping ([String:Any]) async -> Void) async throws -> [String:Any] {
         try await Task.detached(priority:.userInitiated) { [child,input,output] in
             var buffer = Data()
             var result: [String:Any]?
             var remoteError: String?
 
-            func consume(_ line: Data) {
+            func consume(_ line: Data) async {
                 guard let event = Self.decodeEvent(line), let type = event["type"] as? String else { return }
                 if type == "progress", let payload = event["data"] as? [String:Any] {
-                    onProgress(payload)
+                    await onProgress(payload)
                 } else if type == "result", let ok = event["ok"] as? Bool {
                     if ok { result = event["data"] as? [String:Any] }
                     else { remoteError = event["error"] as? String ?? "FORGE_NATIVE_API_ERROR" }
@@ -64,10 +64,10 @@ final class ForgeApiTurn: @unchecked Sendable {
                 while let range = buffer.range(of:newline) {
                     let line = buffer.subdata(in:buffer.startIndex..<range.lowerBound)
                     buffer.removeSubrange(buffer.startIndex..<range.upperBound)
-                    consume(line)
+                    await consume(line)
                 }
             }
-            if !buffer.isEmpty { consume(buffer) }
+            if !buffer.isEmpty { await consume(buffer) }
             try? input.close()
             child.waitUntilExit()
             guard child.terminationStatus == 0 else { throw ForgeBridgeError.invalidResponse }

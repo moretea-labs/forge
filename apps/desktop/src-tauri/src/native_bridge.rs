@@ -277,6 +277,9 @@ impl LocalApiHost for NativeApiHost {
     fn emit_tool_progress(&self, payload: Value) {
         write_api_turn_event(json!({ "type":"progress", "data":payload }));
     }
+    fn emit_model_progress(&self, payload: Value) {
+        write_api_turn_event(json!({ "type":"progress", "data":payload }));
+    }
 }
 
 pub fn run_api_turn() -> i32 {

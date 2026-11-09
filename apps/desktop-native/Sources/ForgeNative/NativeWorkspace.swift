@@ -537,6 +537,9 @@ final class NativeWorkspace: ObservableObject {
     @Published var agentChanges: AgentGitDiff?
     @Published var changesLoading = false
     @Published var liveActivity: AgentLiveActivity?
+    // Transient model deltas. Only a finished turn becomes canonical thread history.
+    @Published private(set) var streamedAnswer = ""
+    @Published private(set) var streamedReasoning = ""
     @Published var connection = "MCP 状态未知"
     @Published var error: String?
     @Published var records: [ForgeRecord] = []
@@ -2855,6 +2858,48 @@ final class NativeWorkspace: ObservableObject {
         }
     }
 
+    func applyApiModelProgress(_ payload:[String:Any], conversationId:String) {
+        guard activeConversationId == conversationId,
+              let kind = payload["kind"] as? String else { return }
+        let now = ISO8601DateFormatter().string(from:Date())
+        var title = liveActivity?.lastActivity ?? "正在请求模型"
+        var phase = liveActivity?.phase ?? "thinking"
+        switch kind {
+        case "round_start":
+            // A model round may precede a tool call. Its preview is not a
+            // confirmed answer and must not leak into the next round.
+            streamedAnswer = ""
+            streamedReasoning = ""
+            phase = "thinking"
+            title = "正在等待模型响应"
+        case "text_delta":
+            if let delta = payload["delta"] as? String {
+                streamedAnswer = Self.appendBoundedPreview(streamedAnswer,delta:delta,limit:32_000)
+                phase = "responding"
+                title = "正在生成回复"
+            }
+        case "reasoning_delta":
+            if let delta = payload["delta"] as? String {
+                streamedReasoning = Self.appendBoundedPreview(streamedReasoning,delta:delta,limit:4_000)
+                phase = "thinking"
+                title = "正在接收 Provider 推理内容"
+            }
+        default: return
+        }
+        liveActivity = AgentLiveActivity(
+            conversationId:conversationId, status:"running", phase:phase,
+            toolActivityCount:liveActivity?.toolActivityCount ?? 0,
+            lastActivity:title,
+            startedAt:liveActivity?.startedAt ?? now, updatedAt:now,
+            events:liveActivity?.events
+        )
+    }
+
+    nonisolated static func appendBoundedPreview(_ current:String,delta:String,limit:Int) -> String {
+        guard current.count < limit else { return current }
+        return current + String(delta.prefix(limit - current.count))
+    }
+
     func applyApiToolProgress(_ payload:[String:Any], conversationId:String) {
         guard activeConversationId == conversationId,
               let name = payload["name"] as? String else { return }
@@ -2941,6 +2986,8 @@ final class NativeWorkspace: ObservableObject {
         let contextPaths = pendingContextPaths
         busy = true
         activeConversationId = id
+        streamedAnswer = ""
+        streamedReasoning = ""
         activeTurnProvider = turnProvider
         draft = ""
         pendingImageURLs = []
@@ -2976,6 +3023,8 @@ final class NativeWorkspace: ObservableObject {
             activityMonitor?.cancel()
             activeApiTurn = nil
             activeTurnProvider = nil
+            streamedAnswer = ""
+            streamedReasoning = ""
             liveActivity = nil
             activeConversationId = nil
             busy = false
@@ -2999,7 +3048,11 @@ final class NativeWorkspace: ObservableObject {
                 let turn = try ForgeBridge.startApiTurn(apiArguments)
                 activeApiTurn = turn
                 response = try await turn.wait { [weak self] payload in
-                    Task { @MainActor in
+                    // Read and apply model deltas in their original pipe order.
+                    // Independent unstructured Tasks could reorder streamed tokens.
+                    if payload["kind"] is String {
+                        self?.applyApiModelProgress(payload,conversationId:id)
+                    } else {
                         self?.applyApiToolProgress(payload,conversationId:id)
                     }
                 }
