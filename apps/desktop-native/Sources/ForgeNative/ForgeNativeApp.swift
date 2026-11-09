@@ -5135,15 +5135,32 @@ private struct SchedulePane: View {
                 .accessibilityIdentifier("schedule.\(item.scheduleId).actions")
             }
             if expandedIds.contains(item.id) {
-                VStack(alignment:.leading,spacing:6) {
-                    meta("任务 ID",item.scheduleId)
-                    meta("执行动作",item.operation)
-                    if let updated = item.updatedAt { meta("更新",updated) }
-                    if let last = item.lastTriggeredAt { meta("上次触发",last) }
-                    if let next = item.nextEligibleAt { meta("下次触发",next) }
+                VStack(alignment:.leading,spacing:9) {
                     if let reason = item.pausedReason,!reason.isEmpty {
-                        Text(reason).font(.system(size:11)).foregroundStyle(.orange)
+                        Label(reason,systemImage:"pause.circle")
+                            .font(.system(size:11))
+                            .foregroundStyle(.orange)
                     }
+                    HStack(spacing:18) {
+                        if let last = item.lastTriggeredAt {
+                            meta("上次运行",last)
+                        } else {
+                            meta("上次运行","尚无")
+                        }
+                        if let next = item.nextEligibleAt {
+                            meta("下次运行",next)
+                        }
+                    }
+                    DisclosureGroup("技术信息") {
+                        VStack(alignment:.leading,spacing:6) {
+                            meta("任务 ID",item.scheduleId)
+                            meta("执行动作",item.operation)
+                            if let updated = item.updatedAt { meta("更新",updated) }
+                        }
+                        .padding(.top,7)
+                    }
+                    .font(.system(size:10.5,weight:.medium))
+                    .foregroundStyle(ForgePalette.secondary)
                 }
                 .padding(.leading,17)
                 .accessibilityIdentifier("schedule.\(item.scheduleId).expanded")
@@ -5310,33 +5327,47 @@ private struct PluginsPane: View {
             .accessibilityIdentifier("plugins.\(item.pluginId).details")
             if expandedIds.contains(item.id) {
                 VStack(alignment:.leading,spacing:11) {
-                    LazyVGrid(columns:[GridItem(.adaptive(minimum:180,maximum:300),spacing:12,alignment:.leading)],
-                              alignment:.leading,spacing:8) {
-                        meta("插件 ID",item.pluginId)
-                        if let version = item.pluginVersion { meta("版本",version) }
-                        if let provider = item.provider { meta("Provider",provider) }
-                        meta("生命周期",item.lifecycle == "enabled" ? "已启用" : item.lifecycle)
-                        meta("健康",item.health == "ready" ? "就绪" : item.health)
-                        meta("启用状态",item.enabled ? "已启用" : "已禁用")
-                        meta("动作数","\(item.actionCount)")
-                    }
                     if !item.capabilities.isEmpty {
-                        Text("能力摘要").font(.system(size:10.5,weight:.semibold))
-                            .padding(.top,3)
+                        Text("可用能力").font(.system(size:10.5,weight:.semibold))
                         LazyVGrid(columns:[GridItem(.adaptive(minimum:180,maximum:300),spacing:12,alignment:.leading)],
                                   alignment:.leading,spacing:7) {
                             ForEach(Array(item.capabilities.enumerated()),id:\.offset) { _, capability in
-                                Text(capability).font(.system(size:11.5))
-                                    .foregroundStyle(ForgePalette.secondary)
-                                    .frame(maxWidth:.infinity,alignment:.leading)
-                                    .fixedSize(horizontal:false,vertical:true)
+                                HStack(alignment:.top,spacing:7) {
+                                    Image(systemName:"checkmark")
+                                        .font(.system(size:8.5,weight:.semibold))
+                                        .foregroundStyle(ForgePalette.secondary)
+                                        .padding(.top,3)
+                                    Text(capability).font(.system(size:11.5))
+                                        .foregroundStyle(ForgePalette.ink)
+                                        .frame(maxWidth:.infinity,alignment:.leading)
+                                        .fixedSize(horizontal:false,vertical:true)
+                                }
                             }
                         }
                         if item.capabilities.count < item.actionCount {
-                            Text("仅展示部分能力，非完整动作清单。")
+                            Text("展示 \(item.capabilities.count) / \(item.actionCount) 项代表能力。")
                                 .font(.system(size:10)).foregroundStyle(.tertiary)
                         }
+                    } else {
+                        Text("当前没有可展示的能力摘要。")
+                            .font(.system(size:11)).foregroundStyle(ForgePalette.secondary)
                     }
+
+                    DisclosureGroup("技术信息") {
+                        LazyVGrid(columns:[GridItem(.adaptive(minimum:180,maximum:300),spacing:12,alignment:.leading)],
+                                  alignment:.leading,spacing:8) {
+                            meta("插件 ID",item.pluginId)
+                            if let version = item.pluginVersion { meta("版本",version) }
+                            if let provider = item.provider { meta("Provider",provider) }
+                            meta("生命周期",item.lifecycle == "enabled" ? "已启用" : item.lifecycle)
+                            meta("健康",item.health == "ready" ? "就绪" : item.health)
+                            meta("启用状态",item.enabled ? "已启用" : "已禁用")
+                            meta("动作数","\(item.actionCount)")
+                        }
+                        .padding(.top,7)
+                    }
+                    .font(.system(size:10.5,weight:.medium))
+                    .foregroundStyle(ForgePalette.secondary)
                 }
                 .padding(.leading,17)
                 .accessibilityIdentifier("plugins.\(item.pluginId).expanded")
@@ -5473,45 +5504,68 @@ private struct RuntimeSettingsSection: View {
     @State private var setupController = "chatgpt"
 
     var body: some View {
-        VStack(alignment:.leading,spacing:18) {
+        VStack(alignment:.leading,spacing:16) {
             VStack(alignment:.leading,spacing:5) {
-                Text("连接与 Runtime").font(.system(size:13,weight:.semibold))
-                Text("MCP 连接、Recovery 与 Runtime 诊断。这里不提供版本切换、回滚或 Runtime 激活。")
+                Text("连接").font(.system(size:13,weight:.semibold))
+                Text("先配置并确认 MCP / Controller 连接；Runtime 细节只在需要诊断时展开。")
                     .font(.system(size:11.5)).foregroundStyle(ForgePalette.secondary)
             }
-            runtimeCard
-            Divider()
+
             connectionCard
-            if let diagnostics = model.runtimeDiagnostics {
-                Divider()
+
+            Divider()
+
+            DisclosureGroup {
                 VStack(alignment:.leading,spacing:12) {
-                        HStack(alignment:.top) {
-                            VStack(alignment:.leading,spacing:3) {
-                                Text("上次诊断").font(.system(size:12,weight:.semibold))
-                                if let checkedAt = diagnostics.checkedAt, !checkedAt.isEmpty {
-                                    Text(checkedAt)
-                                        .font(.system(size:9.5,design:.monospaced))
-                                        .foregroundStyle(.tertiary)
-                                        .textSelection(.enabled)
-                                }
-                            }
-                            Spacer()
-                            Text("\(diagnostics.passed) 通过 · \(diagnostics.failed) 失败")
-                                .font(.system(size:10.5,weight:.medium))
-                                .foregroundStyle(diagnostics.ok ? Color.green : Color.orange)
-                        }
-                        ForEach(diagnostics.probes) { probe in
-                            HStack(spacing:9) {
-                                Image(systemName:probe.ok ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
-                                    .foregroundStyle(probe.ok ? Color.green : Color.orange)
-                                Text(probe.label).font(.system(size:11.5))
-                                Spacer()
-                            }
-                        }
+                    runtimeCard
+                    if let diagnostics = model.runtimeDiagnostics {
+                        Divider()
+                        runtimeDiagnostics(diagnostics)
+                    }
                 }
-                .padding(.vertical,6)
+                .padding(.top,10)
+            } label: {
+                HStack(spacing:8) {
+                    Circle().fill(runtimeColor).frame(width:7,height:7)
+                    Text("Runtime 与诊断")
+                        .font(.system(size:11.5,weight:.semibold))
+                    Spacer()
+                    Text(model.runtimeStatus?.label ?? "状态未知")
+                        .font(.system(size:10.5))
+                        .foregroundStyle(ForgePalette.secondary)
+                }
+            }
+            .accessibilityIdentifier("settings.runtime.disclosure")
+        }
+    }
+
+    private func runtimeDiagnostics(_ diagnostics: RuntimeDiagnosticsDetail) -> some View {
+        VStack(alignment:.leading,spacing:12) {
+            HStack(alignment:.top) {
+                VStack(alignment:.leading,spacing:3) {
+                    Text("上次诊断").font(.system(size:12,weight:.semibold))
+                    if let checkedAt = diagnostics.checkedAt, !checkedAt.isEmpty {
+                        Text(checkedAt)
+                            .font(.system(size:9.5,design:.monospaced))
+                            .foregroundStyle(.tertiary)
+                            .textSelection(.enabled)
+                    }
+                }
+                Spacer()
+                Text("\(diagnostics.passed) 通过 · \(diagnostics.failed) 失败")
+                    .font(.system(size:10.5,weight:.medium))
+                    .foregroundStyle(diagnostics.ok ? Color.green : Color.orange)
+            }
+            ForEach(diagnostics.probes) { probe in
+                HStack(spacing:9) {
+                    Image(systemName:probe.ok ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                        .foregroundStyle(probe.ok ? Color.green : Color.orange)
+                    Text(probe.label).font(.system(size:11.5))
+                    Spacer()
+                }
             }
         }
+        .padding(.vertical,6)
     }
 
     private var runtimeCard: some View {
