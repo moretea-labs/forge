@@ -1495,22 +1495,28 @@ describe('browser session compatibility on Computer target authority', () => {
     });
     let launchOptions: Record<string, unknown> | undefined;
     let screenshotCalls = 0;
+    let providerAttaches = 0;
+    const appliedSteps: string[] = [];
     setBrowserPluginRuntimeHooksForTest({
       moduleAvailable: () => true,
       loadPlaywright: () => ({
         chromium: {
           launchPersistentContext: async (_dir: string, options: Record<string, unknown>) => {
             launchOptions = options;
+            providerAttaches += 1;
             const page = {
               url: () => 'https://example.com/',
               title: async () => 'Example',
               goto: async () => undefined,
               evaluate: async <T>() => undefined as T,
               screenshot: async () => { screenshotCalls += 1; return Buffer.from('fixture screenshot'); },
-              click: async () => undefined,
-              fill: async () => undefined,
-              press: async () => undefined,
-              waitForSelector: async () => undefined,
+              click: async (selector: string) => {
+                appliedSteps.push('click:' + selector);
+                if (selector === '#unknown-result') throw new Error('unverified click result');
+              },
+              fill: async (selector: string, text: string) => { appliedSteps.push('fill:' + selector + ':' + text); },
+              press: async (selector: string, key: string) => { appliedSteps.push('press:' + selector + ':' + key); },
+              waitForSelector: async (selector: string) => { appliedSteps.push('wait:' + selector); },
               bringToFront: async () => undefined,
               close: async () => undefined,
             };
@@ -1544,6 +1550,58 @@ describe('browser session compatibility on Computer target authority', () => {
     expect(withCapture.evidenceMode).toBe('screenshot');
     expect(withCapture).toHaveProperty('screenshot');
     expect(screenshotCalls).toBe(1);
+
+    const beforeBatch = providerAttaches;
+    const completed = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser',
+      requestId: 'ordinary-custom-profile-batch', actionId: 'run_steps',
+      args: { session_id: 'ordinary-custom-profile-managed', steps: [
+        { action: 'fill', selector: '#email', text: 'batch@example.com' },
+        { action: 'click', selector: '#next' },
+        { action: 'wait_for_selector', selector: '#ready', state: 'visible' },
+        { action: 'press', selector: '#search', key: 'Enter' },
+      ] },
+      origin: { surface: 'mcp', actor: 'test' },
+    });
+    // A warm page handle may already be retained; batching must not attach once per step.
+    expect(providerAttaches - beforeBatch).toBeLessThanOrEqual(1);
+    expect(completed).toMatchObject({ evidenceMode: 'summary',
+      action: { actionId: 'run_steps', completedSteps: 4 } });
+    expect((completed.action as { steps: unknown[] }).steps).toHaveLength(4);
+    expect(appliedSteps.slice(-4)).toEqual([
+      'fill:#email:batch@example.com', 'click:#next', 'wait:#ready', 'press:#search:Enter',
+    ]);
+    expect(screenshotCalls).toBe(1);
+
+    const beforeInvalid = providerAttaches;
+    await expect(executeBrowserPluginAction({
+      controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser',
+      requestId: 'ordinary-custom-profile-batch-invalid', actionId: 'run_steps',
+      args: { session_id: 'ordinary-custom-profile-managed', steps: [
+        { action: 'click', selector: '#next' },
+        { action: 'trusted_input', selector: '#unsafe' },
+      ] },
+      origin: { surface: 'mcp', actor: 'test' },
+    })).rejects.toMatchObject({ code: 'PLUGIN_ACTION_ARGUMENT_INVALID' });
+    expect(providerAttaches).toBe(beforeInvalid);
+
+    const beforeFailure = appliedSteps.length;
+    await expect(executeBrowserPluginAction({
+      controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser',
+      requestId: 'ordinary-custom-profile-batch-unknown', actionId: 'run_steps',
+      args: { session_id: 'ordinary-custom-profile-managed', steps: [
+        { action: 'fill', selector: '#first', text: 'saved' },
+        { action: 'click', selector: '#unknown-result' },
+        { action: 'fill', selector: '#never', text: 'not-applied' },
+      ] },
+      origin: { surface: 'mcp', actor: 'test' },
+    })).rejects.toMatchObject({
+      code: 'PLUGIN_BROWSER_MUTATION_OUTCOME_UNKNOWN', retryable: false, effectOutcome: 'outcome_unknown',
+      details: { completedSteps: 1, failedIndex: 1 },
+    });
+    expect(appliedSteps.slice(beforeFailure)).toEqual([
+      'fill:#first:saved', 'click:#unknown-result',
+    ]);
 
     expect(launchOptions?.ignoreDefaultArgs).toEqual([
       '--disable-extensions',

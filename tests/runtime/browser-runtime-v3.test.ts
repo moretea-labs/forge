@@ -69,6 +69,14 @@ function provider(options: {
   };
 }
 
+test('bounded browser batches use the existing non-replayable mutation transaction authority', () => {
+  expect(browserRuntimeActionPolicy('run_steps')).toEqual({
+    requiredCapabilities: ['dom.interact', 'browser.transaction'],
+    foreground: 'none',
+    replaySafety: 'non_idempotent',
+  });
+});
+
 describe('Browser Runtime completion wait policy', () => {
   test('normal semantic actions have no hidden settle delay but preserve explicit compatibility waits', () => {
     expect(browserExplicitPostActionWaitMs(undefined)).toBe(0);

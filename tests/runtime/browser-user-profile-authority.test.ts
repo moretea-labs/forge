@@ -49,7 +49,7 @@ describe('Browser semantic evidence contract shared by MCP and local Computer', 
     const browser = buildBrowserPluginManifest(1, '2026-08-30T00:00:00.000Z', root, context);
     const computer = computerPluginAdapter.buildManifest(1, undefined, root, context);
     for (const manifest of [browser, computer]) {
-      for (const actionId of ['click', 'fill', 'press']) {
+      for (const actionId of ['click', 'fill', 'press', 'run_steps']) {
         const action = manifest.actions.find((candidate) => candidate.actionId === actionId);
         expect(action).toBeDefined();
         const properties = (action!.argumentsSchema.properties ?? {}) as Record<string, { type?: string }>;

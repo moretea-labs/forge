@@ -557,6 +557,31 @@ export function browserActions(): AssistantPluginActionDescriptor[] {
       argumentsSchema: interactSchema({ selector: { type: 'string' } }, ['selector']),
     },
     {
+      actionId: 'run_steps',
+      title: 'Run bounded browser steps',
+      description: 'Execute up to eight model-decided DOM steps on one existing Browser session without repeated provider attach or model round trips. Stops on the first failure; never retries an uncertain mutation.',
+      readOnly: false, risk: 'remote_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
+      scopes: ['browser.interact', 'browser.profile'], resourceClaims: writeRemote,
+      argumentsSchema: interactSchema({
+        steps: {
+          type: 'array', minItems: 1, maxItems: 8,
+          items: {
+            type: 'object',
+            properties: {
+              action: { type: 'string', enum: ['fill', 'click', 'press', 'wait_for_selector'] },
+              selector: { type: 'string', minLength: 1, maxLength: 1000 },
+              text: { type: 'string', maxLength: 10000 },
+              key: { type: 'string', maxLength: 100 },
+              state: { type: 'string', enum: ['attached', 'detached', 'visible', 'hidden'] },
+              timeout_ms: { type: 'number', minimum: 100, maximum: 8000 },
+            },
+            required: ['action', 'selector'],
+            additionalProperties: false,
+          },
+        },
+      }, ['session_id', 'steps']),
+    },
+    {
       actionId: 'press',
       title: 'Press key',
       description: 'Press a key on a selector on an allowed page after authorization.',
@@ -649,7 +674,7 @@ export function browserActions(): AssistantPluginActionDescriptor[] {
   const foregroundRequired = new Set(['activate_page', 'request_human_handoff']);
   const foregroundPossible = new Set([
     'create_session', 'open_page', 'navigate', 'reload', 'go_back', 'resolve_handoff',
-    'click', 'click_text', 'double_click', 'hover', 'focus', 'type', 'fill', 'select_option',
+    'click', 'click_text', 'double_click', 'hover', 'focus', 'type', 'fill', 'run_steps', 'select_option',
     'check', 'uncheck', 'press', 'keyboard_shortcut', 'trusted_input', 'dispatch_event',
     'wait_for_selector', 'attach_local_file', 'await_file_transfer',
   ]);

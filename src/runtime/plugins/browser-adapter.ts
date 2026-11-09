@@ -5071,6 +5071,81 @@ async function executeBrowserPluginActionInternal(
           return finalizeInteractiveAction(input.repoRoot, current, page, target, connection, 'select_option', `Selected ${values.length} option(s) on ${selector}.`, { selector, values, selectedValues });
         });
       }
+      case 'run_steps': {
+        const target = resolveActionTarget(input.repoRoot, input.args);
+        // No implicit tab adoption or creation: a batch acts only on a saved,
+        // exact session. Validate the entire sequence before any effect.
+        if (!stringValue(input.args.session_id) || !target.existingSession) {
+          throw new AssistantPluginError('PLUGIN_BROWSER_BATCH_SESSION_REQUIRED',
+            'run_steps requires an existing exact Browser session_id.', { retryable: false });
+        }
+        const rawSteps = input.args.steps;
+        if (!Array.isArray(rawSteps) || rawSteps.length < 1 || rawSteps.length > 8) {
+          throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID',
+            'run_steps requires 1–8 bounded steps.', { retryable: false });
+        }
+        type StepAction = 'fill' | 'click' | 'press' | 'wait_for_selector';
+        const steps: Array<{ action: StepAction; selector: string; text?: string; key?: string; state?: WaitForSelectorState; timeoutMs: number }> = [];
+        let totalTextLength = 0;
+        for (const [index, raw] of rawSteps.entries()) {
+          if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+            throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', `Invalid browser step ${index}.`, { retryable: false });
+          }
+          const step = raw as Record<string, unknown>;
+          const action = step.action;
+          const allowed: readonly string[] = action === 'fill' ? ['action', 'selector', 'text', 'timeout_ms']
+            : action === 'press' ? ['action', 'selector', 'key', 'timeout_ms']
+            : action === 'wait_for_selector' ? ['action', 'selector', 'state', 'timeout_ms']
+            : ['action', 'selector', 'timeout_ms'];
+          if (!['fill', 'click', 'press', 'wait_for_selector'].includes(String(action))
+            || Object.keys(step).some((key) => !allowed.includes(key))
+            || typeof step.selector !== 'string' || !step.selector.trim() || step.selector.length > 1000
+            || (step.timeout_ms !== undefined && (typeof step.timeout_ms !== 'number'
+              || !Number.isFinite(step.timeout_ms) || step.timeout_ms < 100 || step.timeout_ms > 8000))
+            || (action === 'fill' && (typeof step.text !== 'string' || !step.text || step.text.length > 10000))
+            || (action === 'press' && (typeof step.key !== 'string' || !step.key.trim() || step.key.length > 100))
+            || (action === 'wait_for_selector' && step.state !== undefined
+              && !['visible', 'hidden', 'attached', 'detached'].includes(String(step.state)))) {
+            throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', `Invalid browser step ${index} arguments.`, { retryable: false });
+          }
+          if (action === 'fill') totalTextLength += (step.text as string).length;
+          if (totalTextLength > 20000) {
+            throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID',
+              'Browser batch text exceeds 20000 characters.', { retryable: false });
+          }
+          steps.push({
+            action: action as StepAction, selector: (step.selector as string).trim(),
+            ...(action === 'fill' ? { text: step.text as string } : {}),
+            ...(action === 'press' ? { key: (step.key as string).trim() } : {}),
+            ...(action === 'wait_for_selector' ? { state: waitForSelectorState(step.state) } : {}),
+            timeoutMs: typeof step.timeout_ms === 'number' ? step.timeout_ms : 5000,
+          });
+        }
+        return await withPage(input.actionId, input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
+          const completed: Array<{ index: number; action: StepAction; selector: string; durationMs: number }> = [];
+          for (const [index, step] of steps.entries()) {
+            const startedAt = performance.now();
+            try {
+              if (step.action === 'fill') await page.fill(step.selector, step.text!, { timeout: step.timeoutMs });
+              else if (step.action === 'click') await page.click(step.selector, { timeout: step.timeoutMs });
+              else if (step.action === 'press') await page.press(step.selector, step.key!, { timeout: step.timeoutMs });
+              else await page.waitForSelector(step.selector, { state: step.state, timeout: step.timeoutMs });
+            } catch {
+              // The failing step itself may have taken effect. Never continue,
+              // replay this batch, or expose typed field contents in errors.
+              throw new AssistantPluginError('PLUGIN_BROWSER_MUTATION_OUTCOME_UNKNOWN',
+                `Browser batch stopped at step ${index}; reconcile the exact session before any retry.`,
+                { retryable: false, effectOutcome: 'outcome_unknown', details: { actionId: 'run_steps', failedIndex: index, completedSteps: completed.length, stepAction: step.action } });
+            }
+            completed.push({ index, action: step.action, selector: step.selector,
+              durationMs: Math.round((performance.now() - startedAt) * 10) / 10 });
+          }
+          await delay(browserExplicitPostActionWaitMs(input.args.post_action_wait_ms));
+          return finalizeInteractiveAction(input.repoRoot, current, page, target, connection,
+            'run_steps', `Completed ${completed.length} bounded browser steps.`,
+            { completedSteps: completed.length, steps: completed });
+        }, { requireExistingResource: true });
+      }
       case 'press': {
         const target = resolveActionTarget(input.repoRoot, input.args);
         const selector = requiredString(input.args.selector, 'selector');

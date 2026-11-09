@@ -61,7 +61,7 @@ const TRUSTED_INPUT_ACTIONS = new Set(['trusted_input', 'activate_page']);
 const DOM_INTERACTION_ACTIONS = new Set([
   'create_session', 'open_page', 'navigate', 'reload', 'go_back',
   'click', 'click_text', 'double_click', 'hover', 'focus', 'type', 'fill', 'select_option', 'check', 'uncheck',
-  'press', 'keyboard_shortcut', 'dispatch_event', 'attach_local_file', 'close_page',
+  'press', 'run_steps', 'keyboard_shortcut', 'dispatch_event', 'attach_local_file', 'close_page',
 ]);
 const IDEMPOTENT_ACTIONS = new Set(['configure', 'close_session', 'clear_session', 'request_human_handoff', 'resolve_handoff']);
 
