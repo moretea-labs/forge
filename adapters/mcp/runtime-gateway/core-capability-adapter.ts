@@ -36,7 +36,7 @@ export async function callCoreCapabilityAdapter(
       return result({ error: { code: 'CORE_CAPABILITY_ACTION_UNSUPPORTED', message: `Unsupported controller.connection action: ${action || '<empty>'}` } }, true);
     }
     if (capabilityId === 'controller.plugins') {
-      if (action === 'get') return result(readControllerPluginManagement(ctx.controllerHome));
+      if (action === 'get') return result({ ...readControllerPluginManagement(ctx.controllerHome) });
       if (action === 'install_official') {
         return result(installControllerOfficialPlugin(ctx.controllerHome, String(input.plugin_id ?? '')));
       }

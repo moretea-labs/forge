@@ -122,6 +122,24 @@ afterEach(() => {
   while (roots.length > 0) rmSync(roots.pop()!, { recursive: true, force: true });
 });
 
+describe('controller.plugins capability', () => {
+  test('adapts the typed management snapshot into the MCP structured result', async () => {
+    const fx = fixture();
+    roots.push(fx.root);
+
+    const response = await callCoreCapabilityAdapter(fx.ctx, 'capability_execute', {
+      capability_id: 'controller.plugins',
+      action: 'get',
+      arguments: {},
+    });
+
+    expect(response?.isError).not.toBe(true);
+    const payload = response?.structuredContent as { schemaVersion?: number; plugins?: unknown[] };
+    expect(payload.schemaVersion).toBe(1);
+    expect(Array.isArray(payload.plugins)).toBe(true);
+  });
+});
+
 describe('repository.direct_edit capability', () => {
   test('routes apply through the existing Safe Patch/EditSession owner', async () => {
     const fx = fixture();
