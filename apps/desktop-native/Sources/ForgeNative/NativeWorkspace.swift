@@ -222,6 +222,10 @@ enum SemanticRecordDetail {
     case requirement(RequirementRecordDetail)
     case plan(PlanRecordDetail)
 }
+enum ProjectScheduleAction: String {
+    case pause, resume, trigger
+}
+
 struct ProjectScheduleDetail: Identifiable {
     let scheduleId: String
     let name: String
@@ -1294,6 +1298,32 @@ final class NativeWorkspace: ObservableObject {
             schedules = []
             self.error = error.localizedDescription
         }
+    }
+
+    func controlSchedule(_ schedule: ProjectScheduleDetail, action: ProjectScheduleAction) async {
+        guard let repoId, !schedulesLoading else { return }
+        schedulesLoading = true
+        do {
+            _ = try await ForgeBridge.request("control_project_schedule",[
+                "repoId":repoId,
+                "scheduleId":schedule.scheduleId,
+                "action":action.rawValue
+            ])
+            let value = try await ForgeBridge.request("read_project_schedules",["repoId":repoId])
+            guard self.repoId == repoId, self.page == .schedule else {
+                schedulesLoading = false
+                return
+            }
+            schedules = Self.projectScheduleRows(value)
+            error = nil
+        } catch {
+            guard self.repoId == repoId else {
+                schedulesLoading = false
+                return
+            }
+            self.error = error.localizedDescription
+        }
+        schedulesLoading = false
     }
 
     func loadPluginsPage() async {

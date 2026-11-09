@@ -525,6 +525,37 @@ async fn read_project_schedules(repo_id: String) -> Result<Value, String> {
 }
 
 #[tauri::command]
+async fn control_project_schedule(
+    repo_id: String,
+    schedule_id: String,
+    action: String,
+) -> Result<Value, String> {
+    if repo_id.trim().is_empty() {
+        return Err("FORGE_DESKTOP_REPOSITORY_REQUIRED".to_string());
+    }
+    if schedule_id.trim().is_empty() {
+        return Err("FORGE_DESKTOP_SCHEDULE_REQUIRED".to_string());
+    }
+    let operation = match action.as_str() {
+        "pause" => "schedule_pause",
+        "resume" => "schedule_resume",
+        "trigger" => "schedule_trigger",
+        _ => return Err("FORGE_DESKTOP_SCHEDULE_ACTION_UNSUPPORTED".to_string()),
+    };
+    let result = call_runtime_tool(
+        "rh_work",
+        json!({
+            "repo_id": repo_id,
+            "operation": operation,
+            "schedule_id": schedule_id,
+            "request_id": request_id("project-schedule-control")
+        }),
+    )
+    .await?;
+    Ok(semantic_facade_data(result))
+}
+
+#[tauri::command]
 async fn read_project_plugins(repo_id: String) -> Result<Value, String> {
     if repo_id.trim().is_empty() {
         return Err("FORGE_DESKTOP_REPOSITORY_REQUIRED".to_string());
@@ -2978,6 +3009,7 @@ fn main() {
             read_project_requirement_list,
             read_project_plan_list,
             read_project_schedules,
+            control_project_schedule,
             read_project_plugins,
             read_agent_git_diff,
             commit_agent_git_files,

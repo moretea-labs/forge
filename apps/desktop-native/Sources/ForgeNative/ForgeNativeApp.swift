@@ -4272,6 +4272,21 @@ private struct SchedulePane: View {
                 }
             }
             Spacer(minLength:8)
+            Menu {
+                Button(item.enabled ? "暂停" : "恢复") {
+                    Task { await model.controlSchedule(item,action:item.enabled ? .pause : .resume) }
+                }
+                Button("立即运行") {
+                    Task { await model.controlSchedule(item,action:.trigger) }
+                }
+            } label: {
+                Image(systemName:"ellipsis")
+                    .frame(width:24,height:24)
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .disabled(model.schedulesLoading)
+            .accessibilityIdentifier("schedule.\(item.scheduleId).actions")
         }.padding(.vertical,12)
     }
 
