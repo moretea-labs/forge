@@ -92,7 +92,7 @@ export function sha256ControlPlaneDatabaseFile(path: string): string {
   }
 }
 
-export const CONTROL_PLANE_SQLITE_MAINTENANCE_POLICY_VERSION = 'control-plane-sqlite-maintenance-v1' as const;
+export const CONTROL_PLANE_SQLITE_MAINTENANCE_POLICY_VERSION = 'control-plane-sqlite-maintenance-v2' as const;
 export const DEFAULT_CONTROL_PLANE_SQLITE_VACUUM_MIN_RECLAIMABLE_BYTES = 64 * 1024 * 1024;
 export const DEFAULT_CONTROL_PLANE_SQLITE_VACUUM_MIN_RECLAIMABLE_RATIO = 0.20;
 /** Keep each retention write transaction far below the Runtime scheduler's 5s busy timeout. */
@@ -103,10 +103,17 @@ export const REBUILDABLE_AUDIT_NAMESPACES = [
   'computer_interaction_target',
 ] as const;
 
-/** Rebuildable index namespaces whose current-record history may be bounded by a floor. */
+/**
+ * Current-record namespaces whose historical revision chain may be bounded by
+ * an audit floor. Rebuildable indexes never need unbounded history, and
+ * work_contract is historical read-only compatibility after Work retirement
+ * (#483): its current row remains canonical history, but millions of obsolete
+ * intermediate revisions no longer own mutable semantics.
+ */
 export const REBUILDABLE_RECORD_AUDIT_NAMESPACES = [
   'computer_interaction_target_index',
   'execution_work_validation_index',
+  'work_contract',
 ] as const;
 
 export interface PruneOrphanedAuditOptions {
@@ -1211,10 +1218,12 @@ function pruneOrphanedAuditRows(
 }
 
 /**
- * Bound current-record history for rebuildable index namespaces only. The
+ * Bound current-record history only for explicitly approved namespaces. The
  * newest `keepTail` revisions always remain, and every prune advances the
  * record's audit floor so inspection still proves an exact contiguous chain.
- * Semantic/business namespaces are never eligible.
+ * Mutable semantic domains remain excluded; retired read-only Work history is
+ * eligible because its current row, not every intermediate revision, is the
+ * compatibility authority after #483.
  */
 function pruneRebuildableRecordAuditRows(
   database: SqliteDatabase,

@@ -280,11 +280,19 @@ describe('final SQLite control-plane cutover', () => {
     });
   });
 
-  test('SQLite maintenance bounds current rebuildable index history with an audit floor', () => {
+  test('SQLite maintenance bounds rebuildable and retired Work history while preserving live semantic history', () => {
     withHome((controllerHome) => {
       const namespace = 'computer_interaction_target_index';
       let current = writeControlPlaneRecord(controllerHome, {
         namespace, scope: 'controller', key: 'current-long', schemaVersion: 1,
+        value: { revision: 1 }, expectedRevision: null,
+      });
+      let retiredWork = writeControlPlaneRecord(controllerHome, {
+        namespace: 'work_contract', scope: 'repo-test', key: 'retired-work-long', schemaVersion: 1,
+        value: { revision: 1 }, expectedRevision: null,
+      });
+      let liveSemantic = writeControlPlaneRecord(controllerHome, {
+        namespace: 'plan_contract', scope: 'repo-test', key: 'semantic-long', schemaVersion: 1,
         value: { revision: 1 }, expectedRevision: null,
       });
       for (let revision = 2; revision <= 100; revision += 1) {
@@ -292,15 +300,13 @@ describe('final SQLite control-plane cutover', () => {
           namespace, scope: 'controller', key: 'current-long', schemaVersion: 1,
           value: { revision }, expectedRevision: current.revision,
         });
-      }
-      let semantic = writeControlPlaneRecord(controllerHome, {
-        namespace: 'work_contract', scope: 'repo-test', key: 'semantic-long', schemaVersion: 1,
-        value: { revision: 1 }, expectedRevision: null,
-      });
-      for (let revision = 2; revision <= 100; revision += 1) {
-        semantic = writeControlPlaneRecord(controllerHome, {
-          namespace: 'work_contract', scope: 'repo-test', key: 'semantic-long', schemaVersion: 1,
-          value: { revision }, expectedRevision: semantic.revision,
+        retiredWork = writeControlPlaneRecord(controllerHome, {
+          namespace: 'work_contract', scope: 'repo-test', key: 'retired-work-long', schemaVersion: 1,
+          value: { revision }, expectedRevision: retiredWork.revision,
+        });
+        liveSemantic = writeControlPlaneRecord(controllerHome, {
+          namespace: 'plan_contract', scope: 'repo-test', key: 'semantic-long', schemaVersion: 1,
+          value: { revision }, expectedRevision: liveSemantic.revision,
         });
       }
 
@@ -309,7 +315,7 @@ describe('final SQLite control-plane cutover', () => {
         minimumReclaimableRatio: 0,
         pruneRebuildableRecordAudit: { olderThanMs: -1_000, keepTail: 10, maxRows: 1_000 },
       });
-      expect(report.prunedCurrentAuditRows).toBe(90);
+      expect(report.prunedCurrentAuditRows).toBe(180);
 
       const database = new Database(controlPlaneDatabasePath(controllerHome));
       try {
@@ -321,13 +327,28 @@ describe('final SQLite control-plane cutover', () => {
           'SELECT floor_revision FROM control_plane_audit_floor WHERE namespace = ? AND scope = ? AND record_key = ?',
         ).get(namespace, 'controller', 'current-long') as { floor_revision: number } | null;
         expect(currentFloor?.floor_revision).toBe(91);
+
+        const workRevisions = database.query(
+          "SELECT revision FROM control_plane_audit WHERE namespace = 'work_contract' AND scope = 'repo-test' AND record_key = 'retired-work-long' ORDER BY revision",
+        ).all().map((row) => (row as { revision: number }).revision);
+        expect(workRevisions).toEqual(Array.from({ length: 10 }, (_, index) => 91 + index));
+        const workFloor = database.query(
+          "SELECT floor_revision FROM control_plane_audit_floor WHERE namespace = 'work_contract' AND scope = 'repo-test' AND record_key = 'retired-work-long'",
+        ).get() as { floor_revision: number } | null;
+        expect(workFloor?.floor_revision).toBe(91);
+
         const semanticRevisions = database.query(
-          "SELECT revision FROM control_plane_audit WHERE namespace = 'work_contract' AND scope = 'repo-test' AND record_key = 'semantic-long' ORDER BY revision",
+          "SELECT revision FROM control_plane_audit WHERE namespace = 'plan_contract' AND scope = 'repo-test' AND record_key = 'semantic-long' ORDER BY revision",
         ).all().map((row) => (row as { revision: number }).revision);
         expect(semanticRevisions).toHaveLength(100);
       } finally {
         database.close();
       }
+      retiredWork = writeControlPlaneRecord(controllerHome, {
+        namespace: 'work_contract', scope: 'repo-test', key: 'retired-work-long', schemaVersion: 1,
+        value: { revision: 101 }, expectedRevision: retiredWork.revision,
+      });
+      expect(retiredWork.revision).toBe(101);
       expect(inspectControlPlaneDatabase(controllerHome)).toMatchObject({ integrity: 'ok', orphanRecordCount: 0 });
     });
   });
