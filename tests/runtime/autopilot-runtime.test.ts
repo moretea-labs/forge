@@ -121,7 +121,7 @@ describe('Requirement Autopilot',() => {
 
   test('pauses on an accepted command with missing Process identity instead of treating it as completed',async() => {
     const fx=fixture('pending-without-identity');
-    const enrolled=authorizeAutopilot({controllerHome:fx.controllerHome,repoId:fx.repository.repoId,
+    const enrolled=authorizeAutopilot({controllerHome:fx.controllerHome,repoId:fx.repository.repoId,checkoutId:fx.repository.activeCheckoutId,
       requirementId:'REQ-AUTO',confirmAuthorization:true,policy:{
         provider:'joycode',endpoint:'https://api-ai.jd.com',protocol:'chat_completions',model:'JoyAI-Code-1.6',
         maxTurns:3,maxToolCalls:3,maxTotalTokens:20_000,
@@ -149,7 +149,7 @@ describe('Requirement Autopilot',() => {
   });
   test('joins a real managed Process terminal before the model makes a completion decision',async() => {
     const fx=fixture('real-process-join');
-    const enrolled=authorizeAutopilot({controllerHome:fx.controllerHome,repoId:fx.repository.repoId,
+    const enrolled=authorizeAutopilot({controllerHome:fx.controllerHome,repoId:fx.repository.repoId,checkoutId:fx.repository.activeCheckoutId,
       requirementId:'REQ-AUTO',confirmAuthorization:true,policy:{
         provider:'joycode',endpoint:'https://api-ai.jd.com',protocol:'chat_completions',model:'JoyAI-Code-1.6',
         maxTurns:3,maxToolCalls:3,maxTotalTokens:20_000,
@@ -202,7 +202,7 @@ describe('Requirement Autopilot',() => {
   test('joins a real lightweight repository Process without duplicating the command',async() => {
     const fx=fixture('lightweight-process-join');
     const enrolled=authorizeAutopilot({
-      controllerHome:fx.controllerHome,repoId:fx.repository.repoId,
+      controllerHome:fx.controllerHome,repoId:fx.repository.repoId,checkoutId:fx.repository.activeCheckoutId,
       requirementId:'REQ-AUTO',confirmAuthorization:true,
       policy:{provider:'joycode',endpoint:'https://api-ai.jd.com',protocol:'chat_completions',
         model:'JoyAI-Code-1.6',maxTurns:3,maxToolCalls:3,maxTotalTokens:20_000},
@@ -267,7 +267,7 @@ describe('Requirement Autopilot',() => {
   test('reconciles persisted lightweight Process after interrupted Agent loop without replay',async() => {
     const fx=fixture('interrupted-process-join');
     const enrolled=authorizeAutopilot({
-      controllerHome:fx.controllerHome,repoId:fx.repository.repoId,
+      controllerHome:fx.controllerHome,repoId:fx.repository.repoId,checkoutId:fx.repository.activeCheckoutId,
       requirementId:'REQ-AUTO',confirmAuthorization:true,
       policy:{provider:'joycode',endpoint:'https://api-ai.jd.com',protocol:'chat_completions',
         model:'JoyAI-Code-1.6',maxTurns:3,maxToolCalls:3,maxTotalTokens:20_000},
@@ -331,7 +331,7 @@ describe('Requirement Autopilot',() => {
   test('fails closed on an unavailable persisted Process and does not run model or tools',async() => {
     const fx=fixture('unknown-process-on-resume');
     const enrolled=authorizeAutopilot({
-      controllerHome:fx.controllerHome,repoId:fx.repository.repoId,
+      controllerHome:fx.controllerHome,repoId:fx.repository.repoId,checkoutId:fx.repository.activeCheckoutId,
       requirementId:'REQ-AUTO',confirmAuthorization:true,
       policy:{provider:'joycode',endpoint:'https://api-ai.jd.com',protocol:'chat_completions',
         model:'JoyAI-Code-1.6',maxTurns:3,maxToolCalls:3,maxTotalTokens:20_000},
@@ -363,7 +363,7 @@ describe('Requirement Autopilot',() => {
   test('persists the request identity before command admission and never replays when its receipt is lost',async() => {
     const fx=fixture('lost-command-receipt');
     const enrolled=authorizeAutopilot({
-      controllerHome:fx.controllerHome,repoId:fx.repository.repoId,
+      controllerHome:fx.controllerHome,repoId:fx.repository.repoId,checkoutId:fx.repository.activeCheckoutId,
       requirementId:'REQ-AUTO',confirmAuthorization:true,
       policy:{provider:'joycode',endpoint:'https://api-ai.jd.com',protocol:'chat_completions',
         model:'JoyAI-Code-1.6',maxTurns:3,maxToolCalls:3,maxTotalTokens:20_000},
@@ -457,7 +457,7 @@ describe('Requirement Autopilot',() => {
     const fx=fixture('joycode');
     const enrolled=authorizeAutopilot({
       controllerHome:fx.controllerHome,
-      repoId:fx.repository.repoId,
+      repoId:fx.repository.repoId,checkoutId:fx.repository.activeCheckoutId,
       requirementId:'REQ-AUTO',
       confirmAuthorization:true,
       policy:{
@@ -529,7 +529,7 @@ describe('Requirement Autopilot',() => {
     });
     const enrolled=authorizeAutopilot({
       controllerHome:fx.controllerHome,
-      repoId:fx.repository.repoId,
+      repoId:fx.repository.repoId,checkoutId:fx.repository.activeCheckoutId,
       requirementId:'REQ-AUTO',
       confirmAuthorization:true,
       policy:{
@@ -597,7 +597,7 @@ describe('Requirement Autopilot',() => {
     const fx=fixture('inspection-guard');
     const enrolled=authorizeAutopilot({
       controllerHome:fx.controllerHome,
-      repoId:fx.repository.repoId,
+      repoId:fx.repository.repoId,checkoutId:fx.repository.activeCheckoutId,
       requirementId:'REQ-AUTO',
       confirmAuthorization:true,
       policy:{
@@ -665,7 +665,7 @@ describe('Requirement Autopilot',() => {
     const fx=fixture('budget-refresh');
     const first=authorizeAutopilot({
       controllerHome:fx.controllerHome,
-      repoId:fx.repository.repoId,
+      repoId:fx.repository.repoId,checkoutId:fx.repository.activeCheckoutId,
       requirementId:'REQ-AUTO',
       confirmAuthorization:true,
       policy:{maxTotalTokens:1_000,maxTurns:4,maxToolCalls:6},
@@ -698,7 +698,7 @@ describe('Requirement Autopilot',() => {
 
     const second=authorizeAutopilot({
       controllerHome:fx.controllerHome,
-      repoId:fx.repository.repoId,
+      repoId:fx.repository.repoId,checkoutId:fx.repository.activeCheckoutId,
       requirementId:'REQ-AUTO',
       confirmAuthorization:true,
       policy:{maxTotalTokens:4_000,maxTurns:6,maxToolCalls:8},
@@ -739,7 +739,7 @@ describe('Requirement Autopilot',() => {
     const fx=fixture('budget-window');
     const first=authorizeAutopilot({
       controllerHome:fx.controllerHome,
-      repoId:fx.repository.repoId,
+      repoId:fx.repository.repoId,checkoutId:fx.repository.activeCheckoutId,
       requirementId:'REQ-AUTO',
       confirmAuthorization:true,
       policy:{maxTotalTokens:500_000,maxTurns:48,maxToolCalls:128},
@@ -761,7 +761,7 @@ describe('Requirement Autopilot',() => {
     const runId=readAutopilotRun(fx.controllerHome,fx.repository.repoId,'REQ-AUTO')!.value.runId;
     const second=authorizeAutopilot({
       controllerHome:fx.controllerHome,
-      repoId:fx.repository.repoId,
+      repoId:fx.repository.repoId,checkoutId:fx.repository.activeCheckoutId,
       requirementId:'REQ-AUTO',
       confirmAuthorization:true,
       policy:{maxTotalTokens:500_000,maxTurns:48,maxToolCalls:128},
@@ -797,14 +797,14 @@ describe('Requirement Autopilot',() => {
     const fx=fixture('authorization');
     expect(() => authorizeAutopilot({
       controllerHome:fx.controllerHome,
-      repoId:fx.repository.repoId,
+      repoId:fx.repository.repoId,checkoutId:fx.repository.activeCheckoutId,
       requirementId:'REQ-AUTO',
       confirmAuthorization:false,
     })).toThrow('AUTOPILOT_AUTHORIZATION_CONFIRMATION_REQUIRED');
 
     const first=authorizeAutopilot({
       controllerHome:fx.controllerHome,
-      repoId:fx.repository.repoId,
+      repoId:fx.repository.repoId,checkoutId:fx.repository.activeCheckoutId,
       requirementId:'REQ-AUTO',
       confirmAuthorization:true,
       policy:{maxTotalTokens:12_000,maxTurns:4,maxToolCalls:6},
@@ -814,7 +814,7 @@ describe('Requirement Autopilot',() => {
 
     const second=authorizeAutopilot({
       controllerHome:fx.controllerHome,
-      repoId:fx.repository.repoId,
+      repoId:fx.repository.repoId,checkoutId:fx.repository.activeCheckoutId,
       requirementId:'REQ-AUTO',
       confirmAuthorization:true,
       policy:{maxTotalTokens:20_000,maxTurns:5,maxToolCalls:8},
@@ -828,7 +828,7 @@ describe('Requirement Autopilot',() => {
     const fx=fixture('revision');
     authorizeAutopilot({
       controllerHome:fx.controllerHome,
-      repoId:fx.repository.repoId,
+      repoId:fx.repository.repoId,checkoutId:fx.repository.activeCheckoutId,
       requirementId:'REQ-AUTO',
       confirmAuthorization:true,
     });
@@ -857,7 +857,7 @@ describe('Requirement Autopilot',() => {
     });
     const enrolled=authorizeAutopilot({
       controllerHome:fx.controllerHome,
-      repoId:fx.repository.repoId,
+      repoId:fx.repository.repoId,checkoutId:fx.repository.activeCheckoutId,
       requirementId:'REQ-AUTO',
       confirmAuthorization:true,
       policy:{checkpointPlanIds:['PLAN-CHECK'],maxTurns:3,maxToolCalls:3,maxTotalTokens:10_000},
@@ -896,7 +896,7 @@ describe('Requirement Autopilot',() => {
     const fx=fixture('restart');
     const enrolled=authorizeAutopilot({
       controllerHome:fx.controllerHome,
-      repoId:fx.repository.repoId,
+      repoId:fx.repository.repoId,checkoutId:fx.repository.activeCheckoutId,
       requirementId:'REQ-AUTO',
       confirmAuthorization:true,
       policy:{maxTurns:3,maxToolCalls:3,maxTotalTokens:10_000},
@@ -935,7 +935,7 @@ describe('Requirement Autopilot',() => {
     const fx=fixture('responses');
     const enrolled=authorizeAutopilot({
       controllerHome:fx.controllerHome,
-      repoId:fx.repository.repoId,
+      repoId:fx.repository.repoId,checkoutId:fx.repository.activeCheckoutId,
       requirementId:'REQ-AUTO',
       confirmAuthorization:true,
       policy:{
@@ -997,7 +997,7 @@ describe('Requirement Autopilot',() => {
     const fx=fixture('risk');
     const enrolled=authorizeAutopilot({
       controllerHome:fx.controllerHome,
-      repoId:fx.repository.repoId,
+      repoId:fx.repository.repoId,checkoutId:fx.repository.activeCheckoutId,
       requirementId:'REQ-AUTO',
       confirmAuthorization:true,
       policy:{maxTurns:3,maxToolCalls:3,maxTotalTokens:10_000},

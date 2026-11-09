@@ -75,7 +75,9 @@ const EXPECTED_PREFERRED_TOOL_NAME_FINGERPRINT = 'f22e635a213b45fa';
 // 2026-11-08: rh_work adds bounded requirement_list discovery so the native
 // Planning client reads current Requirement semantics from their canonical owner
 // instead of depending on the retired rh_status requirementBoard projection.
-const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = '18dd06882d86c36b';
+// 2026-11-09: #592 adds rh_inbox.scope (list-only all/global) so scoped counts
+// come from the inbox owner. Refresh the exact combined schema fingerprint.
+const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = '1d6cff781781ce37';
 
 const policy = runtimePolicy(process.cwd(), {
   profile: 'controller',

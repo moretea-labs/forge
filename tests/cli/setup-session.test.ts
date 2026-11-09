@@ -5,7 +5,7 @@ import { join } from 'path';
 import { closeSetupSession, openSetupSession, readSetupSession, type InitHookReport } from '../../src/cli/commands/init-hook';
 import { configureSetupProfile, readSetupProfile, resolveTunnelGuidance, setupConnectorAuthMode, type SetupPlatformSnapshot } from '../../src/cli/commands/setup-profile';
 import { runMcpSetupChatgpt } from '../../adapters/mcp/setup';
-import { configureInitialControllerConnection, readControllerConnectionSnapshot, repairControllerConnection } from '../../src/runtime/control-plane/facade/controller-connection';
+import { configureInitialControllerConnection, readControllerConnectionSnapshot, repairControllerConnection } from '../../adapters/mcp/runtime-gateway/controller-connection';
 
 const platform: SetupPlatformSnapshot = { platform: 'linux', arch: 'x64', environment: 'linux', serviceManager: 'systemd-user', commands: { brew: false, cloudflared: false, tailscale: false, tunnelClient: false, systemctl: true, winget: false } };
 function report(target: InitHookReport['target'] = 'none', status: InitHookReport['status'] = 'ok', action = false): InitHookReport {

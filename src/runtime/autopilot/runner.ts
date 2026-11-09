@@ -2,8 +2,7 @@ import { spawn } from 'child_process';
 import { randomUUID } from 'crypto';
 import { homedir } from 'os';
 import { join } from 'path';
-import { classifyRepositoryCommand } from '../../cli/repositories/command-classifier';
-import { getRepository } from '../../cli/repositories/registry';
+import { classifyRepositoryCommand } from '../../core/repository-command/classification';
 import { readRequirement, requirementSemanticView } from '../control-plane/persistence/requirement-store';
 import { listPlanContracts } from '../control-plane/facade/plan-contract-store';
 import { waitRepositoryCommandProcess } from '../execution/process-runtime/command-facade';
@@ -531,8 +530,6 @@ export async function runAutopilotLoop(
   if (requirement.revision !== initialRecord.value.requirementRevision) {
     throw new Error(`AUTOPILOT_REQUIREMENT_REVISION_CHANGED: approved=${initialRecord.value.requirementRevision},current=${requirement.revision}`);
   }
-  const repository = getRepository(repoId, controllerHome);
-  if (!repository) throw new Error(`AUTOPILOT_REPOSITORY_NOT_FOUND: ${repoId}`);
   const plans = listPlanContracts({ controllerHome, repoId, status: 'active', limit: 100 });
   const messages: DeepSeekMessage[] = [
     { role: 'system', content: systemPrompt(initialRecord.value, requirement, plans) },
@@ -713,7 +710,7 @@ export async function runAutopilotLoop(
           continue;
         }
         args.command = normalizedCommand;
-        const classification = classifyRepositoryCommand(normalizedCommand, repository.defaultBranch);
+        const classification = classifyRepositoryCommand(normalizedCommand);
         if ((RISK_RANK[classification.risk] ?? 99) > RISK_RANK.workspace_write) {
           updateAutopilotRun(controllerHome, repoId, requirementId, (run) => ({
             ...run,

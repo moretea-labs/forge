@@ -1,5 +1,5 @@
-import { openSetupSession, readSetupSession, type SetupSession } from '../../../cli/commands/init-hook';
-import { runMcpSetupChatgpt } from '../../../../adapters/mcp/setup';
+import { openSetupSession, readSetupSession, type SetupSession } from '../../../src/cli/commands/init-hook';
+import { runMcpSetupChatgpt } from '../setup';
 import {
   configureSetupProfile,
   detectSetupPlatform,
@@ -10,7 +10,7 @@ import {
   type SetupControllerKind,
   type SetupPlatformSnapshot,
   type SetupTunnelProvider,
-} from '../../../cli/commands/setup-profile';
+} from '../../../src/cli/commands/setup-profile';
 
 export interface ControllerConnectionSnapshot {
   schemaVersion: 1;

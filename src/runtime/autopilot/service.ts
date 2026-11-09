@@ -1,6 +1,5 @@
 import { recordCanonicalGrant, revokeCanonicalGrant, listCanonicalGrants } from '../../../packages/kernel/identity/api';
 import { readRequirement, requirementSemanticView } from '../control-plane/persistence/requirement-store';
-import { resolveRepositorySelection } from '../../cli/repositories/registry';
 import { listPlanContracts } from '../control-plane/facade/plan-contract-store';
 import { createAutopilotRun, defaultAutopilotPolicy, readAutopilotRun, setAutopilotRunStatus, updateAutopilotRun } from './store';
 import { runAutopilotLoop, type AutopilotRunnerDependencies } from './runner';
@@ -102,15 +101,16 @@ export function authorizeAutopilot(input: {
   expiresInMinutes?: number;
 }) {
   if (!input.confirmAuthorization) throw new Error('AUTOPILOT_AUTHORIZATION_CONFIRMATION_REQUIRED');
-  const repository = resolveRepositorySelection({
-    repoId: input.repoId,
-    checkoutId: input.checkoutId,
-    controllerHome: input.controllerHome,
-    allowSoleRepository: false,
-  });
+  // The adapter resolves the exact checkout through the canonical Repository
+  // Registry; Runtime consumes the explicit fact instead of reaching into CLI.
+  const checkoutId = input.checkoutId?.trim();
+  if (!checkoutId) throw new Error('AUTOPILOT_CHECKOUT_REQUIRED');
   const requirementRecord = readRequirement({ controllerHome: input.controllerHome }, input.requirementId);
   if (!requirementRecord) throw new Error(`AUTOPILOT_REQUIREMENT_NOT_FOUND: ${input.requirementId}`);
   const requirement = requirementSemanticView(requirementRecord.value);
+  if (requirement.repoId && requirement.repoId !== input.repoId) {
+    throw new Error(`AUTOPILOT_REQUIREMENT_REPOSITORY_CONFLICT: ${requirement.repoId}`);
+  }
   if (requirement.state !== 'open') throw new Error(`AUTOPILOT_REQUIREMENT_NOT_OPEN: ${requirement.state}`);
   const policy = defaultAutopilotPolicy(input.policy);
   if (policy.checkpointPlanIds.length > 0) {
@@ -126,7 +126,7 @@ export function authorizeAutopilot(input: {
     : undefined;
   if (budgetRefresh) {
     if (budgetRefresh.value.requirementRevision !== requirement.revision
-        || budgetRefresh.value.checkoutId !== repository.activeCheckoutId) {
+        || budgetRefresh.value.checkoutId !== checkoutId) {
       throw new Error('AUTOPILOT_BUDGET_REAUTHORIZATION_SCOPE_CHANGED');
     }
     validateBudgetRefresh(budgetRefresh.value, policy);
@@ -145,7 +145,7 @@ export function authorizeAutopilot(input: {
     capabilities: [CAPABILITY],
     target: target(input.repoId, input.requirementId),
     riskCeiling: 'workspace_write',
-    constraints: constraints(requirement.revision, repository.activeCheckoutId, policy),
+    constraints: constraints(requirement.revision, checkoutId, policy),
     expiresInMinutes: input.expiresInMinutes,
   });
   const refreshedRun = budgetRefresh
@@ -160,7 +160,7 @@ export function authorizeAutopilot(input: {
         },
       }),'autopilot_budget_reauthorized')
     : undefined;
-  return { grant, requirement, policy, checkoutId: repository.activeCheckoutId, refreshedRun: refreshedRun?.value };
+  return { grant, requirement, policy, checkoutId, refreshedRun: refreshedRun?.value };
 }
 
 export function revokeAutopilot(input: {

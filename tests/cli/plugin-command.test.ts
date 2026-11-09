@@ -7,7 +7,7 @@ import { tmpdir } from 'os';
 import { externalPluginListItem, installTrustedExternalPlugin, installerNextSteps, officialPluginCatalogItems, pluginCatalogCompatibility, registrationFrom, trustedExternalPluginCatalogEntry } from '../../src/cli/commands/plugin';
 import { assertExternalPluginRepositoryTrusted, assertFirstPartyPluginRepositoryTrusted, trustExternalPluginRepository, untrustExternalPluginRepository } from '../../src/runtime/plugins/catalog-trust';
 import { getExternalPluginRegistration } from '../../src/runtime/plugins/external-registration';
-import { readControllerPluginManagement } from '../../src/runtime/control-plane/facade/controller-plugins';
+import { readControllerPluginManagement } from '../../adapters/mcp/runtime-gateway/controller-plugins';
 
 describe('official plugin catalog', () => {
   test('projects the official catalog for Settings without a second plugin registry', () => {

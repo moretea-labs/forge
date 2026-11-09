@@ -261,6 +261,10 @@
       "module": "repository",
       "resource": "git-worktree"
     },
+    "tests/cli/repository-worktree-identity.test.ts": {
+      "module": "repository",
+      "resource": "git-worktree"
+    },
     "tests/cli/repository-command-scope.test.ts": {
       "module": "repository",
       "resource": "pure"
@@ -401,6 +405,10 @@
       "module": "browser",
       "resource": "controller-home-isolated"
     },
+    "tests/runtime/autopilot-runtime.test.ts": {
+      "module": "controller",
+      "resource": "process-tree"
+    },
     "tests/runtime/canonical-single-runtime.test.ts": {
       "module": "controller",
       "resource": "controller-home-isolated"
@@ -427,6 +435,10 @@
     },
     "tests/runtime/control-plane-hardening.test.ts": {
       "module": "process-runtime",
+      "resource": "temp-isolated"
+    },
+    "tests/runtime/credential-authorization.test.ts": {
+      "module": "controller",
       "resource": "temp-isolated"
     },
     "tests/runtime/controller-home-migration.test.ts": {
