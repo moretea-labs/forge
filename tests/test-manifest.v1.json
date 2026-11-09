@@ -281,6 +281,10 @@
       "module": "repository",
       "resource": "git-worktree"
     },
+    "tests/cli/repository-worktree-identity.test.ts": {
+      "module": "repository",
+      "resource": "git-worktree"
+    },
     "tests/cli/run.test.ts": {
       "module": "core",
       "resource": "temp-isolated"
@@ -409,6 +413,10 @@
       "module": "workflow",
       "resource": "process-tree"
     },
+    "tests/runtime/autopilot-runtime.test.ts": {
+      "module": "workflow",
+      "resource": "process-tree"
+    },
     "tests/runtime/check-runner-provenance.test.ts": {
       "module": "process-runtime",
       "resource": "temp-isolated"
@@ -430,6 +438,10 @@
       "resource": "temp-isolated"
     },
     "tests/runtime/controller-home-migration.test.ts": {
+      "module": "controller",
+      "resource": "controller-home-isolated"
+    },
+    "tests/runtime/credential-authorization.test.ts": {
       "module": "controller",
       "resource": "controller-home-isolated"
     },
