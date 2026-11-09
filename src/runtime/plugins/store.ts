@@ -3,8 +3,7 @@ import { join } from 'path';
 import type { RepositoryRecord } from '../../cli/repositories/types';
 import { CONTROLLER_SCOPE_REPO_ID, FORGE_INSTANCE_SCOPE_KEY, controllerSystemRoot, ensureControllerHome, repositoryControllerRoot } from '../../effects/controller-home';
 import { listRepositories } from '../../cli/repositories/registry';
-import { withControllerLock } from '../../cli/repositories/locks';
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'fs';
+import { existsSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'fs';
 import type { ExecutionJob, ResourceClaimSpec } from '../execution/jobs/types';
 import { appendRuntimeEvent } from '../evidence/event-ledger';
 import { redactSensitiveText, redactSensitiveValue } from '../evidence/sensitive-output';
@@ -1381,10 +1380,24 @@ function pluginActionRequestPath(controllerHome: string, requestId: string): str
   return join(root, `${hash}.json`);
 }
 
-function withPluginRequestLock<T>(home: string, requestId: string, operation: () => T): T {
-  const hash = createHash('sha256').update(requestId).digest('hex');
-  return withControllerLock(home, { scope: 'global', resource: `plugin-request-${hash}` },
-    `plugin-request:${hash.slice(0, 12)}`, operation);
+/** Publish a complete Plugin record only when its canonical path is absent.
+ * Same-directory hard link is an atomic create-if-absent: no lock file,
+ * partial JSON, overwrite, or second request state authority.
+ */
+function publishPluginRecordOnce<T>(path: string, value: T): boolean {
+  const staged = `${path}.${process.pid}.${randomUUID()}.pending`;
+  try {
+    writeJsonAtomic(staged, value);
+    try {
+      linkSync(staged, path);
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
+      throw error;
+    }
+  } finally {
+    rmSync(staged, { force: true });
+  }
 }
 
 function pluginClaimOwnerAlive(index: PluginActionRequestIndex): boolean {
@@ -1408,38 +1421,38 @@ function recoverOrphanedPluginRequest(
     throw new Error(`PLUGIN_RECEIPT_LOST: ${index.requestId}`);
   }
   if (pluginClaimOwnerAlive(index)) return undefined;
-  return withPluginRequestLock(home, index.requestId, () => {
-    const current = readJsonFile<PluginActionRequestIndex>(requestPath);
-    if (current.requestId !== index.requestId || current.receiptId !== index.receiptId
-      || current.scopeKey !== index.scopeKey || current.semanticKey !== index.semanticKey) {
-      throw new Error(`PLUGIN_RECEIPT_REQUEST_MISMATCH: ${index.requestId}`);
-    }
-    const terminal = readPluginActionReceipt(home, current.scopeKey, current.receiptId);
-    if (terminal) return terminal;
-    if (pluginClaimOwnerAlive(current)) return undefined;
-    const failure = {
-      code: 'PLUGIN_ACTION_OUTCOME_UNKNOWN',
-      message: 'The original request ended without a Receipt; external effects must be reconciled, never replayed.',
-      retryable: false,
-    };
-    const receipt: PluginActionReceipt = {
-      schemaVersion: 1,
-      receiptId: current.receiptId,
-      requestId: current.requestId,
-      scopeKey: current.scopeKey,
-      ...(current.repoId ? { repoId: current.repoId } : {}),
-      pluginId: current.pluginId!,
-      actionId: current.actionId!,
-      semanticKey: current.semanticKey,
-      status: 'failed',
-      effectOutcome: 'outcome_unknown',
-      createdAt: current.createdAt,
-      result: { outcome: 'outcome_unknown', error: failure },
-      error: failure,
-    };
-    writeJsonAtomic(pluginActionReceiptPath(home, current.scopeKey, current.receiptId), receipt);
-    return receipt;
-  });
+  const current = readJsonFile<PluginActionRequestIndex>(requestPath);
+  if (current.requestId !== index.requestId || current.receiptId !== index.receiptId
+    || current.scopeKey !== index.scopeKey || current.semanticKey !== index.semanticKey) {
+    throw new Error(`PLUGIN_RECEIPT_REQUEST_MISMATCH: ${index.requestId}`);
+  }
+  const terminal = readPluginActionReceipt(home, current.scopeKey, current.receiptId);
+  if (terminal) return terminal;
+  if (pluginClaimOwnerAlive(current)) return undefined;
+  const failure = {
+    code: 'PLUGIN_ACTION_OUTCOME_UNKNOWN',
+    message: 'The original request ended without a Receipt; external effects must be reconciled, never replayed.',
+    retryable: false,
+  };
+  const receipt: PluginActionReceipt = {
+    schemaVersion: 1,
+    receiptId: current.receiptId,
+    requestId: current.requestId,
+    scopeKey: current.scopeKey,
+    ...(current.repoId ? { repoId: current.repoId } : {}),
+    pluginId: current.pluginId!,
+    actionId: current.actionId!,
+    semanticKey: current.semanticKey,
+    status: 'failed',
+    effectOutcome: 'outcome_unknown',
+    createdAt: current.createdAt,
+    result: { outcome: 'outcome_unknown', error: failure },
+    error: failure,
+  };
+  const path = pluginActionReceiptPath(home, current.scopeKey, current.receiptId);
+  return publishPluginRecordOnce(path, receipt)
+    ? receipt
+    : readPluginActionReceipt(home, current.scopeKey, current.receiptId);
 }
 
 function pluginActionReceiptPath(controllerHome: string, scopeKey: string, receiptId: string): string {
@@ -1964,23 +1977,19 @@ async function submitPluginAction(
       action,
       request,
       () => {
-        // Claim inside the existing resource lease, immediately before dispatch.
-        // The Controller lock serializes the index check/write across processes.
-        const claimed = withPluginRequestLock(controllerHome, request.requestId, () => {
-          if (existsSync(requestPath)) return false;
-          writeJsonAtomic(requestPath, {
-            requestId: request.requestId,
-            scopeKey: scope.scopeKey,
-            ...(scope.repository ? { repoId: scope.repository.repoId } : {}),
-            receiptId,
-            semanticKey: key,
-            pluginId: request.pluginId,
-            actionId: request.actionId,
-            claimOwnerPid: process.pid,
-            createdAt,
-          } satisfies PluginActionRequestIndex);
-          return true;
-        });
+        // The request index itself is the serialized pre-dispatch claim.
+        // Atomic create-if-absent prevents cross-process duplicate dispatch.
+        const claimed = publishPluginRecordOnce(requestPath, {
+          requestId: request.requestId,
+          scopeKey: scope.scopeKey,
+          ...(scope.repository ? { repoId: scope.repository.repoId } : {}),
+          receiptId,
+          semanticKey: key,
+          pluginId: request.pluginId,
+          actionId: request.actionId,
+          claimOwnerPid: process.pid,
+          createdAt,
+        } satisfies PluginActionRequestIndex);
         if (!claimed) {
           throw new AssistantPluginError(
             'PLUGIN_RESOURCE_CONTENTION',
