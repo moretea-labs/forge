@@ -348,6 +348,17 @@ describe('MCP canonical Runtime proxy routing', () => {
           expect(staleTool.structuredContent).toMatchObject({
             error: { code: 'TOOL_NOT_FOUND', action: 'refresh_tools_list' },
           });
+          const retiredWorkTool = await client.callTool({ name: 'work_prepare', arguments: {} });
+          expect(retiredWorkTool.isError).toBe(true);
+          expect(retiredWorkTool.structuredContent).toMatchObject({
+            error: {
+              code: 'TOOL_NOT_FOUND',
+              action: 'refresh_tools_list',
+              reason: 'retired_tool_catalog_stale',
+              replacement: 'direct_capabilities',
+              semanticContext: 'rh_work',
+            },
+          });
         }
         const currentTool = await client.callTool({ name: 'rh_status', arguments: requestId ? { request_id: requestId } : {} });
         expect(currentTool.structuredContent).toMatchObject({ ok: true });

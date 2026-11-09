@@ -1010,13 +1010,23 @@ function canonicalRuntimeSchemaMatchesGateway(ctx: MultiRepositoryMcpToolContext
   return !runtimeFingerprint || runtimeFingerprint === controllerToolSurfaceStatus(ctx).fingerprint;
 }
 
+const RETIRED_WORK_LIFECYCLE_TOOLS = new Set(['work_prepare', 'work_validate', 'work_finalize']);
+
 function toolNotFoundResult(name: string): CallToolResult {
+  const retiredWorkLifecycle = RETIRED_WORK_LIFECYCLE_TOOLS.has(name);
   const value = {
     error: {
       code: 'TOOL_NOT_FOUND',
-      message: `${name} is not available in this session's tools/list. Refresh tool discovery before retrying.`,
+      message: retiredWorkLifecycle
+        ? `${name} is retired and must not be restored. Refresh tools/list; use direct repository/process/plugin capabilities for execution and rh_work only for Requirement/Plan semantic context.`
+        : `${name} is not available in this session's tools/list. Refresh tool discovery before retrying.`,
       recoverable: true,
       action: 'refresh_tools_list',
+      ...(retiredWorkLifecycle ? {
+        reason: 'retired_tool_catalog_stale',
+        replacement: 'direct_capabilities',
+        semanticContext: 'rh_work',
+      } : {}),
     },
   };
   return { content: [{ type: 'text', text: JSON.stringify(value) }], structuredContent: value, isError: true };
