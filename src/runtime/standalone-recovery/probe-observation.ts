@@ -51,11 +51,21 @@ export async function runtimeStatus(config: RecoveryConfig) {
   };
 }
 
-export async function probe(transport: RecoveryHttpTransport, url: string, timeoutMs = 4_000): Promise<{ ok: boolean; detail: string; status?: number }> {
+export async function probe(
+  transport: RecoveryHttpTransport,
+  url: string,
+  timeoutMs = 4_000,
+  headers: Record<string, string> = {},
+): Promise<{ ok: boolean; detail: string; status?: number }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort('RECOVERY_HTTP_TIMEOUT'), timeoutMs);
   try {
-    const response = await transport.request({ url, headers: { accept: 'application/json' }, timeoutMs, signal: controller.signal });
+    const response = await transport.request({
+      url,
+      headers: { accept: 'application/json', ...headers },
+      timeoutMs,
+      signal: controller.signal,
+    });
     return { ok: response.ok, detail: `HTTP ${response.status}`, status: response.status };
   } catch (error) {
     return { ok: false, detail: error instanceof Error ? error.message.slice(0, 180) : 'request failed' };
@@ -73,9 +83,10 @@ export async function probeRuntimeGateway(
   transport: RecoveryHttpTransport,
   url: string,
 ): Promise<{ ok: boolean; detail: string; status?: number }> {
-  const first = await probe(transport, url, 750);
+  const freshConnection = { connection: 'close' };
+  const first = await probe(transport, url, 750, freshConnection);
   if (first.ok || first.status !== undefined) return first;
-  return probe(transport, url, 3_250);
+  return probe(transport, url, 3_250, freshConnection);
 }
 
 export async function probeExternalMcp(

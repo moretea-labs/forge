@@ -466,15 +466,21 @@ test('historical Stable A permits only the exact pre-context-pack omission to se
 
 test('standalone Recovery retries one transport-only active gateway failure within the strict verification budget', async () => {
   let calls = 0;
+  const observedHeaders: Array<Record<string, string> | undefined> = [];
   const result = await probeRuntimeGateway({
-    request: async () => {
+    request: async (request) => {
       calls += 1;
+      observedHeaders.push(request.headers);
       if (calls === 1) throw new Error('request failed');
       return { status: 200, ok: true, headers: {}, body: '{}' };
     },
   }, 'http://127.0.0.1:8765/healthz');
 
   expect(calls).toBe(2);
+  expect(observedHeaders).toEqual([
+    { accept: 'application/json', connection: 'close' },
+    { accept: 'application/json', connection: 'close' },
+  ]);
   expect(result).toEqual({ ok: true, detail: 'HTTP 200', status: 200 });
 });
 
