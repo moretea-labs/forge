@@ -1165,7 +1165,6 @@ private struct AgentPane: View {
     @State private var expandedMessageActivities: Set<String> = []
     @State private var isComposerDropTarget = false
     @State private var semanticInspector: AgentSemanticContextInspector?
-    @State private var showAgentConfiguration = false
     @FocusState private var composerFocused: Bool
 
     var body: some View {
@@ -1502,7 +1501,7 @@ private struct AgentPane: View {
                     .accessibilityHint("添加当前 checkout 文件或当前 Provider 支持的图片")
                     .accessibilityIdentifier("agent.attach")
 
-                    compactAgentConfigurationControl
+                    composerQuickConfigurationControls
 
                     Spacer(minLength:12)
 
@@ -1941,315 +1940,232 @@ private struct AgentPane: View {
         }
     }
 
-    private var compactAgentConfigurationControl: some View {
-        Button {
-            showAgentConfiguration.toggle()
-        } label: {
-            HStack(spacing:5) {
-                Image(systemName:model.repositoryAccessMode == "full_access" && NativeWorkspace.matchesExternalProvider(model.selectedProvider)
-                      ? "checkmark.shield.fill"
-                      : (NativeWorkspace.matchesExternalProvider(model.selectedProvider) ? "server.rack" : "cpu"))
-                    .font(.system(size:9.5,weight:.medium))
-                    .foregroundStyle(model.repositoryAccessMode == "full_access" && NativeWorkspace.matchesExternalProvider(model.selectedProvider)
-                                     ? ForgePalette.accent : ForgePalette.secondary)
-                Text(composerConfigurationLabel)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .frame(maxWidth:210,alignment:.leading)
-                Image(systemName:"chevron.up.chevron.down")
-                    .font(.system(size:7,weight:.semibold))
-                    .foregroundStyle(.tertiary)
-            }
-            .font(.system(size:10.5,weight:.medium))
-            .foregroundStyle(ForgePalette.ink)
-            .padding(.horizontal,8)
-            .frame(height:27)
-            .background(ForgePalette.softFill,
-                        in:RoundedRectangle(cornerRadius:9,style:.continuous))
-            .contentShape(Rectangle())
+    @ViewBuilder
+    private var composerQuickConfigurationControls: some View {
+        if showsQuickProviderPicker {
+            quickProviderMenu
         }
-        .buttonStyle(.plain)
-        .popover(isPresented:$showAgentConfiguration,arrowEdge:.bottom) {
-            agentConfigurationPopover
+        quickModelMenu
+        if model.selectedProvider == "codex" && !model.selectedReasoningOptions.isEmpty {
+            quickReasoningMenu
         }
-        .help("会话设置：Provider、模型、推理强度与仓库权限")
-        .accessibilityLabel("会话设置")
-        .accessibilityValue(compactConfigurationAccessibilityValue)
-        .accessibilityHint("打开一层会话设置面板")
-        .accessibilityIdentifier("agent.configuration.compact")
+        if model.checkoutId != nil && NativeWorkspace.matchesExternalProvider(model.selectedProvider) {
+            quickRepositoryAccessMenu
+        }
     }
 
-    private var agentConfigurationPopover: some View {
-        VStack(alignment:.leading,spacing:0) {
-            HStack(alignment:.top,spacing:10) {
-                VStack(alignment:.leading,spacing:3) {
-                    Text("会话设置")
-                        .font(.system(size:13,weight:.semibold))
-                    Text("只调整当前会话；API endpoint 与凭证仍由全局 Provider 设置管理。")
-                        .font(.system(size:10.5))
-                        .foregroundStyle(ForgePalette.secondary)
-                        .fixedSize(horizontal:false,vertical:true)
-                }
-                Spacer(minLength:8)
-                Button { showAgentConfiguration=false } label: {
-                    Image(systemName:"xmark")
-                        .font(.system(size:9,weight:.semibold))
-                        .frame(width:24,height:24)
-                }
-                .buttonStyle(.plain)
-                .help("关闭会话设置")
-                .accessibilityLabel("关闭会话设置")
-            }
-            .padding(.horizontal,14).padding(.vertical,12)
+    private var showsQuickProviderPicker: Bool {
+        !providerSelectionLocked && quickProviderCount > 1
+    }
 
-            Divider()
-
-            ScrollView {
-                VStack(alignment:.leading,spacing:0) {
-                    configurationSection("Provider") {
-                        VStack(spacing:2) {
-                            configurationChoice(
-                                "Codex CLI",
-                                subtitle:"本地 Codex 会话",
-                                systemImage:"cpu",
-                                selected:model.selectedProvider == "codex",
-                                disabled:providerSelectionLocked
-                            ) {
-                                model.selectThreadProvider("codex")
-                            }
-                            if let profiles=model.localApiSettings?.profiles {
-                                ForEach(profiles) { profile in
-                                    configurationChoice(
-                                        profile.label,
-                                        subtitle:profile.endpointReady ? "当前会话使用此 API Profile" : "需要先配置 Provider",
-                                        systemImage:"server.rack",
-                                        selected:model.selectedProvider == profile.providerId,
-                                        disabled:providerSelectionLocked || !profile.endpointReady
-                                    ) {
-                                        model.selectThreadProvider(profile.providerId)
-                                    }
-                                }
-                            }
-                            configurationChoice(
-                                "JoyCode",
-                                subtitle:model.joyCodeProfileReady ? "使用已配置的 JoyCode Profile" : "需要先配置 Provider",
-                                systemImage:"sparkles",
-                                selected:model.selectedProvider == "joycode",
-                                disabled:providerSelectionLocked || !model.joyCodeProfileReady
-                            ) {
-                                model.selectThreadProvider("joycode")
-                            }
-                            Button("管理 Provider Profile") {
-                                showAgentConfiguration=false
-                                model.show(.settings)
-                            }
-                            .buttonStyle(.plain)
-                            .font(.system(size:10,weight:.semibold))
-                            .foregroundStyle(ForgePalette.secondary)
-                            .padding(.top,5)
-                            .accessibilityIdentifier("agent.configuration.provider-settings")
-                        }
-                        if providerSelectionLocked {
-                            Text("Agent 运行期间锁定 Provider，完成后可以切换当前会话。")
-                                .font(.system(size:9.5))
-                                .foregroundStyle(.tertiary)
-                                .padding(.top,5)
-                        }
-                    }
-                    Divider().padding(.vertical,2)
-
-                    if model.selectedProvider == "codex" {
-                        configurationSection("模型") {
-                            if model.agentModels.isEmpty {
-                                Text("没有可用模型。")
-                                    .font(.system(size:10.5))
-                                    .foregroundStyle(ForgePalette.secondary)
-                            } else {
-                                VStack(spacing:2) {
-                                    ForEach(model.agentModels) { option in
-                                        configurationChoice(
-                                            option.displayName,
-                                            subtitle:option.description,
-                                            systemImage:"cube",
-                                            selected:model.selectedAgentModel?.slug == option.slug,
-                                            disabled:model.busy
-                                        ) {
-                                            model.selectAgentModel(option.slug)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        Divider().padding(.vertical,2)
-
-                        configurationSection("推理强度") {
-                            if model.selectedReasoningOptions.isEmpty {
-                                Text("当前模型没有可选推理强度。")
-                                    .font(.system(size:10.5))
-                                    .foregroundStyle(ForgePalette.secondary)
-                            } else {
-                                HStack(spacing:6) {
-                                    ForEach(model.selectedReasoningOptions) { option in
-                                        let selected=model.selectedReasoningEffort == option.effort
-                                        Button(reasoningLabel(option.effort)) {
-                                            model.selectReasoningEffort(option.effort)
-                                        }
-                                        .buttonStyle(.plain)
-                                        .font(.system(size:10,weight:selected ? .semibold : .medium))
-                                        .foregroundStyle(selected ? ForgePalette.ink : ForgePalette.secondary)
-                                        .padding(.horizontal,9)
-                                        .frame(height:27)
-                                        .background(selected ? ForgePalette.selectionStrong : ForgePalette.softFill,
-                                                    in:Capsule())
-                                        .disabled(model.busy)
-                                        .accessibilityLabel("推理强度 \(reasoningLabel(option.effort))")
-                                        .accessibilityValue(selected ? "已选择" : "未选择")
-                                    }
-                                }
-                            }
-                        }
-                    } else {
-                        configurationSection("模型") {
-                            HStack(spacing:9) {
-                                Image(systemName:"cube")
-                                    .font(.system(size:10))
-                                    .foregroundStyle(ForgePalette.secondary)
-                                VStack(alignment:.leading,spacing:2) {
-                                    Text(model.selectedApiModel.isEmpty ? "未配置模型" : model.selectedApiModel)
-                                        .font(.system(size:11,weight:.medium))
-                                    Text("模型由当前 Provider Profile 管理。")
-                                        .font(.system(size:9.5))
-                                        .foregroundStyle(.tertiary)
-                                }
-                                Spacer()
-                                Button("Provider 设置") {
-                                    showAgentConfiguration=false
-                                    model.show(.settings)
-                                }
-                                .buttonStyle(.plain)
-                                .font(.system(size:10,weight:.semibold))
-                                .disabled(model.busy)
-                                .accessibilityIdentifier("agent.configuration.provider-settings")
-                            }
-                        }
-                    }
-
-                    if model.checkoutId != nil && NativeWorkspace.matchesExternalProvider(model.selectedProvider) {
-                        Divider().padding(.vertical,2)
-
-                        configurationSection("仓库权限") {
-                            VStack(spacing:2) {
-                                configurationChoice(
-                                    "Request",
-                                    subtitle:"默认只读；写入时请求确认",
-                                    systemImage:"lock",
-                                    selected:model.repositoryAccessMode == "request",
-                                    disabled:model.busy || model.repositoryAccessLoading
-                                ) {
-                                    Task { _ = await model.setRepositoryAccessMode("request") }
-                                }
-                                configurationChoice(
-                                    "Full Access",
-                                    subtitle:"持续允许普通仓库写入；敏感操作仍单独受保护",
-                                    systemImage:"checkmark.shield",
-                                    selected:model.repositoryAccessMode == "full_access",
-                                    disabled:model.busy || model.repositoryAccessLoading
-                                ) {
-                                    Task { _ = await model.setRepositoryAccessMode("full_access") }
-                                }
-                            }
-                        }
-                    }
-                }
-                .padding(.vertical,6)
-            }
-            .frame(maxHeight:430)
+    private var quickProviderCount: Int {
+        let profiles = model.localApiSettings?.profiles ?? []
+        var count = model.localProviderReady ? 1 : 0
+        count += profiles.filter(\.endpointReady).count
+        if model.joyCodeProfileReady { count += 1 }
+        // Preserve the currently bound provider even if its profile is temporarily unavailable.
+        if model.selectedProvider == "codex" && !model.localProviderReady { count += 1 }
+        if model.selectedProvider == "joycode" && !model.joyCodeProfileReady { count += 1 }
+        if let selectedProfile = profiles.first(where: { $0.providerId == model.selectedProvider }) {
+            if !selectedProfile.endpointReady { count += 1 }
+        } else if model.selectedProvider != "codex" && model.selectedProvider != "joycode" {
+            count += 1
         }
-        .frame(width:390)
-        .accessibilityIdentifier("agent.configuration.popover")
+        return count
     }
 
     private var providerSelectionLocked: Bool {
         model.busy
     }
 
-    private func configurationSection<Content:View>(
-        _ title:String,
-        @ViewBuilder content:() -> Content
-    ) -> some View {
-        VStack(alignment:.leading,spacing:7) {
-            Text(title)
-                .font(.system(size:9.5,weight:.semibold))
-                .foregroundStyle(ForgePalette.secondary)
-            content()
-        }
-        .padding(.horizontal,14).padding(.vertical,9)
-    }
-
-    private func configurationChoice(
-        _ title:String,
-        subtitle:String,
-        systemImage:String,
-        selected:Bool,
-        disabled:Bool,
-        action:@escaping () -> Void
-    ) -> some View {
-        Button(action:action) {
-            HStack(alignment:.top,spacing:9) {
-                Image(systemName:systemImage)
-                    .font(.system(size:10))
-                    .foregroundStyle(selected ? ForgePalette.ink : ForgePalette.secondary)
-                    .frame(width:18,height:18)
-                VStack(alignment:.leading,spacing:2) {
-                    Text(title)
-                        .font(.system(size:11,weight:selected ? .semibold : .medium))
-                        .foregroundStyle(ForgePalette.ink)
-                    Text(subtitle)
-                        .font(.system(size:9.5))
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(2)
-                }
-                Spacer(minLength:8)
-                if selected {
-                    Image(systemName:"checkmark")
-                        .font(.system(size:9,weight:.bold))
-                        .foregroundStyle(ForgePalette.ink)
-                        .padding(.top,2)
+    private var quickProviderMenu: some View {
+        Menu {
+            Button {
+                model.selectThreadProvider("codex")
+            } label: {
+                if model.selectedProvider == "codex" {
+                    Label("Codex CLI",systemImage:"checkmark")
+                } else {
+                    Text("Codex CLI")
                 }
             }
-            .padding(.horizontal,8).padding(.vertical,7)
-            .frame(maxWidth:.infinity,alignment:.leading)
-            .background(selected ? ForgePalette.selectionStrong : Color.clear,
-                        in:RoundedRectangle(cornerRadius:8,style:.continuous))
-            .contentShape(Rectangle())
+            .disabled(!model.localProviderReady && model.selectedProvider != "codex")
+
+            if let profiles = model.localApiSettings?.profiles {
+                ForEach(profiles) { profile in
+                    Button {
+                        model.selectThreadProvider(profile.providerId)
+                    } label: {
+                        if model.selectedProvider == profile.providerId {
+                            Label(profile.label,systemImage:"checkmark")
+                        } else {
+                            Text(profile.label)
+                        }
+                    }
+                    .disabled(!profile.endpointReady && model.selectedProvider != profile.providerId)
+                }
+            }
+
+            if model.joyCodeProfileReady || model.selectedProvider == "joycode" {
+                Button {
+                    model.selectThreadProvider("joycode")
+                } label: {
+                    if model.selectedProvider == "joycode" {
+                        Label("JoyCode",systemImage:"checkmark")
+                    } else {
+                        Text("JoyCode")
+                    }
+                }
+                .disabled(!model.joyCodeProfileReady)
+            }
+        } label: {
+            quickControlLabel(
+                quickProviderLabel,
+                systemImage:model.selectedProvider == "joycode" ? "sparkles" :
+                    (NativeWorkspace.matchesExternalProvider(model.selectedProvider) ? "server.rack" : "cpu")
+            )
         }
-        .buttonStyle(.plain)
-        .disabled(disabled)
-        .opacity(disabled ? 0.5 : 1)
-        .accessibilityLabel(title)
-        .accessibilityValue(selected ? "已选择" : "未选择")
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .disabled(providerSelectionLocked)
+        .help("切换当前会话的 Provider；已有消息保留，默认值只影响新会话")
+        .accessibilityLabel("Provider")
+        .accessibilityValue(quickProviderLabel)
+        .accessibilityIdentifier("agent.provider.quick")
     }
 
-    private var composerConfigurationLabel: String {
-        if NativeWorkspace.matchesExternalProvider(model.selectedProvider) {
-            let externalModel = model.selectedApiModel.isEmpty ? "外部模型" : model.selectedApiModel
-            return model.selectedProvider == "joycode"
-                ? "JoyCode · \(externalModel)"
-                : "API · \(externalModel)"
+    private var quickModelMenu: some View {
+        Menu {
+            if model.selectedProvider == "codex" {
+                ForEach(model.agentModels) { option in
+                    Button {
+                        model.selectAgentModel(option.slug)
+                    } label: {
+                        if model.selectedAgentModel?.slug == option.slug {
+                            Label(option.displayName,systemImage:"checkmark")
+                        } else {
+                            Text(option.displayName)
+                        }
+                    }
+                    .disabled(model.busy)
+                }
+            } else {
+                let label = model.selectedApiModel.isEmpty ? "未配置模型" : model.selectedApiModel
+                Button(label) {}
+                    .disabled(true)
+                Divider()
+                Button("前往 Provider 设置…") {
+                    model.show(.settings)
+                }
+                .disabled(model.busy)
+            }
+        } label: {
+            quickControlLabel(quickModelLabel,systemImage:"cube")
         }
-        let modelName = model.selectedAgentModel?.displayName ?? "Codex"
-        let reasoning = reasoningLabel(model.selectedReasoningEffort)
-        return reasoning.isEmpty ? modelName : "\(modelName) · \(reasoning)"
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .disabled(model.busy || (model.selectedProvider == "codex" && model.agentModels.isEmpty))
+        .help(model.selectedProvider == "codex" ? "切换模型" : "当前外部 Provider 模型；模型配置在设置中管理")
+        .accessibilityLabel("模型")
+        .accessibilityValue(quickModelLabel)
+        .accessibilityIdentifier("agent.model.quick")
     }
 
-    private var compactConfigurationAccessibilityValue: String {
-        let provider = model.selectedProvider == "joycode"
-            ? "JoyCode"
-            : (model.selectedProvider == "api" ? "兼容 API" : "Codex CLI")
-        let writeScope = NativeWorkspace.matchesExternalProvider(model.selectedProvider)
-            ? (model.repositoryAccessMode == "full_access" ? "，仓库 Full Access" : "，仓库 Request") : ""
-        return "\(provider)，\(composerConfigurationLabel)\(writeScope)"
+    private var quickReasoningMenu: some View {
+        Menu {
+            ForEach(model.selectedReasoningOptions) { option in
+                Button {
+                    model.selectReasoningEffort(option.effort)
+                } label: {
+                    let label = reasoningLabel(option.effort)
+                    if model.selectedReasoningEffort == option.effort {
+                        Label(label,systemImage:"checkmark")
+                    } else {
+                        Text(label)
+                    }
+                }
+                .disabled(model.busy)
+            }
+        } label: {
+            quickControlLabel(reasoningLabel(model.selectedReasoningEffort),systemImage:"brain.head.profile")
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .disabled(model.busy)
+        .help("切换当前模型的推理强度")
+        .accessibilityLabel("推理强度")
+        .accessibilityValue(reasoningLabel(model.selectedReasoningEffort))
+        .accessibilityIdentifier("agent.reasoning.quick")
+    }
+
+    private var quickRepositoryAccessMenu: some View {
+        Menu {
+            Button {
+                Task { _ = await model.setRepositoryAccessMode("request") }
+            } label: {
+                if model.repositoryAccessMode == "request" {
+                    Label("Request",systemImage:"checkmark")
+                } else {
+                    Text("Request")
+                }
+            }
+
+            Button {
+                Task { _ = await model.setRepositoryAccessMode("full_access") }
+            } label: {
+                if model.repositoryAccessMode == "full_access" {
+                    Label("Full Access",systemImage:"checkmark")
+                } else {
+                    Text("Full Access")
+                }
+            }
+        } label: {
+            quickControlLabel(
+                model.repositoryAccessMode == "full_access" ? "Full Access" : "Request",
+                systemImage:model.repositoryAccessMode == "full_access" ? "checkmark.shield" : "lock"
+            )
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .disabled(model.busy || model.repositoryAccessLoading)
+        .help("当前外部 Provider 的仓库权限")
+        .accessibilityLabel("仓库权限")
+        .accessibilityValue(model.repositoryAccessMode == "full_access" ? "Full Access" : "Request")
+        .accessibilityIdentifier("agent.repository-access.quick")
+    }
+
+    private func quickControlLabel(_ title:String,systemImage:String) -> some View {
+        HStack(spacing:5) {
+            Image(systemName:systemImage)
+                .font(.system(size:9,weight:.medium))
+                .foregroundStyle(ForgePalette.secondary)
+            Text(title)
+                .font(.system(size:10.5,weight:.medium))
+                .foregroundStyle(ForgePalette.ink)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Image(systemName:"chevron.down")
+                .font(.system(size:6.5,weight:.bold))
+                .foregroundStyle(.tertiary)
+        }
+        .padding(.horizontal,8)
+        .frame(height:27)
+        .background(ForgePalette.softFill,
+                    in:RoundedRectangle(cornerRadius:9,style:.continuous))
+        .contentShape(Rectangle())
+    }
+
+    private var quickProviderLabel: String {
+        if model.selectedProvider == "codex" { return "Codex CLI" }
+        if model.selectedProvider == "joycode" { return "JoyCode" }
+        return model.localApiSettings?.profiles.first(where: { $0.providerId == model.selectedProvider })?.label ?? "API"
+    }
+
+    private var quickModelLabel: String {
+        if model.selectedProvider == "codex" {
+            return model.selectedAgentModel?.displayName ?? "模型"
+        }
+        return model.selectedApiModel.isEmpty ? "模型" : model.selectedApiModel
     }
 
     private func activityIcon(_ phase: String) -> String {
@@ -6336,50 +6252,14 @@ private struct KnowledgePane: View {
     }
 }
 
-private struct ProviderProfileDraft: Identifiable, Equatable {
-    let id:String
-    var label:String
-    var endpoint:String
-    var model:String
-    var apiProtocol:String
-    var credentialRef:String?
-
-    var providerId:String { "api:\(id)" }
-
-    init(_ detail:ApiProviderProfileDetail) {
-        id=detail.id
-        label=detail.label
-        endpoint=detail.endpoint
-        model=detail.model
-        apiProtocol=detail.apiProtocol
-        credentialRef=detail.credentialRef
-    }
-
-    init(id:String,label:String,endpoint:String,model:String,apiProtocol:String,credentialRef:String?=nil) {
-        self.id=id
-        self.label=label
-        self.endpoint=endpoint
-        self.model=model
-        self.apiProtocol=apiProtocol
-        self.credentialRef=credentialRef
-    }
-
-    func detail(existing:ApiProviderProfileDetail?) -> ApiProviderProfileDetail {
-        ApiProviderProfileDetail(
-            id:id,providerId:providerId,label:label,endpoint:endpoint,model:model,
-            apiProtocol:apiProtocol,credentialRef:credentialRef,
-            hasKey:existing?.hasKey ?? false,
-            endpointReady:existing?.endpointReady ?? false
-        )
-    }
-}
-
 private struct SettingsPane: View {
     @ObservedObject var model: NativeWorkspace
     @State private var defaultProvider = "codex"
-    @State private var profiles:[ProviderProfileDraft] = []
-    @State private var selectedProfileId = ""
+    @State private var apiProtocol = "openai"
+    @State private var endpoint = "https://api.openai.com/v1"
+    @State private var apiModel = ""
     @State private var joyCodeModel = "JoyAI-Code-1.6"
+    @State private var selectedCredentialRef = ""
     @State private var saving = false
 
     var body: some View {
@@ -6388,7 +6268,7 @@ private struct SettingsPane: View {
                 HStack(alignment:.top) {
                     VStack(alignment:.leading,spacing:6) {
                         Text("设置").font(.system(size:22,weight:.medium))
-                        Text("Provider 与 Agent Harness 配置。API/JoyCode 由 Forge Local Harness 直接执行 tools；Codex CLI 通过其 MCP 扩展接口接入同一 Forge Tool Registry。")
+                        Text("Agent、MCP 连接与 Runtime 的本机配置。Runtime 不再占用工作区主导航。")
                             .font(.system(size:12)).foregroundStyle(ForgePalette.secondary)
                     }
                     Spacer()
@@ -6407,138 +6287,163 @@ private struct SettingsPane: View {
                 PluginSettingsSection(model:model)
                 Divider()
 
-                VStack(alignment:.leading,spacing:12) {
+                VStack(alignment:.leading,spacing:13) {
                     HStack(spacing:9) {
                         Circle().fill(model.selectedProviderReady ? Color.green : Color.orange)
                             .frame(width:8,height:8)
-                        Text("当前会话 · \(selectedProviderLabel)")
+                        Text("当前会话 · \(model.selectedProvider == "joycode" ? "JoyCode" : (model.selectedProvider == "api" ? "兼容 API" : "Codex CLI"))")
                             .font(.system(size:14,weight:.semibold))
                         Spacer()
                     }
-                    Text(currentProviderDescription)
+                    Text(model.selectedProvider == "joycode"
+                         ? (model.joyCodeProfileReady ? "复用本机 JoyCode 登录态；凭据不会写入 Forge 配置。" : "JoyCode 登录态尚未就绪。")
+                         : (model.selectedProvider == "api"
+                            ? (model.apiProfileReady ? "使用保存的兼容 API profile；仓库写权限按 Repository AccessPolicy 持续生效，密钥授权按 Grant 复用。" : "API profile 尚未完成。")
+                            : model.provider))
                         .font(.system(size:12)).foregroundStyle(ForgePalette.secondary)
                     LazyVGrid(columns:[GridItem(.adaptive(minimum:145,maximum:260),spacing:14,alignment:.leading)],
                               alignment:.leading,spacing:10) {
                         settingMeta("会话模型",NativeWorkspace.matchesExternalProvider(model.selectedProvider)
                                     ? (model.selectedApiModel.isEmpty ? "未配置" : model.selectedApiModel)
                                     : (model.selectedAgentModel?.displayName ?? "Codex 默认"))
-                        settingMeta("Agent Harness",model.selectedProvider == "codex" ? "Codex CLI Harness" : "Forge Local Harness")
-                        settingMeta("Tool Transport",model.selectedProvider == "codex"
-                                    ? "Codex MCP adapter"
-                                    : "Local direct · canonical registry")
+                        settingMeta("Reasoning",NativeWorkspace.matchesExternalProvider(model.selectedProvider)
+                                    ? (model.selectedProvider == "joycode" ? "JoyCode" : "API profile")
+                                    : (model.selectedReasoningEffort.isEmpty ? "默认" : model.selectedReasoningEffort))
+                        settingMeta("图片输入",model.selectedProviderSupportsImages ? "可用" : "不可用")
                     }
-                    Text("Provider 可在空闲时按会话显式切换；默认 Provider 只影响新会话，不会静默改写已有会话。")
+                    Text("Provider 与模型上下文按会话保存；已有历史不会被默认设置静默改写。")
                         .font(.system(size:10.5)).foregroundStyle(.tertiary)
                 }
-                .padding(.vertical,10)
-
+                .padding(.vertical,12)
                 Divider()
 
-                VStack(alignment:.leading,spacing:14) {
+                VStack(alignment:.leading,spacing:13) {
                     HStack {
-                        VStack(alignment:.leading,spacing:4) {
-                            Text("模型 Provider").font(.system(size:13,weight:.semibold))
-                            Text("Provider 只负责模型协议与鉴权；Repository/Git/Process 权限仍由 Forge canonical authority 决定。")
+                        Text("保存的兼容 API profile").font(.system(size:13,weight:.semibold))
+                        Spacer()
+                        Text(model.apiProfileReady ? "可用于新会话" : "配置未完成")
+                            .font(.system(size:9.5,weight:.semibold))
+                            .foregroundStyle(model.apiProfileReady ? Color.green : Color.orange)
+                    }
+                    if let settings = model.localApiSettings {
+                        LazyVGrid(columns:[GridItem(.adaptive(minimum:145,maximum:260),spacing:14,alignment:.leading)],
+                                  alignment:.leading,spacing:10) {
+                            settingMeta("新会话默认",settings.provider == "joycode" ? "JoyCode" : (settings.provider == "api" ? "兼容 API" : "Codex CLI"))
+                            settingMeta("协议",settings.apiProtocol)
+                            settingMeta("Credential",settings.credentialRef ?? (settings.endpoint == "https://zro.moonmath.ai/v1" ? "zro 管理" : "未选择"))
+                        }
+                    } else {
+                        Text(model.settingsLoading ? "正在读取本地配置…" : "尚未读取本地 API 配置。")
+                            .font(.system(size:11.5)).foregroundStyle(ForgePalette.secondary)
+                    }
+
+                    VStack(alignment:.leading,spacing:11) {
+                        HStack(spacing:12) {
+                            Text("新会话默认").font(.system(size:10.5,weight:.medium))
+                                .foregroundStyle(ForgePalette.secondary).frame(width:82,alignment:.leading)
+                            Picker("新会话默认",selection:$defaultProvider) {
+                                Text("Codex CLI").tag("codex")
+                                Text("兼容 API").tag("api")
+                                Text("JoyCode").tag("joycode")
+                            }
+                            .labelsHidden().pickerStyle(.segmented).frame(maxWidth:260)
+                            .accessibilityIdentifier("settings.default-provider")
+                        }
+                        HStack(spacing:12) {
+                            Text("API 协议").font(.system(size:10.5,weight:.medium))
+                                .foregroundStyle(ForgePalette.secondary).frame(width:82,alignment:.leading)
+                            Picker("API 协议",selection:$apiProtocol) {
+                                Text("OpenAI Chat").tag("openai")
+                                Text("OpenAI Responses").tag("responses")
+                                Text("Anthropic").tag("anthropic")
+                            }
+                            .labelsHidden().pickerStyle(.menu).frame(maxWidth:260,alignment:.leading)
+                            .accessibilityIdentifier("settings.api-protocol")
+                        }
+                        settingsField("Endpoint") {
+                            TextField("https://api.example.com/v1",text:$endpoint)
+                                .textFieldStyle(.plain).font(.system(size:11.5,design:.monospaced))
+                                .accessibilityIdentifier("settings.endpoint")
+                        }
+                        settingsField("模型 ID") {
+                            TextField("例如 gpt-5.6 / claude-sonnet",text:$apiModel)
+                                .textFieldStyle(.plain).font(.system(size:11.5,design:.monospaced))
+                                .accessibilityIdentifier("settings.model")
+                        }
+                        settingsField("JoyCode 模型") {
+                            TextField("JoyAI-Code-1.6",text:$joyCodeModel)
+                                .textFieldStyle(.plain).font(.system(size:11.5,design:.monospaced))
+                                .accessibilityIdentifier("settings.joycode-model")
+                        }
+                        HStack(spacing:7) {
+                            Circle().fill(model.localApiSettings?.joyCodeReady == true ? Color.green : Color.orange)
+                                .frame(width:7,height:7)
+                            Text(model.localApiSettings?.joyCodeReady == true
+                                 ? "已检测到本机 JoyCode 登录态；凭据仅在请求时读取到内存。"
+                                 : "未检测到 JoyCode 登录态，请先在 JoyCode 客户端登录。")
                                 .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
                         }
-                        Spacer()
-                        Menu {
-                            Button("DeepSeek（官方 API）") {
-                                addProfile(label:"DeepSeek",endpoint:"https://api.deepseek.com",model:"deepseek-v4-flash",apiProtocol:"openai")
+                        if endpoint.trimmingCharacters(in:.whitespacesAndNewlines) == "https://zro.moonmath.ai/v1" {
+                            Text("DeepSeek / zro 凭据由 zro 本机配置管理，Forge 不复制、不展示，也不创建第二份 secret。")
+                                .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
+                        } else if endpoint.lowercased().hasPrefix("http://localhost")
+                                    || endpoint.lowercased().hasPrefix("http://127.0.0.1") {
+                            Text("本机 loopback Endpoint 不要求受管密钥。")
+                                .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
+                        } else {
+                            settingsField("受管密钥") {
+                                Picker("受管密钥",selection:$selectedCredentialRef) {
+                                    Text("未选择").tag("")
+                                    ForEach(model.managedApiCredentials.filter { $0.endpoint == endpoint.trimmingCharacters(in:.whitespacesAndNewlines) }) { credential in
+                                        Text("\(credential.label) · \(credential.authorized ? "已授权" : "未授权")")
+                                            .tag(credential.credentialRef)
+                                    }
+                                }
+                                .labelsHidden().pickerStyle(.menu)
+                                .accessibilityIdentifier("settings.credential")
                             }
-                            Button("DeepSeek · Zro（第三方兼容）") {
-                                addProfile(label:"DeepSeek · Zro",endpoint:"https://zro.moonmath.ai/v1",model:"deepseek-v4.1-flash",apiProtocol:"openai")
-                            }
-                            Button("OpenAI") {
-                                addProfile(label:"OpenAI",endpoint:"https://api.openai.com/v1",model:"",apiProtocol:"responses")
-                            }
-                            Button("Anthropic") {
-                                addProfile(label:"Anthropic",endpoint:"https://api.anthropic.com/v1",model:"",apiProtocol:"anthropic")
-                            }
-                            Divider()
-                            Button("自定义兼容 API") {
-                                addProfile(label:"自定义 Provider",endpoint:"https://api.example.com/v1",model:"",apiProtocol:"openai")
-                            }
-                        } label: {
-                            Label("添加 Provider",systemImage:"plus")
-                        }
-                        .menuStyle(.borderlessButton)
-                    }
-
-                    HStack(spacing:12) {
-                        Text("新会话默认").font(.system(size:10.5,weight:.medium))
-                            .foregroundStyle(ForgePalette.secondary).frame(width:82,alignment:.leading)
-                        Picker("新会话默认",selection:$defaultProvider) {
-                            Text("Codex CLI").tag("codex")
-                            ForEach(profiles) { profile in
-                                Text(profile.label).tag(profile.providerId)
-                            }
-                            Text("JoyCode").tag("joycode")
-                        }
-                        .labelsHidden().pickerStyle(.menu).frame(maxWidth:300,alignment:.leading)
-                        .accessibilityIdentifier("settings.default-provider")
-                    }
-
-                    if profiles.isEmpty {
-                        Text("还没有 API Provider。添加 DeepSeek、OpenAI、Anthropic 或自定义兼容 Endpoint 后即可在会话中切换。")
-                            .font(.system(size:11.5)).foregroundStyle(ForgePalette.secondary)
-                            .padding(.vertical,4)
-                    } else {
-                        HStack(spacing:12) {
-                            Text("编辑 Profile").font(.system(size:10.5,weight:.medium))
-                                .foregroundStyle(ForgePalette.secondary).frame(width:82,alignment:.leading)
-                            Picker("编辑 Profile",selection:$selectedProfileId) {
-                                ForEach(profiles) { profile in
-                                    Text(profile.label).tag(profile.id)
+                            HStack(spacing:10) {
+                                Button("从剪贴板导入并授权") { importCredential() }
+                                    .buttonStyle(.bordered)
+                                    .disabled(saving || model.settingsLoading || endpoint.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty)
+                                if let credential = selectedCredential {
+                                    Button("从剪贴板轮换") { rotateCredential(credential.credentialRef) }
+                                        .buttonStyle(.plain)
+                                    Button(credential.authorized ? "撤销使用授权" : "授权使用") {
+                                        setCredentialAuthorization(credential.credentialRef,!credential.authorized)
+                                    }
+                                    .buttonStyle(.plain)
+                                    Button("删除",role:.destructive) { deleteCredential(credential.credentialRef) }
+                                        .buttonStyle(.plain).foregroundStyle(.red)
                                 }
                             }
-                            .labelsHidden().pickerStyle(.menu).frame(maxWidth:300,alignment:.leading)
-                            Spacer()
-                            if let index=selectedProfileIndex {
-                                let profile=profiles[index]
-                                Text(profileReadiness(profile))
-                                    .font(.system(size:9.5,weight:.semibold))
-                                    .foregroundStyle(profileReady(profile) ? Color.green : Color.orange)
-                                Button("删除",role:.destructive) { deleteProfile(index) }
-                                    .buttonStyle(.plain).foregroundStyle(.red)
+                            if let credential = selectedCredential {
+                                Text("Ref \(credential.credentialRef) · Keychain \(credential.hasSecret ? "已存" : "缺失") · \(credential.authorized ? "授权可复用" : "未授权")")
+                                    .font(.system(size:9.5,design:.monospaced)).foregroundStyle(.tertiary)
+                                    .textSelection(.enabled)
                             }
                         }
-
-                        if let index=selectedProfileIndex {
-                            providerEditor(index:index)
+                        HStack(spacing:10) {
+                            Spacer()
+                            Button(saving ? "保存中…" : "保存配置") {
+                                saveApiSettings()
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(saving || model.settingsLoading
+                                      || endpoint.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty
+                                      || (defaultProvider == "api" && apiModel.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty)
+                                      || (defaultProvider == "joycode"
+                                          && (joyCodeModel.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty
+                                              || model.localApiSettings?.joyCodeReady != true)))
+                            .accessibilityIdentifier("settings.save")
                         }
                     }
+                    .padding(.vertical,10)
 
-                    Divider()
-
-                    settingsField("JoyCode 模型") {
-                        TextField("JoyAI-Code-1.6",text:$joyCodeModel)
-                            .textFieldStyle(.plain).font(.system(size:11.5,design:.monospaced))
-                            .accessibilityIdentifier("settings.joycode-model")
-                    }
-                    HStack(spacing:7) {
-                        Circle().fill(model.localApiSettings?.joyCodeReady == true ? Color.green : Color.orange)
-                            .frame(width:7,height:7)
-                        Text(model.localApiSettings?.joyCodeReady == true
-                             ? "已检测到本机 JoyCode 登录态；凭据由 JoyCode 自己管理。"
-                             : "未检测到 JoyCode 登录态。")
-                            .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
-                    }
-
-                    HStack(spacing:10) {
-                        Spacer()
-                        Button(saving ? "保存中…" : "保存 Provider 配置") {
-                            saveApiSettings()
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(saveDisabled)
-                        .accessibilityIdentifier("settings.save")
-                    }
-
-                    Text("API secret 只保存于 macOS Keychain；Provider Profile 只持久化 opaque credential ref、Endpoint、协议与模型。API/JoyCode 的 Local Harness 直接调用 canonical Forge Tool Registry；Codex CLI 保留其原生 MCP tool adapter，不复制 Forge authority。")
+                    Text("Forge-managed secret 只存在 macOS Keychain；配置只保存 opaque credential ref、Endpoint、Provider 与模型。创建/轮换从剪贴板导入后立即清空剪贴板，模型与 MCP 永不获得 raw secret。JoyCode、Codex、zro 继续由各自本机凭据 Authority 管理。仓库写权限按 Repository AccessPolicy 持续生效，密钥使用按 canonical AuthorizationGrant 复用直到到期或撤销。")
                         .font(.system(size:10.5)).foregroundStyle(.tertiary).lineSpacing(3)
                 }
-                .padding(.vertical,10)
+                .padding(.vertical,12)
             }
             .frame(maxWidth:960,alignment:.leading)
             .frame(maxWidth:.infinity,alignment:.leading)
@@ -6549,225 +6454,77 @@ private struct SettingsPane: View {
         }
     }
 
-    @ViewBuilder
-    private func providerEditor(index:Int) -> some View {
-        VStack(alignment:.leading,spacing:11) {
-            settingsField("名称") {
-                TextField("Provider 名称",text:$profiles[index].label)
-                    .textFieldStyle(.plain)
-            }
-            settingsField("Endpoint") {
-                TextField("https://api.example.com",text:$profiles[index].endpoint)
-                    .textFieldStyle(.plain).font(.system(size:11.5,design:.monospaced))
-                    .accessibilityIdentifier("settings.endpoint")
-            }
-            settingsField("模型 ID") {
-                TextField("模型 ID",text:$profiles[index].model)
-                    .textFieldStyle(.plain).font(.system(size:11.5,design:.monospaced))
-                    .accessibilityIdentifier("settings.model")
-            }
-            HStack(spacing:12) {
-                Text("API 协议").font(.system(size:10.5,weight:.medium))
-                    .foregroundStyle(ForgePalette.secondary).frame(width:82,alignment:.leading)
-                Picker("API 协议",selection:$profiles[index].apiProtocol) {
-                    Text("OpenAI Chat").tag("openai")
-                    Text("OpenAI Responses").tag("responses")
-                    Text("Anthropic").tag("anthropic")
-                }
-                .labelsHidden().pickerStyle(.menu).frame(maxWidth:300,alignment:.leading)
-                .accessibilityIdentifier("settings.api-protocol")
-            }
-
-            let endpoint=profiles[index].endpoint.trimmingCharacters(in:.whitespacesAndNewlines)
-            if endpoint == "https://zro.moonmath.ai/v1" {
-                Text("zro 凭据由 zro 本机配置管理，Forge 不复制 secret。")
-                    .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
-            } else if endpoint.lowercased().hasPrefix("http://localhost")
-                        || endpoint.lowercased().hasPrefix("http://127.0.0.1") {
-                Text("本机 loopback Endpoint 不要求受管密钥。")
-                    .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
-            } else {
-                settingsField("受管密钥") {
-                    Picker("受管密钥",selection:$profiles[index].credentialRef) {
-                        Text("未选择").tag(nil as String?)
-                        ForEach(model.managedApiCredentials.filter { $0.endpoint == endpoint }) { credential in
-                            Text("\(credential.label) · \(credential.authorized ? "已授权" : "未授权")")
-                                .tag(Optional(credential.credentialRef))
-                        }
-                    }
-                    .labelsHidden().pickerStyle(.menu)
-                    .accessibilityIdentifier("settings.credential")
-                }
-                HStack(spacing:10) {
-                    Button("从剪贴板导入并授权") { importCredential(index:index) }
-                        .buttonStyle(.bordered)
-                        .disabled(saving || model.settingsLoading || endpoint.isEmpty)
-                    if let credential=selectedCredential(index:index) {
-                        Button("从剪贴板轮换") { rotateCredential(credential.credentialRef) }
-                            .buttonStyle(.plain)
-                        Button(credential.authorized ? "撤销使用授权" : "授权使用") {
-                            setCredentialAuthorization(credential.credentialRef,!credential.authorized)
-                        }
-                        .buttonStyle(.plain)
-                        Button("删除密钥",role:.destructive) { deleteCredential(credential.credentialRef) }
-                            .buttonStyle(.plain).foregroundStyle(.red)
-                    }
-                }
-                if let credential=selectedCredential(index:index) {
-                    Text("Ref \(credential.credentialRef) · Keychain \(credential.hasSecret ? "已存" : "缺失") · \(credential.authorized ? "授权可复用" : "未授权")")
-                        .font(.system(size:9.5,design:.monospaced)).foregroundStyle(.tertiary)
-                        .textSelection(.enabled)
-                }
-            }
-        }
-        .padding(.vertical,6)
-    }
-
-    private var selectedProfileIndex:Int? {
-        profiles.firstIndex { $0.id == selectedProfileId }
-    }
-
-    private var selectedProviderLabel:String {
-        if model.selectedProvider == "codex" { return "Codex CLI" }
-        if model.selectedProvider == "joycode" { return "JoyCode" }
-        return model.selectedApiProfile?.label ?? "API Provider"
-    }
-
-    private var currentProviderDescription:String {
-        if model.selectedProvider == "joycode" {
-            return model.joyCodeProfileReady
-                ? "JoyCode 作为模型 Provider；Forge 工具由 Local Agent Harness 执行。"
-                : "JoyCode 登录态尚未就绪。"
-        }
-        if NativeWorkspace.matchesExternalProvider(model.selectedProvider) {
-            return model.selectedProviderReady
-                ? "当前 API Provider 由 Local Agent Harness 驱动；built-in Forge tools 走本地 direct tool session。"
-                : "当前 API Provider 尚未就绪。"
-        }
-        return "Codex CLI 自带 Agent Harness；Forge tools 通过 Codex 支持的 MCP adapter 注入，执行 authority 仍由 Forge Runtime/Repository policy 持有。"
-    }
-
-    private var settingsSignature:String {
-        guard let settings=model.localApiSettings else { return "none" }
-        let rows=settings.profiles.map {
-            [$0.id,$0.label,$0.endpoint,$0.model,$0.apiProtocol,$0.credentialRef ?? ""].joined(separator:"|")
-        }.joined(separator:";")
-        return [settings.defaultProvider,rows,settings.joyCodeModel].joined(separator:"::")
-    }
-
-    private var saveDisabled:Bool {
-        if saving || model.settingsLoading || joyCodeModel.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty {
-            return true
-        }
-        if profiles.contains(where: {
-            $0.label.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty
-                || $0.endpoint.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty
-                || $0.model.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty
-        }) { return true }
-        if defaultProvider == "joycode" && model.localApiSettings?.joyCodeReady != true { return true }
-        return false
+    private var settingsSignature: String {
+        guard let settings = model.localApiSettings else { return "none" }
+        // Only persisted configuration can resynchronize an editable draft.
+        // Session readiness and credential health refresh independently and
+        // must never silently overwrite a user's unsaved form values.
+        return [settings.provider,settings.endpoint,settings.model,settings.apiProtocol,
+                settings.credentialRef ?? "",settings.joyCodeModel].joined(separator:"|")
     }
 
     private func syncSettingsDraft() {
-        guard let settings=model.localApiSettings else { return }
-        defaultProvider=settings.defaultProvider
-        profiles=settings.profiles.map(ProviderProfileDraft.init)
-        if let id=settings.defaultProvider.split(separator:":",maxSplits:1).dropFirst().first,
-           profiles.contains(where:{$0.id == String(id)}) {
-            selectedProfileId=String(id)
-        } else if !profiles.contains(where:{$0.id == selectedProfileId}) {
-            selectedProfileId=profiles.first?.id ?? ""
-        }
-        joyCodeModel=settings.joyCodeModel
-    }
-
-    private func addProfile(label:String,endpoint:String,model:String,apiProtocol:String) {
-        let id="profile-" + UUID().uuidString.prefix(8).lowercased()
-        let profile=ProviderProfileDraft(
-            id:String(id),label:label,endpoint:endpoint,model:model,apiProtocol:apiProtocol
-        )
-        profiles.append(profile)
-        selectedProfileId=profile.id
-    }
-
-    private func deleteProfile(_ index:Int) {
-        guard profiles.indices.contains(index) else { return }
-        let providerId=profiles[index].providerId
-        profiles.remove(at:index)
-        if defaultProvider == providerId { defaultProvider="codex" }
-        selectedProfileId=profiles.first?.id ?? ""
-    }
-
-    private func existingProfile(_ id:String) -> ApiProviderProfileDetail? {
-        model.localApiSettings?.profiles.first { $0.id == id }
-    }
-
-    private func profileReady(_ profile:ProviderProfileDraft) -> Bool {
-        guard let saved=existingProfile(profile.id), saved.endpointReady else { return false }
-        return saved.label == profile.label
-            && saved.endpoint == profile.endpoint
-            && saved.model == profile.model
-            && saved.apiProtocol == profile.apiProtocol
-            && saved.credentialRef == profile.credentialRef
-    }
-
-    private func profileReadiness(_ profile:ProviderProfileDraft) -> String {
-        profileReady(profile) ? "已就绪" : "待保存/验证"
+        guard let settings = model.localApiSettings else { return }
+        defaultProvider = settings.provider
+        endpoint = settings.endpoint
+        apiModel = settings.model
+        joyCodeModel = settings.joyCodeModel
+        apiProtocol = settings.apiProtocol
+        selectedCredentialRef = settings.credentialRef ?? ""
     }
 
     private func saveApiSettings() {
-        guard !saveDisabled else { return }
-        saving=true
-        let details=profiles.map { $0.detail(existing:existingProfile($0.id)) }
+        guard !saving else { return }
+        saving = true
         Task {
-            _ = await model.saveLocalApiSettings(
-                defaultProvider:defaultProvider,
-                profiles:details,
+            let saved = await model.saveLocalApiSettings(
+                provider:defaultProvider,
+                endpoint:endpoint,
+                model:apiModel,
+                apiProtocol:apiProtocol,
+                credentialRef:selectedCredentialRef.isEmpty ? nil : selectedCredentialRef,
                 joyCodeModel:joyCodeModel
             )
-            saving=false
+            _ = saved
+            saving = false
         }
     }
 
-    private func selectedCredential(index:Int) -> ManagedApiCredentialDetail? {
-        guard profiles.indices.contains(index), let ref=profiles[index].credentialRef else { return nil }
-        return model.managedApiCredentials.first { $0.credentialRef == ref }
+    private var selectedCredential: ManagedApiCredentialDetail? {
+        model.managedApiCredentials.first { $0.credentialRef == selectedCredentialRef }
     }
 
-    private func importCredential(index:Int) {
-        guard !saving, profiles.indices.contains(index) else { return }
-        let endpoint=profiles[index].endpoint
-        saving=true
+    private func importCredential() {
+        guard !saving else { return }
+        saving = true
         Task {
-            if let credentialRef=await model.createManagedApiCredential(endpoint:endpoint,label:profiles[index].label) {
-                profiles[index].credentialRef=credentialRef
+            if let credentialRef = await model.createManagedApiCredential(endpoint:endpoint,label:URL(string:endpoint)?.host) {
+                selectedCredentialRef = credentialRef
             }
-            saving=false
+            saving = false
         }
     }
 
     private func rotateCredential(_ credentialRef:String) {
         guard !saving else { return }
-        saving=true
-        Task { _ = await model.rotateManagedApiCredential(credentialRef); saving=false }
+        saving = true
+        Task { _ = await model.rotateManagedApiCredential(credentialRef); saving = false }
     }
 
     private func setCredentialAuthorization(_ credentialRef:String,_ authorized:Bool) {
         guard !saving else { return }
-        saving=true
-        Task { _ = await model.setManagedApiCredentialAuthorization(credentialRef,authorized:authorized); saving=false }
+        saving = true
+        Task { _ = await model.setManagedApiCredentialAuthorization(credentialRef,authorized:authorized); saving = false }
     }
 
     private func deleteCredential(_ credentialRef:String) {
         guard !saving else { return }
-        saving=true
+        saving = true
         Task {
-            if await model.deleteManagedApiCredential(credentialRef) {
-                for index in profiles.indices where profiles[index].credentialRef == credentialRef {
-                    profiles[index].credentialRef=nil
-                }
+            if await model.deleteManagedApiCredential(credentialRef), selectedCredentialRef == credentialRef {
+                selectedCredentialRef = ""
             }
-            saving=false
+            saving = false
         }
     }
 
@@ -6793,5 +6550,13 @@ private struct SettingsPane: View {
                 .textSelection(.enabled)
         }
         .frame(maxWidth:.infinity,alignment:.leading)
+    }
+
+    private func settingLine(_ label:String,_ value:String) -> some View {
+        HStack(alignment:.firstTextBaseline,spacing:10) {
+            Text(label).font(.system(size:10,weight:.medium)).foregroundStyle(ForgePalette.secondary)
+                .frame(width:62,alignment:.leading)
+            Text(value).font(.system(size:10.5,design:.monospaced)).textSelection(.enabled)
+        }
     }
 }
