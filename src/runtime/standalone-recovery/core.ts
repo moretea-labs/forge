@@ -816,7 +816,6 @@ export async function verifyStableRuntime(
   const authority = releaseAuthority(config);
   const active = activeAuthorityRelease(config);
   const previous = previousAuthorityRelease(config);
-  const known = matchingKnownGood(config, active);
   const probes: VerifyResult['probes'] = {
     runtime_status: {
       ok: observation.running && !observation.stale,
@@ -826,6 +825,9 @@ export async function verifyStableRuntime(
     },
   };
   const knownGoodRecoverability = inspectKnownGoodRecoverability(config);
+  const known = active
+    ? knownGoodRecoverability.available.find((entry) => sameReleaseIdentity(entry, active))
+    : undefined;
   probes.recovery_known_good_recoverability = {
     ok: knownGoodRecoverability.unavailable.length === 0,
     detail: knownGoodRecoverability.unavailable.length === 0
@@ -1012,25 +1014,31 @@ function pruneRetiredKnownGoodRecoveryBundles(config: RecoveryConfig, releases: 
  * attestations are evidence, not a second rollback authority, and must not
  * keep full SQLite bundles and immutable Runtime trees alive indefinitely.
  */
-function reconcileKnownGoodRecoveryRetention(config: RecoveryConfig): void {
+function reconcileKnownGoodRecoveryRetention(config: RecoveryConfig, verifiedStable: VerifyResult): void {
   const store = knownGood(config);
   if (store.schemaVersion !== 2 || store.releases.length === 0) return;
+  if (verifiedStable.probes.recovery_known_good_recoverability?.ok !== true) {
+    throw new Error('KNOWN_GOOD_RETENTION_REQUIRES_PREVERIFIED_RECOVERABILITY');
+  }
   const authority = releaseAuthority(config);
   if (!authority) throw new Error('KNOWN_GOOD_RETENTION_RUNTIME_AUTHORITY_MISSING');
   const rollbackReleases = [
     releaseEvidence(config.controllerHome, authority.active, authority),
     ...(authority.previous ? [releaseEvidence(config.controllerHome, authority.previous, authority)] : []),
   ].filter((release): release is ReleaseEvidence => Boolean(release));
-  const retained: ReleaseEvidence[] = [];
-  for (const entry of store.releases) {
-    const rollbackEntry = rollbackReleases.find((release) => sameReleaseIdentity(release, entry));
-    if (!rollbackEntry) continue;
-    try { inspectKnownGoodRecoveryBundle(config.controllerHome, entry); }
-    catch (error) {
-      throw new Error(`KNOWN_GOOD_RETENTION_AUTHORITY_INVALID: ${error instanceof Error ? error.message : String(error)}`);
-    }
-    retained.push(entry);
+  const verifiedRollbackReleases = [
+    verifiedStable.releases.active,
+    verifiedStable.releases.previous,
+  ].filter((release): release is ReleaseEvidence => Boolean(release));
+  if (rollbackReleases.some((release) => !verifiedRollbackReleases.some((verified) => sameReleaseIdentity(verified, release)))) {
+    throw new Error('KNOWN_GOOD_RETENTION_RUNTIME_AUTHORITY_CHANGED_AFTER_VERIFY');
   }
+
+  const retained = store.releases.filter((entry) =>
+    rollbackReleases.some((release) => sameReleaseIdentity(release, entry)));
+  // verifyStableRuntime already validated Recovery bundle contents for the same
+  // rollback identities before this mutation lock. Retention owns only which
+  // evidence remains referenced; it must not re-hash multi-gigabyte bundle bytes.
   if (retained.length === store.releases.length) return;
   writeJson(statePath(config), { schemaVersion: 2, releases: retained, updatedAt: new Date().toISOString() } satisfies KnownGoodStore);
   pruneRetiredKnownGoodRecoveryBundles(config, retained);
@@ -4138,7 +4146,7 @@ export async function prepareConfiguredRuntimeReleaseSession(
     // Reconcile and reclaim only bytes that no current rollback authority needs.
     // This is one bounded lifecycle attempt, not a second GC owner, and it
     // retains fail-closed behavior whenever an authority cannot be proven.
-    reconcileKnownGoodRecoveryRetention(config);
+    reconcileKnownGoodRecoveryRetention(config, verifiedStable);
     const releaseRetention = cleanupControllerReleaseHistory(config.controllerHome, {
       graceMs: 0,
       stagingGraceMs: 0,
