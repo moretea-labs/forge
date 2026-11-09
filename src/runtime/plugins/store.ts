@@ -3,6 +3,7 @@ import { join } from 'path';
 import type { RepositoryRecord } from '../../cli/repositories/types';
 import { CONTROLLER_SCOPE_REPO_ID, FORGE_INSTANCE_SCOPE_KEY, controllerSystemRoot, ensureControllerHome, repositoryControllerRoot } from '../../effects/controller-home';
 import { listRepositories } from '../../cli/repositories/registry';
+import { withControllerLock } from '../../cli/repositories/locks';
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'fs';
 import type { ExecutionJob, ResourceClaimSpec } from '../execution/jobs/types';
 import { appendRuntimeEvent } from '../evidence/event-ledger';
@@ -1355,6 +1356,10 @@ interface PluginActionRequestIndex {
   receiptId: string;
   semanticKey: string;
   createdAt: string;
+  pluginId?: string;
+  actionId?: string;
+  /** Owner of an index claim published before the external provider call. */
+  claimOwnerPid?: number;
 }
 
 function pluginActionReceiptRoot(controllerHome: string, scopeKey: string): string {
@@ -1374,6 +1379,67 @@ function pluginActionRequestPath(controllerHome: string, requestId: string): str
   const root = join(ensureControllerHome(controllerHome), 'indexes', 'plugin-actions', 'requests');
   mkdirSync(root, { recursive: true });
   return join(root, `${hash}.json`);
+}
+
+function withPluginRequestLock<T>(home: string, requestId: string, operation: () => T): T {
+  const hash = createHash('sha256').update(requestId).digest('hex');
+  return withControllerLock(home, { scope: 'global', resource: `plugin-request-${hash}` },
+    `plugin-request:${hash.slice(0, 12)}`, operation);
+}
+
+function pluginClaimOwnerAlive(index: PluginActionRequestIndex): boolean {
+  if (!Number.isSafeInteger(index.claimOwnerPid) || (index.claimOwnerPid ?? 0) <= 0) return false;
+  try {
+    process.kill(index.claimOwnerPid!, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+/** Reconcile a dead pre-dispatch claimant, never retry the provider effect. */
+function recoverOrphanedPluginRequest(
+  home: string,
+  requestPath: string,
+  index: PluginActionRequestIndex,
+): PluginActionReceipt | undefined {
+  // Old terminal indexes have no claim metadata; a missing legacy Receipt is corrupt.
+  if (!index.pluginId || !index.actionId || !index.claimOwnerPid) {
+    throw new Error(`PLUGIN_RECEIPT_LOST: ${index.requestId}`);
+  }
+  if (pluginClaimOwnerAlive(index)) return undefined;
+  return withPluginRequestLock(home, index.requestId, () => {
+    const current = readJsonFile<PluginActionRequestIndex>(requestPath);
+    if (current.requestId !== index.requestId || current.receiptId !== index.receiptId
+      || current.scopeKey !== index.scopeKey || current.semanticKey !== index.semanticKey) {
+      throw new Error(`PLUGIN_RECEIPT_REQUEST_MISMATCH: ${index.requestId}`);
+    }
+    const terminal = readPluginActionReceipt(home, current.scopeKey, current.receiptId);
+    if (terminal) return terminal;
+    if (pluginClaimOwnerAlive(current)) return undefined;
+    const failure = {
+      code: 'PLUGIN_ACTION_OUTCOME_UNKNOWN',
+      message: 'The original request ended without a Receipt; external effects must be reconciled, never replayed.',
+      retryable: false,
+    };
+    const receipt: PluginActionReceipt = {
+      schemaVersion: 1,
+      receiptId: current.receiptId,
+      requestId: current.requestId,
+      scopeKey: current.scopeKey,
+      ...(current.repoId ? { repoId: current.repoId } : {}),
+      pluginId: current.pluginId!,
+      actionId: current.actionId!,
+      semanticKey: current.semanticKey,
+      status: 'failed',
+      effectOutcome: 'outcome_unknown',
+      createdAt: current.createdAt,
+      result: { outcome: 'outcome_unknown', error: failure },
+      error: failure,
+    };
+    writeJsonAtomic(pluginActionReceiptPath(home, current.scopeKey, current.receiptId), receipt);
+    return receipt;
+  });
 }
 
 function pluginActionReceiptPath(controllerHome: string, scopeKey: string, receiptId: string): string {
@@ -1645,8 +1711,14 @@ export function readPluginActionReceiptForRequest(
   const scopeKey = index.scopeKey?.trim() || index.repoId?.trim();
   if (!scopeKey) throw new Error('PLUGIN_RECEIPT_REQUEST_SCOPE_CORRUPT');
   if (repositoryPhone && scopeKey !== repositoryAction.repoId) throw new Error(`REQUEST_ID_SCOPE_CONFLICT: ${requestId}`);
-  const receipt = readPluginActionReceipt(controllerHome, scopeKey, index.receiptId);
-  if (!receipt || receipt.receiptId !== index.receiptId || receipt.requestId !== requestId
+  if (repositoryPhone && ((index.pluginId && index.pluginId !== repositoryAction.pluginId)
+    || (index.actionId && index.actionId !== repositoryAction.actionId))) {
+    throw new Error(`REQUEST_ID_SCOPE_CONFLICT: ${requestId}`);
+  }
+  const receipt = readPluginActionReceipt(controllerHome, scopeKey, index.receiptId)
+    ?? recoverOrphanedPluginRequest(controllerHome, path, index);
+  if (!receipt) return undefined;
+  if (receipt.receiptId !== index.receiptId || receipt.requestId !== requestId
     || receipt.semanticKey !== index.semanticKey) throw new Error('PLUGIN_RECEIPT_LOST');
   if (repositoryPhone && (receipt.scopeKey !== repositoryAction.repoId
     || receipt.pluginId !== repositoryAction.pluginId || receipt.actionId !== repositoryAction.actionId)) {
@@ -1753,9 +1825,19 @@ async function submitPluginAction(
     if (existingScopeKey !== scope.scopeKey) {
       throw new Error(`REQUEST_ID_SCOPE_CONFLICT: ${request.requestId} already belongs to ${existingScopeKey}`);
     }
-    const existing = readPluginActionReceipt(controllerHome, existingScopeKey, index.receiptId);
+    if (index.requestId !== request.requestId
+      || (index.pluginId && index.pluginId !== request.pluginId)
+      || (index.actionId && index.actionId !== request.actionId)) {
+      throw new Error(`REQUEST_ID_CONFLICT: ${request.requestId} belongs to another Plugin request`);
+    }
+    const existing = readPluginActionReceipt(controllerHome, existingScopeKey, index.receiptId)
+      ?? recoverOrphanedPluginRequest(controllerHome, requestPath, index);
     if (!existing) {
-      throw new Error(`PLUGIN_RECEIPT_LOST: ${request.requestId}`);
+      throw new AssistantPluginError(
+        'PLUGIN_RESOURCE_CONTENTION',
+        `${request.pluginId}/${request.actionId} is still owned by the original request.`,
+        { retryable: true },
+      );
     }
     return {
       manifest,
@@ -1771,6 +1853,8 @@ async function submitPluginAction(
   const createdAt = new Date().toISOString();
   const receiptId = `PLG-${Date.now()}-${createHash('sha256').update(request.requestId).digest('hex').slice(0, 8)}`;
   const capabilityId = reusableCapabilityId(manifest, action);
+  let claimedBeforeDispatch = false;
+  let providerCompleted = false;
   let authorization = initialAuthorizationEvidence(manifest, action);
   let authorizationContext: AssistantPluginAuthorizationContext | undefined;
   let activeAuthorizationGrant: PluginCapabilityAuthorizationGrant | undefined;
@@ -1879,23 +1963,51 @@ async function submitPluginAction(
       scope,
       action,
       request,
-      () => executePluginActionInScope(scope, {
-        controllerHome,
-        ...pluginActionExecutionFields(scope),
-        pluginId: request.pluginId,
-        actionId: request.actionId,
-        requestId: request.requestId,
-        args: normalizedArgs,
-        origin: request.origin,
-        jobId: receiptId,
-        timeoutMs: request.timeoutMs,
-        signal: request.signal,
-        authorizationGrantRefs: request.authorizationGrantRefs,
-        deadlineAtMs: typeof request.timeoutMs === 'number'
-          ? Date.now() + Math.max(1, Math.trunc(request.timeoutMs))
-          : undefined,
-      }),
+      () => {
+        // Claim inside the existing resource lease, immediately before dispatch.
+        // The Controller lock serializes the index check/write across processes.
+        const claimed = withPluginRequestLock(controllerHome, request.requestId, () => {
+          if (existsSync(requestPath)) return false;
+          writeJsonAtomic(requestPath, {
+            requestId: request.requestId,
+            scopeKey: scope.scopeKey,
+            ...(scope.repository ? { repoId: scope.repository.repoId } : {}),
+            receiptId,
+            semanticKey: key,
+            pluginId: request.pluginId,
+            actionId: request.actionId,
+            claimOwnerPid: process.pid,
+            createdAt,
+          } satisfies PluginActionRequestIndex);
+          return true;
+        });
+        if (!claimed) {
+          throw new AssistantPluginError(
+            'PLUGIN_RESOURCE_CONTENTION',
+            `${request.pluginId}/${request.actionId} already has a durable request claim.`,
+            { retryable: true },
+          );
+        }
+        claimedBeforeDispatch = true;
+        return executePluginActionInScope(scope, {
+          controllerHome,
+          ...pluginActionExecutionFields(scope),
+          pluginId: request.pluginId,
+          actionId: request.actionId,
+          requestId: request.requestId,
+          args: normalizedArgs,
+          origin: request.origin,
+          jobId: receiptId,
+          timeoutMs: request.timeoutMs,
+          signal: request.signal,
+          authorizationGrantRefs: request.authorizationGrantRefs,
+          deadlineAtMs: typeof request.timeoutMs === 'number'
+            ? Date.now() + Math.max(1, Math.trunc(request.timeoutMs))
+            : undefined,
+        });
+      },
     );
+    providerCompleted = true;
     // create_session materializes the exact provider/session identity during
     // execution, so its authorization target cannot always be resolved before
     // the action runs. Resolve that postcondition once after a successful
@@ -1971,14 +2083,6 @@ async function submitPluginAction(
       result: resultWithLineage,
     };
     writeJsonAtomic(pluginActionReceiptPath(controllerHome, scope.scopeKey, receiptId), receipt);
-    writeJsonAtomic(requestPath, {
-      requestId: request.requestId,
-      scopeKey: scope.scopeKey,
-      ...(scope.repository ? { repoId: scope.repository.repoId } : {}),
-      receiptId,
-      semanticKey: key,
-      createdAt,
-    } satisfies PluginActionRequestIndex);
     const nextManifest = scope.kind === 'controller'
       ? getControllerPluginManifest(controllerHome, request.pluginId)
       : getAssistantPluginManifestForAction(controllerHome, scope.repository!, request);
@@ -1992,6 +2096,9 @@ async function submitPluginAction(
       authorization,
     };
   } catch (error) {
+    // A competing invocation owns no claim; a completed effect must never be
+    // rewritten as failed if terminal persistence or result projection fails.
+    if (!claimedBeforeDispatch || providerCompleted) throw error;
     const message = error instanceof Error ? error.message : String(error);
     const code = isAssistantPluginError(error)
       ? error.code
@@ -2036,14 +2143,6 @@ async function submitPluginAction(
       error: failure,
     };
     writeJsonAtomic(pluginActionReceiptPath(controllerHome, scope.scopeKey, receiptId), receipt);
-    writeJsonAtomic(requestPath, {
-      requestId: request.requestId,
-      scopeKey: scope.scopeKey,
-      ...(scope.repository ? { repoId: scope.repository.repoId } : {}),
-      receiptId,
-      semanticKey: key,
-      createdAt,
-    } satisfies PluginActionRequestIndex);
     if (outcomeUnknown) {
       return {
         manifest,

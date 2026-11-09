@@ -38,6 +38,7 @@ import {
   listControllerPluginManifests,
   submitControllerPluginAction,
   submitAssistantPluginAction,
+  readPluginActionReceiptForRequest,
 } from '../../src/runtime/plugins/store';
 import { FORGE_INSTANCE_SCOPE_KEY } from '../../src/effects/controller-home';
 import { acquireRuntimeOwnership } from '../../src/runtime/root/ownership';
@@ -219,7 +220,60 @@ describe('plugin action resource replay fencing', () => {
     expect(replayed.receipt.receiptId).toBe(completed.receipt.receiptId);
     const executes = readFileSync(logPath, 'utf8').trim().split('\n').filter((line) => line === 'execute');
     expect(executes).toHaveLength(1);
+
   });
+
+  test('process loss after provider dispatch reconciles the same request as unknown without duplicate effects', async () => {
+    const { controllerHome, socketPath } = fixture(true, undefined, true);
+    const logPath = join(controllerHome, 'provider-crash-replay.log');
+    await startExternalProviderFixture(controllerHome, socketPath, logPath);
+    const request = {
+      pluginId: 'desktop_operator',
+      actionId: 'desktop_mutate_slow',
+      requestId: 'provider-effect-crash-before-receipt',
+      args: {},
+      origin: { surface: 'mcp' as const, actor: 'test' },
+    };
+    // The provider appends its effect to disk before the delayed reply. Kill
+    // only the client process, leaving the provider running for reconciliation.
+    const scriptPath = join(controllerHome, 'crash-client.ts');
+    writeFileSync(scriptPath, [
+      'import { submitControllerPluginAction } from ' + JSON.stringify(join(process.cwd(), 'src/runtime/plugins/store.ts')) + ';',
+      'await submitControllerPluginAction(' + JSON.stringify(controllerHome) + ', ' + JSON.stringify(request) + ');',
+    ].join('\n'));
+    const child = spawn(process.execPath, [scriptPath], { cwd: process.cwd(), stdio: ['ignore', 'pipe', 'pipe'] });
+    children.push(child);
+    let stderr = '';
+    child.stderr?.on('data', (chunk) => { stderr += chunk.toString('utf8'); });
+    const exit = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
+      child.once('exit', (code, signal) => resolve({ code, signal }));
+    });
+    let dispatched = false;
+    for (let attempt = 0; attempt < 400; attempt += 1) {
+      if (existsSync(logPath) && readFileSync(logPath, 'utf8').split('\n').includes('execute')) {
+        dispatched = true;
+        break;
+      }
+      if (child.exitCode !== null) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(dispatched, stderr).toBe(true);
+    expect(child.kill('SIGKILL')).toBe(true);
+    expect((await exit).signal).toBe('SIGKILL');
+
+    const reconciled = readPluginActionReceiptForRequest(controllerHome, request.requestId);
+    expect(reconciled?.effectOutcome).toBe('outcome_unknown');
+    expect(reconciled?.error?.code).toBe('PLUGIN_ACTION_OUTCOME_UNKNOWN');
+
+    const replay = await submitControllerPluginAction(controllerHome, request);
+    expect(replay.deduplicated).toBe(true);
+    expect(reconciled).toBeDefined();
+    expect(replay.receipt.receiptId).toBe(reconciled!.receiptId);
+    expect(replay.receipt.effectOutcome).toBe('outcome_unknown');
+    await expect(submitControllerPluginAction(controllerHome, { ...request, actionId: 'desktop_status' }))
+      .rejects.toThrow('REQUEST_ID_CONFLICT');
+    expect(readFileSync(logPath, 'utf8').trim().split('\n').filter((line) => line === 'execute')).toHaveLength(1);
+  }, 15_000);
 });
 
 describe('scheduled Gmail automation capability', () => {
