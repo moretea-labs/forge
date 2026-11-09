@@ -626,14 +626,66 @@ async fn read_project_plugins(repo_id: String) -> Result<Value, String> {
     }))
 }
 
+fn merge_user_request_projections(all_result: Value, repo_result: Option<Value>) -> Value {
+    fn items(result: Value) -> Vec<Value> {
+        semantic_facade_data(result)
+            .get("items")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    let all_items = items(all_result);
+    let mut merged = all_items
+        .iter()
+        .filter(|item| item.get("targetScope").is_none())
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut possibly_truncated = all_items.len() >= 50;
+
+    if let Some(repo_result) = repo_result {
+        let repo_items = items(repo_result);
+        possibly_truncated |= repo_items.len() >= 50;
+        for item in repo_items {
+            let request_id = item.get("requestId").and_then(Value::as_str).unwrap_or_default();
+            if request_id.is_empty()
+                || merged.iter().any(|current| current.get("requestId").and_then(Value::as_str) == Some(request_id)) {
+                continue;
+            }
+            merged.push(item);
+        }
+    }
+
+    merged.sort_by(|left, right| {
+        right.get("updatedAt").and_then(Value::as_str).unwrap_or_default()
+            .cmp(left.get("updatedAt").and_then(Value::as_str).unwrap_or_default())
+    });
+    json!({
+        "items": merged,
+        "knownCount": merged.len(),
+        "possiblyTruncated": possibly_truncated
+    })
+}
+
 #[tauri::command]
-async fn read_user_requests() -> Result<Value, String> {
-    call_runtime_tool("rh_inbox", json!({
+async fn read_user_requests(repo_id: Option<String>) -> Result<Value, String> {
+    let all_result = call_runtime_tool("rh_inbox", json!({
         "operation": "list",
         "detail_level": "summary",
         "limit": 100,
         "request_id": request_id("user-requests-list")
-    })).await
+    })).await?;
+    let repo_result = match repo_id.map(|value| value.trim().to_string()).filter(|value| !value.is_empty()) {
+        Some(repo_id) => Some(call_runtime_tool("rh_inbox", json!({
+            "repo_id": repo_id,
+            "operation": "list",
+            "detail_level": "summary",
+            "limit": 100,
+            "request_id": request_id("user-requests-repository-list")
+        })).await?),
+        None => None,
+    };
+    Ok(merge_user_request_projections(all_result, repo_result))
 }
 
 #[tauri::command]

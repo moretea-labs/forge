@@ -72,7 +72,8 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
                 required(args, "checkoutId")?,
                 required_strings(args, "requirementIds", 100)?,
             ).await,
-        "read_user_requests" => read_user_requests().await,
+        "read_user_requests" =>
+            read_user_requests(args.get("repoId").and_then(Value::as_str).map(str::to_owned)).await,
         "control_user_request" =>
             control_user_request(
                 required_bounded(args, "requestId", 256)?,
@@ -491,6 +492,21 @@ mod tests {
             "operation":"status"
         })));
         assert_eq!(missing_checkout.unwrap_err(), "FORGE_NATIVE_BRIDGE_checkoutId_REQUIRED");
+        let merged = merge_user_request_projections(
+            json!({"data":{"items":[
+                {"requestId":"global","title":"Global","summary":"g","status":"pending","updatedAt":"2026-11-09T02:00:00Z"},
+                {"requestId":"foreign","title":"Foreign","summary":"f","status":"pending","updatedAt":"2026-11-09T03:00:00Z","targetScope":{"repoId":"repo-b"}}
+            ]}}),
+            Some(json!({"data":{"items":[
+                {"requestId":"repo","title":"Repo","summary":"r","status":"pending","updatedAt":"2026-11-09T04:00:00Z","targetScope":{"repoId":"repo-a"}}
+            ]}})),
+        );
+        assert_eq!(merged.get("knownCount").and_then(Value::as_u64), Some(2));
+        let ids = merged.get("items").and_then(Value::as_array).unwrap().iter()
+            .filter_map(|item| item.get("requestId").and_then(Value::as_str)).collect::<Vec<_>>();
+        assert_eq!(ids, vec!["repo", "global"]);
+        assert_eq!(merged.get("possiblyTruncated").and_then(Value::as_bool), Some(false));
+
         let fake_accept = tauri::async_runtime::block_on(dispatch("control_user_request", &json!({
             "requestId":"req-1",
             "action":"accept",

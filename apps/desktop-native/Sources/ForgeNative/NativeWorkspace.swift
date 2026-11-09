@@ -470,6 +470,7 @@ final class NativeWorkspace: ObservableObject {
     @Published var userRequests: [UserRequestDetail] = []
     @Published var userRequestsLoading = false
     @Published var userRequestsError: String?
+    @Published var userRequestsPossiblyTruncated = false
     @Published var busy = false
     @Published private(set) var activeConversationId: String?
     private var activeApiTurn: ForgeApiTurn?
@@ -1005,6 +1006,12 @@ final class NativeWorkspace: ObservableObject {
         }
     }
 
+    nonisolated static func userRequestsPossiblyTruncated(_ result:[String:Any]) -> Bool {
+        let outer = result["data"] as? [String:Any] ?? result
+        let data = outer["data"] as? [String:Any] ?? outer
+        return data["possiblyTruncated"] as? Bool == true
+    }
+
     nonisolated static func relevantUserRequestRows(
         _ rows:[UserRequestDetail], repoId:String?
     ) -> [UserRequestDetail] {
@@ -1022,8 +1029,12 @@ final class NativeWorkspace: ObservableObject {
         userRequestsLoading = true
         defer { userRequestsLoading = false }
         do {
-            let value = try await ForgeBridge.request("read_user_requests")
+            let value = try await ForgeBridge.request(
+                "read_user_requests",
+                repoId.map { ["repoId":$0] } ?? [:]
+            )
             userRequests = Self.userRequestRows(value)
+            userRequestsPossiblyTruncated = Self.userRequestsPossiblyTruncated(value)
             userRequestsError = nil
         } catch {
             userRequestsError = error.localizedDescription
@@ -1045,8 +1056,12 @@ final class NativeWorkspace: ObservableObject {
                 "action":dismiss ? "dismiss" : "resolve",
                 "decision":normalized
             ])
-            let value = try await ForgeBridge.request("read_user_requests")
+            let value = try await ForgeBridge.request(
+                "read_user_requests",
+                repoId.map { ["repoId":$0] } ?? [:]
+            )
             userRequests = Self.userRequestRows(value)
+            userRequestsPossiblyTruncated = Self.userRequestsPossiblyTruncated(value)
             userRequestsError = nil
         } catch {
             userRequestsError = error.localizedDescription

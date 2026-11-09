@@ -132,6 +132,9 @@ private struct ForgeWorkspaceView: View {
         .onChange(of:model.showSearch) { visible in
             sidebarSearchFocused = visible
         }
+        .onChange(of:model.repoId) { _ in
+            Task { await model.loadUserRequests() }
+        }
     }
 
     private var sidebar: some View {
@@ -170,7 +173,10 @@ private struct ForgeWorkspaceView: View {
                             .font(.system(size:12.5,weight:.medium))
                             .frame(width:28,height:30)
                         if !model.relevantUserRequests.isEmpty {
-                            Text(model.relevantUserRequests.count > 99 ? "99+" : "\(model.relevantUserRequests.count)")
+                            let count = model.relevantUserRequests.count
+                            Text(model.userRequestsPossiblyTruncated
+                                 ? "\(min(count,99))+"
+                                 : (count > 99 ? "99+" : "\(count)"))
                                 .font(.system(size:8,weight:.bold))
                                 .padding(.horizontal,3).frame(minWidth:13,minHeight:13)
                                 .background(Capsule().fill(ForgePalette.accent))
@@ -182,7 +188,9 @@ private struct ForgeWorkspaceView: View {
                 }
                 .buttonStyle(.plain)
                 .help("待处理请求")
-                .accessibilityLabel("待处理请求 \(model.relevantUserRequests.count)")
+                .accessibilityLabel(model.userRequestsPossiblyTruncated
+                    ? "待处理请求至少 \(model.relevantUserRequests.count)"
+                    : "待处理请求 \(model.relevantUserRequests.count)")
                 .accessibilityIdentifier("sidebar.inbox.open")
                 .popover(isPresented:$inboxShown,arrowEdge:.trailing) {
                     inboxPanel
@@ -284,6 +292,10 @@ private struct ForgeWorkspaceView: View {
                     Text("待处理").font(.system(size:13,weight:.semibold))
                     Text(model.repoId == nil ? "全局请求" : "当前项目与全局请求")
                         .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
+                    if model.userRequestsPossiblyTruncated {
+                        Text("还有更早的全局请求未显示")
+                            .font(.system(size:9.5)).foregroundStyle(.tertiary)
+                    }
                 }
                 Spacer()
                 Button {
