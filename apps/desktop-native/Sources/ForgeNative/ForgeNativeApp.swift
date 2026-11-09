@@ -2931,6 +2931,7 @@ private struct AgentKnowledgeInspector: View {
     @State private var loading = false
     @State private var error: String?
     @State private var loadToken = UUID()
+    @State private var expandedMemoryIds: Set<String> = []
 
     var body: some View {
         VStack(alignment:.leading,spacing:0) {
@@ -2964,6 +2965,7 @@ private struct AgentKnowledgeInspector: View {
                     .textFieldStyle(.plain)
                     .font(.system(size:11))
                     .onSubmit { Task { await reload() } }
+                    .accessibilityIdentifier("agent.knowledge-inspector.search")
                 if !query.isEmpty {
                     Button {
                         query=""
@@ -2999,7 +3001,7 @@ private struct AgentKnowledgeInspector: View {
             } else {
                 ScrollView {
                     LazyVStack(alignment:.leading,spacing:0) {
-                        ForEach(Array(memories.prefix(7))) { memory in
+                        ForEach(memories) { memory in
                             knowledgeRow(memory)
                             Divider().padding(.leading,14)
                         }
@@ -3031,7 +3033,8 @@ private struct AgentKnowledgeInspector: View {
     }
 
     private func knowledgeRow(_ memory:KnowledgeMemoryDetail) -> some View {
-        VStack(alignment:.leading,spacing:6) {
+        let expanded = expandedMemoryIds.contains(memory.id)
+        return VStack(alignment:.leading,spacing:6) {
             HStack(spacing:6) {
                 Text(scopeLabel(memory.scope.kind))
                     .font(.system(size:9,weight:.semibold))
@@ -3052,8 +3055,20 @@ private struct AgentKnowledgeInspector: View {
             Text(memory.canonicalText)
                 .font(.system(size:11)).lineSpacing(3)
                 .foregroundStyle(ForgePalette.ink)
-                .lineLimit(3)
+                .lineLimit(expanded ? nil : 3)
+                .fixedSize(horizontal:false,vertical:expanded)
                 .textSelection(.enabled)
+            if memory.canonicalText.count > 110 {
+                Button(expanded ? "收起全文" : "展开全文") {
+                    if !expandedMemoryIds.insert(memory.id).inserted {
+                        expandedMemoryIds.remove(memory.id)
+                    }
+                }
+                .buttonStyle(.plain)
+                .font(.system(size:10.5,weight:.medium))
+                .foregroundStyle(ForgePalette.secondary)
+                .accessibilityIdentifier("agent.knowledge-inspector.expand.\(memory.id)")
+            }
         }
         .padding(.horizontal,14).padding(.vertical,10)
     }
@@ -3067,6 +3082,7 @@ private struct AgentKnowledgeInspector: View {
         let token=UUID()
         loadToken=token
         result=nil
+        expandedMemoryIds=[]
         error=nil
         guard let repoId=model.repoId else { loading=false; return }
         let searchQuery=query.trimmingCharacters(in:.whitespacesAndNewlines)
