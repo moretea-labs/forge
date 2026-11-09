@@ -9,6 +9,7 @@ import { claimsConflict } from '../../src/runtime/resources/claims/conflicts';
 import type { ExecutionLease } from '../../src/runtime/resources/leases/types';
 import { claimsForAssistantPluginAction } from '../../src/runtime/plugins/store';
 import type { AssistantPluginActionDescriptor } from '../../src/runtime/plugins/types';
+import { createDesktopOperatorRegistrationInput } from '../../src/runtime/plugins/desktop-operator-registration';
 import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -499,6 +500,28 @@ describe('Process Runtime fine-grained resource claims', () => {
   test('release checks retain heavy-check exclusivity', () => {
     const claims = claimsForCheck('check:release', undefined, 'repo1', 'co1');
     expect(claims).toContainEqual({ resourceKey: 'heavy-check:repo1', mode: 'exclusive' });
+  });
+
+  test('Desktop Operator interaction input does not acquire the provider-global state lease (#608)', () => {
+    const registration = createDesktopOperatorRegistrationInput({
+      socketPath: '/tmp/forge-desktop-operator.sock',
+      pluginVersion: '0.4.7',
+    });
+    const repository = { repoId: 'repo1', activeCheckoutId: 'co1' } as Parameters<typeof claimsForAssistantPluginAction>[1];
+
+    for (const actionId of ['desktop_press', 'desktop_select_rows', 'desktop_pointer_click', 'desktop_pointer_drag', 'desktop_type_text', 'desktop_key']) {
+      const action = registration.actions.find((candidate) => candidate.actionId === actionId);
+      expect(action).toBeDefined();
+      expect(claimsForAssistantPluginAction(action!, repository, registration.pluginId)).toEqual([]);
+    }
+
+    for (const actionId of ['desktop_permissions_request', 'desktop_session_open', 'desktop_session_close']) {
+      const action = registration.actions.find((candidate) => candidate.actionId === actionId);
+      expect(action).toBeDefined();
+      expect(claimsForAssistantPluginAction(action!, repository, registration.pluginId)).toEqual([
+        { resourceKey: 'provider-state:desktop_operator', mode: 'write' },
+      ]);
+    }
   });
 
   test('trusted provider state serializes only the same provider, never repository workspace state', () => {
