@@ -438,9 +438,10 @@ export function resolveTunnelGuidance(
         command: chatgptConnectorRepairCommand(profile, controllerHome),
       };
     }
+    const tunnelClient = platform.prerequisites?.tunnelClient?.executable ?? 'tunnel-client';
     const preferredAlias = 'forge';
     const configuredAliases: string[] = [];
-    const listed = spawnSync('tunnel-client', ['runtimes', 'list', '--json'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 15_000, env: options.env ?? process.env });
+    const listed = spawnSync(tunnelClient, ['runtimes', 'list', '--json'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 15_000, env: options.env ?? process.env });
     if (listed.status === 0) {
       try {
         const value = JSON.parse(listed.stdout || '{}') as { aliases?: Array<{ alias?: string; tunnel_id?: string }> };
@@ -453,7 +454,7 @@ export function resolveTunnelGuidance(
     }
     const aliases = Array.from(new Set([...configuredAliases, preferredAlias]));
     for (const alias of aliases) {
-      const status = spawnSync('tunnel-client', openAiSecureTunnelStatusArgs(alias), { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 15_000, env: options.env ?? process.env });
+      const status = spawnSync(tunnelClient, openAiSecureTunnelStatusArgs(alias), { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 15_000, env: options.env ?? process.env });
       if (status.status !== 0) continue;
       try {
         const value = parseOpenAiSecureTunnelRuntimeStatus(status.stdout || '{}', { alias, tunnelId: profile.tunnel.tunnelId, mcpServerUrl: localEndpoint });

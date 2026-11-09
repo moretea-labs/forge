@@ -17,6 +17,8 @@ export { REQUIREMENT_STATES, type RequirementState } from '../../../../packages/
 export interface Requirement {
   schemaVersion: 1;
   requirementId: string;
+  /** Optional node-local repository placement; absent for ForgeInstance-scoped legacy/global Requirements. */
+  repoId?: string;
   legacyAliases: string[];
   title: string;
   outcomeStatement: string;
@@ -48,6 +50,8 @@ export interface RequirementStoreOptions {
 
 export interface CreateRequirementInput {
   requirementId: string;
+  /** Optional node-local repository placement provenance. */
+  repoId?: string;
   legacyAliases?: string[];
   title: string;
   outcomeStatement: string;
@@ -63,6 +67,7 @@ export interface RequirementSemanticView {
   requirementId: string;
   revision: number;
   semanticScope: ScopeRef;
+  repoId?: string;
   title: string;
   outcomeStatement: string;
   acceptanceCriteria: string[];
@@ -82,6 +87,8 @@ export interface RequirementRevisionRecord extends RequirementSemanticView {
 
 export interface ReviseRequirementSemanticInput {
   expectedRevision: number;
+  /** Optional repository placement captured from the current repository context. */
+  repoId?: string;
   title?: string;
   outcomeStatement?: string;
   acceptanceCriteria?: string[];
@@ -142,6 +149,11 @@ function id(value: string): string {
   return normalized.slice(0, 160);
 }
 
+function repositoryId(value: unknown): string | undefined {
+  const normalized = String(value ?? '').trim();
+  return normalized ? normalized.slice(0, 256) : undefined;
+}
+
 function bounded(values: readonly string[] | undefined, limit: number, maxLength = 500): string[] {
   return (values ?? []).map((value) => String(value).trim()).filter(Boolean).slice(0, limit).map((value) => value.slice(0, maxLength));
 }
@@ -162,6 +174,7 @@ export function requirementSemanticView(requirement: Requirement): RequirementSe
     requirementId: requirement.requirementId,
     revision: currentRequirementSemanticRevision(requirement),
     semanticScope: { schemaVersion: 1, kind: 'requirement', id: requirement.requirementId },
+    ...(requirement.repoId ? { repoId: requirement.repoId } : {}),
     title: requirement.title,
     outcomeStatement: requirement.outcomeStatement,
     acceptanceCriteria: [...requirement.acceptanceCriteria],
@@ -255,6 +268,10 @@ export function reviseRequirementSemantic(
     if (semanticRevision !== input.expectedRevision) {
       throw new Error(`REQUIREMENT_REVISION_CONFLICT:${requirementId}:expected=${input.expectedRevision}:actual=${semanticRevision}`);
     }
+    const requestedRepoId = repositoryId(input.repoId);
+    if (requestedRepoId && current.value.repoId && current.value.repoId !== requestedRepoId) {
+      throw new Error(`REQUIREMENT_REPOSITORY_CONFLICT:${requirementId}:existing=${current.value.repoId}:requested=${requestedRepoId}`);
+    }
     const requestedState = input.state;
     const legacyState: RequirementState = requestedState === 'completed'
       ? 'done'
@@ -298,6 +315,7 @@ export function reviseRequirementSemantic(
     if (!title || !outcomeStatement) throw new Error('REQUIREMENT_CONTENT_REQUIRED');
     const updated: Requirement = {
       ...currentValue,
+      ...(requestedRepoId && !current.value.repoId ? { repoId: requestedRepoId } : {}),
       title,
       outcomeStatement,
       acceptanceCriteria: input.acceptanceCriteria === undefined ? [...current.value.acceptanceCriteria] : bounded(input.acceptanceCriteria, 50),
@@ -328,6 +346,7 @@ export function createRequirement(
   const requirement: Requirement = {
     schemaVersion: 1,
     requirementId,
+    ...(repositoryId(input.repoId) ? { repoId: repositoryId(input.repoId) } : {}),
     legacyAliases: bounded(input.legacyAliases, 20, 160),
     title: String(input.title ?? '').trim().slice(0, 500),
     outcomeStatement: String(input.outcomeStatement ?? '').trim().slice(0, 2_000),
@@ -370,6 +389,39 @@ export function createRequirement(
     });
   });
   return requirement;
+}
+
+export function bindRequirementRepositoryPlacement(
+  options: RequirementStoreOptions,
+  requirementIdInput: string,
+  repoIdInput: string,
+): Requirement {
+  const requirementId = id(requirementIdInput);
+  const repoId = repositoryId(repoIdInput);
+  if (!repoId) throw new Error('REQUIREMENT_REPOSITORY_REQUIRED');
+  return withControlPlaneTransaction(options.controllerHome, (database) => {
+    const current = readWithin(database, requirementId);
+    if (!current) throw new Error(`REQUIREMENT_NOT_FOUND: ${requirementId}`);
+    if (current.value.repoId === repoId) return current.value;
+    if (current.value.repoId) {
+      throw new Error(`REQUIREMENT_REPOSITORY_CONFLICT:${requirementId}:existing=${current.value.repoId}:requested=${repoId}`);
+    }
+    const updated: Requirement = {
+      ...current.value,
+      repoId,
+      revision: current.value.revision + 1,
+      updatedAt: nowIso(options),
+    };
+    return writeControlPlaneRecordWithinTransaction(database, {
+      namespace: NAMESPACE,
+      scope: SCOPE,
+      key: requirementId,
+      schemaVersion: SCHEMA_VERSION,
+      value: updated,
+      action: 'requirement_repository_bound',
+      expectedRevision: current.revision,
+    }).value;
+  });
 }
 
 export function bindRequirementCandidateAuditRef(

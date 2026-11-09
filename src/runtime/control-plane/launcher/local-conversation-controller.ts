@@ -1,7 +1,7 @@
 import { execFile, spawn, type ChildProcess } from 'child_process';
-import { mkdirSync } from 'fs';
+import { mkdirSync, realpathSync, statSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { extname, isAbsolute, join, relative, sep } from 'path';
 import { redactProcessOutput } from '../../../effects/process-runner';
 import { resolveProviderMcpBootstrap } from './provider-mcp-bootstrap';
 import {
@@ -13,11 +13,55 @@ import {
 const LOCAL_CONVERSATION_TIMEOUT_MS = 5 * 60_000;
 const LOCAL_CONVERSATION_MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
 const LOCAL_CONVERSATION_MAX_PROMPT_CHARS = 20_000;
+const LOCAL_CONVERSATION_ACTIVITY_EVENT_LIMIT = 30;
+const LOCAL_CONVERSATION_ACTIVITY_DETAIL_CHARS = 240;
+const LOCAL_CONVERSATION_MAX_IMAGES = 4;
+const LOCAL_CONVERSATION_MAX_IMAGE_BYTES = 20 * 1024 * 1024;
+const LOCAL_CONVERSATION_IMAGE_ROOT = 'forge-local-conversation-images';
+const LOCAL_CONVERSATION_IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif']);
 const LOCAL_CONVERSATION_ID = /^[A-Za-z0-9._:-]{1,160}$/;
 
-// Transient process handles live only in the existing local conversation
-// owner. Nothing in this map is durable Work or provider session authority.
-const activeLocalTurns = new Map<string, { child: ChildProcess; cancelRequested: boolean }>();
+export type LocalConversationActivityPhase = 'starting' | 'thinking' | 'tool' | 'responding' | 'finishing';
+export type LocalConversationActivityEventStatus = 'active' | 'completed';
+
+export interface LocalConversationActivityEvent {
+  phase: LocalConversationActivityPhase;
+  label: string;
+  detail?: string;
+  status: LocalConversationActivityEventStatus;
+  startedAt: string;
+  completedAt?: string;
+}
+
+export interface LocalConversationActivitySnapshot {
+  conversationId: string;
+  status: 'idle' | 'running';
+  phase?: LocalConversationActivityPhase;
+  toolActivityCount: number;
+  lastActivity?: string;
+  startedAt?: string;
+  updatedAt?: string;
+  events: LocalConversationActivityEvent[];
+}
+
+interface ActiveLocalTurn {
+  child: ChildProcess;
+  cancelRequested: boolean;
+  lineBuffer: string;
+  activity: LocalConversationActivitySnapshot;
+}
+
+// Transient process handles and their bounded live observation live only in the
+// existing local conversation owner. Nothing here is durable Work/session authority.
+const activeLocalTurns = new Map<string, ActiveLocalTurn>();
+
+export function readLocalConversationActivity(conversationId: string): LocalConversationActivitySnapshot {
+  if (!LOCAL_CONVERSATION_ID.test(conversationId)) throw Error('LOCAL_CONVERSATION_ID_INVALID');
+  const active = activeLocalTurns.get(conversationId);
+  return active
+    ? { ...active.activity, events: active.activity.events.map((event) => ({ ...event })) }
+    : { conversationId, status: 'idle', toolActivityCount: 0, events: [] };
+}
 
 export function cancelLocalConversation(conversationId: string): {
   conversationId: string; status: 'requested' | 'not_active';
@@ -42,6 +86,25 @@ export interface LocalConversationProviderStatus {
   streaming: boolean;
   tools: boolean;
   cancellable: boolean;
+  imageInput: boolean;
+}
+
+export interface LocalConversationReasoningOption {
+  effort: string;
+  description: string;
+}
+
+export interface LocalConversationModelOption {
+  slug: string;
+  displayName: string;
+  description: string;
+  defaultReasoningLevel: string;
+  supportedReasoningLevels: LocalConversationReasoningOption[];
+}
+
+export interface LocalConversationModelCatalog {
+  provider: 'codex';
+  models: LocalConversationModelOption[];
 }
 
 export interface LocalConversationSendInput {
@@ -50,6 +113,9 @@ export interface LocalConversationSendInput {
   providerSessionId?: string;
   prompt: string;
   repoId?: string;
+  model?: string;
+  reasoningEffort?: string;
+  imagePaths?: string[];
   timeoutMs?: number;
 }
 
@@ -60,6 +126,7 @@ export interface LocalConversationSendResult {
   providerSessionId: string;
   output: string;
   toolActivityCount: number;
+  activityEvents: LocalConversationActivityEvent[];
 }
 
 export interface ParsedCodexConversationEvents {
@@ -120,6 +187,158 @@ export function parseCodexConversationJsonl(stdout: string): ParsedCodexConversa
   return { providerSessionId, output, toolActivityCount };
 }
 
+function activityField(item: Record<string, unknown>, ...keys: string[]): string {
+  for (const key of keys) {
+    const value = item[key];
+    if (typeof value === 'string' && value.trim()) return value.trim().slice(0, 160);
+  }
+  return '';
+}
+
+function boundedActivityDetail(value: string): string | undefined {
+  const detail = redactProcessOutput(value).replace(/\s+/g, ' ').trim()
+    .slice(0, LOCAL_CONVERSATION_ACTIVITY_DETAIL_CHARS);
+  return detail || undefined;
+}
+
+function activityLabel(itemType: string, item: Record<string, unknown>): string {
+  if (itemType === 'mcp_tool_call') {
+    const tool = activityField(item, 'tool', 'tool_name', 'name');
+    const server = activityField(item, 'server', 'server_name');
+    const display = tool
+      ? (server && !tool.startsWith(`${server}.`) ? `${server} · ${tool}` : tool)
+      : server;
+    return display ? `正在使用 ${display}` : '正在使用 Forge 工具';
+  }
+  if (itemType === 'command_execution') return '正在执行命令';
+  if (itemType === 'file_change') return '正在修改文件';
+  if (itemType === 'web_search') return '正在搜索';
+  return 'Agent 正在工作';
+}
+
+function activityDetail(itemType: string, item: Record<string, unknown>): string | undefined {
+  if (itemType === 'command_execution') {
+    const command = typeof item.command === 'string'
+      ? item.command
+      : Array.isArray(item.command)
+        ? item.command.filter((part): part is string => typeof part === 'string').join(' ')
+        : '';
+    return command ? boundedActivityDetail(command) : undefined;
+  }
+  if (itemType === 'file_change') {
+    const changes = Array.isArray(item.changes) ? item.changes : [];
+    const summaries = changes.flatMap((value) => {
+      const change = record(value);
+      if (!change) return [];
+      const path = activityField(change, 'path');
+      if (!path) return [];
+      const kind = activityField(change, 'kind') || 'change';
+      return [`${kind} ${path}`];
+    });
+    if (summaries.length === 0) return undefined;
+    const shown = summaries.slice(0, 4);
+    const suffix = summaries.length > shown.length ? ` · +${summaries.length - shown.length}` : '';
+    return boundedActivityDetail(`${shown.join(' · ')}${suffix}`);
+  }
+  if (itemType === 'web_search') {
+    const query = activityField(item, 'query');
+    return query ? boundedActivityDetail(query) : undefined;
+  }
+  return undefined;
+}
+
+function recordActivityEvent(
+  active: ActiveLocalTurn,
+  phase: LocalConversationActivityPhase,
+  label: string,
+  detail: string | undefined,
+  status: LocalConversationActivityEventStatus,
+  now: string,
+): void {
+  const events = active.activity.events;
+  if (status === 'completed') {
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const existing = events[index]!;
+      if (existing.status === 'active' && existing.phase === phase && existing.label === label) {
+        existing.status = 'completed';
+        if (detail) existing.detail = detail;
+        existing.completedAt = now;
+        return;
+      }
+    }
+  }
+  for (const existing of events) {
+    if (existing.status === 'active') {
+      existing.status = 'completed';
+      existing.completedAt = now;
+    }
+  }
+  events.push({
+    phase,
+    label,
+    ...(detail ? { detail } : {}),
+    status,
+    startedAt: now,
+    ...(status === 'completed' ? { completedAt: now } : {}),
+  });
+  if (events.length > LOCAL_CONVERSATION_ACTIVITY_EVENT_LIMIT) {
+    events.splice(0, events.length - LOCAL_CONVERSATION_ACTIVITY_EVENT_LIMIT);
+  }
+}
+
+function applyActivityLine(active: ActiveLocalTurn, line: string): void {
+  const trimmed = line.trim();
+  if (!trimmed.startsWith('{')) return;
+  let event: Record<string, unknown> | undefined;
+  try { event = record(JSON.parse(trimmed)); } catch { return; }
+  if (!event) return;
+  const type = typeof event.type === 'string' ? event.type : '';
+  const now = new Date().toISOString();
+  const update = (
+    phase: LocalConversationActivityPhase,
+    lastActivity: string,
+    status: LocalConversationActivityEventStatus,
+    detail?: string,
+  ) => {
+    active.activity.phase = phase;
+    active.activity.lastActivity = lastActivity;
+    active.activity.updatedAt = now;
+    recordActivityEvent(active, phase, lastActivity, detail, status, now);
+  };
+  if (type === 'thread.started' && typeof event.thread_id === 'string' && event.thread_id.trim()) {
+    update('thinking', '会话已启动', 'completed');
+    return;
+  }
+  if (type === 'turn.started') {
+    update('thinking', '正在推理', 'active');
+    return;
+  }
+  if (type === 'turn.completed') {
+    update('finishing', '正在完成', 'completed');
+    return;
+  }
+  if (type !== 'item.started' && type !== 'item.completed') return;
+  const item = record(event.item);
+  if (!item) return;
+  const itemType = typeof item.type === 'string' ? item.type : '';
+  const status: LocalConversationActivityEventStatus = type === 'item.completed' ? 'completed' : 'active';
+  if (itemType === 'agent_message') {
+    update('responding', '正在生成回复', status);
+    return;
+  }
+  if (['mcp_tool_call', 'command_execution', 'file_change', 'web_search'].includes(itemType)) {
+    if (type === 'item.completed') active.activity.toolActivityCount += 1;
+    update('tool', activityLabel(itemType, item), status, activityDetail(itemType, item));
+  }
+}
+
+function ingestActivityChunk(active: ActiveLocalTurn, text: string): void {
+  active.lineBuffer += text;
+  const lines = active.lineBuffer.split(/\r?\n/);
+  active.lineBuffer = lines.pop() ?? '';
+  for (const line of lines) applyActivityLine(active, line);
+}
+
 function localConversationCwd(): string {
   const root = join(tmpdir(), 'forge-local-controller');
   mkdirSync(root, { recursive: true, mode: 0o700 });
@@ -158,6 +377,7 @@ export async function readLocalConversationProviderStatus(
         streaming: false,
         tools: false,
         cancellable: true,
+        imageInput: true,
       };
     }
     return {
@@ -168,6 +388,7 @@ export async function readLocalConversationProviderStatus(
       streaming: false,
       tools: true,
       cancellable: true,
+      imageInput: true,
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -180,8 +401,67 @@ export async function readLocalConversationProviderStatus(
       streaming: false,
       tools: false,
       cancellable: true,
+      imageInput: true,
     };
   }
+}
+
+function boundedCatalogText(value: unknown, fallback = ''): string {
+  return typeof value === 'string' ? value.trim().slice(0, 500) : fallback;
+}
+
+export function parseCodexModelCatalog(stdout: string): LocalConversationModelCatalog {
+  let parsed: unknown;
+  try { parsed = JSON.parse(stdout); } catch { throw new Error('LOCAL_CONVERSATION_MODEL_CATALOG_INVALID'); }
+  const root = record(parsed);
+  const rows = Array.isArray(root?.models) ? root.models : [];
+  const models = rows.flatMap((value, index): Array<LocalConversationModelOption & { priority: number }> => {
+    const item = record(value);
+    const slug = boundedCatalogText(item?.slug);
+    if (!slug || slug.length > 120 || !/^[A-Za-z0-9._:-]+$/.test(slug) || item?.visibility !== 'list') return [];
+    const levels = Array.isArray(item.supported_reasoning_levels)
+      ? item.supported_reasoning_levels.flatMap((entry): LocalConversationReasoningOption[] => {
+          const level = record(entry);
+          const effort = boundedCatalogText(level?.effort);
+          if (!effort || effort.length > 32 || !/^[A-Za-z0-9_-]+$/.test(effort)) return [];
+          return [{ effort, description: boundedCatalogText(level?.description) }];
+        })
+      : [];
+    return [{
+      slug,
+      displayName: boundedCatalogText(item.display_name, slug),
+      description: boundedCatalogText(item.description),
+      defaultReasoningLevel: boundedCatalogText(item.default_reasoning_level),
+      supportedReasoningLevels: levels,
+      priority: typeof item.priority === 'number' && Number.isFinite(item.priority) ? item.priority : 10_000 + index,
+    }];
+  }).sort((left, right) => left.priority - right.priority)
+    .slice(0, 32)
+    .map(({ priority: _priority, ...model }) => model);
+  if (!models.length) throw new Error('LOCAL_CONVERSATION_MODEL_CATALOG_EMPTY');
+  return { provider: 'codex', models };
+}
+
+export async function readLocalConversationModelCatalog(
+  cwd: string = process.cwd(),
+): Promise<LocalConversationModelCatalog> {
+  const executable = resolveLauncherExecutable({ controllerType: 'codex', cwd });
+  const stdout = await new Promise<string>((resolve, reject) => {
+    execFile(executable, ['debug', 'models'], {
+      cwd,
+      env: launcherProcessEnvironment(process.env),
+      timeout: 5_000,
+      maxBuffer: 8 * 1024 * 1024,
+      encoding: 'utf8',
+    }, (error, output) => {
+      if (error) {
+        reject(new Error(`LOCAL_CONVERSATION_MODEL_CATALOG_FAILED: ${error.message}`));
+        return;
+      }
+      resolve(output);
+    });
+  });
+  return parseCodexModelCatalog(stdout);
 }
 
 export function runCodexConversation(
@@ -191,7 +471,7 @@ export function runCodexConversation(
   cwd: string,
   timeoutMs: number,
   conversationId: string,
-): Promise<{ stdout: string; stderr: string }> {
+): Promise<{ stdout: string; stderr: string; activity: LocalConversationActivitySnapshot }> {
   return new Promise((resolve, reject) => {
     if (activeLocalTurns.has(conversationId)) {
       throw Error('LOCAL_CONVERSATION_ALREADY_RUNNING');
@@ -201,7 +481,27 @@ export function runCodexConversation(
       env,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
-    const active = { child, cancelRequested: false };
+    const now = new Date().toISOString();
+    const active: ActiveLocalTurn = {
+      child,
+      cancelRequested: false,
+      lineBuffer: '',
+      activity: {
+        conversationId,
+        status: 'running',
+        phase: 'starting',
+        toolActivityCount: 0,
+        lastActivity: '正在启动 Codex',
+        startedAt: now,
+        updatedAt: now,
+        events: [{
+          phase: 'starting',
+          label: '正在启动 Codex',
+          status: 'active',
+          startedAt: now,
+        }],
+      },
+    };
     activeLocalTurns.set(conversationId, active);
     let stdout = '';
     let stderr = '';
@@ -221,10 +521,19 @@ export function runCodexConversation(
       }
       return next;
     };
-    child.stdout?.on('data', (chunk) => { stdout = append(stdout, chunk, 'stdout'); });
+    child.stdout?.on('data', (chunk) => {
+      const text = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk ?? '');
+      stdout = append(stdout, text, 'stdout');
+      ingestActivityChunk(active, text);
+    });
     child.stderr?.on('data', (chunk) => { stderr = append(stderr, chunk, 'stderr'); });
     child.once('error', (error) => fail(new Error(`LOCAL_CONVERSATION_PROVIDER_START_FAILED: ${error.message}`)));
     child.once('close', (code, signal) => {
+      if (active.lineBuffer.trim()) applyActivityLine(active, active.lineBuffer);
+      const activity = {
+        ...active.activity,
+        events: active.activity.events.map((event) => ({ ...event })),
+      };
       if (activeLocalTurns.get(conversationId) === active) activeLocalTurns.delete(conversationId);
       if (settled) return;
       settled = true;
@@ -238,13 +547,69 @@ export function runCodexConversation(
         reject(new Error(`LOCAL_CONVERSATION_PROVIDER_FAILED: code=${String(code ?? 'null')} signal=${signal ?? 'none'}${detail ? `; ${detail}` : ''}`));
         return;
       }
-      resolve({ stdout, stderr });
+      resolve({ stdout, stderr, activity });
     });
     const timer = setTimeout(() => {
       child.kill('SIGTERM');
       fail(new Error('LOCAL_CONVERSATION_PROVIDER_TIMEOUT'));
     }, timeoutMs);
   });
+}
+
+export function validateLocalConversationImagePaths(conversationId: string, imagePaths?: string[]): string[] {
+  if (!imagePaths?.length) return [];
+  if (!LOCAL_CONVERSATION_ID.test(conversationId)) throw new Error('LOCAL_CONVERSATION_ID_INVALID');
+  if (imagePaths.length > LOCAL_CONVERSATION_MAX_IMAGES) throw new Error('LOCAL_CONVERSATION_IMAGE_COUNT_INVALID');
+
+  let root: string;
+  try {
+    root = realpathSync(join(tmpdir(), LOCAL_CONVERSATION_IMAGE_ROOT, conversationId));
+  } catch {
+    throw new Error('LOCAL_CONVERSATION_IMAGE_ROOT_INVALID');
+  }
+
+  return imagePaths.map((imagePath) => {
+    if (!imagePath || imagePath.length > 4096 || !isAbsolute(imagePath)) {
+      throw new Error('LOCAL_CONVERSATION_IMAGE_PATH_INVALID');
+    }
+    let resolved: string;
+    try {
+      resolved = realpathSync(imagePath);
+    } catch {
+      throw new Error('LOCAL_CONVERSATION_IMAGE_PATH_INVALID');
+    }
+    const scoped = relative(root, resolved);
+    if (!scoped || scoped === '..' || scoped.startsWith(`..${sep}`) || isAbsolute(scoped)) {
+      throw new Error('LOCAL_CONVERSATION_IMAGE_PATH_OUTSIDE_STAGING');
+    }
+    if (!LOCAL_CONVERSATION_IMAGE_EXTENSIONS.has(extname(resolved).toLowerCase())) {
+      throw new Error('LOCAL_CONVERSATION_IMAGE_TYPE_UNSUPPORTED');
+    }
+    const stat = statSync(resolved);
+    if (!stat.isFile() || stat.size <= 0 || stat.size > LOCAL_CONVERSATION_MAX_IMAGE_BYTES) {
+      throw new Error('LOCAL_CONVERSATION_IMAGE_FILE_INVALID');
+    }
+    return resolved;
+  });
+}
+
+export function buildLocalConversationProviderArgs(
+  model?: string, reasoningEffort?: string, imagePaths: string[] = [],
+): string[] {
+  const selectedModel = model?.trim();
+  const selectedReasoning = reasoningEffort?.trim();
+  if (selectedModel && (selectedModel.length > 120 || !/^[A-Za-z0-9._:-]+$/.test(selectedModel))) {
+    throw new Error('LOCAL_CONVERSATION_MODEL_INVALID');
+  }
+  if (selectedReasoning && (selectedReasoning.length > 32 || !/^[A-Za-z0-9_-]+$/.test(selectedReasoning))) {
+    throw new Error('LOCAL_CONVERSATION_REASONING_INVALID');
+  }
+  return [
+    '--skip-git-repo-check',
+    ...(selectedModel ? ['--model', selectedModel] : []),
+    ...(selectedReasoning ? ['-c', `model_reasoning_effort="${selectedReasoning}"`] : []),
+    ...imagePaths.flatMap((imagePath) => ['--image', imagePath]),
+  ];
 }
 
 export async function sendLocalConversation(input: LocalConversationSendInput): Promise<LocalConversationSendResult> {
@@ -257,6 +622,8 @@ export async function sendLocalConversation(input: LocalConversationSendInput): 
   if (providerSessionId && !LOCAL_CONVERSATION_ID.test(providerSessionId)) throw new Error('LOCAL_CONVERSATION_PROVIDER_SESSION_INVALID');
   if (repoId && repoId.length > 256) throw new Error('LOCAL_CONVERSATION_REPOSITORY_INVALID');
 
+  const imagePaths = validateLocalConversationImagePaths(conversationId, input.imagePaths);
+  const providerArgs = buildLocalConversationProviderArgs(input.model, input.reasoningEffort, imagePaths);
   const cwd = localConversationCwd();
   // The real conversation spawn reports startup failures; status queries still probe.
   const executable = resolveLauncherExecutable({ controllerType: 'codex', cwd }, process.env, false);
@@ -269,7 +636,7 @@ export async function sendLocalConversation(input: LocalConversationSendInput): 
     // The isolated local-conversation cwd is intentionally not a Git checkout.
     // Only this local Agent entry opts out of Codex's repo presence check.
     // Forge MCP tools still validate the registered repo/checkout independently.
-    args: ['--skip-git-repo-check'],
+    args: providerArgs,
     resumeSessionId: providerSessionId,
     json: true,
   });
@@ -292,5 +659,8 @@ export async function sendLocalConversation(input: LocalConversationSendInput): 
     providerSessionId: resolvedProviderSessionId,
     output: parsed.output.trim(),
     toolActivityCount: parsed.toolActivityCount,
+    activityEvents: completed.activity.events
+      .filter((event) => event.phase === 'tool')
+      .map((event) => ({ ...event })),
   };
 }

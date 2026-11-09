@@ -355,7 +355,7 @@ export function LocalConversationSurface({
   onOpenThreadHandled: () => void;
   onThreadsChange: (items: LocalConversationNavItem[], selectedId?: string, activeRepoId?: string) => void;
   onRefreshProvider: () => Promise<void>;
-  onSend?: (input: { thread: LocalConversationThread; prompt: string; allowEffects: boolean }) => Promise<LocalConversationReply>;
+  onSend?: (input: { thread: LocalConversationThread; prompt: string }) => Promise<LocalConversationReply>;
   onCancel?: (thread: LocalConversationThread) => Promise<void>;
 }) {
   const [threads, setThreads] = useState<LocalConversationThread[]>(() => loadThreads());
@@ -368,7 +368,6 @@ export function LocalConversationSurface({
   }>>({});
   const pendingTurnIds = useRef(new Set<string>());
   const [sendErrors, setSendErrors] = useState<Record<string, string | null>>({});
-  const [allowEffects, setAllowEffects] = useState(false);
   const [diffVisible, setDiffVisible] = useState(false);
   const [diffStaged, setDiffStaged] = useState(false);
   const [diffRepoId, setDiffRepoId] = useState<string>();
@@ -524,10 +523,6 @@ export function LocalConversationSurface({
   const selectedProject = projects.find((project) => project.repoId === selectedThread?.projectRepoId);
   const selectedRepoId = selectedThread?.projectRepoId;
 
-  // An effect permission is for exactly one conversation repository/checkout context.
-  useEffect(() => { setAllowEffects(false); },
-    [selectedThread?.id, selectedRepoId, selectedThread?.checkoutId]);
-
   // Catalog load may complete after an empty draft was first created.
   // Never rewrite a conversation with messages or a provider resume handle.
   useEffect(() => {
@@ -570,6 +565,8 @@ export function LocalConversationSurface({
   const checkoutBindingReady = !selectedRepoId || Boolean(selectedThread?.checkoutId
     && checkoutIndex.some((checkout) => checkout.checkoutId === selectedThread.checkoutId));
   const apiSelected = selectedThreadProvider === 'api';
+  const joyCodeSelected = selectedThreadProvider === 'joycode';
+  const externalSelected = apiSelected || joyCodeSelected;
   const loopbackApi = Boolean(apiSettings && /^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::[0-9]+)?(?:\/|$)/.test(apiSettings.endpoint));
   // When Codex is the new-session default, the settings read deliberately
   // does not query the API Keychain. A historical API thread can still send:
@@ -577,7 +574,8 @@ export function LocalConversationSurface({
   const apiCredentialDeferred = apiSelected && apiSettings?.provider !== 'api' && !loopbackApi;
   const apiReady = Boolean(apiSettings?.model.trim()
     && (apiSettings?.hasKey || loopbackApi || apiCredentialDeferred));
-  const providerReady = (apiSelected ? apiReady : provider?.status === 'ready')
+  const joyCodeReady = Boolean(apiSettings?.joyCodeReady && apiSettings?.joyCodeModel.trim());
+  const providerReady = (joyCodeSelected ? joyCodeReady : apiSelected ? apiReady : provider?.status === 'ready')
     && Boolean(onSend) && projectBindingReady && checkoutBindingReady;
 
   const addThread = () => {
@@ -632,7 +630,6 @@ export function LocalConversationSurface({
       setDrafts((current) => ({ ...current,
         [choice.thread.id]: current[selectedThread.id] ?? '' }));
     } else updateSelected(() => choice.thread);
-    setAllowEffects(false);
     setSendError(null);
     diffRequest.current += 1;
     setDiffVisible(false);
@@ -648,7 +645,6 @@ export function LocalConversationSurface({
       setDrafts((current) => ({ ...current,
         [choice.thread.id]: current[selectedThread.id] ?? '' }));
     } else updateSelected(() => choice.thread);
-    setAllowEffects(false);
     setSendError(null);
     diffRequest.current += 1;
     setDiffVisible(false);
@@ -656,15 +652,22 @@ export function LocalConversationSurface({
     setCommitError(undefined);
   };
 
-  const archiveThread = () => {
+  const deleteThread = () => {
     if (!selectedThread || sending || committing) return;
-    updateSelected((thread) => ({ ...thread, archived: true, updatedAt: new Date().toISOString() }));
+    const deletedId = selectedThread.id;
+    // Local conversation state has one owner; deleting must not create hidden history.
+    setThreads((current) => current.filter((thread) => thread.id !== deletedId));
     setDrafts((current) => {
       const next = { ...current };
-      delete next[selectedThread.id];
+      delete next[deletedId];
       return next;
     });
-    setSelectedThreadId(activeThreads.find((thread) => thread.id !== selectedThread.id)?.id);
+    setSendErrors((current) => {
+      const next = { ...current };
+      delete next[deletedId];
+      return next;
+    });
+    setSelectedThreadId(activeThreads.find((thread) => thread.id !== deletedId)?.id);
   };
 
   async function toggleDiff(forceRefresh = false, staged = diffStaged) {
@@ -743,10 +746,6 @@ export function LocalConversationSurface({
     const prompt = draft.trim();
     if (!selectedThread || !providerReady || !onSend || !prompt || sending || committing
       || pendingTurnIds.current.has(selectedThread.id)) return;
-    const authorizedEffects = apiSelected && allowEffects && Boolean(selectedProject && checkoutBindingReady);
-    if (authorizedEffects && !window.confirm(
-      '仅本次回复：允许当前 API 模型通过 Forge 修改所选仓库及执行命令。Forge 原有安全检查仍生效。确认授权？'
-    )) return;
     const createdAt = new Date().toISOString();
     const userMessage: LocalConversationMessage = { id: localId('message'), role: 'user', content: prompt, createdAt };
     const pendingThread: LocalConversationThread = {
@@ -763,7 +762,7 @@ export function LocalConversationSurface({
       ...current, [selectedThread.id]: { cancelRequested: false, toolProgress: [] },
     }));
     try {
-      const reply = await onSend({ thread: pendingThread, prompt, allowEffects: authorizedEffects });
+      const reply = await onSend({ thread: pendingThread, prompt });
       const repliedAt = new Date().toISOString();
       const assistantMessage: LocalConversationMessage = {
         id: localId('message'), role: 'assistant', content: reply.content, createdAt: repliedAt,
@@ -801,7 +800,6 @@ export function LocalConversationSurface({
         setSendError('本次回复未确认：' + reason + '。若可能涉及工具操作，请先检查 Forge 结果再决定是否重新发送。');
       }
     } finally {
-      if (currentThreadIdRef.current === selectedThread.id) setAllowEffects(false);
       pendingTurnIds.current.delete(selectedThread.id);
       setPendingTurns((current) => {
         const next = { ...current };
@@ -812,7 +810,7 @@ export function LocalConversationSurface({
   };
 
   const cancelTurn = async () => {
-    if (!(apiSelected || provider?.cancellable === true) || !sending || !selectedThread
+    if (!(externalSelected || provider?.cancellable === true) || !sending || !selectedThread
       || !onCancel || cancelRequested) return;
     const id = selectedThread.id;
     setPendingTurns((current) => current[id] ? {
@@ -841,13 +839,17 @@ export function LocalConversationSurface({
         </div>
         <div className="agent-chat-header-actions">
           <span className="agent-provider-indicator"
-            title={apiSelected ? (apiReady
-              ? `API · ${apiSettings?.model}${apiCredentialDeferred ? ' · 发送时校验钥匙串' : ''}`
-              : 'API 尚未配置')
-              : providerError ?? provider?.detail ?? 'Codex CLI 状态待确认'}>
-            <span className={'health-dot ' + ((apiSelected ? (apiReady && !apiCredentialDeferred) : provider?.status === 'ready')
+            title={joyCodeSelected
+              ? (joyCodeReady ? `JoyCode · ${apiSettings?.joyCodeModel}` : 'JoyCode 尚未就绪')
+              : apiSelected ? (apiReady
+                ? `API · ${apiSettings?.model}${apiCredentialDeferred ? ' · 发送时校验钥匙串' : ''}`
+                : 'API 尚未配置')
+                : providerError ?? provider?.detail ?? 'Codex CLI 状态待确认'}>
+            <span className={'health-dot ' + ((joyCodeSelected ? joyCodeReady
+              : apiSelected ? (apiReady && !apiCredentialDeferred) : provider?.status === 'ready')
               ? 'connected' : 'degraded')} aria-hidden="true" />
-            <span>{apiSelected ? (apiReady ? 'API' : '未配置')
+            <span>{joyCodeSelected ? (joyCodeReady ? 'JoyCode' : '未配置')
+              : apiSelected ? (apiReady ? 'API' : '未配置')
               : providerLoading ? '检测中' : provider?.status === 'ready' ? 'Codex' : '未连接'}</span>
           </span>
           <button className="agent-icon-button" type="button" disabled={!selectedThread?.projectRepoId || !checkoutBindingReady || committing}
@@ -861,7 +863,7 @@ export function LocalConversationSurface({
             <summary title="更多会话操作" aria-label="更多会话操作"><AgentControlIcon name="more" /></summary>
             <div className="agent-header-menu-panel" role="group" aria-label="会话操作">
               <button type="button" onClick={() => { closeAgentMenus(surfaceRef.current); onOpenProjects(); }}>
-                <AgentControlIcon name="work" /> 项目与记录
+                <AgentControlIcon name="folder" /> 项目与记录
               </button>
               <button type="button" onClick={() => { closeAgentMenus(surfaceRef.current); onOpenKnowledge(); }}>
                 <AgentControlIcon name="book" /> 项目知识
@@ -869,12 +871,12 @@ export function LocalConversationSurface({
               <button type="button" onClick={() => { closeAgentMenus(surfaceRef.current); onOpenSettings(); }}>
                 <AgentControlIcon name="settings" /> 模型与授权
               </button>
-              {!apiSelected && <button type="button" disabled={providerLoading}
+              {!externalSelected && <button type="button" disabled={providerLoading}
                 onClick={() => { closeAgentMenus(surfaceRef.current); void onRefreshProvider(); }}>
                 <AgentControlIcon name="refresh" /> 刷新 Codex 连接
               </button>}
               {selectedThread && <button type="button" disabled={sending || committing}
-                onClick={() => { closeAgentMenus(surfaceRef.current); archiveThread(); }}>归档当前会话</button>}
+                onClick={() => { closeAgentMenus(surfaceRef.current); deleteThread(); }}>删除当前会话</button>}
             </div>
           </details>
         </div>
@@ -1001,6 +1003,7 @@ export function LocalConversationSurface({
                 {sendError
                   ?? (!projectBindingReady ? '项目已不在 Forge 注册目录中，请重新选择'
                     : !checkoutBindingReady && selectedRepoId ? 'Checkout 未核实，暂时禁止执行'
+                    : joyCodeSelected ? '请先登录 JoyCode 并配置可用模型'
                     : apiSelected ? '请配置可用的 API 模型与密钥'
                     : providerError ?? 'Codex CLI 尚未就绪')}
               </div>
@@ -1049,25 +1052,17 @@ export function LocalConversationSurface({
                   title="配置新会话默认模型；当前会话的执行引擎保持不变"
                   aria-label="选择模型与 API 设置" onClick={onOpenSettings}>
                   <AgentControlIcon name="settings" />
-                  <span>{apiSelected ? (apiSettings?.model || '兼容 API') : 'Codex'}</span>
+                  <span>{joyCodeSelected ? (apiSettings?.joyCodeModel || 'JoyCode')
+                    : apiSelected ? (apiSettings?.model || '兼容 API') : 'Codex'}</span>
                   <AgentControlIcon name="chevron" />
                 </button>
-                {apiSelected && selectedProject && <button type="button"
-                  className={'agent-icon-button agent-permission-control' + (allowEffects && checkoutBindingReady ? ' active' : '')}
-                  title={allowEffects && checkoutBindingReady ? '已允许本轮仓库写入，发送时仍会再次确认' : '允许本轮编辑文件和执行命令'}
-                  aria-label="允许本轮编辑文件和执行命令"
-                  aria-pressed={allowEffects && checkoutBindingReady}
-                  disabled={sending || !checkoutBindingReady}
-                  onClick={() => setAllowEffects((current) => !current)}>
-                  <AgentControlIcon name="shield" />
-                </button>}
                 {sending ? (
                   <button className="local-send-button agent-stop-control" type="button"
                     aria-label={cancelRequested ? '已请求停止' : '请求停止当前 Agent 回复'}
-                    title={apiSelected || provider?.cancellable === true
+                    title={externalSelected || provider?.cancellable === true
                       ? cancelRequested ? '正在等待停止确认' : '停止本轮回复'
                       : '当前模型提供方不支持停止'}
-                    disabled={cancelRequested || !onCancel || (!apiSelected && provider?.cancellable !== true)}
+                    disabled={cancelRequested || !onCancel || (!externalSelected && provider?.cancellable !== true)}
                     onClick={() => void cancelTurn()}>
                     <AgentControlIcon name="stop" />
                   </button>

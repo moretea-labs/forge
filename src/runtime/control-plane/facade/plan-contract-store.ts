@@ -130,6 +130,8 @@ export interface PlanSemanticView {
   revision: number;
   semanticScope: ScopeRef;
   requirementId?: string;
+  /** Optional immutable refinement parent. This is structure, not lifecycle or execution ownership. */
+  parentPlanId?: string;
   /** One-way lineage fact: this Plan is historical and its obligations continue in the named successor. */
   supersededBy?: string;
   requirementBasisRevision?: number;
@@ -172,6 +174,8 @@ export interface CreatePlanSemanticInput {
   /** Optional node-local placement provenance; absent for a ForgeInstance-scoped Plan. */
   repoId?: string;
   requirementId?: string;
+  /** Optional immutable refinement parent. Omit for a root Plan. */
+  parentPlanId?: string;
   requirementBasisRevision?: number;
   scopeKey?: string;
   sourceBasisRevision?: string;
@@ -210,6 +214,7 @@ export function planSemanticView(plan: PlanContract): PlanSemanticView {
     revision: currentPlanSemanticRevision(plan),
     semanticScope,
     requirementId: plan.requirementId,
+    ...(plan.parentPlanId?.trim() ? { parentPlanId: plan.parentPlanId.trim() } : {}),
     ...(plan.supersededBy?.trim() ? { supersededBy: plan.supersededBy.trim() } : {}),
     requirementBasisRevision: semantic.requirementBasisRevision,
     sourceBasisRevision: semantic.sourceBasisRevision,
@@ -390,7 +395,7 @@ export function listPlanSemanticRevisionRecords(options: PlanContractStoreOption
 function planRevisionRecord(plan: PlanContract, input: { recordedAt: string; reason: string; requestedRevisionLabel?: string }): PlanRevisionRecord {
   return {
     schemaVersion: 1, repoId: plan.repoId, planId: plan.planId, revision: currentPlanRevision(plan),
-    requirementId: plan.requirementId, scopeKey: plan.scopeKey, sourceRevision: plan.sourceRevision, goal: plan.goal,
+    requirementId: plan.requirementId, parentPlanId: plan.parentPlanId, scopeKey: plan.scopeKey, sourceRevision: plan.sourceRevision, goal: plan.goal,
     nonGoals: [...plan.nonGoals], assumptions: [...plan.assumptions], resolvedDecisions: [...plan.resolvedDecisions],
     stopConditions: [...plan.stopConditions], replanConditions: [...plan.replanConditions], integrationStrategy: plan.integrationStrategy,
     status: plan.status, steps: structuredClone(plan.steps), evidenceRefs: structuredClone(plan.evidenceRefs),
@@ -729,6 +734,19 @@ export function createPlanSemanticContext(options: PlanContractStoreOptions, inp
     // while genuinely independent goals remain free to use distinct scopes.
     const scopeKey = normalizeScopeKey(input.scopeKey?.trim() || planId);
     const requirementId = input.requirementId?.trim().slice(0, 160) || undefined;
+    const parentPlanId = input.parentPlanId?.trim()
+      ? sanitizeFileComponent(input.parentPlanId).slice(0, 160)
+      : undefined;
+    if (parentPlanId === planId) throw new Error(`PLAN_PARENT_SELF_REFERENCE:${planId}`);
+    if (parentPlanId) {
+      const parent = store.contracts.find((existing) => existing.planId === parentPlanId);
+      if (!parent) throw new Error(`PLAN_PARENT_NOT_FOUND:${parentPlanId}`);
+      if (!isCurrentPlanContract(parent)) throw new Error(`PLAN_PARENT_NOT_CURRENT:${parentPlanId}`);
+      const parentRequirementId = parent.requirementId?.trim() || undefined;
+      if (parentRequirementId !== requirementId) {
+        throw new Error(`PLAN_PARENT_REQUIREMENT_MISMATCH:${parentPlanId}`);
+      }
+    }
     const existingLineage = store.contracts.find((existing) =>
       existing.planId !== planId
       && isCurrentPlanContract(existing)
@@ -772,6 +790,7 @@ export function createPlanSemanticContext(options: PlanContractStoreOptions, inp
       semanticContext,
       repoId: input.repoId,
       requirementId,
+      ...(parentPlanId ? { parentPlanId } : {}),
       scopeKey,
       sourceRevision: sourceBasisRevision,
       goal,

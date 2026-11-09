@@ -1,5 +1,6 @@
 import {
   bindRequirementCandidateAuditRef,
+  bindRequirementRepositoryPlacement,
   createRequirement,
   listRequirements,
   readRequirement,
@@ -7,6 +8,7 @@ import {
   type Requirement,
   type RequirementStoreOptions,
 } from '../persistence/requirement-store';
+import { readPlanContractStore } from './plan-contract-store';
 import { cognitionMemoryStore } from '../persistence/cognition-store';
 import { memoryAddressKey, type MemoryUnit } from '../../../../packages/kernel/cognition/api/index';
 
@@ -36,6 +38,7 @@ export function normalizeRequirementAdmissionInput(input: CreateRequirementInput
   if (!requirementId || requirementId.includes('/') || requirementId.includes('\\')) throw new Error('REQUIREMENT_ID_INVALID');
   const normalized: CreateRequirementInput = {
     requirementId: requirementId.slice(0, 160),
+    ...(String(input.repoId ?? '').trim() ? { repoId: String(input.repoId).trim().slice(0, 256) } : {}),
     title: String(input.title ?? '').trim().slice(0, 500),
     outcomeStatement: String(input.outcomeStatement ?? '').trim().slice(0, 2_000),
     acceptanceCriteria: bounded(input.acceptanceCriteria, 50),
@@ -56,12 +59,19 @@ function sameBootstrapIdentity(existing: Requirement, requested: CreateRequireme
     && JSON.stringify(existing.legacyAliases) === JSON.stringify(requested.legacyAliases ?? []);
 }
 
-function existingDecision(existing: Requirement, requested: CreateRequirementInput): RequirementAdmissionResult {
-  return {
-    decision: sameBootstrapIdentity(existing, requested) ? 'reuse_existing' : 'existing_conflict',
-    requirement: existing,
-    created: false,
-  };
+function existingDecision(
+  options: RequirementStoreOptions,
+  existing: Requirement,
+  requested: CreateRequirementInput,
+): RequirementAdmissionResult {
+  if (!sameBootstrapIdentity(existing, requested)) {
+    return { decision: 'existing_conflict', requirement: existing, created: false };
+  }
+  const requestedRepoId = requested.repoId?.trim();
+  const requirement = requestedRepoId
+    ? bindRequirementRepositoryPlacement(options, existing.requirementId, requestedRepoId)
+    : existing;
+  return { decision: 'reuse_existing', requirement, created: false };
 }
 
 /**
@@ -75,7 +85,7 @@ export function admitRequirement(
 ): RequirementAdmissionResult {
   const requested = normalizeRequirementAdmissionInput(input);
   const existing = readRequirement(options, requested.requirementId)?.value;
-  if (existing) return existingDecision(existing, requested);
+  if (existing) return existingDecision(options, existing, requested);
 
   try {
     return { decision: 'created', requirement: createRequirement(options, requested), created: true };
@@ -83,8 +93,26 @@ export function admitRequirement(
     if (!(error instanceof Error) || !error.message.startsWith('REQUIREMENT_ALREADY_EXISTS:')) throw error;
     const raced = readRequirement(options, requested.requirementId)?.value;
     if (!raced) throw error;
-    return existingDecision(raced, requested);
+    return existingDecision(options, raced, requested);
   }
+}
+
+export function listRequirementsForRepository(
+  options: RequirementStoreOptions,
+  repoIdInput?: string,
+  limit = 500,
+) {
+  const repoId = String(repoIdInput ?? '').trim();
+  const all = listRequirements(options, 1000);
+  if (!repoId) return all.slice(0, limit);
+  const relatedRequirementIds = new Set(
+    readPlanContractStore({ controllerHome: options.controllerHome, repoId }).contracts
+      .map((plan) => plan.requirementId?.trim())
+      .filter((requirementId): requirementId is string => Boolean(requirementId)),
+  );
+  return all
+    .filter((record) => record.value.repoId === repoId || relatedRequirementIds.has(record.value.requirementId))
+    .slice(0, limit);
 }
 
 export type RequirementCandidatePromotionDecision =

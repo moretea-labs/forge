@@ -8,7 +8,7 @@ import { repositoryLabel } from '../src/runtime-client';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { ProjectRecordsView } from '../src/project-records-view';
-import { disconnectedProjection } from '../src/runtime-projection';
+import { designPreviewProjection, disconnectedProjection } from '../src/runtime-projection';
 
 describe('Forge Desktop Agent thread identity', () => {
   test('context options select directly, close and return focus, with keyboard navigation', () => {
@@ -103,14 +103,20 @@ describe('Forge Desktop Agent thread identity', () => {
     expect(html).toContain('在 project-b 中新建会话');
     expect((html.match(/sidebar-project-conversations/g) ?? [])).toHaveLength(2);
     expect((html.match(/sidebar-turn-running/g) ?? [])).toHaveLength(1);
+    // Primary semantic destinations stay above the local conversation index.
+    expect(html).toContain('sidebar-primary');
+    expect(html).toContain('sidebar-conversations');
+    expect(html.indexOf('sidebar-new-thread')).toBeLessThan(html.indexOf('sidebar-conversations'));
+    expect((html.match(/aria-label="搜索会话"/g) ?? [])).toHaveLength(1);
+    expect(html).toContain('aria-current="page"');
   });
 
   test('new provider defaults never hide older pinned Codex/API conversations', () => {
     const codex = { ...createThread('codex', 'repo_one', 'checkout_one'),
-      title: 'Codex task', messages: [{ id: 'c1', role: 'user' as const,
+      title: 'Codex task', updatedAt: '2026-11-06T08:00:00Z', messages: [{ id: 'c1', role: 'user' as const,
         content: 'Continue Codex task', createdAt: '2026-11-06T08:00:00Z' }] };
     const api = { ...createThread('api', 'repo_two', 'checkout_two'),
-      title: 'API task', messages: [{ id: 'a1', role: 'user' as const,
+      title: 'API task', updatedAt: '2026-11-06T08:01:00Z', messages: [{ id: 'a1', role: 'user' as const,
         content: 'Continue API task', createdAt: '2026-11-06T08:01:00Z' }] };
     const originalStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
     const projects = [
@@ -138,16 +144,16 @@ describe('Forge Desktop Agent thread identity', () => {
       }));
     };
     try {
-      const oldCodexWithApiDefault = renderHistory([codex, api], 'api');
-      expect(oldCodexWithApiDefault).toContain('Continue Codex task');
-      expect(oldCodexWithApiDefault).toContain('title="Connected"');
-      expect(oldCodexWithApiDefault).not.toContain('API 尚未配置');
-      const oldApiWithCodexDefault = renderHistory([api, codex], 'codex');
-      expect(oldApiWithCodexDefault).toContain('Continue API task');
-      expect(oldApiWithCodexDefault).toContain('发送时校验钥匙串');
-      expect(oldApiWithCodexDefault).toContain('允许本轮编辑文件和执行命令');
+      const apiDefault = renderHistory([codex, api], 'api');
+      expect(apiDefault).toContain('Continue API task');
+      expect(apiDefault).toContain('API 尚未配置');
+      const codexDefault = renderHistory([api, codex], 'codex');
+      expect(codexDefault).toContain('Continue API task');
+      expect(codexDefault).toContain('发送时校验钥匙串');
+      expect(codexDefault).toContain('允许本轮编辑文件和执行命令');
       const nav = localConversationNavItems([codex, api], {});
       expect(nav.map((item) => item.provider).sort()).toEqual(['api', 'codex']);
+      expect(nav.map((item) => item.title).sort()).toEqual(['API task', 'Codex task']);
     } finally {
       if (originalStorage) Object.defineProperty(globalThis, 'localStorage', originalStorage);
       else delete (globalThis as { localStorage?: Storage }).localStorage;
@@ -248,7 +254,7 @@ describe('Forge Desktop Agent thread identity', () => {
 
   test('sidebar, project and Agent actions share purposeful Lucide SVG glyphs', () => {
     for (const name of [
-      'new-thread', 'conversations', 'work', 'requirement', 'plan', 'knowledge',
+      'new-thread', 'conversations', 'requirement', 'plan', 'knowledge',
       'project', 'conversation', 'draft', 'settings', 'runtime',
       'plus', 'diff', 'more', 'folder', 'branch', 'shield', 'arrow', 'stop',
     ] as const) {
@@ -369,7 +375,7 @@ describe('Forge Desktop Agent thread identity', () => {
         provider: { status: 'ready', label: 'Codex', detail: 'ready', streaming: false, tools: true },
         providerLoading: false, providerError: null,
         apiSettings: { provider: 'api', endpoint: 'http://127.0.0.1:1234', model: 'test-model', apiProtocol: 'openai', hasKey: true },
-        onOpenSettings() {}, onOpenProjects() {}, onOpenKnowledge() {}, onOpenWork() {}, onOpenRecord() {},
+        onOpenSettings() {}, onOpenProjects() {}, onOpenKnowledge() {},
         newThreadRequested: false, onNewThreadHandled() {}, onOpenThreadHandled() {}, onThreadsChange() {},
         async onRefreshProvider() {}, async onSend() { return { content: 'ok' }; },
       }));
@@ -437,15 +443,14 @@ describe('Forge Desktop Agent thread identity', () => {
     });
   });
 
-  test('failed project read reports the selected project failure rather than showing stale records', () => {
+  test('failed project read reports the selected project failure rather than showing stale semantic records', () => {
     const html = renderToStaticMarkup(createElement(ProjectRecordsView, {
-      mode: 'works',
+      mode: 'requirements',
       projection: {
         ...disconnectedProjection,
         source: 'runtime',
         runtime: { status: 'degraded', label: '项目详情读取失败', detail: 'yaozhunshi：Forge 返回了错误' },
       },
-      onSelectWork() {},
       onNavigateRecord() {},
       async onRefresh() {},
     }));
@@ -565,4 +570,149 @@ describe('Forge Desktop Agent thread identity', () => {
   });
 
 
+});
+
+
+describe('Native macOS app launch surface', () => {
+  test('does not overlay WKWebView with an unreparented full-window Liquid Glass view', () => {
+    const config = JSON.parse(readFileSync(new URL('../src-tauri/tauri.conf.json', import.meta.url), 'utf8'));
+    const window = config.app.windows.find((entry: { label: string }) => entry.label === 'main');
+    expect(window).toBeDefined();
+    expect(window.transparent).toBe(false);
+    expect(window.titleBarStyle).toBe('Visible');
+    // CSS owns the sidebar material. A native NSGlassEffectView needs the
+    // actual WKWebView as contentView; configuring a separate full-window
+    // overlay made the native Forge window render solid gray on macOS.
+    expect(window.windowEffects).toBeUndefined();
+
+  });
+});
+
+
+describe('Packaged macOS web resources', () => {
+  test('uses relative Vite assets for Tauri custom-protocol WebViews', () => {
+    const viteConfig = readFileSync(new URL('../vite.config.ts', import.meta.url), 'utf8');
+    expect(viteConfig).toContain("base: './'");
+    const entry = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+    expect(entry).not.toContain('forge-native-paint-probe');
+  });
+});
+
+
+describe('macOS WebKit first-frame rendering regression', () => {
+  test('boots the existing React UI before activating its full stylesheet', () => {
+    const entry = readFileSync(new URL('../src/main.tsx', import.meta.url), 'utf8');
+    expect(entry).not.toContain("import './styles.css';");
+    expect(entry).toContain("import('./styles.css')");
+    expect(entry).toContain('requestAnimationFrame(() => requestAnimationFrame(');
+    expect(entry).toContain('FORGE_DESKTOP_STYLESHEET_LOAD_FAILED');
+  });
+});
+
+
+describe('Forge project picker native interactions', () => {
+  test('delegates the single project popup focus and collision handling to Radix', () => {
+    const source = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+    expect(source).toContain("from '@radix-ui/react-popover'");
+    expect(source).toContain('<Popover.Trigger asChild>');
+    expect(source).toContain('<Popover.Content');
+    expect(source).toContain('collisionPadding={12}');
+    expect(source).not.toContain('projectPickerRef');
+    expect(source).not.toContain("document.addEventListener('pointerdown', onPointerDown, true)");
+  });
+});
+
+
+describe('Tauri shell boundary', () => {
+  test('does not opt into obsolete macOS private UI switches for ordinary window chrome', () => {
+    const config = JSON.parse(readFileSync(new URL('../src-tauri/tauri.conf.json', import.meta.url), 'utf8'));
+    const cargo = readFileSync(new URL('../src-tauri/Cargo.toml', import.meta.url), 'utf8');
+    expect(config.app.macOSPrivateApi).toBeUndefined();
+    expect(cargo).not.toContain('features = ["macos-private-api"]');
+    expect(config.app.windows[0].titleBarStyle).toBe('Visible');
+  });
+});
+
+describe('approved A workspace + C rail design contract', () => {
+  test('shares one Forge Design palette between app shell and project popup', () => {
+    const tokens = JSON.parse(readFileSync(new URL('../../../.design-harness/tokens.json', import.meta.url), 'utf8'));
+    const project = JSON.parse(readFileSync(new URL('../../../.design-harness/project.json', import.meta.url), 'utf8'));
+    const variables = readFileSync(new URL('../src/design-tokens.ts', import.meta.url), 'utf8');
+    const styles = readFileSync(new URL('../src/styles.css', import.meta.url), 'utf8');
+    const app = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+    expect(project.designSystem.version).toBe(tokens.meta.version);
+    expect(tokens.color.sidebarGlass).toBe('rgba(240,241,243,.70)');
+    expect(tokens.color.canvas).toBe('#FFFFFF');
+    expect(tokens.color.composerGlass).toBe('rgba(248,249,251,.85)');
+    expect(variables).toContain("'--glass': designTokens.color.sidebarGlass");
+    expect(variables).toContain("'--popover': designTokens.color.popoverGlass");
+    expect(variables).toContain("'--canvas': designTokens.color.canvas");
+    expect(variables).toContain("'--canvas-raised': designTokens.color.canvasRaised");
+    expect(variables).toContain("'--border-strong': designTokens.color.borderStrong");
+    expect(variables).toContain("'--composer-bg': designTokens.color.composerGlass");
+    expect(styles).toContain('background: var(--glass)');
+    expect(styles).toContain('background: var(--canvas)');
+    expect(app).toContain('className="sidebar-project-picker-panel" style={desktopThemeStyle}');
+  });
+});
+
+
+describe('Project semantic browser boundary', () => {
+  test('Requirement navigation is Plan-derived and never projects historical Work as progress', () => {
+    const html = renderToStaticMarkup(createElement(ProjectRecordsView, {
+      mode: 'requirements', projection: designPreviewProjection,
+      onNavigateRecord() {}, async onRefresh() {},
+    }));
+    expect(html).toContain('Requirements');
+    expect(html).toContain('Requirement 由本项目 Plan 的 canonical requirementId 发现');
+    expect(html).toContain('不会从历史 Work 推断');
+    expect(html).not.toContain('打开完整 Work 详情');
+    expect(html).not.toContain('Work 状态');
+  });
+});
+
+
+describe('Forge native first-frame boot surface', () => {
+  test('has visible static content before React then removes it only after existing CSS loads', () => {
+    const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+    const entry = readFileSync(new URL('../src/main.tsx', import.meta.url), 'utf8');
+    expect(html).toContain('id="forge-first-paint" role="status"');
+    expect(html).toContain('Forge 正在启动…');
+    expect(entry).toContain("import('./styles.css').then(");
+    expect(entry).toContain("getElementById('forge-first-paint')?.remove()");
+    expect(entry).toContain('Forge 界面样式加载失败');
+    expect(html).not.toContain('setTimeout');
+  });
+});
+
+
+describe('Mac Agent navigation and local transcript deletion', () => {
+  test('desktop semantic navigation has Requirement and Plan destinations without a Work destination', () => {
+    const source = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+    expect(source).toContain('onOpenRequirements');
+    expect(source).toContain('onOpenPlans');
+    expect(source).not.toContain("activeView === 'works'");
+    expect(source).not.toContain('onOpenWork');
+  });
+
+  test('deleting a local conversation removes its record and draft instead of retaining a hidden archive', () => {
+    const source = readFileSync(new URL('../src/local-conversation.tsx', import.meta.url), 'utf8');
+    expect(source).toContain('删除当前会话');
+    expect(source).not.toContain('归档当前会话');
+    expect(source).toContain('current.filter((thread) => thread.id !== deletedId)');
+    expect(source).toContain('delete next[deletedId]');
+  });
+});
+
+
+describe('Requirement and Plan master-detail behavior', () => {
+  test('keeps semantic detail navigation Work-free and links Plan back to its Requirement', () => {
+    const source = readFileSync(new URL('../src/project-records-view.tsx', import.meta.url), 'utf8');
+    expect(source).toContain("export type RecordMode = 'requirements' | 'plans'");
+    expect(source).toContain("onNavigateRecord('requirements', detail.value.requirementId!)");
+    expect(source).toContain("onNavigateRecord('plans', plan.planId)");
+    expect(source).not.toContain("mode === 'works'");
+    expect(source).not.toContain('onSelectWork');
+    expect(source).not.toContain('read_work_detail');
+  });
 });

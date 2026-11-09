@@ -943,3 +943,255 @@ a { color: #353535; text-decoration: underline; text-underline-offset: 3px; }
   border: 0; border-radius: var(--radius-control); color: #787f8e; background: transparent; }
 .sidebar-picker-project-agent:hover,.sidebar-picker-project-agent:focus-visible {
   color: #574e91; background: rgba(102,90,173,.10); }
+
+/* Approved reference composition (A: PLATFORM Minimal Agent, C: ShioriCode rail).
+ * Design tokens in .design-harness/tokens.json are the only palette authority.
+ * This block adapts proportions to actual Forge Agent/Work/Requirement/Plan views.
+ * No duplicate navigation, third-party brand assets, or permanent code inspector. */
+:root, html, body, #root { background: #fff; }
+.app-shell {
+  --sidebar-width: 246px;
+  background: var(--canvas);
+  color: var(--ink);
+}
+.sidebar {
+  padding: 18px 12px 12px;
+  background: var(--glass);
+  border-right: 1px solid var(--line);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+.sidebar-brand { min-height: 54px; padding: 7px 10px 17px; gap: 10px; }
+.sidebar-brand-icon { width: 24px; height: 24px; }
+.sidebar-app-name { color: var(--ink); font-size: 13.5px; font-weight: 665; letter-spacing: -.025em; }
+.sidebar-app-subtitle { display: none; }
+.sidebar-primary { gap: 3px; }
+.sidebar-primary > .nav-row {
+  min-height: 37px;
+  padding: 7px 10px;
+  color: var(--muted);
+  border-radius: 9px;
+  font-size: 13px;
+  letter-spacing: -.005em;
+}
+.sidebar-primary > .nav-row:hover:not(:disabled) { background: var(--hover); }
+.sidebar-primary > .nav-row.active {
+  background: var(--accent-soft);
+  color: var(--ink);
+  font-weight: 635;
+}
+.sidebar-primary > .nav-row.active .nav-symbol { color: var(--accent); }
+.sidebar-primary .sidebar-new-thread {
+  margin: 0 0 2px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  box-shadow: 0 1px 2px rgba(40,43,50,.035);
+  color: var(--ink);
+  font-weight: 610;
+}
+.sidebar-primary .sidebar-new-thread:hover:not(:disabled) {
+  background: var(--surface);
+  border-color: var(--focus);
+  box-shadow: 0 1px 5px rgba(40,43,50,.06);
+}
+.sidebar-quick-search { color: var(--muted) !important; }
+.sidebar-primary .sidebar-destinations-heading {
+  margin: 19px 10px 6px;
+  padding: 0;
+  color: var(--subtle);
+  font-size: 10px;
+  letter-spacing: .05em;
+  font-weight: 640;
+  text-transform: uppercase;
+}
+.sidebar-conversations {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
+  margin: 16px 0 5px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+  overflow-y: auto;
+  scrollbar-color: var(--border-strong) transparent;
+}
+.sidebar-conversation-heading { flex: 0 0 auto; padding: 0 3px; }
+.sidebar-conversation-heading .sidebar-section-title {
+  margin: 0 7px 10px;
+  color: var(--subtle);
+  font-size: 10px;
+  letter-spacing: .04em;
+  font-weight: 640;
+}
+.sidebar-project-conversations { margin: 0 0 14px; }
+.sidebar-thread-project-heading { margin: 5px 5px; padding: 0 3px; color: var(--muted); }
+.sidebar-thread-row { min-height: 34px; padding: 7px 9px; border-radius: 9px; }
+.sidebar-thread-row .nav-label { font-size: 12.5px; }
+.sidebar-thread-row.active { background: var(--accent-soft); color: var(--ink); }
+.sidebar-thread-row:hover:not(:disabled) { background: var(--hover); }
+.sidebar-keyboard { font-size: 10px; color: var(--subtle); }
+.sidebar-project-popover {
+  flex: 0 0 auto;
+  margin-top: auto;
+  padding: 9px 0 1px;
+  border-top: 1px solid var(--line);
+}
+.sidebar-project-heading { padding: 1px 0 0; }
+.sidebar-project-picker {
+  min-height: 42px;
+  padding: 6px 10px;
+  background: transparent;
+  color: var(--ink);
+  font-size: 12px;
+}
+.sidebar-project-picker:hover { background: var(--hover); }
+.sidebar-footer {
+  flex: 0 0 auto;
+  gap: 2px;
+  margin: 0;
+  padding: 7px 0 0;
+  border-top: 1px solid var(--line);
+}
+.sidebar-footer > .nav-row {
+  min-height: 36px;
+  padding: 7px 10px;
+  border-radius: 9px;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+.sidebar-footer > .nav-row.active { background: var(--accent-soft); color: var(--ink); }
+
+/* A: calm content canvas. Sections are functional rather than ornamental. */
+.workspace-region, .main-pane { background: var(--canvas); border-radius: 0; }
+.workspace-topbar {
+  display: flex;
+  align-items: center;
+  min-height: 54px;
+  height: 54px;
+  gap: 14px;
+  padding: 0 25px;
+  background: var(--canvas);
+  border-bottom: 1px solid var(--line);
+}
+.workspace-topbar-title { align-items: center; gap: 12px; }
+.workspace-topbar-title strong {
+  max-width: 65%;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 640;
+}
+.workspace-topbar-branch { color: var(--subtle); font-size: 10.5px; }
+.workspace-topbar-health { padding: 6px 9px; font-size: 11px; color: var(--muted); }
+.workspace-topbar-health:hover { background: var(--surface-muted); }
+.assistant-content {
+  width: min(860px, calc(100% - 94px));
+  max-width: 100%;
+  padding: 20px 0 18px;
+}
+.local-conversation { gap: 0; }
+.agent-chat-header {
+  min-height: 42px;
+  padding: 0 2px 12px;
+  border-bottom: 1px solid var(--line);
+  align-items: center;
+}
+.agent-chat-header .agent-chat-heading > strong { font-size: 13px; font-weight: 650; color: var(--ink); }
+.agent-chat-heading > span { color: var(--subtle); }
+.agent-icon-button, .agent-header-menu > summary { border-radius: 9px; color: var(--muted); }
+.agent-icon-button:hover:not(:disabled), .agent-header-menu > summary:hover {
+  color: var(--ink);
+  background: var(--surface-muted);
+}
+.local-conversation .local-transcript {
+  padding: 23px 9px 22px;
+  scrollbar-color: var(--border-strong) transparent;
+}
+.local-conversation .local-message.user { border-radius: 13px; background: var(--surface-muted); }
+.local-conversation .local-message.assistant { padding: 13px 1px; }
+.local-message-body { color: var(--ink); font-size: 13px; line-height: 1.75; }
+.local-message-heading { color: var(--subtle); }
+.local-conversation .agent-chat-composer {
+  width: min(780px,100%);
+  margin-inline: auto;
+  border: 1px solid var(--border-strong);
+  border-radius: 16px;
+  background: var(--composer-bg);
+  box-shadow: var(--shadow-composer);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+.local-conversation .agent-chat-composer:focus-within {
+  border-color: var(--focus);
+  box-shadow: var(--shadow-composer), 0 0 0 3px rgba(108,116,128,.07);
+}
+.agent-chat-composer textarea { padding: 15px 16px 9px; font-size: 13px; line-height: 1.6; }
+.agent-chat-composer .agent-composer-toolbar { padding: 6px 9px 9px; gap: 5px 8px; }
+.agent-context-menu > summary, .agent-model-control { border-radius: 9px; color: var(--muted); }
+.agent-context-menu > summary:hover, .agent-model-control:hover { background: var(--surface-muted); color: var(--ink); }
+.agent-context-panel, .agent-header-menu-panel, .sidebar-project-picker-panel {
+  border: 1px solid var(--line);
+  background: var(--popover);
+  border-radius: 14px;
+  box-shadow: var(--shadow-popover);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+/* Git detail is a secondary, on-demand view; never compete with the Agent. */
+.local-git-inspector {
+  border: 0;
+  border-left: 1px solid var(--line);
+  border-radius: 0;
+  background: var(--canvas-raised);
+}
+.local-git-inspector > header { border-bottom-color: var(--line); }
+/* Work / Requirement / Plan keep their independent list/detail navigation. */
+.records-pane { padding: 25px 31px 35px; }
+.records-split { border-radius: 12px; border: 1px solid var(--line); }
+.records-index { background: var(--surface-muted); }
+.record-row:hover, .record-row.active { background: var(--accent-soft); }
+.workspace-sidebar-toggle { color: var(--muted); border-radius: 9px; }
+.workspace-sidebar-toggle:hover { background: var(--surface-muted); color: var(--ink); }
+.app-shell.sidebar-collapsed .workspace-topbar { padding-left: 25px; }
+@media (max-width: 1080px) {
+  .app-shell { --sidebar-width: 228px; }
+  .assistant-content { width: calc(100% - 66px); }
+}
+@media (max-width: 900px) {
+  .app-shell { --sidebar-width: 207px; }
+  .sidebar { padding-inline: 8px; }
+  .workspace-topbar { padding-inline: 16px; }
+  .assistant-content { width: calc(100% - 36px); padding-top: 12px; }
+  .records-pane { padding: 18px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-primary .nav-row,
+  .sidebar-thread-row,
+  .sidebar-project-picker { transition: none; }
+}
+
+
+/* Radix owns the project popover's position, viewport collision, dismiss and
+   focus restoration. Forge retains visual tokens and project-selection state. */
+.sidebar-project-picker-panel[data-state] {
+  position: relative;
+  left: auto;
+  right: auto;
+  bottom: auto;
+  width: var(--radix-popover-trigger-width);
+  max-width: min(340px, calc(100vw - 24px));
+  max-height: min(400px, var(--radix-popover-content-available-height));
+  min-width: 0;
+  z-index: 40;
+  background: #fffefd;
+  border-color: var(--line);
+  box-shadow: var(--shadow-popover);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+.sidebar-project-picker-panel[data-state] .sidebar-projects {
+  min-height: 0;
+  max-height: min(300px, calc(var(--radix-popover-content-available-height) - 72px));
+}
+
+.record-row:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }

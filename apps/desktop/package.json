@@ -10,11 +10,12 @@
     "build": "npm run check:type && npm run build:web",
     "build:web": "vite build",
     "check:type": "tsc --noEmit",
-    "test:ui": "bun test ./tests/agent-git-review.test.tsx ./tests/agent-work-context.test.ts",
+    "test:ui": "BUN_RUNTIME_TRANSPILER_CACHE_PATH=0 bun test ./tests/agent-git-review.test.tsx ./tests/agent-context.test.ts",
     "check": "npm run check:type && npm run build:web && cargo check --manifest-path src-tauri/Cargo.toml",
     "tauri": "tauri"
   },
   "dependencies": {
+    "@radix-ui/react-popover": "1.3.1",
     "@tauri-apps/api": "^2.12.1",
     "lucide-react": "1.69.0",
     "react": "^19.0.0",

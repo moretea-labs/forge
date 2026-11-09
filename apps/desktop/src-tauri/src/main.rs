@@ -1,9 +1,13 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod native_bridge;
+mod managed_keychain;
+
 use serde::Deserialize;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use tauri::{Emitter, Manager};
-use std::{collections::HashMap, env, fs, path::{Path, PathBuf}, sync::Mutex, time::{SystemTime, UNIX_EPOCH}};
+use std::{collections::HashMap, env, fs, path::{Path, PathBuf}, process::Command, sync::Mutex, time::{SystemTime, UNIX_EPOCH}};
 
 const MCP_PROTOCOL_VERSION: &str = "2025-11-25";
 
@@ -379,6 +383,47 @@ async fn read_projects() -> Result<Value, String> {
 }
 
 #[tauri::command]
+async fn read_repository_access(repo_id: String) -> Result<Value, String> {
+    let repo_id = repo_id.trim().to_string();
+    if repo_id.is_empty() { return Err("FORGE_DESKTOP_REPOSITORY_REQUIRED".into()); }
+    call_runtime_tool("rh_access", json!({
+        "operation":"get",
+        "repo_id":repo_id,
+        "request_id":request_id("desktop-repository-access")
+    })).await
+}
+
+#[tauri::command]
+async fn set_repository_access(repo_id: String, mode: String) -> Result<Value, String> {
+    let repo_id = repo_id.trim().to_string();
+    if repo_id.is_empty() { return Err("FORGE_DESKTOP_REPOSITORY_REQUIRED".into()); }
+    if !matches!(mode.as_str(), "request" | "full_access") {
+        return Err("FORGE_DESKTOP_REPOSITORY_ACCESS_MODE_INVALID".into());
+    }
+    call_runtime_tool("rh_access", json!({
+        "operation":"set",
+        "repo_id":repo_id,
+        "mode":mode,
+        "request_id":request_id("desktop-repository-access-set")
+    })).await
+}
+
+fn repository_access_allows_effects(value: &Value, expected_repo_id: &str) -> bool {
+    value.pointer("/repository/repoId").and_then(Value::as_str) == Some(expected_repo_id)
+        && value.pointer("/repositoryPolicy/repoId").and_then(Value::as_str) == Some(expected_repo_id)
+        && value.pointer("/repositoryPolicy/mode").and_then(Value::as_str) == Some("full_access")
+}
+
+async fn resolve_repository_effect_access(
+    repo_id: Option<&str>,
+    checkout_id: Option<&str>,
+) -> Result<bool, String> {
+    let (Some(repo_id), Some(_checkout_id)) = (repo_id, checkout_id) else { return Ok(false); };
+    let value = read_repository_access(repo_id.to_string()).await?;
+    Ok(repository_access_allows_effects(&value, repo_id))
+}
+
+#[tauri::command]
 async fn read_project_overview(repo_id: String) -> Result<Value, String> {
     if repo_id.trim().is_empty() { return Err("FORGE_DESKTOP_REPOSITORY_REQUIRED".to_string()); }
     call_runtime_tool("rh_status", json!({
@@ -432,24 +477,286 @@ async fn read_project_repository(repo_id: String) -> Result<Value, String> {
     }))
 }
 
+fn semantic_facade_data(result: Value) -> Value {
+    result.get("data").cloned().unwrap_or(result)
+}
+
+#[tauri::command]
+async fn read_project_requirement_list(repo_id: String) -> Result<Value, String> {
+    if repo_id.trim().is_empty() { return Err("FORGE_DESKTOP_REPOSITORY_REQUIRED".to_string()); }
+    let result = call_runtime_tool("rh_work", json!({
+        "repo_id": repo_id,
+        "operation": "requirement_list",
+        "limit": 100,
+        "request_id": request_id("project-requirement-list")
+    })).await?;
+    Ok(semantic_facade_data(result))
+}
+
 #[tauri::command]
 async fn read_project_plan_list(repo_id: String) -> Result<Value, String> {
     if repo_id.trim().is_empty() { return Err("FORGE_DESKTOP_REPOSITORY_REQUIRED".to_string()); }
-    call_runtime_tool("rh_work", json!({
+    let result = call_runtime_tool("rh_work", json!({
         "repo_id": repo_id,
         "operation": "plan_list",
         "limit": 100,
         "request_id": request_id("project-plan-list")
-    })).await
+    })).await?;
+    Ok(semantic_facade_data(result))
 }
 
 #[tauri::command]
-async fn read_user_requests() -> Result<Value, String> {
-    call_runtime_tool("rh_inbox", json!({
+async fn read_project_schedules(repo_id: String) -> Result<Value, String> {
+    if repo_id.trim().is_empty() {
+        return Err("FORGE_DESKTOP_REPOSITORY_REQUIRED".to_string());
+    }
+    let result = call_runtime_tool(
+        "rh_work",
+        json!({
+            "repo_id": repo_id,
+            "operation": "schedule_list",
+            "include_occurrences": false,
+            "limit": 100,
+            "request_id": request_id("project-schedule-list")
+        }),
+    )
+    .await?;
+    Ok(semantic_facade_data(result))
+}
+
+#[tauri::command]
+async fn control_project_schedule(
+    repo_id: String,
+    schedule_id: String,
+    action: String,
+) -> Result<Value, String> {
+    if repo_id.trim().is_empty() {
+        return Err("FORGE_DESKTOP_REPOSITORY_REQUIRED".to_string());
+    }
+    if schedule_id.trim().is_empty() {
+        return Err("FORGE_DESKTOP_SCHEDULE_REQUIRED".to_string());
+    }
+    let operation = match action.as_str() {
+        "pause" => "schedule_pause",
+        "resume" => "schedule_resume",
+        "trigger" => "schedule_trigger",
+        _ => return Err("FORGE_DESKTOP_SCHEDULE_ACTION_UNSUPPORTED".to_string()),
+    };
+    let result = call_runtime_tool(
+        "rh_work",
+        json!({
+            "repo_id": repo_id,
+            "operation": operation,
+            "schedule_id": schedule_id,
+            "request_id": request_id("project-schedule-control")
+        }),
+    )
+    .await?;
+    Ok(semantic_facade_data(result))
+}
+
+#[tauri::command]
+async fn read_project_plugins(repo_id: String) -> Result<Value, String> {
+    if repo_id.trim().is_empty() {
+        return Err("FORGE_DESKTOP_REPOSITORY_REQUIRED".to_string());
+    }
+    let result = call_runtime_tool(
+        "list_plugins",
+        json!({
+            "repo_id": repo_id,
+            "request_id": request_id("project-plugin-list")
+        }),
+    )
+    .await?;
+    let plugins = result
+        .get("plugins")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .take(100)
+                .map(|plugin| {
+                    let lifecycle = plugin.get("lifecycle").and_then(Value::as_object);
+                    let health = plugin.get("health").and_then(Value::as_object);
+                    let capability_titles = plugin
+                        .get("capabilities")
+                        .and_then(Value::as_array)
+                        .map(|values| {
+                            values
+                                .iter()
+                                .take(8)
+                                .filter_map(|value| {
+                                    value
+                                        .get("title")
+                                        .and_then(Value::as_str)
+                                        .map(str::to_owned)
+                                        .or_else(|| {
+                                            value
+                                                .get("capabilityId")
+                                                .and_then(Value::as_str)
+                                                .map(str::to_owned)
+                                        })
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+                    json!({
+                        "pluginId": plugin.get("pluginId").and_then(Value::as_str),
+                        "displayName": plugin.get("displayName").and_then(Value::as_str),
+                        "pluginVersion": plugin.get("pluginVersion").and_then(Value::as_str),
+                        "provider": plugin.get("provider").and_then(Value::as_str),
+                        "enabled": plugin.get("enabled").and_then(Value::as_bool).unwrap_or(false),
+                        "lifecycle": lifecycle.and_then(|value| value.get("state")).and_then(Value::as_str),
+                        "health": health.and_then(|value| value.get("state")).and_then(Value::as_str),
+                        "ready": health.and_then(|value| value.get("ready")).and_then(Value::as_bool).unwrap_or(false),
+                        "capabilities": capability_titles,
+                        "actionCount": plugin
+                            .get("actions")
+                            .and_then(Value::as_array)
+                            .map(|values| values.len())
+                            .unwrap_or(0)
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    Ok(json!({
+        "repositoryId": result.get("repositoryId").and_then(Value::as_str),
+        "plugins": plugins
+    }))
+}
+
+fn merge_user_request_projections(
+    global_result: Value,
+    repo_result: Option<Value>,
+    global_scope_supported: bool,
+) -> Value {
+    struct Projection {
+        items: Vec<Value>,
+        total_count: Option<usize>,
+        truncated: bool,
+    }
+    fn projection(result: Value) -> Projection {
+        let data = semantic_facade_data(result);
+        let items = data.get("items").and_then(Value::as_array).cloned().unwrap_or_default();
+        let total_count = data.get("totalCount").and_then(Value::as_u64).map(|value| value as usize);
+        let truncated = data.get("truncated").and_then(Value::as_bool).unwrap_or(items.len() >= 50);
+        Projection { items, total_count, truncated }
+    }
+
+    let global_projection = projection(global_result);
+    let global_items = if global_scope_supported {
+        global_projection.items.clone()
+    } else {
+        global_projection.items.iter()
+            .filter(|item| item.get("targetScope").is_none())
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    let global_count_exact = if global_scope_supported {
+        global_projection.total_count.is_some() || !global_projection.truncated
+    } else {
+        !global_projection.truncated
+    };
+    let global_total = if global_scope_supported {
+        global_projection.total_count.unwrap_or(global_items.len())
+    } else {
+        global_items.len()
+    };
+
+    let mut merged = global_items;
+    let mut exact_total = global_total;
+    let mut count_exact = global_count_exact;
+    let mut list_truncated = global_projection.truncated;
+
+    if let Some(repo_result) = repo_result {
+        let repo_projection = projection(repo_result);
+        let repo_count_exact = repo_projection.total_count.is_some() || !repo_projection.truncated;
+        let repo_total = repo_projection.total_count.unwrap_or(repo_projection.items.len());
+        exact_total += repo_total;
+        count_exact &= repo_count_exact;
+        list_truncated |= repo_projection.truncated;
+        for item in repo_projection.items {
+            let request_id = item.get("requestId").and_then(Value::as_str).unwrap_or_default();
+            if request_id.is_empty()
+                || merged.iter().any(|current| current.get("requestId").and_then(Value::as_str) == Some(request_id)) {
+                continue;
+            }
+            merged.push(item);
+        }
+    }
+
+    merged.sort_by(|left, right| {
+        right.get("updatedAt").and_then(Value::as_str).unwrap_or_default()
+            .cmp(left.get("updatedAt").and_then(Value::as_str).unwrap_or_default())
+    });
+    json!({
+        "items": merged,
+        "knownCount": merged.len(),
+        "totalCount": if count_exact { exact_total } else { merged.len() },
+        "countExact": count_exact,
+        "possiblyTruncated": !count_exact || list_truncated,
+        "listTruncated": list_truncated,
+        "globalScopeSupported": global_scope_supported
+    })
+}
+
+#[tauri::command]
+async fn read_user_requests(repo_id: Option<String>) -> Result<Value, String> {
+    let global_scoped = call_runtime_tool("rh_inbox", json!({
         "operation": "list",
+        "scope": "global",
         "detail_level": "summary",
         "limit": 100,
-        "request_id": request_id("user-requests-list")
+        "request_id": request_id("user-requests-global-list")
+    })).await;
+    let (global_result, global_scope_supported) = match global_scoped {
+        Ok(result) if semantic_facade_data(result.clone())
+            .get("scope").and_then(Value::as_str) == Some("global") => (result, true),
+        Ok(_) | Err(_) => (
+            call_runtime_tool("rh_inbox", json!({
+                "operation": "list",
+                "detail_level": "summary",
+                "limit": 100,
+                "request_id": request_id("user-requests-legacy-list")
+            })).await?,
+            false,
+        ),
+    };
+    let repo_result = match repo_id.map(|value| value.trim().to_string()).filter(|value| !value.is_empty()) {
+        Some(repo_id) => Some(call_runtime_tool("rh_inbox", json!({
+            "repo_id": repo_id,
+            "operation": "list",
+            "detail_level": "summary",
+            "limit": 100,
+            "request_id": request_id("user-requests-repository-list")
+        })).await?),
+        None => None,
+    };
+    Ok(merge_user_request_projections(global_result, repo_result, global_scope_supported))
+}
+
+#[tauri::command]
+async fn control_user_request(
+    handoff_id: String,
+    operation: String,
+    decision: String,
+) -> Result<Value, String> {
+    if handoff_id.trim().is_empty() || handoff_id.len() > 256 {
+        return Err("FORGE_DESKTOP_USER_REQUEST_ID_INVALID".to_string());
+    }
+    if operation != "resolve" && operation != "dismiss" {
+        return Err("FORGE_DESKTOP_USER_REQUEST_ACTION_UNSUPPORTED".to_string());
+    }
+    if operation == "resolve" && decision.trim().is_empty() {
+        return Err("FORGE_DESKTOP_USER_REQUEST_DECISION_REQUIRED".to_string());
+    }
+    call_runtime_tool("rh_inbox", json!({
+        "operation": operation,
+        "handoff_id": handoff_id,
+        "decision": decision,
+        "detail_level": "summary",
+        "request_id": request_id("user-request-control")
     })).await
 }
 
@@ -458,13 +765,14 @@ async fn read_requirement_detail(repo_id: String, requirement_id: String) -> Res
     if repo_id.trim().is_empty() || requirement_id.trim().is_empty() {
         return Err("FORGE_DESKTOP_REQUIREMENT_DETAIL_ARGUMENT_REQUIRED".to_string());
     }
-    call_runtime_tool("rh_work", json!({
+    let result = call_runtime_tool("rh_work", json!({
         "repo_id": repo_id,
         "operation": "requirement_get",
         "requirement_id": requirement_id,
         "detail_level": "detail",
         "request_id": request_id("requirement-detail")
-    })).await
+    })).await?;
+    Ok(semantic_facade_data(result))
 }
 
 #[tauri::command]
@@ -472,13 +780,131 @@ async fn read_plan_detail(repo_id: String, plan_id: String) -> Result<Value, Str
     if repo_id.trim().is_empty() || plan_id.trim().is_empty() {
         return Err("FORGE_DESKTOP_PLAN_DETAIL_ARGUMENT_REQUIRED".to_string());
     }
-    call_runtime_tool("rh_work", json!({
+    let result = call_runtime_tool("rh_work", json!({
         "repo_id": repo_id,
         "operation": "plan_get",
         "plan_id": plan_id,
         "detail_level": "detail",
         "request_id": request_id("plan-detail")
-    })).await
+    })).await?;
+    Ok(semantic_facade_data(result))
+}
+
+#[tauri::command]
+async fn create_requirement(
+    repo_id: String,
+    requirement_id: String,
+    title: String,
+    outcome: String,
+    acceptance_criteria: Vec<String>,
+) -> Result<Value, String> {
+    if repo_id.trim().is_empty() || requirement_id.trim().is_empty() || title.trim().is_empty() || outcome.trim().is_empty() {
+        return Err("FORGE_DESKTOP_REQUIREMENT_CREATE_ARGUMENT_REQUIRED".to_string());
+    }
+    let result = call_runtime_tool("rh_work", json!({
+        "repo_id": repo_id,
+        "operation": "requirement_create",
+        "requirement_id": requirement_id,
+        "requirement_title": title,
+        "requirement_outcome": outcome,
+        "requirement_acceptance_criteria": acceptance_criteria,
+        "request_id": request_id("requirement-create")
+    })).await?;
+    Ok(semantic_facade_data(result))
+}
+
+#[tauri::command]
+async fn create_plan(
+    repo_id: String,
+    plan_id: String,
+    objective: String,
+    requirement_id: Option<String>,
+    parent_plan_id: Option<String>,
+) -> Result<Value, String> {
+    if repo_id.trim().is_empty() || plan_id.trim().is_empty() || objective.trim().is_empty() {
+        return Err("FORGE_DESKTOP_PLAN_CREATE_ARGUMENT_REQUIRED".to_string());
+    }
+    let result = call_runtime_tool("rh_work", json!({
+        "repo_id": repo_id,
+        "operation": "plan_create",
+        "plan_id": plan_id,
+        "requirement_id": requirement_id,
+        "parent_plan_id": parent_plan_id,
+        "scope_key": plan_id,
+        "objective": objective,
+        "plan_items": [],
+        "request_id": request_id("plan-create")
+    })).await?;
+    Ok(semantic_facade_data(result))
+}
+
+async fn read_project_autopilot_statuses(
+    repo_id: String,
+    checkout_id: String,
+    requirement_ids: Vec<String>,
+) -> Result<Value, String> {
+    if repo_id.trim().is_empty() || checkout_id.trim().is_empty()
+        || requirement_ids.is_empty() || requirement_ids.len() > 100 {
+        return Err("FORGE_DESKTOP_AUTOPILOT_STATUS_ARGUMENT_INVALID".to_string());
+    }
+    let mut statuses = serde_json::Map::new();
+    for requirement_id in requirement_ids {
+        if requirement_id.trim().is_empty() || requirement_id.len() > 256 {
+            return Err("FORGE_DESKTOP_AUTOPILOT_STATUS_ARGUMENT_INVALID".to_string());
+        }
+        if statuses.contains_key(&requirement_id) { continue; }
+        let status = match call_runtime_tool("rh_autopilot", json!({
+            "repo_id": repo_id.clone(),
+            "checkout_id": checkout_id.clone(),
+            "requirement_id": requirement_id.clone(),
+            "operation": "status",
+            "request_id": request_id("project-autopilot-status")
+        })).await {
+            Ok(value) => semantic_facade_data(value),
+            Err(error) => json!({ "error": error }),
+        };
+        statuses.insert(requirement_id, status);
+    }
+    Ok(json!({ "statuses": statuses }))
+}
+
+#[tauri::command]
+async fn autopilot_control(
+    repo_id: String,
+    checkout_id: String,
+    requirement_id: String,
+    operation: String,
+    confirm_authorization: bool,
+    model: Option<String>,
+    max_total_tokens: Option<u64>,
+    max_turns: Option<u64>,
+    max_tool_calls: Option<u64>,
+    checkpoint_plan_ids: Vec<String>,
+    expires_in_minutes: Option<u64>,
+    reason: Option<String>,
+) -> Result<Value, String> {
+    if repo_id.trim().is_empty() || checkout_id.trim().is_empty() || requirement_id.trim().is_empty() {
+        return Err("FORGE_DESKTOP_AUTOPILOT_ARGUMENT_REQUIRED".to_string());
+    }
+    if !matches!(operation.as_str(), "status" | "authorize" | "start" | "pause" | "resume" | "revoke") {
+        return Err("FORGE_DESKTOP_AUTOPILOT_OPERATION_UNSUPPORTED".to_string());
+    }
+    let result = call_runtime_tool("rh_autopilot", json!({
+        "repo_id": repo_id,
+        "checkout_id": checkout_id,
+        "requirement_id": requirement_id,
+        "operation": operation,
+        "confirm_authorization": confirm_authorization,
+        "model": model,
+        "max_total_tokens": max_total_tokens,
+        "max_turns": max_turns,
+        "max_tool_calls": max_tool_calls,
+        "checkpoint_plan_ids": checkpoint_plan_ids,
+        "expires_in_minutes": expires_in_minutes,
+        "reason": reason,
+        "request_id": request_id("autopilot-control")
+    })).await?;
+    Ok(semantic_facade_data(result))
 }
 
 #[tauri::command]
@@ -488,6 +914,16 @@ async fn read_local_provider_status() -> Result<Value, String> {
         "action": "status",
         "arguments": {},
         "request_id": request_id("local-conversation-status")
+    })).await
+}
+
+#[tauri::command]
+async fn read_local_provider_models() -> Result<Value, String> {
+    call_runtime_tool("capability_execute", json!({
+        "capability_id": "controller.local_conversation",
+        "action": "models",
+        "arguments": {},
+        "request_id": request_id("local-conversation-models")
     })).await
 }
 
@@ -515,23 +951,114 @@ async fn read_project_knowledge(repo_id: String, query: String) -> Result<Value,
     Ok(audit.clone())
 }
 
+const LOCAL_CONVERSATION_MAX_IMAGES: usize = 4;
+const LOCAL_CONVERSATION_MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
+const LOCAL_CONVERSATION_IMAGE_EXTENSIONS: [&str; 5] = ["png", "jpg", "jpeg", "webp", "gif"];
+
+fn valid_local_conversation_id(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 160
+        && value.chars().all(|character| character.is_ascii_alphanumeric() || "._:-".contains(character))
+}
+
+fn local_conversation_image_root(conversation_id: &str) -> Result<PathBuf, String> {
+    if !valid_local_conversation_id(conversation_id) {
+        return Err("FORGE_DESKTOP_CONVERSATION_INVALID".into());
+    }
+    Ok(env::temp_dir().join("forge-local-conversation-images").join(conversation_id))
+}
+
+fn cleanup_local_conversation_images(conversation_id: &str) {
+    if let Ok(root) = local_conversation_image_root(conversation_id) {
+        let _ = fs::remove_dir_all(root);
+    }
+}
+
+fn stage_local_conversation_images(
+    conversation_id: &str,
+    image_paths: Vec<String>,
+) -> Result<Vec<String>, String> {
+    if image_paths.is_empty() { return Ok(Vec::new()); }
+    if image_paths.len() > LOCAL_CONVERSATION_MAX_IMAGES {
+        return Err("FORGE_DESKTOP_LOCAL_CONVERSATION_IMAGE_COUNT_INVALID".into());
+    }
+
+    let staging_parent = fs::canonicalize(env::temp_dir())
+        .map_err(|_| "FORGE_DESKTOP_LOCAL_CONVERSATION_IMAGE_STAGE_FAILED".to_string())?
+        .join("forge-local-conversation-images");
+    let sources = image_paths.into_iter().map(|raw| {
+        if raw.trim().is_empty() || raw.len() > 4096 {
+            return Err("FORGE_DESKTOP_LOCAL_CONVERSATION_IMAGE_PATH_INVALID".to_string());
+        }
+        let source = fs::canonicalize(&raw)
+            .map_err(|_| "FORGE_DESKTOP_LOCAL_CONVERSATION_IMAGE_PATH_INVALID".to_string())?;
+        if source.starts_with(&staging_parent) {
+            return Err("FORGE_DESKTOP_LOCAL_CONVERSATION_IMAGE_SOURCE_UNSAFE".into());
+        }
+        let metadata = fs::metadata(&source)
+            .map_err(|_| "FORGE_DESKTOP_LOCAL_CONVERSATION_IMAGE_PATH_INVALID".to_string())?;
+        let extension = source.extension().and_then(|value| value.to_str())
+            .map(|value| value.to_ascii_lowercase())
+            .filter(|value| LOCAL_CONVERSATION_IMAGE_EXTENSIONS.contains(&value.as_str()))
+            .ok_or_else(|| "FORGE_DESKTOP_LOCAL_CONVERSATION_IMAGE_TYPE_UNSUPPORTED".to_string())?;
+        if !metadata.is_file() || metadata.len() == 0 || metadata.len() > LOCAL_CONVERSATION_MAX_IMAGE_BYTES {
+            return Err("FORGE_DESKTOP_LOCAL_CONVERSATION_IMAGE_FILE_INVALID".into());
+        }
+        Ok((source, extension))
+    }).collect::<Result<Vec<_>, String>>()?;
+
+    let root = local_conversation_image_root(conversation_id)?;
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root)
+        .map_err(|_| "FORGE_DESKTOP_LOCAL_CONVERSATION_IMAGE_STAGE_FAILED".to_string())?;
+
+    let staged = sources.into_iter().enumerate().map(|(index, (source, extension))| {
+        let target = root.join(format!("{index}.{extension}"));
+        fs::copy(source, &target)
+            .map_err(|_| "FORGE_DESKTOP_LOCAL_CONVERSATION_IMAGE_STAGE_FAILED".to_string())?;
+        fs::canonicalize(target)
+            .map_err(|_| "FORGE_DESKTOP_LOCAL_CONVERSATION_IMAGE_STAGE_FAILED".to_string())
+            .map(|path| path.to_string_lossy().to_string())
+    }).collect::<Result<Vec<_>, String>>();
+
+    if staged.is_err() { cleanup_local_conversation_images(conversation_id); }
+    staged
+}
+
 #[tauri::command]
 async fn send_local_conversation(
     conversation_id: String,
     provider_session_id: Option<String>,
     prompt: String,
+    model: Option<String>,
+    reasoning_effort: Option<String>,
     repo_id: Option<String>,
     checkout_id: Option<String>,
+    image_paths: Option<Vec<String>>,
 ) -> Result<Value, String> {
-    let request = local_conversation_request(conversation_id, provider_session_id, prompt, repo_id, checkout_id)?;
-    call_runtime_tool("capability_execute", request).await
+    let staged_images = stage_local_conversation_images(
+        &conversation_id, image_paths.unwrap_or_default()
+    )?;
+    let request = match local_conversation_request(
+        conversation_id.clone(), provider_session_id, prompt, model, reasoning_effort,
+        repo_id, checkout_id, staged_images,
+    ) {
+        Ok(request) => request,
+        Err(error) => {
+            cleanup_local_conversation_images(&conversation_id);
+            return Err(error);
+        }
+    };
+    let result = call_runtime_tool("capability_execute", request).await;
+    cleanup_local_conversation_images(&conversation_id);
+    result
 }
 
 fn local_conversation_request(
     conversation_id: String, provider_session_id: Option<String>, prompt: String,
-    repo_id: Option<String>, checkout_id: Option<String>,
+    model: Option<String>, reasoning_effort: Option<String>,
+    repo_id: Option<String>, checkout_id: Option<String>, image_paths: Vec<String>,
 ) -> Result<Value, String> {
-    if conversation_id.trim().is_empty() || prompt.trim().is_empty() {
+    if !valid_local_conversation_id(conversation_id.trim()) || prompt.trim().is_empty() {
         return Err("FORGE_DESKTOP_LOCAL_CONVERSATION_ARGUMENT_REQUIRED".to_string());
     }
     if repo_id.as_ref().is_some_and(|value| value.trim().is_empty())
@@ -551,6 +1078,15 @@ fn local_conversation_request(
     });
     if let Some(provider_session_id) = provider_session_id.filter(|value| !value.trim().is_empty()) {
         request["arguments"]["provider_session_id"] = Value::String(provider_session_id);
+    }
+    if let Some(model) = model.filter(|value| !value.trim().is_empty()) {
+        request["arguments"]["model"] = Value::String(model);
+    }
+    if let Some(reasoning_effort) = reasoning_effort.filter(|value| !value.trim().is_empty()) {
+        request["arguments"]["reasoning_effort"] = Value::String(reasoning_effort);
+    }
+    if !image_paths.is_empty() {
+        request["arguments"]["image_paths"] = json!(image_paths);
     }
     if let Some(repo_id) = repo_id { request["repo_id"] = Value::String(repo_id); }
     if let Some(checkout_id) = checkout_id { request["checkout_id"] = Value::String(checkout_id); }
@@ -576,12 +1112,49 @@ async fn cancel_local_conversation(conversation_id: String) -> Result<Value, Str
 }
 
 #[tauri::command]
+async fn read_plugin_management() -> Result<Value, String> {
+    call_runtime_tool("capability_execute", json!({
+        "capability_id": "controller.plugins",
+        "action": "get",
+        "arguments": {},
+        "request_id": request_id("plugin-management-read")
+    })).await
+}
+
+#[tauri::command]
+async fn install_official_plugin(plugin_id: String) -> Result<Value, String> {
+    if plugin_id.is_empty() || plugin_id.len() > 64
+        || !plugin_id.chars().all(|character| character.is_ascii_lowercase() || character.is_ascii_digit() || character == '_') {
+        return Err("FORGE_DESKTOP_PLUGIN_ID_INVALID".into());
+    }
+    call_runtime_tool("capability_execute", json!({
+        "capability_id": "controller.plugins",
+        "action": "install_official",
+        "arguments": { "plugin_id": plugin_id },
+        "request_id": request_id("plugin-management-install")
+    })).await
+}
+
+#[tauri::command]
 async fn read_connection_status() -> Result<Value, String> {
     call_runtime_tool("capability_execute", json!({
         "capability_id": "controller.connection",
         "action": "get",
         "arguments": {},
         "request_id": request_id("connection-status")
+    })).await
+}
+
+#[tauri::command]
+async fn configure_initial_connection(controller: String, tunnel: String) -> Result<Value, String> {
+    call_runtime_tool("capability_execute", json!({
+        "capability_id": "controller.connection",
+        "action": "configure_initial",
+        "arguments": {
+            "controller": controller,
+            "tunnel": tunnel
+        },
+        "request_id": request_id("connection-configure-initial")
     })).await
 }
 
@@ -596,7 +1169,167 @@ async fn repair_connection() -> Result<Value, String> {
 }
 
 
-const LOCAL_API_KEYCHAIN_SERVICE: &str = "com.moretea.forge.desktop.api";
+const ZRO_API_ENDPOINT: &str = "https://zro.moonmath.ai/v1";
+const JOYCODE_DEFAULT_MODEL: &str = "JoyAI-Code-1.6";
+const JOYCODE_COLOR_GATEWAY_ORIGIN: &str = "https://api-ai.jd.com";
+const JOYCODE_COLOR_GATEWAY_APP_ID: &str = "joycode_ide";
+const JOYCODE_EXTENSION_PATH: &str = "/Applications/JoyCode.app/Contents/Resources/app/extensions/joycoder-editor/dist/extension.js";
+
+#[derive(Clone)]
+struct JoyCodeSession {
+    pt_key: String,
+    login_type: String,
+    tenant: String,
+    user_id: String,
+    org_full_name: String,
+    color_base_url: String,
+    signing_key: Vec<u8>,
+}
+
+fn parse_joycode_session(state: &Value) -> Result<JoyCodeSession, String> {
+    let info = state.get("jdhLoginInfo").and_then(Value::as_object)
+        .ok_or("FORGE_DESKTOP_JOYCODE_LOGIN_UNAVAILABLE")?;
+    let text = |primary: &str, fallback: Option<&str>| -> String {
+        info.get(primary).and_then(Value::as_str)
+            .or_else(|| fallback.and_then(|key| info.get(key).and_then(Value::as_str)))
+            .unwrap_or("").trim().to_string()
+    };
+    let pt_key = text("ptKey", Some("pt_key"));
+    let login_type = text("loginType", None);
+    let tenant = text("tenant", None);
+    let user_id = text("userId", None);
+    if pt_key.is_empty() || pt_key.len() > 4096
+        || login_type.is_empty() || login_type.len() > 80
+        || tenant.is_empty() || tenant.len() > 240
+        || user_id.is_empty() || user_id.len() > 240 {
+        return Err("FORGE_DESKTOP_JOYCODE_LOGIN_UNAVAILABLE".into());
+    }
+    let color_base_url = text("colorBaseUrl", None);
+    let color_url = reqwest::Url::parse(&color_base_url)
+        .map_err(|_| "FORGE_DESKTOP_JOYCODE_GATEWAY_INVALID")?;
+    if color_url.scheme() != "https" || color_url.host_str() != Some("api-ai.jd.com") {
+        return Err("FORGE_DESKTOP_JOYCODE_GATEWAY_INVALID".into());
+    }
+    Ok(JoyCodeSession {
+        pt_key,
+        login_type,
+        tenant,
+        user_id,
+        org_full_name:text("orgFullName", None),
+        color_base_url:color_url.origin().ascii_serialization(),
+        signing_key:Vec::new(),
+    })
+}
+
+fn parse_joycode_gateway_signing_key(source: &str) -> Result<Vec<u8>, String> {
+    const NEEDLE: &str = "HmacSHA256(e,\"";
+    let mut candidates: Vec<Vec<u8>> = Vec::new();
+    let mut offset = 0usize;
+    while let Some(relative) = source[offset..].find(NEEDLE) {
+        let value_start = offset + relative + NEEDLE.len();
+        let tail = &source[value_start..];
+        if let Some(value_end) = tail.find('"') {
+            let candidate = &tail[..value_end];
+            if candidate.len() == 32
+                && candidate.is_ascii()
+                && !candidate.contains('\\') {
+                let bytes = candidate.as_bytes().to_vec();
+                if !candidates.iter().any(|existing| existing == &bytes) {
+                    candidates.push(bytes);
+                }
+            }
+        }
+        offset = value_start;
+    }
+    if candidates.len() == 1 {
+        return Ok(candidates.remove(0));
+    }
+    Err("FORGE_DESKTOP_JOYCODE_SIGNER_UNAVAILABLE".into())
+}
+
+#[cfg(target_os = "macos")]
+fn read_joycode_gateway_signing_key() -> Result<Vec<u8>, String> {
+    let path = Path::new(JOYCODE_EXTENSION_PATH);
+    let metadata = fs::metadata(path).map_err(|_| "FORGE_DESKTOP_JOYCODE_SIGNER_UNAVAILABLE")?;
+    if metadata.len() > 128 * 1024 * 1024 {
+        return Err("FORGE_DESKTOP_JOYCODE_SIGNER_UNAVAILABLE".into());
+    }
+    let source = fs::read_to_string(path).map_err(|_| "FORGE_DESKTOP_JOYCODE_SIGNER_UNAVAILABLE")?;
+    parse_joycode_gateway_signing_key(&source)
+}
+
+fn hmac_sha256_hex(key: &[u8], message: &[u8]) -> String {
+    const BLOCK: usize = 64;
+    let mut normalized = [0u8; BLOCK];
+    if key.len() > BLOCK {
+        let digest = Sha256::digest(key);
+        normalized[..digest.len()].copy_from_slice(&digest);
+    } else {
+        normalized[..key.len()].copy_from_slice(key);
+    }
+    let mut inner_key = [0x36u8; BLOCK];
+    let mut outer_key = [0x5cu8; BLOCK];
+    for index in 0..BLOCK {
+        inner_key[index] ^= normalized[index];
+        outer_key[index] ^= normalized[index];
+    }
+    let mut inner = Sha256::new();
+    inner.update(inner_key);
+    inner.update(message);
+    let inner_digest = inner.finalize();
+
+    let mut outer = Sha256::new();
+    outer.update(outer_key);
+    outer.update(inner_digest);
+    hex::encode(outer.finalize())
+}
+
+fn joycode_gateway_url(session: &JoyCodeSession, function_id: &str, timestamp_ms: u128) -> Result<String, String> {
+    if function_id.is_empty() || function_id.len() > 120 {
+        return Err("FORGE_DESKTOP_JOYCODE_FUNCTION_INVALID".into());
+    }
+    let message = format!("{JOYCODE_COLOR_GATEWAY_APP_ID}&{function_id}&{timestamp_ms}");
+    if session.signing_key.is_empty() {
+        return Err("FORGE_DESKTOP_JOYCODE_SIGNER_UNAVAILABLE".into());
+    }
+    let sign = hmac_sha256_hex(&session.signing_key, message.as_bytes());
+    let mut url = reqwest::Url::parse(&format!("{}/api", session.color_base_url.trim_end_matches('/')))
+        .map_err(|_| "FORGE_DESKTOP_JOYCODE_GATEWAY_INVALID")?;
+    url.query_pairs_mut()
+        .append_pair("appid", JOYCODE_COLOR_GATEWAY_APP_ID)
+        .append_pair("functionId", function_id)
+        .append_pair("t", &timestamp_ms.to_string())
+        .append_pair("sign", &sign);
+    Ok(url.to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn read_joycode_session() -> Result<JoyCodeSession, String> {
+    let home = dirs::home_dir().ok_or("FORGE_DESKTOP_JOYCODE_LOGIN_UNAVAILABLE")?;
+    let database = home.join("Library/Application Support/JoyCode/User/globalStorage/state.vscdb");
+    if !database.is_file() { return Err("FORGE_DESKTOP_JOYCODE_LOGIN_UNAVAILABLE".into()); }
+    let output = Command::new("/usr/bin/sqlite3")
+        .arg("-readonly")
+        .arg(&database)
+        .arg("SELECT value FROM ItemTable WHERE key='JoyCode.joycoder-editor' LIMIT 1;")
+        .output()
+        .map_err(|_| "FORGE_DESKTOP_JOYCODE_LOGIN_UNAVAILABLE")?;
+    if !output.status.success() || output.stdout.len() > 2 * 1024 * 1024 {
+        return Err("FORGE_DESKTOP_JOYCODE_LOGIN_UNAVAILABLE".into());
+    }
+    let raw = String::from_utf8(output.stdout)
+        .map_err(|_| "FORGE_DESKTOP_JOYCODE_LOGIN_UNAVAILABLE")?;
+    let state: Value = serde_json::from_str(raw.trim())
+        .map_err(|_| "FORGE_DESKTOP_JOYCODE_LOGIN_UNAVAILABLE")?;
+    let mut session = parse_joycode_session(&state)?;
+    session.signing_key = read_joycode_gateway_signing_key()?;
+    Ok(session)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn read_joycode_session() -> Result<JoyCodeSession, String> {
+    Err("FORGE_DESKTOP_JOYCODE_UNSUPPORTED".into())
+}
 
 fn local_api_config_path() -> Result<PathBuf, String> {
     let root = dirs::config_dir().ok_or("FORGE_DESKTOP_LOCAL_SETTINGS_DIR_UNAVAILABLE")?;
@@ -608,7 +1341,7 @@ fn local_api_config() -> Result<Value, String> {
     let text = match fs::read_to_string(&path) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(json!({ "provider": "codex", "endpoint": "https://api.openai.com/v1", "model": "" }));
+            return Ok(json!({ "provider": "codex", "endpoint": "https://api.openai.com/v1", "model": "", "apiProtocol":"openai", "joyCodeModel":JOYCODE_DEFAULT_MODEL }));
         }
         Err(_) => return Err("FORGE_DESKTOP_LOCAL_SETTINGS_READ_FAILED".into()),
     };
@@ -629,57 +1362,378 @@ fn validated_local_api_endpoint(endpoint: &str) -> Result<String, String> {
     Ok(url.to_string().trim_end_matches('/').to_string())
 }
 
+fn read_zro_api_key() -> Result<Option<String>, String> {
+    let home = dirs::home_dir().ok_or("FORGE_DESKTOP_ZRO_CREDENTIAL_UNAVAILABLE")?;
+    let path = home.join(".config/zro/credentials.json");
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err("FORGE_DESKTOP_ZRO_CREDENTIAL_READ_FAILED".into()),
+    };
+    if text.len() > 64 * 1024 { return Err("FORGE_DESKTOP_ZRO_CREDENTIAL_INVALID".into()); }
+    let value: Value = serde_json::from_str(&text)
+        .map_err(|_| "FORGE_DESKTOP_ZRO_CREDENTIAL_INVALID")?;
+    let key = value.get("apiKey").and_then(Value::as_str).unwrap_or("").trim();
+    if key.is_empty() { return Ok(None); }
+    if key.len() > 4096 { return Err("FORGE_DESKTOP_ZRO_CREDENTIAL_INVALID".into()); }
+    Ok(Some(key.to_string()))
+}
+
+fn managed_api_credential_registry_path() -> Result<PathBuf, String> {
+    let root = dirs::config_dir().ok_or("FORGE_DESKTOP_LOCAL_SETTINGS_DIR_UNAVAILABLE")?;
+    Ok(root.join("com.moretea.forge.desktop").join("credentials.json"))
+}
+
+fn load_managed_api_credential_registry() -> Result<Vec<Value>, String> {
+    let path = managed_api_credential_registry_path()?;
+    let text = match fs::read_to_string(path) {
+        Ok(value) => value,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(_) => return Err("FORGE_DESKTOP_CREDENTIAL_REGISTRY_READ_FAILED".into()),
+    };
+    if text.len() > 512 * 1024 { return Err("FORGE_DESKTOP_CREDENTIAL_REGISTRY_INVALID".into()); }
+    let value: Value = serde_json::from_str(&text)
+        .map_err(|_| "FORGE_DESKTOP_CREDENTIAL_REGISTRY_INVALID")?;
+    if value.get("schemaVersion").and_then(Value::as_u64) != Some(1) {
+        return Err("FORGE_DESKTOP_CREDENTIAL_REGISTRY_INVALID".into());
+    }
+    let rows = value.get("credentials").and_then(Value::as_array)
+        .ok_or("FORGE_DESKTOP_CREDENTIAL_REGISTRY_INVALID")?;
+    let mut result = Vec::new();
+    for row in rows {
+        let credential_ref = row.get("credentialRef").and_then(Value::as_str).unwrap_or("");
+        let endpoint = row.get("endpoint").and_then(Value::as_str).unwrap_or("");
+        if !valid_managed_credential_ref(credential_ref) || validated_local_api_endpoint(endpoint).is_err() {
+            return Err("FORGE_DESKTOP_CREDENTIAL_REGISTRY_INVALID".into());
+        }
+        result.push(row.clone());
+    }
+    Ok(result)
+}
+
+fn save_managed_api_credential_registry(rows: &[Value]) -> Result<(), String> {
+    let path = managed_api_credential_registry_path()?;
+    let parent = path.parent().ok_or("FORGE_DESKTOP_CREDENTIAL_REGISTRY_WRITE_FAILED")?;
+    fs::create_dir_all(parent).map_err(|_| "FORGE_DESKTOP_CREDENTIAL_REGISTRY_WRITE_FAILED")?;
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        fs::set_permissions(parent, fs::Permissions::from_mode(0o700))
+            .map_err(|_| "FORGE_DESKTOP_CREDENTIAL_REGISTRY_WRITE_FAILED")?;
+        let temp = path.with_extension("json.tmp");
+        let mut file = fs::OpenOptions::new().write(true).truncate(true).create(true)
+            .mode(0o600).open(&temp)
+            .map_err(|_| "FORGE_DESKTOP_CREDENTIAL_REGISTRY_WRITE_FAILED")?;
+        file.write_all(json!({"schemaVersion":1,"credentials":rows}).to_string().as_bytes())
+            .map_err(|_| "FORGE_DESKTOP_CREDENTIAL_REGISTRY_WRITE_FAILED")?;
+        fs::rename(temp, path).map_err(|_| "FORGE_DESKTOP_CREDENTIAL_REGISTRY_WRITE_FAILED")?;
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    { Err("FORGE_DESKTOP_CREDENTIAL_REGISTRY_UNSUPPORTED".into()) }
+}
+
+fn valid_managed_credential_ref(value: &str) -> bool {
+    value.starts_with("cred_") && value.len() <= 96
+        && value.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+}
+
+fn new_managed_credential_ref() -> String {
+    let seed = request_id("credential");
+    let digest = Sha256::digest(seed.as_bytes());
+    format!("cred_{}", hex::encode(&digest[..12]))
+}
+
+fn managed_credential_row<'a>(rows: &'a [Value], credential_ref: &str) -> Option<&'a Value> {
+    rows.iter().find(|row| row.get("credentialRef").and_then(Value::as_str) == Some(credential_ref))
+}
+
+fn read_managed_api_credential_secret(credential_ref: &str) -> Result<Option<String>, String> {
+    if !valid_managed_credential_ref(credential_ref) {
+        return Err("FORGE_DESKTOP_CREDENTIAL_REF_INVALID".into());
+    }
+    managed_keychain::read(credential_ref)
+}
+
+fn write_managed_api_credential_secret(credential_ref: &str, secret: &str) -> Result<(), String> {
+    if !valid_managed_credential_ref(credential_ref) || secret.is_empty() || secret.len() > 8192 {
+        return Err("FORGE_DESKTOP_CREDENTIAL_SECRET_INVALID".into());
+    }
+    managed_keychain::write(credential_ref, secret)
+}
+
+fn delete_managed_api_credential_secret(credential_ref: &str) -> Result<(), String> {
+    if !valid_managed_credential_ref(credential_ref) {
+        return Err("FORGE_DESKTOP_CREDENTIAL_REF_INVALID".into());
+    }
+    managed_keychain::delete(credential_ref)
+}
+
 #[cfg(target_os = "macos")]
-fn read_local_api_key(endpoint: &str) -> Result<Option<String>, String> {
-    use security_framework::passwords::{generic_password, PasswordOptions};
-    match generic_password(PasswordOptions::new_generic_password(LOCAL_API_KEYCHAIN_SERVICE, endpoint)) {
-        Ok(value) => String::from_utf8(value).map(Some).map_err(|_| "FORGE_DESKTOP_API_KEY_INVALID".to_string()),
-        Err(error) if error.code() == -25300 => Ok(None),
-        Err(_) => Err("FORGE_DESKTOP_API_KEYCHAIN_READ_FAILED".to_string()),
+fn credential_from_clipboard() -> Result<String, String> {
+    let output = Command::new("/usr/bin/pbpaste").output()
+        .map_err(|_| "FORGE_DESKTOP_CREDENTIAL_CLIPBOARD_UNAVAILABLE")?;
+    if !output.status.success() || output.stdout.len() > 8192 {
+        return Err("FORGE_DESKTOP_CREDENTIAL_CLIPBOARD_INVALID".into());
+    }
+    let secret = String::from_utf8(output.stdout)
+        .map_err(|_| "FORGE_DESKTOP_CREDENTIAL_CLIPBOARD_INVALID")?;
+    let normalized = secret.trim().to_string();
+    if normalized.is_empty() || normalized.len() > 8192
+        || normalized.chars().any(|ch| ch.is_control()) {
+        return Err("FORGE_DESKTOP_CREDENTIAL_CLIPBOARD_INVALID".into());
+    }
+    Ok(normalized)
+}
+#[cfg(not(target_os = "macos"))]
+fn credential_from_clipboard() -> Result<String, String> {
+    Err("FORGE_DESKTOP_CREDENTIAL_CLIPBOARD_UNSUPPORTED".into())
+}
+
+#[cfg(target_os = "macos")]
+fn clear_credential_clipboard() -> Result<(), String> {
+    let mut child = Command::new("/usr/bin/pbcopy")
+        .stdin(std::process::Stdio::piped())
+        .spawn().map_err(|_| "FORGE_DESKTOP_CREDENTIAL_CLIPBOARD_CLEAR_FAILED")?;
+    drop(child.stdin.take());
+    let status = child.wait().map_err(|_| "FORGE_DESKTOP_CREDENTIAL_CLIPBOARD_CLEAR_FAILED")?;
+    if !status.success() { return Err("FORGE_DESKTOP_CREDENTIAL_CLIPBOARD_CLEAR_FAILED".into()); }
+    Ok(())
+}
+#[cfg(not(target_os = "macos"))]
+fn clear_credential_clipboard() -> Result<(), String> {
+    Err("FORGE_DESKTOP_CREDENTIAL_CLIPBOARD_UNSUPPORTED".into())
+}
+
+fn managed_credential_secret_state(credential_ref: &str) -> Result<(bool, &'static str), String> {
+    match read_managed_api_credential_secret(credential_ref) {
+        Ok(Some(_)) => Ok((true, "ready")),
+        Ok(None) => Ok((false, "missing")),
+        Err(error) if error == "FORGE_DESKTOP_CREDENTIAL_KEYCHAIN_ACCESS_NOT_TRUSTED" => {
+            Ok((false, "access_not_trusted"))
+        }
+        Err(error) => Err(error),
     }
 }
 
-#[cfg(not(target_os = "macos"))]
-fn read_local_api_key(_endpoint: &str) -> Result<Option<String>, String> {
-    Err("FORGE_DESKTOP_API_KEYCHAIN_UNSUPPORTED".into())
+fn managed_credential_metadata(row: &Value, has_secret: bool) -> Value {
+    json!({
+        "credentialRef":row.get("credentialRef").and_then(Value::as_str).unwrap_or(""),
+        "label":row.get("label").and_then(Value::as_str).unwrap_or(""),
+        "endpoint":row.get("endpoint").and_then(Value::as_str).unwrap_or(""),
+        "backend":"macos-keychain",
+        "hasSecret":has_secret,
+        "createdAtMs":row.get("createdAtMs").and_then(Value::as_u64),
+        "updatedAtMs":row.get("updatedAtMs").and_then(Value::as_u64),
+        "credentialMaterialReturned":false
+    })
 }
 
-#[cfg(target_os = "macos")]
-fn store_local_api_key(endpoint: &str, secret: &str) -> Result<(), String> {
-    security_framework::passwords::set_generic_password(
-        LOCAL_API_KEYCHAIN_SERVICE, endpoint, secret.as_bytes()
-    ).map_err(|_| "FORGE_DESKTOP_API_KEYCHAIN_WRITE_FAILED".to_string())
-}
-
-#[cfg(not(target_os = "macos"))]
-fn store_local_api_key(_endpoint: &str, _secret: &str) -> Result<(), String> {
-    Err("FORGE_DESKTOP_API_KEYCHAIN_UNSUPPORTED".into())
-}
-
-#[cfg(target_os = "macos")]
-fn delete_local_api_key(endpoint: &str) -> Result<(), String> {
-    match security_framework::passwords::delete_generic_password(
-        LOCAL_API_KEYCHAIN_SERVICE, endpoint
-    ) {
-        Ok(()) => Ok(()),
-        Err(error) if error.code() == -25300 => Ok(()),
-        Err(_) => Err("FORGE_DESKTOP_API_KEYCHAIN_DELETE_FAILED".to_string()),
+fn import_managed_api_credential(endpoint: String, label: Option<String>) -> Result<Value, String> {
+    let endpoint = validated_local_api_endpoint(&endpoint)?;
+    if endpoint == ZRO_API_ENDPOINT {
+        return Err("FORGE_DESKTOP_CREDENTIAL_PROVIDER_OWNED".into());
     }
+    let label = label.unwrap_or_else(|| endpoint.clone()).trim().to_string();
+    if label.is_empty() || label.len() > 120 { return Err("FORGE_DESKTOP_CREDENTIAL_LABEL_INVALID".into()); }
+    let secret = credential_from_clipboard()?;
+    let credential_ref = new_managed_credential_ref();
+    let write_result = write_managed_api_credential_secret(&credential_ref, &secret);
+    let clear_result = clear_credential_clipboard();
+    drop(secret);
+    if let Err(error) = write_result { return Err(error); }
+    if let Err(error) = clear_result {
+        let _ = delete_managed_api_credential_secret(&credential_ref);
+        return Err(error);
+    }
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+    let row = json!({
+        "credentialRef":credential_ref,
+        "label":label,
+        "endpoint":endpoint,
+        "createdAtMs":now,
+        "updatedAtMs":now
+    });
+    let mut rows = load_managed_api_credential_registry()?;
+    rows.push(row.clone());
+    if let Err(error) = save_managed_api_credential_registry(&rows) {
+        let _ = delete_managed_api_credential_secret(&credential_ref);
+        return Err(error);
+    }
+    Ok(managed_credential_metadata(&row, true))
 }
 
-#[cfg(not(target_os = "macos"))]
-fn delete_local_api_key(_endpoint: &str) -> Result<(), String> {
-    Err("FORGE_DESKTOP_API_KEYCHAIN_UNSUPPORTED".into())
+fn rotate_managed_api_credential(credential_ref: String) -> Result<Value, String> {
+    if !valid_managed_credential_ref(&credential_ref) { return Err("FORGE_DESKTOP_CREDENTIAL_REF_INVALID".into()); }
+    let mut rows = load_managed_api_credential_registry()?;
+    let index = rows.iter().position(|row| row.get("credentialRef").and_then(Value::as_str) == Some(credential_ref.as_str()))
+        .ok_or("FORGE_DESKTOP_CREDENTIAL_NOT_FOUND")?;
+    let previous = read_managed_api_credential_secret(&credential_ref)?;
+    let secret = credential_from_clipboard()?;
+    let write_result = write_managed_api_credential_secret(&credential_ref, &secret);
+    let clear_result = clear_credential_clipboard();
+    drop(secret);
+    if let Err(error) = write_result { return Err(error); }
+    if let Err(error) = clear_result {
+        if let Some(previous) = previous.as_deref() {
+            let _ = write_managed_api_credential_secret(&credential_ref, previous);
+        } else {
+            let _ = delete_managed_api_credential_secret(&credential_ref);
+        }
+        return Err(error);
+    }
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+    rows[index]["updatedAtMs"] = Value::from(now);
+    if let Err(error) = save_managed_api_credential_registry(&rows) {
+        if let Some(previous) = previous.as_deref() {
+            let _ = write_managed_api_credential_secret(&credential_ref, previous);
+        } else {
+            let _ = delete_managed_api_credential_secret(&credential_ref);
+        }
+        return Err(error);
+    }
+    Ok(managed_credential_metadata(&rows[index], true))
+}
+
+fn managed_credential_record(credential_ref: &str) -> Result<Value, String> {
+    if !valid_managed_credential_ref(credential_ref) {
+        return Err("FORGE_DESKTOP_CREDENTIAL_REF_INVALID".into());
+    }
+    let rows = load_managed_api_credential_registry()?;
+    managed_credential_row(&rows, credential_ref).cloned()
+        .ok_or_else(|| "FORGE_DESKTOP_CREDENTIAL_NOT_FOUND".to_string())
+}
+
+fn managed_credential_matches_endpoint(credential_ref: &str, endpoint: &str) -> Result<Value, String> {
+    let row = managed_credential_record(credential_ref)?;
+    let stored_endpoint = row.get("endpoint").and_then(Value::as_str).unwrap_or("");
+    if stored_endpoint != endpoint {
+        return Err("FORGE_DESKTOP_CREDENTIAL_ENDPOINT_MISMATCH".into());
+    }
+    Ok(row)
+}
+
+async fn credential_authorization_status(credential_ref: &str, endpoint: &str) -> Result<Value, String> {
+    call_runtime_tool("rh_credential", json!({
+        "operation":"status",
+        "credential_ref":credential_ref,
+        "endpoint":endpoint,
+        "request_id":request_id("credential-status")
+    })).await
 }
 
 #[tauri::command]
-fn clear_local_api_key() -> Result<Value, String> {
-    let config = local_api_config()?;
-    let endpoint = validated_local_api_endpoint(
-        config.get("endpoint").and_then(Value::as_str).unwrap_or("")
-    )?;
-    delete_local_api_key(&endpoint)?;
-    read_local_api_settings()
+async fn managed_api_credential_control(
+    operation: String,
+    credential_ref: Option<String>,
+    endpoint: Option<String>,
+    label: Option<String>,
+    confirm_authorization: Option<bool>,
+) -> Result<Value, String> {
+    match operation.as_str() {
+        "list" => {
+            let rows = load_managed_api_credential_registry()?;
+            let mut items = Vec::with_capacity(rows.len());
+            for row in rows {
+                let credential_ref = row.get("credentialRef").and_then(Value::as_str).unwrap_or("");
+                let endpoint = row.get("endpoint").and_then(Value::as_str).unwrap_or("");
+                let (has_secret, keychain_state) = managed_credential_secret_state(credential_ref)?;
+                let status = credential_authorization_status(credential_ref, endpoint).await
+                    .unwrap_or_else(|_| json!({"authorized":false}));
+                let mut metadata = managed_credential_metadata(&row, has_secret);
+                metadata["keychainState"] = Value::String(keychain_state.to_string());
+                metadata["authorized"] = Value::Bool(status.get("authorized").and_then(Value::as_bool) == Some(true));
+                metadata["expiresAt"] = status.get("expiresAt").cloned().unwrap_or(Value::Null);
+                items.push(metadata);
+            }
+            Ok(json!({"credentials":items,"credentialMaterialReturned":false}))
+        }
+        "create" => {
+            let endpoint = endpoint.ok_or("FORGE_DESKTOP_CREDENTIAL_ENDPOINT_REQUIRED")?;
+            import_managed_api_credential(endpoint, label)
+        }
+        "rotate" => rotate_managed_api_credential(
+            credential_ref.ok_or("FORGE_DESKTOP_CREDENTIAL_REF_REQUIRED")?
+        ),
+        "status" => {
+            let credential_ref = credential_ref.ok_or("FORGE_DESKTOP_CREDENTIAL_REF_REQUIRED")?;
+            let row = managed_credential_record(&credential_ref)?;
+            let endpoint = row.get("endpoint").and_then(Value::as_str).unwrap_or("").to_string();
+            let (has_secret, keychain_state) = managed_credential_secret_state(&credential_ref)?;
+            let auth = credential_authorization_status(&credential_ref, &endpoint).await?;
+            let mut metadata = managed_credential_metadata(&row, has_secret);
+            metadata["keychainState"] = Value::String(keychain_state.to_string());
+            metadata["authorized"] = Value::Bool(auth.get("authorized").and_then(Value::as_bool) == Some(true));
+            metadata["expiresAt"] = auth.get("expiresAt").cloned().unwrap_or(Value::Null);
+            Ok(metadata)
+        }
+        "authorize" => {
+            if confirm_authorization != Some(true) {
+                return Err("FORGE_DESKTOP_CREDENTIAL_AUTHORIZATION_CONFIRMATION_REQUIRED".into());
+            }
+            let credential_ref = credential_ref.ok_or("FORGE_DESKTOP_CREDENTIAL_REF_REQUIRED")?;
+            let row = managed_credential_record(&credential_ref)?;
+            let endpoint = row.get("endpoint").and_then(Value::as_str).unwrap_or("").to_string();
+            if read_managed_api_credential_secret(&credential_ref)?.is_none() {
+                return Err("FORGE_DESKTOP_CREDENTIAL_SECRET_MISSING".into());
+            }
+            call_runtime_tool("rh_credential", json!({
+                "operation":"authorize",
+                "credential_ref":credential_ref,
+                "endpoint":endpoint,
+                "confirm_authorization":true,
+                "request_id":request_id("credential-authorize")
+            })).await
+        }
+        "revoke" => {
+            let credential_ref = credential_ref.ok_or("FORGE_DESKTOP_CREDENTIAL_REF_REQUIRED")?;
+            call_runtime_tool("rh_credential", json!({
+                "operation":"revoke",
+                "credential_ref":credential_ref,
+                "reason":"revoked from Forge Desktop",
+                "request_id":request_id("credential-revoke")
+            })).await
+        }
+        "delete" => {
+            let credential_ref = credential_ref.ok_or("FORGE_DESKTOP_CREDENTIAL_REF_REQUIRED")?;
+            let rows = load_managed_api_credential_registry()?;
+            let row = managed_credential_row(&rows, &credential_ref).cloned()
+                .ok_or("FORGE_DESKTOP_CREDENTIAL_NOT_FOUND")?;
+            let _ = call_runtime_tool("rh_credential", json!({
+                "operation":"revoke",
+                "credential_ref":credential_ref,
+                "reason":"credential deleted from Forge Desktop",
+                "request_id":request_id("credential-delete-revoke")
+            })).await?;
+            delete_managed_api_credential_secret(&credential_ref)?;
+            let next: Vec<Value> = rows.into_iter()
+                .filter(|item| item.get("credentialRef").and_then(Value::as_str) != Some(credential_ref.as_str()))
+                .collect();
+            save_managed_api_credential_registry(&next)?;
+            Ok(json!({
+                "deleted":true,
+                "credentialRef":credential_ref,
+                "endpoint":row.get("endpoint").and_then(Value::as_str).unwrap_or(""),
+                "credentialMaterialReturned":false
+            }))
+        }
+        _ => Err("FORGE_DESKTOP_CREDENTIAL_OPERATION_UNSUPPORTED".into()),
+    }
+}
+
+fn local_api_endpoint_ready(endpoint: &str, has_key: bool) -> bool {
+    let Ok(validated) = validated_local_api_endpoint(endpoint) else { return false; };
+    let Ok(url) = reqwest::Url::parse(&validated) else { return false; };
+    let loopback = matches!(url.host_str().unwrap_or(""), "localhost" | "127.0.0.1" | "[::1]");
+    loopback || has_key
+}
+
+fn validate_local_api_default_endpoint(provider: &str, endpoint: &str, has_key: bool) -> Result<(), String> {
+    if provider == "api" && !local_api_endpoint_ready(endpoint, has_key) {
+        return Err("FORGE_DESKTOP_API_KEY_MISSING".into());
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -689,35 +1743,71 @@ fn read_local_api_settings() -> Result<Value, String> {
     let endpoint = config.get("endpoint").and_then(Value::as_str).unwrap_or("https://api.openai.com/v1");
     let model = config.get("model").and_then(Value::as_str).unwrap_or("");
     let api_protocol = config.get("apiProtocol").and_then(Value::as_str).unwrap_or("openai");
+    let joycode_model = config.get("joyCodeModel").and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty()).unwrap_or(JOYCODE_DEFAULT_MODEL);
+    let credential_ref = config.get("credentialRef").and_then(Value::as_str)
+        .filter(|value| valid_managed_credential_ref(value));
+    let mut keychain_state = Value::Null;
+    let has_key = if endpoint == ZRO_API_ENDPOINT {
+        read_zro_api_key()?.is_some()
+    } else if let Some(credential_ref) = credential_ref {
+        managed_credential_matches_endpoint(credential_ref, endpoint)?;
+        let (has_secret, state) = managed_credential_secret_state(credential_ref)?;
+        keychain_state = Value::String(state.to_string());
+        has_secret
+    } else {
+        false
+    };
     Ok(json!({
         "provider": provider,
         "endpoint": endpoint,
         "model": model,
         "apiProtocol": api_protocol,
-        // The Codex CLI uses its existing login; never access Keychain just
-        // to display Codex settings. API credentials are scoped to API mode.
-        "hasKey": if provider == "api" { read_local_api_key(endpoint)?.is_some() } else { false },
+        "credentialRef": credential_ref,
+        "joyCodeModel": joycode_model,
+        "joyCodeReady": read_joycode_session().is_ok(),
+        "hasKey": has_key,
+        "keychainState": keychain_state,
+        "endpointReady": local_api_endpoint_ready(endpoint, has_key),
     }))
 }
 
 #[tauri::command]
-fn save_local_api_settings(provider: String, endpoint: String, model: String, api_key: Option<String>, api_protocol: Option<String>) -> Result<Value, String> {
-    if provider != "codex" && provider != "api" {
+fn save_local_api_settings(provider: String, endpoint: String, model: String, credential_ref: Option<String>, api_protocol: Option<String>, joy_code_model: Option<String>) -> Result<Value, String> {
+    if !matches!(provider.as_str(), "codex" | "api" | "joycode") {
         return Err("FORGE_DESKTOP_API_PROVIDER_INVALID".into());
     }
     let endpoint = validated_local_api_endpoint(&endpoint)?;
     let api_protocol = api_protocol.as_deref().unwrap_or("openai");
-    if !matches!(api_protocol, "openai" | "anthropic") {
+    if !matches!(api_protocol, "openai" | "anthropic" | "responses") {
         return Err("FORGE_DESKTOP_API_PROTOCOL_INVALID".into());
     }
     let model = model.trim();
     if model.len() > 120 || (provider == "api" && model.is_empty()) {
         return Err("FORGE_DESKTOP_API_MODEL_INVALID".into());
     }
-    if let Some(secret) = api_key.filter(|secret| !secret.trim().is_empty()) {
-        if secret.len() > 4096 { return Err("FORGE_DESKTOP_API_KEY_INVALID".into()); }
-        store_local_api_key(&endpoint, &secret)?;
+    let current = local_api_config()?;
+    let joycode_model = joy_code_model.as_deref()
+        .or_else(|| current.get("joyCodeModel").and_then(Value::as_str))
+        .unwrap_or(JOYCODE_DEFAULT_MODEL).trim();
+    if joycode_model.is_empty() || joycode_model.len() > 120 {
+        return Err("FORGE_DESKTOP_JOYCODE_MODEL_INVALID".into());
     }
+    if provider == "joycode" {
+        read_joycode_session()?;
+    }
+    let credential_ref = credential_ref.map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let has_key = if endpoint == ZRO_API_ENDPOINT {
+        if credential_ref.is_some() { return Err("FORGE_DESKTOP_CREDENTIAL_PROVIDER_OWNED".into()); }
+        read_zro_api_key()?.is_some()
+    } else if let Some(ref credential_ref) = credential_ref {
+        managed_credential_matches_endpoint(credential_ref, &endpoint)?;
+        read_managed_api_credential_secret(credential_ref)?.is_some()
+    } else {
+        false
+    };
+    validate_local_api_default_endpoint(&provider, &endpoint, has_key)?;
     let path = local_api_config_path()?;
     let parent = path.parent().ok_or("FORGE_DESKTOP_LOCAL_SETTINGS_DIR_UNAVAILABLE")?;
     fs::create_dir_all(parent).map_err(|_| "FORGE_DESKTOP_LOCAL_SETTINGS_WRITE_FAILED")?;
@@ -730,7 +1820,7 @@ fn save_local_api_settings(provider: String, endpoint: String, model: String, ap
         let temp = path.with_extension("json.tmp");
         let mut file = fs::OpenOptions::new().write(true).truncate(true).create(true)
             .mode(0o600).open(&temp).map_err(|_| "FORGE_DESKTOP_LOCAL_SETTINGS_WRITE_FAILED")?;
-        file.write_all(json!({ "provider": provider, "endpoint": endpoint, "model": model, "apiProtocol": api_protocol }).to_string().as_bytes())
+        file.write_all(json!({ "provider": provider, "endpoint": endpoint, "model": model, "apiProtocol": api_protocol, "credentialRef": credential_ref, "joyCodeModel": joycode_model }).to_string().as_bytes())
             .map_err(|_| "FORGE_DESKTOP_LOCAL_SETTINGS_WRITE_FAILED")?;
         fs::rename(&temp, &path).map_err(|_| "FORGE_DESKTOP_LOCAL_SETTINGS_WRITE_FAILED")?;
     }
@@ -742,28 +1832,85 @@ fn save_local_api_settings(provider: String, endpoint: String, model: String, ap
 
 
 fn agent_git_diff_arguments(staged: bool) -> Value {
-    json!({ "max_bytes": 20000, "staged": staged })
+    json!({ "max_bytes": 20_000, "staged": staged })
+}
+
+fn agent_untracked_paths(status: &Value, paths: Option<&[String]>) -> Vec<String> {
+    status.get("untracked").and_then(Value::as_array).into_iter().flatten()
+        .filter_map(Value::as_str)
+        .filter(|path| paths.map_or(true, |scope| scope.iter().any(|candidate| candidate == path)))
+        .take(100)
+        .map(str::to_owned)
+        .collect()
+}
+
+async fn read_agent_git_diff_runtime(
+    repo_id: &str,
+    checkout_id: Option<&str>,
+    staged: bool,
+    paths: Option<&[String]>,
+) -> Result<Value, String> {
+    if repo_id.trim().is_empty() { return Err("FORGE_DESKTOP_REPOSITORY_REQUIRED".into()); }
+    validate_agent_checkout_binding(Some(repo_id), checkout_id, false)?;
+    let mut request = agent_git_diff_arguments(staged);
+    request["repo_id"] = Value::String(repo_id.to_string());
+    request["request_id"] = Value::String(request_id("desktop-agent-git-diff"));
+    if let Some(checkout_id) = checkout_id {
+        request["checkout_id"] = Value::String(checkout_id.to_string());
+    }
+    if let Some(paths) = paths {
+        request["paths"] = json!(paths);
+    }
+    let result = call_runtime_tool("repository_git_diff", request).await?;
+    let diff = result.get("diff").cloned()
+        .ok_or_else(|| "FORGE_DESKTOP_GIT_DIFF_RESULT_INVALID".to_string())?;
+    if diff.get("repoId").and_then(Value::as_str) != Some(repo_id)
+        || diff.get("staged").and_then(Value::as_bool) != Some(staged)
+        || checkout_id.is_some_and(|expected|
+            diff.get("checkoutId").and_then(Value::as_str) != Some(expected)
+        ) {
+        return Err("FORGE_DESKTOP_GIT_DIFF_RESULT_INVALID".into());
+    }
+    Ok(diff)
+}
+
+async fn read_agent_git_diff_for_review(
+    repo_id: &str,
+    checkout_id: Option<&str>,
+    staged: bool,
+    paths: Option<&[String]>,
+) -> Result<Value, String> {
+    let mut diff = read_agent_git_diff_runtime(repo_id, checkout_id, staged, paths).await?;
+    let mut request = json!({ "repo_id": repo_id, "refresh": true });
+    if let Some(checkout_id) = checkout_id {
+        request["checkout_id"] = Value::String(checkout_id.to_string());
+    }
+    let result = call_runtime_tool("repository_git_status", request).await?;
+    let status = result.get("status")
+        .ok_or_else(|| "FORGE_DESKTOP_GIT_STATUS_RESULT_INVALID".to_string())?;
+    if status.get("repoId").and_then(Value::as_str) != Some(repo_id)
+        || checkout_id.is_some_and(|expected|
+            status.get("checkoutId").and_then(Value::as_str) != Some(expected)
+        )
+        || status.get("head").and_then(Value::as_str) != diff.get("head").and_then(Value::as_str)
+        || status.get("branch").and_then(Value::as_str) != diff.get("branch").and_then(Value::as_str)
+    {
+        return Err("FORGE_DESKTOP_GIT_STATUS_RESULT_INVALID".into());
+    }
+    let untracked = agent_untracked_paths(status, paths);
+    diff.as_object_mut()
+        .ok_or_else(|| "FORGE_DESKTOP_GIT_DIFF_RESULT_INVALID".to_string())?
+        .insert("untracked".to_string(), json!(untracked));
+    Ok(diff)
 }
 
 #[tauri::command]
 async fn read_agent_git_diff(
-    app: tauri::AppHandle, repo_id: String, checkout_id: Option<String>, staged: Option<bool>,
+    repo_id: String, checkout_id: Option<String>, staged: Option<bool>,
 ) -> Result<Value, String> {
-    if repo_id.trim().is_empty() { return Err("FORGE_DESKTOP_REPOSITORY_REQUIRED".into()); }
-    let receipt = run_local_forge_tool(
-        app,
-        repo_id,
-        checkout_id,
-        "desktop-git-inspector".to_string(),
-        "git_diff".to_string(),
-        agent_git_diff_arguments(staged.unwrap_or(false)),
-        false,
-    ).await?;
-    if receipt.get("ok").and_then(Value::as_bool) != Some(true) {
-        return Err("FORGE_DESKTOP_GIT_DIFF_FAILED".into());
-    }
-    receipt.pointer("/result/diff").cloned()
-        .ok_or_else(|| "FORGE_DESKTOP_GIT_DIFF_RESULT_INVALID".into())
+    read_agent_git_diff_for_review(
+        &repo_id, checkout_id.as_deref(), staged.unwrap_or(false), None
+    ).await
 }
 
 fn reviewed_commit_scope_matches(
@@ -781,20 +1928,37 @@ fn reviewed_commit_scope_matches(
             .is_some_and(|names| paths.iter().all(|path| names.iter().any(|entry| entry.as_str() == Some(path))))
 }
 
-fn native_commit_paths_valid(paths: &[String], message: &str) -> bool {
-    !paths.is_empty() && paths.len() <= 32 && !message.trim().is_empty()
-        && message.len() <= 500 && !message.contains('\0')
-        && paths.iter().all(|path| {
-            !path.is_empty() && path.len() <= 1024 && !path.starts_with('/')
-                && !path.contains('\0') && !path.split('/').any(|part| part == ".." || part == ".")
-        })
+fn native_reviewed_paths_valid(paths: &[String]) -> bool {
+    !paths.is_empty() && paths.len() <= 32 && paths.iter().all(|path| {
+        !path.is_empty() && path.len() <= 1024 && !path.starts_with('/')
+            && !path.contains('\0') && !path.split('/').any(|part| part == ".." || part == ".")
+    })
 }
 
-#[tauri::command]
-async fn commit_agent_git_files(
-    app: tauri::AppHandle, repo_id: String, checkout_id: String,
-    message: String, paths: Vec<String>, staged: bool, expected_patch: String,
-    expected_head: String, expected_branch: String, conversation_id: String,
+fn native_commit_paths_valid(paths: &[String], message: &str) -> bool {
+    native_reviewed_paths_valid(paths) && !message.trim().is_empty()
+        && message.len() <= 500 && !message.contains('\0')
+}
+
+fn reviewed_commit_head(result: &Value, checkout_id: &str) -> Option<String> {
+    if result.get("checkoutId").and_then(Value::as_str) != Some(checkout_id)
+        || result.get("error").is_some()
+        || result.pointer("/commit/ok").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    result.pointer("/commit/after/head").and_then(Value::as_str)
+        .filter(|value| !value.is_empty()).map(str::to_owned)
+}
+
+async fn commit_reviewed_agent_git_files(
+    repo_id: String,
+    checkout_id: String,
+    message: String,
+    paths: Vec<String>,
+    staged: bool,
+    expected_patch: String,
+    expected_head: String,
+    expected_branch: String,
 ) -> Result<Value, String> {
     validate_agent_checkout_binding(Some(&repo_id), Some(&checkout_id), true)?;
     if !native_commit_paths_valid(&paths, &message) {
@@ -804,85 +1968,446 @@ async fn commit_agent_git_files(
         || expected_patch.is_empty() || expected_patch.len() > 20_000 {
         return Err("FORGE_DESKTOP_GIT_COMMIT_REVIEW_REQUIRED".into());
     }
-    // Read via Forge again at commit time; a stale/truncated inspection cannot
-    // authorize a different working tree, different file set or changed patch.
-    let current = run_local_forge_tool(
-        app.clone(), repo_id.clone(), Some(checkout_id.clone()),
-        conversation_id.clone(), "git_diff".into(), agent_git_diff_arguments(staged), false,
+
+    // Re-read the exact reviewed paths through Forge at commit time; a stale
+    // or truncated inspection cannot authorize a different patch, HEAD,
+    // branch, checkout or file set.
+    let current = read_agent_git_diff_runtime(
+        &repo_id, Some(&checkout_id), staged, Some(&paths)
     ).await?;
-    let diff = current.pointer("/result/diff")
-        .filter(|value| reviewed_commit_scope_matches(
-            value, &paths, &expected_patch, &expected_head, &expected_branch, &checkout_id, staged,
-        )).ok_or("FORGE_DESKTOP_GIT_COMMIT_REVIEW_STALE")?;
-    if diff.get("nameOnly").and_then(Value::as_array).is_none() {
-        return Err("FORGE_DESKTOP_GIT_COMMIT_REVIEW_REQUIRED".into());
+    if !reviewed_commit_scope_matches(
+        &current, &paths, &expected_patch, &expected_head, &expected_branch, &checkout_id, staged,
+    ) {
+        return Err("FORGE_DESKTOP_GIT_COMMIT_REVIEW_STALE".into());
     }
-    // --only commits the working-tree content of each named file, even when
-    // the UI is reviewing staged changes. Reject mixed index/worktree state
-    // so the commit cannot silently include unreviewed changes in those files.
-    let opposite = run_local_forge_tool(
-        app.clone(), repo_id.clone(), Some(checkout_id.clone()),
-        conversation_id.clone(), "git_diff".into(),
-        json!({"staged": !staged, "paths": paths, "max_bytes": 20000}), false,
+
+    // Selected-path commit stages working-tree content. Reject any opposite
+    // index/worktree diff for the reviewed paths so --only cannot cross a
+    // review boundary.
+    let opposite = read_agent_git_diff_runtime(
+        &repo_id, Some(&checkout_id), !staged, Some(&paths)
     ).await?;
-    let opposite_diff = opposite.pointer("/result/diff")
-        .ok_or("FORGE_DESKTOP_GIT_COMMIT_OTHER_DIFF_UNKNOWN")?;
-    if opposite_diff.get("truncated").and_then(Value::as_bool) != Some(false)
-        || opposite_diff.get("checkoutId").and_then(Value::as_str) != Some(checkout_id.as_str())
-        || opposite_diff.get("head").and_then(Value::as_str) != Some(expected_head.as_str())
-        || opposite_diff.get("branch").and_then(Value::as_str) != Some(expected_branch.as_str())
-        || opposite_diff.get("staged").and_then(Value::as_bool) != Some(!staged)
-        || opposite_diff.get("nameOnly").and_then(Value::as_array).is_none_or(|names| !names.is_empty()) {
+    if opposite.get("truncated").and_then(Value::as_bool) != Some(false)
+        || opposite.get("head").and_then(Value::as_str) != Some(expected_head.as_str())
+        || opposite.get("branch").and_then(Value::as_str) != Some(expected_branch.as_str())
+        || opposite.get("nameOnly").and_then(Value::as_array).is_none_or(|names| !names.is_empty()) {
         return Err("FORGE_DESKTOP_GIT_COMMIT_MIXED_CHANGES_REVIEW_REQUIRED".into());
     }
-    let result = run_local_forge_tool(
-        app, repo_id.clone(), Some(checkout_id.clone()), conversation_id,
-        "git_commit".into(), json!({"message":message.trim(),"paths":paths}), true,
-    ).await?;
-    if !local_effect_completed("git_commit", &result)
-        || result.pointer("/result/commit/checkoutId").and_then(Value::as_str) != Some(checkout_id.as_str()) {
-        return Err("FORGE_DESKTOP_GIT_COMMIT_UNCONFIRMED_RECONCILE".into());
-    }
-    let after = &result["result"]["commit"]["after"];
-    let head = after.get("head").and_then(Value::as_str)
-        .filter(|value| !value.is_empty())
+
+    let result = call_runtime_tool("capability_execute", json!({
+        "repo_id": repo_id,
+        "checkout_id": checkout_id,
+        "capability_id": "repository.git",
+        "action": "commit_paths",
+        "arguments": { "paths": paths, "message": message.trim() },
+        "request_id": request_id("desktop-reviewed-git-commit")
+    })).await?;
+    let head = reviewed_commit_head(&result, &checkout_id)
         .ok_or("FORGE_DESKTOP_GIT_COMMIT_UNCONFIRMED_RECONCILE")?;
-    Ok(json!({"committed":true,"head":head,"branch":after["branch"],"checkoutId":checkout_id}))
+    Ok(json!({
+        "committed": true,
+        "head": head,
+        "branch": result.pointer("/commit/after/branch").cloned().unwrap_or(Value::Null),
+        "checkoutId": checkout_id
+    }))
+}
+
+async fn restore_reviewed_agent_git_files(
+    repo_id: String,
+    checkout_id: String,
+    paths: Vec<String>,
+    expected_patch: String,
+    expected_head: String,
+    expected_branch: String,
+) -> Result<Value, String> {
+    validate_agent_checkout_binding(Some(&repo_id), Some(&checkout_id), true)?;
+    if !native_reviewed_paths_valid(&paths) {
+        return Err("FORGE_DESKTOP_GIT_RESTORE_INPUT_INVALID".into());
+    }
+    if expected_head.is_empty() || expected_branch.is_empty()
+        || expected_patch.is_empty() || expected_patch.len() > 20_000 {
+        return Err("FORGE_DESKTOP_GIT_RESTORE_REVIEW_REQUIRED".into());
+    }
+
+    let result = call_runtime_tool("capability_execute", json!({
+        "repo_id": repo_id,
+        "checkout_id": checkout_id,
+        "capability_id": "repository.git",
+        "action": "restore_paths",
+        "arguments": {
+            "paths": paths,
+            "expected_head": expected_head,
+            "expected_branch": expected_branch,
+            "expected_patch": expected_patch,
+            "confirm_authorization": true
+        },
+        "request_id": request_id("desktop-reviewed-git-restore")
+    })).await?;
+    if result.get("checkoutId").and_then(Value::as_str) != Some(checkout_id.as_str())
+        || result.get("error").is_some()
+        || result.pointer("/execution/ok").and_then(Value::as_bool) != Some(true) {
+        return Err("FORGE_DESKTOP_GIT_RESTORE_UNCONFIRMED".into());
+    }
+    Ok(json!({"restored":true,"checkoutId":checkout_id}))
+}
+
+#[tauri::command]
+async fn commit_agent_git_files(
+    repo_id: String, checkout_id: String,
+    message: String, paths: Vec<String>, staged: bool, expected_patch: String,
+    expected_head: String, expected_branch: String, conversation_id: String,
+) -> Result<Value, String> {
+    drop(conversation_id);
+    commit_reviewed_agent_git_files(
+        repo_id, checkout_id, message, paths, staged,
+        expected_patch, expected_head, expected_branch,
+    ).await
+}
+
+const LOCAL_API_TOOL_ROUNDS: usize = 16;
+const LOCAL_API_TOOL_CALLS_PER_ROUND: usize = 8;
+const LOCAL_API_TOOL_CALL_BUDGET: usize = 40;
+
+const LOCAL_API_HISTORY_MAX_BYTES: usize = 48_000;
+const LOCAL_API_TOOL_RESULT_MAX_CHARS: usize = 3_600;
+
+fn local_api_history_bytes(messages: &[Value]) -> usize {
+    messages.iter().map(|item| item.to_string().len()).sum()
+}
+
+// Same bounded-recent-context policy as Autopilot, within the existing native
+// model loop. This stores no new state and never treats model text as Git truth.
+fn compact_local_api_history(messages: &mut Vec<Value>) -> bool {
+    if messages.len() <= 18 && local_api_history_bytes(messages) <= LOCAL_API_HISTORY_MAX_BYTES {
+        return false;
+    }
+    let assistants: Vec<usize> = messages.iter().enumerate()
+        .filter(|(_, item)| item.get("role").and_then(Value::as_str) == Some("assistant"))
+        .map(|(index, _)| index).collect();
+    let Some(last_assistant) = assistants.last().copied() else {
+        if messages.len() <= 1 { return false; }
+        let last = messages.last().cloned().unwrap_or(Value::Null);
+        messages.clear();
+        messages.push(last);
+        return true;
+    };
+    let start = assistants.iter().rev().nth(1).copied().unwrap_or(last_assistant);
+    if start < 2 { return false; }
+    let first = messages[0].clone();
+    // Latest explicit user request (often a task change) is more authoritative
+    // than the conversation's original prompt. Keep it when old tool rounds go.
+    let latest_task = messages[..start].iter().rev()
+        .find(|item| item.get("role").and_then(Value::as_str) == Some("user"))
+        .cloned();
+    let recent = messages[start..].to_vec();
+    messages.clear();
+    messages.push(first.clone());
+    if let Some(task) = latest_task.filter(|task| *task != first) {
+        messages.push(task);
+    }
+    messages.push(json!({"role":"user","content":
+        "Earlier tool output was compacted. The latest user request supersedes earlier tasks. Current Git checkout and Forge tool receipts are authoritative; re-read facts before deciding or retrying a write."}));
+    let preserved_prefix = messages.len();
+    messages.extend(recent);
+    if local_api_history_bytes(messages) > LOCAL_API_HISTORY_MAX_BYTES {
+        let last = messages.iter().enumerate().rev()
+            .find(|(_, item)| item.get("role").and_then(Value::as_str) == Some("assistant"))
+            .map(|(index, _)| index);
+        if let Some(last) = last.filter(|index| *index > preserved_prefix) {
+            messages.drain(preserved_prefix..last);
+        }
+    }
+    true
+}
+
+// Verification is evidence from a successful Forge Process receipt, never
+// the model merely claiming it ran tests. Keep this list small and mechanical.
+fn local_verification_command(arguments: &Value) -> bool {
+    let Some(argv) = arguments.get("command").and_then(Value::as_array) else { return false };
+    let parts = argv.iter().map(|item| item.as_str()).collect::<Option<Vec<_>>>();
+    let Some(parts) = parts.filter(|parts| !parts.is_empty()) else { return false };
+    let executable = parts[0].rsplit('/').next().unwrap_or(parts[0]);
+    let suffix = &parts[1..];
+    // Listing or describing a check is not validation evidence.
+    if suffix.iter().any(|arg| matches!(*arg,
+        "--help" | "--version" | "--collect-only" | "--list" | "-h" | "-V")) {
+        return false;
+    }
+    match executable {
+        "cargo" => matches!(suffix.first().copied(), Some("test" | "check" | "clippy")),
+        "swift" => matches!(suffix.first().copied(), Some("test" | "build")),
+        "pytest" | "py.test" => !suffix.iter().any(|arg| matches!(*arg,
+            "--collect-only" | "--help" | "--version" | "-h" | "-V")),
+        "go" => suffix.first() == Some(&"test"),
+        "npm" | "pnpm" | "yarn" | "bun" =>
+            matches!(suffix.first().copied(), Some("test" | "check" | "build"))
+            || (suffix.first() == Some(&"run")
+                && matches!(suffix.get(1).copied(), Some("test" | "check" | "build"))),
+        "python" | "python3" => suffix.starts_with(&["-m", "pytest"])
+            && !suffix.iter().any(|arg| matches!(*arg,
+                "--collect-only" | "--help" | "--version" | "-h" | "-V")),
+        "xcodebuild" => !suffix.iter().any(|arg| matches!(*arg,
+            "-showBuildSettings" | "-list" | "-version" | "-help"))
+            && suffix.iter().enumerate().any(|(index, part)|
+                matches!(*part, "test" | "build")
+                && (index == 0 || !matches!(suffix[index - 1],
+                    "-scheme" | "-configuration" | "-project" | "-workspace"
+                    | "-destination" | "-derivedDataPath" | "-resultBundlePath"))),
+        "bash" | "zsh" | "sh" if suffix.first() == Some(&"-lc") || suffix.first() == Some(&"-c") => {
+            if suffix.len() != 2 { return false; }
+            let script = suffix[1];
+            // Reject shell forms that can mask a check's exit code. Straight
+            // "cd subdir && npm run check" remains valid.
+            if script.chars().any(|ch| ";|$<>".contains(ch)
+                || ch == '#' || ch == '"' || ch == char::from(39)
+                || ch == char::from(92) || ch == char::from(96)
+                || ch == '\n' || ch == '\r') { return false; }
+            let segments: Vec<_> = script.split("&&").map(str::trim).collect();
+            let command = match segments.as_slice() {
+                [check] => *check,
+                [directory, check] if directory.strip_prefix("cd ").is_some_and(|dir|
+                    !dir.is_empty() && !dir.chars().any(char::is_whitespace)
+                ) => *check,
+                _ => return false,
+            };
+            let commands = ["cargo test", "cargo check", "swift test", "swift build",
+                "pytest", "go test", "npm test", "npm run check", "npm run build",
+                "bun test", "xcodebuild test", "xcodebuild build"];
+            commands.iter().any(|pattern|
+                command == *pattern || command.starts_with(&format!("{pattern} "))
+            ) && !command.split_whitespace().any(|arg| matches!(arg,
+                "--help" | "--version" | "--collect-only" | "--list" | "-h" | "-V"))
+        }
+        _ => false,
+    }
+}
+
+fn local_api_access_mode_instruction(allow_effects: bool) -> &'static str {
+    if allow_effects {
+        "Request mode is Full Access for the selected checkout under the repository's persistent Forge AccessPolicy."
+    } else {
+        "Request mode is read-only; inspect but do not mutate repository content."
+    }
+}
+
+fn local_api_budget_pause(reason: &str, total_calls: usize, events: &[Value]) -> Value {
+    let recent = events.iter().rev().take(4).rev().map(|event| {
+        let name = event.get("name").and_then(Value::as_str).unwrap_or("tool");
+        let outcome = if event.get("ok").and_then(Value::as_bool) == Some(true) {
+            "成功回执"
+        } else { "失败回执" };
+        let id = event.get("requestId").and_then(Value::as_str).unwrap_or("只读调用");
+        format!("- {name}: {outcome} · {id}")
+    }).collect::<Vec<_>>().join("\n");
+    json!({
+        "output": format!("本轮达到{reason}，任务尚未确认完成。已收到 {total_calls} 次工具调用回执。\n{recent}\n可点击「继续执行」：先重新读取 Git 状态和必要源码，不盲目重放此前的写操作。"),
+        "incomplete": true,
+        "toolActivityCount": total_calls,
+        "toolEvents": events,
+    })
+}
+
+// A running Forge Process is an accepted, joinable operation, not an unknown outcome.
+fn local_running_process_id(receipt: &Value) -> Option<&str> {
+    if receipt.get("ok").and_then(Value::as_bool) != Some(true)
+        || !matches!(receipt.pointer("/result/status").and_then(Value::as_str),
+            Some("starting" | "running" | "running_recovered"))
+        || receipt.pointer("/result/accepted").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    let id = receipt.pointer("/result/processId").and_then(Value::as_str)?;
+    (id.starts_with("proc_") && id.len() <= 128
+        && id.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_'))
+        .then_some(id)
+}
+
+fn local_api_process_pause(process_id: &str, total_calls: usize, events: &[Value]) -> Value {
+    json!({
+        "output": format!("Forge 命令已受理，但尚未确认终态：可能仍在执行，也可能已经结束而查询未成功。Process ID: {process_id}。不要重复执行该命令。继续时先使用 process_status 获取权威终态，再决定后续步骤。"),
+        "incomplete":true,
+        "toolActivityCount":total_calls,
+        "toolEvents":events
+    })
+}
+
+// Reconcile a long-running command through the same Forge Process record.
+// A terminal query is evidence, not a second execution of the command.
+fn local_terminal_process_receipt(process_id: &str, query: &Value) -> Option<Value> {
+    if query.get("ok").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    let handle = query.get("result")?;
+    if handle.get("processId").and_then(Value::as_str) != Some(process_id)
+        || handle.get("completed").and_then(Value::as_bool) != Some(true) {
+        return None;
+    }
+    Some(json!({"ok":true,"result":{
+        "accepted":true, "completed":true, "processId":process_id,
+        "status":handle["status"], "exitCode":handle["exitCode"],
+        "ok":handle["ok"], "timedOut":handle["timedOut"],
+        "stdoutTail":handle["stdoutTail"], "stderrTail":handle["stderrTail"]
+    }}))
+}
+
+async fn local_wait_running_process<H: LocalApiHost + Sync>(
+    host: &H, repo_id: &str, checkout_id: Option<&str>,
+    conversation_id: &str, process_id: &str, timeout_ms: u64,
+    cancel_receiver: &tokio::sync::watch::Receiver<bool>,
+) -> Option<Value> {
+    // A started effect belongs to Process Runtime. The Agent waits for its
+    // terminal receipt, never retries the original run_command.
+    let deadline = tokio::time::Instant::now()
+        + std::time::Duration::from_millis(timeout_ms.clamp(1_000, 600_000) + 15_000);
+    loop {
+        if *cancel_receiver.borrow() { return None; }
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() { return None; }
+        let wait_ms = (remaining.as_millis().min(10_000) as u64).max(1);
+        let query = run_local_forge_tool(
+            host, repo_id.to_string(), checkout_id.map(str::to_owned),
+            conversation_id.to_string(), "process_status".to_string(),
+            json!({"process_id":process_id,"wait_ms":wait_ms}), false
+        ).await.ok()?;
+        if let Some(terminal) = local_terminal_process_receipt(process_id, &query) {
+            return Some(terminal);
+        }
+        if query.get("ok").and_then(Value::as_bool) != Some(true)
+            || query.pointer("/result/processId").and_then(Value::as_str) != Some(process_id)
+            || query.pointer("/result/completed").and_then(Value::as_bool) != Some(false) {
+            return None;
+        }
+    }
 }
 
 fn local_tool_catalog(allow_effects: bool) -> Vec<Value> {
     let mut tools = vec![
+        json!({"type":"function","function":{"name":"search_code","description":"Search literal source text via a bounded readonly Forge command; optional repo-relative path narrows search.","parameters":{"type":"object","properties":{"query":{"type":"string","minLength":1,"maxLength":160},"path":{"type":"string"}},"required":["query"],"additionalProperties":false}}}),
         json!({"type":"function","function":{"name":"read_file","description":"Read bounded lines of a file in the user's selected registered Forge repository. Paths are repo-relative.","parameters":{"type":"object","properties":{"path":{"type":"string"},"start_line":{"type":"integer","minimum":1},"end_line":{"type":"integer","minimum":1}},"required":["path"],"additionalProperties":false}}}),
         json!({"type":"function","function":{"name":"git_status","description":"Read actual Git status of the selected Forge project, not a cached model guess.","parameters":{"type":"object","properties":{},"additionalProperties":false}}}),
         json!({"type":"function","function":{"name":"git_diff","description":"Inspect a bounded Git diff in the selected repository.","parameters":{"type":"object","properties":{"paths":{"type":"array","items":{"type":"string"}},"staged":{"type":"boolean"},"max_bytes":{"type":"integer","minimum":100,"maximum":16000}},"additionalProperties":false}}}),
+        json!({"type":"function","function":{"name":"process_status","description":"Read the canonical Forge Process Runtime status for a previously returned managed process ID. Never re-run a pending command.","parameters":{"type":"object","properties":{"process_id":{"type":"string","minLength":5,"maxLength":128}},"required":["process_id"],"additionalProperties":false}}}),
         json!({"type":"function","function":{"name":"patch_plan","description":"Review the preconditions and affected paths of proposed canonical Forge edit operations before applying anything.","parameters":{"type":"object","properties":{"operations":{"type":"array","items":{"type":"object"}}},"required":["operations"],"additionalProperties":false}}}),
     ];
     if allow_effects {
         tools.extend([
             json!({"type":"function","function":{"name":"apply_patch","description":"Apply typed Forge safe-patch operations to the selected registered repository. Forge owns mutation exclusion, fingerprint validation and evidence.","parameters":{"type":"object","properties":{"purpose":{"type":"string"},"operations":{"type":"array","items":{"type":"object"},"minItems":1,"maxItems":16},"allowed_paths":{"type":"array","items":{"type":"string"}}},"required":["purpose","operations"],"additionalProperties":false}}}),
-            json!({"type":"function","function":{"name":"run_command","description":"Execute an argument-array command through Forge's existing authorized Process Runtime and checkout/resource leases. No shell command strings or host scope.","parameters":{"type":"object","properties":{"command":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":24},"timeout_ms":{"type":"integer","minimum":1000,"maximum":60000},"max_output_bytes":{"type":"integer","minimum":1000,"maximum":12000}},"required":["command"],"additionalProperties":false}}}),
+            json!({"type":"function","function":{"name":"run_command","description":"Execute typed command arguments via Forge's authorized Process Runtime and checkout leases. Up to 10 minutes execution; if a managed Process ID is returned, inspect it with process_status before proceeding, never replay the command. No host scope.","parameters":{"type":"object","properties":{"command":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":24},"timeout_ms":{"type":"integer","minimum":1000,"maximum":600000},"max_output_bytes":{"type":"integer","minimum":1000,"maximum":12000}},"required":["command"],"additionalProperties":false}}}),
             json!({"type":"function","function":{"name":"git_commit","description":"Commit only explicitly listed repository-relative paths using Forge's canonical structured Git authority. Examine the diff first and supply a nonempty commit message. Never implicitly commit the entire index.","parameters":{"type":"object","properties":{"message":{"type":"string","minLength":1,"maxLength":500},"paths":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":32}},"required":["message","paths"],"additionalProperties":false}}}),
         ]);
     }
     tools
 }
 
-fn local_effect_completed(name: &str, receipt: &Value) -> bool {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LocalEffectOutcome {
+    Succeeded,
+    TerminalFailure,
+    Unknown,
+}
+
+fn local_effect_outcome(name: &str, receipt: &Value) -> LocalEffectOutcome {
+    // A nested success-looking result cannot override a failed Forge envelope.
     if receipt.get("ok").and_then(Value::as_bool) != Some(true) {
-        return false;
+        return LocalEffectOutcome::TerminalFailure;
     }
     let result = &receipt["result"];
     match name {
-        "run_command" => result.get("status").and_then(Value::as_str) == Some("succeeded")
-            && result.get("exitCode").and_then(Value::as_i64) == Some(0),
-        "apply_patch" => result.get("status").and_then(Value::as_str) == Some("applied"),
-        "git_commit" => result.pointer("/commit/committed").and_then(Value::as_bool) == Some(true),
-        _ => false,
+        "run_command" => match result.get("status").and_then(Value::as_str) {
+            Some("succeeded") if result.get("exitCode").and_then(Value::as_i64) == Some(0)
+                && result.get("ok").and_then(Value::as_bool) != Some(false)
+                && result.get("timedOut").and_then(Value::as_bool) != Some(true) => {
+                LocalEffectOutcome::Succeeded
+            }
+            Some("succeeded" | "failed" | "timed_out" | "cancelled" | "orphaned") =>
+                LocalEffectOutcome::TerminalFailure,
+            Some("running") => LocalEffectOutcome::Unknown,
+            _ => LocalEffectOutcome::Unknown,
+        },
+        "apply_patch" => match result.get("status").and_then(Value::as_str) {
+            Some("applied") => LocalEffectOutcome::Succeeded,
+            Some("partial" | "failed") => LocalEffectOutcome::TerminalFailure,
+            _ => LocalEffectOutcome::Unknown,
+        },
+        "git_commit" => match result.pointer("/commit/committed").and_then(Value::as_bool) {
+            Some(true) => LocalEffectOutcome::Succeeded,
+            Some(false) => LocalEffectOutcome::TerminalFailure,
+            None => LocalEffectOutcome::Unknown,
+        },
+        _ => LocalEffectOutcome::Unknown,
     }
 }
 
-async fn run_local_forge_tool(
+fn prepare_local_tool_arguments(name: &str, mut arguments: Value) -> Result<Value, String> {
+    if name != "run_command" {
+        return Ok(arguments);
+    }
+    let object = arguments.as_object_mut()
+        .ok_or("FORGE_DESKTOP_LOCAL_TOOL_ARGUMENTS_INVALID")?;
+    let timeout_ms = object.get("timeout_ms").and_then(Value::as_u64)
+        .unwrap_or(60_000).clamp(1_000, 600_000);
+    // A slow build keeps its canonical Process lease and runs to its own
+    // timeout; the foreground model turn never waits more than one minute.
+    // An accepted running receipt is resumed by Process ID, not re-executed.
+    object.insert("timeout_ms".into(), Value::from(timeout_ms));
+    object.insert("interactive_wait_ms".into(), Value::from(timeout_ms.min(60_000)));
+    Ok(arguments)
+}
+
+fn local_tool_execution_timeout(name: &str, arguments: &Value) -> std::time::Duration {
+    match name {
+        // Allow Process Runtime to accept the command and return a running
+        // handle, rather than blocking the GUI for a long build.
+        "run_command" => std::time::Duration::from_millis(
+            arguments.get("timeout_ms").and_then(Value::as_u64)
+                .unwrap_or(60_000).clamp(1_000, 600_000).min(60_000) + 60_000
+        ),
+        "apply_patch" => std::time::Duration::from_secs(180),
+        "git_commit" => std::time::Duration::from_secs(150),
+        _ => std::time::Duration::from_secs(90),
+    }
+}
+
+fn local_tool_timeout_error(name: &str) -> &'static str {
+    if matches!(name, "run_command" | "apply_patch" | "git_commit") {
+        "FORGE_DESKTOP_LOCAL_TOOL_OUTCOME_UNKNOWN"
+    } else {
+        "FORGE_DESKTOP_LOCAL_TOOL_TIMEOUT"
+    }
+}
+
+fn local_tool_failure_phase(error: &str) -> &'static str {
+    match error {
+        "FORGE_DESKTOP_LOCAL_TOOL_DELIVERY_UNKNOWN"
+        | "FORGE_DESKTOP_LOCAL_TOOL_OUTCOME_UNKNOWN"
+        | "FORGE_DESKTOP_LOCAL_TOOL_RUNNER_FAILED"
+        | "FORGE_DESKTOP_LOCAL_TOOL_RESULT_TOO_LARGE"
+        | "FORGE_DESKTOP_LOCAL_TOOL_RESULT_INVALID" => "unknown",
+        _ => "failed",
+    }
+}
+
+trait LocalApiHost {
+    fn packaged_tool_script(&self) -> Result<PathBuf, String>;
+    fn emit_tool_progress(&self, payload: Value);
+}
+
+struct TauriLocalApiHost {
     app: tauri::AppHandle,
+}
+
+impl LocalApiHost for TauriLocalApiHost {
+    fn packaged_tool_script(&self) -> Result<PathBuf, String> {
+        self.app.path().resolve("resources/forge-local-tool.mjs", tauri::path::BaseDirectory::Resource)
+            .map_err(|_| "FORGE_DESKTOP_LOCAL_TOOL_RESOURCE_UNAVAILABLE".to_string())
+    }
+
+    fn emit_tool_progress(&self, payload: Value) {
+        let _ = self.app.emit("forge-agent-tool-progress", payload);
+    }
+}
+
+async fn run_local_forge_tool<H: LocalApiHost + Sync>(
+    host: &H,
     repo_id: String,
     checkout_id: Option<String>,
     conversation_id: String,
@@ -903,8 +2428,7 @@ async fn run_local_forge_tool(
         let script = if dev_script.is_file() {
             dev_script
         } else {
-            app.path().resolve("resources/forge-local-tool.mjs", tauri::path::BaseDirectory::Resource)
-                .map_err(|_| "FORGE_DESKTOP_LOCAL_TOOL_RESOURCE_UNAVAILABLE")?
+            host.packaged_tool_script()?
         };
         if !script.is_file() {
             return Err("FORGE_DESKTOP_LOCAL_TOOL_RESOURCE_UNAVAILABLE".to_string());
@@ -913,6 +2437,8 @@ async fn run_local_forge_tool(
             .map(|home| home.join(".bun/bin/bun"))
             .filter(|candidate| candidate.is_file());
         let bun = home_bun.unwrap_or_else(|| PathBuf::from("bun"));
+        let tool_timeout = local_tool_execution_timeout(&tool_name, &arguments);
+        let arguments = prepare_local_tool_arguments(&tool_name, arguments)?;
         let payload = json!({
             "controllerHome": home.to_string_lossy(),
             "sourceRoot": source_root,
@@ -939,11 +2465,14 @@ async fn run_local_forge_tool(
         // A lost or unresponsive tool process cannot hold the GUI's worker
         // indefinitely. Drop kills the child; effect outcomes remain unknown
         // until the single Forge Process authority is inspected.
-        let completed = timeout(std::time::Duration::from_secs(90), child.wait_with_output())
-            .await.map_err(|_| "FORGE_DESKTOP_LOCAL_TOOL_OUTCOME_UNKNOWN")?
+        let completed = timeout(tool_timeout, child.wait_with_output())
+            .await.map_err(|_| local_tool_timeout_error(&tool_name))?
             .map_err(|_| "FORGE_DESKTOP_LOCAL_TOOL_OUTCOME_UNKNOWN")?;
-        if !completed.status.success() || completed.stdout.len() > 128 * 1024 {
-            return Err("FORGE_DESKTOP_LOCAL_TOOL_OUTCOME_UNKNOWN".to_string());
+        if !completed.status.success() {
+            return Err("FORGE_DESKTOP_LOCAL_TOOL_RUNNER_FAILED".to_string());
+        }
+        if completed.stdout.len() > 128 * 1024 {
+            return Err("FORGE_DESKTOP_LOCAL_TOOL_RESULT_TOO_LARGE".to_string());
         }
         let result: Value = serde_json::from_slice(&completed.stdout)
             .map_err(|_| "FORGE_DESKTOP_LOCAL_TOOL_RESULT_INVALID")?;
@@ -956,6 +2485,86 @@ async fn run_local_forge_tool(
 
 // Provider-specific tool-call envelope parsing. Execution remains a single
 // canonical Forge path independent of the remote model protocol.
+fn responses_assistant_message(output: &Value) -> Result<Value, String> {
+    let items = output.get("output").and_then(Value::as_array)
+        .ok_or("FORGE_DESKTOP_API_RESPONSE_INVALID")?;
+    let mut texts = Vec::new();
+    let mut calls = Vec::new();
+    for item in items {
+        match item.get("type").and_then(Value::as_str) {
+            Some("message") => {
+                if let Some(blocks) = item.get("content").and_then(Value::as_array) {
+                    for block in blocks {
+                        if block.get("type").and_then(Value::as_str) == Some("output_text") {
+                            if let Some(text) = block.get("text").and_then(Value::as_str)
+                                .filter(|value| !value.trim().is_empty()) {
+                                texts.push(text.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+            Some("function_call") => {
+                let call_id = item.get("call_id").and_then(Value::as_str)
+                    .or_else(|| item.get("id").and_then(Value::as_str)).unwrap_or("");
+                let name = item.get("name").and_then(Value::as_str).unwrap_or("");
+                let arguments = item.get("arguments").and_then(Value::as_str).unwrap_or("{}");
+                if arguments.len() > 64 * 1024 {
+                    return Err("FORGE_DESKTOP_API_TOOL_ARGUMENTS_TOO_LARGE".into());
+                }
+                calls.push(json!({
+                    "id":call_id,
+                    "type":"function",
+                    "function":{"name":name,"arguments":arguments}
+                }));
+            }
+            _ => {}
+        }
+    }
+    if texts.is_empty() && calls.is_empty() {
+        return Err("FORGE_DESKTOP_API_RESPONSE_MISSING".into());
+    }
+    let mut message = json!({
+        "role":"assistant",
+        "content":if texts.is_empty(){Value::Null}else{Value::String(texts.join("\n"))}
+    });
+    if !calls.is_empty() { message["tool_calls"] = Value::Array(calls); }
+    Ok(message)
+}
+
+fn responses_input(history: &[Value]) -> Result<Vec<Value>, String> {
+    let mut input = Vec::new();
+    for item in history {
+        match item.get("role").and_then(Value::as_str) {
+            Some(role @ ("user" | "assistant")) => {
+                if let Some(content) = item.get("content").and_then(Value::as_str)
+                    .filter(|value| !value.trim().is_empty()) {
+                    input.push(json!({"role":role,"content":content}));
+                }
+                if role == "assistant" {
+                    if let Some(calls) = item.get("tool_calls").and_then(Value::as_array) {
+                        for call in calls {
+                            input.push(json!({
+                                "type":"function_call",
+                                "call_id":call.get("id").and_then(Value::as_str).unwrap_or(""),
+                                "name":call.pointer("/function/name").and_then(Value::as_str).unwrap_or(""),
+                                "arguments":call.pointer("/function/arguments").and_then(Value::as_str).unwrap_or("{}"),
+                            }));
+                        }
+                    }
+                }
+            }
+            Some("tool") => input.push(json!({
+                "type":"function_call_output",
+                "call_id":item.get("tool_call_id").and_then(Value::as_str).unwrap_or(""),
+                "output":item.get("content").and_then(Value::as_str).unwrap_or(""),
+            })),
+            _ => return Err("FORGE_DESKTOP_API_MESSAGES_INVALID".into()),
+        }
+    }
+    Ok(input)
+}
+
 fn provider_tool_calls(protocol: &str, output: &Value) -> Result<Vec<(String, String, Value)>, String> {
     let mut requests = Vec::new();
     if protocol == "anthropic" {
@@ -971,8 +2580,12 @@ fn provider_tool_calls(protocol: &str, output: &Value) -> Result<Vec<(String, St
             }
         }
     } else {
-        let message = output.pointer("/choices/0/message")
-            .ok_or("FORGE_DESKTOP_API_RESPONSE_INVALID")?;
+        let message = if protocol == "responses" {
+            responses_assistant_message(output)?
+        } else {
+            output.pointer("/choices/0/message").cloned()
+                .ok_or("FORGE_DESKTOP_API_RESPONSE_INVALID")?
+        };
         if let Some(calls) = message.get("tool_calls").and_then(Value::as_array) {
             for call in calls {
                 let arguments = call.pointer("/function/arguments").and_then(Value::as_str).unwrap_or("{}");
@@ -1023,18 +2636,44 @@ async fn request_local_api_round(
     endpoint: &str,
     protocol: &str,
     key: Option<&str>,
+    joycode: Option<&JoyCodeSession>,
     body: &Value,
 ) -> Result<Value, String> {
     let route = match protocol {
         "anthropic" => "messages",
         "openai" => "chat/completions",
+        "responses" => "responses",
         _ => return Err("FORGE_DESKTOP_API_PROTOCOL_INVALID".into()),
     };
-    let mut request = client.post(format!("{}/{}", endpoint.trim_end_matches('/'), route)).json(body);
+    let mut payload = body.clone();
+    if let Some(session) = joycode {
+        let object = payload.as_object_mut().ok_or("FORGE_DESKTOP_API_MESSAGES_INVALID")?;
+        object.insert("tenant".into(), Value::String(session.tenant.clone()));
+        object.insert("userId".into(), Value::String(session.user_id.clone()));
+        object.insert("client".into(), Value::String("joycoder-ide".into()));
+        object.insert("language".into(), Value::String("UNKNOWN".into()));
+        if !session.org_full_name.is_empty() {
+            object.insert("orgFullName".into(), Value::String(session.org_full_name.clone()));
+        }
+    }
+    let request_url = if let Some(session) = joycode {
+        let timestamp_ms = SystemTime::now().duration_since(UNIX_EPOCH)
+            .map_err(|_| "FORGE_DESKTOP_CLOCK_INVALID")?.as_millis();
+        joycode_gateway_url(session, "chat_completions", timestamp_ms)?
+    } else {
+        format!("{}/{}", endpoint.trim_end_matches('/'), route)
+    };
+    let mut request = client.post(request_url).json(&payload);
     if protocol == "anthropic" {
         request = request.header("anthropic-version", "2023-06-01");
     }
-    if let Some(key) = key.filter(|key| !key.trim().is_empty()) {
+    if let Some(session) = joycode {
+        request = request
+            .header("ptKey", &session.pt_key)
+            .header("loginType", &session.login_type)
+            .header("tenant", &session.tenant)
+            .header("x-ms-client-request-id", request_id("joycode-model"));
+    } else if let Some(key) = key.filter(|key| !key.trim().is_empty()) {
         request = if protocol == "anthropic" {
             request.header("x-api-key", key)
         } else {
@@ -1057,6 +2696,7 @@ async fn request_local_api_round_cancellable(
     endpoint: &str,
     protocol: &str,
     key: Option<&str>,
+    joycode: Option<&JoyCodeSession>,
     body: &Value,
     cancellation: &mut tokio::sync::watch::Receiver<bool>,
 ) -> Result<Value, String> {
@@ -1070,7 +2710,7 @@ async fn request_local_api_round_cancellable(
                 Err("FORGE_DESKTOP_API_CANCEL_CHANNEL_CLOSED".into())
             }
         }
-        value = request_local_api_round(client, endpoint, protocol, key, body) => value,
+        value = request_local_api_round(client, endpoint, protocol, key, joycode, body) => value,
     }
 }
 
@@ -1088,22 +2728,80 @@ fn validate_agent_checkout_binding(
     Ok(())
 }
 
-#[tauri::command]
-async fn send_local_api_conversation(
-    app: tauri::AppHandle,
+fn contextualize_api_turn_error(error: String, last_effect_request_id: Option<&str>) -> String {
+    if error.starts_with("FORGE_DESKTOP_LOCAL_EFFECT_RECONCILIATION_REQUIRED:")
+        || error.starts_with("FORGE_DESKTOP_API_TURN_CANCELLED_AFTER_TOOL:")
+        || error.starts_with("FORGE_DESKTOP_API_TURN_FAILED_AFTER_TOOL:") {
+        return error;
+    }
+    let Some(request_id) = last_effect_request_id else { return error; };
+    if error == "FORGE_DESKTOP_API_TURN_CANCELLED" {
+        return format!("FORGE_DESKTOP_API_TURN_CANCELLED_AFTER_TOOL:{request_id}");
+    }
+    format!("FORGE_DESKTOP_API_TURN_FAILED_AFTER_TOOL:{request_id}:{error}")
+}
+
+async fn run_local_api_turn<H: LocalApiHost + Sync>(
+    host: &H,
     messages: Vec<Value>,
     repo_id: Option<String>,
     checkout_id: Option<String>,
     conversation_id: String,
-    allow_effects: bool,
+    provider_override: Option<String>,
+    model_override: Option<String>,
+    repository_effect_access: bool,
+    cancel_receiver: &mut tokio::sync::watch::Receiver<bool>,
 ) -> Result<Value, String> {
-    // The saved provider is a default for new sessions, not a prohibition on
-    // continuing an existing API conversation. Every API request still checks
-    // the configured endpoint, model, Keychain secret and Forge authorization.
+    // The saved provider is a new-session default. The thread provider is
+    // passed explicitly so changing defaults never redirects an existing thread.
     let config = read_local_api_settings()?;
-    let endpoint = validated_local_api_endpoint(config.get("endpoint").and_then(Value::as_str).unwrap_or(""))?;
-    let model = config.get("model").and_then(Value::as_str).unwrap_or("").trim();
-    if model.is_empty() { return Err("FORGE_DESKTOP_API_MODEL_INVALID".into()); }
+    let provider = provider_override.as_deref()
+        .unwrap_or_else(|| config.get("provider").and_then(Value::as_str).unwrap_or("api"));
+    if !matches!(provider, "api" | "joycode") {
+        return Err("FORGE_DESKTOP_API_PROVIDER_INVALID".into());
+    }
+    let (endpoint, protocol, key, joycode_session, configured_model) = if provider == "joycode" {
+        let session = read_joycode_session()?;
+        let model = config.get("joyCodeModel").and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty()).unwrap_or(JOYCODE_DEFAULT_MODEL);
+        (JOYCODE_COLOR_GATEWAY_ORIGIN.to_string(), "openai", None, Some(session), model)
+    } else {
+        let endpoint = validated_local_api_endpoint(
+            config.get("endpoint").and_then(Value::as_str).unwrap_or("")
+        )?;
+        let protocol = config.get("apiProtocol").and_then(Value::as_str).unwrap_or("openai");
+        if !matches!(protocol, "openai" | "anthropic" | "responses") {
+            return Err("FORGE_DESKTOP_API_PROTOCOL_INVALID".into());
+        }
+        let endpoint_url = reqwest::Url::parse(&endpoint)
+            .map_err(|_| "FORGE_DESKTOP_API_ENDPOINT_INVALID")?;
+        let local = matches!(
+            endpoint_url.host_str().unwrap_or(""),
+            "localhost" | "127.0.0.1" | "[::1]"
+        );
+        let key = if endpoint == ZRO_API_ENDPOINT {
+            read_zro_api_key()?
+        } else if local {
+            None
+        } else {
+            let credential_ref = config.get("credentialRef").and_then(Value::as_str)
+                .filter(|value| valid_managed_credential_ref(value))
+                .ok_or("FORGE_DESKTOP_CREDENTIAL_REF_REQUIRED")?;
+            managed_credential_matches_endpoint(credential_ref, &endpoint)?;
+            let authorization = credential_authorization_status(credential_ref, &endpoint).await?;
+            if authorization.get("authorized").and_then(Value::as_bool) != Some(true) {
+                return Err("FORGE_DESKTOP_CREDENTIAL_USE_NOT_AUTHORIZED".into());
+            }
+            read_managed_api_credential_secret(credential_ref)?
+        };
+        if key.is_none() && !local { return Err("FORGE_DESKTOP_API_KEY_MISSING".into()); }
+        let model = config.get("model").and_then(Value::as_str).unwrap_or("");
+        (endpoint, protocol, key, None, model)
+    };
+    let model = model_override.as_deref().unwrap_or(configured_model).trim();
+    if model.is_empty() || model.len() > 120 {
+        return Err("FORGE_DESKTOP_API_MODEL_INVALID".into());
+    }
     if conversation_id.len() > 160 || conversation_id.is_empty()
         || !conversation_id.chars().all(|char| char.is_ascii_alphanumeric() || "._:-".contains(char)) {
         return Err("FORGE_DESKTOP_API_CONVERSATION_INVALID".into());
@@ -1116,7 +2814,7 @@ async fn send_local_api_conversation(
         return Err("FORGE_DESKTOP_API_REPOSITORY_INVALID".into());
     }
     let checkout_id = checkout_id.filter(|value| !value.trim().is_empty());
-    validate_agent_checkout_binding(repo_id.as_deref(), checkout_id.as_deref(), allow_effects)?;
+    validate_agent_checkout_binding(repo_id.as_deref(), checkout_id.as_deref(), repository_effect_access)?;
     let mut total = 0usize;
     let mut history = Vec::with_capacity(messages.len() + 15);
     for item in messages {
@@ -1126,45 +2824,33 @@ async fn send_local_api_conversation(
             return Err("FORGE_DESKTOP_API_MESSAGES_INVALID".into());
         }
         total += content.len();
-        if total > 60_000 { return Err("FORGE_DESKTOP_API_MESSAGES_TOO_LARGE".into()); }
+        if total > 600_000 { return Err("FORGE_DESKTOP_API_MESSAGES_TOO_LARGE".into()); }
         history.push(json!({ "role": role, "content": content }));
-    }
-    let key = read_local_api_key(&endpoint)?;
-    let host = reqwest::Url::parse(&endpoint).map_err(|_| "FORGE_DESKTOP_API_ENDPOINT_INVALID")?;
-    let local = matches!(host.host_str().unwrap_or(""), "localhost" | "127.0.0.1" | "[::1]");
-    if key.is_none() && !local { return Err("FORGE_DESKTOP_API_KEY_MISSING".into()); }
-    let protocol = config.get("apiProtocol").and_then(Value::as_str).unwrap_or("openai");
-    if !matches!(protocol, "openai" | "anthropic") {
-        return Err("FORGE_DESKTOP_API_PROTOCOL_INVALID".into());
     }
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(120))
         .redirect(reqwest::redirect::Policy::none())
         .build().map_err(|_| "FORGE_DESKTOP_API_CLIENT_FAILED")?;
-    let available_tools = if repo_id.is_some() { local_tool_catalog(allow_effects) } else { Vec::new() };
+    let available_tools = if repo_id.is_some() { local_tool_catalog(repository_effect_access) } else { Vec::new() };
     let system_instruction = if let Some(id) = repo_id.as_ref() {
         let checkout = checkout_id.as_deref().unwrap_or("unbound (read-only)");
-        format!("You are the Forge Desktop local API agent working in registered repository {id}, checkout {checkout}. Use the supplied tools for real facts and repository operations. All calls execute through the existing Forge repository authority in the local process, not MCP HTTP. Never invent a file, command result, Requirement or Plan state. Tools with effects require a pinned checkout and the user's approval for this turn. Never claim an operation succeeded unless its tool result confirms it.")
+        let access_mode = local_api_access_mode_instruction(repository_effect_access);
+        format!("You are the Forge Desktop local API agent working in registered repository {id}, checkout {checkout}. Use the supplied tools for real facts and repository operations. All calls execute through the existing Forge repository authority in the local process, not MCP HTTP. Never invent a file, command result, Requirement or Plan state. Tools with effects require a pinned checkout and this repository's persistent Forge AccessPolicy to be Full Access. {access_mode} Never claim an operation succeeded unless its tool result confirms it.")
     } else {
         "You are the Forge Desktop assistant. No Forge project is attached: tools are disabled. Do not invent repository changes or imply that you ran a command. Ask the user to attach a project to work on files.".to_string()
     };
-    let (cancel_sender, mut cancel_receiver) = tokio::sync::watch::channel(false);
-    {
-        let registry = app.state::<LocalApiTurnRegistry>();
-        let mut turns = registry.0.lock().map_err(|_| "FORGE_DESKTOP_API_TURN_REGISTRY_FAILED")?;
-        if turns.contains_key(&conversation_id) {
-            return Err("FORGE_DESKTOP_API_TURN_ALREADY_RUNNING".into());
-        }
-        turns.insert(conversation_id.clone(), cancel_sender);
-    }
-    let _registration = LocalApiTurnRegistration {
-        app: app.clone(), conversation_id: conversation_id.clone(),
-    };
+    compact_local_api_history(&mut history);
     let mut tool_events: Vec<Value> = Vec::new();
     let mut total_calls = 0usize;
-    for _round in 0..6 {
+    let mut last_effect_request_id: Option<String> = None;
+    let mut patch_needs_verification = false;
+    let mut validation_prompt_sent = false;
+    for _round in 0..LOCAL_API_TOOL_ROUNDS {
+        compact_local_api_history(&mut history);
         if *cancel_receiver.borrow() {
-            return Err("FORGE_DESKTOP_API_TURN_CANCELLED".into());
+            return Err(contextualize_api_turn_error(
+                "FORGE_DESKTOP_API_TURN_CANCELLED".into(), last_effect_request_id.as_deref()
+            ));
         }
         let provider_body = if protocol == "anthropic" {
             let tools: Vec<Value> = available_tools.iter().map(|tool| json!({
@@ -1180,6 +2866,21 @@ async fn send_local_api_conversation(
             });
             if !tools.is_empty() { body["tools"] = Value::Array(tools); }
             body
+        } else if protocol == "responses" {
+            let tools: Vec<Value> = available_tools.iter().map(|tool| json!({
+                "type":"function",
+                "name":tool.pointer("/function/name"),
+                "description":tool.pointer("/function/description"),
+                "parameters":tool.pointer("/function/parameters"),
+            })).collect();
+            let mut body = json!({
+                "model":model,
+                "instructions":system_instruction,
+                "input":responses_input(&history)?,
+                "stream":false,
+            });
+            if !tools.is_empty() { body["tools"] = Value::Array(tools); }
+            body
         } else {
             let mut upstream = Vec::with_capacity(history.len() + 1);
             upstream.push(json!({ "role": "system", "content": system_instruction }));
@@ -1191,46 +2892,103 @@ async fn send_local_api_conversation(
         // Cancel only the in-flight *model request*, never a started Forge
         // repository effect. Requests may already have reached a provider.
         let output = request_local_api_round_cancellable(
-            &client, &endpoint, protocol, key.as_deref(), &provider_body,
-            &mut cancel_receiver,
-        ).await?;
-        let requests = provider_tool_calls(protocol, &output)?;
+            &client, &endpoint, protocol, key.as_deref(), joycode_session.as_ref(), &provider_body,
+            cancel_receiver,
+        ).await.map_err(|error| contextualize_api_turn_error(
+            error, last_effect_request_id.as_deref()
+        ))?;
+        let requests = provider_tool_calls(protocol, &output).map_err(|error| {
+            contextualize_api_turn_error(error, last_effect_request_id.as_deref())
+        })?;
         if protocol == "anthropic" {
             let blocks = output.get("content").and_then(Value::as_array)
-                .ok_or("FORGE_DESKTOP_API_RESPONSE_INVALID")?;
+                .ok_or("FORGE_DESKTOP_API_RESPONSE_INVALID")
+                .map_err(|error| contextualize_api_turn_error(
+                    error.into(), last_effect_request_id.as_deref()
+                ))?;
             if requests.is_empty() {
                 let text = blocks.iter().filter_map(|block| {
                     if block.get("type").and_then(Value::as_str) == Some("text") {
                         block.get("text").and_then(Value::as_str)
                     } else { None }
                 }).collect::<Vec<_>>().join("\n");
-                if text.trim().is_empty() { return Err("FORGE_DESKTOP_API_RESPONSE_MISSING".into()); }
+                if text.trim().is_empty() {
+                    return Err(contextualize_api_turn_error(
+                        "FORGE_DESKTOP_API_RESPONSE_MISSING".into(), last_effect_request_id.as_deref()
+                    ));
+                }
+                if patch_needs_verification {
+                    if validation_prompt_sent {
+                        return Ok(local_api_budget_pause("修改后仍未取得成功的验证命令回执", total_calls, &tool_events));
+                    }
+                    validation_prompt_sent = true;
+                    history.push(json!({"role":"assistant","content":blocks}));
+                    history.push(json!({"role":"user","content":
+                        "Source edits were applied, but no successful focused test/build/check receipt was recorded. Use run_command for an appropriate verification. git diff --check only checks whitespace and is not sufficient. If verification fails, inspect and repair; if no applicable check exists, state that validation is incomplete. Do not claim verified completion without a successful receipt."}));
+                    continue;
+                }
                 return Ok(json!({ "output": text, "toolActivityCount": total_calls, "toolEvents": tool_events }));
             }
             history.push(json!({ "role": "assistant", "content": blocks }));
         } else {
-            let message = output.pointer("/choices/0/message").ok_or("FORGE_DESKTOP_API_RESPONSE_INVALID")?;
+            let message = if protocol == "responses" {
+                responses_assistant_message(&output).map_err(|error| {
+                    contextualize_api_turn_error(error, last_effect_request_id.as_deref())
+                })?
+            } else {
+                output.pointer("/choices/0/message").cloned()
+                    .ok_or("FORGE_DESKTOP_API_RESPONSE_INVALID")
+                    .map_err(|error| contextualize_api_turn_error(
+                        error.into(), last_effect_request_id.as_deref()
+                    ))?
+            };
             if requests.is_empty() {
                 let text = message.get("content").and_then(Value::as_str)
                     .filter(|value| !value.trim().is_empty())
-                    .ok_or("FORGE_DESKTOP_API_RESPONSE_MISSING")?;
+                    .ok_or("FORGE_DESKTOP_API_RESPONSE_MISSING")
+                    .map_err(|error| contextualize_api_turn_error(
+                        error.into(), last_effect_request_id.as_deref()
+                    ))?;
+                if patch_needs_verification {
+                    if validation_prompt_sent {
+                        return Ok(local_api_budget_pause("修改后仍未取得成功的验证命令回执", total_calls, &tool_events));
+                    }
+                    validation_prompt_sent = true;
+                    history.push(message);
+                    history.push(json!({"role":"user","content":
+                        "Source edits were applied, but no successful focused test/build/check receipt was recorded. Use run_command for an appropriate verification. git diff --check only checks whitespace and is not sufficient. If verification fails, inspect and repair; if no applicable check exists, state that validation is incomplete. Do not claim verified completion without a successful receipt."}));
+                    continue;
+                }
                 return Ok(json!({ "output": text, "toolActivityCount": total_calls, "toolEvents": tool_events }));
             }
-            history.push(message.clone());
+            history.push(message);
         }
-        if repo_id.is_none() || requests.is_empty() || requests.len() > 4 || total_calls + requests.len() > 12 {
-            return Err("FORGE_DESKTOP_API_TOOL_BUDGET_EXCEEDED".into());
+        if repo_id.is_none() || requests.is_empty()
+            || requests.len() > LOCAL_API_TOOL_CALLS_PER_ROUND {
+            return Err(contextualize_api_turn_error(
+                "FORGE_DESKTOP_API_TOOL_BUDGET_EXCEEDED".into(), last_effect_request_id.as_deref()
+            ));
+        }
+        if total_calls + requests.len() > LOCAL_API_TOOL_CALL_BUDGET {
+            return Ok(local_api_budget_pause("工具调用预算上限", total_calls, &tool_events));
         }
         let mut tool_results = Vec::new();
         for (id, name, mut args) in requests {
             if *cancel_receiver.borrow() {
-                return Err("FORGE_DESKTOP_API_TURN_CANCELLED".into());
+                return Err(contextualize_api_turn_error(
+                    "FORGE_DESKTOP_API_TURN_CANCELLED".into(), last_effect_request_id.as_deref()
+                ));
             }
             if id.is_empty() || name.is_empty() || !args.is_object()
                 || !available_tools.iter().any(|tool| tool.pointer("/function/name").and_then(Value::as_str) == Some(&name)) {
-                return Err("FORGE_DESKTOP_API_TOOL_NOT_AUTHORIZED".into());
+                return Err(contextualize_api_turn_error(
+                    "FORGE_DESKTOP_API_TOOL_NOT_AUTHORIZED".into(), last_effect_request_id.as_deref()
+                ));
             }
             let effectful = matches!(name.as_str(), "apply_patch" | "run_command" | "git_commit");
+            let verification_attempt = name == "run_command" && local_verification_command(&args);
+            let command_budget_ms = args.get("timeout_ms").and_then(Value::as_u64)
+                .unwrap_or(60_000).clamp(1_000, 600_000);
             let effect_request_id = if effectful {
                 let nonce = SystemTime::now().duration_since(UNIX_EPOCH)
                     .unwrap_or_default().as_nanos();
@@ -1238,58 +2996,104 @@ async fn send_local_api_conversation(
                 args["request_id"] = Value::String(id.clone());
                 Some(id)
             } else { None };
-            let _ = app.emit("forge-agent-tool-progress", json!({
+            host.emit_tool_progress(json!({
                 "conversationId": conversation_id, "name": name, "phase": "started",
-                "requestId": effect_request_id,
+                "requestId": effect_request_id, "toolCallId": id,
             }));
             let tool_result = run_local_forge_tool(
-                app.clone(), repo_id.clone().unwrap_or_default(), checkout_id.clone(),
-                conversation_id.clone(), name.clone(), args, allow_effects
+                host, repo_id.clone().unwrap_or_default(), checkout_id.clone(),
+                conversation_id.clone(), name.clone(), args, repository_effect_access
             ).await;
             let result = match tool_result {
                 Ok(receipt) => receipt,
                 Err(error) => {
-                    let _ = app.emit("forge-agent-tool-progress", json!({
-                        "conversationId": conversation_id, "name": name, "phase": "failed",
-                        "requestId": effect_request_id,
+                    host.emit_tool_progress(json!({
+                        "conversationId": conversation_id, "name": name,
+                        "phase": local_tool_failure_phase(&error),
+                        "requestId": effect_request_id, "toolCallId": id,
                     }));
                     return Err(if effectful {
                         format!("FORGE_DESKTOP_LOCAL_EFFECT_RECONCILIATION_REQUIRED:{}:{}",
                             effect_request_id.as_deref().unwrap_or("unknown"), error)
-                    } else { error });
+                    } else {
+                        contextualize_api_turn_error(error, last_effect_request_id.as_deref())
+                    });
                 }
             };
-            let ok = if effectful {
-                local_effect_completed(&name, &result)
-            } else {
-                result.get("ok").and_then(Value::as_bool) == Some(true)
+            // A running Process already owns the command: join its authoritative
+            // receipt and give the result back to the *same* model tool round.
+            // On cancel/timeout/read failure, stop safely with the Process ID.
+            let result = if name == "run_command" {
+                if let Some(process_id) = local_running_process_id(&result) {
+                    host.emit_tool_progress(json!({
+                        "conversationId":conversation_id, "name":name, "phase":"running",
+                        "processId":process_id, "requestId":effect_request_id, "toolCallId":id
+                    }));
+                    match local_wait_running_process(
+                        host, repo_id.as_deref().unwrap_or_default(), checkout_id.as_deref(),
+                        &conversation_id, process_id, command_budget_ms, cancel_receiver
+                    ).await {
+                        Some(terminal) => terminal,
+                        None => {
+                            tool_events.push(json!({
+                                "name":name, "ok":false, "status":"running",
+                                "processId":process_id, "requestId":effect_request_id, "toolCallId":id
+                            }));
+                            return Ok(local_api_process_pause(process_id, total_calls + 1, &tool_events));
+                        }
+                    }
+                } else { result }
+            } else { result };
+            let effect_outcome = effectful.then(|| local_effect_outcome(&name, &result));
+            if name == "apply_patch" && matches!(
+                result.pointer("/result/status").and_then(Value::as_str), Some("applied" | "partial")
+            ) {
+                patch_needs_verification = true;
+                validation_prompt_sent = false;
+            }
+            let ok = match effect_outcome {
+                Some(LocalEffectOutcome::Succeeded) => true,
+                Some(LocalEffectOutcome::TerminalFailure | LocalEffectOutcome::Unknown) => false,
+                None => result.get("ok").and_then(Value::as_bool) == Some(true),
             };
             // A cancel that arrives during a Forge tool must wait for the tool
             // receipt. Never report the effect itself as rolled back.
             if *cancel_receiver.borrow() {
-                return Err(if effectful {
+                let cancellation = if effectful {
                     format!("FORGE_DESKTOP_API_TURN_CANCELLED_AFTER_TOOL:{}",
                         effect_request_id.as_deref().unwrap_or("unknown"))
-                } else { "FORGE_DESKTOP_API_TURN_CANCELLED".into() });
+                } else { "FORGE_DESKTOP_API_TURN_CANCELLED".into() };
+                return Err(contextualize_api_turn_error(
+                    cancellation, last_effect_request_id.as_deref()
+                ));
             }
+            let process_id = result.pointer("/result/processId").and_then(Value::as_str);
             tool_events.push(json!({ "name": name, "ok": ok,
-                "requestId": effect_request_id }));
-            let _ = app.emit("forge-agent-tool-progress", json!({
+                "processId":process_id, "requestId": effect_request_id, "toolCallId": id }));
+            host.emit_tool_progress(json!({
                 "conversationId": conversation_id, "name": name,
                 "phase": if ok { "completed" } else { "failed" },
-                "requestId": effect_request_id,
+                "processId":process_id, "requestId": effect_request_id, "toolCallId": id,
             }));
             total_calls += 1;
+            if verification_attempt && ok {
+                patch_needs_verification = false;
+            }
             // A real tool result is the only source of truth sent back to the model.
             let serialized = result.to_string();
-            let bounded = if serialized.len() > 16_000 {
-                format!("{}...[truncated]", &serialized[..serialized.char_indices().map(|(idx, _)| idx).take_while(|idx| *idx <= 15_900).last().unwrap_or(0)])
+            let bounded = if serialized.chars().count() > LOCAL_API_TOOL_RESULT_MAX_CHARS {
+                format!("{}...[truncated; re-read from Forge if needed]",
+                    serialized.chars().take(LOCAL_API_TOOL_RESULT_MAX_CHARS - 60).collect::<String>())
             } else { serialized };
-            if !ok && effectful {
-                // The Forge Process/edit authority, not the model, reconciles effects.
-                // Keep this exact request identity for read-only outcome inspection.
+            if effect_outcome == Some(LocalEffectOutcome::Unknown) {
+                // Only a missing or ambiguous terminal receipt requires reconciliation.
+                // Known failures and partial outcomes are sent back to the model verbatim
+                // so it can inspect the canonical Forge receipt without blind replay.
                 return Err(format!("FORGE_DESKTOP_LOCAL_EFFECT_RECONCILIATION_REQUIRED:{}",
                     effect_request_id.as_deref().unwrap_or("unknown")));
+            }
+            if effectful {
+                last_effect_request_id = effect_request_id.clone();
             }
             if protocol == "anthropic" {
                 tool_results.push(json!({"type":"tool_result","tool_use_id":id,"content":bounded,"is_error":!ok}));
@@ -1301,11 +3105,58 @@ async fn send_local_api_conversation(
             history.push(json!({ "role": "user", "content": tool_results }));
         }
     }
-    Err("FORGE_DESKTOP_API_TOOL_ROUND_LIMIT".into())
+    Ok(local_api_budget_pause(
+        if patch_needs_verification { "模型轮次上限且写入尚未取得验证回执" }
+        else { "模型交互轮次上限" }, total_calls, &tool_events
+    ))
+}
+
+#[tauri::command]
+async fn send_local_api_conversation(
+    app: tauri::AppHandle,
+    messages: Vec<Value>,
+    repo_id: Option<String>,
+    checkout_id: Option<String>,
+    conversation_id: String,
+    provider: Option<String>,
+    allow_effects: Option<bool>,
+) -> Result<Value, String> {
+    let (cancel_sender, mut cancel_receiver) = tokio::sync::watch::channel(false);
+    {
+        let registry = app.state::<LocalApiTurnRegistry>();
+        let mut turns = registry.0.lock().map_err(|_| "FORGE_DESKTOP_API_TURN_REGISTRY_FAILED")?;
+        if turns.contains_key(&conversation_id) {
+            return Err("FORGE_DESKTOP_API_TURN_ALREADY_RUNNING".into());
+        }
+        turns.insert(conversation_id.clone(), cancel_sender);
+    }
+    let _registration = LocalApiTurnRegistration {
+        app:app.clone(), conversation_id:conversation_id.clone(),
+    };
+    let host = TauriLocalApiHost { app };
+    let provider = provider.unwrap_or_else(|| "api".to_string());
+    if !matches!(provider.as_str(), "api" | "joycode") {
+        return Err("FORGE_DESKTOP_API_PROVIDER_INVALID".into());
+    }
+    let repository_effect_access = resolve_repository_effect_access(repo_id.as_deref(), checkout_id.as_deref()).await?;
+    run_local_api_turn(
+        &host, messages, repo_id, checkout_id, conversation_id, Some(provider), None,
+        repository_effect_access && allow_effects.unwrap_or(true), &mut cancel_receiver,
+    ).await
 }
 
 
 fn main() {
+    let mode = std::env::args().nth(1);
+    if mode.as_deref() == Some("--native-api-turn") {
+        std::process::exit(native_bridge::run_api_turn());
+    }
+    if mode.as_deref() == Some("--native-model-round") {
+        std::process::exit(native_bridge::run_model_round());
+    }
+    if mode.as_deref() == Some("--native-bridge") {
+        std::process::exit(native_bridge::run());
+    }
     tauri::Builder::default()
         .manage(LocalApiTurnRegistry::default())
         .invoke_handler(tauri::generate_handler![
@@ -1316,23 +3167,35 @@ fn main() {
             read_projects,
             read_project_overview,
             read_project_repository,
+            read_project_requirement_list,
             read_project_plan_list,
+            read_project_schedules,
+            control_project_schedule,
+            read_project_plugins,
             read_agent_git_diff,
             commit_agent_git_files,
             read_user_requests,
+            control_user_request,
             read_requirement_detail,
             read_plan_detail,
+            create_requirement,
+            create_plan,
+            autopilot_control,
             read_local_provider_status,
+            read_local_provider_models,
             read_project_knowledge,
             send_local_conversation,
             cancel_local_conversation,
             read_local_api_settings,
             save_local_api_settings,
-            clear_local_api_key,
+            managed_api_credential_control,
             send_local_api_conversation,
             cancel_local_api_conversation,
             read_connection_status,
-            repair_connection
+            configure_initial_connection,
+            repair_connection,
+            read_plugin_management,
+            install_official_plugin
         ])
         .run(tauri::generate_context!())
         .expect("error while running Forge desktop");
@@ -1341,11 +3204,53 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn joycode_session_parser_reads_only_required_login_fields() {
+        let session = parse_joycode_session(&json!({
+            "jdhLoginInfo": {
+                "ptKey": "fake-session-token",
+                "loginType": "PIN_JD_CLOUD",
+                "tenant": "tenant_test",
+                "userId": "user_test",
+                "orgFullName": "Test Org",
+                "colorBaseUrl": "https://api-ai.jd.com"
+            }
+        })).expect("fake JoyCode session");
+        assert_eq!(session.login_type, "PIN_JD_CLOUD");
+        assert_eq!(session.tenant, "tenant_test");
+        assert_eq!(session.user_id, "user_test");
+        assert_eq!(session.org_full_name, "Test Org");
+        assert_eq!(session.pt_key, "fake-session-token");
+        assert_eq!(session.color_base_url, "https://api-ai.jd.com");
+        assert_eq!(
+            hmac_sha256_hex(b"key", b"The quick brown fox jumps over the lazy dog"),
+            "f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8"
+        );
+        let fake_source = r#"function g(e){return crypto.HmacSHA256(e,"0123456789abcdefghijklmnopqrstuv")}"#;
+        assert_eq!(
+            parse_joycode_gateway_signing_key(fake_source).expect("fake signer"),
+            b"0123456789abcdefghijklmnopqrstuv"
+        );
+
+        let mut session = session;
+        session.signing_key = b"key".to_vec();
+        let url = joycode_gateway_url(&session, "chat_completions", 123).expect("signed gateway URL");
+        assert!(url.starts_with("https://api-ai.jd.com/api?"));
+        assert!(url.contains("appid=joycode_ide"));
+        assert!(url.contains("functionId=chat_completions"));
+        assert!(url.contains("t=123"));
+        assert!(url.contains("sign=5f785c6166e27cfd3cde642443b02d57ece51ce47cc30482151722ce59a79dc5"));
+    }
     #[test]
     fn local_conversation_binds_checkout_or_rejects_incomplete_context() {
         let build = |repo: Option<&str>, checkout: Option<&str>| local_conversation_request(
-            "conversation".into(), None, "hello".into(), repo.map(str::to_owned), checkout.map(str::to_owned));
+            "conversation".into(), None, "hello".into(),
+            Some("gpt-6.1-sol".into()), Some("high".into()),
+            repo.map(str::to_owned), checkout.map(str::to_owned), Vec::new());
         let bound = build(Some("repo_a"), Some("checkout_b")).unwrap();
+        assert_eq!(bound["arguments"]["model"], "gpt-6.1-sol");
+        assert_eq!(bound["arguments"]["reasoning_effort"], "high");
         assert_eq!(bound["repo_id"], "repo_a");
         assert_eq!(bound["checkout_id"], "checkout_b");
         let unbound = build(None, None).unwrap();
@@ -1355,6 +3260,28 @@ mod tests {
         assert!(build(Some(" "), Some(" ")).is_err());
         assert!(build(Some("repo_a"), Some("../invalid")).is_err());
     }
+    #[test]
+    fn local_conversation_images_are_staged_scoped_and_cleaned() {
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let conversation_id = format!("test-image-stage-{}-{nonce}", std::process::id());
+        let source = env::temp_dir().join(format!("forge-image-source-{}-{nonce}.png", std::process::id()));
+        fs::write(&source, b"image-bytes").unwrap();
+
+        let staged = stage_local_conversation_images(
+            &conversation_id,
+            vec![source.to_string_lossy().to_string()],
+        ).unwrap();
+        assert_eq!(staged.len(), 1);
+        let root = fs::canonicalize(local_conversation_image_root(&conversation_id).unwrap()).unwrap();
+        let staged_path = fs::canonicalize(&staged[0]).unwrap();
+        assert!(staged_path.starts_with(&root));
+        assert!(staged_path.is_file());
+
+        cleanup_local_conversation_images(&conversation_id);
+        assert!(!root.exists());
+        let _ = fs::remove_file(source);
+    }
+
     #[test]
     fn mcp_timeout_only_extends_local_conversation_send() {
         let send = json!({"capability_id": "controller.local_conversation", "action": "send"});
@@ -1371,6 +3298,17 @@ mod tests {
     }
 
     #[test]
+    fn agent_untracked_review_evidence_is_bounded_and_path_scoped() {
+        let status = json!({"untracked":["new-a.txt","nested/new-b.txt","other.txt"]});
+        assert_eq!(agent_untracked_paths(&status, None), vec![
+            "new-a.txt".to_string(), "nested/new-b.txt".to_string(), "other.txt".to_string()
+        ]);
+        assert_eq!(agent_untracked_paths(&status, Some(&["nested/new-b.txt".to_string()])),
+            vec!["nested/new-b.txt".to_string()]);
+        assert!(agent_untracked_paths(&json!({}), None).is_empty());
+    }
+
+    #[test]
     fn native_commit_requires_explicit_safe_paths() {
         let review = json!({"patch":"diff --git a/src/lib.rs b/src/lib.rs","head":"abcdef",
             "branch":"work/task-1","checkoutId":"checkout_a","staged":false,"truncated":false,"nameOnly":["src/lib.rs"]});
@@ -1382,11 +3320,25 @@ mod tests {
             "diff --git a/src/lib.rs b/src/lib.rs", "abcdef", "work/task-1", "checkout_b", false));
         assert!(!reviewed_commit_scope_matches(&review, &["src/lib.rs".into()],
             "diff --git a/src/lib.rs b/src/lib.rs", "abcdef", "work/task-1", "checkout_a", true));
+        assert!(native_reviewed_paths_valid(&["src/lib.rs".into()]));
+        assert!(!native_reviewed_paths_valid(&[]));
+        assert!(!native_reviewed_paths_valid(&["../outside".into()]));
+        assert!(!native_reviewed_paths_valid(&["/tmp/file".into()]));
         assert!(native_commit_paths_valid(&["src/lib.rs".into()], "fix: update"));
         assert!(!native_commit_paths_valid(&[], "fix"));
         assert!(!native_commit_paths_valid(&["src/lib.rs".into()], ""));
         assert!(!native_commit_paths_valid(&["../outside".into()], "fix"));
         assert!(!native_commit_paths_valid(&["/tmp/file".into()], "fix"));
+        let committed = json!({
+            "checkoutId":"checkout_a",
+            "commit":{"ok":true,"after":{"head":"deadbeef","branch":"work/task-1"}}
+        });
+        assert_eq!(reviewed_commit_head(&committed, "checkout_a").as_deref(), Some("deadbeef"));
+        assert!(reviewed_commit_head(&committed, "checkout_b").is_none());
+        assert!(reviewed_commit_head(&json!({
+            "checkoutId":"checkout_a","error":{"code":"NO_SELECTED_CHANGES"},
+            "commit":{"ok":true,"after":{"head":"deadbeef"}}
+        }), "checkout_a").is_none());
     }
 
     #[test]
@@ -1468,7 +3420,7 @@ mod tests {
                 .timeout(Duration::from_secs(10)).redirect(reqwest::redirect::Policy::none())
                 .build().expect("client");
             let response = tauri::async_runtime::block_on(request_local_api_round(
-                &client, &format!("http://127.0.0.1:{port}/v1"), protocol, None,
+                &client, &format!("http://127.0.0.1:{port}/v1"), protocol, None, None,
                 &json!({"model":"test-model","messages":[{"role":"user","content":"check repo"}]})
             )).expect("local mock provider response");
             let calls = provider_tool_calls(protocol, &response).expect("parsed provider calls");
@@ -1530,7 +3482,7 @@ mod tests {
             let client = reqwest::Client::builder().timeout(Duration::from_secs(3))
                 .build().expect("client");
             let result = request_local_api_round_cancellable(
-                &client, &format!("http://127.0.0.1:{port}/v1"), "openai", None,
+                &client, &format!("http://127.0.0.1:{port}/v1"), "openai", None, None,
                 &json!({"model":"test-model","messages":[{"role":"user","content":"test"}]}),
                 &mut cancellation,
             ).await;
@@ -1542,31 +3494,260 @@ mod tests {
     }
 
     #[test]
+    fn api_turn_errors_keep_completed_effect_identity() {
+        assert_eq!(
+            contextualize_api_turn_error("FORGE_DESKTOP_API_TURN_CANCELLED".into(),None),
+            "FORGE_DESKTOP_API_TURN_CANCELLED"
+        );
+        assert_eq!(
+            contextualize_api_turn_error("FORGE_DESKTOP_API_TURN_CANCELLED".into(),Some("effect-1")),
+            "FORGE_DESKTOP_API_TURN_CANCELLED_AFTER_TOOL:effect-1"
+        );
+        assert_eq!(
+            contextualize_api_turn_error("FORGE_DESKTOP_API_HTTP_503".into(),Some("effect-2")),
+            "FORGE_DESKTOP_API_TURN_FAILED_AFTER_TOOL:effect-2:FORGE_DESKTOP_API_HTTP_503"
+        );
+        assert_eq!(
+            contextualize_api_turn_error(
+                "FORGE_DESKTOP_LOCAL_EFFECT_RECONCILIATION_REQUIRED:effect-3".into(),Some("effect-2")
+            ),
+            "FORGE_DESKTOP_LOCAL_EFFECT_RECONCILIATION_REQUIRED:effect-3"
+        );
+    }
+
+    #[test]
     fn effect_acceptance_is_not_completion() {
-        assert!(local_effect_completed("git_commit", &json!({"ok":true,"result":{
+        assert_eq!(local_effect_outcome("git_commit", &json!({"ok":true,"result":{
             "commit":{"committed":true,"checkoutId":"checkout_a","after":{"head":"abc123"}}
-        }})));
-        assert!(!local_effect_completed("git_commit", &json!({"ok":true,"result":{
-            "commit":{"committed":false}
-        }})));
-        assert!(!local_effect_completed("git_commit", &json!({"ok":true,"result":{
+        }})), LocalEffectOutcome::Succeeded);
+        assert_eq!(local_effect_outcome("git_commit", &json!({"ok":true,"result":{
+            "commit":{"committed":false,"error":{"code":"GIT_NOTHING_STAGED"}}
+        }})), LocalEffectOutcome::TerminalFailure);
+        assert_eq!(local_effect_outcome("git_commit", &json!({"ok":true,"result":{
             "accepted":true,"status":"running"
-        }})));
-        assert!(local_effect_completed("run_command", &json!({"ok":true,"result":{
+        }})), LocalEffectOutcome::Unknown);
+        assert_eq!(local_effect_outcome("run_command", &json!({"ok":true,"result":{
             "accepted":true,"status":"succeeded","exitCode":0
-        }})));
-        assert!(!local_effect_completed("run_command", &json!({"ok":true,"result":{
+        }})), LocalEffectOutcome::Succeeded);
+        assert_eq!(local_effect_outcome("run_command", &json!({"ok":false,"result":{
+            "status":"succeeded","exitCode":0
+        }})), LocalEffectOutcome::TerminalFailure);
+        assert_eq!(local_effect_outcome("run_command", &json!({"result":{
+            "status":"succeeded","exitCode":0
+        }})), LocalEffectOutcome::TerminalFailure);
+        assert_eq!(local_effect_outcome("run_command", &json!({"ok":true,"result":{
             "accepted":true,"status":"running"
-        }})));
-        assert!(!local_effect_completed("run_command", &json!({"ok":true,"result":{
+        }})), LocalEffectOutcome::Unknown);
+        assert_eq!(local_effect_outcome("run_command", &json!({"ok":true,"result":{
             "accepted":true,"status":"failed","exitCode":1
-        }})));
-        assert!(local_effect_completed("apply_patch", &json!({"ok":true,"result":{
+        }})), LocalEffectOutcome::TerminalFailure);
+        assert_eq!(local_effect_outcome("apply_patch", &json!({"ok":true,"result":{
             "status":"applied"
-        }})));
-        assert!(!local_effect_completed("apply_patch", &json!({"ok":true,"result":{
-            "status":"partial"
-        }})));
+        }})), LocalEffectOutcome::Succeeded);
+        assert_eq!(local_effect_outcome("apply_patch", &json!({"ok":false,"result":{
+            "status":"partial","terminal":true
+        }})), LocalEffectOutcome::TerminalFailure);
+        assert_eq!(local_effect_outcome("apply_patch", &json!({"ok":false,"result":{
+            "status":"failed","terminal":true
+        }})), LocalEffectOutcome::TerminalFailure);
+    }
+
+    #[test]
+    fn managed_process_receipt_pauses_without_replaying_the_command() {
+        let pending = json!({"ok":true,"result":{
+            "accepted":true,"status":"running","processId":"proc_abc_123"
+        }});
+        assert_eq!(local_running_process_id(&pending),Some("proc_abc_123"));
+        assert_eq!(local_running_process_id(&json!({"ok":true,"result":{
+            "accepted":true,"status":"running"
+        }})),None);
+        assert_eq!(local_running_process_id(&json!({"ok":true,"result":{
+            "accepted":true,"status":"succeeded","processId":"proc_abc_123"
+        }})),None);
+        for status in ["starting","running_recovered"] {
+            assert_eq!(local_running_process_id(&json!({"ok":true,"result":{
+                "accepted":true,"status":status,"processId":"proc_abc_123"
+            }})),Some("proc_abc_123"));
+        }
+        let events = [json!({"name":"run_command","status":"running",
+            "processId":"proc_abc_123","requestId":"effect-1"})];
+        let paused = local_api_process_pause("proc_abc_123",1,&events);
+        assert_eq!(paused["incomplete"],true);
+        assert_eq!(paused["toolEvents"][0]["processId"],"proc_abc_123");
+        assert!(paused["output"].as_str().unwrap().contains("process_status"));
+        assert!(paused["output"].as_str().unwrap().contains("尚未确认终态"));
+        assert!(local_tool_catalog(false).iter().any(|tool|
+            tool.pointer("/function/name").and_then(Value::as_str)==Some("process_status")
+        ));
+    }
+
+    #[test]
+    fn managed_process_terminal_receipt_preserves_result_and_identity() {
+        let succeeded = json!({"ok":true,"result":{
+            "processId":"proc_abc_123","status":"succeeded",
+            "completed":true,"ok":true,"exitCode":0,
+            "stdoutTail":"tests passed","stderrTail":""
+        }});
+        let receipt = local_terminal_process_receipt("proc_abc_123",&succeeded).unwrap();
+        assert_eq!(receipt["result"]["stdoutTail"],"tests passed");
+        assert_eq!(receipt["result"]["processId"],"proc_abc_123");
+        assert_eq!(local_effect_outcome("run_command",&receipt),LocalEffectOutcome::Succeeded);
+        let contradictory = json!({"ok":true,"result":{
+            "status":"succeeded","exitCode":0,"ok":false
+        }});
+        assert_eq!(local_effect_outcome("run_command",&contradictory),LocalEffectOutcome::TerminalFailure);
+        let timed_out_success = json!({"ok":true,"result":{
+            "status":"succeeded","exitCode":0,"timedOut":true
+        }});
+        assert_eq!(local_effect_outcome("run_command",&timed_out_success),LocalEffectOutcome::TerminalFailure);
+        assert!(local_terminal_process_receipt("proc_other",&succeeded).is_none());
+        assert!(local_terminal_process_receipt("proc_abc_123",&json!({
+            "ok":true,"result":{"processId":"proc_abc_123","completed":false}
+        })).is_none());
+        assert!(local_terminal_process_receipt("proc_abc_123",&json!({
+            "ok":false,"result":{"processId":"proc_abc_123","completed":true}
+        })).is_none());
+        let failed = json!({"ok":true,"result":{
+            "processId":"proc_abc_123","status":"failed",
+            "completed":true,"ok":false,"exitCode":1
+        }});
+        let receipt = local_terminal_process_receipt("proc_abc_123",&failed).unwrap();
+        assert_eq!(local_effect_outcome("run_command",&receipt),LocalEffectOutcome::TerminalFailure);
+        let timed_out = json!({"ok":true,"result":{
+            "processId":"proc_abc_123","status":"timed_out",
+            "completed":true,"ok":false,"exitCode":null
+        }});
+        let timeout_receipt = local_terminal_process_receipt("proc_abc_123",&timed_out).unwrap();
+        assert_eq!(local_effect_outcome("run_command",&timeout_receipt),LocalEffectOutcome::TerminalFailure);
+        let unknown = json!({"ok":true,"result":{
+            "processId":"proc_abc_123","status":"completed_unknown",
+            "completed":true,"ok":false,"exitCode":null
+        }});
+        let unknown_receipt = local_terminal_process_receipt("proc_abc_123",&unknown).unwrap();
+        assert_eq!(local_effect_outcome("run_command",&unknown_receipt),LocalEffectOutcome::Unknown);
+    }
+
+    #[test]
+    fn local_run_command_waits_for_its_bounded_process_terminal_receipt() {
+        let args = prepare_local_tool_arguments(
+            "run_command",
+            json!({"command":["/bin/echo","ok"],"timeout_ms":12_345})
+        ).expect("prepared run command");
+        assert_eq!(args.get("interactive_wait_ms").and_then(Value::as_u64), Some(12_345));
+
+        let defaulted = prepare_local_tool_arguments(
+            "run_command",
+            json!({"command":["/bin/echo","ok"]})
+        ).expect("default wait");
+        assert_eq!(defaulted.get("interactive_wait_ms").and_then(Value::as_u64), Some(60_000));
+        let long = prepare_local_tool_arguments(
+            "run_command", json!({"command":["cargo","test"],"timeout_ms":300_000})
+        ).expect("managed long command");
+        assert_eq!(long["timeout_ms"],300_000);
+        assert_eq!(long["interactive_wait_ms"],60_000);
+        let capped = prepare_local_tool_arguments(
+            "run_command", json!({"command":["cargo","test"],"timeout_ms":800_000})
+        ).expect("bounded managed command");
+        assert_eq!(capped["timeout_ms"],600_000);
+        assert_eq!(capped["interactive_wait_ms"],60_000);
+
+        let untouched = prepare_local_tool_arguments(
+            "apply_patch",
+            json!({"purpose":"test","operations":[]})
+        ).expect("non-command arguments");
+        assert!(untouched.get("interactive_wait_ms").is_none());
+    }
+
+    #[test]
+    fn local_api_history_keeps_recent_complete_tool_turns() {
+        let mut history = vec![json!({"role":"user","content":"implement a fix"})];
+        for index in 0..12 {
+            history.push(json!({"role":"assistant","tool_calls":[{
+                "id":format!("call-{index}"),"type":"function",
+                "function":{"name":"git_status","arguments":"{}"}
+            }]}));
+            history.push(json!({"role":"tool","tool_call_id":format!("call-{index}"),
+                "content":"bounded Forge receipt"}));
+        }
+        assert!(compact_local_api_history(&mut history));
+        assert!(history.len() <= 6);
+        assert_eq!(history[0]["content"], "implement a fix");
+        assert!(history[1]["content"].as_str().unwrap().contains("compacted"));
+        for tool in history.iter().filter(|message| message["role"] == "tool") {
+            let id = tool["tool_call_id"].as_str().unwrap();
+            assert!(history.iter().any(|assistant| assistant["role"] == "assistant"
+                && assistant["tool_calls"][0]["id"] == id));
+        }
+        assert_eq!(history.last().unwrap()["tool_call_id"], "call-11");
+    }
+
+    #[test]
+    fn local_api_compaction_preserves_latest_user_task_across_tool_rounds() {
+        let mut history = vec![
+            json!({"role":"user","content":"old task: add feature A"}),
+            json!({"role":"assistant","content":"done"}),
+            json!({"role":"user","content":"new task: fix bug B"}),
+        ];
+        for index in 0..14 {
+            history.push(json!({"role":"assistant","tool_calls":[{
+                "id":format!("call-{index}"),"type":"function",
+                "function":{"name":"search_code","arguments":"{}"}
+            }]}));
+            history.push(json!({"role":"tool","tool_call_id":format!("call-{index}"),
+                "content":"actual Forge receipt"}));
+        }
+        assert!(compact_local_api_history(&mut history));
+        assert_eq!(history[0]["content"], "old task: add feature A");
+        assert_eq!(history[1]["content"], "new task: fix bug B");
+        assert!(history[2]["content"].as_str().unwrap().contains("supersedes"));
+        assert_eq!(history.last().unwrap()["tool_call_id"], "call-13");
+    }
+
+    #[test]
+    fn local_verification_requires_focused_command_evidence() {
+        assert!(local_verification_command(&json!({"command":["cargo","test","--manifest-path","x"]})));
+        assert!(local_verification_command(&json!({"command":["swift","test"]})));
+        assert!(local_verification_command(&json!({"command":["bash","-lc","cd app && npm run check"]})));
+        assert!(!local_verification_command(&json!({"command":["git","diff","--check"]})));
+        assert!(!local_verification_command(&json!({"command":["bash","-lc","git diff --check"]})));
+        assert!(local_verification_command(&json!({"command":["npm","run","check","--prefix","apps/desktop"]})));
+        assert!(!local_verification_command(&json!({"command":["npm","config","get","test"]})));
+        assert!(!local_verification_command(&json!({"command":["cargo","metadata","--features","test"]})));
+        assert!(!local_verification_command(&json!({"command":["swift","package","describe","build"]})));
+        assert!(!local_verification_command(&json!({"command":["python3","-m","pytest","--collect-only"]})));
+        assert!(!local_verification_command(&json!({"command":["pytest","--collect-only"]})));
+        assert!(!local_verification_command(&json!({"command":["bash","-lc","npm run check --silent; true"]})));
+        assert!(!local_verification_command(&json!({"command":["bash","-lc","npm run check || true"]})));
+        assert!(!local_verification_command(&json!({"command":["bash","-lc","echo \"fake && npm run check && output\""]})));
+        assert!(!local_verification_command(&json!({"command":["bash","-lc","echo fake # && npm run check"]})));
+        assert!(!local_verification_command(&json!({"command":["bash","-lc","echo fake && npm run check"]})));
+        assert!(!local_verification_command(&json!({"command":["cargo","test","--help"]})));
+        assert!(!local_verification_command(&json!({"command":["xcodebuild","-destination","build","-showBuildSettings"]})));
+        assert!(!local_verification_command(&json!({"command":["xcodebuild","-scheme","build","-showBuildSettings"]})));
+        assert!(!local_verification_command(&json!({"command":["git","status"]})));
+        assert!(!local_verification_command(&json!({"command":["echo","tests passed"]})));
+        assert!(!local_verification_command(&json!({"command":["bash","-lc","echo cargo test"]})));
+        assert!(!local_verification_command(&json!({"command":[]})));
+    }
+
+    #[test]
+    fn local_api_access_mode_instruction_matches_repository_policy() {
+        let readonly = local_api_access_mode_instruction(false);
+        let full_access = local_api_access_mode_instruction(true);
+        assert!(readonly.contains("read-only"));
+        assert!(!readonly.contains("Full Access"));
+        assert!(full_access.contains("Full Access"));
+        assert!(!full_access.contains("read-only"));
+    }
+
+    #[test]
+    fn local_api_budget_pause_is_explicit_and_keeps_effect_receipt() {
+        let events = [json!({"name":"apply_patch","ok":true,"requestId":"effect-123"})];
+        let value = local_api_budget_pause("工具调用预算上限", 40, &events);
+        assert_eq!(value["incomplete"], true);
+        assert_eq!(value["toolActivityCount"], 40);
+        assert_eq!(value["toolEvents"][0]["requestId"], "effect-123");
+        assert!(value["output"].as_str().unwrap().contains("尚未确认完成"));
     }
 
     #[test]
@@ -1577,6 +3758,7 @@ mod tests {
         ).collect::<Vec<_>>();
         let readonly_names = names(readonly);
         assert!(readonly_names.contains(&"read_file".to_string()));
+        assert!(readonly_names.contains(&"search_code".to_string()));
         assert!(readonly_names.contains(&"git_status".to_string()));
         assert!(!readonly_names.contains(&"run_command".to_string()));
         assert!(!readonly_names.contains(&"apply_patch".to_string()));
@@ -1586,11 +3768,86 @@ mod tests {
     }
 
     #[test]
+    fn local_tool_timeout_matches_tool_budget_and_effect_safety() {
+        assert_eq!(local_tool_execution_timeout("read_file", &json!({})).as_secs(), 90);
+        assert_eq!(local_tool_execution_timeout("run_command", &json!({"timeout_ms":1000})).as_secs(), 61);
+        assert_eq!(local_tool_execution_timeout("run_command", &json!({})).as_secs(), 120);
+        assert_eq!(local_tool_execution_timeout("run_command", &json!({"timeout_ms":300_000})).as_secs(), 120);
+        assert_eq!(local_tool_execution_timeout("apply_patch", &json!({})).as_secs(), 180);
+        assert_eq!(local_tool_timeout_error("git_status"), "FORGE_DESKTOP_LOCAL_TOOL_TIMEOUT");
+        assert_eq!(local_tool_timeout_error("apply_patch"), "FORGE_DESKTOP_LOCAL_TOOL_OUTCOME_UNKNOWN");
+    }
+
+    #[test]
+    fn local_tool_failure_phase_distinguishes_unknown_results_from_terminal_failures() {
+        assert_eq!(local_tool_failure_phase("FORGE_DESKTOP_LOCAL_TOOL_OUTCOME_UNKNOWN"), "unknown");
+        assert_eq!(local_tool_failure_phase("FORGE_DESKTOP_LOCAL_TOOL_DELIVERY_UNKNOWN"), "unknown");
+        assert_eq!(local_tool_failure_phase("FORGE_DESKTOP_LOCAL_TOOL_RUNNER_FAILED"), "unknown");
+        assert_eq!(local_tool_failure_phase("FORGE_DESKTOP_LOCAL_TOOL_RESULT_TOO_LARGE"), "unknown");
+        assert_eq!(local_tool_failure_phase("FORGE_DESKTOP_LOCAL_TOOL_RESULT_INVALID"), "unknown");
+        assert_eq!(local_tool_failure_phase("FORGE_DESKTOP_LOCAL_TOOL_RUNNER_UNAVAILABLE"), "failed");
+        assert_eq!(local_tool_failure_phase("FORGE_DESKTOP_LOCAL_TOOL_ARGUMENTS_INVALID"), "failed");
+        assert_eq!(local_tool_failure_phase("FORGE_DESKTOP_LOCAL_TOOL_TIMEOUT"), "failed");
+    }
+
+    #[test]
+    fn repository_access_policy_is_the_effect_authority() {
+        let full = json!({
+            "repository":{"repoId":"repo_a"},
+            "repositoryPolicy":{"repoId":"repo_a","mode":"full_access"}
+        });
+        assert!(repository_access_allows_effects(&full, "repo_a"));
+        let request = json!({
+            "repository":{"repoId":"repo_a"},
+            "repositoryPolicy":{"repoId":"repo_a","mode":"request"}
+        });
+        assert!(!repository_access_allows_effects(&request, "repo_a"));
+        assert!(!repository_access_allows_effects(&full, "repo_b"));
+    }
+
+    #[test]
+    fn managed_credential_metadata_never_contains_secret_material() {
+        let row = json!({
+            "credentialRef":"cred_fixture",
+            "label":"Fixture",
+            "endpoint":"https://api.example.com/v1",
+            "createdAtMs":1,
+            "updatedAtMs":2
+        });
+        let metadata = managed_credential_metadata(&row, true);
+        assert_eq!(metadata.get("credentialRef").and_then(Value::as_str), Some("cred_fixture"));
+        assert_eq!(metadata.get("hasSecret").and_then(Value::as_bool), Some(true));
+        assert_eq!(metadata.get("credentialMaterialReturned").and_then(Value::as_bool), Some(false));
+        let serialized = metadata.to_string();
+        assert!(!serialized.contains("apiKey"));
+        assert!(!serialized.contains("secretValue"));
+        assert!(!serialized.contains("tokenValue"));
+    }
+
+    #[test]
     fn local_tool_catalog_has_no_work_context_tool() {
-        let names = local_tool_catalog(false).iter().filter_map(|tool|
+        let catalog = local_tool_catalog(false);
+        let names = catalog.iter().filter_map(|tool|
             tool.pointer("/function/name").and_then(Value::as_str)
         ).collect::<Vec<_>>();
         assert!(!names.contains(&"read_work_context"));
+    }
+
+    #[test]
+    fn api_default_provider_requires_ready_endpoint_but_codex_allows_backup_profile() {
+        assert!(validate_local_api_default_endpoint("api", "https://api.example.com/v1", false).is_err());
+        assert!(validate_local_api_default_endpoint("api", "https://api.example.com/v1", true).is_ok());
+        assert!(validate_local_api_default_endpoint("api", "http://127.0.0.1:11434/v1", false).is_ok());
+        assert!(validate_local_api_default_endpoint("codex", "https://api.example.com/v1", false).is_ok());
+    }
+
+    #[test]
+    fn api_endpoint_readiness_requires_key_only_for_remote_endpoints() {
+        assert!(local_api_endpoint_ready("http://127.0.0.1:11434/v1", false));
+        assert!(local_api_endpoint_ready("http://[::1]:11434/v1", false));
+        assert!(local_api_endpoint_ready("https://api.example.com/v1", true));
+        assert!(!local_api_endpoint_ready("https://api.example.com/v1", false));
+        assert!(!local_api_endpoint_ready("http://api.example.com/v1", true));
     }
 
     #[test]

@@ -1,10 +1,10 @@
 import {
   REQUIREMENT_STATES,
   isLegacyMachineRequirementWait,
-  listRequirements,
   type Requirement,
   type RequirementState,
 } from '../persistence/requirement-store';
+import { listRequirementsForRepository } from './requirement-authority';
 import { listPlanContracts, summarizePlanContract } from './plan-contract-store';
 import type { PlanContract } from './types';
 
@@ -95,7 +95,11 @@ function projectRequirement(requirement: Requirement, plans: readonly PlanContra
 }
 
 function loadRequirements(options: RequirementBoardOptions): Requirement[] {
-  return listRequirements({ controllerHome: options.controllerHome }, 500)
+  return listRequirementsForRepository(
+    { controllerHome: options.controllerHome },
+    options.repoId,
+    500,
+  )
     .map((record) => record.value)
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
 }

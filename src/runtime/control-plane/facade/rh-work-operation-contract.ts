@@ -13,6 +13,7 @@ export const RH_WORK_OPERATIONS = [
   'get_contract',
   'launcher_start',
   'requirement_create',
+  'requirement_list',
   'requirement_get',
   'requirement_revise',
   'requirement_promote_candidate',

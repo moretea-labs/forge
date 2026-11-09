@@ -9,7 +9,7 @@ import { ensureControllerHome } from '../../src/effects/controller-home';
 import { addRepositoryCheckout, registerRepository } from '../../src/cli/repositories/registry';
 import { getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { createPlanSemanticContext, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
-import { readRequirement, updateRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
+import { createRequirement, readRequirement, updateRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { ensureForgeInstanceIdentity, readForgeInstanceIdentity } from '../../packages/kernel/identity/api/index';
 import { recordCognitiveMemory, type CognitiveWriteAuthorityPort } from '../../packages/kernel/cognition/api/index';
 import { cognitionMemoryStore } from '../../src/runtime/control-plane/persistence/cognition-store';
@@ -73,6 +73,98 @@ function structured(result: Awaited<ReturnType<typeof callRuntimeTool>>): Record
 }
 
 describe('rh_work Requirement bootstrap', () => {
+  test('lists canonical Requirements without requiring Work or Plan authority', async () => {
+    const repoRoot = tempRoot('forge-requirement-list-repo-');
+    const controllerHome = tempRoot('forge-requirement-list-home-');
+    initRepo(repoRoot);
+    ensureControllerHome(controllerHome);
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'Requirement list fixture' });
+    const ctx = mcpContext(controllerHome, repository);
+
+    for (const [id,title] of [['REQ-LIST-A','List A'],['REQ-LIST-B','List B']] as const) {
+      const created = structured(await callRuntimeTool(ctx, 'rh_work', {
+        operation:'requirement_create', requirement_id:id, requirement_title:title,
+        requirement_outcome:`Deliver ${title}.`,
+      }));
+      expect(created.status).toBe('ok');
+    }
+    const listed = structured(await callRuntimeTool(ctx, 'rh_work', {
+      operation:'requirement_list', limit:100,
+    }));
+    expect(listed.status).toBe('ok');
+    expect(listed.data).toMatchObject({ bounded:true, limit:100, authority:'semantic_context_only' });
+    expect(listed.data.requirements).toEqual(expect.arrayContaining([
+      expect.objectContaining({ requirementId:'REQ-LIST-A', revision:1, title:'List A', state:'open', repoId:repository.repoId }),
+      expect.objectContaining({ requirementId:'REQ-LIST-B', revision:1, title:'List B', state:'open', repoId:repository.repoId }),
+    ]));
+    expect(listed.data.requirements.some((entry:Record<string,unknown>) => 'workId' in entry)).toBe(false);
+  });
+
+  test('scopes Requirement discovery to repository placement and explicit Plan relationships', async () => {
+    const repoRootA = tempRoot('forge-requirement-scope-a-');
+    const repoRootB = tempRoot('forge-requirement-scope-b-');
+    const controllerHome = tempRoot('forge-requirement-scope-home-');
+    initRepo(repoRootA);
+    initRepo(repoRootB);
+    ensureControllerHome(controllerHome);
+    const repositoryA = registerRepository({ path:repoRootA, controllerHome, displayName:'Requirement scope A' });
+    const repositoryB = registerRepository({ path:repoRootB, controllerHome, displayName:'Requirement scope B' });
+    const ctxA = mcpContext(controllerHome, repositoryA);
+    const ctxB = mcpContext(controllerHome, repositoryB);
+
+    for (const [ctx,id,title] of [[ctxA,'REQ-SCOPE-A','Scope A'],[ctxB,'REQ-SCOPE-B','Scope B']] as const) {
+      const created = structured(await callRuntimeTool(ctx, 'rh_work', {
+        operation:'requirement_create', requirement_id:id, requirement_title:title,
+        requirement_outcome:`Deliver ${title}.`,
+      }));
+      expect(created.status).toBe('ok');
+    }
+
+    const listedA = structured(await callRuntimeTool(ctxA, 'rh_work', { operation:'requirement_list', limit:100 }));
+    const listedB = structured(await callRuntimeTool(ctxB, 'rh_work', { operation:'requirement_list', limit:100 }));
+    expect(listedA.data.requirements.map((entry:Record<string,unknown>) => entry.requirementId)).toContain('REQ-SCOPE-A');
+    expect(listedA.data.requirements.map((entry:Record<string,unknown>) => entry.requirementId)).not.toContain('REQ-SCOPE-B');
+    expect(listedB.data.requirements.map((entry:Record<string,unknown>) => entry.requirementId)).toContain('REQ-SCOPE-B');
+    expect(listedB.data.requirements.map((entry:Record<string,unknown>) => entry.requirementId)).not.toContain('REQ-SCOPE-A');
+
+    const crossRepositoryGet = structured(await callRuntimeTool(ctxA, 'rh_work', {
+      operation:'requirement_get', requirement_id:'REQ-SCOPE-B',
+    }));
+    expect(crossRepositoryGet.status).toBe('not_found');
+    expect(crossRepositoryGet.data).toMatchObject({
+      requirementId:'REQ-SCOPE-B', repoId:repositoryA.repoId,
+    });
+
+    const legacy = createRequirement({ controllerHome }, {
+      requirementId:'REQ-LEGACY-PLAN-EDGE', title:'Legacy edge',
+      outcomeStatement:'Remain visible only where an explicit Plan relationship exists.',
+    });
+    expect(legacy.repoId).toBeUndefined();
+    createPlanSemanticContext({
+      controllerHome, repoId:repositoryA.repoId,
+      now:() => '2026-01-01T00:00:00.000Z',
+    }, {
+      planId:'PLAN-LEGACY-EDGE', repoId:repositoryA.repoId,
+      requirementId:legacy.requirementId, scopeKey:'legacy-edge', sourceBasisRevision:'legacy-source',
+      goal:'Prove repository relevance through the durable Plan edge.', items:[],
+    });
+    for (let index = 0; index < 100; index++) {
+      createPlanSemanticContext({
+        controllerHome, repoId:repositoryA.repoId,
+        now:() => '2026-02-01T00:00:00.000Z',
+      }, {
+        planId:`PLAN-SCOPE-FILLER-${index}`, repoId:repositoryA.repoId,
+        scopeKey:`scope-filler-${index}`, sourceBasisRevision:`source-filler-${index}`,
+        goal:`Keep legacy placement discovery complete beyond the public Plan list cap (${index}).`,
+        items:[],
+      });
+    }
+    const legacyA = structured(await callRuntimeTool(ctxA, 'rh_work', { operation:'requirement_list', limit:100 }));
+    const legacyB = structured(await callRuntimeTool(ctxB, 'rh_work', { operation:'requirement_list', limit:100 }));
+    expect(legacyA.data.requirements.map((entry:Record<string,unknown>) => entry.requirementId)).toContain(legacy.requirementId);
+    expect(legacyB.data.requirements.map((entry:Record<string,unknown>) => entry.requirementId)).not.toContain(legacy.requirementId);
+  });
+
   test('exposes typed Requirement progress and CAS through rh_work without a Work or legacy carrier', async () => {
     const schema = runtimeToolDefinitions.find((definition) => definition.name === 'rh_work')?.inputSchema;
     expect(schema).toBeDefined();
@@ -482,6 +574,55 @@ describe('rh_work Requirement bootstrap', () => {
     const stored = getPlanContract({ controllerHome, repoId: repository.repoId }, 'PLAN-THIN-CREATE');
     expect(stored?.steps).toEqual([]);
     expect(stored?.semanticRevision).toBe(1);
+
+    const child = structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'plan_create',
+      plan_id: 'PLAN-THIN-CREATE-CHILD',
+      requirement_id: 'REQ-THIN-PLAN-CREATE',
+      parent_plan_id: 'PLAN-THIN-CREATE',
+      scope_key: 'thin-plan-create-child',
+      source_revision: sourceRevision,
+      objective: 'Refine the root Plan without creating execution authority.',
+      plan_items: [{ id: 'child-a', objective: 'Describe the child slice.', dependencies: [] }],
+    }));
+    expect(child.status).toBe('ok');
+    expect(child.data.plan).toMatchObject({
+      planId: 'PLAN-THIN-CREATE-CHILD',
+      requirementId: 'REQ-THIN-PLAN-CREATE',
+      parentPlanId: 'PLAN-THIN-CREATE',
+    });
+    expect(getPlanContract({ controllerHome, repoId: repository.repoId }, 'PLAN-THIN-CREATE-CHILD')?.parentPlanId)
+      .toBe('PLAN-THIN-CREATE');
+
+    const listed = structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'plan_list',
+      limit: 20,
+    }));
+    expect(listed.data.plans).toContainEqual(expect.objectContaining({
+      planId: 'PLAN-THIN-CREATE-CHILD', parentPlanId: 'PLAN-THIN-CREATE',
+    }));
+
+    expect(structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'requirement_create',
+      requirement_id: 'REQ-THIN-PLAN-OTHER',
+      requirement_title: 'Other Requirement',
+      requirement_outcome: 'Own an independent Plan tree.',
+    })).status).toBe('ok');
+    const wrongTree = structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'plan_create',
+      plan_id: 'PLAN-THIN-CREATE-WRONG-PARENT',
+      requirement_id: 'REQ-THIN-PLAN-OTHER',
+      parent_plan_id: 'PLAN-THIN-CREATE',
+      scope_key: 'thin-plan-wrong-parent',
+      source_revision: sourceRevision,
+      objective: 'Must not cross Requirement tree ownership.',
+    }));
+    expect(wrongTree.status).toBe('blocked');
+    expect(wrongTree.summary).toContain('PLAN_PARENT_REQUIREMENT_MISMATCH:PLAN-THIN-CREATE');
 
     const sameLabel = structured(await callRuntimeTool(ctx, 'rh_work', {
       repo_id: repository.repoId,

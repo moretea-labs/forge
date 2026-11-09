@@ -6,7 +6,7 @@ import { buildFacadeResult } from '../../../src/runtime/control-plane/facade';
 import { isRhWorkAcceptedOperation } from '../../../src/runtime/control-plane/facade/rh-work-operation-contract';
 import { findControlPlaneRecordsByKey, readControlPlaneRecord } from '../../../src/runtime/control-plane/persistence/sqlite-store';
 import { result } from './result-adapter';
-import { selected } from './shared-adapter';
+import { selected, selectedOptional } from './shared-adapter';
 import { invalidFacadeOperation } from './status-inbox-adapter';
 import { normalizeRhWorkInputWireMigration } from './work-input-wire-migration';
 import { callRhWorkScheduleAdapter, isRhWorkScheduleOperation } from './scheduler-adapter';
@@ -136,7 +136,8 @@ export async function callWorkAdapter(
   if (!isRhWorkAcceptedOperation(operation)) return invalidFacadeOperation('rh_work', operation);
 
   if (isRhWorkRequirementOperation(operation) && operation !== 'requirement_promote_candidate') {
-    const requirement = await callRhWorkRequirementOperation(ctx, undefined, operation, args);
+    const repository = selectedOptional(ctx, args);
+    const requirement = await callRhWorkRequirementOperation(ctx, repository, operation, args);
     if (requirement) return requirement;
   }
 

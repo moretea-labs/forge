@@ -34,6 +34,12 @@ export interface SelectedPathCommitResult {
   error?: { code: string; message: string };
 }
 
+export interface SelectedPathRestoreResult {
+  paths: string[];
+  execution?: RepositoryGitExecution;
+  error?: { code: string; message: string };
+}
+
 export interface SelectedPathBeforeCommitGuardInput {
   repository: RepositoryRecord;
   requestedPaths: string[];
@@ -139,7 +145,18 @@ function stagedPaths(repository: RepositoryRecord, paths: string[]): string[] {
   return result.stdout
     .split(/\r?\n/)
     .map((entry) => entry.trim())
-    .filter(Boolean);
+    .filter(Boolean)
+    .sort();
+}
+
+function unstagedPaths(repository: RepositoryRecord, paths: string[]): string[] {
+  const result = runGit(repository, ['diff', '--name-only', '--', ...paths], 64 * 1024);
+  if (!result.ok) throw new Error('SELECTED_PATH_RESTORE_DIFF_FAILED: unable to inspect selected working-tree paths');
+  return result.stdout
+    .split(/\r?\n/)
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .sort();
 }
 
 function artifactPreview(repository: RepositoryRecord, path: string): TransferArtifactPreview {
@@ -256,6 +273,83 @@ export function stageSelectedPaths(
       authorization: 'explicit_user_request',
     }),
   };
+}
+
+export function restoreSelectedPaths(
+  controllerHome: string,
+  repository: RepositoryRecord,
+  input: { paths: unknown; expectedHead: unknown; expectedBranch: unknown; expectedPatch: unknown; confirmAuthorization: unknown },
+): SelectedPathRestoreResult {
+  const paths = normalizeSelectedPaths(repository, input.paths);
+  const expectedHead = String(input.expectedHead ?? '').trim();
+  const expectedBranch = String(input.expectedBranch ?? '').trim();
+  const expectedPatch = String(input.expectedPatch ?? '');
+  if (!expectedHead || !expectedBranch || !expectedPatch || Buffer.byteLength(expectedPatch, 'utf8') > 20_000) {
+    throw new Error('SELECTED_PATH_RESTORE_REVIEW_REQUIRED: expected head, branch, and bounded non-empty patch are required');
+  }
+  if (input.confirmAuthorization !== true) {
+    throw new Error('SELECTED_PATH_RESTORE_CONFIRMATION_REQUIRED: confirm_authorization=true is required');
+  }
+
+  return withControllerLock(
+    controllerHome,
+    { scope: 'worktree', repoId: repository.repoId, worktreeId: repository.activeCheckoutId },
+    `selected-path-restore:${repository.activeCheckoutId}`,
+    () => withRepositoryMutationExclusion(
+      controllerHome,
+      repository.repoId,
+      `selected-path-restore:${repository.activeCheckoutId}`,
+      () => {
+        const current = repositoryGitStatus(repository);
+        if (current.head !== expectedHead) {
+          throw new Error(`SELECTED_PATH_RESTORE_HEAD_CHANGED: expected ${expectedHead}, found ${current.head ?? 'missing'}`);
+        }
+        if (current.branch !== expectedBranch) {
+          throw new Error(`SELECTED_PATH_RESTORE_BRANCH_CHANGED: expected ${expectedBranch}, found ${current.branch ?? 'detached'}`);
+        }
+        const staged = stagedPaths(repository, paths);
+        if (staged.length > 0) {
+          throw new Error(`SELECTED_PATH_RESTORE_STAGED_CHANGES: selected paths contain staged changes: ${staged.join(', ')}`);
+        }
+        const changed = unstagedPaths(repository, paths);
+        if (changed.length !== paths.length || changed.some((path, index) => path !== paths[index])) {
+          throw new Error('SELECTED_PATH_RESTORE_SCOPE_CHANGED: selected paths are no longer the exact tracked unstaged change set');
+        }
+        const patch = runGit(repository, ['diff', '--', ...paths], 64 * 1024);
+        if (!patch.ok) {
+          throw new Error('SELECTED_PATH_RESTORE_DIFF_FAILED: unable to re-read selected working-tree patch');
+        }
+        if (patch.stdout !== expectedPatch) {
+          throw new Error('SELECTED_PATH_RESTORE_PATCH_CHANGED: selected working-tree patch no longer matches the reviewed patch');
+        }
+
+        const execution = executeRepositoryGitCommand(controllerHome, repository, {
+          args: ['restore', '--worktree', '--', ...paths],
+          authorization: 'user_confirmation',
+          authorizationDecision: {
+            decision: 'allow',
+            source: 'user_confirmation',
+            reason: 'The user explicitly confirmed discarding this exact reviewed unstaged patch.',
+          },
+        });
+        if (execution.status !== 'executed' || execution.ok !== true) {
+          return {
+            paths,
+            execution,
+            error: { code: 'SELECTED_PATH_RESTORE_FAILED', message: execution.stderr || 'git restore failed for selected paths' },
+          };
+        }
+        if (unstagedPaths(repository, paths).length > 0 || stagedPaths(repository, paths).length > 0) {
+          return {
+            paths,
+            execution,
+            error: { code: 'SELECTED_PATH_RESTORE_UNCONFIRMED', message: 'Selected paths still contain Git changes after restore.' },
+          };
+        }
+        return { paths, execution };
+      },
+    ),
+  );
 }
 
 export function commitSelectedPaths(

@@ -7,8 +7,24 @@ import { tmpdir } from 'os';
 import { externalPluginListItem, installTrustedExternalPlugin, installerNextSteps, officialPluginCatalogItems, pluginCatalogCompatibility, registrationFrom, trustedExternalPluginCatalogEntry } from '../../src/cli/commands/plugin';
 import { assertExternalPluginRepositoryTrusted, assertFirstPartyPluginRepositoryTrusted, trustExternalPluginRepository, untrustExternalPluginRepository } from '../../src/runtime/plugins/catalog-trust';
 import { getExternalPluginRegistration } from '../../src/runtime/plugins/external-registration';
+import { readControllerPluginManagement } from '../../src/runtime/control-plane/facade/controller-plugins';
 
 describe('official plugin catalog', () => {
+  test('projects the official catalog for Settings without a second plugin registry', () => {
+    const home = mkdtempSync(join(tmpdir(), 'forge-plugin-management-'));
+    try {
+      const snapshot = readControllerPluginManagement(home);
+      expect(snapshot.schemaVersion).toBe(1);
+      expect(snapshot.plugins.map((entry) => entry.pluginId)).toEqual([
+        'desktop_operator', 'design', 'personal_knowledge', 'figma',
+      ]);
+      expect(snapshot.plugins.every((entry) => entry.installedVersion === undefined)).toBe(true);
+      expect(snapshot.plugins.every((entry) => entry.authorizationCount === 0)).toBe(true);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   test('includes the pinned Forge Figma Bridge release', () => {
     const registry = JSON.parse(readFileSync(resolve(import.meta.dir, '../../assets/plugin-registry.v1.json'), 'utf8')) as { plugins: Array<Record<string, unknown>> };
     const figma = registry.plugins.find((entry) => entry.id === 'figma');

@@ -305,6 +305,8 @@ export interface PlanRevisionRecord {
   planId: string;
   revision: number;
   requirementId?: string;
+  /** Optional immutable refinement parent. It structures authored Plan context only. */
+  parentPlanId?: string;
   scopeKey: string;
   sourceRevision: string;
   goal: string;
@@ -339,6 +341,8 @@ export interface PlanContract {
   repoId?: string;
   /** Stable Requirement owner. Legacy plans may omit this until portfolio migration. */
   requirementId?: string;
+  /** Optional immutable refinement parent. It structures authored Plan context only. */
+  parentPlanId?: string;
   scopeKey: string;
   sourceRevision: string;
   goal: string;

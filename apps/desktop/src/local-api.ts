@@ -1,12 +1,16 @@
 import { invoke } from '@tauri-apps/api/core';
-export type LocalProviderChoice = 'codex' | 'api';
-export type LocalApiProtocol = 'openai' | 'anthropic';
+export type LocalProviderChoice = 'codex' | 'api' | 'joycode';
+export type LocalApiProtocol = 'openai' | 'anthropic' | 'responses';
 export interface LocalApiSettings {
   provider: LocalProviderChoice;
   endpoint: string;
   model: string;
   apiProtocol: LocalApiProtocol;
+  credentialRef?: string | null;
   hasKey: boolean;
+  endpointReady: boolean;
+  joyCodeModel: string;
+  joyCodeReady: boolean;
 }
 export interface LocalApiToolEvent { name: string; ok: boolean; requestId?: string }
 export interface LocalApiConversationResponse {
@@ -15,17 +19,16 @@ export interface LocalApiConversationResponse {
   toolEvents: LocalApiToolEvent[];
 }
 export const readLocalApiSettings = (): Promise<LocalApiSettings> => invoke('read_local_api_settings');
-export const clearLocalApiKey = (): Promise<LocalApiSettings> => invoke('clear_local_api_key');
 export const saveLocalApiSettings = (input: {
   provider: LocalProviderChoice; endpoint: string; model: string;
-  apiProtocol: LocalApiProtocol; apiKey?: string;
+  apiProtocol: LocalApiProtocol; credentialRef?: string; joyCodeModel?: string;
 }): Promise<LocalApiSettings> => invoke('save_local_api_settings', input);
 export const sendLocalApiConversation = (input: {
   messages: Array<{ role: 'user' | 'assistant'; content: string }>;
   repoId?: string;
   checkoutId?: string;
   conversationId: string;
-  allowEffects: boolean;
+  provider?: 'api' | 'joycode';
 }): Promise<LocalApiConversationResponse> => invoke('send_local_api_conversation', input);
 
 export const cancelLocalApiConversation = (conversationId: string):

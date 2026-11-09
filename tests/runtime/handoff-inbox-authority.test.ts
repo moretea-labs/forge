@@ -11,7 +11,7 @@ import {
 } from "../../src/runtime/control-plane/facade/handoff-inbox-store";
 import { handoffRequiresAttention } from "../../src/runtime/control-plane/facade/handoff-inbox-application";
 import { listUserRequests, recordUserRequest } from "../../packages/kernel/identity/api/index";
-import { findCanonicalUserRequest, shouldUseCanonicalUserRequestInbox } from "../../adapters/mcp/runtime-gateway/status-inbox-adapter";
+import { findCanonicalUserRequest, selectCanonicalUserRequestsForList, shouldUseCanonicalUserRequestInbox } from "../../adapters/mcp/runtime-gateway/status-inbox-adapter";
 
 describe("HandoffItem persistence authority", () => {
   test("controller-home inbox remains authoritative across session-cache changes and fresh reads", () => {
@@ -81,6 +81,62 @@ describe("HandoffItem persistence authority", () => {
         });
       }
       expect(countHandoffItems({ ...location, status: "pending" })).toBe(37);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("scoped canonical list filters before bounded projection", () => {
+    const root = mkdtempSync(join(tmpdir(), "forge-user-request-scope-"));
+    const controllerHome = join(root, "controller-home");
+    try {
+      for (let index = 0; index < 60; index += 1) {
+        recordUserRequest(controllerHome, {
+          kind: 'user_decision_request',
+          rootCauseKey: 'other-' + index,
+          title: 'Other ' + index,
+          summary: 'Other repository decision.',
+          actionRequired: 'product_decision',
+          targetScope: { scopeKind: 'repository', scopeId: 'repo-other', repoId: 'repo-other' },
+        });
+      }
+      for (let index = 0; index < 3; index += 1) {
+        recordUserRequest(controllerHome, {
+          kind: 'user_decision_request',
+          rootCauseKey: 'current-' + index,
+          title: 'Current ' + index,
+          summary: 'Current repository decision.',
+          actionRequired: 'product_decision',
+          targetScope: { scopeKind: 'repository', scopeId: 'repo-current', repoId: 'repo-current' },
+        });
+      }
+      for (let index = 0; index < 2; index += 1) {
+        recordUserRequest(controllerHome, {
+          kind: 'user_action_request',
+          rootCauseKey: 'global-' + index,
+          title: 'Global ' + index,
+          summary: 'Global action.',
+          actionRequired: 'login',
+        });
+      }
+      const pending = listUserRequests(controllerHome, 'pending');
+      const all = selectCanonicalUserRequestsForList(pending, { limit: 100 });
+      expect(all.totalCount).toBe(65);
+      expect(all.items).toHaveLength(65);
+      expect(all.truncated).toBe(false);
+
+      const global = selectCanonicalUserRequestsForList(pending, { scope: 'global', limit: 50 });
+      expect(global.scope).toBe('global');
+      expect(global.totalCount).toBe(2);
+      expect(global.items.map((item) => item.title).sort()).toEqual(['Global 0', 'Global 1']);
+      expect(global.truncated).toBe(false);
+
+      const current = selectCanonicalUserRequestsForList(pending, { repo_id: 'repo-current', limit: 50 });
+      expect(current.scope).toBe('repository');
+      expect(current.totalCount).toBe(3);
+      expect(current.items.every((item) => item.targetScope?.repoId === 'repo-current')).toBe(true);
+      expect(() => selectCanonicalUserRequestsForList(pending, { repo_id: 'repo-current', scope: 'global' }))
+        .toThrow('USER_REQUEST_SCOPE_CONFLICT');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -156,7 +212,7 @@ describe("HandoffItem persistence authority", () => {
         title: "Repo decision",
         summary: "Repository-scoped decision.",
         actionRequired: "product_decision",
-        targetScope: { scopeKind: "work", scopeId: "work-1", repoId: "repo-1", workId: "work-1" },
+        targetScope: { scopeKind: "repository", scopeId: "repo-1", repoId: "repo-1" },
       });
 
       expect(findCanonicalUserRequest(controllerHome, {
@@ -172,8 +228,8 @@ describe("HandoffItem persistence authority", () => {
       })).toBeUndefined();
 
       expect(shouldUseCanonicalUserRequestInbox("repo-1", "get", globalRequest)).toBe(true);
-      expect(shouldUseCanonicalUserRequestInbox("repo-1", "get", repoRequest)).toBe(false);
-      expect(shouldUseCanonicalUserRequestInbox("repo-1", "list", globalRequest)).toBe(false);
+      expect(shouldUseCanonicalUserRequestInbox("repo-1", "get", repoRequest)).toBe(true);
+      expect(shouldUseCanonicalUserRequestInbox("repo-1", "list", globalRequest)).toBe(true);
       expect(shouldUseCanonicalUserRequestInbox(undefined, "list", undefined)).toBe(true);
     } finally {
       rmSync(root, { recursive: true, force: true });

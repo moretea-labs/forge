@@ -3,6 +3,9 @@ import react from '@vitejs/plugin-react';
 
 export default defineConfig({
   plugins: [react()],
+  // Packaged WKWebView loads via Tauri's custom protocol, not a web server root.
+  // Absolute /assets URLs can resolve outside the bundled resource origin.
+  base: './',
   clearScreen: false,
   server: {
     host: '127.0.0.1',

@@ -21,6 +21,7 @@ const FROZEN_FORBIDDEN_OBJECT_KEYS = new Set(['__proto__', 'prototype', 'constru
 const FROZEN_COMMON_FIELDS = ['repo_id', 'checkout_id', 'request_id', 'detail_level'] as const;
 const FROZEN_SEMANTIC_V1_FIELDS: Record<string, ReadonlySet<string>> = {
   work_get: new Set([...FROZEN_COMMON_FIELDS, 'operation', 'work_id']),
+  requirement_list: new Set([...FROZEN_COMMON_FIELDS, 'operation', 'limit']),
   requirement_get: new Set([...FROZEN_COMMON_FIELDS, 'operation', 'requirement_id']),
   requirement_revise: new Set([
     ...FROZEN_COMMON_FIELDS,

@@ -28,8 +28,13 @@ const MAX_PREFERRED_TOOL_COUNT = 24;
 // supervisor_task public tool.
 // Forge #483 (2026-11-07): Work/WorkHandle/ControllerRound retirement removes
 // the remaining Work-bound compatibility tools from the complete registry.
+// 2026-11-08: Requirement Autopilot adds one explicit optional rh_autopilot facade.
+// It is revision-bound and Runtime-owned; it does not restore Work/Supervisor continuation
+// or make Requirement a prerequisite for ordinary Forge use.
+// 2026-11-08: managed generic API credentials add one metadata-only rh_credential facade.
+// It owns only credential-use AuthorizationGrant lifecycle; macOS Keychain/provider stores remain secret authorities.
 // Preferred facade names stay stable; any further complete-registry drift fails closed.
-const EXPECTED_EXPOSED_NAME_FINGERPRINT = 'c9d5a4f3128a8702';
+const EXPECTED_EXPOSED_NAME_FINGERPRINT = '78c48cae45a994ba';
 
 // #197 decomposition authority: the public/frozen Tool Contract is an explicit
 // baseline, independent from whichever internal adapter currently defines a
@@ -64,7 +69,13 @@ const EXPECTED_PREFERRED_TOOL_NAME_FINGERPRINT = 'f22e635a213b45fa';
 // 2026-11-07: #483 retires Work-specific outcome_record/experience_record input
 // fields and keeps lifecycle-free learning_record/learning_feedback as the
 // canonical advisory-memory write path.
-const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = 'b76899ee059d962b';
+// 2026-11-08: Forge Client planning adds optional parent_plan_id to rh_work
+// plan_create. This is an authored Plan refinement edge only; it adds no new
+// execution, approval, lifecycle, progress, or scheduling authority.
+// 2026-11-08: rh_work adds bounded requirement_list discovery so the native
+// Planning client reads current Requirement semantics from their canonical owner
+// instead of depending on the retired rh_status requirementBoard projection.
+const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = '18dd06882d86c36b';
 
 const policy = runtimePolicy(process.cwd(), {
   profile: 'controller',
