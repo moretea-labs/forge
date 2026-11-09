@@ -2723,6 +2723,7 @@ private struct AgentPlanningInspector: View {
     @State private var error: String?
     @State private var query = ""
     @State private var loadToken = UUID()
+    @State private var loadedRepoId: String?
 
     var body: some View {
         VStack(alignment:.leading,spacing:0) {
@@ -2904,7 +2905,7 @@ private struct AgentPlanningInspector: View {
             .background(bound ? ForgePalette.selection.opacity(0.65) : .clear)
         }
         .buttonStyle(.plain)
-        .disabled(model.busy)
+        .disabled(model.busy || loadedRepoId != model.repoId)
         .accessibilityLabel(record.title + "，" + (bound ? "已用于当前会话" : "用于当前会话"))
     }
 
@@ -2913,6 +2914,7 @@ private struct AgentPlanningInspector: View {
         let token=UUID()
         loadToken=token
         records=[]
+        loadedRepoId=nil
         error=nil
         guard let repoId=model.repoId else { loading=false; return }
         loading=true
@@ -2921,6 +2923,7 @@ private struct AgentPlanningInspector: View {
             let fresh=try await model.readPlanningRecordsForCurrentProject()
             guard loadToken == token, model.repoId == repoId, !Task.isCancelled else { return }
             records=fresh
+            loadedRepoId=repoId
         } catch {
             guard loadToken == token, model.repoId == repoId, !Task.isCancelled else { return }
             self.error=error.localizedDescription
@@ -2937,6 +2940,7 @@ private struct AgentKnowledgeInspector: View {
     @State private var error: String?
     @State private var loadToken = UUID()
     @State private var expandedMemoryIds: Set<String> = []
+    @State private var resultOrigin: (repoId: String, threadId: String)?
 
     var body: some View {
         VStack(alignment:.leading,spacing:0) {
@@ -3030,7 +3034,7 @@ private struct AgentKnowledgeInspector: View {
             .padding(.horizontal,14).frame(height:34)
         }
         .frame(width:410,height:455)
-        .task(id:model.repoId) { await reload() }
+        .task(id:[model.repoId ?? "", model.selectedThreadId ?? ""]) { await reload() }
     }
 
     private var memories:[KnowledgeMemoryDetail] {
@@ -3049,12 +3053,16 @@ private struct AgentKnowledgeInspector: View {
                 }
                 Spacer()
                 Button("用于会话") {
-                    model.useKnowledgeInCurrentConversation(memory)
+                    guard let origin=resultOrigin,
+                          origin.repoId == model.repoId,
+                          origin.threadId == model.selectedThreadId else { return }
+                    model.useKnowledgeInCurrentConversation(memory,expectedThreadId:origin.threadId)
                     if model.error == nil { dismiss() }
                 }
                 .buttonStyle(.plain)
                 .font(.system(size:10,weight:.semibold))
-                .disabled(model.busy)
+                .disabled(model.busy || resultOrigin?.repoId != model.repoId
+                          || resultOrigin?.threadId != model.selectedThreadId)
                 .accessibilityIdentifier("agent.knowledge-inspector.use.\(memory.id)")
             }
             Text(memory.canonicalText)
@@ -3087,20 +3095,25 @@ private struct AgentKnowledgeInspector: View {
         let token=UUID()
         loadToken=token
         result=nil
+        resultOrigin=nil
         expandedMemoryIds=[]
         error=nil
-        guard let repoId=model.repoId else { loading=false; return }
+        guard let repoId=model.repoId,
+              let threadId=model.selectedThreadId else { loading=false; return }
         let searchQuery=query.trimmingCharacters(in:.whitespacesAndNewlines)
         loading=true
         defer { if loadToken == token { loading=false } }
         do {
             let fresh=try await model.readKnowledge(searchQuery)
             guard loadToken == token, model.repoId == repoId,
+                  model.selectedThreadId == threadId,
                   query.trimmingCharacters(in:.whitespacesAndNewlines) == searchQuery,
                   !Task.isCancelled else { return }
             result=fresh
+            resultOrigin=(repoId,threadId)
         } catch {
             guard loadToken == token, model.repoId == repoId,
+                  model.selectedThreadId == threadId,
                   query.trimmingCharacters(in:.whitespacesAndNewlines) == searchQuery,
                   !Task.isCancelled else { return }
             self.error=error.localizedDescription

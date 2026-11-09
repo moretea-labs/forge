@@ -765,7 +765,11 @@ final class NativeWorkspace: ObservableObject {
         bindCurrentThreadPlanningContext(requirementId:nil,planId:nil)
     }
 
-    func useKnowledgeInCurrentConversation(_ memory: KnowledgeMemoryDetail) {
+    func useKnowledgeInCurrentConversation(_ memory: KnowledgeMemoryDetail, expectedThreadId: String? = nil) {
+        if let expectedThreadId, expectedThreadId != selectedThreadId {
+            self.error = "当前会话已切换，请重新选择知识。"
+            return
+        }
         guard !busy else {
             self.error = "请先停止正在运行的会话，再添加知识上下文。"
             return

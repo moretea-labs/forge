@@ -137,6 +137,29 @@ final class NativeWorkspaceTests: XCTestCase {
         )
     }
 
+    @MainActor
+    func testKnowledgeInspectorCannotInsertAfterConversationChanges() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        let priorThreadId = model.selectedThreadId
+        let memory = KnowledgeMemoryDetail(
+            id:"old-thread-memory",revision:1,canonicalText:"A previously loaded memory.",
+            concepts:[],facets:[],confidence:1,
+            scope:KnowledgeScopeDetail(kind:"workspace",id:"workspace"),
+            provenance:nil
+        )
+        model.newThread()
+        XCTAssertNotEqual(model.selectedThreadId,priorThreadId)
+        model.draft="Current thread draft"
+        model.useKnowledgeInCurrentConversation(memory,expectedThreadId:priorThreadId)
+        XCTAssertEqual(model.draft,"Current thread draft")
+        XCTAssertFalse(model.draft.contains(memory.canonicalText))
+        XCTAssertEqual(model.error,"当前会话已切换，请重新选择知识。")
+        model.useKnowledgeInCurrentConversation(memory,expectedThreadId:model.selectedThreadId)
+        XCTAssertTrue(model.draft.contains(memory.canonicalText))
+    }
+
     func testLegacyMessageDecodesWithoutToolActivity() throws {
         let data = #"{"id":"m1","role":"assistant","text":"done","createdAt":0}"#.data(using:.utf8)!
         let decoder = JSONDecoder()
