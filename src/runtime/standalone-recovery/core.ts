@@ -1,13 +1,13 @@
 import { measureRuntimePerformance, type RuntimePerformanceDependencies, type RuntimePerformanceEvidence, type RuntimePerformanceIdentity } from './performance';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'crypto';
 import { spawn, spawnSync } from 'child_process';
-import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'fs';
+import { chmodSync, closeSync, existsSync, linkSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'fs';
 import { homedir, hostname } from 'os';
 import { createServer as createNetServer } from 'net';
 import { basename, delimiter, dirname, isAbsolute, join, resolve } from 'path';
 import { assertStorageHeadroom } from '../shared/storage-capacity';
 import { resolveBunExecutable, runtimeAuthorityFreeEnvironment } from '../shared/process-environment';
-import { backupControlPlaneDatabase } from '../control-plane/persistence/sqlite-store';
+import { backupControlPlaneDatabase, inspectControlPlaneDatabaseFile, sha256ControlPlaneDatabaseFile } from '../control-plane/persistence/sqlite-store';
 import { measureReclaimablePath } from '../control-plane/lifecycle-retention-metrics';
 import { cleanupControllerReleaseHistory } from '../control-plane/release-retention';
 import { observeRuntimeStatus, readRuntimeStartupFailureEvidence } from '../root/status';
@@ -996,6 +996,81 @@ function createKnownGoodRecoveryBundle(config: RecoveryConfig): KnownGoodRecover
   }
 }
 
+function dedupePreviousKnownGoodDatabase(
+  config: RecoveryConfig,
+  entry: ReleaseEvidence,
+  previous: RuntimePublishedRelease,
+): ReleaseEvidence {
+  const bundle = entry.recoveryBundle;
+  const backup = previous.databaseBackup;
+  if (!bundle || bundle.schemaVersion !== 1 || !backup?.databaseSha256) return entry;
+
+  const root = resolve(bundle.root);
+  const databasePath = resolve(bundle.database.path);
+  if (databasePath !== resolve(root, 'controller.sqlite') || !existsSync(databasePath)) {
+    throw new Error('PREVIOUS_KNOWN_GOOD_DATABASE_PATH_INVALID');
+  }
+  const backupsRoot = resolve(config.controllerHome, 'runtime', 'releases', 'backups');
+  const backupPath = resolve(backup.path);
+  if (dirname(backupPath) !== backupsRoot || !backupPath.endsWith('.sqlite') || !existsSync(backupPath)) {
+    throw new Error('PREVIOUS_KNOWN_GOOD_AUTHORITY_BACKUP_INVALID');
+  }
+
+  const inspection = inspectControlPlaneDatabaseFile(backupPath);
+  const backupSha256 = sha256ControlPlaneDatabaseFile(backupPath);
+  if (
+    backupSha256 !== backup.databaseSha256
+    || inspection.schemaVersion !== backup.schemaVersion
+    || (backup.recordCount !== undefined && inspection.recordCount !== backup.recordCount)
+    || (backup.auditEventCount !== undefined && inspection.auditEventCount !== backup.auditEventCount)
+  ) {
+    throw new Error('PREVIOUS_KNOWN_GOOD_AUTHORITY_BACKUP_MISMATCH');
+  }
+
+  const existing = statSync(databasePath);
+  const authoritative = statSync(backupPath);
+  const metadataMatches = bundle.database.sha256 === backupSha256
+    && bundle.database.schemaVersion === inspection.schemaVersion
+    && bundle.database.recordCount === inspection.recordCount
+    && bundle.database.auditEventCount === inspection.auditEventCount;
+  if (existing.dev === authoritative.dev && existing.ino === authoritative.ino && metadataMatches) return entry;
+  if (existing.dev !== authoritative.dev || existing.ino !== authoritative.ino) {
+    const token = randomUUID();
+    const replacementPath = resolve(root, `.controller.sqlite-authority-${token}`);
+    const originalPath = resolve(root, `.controller.sqlite-original-${token}`);
+    try {
+      linkSync(databasePath, originalPath);
+      linkSync(backupPath, replacementPath);
+      rmSync(databasePath);
+      renameSync(replacementPath, databasePath);
+      rmSync(originalPath, { force: true });
+    } catch (error) {
+      rmSync(replacementPath, { force: true });
+      if (!existsSync(databasePath) && existsSync(originalPath)) renameSync(originalPath, databasePath);
+      else rmSync(originalPath, { force: true });
+      audit(config, 'known_good_previous_database_dedupe_skipped', {
+        revision: entry.revision,
+        detail: error instanceof Error ? error.message : String(error),
+      });
+      return entry;
+    }
+  }
+
+  return {
+    ...entry,
+    recoveryBundle: {
+      ...bundle,
+      database: {
+        path: databasePath,
+        sha256: backupSha256,
+        schemaVersion: inspection.schemaVersion,
+        recordCount: inspection.recordCount,
+        auditEventCount: inspection.auditEventCount,
+      },
+    },
+  };
+}
+
 function pruneRetiredKnownGoodRecoveryBundles(config: RecoveryConfig, releases: readonly ReleaseEvidence[]): void {
   const root = knownGoodRecoveryBundleRoot(config.controllerHome);
   if (!existsSync(root)) return;
@@ -1034,12 +1109,25 @@ function reconcileKnownGoodRecoveryRetention(config: RecoveryConfig, verifiedSta
     throw new Error('KNOWN_GOOD_RETENTION_RUNTIME_AUTHORITY_CHANGED_AFTER_VERIFY');
   }
 
-  const retained = store.releases.filter((entry) =>
-    rollbackReleases.some((release) => sameReleaseIdentity(release, entry)));
+  let changed = false;
+  const previousEvidence = authority.previous ? releaseEvidence(config.controllerHome, authority.previous, authority) : undefined;
+  const retained = store.releases.flatMap((entry) => {
+    if (!rollbackReleases.some((release) => sameReleaseIdentity(release, entry))) {
+      changed = true;
+      return [];
+    }
+    if (authority.previous && previousEvidence && sameReleaseIdentity(previousEvidence, entry)) {
+      const deduped = dedupePreviousKnownGoodDatabase(config, entry, authority.previous);
+      if (deduped !== entry) changed = true;
+      return [deduped];
+    }
+    return [entry];
+  });
   // verifyStableRuntime already validated Recovery bundle contents for the same
-  // rollback identities before this mutation lock. Retention owns only which
-  // evidence remains referenced; it must not re-hash multi-gigabyte bundle bytes.
-  if (retained.length === store.releases.length) return;
+  // rollback identities before this mutation lock. Retention only rewires the
+  // previous bundle DB to the exact Authority backup and never creates a second
+  // rollback/database authority.
+  if (!changed) return;
   writeJson(statePath(config), { schemaVersion: 2, releases: retained, updatedAt: new Date().toISOString() } satisfies KnownGoodStore);
   pruneRetiredKnownGoodRecoveryBundles(config, retained);
 }
@@ -1110,9 +1198,14 @@ function persistVerifiedKnownGood(config: RecoveryConfig, verified: VerifyResult
   };
   const store = knownGood(config);
   const previous = authority.previous ? releaseEvidence(config.controllerHome, authority.previous, authority) : undefined;
+  const previousAttestations = previous && authority.previous
+    ? store.releases
+      .filter((entry) => sameReleaseIdentity(entry, previous))
+      .map((entry) => dedupePreviousKnownGoodDatabase(config, entry, authority.previous!))
+    : [];
   const releases = [
     attested,
-    ...(previous ? store.releases.filter((entry) => sameReleaseIdentity(entry, previous)) : []),
+    ...previousAttestations,
   ];
   writeJson(statePath(config), { schemaVersion: 2, releases, updatedAt: new Date().toISOString() } satisfies KnownGoodStore);
   pruneRetiredKnownGoodRecoveryBundles(config, releases);

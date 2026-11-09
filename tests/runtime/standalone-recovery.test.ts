@@ -4,7 +4,7 @@ import { CLIENT_CAPABILITIES_META_KEY, CLIENT_INFO_META_KEY, PROTOCOL_VERSION_ME
 import { execFileSync } from 'child_process';
 import { createHash } from 'crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http';
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join, resolve } from 'path';
 import { sha256FileBounded } from '../../src/runtime/root/known-good-recovery';
@@ -3922,6 +3922,41 @@ describe('standalone recovery on canonical Runtime', () => {
     });
   });
 
+  test('refuses rollback when the shared previous known-good database bytes are corrupted', async () => {
+    const home = controllerHome();
+    const first = manifest(home, 'release-link-a', 'artifact-link-a');
+    const second = manifest(home, 'release-link-b', 'artifact-link-b', 2);
+    ensureActiveRuntimeRelease(home, first);
+    const runtime = await runtimeServer();
+    writeMainToken(home);
+    const firstOwnership = startObservedRuntime(home, runtime.endpoint, 'release-link-a', 'artifact-link-a');
+    const config = createRecoveryConfig(home, { publicMcpUrl: runtime.endpoint });
+    await attestKnownGood(config);
+    removeOwnership(firstOwnership);
+
+    publishRuntimeRelease(home, second, 'publish-release-link-b');
+    const secondOwnership = startObservedRuntime(home, runtime.endpoint, 'release-link-b', 'artifact-link-b');
+    await attestKnownGood(config);
+    removeOwnership(secondOwnership);
+
+    const store = JSON.parse(readFileSync(join(home, 'recovery', 'state', 'known-good.json'), 'utf8')) as {
+      releases: Array<{ revision: string; recoveryBundle?: { database: { path: string } } }>;
+    };
+    const previous = store.releases.find((entry) => entry.revision === 'release-link-a');
+    const backupPath = readRuntimeReleaseAuthority(home)?.previous?.databaseBackup?.path;
+    expect(previous?.recoveryBundle?.database.path).toBeTruthy();
+    expect(backupPath).toBeTruthy();
+    const bundleStat = statSync(previous!.recoveryBundle!.database.path);
+    const backupStat = statSync(backupPath!);
+    expect([bundleStat.dev, bundleStat.ino]).toEqual([backupStat.dev, backupStat.ino]);
+
+    writeFileSync(backupPath!, 'corrupted shared rollback database\n', 'utf8');
+    const rolled = await rollbackPrevious(config, 'corrupted shared rollback database');
+    expect(rolled.ok).toBe(false);
+    expect(rolled.detail).toContain('no attested previous whole-Runtime release with a bound SQLite backup is available');
+    expect(rolled.verify?.probes.recovery_known_good_recoverability).toMatchObject({ ok: false });
+  });
+
   test('refuses rollback when the independently attested previous release later fails its execution canary', async () => {
     const home = controllerHome();
     const first = manifest(home, 'release-canary-a', 'artifact-canary-a');
@@ -3955,13 +3990,33 @@ describe('standalone recovery on canonical Runtime', () => {
     writeMainToken(home);
     const firstOwnership = startObservedRuntime(home, runtime.endpoint, 'release-a', 'artifact-a');
     const config = createRecoveryConfig(home, { publicMcpUrl: runtime.endpoint });
-    await attestKnownGood(config);
+    const firstAttestation = await attestKnownGood(config);
     removeOwnership(firstOwnership);
 
     publishRuntimeRelease(home, second, 'publish-release-b');
     const secondOwnership = startObservedRuntime(home, runtime.endpoint, 'release-b', 'artifact-b');
-    await attestKnownGood(config);
+    const secondAttestation = await attestKnownGood(config);
     removeOwnership(secondOwnership);
+
+    const knownGoodStore = JSON.parse(readFileSync(join(home, 'recovery', 'state', 'known-good.json'), 'utf8')) as {
+      releases: Array<{ revision: string; recoveryBundle?: { database: { path: string; sha256: string } } }>;
+    };
+    const previousAttestation = knownGoodStore.releases.find((entry) => entry.revision === 'release-a');
+    const authority = readRuntimeReleaseAuthority(home);
+    const backupPath = authority?.previous?.databaseBackup?.path;
+    expect(previousAttestation?.recoveryBundle).toBeDefined();
+    expect(backupPath).toBeTruthy();
+    const previousDatabasePath = previousAttestation!.recoveryBundle!.database.path;
+    const previousDatabaseStat = statSync(previousDatabasePath);
+    const backupStat = statSync(backupPath!);
+    expect([previousDatabaseStat.dev, previousDatabaseStat.ino]).toEqual([backupStat.dev, backupStat.ino]);
+    const backupSha256 = authority?.previous?.databaseBackup?.databaseSha256;
+    expect(backupSha256).toBeTruthy();
+    expect(previousAttestation!.recoveryBundle!.database.sha256).toBe(backupSha256!);
+    expect(existsSync(firstAttestation.recoveryBundle!.root)).toBe(true);
+    expect(existsSync(secondAttestation.recoveryBundle!.root)).toBe(true);
+    const listing = await listReleases(config) as { knownGood: Array<{ revision: string }> };
+    expect(listing.knownGood.map((entry) => entry.revision)).toEqual(expect.arrayContaining(['release-a', 'release-b']));
 
     const rolled = await rollbackPrevious(config, 'active release became unhealthy after attestation');
     expect(rolled.ok).toBe(true);
@@ -3971,6 +4026,9 @@ describe('standalone recovery on canonical Runtime', () => {
       active: { releaseId: 'release-a', artifactIdentity: 'artifact-a' },
       previous: { releaseId: 'release-b', artifactIdentity: 'artifact-b' },
     });
+    expect(existsSync(previousDatabasePath)).toBe(true);
+    const afterRollback = await listReleases(config) as { knownGood: Array<{ revision: string }> };
+    expect(afterRollback.knownGood.map((entry) => entry.revision)).toContain('release-a');
   });
 
   test('fails closed when an existing authority is invalid instead of rebuilding revision 1', () => {
