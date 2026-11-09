@@ -6,15 +6,15 @@ import UniformTypeIdentifiers
 // one consistent input surface; avoid decorative cards around navigation and status.
 private enum ForgePalette {
     static let canvas = Color(nsColor:.textBackgroundColor)
-    static let ink = Color(red:0.16,green:0.18,blue:0.17)
-    static let secondary = Color(red:0.45,green:0.47,blue:0.46)
-    static let accent = Color(red:0.25,green:0.31,blue:0.26)
+    static let ink = Color.primary
+    static let secondary = Color(nsColor:.secondaryLabelColor)
+    static let accent = Color(nsColor:.controlAccentColor)
     static let selection = Color.primary.opacity(0.072)
     static let selectionStrong = Color.primary.opacity(0.095)
-    static let userBubble = Color(red:0.945,green:0.949,blue:0.938)
-    static let raisedSurface = Color.white.opacity(0.90)
+    static let userBubble = Color.primary.opacity(0.055)
+    static let raisedSurface = Color(nsColor:.controlBackgroundColor)
     static let softFill = Color.primary.opacity(0.045)
-    static let composer = Color.white.opacity(0.76)
+    static let composer = Color(nsColor:.controlBackgroundColor).opacity(0.95)
 }
 
 @main
@@ -807,11 +807,11 @@ private struct ForgeWorkspaceView: View {
                     Button("关闭") { model.error = nil }.buttonStyle(.plain)
                 }
                 .font(.system(size:11))
-                .foregroundStyle(Color(red:0.58,green:0.26,blue:0.24))
+                .foregroundStyle(Color.orange)
                 .padding(.horizontal,12).padding(.vertical,9)
                 .frame(minHeight:38)
-                .background(Color(red:0.99,green:0.95,blue:0.93),
-                            in:RoundedRectangle(cornerRadius:11,style:.continuous))
+                .background(Color.orange.opacity(0.10),
+                            in:RoundedRectangle(cornerRadius:9,style:.continuous))
                 .padding(.horizontal,14).padding(.top,8)
             }
             if model.page != .agent {
@@ -2449,12 +2449,10 @@ private struct RecordsPane: View {
 
     var body: some View {
         GeometryReader { geometry in
-            HStack(spacing:12) {
+            HStack(spacing:0) {
             planningNavigator
                 .frame(minWidth:geometry.size.width < 960 ? 330 : 620,maxWidth:.infinity)
-                .background(.ultraThinMaterial,
-                            in:RoundedRectangle(cornerRadius:16,style:.continuous))
-                .padding(.leading,12).padding(.vertical,12)
+                .padding(.leading,12)
 
             if let selected = model.records.first(where:{$0.id == model.selectedRecord}) {
                 ScrollView {
@@ -2493,9 +2491,12 @@ private struct RecordsPane: View {
                 .frame(minWidth:geometry.size.width < 960 ? 240 : 310,
                        idealWidth:geometry.size.width < 960 ? 260 : 350,
                        maxWidth:geometry.size.width < 960 ? 290 : 390)
-                .background(ForgePalette.raisedSurface.opacity(0.72),
-                            in:RoundedRectangle(cornerRadius:16,style:.continuous))
-                .padding(.trailing,12).padding(.vertical,12)
+                .overlay(alignment:.leading) {
+                    Rectangle()
+                        .fill(Color.primary.opacity(0.09))
+                        .frame(width:1)
+                }
+                .padding(.trailing,12)
                 .transition(.move(edge:.trailing).combined(with:.opacity))
             }
             }
@@ -2550,8 +2551,7 @@ private struct RecordsPane: View {
             }
         }
         .padding(.horizontal,12).padding(.vertical,10)
-        .background(ForgePalette.softFill,
-                    in:RoundedRectangle(cornerRadius:10,style:.continuous))
+        .overlay(alignment:.bottom) { Divider() }
         .accessibilityIdentifier("planning.project.overview")
     }
 
@@ -3518,7 +3518,7 @@ private struct RecordsPane: View {
         let execution=planningExecutionStatus(item)
         let nodeBackground:Color = selected
             ? ForgePalette.raisedSurface
-            : (item.kind == .requirement ? ForgePalette.accent.opacity(0.075) : Color.white.opacity(0.68))
+            : (item.kind == .requirement ? ForgePalette.accent.opacity(0.075) : ForgePalette.raisedSurface.opacity(0.78))
         let nodeBorder:Color = selected
             ? ForgePalette.ink.opacity(0.34)
             : (item.kind == .requirement ? ForgePalette.accent.opacity(0.22) : ForgePalette.secondary.opacity(0.13))
@@ -3583,7 +3583,7 @@ private struct RecordsPane: View {
                         .padding(.vertical,12)
                         .padding(.leading,2)
                 }
-                .shadow(color:Color.black.opacity(selected ? 0.07 : 0.035),radius:selected ? 8 : 4,y:2)
+                .shadow(color:Color.primary.opacity(selected ? 0.035 : 0),radius:4,y:1)
                 .contentShape(RoundedRectangle(cornerRadius:13,style:.continuous))
             }
             .buttonStyle(.plain)
@@ -4204,7 +4204,9 @@ private struct RuntimePane: View {
                         .font(.system(size:12)).foregroundStyle(ForgePalette.secondary)
                 }
                 runtimeCard
+                Divider()
                 connectionCard
+                Divider()
                 if let diagnostics = model.runtimeDiagnostics {
                     VStack(alignment:.leading,spacing:12) {
                         HStack(alignment:.top) {
@@ -4231,11 +4233,10 @@ private struct RuntimePane: View {
                             }
                         }
                     }
-                    .padding(15)
-                    .background(ForgePalette.softFill,in:RoundedRectangle(cornerRadius:14,style:.continuous))
+                    .padding(.vertical,6)
                 }
             }
-            .frame(maxWidth:850,alignment:.leading)
+            .frame(maxWidth:960,alignment:.leading)
             .frame(maxWidth:.infinity,alignment:.leading)
             .padding(30)
         }
@@ -4265,8 +4266,7 @@ private struct RuntimePane: View {
                 }
             }
         }
-        .padding(16)
-        .background(ForgePalette.softFill,in:RoundedRectangle(cornerRadius:15,style:.continuous))
+        .padding(.vertical,8)
     }
 
     private var connectionCard: some View {
@@ -4294,8 +4294,7 @@ private struct RuntimePane: View {
                     .font(.system(size:12)).foregroundStyle(ForgePalette.secondary)
             }
         }
-        .padding(16)
-        .background(ForgePalette.softFill,in:RoundedRectangle(cornerRadius:15,style:.continuous))
+        .padding(.vertical,8)
     }
 
     private var runtimeColor: Color {
@@ -4409,9 +4408,9 @@ private struct KnowledgePane: View {
                                     .font(.system(size:9,design:.monospaced)).foregroundStyle(.tertiary)
                                     .textSelection(.enabled)
                             }
-                            .padding(14)
+                            .padding(.vertical,13)
                             .frame(maxWidth:.infinity,alignment:.leading)
-                            .background(ForgePalette.softFill,in:RoundedRectangle(cornerRadius:14,style:.continuous))
+                            .overlay(alignment:.bottom) { Divider() }
                         }
                     }
                     if result.truncated {
@@ -4432,8 +4431,7 @@ private struct KnowledgePane: View {
 
     private func knowledgeEmpty(_ message:String) -> some View {
         Text(message).font(.system(size:12)).foregroundStyle(ForgePalette.secondary)
-            .padding(18).frame(maxWidth:.infinity,alignment:.leading)
-            .background(ForgePalette.softFill,in:RoundedRectangle(cornerRadius:14,style:.continuous))
+            .padding(.vertical,18).frame(maxWidth:.infinity,alignment:.leading)
     }
 
     private func scopeLabel(_ kind:String) -> String {
@@ -4501,8 +4499,8 @@ private struct SettingsPane: View {
                     Text("Provider 与模型上下文按会话保存；已有历史不会被默认设置静默改写。")
                         .font(.system(size:10.5)).foregroundStyle(.tertiary)
                 }
-                .padding(16)
-                .background(ForgePalette.softFill,in:RoundedRectangle(cornerRadius:15,style:.continuous))
+                .padding(.vertical,12)
+                Divider()
 
                 VStack(alignment:.leading,spacing:13) {
                     HStack {
@@ -4624,18 +4622,16 @@ private struct SettingsPane: View {
                             .accessibilityIdentifier("settings.save")
                         }
                     }
-                    .padding(13)
-                    .background(ForgePalette.canvas,in:RoundedRectangle(cornerRadius:12,style:.continuous))
+                    .padding(.vertical,10)
 
                     Text("Forge-managed secret 只存在 macOS Keychain；配置只保存 opaque credential ref、Endpoint、Provider 与模型。创建/轮换从剪贴板导入后立即清空剪贴板，模型与 MCP 永不获得 raw secret。JoyCode、Codex、zro 继续由各自本机凭据 Authority 管理。仓库写权限按 Repository AccessPolicy 持续生效，密钥使用按 canonical AuthorizationGrant 复用直到到期或撤销。")
                         .font(.system(size:10.5)).foregroundStyle(.tertiary).lineSpacing(3)
                 }
-                .padding(16)
-                .background(ForgePalette.softFill,in:RoundedRectangle(cornerRadius:15,style:.continuous))
+                .padding(.vertical,12)
             }
-            .frame(maxWidth:850,alignment:.leading)
+            .frame(maxWidth:960,alignment:.leading)
             .frame(maxWidth:.infinity,alignment:.leading)
-            .padding(30)
+            .padding(28)
         }
         .task(id:settingsSignature) {
             syncSettingsDraft()
