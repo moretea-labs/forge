@@ -9,6 +9,7 @@ import { tmpdir } from 'os';
 import { dirname, join, resolve } from 'path';
 import { sha256FileBounded } from '../../src/runtime/root/known-good-recovery';
 import { parseOpenAiSecureTunnelRuntimeStatus } from '../../adapters/mcp/tunnels/openai-secure-tunnel';
+import { probeRuntimeGateway } from '../../src/runtime/standalone-recovery/probe-observation';
 import {
   activateRuntimeRelease,
   activatePinnedRuntimeRelease,
@@ -430,6 +431,46 @@ test('historical Stable A permits only the exact pre-context-pack omission to se
   expect(legacyStableContextPackUpgradeBaseline({ ...baseline, releases: { ...baseline.releases, active: undefined } })).toBe(false);
   expect(legacyStableContextPackUpgradeBaseline({ ...baseline, probes: { ...baseline.probes, active_gateway: { ok: false, detail: 'down' } } })).toBe(false);
   expect(legacyStableContextPackUpgradeBaseline({ ...baseline, probes: { ...baseline.probes, runtime_execution_surface: { ok: false, detail: 'RUNTIME_RELEASE_PROCESS_RUNTIME_SURFACE_INCOMPLETE' } } })).toBe(false);
+});
+
+test('standalone Recovery retries one transport-only active gateway failure within the strict verification budget', async () => {
+  let calls = 0;
+  const result = await probeRuntimeGateway({
+    request: async () => {
+      calls += 1;
+      if (calls === 1) throw new Error('request failed');
+      return { status: 200, ok: true, headers: {}, body: '{}' };
+    },
+  }, 'http://127.0.0.1:8765/healthz');
+
+  expect(calls).toBe(2);
+  expect(result).toEqual({ ok: true, detail: 'HTTP 200', status: 200 });
+});
+
+test('standalone Recovery does not retry an unhealthy active gateway HTTP response', async () => {
+  let calls = 0;
+  const result = await probeRuntimeGateway({
+    request: async () => {
+      calls += 1;
+      return { status: 503, ok: false, headers: {}, body: 'not ready' };
+    },
+  }, 'http://127.0.0.1:8765/healthz');
+
+  expect(calls).toBe(1);
+  expect(result).toEqual({ ok: false, detail: 'HTTP 503', status: 503 });
+});
+
+test('standalone Recovery still fails closed when both active gateway transport attempts fail', async () => {
+  let calls = 0;
+  const result = await probeRuntimeGateway({
+    request: async () => {
+      calls += 1;
+      throw new Error(calls === 1 ? 'stale local connection' : 'listener unavailable');
+    },
+  }, 'http://127.0.0.1:8765/healthz');
+
+  expect(calls).toBe(2);
+  expect(result).toEqual({ ok: false, detail: 'listener unavailable' });
 });
 
 test('standalone Recovery compiler resolves account Bun when compiled Runtime PATH omits Bun', () => {

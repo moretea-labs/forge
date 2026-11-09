@@ -62,6 +62,22 @@ export async function probe(transport: RecoveryHttpTransport, url: string, timeo
   } finally { clearTimeout(timer); }
 }
 
+
+/**
+ * Stable Runtime cutover reuses the same loopback listener address across
+ * process replacement. Preserve the original four-second verification budget
+ * while allowing one stale local transport connection to clear. HTTP responses,
+ * including non-2xx responses, are authoritative and are never retried here.
+ */
+export async function probeRuntimeGateway(
+  transport: RecoveryHttpTransport,
+  url: string,
+): Promise<{ ok: boolean; detail: string; status?: number }> {
+  const first = await probe(transport, url, 750);
+  if (first.ok || first.status !== undefined) return first;
+  return probe(transport, url, 3_250);
+}
+
 export async function probeExternalMcp(
   transport: RecoveryHttpTransport,
   url: string,
