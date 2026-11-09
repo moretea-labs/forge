@@ -2886,6 +2886,8 @@ fn build_local_api_request(
     Ok(request)
 }
 
+// Runtime Autopilot --native-model-round expects one complete JSON envelope
+// on stdout; the interactive Client uses SSE, without changing that contract.
 async fn request_local_api_round(
     client: &reqwest::Client,
     endpoint: &str,
@@ -3156,29 +3158,6 @@ async fn request_local_api_round_stream_cancellable<H: LocalApiHost + Sync>(
         value = request_local_api_round_stream(
             host, conversation_id, client, endpoint, protocol, key, joycode, body
         ) => value,
-    }
-}
-
-async fn request_local_api_round_cancellable(
-    client: &reqwest::Client,
-    endpoint: &str,
-    protocol: &str,
-    key: Option<&str>,
-    joycode: Option<&JoyCodeSession>,
-    body: &Value,
-    cancellation: &mut tokio::sync::watch::Receiver<bool>,
-) -> Result<Value, String> {
-    if *cancellation.borrow() { return Err("FORGE_DESKTOP_API_TURN_CANCELLED".into()); }
-    tokio::select! {
-        biased;
-        changed = cancellation.changed() => {
-            if changed.is_ok() && *cancellation.borrow() {
-                Err("FORGE_DESKTOP_API_TURN_CANCELLED".into())
-            } else {
-                Err("FORGE_DESKTOP_API_CANCEL_CHANNEL_CLOSED".into())
-            }
-        }
-        value = request_local_api_round(client, endpoint, protocol, key, joycode, body) => value,
     }
 }
 
@@ -3988,76 +3967,76 @@ mod tests {
 
 
     #[test]
-    fn local_api_openai_and_claude_use_correct_http_paths_and_parse_tools() {
+    fn streamed_provider_http_paths_and_tools_use_one_streaming_transport() {
         use std::{io::{Read, Write}, net::TcpListener, thread, time::Duration};
-        for (protocol, expected_path, reply) in [
-            ("openai", "/v1/chat/completions", json!({
-                "choices":[{"message":{"role":"assistant","tool_calls":[{
-                    "id":"tool-1","type":"function",
-                    "function":{"name":"git_status","arguments":"{}"}
-                }]}}]
-            })),
-            ("anthropic", "/v1/messages", json!({
-                "content":[{"type":"tool_use","id":"toolu-1","name":"read_file","input":{"path":"README.md"}}]
-            })),
+        for (protocol, expected_path, frames, expected_tool) in [
+            ("openai", "/v1/chat/completions", vec![
+                json!({"choices":[{"delta":{"tool_calls":[{
+                    "index":0,"id":"tool-1","function":{"name":"git_status","arguments":"{}"}
+                }]}}]}).to_string(),
+                "[DONE]".to_string()
+            ], "git_status"),
+            ("anthropic", "/v1/messages", vec![
+                json!({"type":"content_block_start","index":0,"content_block":{
+                    "type":"tool_use","id":"toolu-1","name":"read_file","input":{"path":"README.md"}
+                }}).to_string(),
+                json!({"type":"message_stop"}).to_string()
+            ], "read_file"),
         ] {
-            let listener = TcpListener::bind("127.0.0.1:0").expect("loopback mock");
-            let port = listener.local_addr().expect("mock address").port();
+            let listener = TcpListener::bind("127.0.0.1:0").expect("mock SSE socket");
+            let port = listener.local_addr().unwrap().port();
             let expected_path = expected_path.to_string();
-            let response_body = reply.to_string();
             let server = thread::spawn(move || {
-                let (mut stream, _) = listener.accept().expect("mock connection");
-                stream.set_read_timeout(Some(Duration::from_secs(8))).expect("read timeout");
+                let (mut socket, _) = listener.accept().expect("mock connection");
+                socket.set_read_timeout(Some(Duration::from_secs(8))).unwrap();
                 let mut request = Vec::new();
                 let mut temp = [0u8; 2048];
                 let header_end = loop {
-                    let bytes = stream.read(&mut temp).expect("read request");
-                    assert!(bytes > 0 && request.len() < 128 * 1024, "bounded request");
-                    request.extend_from_slice(&temp[..bytes]);
-                    if let Some(end) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                    let n = socket.read(&mut temp).expect("headers");
+                    assert!(n > 0 && request.len() < 128 * 1024);
+                    request.extend_from_slice(&temp[..n]);
+                    if let Some(end) = request.windows(4).position(|item| item == b"\r\n\r\n") {
                         break end + 4;
                     }
                 };
                 let headers = String::from_utf8_lossy(&request[..header_end]).to_string();
-                assert!(headers.starts_with(&format!("POST {expected_path} HTTP/1.1")), "endpoint path");
-                assert!(headers.to_ascii_lowercase().contains("content-type: application/json"));
-                let content_length = headers.lines().find_map(|line| {
+                assert!(headers.starts_with(&format!("POST {expected_path} HTTP/1.1")));
+                assert!(headers.to_ascii_lowercase().contains("accept: text/event-stream"));
+                let length = headers.lines().find_map(|line| {
                     line.to_ascii_lowercase().strip_prefix("content-length:")
                         .and_then(|value| value.trim().parse::<usize>().ok())
-                }).expect("body length");
-                while request.len() - header_end < content_length {
-                    let bytes = stream.read(&mut temp).expect("body");
-                    assert!(bytes > 0, "complete body");
-                    request.extend_from_slice(&temp[..bytes]);
+                }).expect("Content-Length");
+                while request.len() - header_end < length {
+                    let n = socket.read(&mut temp).expect("request body");
+                    assert!(n > 0);
+                    request.extend_from_slice(&temp[..n]);
                 }
-                let body: Value = serde_json::from_slice(
-                    &request[header_end..header_end + content_length]
-                ).expect("valid provider payload");
-                assert_eq!(body["model"], "test-model");
-                assert_eq!(body["messages"][0]["role"], "user");
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    response_body.len(), response_body
-                );
-                stream.write_all(response.as_bytes()).expect("respond");
-                headers
+                let body: Value = serde_json::from_slice(&request[header_end..header_end+length]).unwrap();
+                assert_eq!(body["stream"],true);
+                assert_eq!(body["model"],"test-model");
+                assert_eq!(body["messages"][0]["role"],"user");
+                if expected_path == "/v1/messages" {
+                    assert!(headers.to_ascii_lowercase().contains("anthropic-version: 2023-06-01"));
+                }
+                let payload = frames.into_iter().map(|frame| format!("data: {frame}\r\n\r\n")).collect::<String>();
+                socket.write_all(format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    payload.len()
+                ).as_bytes()).unwrap();
+                socket.write_all(payload.as_bytes()).unwrap();
             });
-            let client = reqwest::Client::builder()
-                .timeout(Duration::from_secs(10)).redirect(reqwest::redirect::Policy::none())
-                .build().expect("client");
-            let response = tauri::async_runtime::block_on(request_local_api_round(
-                &client, &format!("http://127.0.0.1:{port}/v1"), protocol, None, None,
-                &json!({"model":"test-model","messages":[{"role":"user","content":"check repo"}]})
-            )).expect("local mock provider response");
-            let calls = provider_tool_calls(protocol, &response).expect("parsed provider calls");
-            assert_eq!(calls.len(), 1);
-            let headers = server.join().expect("mock received correct request");
-            if protocol == "anthropic" {
-                assert_eq!(calls[0].1, "read_file");
-                assert!(headers.to_ascii_lowercase().contains("anthropic-version: 2023-06-01"));
-            } else {
-                assert_eq!(calls[0].1, "git_status");
-            }
+            let host = RecordingStreamHost::default();
+            let client = reqwest::Client::new();
+            let endpoint = format!("http://127.0.0.1:{port}/v1");
+            let body = json!({"stream":true,"model":"test-model",
+                "messages":[{"role":"user","content":"check repo"}]});
+            let output = tauri::async_runtime::block_on(request_local_api_round_stream(
+                &host, "conv-path", &client, &endpoint, protocol, None, None, &body
+            )).expect("streamed model response");
+            let calls = provider_tool_calls(protocol,&output).expect("parsed tools");
+            assert_eq!(calls.len(),1);
+            assert_eq!(calls[0].1,expected_tool);
+            server.join().unwrap();
         }
     }
 
@@ -4107,10 +4086,13 @@ mod tests {
             });
             let client = reqwest::Client::builder().timeout(Duration::from_secs(3))
                 .build().expect("client");
-            let result = request_local_api_round_cancellable(
-                &client, &format!("http://127.0.0.1:{port}/v1"), "openai", None, None,
-                &json!({"model":"test-model","messages":[{"role":"user","content":"test"}]}),
-                &mut cancellation,
+            let host = RecordingStreamHost::default();
+            let endpoint = format!("http://127.0.0.1:{port}/v1");
+            let body = json!({"stream":true,"model":"test-model",
+                "messages":[{"role":"user","content":"test"}]});
+            let result = request_local_api_round_stream_cancellable(
+                &host, "conv-cancel", &client, &endpoint, "openai", None, None,
+                &body, &mut cancellation,
             ).await;
             cancel.await.expect("cancel delivered");
             result
