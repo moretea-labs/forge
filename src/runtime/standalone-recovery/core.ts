@@ -4057,6 +4057,8 @@ export function stageConfiguredRuntimeRelease(
   }
 }
 
+const RELEASE_SESSION_BUILD_COMMIT_LOCK_WAIT_MS = 120_000;
+
 export async function prepareConfiguredRuntimeReleaseSession(
   config: RecoveryConfig,
   dependencies: Pick<ConfiguredRuntimeActivationDependencies, 'stage' | 'materializeCandidateLane'> = {},
@@ -4393,10 +4395,11 @@ export async function prepareConfiguredRuntimeReleaseSession(
   }
 
   const { staged, candidateRelease } = candidateBuild.value;
-  const committed = await withLock(config, {
+  const commitIntent: RecoveryLockIntent = {
     action: 'release_session_prepare',
     ...(requestId?.trim() ? { requestId: requestId.trim() } : {}),
-  }, async () => {
+  };
+  const commitBuiltCandidate = () => withLock(config, commitIntent, async () => {
     const latest = readReleaseSession(config.controllerHome, sessionId);
     if (!latest) {
       return {
@@ -4465,12 +4468,18 @@ export async function prepareConfiguredRuntimeReleaseSession(
     };
   });
 
+  let committed = await commitBuiltCandidate();
+  const commitDeadline = Date.now() + RELEASE_SESSION_BUILD_COMMIT_LOCK_WAIT_MS;
+  while (!committed.acquired && Date.now() < commitDeadline) {
+    await sleep(250);
+    committed = await commitBuiltCandidate();
+  }
   if (!committed.acquired) {
     return {
       ok: false,
       attempted: false,
       noOp: true,
-      detail: 'Candidate B build completed; Stable A commit lock is busy: ' + recoveryBusyDetail(committed.owner),
+      detail: 'Candidate B build completed; Stable A commit lock remained busy after bounded wait: ' + recoveryBusyDetail(committed.owner),
       staged,
       releaseSession: readReleaseSession(config.controllerHome, sessionId) ?? frozenSession,
     };
