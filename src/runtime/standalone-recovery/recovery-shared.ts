@@ -238,8 +238,9 @@ export interface VerifyResult {
 export interface VerifyStableRuntimeOptions extends RuntimeReleaseExecutionCanaryDependencies {
   probeMcpProtocol?: boolean;
   /**
-   * ReleaseSession activation only: allow one transport-only reconnect on the
-   * canonical loopback health endpoint after listener replacement.
+   * Canonical verification defaults to one bounded transport-only reconnect on
+   * the loopback Runtime health endpoint after same-address listener replacement.
+   * Set false only for callers that explicitly require a single transport attempt.
    */
   stabilizeActiveGatewayTransport?: boolean;
 }
