@@ -23,6 +23,7 @@ import { recordOwnedResource } from '../../packages/kernel/identity/api/index';
 import { commitSelectedPaths, restoreSelectedPaths, selectedPathDiff } from '../../src/cli/repositories/selected-path-actions';
 import { acquireControllerLock, releaseControllerLock } from '../../src/cli/repositories/locks';
 import { persistControllerAccessMode } from '../../adapters/mcp/access-mode';
+import { classifyRepositoryCommand } from '../../src/cli/repositories/command-classifier';
 import { executionIdentityForRepository } from '../../src/runtime/control-plane/execution/execution-identity';
 import { readWorkHandle, WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
@@ -207,7 +208,7 @@ describe('structured registered worktree cleanup (#41)', () => {
     expect(fx.current().checkouts.find((item) => item.checkoutId === fx.target.checkoutId)?.lifecycle).toBe('removed');
   });
 
-  test('retains historical WorkHandle checkout identity even when no OwnedResource metadata exists', () => {
+  test('historical WorkHandle does not veto a safe worktree preview without current OwnedResource', () => {
     const fx = fixture();
     const previous = seedWorkHandle(fx.controllerHome, fx.repository, 'work-old-checkout-identity');
     seedHistoricalWorkHandle(fx.controllerHome, {
@@ -217,7 +218,7 @@ describe('structured registered worktree cleanup (#41)', () => {
       managedWorktree: true,
       branch: 'legacy-work-source',
     });
-    expect(() => fx.cleanup()).toThrow('GIT_WORKTREE_LEGACY_WORK_HANDLE_PROTECTED');
+    expect(fx.cleanup().status).toBe('preview');
     expect(existsSync(fx.linked)).toBe(true);
     expect(fx.current().checkouts.find((item) => item.checkoutId === fx.target.checkoutId)?.lifecycle).toBe('active');
   });
@@ -387,19 +388,23 @@ describe('repository command execution lifecycle', () => {
     }
   });
 
-  test('raw git commits derive staged-index scope while widening forms stay blocked and selected-path commits isolate unrelated staged work', async () => {
+  test('raw git commits allow native scope while selected-path commits isolate unrelated staged work', async () => {
     const route = (command: string[] | string) => classifyRepositoryCommandRoute(command);
     expect(route(['git', 'commit', '-m', 'staged index'])).toEqual({ route: 'process_managed', reason: 'workspace_write_requires_process_lease' });
     expect(route("git commit -m 'staged index shell'")).toEqual({ route: 'process_managed', reason: 'workspace_write_requires_process_lease' });
     expect(route(['bash', '-lc', "git commit -m 'wrapped staged index'"])).toEqual({ route: 'process_managed', reason: 'workspace_write_requires_process_lease' });
-    expect(route("git add . && git commit -m 'compound unsafe'")).toEqual({ route: 'reject', reason: 'git_commit_requires_explicit_path_scope' });
+    expect(route("git add . && git commit -m 'compound native'")).toEqual({ route: 'process_managed', reason: 'workspace_write_requires_process_lease' });
     expect(route(['git', 'commit', '--only', '-m', 'safe', '--', 'README.md'])).toEqual({ route: 'process_managed', reason: 'workspace_write_requires_process_lease' });
     expect(route(['git', 'commit', '-m', 'safe argv pathspec', '--', 'README.md', 'docs/forge-plugin-management.md'])).toEqual({ route: 'process_managed', reason: 'workspace_write_requires_process_lease' });
     expect(route("git commit -m 'safe shell pathspec' -- README.md docs/forge-plugin-management.md")).toEqual({ route: 'process_managed', reason: 'workspace_write_requires_process_lease' });
     expect(route(['bash', '-lc', "git commit -m 'safe wrapped pathspec' -- README.md"])).toEqual({ route: 'process_managed', reason: 'workspace_write_requires_process_lease' });
     expect(route(['bash', '-lc', "rg -n 'git commit' src tests"])).toEqual({ route: 'process_direct', reason: 'readonly_fast_path' });
-    expect(route(['git', 'commit', '-a', '-m', 'scope widening', '--', 'README.md'])).toEqual({ route: 'reject', reason: 'git_commit_requires_explicit_path_scope' });
-    expect(route("git commit --include -m 'scope widening' -- README.md")).toEqual({ route: 'reject', reason: 'git_commit_requires_explicit_path_scope' });
+    expect(route(['git', 'commit', '-a', '-m', 'tracked files', '--', 'README.md'])).toEqual({ route: 'process_managed', reason: 'workspace_write_requires_process_lease' });
+    expect(route("git commit --include -m 'native scope' -- README.md")).toEqual({ route: 'process_managed', reason: 'workspace_write_requires_process_lease' });
+    expect(route(['git', 'commit', '--amend', '--no-edit'])).toEqual({ route: 'process_managed', reason: 'workspace_write_requires_process_lease' });
+    expect(route(['git', 'commit', '--patch'])).toEqual({ route: 'process_managed', reason: 'workspace_write_requires_process_lease' });
+    expect(classifyRepositoryCommand(['git', 'reset', '--hard'], 'main')).toMatchObject({ risk: 'destructive', confirmation: 'strong_confirmation' });
+    expect(classifyRepositoryCommand(['git', 'push', '--force', 'origin', 'HEAD'], 'main')).toMatchObject({ risk: 'destructive', confirmation: 'strong_confirmation' });
 
     const controllerHome = tempRoot('forge-selected-commit-home-');
     const repoRoot = tempRoot('forge-selected-commit-repo-');
@@ -502,6 +507,44 @@ describe('repository command execution lifecycle', () => {
       expectedPatch:stale.diff,
       confirmAuthorization:true,
     })).toThrow('SELECTED_PATH_RESTORE_PATCH_CHANGED');
+  });
+
+  test('work-free native git -a, chained add/commit and amend execute without taking unrelated untracked files', async () => {
+    const controllerHome = tempRoot('forge-agent-git-home-');
+    const repoRoot = tempRoot('forge-agent-git-repo-');
+    const repository = seedRepo(controllerHome, repoRoot);
+    persistControllerAccessMode(controllerHome, 'full_access');
+
+    const execute = async (command: string | string[]) => {
+      const result = await executeRepositoryCommandViaProcessRuntime({
+        controllerHome, repository, command, timeoutMs: 10_000,
+        executionIdentity: executionIdentityForRepository(repository),
+      });
+      const terminal = result.process?.completed
+        ? result.process
+        : result.process
+          ? await waitRepositoryCommandProcess(controllerHome, repository.repoId, result.process.processId, { timeoutMs: 10_000 })
+          : undefined;
+      expect(terminal?.ok ?? result.ok).toBe(true);
+    };
+
+    writeFileSync(join(repoRoot, 'README.md'), 'tracked edit\n');
+    writeFileSync(join(repoRoot, 'untracked.txt'), 'preserve me\n');
+    await execute(['git', 'commit', '-am', 'tracked edit']);
+    expect(gitOutput(repoRoot, ['show', '--pretty=format:', '--name-only', 'HEAD'])).toBe('README.md');
+    expect(gitOutput(repoRoot, ['status', '--short'])).toContain('?? untracked.txt');
+
+    writeFileSync(join(repoRoot, 'new-file.txt'), 'explicitly selected\n');
+    await execute("git add new-file.txt && git commit -m 'native chained commit'");
+    expect(gitOutput(repoRoot, ['show', '--pretty=format:', '--name-only', 'HEAD'])).toBe('new-file.txt');
+    expect(gitOutput(repoRoot, ['status', '--short'])).toContain('?? untracked.txt');
+
+    const previousHead = gitOutput(repoRoot, ['rev-parse', 'HEAD']);
+    writeFileSync(join(repoRoot, 'new-file.txt'), 'amended\n');
+    git(repoRoot, ['add', 'new-file.txt']);
+    await execute(['git', 'commit', '--amend', '--no-edit']);
+    expect(gitOutput(repoRoot, ['rev-parse', 'HEAD'])).not.toBe(previousHead);
+    expect(gitOutput(repoRoot, ['status', '--short'])).toContain('?? untracked.txt');
   });
 
   test('routes fixed shell diagnostics and ordinary local scripts without weakening external boundaries', () => {
