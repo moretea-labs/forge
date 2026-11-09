@@ -222,6 +222,33 @@ enum SemanticRecordDetail {
     case requirement(RequirementRecordDetail)
     case plan(PlanRecordDetail)
 }
+struct ProjectScheduleDetail: Identifiable {
+    let scheduleId: String
+    let name: String
+    let enabled: Bool
+    let trigger: String
+    let operation: String
+    let updatedAt: String?
+    let lastTriggeredAt: String?
+    let nextEligibleAt: String?
+    let pausedReason: String?
+    var id: String { scheduleId }
+}
+
+struct ProjectPluginDetail: Identifiable {
+    let pluginId: String
+    let displayName: String
+    let pluginVersion: String?
+    let provider: String?
+    let enabled: Bool
+    let lifecycle: String
+    let health: String
+    let ready: Bool
+    let capabilities: [String]
+    let actionCount: Int
+    var id: String { pluginId }
+}
+
 struct RuntimeStatusDetail {
     let running: Bool
     let ready: Bool
@@ -349,15 +376,16 @@ struct RepositoryCheckoutContext {
 }
 enum NativePage: String, CaseIterable, Identifiable {
     case agent = "会话", requirement = "规划", plan = "Plan",
-         knowledge = "知识库", runtime = "Runtime", settings = "设置"
+         schedule = "计划任务", plugins = "插件", knowledge = "知识库", settings = "设置"
     var id: String { rawValue }
     var accessibilityId: String {
         switch self {
         case .agent: return "nav.agent"
         case .requirement: return "nav.requirement"
         case .plan: return "nav.plan"
+        case .schedule: return "nav.schedule"
+        case .plugins: return "nav.plugins"
         case .knowledge: return "nav.knowledge"
-        case .runtime: return "nav.runtime"
         case .settings: return "nav.settings"
         }
     }
@@ -366,8 +394,9 @@ enum NativePage: String, CaseIterable, Identifiable {
         case .agent: return "bubble.left.and.bubble.right"
         case .requirement: return "point.3.connected.trianglepath.dotted"
         case .plan: return "list.bullet.rectangle"
+        case .schedule: return "calendar.badge.clock"
+        case .plugins: return "puzzlepiece.extension"
         case .knowledge: return "books.vertical"
-        case .runtime: return "waveform.path.ecg"
         case .settings: return "gearshape"
         }
     }
@@ -430,6 +459,10 @@ final class NativeWorkspace: ObservableObject {
     @Published var planningAutopilotStatusError: String?
     @Published var autopilotLoading = false
     @Published var detail = ""
+    @Published var schedules: [ProjectScheduleDetail] = []
+    @Published var schedulesLoading = false
+    @Published var plugins: [ProjectPluginDetail] = []
+    @Published var pluginsLoading = false
     @Published var runtimeStatus: RuntimeStatusDetail?
     @Published var runtimeDiagnostics: RuntimeDiagnosticsDetail?
     @Published var runtimeLoading = false
@@ -1034,8 +1067,12 @@ final class NativeWorkspace: ObservableObject {
         }
     }
     func loadPage() async {
-        if page == .runtime {
-            await loadRuntimePage()
+        if page == .schedule {
+            await loadSchedulePage()
+            return
+        }
+        if page == .plugins {
+            await loadPluginsPage()
             return
         }
         if page == .knowledge {
@@ -1178,6 +1215,102 @@ final class NativeWorkspace: ObservableObject {
             detail = Self.prettyJSON(result)
             error = nil
         } catch { self.error = error.localizedDescription }
+    }
+
+    nonisolated static func scheduleTriggerLabel(_ trigger:[String:Any]) -> String {
+        switch trigger["type"] as? String ?? "manual" {
+        case "interval":
+            let minutes = (trigger["everyMinutes"] as? NSNumber)?.intValue
+            return minutes.map { "每 \($0) 分钟" } ?? "定时间隔"
+        case "cron":
+            let expression = trigger["cronExpression"] as? String ?? "Cron"
+            if let timezone = trigger["timezone"] as? String, !timezone.isEmpty { return "\(expression) · \(timezone)" }
+            return expression
+        case "calendar":
+            return trigger["calendarAt"] as? String ?? "指定时间"
+        case "condition":
+            return (trigger["condition"] as? [String:Any])?["kind"] as? String ?? "条件触发"
+        case "repository-event":
+            return trigger["eventName"] as? String ?? "仓库事件"
+        case "dependency-checkpoint":
+            let ids = trigger["dependencyJobIds"] as? [String] ?? []
+            return ids.isEmpty ? "依赖完成" : "依赖 \(ids.count) 个任务"
+        default:
+            return "手动"
+        }
+    }
+
+    nonisolated static func projectScheduleRows(_ result:[String:Any]) -> [ProjectScheduleDetail] {
+        let data = result["data"] as? [String:Any] ?? result
+        let rows = data["schedules"] as? [[String:Any]] ?? []
+        return rows.compactMap { row in
+            guard let scheduleId = row["scheduleId"] as? String else { return nil }
+            return ProjectScheduleDetail(
+                scheduleId:scheduleId,
+                name:row["name"] as? String ?? scheduleId,
+                enabled:row["enabled"] as? Bool == true,
+                trigger:scheduleTriggerLabel(row["trigger"] as? [String:Any] ?? [:]),
+                operation:row["operation"] as? String ?? "unknown",
+                updatedAt:row["updatedAt"] as? String,
+                lastTriggeredAt:row["lastTriggeredAt"] as? String,
+                nextEligibleAt:row["nextEligibleAt"] as? String,
+                pausedReason:row["pausedReason"] as? String
+            )
+        }
+    }
+
+    nonisolated static func projectPluginRows(_ result:[String:Any]) -> [ProjectPluginDetail] {
+        let rows = result["plugins"] as? [[String:Any]] ?? []
+        var seen = Set<String>()
+        return rows.compactMap { row in
+            guard let pluginId = row["pluginId"] as? String, seen.insert(pluginId).inserted else { return nil }
+            return ProjectPluginDetail(
+                pluginId:pluginId,
+                displayName:row["displayName"] as? String ?? pluginId,
+                pluginVersion:row["pluginVersion"] as? String,
+                provider:row["provider"] as? String,
+                enabled:row["enabled"] as? Bool == true,
+                lifecycle:row["lifecycle"] as? String ?? "unknown",
+                health:row["health"] as? String ?? "unknown",
+                ready:row["ready"] as? Bool == true,
+                capabilities:row["capabilities"] as? [String] ?? [],
+                actionCount:(row["actionCount"] as? NSNumber)?.intValue ?? 0
+            )
+        }
+    }
+
+    func loadSchedulePage() async {
+        guard let repoId else { schedules = []; return }
+        guard !schedulesLoading else { return }
+        schedulesLoading = true
+        defer { schedulesLoading = false }
+        do {
+            let value = try await ForgeBridge.request("read_project_schedules",["repoId":repoId])
+            guard self.repoId == repoId, self.page == .schedule else { return }
+            schedules = Self.projectScheduleRows(value)
+            error = nil
+        } catch {
+            guard self.repoId == repoId else { return }
+            schedules = []
+            self.error = error.localizedDescription
+        }
+    }
+
+    func loadPluginsPage() async {
+        guard let repoId else { plugins = []; return }
+        guard !pluginsLoading else { return }
+        pluginsLoading = true
+        defer { pluginsLoading = false }
+        do {
+            let value = try await ForgeBridge.request("read_project_plugins",["repoId":repoId])
+            guard self.repoId == repoId, self.page == .plugins else { return }
+            plugins = Self.projectPluginRows(value)
+            error = nil
+        } catch {
+            guard self.repoId == repoId else { return }
+            plugins = []
+            self.error = error.localizedDescription
+        }
     }
 
     nonisolated static func runtimeStatusDetail(_ result: [String:Any]) -> RuntimeStatusDetail {
@@ -1360,6 +1493,7 @@ final class NativeWorkspace: ObservableObject {
         settingsLoading = true
         defer { settingsLoading = false }
 
+        async let runtimeRefresh: Void = loadRuntimePage()
         async let statusRequest = ForgeBridge.request("read_local_provider_status")
         async let settingsRequest = ForgeBridge.request("read_local_api_settings")
         async let credentialRequest = ForgeBridge.request("managed_api_credential_control",["operation":"list"])
@@ -1391,7 +1525,8 @@ final class NativeWorkspace: ObservableObject {
             failures.append("密钥：\(error.localizedDescription)")
         }
 
-        self.error = failures.isEmpty ? nil : failures.joined(separator:"\n")
+        _ = await runtimeRefresh
+        if !failures.isEmpty { self.error = failures.joined(separator:"\n") }
     }
 
     func saveLocalApiSettings(

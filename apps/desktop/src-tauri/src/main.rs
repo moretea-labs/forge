@@ -506,6 +506,96 @@ async fn read_project_plan_list(repo_id: String) -> Result<Value, String> {
 }
 
 #[tauri::command]
+async fn read_project_schedules(repo_id: String) -> Result<Value, String> {
+    if repo_id.trim().is_empty() {
+        return Err("FORGE_DESKTOP_REPOSITORY_REQUIRED".to_string());
+    }
+    let result = call_runtime_tool(
+        "rh_work",
+        json!({
+            "repo_id": repo_id,
+            "operation": "schedule_list",
+            "include_occurrences": false,
+            "limit": 100,
+            "request_id": request_id("project-schedule-list")
+        }),
+    )
+    .await?;
+    Ok(semantic_facade_data(result))
+}
+
+#[tauri::command]
+async fn read_project_plugins(repo_id: String) -> Result<Value, String> {
+    if repo_id.trim().is_empty() {
+        return Err("FORGE_DESKTOP_REPOSITORY_REQUIRED".to_string());
+    }
+    let result = call_runtime_tool(
+        "list_plugins",
+        json!({
+            "repo_id": repo_id,
+            "request_id": request_id("project-plugin-list")
+        }),
+    )
+    .await?;
+    let plugins = result
+        .get("plugins")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .take(100)
+                .map(|plugin| {
+                    let lifecycle = plugin.get("lifecycle").and_then(Value::as_object);
+                    let health = plugin.get("health").and_then(Value::as_object);
+                    let capability_titles = plugin
+                        .get("capabilities")
+                        .and_then(Value::as_array)
+                        .map(|values| {
+                            values
+                                .iter()
+                                .take(8)
+                                .filter_map(|value| {
+                                    value
+                                        .get("title")
+                                        .and_then(Value::as_str)
+                                        .map(str::to_owned)
+                                        .or_else(|| {
+                                            value
+                                                .get("capabilityId")
+                                                .and_then(Value::as_str)
+                                                .map(str::to_owned)
+                                        })
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+                    json!({
+                        "pluginId": plugin.get("pluginId").and_then(Value::as_str),
+                        "displayName": plugin.get("displayName").and_then(Value::as_str),
+                        "pluginVersion": plugin.get("pluginVersion").and_then(Value::as_str),
+                        "provider": plugin.get("provider").and_then(Value::as_str),
+                        "enabled": plugin.get("enabled").and_then(Value::as_bool).unwrap_or(false),
+                        "lifecycle": lifecycle.and_then(|value| value.get("state")).and_then(Value::as_str),
+                        "health": health.and_then(|value| value.get("state")).and_then(Value::as_str),
+                        "ready": health.and_then(|value| value.get("ready")).and_then(Value::as_bool).unwrap_or(false),
+                        "capabilities": capability_titles,
+                        "actionCount": plugin
+                            .get("actions")
+                            .and_then(Value::as_array)
+                            .map(|values| values.len())
+                            .unwrap_or(0)
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    Ok(json!({
+        "repositoryId": result.get("repositoryId").and_then(Value::as_str),
+        "plugins": plugins
+    }))
+}
+
+#[tauri::command]
 async fn read_user_requests() -> Result<Value, String> {
     call_runtime_tool("rh_inbox", json!({
         "operation": "list",
@@ -2887,6 +2977,8 @@ fn main() {
             read_project_repository,
             read_project_requirement_list,
             read_project_plan_list,
+            read_project_schedules,
+            read_project_plugins,
             read_agent_git_diff,
             commit_agent_git_files,
             read_user_requests,

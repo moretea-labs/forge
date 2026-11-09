@@ -56,6 +56,10 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
             read_project_requirement_list(required(args, "repoId")?).await,
         "read_project_plan_list" =>
             read_project_plan_list(required(args, "repoId")?).await,
+        "read_project_schedules" =>
+            read_project_schedules(required(args, "repoId")?).await,
+        "read_project_plugins" =>
+            read_project_plugins(required(args, "repoId")?).await,
         "read_project_autopilot_statuses" =>
             read_project_autopilot_statuses(
                 required(args, "repoId")?,

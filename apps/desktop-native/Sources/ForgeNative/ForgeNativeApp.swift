@@ -876,8 +876,9 @@ private struct ForgeWorkspaceView: View {
             switch model.page {
             case .agent: AgentPane(model:model)
             case .requirement,.plan: RecordsPane(model:model)
+            case .schedule: SchedulePane(model:model)
+            case .plugins: PluginsPane(model:model)
             case .knowledge: KnowledgePane(model:model)
-            case .runtime: RuntimePane(model:model)
             case .settings: SettingsPane(model:model)
             }
         }
@@ -4209,23 +4210,178 @@ private struct RecordsPane: View {
     }
 }
 
-private struct RuntimePane: View {
+private struct SchedulePane: View {
     @ObservedObject var model: NativeWorkspace
 
     var body: some View {
         ScrollView {
             VStack(alignment:.leading,spacing:18) {
-                VStack(alignment:.leading,spacing:6) {
-                    Text("Runtime 与连接").font(.system(size:22,weight:.medium))
-                    Text("读取现有 Recovery 与 controller.connection 权威；此页面不提供版本切换、回滚或 Runtime 激活。")
-                        .font(.system(size:12)).foregroundStyle(ForgePalette.secondary)
+                HStack(alignment:.top) {
+                    VStack(alignment:.leading,spacing:5) {
+                        Text("计划任务").font(.system(size:22,weight:.medium))
+                        Text("直接读取 Forge Scheduler；Client 不维护第二份计划任务状态。")
+                            .font(.system(size:12)).foregroundStyle(ForgePalette.secondary)
+                    }
+                    Spacer()
+                    Button { Task { await model.loadSchedulePage() } } label: {
+                        if model.schedulesLoading { ProgressView().controlSize(.small) }
+                        else { Label("刷新",systemImage:"arrow.clockwise") }
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(model.schedulesLoading || model.repoId == nil)
+                    .accessibilityIdentifier("schedule.refresh")
                 }
-                runtimeCard
+
+                if model.repoId == nil {
+                    emptyState("先选择项目","计划任务按项目读取。")
+                } else if model.schedulesLoading && model.schedules.isEmpty {
+                    ProgressView("正在读取 Scheduler…").controlSize(.small)
+                } else if model.schedules.isEmpty {
+                    emptyState("暂无计划任务","当前项目没有 Forge Schedule；这里不会创建示例或客户端私有任务。")
+                } else {
+                    VStack(alignment:.leading,spacing:0) {
+                        ForEach(Array(model.schedules.enumerated()),id:\.element.id) { index,item in
+                            scheduleRow(item)
+                            if index < model.schedules.count - 1 { Divider() }
+                        }
+                    }
+                }
+            }
+            .frame(maxWidth:960,alignment:.leading)
+            .frame(maxWidth:.infinity,alignment:.leading)
+            .padding(30)
+        }
+    }
+
+    private func scheduleRow(_ item:ProjectScheduleDetail) -> some View {
+        HStack(alignment:.top,spacing:12) {
+            Circle().fill(item.enabled ? Color.green : Color.secondary).frame(width:7,height:7).padding(.top,6)
+            VStack(alignment:.leading,spacing:6) {
+                HStack(spacing:8) {
+                    Text(item.name).font(.system(size:13,weight:.semibold))
+                    if !item.enabled { Text("已暂停").font(.system(size:9.5,weight:.semibold)).foregroundStyle(.secondary) }
+                }
+                Text(item.trigger).font(.system(size:11.5)).foregroundStyle(ForgePalette.secondary)
+                HStack(spacing:14) {
+                    meta("动作",item.operation)
+                    if let next=item.nextEligibleAt { meta("下次",next) }
+                    else if let last=item.lastTriggeredAt { meta("上次",last) }
+                }
+                if let reason=item.pausedReason,!reason.isEmpty {
+                    Text(reason).font(.system(size:10.5)).foregroundStyle(.orange)
+                }
+            }
+            Spacer(minLength:8)
+        }.padding(.vertical,12)
+    }
+
+    private func meta(_ label:String,_ value:String) -> some View {
+        Text("\(label) · \(value)").font(.system(size:9.5,design:.monospaced)).foregroundStyle(.tertiary).lineLimit(1)
+    }
+
+    private func emptyState(_ title:String,_ detail:String) -> some View {
+        VStack(alignment:.leading,spacing:5) {
+            Text(title).font(.system(size:13,weight:.medium))
+            Text(detail).font(.system(size:11.5)).foregroundStyle(ForgePalette.secondary)
+        }.padding(.vertical,16)
+    }
+}
+
+private struct PluginsPane: View {
+    @ObservedObject var model: NativeWorkspace
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment:.leading,spacing:18) {
+                HStack(alignment:.top) {
+                    VStack(alignment:.leading,spacing:5) {
+                        Text("插件").font(.system(size:22,weight:.medium))
+                        Text("显示 Forge Runtime 已注册的插件能力；Agent 仍通过 canonical 插件 authority 执行动作。")
+                            .font(.system(size:12)).foregroundStyle(ForgePalette.secondary)
+                    }
+                    Spacer()
+                    Button { Task { await model.loadPluginsPage() } } label: {
+                        if model.pluginsLoading { ProgressView().controlSize(.small) }
+                        else { Label("刷新",systemImage:"arrow.clockwise") }
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(model.pluginsLoading || model.repoId == nil)
+                    .accessibilityIdentifier("plugins.refresh")
+                }
+
+                if model.repoId == nil {
+                    emptyState("先选择项目","插件能力会结合当前项目返回。")
+                } else if model.pluginsLoading && model.plugins.isEmpty {
+                    ProgressView("正在读取插件…").controlSize(.small)
+                } else if model.plugins.isEmpty {
+                    emptyState("没有可用插件","Runtime 当前没有为这个项目注册插件。")
+                } else {
+                    VStack(alignment:.leading,spacing:0) {
+                        ForEach(Array(model.plugins.enumerated()),id:\.element.id) { index,item in
+                            pluginRow(item)
+                            if index < model.plugins.count - 1 { Divider() }
+                        }
+                    }
+                }
+            }
+            .frame(maxWidth:960,alignment:.leading)
+            .frame(maxWidth:.infinity,alignment:.leading)
+            .padding(30)
+        }
+    }
+
+    private func pluginRow(_ item:ProjectPluginDetail) -> some View {
+        HStack(alignment:.top,spacing:12) {
+            Circle().fill(item.ready && item.enabled ? Color.green : Color.orange).frame(width:7,height:7).padding(.top,6)
+            VStack(alignment:.leading,spacing:6) {
+                HStack(spacing:8) {
+                    Text(item.displayName).font(.system(size:13,weight:.semibold))
+                    if let version=item.pluginVersion,!version.isEmpty {
+                        Text(version).font(.system(size:9.5,design:.monospaced)).foregroundStyle(.tertiary)
+                    }
+                }
+                if !item.capabilities.isEmpty {
+                    Text(item.capabilities.joined(separator:" · "))
+                        .font(.system(size:11.5)).foregroundStyle(ForgePalette.secondary).lineLimit(2)
+                }
+                HStack(spacing:14) {
+                    meta("状态",item.health)
+                    meta("动作","\(item.actionCount)")
+                    if let provider=item.provider,!provider.isEmpty { meta("Provider",provider) }
+                }
+            }
+            Spacer(minLength:8)
+        }.padding(.vertical,12)
+    }
+
+    private func meta(_ label:String,_ value:String) -> some View {
+        Text("\(label) · \(value)").font(.system(size:9.5,design:.monospaced)).foregroundStyle(.tertiary).lineLimit(1)
+    }
+
+    private func emptyState(_ title:String,_ detail:String) -> some View {
+        VStack(alignment:.leading,spacing:5) {
+            Text(title).font(.system(size:13,weight:.medium))
+            Text(detail).font(.system(size:11.5)).foregroundStyle(ForgePalette.secondary)
+        }.padding(.vertical,16)
+    }
+}
+
+private struct RuntimeSettingsSection: View {
+    @ObservedObject var model: NativeWorkspace
+
+    var body: some View {
+        VStack(alignment:.leading,spacing:18) {
+            VStack(alignment:.leading,spacing:5) {
+                Text("连接与 Runtime").font(.system(size:13,weight:.semibold))
+                Text("MCP 连接、Recovery 与 Runtime 诊断。这里不提供版本切换、回滚或 Runtime 激活。")
+                    .font(.system(size:11.5)).foregroundStyle(ForgePalette.secondary)
+            }
+            runtimeCard
+            Divider()
+            connectionCard
+            if let diagnostics = model.runtimeDiagnostics {
                 Divider()
-                connectionCard
-                Divider()
-                if let diagnostics = model.runtimeDiagnostics {
-                    VStack(alignment:.leading,spacing:12) {
+                VStack(alignment:.leading,spacing:12) {
                         HStack(alignment:.top) {
                             VStack(alignment:.leading,spacing:3) {
                                 Text("上次诊断").font(.system(size:12,weight:.semibold))
@@ -4249,13 +4405,9 @@ private struct RuntimePane: View {
                                 Spacer()
                             }
                         }
-                    }
-                    .padding(.vertical,6)
                 }
+                .padding(.vertical,6)
             }
-            .frame(maxWidth:960,alignment:.leading)
-            .frame(maxWidth:.infinity,alignment:.leading)
-            .padding(30)
         }
     }
 
@@ -4306,8 +4458,37 @@ private struct RuntimePane: View {
             if let status = model.connectionStatus {
                 connectionRow("控制器",status.controller)
                 connectionRow("传输",status.tunnel)
+                if !status.configured {
+                    Divider()
+                    VStack(alignment:.leading,spacing:7) {
+                        HStack {
+                            Text("首次连接").font(.system(size:11.5,weight:.semibold))
+                            Spacer()
+                            Button("复制 ChatGPT 配置命令") {
+                                let commands = """
+                                forge setup
+                                forge setup configure --controller chatgpt --tunnel auto
+                                forge setup next
+                                """
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(commands,forType:.string)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityIdentifier("connection.copySetup")
+                        }
+                        Text("连接配置仍由 Forge Setup 持久化，Client 不创建另一份 MCP 配置。ChatGPT 推荐路径：")
+                            .font(.system(size:11)).foregroundStyle(ForgePalette.secondary)
+                        Text("forge setup\nforge setup configure --controller chatgpt --tunnel auto\nforge setup next")
+                            .font(.system(size:10.5,design:.monospaced))
+                            .foregroundStyle(ForgePalette.secondary)
+                            .textSelection(.enabled)
+                        Text("Codex / Claude 等本地控制器不需要远程 tunnel；运行 forge setup 后按 Next 引导完成即可。")
+                            .font(.system(size:10.5)).foregroundStyle(.tertiary)
+                    }
+                    .padding(.top,2)
+                }
             } else {
-                Text("连接状态来自 Forge setup authority；客户端不保存第二份连接配置。")
+                Text("连接状态来自 Forge Setup authority；客户端不保存第二份连接配置。")
                     .font(.system(size:12)).foregroundStyle(ForgePalette.secondary)
             }
         }
@@ -4471,8 +4652,8 @@ private struct SettingsPane: View {
             VStack(alignment:.leading,spacing:18) {
                 HStack(alignment:.top) {
                     VStack(alignment:.leading,spacing:6) {
-                        Text("Agent 设置").font(.system(size:22,weight:.medium))
-                        Text("Provider 按会话固定：Codex 使用 Forge controller.local_conversation；兼容 API 与 JoyCode 共用同一 Rust Agent 核心、取消与工具事件协议。已有历史不会因默认配置改变而切换 Provider。")
+                        Text("设置").font(.system(size:22,weight:.medium))
+                        Text("Agent、MCP 连接与 Runtime 的本机配置。Runtime 不再占用工作区主导航。")
                             .font(.system(size:12)).foregroundStyle(ForgePalette.secondary)
                     }
                     Spacer()
@@ -4486,6 +4667,9 @@ private struct SettingsPane: View {
                     .accessibilityIdentifier("settings.refresh")
                 }
 
+                RuntimeSettingsSection(model:model)
+                Divider()
+
                 VStack(alignment:.leading,spacing:13) {
                     HStack(spacing:9) {
                         Circle().fill(model.selectedProviderReady ? Color.green : Color.orange)
@@ -4493,10 +4677,6 @@ private struct SettingsPane: View {
                         Text("当前会话 · \(model.selectedProvider == "joycode" ? "JoyCode" : (model.selectedProvider == "api" ? "兼容 API" : "Codex CLI"))")
                             .font(.system(size:14,weight:.semibold))
                         Spacer()
-                        Text("当前执行 Provider")
-                            .font(.system(size:9.5,weight:.semibold))
-                            .padding(.horizontal,8).frame(height:22)
-                            .background(ForgePalette.selection,in:Capsule())
                     }
                     Text(model.selectedProvider == "joycode"
                          ? (model.joyCodeProfileReady ? "复用本机 JoyCode 登录态；凭据不会写入 Forge 配置。" : "JoyCode 登录态尚未就绪。")
@@ -4504,7 +4684,8 @@ private struct SettingsPane: View {
                             ? (model.apiProfileReady ? "使用保存的兼容 API profile；仓库写权限按 Repository AccessPolicy 持续生效，密钥授权按 Grant 复用。" : "API profile 尚未完成。")
                             : model.provider))
                         .font(.system(size:12)).foregroundStyle(ForgePalette.secondary)
-                    HStack(spacing:16) {
+                    LazyVGrid(columns:[GridItem(.adaptive(minimum:145,maximum:260),spacing:14,alignment:.leading)],
+                              alignment:.leading,spacing:10) {
                         settingMeta("会话模型",NativeWorkspace.matchesExternalProvider(model.selectedProvider)
                                     ? (model.selectedApiModel.isEmpty ? "未配置" : model.selectedApiModel)
                                     : (model.selectedAgentModel?.displayName ?? "Codex 默认"))
@@ -4528,7 +4709,8 @@ private struct SettingsPane: View {
                             .foregroundStyle(model.apiProfileReady ? Color.green : Color.orange)
                     }
                     if let settings = model.localApiSettings {
-                        HStack(spacing:16) {
+                        LazyVGrid(columns:[GridItem(.adaptive(minimum:145,maximum:260),spacing:14,alignment:.leading)],
+                                  alignment:.leading,spacing:10) {
                             settingMeta("新会话默认",settings.provider == "joycode" ? "JoyCode" : (settings.provider == "api" ? "兼容 API" : "Codex CLI"))
                             settingMeta("协议",settings.apiProtocol)
                             settingMeta("Credential",settings.credentialRef ?? (settings.endpoint == "https://zro.moonmath.ai/v1" ? "zro 管理" : "未选择"))
@@ -4657,8 +4839,11 @@ private struct SettingsPane: View {
 
     private var settingsSignature: String {
         guard let settings = model.localApiSettings else { return "none" }
+        // Only persisted configuration can resynchronize an editable draft.
+        // Session readiness and credential health refresh independently and
+        // must never silently overwrite a user's unsaved form values.
         return [settings.provider,settings.endpoint,settings.model,settings.apiProtocol,
-                settings.credentialRef ?? "",settings.joyCodeModel,settings.hasKey ? "1" : "0",settings.joyCodeReady ? "1" : "0"].joined(separator:"|")
+                settings.credentialRef ?? "",settings.joyCodeModel].joined(separator:"|")
     }
 
     private func syncSettingsDraft() {
@@ -4740,8 +4925,14 @@ private struct SettingsPane: View {
     private func settingMeta(_ label:String,_ value:String) -> some View {
         VStack(alignment:.leading,spacing:3) {
             Text(label).font(.system(size:9.5,weight:.medium)).foregroundStyle(.tertiary)
-            Text(value).font(.system(size:11.5,weight:.medium)).textSelection(.enabled)
+            Text(value)
+                .font(.system(size:11.5,weight:.medium))
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .help(value)
+                .textSelection(.enabled)
         }
+        .frame(maxWidth:.infinity,alignment:.leading)
     }
 
     private func settingLine(_ label:String,_ value:String) -> some View {

@@ -1300,6 +1300,57 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertNil(try JSONDecoder().decode(ChatMessage.self,from:oldData).incomplete)
     }
 
+    func testProjectScheduleRowsDecodeCanonicalSchedulerProjection() {
+        let rows = NativeWorkspace.projectScheduleRows([
+            "schedules":[[
+                "scheduleId":"schedule-1",
+                "name":"Watch release",
+                "enabled":true,
+                "trigger":["type":"interval","everyMinutes":10],
+                "operation":"browser_observation",
+                "updatedAt":"2026-11-09T00:00:00Z",
+                "nextEligibleAt":"2026-11-09T00:10:00Z"
+            ]]
+        ])
+        XCTAssertEqual(rows.count,1)
+        XCTAssertEqual(rows[0].scheduleId,"schedule-1")
+        XCTAssertEqual(rows[0].trigger,"每 10 分钟")
+        XCTAssertEqual(rows[0].operation,"browser_observation")
+        XCTAssertTrue(rows[0].enabled)
+    }
+
+    func testProjectPluginRowsDecodeBoundedPluginProjection() {
+        let rows = NativeWorkspace.projectPluginRows([
+            "plugins":[[
+                "pluginId":"browser",
+                "displayName":"Browser",
+                "pluginVersion":"1.2.3",
+                "provider":"forge",
+                "enabled":true,
+                "lifecycle":"enabled",
+                "health":"ready",
+                "ready":true,
+                "capabilities":["Navigate","Read page"],
+                "actionCount":4
+            ],[
+                "pluginId":"browser",
+                "displayName":"Browser duplicate scope",
+                "enabled":true,
+                "lifecycle":"enabled",
+                "health":"ready",
+                "ready":true,
+                "capabilities":["Duplicate"],
+                "actionCount":2
+            ]]
+        ])
+        XCTAssertEqual(rows.count,1)
+        XCTAssertEqual(rows[0].pluginId,"browser")
+        XCTAssertEqual(rows[0].displayName,"Browser")
+        XCTAssertEqual(rows[0].capabilities,["Navigate","Read page"])
+        XCTAssertEqual(rows[0].actionCount,4)
+        XCTAssertTrue(rows[0].ready)
+    }
+
     func testRegistryProjectLabelDoesNotFabricateRepository() {
         let item = ForgeProject(repoId:"r",displayName:"Forge",localRoot:nil,checkoutId:nil,
                                 remoteUrl:"https://github.com/moretea-labs/forge.git",defaultBranch:"main")
