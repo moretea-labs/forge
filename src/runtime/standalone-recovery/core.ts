@@ -175,6 +175,7 @@ import {
   observeRecentMacNetworkExtensionChanges,
   openAiTunnelObservationFromProbe,
   probe,
+  probeRuntimeGateway,
   probeExternalMcp,
   probeOpenAiApiReachability,
   probeOpenAiRecoveryTunnel,
@@ -844,7 +845,9 @@ export async function verifyStableRuntime(
   }
   const endpoint = observation.snapshot?.endpoint;
   probes.active_gateway = endpoint
-    ? await probe(transport, runtimeHealthEndpoint(endpoint))
+    ? await (options.stabilizeActiveGatewayTransport
+        ? probeRuntimeGateway(transport, runtimeHealthEndpoint(endpoint))
+        : probe(transport, runtimeHealthEndpoint(endpoint)))
     : { ok: false, detail: 'canonical Runtime endpoint is unavailable' };
   probes.runtime_execution_surface = probeRuntimeExecutionSurface(config, active, options);
   if (config.publicMcpUrl) {
@@ -1280,6 +1283,10 @@ async function verifyLocalRuntime(
  */
 async function verifyLocalRuntimeForReleaseCutover(config: RecoveryConfig): Promise<VerifyResult> {
   return verifyLocalRuntime({ ...config, primaryConnectorService: undefined }, { probeMcpProtocol: false });
+}
+
+async function verifyLocalRuntimeForReleaseActivation(config: RecoveryConfig): Promise<VerifyResult> {
+  return verifyLocalRuntime(config, { stabilizeActiveGatewayTransport: true });
 }
 
 async function verifyRecoveryPreflight(
@@ -5201,7 +5208,10 @@ export async function cutoverConfiguredRuntimeReleaseSession(
           }],
         });
 
-        const activation = await activateRuntimeReleaseInternal(config, promoted.manifestPath, {}, {
+        const activation = await activateRuntimeReleaseInternal(config, promoted.manifestPath, {
+          verifyLocal: verifyLocalRuntimeForReleaseActivation,
+          observeLocal: observePrimaryRuntimeActivationReadiness,
+        }, {
           ...(requestId?.trim() ? { requestId: requestId.trim() } : {}),
           expectedAuthorityRevision: session.stableRelease.authorityRevision,
           expectedActiveReleaseId: session.stableRelease.releaseId,
