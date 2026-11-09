@@ -471,6 +471,7 @@ final class NativeWorkspace: ObservableObject {
     @Published var userRequestsLoading = false
     @Published var userRequestsError: String?
     @Published var userRequestsPossiblyTruncated = false
+    @Published var userRequestsTotalCount: Int?
     @Published var busy = false
     @Published private(set) var activeConversationId: String?
     private var activeApiTurn: ForgeApiTurn?
@@ -1012,6 +1013,13 @@ final class NativeWorkspace: ObservableObject {
         return data["possiblyTruncated"] as? Bool == true
     }
 
+    nonisolated static func userRequestsTotalCount(_ result:[String:Any]) -> Int? {
+        let outer = result["data"] as? [String:Any] ?? result
+        let data = outer["data"] as? [String:Any] ?? outer
+        guard data["countExact"] as? Bool == true else { return nil }
+        return (data["totalCount"] as? NSNumber)?.intValue
+    }
+
     nonisolated static func relevantUserRequestRows(
         _ rows:[UserRequestDetail], repoId:String?
     ) -> [UserRequestDetail] {
@@ -1035,6 +1043,7 @@ final class NativeWorkspace: ObservableObject {
             )
             userRequests = Self.userRequestRows(value)
             userRequestsPossiblyTruncated = Self.userRequestsPossiblyTruncated(value)
+            userRequestsTotalCount = Self.userRequestsTotalCount(value)
             userRequestsError = nil
         } catch {
             userRequestsError = error.localizedDescription
@@ -1062,6 +1071,7 @@ final class NativeWorkspace: ObservableObject {
             )
             userRequests = Self.userRequestRows(value)
             userRequestsPossiblyTruncated = Self.userRequestsPossiblyTruncated(value)
+            userRequestsTotalCount = Self.userRequestsTotalCount(value)
             userRequestsError = nil
         } catch {
             userRequestsError = error.localizedDescription

@@ -104,6 +104,7 @@ private struct ForgeWorkspaceView: View {
     @State private var inboxDecisionRequestId: String?
     @State private var inboxDecision = ""
     @State private var inboxDismissRequestId: String?
+    @State private var expandedInboxRequestIds: Set<String> = []
     @FocusState private var sidebarSearchFocused: Bool
 
     var body: some View {
@@ -173,10 +174,10 @@ private struct ForgeWorkspaceView: View {
                             .font(.system(size:12.5,weight:.medium))
                             .frame(width:28,height:30)
                         if !model.relevantUserRequests.isEmpty {
-                            let count = model.relevantUserRequests.count
-                            Text(model.userRequestsPossiblyTruncated
-                                 ? "\(min(count,99))+"
-                                 : (count > 99 ? "99+" : "\(count)"))
+                            let visibleCount = model.relevantUserRequests.count
+                            let exactCount = model.userRequestsTotalCount
+                            Text(exactCount.map { $0 > 99 ? "99+" : "\($0)" }
+                                 ?? "\(min(visibleCount,99))+")
                                 .font(.system(size:8,weight:.bold))
                                 .padding(.horizontal,3).frame(minWidth:13,minHeight:13)
                                 .background(Capsule().fill(ForgePalette.accent))
@@ -188,9 +189,8 @@ private struct ForgeWorkspaceView: View {
                 }
                 .buttonStyle(.plain)
                 .help("待处理请求")
-                .accessibilityLabel(model.userRequestsPossiblyTruncated
-                    ? "待处理请求至少 \(model.relevantUserRequests.count)"
-                    : "待处理请求 \(model.relevantUserRequests.count)")
+                .accessibilityLabel(model.userRequestsTotalCount.map { "待处理请求 \($0)" }
+                    ?? "待处理请求至少 \(model.relevantUserRequests.count)")
                 .accessibilityIdentifier("sidebar.inbox.open")
                 .popover(isPresented:$inboxShown,arrowEdge:.trailing) {
                     inboxPanel
@@ -293,7 +293,9 @@ private struct ForgeWorkspaceView: View {
                     Text(model.repoId == nil ? "全局请求" : "当前项目与全局请求")
                         .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
                     if model.userRequestsPossiblyTruncated {
-                        Text("还有更早的全局请求未显示")
+                        Text(model.userRequestsTotalCount == nil
+                             ? "当前 Runtime 仅能确认这些请求；可能还有更早项目外请求"
+                             : "列表已截断；徽标数量仍来自完整 scoped count")
                             .font(.system(size:9.5)).foregroundStyle(.tertiary)
                     }
                 }
@@ -313,19 +315,27 @@ private struct ForgeWorkspaceView: View {
 
             Divider()
 
-            if let error = model.userRequestsError, model.relevantUserRequests.isEmpty {
-                Text("Inbox 暂不可用：\(error)")
-                    .font(.system(size:11.5))
-                    .foregroundStyle(ForgePalette.secondary)
-                    .padding(14)
-            } else if model.userRequestsLoading && model.relevantUserRequests.isEmpty {
+            if let error = model.userRequestsError {
+                HStack(alignment:.top,spacing:8) {
+                    Image(systemName:"exclamationmark.circle")
+                    Text("请求状态未确认：\(error)。请刷新核对后再提交。")
+                        .font(.system(size:11))
+                        .fixedSize(horizontal:false,vertical:true)
+                        .textSelection(.enabled)
+                    Spacer(minLength:6)
+                }
+                .foregroundStyle(.orange)
+                .padding(.horizontal,14).padding(.vertical,10)
+                .accessibilityIdentifier("inbox.error")
+            }
+            if model.userRequestsLoading && model.relevantUserRequests.isEmpty {
                 ProgressView("正在读取…").controlSize(.small).padding(14)
-            } else if model.relevantUserRequests.isEmpty {
+            } else if model.relevantUserRequests.isEmpty && model.userRequestsError == nil {
                 Text("当前没有需要处理的请求。")
                     .font(.system(size:11.5))
                     .foregroundStyle(ForgePalette.secondary)
                     .padding(14)
-            } else {
+            } else if !model.relevantUserRequests.isEmpty {
                 ScrollView {
                     LazyVStack(alignment:.leading,spacing:0) {
                         ForEach(Array(model.relevantUserRequests.enumerated()),id:\.element.id) { index,item in
@@ -358,6 +368,7 @@ private struct ForgeWorkspaceView: View {
 
     private func inboxRequestRow(_ item:UserRequestDetail) -> some View {
         let editing = inboxDecisionRequestId == item.requestId
+        let expanded = expandedInboxRequestIds.contains(item.requestId)
         return VStack(alignment:.leading,spacing:7) {
             HStack(alignment:.top,spacing:8) {
                 Image(systemName:inboxActionIcon(item.actionRequired))
@@ -369,7 +380,19 @@ private struct ForgeWorkspaceView: View {
                     Text(item.summary)
                         .font(.system(size:10.5))
                         .foregroundStyle(ForgePalette.secondary)
-                        .lineLimit(editing ? 8 : 3)
+                        .lineLimit(editing || expanded ? nil : 3)
+                        .textSelection(.enabled)
+                    if item.summary.count > 100 && !editing {
+                        Button(expanded ? "收起说明" : "查看完整说明") {
+                            if !expandedInboxRequestIds.insert(item.requestId).inserted {
+                                expandedInboxRequestIds.remove(item.requestId)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .font(.system(size:10.5,weight:.medium))
+                        .foregroundStyle(ForgePalette.secondary)
+                        .accessibilityIdentifier("inbox.\(item.requestId).details")
+                    }
                     HStack(spacing:8) {
                         Text(inboxActionLabel(item.actionRequired))
                         if item.targetRepoId == nil { Text("全局") }
@@ -380,18 +403,17 @@ private struct ForgeWorkspaceView: View {
             }
 
             if editing {
-                TextField(
-                    item.actionRequired == "product_decision" || item.actionRequired == "confirm_destructive"
-                        ? "输入决定，例如：允许 / 不允许"
-                        : "输入完成情况，例如：已完成登录",
-                    text:$inboxDecision
-                )
-                .textFieldStyle(.roundedBorder)
-                .font(.system(size:11))
-                .accessibilityIdentifier("inbox.\(item.requestId).decision")
+                TextField(inboxDecisionPlaceholder(item.actionRequired),
+                          text:$inboxDecision,axis:.vertical)
+                    .lineLimit(2...4)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size:11))
+                    .accessibilityIdentifier("inbox.\(item.requestId).decision")
+                Text("此处只记录回复，不会代你完成登录、授权或其他操作。")
+                    .font(.system(size:10)).foregroundStyle(.tertiary)
 
                 HStack(spacing:10) {
-                    Button("记录并关闭") {
+                    Button("提交回复并关闭") {
                         let decision=inboxDecision
                         Task {
                             await model.resolveUserRequest(item,decision:decision)
@@ -404,10 +426,11 @@ private struct ForgeWorkspaceView: View {
                     .buttonStyle(.borderedProminent)
                     .controlSize(.small)
                     .disabled(inboxDecision.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty || model.userRequestsLoading)
-                    Button("忽略") { inboxDismissRequestId=item.requestId }
+                    Button("忽略请求") { inboxDismissRequestId=item.requestId }
                         .buttonStyle(.plain)
                         .controlSize(.small)
                         .foregroundStyle(ForgePalette.secondary)
+                        .disabled(model.userRequestsLoading)
                     Button("取消") {
                         inboxDecisionRequestId=nil
                         inboxDecision=""
@@ -420,17 +443,37 @@ private struct ForgeWorkspaceView: View {
             } else {
                 HStack {
                     Spacer()
-                    Button("处理") {
+                    Button(inboxHandleLabel(item.actionRequired)) {
                         inboxDecisionRequestId=item.requestId
                         inboxDecision=""
                     }
                     .buttonStyle(.plain)
                     .font(.system(size:10.5,weight:.medium))
+                    .disabled(model.userRequestsLoading)
                     .accessibilityIdentifier("inbox.\(item.requestId).handle")
                 }
             }
         }
         .padding(.vertical,10)
+    }
+
+    private func inboxHandleLabel(_ action:String) -> String {
+        switch action {
+        case "login": return "报告登录结果"
+        case "grant_permission": return "报告授权结果"
+        case "confirm_destructive": return "填写确认决定"
+        case "product_decision": return "作出决定"
+        default: return "填写处理结果"
+        }
+    }
+
+    private func inboxDecisionPlaceholder(_ action:String) -> String {
+        switch action {
+        case "login": return "说明登录是否已完成"
+        case "grant_permission": return "说明授权是否已完成"
+        case "confirm_destructive": return "明确填写批准或拒绝及原因"
+        default: return "填写你的决定或处理结果"
+        }
     }
 
     private func inboxActionLabel(_ action:String) -> String {

@@ -626,27 +626,57 @@ async fn read_project_plugins(repo_id: String) -> Result<Value, String> {
     }))
 }
 
-fn merge_user_request_projections(all_result: Value, repo_result: Option<Value>) -> Value {
-    fn items(result: Value) -> Vec<Value> {
-        semantic_facade_data(result)
-            .get("items")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default()
+fn merge_user_request_projections(
+    global_result: Value,
+    repo_result: Option<Value>,
+    global_scope_supported: bool,
+) -> Value {
+    struct Projection {
+        items: Vec<Value>,
+        total_count: Option<usize>,
+        truncated: bool,
+    }
+    fn projection(result: Value) -> Projection {
+        let data = semantic_facade_data(result);
+        let items = data.get("items").and_then(Value::as_array).cloned().unwrap_or_default();
+        let total_count = data.get("totalCount").and_then(Value::as_u64).map(|value| value as usize);
+        let truncated = data.get("truncated").and_then(Value::as_bool).unwrap_or(items.len() >= 50);
+        Projection { items, total_count, truncated }
     }
 
-    let all_items = items(all_result);
-    let mut merged = all_items
-        .iter()
-        .filter(|item| item.get("targetScope").is_none())
-        .cloned()
-        .collect::<Vec<_>>();
-    let mut possibly_truncated = all_items.len() >= 50;
+    let global_projection = projection(global_result);
+    let global_items = if global_scope_supported {
+        global_projection.items.clone()
+    } else {
+        global_projection.items.iter()
+            .filter(|item| item.get("targetScope").is_none())
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    let global_count_exact = if global_scope_supported {
+        global_projection.total_count.is_some() || !global_projection.truncated
+    } else {
+        !global_projection.truncated
+    };
+    let global_total = if global_scope_supported {
+        global_projection.total_count.unwrap_or(global_items.len())
+    } else {
+        global_items.len()
+    };
+
+    let mut merged = global_items;
+    let mut exact_total = global_total;
+    let mut count_exact = global_count_exact;
+    let mut list_truncated = global_projection.truncated;
 
     if let Some(repo_result) = repo_result {
-        let repo_items = items(repo_result);
-        possibly_truncated |= repo_items.len() >= 50;
-        for item in repo_items {
+        let repo_projection = projection(repo_result);
+        let repo_count_exact = repo_projection.total_count.is_some() || !repo_projection.truncated;
+        let repo_total = repo_projection.total_count.unwrap_or(repo_projection.items.len());
+        exact_total += repo_total;
+        count_exact &= repo_count_exact;
+        list_truncated |= repo_projection.truncated;
+        for item in repo_projection.items {
             let request_id = item.get("requestId").and_then(Value::as_str).unwrap_or_default();
             if request_id.is_empty()
                 || merged.iter().any(|current| current.get("requestId").and_then(Value::as_str) == Some(request_id)) {
@@ -663,18 +693,36 @@ fn merge_user_request_projections(all_result: Value, repo_result: Option<Value>)
     json!({
         "items": merged,
         "knownCount": merged.len(),
-        "possiblyTruncated": possibly_truncated
+        "totalCount": if count_exact { exact_total } else { merged.len() },
+        "countExact": count_exact,
+        "possiblyTruncated": !count_exact || list_truncated,
+        "listTruncated": list_truncated,
+        "globalScopeSupported": global_scope_supported
     })
 }
 
 #[tauri::command]
 async fn read_user_requests(repo_id: Option<String>) -> Result<Value, String> {
-    let all_result = call_runtime_tool("rh_inbox", json!({
+    let global_scoped = call_runtime_tool("rh_inbox", json!({
         "operation": "list",
+        "scope": "global",
         "detail_level": "summary",
         "limit": 100,
-        "request_id": request_id("user-requests-list")
-    })).await?;
+        "request_id": request_id("user-requests-global-list")
+    })).await;
+    let (global_result, global_scope_supported) = match global_scoped {
+        Ok(result) if semantic_facade_data(result.clone())
+            .get("scope").and_then(Value::as_str) == Some("global") => (result, true),
+        Ok(_) | Err(_) => (
+            call_runtime_tool("rh_inbox", json!({
+                "operation": "list",
+                "detail_level": "summary",
+                "limit": 100,
+                "request_id": request_id("user-requests-legacy-list")
+            })).await?,
+            false,
+        ),
+    };
     let repo_result = match repo_id.map(|value| value.trim().to_string()).filter(|value| !value.is_empty()) {
         Some(repo_id) => Some(call_runtime_tool("rh_inbox", json!({
             "repo_id": repo_id,
@@ -685,7 +733,7 @@ async fn read_user_requests(repo_id: Option<String>) -> Result<Value, String> {
         })).await?),
         None => None,
     };
-    Ok(merge_user_request_projections(all_result, repo_result))
+    Ok(merge_user_request_projections(global_result, repo_result, global_scope_supported))
 }
 
 #[tauri::command]

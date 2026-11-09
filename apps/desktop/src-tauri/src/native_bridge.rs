@@ -483,6 +483,38 @@ mod tests {
     }
 
     #[test]
+    fn scoped_user_request_merge_preserves_exact_counts_and_legacy_fallback() {
+        let global = json!({"data":{
+            "items":[{"requestId":"global-1","updatedAt":"2026-11-09T00:00:00Z"}],
+            "totalCount":1,
+            "truncated":false,
+            "scope":"global"
+        }});
+        let repo = json!({"data":{
+            "items":[{"requestId":"repo-1","targetScope":{"repoId":"repo-a"},"updatedAt":"2026-11-09T01:00:00Z"}],
+            "totalCount":1,
+            "truncated":false,
+            "scope":"repository"
+        }});
+        let exact = merge_user_request_projections(global, Some(repo), true);
+        assert_eq!(exact.get("totalCount").and_then(Value::as_u64), Some(2));
+        assert_eq!(exact.get("countExact").and_then(Value::as_bool), Some(true));
+        assert_eq!(exact.get("possiblyTruncated").and_then(Value::as_bool), Some(false));
+
+        let legacy_items = (0..50).map(|index| {
+            if index == 0 {
+                json!({"requestId":"global-legacy","updatedAt":"2026-11-09T00:00:00Z"})
+            } else {
+                json!({"requestId":format!("other-{index}"),"targetScope":{"repoId":"repo-other"}})
+            }
+        }).collect::<Vec<_>>();
+        let legacy = merge_user_request_projections(json!({"data":{"items":legacy_items}}), None, false);
+        assert_eq!(legacy.get("knownCount").and_then(Value::as_u64), Some(1));
+        assert_eq!(legacy.get("countExact").and_then(Value::as_bool), Some(false));
+        assert_eq!(legacy.get("possiblyTruncated").and_then(Value::as_bool), Some(true));
+    }
+
+    #[test]
     fn bridge_never_accepts_arbitrary_command_execution() {
         let invalid = tauri::async_runtime::block_on(dispatch("execute_command", &json!({})));
         assert_eq!(invalid.unwrap_err(), "FORGE_NATIVE_BRIDGE_OPERATION_UNSUPPORTED");
@@ -500,6 +532,7 @@ mod tests {
             Some(json!({"data":{"items":[
                 {"requestId":"repo","title":"Repo","summary":"r","status":"pending","updatedAt":"2026-11-09T04:00:00Z","targetScope":{"repoId":"repo-a"}}
             ]}})),
+            false,
         );
         assert_eq!(merged.get("knownCount").and_then(Value::as_u64), Some(2));
         let ids = merged.get("items").and_then(Value::as_array).unwrap().iter()

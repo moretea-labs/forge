@@ -1392,6 +1392,26 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertNotNil(NativeWorkspace.pluginInstallationWarning(target:target,refreshed:[]))
     }
 
+    func testUserRequestCountProjectionDistinguishesExactFromBoundedFallback() {
+        let exact:[String:Any] = [
+            "items":[],
+            "totalCount":7,
+            "countExact":true,
+            "possiblyTruncated":false
+        ]
+        XCTAssertEqual(NativeWorkspace.userRequestsTotalCount(exact),7)
+        XCTAssertFalse(NativeWorkspace.userRequestsPossiblyTruncated(exact))
+
+        let fallback:[String:Any] = [
+            "items":[],
+            "totalCount":6,
+            "countExact":false,
+            "possiblyTruncated":true
+        ]
+        XCTAssertNil(NativeWorkspace.userRequestsTotalCount(fallback))
+        XCTAssertTrue(NativeWorkspace.userRequestsPossiblyTruncated(fallback))
+    }
+
     func testUserRequestProjectionFiltersCurrentProjectAndGlobalOnly() {
         let rows = NativeWorkspace.userRequestRows([
             "data":[

@@ -26,6 +26,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
   }),
   definition('rh_inbox', 'Preferred ChatGPT facade: instance-level UserRequest inbox for genuine human actions/decisions. Repository-scoped handoff_id remains a legacy compatibility lookup.', {
     repo_id: { ...repoId, description: 'Optional legacy repository context. Omit for canonical instance-level UserRequest operations.' },
+    scope: { type: 'string', enum: ['all', 'global'], description: 'List-only scope filter. global returns only unscoped instance-level UserRequests; omit/all preserves the existing canonical list.' },
     operation: { type: 'string', enum: ['list', 'get', 'ack', 'accept', 'resolve', 'dismiss', 'create'], description: 'Defaults to list (pending).' },
     request_id: { type: 'string', description: 'Canonical instance-level UserRequest id.' },
     handoff_id: { type: 'string', description: 'Legacy compatibility id.' },

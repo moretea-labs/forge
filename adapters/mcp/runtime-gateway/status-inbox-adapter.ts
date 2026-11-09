@@ -606,17 +606,54 @@ export function shouldUseCanonicalUserRequestInbox(
   return Boolean(request);
 }
 
-function callCanonicalUserRequestInbox(ctx: MultiRepositoryMcpToolContext, args: Record<string, unknown>, operation: string): CallToolResult {
+export function selectCanonicalUserRequestsForList(
+  requests: readonly UserRequest[],
+  args: Record<string, unknown>,
+): {
+  items: UserRequest[];
+  totalCount: number;
+  truncated: boolean;
+  scope: 'all' | 'global' | 'repository';
+} {
   const limit = Math.max(1, Math.min(Math.trunc(typeof args.limit === 'number' ? args.limit : 50), 100));
+  const repoId = typeof args.repo_id === 'string' ? args.repo_id.trim() : '';
+  const requestedScope = typeof args.scope === 'string' ? args.scope.trim() : 'all';
+  if (requestedScope !== 'all' && requestedScope !== 'global') throw new Error('USER_REQUEST_SCOPE_INVALID');
+  if (repoId && requestedScope === 'global') throw new Error('USER_REQUEST_SCOPE_CONFLICT');
+
+  const scope: 'all' | 'global' | 'repository' = repoId
+    ? 'repository'
+    : requestedScope === 'global' ? 'global' : 'all';
+  const matching = requests.filter((item) => {
+    if (repoId) return item.targetScope?.repoId === repoId;
+    if (scope === 'global') return item.targetScope === undefined;
+    return true;
+  });
+  return {
+    items: matching.slice(0, limit),
+    totalCount: matching.length,
+    truncated: matching.length > limit,
+    scope,
+  };
+}
+
+function callCanonicalUserRequestInbox(ctx: MultiRepositoryMcpToolContext, args: Record<string, unknown>, operation: string): CallToolResult {
   if (operation === 'list') {
-    const repoId = typeof args.repo_id === 'string' ? args.repo_id.trim() : '';
-    const items = listUserRequests(ctx.controllerHome, 'pending')
-      .filter((item) => !repoId || item.targetScope?.repoId === repoId)
-      .slice(0, limit);
+    const projection = selectCanonicalUserRequestsForList(
+      listUserRequests(ctx.controllerHome, 'pending'),
+      args,
+    );
     return result(buildFacadeResult({
-      summary: items.length ? `${items.length} pending UserRequest item(s).` : 'No pending UserRequest items.',
-      data: { items: items.map(summarizeUserRequest) },
-      suggestedNextActions: items.slice(0, 1).map((item) => ({ label: `Read ${item.requestId}`, tool: 'rh_inbox', operation: 'get', payload: { handoff_id: item.requestId }, risk: 'readonly' as const })),
+      summary: projection.totalCount
+        ? String(projection.totalCount) + ' pending UserRequest item(s).'
+        : 'No pending UserRequest items.',
+      data: {
+        items: projection.items.map(summarizeUserRequest),
+        totalCount: projection.totalCount,
+        truncated: projection.truncated,
+        scope: projection.scope,
+      },
+      suggestedNextActions: projection.items.slice(0, 1).map((item) => ({ label: 'Read ' + item.requestId, tool: 'rh_inbox', operation: 'get', payload: { handoff_id: item.requestId }, risk: 'readonly' as const })),
     }) as unknown as Record<string, unknown>);
   }
   if (operation === 'create') {
