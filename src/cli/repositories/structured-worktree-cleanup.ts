@@ -118,7 +118,8 @@ export function repositoryGitRemoveWorktree(
         // Path string comparison must never silently release its real owner.
         const recorded = resolve(item.targetRef);
         return recorded === targetRoot
-          || (existsSync(recorded) && realpathSync(recorded) === realpathSync(targetRoot));
+          || (existsSync(recorded) && existsSync(targetRoot)
+            && realpathSync(recorded) === realpathSync(targetRoot));
       });
     if (owner) throw new Error('GIT_WORKTREE_OWNED_RESOURCE_PROTECTED: ' + owner.resourceId);
     // No path-based adoption: registry identity and live Git linkage must agree.

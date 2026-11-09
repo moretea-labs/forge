@@ -185,6 +185,28 @@ describe('structured registered worktree cleanup (#41)', () => {
     expect(existsSync(fx.linked)).toBe(false);
   });
 
+  test('reconciles a registered checkout already removed from Git even when another owned worktree exists', () => {
+    const fx = fixture();
+    const unrelatedOwned = join(fx.root, 'unrelated-owned-worktree');
+    mkdirSync(unrelatedOwned, { recursive: true });
+    recordOwnedResource(fx.controllerHome, {
+      resourceId: 'unrelated-owned-worktree',
+      kind: 'worktree',
+      targetRef: unrelatedOwned,
+      creator: 'forge:managed-workspace',
+      repoId: fx.repository.repoId,
+      associatedWorkId: 'other-work',
+    });
+
+    git(fx.repoRoot, ['worktree', 'remove', fx.linked]);
+    expect(existsSync(fx.linked)).toBe(false);
+    expect(gitOutput(fx.repoRoot, ['worktree', 'list', '--porcelain'])).not.toContain(fx.linked);
+
+    const result = fx.cleanup();
+    expect(result.status).toBe('already_removed');
+    expect(fx.current().checkouts.find((item) => item.checkoutId === fx.target.checkoutId)?.lifecycle).toBe('removed');
+  });
+
   test('retains historical WorkHandle checkout identity even when no OwnedResource metadata exists', () => {
     const fx = fixture();
     const previous = seedWorkHandle(fx.controllerHome, fx.repository, 'work-old-checkout-identity');
