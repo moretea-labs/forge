@@ -124,11 +124,13 @@ function interactSchema(extra: Record<string, unknown>, required: string[]): Rec
 }
 
 export function browserActions(): AssistantPluginActionDescriptor[] {
-  const readRemote = [
+  const readRemote = [{ resource: 'remote' as const, mode: 'read' as const }];
+  const writeRemote = [{ resource: 'remote' as const, mode: 'exclusive' as const }];
+  const providerReadRemote = [
     { resource: 'remote' as const, mode: 'read' as const },
-    { resource: 'provider-state' as const, mode: 'write' as const },
+    { resource: 'provider-state' as const, mode: 'read' as const },
   ];
-  const writeRemote = [
+  const providerWriteRemote = [
     { resource: 'remote' as const, mode: 'exclusive' as const },
     { resource: 'provider-state' as const, mode: 'write' as const },
   ];
@@ -177,7 +179,7 @@ export function browserActions(): AssistantPluginActionDescriptor[] {
       title: 'List unpacked browser extensions',
       description: 'List unpacked extensions visible to the selected Browser provider. No arbitrary CDP method is accepted.',
       readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 30_000, cancellable: true, idempotent: true,
-      scopes: ['browser.extensions', 'browser.profile'], resourceClaims: readRemote,
+      scopes: ['browser.extensions', 'browser.profile'], resourceClaims: providerReadRemote,
       argumentsSchema: sessionTargetSchema({}, []),
     },
     {
@@ -185,7 +187,7 @@ export function browserActions(): AssistantPluginActionDescriptor[] {
       title: 'Install unpacked browser extension',
       description: 'Load one policy-bounded unpacked extension directory through the selected Browser provider and verify its exact installed identity.',
       readOnly: false, risk: 'remote_write', confirmation: 'authorization', defaultTimeoutMs: 30_000, cancellable: false, idempotent: false,
-      scopes: ['browser.extensions', 'browser.profile'], resourceClaims: writeRemote,
+      scopes: ['browser.extensions', 'browser.profile'], resourceClaims: providerWriteRemote,
       argumentsSchema: sessionTargetSchema({
         extension_path: { type: 'string' },
         enable_in_incognito: { type: 'boolean' },
@@ -196,7 +198,7 @@ export function browserActions(): AssistantPluginActionDescriptor[] {
       title: 'Create browser session',
       description: 'Open an HTTP(S) URL or explicitly adopt the matching frontmost native tab, then persist a reusable session id.',
       readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
-      scopes: ['browser.read', 'browser.profile'], resourceClaims: readRemote,
+      scopes: ['browser.read', 'browser.profile'], resourceClaims: writeRemote,
       argumentsSchema: sessionTargetSchema({
         extract_text: { type: 'boolean' },
         max_chars: { type: 'number' },
@@ -250,7 +252,7 @@ export function browserActions(): AssistantPluginActionDescriptor[] {
       title: 'Request human browser handoff',
       description: 'Keep a saved browser session open for CAPTCHA, login, two-factor authentication, or another manual step.',
       readOnly: false, risk: 'workspace_write', confirmation: 'authorization', defaultTimeoutMs: 30_000, cancellable: true, idempotent: false,
-      scopes: ['browser.read', 'browser.profile'], resourceClaims: readRemote,
+      scopes: ['browser.read', 'browser.profile'], resourceClaims: providerWriteRemote,
       argumentsSchema: sessionTargetSchema({
         reason: { type: 'string', enum: ['captcha', 'login', 'two_factor', 'manual_review', 'sensitive_confirmation'] },
         instructions: { type: 'string' },
@@ -286,7 +288,7 @@ export function browserActions(): AssistantPluginActionDescriptor[] {
       title: 'Open page',
       description: 'Open an HTTP(S) URL with the persistent profile and save a lightweight session.',
       readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
-      scopes: ['browser.read'], resourceClaims: readRemote,
+      scopes: ['browser.read'], resourceClaims: writeRemote,
       argumentsSchema: sessionTargetSchema({ extract_text: { type: 'boolean' }, max_chars: { type: 'number' } }, ['url']),
     },
     {

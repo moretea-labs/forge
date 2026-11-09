@@ -2615,6 +2615,13 @@ function nativeBackgroundNavigationRequiresReplacement(error: unknown): boolean 
   return message.includes('BROWSER_AUTOMATION_BACKGROUND_NAVIGATION_REQUIRES_REPLACEMENT');
 }
 
+export function browserMayReuseExistingNativeTab(args: Record<string, unknown>): boolean {
+  // Only Computer's native-only composition may select/reuse an existing tab.
+  // A normal Browser call without session_id is a fresh session and must create
+  // its own plugin-owned tab instead of adopting another session's authority.
+  return args.__forge_computer_native_only === true;
+}
+
 async function openNativeAttachedContext(
   repoRoot: string,
   config: BrowserPluginConfig,
@@ -2912,7 +2919,7 @@ async function openNativeAttachedContext(
     }
   };
   try {
-    if (!page && !savedTab && !target.existingSession && (args.__forge_computer_native_only === true || !stringValue(args.session_id))) {
+    if (!page && !savedTab && !target.existingSession && browserMayReuseExistingNativeTab(args)) {
       let inventory: Awaited<ReturnType<typeof listMacOsBrowserTabs>> | undefined;
       try {
         inventory = await listMacOsBrowserTabs(activeAttachment.metadata.product, timeout);

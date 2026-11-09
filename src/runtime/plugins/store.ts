@@ -572,23 +572,51 @@ function writeRegistry(controllerHome: string, repoId: string, manifests: Assist
   return index;
 }
 
+function browserRemoteResourceKey(
+  pluginId: string,
+  args: Record<string, unknown> | undefined,
+  requestId?: string,
+): string {
+  if (pluginId !== 'browser') return `provider-state:${pluginId}`;
+  const text = (value: unknown): string | undefined => typeof value === 'string' && value.trim() ? value.trim() : undefined;
+  const browserProduct = text(args?.native_browser_product) ?? 'auto';
+  const tabId = text(args?.native_tab_id);
+  const sessionId = text(args?.session_id);
+  const identity = tabId
+    ? `native-tab:${browserProduct}:${tabId}`
+    : args?.native_active_tab === true
+      ? `native-active-tab:${browserProduct}`
+      : sessionId
+        ? `session:${sessionId}`
+        : requestId
+          ? `request:${requestId}`
+          : undefined;
+  if (!identity) return `provider-state:${pluginId}`;
+  const digest = createHash('sha256').update(identity).digest('hex').slice(0, 24);
+  return `provider-resource:${pluginId}:${digest}`;
+}
+
 function claimsForPluginActionScope(
   action: AssistantPluginActionDescriptor,
   scope: PluginActionScopeContext,
   trustedPluginId: string,
+  args?: Record<string, unknown>,
+  requestId?: string,
 ): ResourceClaimSpec[] {
   const pluginId = trustedPluginId.trim().replace(/[^a-zA-Z0-9._-]+/g, '-');
   if (!pluginId) throw new Error('PLUGIN_ID_REQUIRED_FOR_RESOURCE_CLAIMS');
   const claims = action.resourceClaims.map((claim) => ({
-    resourceKey: claim.resource === 'remote' || claim.resource === 'provider-state'
+    resourceKey: claim.resource === 'provider-state'
       ? `provider-state:${pluginId}`
-      : scope.kind === 'controller'
-        ? `controller-system:${claim.resource}`
-        : claim.resource === 'workspace'
-          ? `workspace:${scope.checkoutId}`
-          : claim.resource === 'git-refs'
-            ? `git-refs:${scope.scopeKey}`
-            : `repo-state:${scope.scopeKey}`,
+      : claim.resource === 'remote'
+        ? browserRemoteResourceKey(pluginId, args, requestId)
+        : scope.kind === 'controller'
+          ? `controller-system:${claim.resource}`
+          : claim.resource === 'workspace'
+            ? `workspace:${scope.checkoutId}`
+            : claim.resource === 'git-refs'
+              ? `git-refs:${scope.scopeKey}`
+              : `repo-state:${scope.scopeKey}`,
     mode: claim.mode,
   }));
   if (pluginId === 'ios' && ['build', 'xcode_test', 'smoke_review'].includes(action.actionId)) {
@@ -606,8 +634,10 @@ export function claimsForAssistantPluginAction(
   action: AssistantPluginActionDescriptor,
   repository: RepositoryRecord,
   trustedPluginId: string,
+  args?: Record<string, unknown>,
+  requestId?: string,
 ): ResourceClaimSpec[] {
-  return claimsForPluginActionScope(action, repositoryPluginActionScope(repository), trustedPluginId);
+  return claimsForPluginActionScope(action, repositoryPluginActionScope(repository), trustedPluginId, args, requestId);
 }
 
 async function withAssistantPluginResourceLeases<T>(
@@ -617,7 +647,7 @@ async function withAssistantPluginResourceLeases<T>(
   request: AssistantPluginActionRequest,
   operation: () => Promise<T>,
 ): Promise<T> {
-  const claims = claimsForPluginActionScope(action, scope, request.pluginId).map((claim) => ({
+  const claims = claimsForPluginActionScope(action, scope, request.pluginId, request.args, request.requestId).map((claim) => ({
     ...claim,
     repoId: scope.scopeKey,
     ...(scope.checkoutId ? { checkoutId: scope.checkoutId } : {}),

@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, symlinkSync, writeFileSync, mkdirSync, realpathSyn
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
+  browserMayReuseExistingNativeTab,
   chooseTab,
   resolveBrowserAttachmentPaths,
   selectExactNativeTab,
@@ -28,6 +29,13 @@ describe('Computer Browser exact tab selection', () => {
   });
   const inventory = (tabs: ReturnType<typeof nativeTab>[], truncated = false) => ({
     product: 'chrome' as const, tabs, truncated,
+  });
+
+  test('normal fresh Browser sessions never implicitly reuse another native tab authority (#619)', () => {
+    expect(browserMayReuseExistingNativeTab({})).toBe(false);
+    expect(browserMayReuseExistingNativeTab({ session_id: '' })).toBe(false);
+    expect(browserMayReuseExistingNativeTab({ url: 'https://chatgpt.com/' })).toBe(false);
+    expect(browserMayReuseExistingNativeTab({ __forge_computer_native_only: true })).toBe(true);
   });
 
   test('does not pick the frontmost of two otherwise identical native tabs', () => {

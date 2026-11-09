@@ -710,7 +710,7 @@ describe('browser session compatibility on Computer target authority', () => {
     expect(openedSession.browser?.provider).toBe('macos-apple-events');
     expect(openedSession.browser?.tab).toMatchObject({ ownership: 'plugin_owned', windowId: '7', tabId: '9' });
     expect(createCalls).toBe(1);
-    expect(inventoryCalls).toBe(1);
+    expect(inventoryCalls).toBe(0);
 
     const listed = await executeBrowserPluginAction({
       ...baseInput,
@@ -719,7 +719,7 @@ describe('browser session compatibility on Computer target authority', () => {
       args: {},
     });
     expect(listed).toMatchObject({ liveNativeSessionCount: 1, unverifiedSessionCount: 0 });
-    expect(inventoryCalls).toBe(2);
+    expect(inventoryCalls).toBe(1);
 
     const closed = await executeBrowserPluginAction({
       ...baseInput,
@@ -729,7 +729,7 @@ describe('browser session compatibility on Computer target authority', () => {
     });
     expect(closed).toMatchObject({ closed: true, resourceClosed: true });
     expect(closeCalls).toBe(1);
-    expect(inventoryCalls).toBe(3);
+    expect(inventoryCalls).toBe(2);
   });
 
   test('session-bound reads refuse to create a replacement for a missing native tab', async () => {
@@ -1653,7 +1653,10 @@ describe('browser session compatibility on Computer target authority', () => {
       expect(action.resourceClaims.some((claim) => claim.resource === 'repo-state')).toBe(false);
     }
     expect(manifest.actions.find((action) => action.actionId === 'open_page')?.resourceClaims).toEqual([
-      { resource: 'remote', mode: 'read' },
+      { resource: 'remote', mode: 'exclusive' },
+    ]);
+    expect(manifest.actions.find((action) => action.actionId === 'request_human_handoff')?.resourceClaims).toEqual([
+      { resource: 'remote', mode: 'exclusive' },
       { resource: 'provider-state', mode: 'write' },
     ]);
   });

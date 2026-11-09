@@ -524,6 +524,41 @@ describe('Process Runtime fine-grained resource claims', () => {
     }
   });
 
+  test('Browser remote claims are exact-session scoped while provider state remains global (#619)', () => {
+    const repository = { repoId: 'repo1', activeCheckoutId: 'co1' } as Parameters<typeof claimsForAssistantPluginAction>[1];
+    const remoteAction = {
+      actionId: 'navigate', title: 'Navigate', description: 'test', readOnly: false,
+      risk: 'remote_write', confirmation: 'authorization', defaultTimeoutMs: 60_000,
+      cancellable: true, idempotent: false, scopes: ['browser.interact'],
+      resourceClaims: [{ resource: 'remote', mode: 'exclusive' }],
+      argumentsSchema: {},
+    } as AssistantPluginActionDescriptor;
+    const providerAction = {
+      ...remoteAction,
+      actionId: 'configure',
+      resourceClaims: [{ resource: 'provider-state', mode: 'write' }],
+    } as AssistantPluginActionDescriptor;
+
+    const sessionA = claimsForAssistantPluginAction(remoteAction, repository, 'browser', { session_id: 'session-a' }, 'request-a');
+    const sessionAAgain = claimsForAssistantPluginAction(remoteAction, repository, 'browser', { session_id: 'session-a' }, 'request-b');
+    const sessionB = claimsForAssistantPluginAction(remoteAction, repository, 'browser', { session_id: 'session-b' }, 'request-c');
+    const freshA = claimsForAssistantPluginAction(remoteAction, repository, 'browser', {}, 'fresh-a');
+    const freshB = claimsForAssistantPluginAction(remoteAction, repository, 'browser', {}, 'fresh-b');
+    const exactTab = claimsForAssistantPluginAction(remoteAction, repository, 'browser', {
+      native_browser_product: 'chrome', native_tab_id: 'tab-42',
+    }, 'tab-request');
+
+    expect(sessionA[0]?.resourceKey).toBe(sessionAAgain[0]?.resourceKey);
+    expect(sessionA[0]?.resourceKey).not.toBe(sessionB[0]?.resourceKey);
+    expect(freshA[0]?.resourceKey).not.toBe(freshB[0]?.resourceKey);
+    expect(exactTab[0]?.resourceKey).toMatch(/^provider-resource:browser:/);
+    expect(claimsConflict(sessionA[0]!, lease(sessionAAgain[0]!.resourceKey, 'exclusive'))).toBe(true);
+    expect(claimsConflict(sessionA[0]!, lease(sessionB[0]!.resourceKey, 'exclusive'))).toBe(false);
+    expect(claimsForAssistantPluginAction(providerAction, repository, 'browser', { session_id: 'session-a' }, 'provider-a')).toEqual([
+      { resourceKey: 'provider-state:browser', mode: 'write' },
+    ]);
+  });
+
   test('trusted provider state serializes only the same provider, never repository workspace state', () => {
     const action = {
       actionId: 'mutate_provider', title: 'Mutate provider', description: 'test', readOnly: false,
