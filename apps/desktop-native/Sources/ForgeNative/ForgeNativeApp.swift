@@ -1673,27 +1673,6 @@ private struct AgentPane: View {
                         .background(ForgePalette.softFill,
                                     in:RoundedRectangle(cornerRadius:7,style:.continuous))
                 }
-                if let planId = model.thread?.planId, !planId.isEmpty {
-                    Button { semanticInspector = .planning } label: {
-                        Text("Plan · \(String(planId.prefix(12)))")
-                            .font(.system(size:9.5,weight:.medium,design:.monospaced))
-                            .lineLimit(1)
-                            .padding(.horizontal,7).frame(height:21)
-                            .background(ForgePalette.softFill,in:RoundedRectangle(cornerRadius:7,style:.continuous))
-                    }
-                    .buttonStyle(.plain)
-                    .help("查看此会话附着的 Plan 上下文")
-                } else if let requirementId = model.thread?.requirementId, !requirementId.isEmpty {
-                    Button { semanticInspector = .planning } label: {
-                        Text("Req · \(String(requirementId.prefix(12)))")
-                            .font(.system(size:9.5,weight:.medium,design:.monospaced))
-                            .lineLimit(1)
-                            .padding(.horizontal,7).frame(height:21)
-                            .background(ForgePalette.softFill,in:RoundedRectangle(cornerRadius:7,style:.continuous))
-                    }
-                    .buttonStyle(.plain)
-                    .help("查看此会话附着的 Requirement 上下文")
-                }
             }
             .help(model.checkoutId.map { "checkout: \($0)" } ?? "当前项目没有 checkout")
 
@@ -1701,11 +1680,11 @@ private struct AgentPane: View {
 
             ViewThatFits(in:.horizontal) {
                 HStack(spacing:3) {
-                    semanticContextButton("规划",kind:.planning,systemImage:"point.3.connected.trianglepath.dotted")
+                    planningContextControl()
                     semanticContextButton("知识",kind:.knowledge,systemImage:"books.vertical")
                 }
                 HStack(spacing:3) {
-                    semanticContextButton("规划",kind:.planning,systemImage:"point.3.connected.trianglepath.dotted",compact:true)
+                    planningContextControl(compact:true)
                     semanticContextButton("知识",kind:.knowledge,systemImage:"books.vertical",compact:true)
                 }
             }
@@ -1838,6 +1817,51 @@ private struct AgentPane: View {
             AgentPlanningInspector(model:model) { semanticInspector = nil }
         case .knowledge:
             AgentKnowledgeInspector(model:model) { semanticInspector = nil }
+        }
+    }
+
+    private func planningContextControl(compact: Bool = false) -> some View {
+        let planId = model.thread?.planId
+        let requirementId = model.thread?.requirementId
+        let title: String
+        if let planId, !planId.isEmpty {
+            title = compact ? "" : "Plan · \(String(planId.prefix(8)))"
+        } else if let requirementId, !requirementId.isEmpty {
+            title = compact ? "" : "Req · \(String(requirementId.prefix(8)))"
+        } else {
+            title = compact ? "" : "规划"
+        }
+
+        return Button {
+            semanticInspector = semanticInspector == .planning ? nil : .planning
+        } label: {
+            HStack(spacing:4) {
+                Image(systemName:"point.3.connected.trianglepath.dotted").font(.system(size:9))
+                if !title.isEmpty { Text(title) }
+            }
+            .font(.system(size:10.5,weight:.medium))
+            .foregroundStyle(ForgePalette.secondary)
+            .padding(.horizontal,7)
+            .frame(minWidth:compact ? 25 : nil,minHeight:24)
+            .background((planId?.isEmpty == false || requirementId?.isEmpty == false) ? ForgePalette.softFill : Color.clear,
+                        in:RoundedRectangle(cornerRadius:8,style:.continuous))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(model.repoId == nil)
+        .help(planId?.isEmpty == false
+              ? "当前会话已绑定 Plan；点击查看或更换"
+              : (requirementId?.isEmpty == false
+                 ? "当前会话已绑定 Requirement；点击查看或更换"
+                 : "在当前会话中选择规划上下文"))
+        .accessibilityLabel("规划")
+        .accessibilityValue(planId?.isEmpty == false
+                            ? "已绑定 Plan"
+                            : (requirementId?.isEmpty == false ? "已绑定 Requirement" : "未绑定"))
+        .accessibilityHint("在当前会话中打开规划上下文，不切换工作区页面")
+        .accessibilityIdentifier("agent.semantic-context.planning")
+        .popover(isPresented:semanticInspectorBinding(.planning),arrowEdge:.top) {
+            semanticInspectorContent(.planning)
         }
     }
 
