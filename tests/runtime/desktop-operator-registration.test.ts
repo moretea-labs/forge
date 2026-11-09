@@ -76,6 +76,14 @@ describe('Desktop Operator trusted external registration', () => {
       expect(action.risk).toBe('workspace_write');
       expect(action.confirmation).toBe('authorization');
     }
+    for (const actionId of ['desktop_press', 'desktop_select_rows', 'desktop_pointer_click', 'desktop_pointer_drag', 'desktop_type_text', 'desktop_key']) {
+      expect(input.actions.find((action) => action.actionId === actionId)?.resourceClaims).toEqual([]);
+    }
+    for (const actionId of ['desktop_permissions_request', 'desktop_session_open', 'desktop_clipboard_write', 'desktop_copy', 'desktop_paste', 'desktop_open_url', 'desktop_batch', 'desktop_session_close']) {
+      expect(input.actions.find((action) => action.actionId === actionId)?.resourceClaims).toEqual([
+        { resource: 'provider-state', mode: 'write' },
+      ]);
+    }
     const press = input.actions.find((action) => action.actionId === 'desktop_press');
     const pressSchema = press?.argumentsSchema as { properties?: Record<string, { enum?: string[] } | undefined> } | undefined;
     expect(pressSchema?.properties?.semantic_action?.enum).toEqual(['press', 'show_menu', 'pick', 'open', 'confirm', 'scroll_down_page', 'scroll_up_page']);
