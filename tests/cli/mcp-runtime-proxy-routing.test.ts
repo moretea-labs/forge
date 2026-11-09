@@ -199,10 +199,9 @@ describe('MCP canonical Runtime proxy routing', () => {
     expect(sameCanonicalRuntimeProxyIdentity(baseline, { ...baseline, runtimeInstanceId: 'runtime-b' })).toBe(false);
   });
 
-  test('replays one transient inner disconnect only for a keyed Work-attributed repository command', async () => {
+  test('replays one transient inner disconnect for an execute_command with a stable request id and no Work', async () => {
     const args = {
       repo_id: 'repo-fixture',
-      work_id: 'WORK-REPLAY-SAFE',
       request_id: 'stable-process-request',
       command: ['bun', 'x', 'tsc', '--noEmit'],
     };
@@ -282,8 +281,8 @@ describe('MCP canonical Runtime proxy routing', () => {
     expect(cutoverReconnects).toBe(0);
   });
 
-  test('does not replay keyed Work commands for non-transient failures or beyond one retry', async () => {
-    const args = { work_id: 'WORK-REPLAY-BOUND', request_id: 'stable-bound', command: ['true'] };
+  test('does not replay keyed repository commands for non-transient failures or beyond one retry', async () => {
+    const args = { request_id: 'stable-bound', command: ['true'] };
     let semanticCalls = 0;
     let semanticReconnects = 0;
     await expect(callCanonicalRuntimeToolWithReplay({

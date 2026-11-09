@@ -508,9 +508,8 @@ export function sameCanonicalRuntimeProxyIdentity(
 
 export function canonicalRuntimeToolCallIsReplaySafe(name: string, args: Record<string, unknown>): boolean {
   if (name !== 'execute_command') return false;
-  const workId = typeof args.work_id === 'string' ? args.work_id.trim() : '';
   const requestId = typeof args.request_id === 'string' ? args.request_id.trim() : '';
-  return Boolean(workId && requestId);
+  return Boolean(requestId);
 }
 
 export function canonicalRuntimeToolCallFailureIsCutoverOutcomeUnknown(error: unknown): boolean {
