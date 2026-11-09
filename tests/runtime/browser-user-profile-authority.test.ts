@@ -37,6 +37,30 @@ afterEach(() => {
   while (roots.length > 0) rmSync(roots.pop()!, { recursive: true, force: true });
 });
 
+describe('Browser semantic evidence contract shared by MCP and local Computer', () => {
+  test('defaults to completion evidence and exposes explicit screenshot opt-in on both surfaces', () => {
+    const root = fixture();
+    const context = {
+      controllerHome: join(root, 'controller-home'),
+      repoId: 'repo-browser-user-authority',
+      repoRoot: root,
+      controllerScoped: false,
+    };
+    const browser = buildBrowserPluginManifest(1, '2026-08-30T00:00:00.000Z', root, context);
+    const computer = computerPluginAdapter.buildManifest(1, undefined, root, context);
+    for (const manifest of [browser, computer]) {
+      for (const actionId of ['click', 'fill', 'press']) {
+        const action = manifest.actions.find((candidate) => candidate.actionId === actionId);
+        expect(action).toBeDefined();
+        const properties = (action!.argumentsSchema.properties ?? {}) as Record<string, { type?: string }>;
+        expect(properties.capture_after_action).toEqual(expect.objectContaining({ type: 'boolean' }));
+        expect(action!.readOnly).toBe(false);
+      }
+      expect(manifest.actions.some((candidate) => candidate.actionId === 'screenshot')).toBe(true);
+    }
+  });
+});
+
 describe('browser user-profile authority', () => {
   test('defaults to existing user Chromium-family browsers and disables silent managed fallback', () => {
     const details = browserDetails(fixture());

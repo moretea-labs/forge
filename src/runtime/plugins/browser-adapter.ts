@@ -162,6 +162,7 @@ interface BrowserActionTarget {
   sessionId: string;
   url: string;
   existingSession?: BrowserSessionState;
+  captureAfterAction?: boolean;
 }
 
 export function browserExplicitSessionRequiresExistingResource(
@@ -1058,10 +1059,10 @@ function resolveActionTarget(repoRoot: string, args: Record<string, unknown>): B
         throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'url does not match the saved session.', { retryable: false });
       }
     }
-    return { sessionId: providedSessionId, url: sessionUrl, existingSession };
+    return { sessionId: providedSessionId, url: sessionUrl, existingSession, captureAfterAction: args.capture_after_action === true };
   }
   const url = normalizedUrl(directUrl);
-  return { sessionId: sessionIdFor(url), url };
+  return { sessionId: sessionIdFor(url), url, captureAfterAction: args.capture_after_action === true };
 }
 
 function sessionFromPage(target: BrowserActionTarget, pageUrl: string, title: string, connection?: BrowserConnectionSummary): BrowserSessionState {
@@ -3765,13 +3766,17 @@ async function finalizeInteractiveAction(
   const session = saveBrowserSession(repoRoot, sessionFromPage(target, pageUrl, title, connection));
   let screenshot: BrowserActionScreenshot | undefined;
   const silentNativeEvidence = connection.provider === 'macos-apple-events';
-  if (!silentNativeEvidence) {
+  // A semantic action has already finished; do not force a full-page screenshot.
+  if (!silentNativeEvidence && target.captureAfterAction === true) {
     try {
       screenshot = await captureActionScreenshot(page, repoRoot, actionId, session.sessionId, session.url);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       warnings.push(`Screenshot capture failed: ${message}`);
     }
+  }
+  if (silentNativeEvidence && target.captureAfterAction === true) {
+    warnings.push('Native background Browser actions cannot capture a screenshot silently; use explicit screenshot after foreground activation.');
   }
   return {
     ...interactionResult(actionId, session, summary, screenshot, warnings, extra),

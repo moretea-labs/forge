@@ -1494,6 +1494,7 @@ describe('browser session compatibility on Computer target authority', () => {
       cdpAttachFallback: 'fail_closed', nativeAttachMode: 'disabled',
     });
     let launchOptions: Record<string, unknown> | undefined;
+    let screenshotCalls = 0;
     setBrowserPluginRuntimeHooksForTest({
       moduleAvailable: () => true,
       loadPlaywright: () => ({
@@ -1505,7 +1506,7 @@ describe('browser session compatibility on Computer target authority', () => {
               title: async () => 'Example',
               goto: async () => undefined,
               evaluate: async <T>() => undefined as T,
-              screenshot: async () => Buffer.from(''),
+              screenshot: async () => { screenshotCalls += 1; return Buffer.from('fixture screenshot'); },
               click: async () => undefined,
               fill: async () => undefined,
               press: async () => undefined,
@@ -1524,6 +1525,26 @@ describe('browser session compatibility on Computer target authority', () => {
       args: { session_id: 'ordinary-custom-profile-managed', url: 'https://example.com/' },
       origin: { surface: 'mcp', actor: 'test' },
     });
+    const normal = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser',
+      requestId: 'ordinary-custom-profile-fill', actionId: 'fill',
+      args: { session_id: 'ordinary-custom-profile-managed', selector: '#message', text: 'normal' },
+      origin: { surface: 'mcp', actor: 'test' },
+    });
+    expect(normal.evidenceMode).toBe('summary');
+    expect(normal).not.toHaveProperty('screenshot');
+    expect(screenshotCalls).toBe(0);
+
+    const withCapture = await executeBrowserPluginAction({
+      controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser',
+      requestId: 'ordinary-custom-profile-fill-capture', actionId: 'fill',
+      args: { session_id: 'ordinary-custom-profile-managed', selector: '#message', text: 'capture', capture_after_action: true },
+      origin: { surface: 'mcp', actor: 'test' },
+    });
+    expect(withCapture.evidenceMode).toBe('screenshot');
+    expect(withCapture).toHaveProperty('screenshot');
+    expect(screenshotCalls).toBe(1);
+
     expect(launchOptions?.ignoreDefaultArgs).toEqual([
       '--disable-extensions',
       '--disable-component-extensions-with-background-pages',
