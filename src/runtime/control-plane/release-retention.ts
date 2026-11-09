@@ -8,7 +8,6 @@ import {
 } from 'fs';
 import { basename, dirname, join, relative, resolve } from 'path';
 import { measureReclaimablePath } from './lifecycle-retention-metrics';
-import { inspectKnownGoodRecoveryBundle, type KnownGoodReleaseIdentity } from '../root/known-good-recovery';
 
 const DEFAULT_RELEASE_RETENTION_GRACE_MS = 30 * 60_000;
 const DEFAULT_STAGING_RETENTION_GRACE_MS = 6 * 60 * 60_000;
@@ -151,56 +150,6 @@ function loadPackageConnectorReleaseProtection(controllerHome: string, releasesR
   return canonical(releaseRoot);
 }
 
-function loadRecoveryKnownGoodProtection(
-  controllerHome: string,
-  releasesRoot: string,
-  rollbackReleasePaths: ReadonlySet<string>,
-): Set<string> {
-  const protectedPaths = new Set<string>();
-  const knownGoodPath = join(controllerHome, 'recovery', 'state', 'known-good.json');
-  if (!existsSync(knownGoodPath)) return protectedPaths;
-  const parsed = JSON.parse(readFileSync(knownGoodPath, 'utf8')) as Record<string, unknown>;
-  // Schema v1 was metadata-only evidence. It deliberately has no retention
-  // authority: only v2 entries pass the same release + DB + service-contract
-  // recoverability check that Recovery uses before attesting known-good.
-  if (parsed.schemaVersion === 1) return protectedPaths;
-  if (parsed.schemaVersion !== 2 || !Array.isArray(parsed.releases)) {
-    throw new Error('standalone recovery known-good authority is invalid');
-  }
-  for (const raw of parsed.releases) {
-    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('standalone recovery known-good release record is invalid');
-    const entry = raw as Record<string, unknown>;
-    const manifestPath = typeof entry.path === 'string' ? entry.path.trim() : '';
-    const revision = typeof entry.revision === 'string' ? entry.revision.trim() : '';
-    const releaseRoot = manifestPath ? dirname(resolve(manifestPath)) : '';
-    if (
-      !manifestPath
-      || !revision
-      || basename(manifestPath) !== 'manifest.json'
-      || basename(releaseRoot) !== revision
-      || !directChild(releasesRoot, releaseRoot)
-    ) throw new Error('standalone recovery known-good release is outside runtime releases');
-    // Historical records are not protection. Do not inspect them after their
-    // release tree has been reclaimed, or one old record would block cleanup
-    // of every later candidate in the same pass.
-    if (!rollbackReleasePaths.has(canonical(releaseRoot))) continue;
-    let inspected;
-    try {
-      inspected = inspectKnownGoodRecoveryBundle(controllerHome, raw as KnownGoodReleaseIdentity);
-    } catch (error) {
-      throw new Error(`standalone recovery known-good bundle is not recoverable: ${error instanceof Error ? error.message : String(error)}`);
-    }
-    const inspectedReleaseRoot = canonical(dirname(inspected.releaseRoot));
-    if (inspectedReleaseRoot !== canonical(releasesRoot)) {
-      throw new Error('standalone recovery known-good release is outside runtime releases');
-    }
-    // Historical attestations are evidence, not rollback authority. Recovery
-    // can only target releases currently named by the committed Runtime.
-    protectedPaths.add(canonical(inspected.releaseRoot));
-  }
-  return protectedPaths;
-}
-
 function loadPinnedRuntimeReleaseProtection(controllerHome: string, releasesRoot: string): string | undefined {
   const pinPath = join(controllerHome, 'recovery', 'state', 'runtime-pin.json');
   if (!existsSync(pinPath)) return undefined;
@@ -251,12 +200,10 @@ function loadRuntimeProtection(controllerHome: string): RuntimeProtection | unde
   if (connectorRelease) releasePaths.add(connectorRelease);
   const pinnedRelease = loadPinnedRuntimeReleaseProtection(controllerHome, releasesRoot);
   if (pinnedRelease) releasePaths.add(pinnedRelease);
-  // Only known-good entries that are also named by the committed Runtime
-  // authority are rollback protection. Older attestations are historical
-  // evidence and must not pin immutable release trees.
-  for (const knownGoodRelease of loadRecoveryKnownGoodProtection(controllerHome, releasesRoot, releasePaths)) {
-    releasePaths.add(knownGoodRelease);
-  }
+  // Recovery known-good is evidence, not release-retention authority. Active,
+  // previous, Connector, and explicit pin authorities above already own every
+  // release path that retention must preserve. Recovery validates bundle bytes
+  // at strict verify/rollback boundaries instead of making cleanup re-hash them.
 
   // A publication writes the rollback backup before it atomically updates
   // authority.json. Keep both the candidate tree and backup leased for the

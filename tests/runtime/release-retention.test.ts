@@ -458,6 +458,31 @@ describe('controller release retention', () => {
     expect(report.skippedByReason.release_authority).toBe(2);
   });
 
+  test('release retention does not re-hash Recovery bundle contents already owned by Runtime authority', () => {
+    const home = controllerHome();
+    const active = writeRecoverableKnownGood(home, 'active-release');
+    const previous = runtimeRelease(home, 'previous-release');
+    const stale = runtimeRelease(home, 'stale-release');
+    writeRuntimeAuthority(home, 'active-release', 'previous-release');
+
+    const knownGoodPath = join(home, 'recovery', 'state', 'known-good.json');
+    const knownGood = JSON.parse(readFileSync(knownGoodPath, 'utf8')) as {
+      releases: Array<{ recoveryBundle?: { database?: { path?: string } } }>;
+    };
+    const databasePath = knownGood.releases[0]?.recoveryBundle?.database?.path;
+    if (!databasePath) throw new Error('fixture known-good database path missing');
+    writeFileSync(databasePath, 'corrupted-after-attestation', 'utf8');
+    age(stale);
+
+    const report = cleanupControllerReleaseHistory(home, { nowMs: NOW, graceMs: 0, maxRemovals: 20 });
+
+    expect(existsSync(active)).toBe(true);
+    expect(existsSync(previous)).toBe(true);
+    expect(existsSync(stale)).toBe(false);
+    expect(report.errors).toEqual([]);
+    expect(report.removedPaths).toContain('runtime/releases/stale-release');
+  });
+
   test('preserves an explicitly pinned Runtime release while known-good history remains non-owning', () => {
     const home = controllerHome();
     const active = runtimeRelease(home, 'active-release');
