@@ -4,7 +4,7 @@ import { callRepositoryTool } from '../tool-mapping/repository-tools';
 import { commitSelectedPaths, restoreSelectedPaths, selectedPathDiff, stageSelectedPaths } from '../../../src/cli/repositories/selected-path-actions';
 import { result } from './result-adapter';
 import { selected } from './shared-adapter';
-import { readControllerConnectionSnapshot, repairControllerConnection } from '../../../src/runtime/control-plane/facade/controller-connection';
+import { configureInitialControllerConnection, readControllerConnectionSnapshot, repairControllerConnection } from '../../../src/runtime/control-plane/facade/controller-connection';
 import { cancelLocalConversation, readLocalConversationActivity, readLocalConversationModelCatalog, readLocalConversationProviderStatus, sendLocalConversation } from '../../../src/runtime/control-plane/launcher/local-conversation-controller';
 
 function object(value: unknown): Record<string, unknown> {
@@ -25,6 +25,12 @@ export async function callCoreCapabilityAdapter(
   try {
     if (capabilityId === 'controller.connection') {
       if (action === 'get') return result({ ...readControllerConnectionSnapshot(ctx.controllerHome) });
+      if (action === 'configure_initial') {
+        return result(configureInitialControllerConnection(ctx.controllerHome, {
+          controller: String(input.controller ?? ''),
+          tunnel: input.tunnel == null ? undefined : String(input.tunnel),
+        }));
+      }
       if (action === 'repair_connector') return result(repairControllerConnection(ctx.controllerHome));
       return result({ error: { code: 'CORE_CAPABILITY_ACTION_UNSUPPORTED', message: `Unsupported controller.connection action: ${action || '<empty>'}` } }, true);
     }

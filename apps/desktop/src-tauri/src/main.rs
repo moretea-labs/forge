@@ -998,6 +998,19 @@ async fn read_connection_status() -> Result<Value, String> {
 }
 
 #[tauri::command]
+async fn configure_initial_connection(controller: String, tunnel: String) -> Result<Value, String> {
+    call_runtime_tool("capability_execute", json!({
+        "capability_id": "controller.connection",
+        "action": "configure_initial",
+        "arguments": {
+            "controller": controller,
+            "tunnel": tunnel
+        },
+        "request_id": request_id("connection-configure-initial")
+    })).await
+}
+
+#[tauri::command]
 async fn repair_connection() -> Result<Value, String> {
     call_runtime_tool("capability_execute", json!({
         "capability_id": "controller.connection",
@@ -3030,6 +3043,7 @@ fn main() {
             send_local_api_conversation,
             cancel_local_api_conversation,
             read_connection_status,
+            configure_initial_connection,
             repair_connection
         ])
         .run(tauri::generate_context!())

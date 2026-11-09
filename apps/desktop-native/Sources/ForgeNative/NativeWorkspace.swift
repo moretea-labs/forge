@@ -286,6 +286,14 @@ struct ConnectionComponentDetail {
     let detail: String
 }
 
+struct ConnectionSetupNextDetail {
+    let status: String
+    let id: String?
+    let summary: String?
+    let risk: String?
+    let requiresUser: Bool
+}
+
 struct ControllerConnectionDetail {
     let configured: Bool
     let ready: Bool
@@ -293,6 +301,7 @@ struct ControllerConnectionDetail {
     let tunnel: ConnectionComponentDetail
     let repairAvailable: Bool
     let repairLabel: String
+    let setup: ConnectionSetupNextDetail?
 }
 struct KnowledgeScopeDetail: Codable {
     let kind: String
@@ -1283,6 +1292,29 @@ final class NativeWorkspace: ObservableObject {
         }
     }
 
+    nonisolated static func scheduleOutcomeWarning(
+        action:ProjectScheduleAction,
+        receipt:[String:Any],
+        refreshed:[ProjectScheduleDetail],
+        scheduleId:String
+    ) -> String? {
+        if action == .trigger {
+            return receipt["occurrence"] as? [String:Any] == nil
+                ? "Scheduler 未产生执行实例。请核对任务条件与权威状态，不要当作运行成功。"
+                : nil
+        }
+        guard let updated = refreshed.first(where:{ $0.scheduleId == scheduleId }) else {
+            return "操作回执已返回，但刷新列表没有找到该任务，请检查 Scheduler 状态。"
+        }
+        if action == .pause && updated.enabled {
+            return "暂停操作后任务仍显示已启用，请检查 Scheduler 状态。"
+        }
+        if action == .resume && !updated.enabled {
+            return "恢复操作后任务仍显示已暂停，请检查 Scheduler 状态。"
+        }
+        return nil
+    }
+
     func loadSchedulePage() async {
         guard let repoId else { schedules = []; return }
         guard !schedulesLoading else { return }
@@ -1294,7 +1326,7 @@ final class NativeWorkspace: ObservableObject {
             schedules = Self.projectScheduleRows(value)
             error = nil
         } catch {
-            guard self.repoId == repoId else { return }
+            guard self.repoId == repoId, self.page == .schedule else { return }
             schedules = []
             self.error = error.localizedDescription
         }
@@ -1303,27 +1335,25 @@ final class NativeWorkspace: ObservableObject {
     func controlSchedule(_ schedule: ProjectScheduleDetail, action: ProjectScheduleAction) async {
         guard let repoId, !schedulesLoading else { return }
         schedulesLoading = true
+        defer { schedulesLoading = false }
         do {
-            _ = try await ForgeBridge.request("control_project_schedule",[
+            let receipt = try await ForgeBridge.request("control_project_schedule",[
                 "repoId":repoId,
                 "scheduleId":schedule.scheduleId,
                 "action":action.rawValue
             ])
             let value = try await ForgeBridge.request("read_project_schedules",["repoId":repoId])
-            guard self.repoId == repoId, self.page == .schedule else {
-                schedulesLoading = false
-                return
-            }
-            schedules = Self.projectScheduleRows(value)
-            error = nil
+            guard self.repoId == repoId, self.page == .schedule else { return }
+            let refreshed = Self.projectScheduleRows(value)
+            schedules = refreshed
+            error = Self.scheduleOutcomeWarning(action:action,receipt:receipt,
+                                                refreshed:refreshed,scheduleId:schedule.scheduleId)
         } catch {
-            guard self.repoId == repoId else {
-                schedulesLoading = false
-                return
-            }
-            self.error = error.localizedDescription
+            guard self.repoId == repoId, self.page == .schedule else { return }
+            // A transport failure after admission is not evidence that an
+            // effect was skipped. Never automatically retry the operation.
+            self.error = "无法确认任务操作结果：\(error.localizedDescription)。请刷新 Scheduler 核对后再操作。"
         }
-        schedulesLoading = false
     }
 
     func loadPluginsPage() async {
@@ -1337,7 +1367,7 @@ final class NativeWorkspace: ObservableObject {
             plugins = Self.projectPluginRows(value)
             error = nil
         } catch {
-            guard self.repoId == repoId else { return }
+            guard self.repoId == repoId, self.page == .plugins else { return }
             plugins = []
             self.error = error.localizedDescription
         }
@@ -1412,6 +1442,8 @@ final class NativeWorkspace: ObservableObject {
         guard let controller = value["controller"] as? [String:Any],
               let tunnel = value["tunnel"] as? [String:Any] else { return nil }
         let repair = value["repair"] as? [String:Any] ?? [:]
+        let setupRaw = value["setup"] as? [String:Any]
+        let nextRaw = setupRaw?["nextAction"] as? [String:Any]
         return ControllerConnectionDetail(
             configured:value["configured"] as? Bool == true,
             ready:value["ready"] as? Bool == true,
@@ -1426,7 +1458,16 @@ final class NativeWorkspace: ObservableObject {
                 detail:tunnel["detail"] as? String ?? ""
             ),
             repairAvailable:repair["available"] as? Bool == true,
-            repairLabel:repair["label"] as? String ?? "刷新 Forge Connector"
+            repairLabel:repair["label"] as? String ?? "刷新 Forge Connector",
+            setup:setupRaw.map { setup in
+                ConnectionSetupNextDetail(
+                    status:setup["status"] as? String ?? "open",
+                    id:nextRaw?["id"] as? String,
+                    summary:nextRaw?["summary"] as? String,
+                    risk:nextRaw?["risk"] as? String,
+                    requiresUser:nextRaw?["requiresUser"] as? Bool == true
+                )
+            }
         )
     }
 
@@ -1471,6 +1512,23 @@ final class NativeWorkspace: ObservableObject {
         do {
             let value = try await ForgeBridge.request("verify_recovery_runtime")
             runtimeDiagnostics = Self.runtimeDiagnosticsDetail(value)
+            error = nil
+        } catch { self.error = error.localizedDescription }
+    }
+
+    func configureInitialControllerConnection(_ controller:String) async {
+        guard !connectionLoading else { return }
+        connectionLoading = true
+        defer { connectionLoading = false }
+        let tunnel = (controller == "chatgpt" || controller == "mcp") ? "auto" : "none"
+        do {
+            let value = try await ForgeBridge.request("configure_initial_connection",[
+                "controller":controller,
+                "tunnel":tunnel
+            ])
+            guard let parsed = Self.controllerConnectionDetail(value) else { throw ForgeBridgeError.invalidResponse }
+            connectionStatus = parsed
+            connection = Self.connectionLabel(parsed)
             error = nil
         } catch { self.error = error.localizedDescription }
     }

@@ -309,6 +309,19 @@ export function getCoreCapabilityExecutionSchema(capabilityId: string): Record<s
           risk: 'readonly',
           argumentsSchema: { type: 'object', additionalProperties: false, properties: {} },
         },
+        configure_initial: {
+          readOnly: false,
+          risk: 'workspace_write',
+          argumentsSchema: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['controller'],
+            properties: {
+              controller: { type: 'string', enum: ['chatgpt', 'codex', 'claude', 'mcp'] },
+              tunnel: { type: 'string', enum: ['auto', 'none'] },
+            },
+          },
+        },
         repair_connector: {
           readOnly: false,
           risk: 'workspace_write',

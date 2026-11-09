@@ -3,9 +3,9 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { closeSetupSession, openSetupSession, readSetupSession, type InitHookReport } from '../../src/cli/commands/init-hook';
-import { configureSetupProfile, resolveTunnelGuidance, setupConnectorAuthMode, type SetupPlatformSnapshot } from '../../src/cli/commands/setup-profile';
+import { configureSetupProfile, readSetupProfile, resolveTunnelGuidance, setupConnectorAuthMode, type SetupPlatformSnapshot } from '../../src/cli/commands/setup-profile';
 import { runMcpSetupChatgpt } from '../../adapters/mcp/setup';
-import { readControllerConnectionSnapshot, repairControllerConnection } from '../../src/runtime/control-plane/facade/controller-connection';
+import { configureInitialControllerConnection, readControllerConnectionSnapshot, repairControllerConnection } from '../../src/runtime/control-plane/facade/controller-connection';
 
 const platform: SetupPlatformSnapshot = { platform: 'linux', arch: 'x64', environment: 'linux', serviceManager: 'systemd-user', commands: { brew: false, cloudflared: false, tailscale: false, tunnelClient: false, systemctl: true, winget: false } };
 function report(target: InitHookReport['target'] = 'none', status: InitHookReport['status'] = 'ok', action = false): InitHookReport {
@@ -18,6 +18,33 @@ describe('Forge setup session', () => {
     const root = temp('forge-setup-select-'); try {
       const session = openSetupSession({ setupRoot: root, report: report(), platform, uuid: () => 's1', now: () => new Date('2026-08-12T00:00:00Z') });
       expect(session).toMatchObject({ status: 'open', target: 'none', nextAction: { id: 'controller.select', command: 'forge setup configure --controller chatgpt' } });
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test('configures the first controller through the existing setup profile authority', () => {
+    const root = temp('forge-setup-connection-capability-'); try {
+      const controllerHome = join(root, 'controller');
+      const configured = configureInitialControllerConnection(
+        controllerHome,
+        { controller: 'chatgpt', tunnel: 'auto' },
+        { setupRoot: root, platform },
+      );
+      expect(readSetupProfile({ setupRoot: root })).toMatchObject({
+        primaryController: 'chatgpt',
+        controllers: ['chatgpt'],
+        tunnel: { provider: 'auto' },
+      });
+      expect(configured.connection).toMatchObject({
+        configured: true,
+        profile: { primaryController: 'chatgpt', controllers: ['chatgpt'], tunnelProvider: 'auto' },
+        setup: { status: expect.any(String) },
+      });
+      expect(readSetupSession({ setupRoot: root })).toBeDefined();
+      expect(() => configureInitialControllerConnection(
+        controllerHome,
+        { controller: 'codex', tunnel: 'none' },
+        { setupRoot: root, platform },
+      )).toThrow('CONTROLLER_CONNECTION_ALREADY_CONFIGURED');
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 

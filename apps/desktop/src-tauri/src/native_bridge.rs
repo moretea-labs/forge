@@ -119,6 +119,11 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
         "read_recovery_status" => read_recovery_status().await,
         "verify_recovery_runtime" => verify_recovery_runtime().await,
         "read_connection_status" => read_connection_status().await,
+        "configure_initial_connection" =>
+            configure_initial_connection(
+                required(args, "controller")?,
+                required(args, "tunnel")?,
+            ).await,
         "repair_connection" => repair_connection().await,
         "read_local_provider_status" => read_local_provider_status().await,
         "read_local_provider_models" => read_local_provider_models().await,

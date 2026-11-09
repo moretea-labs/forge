@@ -158,8 +158,9 @@ describe('handoff and facade contracts', () => {
       actions?: Record<string, { readOnly?: boolean; risk?: string }>;
     } | undefined;
     expect(schema?.executeWith).toBe('capability_execute');
-    expect(Object.keys(schema?.actions ?? {}).sort()).toEqual(['get', 'repair_connector']);
+    expect(Object.keys(schema?.actions ?? {}).sort()).toEqual(['configure_initial', 'get', 'repair_connector']);
     expect(schema?.actions?.get).toMatchObject({ readOnly: true, risk: 'readonly' });
+    expect(schema?.actions?.configure_initial).toMatchObject({ readOnly: false, risk: 'workspace_write' });
     expect(schema?.actions?.repair_connector).toMatchObject({ readOnly: false, risk: 'workspace_write' });
     expect(FACADE_TOOLS).toHaveLength(6);
   });

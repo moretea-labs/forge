@@ -87,7 +87,7 @@ enum ForgeBridge {
         "read_project_schedules", "control_project_schedule", "read_project_plugins",
         "read_requirement_detail", "read_plan_detail", "create_requirement", "create_plan", "autopilot_control",
         "read_project_knowledge", "read_recovery_status", "verify_recovery_runtime",
-        "read_connection_status", "repair_connection",
+        "read_connection_status", "configure_initial_connection", "repair_connection",
         "read_local_provider_status", "read_local_provider_models", "read_local_conversation_activity",
         "read_agent_git_diff", "commit_agent_git_files", "restore_agent_git_files",
         "read_local_api_settings", "save_local_api_settings", "managed_api_credential_control",

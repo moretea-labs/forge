@@ -1,5 +1,7 @@
+import { openSetupSession, readSetupSession, type SetupSession } from '../../../cli/commands/init-hook';
 import { runMcpSetupChatgpt } from '../../../../adapters/mcp/setup';
 import {
+  configureSetupProfile,
   detectSetupPlatform,
   readSetupProfile,
   resolveControllerGuidance,
@@ -36,6 +38,33 @@ export interface ControllerConnectionSnapshot {
     action: 'repair_connector';
     label: string;
   };
+  setup?: {
+    status: SetupSession['status'];
+    nextAction?: {
+      id: string;
+      summary: string;
+      risk: string;
+      requiresUser: boolean;
+    };
+  };
+}
+
+function setupProjection(session: SetupSession | undefined): ControllerConnectionSnapshot['setup'] | undefined {
+  if (!session) return undefined;
+  const bootstrapAction = session.nextAction
+    ? session.bootstrap?.actions.find((entry) => entry.id === session.nextAction?.id)
+    : undefined;
+  return {
+    status: session.status,
+    ...(session.nextAction ? {
+      nextAction: {
+        id: session.nextAction.id,
+        summary: session.nextAction.reason,
+        risk: session.nextAction.risk,
+        requiresUser: bootstrapAction?.owner === 'user',
+      },
+    } : {}),
+  };
 }
 
 export interface ControllerConnectionOptions {
@@ -49,6 +78,7 @@ export function readControllerConnectionSnapshot(
   options: ControllerConnectionOptions = {},
 ): ControllerConnectionSnapshot {
   const profile = readSetupProfile({ setupRoot: options.setupRoot });
+  const setup = setupProjection(readSetupSession({ setupRoot: options.setupRoot, env: options.env }));
   if (!profile) {
     return {
       schemaVersion: 1,
@@ -66,6 +96,7 @@ export function readControllerConnectionSnapshot(
         detail: 'Remote transport status becomes available after Forge setup has a controller profile.',
       },
       repair: { available: false, action: 'repair_connector', label: 'Refresh Forge Connector' },
+      ...(setup ? { setup } : {}),
     };
   }
 
@@ -105,7 +136,48 @@ export function readControllerConnectionSnapshot(
       action: 'repair_connector',
       label: 'Refresh Forge Connector',
     },
+    ...(setup ? { setup } : {}),
   };
+}
+
+export function configureInitialControllerConnection(
+  controllerHome: string,
+  input: { controller: string; tunnel?: string },
+  options: ControllerConnectionOptions = {},
+): { connection: ControllerConnectionSnapshot } {
+  if (readSetupProfile({ setupRoot: options.setupRoot })) {
+    throw new Error('CONTROLLER_CONNECTION_ALREADY_CONFIGURED');
+  }
+  const controller = input.controller.trim();
+  const tunnel = input.tunnel?.trim()
+    || (controller === 'chatgpt' || controller === 'mcp' ? 'auto' : 'none');
+  if (!['chatgpt', 'codex', 'claude', 'mcp'].includes(controller)) {
+    throw new Error('CONTROLLER_CONNECTION_CONTROLLER_INVALID');
+  }
+  if (!['auto', 'none'].includes(tunnel)) {
+    throw new Error('CONTROLLER_CONNECTION_TUNNEL_INVALID');
+  }
+  const profile = configureSetupProfile({
+    setupRoot: options.setupRoot,
+    controller,
+    tunnel,
+  });
+  if (profile.controllers.some((entry) => entry === 'chatgpt' || entry === 'mcp')) {
+    runMcpSetupChatgpt({
+      controllerHome,
+      userLevel: true,
+      ...(profile.tunnel.endpoint ? { endpoint: profile.tunnel.endpoint } : {}),
+      clearEndpoint: !profile.tunnel.endpoint,
+      connectorAuthMode: setupConnectorAuthMode(profile),
+    });
+  }
+  openSetupSession({
+    setupRoot: options.setupRoot,
+    env: options.env,
+    controllerHome,
+    profile,
+  });
+  return { connection: readControllerConnectionSnapshot(controllerHome, options) };
 }
 
 export function repairControllerConnection(

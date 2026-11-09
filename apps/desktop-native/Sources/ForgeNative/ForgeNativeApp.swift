@@ -795,7 +795,7 @@ private struct ForgeWorkspaceView: View {
 
     private var main: some View {
         VStack(spacing:0) {
-            if let error = model.error {
+            if let error = model.error, model.page != .schedule && model.page != .plugins {
                 HStack(spacing:9) {
                     Image(systemName:"exclamationmark.circle")
                     Text(error)
@@ -4212,6 +4212,8 @@ private struct RecordsPane: View {
 
 private struct SchedulePane: View {
     @ObservedObject var model: NativeWorkspace
+    @State private var expandedIds: Set<String> = []
+    @State private var pendingAction: (item: ProjectScheduleDetail, action: ProjectScheduleAction)?
 
     var body: some View {
         ScrollView {
@@ -4232,13 +4234,27 @@ private struct SchedulePane: View {
                     .accessibilityIdentifier("schedule.refresh")
                 }
 
+                if let error = model.error, model.repoId != nil {
+                    HStack(alignment:.firstTextBaseline,spacing:9) {
+                        Image(systemName:"exclamationmark.circle")
+                        Text(error).font(.system(size:11.5)).textSelection(.enabled)
+                        Spacer(minLength:8)
+                        Button("重试") { Task { await model.loadSchedulePage() } }
+                            .buttonStyle(.plain)
+                            .disabled(model.schedulesLoading)
+                            .accessibilityIdentifier("schedule.retry")
+                    }
+                    .foregroundStyle(.orange)
+                    .padding(.vertical,8)
+                    .accessibilityIdentifier("schedule.error")
+                }
                 if model.repoId == nil {
                     emptyState("先选择项目","计划任务按项目读取。")
                 } else if model.schedulesLoading && model.schedules.isEmpty {
                     ProgressView("正在读取 Scheduler…").controlSize(.small)
-                } else if model.schedules.isEmpty {
+                } else if model.schedules.isEmpty && model.error == nil {
                     emptyState("暂无计划任务","当前项目没有 Forge Schedule；这里不会创建示例或客户端私有任务。")
-                } else {
+                } else if !model.schedules.isEmpty {
                     VStack(alignment:.leading,spacing:0) {
                         ForEach(Array(model.schedules.enumerated()),id:\.element.id) { index,item in
                             scheduleRow(item)
@@ -4251,47 +4267,99 @@ private struct SchedulePane: View {
             .frame(maxWidth:.infinity,alignment:.leading)
             .padding(30)
         }
+        .confirmationDialog("确认任务操作",isPresented:Binding(
+            get:{ pendingAction != nil },
+            set:{ if !$0 { pendingAction = nil } }
+        ),titleVisibility:.visible) {
+            if let pending = pendingAction {
+                Button(pending.action == .pause ? "暂停任务" : (pending.action == .resume ? "恢复任务" : "立即运行"),
+                       role:pending.action == .pause ? .destructive : nil) {
+                    let selected = pending
+                    pendingAction = nil
+                    Task { await model.controlSchedule(selected.item,action:selected.action) }
+                }
+            }
+            Button("取消",role:.cancel) { pendingAction = nil }
+        } message: {
+            if let pending = pendingAction {
+                Text("\(pending.item.name) · \(pending.item.trigger)\n\(pending.action == .trigger ? "将请求 Forge Scheduler 立即触发；是否产生执行实例以 Runtime 回执为准。" : "此操作将更新 Forge Scheduler 中的任务状态。")")
+            }
+        }
     }
 
     private func scheduleRow(_ item:ProjectScheduleDetail) -> some View {
-        HStack(alignment:.top,spacing:12) {
-            Circle().fill(item.enabled ? Color.green : Color.secondary).frame(width:7,height:7).padding(.top,6)
-            VStack(alignment:.leading,spacing:6) {
-                HStack(spacing:8) {
-                    Text(item.name).font(.system(size:13,weight:.semibold))
-                    if !item.enabled { Text("已暂停").font(.system(size:9.5,weight:.semibold)).foregroundStyle(.secondary) }
+        VStack(alignment:.leading,spacing:10) {
+            HStack(alignment:.top,spacing:10) {
+                Button {
+                    if !expandedIds.insert(item.id).inserted { expandedIds.remove(item.id) }
+                } label: {
+                    HStack(alignment:.top,spacing:10) {
+                        Circle().fill(item.enabled ? Color.green : Color.secondary)
+                            .frame(width:7,height:7).padding(.top,6)
+                        VStack(alignment:.leading,spacing:5) {
+                            HStack(spacing:7) {
+                                Text(item.name).font(.system(size:13,weight:.semibold))
+                                    .lineLimit(2)
+                                if !item.enabled {
+                                    Text("已暂停").font(.system(size:10)).foregroundStyle(.secondary)
+                                }
+                            }
+                            Text(item.trigger).font(.system(size:11.5))
+                                .foregroundStyle(ForgePalette.secondary)
+                                .lineLimit(2)
+                            if let next = item.nextEligibleAt {
+                                Text("下次 · \(next)").font(.system(size:10))
+                                    .foregroundStyle(.tertiary).lineLimit(1)
+                            }
+                        }
+                        Spacer(minLength:6)
+                        Image(systemName:expandedIds.contains(item.id) ? "chevron.up" : "chevron.down")
+                            .font(.system(size:10,weight:.medium)).foregroundStyle(.secondary)
+                            .padding(.top,5)
+                    }
+                    .contentShape(Rectangle())
                 }
-                Text(item.trigger).font(.system(size:11.5)).foregroundStyle(ForgePalette.secondary)
-                HStack(spacing:14) {
-                    meta("动作",item.operation)
-                    if let next=item.nextEligibleAt { meta("下次",next) }
-                    else if let last=item.lastTriggeredAt { meta("上次",last) }
+                .buttonStyle(.plain)
+                .accessibilityLabel("\(item.name)，\(item.enabled ? "已启用" : "已暂停")，\(expandedIds.contains(item.id) ? "收起详情" : "展开详情")")
+                .accessibilityIdentifier("schedule.\(item.scheduleId).details")
+                Menu {
+                    Button(item.enabled ? "暂停" : "恢复") {
+                        pendingAction = (item,item.enabled ? .pause : .resume)
+                    }
+                    Button("立即运行") {
+                        pendingAction = (item,.trigger)
+                    }
+                    .disabled(!item.enabled)
+                } label: {
+                    Image(systemName:"ellipsis").frame(width:26,height:26)
                 }
-                if let reason=item.pausedReason,!reason.isEmpty {
-                    Text(reason).font(.system(size:10.5)).foregroundStyle(.orange)
-                }
+                .menuStyle(.borderlessButton).fixedSize()
+                .disabled(model.schedulesLoading)
+                .accessibilityIdentifier("schedule.\(item.scheduleId).actions")
             }
-            Spacer(minLength:8)
-            Menu {
-                Button(item.enabled ? "暂停" : "恢复") {
-                    Task { await model.controlSchedule(item,action:item.enabled ? .pause : .resume) }
+            if expandedIds.contains(item.id) {
+                VStack(alignment:.leading,spacing:6) {
+                    meta("任务 ID",item.scheduleId)
+                    meta("执行动作",item.operation)
+                    if let updated = item.updatedAt { meta("更新",updated) }
+                    if let last = item.lastTriggeredAt { meta("上次触发",last) }
+                    if let next = item.nextEligibleAt { meta("下次触发",next) }
+                    if let reason = item.pausedReason,!reason.isEmpty {
+                        Text(reason).font(.system(size:11)).foregroundStyle(.orange)
+                    }
                 }
-                Button("立即运行") {
-                    Task { await model.controlSchedule(item,action:.trigger) }
-                }
-            } label: {
-                Image(systemName:"ellipsis")
-                    .frame(width:24,height:24)
+                .padding(.leading,17)
+                .accessibilityIdentifier("schedule.\(item.scheduleId).expanded")
             }
-            .menuStyle(.borderlessButton)
-            .fixedSize()
-            .disabled(model.schedulesLoading)
-            .accessibilityIdentifier("schedule.\(item.scheduleId).actions")
         }.padding(.vertical,12)
     }
 
     private func meta(_ label:String,_ value:String) -> some View {
-        Text("\(label) · \(value)").font(.system(size:9.5,design:.monospaced)).foregroundStyle(.tertiary).lineLimit(1)
+        Text("\(label) · \(value)")
+            .font(.system(size:10.5,design:.monospaced))
+            .foregroundStyle(.secondary)
+            .textSelection(.enabled)
+            .fixedSize(horizontal:false,vertical:true)
     }
 
     private func emptyState(_ title:String,_ detail:String) -> some View {
@@ -4304,6 +4372,21 @@ private struct SchedulePane: View {
 
 private struct PluginsPane: View {
     @ObservedObject var model: NativeWorkspace
+    @State private var searchOpen = false
+    @State private var query = ""
+    @State private var expandedIds: Set<String> = []
+    @FocusState private var searchFocused: Bool
+
+    private var visiblePlugins: [ProjectPluginDetail] {
+        let term = query.trimmingCharacters(in:.whitespacesAndNewlines)
+        guard !term.isEmpty else { return model.plugins }
+        return model.plugins.filter { item in
+            item.displayName.localizedCaseInsensitiveContains(term)
+                || item.pluginId.localizedCaseInsensitiveContains(term)
+                || (item.provider?.localizedCaseInsensitiveContains(term) == true)
+                || item.capabilities.contains(where:{ $0.localizedCaseInsensitiveContains(term) })
+        }
+    }
 
     var body: some View {
         ScrollView {
@@ -4322,19 +4405,71 @@ private struct PluginsPane: View {
                     .buttonStyle(.plain)
                     .disabled(model.pluginsLoading || model.repoId == nil)
                     .accessibilityIdentifier("plugins.refresh")
+                    Button {
+                        searchOpen.toggle()
+                        if !searchOpen { query = "" }
+                        else { searchFocused = true }
+                    } label: {
+                        Image(systemName:searchOpen ? "xmark" : "magnifyingglass")
+                            .frame(width:28,height:28)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(searchOpen ? "关闭插件搜索" : "搜索插件")
+                    .accessibilityIdentifier("plugins.search.toggle")
                 }
 
+                if searchOpen {
+                    HStack(spacing:7) {
+                        Image(systemName:"magnifyingglass")
+                            .foregroundStyle(ForgePalette.secondary)
+                        TextField("搜索名称、Provider 或能力",text:$query)
+                            .textFieldStyle(.plain)
+                            .focused($searchFocused)
+                            .font(.system(size:12))
+                            .accessibilityIdentifier("plugins.search.field")
+                        if !query.isEmpty {
+                            Button { query = "" } label: {
+                                Image(systemName:"xmark.circle.fill")
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("清除插件搜索")
+                        }
+                    }
+                    .padding(.vertical,8)
+                    .overlay(alignment:.bottom) { Divider() }
+                }
+                if let error = model.error, model.repoId != nil {
+                    HStack(alignment:.firstTextBaseline,spacing:9) {
+                        Image(systemName:"exclamationmark.circle")
+                        Text(error).font(.system(size:11.5)).textSelection(.enabled)
+                        Spacer(minLength:8)
+                        Button("重试") { Task { await model.loadPluginsPage() } }
+                            .buttonStyle(.plain)
+                            .disabled(model.pluginsLoading)
+                            .accessibilityIdentifier("plugins.retry")
+                    }
+                    .foregroundStyle(.orange)
+                    .padding(.vertical,8)
+                    .accessibilityIdentifier("plugins.error")
+                }
                 if model.repoId == nil {
                     emptyState("先选择项目","插件能力会结合当前项目返回。")
                 } else if model.pluginsLoading && model.plugins.isEmpty {
                     ProgressView("正在读取插件…").controlSize(.small)
-                } else if model.plugins.isEmpty {
+                } else if model.plugins.isEmpty && model.error == nil {
                     emptyState("没有可用插件","Runtime 当前没有为这个项目注册插件。")
-                } else {
-                    VStack(alignment:.leading,spacing:0) {
-                        ForEach(Array(model.plugins.enumerated()),id:\.element.id) { index,item in
-                            pluginRow(item)
-                            if index < model.plugins.count - 1 { Divider() }
+                } else if !model.plugins.isEmpty {
+                    if visiblePlugins.isEmpty {
+                        emptyState("无匹配插件","尝试其他名称、Provider 或能力关键词。")
+                    } else {
+                        VStack(alignment:.leading,spacing:0) {
+                            Text("显示 \(visiblePlugins.count) / \(model.plugins.count) 项")
+                                .font(.system(size:10)).foregroundStyle(.tertiary)
+                                .padding(.bottom,6)
+                            ForEach(Array(visiblePlugins.enumerated()),id:\.element.id) { index,item in
+                                pluginRow(item)
+                                if index < visiblePlugins.count - 1 { Divider() }
+                            }
                         }
                     }
                 }
@@ -4346,31 +4481,71 @@ private struct PluginsPane: View {
     }
 
     private func pluginRow(_ item:ProjectPluginDetail) -> some View {
-        HStack(alignment:.top,spacing:12) {
-            Circle().fill(item.ready && item.enabled ? Color.green : Color.orange).frame(width:7,height:7).padding(.top,6)
-            VStack(alignment:.leading,spacing:6) {
-                HStack(spacing:8) {
-                    Text(item.displayName).font(.system(size:13,weight:.semibold))
-                    if let version=item.pluginVersion,!version.isEmpty {
-                        Text(version).font(.system(size:9.5,design:.monospaced)).foregroundStyle(.tertiary)
+        VStack(alignment:.leading,spacing:10) {
+            Button {
+                if !expandedIds.insert(item.id).inserted { expandedIds.remove(item.id) }
+            } label: {
+                HStack(alignment:.top,spacing:10) {
+                    Circle().fill(!item.enabled ? Color.secondary : (item.ready ? Color.green : Color.orange))
+                        .frame(width:7,height:7).padding(.top,6)
+                    VStack(alignment:.leading,spacing:5) {
+                        HStack(spacing:7) {
+                            Text(item.displayName).font(.system(size:13,weight:.semibold))
+                                .lineLimit(2)
+                            if !item.enabled {
+                                Text("已禁用").font(.system(size:10)).foregroundStyle(.secondary)
+                            }
+                        }
+                        Text(item.pluginId).font(.system(size:10,design:.monospaced))
+                            .foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                        Text("\(item.actionCount) 个动作 · \(item.ready ? "可用" : "未就绪")")
+                            .font(.system(size:11.5)).foregroundStyle(ForgePalette.secondary)
+                    }
+                    Spacer(minLength:6)
+                    Image(systemName:expandedIds.contains(item.id) ? "chevron.up" : "chevron.down")
+                        .font(.system(size:10,weight:.medium)).foregroundStyle(.secondary)
+                        .padding(.top,5)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("\(item.displayName)，\(item.ready ? "就绪" : "未就绪")，\(expandedIds.contains(item.id) ? "收起详情" : "展开详情")")
+            .accessibilityIdentifier("plugins.\(item.pluginId).details")
+            if expandedIds.contains(item.id) {
+                VStack(alignment:.leading,spacing:7) {
+                    meta("插件 ID",item.pluginId)
+                    if let version = item.pluginVersion { meta("版本",version) }
+                    if let provider = item.provider { meta("Provider",provider) }
+                    meta("生命周期",item.lifecycle)
+                    meta("健康",item.health)
+                    meta("启用状态",item.enabled ? "已启用" : "已禁用")
+                    meta("动作数","\(item.actionCount)")
+                    if !item.capabilities.isEmpty {
+                        Text("已返回的能力").font(.system(size:10.5,weight:.semibold))
+                            .padding(.top,5)
+                        ForEach(Array(item.capabilities.enumerated()),id:\.offset) { _, capability in
+                            Text(capability).font(.system(size:11.5))
+                                .foregroundStyle(ForgePalette.secondary)
+                                .fixedSize(horizontal:false,vertical:true)
+                        }
+                        if item.capabilities.count < item.actionCount {
+                            Text("此处为有界摘要，非完整动作列表。")
+                                .font(.system(size:10)).foregroundStyle(.tertiary)
+                        }
                     }
                 }
-                if !item.capabilities.isEmpty {
-                    Text(item.capabilities.joined(separator:" · "))
-                        .font(.system(size:11.5)).foregroundStyle(ForgePalette.secondary).lineLimit(2)
-                }
-                HStack(spacing:14) {
-                    meta("状态",item.health)
-                    meta("动作","\(item.actionCount)")
-                    if let provider=item.provider,!provider.isEmpty { meta("Provider",provider) }
-                }
+                .padding(.leading,17)
+                .accessibilityIdentifier("plugins.\(item.pluginId).expanded")
             }
-            Spacer(minLength:8)
         }.padding(.vertical,12)
     }
 
     private func meta(_ label:String,_ value:String) -> some View {
-        Text("\(label) · \(value)").font(.system(size:9.5,design:.monospaced)).foregroundStyle(.tertiary).lineLimit(1)
+        Text("\(label) · \(value)")
+            .font(.system(size:10.5,design:.monospaced))
+            .foregroundStyle(.secondary)
+            .textSelection(.enabled)
+            .fixedSize(horizontal:false,vertical:true)
     }
 
     private func emptyState(_ title:String,_ detail:String) -> some View {
@@ -4383,6 +4558,7 @@ private struct PluginsPane: View {
 
 private struct RuntimeSettingsSection: View {
     @ObservedObject var model: NativeWorkspace
+    @State private var setupController = "chatgpt"
 
     var body: some View {
         VStack(alignment:.leading,spacing:18) {
@@ -4473,31 +4649,52 @@ private struct RuntimeSettingsSection: View {
             if let status = model.connectionStatus {
                 connectionRow("控制器",status.controller)
                 connectionRow("传输",status.tunnel)
+                if status.configured, !status.ready, let setup = status.setup, let summary = setup.summary {
+                    Divider()
+                    VStack(alignment:.leading,spacing:6) {
+                        HStack(spacing:8) {
+                            Text(setup.requiresUser ? "需要你的操作" : "下一步")
+                                .font(.system(size:11.5,weight:.semibold))
+                            Spacer()
+                            Button("重新检测") { Task { await model.loadRuntimePage() } }
+                                .buttonStyle(.plain)
+                                .disabled(model.connectionLoading)
+                        }
+                        Text(summary).font(.system(size:11.5)).foregroundStyle(ForgePalette.secondary)
+                        if let risk = setup.risk, !risk.isEmpty {
+                            Text(risk).font(.system(size:10.5)).foregroundStyle(.tertiary)
+                        }
+                    }
+                    .padding(.top,2)
+                    .accessibilityIdentifier("connection.setup.next")
+                }
                 if !status.configured {
                     Divider()
-                    VStack(alignment:.leading,spacing:7) {
-                        HStack {
-                            Text("首次连接").font(.system(size:11.5,weight:.semibold))
-                            Spacer()
-                            Button("复制 ChatGPT 配置命令") {
-                                let commands = """
-                                forge setup
-                                forge setup configure --controller chatgpt --tunnel auto
-                                forge setup next
-                                """
-                                NSPasteboard.general.clearContents()
-                                NSPasteboard.general.setString(commands,forType:.string)
+                    VStack(alignment:.leading,spacing:8) {
+                        Text("首次连接").font(.system(size:11.5,weight:.semibold))
+                        HStack(spacing:10) {
+                            Picker("控制器",selection:$setupController) {
+                                Text("ChatGPT").tag("chatgpt")
+                                Text("Codex").tag("codex")
+                                Text("Claude Code").tag("claude")
+                                Text("MCP Client").tag("mcp")
                             }
-                            .buttonStyle(.plain)
-                            .accessibilityIdentifier("connection.copySetup")
+                            .pickerStyle(.menu)
+                            .frame(width:220,alignment:.leading)
+                            .accessibilityIdentifier("connection.setup.controller")
+                            Spacer()
+                            Button(model.connectionLoading ? "配置中…" : "配置并连接") {
+                                Task { await model.configureInitialControllerConnection(setupController) }
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(model.connectionLoading)
+                            .accessibilityIdentifier("connection.setup.apply")
                         }
-                        Text("连接配置仍由 Forge Setup 持久化，Client 不创建另一份 MCP 配置。ChatGPT 推荐路径：")
+                        Text(setupController == "chatgpt" || setupController == "mcp"
+                             ? "使用 Forge 自动远程传输；不需要手工填写内部 MCP 状态。"
+                             : "使用本机控制器，不启用远程 tunnel。")
                             .font(.system(size:11)).foregroundStyle(ForgePalette.secondary)
-                        Text("forge setup\nforge setup configure --controller chatgpt --tunnel auto\nforge setup next")
-                            .font(.system(size:10.5,design:.monospaced))
-                            .foregroundStyle(ForgePalette.secondary)
-                            .textSelection(.enabled)
-                        Text("Codex / Claude 等本地控制器不需要远程 tunnel；运行 forge setup 后按 Next 引导完成即可。")
+                        Text("配置仍由 Forge Setup 持久化；Client 只调用 controller.connection，不保存第二份连接配置。")
                             .font(.system(size:10.5)).foregroundStyle(.tertiary)
                     }
                     .padding(.top,2)

@@ -507,13 +507,27 @@ final class NativeWorkspaceTests: XCTestCase {
                 "configured":true,"ready":false,
                 "controller":["ready":true,"title":"Controller ready","detail":"local"],
                 "tunnel":["ready":false,"title":"Tunnel degraded","detail":"reconnect"],
-                "repair":["available":true,"label":"Refresh Forge Connector"]
+                "repair":["available":true,"label":"Refresh Forge Connector"],
+                "setup":[
+                    "status":"open",
+                    "nextAction":[
+                        "id":"runtime.install",
+                        "summary":"Install Forge Runtime",
+                        "risk":"workspace_write",
+                        "requiresUser":false
+                    ]
+                ]
             ]
         ])
         XCTAssertEqual(connection?.controller.ready,true)
         XCTAssertEqual(connection?.tunnel.ready,false)
         XCTAssertEqual(connection?.repairAvailable,true)
         XCTAssertEqual(connection?.repairLabel,"Refresh Forge Connector")
+        XCTAssertEqual(connection?.setup?.status,"open")
+        XCTAssertEqual(connection?.setup?.id,"runtime.install")
+        XCTAssertEqual(connection?.setup?.summary,"Install Forge Runtime")
+        XCTAssertEqual(connection?.setup?.risk,"workspace_write")
+        XCTAssertEqual(connection?.setup?.requiresUser,false)
         XCTAssertEqual(NativeWorkspace.connectionLabel(connection),"远程 MCP 未连接")
         XCTAssertEqual(NativeWorkspace.connectionLabel(nil),"MCP 状态未知")
         XCTAssertNil(NativeWorkspace.controllerConnectionDetail(["unexpected":true]))
@@ -1317,6 +1331,29 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(rows[0].trigger,"每 10 分钟")
         XCTAssertEqual(rows[0].operation,"browser_observation")
         XCTAssertTrue(rows[0].enabled)
+    }
+
+    func testScheduleEffectsRequireVerifiedCanonicalOutcome() {
+        let active = NativeWorkspace.projectScheduleRows([
+            "schedules":[["scheduleId":"s1","enabled":true,"operation":"browser_observation"]]
+        ])
+        let paused = NativeWorkspace.projectScheduleRows([
+            "schedules":[["scheduleId":"s1","enabled":false,"operation":"browser_observation"]]
+        ])
+        XCTAssertNil(NativeWorkspace.scheduleOutcomeWarning(
+            action:.pause,receipt:["schedule":["enabled":false]],refreshed:paused,scheduleId:"s1"))
+        XCTAssertNil(NativeWorkspace.scheduleOutcomeWarning(
+            action:.resume,receipt:["schedule":["enabled":true]],refreshed:active,scheduleId:"s1"))
+        XCTAssertNotNil(NativeWorkspace.scheduleOutcomeWarning(
+            action:.pause,receipt:["schedule":["enabled":false]],refreshed:active,scheduleId:"s1"))
+        XCTAssertNotNil(NativeWorkspace.scheduleOutcomeWarning(
+            action:.resume,receipt:["schedule":["enabled":true]],refreshed:paused,scheduleId:"s1"))
+        XCTAssertNotNil(NativeWorkspace.scheduleOutcomeWarning(
+            action:.pause,receipt:[:],refreshed:[],scheduleId:"s1"))
+        XCTAssertNotNil(NativeWorkspace.scheduleOutcomeWarning(
+            action:.trigger,receipt:["occurrence":NSNull()],refreshed:active,scheduleId:"s1"))
+        XCTAssertNil(NativeWorkspace.scheduleOutcomeWarning(
+            action:.trigger,receipt:["occurrence":["occurrenceId":"o1"]],refreshed:active,scheduleId:"s1"))
     }
 
     func testProjectPluginRowsDecodeBoundedPluginProjection() {
