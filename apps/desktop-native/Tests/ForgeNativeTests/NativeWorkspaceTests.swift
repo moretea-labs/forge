@@ -77,6 +77,66 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(restored.thread?.planId,"PLAN-a")
     }
 
+    @MainActor
+    func testPlanningInspectorBindingUpdatesOnlyCurrentConversationContext() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = folder.appendingPathComponent("conversations.json")
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:store)
+        let originalId = model.thread?.id
+
+        model.bindCurrentThreadPlanningContext(requirementId:"REQ-inspector",planId:"PLAN-inspector")
+        XCTAssertEqual(model.thread?.id,originalId)
+        XCTAssertEqual(model.thread?.requirementId,"REQ-inspector")
+        XCTAssertEqual(model.thread?.planId,"PLAN-inspector")
+
+        let restored = NativeWorkspace(store:store)
+        XCTAssertEqual(restored.thread?.id,originalId)
+        XCTAssertEqual(restored.thread?.requirementId,"REQ-inspector")
+        XCTAssertEqual(restored.thread?.planId,"PLAN-inspector")
+
+        restored.clearCurrentThreadPlanningContext()
+        XCTAssertNil(restored.thread?.requirementId)
+        XCTAssertNil(restored.thread?.planId)
+
+        let cleared = NativeWorkspace(store:store)
+        XCTAssertNil(cleared.thread?.requirementId)
+        XCTAssertNil(cleared.thread?.planId)
+    }
+
+    @MainActor
+    func testKnowledgeReuseAddsEditableDraftContextWithoutSendingOrDuplicating() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        let memory = KnowledgeMemoryDetail(
+            id:"memory-1",
+            revision:3,
+            canonicalText:"Prefer one canonical authority for semantic state.",
+            concepts:["authority","semantic-state"],
+            facets:["architecture"],
+            confidence:0.94,
+            scope:KnowledgeScopeDetail(kind:"project",id:"repo-a"),
+            provenance:KnowledgeProvenanceDetail(sourceKind:"system_inference",recordedAt:nil)
+        )
+
+        model.draft = "Continue the current task."
+        let messageCount = model.thread?.messages.count
+        model.useKnowledgeInCurrentConversation(memory)
+
+        XCTAssertEqual(model.page,.agent)
+        XCTAssertEqual(model.thread?.messages.count,messageCount)
+        XCTAssertTrue(model.draft.contains("Continue the current task."))
+        XCTAssertTrue(model.draft.contains(memory.canonicalText))
+        XCTAssertTrue(model.draft.contains("请参考这条 Forge 项目知识继续当前任务"))
+
+        model.useKnowledgeInCurrentConversation(memory)
+        XCTAssertEqual(
+            model.draft.components(separatedBy:memory.canonicalText).count - 1,
+            1
+        )
+    }
+
     func testLegacyMessageDecodesWithoutToolActivity() throws {
         let data = #"{"id":"m1","role":"assistant","text":"done","createdAt":0}"#.data(using:.utf8)!
         let decoder = JSONDecoder()

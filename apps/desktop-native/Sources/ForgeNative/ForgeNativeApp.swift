@@ -1134,12 +1134,19 @@ private struct ForgeWorkspaceView: View {
     }
 }
 
+private enum AgentSemanticContextInspector: String, Identifiable {
+    case planning
+    case knowledge
+    var id: String { rawValue }
+}
+
 private struct AgentPane: View {
     @ObservedObject var model: NativeWorkspace
     @State private var showChanges = false
     @State private var showActivityDetails = false
     @State private var expandedMessageActivities: Set<String> = []
     @State private var isComposerDropTarget = false
+    @State private var semanticInspector: AgentSemanticContextInspector?
     @FocusState private var composerFocused: Bool
 
     var body: some View {
@@ -1649,7 +1656,7 @@ private struct AgentPane: View {
                                     in:RoundedRectangle(cornerRadius:7,style:.continuous))
                 }
                 if let planId = model.thread?.planId, !planId.isEmpty {
-                    Button { Task { await model.openPlan(planId) } } label: {
+                    Button { semanticInspector = .planning } label: {
                         Text("Plan · \(String(planId.prefix(12)))")
                             .font(.system(size:9.5,weight:.medium,design:.monospaced))
                             .lineLimit(1)
@@ -1657,9 +1664,9 @@ private struct AgentPane: View {
                             .background(ForgePalette.softFill,in:RoundedRectangle(cornerRadius:7,style:.continuous))
                     }
                     .buttonStyle(.plain)
-                    .help("打开此会话附着的可选 Plan 上下文")
+                    .help("查看此会话附着的 Plan 上下文")
                 } else if let requirementId = model.thread?.requirementId, !requirementId.isEmpty {
-                    Button { Task { await model.openRequirement(requirementId) } } label: {
+                    Button { semanticInspector = .planning } label: {
                         Text("Req · \(String(requirementId.prefix(12)))")
                             .font(.system(size:9.5,weight:.medium,design:.monospaced))
                             .lineLimit(1)
@@ -1667,7 +1674,7 @@ private struct AgentPane: View {
                             .background(ForgePalette.softFill,in:RoundedRectangle(cornerRadius:7,style:.continuous))
                     }
                     .buttonStyle(.plain)
-                    .help("打开此会话附着的可选 Requirement 上下文")
+                    .help("查看此会话附着的 Requirement 上下文")
                 }
             }
             .help(model.checkoutId.map { "checkout: \($0)" } ?? "当前项目没有 checkout")
@@ -1676,12 +1683,12 @@ private struct AgentPane: View {
 
             ViewThatFits(in:.horizontal) {
                 HStack(spacing:3) {
-                    semanticContextButton("规划",page:.requirement,systemImage:"point.3.connected.trianglepath.dotted")
-                    semanticContextButton("Knowledge",page:.knowledge,systemImage:"books.vertical")
+                    semanticContextButton("规划",kind:.planning,systemImage:"point.3.connected.trianglepath.dotted")
+                    semanticContextButton("Knowledge",kind:.knowledge,systemImage:"books.vertical")
                 }
                 HStack(spacing:3) {
-                    semanticContextButton("规划",page:.requirement,systemImage:"point.3.connected.trianglepath.dotted",compact:true)
-                    semanticContextButton("Knowledge",page:.knowledge,systemImage:"books.vertical",compact:true)
+                    semanticContextButton("规划",kind:.planning,systemImage:"point.3.connected.trianglepath.dotted",compact:true)
+                    semanticContextButton("Knowledge",kind:.knowledge,systemImage:"books.vertical",compact:true)
                 }
             }
 
@@ -1796,9 +1803,31 @@ private struct AgentPane: View {
         .accessibilityIdentifier("agent.changes")
     }
 
-    private func semanticContextButton(_ title: String, page: NativePage, systemImage: String,
+    private func semanticInspectorBinding(_ kind: AgentSemanticContextInspector) -> Binding<Bool> {
+        Binding(
+            get: { semanticInspector == kind },
+            set: { visible in
+                if visible { semanticInspector = kind }
+                else if semanticInspector == kind { semanticInspector = nil }
+            }
+        )
+    }
+
+    @ViewBuilder
+    private func semanticInspectorContent(_ kind: AgentSemanticContextInspector) -> some View {
+        switch kind {
+        case .planning:
+            AgentPlanningInspector(model:model) { semanticInspector = nil }
+        case .knowledge:
+            AgentKnowledgeInspector(model:model) { semanticInspector = nil }
+        }
+    }
+
+    private func semanticContextButton(_ title: String, kind: AgentSemanticContextInspector, systemImage: String,
                                        compact: Bool = false) -> some View {
-        Button { model.show(page) } label: {
+        Button {
+            semanticInspector = semanticInspector == kind ? nil : kind
+        } label: {
             HStack(spacing:4) {
                 Image(systemName:systemImage).font(.system(size:9))
                 if !compact { Text(title) }
@@ -1811,9 +1840,13 @@ private struct AgentPane: View {
         }
         .buttonStyle(.plain)
         .disabled(model.repoId == nil)
-        .help("打开当前项目的 \(title)")
+        .help("在当前会话中查看 \(title)")
         .accessibilityLabel(title)
-        .accessibilityIdentifier("agent.semantic-context.\(page.rawValue)")
+        .accessibilityHint("在当前会话中打开上下文，不切换工作区页面")
+        .accessibilityIdentifier("agent.semantic-context.\(kind.rawValue)")
+        .popover(isPresented:semanticInspectorBinding(kind),arrowEdge:.top) {
+            semanticInspectorContent(kind)
+        }
     }
 
     private func starterPromptButton(_ title: String, systemImage: String, prompt: String) -> some View {
@@ -2661,6 +2694,372 @@ private struct PlanningAuthoringContext: Identifiable {
 private struct AutopilotApprovalContext: Identifiable {
     let requirement: RequirementRecordDetail
     var id: String { requirement.requirementId }
+}
+
+private struct AgentPlanningInspector: View {
+    @ObservedObject var model: NativeWorkspace
+    let dismiss: () -> Void
+    @State private var records: [ForgeRecord] = []
+    @State private var loading = false
+    @State private var error: String?
+    @State private var query = ""
+
+    var body: some View {
+        VStack(alignment:.leading,spacing:0) {
+            HStack(alignment:.top,spacing:10) {
+                VStack(alignment:.leading,spacing:3) {
+                    Text("规划上下文").font(.system(size:13,weight:.semibold))
+                    Text("选择只会绑定当前会话，不修改 Requirement / Plan。")
+                        .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
+                }
+                Spacer()
+                Button {
+                    dismiss()
+                    model.show(.requirement)
+                } label: {
+                    Image(systemName:"arrow.up.right")
+                        .font(.system(size:10,weight:.semibold))
+                        .frame(width:24,height:24)
+                }
+                .buttonStyle(.plain)
+                .help("打开完整规划")
+                .accessibilityLabel("打开完整规划")
+                .accessibilityIdentifier("agent.planning-inspector.open-full")
+            }
+            .padding(.horizontal,14).padding(.vertical,12)
+
+            if let contextLabel = currentContextLabel {
+                Divider()
+                HStack(spacing:8) {
+                    Image(systemName:"paperclip")
+                        .font(.system(size:9.5,weight:.medium))
+                        .foregroundStyle(ForgePalette.secondary)
+                    VStack(alignment:.leading,spacing:2) {
+                        Text("当前会话").font(.system(size:9.5)).foregroundStyle(.tertiary)
+                        Text(contextLabel)
+                            .font(.system(size:10.5,weight:.medium,design:.monospaced))
+                            .lineLimit(1).truncationMode(.middle)
+                    }
+                    Spacer()
+                    Button("清除") {
+                        model.clearCurrentThreadPlanningContext()
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size:10.5,weight:.medium))
+                    .disabled(model.busy)
+                    .accessibilityIdentifier("agent.planning-inspector.clear")
+                }
+                .padding(.horizontal,14).padding(.vertical,10)
+            }
+
+            Divider()
+
+            HStack(spacing:7) {
+                Image(systemName:"magnifyingglass")
+                    .font(.system(size:9.5)).foregroundStyle(.tertiary)
+                TextField("筛选 Requirement / Plan",text:$query)
+                    .textFieldStyle(.plain)
+                    .font(.system(size:11))
+                if !query.isEmpty {
+                    Button { query = "" } label: {
+                        Image(systemName:"xmark.circle.fill").font(.system(size:9))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("清除规划筛选")
+                }
+            }
+            .padding(.horizontal,10).frame(height:32)
+            .background(ForgePalette.softFill)
+            .padding(.horizontal,14).padding(.vertical,9)
+
+            if loading && records.isEmpty {
+                ProgressView("正在读取规划…").controlSize(.small)
+                    .frame(maxWidth:.infinity,maxHeight:.infinity)
+            } else if let error {
+                VStack(alignment:.leading,spacing:7) {
+                    Label("规划暂不可用",systemImage:"exclamationmark.circle")
+                        .font(.system(size:11,weight:.medium))
+                    Text(error).font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
+                    Button("重试") { Task { await reload() } }
+                        .buttonStyle(.plain).font(.system(size:10.5,weight:.medium))
+                }
+                .padding(14).frame(maxWidth:.infinity,maxHeight:.infinity,alignment:.topLeading)
+            } else if prioritizedRecords.isEmpty {
+                Text(query.isEmpty ? "当前项目还没有 Requirement / Plan。" : "没有匹配的规划记录。")
+                    .font(.system(size:11)).foregroundStyle(ForgePalette.secondary)
+                    .frame(maxWidth:.infinity,maxHeight:.infinity,alignment:.topLeading)
+                    .padding(14)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment:.leading,spacing:0) {
+                        ForEach(Array(prioritizedRecords.prefix(10))) { record in
+                            planningRow(record)
+                            Divider().padding(.leading,38)
+                        }
+                    }
+                }
+                .scrollIndicators(.automatic)
+            }
+
+            Divider()
+            HStack {
+                Text("完整关系、Autopilot 与编辑操作请在规划页处理。")
+                    .font(.system(size:9.5)).foregroundStyle(.tertiary)
+                Spacer()
+                if loading { ProgressView().controlSize(.mini) }
+            }
+            .padding(.horizontal,14).frame(height:34)
+        }
+        .frame(width:390,height:455)
+        .task(id:model.repoId) { await reload() }
+    }
+
+    private var currentContextLabel: String? {
+        if let planId=model.thread?.planId,!planId.isEmpty { return "Plan · \\(String(planId.prefix(18)))" }
+        if let requirementId=model.thread?.requirementId,!requirementId.isEmpty {
+            return "Requirement · \\(String(requirementId.prefix(18)))"
+        }
+        return nil
+    }
+
+    private var prioritizedRecords: [ForgeRecord] {
+        let needle=query.trimmingCharacters(in:.whitespacesAndNewlines)
+        let filtered = records.filter { record in
+            needle.isEmpty
+                || record.title.localizedCaseInsensitiveContains(needle)
+                || record.recordId.localizedCaseInsensitiveContains(needle)
+        }
+        return filtered.enumerated().sorted { lhs,rhs in
+            let lp=priority(lhs.element),rp=priority(rhs.element)
+            return lp == rp ? lhs.offset < rhs.offset : lp < rp
+        }.map(\.element)
+    }
+
+    private func priority(_ record:ForgeRecord) -> Int {
+        if record.kind == .plan,record.recordId == model.thread?.planId { return 0 }
+        if record.kind == .requirement,record.recordId == model.thread?.requirementId { return 1 }
+        if let requirementId=model.thread?.requirementId,record.requirementId == requirementId { return 2 }
+        if record.kind == .requirement,record.state == "open" { return 3 }
+        if record.kind == .requirement { return 4 }
+        return 5 + min(record.depth,4)
+    }
+
+    private func planningRow(_ record:ForgeRecord) -> some View {
+        let bound = record.kind == .plan
+            ? model.thread?.planId == record.recordId
+            : (model.thread?.planId == nil && model.thread?.requirementId == record.recordId)
+        return Button {
+            if record.kind == .plan {
+                model.bindCurrentThreadPlanningContext(requirementId:record.requirementId,planId:record.recordId)
+            } else {
+                model.bindCurrentThreadPlanningContext(requirementId:record.recordId,planId:nil)
+            }
+            if model.error == nil { dismiss() }
+        } label: {
+            HStack(alignment:.top,spacing:9) {
+                Image(systemName:record.kind == .requirement ? "doc.text" : "list.bullet.rectangle")
+                    .font(.system(size:10))
+                    .foregroundStyle(bound ? ForgePalette.ink : ForgePalette.secondary)
+                    .frame(width:18,height:18)
+                VStack(alignment:.leading,spacing:3) {
+                    Text(record.title)
+                        .font(.system(size:11.5,weight:bound ? .semibold : .medium))
+                        .foregroundStyle(ForgePalette.ink)
+                        .lineLimit(2)
+                    HStack(spacing:6) {
+                        Text(record.kind == .requirement ? "Requirement" : "Plan")
+                        if record.kind == .requirement { Text(record.state) }
+                    }
+                    .font(.system(size:9.5)).foregroundStyle(.tertiary)
+                }
+                Spacer(minLength:5)
+                if bound {
+                    Image(systemName:"checkmark")
+                        .font(.system(size:9.5,weight:.semibold))
+                        .foregroundStyle(ForgePalette.secondary)
+                }
+            }
+            .padding(.horizontal,14).padding(.vertical,9)
+            .contentShape(Rectangle())
+            .background(bound ? ForgePalette.selection.opacity(0.65) : .clear)
+        }
+        .buttonStyle(.plain)
+        .disabled(model.busy)
+        .accessibilityLabel(record.title + "，" + (bound ? "已用于当前会话" : "用于当前会话"))
+    }
+
+    @MainActor
+    private func reload() async {
+        guard model.repoId != nil else {
+            records=[]
+            error=nil
+            return
+        }
+        loading=true
+        defer { loading=false }
+        do {
+            records=try await model.readPlanningRecordsForCurrentProject()
+            error=nil
+        } catch {
+            self.error=error.localizedDescription
+        }
+    }
+}
+
+private struct AgentKnowledgeInspector: View {
+    @ObservedObject var model: NativeWorkspace
+    let dismiss: () -> Void
+    @State private var query = ""
+    @State private var result: KnowledgeAuditDetail?
+    @State private var loading = false
+    @State private var error: String?
+
+    var body: some View {
+        VStack(alignment:.leading,spacing:0) {
+            HStack(alignment:.top,spacing:10) {
+                VStack(alignment:.leading,spacing:3) {
+                    Text("项目知识").font(.system(size:13,weight:.semibold))
+                    Text("读取 Cognitive 记忆；选择后先放入草稿，可编辑再发送。")
+                        .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
+                }
+                Spacer()
+                Button {
+                    dismiss()
+                    model.show(.knowledge)
+                } label: {
+                    Image(systemName:"arrow.up.right")
+                        .font(.system(size:10,weight:.semibold))
+                        .frame(width:24,height:24)
+                }
+                .buttonStyle(.plain)
+                .help("打开完整知识库")
+                .accessibilityLabel("打开完整知识库")
+                .accessibilityIdentifier("agent.knowledge-inspector.open-full")
+            }
+            .padding(.horizontal,14).padding(.vertical,12)
+            Divider()
+
+            HStack(spacing:7) {
+                Image(systemName:"magnifyingglass")
+                    .font(.system(size:9.5)).foregroundStyle(.tertiary)
+                TextField("搜索经验、概念、技术决策",text:$query)
+                    .textFieldStyle(.plain)
+                    .font(.system(size:11))
+                    .onSubmit { Task { await reload() } }
+                if !query.isEmpty {
+                    Button {
+                        query=""
+                        Task { await reload() }
+                    } label: {
+                        Image(systemName:"xmark.circle.fill").font(.system(size:9))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("清除知识搜索")
+                }
+            }
+            .padding(.horizontal,10).frame(height:32)
+            .background(ForgePalette.softFill)
+            .padding(.horizontal,14).padding(.vertical,9)
+
+            if loading && result == nil {
+                ProgressView("正在读取知识…").controlSize(.small)
+                    .frame(maxWidth:.infinity,maxHeight:.infinity)
+            } else if let error {
+                VStack(alignment:.leading,spacing:7) {
+                    Label("知识暂不可用",systemImage:"exclamationmark.circle")
+                        .font(.system(size:11,weight:.medium))
+                    Text(error).font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
+                    Button("重试") { Task { await reload() } }
+                        .buttonStyle(.plain).font(.system(size:10.5,weight:.medium))
+                }
+                .padding(14).frame(maxWidth:.infinity,maxHeight:.infinity,alignment:.topLeading)
+            } else if memories.isEmpty {
+                Text("没有匹配的知识记录。")
+                    .font(.system(size:11)).foregroundStyle(ForgePalette.secondary)
+                    .frame(maxWidth:.infinity,maxHeight:.infinity,alignment:.topLeading)
+                    .padding(14)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment:.leading,spacing:0) {
+                        ForEach(Array(memories.prefix(7))) { memory in
+                            knowledgeRow(memory)
+                            Divider().padding(.leading,14)
+                        }
+                    }
+                }
+                .scrollIndicators(.automatic)
+            }
+
+            Divider()
+            HStack(spacing:6) {
+                if let result {
+                    Text("\\(result.items.count) 条结果")
+                    if result.truncated { Text("· 已截断") }
+                } else {
+                    Text("只读 · advisory")
+                }
+                Spacer()
+                if loading { ProgressView().controlSize(.mini) }
+            }
+            .font(.system(size:9.5)).foregroundStyle(.tertiary)
+            .padding(.horizontal,14).frame(height:34)
+        }
+        .frame(width:410,height:455)
+        .task(id:model.repoId) { await reload() }
+    }
+
+    private var memories:[KnowledgeMemoryDetail] {
+        result?.items.map(\.memory) ?? []
+    }
+
+    private func knowledgeRow(_ memory:KnowledgeMemoryDetail) -> some View {
+        VStack(alignment:.leading,spacing:6) {
+            HStack(spacing:6) {
+                Text(scopeLabel(memory.scope.kind))
+                    .font(.system(size:9,weight:.semibold))
+                    .foregroundStyle(ForgePalette.secondary)
+                if let concept=memory.concepts.first,!concept.isEmpty {
+                    Text(concept).font(.system(size:9.5,weight:.medium))
+                }
+                Spacer()
+                Button("用于会话") {
+                    model.useKnowledgeInCurrentConversation(memory)
+                    if model.error == nil { dismiss() }
+                }
+                .buttonStyle(.plain)
+                .font(.system(size:10,weight:.semibold))
+                .disabled(model.busy)
+                .accessibilityIdentifier("agent.knowledge-inspector.use.\\(memory.id)")
+            }
+            Text(memory.canonicalText)
+                .font(.system(size:11)).lineSpacing(3)
+                .foregroundStyle(ForgePalette.ink)
+                .lineLimit(3)
+                .textSelection(.enabled)
+        }
+        .padding(.horizontal,14).padding(.vertical,10)
+    }
+
+    private func scopeLabel(_ kind:String) -> String {
+        switch kind { case "project": return "项目"; case "workspace": return "工作空间"; default: return kind }
+    }
+
+    @MainActor
+    private func reload() async {
+        guard model.repoId != nil else {
+            result=nil
+            error=nil
+            return
+        }
+        loading=true
+        defer { loading=false }
+        do {
+            result=try await model.readKnowledge(query.trimmingCharacters(in:.whitespacesAndNewlines))
+            error=nil
+        } catch {
+            self.error=error.localizedDescription
+        }
+    }
 }
 
 private struct RecordsPane: View {
@@ -4300,136 +4699,286 @@ private struct RecordsPane: View {
     private func semanticRecordDetail(_ detail: SemanticRecordDetail) -> some View {
         switch detail {
         case .requirement(let requirement):
-            VStack(alignment:.leading,spacing:18) {
-                VStack(alignment:.leading,spacing:8) {
-                    HStack(spacing:9) {
-                        Button {
-                            model.newThreadForRequirement(requirement.requirementId)
-                        } label: {
-                            Label("以此 Requirement 新建会话",systemImage:"bubble.left.and.bubble.right")
-                        }
-                        .buttonStyle(.borderedProminent)
+            VStack(alignment:.leading,spacing:16) {
+                HStack(spacing:9) {
+                    Button {
+                        model.bindCurrentThreadPlanningContext(
+                            requirementId:requirement.requirementId,
+                            planId:nil
+                        )
+                        if model.error == nil { model.show(.agent) }
+                    } label: {
+                        Label("在当前会话中继续",systemImage:"arrow.turn.down.right")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(model.busy || model.thread == nil)
+                    .help("把此 Requirement 绑定到当前会话，不修改 Requirement 本身")
+                    .accessibilityIdentifier("planning.requirement.use-current")
+
+                    Button {
+                        model.newThreadForRequirement(requirement.requirementId)
+                    } label: {
+                        Label("新建会话",systemImage:"plus.bubble")
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(model.busy)
+
+                    Menu {
                         Button {
                             beginPlan(requirementId:requirement.requirementId,parentPlanId:nil)
                         } label: {
                             Label("添加根 Plan",systemImage:"plus")
                         }
-                        .buttonStyle(.bordered)
+                    } label: {
+                        Image(systemName:"ellipsis")
+                            .frame(width:24,height:24)
                     }
-                    Text("可选上下文，不影响普通 Agent 会话。")
-                        .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
                 }
-                autopilotSection(requirement)
+
                 semanticSection("目标") {
                     Text(requirement.outcomeStatement.isEmpty ? "未提供 outcome。" : requirement.outcomeStatement)
-                        .font(.system(size:12.5)).lineSpacing(4).textSelection(.enabled)
+                        .font(.system(size:13,weight:.medium))
+                        .lineSpacing(4)
+                        .textSelection(.enabled)
                 }
-                if !requirement.acceptanceCriteria.isEmpty {
-                    semanticSection("验收标准") {
-                        semanticBulletList(requirement.acceptanceCriteria)
-                    }
-                }
+
                 if !requirement.progressSummary.isEmpty {
                     semanticSection("当前进度") {
                         Text(requirement.progressSummary)
-                            .font(.system(size:12.5)).lineSpacing(4).textSelection(.enabled)
+                            .font(.system(size:12.5))
+                            .lineSpacing(4)
+                            .textSelection(.enabled)
                     }
                 }
+
                 if !requirement.remainingWork.isEmpty {
-                    semanticSection("剩余工作") {
-                        semanticBulletList(requirement.remainingWork)
-                    }
-                }
-                Text("Requirement · r\(requirement.revision) · \(requirement.state)")
-                    .font(.system(size:10,design:.monospaced)).foregroundStyle(.tertiary)
-            }
-        case .plan(let plan):
-            VStack(alignment:.leading,spacing:18) {
-                VStack(alignment:.leading,spacing:8) {
-                    HStack(spacing:9) {
-                        Button {
-                            model.newThreadForPlan(plan)
-                        } label: {
-                            Label("以此 Plan 新建会话",systemImage:"bubble.left.and.bubble.right")
-                        }
-                        .buttonStyle(.borderedProminent)
-                        Button {
-                            beginPlan(requirementId:plan.requirementId,parentPlanId:plan.planId)
-                        } label: {
-                            Label("细化子 Plan",systemImage:"arrow.turn.down.right")
-                        }
-                        .buttonStyle(.bordered)
-                    }
-                    Text("会话仍由 Project / checkout 承载；Plan 只是附加语义上下文。")
-                        .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
-                }
-                semanticSection("目标") {
-                    Text(plan.goal).font(.system(size:12.5)).lineSpacing(4).textSelection(.enabled)
-                }
-                if let parentPlanId = plan.parentPlanId, !parentPlanId.isEmpty {
-                    Button {
-                        Task { await model.openPlan(parentPlanId) }
-                    } label: {
-                        HStack(spacing:7) {
-                            Image(systemName:"arrow.turn.up.left")
-                            Text("上级 Plan")
-                            Text(parentPlanId).font(.system(size:10,design:.monospaced)).foregroundStyle(.secondary)
-                            Spacer(minLength:0)
-                            Image(systemName:"chevron.right").font(.system(size:9,weight:.semibold))
-                        }
-                        .font(.system(size:11,weight:.medium))
-                        .padding(.horizontal,11).frame(height:34)
-                        .background(ForgePalette.softFill,in:RoundedRectangle(cornerRadius:9,style:.continuous))
-                    }
-                    .buttonStyle(.plain)
-                }
-                if let requirementId = plan.requirementId, !requirementId.isEmpty {
-                    Button {
-                        Task { await model.openRequirement(requirementId) }
-                    } label: {
-                        HStack(spacing:7) {
-                            Image(systemName:"doc.text")
-                            Text("打开 Requirement")
-                            Text(requirementId).font(.system(size:10,design:.monospaced)).foregroundStyle(.secondary)
-                            Spacer(minLength:0)
-                            Image(systemName:"chevron.right").font(.system(size:9,weight:.semibold))
-                        }
-                        .font(.system(size:11,weight:.medium))
-                        .padding(.horizontal,11).frame(height:34)
-                        .background(ForgePalette.softFill,in:RoundedRectangle(cornerRadius:9,style:.continuous))
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("打开 Requirement")
-                    .accessibilityValue(requirementId)
-                    .accessibilityIdentifier("semantic.open-requirement")
-                }
-                if !plan.items.isEmpty {
-                    semanticSection("计划项") {
-                        VStack(alignment:.leading,spacing:9) {
-                            ForEach(plan.items) { item in
-                                VStack(alignment:.leading,spacing:3) {
-                                    Text(item.objective).font(.system(size:12.5)).lineSpacing(3)
-                                    Text(item.id).font(.system(size:9.5,design:.monospaced)).foregroundStyle(.tertiary)
+                    semanticSection("下一步") {
+                        VStack(alignment:.leading,spacing:8) {
+                            ForEach(Array(requirement.remainingWork.enumerated()),id:\.offset) { index, value in
+                                HStack(alignment:.top,spacing:9) {
+                                    Text("\(index + 1)")
+                                        .font(.system(size:9.5,weight:.semibold,design:.rounded))
+                                        .foregroundStyle(ForgePalette.secondary)
+                                        .frame(width:17,height:17)
+                                        .background(ForgePalette.softFill,in:Circle())
+                                    Text(value)
+                                        .font(.system(size:12))
+                                        .lineSpacing(3)
+                                        .textSelection(.enabled)
                                 }
                             }
                         }
                     }
                 }
-                if !plan.resolvedDecisions.isEmpty {
-                    semanticSection("已确认决策") { semanticBulletList(plan.resolvedDecisions) }
-                }
-                if !plan.nonGoals.isEmpty {
-                    semanticSection("不做") { semanticBulletList(plan.nonGoals) }
-                }
-                HStack(spacing:8) {
-                    Text("Plan · r\(plan.revision)")
-                    if let source = plan.sourceBasisRevision, !source.isEmpty {
-                        Text(String(source.prefix(10))).textSelection(.enabled)
+
+                autopilotSection(requirement)
+
+                if !requirement.acceptanceCriteria.isEmpty {
+                    DisclosureGroup {
+                        semanticBulletList(requirement.acceptanceCriteria)
+                            .padding(.top,8)
+                    } label: {
+                        HStack {
+                            Text("验收标准")
+                            Spacer()
+                            Text("\(requirement.acceptanceCriteria.count)")
+                                .foregroundStyle(.tertiary)
+                        }
+                        .font(.system(size:11,weight:.semibold))
+                        .foregroundStyle(ForgePalette.secondary)
+                    }
+                    .padding(.vertical,11)
+                    .overlay(alignment:.top) {
+                        Rectangle().fill(Color.primary.opacity(0.10)).frame(height:1)
                     }
                 }
-                .font(.system(size:10,design:.monospaced)).foregroundStyle(.tertiary)
+
+                DisclosureGroup("记录信息") {
+                    VStack(alignment:.leading,spacing:6) {
+                        Text(requirement.requirementId)
+                            .textSelection(.enabled)
+                        Text("revision \(requirement.revision) · \(requirement.state)")
+                    }
+                    .font(.system(size:9.5,design:.monospaced))
+                    .foregroundStyle(.tertiary)
+                    .padding(.top,7)
+                }
+                .font(.system(size:10.5,weight:.medium))
+                .foregroundStyle(ForgePalette.secondary)
+            }
+
+        case .plan(let plan):
+            VStack(alignment:.leading,spacing:16) {
+                HStack(spacing:9) {
+                    Button {
+                        model.bindCurrentThreadPlanningContext(
+                            requirementId:plan.requirementId,
+                            planId:plan.planId
+                        )
+                        if model.error == nil { model.show(.agent) }
+                    } label: {
+                        Label("在当前会话中继续",systemImage:"arrow.turn.down.right")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(model.busy || model.thread == nil)
+                    .help("把此 Plan 绑定到当前会话，不修改 Plan 本身")
+                    .accessibilityIdentifier("planning.plan.use-current")
+
+                    Button {
+                        model.newThreadForPlan(plan)
+                    } label: {
+                        Label("新建会话",systemImage:"plus.bubble")
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(model.busy)
+
+                    Menu {
+                        Button {
+                            beginPlan(requirementId:plan.requirementId,parentPlanId:plan.planId)
+                        } label: {
+                            Label("细化子 Plan",systemImage:"arrow.turn.down.right")
+                        }
+                    } label: {
+                        Image(systemName:"ellipsis")
+                            .frame(width:24,height:24)
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                }
+
+                semanticSection("目标") {
+                    Text(plan.goal.isEmpty ? "未提供目标。" : plan.goal)
+                        .font(.system(size:13,weight:.medium))
+                        .lineSpacing(4)
+                        .textSelection(.enabled)
+                }
+
+                if !plan.items.isEmpty {
+                    semanticSection("实施顺序") {
+                        VStack(alignment:.leading,spacing:10) {
+                            ForEach(Array(plan.items.enumerated()),id:\.element.id) { index,item in
+                                HStack(alignment:.top,spacing:9) {
+                                    Text("\(index + 1)")
+                                        .font(.system(size:9.5,weight:.semibold,design:.rounded))
+                                        .foregroundStyle(ForgePalette.secondary)
+                                        .frame(width:17,height:17)
+                                        .background(ForgePalette.softFill,in:Circle())
+                                    VStack(alignment:.leading,spacing:3) {
+                                        Text(item.objective)
+                                            .font(.system(size:12.5))
+                                            .lineSpacing(3)
+                                        Text(item.id)
+                                            .font(.system(size:9,design:.monospaced))
+                                            .foregroundStyle(.tertiary)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if plan.parentPlanId != nil || plan.requirementId != nil {
+                    semanticSection("关系") {
+                        VStack(alignment:.leading,spacing:5) {
+                            if let parentPlanId=plan.parentPlanId,!parentPlanId.isEmpty {
+                                semanticRelationButton(
+                                    title:"上级 Plan",
+                                    id:parentPlanId,
+                                    systemImage:"arrow.turn.up.left"
+                                ) {
+                                    Task { await model.openPlan(parentPlanId) }
+                                }
+                            }
+                            if let requirementId=plan.requirementId,!requirementId.isEmpty {
+                                semanticRelationButton(
+                                    title:"所属 Requirement",
+                                    id:requirementId,
+                                    systemImage:"doc.text"
+                                ) {
+                                    Task { await model.openRequirement(requirementId) }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if !plan.resolvedDecisions.isEmpty || !plan.nonGoals.isEmpty {
+                    DisclosureGroup("决策与边界") {
+                        VStack(alignment:.leading,spacing:13) {
+                            if !plan.resolvedDecisions.isEmpty {
+                                VStack(alignment:.leading,spacing:7) {
+                                    Text("已确认决策")
+                                        .font(.system(size:10.5,weight:.semibold))
+                                        .foregroundStyle(ForgePalette.secondary)
+                                    semanticBulletList(plan.resolvedDecisions)
+                                }
+                            }
+                            if !plan.nonGoals.isEmpty {
+                                VStack(alignment:.leading,spacing:7) {
+                                    Text("不做")
+                                        .font(.system(size:10.5,weight:.semibold))
+                                        .foregroundStyle(ForgePalette.secondary)
+                                    semanticBulletList(plan.nonGoals)
+                                }
+                            }
+                        }
+                        .padding(.top,9)
+                    }
+                    .font(.system(size:11,weight:.semibold))
+                    .foregroundStyle(ForgePalette.secondary)
+                    .padding(.vertical,11)
+                    .overlay(alignment:.top) {
+                        Rectangle().fill(Color.primary.opacity(0.10)).frame(height:1)
+                    }
+                }
+
+                DisclosureGroup("记录信息") {
+                    VStack(alignment:.leading,spacing:6) {
+                        Text(plan.planId).textSelection(.enabled)
+                        Text("revision \(plan.revision)")
+                        if let source=plan.sourceBasisRevision,!source.isEmpty {
+                            Text("source \(source)").textSelection(.enabled)
+                        }
+                    }
+                    .font(.system(size:9.5,design:.monospaced))
+                    .foregroundStyle(.tertiary)
+                    .padding(.top,7)
+                }
+                .font(.system(size:10.5,weight:.medium))
+                .foregroundStyle(ForgePalette.secondary)
             }
         }
+    }
+
+    private func semanticRelationButton(
+        title:String,
+        id:String,
+        systemImage:String,
+        action:@escaping () -> Void
+    ) -> some View {
+        Button(action:action) {
+            HStack(spacing:7) {
+                Image(systemName:systemImage)
+                    .font(.system(size:9.5))
+                    .foregroundStyle(ForgePalette.secondary)
+                    .frame(width:16)
+                Text(title)
+                    .font(.system(size:11,weight:.medium))
+                Text(id)
+                    .font(.system(size:9.5,design:.monospaced))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1).truncationMode(.middle)
+                Spacer(minLength:0)
+                Image(systemName:"chevron.right")
+                    .font(.system(size:8.5,weight:.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .frame(height:29)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     private func semanticSection<Content:View>(_ title:String,@ViewBuilder content:() -> Content) -> some View {
@@ -5110,105 +5659,346 @@ private struct RuntimeSettingsSection: View {
 
 private struct KnowledgePane: View {
     @ObservedObject var model: NativeWorkspace
-    var body: some View {
-        ScrollView {
-            VStack(alignment:.leading,spacing:18) {
-                VStack(alignment:.leading,spacing:6) {
-                    Text("记忆与知识").font(.system(size:21,weight:.medium))
-                    Text("读取当前 Forge 项目/工作空间的 Cognitive 记录；结果只读、仅供参考，不更改 Requirement、Plan 或执行授权。")
-                        .font(.system(size:12)).foregroundStyle(ForgePalette.secondary)
-                }
-                HStack(spacing:9) {
-                    TextField("搜索经验、概念、技术决策…",text:$model.knowledgeQuery)
-                        .textFieldStyle(.plain)
-                        .padding(.horizontal,12)
-                        .frame(height:38)
-                        .background(ForgePalette.softFill,
-                                    in:RoundedRectangle(cornerRadius:12,style:.continuous))
-                        .onSubmit { Task { await model.searchKnowledge() } }
-                        .accessibilityLabel("知识库搜索")
-                        .accessibilityIdentifier("knowledge.query")
-                    Button { Task { await model.searchKnowledge() } } label: {
-                        if model.knowledgeLoading { ProgressView().controlSize(.small) }
-                        else { Label("检索",systemImage:"magnifyingglass") }
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.regular)
-                    .disabled(model.knowledgeLoading || model.repoId == nil)
-                    .accessibilityIdentifier("knowledge.search")
-                }
-                HStack {
-                    Text(model.project.map { "项目：\($0.label)" } ?? "未选择项目")
-                    Spacer()
-                    if let result = model.knowledgeResult {
-                        Text("已检索 \(result.inspected) 条 · 返回 \(result.items.count) 条")
-                    } else {
-                        Text("Forge Cognitive · 只读")
-                    }
-                }
-                .font(.system(size:10.5)).foregroundStyle(.tertiary)
+    @State private var selectedMemoryId: String?
 
-                if model.repoId == nil {
-                    knowledgeEmpty("先选择已注册的 Forge 项目，以限定知识检索范围。")
-                } else if let result = model.knowledgeResult, result.items.isEmpty {
-                    knowledgeEmpty("当前没有匹配的记忆记录。")
-                } else if let result = model.knowledgeResult {
-                    LazyVStack(alignment:.leading,spacing:10) {
-                        ForEach(result.items.map(\.memory)) { memory in
-                            VStack(alignment:.leading,spacing:10) {
-                                HStack(spacing:8) {
-                                    Text(scopeLabel(memory.scope.kind))
-                                        .font(.system(size:9.5,weight:.semibold))
-                                        .padding(.horizontal,7).frame(height:21)
-                                        .background(ForgePalette.selection,in:Capsule())
-                                    Text(memory.provenance?.sourceKind ?? "Cognitive")
-                                    Spacer()
-                                    Text("r\(memory.revision)")
-                                }
-                                .font(.system(size:9.5)).foregroundStyle(ForgePalette.secondary)
-                                Text(memory.canonicalText)
-                                    .font(.system(size:12.5)).lineSpacing(4).textSelection(.enabled)
-                                if !memory.concepts.isEmpty {
-                                    HStack(spacing:6) {
-                                        ForEach(Array(memory.concepts.prefix(6)),id:\.self) { concept in
-                                            Text(concept).font(.system(size:9.5))
-                                                .padding(.horizontal,7).frame(height:22)
-                                                .background(ForgePalette.softFill,in:Capsule())
-                                        }
-                                    }
-                                }
-                                Text("\(memory.scope.kind) / \(memory.scope.id) · \(memory.id)")
-                                    .font(.system(size:9,design:.monospaced)).foregroundStyle(.tertiary)
-                                    .textSelection(.enabled)
+    var body: some View {
+        VStack(alignment:.leading,spacing:0) {
+            VStack(alignment:.leading,spacing:11) {
+                HStack(alignment:.top) {
+                    VStack(alignment:.leading,spacing:4) {
+                        Text("知识库")
+                            .font(.system(size:20,weight:.medium))
+                        Text("先找可复用判断，再决定是否带回当前会话。Cognitive 记录保持只读、仅供参考。")
+                            .font(.system(size:11.5))
+                            .foregroundStyle(ForgePalette.secondary)
+                    }
+                    Spacer()
+                    if let result=model.knowledgeResult {
+                        Text("\(result.items.count) 条结果")
+                            .font(.system(size:10.5,weight:.medium))
+                            .foregroundStyle(ForgePalette.secondary)
+                    }
+                }
+
+                HStack(spacing:8) {
+                    HStack(spacing:7) {
+                        Image(systemName:"magnifyingglass")
+                            .font(.system(size:10))
+                            .foregroundStyle(.tertiary)
+                        TextField("搜索经验、概念、技术决策…",text:$model.knowledgeQuery)
+                            .textFieldStyle(.plain)
+                            .font(.system(size:11.5))
+                            .onSubmit { runSearch() }
+                            .accessibilityIdentifier("knowledge.query")
+                        if !model.knowledgeQuery.isEmpty {
+                            Button {
+                                model.knowledgeQuery=""
+                                runSearch()
+                            } label: {
+                                Image(systemName:"xmark.circle.fill")
+                                    .font(.system(size:9.5))
                             }
-                            .padding(.vertical,13)
-                            .frame(maxWidth:.infinity,alignment:.leading)
-                            .overlay(alignment:.bottom) { Divider() }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("清除知识搜索")
                         }
                     }
-                    if result.truncated {
-                        Label("结果已达到单次上限，可输入关键词缩小范围。",systemImage:"info.circle")
-                            .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
+                    .padding(.horizontal,10)
+                    .frame(height:34)
+                    .background(ForgePalette.softFill,
+                                in:RoundedRectangle(cornerRadius:9,style:.continuous))
+
+                    Button { runSearch() } label: {
+                        if model.knowledgeLoading {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Image(systemName:"arrow.right")
+                                .font(.system(size:10,weight:.semibold))
+                        }
                     }
-                    if !result.gaps.isEmpty {
-                        Label("部分范围不可达：\(result.gaps.joined(separator:"、"))",systemImage:"exclamationmark.triangle")
-                            .font(.system(size:10.5)).foregroundStyle(.orange)
+                    .buttonStyle(.plain)
+                    .frame(width:30,height:30)
+                    .help("检索")
+                    .disabled(model.knowledgeLoading || model.repoId == nil)
+                    .accessibilityLabel("检索知识")
+                    .accessibilityIdentifier("knowledge.search")
+                }
+            }
+            .padding(.horizontal,22).padding(.top,20).padding(.bottom,14)
+
+            Divider()
+
+            if model.repoId == nil {
+                knowledgeEmpty("先选择已注册的 Forge 项目，以限定知识检索范围。")
+            } else if model.knowledgeLoading && model.knowledgeResult == nil {
+                ProgressView("正在读取知识…")
+                    .controlSize(.small)
+                    .frame(maxWidth:.infinity,maxHeight:.infinity)
+            } else if let result=model.knowledgeResult,result.items.isEmpty {
+                knowledgeEmpty("没有匹配的知识记录。换一个更具体的概念或技术决策再试。")
+            } else if model.knowledgeResult == nil {
+                knowledgeEmpty("输入问题或概念开始检索。")
+            } else {
+                GeometryReader { geometry in
+                    let listWidth=min(max(280,geometry.size.width * 0.34),360)
+                    HStack(spacing:0) {
+                        knowledgeList
+                            .frame(width:listWidth)
+                        Divider()
+                        knowledgeDetail
+                            .frame(maxWidth:.infinity,maxHeight:.infinity)
                     }
                 }
             }
-            .frame(maxWidth:850,alignment:.leading)
-            .frame(maxWidth:.infinity,alignment:.leading)
-            .padding(28)
+
+            Divider()
+            knowledgeStatusBar
+        }
+        .background(ForgePalette.canvas)
+        .onChange(of:model.knowledgeResult?.items.map(\.memory.id) ?? []) { ids in
+            if let selectedMemoryId,!ids.contains(selectedMemoryId) {
+                self.selectedMemoryId=nil
+            }
         }
     }
 
+    private var memories:[KnowledgeMemoryDetail] {
+        model.knowledgeResult?.items.map(\.memory) ?? []
+    }
+
+    private var selectedMemory:KnowledgeMemoryDetail? {
+        if let selectedMemoryId,
+           let exact=memories.first(where:{$0.id == selectedMemoryId}) {
+            return exact
+        }
+        return memories.first
+    }
+
+    private var knowledgeList: some View {
+        ScrollView {
+            LazyVStack(alignment:.leading,spacing:0) {
+                ForEach(memories) { memory in
+                    let selected=selectedMemory?.id == memory.id
+                    Button {
+                        selectedMemoryId=memory.id
+                    } label: {
+                        VStack(alignment:.leading,spacing:6) {
+                            HStack(spacing:6) {
+                                Text(scopeLabel(memory.scope.kind))
+                                    .font(.system(size:9,weight:.semibold))
+                                    .foregroundStyle(ForgePalette.secondary)
+                                if let concept=memory.concepts.first,!concept.isEmpty {
+                                    Text(concept)
+                                        .font(.system(size:9.5,weight:.medium))
+                                        .lineLimit(1)
+                                }
+                                Spacer()
+                                if selected {
+                                    Image(systemName:"chevron.right")
+                                        .font(.system(size:8.5,weight:.semibold))
+                                        .foregroundStyle(.tertiary)
+                                }
+                            }
+                            Text(memory.canonicalText)
+                                .font(.system(size:11.5))
+                                .foregroundStyle(ForgePalette.ink)
+                                .lineLimit(3)
+                                .multilineTextAlignment(.leading)
+                            if let source=memory.provenance?.sourceKind,!source.isEmpty {
+                                Text(source)
+                                    .font(.system(size:9))
+                                    .foregroundStyle(.tertiary)
+                            }
+                        }
+                        .padding(.horizontal,14).padding(.vertical,11)
+                        .frame(maxWidth:.infinity,alignment:.leading)
+                        .contentShape(Rectangle())
+                        .background(selected ? ForgePalette.selection.opacity(0.75) : .clear)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("knowledge.result.\(memory.id)")
+                    Divider().padding(.leading,14)
+                }
+            }
+        }
+        .scrollIndicators(.automatic)
+    }
+
+    @ViewBuilder
+    private var knowledgeDetail: some View {
+        if let memory=selectedMemory {
+            ScrollView {
+                VStack(alignment:.leading,spacing:16) {
+                    VStack(alignment:.leading,spacing:6) {
+                        HStack(spacing:7) {
+                            Text(scopeLabel(memory.scope.kind))
+                                .font(.system(size:9.5,weight:.semibold))
+                                .foregroundStyle(ForgePalette.secondary)
+                            if let source=memory.provenance?.sourceKind,!source.isEmpty {
+                                Text(source)
+                                    .font(.system(size:9.5))
+                                    .foregroundStyle(.tertiary)
+                            }
+                        }
+                        Text(memory.canonicalText)
+                            .font(.system(size:14,weight:.medium))
+                            .lineSpacing(5)
+                            .textSelection(.enabled)
+                    }
+
+                    HStack(spacing:9) {
+                        Button {
+                            model.useKnowledgeInCurrentConversation(memory)
+                        } label: {
+                            Label("用于当前会话",systemImage:"bubble.left.and.text.bubble.right")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(model.busy || model.thread == nil)
+                        .help("先放入当前会话草稿，可编辑后再发送")
+                        .accessibilityIdentifier("knowledge.use.\(memory.id)")
+
+                        Button {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(memory.canonicalText,forType:.string)
+                        } label: {
+                            Label("复制",systemImage:"doc.on.doc")
+                        }
+                        .buttonStyle(.bordered)
+                        .accessibilityIdentifier("knowledge.copy.\(memory.id)")
+                    }
+
+                    if !memory.concepts.isEmpty {
+                        knowledgeDetailSection("相关概念") {
+                            ScrollView(.horizontal) {
+                                HStack(spacing:6) {
+                                    ForEach(memory.concepts,id:\.self) { concept in
+                                        Button(concept) {
+                                            model.knowledgeQuery=concept
+                                            selectedMemoryId=nil
+                                            runSearch()
+                                        }
+                                        .buttonStyle(.plain)
+                                        .font(.system(size:10,weight:.medium))
+                                        .padding(.horizontal,8).frame(height:24)
+                                        .background(ForgePalette.softFill,in:Capsule())
+                                        .help("检索 \(concept)")
+                                    }
+                                }
+                            }
+                            .scrollIndicators(.hidden)
+                        }
+                    }
+
+                    if !memory.facets.isEmpty {
+                        knowledgeDetailSection("适用侧面") {
+                            Text(memory.facets.joined(separator:" · "))
+                                .font(.system(size:11))
+                                .foregroundStyle(ForgePalette.secondary)
+                                .textSelection(.enabled)
+                        }
+                    }
+
+                    DisclosureGroup("来源与元数据") {
+                        VStack(alignment:.leading,spacing:7) {
+                            knowledgeMetadata("Scope","\(memory.scope.kind) / \(memory.scope.id)")
+                            if let source=memory.provenance?.sourceKind,!source.isEmpty {
+                                knowledgeMetadata("Source",source)
+                            }
+                            if let recorded=memory.provenance?.recordedAt,!recorded.isEmpty {
+                                knowledgeMetadata("Recorded",recorded)
+                            }
+                            knowledgeMetadata("Confidence",String(format:"%.2f",memory.confidence))
+                            knowledgeMetadata("Revision","r\(memory.revision)")
+                            knowledgeMetadata("Memory ID",memory.id)
+                        }
+                        .padding(.top,9)
+                    }
+                    .font(.system(size:10.5,weight:.medium))
+                    .foregroundStyle(ForgePalette.secondary)
+                    .padding(.top,2)
+                }
+                .frame(maxWidth:620,alignment:.leading)
+                .frame(maxWidth:.infinity,alignment:.leading)
+                .padding(.horizontal,24).padding(.vertical,22)
+            }
+            .scrollIndicators(.automatic)
+        } else {
+            knowledgeEmpty("选择左侧知识记录查看详情。")
+        }
+    }
+
+    private var knowledgeStatusBar: some View {
+        HStack(spacing:7) {
+            if let result=model.knowledgeResult {
+                Text("检索 \(result.inspected) 条 · 返回 \(result.items.count) 条")
+                if result.truncated {
+                    Text("· 结果已截断，建议缩小关键词")
+                }
+                if !result.gaps.isEmpty {
+                    Text("· 部分范围不可达")
+                        .foregroundStyle(.orange)
+                        .help(result.gaps.joined(separator:"、"))
+                }
+            } else {
+                Text("Forge Cognitive · 只读 advisory")
+            }
+            Spacer()
+            Text(model.project?.label ?? "未选择项目")
+        }
+        .font(.system(size:9.5))
+        .foregroundStyle(.tertiary)
+        .padding(.horizontal,18)
+        .frame(height:33)
+    }
+
+    private func knowledgeDetailSection<Content:View>(
+        _ title:String,
+        @ViewBuilder content:() -> Content
+    ) -> some View {
+        VStack(alignment:.leading,spacing:8) {
+            Text(title)
+                .font(.system(size:10.5,weight:.semibold))
+                .foregroundStyle(ForgePalette.secondary)
+            content()
+        }
+        .padding(.top,12)
+        .overlay(alignment:.top) {
+            Rectangle().fill(Color.primary.opacity(0.10)).frame(height:1)
+        }
+    }
+
+    private func knowledgeMetadata(_ key:String,_ value:String) -> some View {
+        HStack(alignment:.top,spacing:10) {
+            Text(key)
+                .frame(width:72,alignment:.leading)
+                .foregroundStyle(.tertiary)
+            Text(value)
+                .textSelection(.enabled)
+                .frame(maxWidth:.infinity,alignment:.leading)
+        }
+        .font(.system(size:9.5,design:.monospaced))
+    }
+
     private func knowledgeEmpty(_ message:String) -> some View {
-        Text(message).font(.system(size:12)).foregroundStyle(ForgePalette.secondary)
-            .padding(.vertical,18).frame(maxWidth:.infinity,alignment:.leading)
+        Text(message)
+            .font(.system(size:11.5))
+            .foregroundStyle(ForgePalette.secondary)
+            .frame(maxWidth:.infinity,maxHeight:.infinity,alignment:.topLeading)
+            .padding(22)
     }
 
     private func scopeLabel(_ kind:String) -> String {
-        switch kind { case "project": return "项目"; case "workspace": return "工作空间"; default: return kind }
+        switch kind {
+        case "project": return "项目"
+        case "workspace": return "工作空间"
+        case "requirement": return "Requirement"
+        case "plan": return "Plan"
+        default: return kind
+        }
+    }
+
+    private func runSearch() {
+        selectedMemoryId=nil
+        Task { await model.searchKnowledge() }
     }
 }
 

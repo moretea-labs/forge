@@ -696,6 +696,42 @@ final class NativeWorkspace: ObservableObject {
     func newThreadForPlan(_ plan: PlanRecordDetail) {
         newThread(requirementId:plan.requirementId,planId:plan.planId)
     }
+
+    func bindCurrentThreadPlanningContext(requirementId: String?, planId: String?) {
+        guard !busy else {
+            self.error = "请先停止正在运行的会话，再更改规划上下文。"
+            return
+        }
+        guard let index = threads.firstIndex(where: { $0.id == selectedThreadId }) else { return }
+        let requirement = requirementId?.trimmingCharacters(in:.whitespacesAndNewlines)
+        let plan = planId?.trimmingCharacters(in:.whitespacesAndNewlines)
+        threads[index].requirementId = requirement?.isEmpty == false ? requirement : nil
+        threads[index].planId = plan?.isEmpty == false ? plan : nil
+        threads[index].updatedAt = Date()
+        persist()
+        self.error = nil
+    }
+
+    func clearCurrentThreadPlanningContext() {
+        bindCurrentThreadPlanningContext(requirementId:nil,planId:nil)
+    }
+
+    func useKnowledgeInCurrentConversation(_ memory: KnowledgeMemoryDetail) {
+        guard !busy else {
+            self.error = "请先停止正在运行的会话，再添加知识上下文。"
+            return
+        }
+        let text = memory.canonicalText.trimmingCharacters(in:.whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        let addition = "请参考这条 Forge 项目知识继续当前任务：\n\(text)"
+        if draft.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty {
+            draft = addition
+        } else if !draft.contains(text) {
+            draft += "\n\n" + addition
+        }
+        if page != .agent { show(.agent) }
+        self.error = nil
+    }
     private func activateThreadContext(_ item: ChatThread, refreshProjectContext: Bool = true) {
         let contextChanged = item.repoId != repoId || item.checkoutId != checkoutId
         selectedThreadId = item.id
@@ -1233,6 +1269,23 @@ final class NativeWorkspace: ObservableObject {
             self.error = error.localizedDescription
         }
     }
+    func readPlanningRecordsForCurrentProject() async throws -> [ForgeRecord] {
+        guard let repoId else { throw ForgeBridgeError.remote("FORGE_NATIVE_REPOSITORY_REQUIRED") }
+        async let requirementValue = ForgeBridge.request("read_project_requirement_list",["repoId":repoId])
+        async let planValue = ForgeBridge.request("read_project_plan_list",["repoId":repoId])
+        let (requirementList,planList) = try await (requirementValue,planValue)
+        let requirementData = requirementList["data"] as? [String:Any] ?? requirementList
+        let requirementRows = requirementData["requirements"] as? [[String:Any]] ?? []
+        let planData = planList["data"] as? [String:Any] ?? planList
+        let planRows = planData["plans"] as? [[String:Any]] ?? []
+        let projectRequirements = Self.projectRequirementRows(
+            requirementRows:requirementRows,
+            planRows:planRows,
+            repoId:repoId
+        )
+        return Self.planningRecords(requirementRows:projectRequirements,planRows:planRows)
+    }
+
     func loadPage() async {
         if page == .schedule {
             await loadSchedulePage()
@@ -1254,20 +1307,9 @@ final class NativeWorkspace: ObservableObject {
         let targetPage=page
         do {
             if targetPage == .requirement {
-                async let requirementValue = ForgeBridge.request("read_project_requirement_list",["repoId":repoId])
-                async let planValue = ForgeBridge.request("read_project_plan_list",["repoId":repoId])
-                let (requirementList,planList) = try await (requirementValue,planValue)
+                let planning = try await readPlanningRecordsForCurrentProject()
                 guard self.repoId == repoId,self.page == targetPage else { return }
-                let requirementData = requirementList["data"] as? [String:Any] ?? requirementList
-                let requirementRows = requirementData["requirements"] as? [[String:Any]] ?? []
-                let planData = planList["data"] as? [String:Any] ?? planList
-                let planRows = planData["plans"] as? [[String:Any]] ?? []
-                let projectRequirements = Self.projectRequirementRows(
-                    requirementRows:requirementRows,
-                    planRows:planRows,
-                    repoId:repoId
-                )
-                records = Self.planningRecords(requirementRows:projectRequirements,planRows:planRows)
+                records = planning
             } else {
                 let result = try await ForgeBridge.request("read_project_plan_list",["repoId":repoId])
                 guard self.repoId == repoId,self.page == targetPage else { return }
@@ -2294,6 +2336,16 @@ final class NativeWorkspace: ObservableObject {
         return try? JSONDecoder().decode(KnowledgeAuditDetail.self,from:bytes)
     }
 
+    func readKnowledge(_ query: String) async throws -> KnowledgeAuditDetail {
+        guard let repoId else { throw ForgeBridgeError.remote("FORGE_NATIVE_REPOSITORY_REQUIRED") }
+        let value = try await ForgeBridge.request("read_project_knowledge",[
+            "repoId":repoId,
+            "query":query
+        ])
+        guard let parsed = Self.knowledgeAuditDetail(value) else { throw ForgeBridgeError.invalidResponse }
+        return parsed
+    }
+
     func searchKnowledge() async {
         guard let repoId else {
             knowledgeResult = nil
@@ -2310,11 +2362,8 @@ final class NativeWorkspace: ObservableObject {
             }
         }
         do {
-            let value = try await ForgeBridge.request("read_project_knowledge",[
-                "repoId":repoId,"query":targetQuery
-            ])
+            let parsed = try await readKnowledge(targetQuery)
             guard self.repoId == repoId,self.page == .knowledge,self.knowledgeQuery == targetQuery else { return }
-            guard let parsed = Self.knowledgeAuditDetail(value) else { throw ForgeBridgeError.invalidResponse }
             knowledgeResult = parsed
             error = nil
         } catch {
