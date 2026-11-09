@@ -16,7 +16,6 @@
     "src/runtime/control-plane/execution/verification-evidence.ts|../../../cli/repositories/structured-git",
     "src/runtime/control-plane/execution/work-lifecycle-audit.ts|../../../cli/repositories/types",
     "src/runtime/control-plane/facade/capability-registry.ts|../../../cli/editing/edit-operation-contract",
-    "src/runtime/control-plane/facade/controller-connection.ts|../../../cli/commands/setup-profile",
     "src/runtime/control-plane/facade/handoff-inbox-store.ts|../../../cli/repositories/locks",
     "src/runtime/control-plane/facade/plan-contract-store.ts|../../../cli/repositories/locks",
     "src/runtime/control-plane/facade/semantic-admission.ts|../../../cli/repositories/locks",

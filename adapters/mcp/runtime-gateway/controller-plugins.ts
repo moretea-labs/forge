@@ -1,6 +1,6 @@
-import { installOfficialPlugin, officialPluginCatalogItems } from '../../../cli/commands/plugin';
-import { listExternalPluginRegistrations } from '../../plugins/external-registration';
-import { listCanonicalPluginCapabilityAuthorizations } from '../../plugins/capability-authorization-grants';
+import { installOfficialPlugin, officialPluginCatalogItems } from '../../../src/cli/commands/plugin';
+import { listExternalPluginRegistrations } from '../../../src/runtime/plugins/external-registration';
+import { listCanonicalPluginCapabilityAuthorizations } from '../../../src/runtime/plugins/capability-authorization-grants';
 
 export interface ControllerPluginManagementItem {
   pluginId: string;

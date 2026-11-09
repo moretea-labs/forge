@@ -4,8 +4,8 @@ import { callRepositoryTool } from '../tool-mapping/repository-tools';
 import { commitSelectedPaths, restoreSelectedPaths, selectedPathDiff, stageSelectedPaths } from '../../../src/cli/repositories/selected-path-actions';
 import { result } from './result-adapter';
 import { selected } from './shared-adapter';
-import { configureInitialControllerConnection, readControllerConnectionSnapshot, repairControllerConnection } from '../../../src/runtime/control-plane/facade/controller-connection';
-import { installControllerOfficialPlugin, readControllerPluginManagement } from '../../../src/runtime/control-plane/facade/controller-plugins';
+import { configureInitialControllerConnection, readControllerConnectionSnapshot, repairControllerConnection } from './controller-connection';
+import { installControllerOfficialPlugin, readControllerPluginManagement } from './controller-plugins';
 import { cancelLocalConversation, readLocalConversationActivity, readLocalConversationModelCatalog, readLocalConversationProviderStatus, sendLocalConversation } from '../../../src/runtime/control-plane/launcher/local-conversation-controller';
 
 function object(value: unknown): Record<string, unknown> {
