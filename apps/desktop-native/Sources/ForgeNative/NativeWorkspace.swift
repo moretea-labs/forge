@@ -1050,6 +1050,15 @@ final class NativeWorkspace: ObservableObject {
         }
     }
 
+    nonisolated static func userRequestResolutionConfirmed(
+        _ receipt:[String:Any], requestId:String
+    ) -> Bool {
+        let data = receipt["data"] as? [String:Any] ?? receipt
+        guard let item = data["item"] as? [String:Any] else { return false }
+        return item["requestId"] as? String == requestId
+            && item["status"] as? String == "resolved"
+    }
+
     func resolveUserRequest(_ request:UserRequestDetail, decision:String, dismiss:Bool = false) async {
         guard !userRequestsLoading else { return }
         let normalized = decision.trimmingCharacters(in:.whitespacesAndNewlines)
@@ -1060,11 +1069,15 @@ final class NativeWorkspace: ObservableObject {
         userRequestsLoading = true
         defer { userRequestsLoading = false }
         do {
-            _ = try await ForgeBridge.request("control_user_request",[
+            let receipt = try await ForgeBridge.request("control_user_request",[
                 "requestId":request.requestId,
                 "action":dismiss ? "dismiss" : "resolve",
                 "decision":normalized
             ])
+            guard Self.userRequestResolutionConfirmed(receipt,requestId:request.requestId) else {
+                userRequestsError = "请求回执未确认已处理，请刷新核对状态，避免重复提交。"
+                return
+            }
             let value = try await ForgeBridge.request(
                 "read_user_requests",
                 repoId.map { ["repoId":$0] } ?? [:]
@@ -1074,7 +1087,9 @@ final class NativeWorkspace: ObservableObject {
             userRequestsTotalCount = Self.userRequestsTotalCount(value)
             userRequestsError = nil
         } catch {
-            userRequestsError = error.localizedDescription
+            // Submission may have been accepted before transport failed.
+            // Keep the draft and ask for a read-only refresh, never resubmit.
+            userRequestsError = "无法确认请求结果：\(error.localizedDescription)。请刷新核对后再操作。"
         }
     }
 

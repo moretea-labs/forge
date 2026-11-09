@@ -1412,6 +1412,21 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertTrue(NativeWorkspace.userRequestsPossiblyTruncated(fallback))
     }
 
+    func testUserRequestFeedbackRequiresMatchingTerminalAuthorityReceipt() {
+        XCTAssertTrue(NativeWorkspace.userRequestResolutionConfirmed([
+            "data":["item":["requestId":"request-1","status":"resolved"]]
+        ],requestId:"request-1"))
+        XCTAssertFalse(NativeWorkspace.userRequestResolutionConfirmed([
+            "data":["item":["requestId":"request-1","status":"pending"]]
+        ],requestId:"request-1"))
+        XCTAssertFalse(NativeWorkspace.userRequestResolutionConfirmed([
+            "data":["item":["requestId":"request-2","status":"resolved"]]
+        ],requestId:"request-1"))
+        XCTAssertFalse(NativeWorkspace.userRequestResolutionConfirmed([
+            "data":["status":"ok"]
+        ],requestId:"request-1"))
+    }
+
     func testUserRequestProjectionFiltersCurrentProjectAndGlobalOnly() {
         let rows = NativeWorkspace.userRequestRows([
             "data":[
