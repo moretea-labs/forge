@@ -20,7 +20,6 @@ Executable code and persisted schemas are authoritative for implementation facts
 
 <!-- BEGIN ARCHITECTURE PENDING REQUESTS -->
 - [ ] 2026-09-04 [unknown] `unknown` -> [2026-09-04-computer-plugin-workflow-taxonomy](requests/2026-09-04-computer-plugin-workflow-taxonomy.md)
-- [ ] 2026-10-23T16:30:16+0800 [medium] `package.json` -> [root](requests/root.md)
 <!-- END ARCHITECTURE PENDING REQUESTS -->
 
 ## Accepted Architecture Decisions
