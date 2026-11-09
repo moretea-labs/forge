@@ -1173,7 +1173,13 @@ export function createRecoveryToolExecutor(config: RecoveryConfig, options: {
   const runChild = options.runChild ?? runBoundedChild;
   const activationObservationMs = Math.max(1, options.activationObservationMs ?? 750);
   let activeStatus = 0;
-  let activeHeavy = 0;
+  let activeActivation = 0;
+  let activeCandidateWork = 0;
+  const usesCandidateWorkCapacity = (name: string): boolean =>
+    name === 'stage_runtime_release'
+    || name === 'prepare_runtime_release_session'
+    || name === 'verify_runtime_release_session_candidate'
+    || name === 'advance_runtime_release_session';
   type ActivationTask = {
     fingerprint: string;
     startedAt: string;
@@ -1248,9 +1254,9 @@ export function createRecoveryToolExecutor(config: RecoveryConfig, options: {
         }
         throw new Error('RECOVERY_BUSY: execution capacity reached; no operation was started.');
       }
-      if (activeHeavy >= 1) throw new Error('RECOVERY_BUSY: execution capacity reached; no operation was started.');
+      if (activeActivation >= 1) throw new Error('RECOVERY_BUSY: execution capacity reached; no operation was started.');
 
-      activeHeavy += 1;
+      activeActivation += 1;
       const task: ActivationTask = {
         fingerprint,
         startedAt: new Date().toISOString(),
@@ -1274,7 +1280,7 @@ export function createRecoveryToolExecutor(config: RecoveryConfig, options: {
           task.error = error instanceof Error ? error : new Error(String(error));
         },
       ).finally(() => {
-        activeHeavy = Math.max(0, activeHeavy - 1);
+        activeActivation = Math.max(0, activeActivation - 1);
       });
 
       const observed = await Promise.race([
@@ -1294,14 +1300,17 @@ export function createRecoveryToolExecutor(config: RecoveryConfig, options: {
       return activationRunning(rawRequestId, task.startedAt);
     }
 
-    if (status ? activeStatus >= 2 : activeHeavy >= 1) {
+    const candidateWork = usesCandidateWorkCapacity(name);
+    if (status ? activeStatus >= 2 : candidateWork && activeCandidateWork >= 1) {
       throw new Error('RECOVERY_BUSY: execution capacity reached; no operation was started.');
     }
-    if (status) activeStatus += 1; else activeHeavy += 1;
+    if (status) activeStatus += 1;
+    else if (candidateWork) activeCandidateWork += 1;
     try {
       return await executeChild(name, input, status);
     } finally {
-      if (status) activeStatus -= 1; else activeHeavy -= 1;
+      if (status) activeStatus -= 1;
+      else if (candidateWork) activeCandidateWork = Math.max(0, activeCandidateWork - 1);
     }
   };
 }

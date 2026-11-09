@@ -14,6 +14,8 @@ import {
   activateRuntimeRelease,
   activatePinnedRuntimeRelease,
   attestKnownGood,
+  bootAndVerifyConfiguredRuntimeReleaseSessionCandidate,
+  verifyBootedReleaseSessionCandidateCanaries,
   createRecoveryConfig,
   configuredRuntimeReleaseSourceState,
   decideWatchdog,
@@ -130,7 +132,7 @@ const roots: string[] = [];
 const servers: Server[] = [];
 const ownerships: RuntimeOwnershipHandle[] = [];
 
-test('Recovery bounds heavy tool concurrency while reserving status capacity and releasing failed slots', async () => {
+test('Recovery bounds Candidate work while reserving status capacity and releasing failed slots', async () => {
   let finishHeavy!: () => void;
   let calls = 0;
   const execute = createRecoveryToolExecutor(createRecoveryConfig('/tmp/unused-recovery-home'), {
@@ -139,15 +141,16 @@ test('Recovery bounds heavy tool concurrency while reserving status capacity and
       calls += 1;
       const input = JSON.parse(String(options.input));
       expect(options.forwardSignals).toBe(false);
-      if (input.name === 'verify_stable_runtime') await new Promise<void>((done) => { finishHeavy = done; });
+      if (input.name === 'prepare_runtime_release_session') await new Promise<void>((done) => { finishHeavy = done; });
       return {
         status: 0, signal: null, timedOut: false, stderr: '', residualPids: [], remainingPids: [], pidReuseFenced: false,
         stdout: JSON.stringify({ schemaVersion: 1, ok: input.name !== 'list_releases', value: { ready: true }, error: 'expected failure' }),
       };
     },
   });
-  const heavy = execute('verify_stable_runtime', {});
-  await expect(execute('verify_stable_runtime', {})).rejects.toThrow('RECOVERY_BUSY');
+  const heavy = execute('prepare_runtime_release_session', { request_id: 'candidate-work-a' });
+  await expect(execute('verify_runtime_release_session_candidate', { request_id: 'candidate-work-b', session_id: 'release-session-b' }))
+    .rejects.toThrow('RECOVERY_BUSY');
   expect(calls).toBe(1);
   expect(await execute('runtime_status', {})).toEqual({ ready: true });
   finishHeavy();
@@ -157,6 +160,33 @@ test('Recovery bounds heavy tool concurrency while reserving status capacity and
   await expect(execute('unknown_tool', {})).rejects.toThrow('RECOVERY_TOOL_REQUEST_INVALID');
   await expect(execute('runtime_status', { data: 'x'.repeat(65_536) })).rejects.toThrow('RECOVERY_REQUEST_TOO_LARGE');
   expect(calls).toBe(4);
+});
+
+test('Recovery Gateway lets unrelated Connector work enter while Candidate work is isolated', async () => {
+  let finishCandidate!: () => void;
+  let calls = 0;
+  const execute = createRecoveryToolExecutor(createRecoveryConfig('/tmp/unused-recovery-home'), {
+    releasePath: '/tmp/unused-recovery-release',
+    runChild: async (_command, _args, options) => {
+      calls += 1;
+      const input = JSON.parse(String(options.input));
+      if (input.name === 'prepare_runtime_release_session') {
+        await new Promise<void>((done) => { finishCandidate = done; });
+      }
+      return {
+        status: 0, signal: null, timedOut: false, stderr: '', residualPids: [], remainingPids: [], pidReuseFenced: false,
+        stdout: JSON.stringify({ schemaVersion: 1, ok: true, value: { ok: true, attempted: true, detail: input.name } }),
+      };
+    },
+  });
+
+  const candidate = execute('prepare_runtime_release_session', { request_id: 'candidate-isolated' });
+  while (calls < 1) await Bun.sleep(1);
+  expect(await execute('restart_primary_connector', { request_id: 'connector-independent' }))
+    .toMatchObject({ ok: true, detail: 'restart_primary_connector' });
+  expect(calls).toBe(2);
+  finishCandidate();
+  await candidate;
 });
 
 test('Recovery keeps HTTP health responsive during CPU-heavy isolated tool execution', async () => {
@@ -2298,8 +2328,9 @@ test('ReleaseSession preparation builds the isolated immutable candidate without
       expect(existsSync(join(input.sourceRoot, 'UNTRACKED-CONCURRENT.txt'))).toBe(false);
       expect(existsSync(join(input.sourceRoot, 'WORK-ONLY.md'))).toBe(false);
       expect(resolve(input.controllerHome)).not.toBe(resolve(home));
-      const operationLock = JSON.parse(readFileSync(join(home, 'recovery', 'locks', 'operation.lock'), 'utf8')) as Record<string, unknown>;
-      expect(operationLock).toMatchObject({
+      expect(existsSync(join(home, 'recovery', 'locks', 'operation.lock'))).toBe(false);
+      const candidateOperationLock = JSON.parse(readFileSync(join(input.controllerHome, 'recovery', 'locks', 'operation.lock'), 'utf8')) as Record<string, unknown>;
+      expect(candidateOperationLock).toMatchObject({
         pid: process.pid,
         action: 'release_session_prepare',
         requestId: 'recovery-gateway:stage-request-1',
@@ -2387,6 +2418,180 @@ test('ReleaseSession preparation builds the isolated immutable candidate without
     revision: expectedAuthority.revision,
     active: { releaseId: 'release-baseline', artifactIdentity: baseline.artifactIdentity },
   });
+});
+
+
+async function candidateBootedFixture(label: string) {
+  const home = controllerHome();
+  const sourceRoot = join(home, 'source');
+  committedRecoverySource(sourceRoot);
+  const baseline = verifiedManifest(home, 'release-baseline-' + label);
+  ensureActiveRuntimeRelease(home, baseline.path);
+  const runtime = await runtimeServer();
+  writeMainToken(home);
+  startObservedRuntime(home, runtime.endpoint, 'release-baseline-' + label, baseline.artifactIdentity);
+  const config = createRecoveryConfig(home, {
+    primaryRuntimeSourceRoot: sourceRoot,
+    primaryRuntimeSourceRepositoryId: 'repo-' + label,
+  });
+  const prepared = await prepareConfiguredRuntimeReleaseSession(config, {
+    stage: (input) => {
+      const sourceCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: input.sourceRoot, encoding: 'utf8' }).trim();
+      const releaseId = 'release-candidate-' + label;
+      const releasePath = join(input.controllerHome, 'runtime', 'releases', releaseId);
+      mkdirSync(releasePath, { recursive: true });
+      const runtimePath = join(releasePath, 'forge-runtime');
+      writeFileSync(runtimePath, '#!/bin/sh\n# ' + label + '\nexit 0\n', { mode: 0o700 });
+      const artifactIdentity = 'sha256:' + createHash('sha256').update(readFileSync(runtimePath)).digest('hex');
+      const manifestPath = join(releasePath, 'manifest.json');
+      writeFileSync(manifestPath, JSON.stringify({
+        schemaVersion: 1,
+        releaseId,
+        artifactIdentity,
+        entrypoint: 'forge-runtime',
+        arguments: [],
+        configurationSchemaVersion: 1,
+        deploymentScope: 'portable',
+        databaseSchemaCompatibility: { minimum: 1, maximum: 1 },
+        workerProtocolVersion: 1,
+        sourceCommit,
+        createdAt: new Date().toISOString(),
+      }, null, 2) + '\n');
+      return {
+        controllerHome: input.controllerHome,
+        releasePath,
+        manifestPath,
+        releaseId,
+        artifactIdentity,
+        manifestSha256: createHash('sha256').update(readFileSync(manifestPath)).digest('hex'),
+        sourceCommit,
+        sourceRepositoryId: input.sourceRepositoryId,
+      };
+    },
+  }, 'candidate-fixture-' + label);
+  let session = prepared.releaseSession!;
+  session = advanceReleaseSession({
+    controllerHome: home,
+    sessionId: session.sessionId,
+    expectedRevision: session.revision,
+    phase: 'candidate_booted',
+    receipts: [{ id: 'candidate_boot', kind: 'candidate_canary', summary: 'fixture boot checkpoint' }],
+  });
+  return { home, config, session };
+}
+
+function candidateRuntimeObservation(
+  session: NonNullable<Awaited<ReturnType<typeof candidateBootedFixture>>['session']>,
+  runtimeInstanceId: string,
+): ReturnType<typeof observeRuntimeStatus> {
+  const observedAt = new Date().toISOString();
+  return {
+    schemaVersion: 1,
+    running: true,
+    ready: true,
+    stale: false,
+    reasonCodes: [],
+    observedAt,
+    snapshot: {
+      schemaVersion: 1,
+      runtimeInstanceId,
+      pid: process.pid,
+      releaseId: session.candidateRelease!.releaseId,
+      artifactIdentity: session.candidateRelease!.artifactIdentity,
+      readiness: {
+        ready: true,
+        reasonCodes: [],
+        diagnostics: diagnostics(),
+        observedAt,
+      },
+      startedAt: observedAt,
+      updatedAt: observedAt,
+    },
+  };
+}
+
+function candidateCanaryVerify(): VerifyResult {
+  const verify = healthyVerify();
+  return {
+    ...verify,
+    probes: {
+      ...verify.probes,
+      mcp_initialized_notification: { ok: true, detail: 'ok' },
+      mcp_tools_list: { ok: true, detail: 'ok' },
+      mcp_read_only_call: { ok: true, detail: 'ok' },
+      mcp_session_close: { ok: true, detail: 'ok' },
+    },
+  };
+}
+
+test('ReleaseSession candidate restart canary runs without holding Stable A Recovery lock', async () => {
+  const { home, config, session } = await candidateBootedFixture('canary-unlocked');
+  let restartCalls = 0;
+  const result = await verifyBootedReleaseSessionCandidateCanaries(
+    config,
+    session.sessionId,
+    'candidate-unlocked',
+    {
+      restartCandidateRuntime: async (candidateConfig, dependencies) => {
+        restartCalls += 1;
+        expect(candidateConfig.controllerHome).toBe(session.candidate.controllerHome);
+        expect(existsSync(recoveryOperationLockPath(home))).toBe(false);
+        expect(dependencies?.forceHealthyRestart).toBe(true);
+        expect(await dependencies?.repairPrimaryConnectorBinding?.(candidateConfig)).toMatchObject({ ok: true, noOp: true });
+        return { ok: true, attempted: true, detail: 'candidate restarted', verify: candidateCanaryVerify() };
+      },
+      observeCandidateRuntime: () => candidateRuntimeObservation(session, 'candidate-runtime-fixture'),
+    },
+  );
+  expect(restartCalls).toBe(1);
+  expect(result).toMatchObject({ ok: true, releaseSession: { phase: 'cutover_eligible' } });
+  expect(existsSync(recoveryOperationLockPath(home))).toBe(false);
+});
+
+test('ReleaseSession rejects stale candidate canary completion after concurrent terminalization', async () => {
+  const { home, config, session } = await candidateBootedFixture('canary-stale');
+  const result = await verifyBootedReleaseSessionCandidateCanaries(
+    config,
+    session.sessionId,
+    'candidate-stale',
+    {
+      restartCandidateRuntime: async () => {
+        const current = readReleaseSession(home, session.sessionId)!;
+        advanceReleaseSession({
+          controllerHome: home,
+          sessionId: current.sessionId,
+          expectedRevision: current.revision,
+          phase: 'failed',
+          receipts: [{ id: 'cancelled', kind: 'candidate_canary', summary: 'concurrent terminalization' }],
+        });
+        return { ok: true, attempted: true, detail: 'late candidate success', verify: candidateCanaryVerify() };
+      },
+      observeCandidateRuntime: () => candidateRuntimeObservation(session, 'candidate-runtime-stale'),
+    },
+  );
+  expect(result.ok).toBe(false);
+  expect(result.detail).toContain('RELEASE_SESSION_CANDIDATE_CANARY_COMPLETION_STALE');
+  expect(readReleaseSession(home, session.sessionId)?.phase).toBe('failed');
+});
+
+test('ReleaseSession fails closed when a new invocation finds an interrupted candidate_booted checkpoint', async () => {
+  const { home, config, session } = await candidateBootedFixture('canary-interrupted');
+  let restartCalls = 0;
+  const result = await bootAndVerifyConfiguredRuntimeReleaseSessionCandidate(
+    config,
+    session.sessionId,
+    'candidate-interrupted',
+    {
+      restartCandidateRuntime: async () => {
+        restartCalls += 1;
+        return { ok: true, attempted: true, detail: 'must not resume', verify: candidateCanaryVerify() };
+      },
+    },
+  );
+  expect(restartCalls).toBe(0);
+  expect(result.ok).toBe(false);
+  expect(result.detail).toContain('interrupted');
+  expect(readReleaseSession(home, session.sessionId)?.phase).toBe('failed');
 });
 
 test('ReleaseSession preparation reconciles terminal and orphan Candidate B lanes before capacity admission', async () => {

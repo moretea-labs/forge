@@ -4284,10 +4284,37 @@ export async function prepareConfiguredRuntimeReleaseSession(
         sourceRevision,
       });
     }
-    const sessionId = session.sessionId;
+    return {
+      buildContext: {
+        session,
+        candidateLane,
+        stableRelease,
+        sourceRevision,
+      },
+    };
+  });
 
+  if (!locked.acquired) {
+    return { ok: false, attempted: false, noOp: true, detail: recoveryBusyDetail(locked.owner) };
+  }
+  if (!('buildContext' in locked.value)) return locked.value;
+
+  const {
+    session: frozenSession,
+    candidateLane,
+    stableRelease,
+    sourceRevision,
+  } = locked.value.buildContext;
+  const sessionId = frozenSession.sessionId;
+
+  // Building Candidate B is isolated work. Serialize it only inside Candidate B's
+  // own ControllerHome so Stable A Recovery mutations are not blocked for the
+  // duration of an immutable build.
+  const candidateBuild = await withLock(candidateRecoveryConfig(frozenSession), {
+    action: 'release_session_prepare',
+    ...(requestId?.trim() ? { requestId: requestId.trim() } : {}),
+  }, async () => {
     try {
-      assertStableReleaseSessionIdentityCurrent(config, stableRelease);
       const staged = withRuntimeReleaseSourceSnapshot({ sourceRoot, sourceRevision }, frozenSourceRoot =>
         (dependencies.stage ?? stageRuntimeReleaseFromCandidateSource)({
           controllerHome: candidateLane.controllerHome,
@@ -4306,57 +4333,145 @@ export async function prepareConfiguredRuntimeReleaseSession(
         sourceCommit: staged.sourceCommit,
         ...(staged.sourceRepositoryId ? { sourceRepositoryId: staged.sourceRepositoryId } : {}),
       };
-      assertStableReleaseSessionIdentityCurrent(config, stableRelease);
-      session = advanceReleaseSession({
-        controllerHome: config.controllerHome,
-        sessionId,
-        expectedRevision: session.revision,
-        phase: 'built',
-        candidateRelease,
-        receipts: [{
-          id: 'build',
-          kind: 'build',
-          summary: `portable candidate ${staged.releaseId} built under isolated Candidate B; Stable A unchanged`,
-        }],
-      });
-      audit(config, 'release_session_candidate_built', {
-        sessionId,
-        sourceRevision,
-        stableReleaseId: stableRelease.releaseId,
-        stableAuthorityRevision: stableRelease.authorityRevision,
-        candidateControllerHome: candidateLane.controllerHome,
-        candidatePort: candidateLane.port,
-        candidateReleaseId: staged.releaseId,
-        candidateTreeSha256: candidateRelease.treeSha256,
-      });
-      return {
-        ok: true as const,
-        attempted: true,
-        detail: 'configured Runtime source was built into an isolated Candidate B ReleaseSession; Stable A was not stopped or activated',
-        staged,
-        releaseSession: session,
-      };
+      return { ok: true as const, staged, candidateRelease };
     } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      try {
-        session = advanceReleaseSession({
-          controllerHome: config.controllerHome,
-          sessionId,
-          expectedRevision: session.revision,
-          phase: 'failed',
-          receipts: [{ id: 'build_failed', kind: 'build', summary: detail.slice(0, 500) }],
-        });
-      } catch { /* Preserve the original build failure. */ }
-      cleanupRetiredCandidateLane(config, session);
-      audit(config, 'release_session_candidate_build_failed', { sessionId, sourceRevision, detail });
-      return { ok: false as const, attempted: true, detail, releaseSession: session };
+      return { ok: false as const, detail: error instanceof Error ? error.message : String(error) };
     }
   });
 
-  if (!locked.acquired) {
-    return { ok: false, attempted: false, noOp: true, detail: recoveryBusyDetail(locked.owner) };
+  if (!candidateBuild.acquired) {
+    return {
+      ok: false,
+      attempted: false,
+      noOp: true,
+      detail: 'Candidate B build already in progress: ' + recoveryBusyDetail(candidateBuild.owner),
+      releaseSession: readReleaseSession(config.controllerHome, sessionId) ?? frozenSession,
+    };
   }
-  return locked.value;
+
+  if (!candidateBuild.value.ok) {
+    const detail = candidateBuild.value.detail;
+    audit(config, 'release_session_candidate_build_failed', { sessionId, sourceRevision, detail });
+    const failed = await withLock(config, {
+      action: 'release_session_prepare',
+      ...(requestId?.trim() ? { requestId: requestId.trim() } : {}),
+    }, async () => {
+      const latest = readReleaseSession(config.controllerHome, sessionId);
+      if (!latest) return { ok: false as const, attempted: true, detail, releaseSession: frozenSession };
+      if (latest.revision !== frozenSession.revision || latest.phase !== 'source_frozen') {
+        if (releaseSessionCandidateIsRetired(latest)) cleanupRetiredCandidateLane(config, latest);
+        return {
+          ok: false as const,
+          attempted: true,
+          detail: 'RELEASE_SESSION_BUILD_COMPLETION_STALE: ' + latest.phase + '@' + latest.revision + '; ' + detail,
+          releaseSession: latest,
+        };
+      }
+      const terminal = advanceReleaseSession({
+        controllerHome: config.controllerHome,
+        sessionId,
+        expectedRevision: latest.revision,
+        phase: 'failed',
+        receipts: [{ id: 'build_failed', kind: 'build', summary: detail.slice(0, 500) }],
+      });
+      cleanupRetiredCandidateLane(config, terminal);
+      return { ok: false as const, attempted: true, detail, releaseSession: terminal };
+    });
+    if (!failed.acquired) {
+      return {
+        ok: false,
+        attempted: true,
+        detail: detail + '; build failure could not acquire Stable A commit lock: ' + recoveryBusyDetail(failed.owner),
+        releaseSession: readReleaseSession(config.controllerHome, sessionId) ?? frozenSession,
+      };
+    }
+    return failed.value;
+  }
+
+  const { staged, candidateRelease } = candidateBuild.value;
+  const committed = await withLock(config, {
+    action: 'release_session_prepare',
+    ...(requestId?.trim() ? { requestId: requestId.trim() } : {}),
+  }, async () => {
+    const latest = readReleaseSession(config.controllerHome, sessionId);
+    if (!latest) {
+      return {
+        ok: false as const,
+        attempted: true,
+        detail: 'RELEASE_SESSION_BUILD_COMPLETION_STALE: session disappeared before build commit',
+      };
+    }
+    if (
+      latest.revision !== frozenSession.revision
+      || latest.phase !== 'source_frozen'
+      || latest.sourceRevision !== sourceRevision
+      || latest.candidate.controllerHome !== frozenSession.candidate.controllerHome
+    ) {
+      if (releaseSessionCandidateIsRetired(latest)) cleanupRetiredCandidateLane(config, latest);
+      return {
+        ok: false as const,
+        attempted: true,
+        detail: 'RELEASE_SESSION_BUILD_COMPLETION_STALE: ' + latest.phase + '@' + latest.revision,
+        releaseSession: latest,
+      };
+    }
+    try {
+      assertStableReleaseSessionIdentityCurrent(config, stableRelease);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      const terminal = advanceReleaseSession({
+        controllerHome: config.controllerHome,
+        sessionId,
+        expectedRevision: latest.revision,
+        phase: 'failed',
+        receipts: [{ id: 'build_stale_stable', kind: 'build', summary: detail.slice(0, 500) }],
+      });
+      cleanupRetiredCandidateLane(config, terminal);
+      return { ok: false as const, attempted: true, detail, releaseSession: terminal };
+    }
+
+    const session = advanceReleaseSession({
+      controllerHome: config.controllerHome,
+      sessionId,
+      expectedRevision: latest.revision,
+      phase: 'built',
+      candidateRelease,
+      receipts: [{
+        id: 'build',
+        kind: 'build',
+        summary: 'portable candidate ' + staged.releaseId + ' built under isolated Candidate B; Stable A unchanged',
+      }],
+    });
+    audit(config, 'release_session_candidate_built', {
+      sessionId,
+      sourceRevision,
+      stableReleaseId: stableRelease.releaseId,
+      stableAuthorityRevision: stableRelease.authorityRevision,
+      candidateControllerHome: candidateLane.controllerHome,
+      candidatePort: candidateLane.port,
+      candidateReleaseId: staged.releaseId,
+      candidateTreeSha256: candidateRelease.treeSha256,
+    });
+    return {
+      ok: true as const,
+      attempted: true,
+      detail: 'configured Runtime source was built under Candidate B lock and committed with an exact Stable A/session CAS; Stable A was not stopped or activated',
+      staged,
+      releaseSession: session,
+    };
+  });
+
+  if (!committed.acquired) {
+    return {
+      ok: false,
+      attempted: false,
+      noOp: true,
+      detail: 'Candidate B build completed; Stable A commit lock is busy: ' + recoveryBusyDetail(committed.owner),
+      staged,
+      releaseSession: readReleaseSession(config.controllerHome, sessionId) ?? frozenSession,
+    };
+  }
+  return committed.value;
 }
 
 
@@ -4604,8 +4719,9 @@ async function reconcileOrphanCandidateLanes(
 function candidateCanaryReceipts(
   session: ReleaseSession,
   verified: VerifyResult,
+  observeCandidateRuntime: typeof observeRuntimeStatus = observeRuntimeStatus,
 ): Array<{ id: string; kind: 'candidate_canary'; summary: string }> {
-  const observation = observeRuntimeStatus(session.candidate.controllerHome);
+  const observation = observeCandidateRuntime(session.candidate.controllerHome);
   const diagnostics = observation.snapshot?.readiness.diagnostics;
   const mcpProbeNames = ['mcp_initialize', 'mcp_initialized_notification', 'mcp_tools_list', 'mcp_read_only_call', 'mcp_session_close'];
   const failedMcp = mcpProbeNames.filter((name) => verified.probes[name]?.ok !== true);
@@ -4622,10 +4738,214 @@ function candidateCanaryReceipts(
   ];
 }
 
+export interface ReleaseSessionCandidateVerificationDependencies {
+  restartCandidateRuntime?: (
+    config: RecoveryConfig,
+    dependencies?: PrimaryRuntimeRecoveryDependencies,
+  ) => Promise<PrimaryRuntimeRestartResult>;
+  observeCandidateRuntime?: typeof observeRuntimeStatus;
+}
+
+async function failBootedReleaseSessionCandidateCanary(
+  config: RecoveryConfig,
+  session: ReleaseSession,
+  detail: string,
+  requestId?: string,
+): Promise<ConfiguredRuntimeActivationResult> {
+  const retirement = await stopReleaseSessionCandidateService(session, command);
+  const terminalDetail = retirement.ok
+    ? detail
+    : detail + '; Candidate B retirement failed: ' + retirement.detail;
+  const committed = await withLock(config, {
+    action: 'release_session_candidate_boot',
+    ...(requestId?.trim() ? { requestId: requestId.trim() } : {}),
+  }, async () => {
+    const latest = readReleaseSession(config.controllerHome, session.sessionId);
+    if (!latest) {
+      return { ok: false as const, attempted: true, detail: terminalDetail, releaseSession: session };
+    }
+    if (
+      latest.revision !== session.revision
+      || latest.phase !== 'candidate_booted'
+      || !sameReleaseSessionIdentity(latest.candidateRelease, session.candidateRelease)
+    ) {
+      return {
+        ok: false as const,
+        attempted: true,
+        detail: 'RELEASE_SESSION_CANDIDATE_CANARY_COMPLETION_STALE: ' + latest.phase + '@' + latest.revision,
+        releaseSession: latest,
+      };
+    }
+    if (!retirement.ok) {
+      return { ok: false as const, attempted: true, detail: terminalDetail, releaseSession: latest };
+    }
+    const terminal = advanceReleaseSession({
+      controllerHome: config.controllerHome,
+      sessionId: latest.sessionId,
+      expectedRevision: latest.revision,
+      phase: 'failed',
+      receipts: [{ id: 'candidate_failed', kind: 'candidate_canary', summary: terminalDetail.slice(0, 500) }],
+    });
+    cleanupRetiredCandidateLane(config, terminal);
+    return { ok: false as const, attempted: true, detail: terminalDetail, releaseSession: terminal };
+  });
+  audit(config, 'release_session_candidate_failed', {
+    sessionId: session.sessionId,
+    detail,
+    candidateRetired: retirement.ok,
+    candidateRetirementDetail: retirement.detail,
+  });
+  if (!committed.acquired) {
+    return {
+      ok: false,
+      attempted: true,
+      detail: terminalDetail + '; Stable A failure-commit lock is busy: ' + recoveryBusyDetail(committed.owner),
+      releaseSession: readReleaseSession(config.controllerHome, session.sessionId) ?? session,
+    };
+  }
+  return committed.value;
+}
+
+export async function verifyBootedReleaseSessionCandidateCanaries(
+  config: RecoveryConfig,
+  sessionId: string,
+  requestId: string | undefined,
+  dependencies: ReleaseSessionCandidateVerificationDependencies,
+): Promise<ConfiguredRuntimeActivationResult> {
+  const session = readReleaseSession(config.controllerHome, sessionId);
+  if (!session) return { ok: false, attempted: false, noOp: true, detail: 'RELEASE_SESSION_MISSING' };
+  if (session.phase === 'cutover_eligible') {
+    return { ok: true, attempted: false, noOp: true, detail: 'Candidate B is already cutover-eligible', releaseSession: session };
+  }
+  if (session.phase !== 'candidate_booted') {
+    return {
+      ok: false, attempted: false, noOp: true,
+      detail: 'RELEASE_SESSION_CANDIDATE_CANARY_REQUIRES_BOOTED: ' + session.phase,
+      releaseSession: session,
+    };
+  }
+  const candidateRelease = session.candidateRelease;
+  if (!candidateRelease) {
+    return { ok: false, attempted: false, noOp: true, detail: 'RELEASE_SESSION_CANDIDATE_RELEASE_REQUIRED', releaseSession: session };
+  }
+
+  const observeCandidateRuntime = dependencies.observeCandidateRuntime ?? observeRuntimeStatus;
+  const candidateConfig = candidateRecoveryConfig(session);
+  const candidateAuthority = readRuntimeReleaseAuthority(session.candidate.controllerHome);
+  const candidateObservation = observeCandidateRuntime(session.candidate.controllerHome);
+  const restartCandidateRuntime = dependencies.restartCandidateRuntime ?? restartPrimaryRuntime;
+  const restarted = await restartCandidateRuntime(candidateConfig, {
+    forceHealthyRestart: true,
+    requestId: requestId?.trim() ? requestId.trim() + ':candidate-restart' : undefined,
+    expectedAuthorityRevision: candidateAuthority?.revision,
+    expectedActiveReleaseId: candidateRelease.releaseId,
+    expectedRuntimeInstanceId: candidateObservation.snapshot?.runtimeInstanceId,
+    repairPrimaryConnectorBinding: async () => ({
+      ok: true,
+      attempted: false,
+      noOp: true,
+      detail: 'Candidate B owns no primary Connector; Stable A Connector lifecycle is independent',
+    }),
+  });
+
+  if (!restarted.ok) {
+    if (!restarted.attempted && restarted.noOp && restarted.detail.startsWith('Recovery mutation already in progress:')) {
+      return {
+        ok: false, attempted: false, noOp: true,
+        detail: 'Candidate B canary already in progress: ' + restarted.detail,
+        releaseSession: readReleaseSession(config.controllerHome, sessionId) ?? session,
+      };
+    }
+    return failBootedReleaseSessionCandidateCanary(
+      config,
+      session,
+      'RELEASE_SESSION_CANDIDATE_RECOVERY_RESTART_FAILED: ' + restarted.detail,
+      requestId,
+    );
+  }
+
+  let receipts: Array<{ id: string; kind: 'candidate_canary'; summary: string }>;
+  try {
+    receipts = candidateCanaryReceipts(session, restarted.verify, observeCandidateRuntime);
+  } catch (error) {
+    return failBootedReleaseSessionCandidateCanary(
+      config,
+      session,
+      error instanceof Error ? error.message : String(error),
+      requestId,
+    );
+  }
+
+  const committed = await withLock(config, {
+    action: 'release_session_candidate_boot',
+    ...(requestId?.trim() ? { requestId: requestId.trim() } : {}),
+  }, async () => {
+    let latest = readReleaseSession(config.controllerHome, sessionId);
+    if (!latest) {
+      return { ok: false as const, attempted: true, detail: 'RELEASE_SESSION_CANDIDATE_CANARY_COMPLETION_STALE: session missing' };
+    }
+    if (latest.phase === 'cutover_eligible' && sameReleaseSessionIdentity(latest.candidateRelease, candidateRelease)) {
+      return {
+        ok: true as const, attempted: false, noOp: true,
+        detail: 'Candidate B is already cutover-eligible; duplicate canary completion ignored',
+        releaseSession: latest,
+      };
+    }
+    if (
+      latest.revision !== session.revision
+      || latest.phase !== 'candidate_booted'
+      || latest.candidate.controllerHome !== session.candidate.controllerHome
+      || !sameReleaseSessionIdentity(latest.candidateRelease, candidateRelease)
+    ) {
+      return {
+        ok: false as const, attempted: true,
+        detail: 'RELEASE_SESSION_CANDIDATE_CANARY_COMPLETION_STALE: ' + latest.phase + '@' + latest.revision,
+        releaseSession: latest,
+      };
+    }
+    assertStableReleaseSessionIdentityCurrent(config, latest.stableRelease);
+    latest = advanceReleaseSession({
+      controllerHome: config.controllerHome,
+      sessionId,
+      expectedRevision: latest.revision,
+      phase: 'candidate_verified',
+      receipts,
+    });
+    latest = advanceReleaseSession({
+      controllerHome: config.controllerHome,
+      sessionId,
+      expectedRevision: latest.revision,
+      phase: 'cutover_eligible',
+    });
+    audit(config, 'release_session_candidate_verified', {
+      sessionId,
+      candidateReleaseId: candidateRelease.releaseId,
+      candidateControllerHome: latest.candidate.controllerHome,
+      candidatePort: latest.candidate.port,
+      stableReleaseId: latest.stableRelease.releaseId,
+    });
+    return {
+      ok: true as const,
+      attempted: true,
+      detail: 'Candidate B restart and MCP/Scheduler/Controller canaries ran under Candidate B ownership and committed through exact Stable A/session CAS',
+      releaseSession: latest,
+    };
+  });
+  if (!committed.acquired) {
+    return {
+      ok: false, attempted: true,
+      detail: 'Candidate B canaries passed; Stable A canary-commit lock is busy: ' + recoveryBusyDetail(committed.owner),
+      releaseSession: readReleaseSession(config.controllerHome, sessionId) ?? session,
+    };
+  }
+  return committed.value;
+}
+
 export async function bootAndVerifyConfiguredRuntimeReleaseSessionCandidate(
   config: RecoveryConfig,
   sessionId: string,
   requestId?: string,
+  dependencies: ReleaseSessionCandidateVerificationDependencies = {},
 ): Promise<ConfiguredRuntimeActivationResult> {
   const locked = await withLock(config, {
     action: 'release_session_candidate_boot',
@@ -4639,7 +4959,7 @@ export async function bootAndVerifyConfiguredRuntimeReleaseSessionCandidate(
         return {
           ok: false as const,
           attempted: true,
-          detail: `Candidate B boot/restart canary was interrupted and retirement failed: ${retirement.detail}`,
+          detail: 'Candidate B boot/restart canary was interrupted and retirement failed: ' + retirement.detail,
           releaseSession: session,
         };
       }
@@ -4699,49 +5019,12 @@ export async function bootAndVerifyConfiguredRuntimeReleaseSessionCandidate(
         receipts: [{ id: 'candidate_boot', kind: 'candidate_canary', summary: 'Candidate B booted and passed initial whole-Runtime verification while Stable A remained healthy' }],
       });
 
-      const platform = process.platform;
-      const uid = await currentUid();
-      const service = primaryRuntimeServiceOwner(candidateConfig, platform, uid);
-      if (!service) throw new Error('RELEASE_SESSION_CANDIDATE_SERVICE_OWNER_MISSING');
-      const stopped = await stopPrimaryRuntimeForReleaseTransition({
-        config: candidateConfig,
-        service,
-        now: Date.now,
-        wait: sleep,
-        runCommand,
-        runtimeRunning: (candidate) => observeRuntimeStatus(candidate.controllerHome).running,
-      });
-      if (!stopped.ok) throw new Error(`RELEASE_SESSION_CANDIDATE_RECOVERY_STOP_FAILED: ${stopped.detail}`);
-      const restarted = await restartPrimaryRuntime(candidateConfig);
-      if (!restarted.ok) throw new Error(`RELEASE_SESSION_CANDIDATE_RECOVERY_RESTART_FAILED: ${restarted.detail}`);
-      initialVerify = restarted.verify;
-      const receipts = candidateCanaryReceipts(session, initialVerify);
-      assertStableReleaseSessionIdentityCurrent(config, session.stableRelease);
-      session = advanceReleaseSession({
-        controllerHome: config.controllerHome,
-        sessionId,
-        expectedRevision: session.revision,
-        phase: 'candidate_verified',
-        receipts,
-      });
-      session = advanceReleaseSession({
-        controllerHome: config.controllerHome,
-        sessionId,
-        expectedRevision: session.revision,
-        phase: 'cutover_eligible',
-      });
-      audit(config, 'release_session_candidate_verified', {
-        sessionId,
-        candidateReleaseId: candidateRelease.releaseId,
-        candidateControllerHome: session.candidate.controllerHome,
-        candidatePort: session.candidate.port,
-        stableReleaseId: session.stableRelease.releaseId,
-      });
       return {
         ok: true as const,
         attempted: true,
-        detail: 'Candidate B booted in isolation, survived a Recovery restart canary, passed MCP/Scheduler/Controller canaries, and is cutover-eligible; Stable A remains active',
+        detail: 'Candidate B booted in isolation and persisted candidate_booted; restart/MCP/Scheduler/Controller canaries continue outside Stable A lock',
         releaseSession: session,
+        continueCandidateCanary: true as const,
       };
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
@@ -4775,6 +5058,9 @@ export async function bootAndVerifyConfiguredRuntimeReleaseSessionCandidate(
     }
   });
   if (!locked.acquired) return { ok: false, attempted: false, noOp: true, detail: recoveryBusyDetail(locked.owner) };
+  if ('continueCandidateCanary' in locked.value && locked.value.continueCandidateCanary === true) {
+    return verifyBootedReleaseSessionCandidateCanaries(config, sessionId, requestId, dependencies);
+  }
   return locked.value;
 }
 
