@@ -36,7 +36,7 @@ export async function callCoreCapabilityAdapter(
       return result({ error: { code: 'CORE_CAPABILITY_ACTION_UNSUPPORTED', message: `Unsupported controller.connection action: ${action || '<empty>'}` } }, true);
     }
     if (capabilityId === 'controller.plugins') {
-      if (action === 'get') return result(readControllerPluginManagement(ctx.controllerHome));
+      if (action === 'get') return result({ ...readControllerPluginManagement(ctx.controllerHome) });
       if (action === 'install_official') {
         return result(installControllerOfficialPlugin(ctx.controllerHome, String(input.plugin_id ?? '')));
       }
@@ -153,35 +153,4 @@ export async function callCoreCapabilityAdapter(
           ...restored,
         }, Boolean(restored.error));
       }
-      case 'delete_remote_branch': {
-        const forwarded = await callRepositoryTool(ctx.controllerHome, 'repository_git_delete_branch', {
-          repo_id: repository.repoId,
-          checkout_id: repository.activeCheckoutId,
-          branch: input.branch,
-          remote: true,
-          expected_remote_sha: input.expected_remote_sha,
-          ...(typeof input.approval_request_id === 'string' && input.approval_request_id.trim()
-            ? { approval_request_id: input.approval_request_id.trim() }
-            : {}),
-        });
-        return forwarded ?? result({
-          error: { code: 'CORE_CAPABILITY_ROUTE_UNAVAILABLE', message: 'Repository remote-branch delete route is unavailable.' },
-        }, true);
-      }
-      case 'deliver_work':
-      case 'discard_work':
-        return result({
-          error: {
-            code: 'WORK_LIFECYCLE_RETIRED',
-            message: `repository.git.${action} is retired; use ordinary Git/checkout capabilities. Historical Work cleanup is maintenance-owned.`,
-          },
-        }, true);
-      default:
-        return result({ error: { code: 'CORE_CAPABILITY_ACTION_UNSUPPORTED', message: `Unsupported repository.git action: ${action || '<empty>'}` } }, true);
-    }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    const structuredCode = /^([A-Z][A-Z0-9_]+)(?::|$)/.exec(message)?.[1];
-    return result({ error: { code: structuredCode ?? 'CORE_CAPABILITY_FAILED', message } }, true);
-  }
-}
+      case 'de...
