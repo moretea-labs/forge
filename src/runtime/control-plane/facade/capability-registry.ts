@@ -49,6 +49,16 @@ const CORE_CAPABILITIES: CapabilityDescriptor[] = [
     summary: 'Read product-safe controller and tunnel connection state, and refresh the existing Forge Connector through setup authority without creating another configuration owner.',
   },
   {
+    capabilityId: 'controller.plugins',
+    domain: 'controller',
+    group: 'controller',
+    operationClass: 'execute',
+    risk: 'workspace_write',
+    exposedVia: 'capability_execute',
+    schemaExposure: 'stable_static',
+    summary: 'Read the official pinned plugin catalog and install/update official plugins through the existing plugin lifecycle, trust, lock and authorization authorities.',
+  },
+  {
     capabilityId: 'controller.local_conversation',
     domain: 'controller',
     group: 'controller',
@@ -326,6 +336,31 @@ export function getCoreCapabilityExecutionSchema(capabilityId: string): Record<s
           readOnly: false,
           risk: 'workspace_write',
           argumentsSchema: { type: 'object', additionalProperties: false, properties: {} },
+        },
+      },
+    };
+  }
+  if (capabilityId === 'controller.plugins') {
+    return {
+      capabilityId,
+      executeWith: 'capability_execute',
+      actions: {
+        get: {
+          readOnly: true,
+          risk: 'readonly',
+          argumentsSchema: { type: 'object', additionalProperties: false, properties: {} },
+        },
+        install_official: {
+          readOnly: false,
+          risk: 'workspace_write',
+          argumentsSchema: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['plugin_id'],
+            properties: {
+              plugin_id: { type: 'string', pattern: '^[a-z][a-z0-9_]{1,63}$' },
+            },
+          },
         },
       },
     };

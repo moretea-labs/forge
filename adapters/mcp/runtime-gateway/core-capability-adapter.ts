@@ -5,6 +5,7 @@ import { commitSelectedPaths, restoreSelectedPaths, selectedPathDiff, stageSelec
 import { result } from './result-adapter';
 import { selected } from './shared-adapter';
 import { configureInitialControllerConnection, readControllerConnectionSnapshot, repairControllerConnection } from '../../../src/runtime/control-plane/facade/controller-connection';
+import { installControllerOfficialPlugin, readControllerPluginManagement } from '../../../src/runtime/control-plane/facade/controller-plugins';
 import { cancelLocalConversation, readLocalConversationActivity, readLocalConversationModelCatalog, readLocalConversationProviderStatus, sendLocalConversation } from '../../../src/runtime/control-plane/launcher/local-conversation-controller';
 
 function object(value: unknown): Record<string, unknown> {
@@ -33,6 +34,13 @@ export async function callCoreCapabilityAdapter(
       }
       if (action === 'repair_connector') return result(repairControllerConnection(ctx.controllerHome));
       return result({ error: { code: 'CORE_CAPABILITY_ACTION_UNSUPPORTED', message: `Unsupported controller.connection action: ${action || '<empty>'}` } }, true);
+    }
+    if (capabilityId === 'controller.plugins') {
+      if (action === 'get') return result(readControllerPluginManagement(ctx.controllerHome));
+      if (action === 'install_official') {
+        return result(installControllerOfficialPlugin(ctx.controllerHome, String(input.plugin_id ?? '')));
+      }
+      return result({ error: { code: 'CORE_CAPABILITY_ACTION_UNSUPPORTED', message: 'Unsupported controller.plugins action: ' + (action || '<empty>') } }, true);
     }
     if (capabilityId === 'controller.local_conversation') {
       if (action === 'status') return result({ ...await readLocalConversationProviderStatus() });

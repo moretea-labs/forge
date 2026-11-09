@@ -988,6 +988,30 @@ async fn cancel_local_conversation(conversation_id: String) -> Result<Value, Str
 }
 
 #[tauri::command]
+async fn read_plugin_management() -> Result<Value, String> {
+    call_runtime_tool("capability_execute", json!({
+        "capability_id": "controller.plugins",
+        "action": "get",
+        "arguments": {},
+        "request_id": request_id("plugin-management-read")
+    })).await
+}
+
+#[tauri::command]
+async fn install_official_plugin(plugin_id: String) -> Result<Value, String> {
+    if plugin_id.is_empty() || plugin_id.len() > 64
+        || !plugin_id.chars().all(|character| character.is_ascii_lowercase() || character.is_ascii_digit() || character == '_') {
+        return Err("FORGE_DESKTOP_PLUGIN_ID_INVALID".into());
+    }
+    call_runtime_tool("capability_execute", json!({
+        "capability_id": "controller.plugins",
+        "action": "install_official",
+        "arguments": { "plugin_id": plugin_id },
+        "request_id": request_id("plugin-management-install")
+    })).await
+}
+
+#[tauri::command]
 async fn read_connection_status() -> Result<Value, String> {
     call_runtime_tool("capability_execute", json!({
         "capability_id": "controller.connection",
@@ -3044,7 +3068,9 @@ fn main() {
             cancel_local_api_conversation,
             read_connection_status,
             configure_initial_connection,
-            repair_connection
+            repair_connection,
+            read_plugin_management,
+            install_official_plugin
         ])
         .run(tauri::generate_context!())
         .expect("error while running Forge desktop");

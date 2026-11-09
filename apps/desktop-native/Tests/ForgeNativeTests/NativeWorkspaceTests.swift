@@ -1356,6 +1356,28 @@ final class NativeWorkspaceTests: XCTestCase {
             action:.trigger,receipt:["occurrence":["occurrenceId":"o1"]],refreshed:active,scheduleId:"s1"))
     }
 
+    func testPluginManagementRowsDecodeOfficialCatalogProjection() {
+        let rows = NativeWorkspace.pluginManagementRows([
+            "plugins":[[
+                "pluginId":"figma",
+                "name":"Forge Figma Bridge",
+                "version":"0.3.0",
+                "description":"Direct Figma bridge",
+                "compatible":true,
+                "installedVersion":"0.2.0",
+                "enabled":true,
+                "authorizationCount":2,
+                "authorizationExpiresAt":"2026-12-01T00:00:00Z"
+            ]]
+        ])
+        XCTAssertEqual(rows.count,1)
+        XCTAssertEqual(rows[0].pluginId,"figma")
+        XCTAssertEqual(rows[0].installedVersion,"0.2.0")
+        XCTAssertTrue(rows[0].compatible)
+        XCTAssertEqual(rows[0].authorizationCount,2)
+        XCTAssertEqual(rows[0].authorizationExpiresAt,"2026-12-01T00:00:00Z")
+    }
+
     func testProjectPluginRowsDecodeBoundedPluginProjection() {
         let rows = NativeWorkspace.projectPluginRows([
             "plugins":[[

@@ -4221,7 +4221,7 @@ private struct SchedulePane: View {
                 HStack(alignment:.top) {
                     VStack(alignment:.leading,spacing:5) {
                         Text("计划任务").font(.system(size:22,weight:.medium))
-                        Text("直接读取 Forge Scheduler；Client 不维护第二份计划任务状态。")
+                        Text("查看定时与条件触发任务，检查执行状态，并管理暂停与恢复。")
                             .font(.system(size:12)).foregroundStyle(ForgePalette.secondary)
                     }
                     Spacer()
@@ -4253,7 +4253,7 @@ private struct SchedulePane: View {
                 } else if model.schedulesLoading && model.schedules.isEmpty {
                     ProgressView("正在读取 Scheduler…").controlSize(.small)
                 } else if model.schedules.isEmpty && model.error == nil {
-                    emptyState("暂无计划任务","当前项目没有 Forge Schedule；这里不会创建示例或客户端私有任务。")
+                    emptyState("暂无计划任务","当前项目尚未配置定时或条件触发任务。")
                 } else if !model.schedules.isEmpty {
                     VStack(alignment:.leading,spacing:0) {
                         ForEach(Array(model.schedules.enumerated()),id:\.element.id) { index,item in
@@ -4394,7 +4394,7 @@ private struct PluginsPane: View {
                 HStack(alignment:.top) {
                     VStack(alignment:.leading,spacing:5) {
                         Text("插件").font(.system(size:22,weight:.medium))
-                        Text("显示 Forge Runtime 已注册的插件能力；Agent 仍通过 canonical 插件 authority 执行动作。")
+                        Text("查看当前项目可用的插件、连接状态与能力。")
                             .font(.system(size:12)).foregroundStyle(ForgePalette.secondary)
                     }
                     Spacer()
@@ -4512,24 +4512,31 @@ private struct PluginsPane: View {
             .accessibilityLabel("\(item.displayName)，\(item.ready ? "就绪" : "未就绪")，\(expandedIds.contains(item.id) ? "收起详情" : "展开详情")")
             .accessibilityIdentifier("plugins.\(item.pluginId).details")
             if expandedIds.contains(item.id) {
-                VStack(alignment:.leading,spacing:7) {
-                    meta("插件 ID",item.pluginId)
-                    if let version = item.pluginVersion { meta("版本",version) }
-                    if let provider = item.provider { meta("Provider",provider) }
-                    meta("生命周期",item.lifecycle)
-                    meta("健康",item.health)
-                    meta("启用状态",item.enabled ? "已启用" : "已禁用")
-                    meta("动作数","\(item.actionCount)")
+                VStack(alignment:.leading,spacing:11) {
+                    LazyVGrid(columns:[GridItem(.adaptive(minimum:180,maximum:300),spacing:12,alignment:.leading)],
+                              alignment:.leading,spacing:8) {
+                        meta("插件 ID",item.pluginId)
+                        if let version = item.pluginVersion { meta("版本",version) }
+                        if let provider = item.provider { meta("Provider",provider) }
+                        meta("生命周期",item.lifecycle == "enabled" ? "已启用" : item.lifecycle)
+                        meta("健康",item.health == "ready" ? "就绪" : item.health)
+                        meta("启用状态",item.enabled ? "已启用" : "已禁用")
+                        meta("动作数","\(item.actionCount)")
+                    }
                     if !item.capabilities.isEmpty {
-                        Text("已返回的能力").font(.system(size:10.5,weight:.semibold))
-                            .padding(.top,5)
-                        ForEach(Array(item.capabilities.enumerated()),id:\.offset) { _, capability in
-                            Text(capability).font(.system(size:11.5))
-                                .foregroundStyle(ForgePalette.secondary)
-                                .fixedSize(horizontal:false,vertical:true)
+                        Text("能力摘要").font(.system(size:10.5,weight:.semibold))
+                            .padding(.top,3)
+                        LazyVGrid(columns:[GridItem(.adaptive(minimum:180,maximum:300),spacing:12,alignment:.leading)],
+                                  alignment:.leading,spacing:7) {
+                            ForEach(Array(item.capabilities.enumerated()),id:\.offset) { _, capability in
+                                Text(capability).font(.system(size:11.5))
+                                    .foregroundStyle(ForgePalette.secondary)
+                                    .frame(maxWidth:.infinity,alignment:.leading)
+                                    .fixedSize(horizontal:false,vertical:true)
+                            }
                         }
                         if item.capabilities.count < item.actionCount {
-                            Text("此处为有界摘要，非完整动作列表。")
+                            Text("仅展示部分能力，非完整动作清单。")
                                 .font(.system(size:10)).foregroundStyle(.tertiary)
                         }
                     }
@@ -4553,6 +4560,78 @@ private struct PluginsPane: View {
             Text(title).font(.system(size:13,weight:.medium))
             Text(detail).font(.system(size:11.5)).foregroundStyle(ForgePalette.secondary)
         }.padding(.vertical,16)
+    }
+}
+
+private struct PluginSettingsSection: View {
+    @ObservedObject var model: NativeWorkspace
+
+    var body: some View {
+        VStack(alignment:.leading,spacing:12) {
+            HStack {
+                VStack(alignment:.leading,spacing:4) {
+                    Text("插件管理").font(.system(size:13,weight:.semibold))
+                    Text("官方 pinned catalog；安装与授权仍由 Forge Runtime 管理。")
+                        .font(.system(size:10.5)).foregroundStyle(.tertiary)
+                }
+                Spacer()
+                Button { Task { await model.loadPluginManagement() } } label: {
+                    if model.pluginManagementLoading { ProgressView().controlSize(.small) }
+                    else { Image(systemName:"arrow.clockwise") }
+                }
+                .buttonStyle(.plain)
+                .disabled(model.pluginManagementLoading)
+                .accessibilityLabel("刷新插件管理")
+                .accessibilityIdentifier("settings.plugins.refresh")
+            }
+
+            if model.pluginManagement.isEmpty {
+                if let error = model.pluginManagementError {
+                    Text(error.contains("controller.plugins") || error.contains("CORE_CAPABILITY")
+                         ? "当前 Runtime 尚未提供插件管理能力；工作区插件发现仍可正常使用。"
+                         : "插件管理不可用：\(error)")
+                        .font(.system(size:11)).foregroundStyle(ForgePalette.secondary)
+                } else if model.pluginManagementLoading {
+                    ProgressView("正在读取官方插件目录…").controlSize(.small)
+                } else {
+                    Text("官方插件目录为空。").font(.system(size:11)).foregroundStyle(ForgePalette.secondary)
+                }
+            } else {
+                VStack(alignment:.leading,spacing:0) {
+                    ForEach(Array(model.pluginManagement.enumerated()),id:\.element.id) { index,item in
+                        HStack(alignment:.top,spacing:11) {
+                            Circle()
+                                .fill(item.installedVersion == nil ? Color.secondary : (item.enabled == false ? Color.orange : Color.green))
+                                .frame(width:7,height:7).padding(.top,6)
+                            VStack(alignment:.leading,spacing:4) {
+                                HStack(spacing:7) {
+                                    Text(item.name).font(.system(size:11.5,weight:.semibold))
+                                    Text(item.version).font(.system(size:9.5,design:.monospaced)).foregroundStyle(.tertiary)
+                                }
+                                Text(item.description).font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary).lineLimit(2)
+                                HStack(spacing:12) {
+                                    Text(item.installedVersion.map { "已安装 \($0)" } ?? "未安装")
+                                    if item.authorizationCount > 0 { Text("授权 \(item.authorizationCount)") }
+                                    if !item.compatible { Text(item.compatibilityReason ?? "当前平台不兼容") }
+                                }
+                                .font(.system(size:9.5)).foregroundStyle(.tertiary)
+                            }
+                            Spacer(minLength:8)
+                            Button(item.installedVersion == item.version ? "已安装" : (item.installedVersion == nil ? "安装" : "更新")) {
+                                Task { await model.installOfficialPlugin(item) }
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .disabled(model.pluginManagementLoading || !item.compatible || item.installedVersion == item.version)
+                            .accessibilityIdentifier("settings.plugins.\(item.pluginId).install")
+                        }
+                        .padding(.vertical,9)
+                        if index < model.pluginManagement.count - 1 { Divider() }
+                    }
+                }
+            }
+        }
+        .padding(.vertical,8)
     }
 }
 
@@ -4880,6 +4959,8 @@ private struct SettingsPane: View {
                 }
 
                 RuntimeSettingsSection(model:model)
+                Divider()
+                PluginSettingsSection(model:model)
                 Divider()
 
                 VStack(alignment:.leading,spacing:13) {

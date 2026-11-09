@@ -147,6 +147,14 @@ describe('handoff and facade contracts', () => {
     expect(FACADE_TOOLS).toHaveLength(6);
   });
 
+  test('exposes official plugin management through one controller capability', () => {
+    const schema = getCoreCapabilityExecutionSchema('controller.plugins') as any;
+    expect(schema?.executeWith).toBe('capability_execute');
+    expect(Object.keys(schema?.actions ?? {}).sort()).toEqual(['get', 'install_official']);
+    expect(schema?.actions?.get).toMatchObject({ readOnly: true, risk: 'readonly' });
+    expect(schema?.actions?.install_official).toMatchObject({ readOnly: false, risk: 'workspace_write' });
+  });
+
   test('exposes controller connection setup through capability_execute without creating a new facade tool', () => {
     const descriptor = listCapabilityDescriptors().find((entry) => entry.capabilityId === 'controller.connection');
     expect(descriptor).toMatchObject({

@@ -670,6 +670,16 @@ export function reconcilePluginCapabilityAuthorizations(
   }
 }
 
+export function listCanonicalPluginCapabilityAuthorizations(
+  controllerHome: string,
+  ownerScope?: string,
+): PluginCapabilityAuthorizationGrant[] {
+  const normalizedOwner = ownerScope?.trim();
+  return listCanonicalGrants(controllerHome, normalizedOwner ? { ownerScope: normalizedOwner } : undefined)
+    .map((grant) => pluginGrantFromCanonical(grant))
+    .filter((grant): grant is PluginCapabilityAuthorizationGrant => Boolean(grant));
+}
+
 export function listPluginCapabilityAuthorizations(
   controllerHome: string,
   ownerScope?: string,

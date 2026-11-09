@@ -125,6 +125,9 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
                 required(args, "tunnel")?,
             ).await,
         "repair_connection" => repair_connection().await,
+        "read_plugin_management" => read_plugin_management().await,
+        "install_official_plugin" =>
+            install_official_plugin(required(args, "pluginId")?).await,
         "read_local_provider_status" => read_local_provider_status().await,
         "read_local_provider_models" => read_local_provider_models().await,
         "read_local_conversation_activity" =>

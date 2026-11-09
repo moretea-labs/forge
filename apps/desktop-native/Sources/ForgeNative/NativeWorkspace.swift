@@ -286,6 +286,20 @@ struct ConnectionComponentDetail {
     let detail: String
 }
 
+struct PluginManagementItem: Identifiable {
+    let pluginId: String
+    let name: String
+    let version: String
+    let description: String
+    let compatible: Bool
+    let compatibilityReason: String?
+    let installedVersion: String?
+    let enabled: Bool?
+    let authorizationCount: Int
+    let authorizationExpiresAt: String?
+    var id: String { pluginId }
+}
+
 struct ConnectionSetupNextDetail {
     let status: String
     let id: String?
@@ -481,6 +495,9 @@ final class NativeWorkspace: ObservableObject {
     @Published var runtimeLoading = false
     @Published var connectionStatus: ControllerConnectionDetail?
     @Published var connectionLoading = false
+    @Published var pluginManagement: [PluginManagementItem] = []
+    @Published var pluginManagementLoading = false
+    @Published var pluginManagementError: String?
     @Published var knowledgeQuery = ""
     @Published var knowledgeResult: KnowledgeAuditDetail?
     @Published var knowledgeLoading = false
@@ -1373,6 +1390,56 @@ final class NativeWorkspace: ObservableObject {
         }
     }
 
+    nonisolated static func pluginManagementRows(_ result:[String:Any]) -> [PluginManagementItem] {
+        let rows = result["plugins"] as? [[String:Any]] ?? []
+        return rows.compactMap { row in
+            guard let pluginId = row["pluginId"] as? String,
+                  let name = row["name"] as? String,
+                  let version = row["version"] as? String,
+                  let description = row["description"] as? String else { return nil }
+            return PluginManagementItem(
+                pluginId:pluginId,
+                name:name,
+                version:version,
+                description:description,
+                compatible:row["compatible"] as? Bool == true,
+                compatibilityReason:row["compatibilityReason"] as? String,
+                installedVersion:row["installedVersion"] as? String,
+                enabled:row["enabled"] as? Bool,
+                authorizationCount:(row["authorizationCount"] as? NSNumber)?.intValue ?? 0,
+                authorizationExpiresAt:row["authorizationExpiresAt"] as? String
+            )
+        }
+    }
+
+    func loadPluginManagement() async {
+        guard !pluginManagementLoading else { return }
+        pluginManagementLoading = true
+        defer { pluginManagementLoading = false }
+        do {
+            let value = try await ForgeBridge.request("read_plugin_management")
+            pluginManagement = Self.pluginManagementRows(value)
+            pluginManagementError = nil
+        } catch {
+            pluginManagement = []
+            pluginManagementError = error.localizedDescription
+        }
+    }
+
+    func installOfficialPlugin(_ item:PluginManagementItem) async {
+        guard item.compatible, !pluginManagementLoading else { return }
+        pluginManagementLoading = true
+        defer { pluginManagementLoading = false }
+        do {
+            let value = try await ForgeBridge.request("install_official_plugin",["pluginId":item.pluginId])
+            let management = value["management"] as? [String:Any] ?? [:]
+            pluginManagement = Self.pluginManagementRows(management)
+            pluginManagementError = nil
+        } catch {
+            pluginManagementError = error.localizedDescription
+        }
+    }
+
     nonisolated static func runtimeStatusDetail(_ result: [String:Any]) -> RuntimeStatusDetail {
         let status = result["data"] as? [String:Any] ?? result
         let running = status["running"] as? Bool == true
@@ -1582,6 +1649,7 @@ final class NativeWorkspace: ObservableObject {
         defer { settingsLoading = false }
 
         async let runtimeRefresh: Void = loadRuntimePage()
+        async let pluginRefresh: Void = loadPluginManagement()
         async let statusRequest = ForgeBridge.request("read_local_provider_status")
         async let settingsRequest = ForgeBridge.request("read_local_api_settings")
         async let credentialRequest = ForgeBridge.request("managed_api_credential_control",["operation":"list"])
@@ -1614,6 +1682,7 @@ final class NativeWorkspace: ObservableObject {
         }
 
         _ = await runtimeRefresh
+        _ = await pluginRefresh
         if !failures.isEmpty { self.error = failures.joined(separator:"\n") }
     }
 
