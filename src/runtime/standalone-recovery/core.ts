@@ -80,7 +80,7 @@ import {
 import { readCurrentRecoveryRelease, type RecoveryRuntimeRole } from './release';
 import { acquireRecoveryOperationLock, recoveryOperationLockOwnerAlive, recoveryOperationLockPath, RecoveryOperationLockRaceError, type RecoveryOperationLockRecord } from './operation-lock';
 import { RECOVERY_MUTATION_IDENTITY_FIELDS, type RecoveryMutationIdentityArguments } from './mutation-identity-contract';
-import { createCandidateExecutionLane, readStableExecutionLane } from '../root/runtime-lane';
+import { materializeCandidateExecutionLane, planCandidateExecutionLane, readStableExecutionLane } from '../root/runtime-lane';
 import {
   advanceReleaseSession,
   createReleaseSession,
@@ -4059,7 +4059,7 @@ export function stageConfiguredRuntimeRelease(
 
 export async function prepareConfiguredRuntimeReleaseSession(
   config: RecoveryConfig,
-  dependencies: Pick<ConfiguredRuntimeActivationDependencies, 'stage'> = {},
+  dependencies: Pick<ConfiguredRuntimeActivationDependencies, 'stage' | 'materializeCandidateLane'> = {},
   requestId?: string,
 ): Promise<ConfiguredRuntimeActivationResult> {
   const sourceRoot = config.primaryRuntimeSourceRoot?.trim();
@@ -4262,19 +4262,19 @@ export async function prepareConfiguredRuntimeReleaseSession(
     });
 
     let session: ReleaseSession;
-    let candidateLane: ReturnType<typeof createCandidateExecutionLane>['candidate'];
+    let candidateLane: ReturnType<typeof planCandidateExecutionLane>;
     if (resumableMatchingSession) {
       session = resumableMatchingSession;
       candidateLane = session.candidate;
     } else {
       const nextSessionId = `release-${Date.now()}-${randomUUID().replaceAll('-', '').slice(0, 16)}`;
       const candidatePort = await allocateCandidateLoopbackPort(stable.port);
-      candidateLane = createCandidateExecutionLane({
-        stableControllerHome: stable.controllerHome,
+      candidateLane = planCandidateExecutionLane({
+        stable,
         candidateControllerHome: candidateControllerHomeForSession(config, nextSessionId),
         candidatePort,
         sessionId: nextSessionId,
-      }).candidate;
+      });
       session = createReleaseSession({
         controllerHome: config.controllerHome,
         sessionId: nextSessionId,
@@ -4315,6 +4315,10 @@ export async function prepareConfiguredRuntimeReleaseSession(
     ...(requestId?.trim() ? { requestId: requestId.trim() } : {}),
   }, async () => {
     try {
+      (dependencies.materializeCandidateLane ?? materializeCandidateExecutionLane)({
+        stable: frozenSession.stable,
+        candidate: candidateLane,
+      });
       const staged = withRuntimeReleaseSourceSnapshot({ sourceRoot, sourceRevision }, frozenSourceRoot =>
         (dependencies.stage ?? stageRuntimeReleaseFromCandidateSource)({
           controllerHome: candidateLane.controllerHome,
@@ -6421,6 +6425,7 @@ export async function promoteConfiguredRuntimeReleaseSessionKnownGood(
 
 export interface ConfiguredRuntimeActivationDependencies {
   stage?: typeof stageRuntimeReleaseFromCandidateSource;
+  materializeCandidateLane?: typeof materializeCandidateExecutionLane;
   activate?: (config: RecoveryConfig, manifestPath: string, guard: RuntimeReleaseActivationGuard) => Promise<RuntimeReleaseActivationResult>;
 }
 

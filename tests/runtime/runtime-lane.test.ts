@@ -6,6 +6,7 @@ import { inspectControlPlaneDatabase } from '../../src/runtime/control-plane/per
 import { forgeRuntimeServicePaths, writeForgeRuntimeServiceConfig } from '../../src/runtime/root/service';
 import {
   createCandidateExecutionLane,
+  materializeCandidateExecutionLane,
   planCandidateExecutionLane,
   readStableExecutionLane,
   removeRetiredCandidateExecutionLane,
@@ -87,6 +88,22 @@ describe('Stable A and Candidate B execution lanes', () => {
         persistentRuntimeRequired: true,
       },
     });
+  });
+
+  test('fails closed when Candidate B foundation is only partially materialized', () => {
+    const fx = stableFixture();
+    const stable = readStableExecutionLane(fx.stableHome);
+    const candidate = planCandidateExecutionLane({
+      stable,
+      candidateControllerHome: join(fx.root, 'partial-candidate'),
+      candidatePort: 8766,
+      sessionId: 'release-session-partial-foundation',
+    });
+    mkdirSync(join(candidate.controllerHome, 'mcp'), { recursive: true });
+    writeFileSync(candidate.authTokenFile, 'partial-token\n', { mode: 0o600 });
+
+    expect(() => materializeCandidateExecutionLane({ stable, candidate }))
+      .toThrow('RUNTIME_CANDIDATE_FOUNDATION_INCOMPLETE');
   });
 
   test('drops a missing Stable development repository overlay from Candidate B service config', () => {
