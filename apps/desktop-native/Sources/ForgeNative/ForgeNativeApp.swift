@@ -8,7 +8,11 @@ private enum ForgePalette {
     static let canvas = Color(nsColor:.textBackgroundColor)
     static let ink = Color.primary
     static let secondary = Color(nsColor:.secondaryLabelColor)
-    static let accent = Color(nsColor:.controlAccentColor)
+    static let accent = Color(nsColor:NSColor(name:nil) { appearance in
+        appearance.bestMatch(from:[.darkAqua,.aqua]) == .darkAqua
+            ? NSColor.controlAccentColor
+            : NSColor.labelColor
+    })
     static let selection = Color.primary.opacity(0.072)
     static let selectionStrong = Color.primary.opacity(0.095)
     static let userBubble = Color.primary.opacity(0.055)
@@ -1161,6 +1165,7 @@ private struct AgentPane: View {
     @State private var expandedMessageActivities: Set<String> = []
     @State private var isComposerDropTarget = false
     @State private var semanticInspector: AgentSemanticContextInspector?
+    @State private var showAgentConfiguration = false
     @FocusState private var composerFocused: Bool
 
     var body: some View {
@@ -1698,11 +1703,11 @@ private struct AgentPane: View {
             ViewThatFits(in:.horizontal) {
                 HStack(spacing:3) {
                     semanticContextButton("规划",kind:.planning,systemImage:"point.3.connected.trianglepath.dotted")
-                    semanticContextButton("Knowledge",kind:.knowledge,systemImage:"books.vertical")
+                    semanticContextButton("知识",kind:.knowledge,systemImage:"books.vertical")
                 }
                 HStack(spacing:3) {
                     semanticContextButton("规划",kind:.planning,systemImage:"point.3.connected.trianglepath.dotted",compact:true)
-                    semanticContextButton("Knowledge",kind:.knowledge,systemImage:"books.vertical",compact:true)
+                    semanticContextButton("知识",kind:.knowledge,systemImage:"books.vertical",compact:true)
                 }
             }
 
@@ -1937,108 +1942,8 @@ private struct AgentPane: View {
     }
 
     private var compactAgentConfigurationControl: some View {
-        Menu {
-            Menu("Provider") {
-                Button {
-                    model.selectThreadProvider("codex")
-                } label: {
-                    if model.selectedProvider == "codex" {
-                        Label("Codex CLI",systemImage:"checkmark")
-                    } else {
-                        Text("Codex CLI")
-                    }
-                }
-                if let profiles=model.localApiSettings?.profiles, !profiles.isEmpty {
-                    Divider()
-                    ForEach(profiles) { profile in
-                        Button {
-                            model.selectThreadProvider(profile.providerId)
-                        } label: {
-                            if model.selectedProvider == profile.providerId {
-                                Label(profile.label,systemImage:"checkmark")
-                            } else {
-                                Text(profile.label)
-                            }
-                        }
-                        .disabled(!profile.endpointReady)
-                    }
-                }
-                Button {
-                    model.selectThreadProvider("joycode")
-                } label: {
-                    if model.selectedProvider == "joycode" {
-                        Label("JoyCode",systemImage:"checkmark")
-                    } else {
-                        Text("JoyCode")
-                    }
-                }
-                .disabled(!model.joyCodeProfileReady)
-            }
-            .disabled(model.busy)
-
-            if model.selectedProvider == "codex" {
-                Menu("模型") {
-                    ForEach(model.agentModels) { option in
-                        Button {
-                            model.selectAgentModel(option.slug)
-                        } label: {
-                            if model.selectedAgentModel?.slug == option.slug {
-                                Label(option.displayName,systemImage:"checkmark")
-                            } else {
-                                Text(option.displayName)
-                            }
-                        }
-                    }
-                }
-                .disabled(model.agentModels.isEmpty || model.busy)
-
-                Menu("推理强度") {
-                    ForEach(model.selectedReasoningOptions) { option in
-                        Button {
-                            model.selectReasoningEffort(option.effort)
-                        } label: {
-                            if model.selectedReasoningEffort == option.effort {
-                                Label(reasoningLabel(option.effort),systemImage:"checkmark")
-                            } else {
-                                Text(reasoningLabel(option.effort))
-                            }
-                        }
-                    }
-                }
-                .disabled(model.selectedReasoningOptions.isEmpty || model.busy)
-            } else {
-                Text("当前模型 · \(model.selectedApiModel.isEmpty ? "未配置" : model.selectedApiModel)")
-                Button("打开 Provider 设置") { model.show(.settings) }
-                    .disabled(model.busy)
-                if model.checkoutId != nil {
-                    Divider()
-                    Menu("仓库权限") {
-                        Button {
-                            Task { _ = await model.setRepositoryAccessMode("request") }
-                        } label: {
-                            if model.repositoryAccessMode == "request" {
-                                Label("Request · 只读外部 Agent",systemImage:"checkmark")
-                            } else {
-                                Text("Request · 只读外部 Agent")
-                            }
-                        }
-                        Button {
-                            Task { _ = await model.setRepositoryAccessMode("full_access") }
-                        } label: {
-                            if model.repositoryAccessMode == "full_access" {
-                                Label("Full Access · 持续允许普通仓库写入",systemImage:"checkmark")
-                            } else {
-                                Text("Full Access · 持续允许普通仓库写入")
-                            }
-                        }
-                    }
-                    .disabled(model.busy || model.repositoryAccessLoading)
-                    .accessibilityLabel("仓库访问权限")
-                    .accessibilityValue(model.repositoryAccessMode == "full_access" ? "Full Access" : "Request")
-                    .accessibilityHint("权限属于当前仓库并持续生效，直到再次修改；密钥和破坏性操作仍使用独立安全边界")
-                    .accessibilityIdentifier("agent.repository-access")
-                }
-            }
+        Button {
+            showAgentConfiguration.toggle()
         } label: {
             HStack(spacing:5) {
                 Image(systemName:model.repositoryAccessMode == "full_access" && NativeWorkspace.matchesExternalProvider(model.selectedProvider)
@@ -2051,7 +1956,7 @@ private struct AgentPane: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .frame(maxWidth:210,alignment:.leading)
-                Image(systemName:"chevron.down")
+                Image(systemName:"chevron.up.chevron.down")
                     .font(.system(size:7,weight:.semibold))
                     .foregroundStyle(.tertiary)
             }
@@ -2061,15 +1966,269 @@ private struct AgentPane: View {
             .frame(height:27)
             .background(ForgePalette.softFill,
                         in:RoundedRectangle(cornerRadius:9,style:.continuous))
+            .contentShape(Rectangle())
         }
-        .menuStyle(.borderlessButton)
-        .fixedSize(horizontal:false,vertical:true)
-        .help(model.repositoryAccessMode == "full_access" && NativeWorkspace.matchesExternalProvider(model.selectedProvider)
-              ? "当前仓库为 Full Access：普通仓库操作持续允许；密钥与破坏性操作仍单独受保护"
-              : "选择 Provider、模型、推理强度与仓库访问权限")
-        .accessibilityLabel("Agent 配置")
+        .buttonStyle(.plain)
+        .popover(isPresented:$showAgentConfiguration,arrowEdge:.bottom) {
+            agentConfigurationPopover
+        }
+        .help("会话设置：Provider、模型、推理强度与仓库权限")
+        .accessibilityLabel("会话设置")
         .accessibilityValue(compactConfigurationAccessibilityValue)
+        .accessibilityHint("打开一层会话设置面板")
         .accessibilityIdentifier("agent.configuration.compact")
+    }
+
+    private var agentConfigurationPopover: some View {
+        VStack(alignment:.leading,spacing:0) {
+            HStack(alignment:.top,spacing:10) {
+                VStack(alignment:.leading,spacing:3) {
+                    Text("会话设置")
+                        .font(.system(size:13,weight:.semibold))
+                    Text("只调整当前会话；API endpoint 与凭证仍由全局 Provider 设置管理。")
+                        .font(.system(size:10.5))
+                        .foregroundStyle(ForgePalette.secondary)
+                        .fixedSize(horizontal:false,vertical:true)
+                }
+                Spacer(minLength:8)
+                Button { showAgentConfiguration=false } label: {
+                    Image(systemName:"xmark")
+                        .font(.system(size:9,weight:.semibold))
+                        .frame(width:24,height:24)
+                }
+                .buttonStyle(.plain)
+                .help("关闭会话设置")
+                .accessibilityLabel("关闭会话设置")
+            }
+            .padding(.horizontal,14).padding(.vertical,12)
+
+            Divider()
+
+            ScrollView {
+                VStack(alignment:.leading,spacing:0) {
+                    configurationSection("Provider") {
+                        VStack(spacing:2) {
+                            configurationChoice(
+                                "Codex CLI",
+                                subtitle:"本地 Codex 会话",
+                                systemImage:"cpu",
+                                selected:model.selectedProvider == "codex",
+                                disabled:providerSelectionLocked
+                            ) {
+                                model.selectThreadProvider("codex")
+                            }
+                            if let profiles=model.localApiSettings?.profiles {
+                                ForEach(profiles) { profile in
+                                    configurationChoice(
+                                        profile.label,
+                                        subtitle:profile.endpointReady ? "当前会话使用此 API Profile" : "需要先配置 Provider",
+                                        systemImage:"server.rack",
+                                        selected:model.selectedProvider == profile.providerId,
+                                        disabled:providerSelectionLocked || !profile.endpointReady
+                                    ) {
+                                        model.selectThreadProvider(profile.providerId)
+                                    }
+                                }
+                            }
+                            configurationChoice(
+                                "JoyCode",
+                                subtitle:model.joyCodeProfileReady ? "使用已配置的 JoyCode Profile" : "需要先配置 Provider",
+                                systemImage:"sparkles",
+                                selected:model.selectedProvider == "joycode",
+                                disabled:providerSelectionLocked || !model.joyCodeProfileReady
+                            ) {
+                                model.selectThreadProvider("joycode")
+                            }
+                            Button("管理 Provider Profile") {
+                                showAgentConfiguration=false
+                                model.show(.settings)
+                            }
+                            .buttonStyle(.plain)
+                            .font(.system(size:10,weight:.semibold))
+                            .foregroundStyle(ForgePalette.secondary)
+                            .padding(.top,5)
+                            .accessibilityIdentifier("agent.configuration.provider-settings")
+                        }
+                        if providerSelectionLocked {
+                            Text("Agent 运行期间锁定 Provider，完成后可以切换当前会话。")
+                                .font(.system(size:9.5))
+                                .foregroundStyle(.tertiary)
+                                .padding(.top,5)
+                        }
+                    }
+                    Divider().padding(.vertical,2)
+
+                    if model.selectedProvider == "codex" {
+                        configurationSection("模型") {
+                            if model.agentModels.isEmpty {
+                                Text("没有可用模型。")
+                                    .font(.system(size:10.5))
+                                    .foregroundStyle(ForgePalette.secondary)
+                            } else {
+                                VStack(spacing:2) {
+                                    ForEach(model.agentModels) { option in
+                                        configurationChoice(
+                                            option.displayName,
+                                            subtitle:option.description,
+                                            systemImage:"cube",
+                                            selected:model.selectedAgentModel?.slug == option.slug,
+                                            disabled:model.busy
+                                        ) {
+                                            model.selectAgentModel(option.slug)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        Divider().padding(.vertical,2)
+
+                        configurationSection("推理强度") {
+                            if model.selectedReasoningOptions.isEmpty {
+                                Text("当前模型没有可选推理强度。")
+                                    .font(.system(size:10.5))
+                                    .foregroundStyle(ForgePalette.secondary)
+                            } else {
+                                HStack(spacing:6) {
+                                    ForEach(model.selectedReasoningOptions) { option in
+                                        let selected=model.selectedReasoningEffort == option.effort
+                                        Button(reasoningLabel(option.effort)) {
+                                            model.selectReasoningEffort(option.effort)
+                                        }
+                                        .buttonStyle(.plain)
+                                        .font(.system(size:10,weight:selected ? .semibold : .medium))
+                                        .foregroundStyle(selected ? ForgePalette.ink : ForgePalette.secondary)
+                                        .padding(.horizontal,9)
+                                        .frame(height:27)
+                                        .background(selected ? ForgePalette.selectionStrong : ForgePalette.softFill,
+                                                    in:Capsule())
+                                        .disabled(model.busy)
+                                        .accessibilityLabel("推理强度 \(reasoningLabel(option.effort))")
+                                        .accessibilityValue(selected ? "已选择" : "未选择")
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        configurationSection("模型") {
+                            HStack(spacing:9) {
+                                Image(systemName:"cube")
+                                    .font(.system(size:10))
+                                    .foregroundStyle(ForgePalette.secondary)
+                                VStack(alignment:.leading,spacing:2) {
+                                    Text(model.selectedApiModel.isEmpty ? "未配置模型" : model.selectedApiModel)
+                                        .font(.system(size:11,weight:.medium))
+                                    Text("模型由当前 Provider Profile 管理。")
+                                        .font(.system(size:9.5))
+                                        .foregroundStyle(.tertiary)
+                                }
+                                Spacer()
+                                Button("Provider 设置") {
+                                    showAgentConfiguration=false
+                                    model.show(.settings)
+                                }
+                                .buttonStyle(.plain)
+                                .font(.system(size:10,weight:.semibold))
+                                .disabled(model.busy)
+                                .accessibilityIdentifier("agent.configuration.provider-settings")
+                            }
+                        }
+                    }
+
+                    if model.checkoutId != nil && NativeWorkspace.matchesExternalProvider(model.selectedProvider) {
+                        Divider().padding(.vertical,2)
+
+                        configurationSection("仓库权限") {
+                            VStack(spacing:2) {
+                                configurationChoice(
+                                    "Request",
+                                    subtitle:"默认只读；写入时请求确认",
+                                    systemImage:"lock",
+                                    selected:model.repositoryAccessMode == "request",
+                                    disabled:model.busy || model.repositoryAccessLoading
+                                ) {
+                                    Task { _ = await model.setRepositoryAccessMode("request") }
+                                }
+                                configurationChoice(
+                                    "Full Access",
+                                    subtitle:"持续允许普通仓库写入；敏感操作仍单独受保护",
+                                    systemImage:"checkmark.shield",
+                                    selected:model.repositoryAccessMode == "full_access",
+                                    disabled:model.busy || model.repositoryAccessLoading
+                                ) {
+                                    Task { _ = await model.setRepositoryAccessMode("full_access") }
+                                }
+                            }
+                        }
+                    }
+                }
+                .padding(.vertical,6)
+            }
+            .frame(maxHeight:430)
+        }
+        .frame(width:390)
+        .accessibilityIdentifier("agent.configuration.popover")
+    }
+
+    private var providerSelectionLocked: Bool {
+        model.busy
+    }
+
+    private func configurationSection<Content:View>(
+        _ title:String,
+        @ViewBuilder content:() -> Content
+    ) -> some View {
+        VStack(alignment:.leading,spacing:7) {
+            Text(title)
+                .font(.system(size:9.5,weight:.semibold))
+                .foregroundStyle(ForgePalette.secondary)
+            content()
+        }
+        .padding(.horizontal,14).padding(.vertical,9)
+    }
+
+    private func configurationChoice(
+        _ title:String,
+        subtitle:String,
+        systemImage:String,
+        selected:Bool,
+        disabled:Bool,
+        action:@escaping () -> Void
+    ) -> some View {
+        Button(action:action) {
+            HStack(alignment:.top,spacing:9) {
+                Image(systemName:systemImage)
+                    .font(.system(size:10))
+                    .foregroundStyle(selected ? ForgePalette.ink : ForgePalette.secondary)
+                    .frame(width:18,height:18)
+                VStack(alignment:.leading,spacing:2) {
+                    Text(title)
+                        .font(.system(size:11,weight:selected ? .semibold : .medium))
+                        .foregroundStyle(ForgePalette.ink)
+                    Text(subtitle)
+                        .font(.system(size:9.5))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(2)
+                }
+                Spacer(minLength:8)
+                if selected {
+                    Image(systemName:"checkmark")
+                        .font(.system(size:9,weight:.bold))
+                        .foregroundStyle(ForgePalette.ink)
+                        .padding(.top,2)
+                }
+            }
+            .padding(.horizontal,8).padding(.vertical,7)
+            .frame(maxWidth:.infinity,alignment:.leading)
+            .background(selected ? ForgePalette.selectionStrong : Color.clear,
+                        in:RoundedRectangle(cornerRadius:8,style:.continuous))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .opacity(disabled ? 0.5 : 1)
+        .accessibilityLabel(title)
+        .accessibilityValue(selected ? "已选择" : "未选择")
     }
 
     private var composerConfigurationLabel: String {
@@ -2734,35 +2893,49 @@ private struct AgentPlanningInspector: View {
                         .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
                 }
                 Spacer()
-                Button {
-                    dismiss()
-                    model.show(.requirement)
-                } label: {
-                    Image(systemName:"arrow.up.right")
-                        .font(.system(size:10,weight:.semibold))
+                Button { dismiss() } label: {
+                    Image(systemName:"xmark")
+                        .font(.system(size:9,weight:.semibold))
                         .frame(width:24,height:24)
                 }
                 .buttonStyle(.plain)
-                .help("打开完整规划")
-                .accessibilityLabel("打开完整规划")
-                .accessibilityIdentifier("agent.planning-inspector.open-full")
+                .help("关闭规划上下文")
+                .accessibilityLabel("关闭规划上下文")
+                .accessibilityIdentifier("agent.planning-inspector.close")
             }
             .padding(.horizontal,14).padding(.vertical,12)
 
-            if let contextLabel = currentContextLabel {
-                Divider()
-                HStack(spacing:8) {
-                    Image(systemName:"paperclip")
+            Divider()
+            HStack(alignment:.top,spacing:9) {
+                Image(systemName:currentBoundRecord == nil ? "paperclip" : "paperclip.circle.fill")
+                    .font(.system(size:10,weight:.medium))
+                    .foregroundStyle(ForgePalette.secondary)
+                    .frame(width:18,height:18)
+                VStack(alignment:.leading,spacing:3) {
+                    Text("当前会话")
                         .font(.system(size:9.5,weight:.medium))
-                        .foregroundStyle(ForgePalette.secondary)
-                    VStack(alignment:.leading,spacing:2) {
-                        Text("当前会话").font(.system(size:9.5)).foregroundStyle(.tertiary)
+                        .foregroundStyle(.tertiary)
+                    if let record=currentBoundRecord {
+                        Text(record.title)
+                            .font(.system(size:11.5,weight:.semibold))
+                            .lineLimit(2)
+                        Text(currentContextLabel ?? record.recordId)
+                            .font(.system(size:9.5,design:.monospaced))
+                            .foregroundStyle(ForgePalette.secondary)
+                            .lineLimit(1).truncationMode(.middle)
+                    } else if let contextLabel=currentContextLabel {
                         Text(contextLabel)
                             .font(.system(size:10.5,weight:.medium,design:.monospaced))
                             .lineLimit(1).truncationMode(.middle)
+                    } else {
+                        Text("未绑定规划 · 会话可以直接工作")
+                            .font(.system(size:10.5,weight:.medium))
+                            .foregroundStyle(ForgePalette.secondary)
                     }
-                    Spacer()
-                    Button("清除") {
+                }
+                Spacer(minLength:6)
+                if currentContextLabel != nil {
+                    Button("移除") {
                         model.clearCurrentThreadPlanningContext()
                     }
                     .buttonStyle(.plain)
@@ -2770,8 +2943,9 @@ private struct AgentPlanningInspector: View {
                     .disabled(model.busy)
                     .accessibilityIdentifier("agent.planning-inspector.clear")
                 }
-                .padding(.horizontal,14).padding(.vertical,10)
             }
+            .padding(.horizontal,14).padding(.vertical,11)
+            .accessibilityIdentifier("agent.planning-inspector.current")
 
             Divider()
 
@@ -2791,7 +2965,20 @@ private struct AgentPlanningInspector: View {
             }
             .padding(.horizontal,10).frame(height:32)
             .background(ForgePalette.softFill)
-            .padding(.horizontal,14).padding(.vertical,9)
+            .padding(.horizontal,14).padding(.top,9).padding(.bottom,7)
+
+            HStack {
+                Text(query.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty ? "可绑定规划" : "筛选结果")
+                    .font(.system(size:9.5,weight:.semibold))
+                    .foregroundStyle(ForgePalette.secondary)
+                Spacer()
+                if !loading {
+                    Text("\(availableRecords.count)")
+                        .font(.system(size:9.5,weight:.medium))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .padding(.horizontal,14).padding(.bottom,5)
 
             if loading && records.isEmpty {
                 ProgressView("正在读取规划…").controlSize(.small)
@@ -2805,15 +2992,15 @@ private struct AgentPlanningInspector: View {
                         .buttonStyle(.plain).font(.system(size:10.5,weight:.medium))
                 }
                 .padding(14).frame(maxWidth:.infinity,maxHeight:.infinity,alignment:.topLeading)
-            } else if prioritizedRecords.isEmpty {
-                Text(query.isEmpty ? "当前项目还没有 Requirement / Plan。" : "没有匹配的规划记录。")
+            } else if availableRecords.isEmpty {
+                Text(query.isEmpty ? "当前没有其他可绑定的 Requirement / Plan。" : "没有匹配的规划记录。")
                     .font(.system(size:11)).foregroundStyle(ForgePalette.secondary)
                     .frame(maxWidth:.infinity,maxHeight:.infinity,alignment:.topLeading)
                     .padding(14)
             } else {
                 ScrollView {
                     LazyVStack(alignment:.leading,spacing:0) {
-                        ForEach(Array(prioritizedRecords.prefix(10))) { record in
+                        ForEach(Array(availableRecords.prefix(10))) { record in
                             planningRow(record)
                             Divider().padding(.leading,38)
                         }
@@ -2824,7 +3011,7 @@ private struct AgentPlanningInspector: View {
 
             Divider()
             HStack {
-                Text("完整关系、Autopilot 与编辑操作请在规划页处理。")
+                Text("绑定只影响当前会话，不会修改 Requirement / Plan。")
                     .font(.system(size:9.5)).foregroundStyle(.tertiary)
                 Spacer()
                 if loading { ProgressView().controlSize(.mini) }
@@ -2841,6 +3028,23 @@ private struct AgentPlanningInspector: View {
             return "Requirement · \(String(requirementId.prefix(18)))"
         }
         return nil
+    }
+
+    private var currentBoundRecord: ForgeRecord? {
+        if let planId=model.thread?.planId,!planId.isEmpty {
+            return records.first { $0.kind == .plan && $0.recordId == planId }
+        }
+        if let requirementId=model.thread?.requirementId,!requirementId.isEmpty {
+            return records.first { $0.kind == .requirement && $0.recordId == requirementId }
+        }
+        return nil
+    }
+
+    private var availableRecords: [ForgeRecord] {
+        prioritizedRecords.filter { record in
+            if record.kind == .plan { return record.recordId != model.thread?.planId }
+            return !(model.thread?.planId == nil && record.recordId == model.thread?.requirementId)
+        }
     }
 
     private var prioritizedRecords: [ForgeRecord] {
@@ -2875,7 +3079,6 @@ private struct AgentPlanningInspector: View {
             } else {
                 model.bindCurrentThreadPlanningContext(requirementId:record.recordId,planId:nil)
             }
-            if model.error == nil { dismiss() }
         } label: {
             HStack(alignment:.top,spacing:9) {
                 Image(systemName:record.kind == .requirement ? "doc.text" : "list.bullet.rectangle")
@@ -2898,6 +3101,10 @@ private struct AgentPlanningInspector: View {
                     Image(systemName:"checkmark")
                         .font(.system(size:9.5,weight:.semibold))
                         .foregroundStyle(ForgePalette.secondary)
+                } else {
+                    Text("绑定")
+                        .font(.system(size:9.5,weight:.semibold))
+                        .foregroundStyle(ForgePalette.secondary)
                 }
             }
             .padding(.horizontal,14).padding(.vertical,9)
@@ -2906,7 +3113,8 @@ private struct AgentPlanningInspector: View {
         }
         .buttonStyle(.plain)
         .disabled(model.busy || loadedRepoId != model.repoId)
-        .accessibilityLabel(record.title + "，" + (bound ? "已用于当前会话" : "用于当前会话"))
+        .accessibilityLabel(record.title + "，" + (bound ? "已绑定当前会话" : "绑定到当前会话"))
+        .accessibilityIdentifier("agent.planning-inspector.bind.\(record.recordId)")
     }
 
     @MainActor
@@ -2947,22 +3155,19 @@ private struct AgentKnowledgeInspector: View {
             HStack(alignment:.top,spacing:10) {
                 VStack(alignment:.leading,spacing:3) {
                     Text("项目知识").font(.system(size:13,weight:.semibold))
-                    Text("读取 Cognitive 记忆；选择后先放入草稿，可编辑再发送。")
+                    Text("先看可复用判断；加入当前草稿后仍可编辑，不会自动发送。")
                         .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
                 }
                 Spacer()
-                Button {
-                    dismiss()
-                    model.show(.knowledge)
-                } label: {
-                    Image(systemName:"arrow.up.right")
-                        .font(.system(size:10,weight:.semibold))
+                Button { dismiss() } label: {
+                    Image(systemName:"xmark")
+                        .font(.system(size:9,weight:.semibold))
                         .frame(width:24,height:24)
                 }
                 .buttonStyle(.plain)
-                .help("打开完整知识库")
-                .accessibilityLabel("打开完整知识库")
-                .accessibilityIdentifier("agent.knowledge-inspector.open-full")
+                .help("关闭项目知识")
+                .accessibilityLabel("关闭项目知识")
+                .accessibilityIdentifier("agent.knowledge-inspector.close")
             }
             .padding(.horizontal,14).padding(.vertical,12)
             Divider()
@@ -2988,7 +3193,20 @@ private struct AgentKnowledgeInspector: View {
             }
             .padding(.horizontal,10).frame(height:32)
             .background(ForgePalette.softFill)
-            .padding(.horizontal,14).padding(.vertical,9)
+            .padding(.horizontal,14).padding(.top,9).padding(.bottom,7)
+
+            HStack {
+                Text(query.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty ? "当前项目知识" : "搜索结果")
+                    .font(.system(size:9.5,weight:.semibold))
+                    .foregroundStyle(ForgePalette.secondary)
+                Spacer()
+                if let result,!loading {
+                    Text("\(result.items.count)")
+                        .font(.system(size:9.5,weight:.medium))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            .padding(.horizontal,14).padding(.bottom,5)
 
             if loading && result == nil {
                 ProgressView("正在读取知识…").controlSize(.small)
@@ -3027,6 +3245,7 @@ private struct AgentKnowledgeInspector: View {
                 } else {
                     Text("只读 · advisory")
                 }
+                if result != nil { Text("· 按 Cognitive 返回顺序") }
                 Spacer()
                 if loading { ProgressView().controlSize(.mini) }
             }
@@ -3043,6 +3262,7 @@ private struct AgentKnowledgeInspector: View {
 
     private func knowledgeRow(_ memory:KnowledgeMemoryDetail) -> some View {
         let expanded = expandedMemoryIds.contains(memory.id)
+        let alreadyInDraft = model.draft.contains(memory.canonicalText)
         return VStack(alignment:.leading,spacing:6) {
             HStack(spacing:6) {
                 Text(scopeLabel(memory.scope.kind))
@@ -3052,16 +3272,17 @@ private struct AgentKnowledgeInspector: View {
                     Text(concept).font(.system(size:9.5,weight:.medium))
                 }
                 Spacer()
-                Button("用于会话") {
-                    guard let origin=resultOrigin,
+                Button(alreadyInDraft ? "已在草稿" : "加入草稿") {
+                    guard !alreadyInDraft,
+                          let origin=resultOrigin,
                           origin.repoId == model.repoId,
                           origin.threadId == model.selectedThreadId else { return }
                     model.useKnowledgeInCurrentConversation(memory,expectedThreadId:origin.threadId)
-                    if model.error == nil { dismiss() }
                 }
                 .buttonStyle(.plain)
                 .font(.system(size:10,weight:.semibold))
-                .disabled(model.busy || resultOrigin?.repoId != model.repoId
+                .foregroundStyle(alreadyInDraft ? ForgePalette.secondary.opacity(0.55) : ForgePalette.secondary)
+                .disabled(alreadyInDraft || model.busy || resultOrigin?.repoId != model.repoId
                           || resultOrigin?.threadId != model.selectedThreadId)
                 .accessibilityIdentifier("agent.knowledge-inspector.use.\(memory.id)")
             }
@@ -5962,11 +6183,11 @@ private struct KnowledgePane: View {
                         Button {
                             model.useKnowledgeInCurrentConversation(memory)
                         } label: {
-                            Label("用于当前会话",systemImage:"bubble.left.and.text.bubble.right")
+                            Label("加入当前草稿",systemImage:"text.badge.plus")
                         }
                         .buttonStyle(.borderedProminent)
                         .disabled(model.busy || model.thread == nil)
-                        .help("先放入当前会话草稿，可编辑后再发送")
+                        .help("加入当前会话草稿，可编辑后再发送；不会自动发送")
                         .accessibilityIdentifier("knowledge.use.\(memory.id)")
 
                         Button {
