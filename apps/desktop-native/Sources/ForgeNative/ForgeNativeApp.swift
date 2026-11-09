@@ -110,7 +110,6 @@ private struct ForgeWorkspaceView: View {
             main
         }
         .navigationSplitViewStyle(.balanced)
-        .preferredColorScheme(.light)
         .toolbar {
             ToolbarItem(placement:.navigation) {
                 Text(model.project?.label ?? "Forge")
@@ -2449,10 +2448,13 @@ private struct RecordsPane: View {
 
     var body: some View {
         GeometryReader { geometry in
+            let compact = geometry.size.width < 900
             HStack(spacing:0) {
-            planningNavigator
-                .frame(minWidth:geometry.size.width < 960 ? 330 : 620,maxWidth:.infinity)
-                .padding(.leading,12)
+                if !compact || model.selectedRecord == nil {
+                    planningNavigator
+                        .frame(minWidth:compact ? 0 : 520,maxWidth:.infinity)
+                        .padding(.leading,compact ? 8 : 12)
+                }
 
             if let selected = model.records.first(where:{$0.id == model.selectedRecord}) {
                 ScrollView {
@@ -2472,13 +2474,18 @@ private struct RecordsPane: View {
                             Button {
                                 model.clearRecordSelection()
                             } label: {
-                                Image(systemName:"xmark")
-                                    .font(.system(size:9,weight:.semibold))
-                                    .frame(width:24,height:24)
-                                    .background(ForgePalette.softFill,in:RoundedRectangle(cornerRadius:8,style:.continuous))
+                                if compact {
+                                    Label("返回规划",systemImage:"chevron.left")
+                                        .font(.system(size:11,weight:.medium))
+                                } else {
+                                    Image(systemName:"xmark")
+                                        .font(.system(size:9,weight:.semibold))
+                                        .frame(width:24,height:24)
+                                }
                             }
                             .buttonStyle(.plain)
-                            .help("关闭详情，返回完整关系图")
+                            .help("关闭详情，返回规划")
+                            .accessibilityIdentifier("planning.detail.back")
                         }
 
                         if let recordDetail = model.recordDetail {
@@ -2488,15 +2495,17 @@ private struct RecordsPane: View {
                     .frame(maxWidth:.infinity,alignment:.leading)
                     .padding(.horizontal,18).padding(.vertical,20)
                 }
-                .frame(minWidth:geometry.size.width < 960 ? 240 : 310,
-                       idealWidth:geometry.size.width < 960 ? 260 : 350,
-                       maxWidth:geometry.size.width < 960 ? 290 : 390)
+                .frame(minWidth:compact ? 0 : 280,
+                       idealWidth:compact ? geometry.size.width : 330,
+                       maxWidth:compact ? .infinity : 390)
                 .overlay(alignment:.leading) {
-                    Rectangle()
-                        .fill(Color.primary.opacity(0.09))
-                        .frame(width:1)
+                    if !compact {
+                        Rectangle()
+                            .fill(Color.primary.opacity(0.09))
+                            .frame(width:1)
+                    }
                 }
-                .padding(.trailing,12)
+                .padding(.trailing,compact ? 8 : 12)
                 .transition(.move(edge:.trailing).combined(with:.opacity))
             }
             }
@@ -4043,19 +4052,21 @@ private struct RecordsPane: View {
         switch detail {
         case .requirement(let requirement):
             VStack(alignment:.leading,spacing:18) {
-                HStack(spacing:9) {
-                    Button {
-                        model.newThreadForRequirement(requirement.requirementId)
-                    } label: {
-                        Label("以此 Requirement 新建会话",systemImage:"bubble.left.and.bubble.right")
+                VStack(alignment:.leading,spacing:8) {
+                    HStack(spacing:9) {
+                        Button {
+                            model.newThreadForRequirement(requirement.requirementId)
+                        } label: {
+                            Label("以此 Requirement 新建会话",systemImage:"bubble.left.and.bubble.right")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        Button {
+                            beginPlan(requirementId:requirement.requirementId,parentPlanId:nil)
+                        } label: {
+                            Label("添加根 Plan",systemImage:"plus")
+                        }
+                        .buttonStyle(.bordered)
                     }
-                    .buttonStyle(.borderedProminent)
-                    Button {
-                        beginPlan(requirementId:requirement.requirementId,parentPlanId:nil)
-                    } label: {
-                        Label("添加根 Plan",systemImage:"plus")
-                    }
-                    .buttonStyle(.bordered)
                     Text("可选上下文，不影响普通 Agent 会话。")
                         .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
                 }
@@ -4085,19 +4096,21 @@ private struct RecordsPane: View {
             }
         case .plan(let plan):
             VStack(alignment:.leading,spacing:18) {
-                HStack(spacing:9) {
-                    Button {
-                        model.newThreadForPlan(plan)
-                    } label: {
-                        Label("以此 Plan 新建会话",systemImage:"bubble.left.and.bubble.right")
+                VStack(alignment:.leading,spacing:8) {
+                    HStack(spacing:9) {
+                        Button {
+                            model.newThreadForPlan(plan)
+                        } label: {
+                            Label("以此 Plan 新建会话",systemImage:"bubble.left.and.bubble.right")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        Button {
+                            beginPlan(requirementId:plan.requirementId,parentPlanId:plan.planId)
+                        } label: {
+                            Label("细化子 Plan",systemImage:"arrow.turn.down.right")
+                        }
+                        .buttonStyle(.bordered)
                     }
-                    .buttonStyle(.borderedProminent)
-                    Button {
-                        beginPlan(requirementId:plan.requirementId,parentPlanId:plan.planId)
-                    } label: {
-                        Label("细化子 Plan",systemImage:"arrow.turn.down.right")
-                    }
-                    .buttonStyle(.bordered)
                     Text("会话仍由 Project / checkout 承载；Plan 只是附加语义上下文。")
                         .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
                 }
@@ -4175,9 +4188,13 @@ private struct RecordsPane: View {
             Text(title).font(.system(size:11,weight:.semibold)).foregroundStyle(ForgePalette.secondary)
             content()
         }
-        .padding(14)
+        .padding(.vertical,12)
         .frame(maxWidth:.infinity,alignment:.leading)
-        .background(ForgePalette.softFill,in:RoundedRectangle(cornerRadius:13,style:.continuous))
+        .overlay(alignment:.top) {
+            Rectangle()
+                .fill(Color.primary.opacity(0.10))
+                .frame(height:1)
+        }
     }
 
     private func semanticBulletList(_ values:[String]) -> some View {
