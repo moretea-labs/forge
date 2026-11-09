@@ -1509,6 +1509,19 @@ final class NativeWorkspace: ObservableObject {
         }
     }
 
+    nonisolated static func pluginInstallationWarning(
+        target:PluginManagementItem,
+        refreshed:[PluginManagementItem]
+    ) -> String? {
+        guard let actual = refreshed.first(where:{ $0.pluginId == target.pluginId }) else {
+            return "安装回执未包含目标插件，请刷新确认实际状态。"
+        }
+        guard actual.installedVersion == target.version else {
+            return "目标插件尚未显示版本 \(target.version)，请刷新确认实际安装状态。"
+        }
+        return nil
+    }
+
     func loadPluginManagement() async {
         guard !pluginManagementLoading else { return }
         pluginManagementLoading = true
@@ -1518,22 +1531,29 @@ final class NativeWorkspace: ObservableObject {
             pluginManagement = Self.pluginManagementRows(value)
             pluginManagementError = nil
         } catch {
-            pluginManagement = []
+            // A failed refresh must not erase the last confirmed directory.
             pluginManagementError = error.localizedDescription
         }
     }
 
     func installOfficialPlugin(_ item:PluginManagementItem) async {
-        guard item.compatible, !pluginManagementLoading else { return }
+        guard item.compatible, item.installedVersion != item.version, !pluginManagementLoading else { return }
         pluginManagementLoading = true
         defer { pluginManagementLoading = false }
         do {
             let value = try await ForgeBridge.request("install_official_plugin",["pluginId":item.pluginId])
-            let management = value["management"] as? [String:Any] ?? [:]
-            pluginManagement = Self.pluginManagementRows(management)
-            pluginManagementError = nil
+            guard let management = value["management"] as? [String:Any],
+                  management["plugins"] is [[String:Any]] else {
+                pluginManagementError = "安装请求已返回，但未提供插件目录回执，请刷新确认实际安装状态。"
+                return
+            }
+            let refreshed = Self.pluginManagementRows(management)
+            pluginManagement = refreshed
+            pluginManagementError = Self.pluginInstallationWarning(target:item,refreshed:refreshed)
         } catch {
-            pluginManagementError = error.localizedDescription
+            // A request can have been admitted before transport failure.
+            // Do not blindly reinstall, and do not erase the prior list.
+            pluginManagementError = "无法确认插件安装结果：\(error.localizedDescription)。请刷新核对后再操作。"
         }
     }
 

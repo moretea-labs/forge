@@ -4758,13 +4758,14 @@ private struct PluginsPane: View {
 
 private struct PluginSettingsSection: View {
     @ObservedObject var model: NativeWorkspace
+    @State private var pendingInstallation: PluginManagementItem?
 
     var body: some View {
         VStack(alignment:.leading,spacing:12) {
             HStack {
                 VStack(alignment:.leading,spacing:4) {
                     Text("插件管理").font(.system(size:13,weight:.semibold))
-                    Text("官方 pinned catalog；安装与授权仍由 Forge Runtime 管理。")
+                    Text("管理官方插件版本；安装不会自动授予插件操作权限。")
                         .font(.system(size:10.5)).foregroundStyle(.tertiary)
                 }
                 Spacer()
@@ -4778,16 +4779,30 @@ private struct PluginSettingsSection: View {
                 .accessibilityIdentifier("settings.plugins.refresh")
             }
 
-            if model.pluginManagement.isEmpty {
-                if let error = model.pluginManagementError {
+            if let error = model.pluginManagementError {
+                HStack(alignment:.top,spacing:8) {
+                    Image(systemName:"exclamationmark.circle")
                     Text(error.contains("controller.plugins") || error.contains("CORE_CAPABILITY")
-                         ? "当前 Runtime 尚未提供插件管理能力；工作区插件发现仍可正常使用。"
-                         : "插件管理不可用：\(error)")
-                        .font(.system(size:11)).foregroundStyle(ForgePalette.secondary)
-                } else if model.pluginManagementLoading {
+                         ? "当前运行时不支持插件管理；仍可在工作区查看已注册的插件。"
+                         : "插件状态无法确认：\(error)")
+                        .font(.system(size:11))
+                        .fixedSize(horizontal:false,vertical:true)
+                        .textSelection(.enabled)
+                    Spacer(minLength:6)
+                    Button("重试") { Task { await model.loadPluginManagement() } }
+                        .buttonStyle(.plain)
+                        .disabled(model.pluginManagementLoading)
+                        .accessibilityIdentifier("settings.plugins.retry")
+                }
+                .foregroundStyle(.orange)
+                .accessibilityIdentifier("settings.plugins.error")
+            }
+            if model.pluginManagement.isEmpty {
+                if model.pluginManagementLoading {
                     ProgressView("正在读取官方插件目录…").controlSize(.small)
-                } else {
-                    Text("官方插件目录为空。").font(.system(size:11)).foregroundStyle(ForgePalette.secondary)
+                } else if model.pluginManagementError == nil {
+                    Text("暂无可安装的官方插件。")
+                        .font(.system(size:11)).foregroundStyle(ForgePalette.secondary)
                 }
             } else {
                 VStack(alignment:.leading,spacing:0) {
@@ -4802,16 +4817,21 @@ private struct PluginSettingsSection: View {
                                     Text(item.version).font(.system(size:9.5,design:.monospaced)).foregroundStyle(.tertiary)
                                 }
                                 Text(item.description).font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary).lineLimit(2)
-                                HStack(spacing:12) {
+                                HStack(spacing:10) {
                                     Text(item.installedVersion.map { "已安装 \($0)" } ?? "未安装")
+                                    if item.enabled == false && item.installedVersion != nil { Text("已禁用") }
                                     if item.authorizationCount > 0 { Text("授权 \(item.authorizationCount)") }
-                                    if !item.compatible { Text(item.compatibilityReason ?? "当前平台不兼容") }
                                 }
                                 .font(.system(size:9.5)).foregroundStyle(.tertiary)
+                                if !item.compatible {
+                                    Text(item.compatibilityReason ?? "当前平台不兼容")
+                                        .font(.system(size:10.5)).foregroundStyle(.orange)
+                                        .fixedSize(horizontal:false,vertical:true)
+                                }
                             }
                             Spacer(minLength:8)
                             Button(item.installedVersion == item.version ? "已安装" : (item.installedVersion == nil ? "安装" : "更新")) {
-                                Task { await model.installOfficialPlugin(item) }
+                                pendingInstallation = item
                             }
                             .buttonStyle(.bordered)
                             .controlSize(.small)
@@ -4825,6 +4845,22 @@ private struct PluginSettingsSection: View {
             }
         }
         .padding(.vertical,8)
+        .confirmationDialog("确认安装官方插件",isPresented:Binding(
+            get:{ pendingInstallation != nil },
+            set:{ if !$0 { pendingInstallation = nil } }
+        ),titleVisibility:.visible) {
+            if let item = pendingInstallation {
+                Button(item.installedVersion == nil ? "确认安装" : "确认更新") {
+                    pendingInstallation = nil
+                    Task { await model.installOfficialPlugin(item) }
+                }
+            }
+            Button("取消",role:.cancel) { pendingInstallation = nil }
+        } message: {
+            if let item = pendingInstallation {
+                Text("\(item.name) · \(item.version)\n将更改 Forge 中的插件安装状态，不会自动授予操作权限。")
+            }
+        }
     }
 }
 

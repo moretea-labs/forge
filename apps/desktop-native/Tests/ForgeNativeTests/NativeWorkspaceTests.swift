@@ -1378,6 +1378,20 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(rows[0].authorizationExpiresAt,"2026-12-01T00:00:00Z")
     }
 
+    func testPluginInstallationRequiresConfirmedVersionFromAuthority() {
+        let target = NativeWorkspace.pluginManagementRows(["plugins":[[
+            "pluginId":"figma","name":"Figma","version":"0.3.0","description":"Bridge",
+            "compatible":true,"installedVersion":"0.2.0"
+        ]]]).first!
+        let current = NativeWorkspace.pluginManagementRows(["plugins":[[
+            "pluginId":"figma","name":"Figma","version":"0.3.0","description":"Bridge",
+            "compatible":true,"installedVersion":"0.3.0"
+        ]]])
+        XCTAssertNil(NativeWorkspace.pluginInstallationWarning(target:target,refreshed:current))
+        XCTAssertNotNil(NativeWorkspace.pluginInstallationWarning(target:target,refreshed:[target]))
+        XCTAssertNotNil(NativeWorkspace.pluginInstallationWarning(target:target,refreshed:[]))
+    }
+
     func testUserRequestProjectionFiltersCurrentProjectAndGlobalOnly() {
         let rows = NativeWorkspace.userRequestRows([
             "data":[
