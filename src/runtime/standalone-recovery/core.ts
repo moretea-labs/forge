@@ -847,7 +847,7 @@ export async function verifyStableRuntime(
   }
   const endpoint = observation.snapshot?.endpoint;
   probes.active_gateway = endpoint
-    ? await (options.stabilizeActiveGatewayTransport
+    ? await (options.stabilizeActiveGatewayTransport !== false
         ? probeRuntimeGateway(transport, runtimeHealthEndpoint(endpoint))
         : probe(transport, runtimeHealthEndpoint(endpoint)))
     : { ok: false, detail: 'canonical Runtime endpoint is unavailable' };

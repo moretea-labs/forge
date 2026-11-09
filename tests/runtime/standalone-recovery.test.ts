@@ -510,6 +510,32 @@ test('standalone Recovery still fails closed when both active gateway transport 
   expect(result).toEqual({ ok: false, detail: 'listener unavailable' });
 });
 
+test('verifyStableRuntime uses stabilized active gateway probing by default', async () => {
+  const home = controllerHome();
+  const activeManifest = manifest(home, 'release-default-gateway-retry', 'artifact-default-gateway-retry');
+  ensureActiveRuntimeRelease(home, activeManifest);
+  const runtime = await runtimeServer();
+  writeMainToken(home);
+  startObservedRuntime(home, runtime.endpoint, 'release-default-gateway-retry', 'artifact-default-gateway-retry');
+  const config = createRecoveryConfig(home);
+  const realTransport = createRecoveryHttpTransport(home);
+  let readyCalls = 0;
+  const transport = {
+    request: async (request: Parameters<typeof realTransport.request>[0]) => {
+      if (new URL(request.url).pathname === '/ready') {
+        readyCalls += 1;
+        if (readyCalls === 1) throw new Error('stale local transport');
+      }
+      return realTransport.request(request);
+    },
+  };
+
+  const verified = await verifyStableRuntime(config, transport, { probeMcpProtocol: false });
+
+  expect(readyCalls).toBe(2);
+  expect(verified.probes.active_gateway).toEqual({ ok: true, detail: 'HTTP 200', status: 200 });
+});
+
 test('standalone Recovery compiler resolves account Bun when compiled Runtime PATH omits Bun', () => {
   const home = mkdtempSync(join(tmpdir(), 'forge-recovery-bun-home-'));
   roots.push(home);
