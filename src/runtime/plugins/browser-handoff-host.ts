@@ -181,6 +181,7 @@ async function main(): Promise<void> {
   process.once('SIGINT', onSignal);
 
   try {
+    if (!spec.profileDir) throw new Error('managed browser handoff requires a profile directory');
     context = await playwright.chromium.launchPersistentContext(spec.profileDir, launchOptions);
     let page = context.pages()[0] ?? await context.newPage();
     await page.goto(spec.url, { waitUntil: 'domcontentloaded', timeout: spec.defaultTimeoutMs });

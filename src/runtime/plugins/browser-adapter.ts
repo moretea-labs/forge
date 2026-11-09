@@ -721,23 +721,30 @@ async function resolveBrowserPluginAuthorizationContextInternal(
     return undefined;
   }
 
-  const profile = selectedProfile(config, input.repoRoot, connection.activeMode, sessionId);
   const providerId = connection.browserProduct ?? connection.provider;
-  const identity = {
-    provider: connection.provider,
-    browserProduct: connection.browserProduct,
-    activeMode: connection.activeMode,
-    endpoint: connection.endpoint,
-    origin,
-    browserChannel: config.browserChannel,
-    executablePath: config.executablePath ? resolveConfiguredPath(input.repoRoot, config.executablePath) : undefined,
-    profileMode: config.profileMode,
-    selectedProfilePath: profile.selectedProfilePath,
-    profileDirectory: profile.profileDirectory,
-    cdpAttachFallback: config.cdpAttachFallback,
-    nativeAttachMode: config.nativeAttachMode,
-    nativeBrowserCandidates: config.nativeBrowserCandidates,
-  };
+  const identity = connection.provider === 'macos-apple-events'
+    ? {
+        provider: connection.provider,
+        browserProduct: connection.browserProduct,
+        activeMode: connection.activeMode,
+        origin,
+      }
+    : (() => {
+        const profile = selectedProfile(config, input.repoRoot, connection.activeMode, sessionId);
+        return {
+          provider: connection.provider,
+          browserProduct: connection.browserProduct,
+          activeMode: connection.activeMode,
+          endpoint: connection.endpoint,
+          origin,
+          browserChannel: config.browserChannel,
+          executablePath: config.executablePath ? resolveConfiguredPath(input.repoRoot, config.executablePath) : undefined,
+          profileMode: config.profileMode,
+          selectedProfilePath: profile.selectedProfilePath,
+          profileDirectory: profile.profileDirectory,
+          cdpAttachFallback: config.cdpAttachFallback,
+        };
+      })();
   return {
     target: {
       kind: 'browser-origin',
@@ -1142,6 +1149,10 @@ async function delay(ms: number): Promise<void> {
 }
 
 
+function nativeBrowserTabTargetId(product: MacOsBrowserProduct, ref: MacOsBrowserTabRef): string {
+  return 'macos-apple-events:' + product + ':' + ref.windowId + ':' + ref.tabId;
+}
+
 function selectedProfile(config: BrowserPluginConfig, repoRoot: string, activeMode: BrowserMode = 'managed_persistent', sessionId?: string): BrowserProfileSelection {
   if (activeMode === 'isolated') {
     const profileDir = isolatedProfileDir(repoRoot, sessionId ?? 'anonymous');
@@ -1189,7 +1200,7 @@ interface BrowserConnectionSummary {
   browserProduct?: MacOsBrowserProduct;
   nativeBrowserCandidates?: MacOsBrowserProduct[];
   fallback?: BrowserConnectionFallback;
-  profile: {
+  profile?: {
     profileMode?: BrowserProfileMode;
     profileDirectory?: string;
     selectedProfilePath: string;
@@ -3057,11 +3068,6 @@ async function openNativeAttachedContext(
       attached: true,
       browserProduct: metadata.product,
       nativeBrowserCandidates: config.nativeBrowserCandidates,
-      profile: {
-        profileMode: config.profileMode,
-        profileDirectory: config.profileDirectory,
-        selectedProfilePath: `macos:${metadata.product}:owned-tab`,
-      },
       tabInventory: inventory,
       sessionResume,
     }, pageUrl, title, matchedBy, {
@@ -4259,8 +4265,8 @@ async function executeBrowserPluginActionInternal(
             jobId: input.jobId,
             sessionId: target.sessionId,
             url: target.url,
+            targetId: managedTarget.profile.selectedProfilePath,
             profileDir: managedTarget.profile.profileDir,
-            selectedProfilePath: managedTarget.profile.selectedProfilePath,
             profileDirectory: managedTarget.profile.profileDirectory,
             browserChannel: current.browserChannel,
             executablePath: current.executablePath ? resolveConfiguredPath(input.repoRoot, current.executablePath) : undefined,
@@ -4300,11 +4306,11 @@ async function executeBrowserPluginActionInternal(
             { retryable: false });
         }
         const handoffMode: BrowserMode = current.browserMode === 'isolated' ? 'isolated' : 'managed_persistent';
-        const profile = selectedProfile(current, input.repoRoot, handoffMode, target.sessionId);
-        if (!nativeBrowser) mkdirSync(profile.profileDir, { recursive: true });
-        const selectedProfilePath = nativeBrowser
-          ? `macos-apple-events:${nativeBrowser.product}:${nativeBrowser.ref.windowId}:${nativeBrowser.ref.tabId}`
-          : profile.selectedProfilePath;
+        const profile = nativeBrowser ? undefined : selectedProfile(current, input.repoRoot, handoffMode, target.sessionId);
+        if (profile) mkdirSync(profile.profileDir, { recursive: true });
+        const targetId = nativeBrowser
+          ? nativeBrowserTabTargetId(nativeBrowser.product, nativeBrowser.ref)
+          : profile!.selectedProfilePath;
         const handoff = await startBrowserHandoff({
           repoRoot: input.repoRoot,
           repoId: input.repoId,
@@ -4312,9 +4318,9 @@ async function executeBrowserPluginActionInternal(
           jobId: input.jobId,
           sessionId: target.sessionId,
           url: target.url,
-          profileDir: profile.profileDir,
-          selectedProfilePath,
-          profileDirectory: profile.profileDirectory,
+          targetId,
+          profileDir: profile?.profileDir,
+          profileDirectory: profile?.profileDirectory,
           browserChannel: current.browserChannel,
           executablePath: current.executablePath ? resolveConfiguredPath(input.repoRoot, current.executablePath) : undefined,
           defaultTimeoutMs: current.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS,
@@ -4532,7 +4538,6 @@ async function executeBrowserPluginActionInternal(
             provider: 'macos-apple-events',
             attached: true,
             browserProduct: adoptedProduct,
-            profile: { selectedProfilePath: `macos:${adoptedProduct}:user-tab` },
             tabInventory: [{ index: 0, key: tabKey(requestedUrl, title), url: requestedUrl, title }],
             sessionResume: {
               sessionId: target.sessionId,

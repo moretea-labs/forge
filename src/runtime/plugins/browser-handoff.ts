@@ -33,8 +33,7 @@ export interface BrowserHandoffLaunchSpec {
   interactionId: string;
   sessionId: string;
   url: string;
-  profileDir: string;
-  selectedProfilePath: string;
+  profileDir?: string;
   profileDirectory?: string;
   browserChannel?: string;
   executablePath?: string;
@@ -50,8 +49,8 @@ export interface BrowserHandoffStartInput {
   jobId?: string;
   sessionId: string;
   url: string;
-  profileDir: string;
-  selectedProfilePath: string;
+  targetId: string;
+  profileDir?: string;
   profileDirectory?: string;
   browserChannel?: string;
   executablePath?: string;
@@ -242,11 +241,11 @@ export function getBrowserHandoff(repoRoot: string, interactionId: string): Inte
   return reconcileRecord(repoRoot, record);
 }
 
-export function assertBrowserProfileAvailable(repoRoot: string, selectedProfilePath: string): void {
+function assertBrowserInteractionTargetAvailable(repoRoot: string, targetId: string, label: string): void {
   const active = listBrowserHandoffs(repoRoot).find((record) =>
-    record.targetId === selectedProfilePath && isInteractionSessionActive(record.status));
+    record.targetId === targetId && isInteractionSessionActive(record.status));
   if (!active) return;
-  throw new AssistantPluginError('PLUGIN_RESOURCE_BUSY', 'The browser profile is currently owned by a human handoff session.', {
+  throw new AssistantPluginError('PLUGIN_RESOURCE_BUSY', 'The browser ' + label + ' is currently owned by a human handoff session.', {
     retryable: true,
     details: {
       interactionId: active.interactionId,
@@ -254,6 +253,10 @@ export function assertBrowserProfileAvailable(repoRoot: string, selectedProfileP
       status: active.status,
     },
   });
+}
+
+export function assertBrowserProfileAvailable(repoRoot: string, selectedProfilePath: string): void {
+  assertBrowserInteractionTargetAvailable(repoRoot, selectedProfilePath, 'profile');
 }
 
 export function assertBrowserSessionAvailable(repoRoot: string, sessionId?: string): void {
@@ -334,7 +337,7 @@ export function startRuntimeManagedBrowserHandoff(
   result: { url?: string; title?: string },
 ): InteractionSessionRecord {
   persistDeadBrowserHandoffs(input.repoRoot);
-  assertBrowserProfileAvailable(input.repoRoot, input.selectedProfilePath);
+  assertBrowserInteractionTargetAvailable(input.repoRoot, input.targetId, 'interaction target');
   const timestamp = hooks.now();
   const interactionId = `browser_handoff_${randomUUID()}`;
   const expiresAt = new Date(Date.parse(timestamp) + boundedTimeout(input.timeoutMs)).toISOString();
@@ -343,7 +346,7 @@ export function startRuntimeManagedBrowserHandoff(
     interactionId,
     provider: PROVIDER,
     sessionId: input.sessionId,
-    targetId: input.selectedProfilePath,
+    targetId: input.targetId,
     targetAliases: ['runtime-managed'],
     status: 'waiting_for_user',
     reason: input.reason,
@@ -391,7 +394,7 @@ export function resolveRuntimeManagedBrowserHandoff(
 
 export async function startBrowserHandoff(input: BrowserHandoffStartInput): Promise<InteractionSessionRecord> {
   persistDeadBrowserHandoffs(input.repoRoot);
-  assertBrowserProfileAvailable(input.repoRoot, input.selectedProfilePath);
+  assertBrowserInteractionTargetAvailable(input.repoRoot, input.targetId, 'interaction target');
   const timestamp = hooks.now();
   const interactionId = `browser_handoff_${randomUUID()}`;
   const expiresAt = new Date(Date.parse(timestamp) + boundedTimeout(input.timeoutMs)).toISOString();
@@ -400,7 +403,7 @@ export async function startBrowserHandoff(input: BrowserHandoffStartInput): Prom
     interactionId,
     provider: PROVIDER,
     sessionId: input.sessionId,
-    targetId: input.selectedProfilePath,
+    targetId: input.targetId,
     status: 'starting',
     reason: input.reason,
     instructions: input.instructions,
@@ -421,7 +424,6 @@ export async function startBrowserHandoff(input: BrowserHandoffStartInput): Prom
     sessionId: input.sessionId,
     url: input.url,
     profileDir: input.profileDir,
-    selectedProfilePath: input.selectedProfilePath,
     profileDirectory: input.profileDirectory,
     browserChannel: input.browserChannel,
     executablePath: input.executablePath,
