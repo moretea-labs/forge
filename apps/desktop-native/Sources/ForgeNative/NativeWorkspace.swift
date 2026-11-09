@@ -436,6 +436,19 @@ enum NativePage: String, CaseIterable, Identifiable {
     }
 }
 
+struct UserRequestDetail: Identifiable, Equatable {
+    let requestId: String
+    let kind: String
+    let title: String
+    let summary: String
+    let actionRequired: String
+    let status: String
+    let targetRepoId: String?
+    let targetScopeKind: String?
+    let updatedAt: String?
+    var id: String { requestId }
+}
+
 struct NativeNavigationEntry: Equatable {
     let page: NativePage
     let threadId: String?
@@ -454,6 +467,9 @@ final class NativeWorkspace: ObservableObject {
     @Published var draft = ""
     @Published var search = ""
     @Published var showSearch = false
+    @Published var userRequests: [UserRequestDetail] = []
+    @Published var userRequestsLoading = false
+    @Published var userRequestsError: String?
     @Published var busy = false
     @Published private(set) var activeConversationId: String?
     private var activeApiTurn: ForgeApiTurn?
@@ -523,6 +539,15 @@ final class NativeWorkspace: ObservableObject {
 
     var project: ForgeProject? { projects.first { $0.repoId == repoId } }
     var thread: ChatThread? { threads.first { $0.id == selectedThreadId } }
+    var relevantUserRequests: [UserRequestDetail] {
+        userRequests.filter { request in
+            guard request.status == "pending" else { return false }
+            if let targetRepoId = request.targetRepoId {
+                return targetRepoId == repoId
+            }
+            return request.targetScopeKind == nil
+        }
+    }
     var canNavigateBack: Bool { !navigationBackStack.isEmpty }
     var navigationBackLabel: String? { navigationBackStack.last?.page.rawValue }
 
@@ -957,6 +982,77 @@ final class NativeWorkspace: ObservableObject {
         if !showSearch { search = "" }
     }
 
+    nonisolated static func userRequestRows(_ result:[String:Any]) -> [UserRequestDetail] {
+        let outer = result["data"] as? [String:Any] ?? result
+        let data = outer["data"] as? [String:Any] ?? outer
+        let rows = data["items"] as? [[String:Any]] ?? []
+        return rows.compactMap { row in
+            guard let requestId = row["requestId"] as? String,
+                  let title = row["title"] as? String,
+                  let summary = row["summary"] as? String else { return nil }
+            let targetScope = row["targetScope"] as? [String:Any]
+            return UserRequestDetail(
+                requestId:requestId,
+                kind:row["kind"] as? String ?? "user_action_request",
+                title:title,
+                summary:summary,
+                actionRequired:row["actionRequired"] as? String ?? "product_decision",
+                status:row["status"] as? String ?? "pending",
+                targetRepoId:targetScope?["repoId"] as? String,
+                targetScopeKind:targetScope?["scopeKind"] as? String,
+                updatedAt:row["updatedAt"] as? String
+            )
+        }
+    }
+
+    nonisolated static func relevantUserRequestRows(
+        _ rows:[UserRequestDetail], repoId:String?
+    ) -> [UserRequestDetail] {
+        rows.filter { request in
+            guard request.status == "pending" else { return false }
+            if let targetRepoId = request.targetRepoId {
+                return targetRepoId == repoId
+            }
+            return request.targetScopeKind == nil
+        }
+    }
+
+    func loadUserRequests() async {
+        guard !userRequestsLoading else { return }
+        userRequestsLoading = true
+        defer { userRequestsLoading = false }
+        do {
+            let value = try await ForgeBridge.request("read_user_requests")
+            userRequests = Self.userRequestRows(value)
+            userRequestsError = nil
+        } catch {
+            userRequestsError = error.localizedDescription
+        }
+    }
+
+    func resolveUserRequest(_ request:UserRequestDetail, decision:String, dismiss:Bool = false) async {
+        guard !userRequestsLoading else { return }
+        let normalized = decision.trimmingCharacters(in:.whitespacesAndNewlines)
+        guard dismiss || !normalized.isEmpty else {
+            userRequestsError = "请先输入决定或完成情况。"
+            return
+        }
+        userRequestsLoading = true
+        defer { userRequestsLoading = false }
+        do {
+            _ = try await ForgeBridge.request("control_user_request",[
+                "requestId":request.requestId,
+                "action":dismiss ? "dismiss" : "resolve",
+                "decision":normalized
+            ])
+            let value = try await ForgeBridge.request("read_user_requests")
+            userRequests = Self.userRequestRows(value)
+            userRequestsError = nil
+        } catch {
+            userRequestsError = error.localizedDescription
+        }
+    }
+
     nonisolated static func localProviderStatusReady(_ status:[String:Any]) -> Bool {
         status["status"] as? String == "ready"
     }
@@ -1002,6 +1098,7 @@ final class NativeWorkspace: ObservableObject {
                 connection = "MCP 状态未知"
             }
             await refreshProject()
+            await loadUserRequests()
             error = nil
         } catch { self.error = error.localizedDescription }
     }

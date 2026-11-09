@@ -100,6 +100,10 @@ private struct ForgeWorkspaceView: View {
     @State private var expandedProjectCheckouts: [ProjectCheckoutChoice] = []
     @State private var projectCheckoutsLoading = false
     @State private var projectCheckoutError: String?
+    @State private var inboxShown = false
+    @State private var inboxDecisionRequestId: String?
+    @State private var inboxDecision = ""
+    @State private var inboxDismissRequestId: String?
     @FocusState private var sidebarSearchFocused: Bool
 
     var body: some View {
@@ -156,6 +160,33 @@ private struct ForgeWorkspaceView: View {
                 .help(model.showSearch ? "关闭会话搜索 (Esc)" : "搜索全部会话 (⌘K)")
                 .accessibilityLabel(model.showSearch ? "关闭搜索" : "搜索会话")
                 .accessibilityIdentifier(model.showSearch ? "sidebar.search.close" : "sidebar.search.open")
+
+                Button {
+                    inboxShown.toggle()
+                    if inboxShown { Task { await model.loadUserRequests() } }
+                } label: {
+                    ZStack(alignment:.topTrailing) {
+                        Image(systemName:"tray")
+                            .font(.system(size:12.5,weight:.medium))
+                            .frame(width:28,height:30)
+                        if !model.relevantUserRequests.isEmpty {
+                            Text(model.relevantUserRequests.count > 99 ? "99+" : "\(model.relevantUserRequests.count)")
+                                .font(.system(size:8,weight:.bold))
+                                .padding(.horizontal,3).frame(minWidth:13,minHeight:13)
+                                .background(Capsule().fill(ForgePalette.accent))
+                                .foregroundStyle(Color.white)
+                                .offset(x:3,y:1)
+                        }
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("待处理请求")
+                .accessibilityLabel("待处理请求 \(model.relevantUserRequests.count)")
+                .accessibilityIdentifier("sidebar.inbox.open")
+                .popover(isPresented:$inboxShown,arrowEdge:.trailing) {
+                    inboxPanel
+                }
             }
             .padding(.horizontal,18)
             .frame(height:34)
@@ -244,6 +275,168 @@ private struct ForgeWorkspaceView: View {
         }
         .foregroundStyle(ForgePalette.ink)
         .background(.ultraThinMaterial)
+    }
+
+    private var inboxPanel: some View {
+        VStack(alignment:.leading,spacing:0) {
+            HStack {
+                VStack(alignment:.leading,spacing:2) {
+                    Text("待处理").font(.system(size:13,weight:.semibold))
+                    Text(model.repoId == nil ? "全局请求" : "当前项目与全局请求")
+                        .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
+                }
+                Spacer()
+                Button {
+                    Task { await model.loadUserRequests() }
+                } label: {
+                    if model.userRequestsLoading { ProgressView().controlSize(.small) }
+                    else { Image(systemName:"arrow.clockwise") }
+                }
+                .buttonStyle(.plain)
+                .disabled(model.userRequestsLoading)
+                .accessibilityLabel("刷新待处理请求")
+                .accessibilityIdentifier("inbox.refresh")
+            }
+            .padding(.horizontal,14).padding(.vertical,12)
+
+            Divider()
+
+            if let error = model.userRequestsError, model.relevantUserRequests.isEmpty {
+                Text("Inbox 暂不可用：\(error)")
+                    .font(.system(size:11.5))
+                    .foregroundStyle(ForgePalette.secondary)
+                    .padding(14)
+            } else if model.userRequestsLoading && model.relevantUserRequests.isEmpty {
+                ProgressView("正在读取…").controlSize(.small).padding(14)
+            } else if model.relevantUserRequests.isEmpty {
+                Text("当前没有需要处理的请求。")
+                    .font(.system(size:11.5))
+                    .foregroundStyle(ForgePalette.secondary)
+                    .padding(14)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment:.leading,spacing:0) {
+                        ForEach(Array(model.relevantUserRequests.enumerated()),id:\.element.id) { index,item in
+                            inboxRequestRow(item)
+                            if index < model.relevantUserRequests.count - 1 { Divider() }
+                        }
+                    }
+                    .padding(.horizontal,14)
+                }
+            }
+        }
+        .frame(width:410,height:460)
+        .confirmationDialog(
+            "忽略这个请求？",
+            isPresented:Binding(
+                get:{ inboxDismissRequestId != nil },
+                set:{ if !$0 { inboxDismissRequestId = nil } }
+            ),
+            titleVisibility:.visible
+        ) {
+            Button("忽略并关闭",role:.destructive) {
+                guard let id=inboxDismissRequestId,
+                      let item=model.relevantUserRequests.first(where:{ $0.requestId == id }) else { return }
+                inboxDismissRequestId=nil
+                Task { await model.resolveUserRequest(item,decision:"",dismiss:true) }
+            }
+            Button("取消",role:.cancel) { inboxDismissRequestId=nil }
+        }
+    }
+
+    private func inboxRequestRow(_ item:UserRequestDetail) -> some View {
+        let editing = inboxDecisionRequestId == item.requestId
+        return VStack(alignment:.leading,spacing:7) {
+            HStack(alignment:.top,spacing:8) {
+                Image(systemName:inboxActionIcon(item.actionRequired))
+                    .font(.system(size:10.5,weight:.semibold))
+                    .foregroundStyle(ForgePalette.secondary)
+                    .frame(width:16,height:16)
+                VStack(alignment:.leading,spacing:4) {
+                    Text(item.title).font(.system(size:11.5,weight:.semibold)).lineLimit(2)
+                    Text(item.summary)
+                        .font(.system(size:10.5))
+                        .foregroundStyle(ForgePalette.secondary)
+                        .lineLimit(editing ? 8 : 3)
+                    HStack(spacing:8) {
+                        Text(inboxActionLabel(item.actionRequired))
+                        if item.targetRepoId == nil { Text("全局") }
+                    }
+                    .font(.system(size:9.5)).foregroundStyle(.tertiary)
+                }
+                Spacer(minLength:4)
+            }
+
+            if editing {
+                TextField(
+                    item.actionRequired == "product_decision" || item.actionRequired == "confirm_destructive"
+                        ? "输入决定，例如：允许 / 不允许"
+                        : "输入完成情况，例如：已完成登录",
+                    text:$inboxDecision
+                )
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size:11))
+                .accessibilityIdentifier("inbox.\(item.requestId).decision")
+
+                HStack(spacing:10) {
+                    Button("记录并关闭") {
+                        let decision=inboxDecision
+                        Task {
+                            await model.resolveUserRequest(item,decision:decision)
+                            if model.userRequestsError == nil {
+                                inboxDecisionRequestId=nil
+                                inboxDecision=""
+                            }
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(inboxDecision.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty || model.userRequestsLoading)
+                    Button("忽略") { inboxDismissRequestId=item.requestId }
+                        .buttonStyle(.plain)
+                        .controlSize(.small)
+                        .foregroundStyle(ForgePalette.secondary)
+                    Button("取消") {
+                        inboxDecisionRequestId=nil
+                        inboxDecision=""
+                    }
+                    .buttonStyle(.plain)
+                    .controlSize(.small)
+                    .foregroundStyle(ForgePalette.secondary)
+                    Spacer()
+                }
+            } else {
+                HStack {
+                    Spacer()
+                    Button("处理") {
+                        inboxDecisionRequestId=item.requestId
+                        inboxDecision=""
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size:10.5,weight:.medium))
+                    .accessibilityIdentifier("inbox.\(item.requestId).handle")
+                }
+            }
+        }
+        .padding(.vertical,10)
+    }
+
+    private func inboxActionLabel(_ action:String) -> String {
+        switch action {
+        case "login": return "需要登录"
+        case "grant_permission": return "需要授权"
+        case "confirm_destructive": return "需要确认"
+        default: return "需要决定"
+        }
+    }
+
+    private func inboxActionIcon(_ action:String) -> String {
+        switch action {
+        case "login": return "person.crop.circle.badge.checkmark"
+        case "grant_permission": return "key"
+        case "confirm_destructive": return "exclamationmark.triangle"
+        default: return "questionmark.circle"
+        }
     }
 
     private func threadRow(_ thread: ChatThread) -> some View {

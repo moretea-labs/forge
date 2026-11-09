@@ -1378,6 +1378,69 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(rows[0].authorizationExpiresAt,"2026-12-01T00:00:00Z")
     }
 
+    func testUserRequestProjectionFiltersCurrentProjectAndGlobalOnly() {
+        let rows = NativeWorkspace.userRequestRows([
+            "data":[
+                "data":[
+                    "items":[
+                    [
+                        "requestId":"global-1",
+                        "kind":"user_action_request",
+                        "title":"Login",
+                        "summary":"Complete login",
+                        "actionRequired":"login",
+                        "status":"pending"
+                    ],
+                    [
+                        "requestId":"repo-1",
+                        "kind":"user_decision_request",
+                        "title":"Approve",
+                        "summary":"Approve current project",
+                        "actionRequired":"product_decision",
+                        "status":"pending",
+                        "targetScope":["repoId":"repo-a"]
+                    ],
+                    [
+                        "requestId":"repo-2",
+                        "kind":"user_decision_request",
+                        "title":"Other",
+                        "summary":"Other repository",
+                        "actionRequired":"product_decision",
+                        "status":"pending",
+                        "targetScope":["repoId":"repo-b"]
+                    ],
+                    [
+                        "requestId":"legacy-work-no-repo",
+                        "kind":"user_decision_request",
+                        "title":"Legacy scoped",
+                        "summary":"Scoped work without repository identity",
+                        "actionRequired":"product_decision",
+                        "status":"pending",
+                        "targetScope":["scopeKind":"work","scopeId":"legacy-work"]
+                    ],
+                    [
+                        "requestId":"done",
+                        "kind":"user_action_request",
+                        "title":"Done",
+                        "summary":"Already done",
+                        "actionRequired":"login",
+                        "status":"resolved"
+                    ]
+                    ]
+                ]
+            ]
+        ])
+        XCTAssertEqual(rows.count,5)
+        XCTAssertEqual(
+            NativeWorkspace.relevantUserRequestRows(rows,repoId:"repo-a").map(\.requestId),
+            ["global-1","repo-1"]
+        )
+        XCTAssertEqual(
+            NativeWorkspace.relevantUserRequestRows(rows,repoId:nil).map(\.requestId),
+            ["global-1"]
+        )
+    }
+
     func testProjectPluginRowsDecodeBoundedPluginProjection() {
         let rows = NativeWorkspace.projectPluginRows([
             "plugins":[[

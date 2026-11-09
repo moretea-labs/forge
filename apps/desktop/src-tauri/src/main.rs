@@ -637,6 +637,30 @@ async fn read_user_requests() -> Result<Value, String> {
 }
 
 #[tauri::command]
+async fn control_user_request(
+    handoff_id: String,
+    operation: String,
+    decision: String,
+) -> Result<Value, String> {
+    if handoff_id.trim().is_empty() || handoff_id.len() > 256 {
+        return Err("FORGE_DESKTOP_USER_REQUEST_ID_INVALID".to_string());
+    }
+    if operation != "resolve" && operation != "dismiss" {
+        return Err("FORGE_DESKTOP_USER_REQUEST_ACTION_UNSUPPORTED".to_string());
+    }
+    if operation == "resolve" && decision.trim().is_empty() {
+        return Err("FORGE_DESKTOP_USER_REQUEST_DECISION_REQUIRED".to_string());
+    }
+    call_runtime_tool("rh_inbox", json!({
+        "operation": operation,
+        "handoff_id": handoff_id,
+        "decision": decision,
+        "detail_level": "summary",
+        "request_id": request_id("user-request-control")
+    })).await
+}
+
+#[tauri::command]
 async fn read_requirement_detail(repo_id: String, requirement_id: String) -> Result<Value, String> {
     if repo_id.trim().is_empty() || requirement_id.trim().is_empty() {
         return Err("FORGE_DESKTOP_REQUIREMENT_DETAIL_ARGUMENT_REQUIRED".to_string());
@@ -3051,6 +3075,7 @@ fn main() {
             read_agent_git_diff,
             commit_agent_git_files,
             read_user_requests,
+            control_user_request,
             read_requirement_detail,
             read_plan_detail,
             create_requirement,

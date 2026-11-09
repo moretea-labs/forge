@@ -72,6 +72,13 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
                 required(args, "checkoutId")?,
                 required_strings(args, "requirementIds", 100)?,
             ).await,
+        "read_user_requests" => read_user_requests().await,
+        "control_user_request" =>
+            control_user_request(
+                required_bounded(args, "requestId", 256)?,
+                required(args, "action")?,
+                args.get("decision").and_then(Value::as_str).unwrap_or("").to_string(),
+            ).await,
         "read_requirement_detail" =>
             read_requirement_detail(required(args, "repoId")?, required(args, "requirementId")?).await,
         "read_plan_detail" =>
@@ -484,6 +491,18 @@ mod tests {
             "operation":"status"
         })));
         assert_eq!(missing_checkout.unwrap_err(), "FORGE_NATIVE_BRIDGE_checkoutId_REQUIRED");
+        let fake_accept = tauri::async_runtime::block_on(dispatch("control_user_request", &json!({
+            "requestId":"req-1",
+            "action":"accept",
+            "decision":"accepted"
+        })));
+        assert_eq!(fake_accept.unwrap_err(), "FORGE_DESKTOP_USER_REQUEST_ACTION_UNSUPPORTED");
+        let empty_resolution = tauri::async_runtime::block_on(dispatch("control_user_request", &json!({
+            "requestId":"req-1",
+            "action":"resolve",
+            "decision":""
+        })));
+        assert_eq!(empty_resolution.unwrap_err(), "FORGE_DESKTOP_USER_REQUEST_DECISION_REQUIRED");
         assert_eq!(required(&json!({"repoId":""}), "repoId").unwrap_err(),
                    "FORGE_NATIVE_BRIDGE_repoId_REQUIRED");
         assert_eq!(required_strings(&json!({"paths":["src/main.rs"]}), "paths", 32).unwrap(),
