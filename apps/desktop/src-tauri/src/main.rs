@@ -1336,16 +1336,154 @@ fn local_api_config_path() -> Result<PathBuf, String> {
     Ok(root.join("com.moretea.forge.desktop").join("local-api.json"))
 }
 
+const LOCAL_API_CONFIG_SCHEMA_VERSION: u64 = 2;
+const LOCAL_API_PROFILE_LIMIT: usize = 20;
+
+fn default_local_api_config() -> Value {
+    json!({
+        "schemaVersion": LOCAL_API_CONFIG_SCHEMA_VERSION,
+        "defaultProvider": "codex",
+        "apiProfiles": [],
+        "joyCodeModel": JOYCODE_DEFAULT_MODEL
+    })
+}
+
+fn valid_api_profile_id(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 64
+        && value.chars().all(|char| char.is_ascii_alphanumeric() || "._-".contains(char))
+}
+
+fn api_provider_id(profile_id: &str) -> String {
+    format!("api:{profile_id}")
+}
+
+fn api_profile_id(provider: &str) -> Option<&str> {
+    provider.strip_prefix("api:").filter(|value| valid_api_profile_id(value))
+}
+
+fn normalize_api_profile(row: &Value) -> Result<Value, String> {
+    let id = row.get("id").and_then(Value::as_str).unwrap_or("").trim();
+    if !valid_api_profile_id(id) { return Err("FORGE_DESKTOP_API_PROFILE_ID_INVALID".into()); }
+    let label = row.get("label").and_then(Value::as_str).unwrap_or("").trim();
+    if label.is_empty() || label.len() > 120 { return Err("FORGE_DESKTOP_API_PROFILE_LABEL_INVALID".into()); }
+    let endpoint = validated_local_api_endpoint(
+        row.get("endpoint").and_then(Value::as_str).unwrap_or("")
+    )?;
+    let model = row.get("model").and_then(Value::as_str).unwrap_or("").trim();
+    if model.is_empty() || model.len() > 120 { return Err("FORGE_DESKTOP_API_MODEL_INVALID".into()); }
+    let api_protocol = row.get("apiProtocol").and_then(Value::as_str).unwrap_or("openai");
+    if !matches!(api_protocol, "openai" | "anthropic" | "responses") {
+        return Err("FORGE_DESKTOP_API_PROTOCOL_INVALID".into());
+    }
+    let credential_ref = row.get("credentialRef").and_then(Value::as_str)
+        .map(str::trim).filter(|value| !value.is_empty()).map(str::to_owned);
+    if let Some(ref credential_ref) = credential_ref {
+        if !valid_managed_credential_ref(credential_ref) {
+            return Err("FORGE_DESKTOP_CREDENTIAL_REF_INVALID".into());
+        }
+        if endpoint == ZRO_API_ENDPOINT {
+            return Err("FORGE_DESKTOP_CREDENTIAL_PROVIDER_OWNED".into());
+        }
+        managed_credential_matches_endpoint(credential_ref, &endpoint)?;
+    }
+    Ok(json!({
+        "id": id,
+        "label": label,
+        "endpoint": endpoint,
+        "model": model,
+        "apiProtocol": api_protocol,
+        "credentialRef": credential_ref,
+    }))
+}
+
+fn normalize_local_api_config(value: Value) -> Result<Value, String> {
+    if value.get("schemaVersion").and_then(Value::as_u64) == Some(LOCAL_API_CONFIG_SCHEMA_VERSION) {
+        let rows = value.get("apiProfiles").and_then(Value::as_array)
+            .ok_or("FORGE_DESKTOP_LOCAL_SETTINGS_INVALID")?;
+        if rows.len() > LOCAL_API_PROFILE_LIMIT {
+            return Err("FORGE_DESKTOP_API_PROFILE_LIMIT_EXCEEDED".into());
+        }
+        let mut profiles = Vec::with_capacity(rows.len());
+        let mut ids = std::collections::HashSet::new();
+        for row in rows {
+            let normalized = normalize_api_profile(row)?;
+            let id = normalized.get("id").and_then(Value::as_str).unwrap_or("");
+            if !ids.insert(id.to_string()) {
+                return Err("FORGE_DESKTOP_API_PROFILE_ID_DUPLICATE".into());
+            }
+            profiles.push(normalized);
+        }
+        let default_provider = value.get("defaultProvider").and_then(Value::as_str).unwrap_or("codex");
+        if default_provider != "codex" && default_provider != "joycode"
+            && api_profile_id(default_provider).is_none() {
+            return Err("FORGE_DESKTOP_API_PROVIDER_INVALID".into());
+        }
+        if let Some(id) = api_profile_id(default_provider) {
+            if !profiles.iter().any(|row| row.get("id").and_then(Value::as_str) == Some(id)) {
+                return Err("FORGE_DESKTOP_API_PROFILE_NOT_FOUND".into());
+            }
+        }
+        let joycode_model = value.get("joyCodeModel").and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty()).unwrap_or(JOYCODE_DEFAULT_MODEL).trim();
+        if joycode_model.is_empty() || joycode_model.len() > 120 {
+            return Err("FORGE_DESKTOP_JOYCODE_MODEL_INVALID".into());
+        }
+        return Ok(json!({
+            "schemaVersion": LOCAL_API_CONFIG_SCHEMA_VERSION,
+            "defaultProvider": default_provider,
+            "apiProfiles": profiles,
+            "joyCodeModel": joycode_model,
+        }));
+    }
+
+    // One-time read migration from the historical single generic API slot.
+    let legacy_provider = value.get("provider").and_then(Value::as_str).unwrap_or("codex");
+    let endpoint = value.get("endpoint").and_then(Value::as_str).unwrap_or("https://api.openai.com/v1");
+    let model = value.get("model").and_then(Value::as_str).unwrap_or("").trim();
+    let protocol = value.get("apiProtocol").and_then(Value::as_str).unwrap_or("openai");
+    let credential_ref = value.get("credentialRef").and_then(Value::as_str)
+        .map(str::trim).filter(|value| !value.is_empty()).map(str::to_owned);
+    let preserve_legacy_profile = legacy_provider == "api" || !model.is_empty()
+        || credential_ref.is_some();
+    let mut profiles = Vec::new();
+    if preserve_legacy_profile {
+        let host_label = reqwest::Url::parse(endpoint).ok()
+            .and_then(|url| url.host_str().map(str::to_owned))
+            .unwrap_or_else(|| "Compatible API".to_string());
+        profiles.push(normalize_api_profile(&json!({
+            "id": "legacy-api",
+            "label": host_label,
+            "endpoint": endpoint,
+            "model": if model.is_empty() { "model" } else { model },
+            "apiProtocol": protocol,
+            "credentialRef": credential_ref,
+        }))?);
+    }
+    let default_provider = match legacy_provider {
+        "api" if !profiles.is_empty() => "api:legacy-api",
+        "joycode" => "joycode",
+        _ => "codex",
+    };
+    let joycode_model = value.get("joyCodeModel").and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty()).unwrap_or(JOYCODE_DEFAULT_MODEL);
+    Ok(json!({
+        "schemaVersion": LOCAL_API_CONFIG_SCHEMA_VERSION,
+        "defaultProvider": default_provider,
+        "apiProfiles": profiles,
+        "joyCodeModel": joycode_model,
+    }))
+}
+
 fn local_api_config() -> Result<Value, String> {
     let path = local_api_config_path()?;
     let text = match fs::read_to_string(&path) {
         Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(json!({ "provider": "codex", "endpoint": "https://api.openai.com/v1", "model": "", "apiProtocol":"openai", "joyCodeModel":JOYCODE_DEFAULT_MODEL }));
-        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(default_local_api_config()),
         Err(_) => return Err("FORGE_DESKTOP_LOCAL_SETTINGS_READ_FAILED".into()),
     };
-    serde_json::from_str(&text).map_err(|_| "FORGE_DESKTOP_LOCAL_SETTINGS_INVALID".to_string())
+    let value: Value = serde_json::from_str(&text)
+        .map_err(|_| "FORGE_DESKTOP_LOCAL_SETTINGS_INVALID".to_string())?;
+    normalize_local_api_config(value)
 }
 
 fn validated_local_api_endpoint(endpoint: &str) -> Result<String, String> {
@@ -1729,85 +1867,113 @@ fn local_api_endpoint_ready(endpoint: &str, has_key: bool) -> bool {
     loopback || has_key
 }
 
-fn validate_local_api_default_endpoint(provider: &str, endpoint: &str, has_key: bool) -> Result<(), String> {
-    if provider == "api" && !local_api_endpoint_ready(endpoint, has_key) {
-        return Err("FORGE_DESKTOP_API_KEY_MISSING".into());
+fn api_profile_secret_state(profile: &Value) -> Result<(bool, Value), String> {
+    let endpoint = profile.get("endpoint").and_then(Value::as_str).unwrap_or("");
+    if endpoint == ZRO_API_ENDPOINT {
+        return Ok((read_zro_api_key()?.is_some(), Value::String("provider-owned".into())));
     }
-    Ok(())
+    if let Some(credential_ref) = profile.get("credentialRef").and_then(Value::as_str) {
+        managed_credential_matches_endpoint(credential_ref, endpoint)?;
+        let (has_secret, state) = managed_credential_secret_state(credential_ref)?;
+        return Ok((has_secret, Value::String(state.to_string())));
+    }
+    Ok((false, Value::Null))
+}
+
+fn api_profile_from_config<'a>(config: &'a Value, provider: &str) -> Result<&'a Value, String> {
+    let profiles = config.get("apiProfiles").and_then(Value::as_array)
+        .ok_or("FORGE_DESKTOP_LOCAL_SETTINGS_INVALID")?;
+    let profile_id = if provider == "api" {
+        config.get("defaultProvider").and_then(Value::as_str)
+            .and_then(api_profile_id)
+            .or_else(|| profiles.first().and_then(|row| row.get("id")).and_then(Value::as_str))
+    } else {
+        api_profile_id(provider)
+    }.ok_or("FORGE_DESKTOP_API_PROFILE_NOT_FOUND")?;
+    profiles.iter()
+        .find(|row| row.get("id").and_then(Value::as_str) == Some(profile_id))
+        .ok_or_else(|| "FORGE_DESKTOP_API_PROFILE_NOT_FOUND".to_string())
 }
 
 #[tauri::command]
 fn read_local_api_settings() -> Result<Value, String> {
     let config = local_api_config()?;
-    let provider = config.get("provider").and_then(Value::as_str).unwrap_or("codex");
-    let endpoint = config.get("endpoint").and_then(Value::as_str).unwrap_or("https://api.openai.com/v1");
-    let model = config.get("model").and_then(Value::as_str).unwrap_or("");
-    let api_protocol = config.get("apiProtocol").and_then(Value::as_str).unwrap_or("openai");
-    let joycode_model = config.get("joyCodeModel").and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty()).unwrap_or(JOYCODE_DEFAULT_MODEL);
-    let credential_ref = config.get("credentialRef").and_then(Value::as_str)
-        .filter(|value| valid_managed_credential_ref(value));
-    let mut keychain_state = Value::Null;
-    let has_key = if endpoint == ZRO_API_ENDPOINT {
-        read_zro_api_key()?.is_some()
-    } else if let Some(credential_ref) = credential_ref {
-        managed_credential_matches_endpoint(credential_ref, endpoint)?;
-        let (has_secret, state) = managed_credential_secret_state(credential_ref)?;
-        keychain_state = Value::String(state.to_string());
-        has_secret
-    } else {
-        false
-    };
+    let profiles = config.get("apiProfiles").and_then(Value::as_array)
+        .ok_or("FORGE_DESKTOP_LOCAL_SETTINGS_INVALID")?;
+    let mut projected = Vec::with_capacity(profiles.len());
+    for profile in profiles {
+        let (has_key, keychain_state) = api_profile_secret_state(profile)?;
+        let mut row = profile.clone();
+        row["hasKey"] = Value::Bool(has_key);
+        row["keychainState"] = keychain_state;
+        row["endpointReady"] = Value::Bool(local_api_endpoint_ready(
+            profile.get("endpoint").and_then(Value::as_str).unwrap_or(""), has_key
+        ));
+        row["providerId"] = Value::String(api_provider_id(
+            profile.get("id").and_then(Value::as_str).unwrap_or("")
+        ));
+        projected.push(row);
+    }
+    let default_provider = config.get("defaultProvider").and_then(Value::as_str).unwrap_or("codex");
+    let compatibility_provider = if api_profile_id(default_provider).is_some() { "api" } else { default_provider };
+    let compatibility_profile = api_profile_id(default_provider)
+        .and_then(|id| projected.iter().find(|row| row.get("id").and_then(Value::as_str) == Some(id)))
+        .or_else(|| projected.first());
     Ok(json!({
-        "provider": provider,
-        "endpoint": endpoint,
-        "model": model,
-        "apiProtocol": api_protocol,
-        "credentialRef": credential_ref,
-        "joyCodeModel": joycode_model,
+        "schemaVersion": LOCAL_API_CONFIG_SCHEMA_VERSION,
+        "defaultProvider": default_provider,
+        "profiles": projected,
+        "joyCodeModel": config.get("joyCodeModel").and_then(Value::as_str).unwrap_or(JOYCODE_DEFAULT_MODEL),
         "joyCodeReady": read_joycode_session().is_ok(),
-        "hasKey": has_key,
-        "keychainState": keychain_state,
-        "endpointReady": local_api_endpoint_ready(endpoint, has_key),
+
+        // Compatibility projection for the retired React single-slot form.
+        // save_local_api_settings itself accepts only schema-v2 arguments.
+        "provider": compatibility_provider,
+        "endpoint": compatibility_profile.and_then(|row| row.get("endpoint")).and_then(Value::as_str)
+            .unwrap_or("https://api.openai.com/v1"),
+        "model": compatibility_profile.and_then(|row| row.get("model")).and_then(Value::as_str).unwrap_or(""),
+        "apiProtocol": compatibility_profile.and_then(|row| row.get("apiProtocol")).and_then(Value::as_str)
+            .unwrap_or("openai"),
+        "credentialRef": compatibility_profile.and_then(|row| row.get("credentialRef")).cloned().unwrap_or(Value::Null),
+        "hasKey": compatibility_profile.and_then(|row| row.get("hasKey")).and_then(Value::as_bool).unwrap_or(false),
+        "endpointReady": compatibility_profile.and_then(|row| row.get("endpointReady")).and_then(Value::as_bool).unwrap_or(false),
     }))
 }
 
 #[tauri::command]
-fn save_local_api_settings(provider: String, endpoint: String, model: String, credential_ref: Option<String>, api_protocol: Option<String>, joy_code_model: Option<String>) -> Result<Value, String> {
-    if !matches!(provider.as_str(), "codex" | "api" | "joycode") {
-        return Err("FORGE_DESKTOP_API_PROVIDER_INVALID".into());
-    }
-    let endpoint = validated_local_api_endpoint(&endpoint)?;
-    let api_protocol = api_protocol.as_deref().unwrap_or("openai");
-    if !matches!(api_protocol, "openai" | "anthropic" | "responses") {
-        return Err("FORGE_DESKTOP_API_PROTOCOL_INVALID".into());
-    }
-    let model = model.trim();
-    if model.len() > 120 || (provider == "api" && model.is_empty()) {
-        return Err("FORGE_DESKTOP_API_MODEL_INVALID".into());
+fn save_local_api_settings(
+    default_provider: String,
+    profiles: Value,
+    joy_code_model: Option<String>,
+) -> Result<Value, String> {
+    let rows = profiles.as_array().ok_or("FORGE_DESKTOP_API_PROFILES_INVALID")?;
+    if rows.len() > LOCAL_API_PROFILE_LIMIT {
+        return Err("FORGE_DESKTOP_API_PROFILE_LIMIT_EXCEEDED".into());
     }
     let current = local_api_config()?;
     let joycode_model = joy_code_model.as_deref()
         .or_else(|| current.get("joyCodeModel").and_then(Value::as_str))
         .unwrap_or(JOYCODE_DEFAULT_MODEL).trim();
-    if joycode_model.is_empty() || joycode_model.len() > 120 {
-        return Err("FORGE_DESKTOP_JOYCODE_MODEL_INVALID".into());
-    }
-    if provider == "joycode" {
+    let normalized = normalize_local_api_config(json!({
+        "schemaVersion": LOCAL_API_CONFIG_SCHEMA_VERSION,
+        "defaultProvider": default_provider,
+        "apiProfiles": rows,
+        "joyCodeModel": joycode_model,
+    }))?;
+    if normalized.get("defaultProvider").and_then(Value::as_str) == Some("joycode") {
         read_joycode_session()?;
     }
-    let credential_ref = credential_ref.map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty());
-    let has_key = if endpoint == ZRO_API_ENDPOINT {
-        if credential_ref.is_some() { return Err("FORGE_DESKTOP_CREDENTIAL_PROVIDER_OWNED".into()); }
-        read_zro_api_key()?.is_some()
-    } else if let Some(ref credential_ref) = credential_ref {
-        managed_credential_matches_endpoint(credential_ref, &endpoint)?;
-        read_managed_api_credential_secret(credential_ref)?.is_some()
-    } else {
-        false
-    };
-    validate_local_api_default_endpoint(&provider, &endpoint, has_key)?;
+    if let Some(profile_id) = normalized.get("defaultProvider").and_then(Value::as_str).and_then(api_profile_id) {
+        let provider_id = api_provider_id(profile_id);
+        let profile = api_profile_from_config(&normalized, &provider_id)?;
+        let (has_key, _) = api_profile_secret_state(profile)?;
+        if !local_api_endpoint_ready(
+            profile.get("endpoint").and_then(Value::as_str).unwrap_or(""), has_key
+        ) {
+            return Err("FORGE_DESKTOP_API_KEY_MISSING".into());
+        }
+    }
+
     let path = local_api_config_path()?;
     let parent = path.parent().ok_or("FORGE_DESKTOP_LOCAL_SETTINGS_DIR_UNAVAILABLE")?;
     fs::create_dir_all(parent).map_err(|_| "FORGE_DESKTOP_LOCAL_SETTINGS_WRITE_FAILED")?;
@@ -1820,7 +1986,7 @@ fn save_local_api_settings(provider: String, endpoint: String, model: String, cr
         let temp = path.with_extension("json.tmp");
         let mut file = fs::OpenOptions::new().write(true).truncate(true).create(true)
             .mode(0o600).open(&temp).map_err(|_| "FORGE_DESKTOP_LOCAL_SETTINGS_WRITE_FAILED")?;
-        file.write_all(json!({ "provider": provider, "endpoint": endpoint, "model": model, "apiProtocol": api_protocol, "credentialRef": credential_ref, "joyCodeModel": joycode_model }).to_string().as_bytes())
+        file.write_all(normalized.to_string().as_bytes())
             .map_err(|_| "FORGE_DESKTOP_LOCAL_SETTINGS_WRITE_FAILED")?;
         fs::rename(&temp, &path).map_err(|_| "FORGE_DESKTOP_LOCAL_SETTINGS_WRITE_FAILED")?;
     }
@@ -2250,7 +2416,8 @@ fn local_terminal_process_receipt(process_id: &str, query: &Value) -> Option<Val
 }
 
 async fn local_wait_running_process<H: LocalApiHost + Sync>(
-    host: &H, repo_id: &str, checkout_id: Option<&str>,
+    host: &H, session: &mut Option<LocalToolSession>,
+    repo_id: &str, checkout_id: Option<&str>,
     conversation_id: &str, process_id: &str, timeout_ms: u64,
     cancel_receiver: &tokio::sync::watch::Receiver<bool>,
 ) -> Option<Value> {
@@ -2264,7 +2431,7 @@ async fn local_wait_running_process<H: LocalApiHost + Sync>(
         if remaining.is_zero() { return None; }
         let wait_ms = (remaining.as_millis().min(10_000) as u64).max(1);
         let query = run_local_forge_tool(
-            host, repo_id.to_string(), checkout_id.map(str::to_owned),
+            host, session, repo_id.to_string(), checkout_id.map(str::to_owned),
             conversation_id.to_string(), "process_status".to_string(),
             json!({"process_id":process_id,"wait_ms":wait_ms}), false
         ).await.ok()?;
@@ -2406,8 +2573,88 @@ impl LocalApiHost for TauriLocalApiHost {
     }
 }
 
+struct LocalToolSession {
+    _child: tokio::process::Child,
+    stdin: tokio::process::ChildStdin,
+    stdout: tokio::io::BufReader<tokio::process::ChildStdout>,
+    controller_home: String,
+    source_root: String,
+}
+
+impl LocalToolSession {
+    async fn start<H: LocalApiHost + Sync>(host: &H) -> Result<Self, String> {
+        use std::process::Stdio;
+
+        let config = runtime_config()?;
+        let source_root = config.repository_root
+            .filter(|path| PathBuf::from(path).is_absolute())
+            .ok_or("FORGE_DESKTOP_LOCAL_SOURCE_UNAVAILABLE")?;
+        let controller_home = controller_home()?.to_string_lossy().to_string();
+        let dev_script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/forge-local-tool.mjs");
+        let script = if dev_script.is_file() { dev_script } else { host.packaged_tool_script()? };
+        if !script.is_file() {
+            return Err("FORGE_DESKTOP_LOCAL_TOOL_RESOURCE_UNAVAILABLE".to_string());
+        }
+        let bun = dirs::home_dir().map(|home| home.join(".bun/bin/bun"))
+            .filter(|candidate| candidate.is_file()).unwrap_or_else(|| PathBuf::from("bun"));
+        let mut child = tokio::process::Command::new(bun);
+        child.arg(script).arg("--session").kill_on_drop(true)
+            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
+        let mut child = child.spawn()
+            .map_err(|_| "FORGE_DESKTOP_LOCAL_TOOL_RUNNER_UNAVAILABLE")?;
+        let stdin = child.stdin.take().ok_or("FORGE_DESKTOP_LOCAL_TOOL_RUNNER_UNAVAILABLE")?;
+        let stdout = child.stdout.take().ok_or("FORGE_DESKTOP_LOCAL_TOOL_RUNNER_UNAVAILABLE")?;
+        Ok(Self {
+            _child: child,
+            stdin,
+            stdout: tokio::io::BufReader::new(stdout),
+            controller_home,
+            source_root,
+        })
+    }
+
+    async fn call(
+        &mut self,
+        payload: Value,
+        timeout_budget: std::time::Duration,
+        timeout_error: &'static str,
+    ) -> Result<Value, String> {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+        use tokio::time::timeout;
+
+        let bytes = payload.to_string();
+        if bytes.len() > 96 * 1024 {
+            return Err("FORGE_DESKTOP_LOCAL_TOOL_REQUEST_TOO_LARGE".to_string());
+        }
+        self.stdin.write_all(bytes.as_bytes()).await
+            .map_err(|_| "FORGE_DESKTOP_LOCAL_TOOL_DELIVERY_UNKNOWN")?;
+        self.stdin.write_all(b"\n").await
+            .map_err(|_| "FORGE_DESKTOP_LOCAL_TOOL_DELIVERY_UNKNOWN")?;
+        self.stdin.flush().await
+            .map_err(|_| "FORGE_DESKTOP_LOCAL_TOOL_DELIVERY_UNKNOWN")?;
+
+        let mut line = String::new();
+        let bytes_read = timeout(timeout_budget, self.stdout.read_line(&mut line))
+            .await.map_err(|_| timeout_error.to_string())?
+            .map_err(|_| "FORGE_DESKTOP_LOCAL_TOOL_OUTCOME_UNKNOWN")?;
+        if bytes_read == 0 {
+            return Err("FORGE_DESKTOP_LOCAL_TOOL_RUNNER_FAILED".to_string());
+        }
+        if line.len() > 128 * 1024 {
+            return Err("FORGE_DESKTOP_LOCAL_TOOL_RESULT_TOO_LARGE".to_string());
+        }
+        let result: Value = serde_json::from_str(line.trim_end())
+            .map_err(|_| "FORGE_DESKTOP_LOCAL_TOOL_RESULT_INVALID")?;
+        if result.get("ok").and_then(Value::as_bool).is_none() {
+            return Err("FORGE_DESKTOP_LOCAL_TOOL_RESULT_INVALID".to_string());
+        }
+        Ok(result)
+    }
+}
+
 async fn run_local_forge_tool<H: LocalApiHost + Sync>(
     host: &H,
+    session: &mut Option<LocalToolSession>,
     repo_id: String,
     checkout_id: Option<String>,
     conversation_id: String,
@@ -2415,73 +2662,25 @@ async fn run_local_forge_tool<H: LocalApiHost + Sync>(
     arguments: Value,
     allow_effects: bool,
 ) -> Result<Value, String> {
-    use std::process::Stdio;
-    use tokio::{io::AsyncWriteExt, process::Command, time::timeout};
-        let config = runtime_config()?;
-        let source_root = config.repository_root
-            .filter(|path| PathBuf::from(path).is_absolute())
-            .ok_or("FORGE_DESKTOP_LOCAL_SOURCE_UNAVAILABLE")?;
-        let home = controller_home()?;
-        // Source checkout is authoritative for this installed Forge instance;
-        // the Desktop does not install/activate a second Runtime release.
-        let dev_script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/forge-local-tool.mjs");
-        let script = if dev_script.is_file() {
-            dev_script
-        } else {
-            host.packaged_tool_script()?
-        };
-        if !script.is_file() {
-            return Err("FORGE_DESKTOP_LOCAL_TOOL_RESOURCE_UNAVAILABLE".to_string());
-        }
-        let home_bun = dirs::home_dir()
-            .map(|home| home.join(".bun/bin/bun"))
-            .filter(|candidate| candidate.is_file());
-        let bun = home_bun.unwrap_or_else(|| PathBuf::from("bun"));
-        let tool_timeout = local_tool_execution_timeout(&tool_name, &arguments);
-        let arguments = prepare_local_tool_arguments(&tool_name, arguments)?;
-        let payload = json!({
-            "controllerHome": home.to_string_lossy(),
-            "sourceRoot": source_root,
-            "repoId": repo_id,
-            "checkoutId": checkout_id,
-            "conversationId": conversation_id,
-            "tool": tool_name,
-            "arguments": arguments,
-            "allowEffects": allow_effects,
-        });
-        let bytes = payload.to_string();
-        if bytes.len() > 96 * 1024 {
-            return Err("FORGE_DESKTOP_LOCAL_TOOL_REQUEST_TOO_LARGE".to_string());
-        }
-        let mut child = Command::new(bun);
-        child.arg(script).kill_on_drop(true)
-            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
-        let mut child = child.spawn()
-            .map_err(|_| "FORGE_DESKTOP_LOCAL_TOOL_RUNNER_UNAVAILABLE")?;
-        if let Some(mut stdin) = child.stdin.take() {
-            stdin.write_all(bytes.as_bytes()).await
-                .map_err(|_| "FORGE_DESKTOP_LOCAL_TOOL_DELIVERY_UNKNOWN")?;
-        }
-        // A lost or unresponsive tool process cannot hold the GUI's worker
-        // indefinitely. Drop kills the child; effect outcomes remain unknown
-        // until the single Forge Process authority is inspected.
-        let completed = timeout(tool_timeout, child.wait_with_output())
-            .await.map_err(|_| local_tool_timeout_error(&tool_name))?
-            .map_err(|_| "FORGE_DESKTOP_LOCAL_TOOL_OUTCOME_UNKNOWN")?;
-        if !completed.status.success() {
-            return Err("FORGE_DESKTOP_LOCAL_TOOL_RUNNER_FAILED".to_string());
-        }
-        if completed.stdout.len() > 128 * 1024 {
-            return Err("FORGE_DESKTOP_LOCAL_TOOL_RESULT_TOO_LARGE".to_string());
-        }
-        let result: Value = serde_json::from_slice(&completed.stdout)
-            .map_err(|_| "FORGE_DESKTOP_LOCAL_TOOL_RESULT_INVALID")?;
-        if result.get("ok").and_then(Value::as_bool).is_none() {
-            return Err("FORGE_DESKTOP_LOCAL_TOOL_RESULT_INVALID".to_string());
-        }
-        Ok(result)
+    let tool_timeout = local_tool_execution_timeout(&tool_name, &arguments);
+    let timeout_error = local_tool_timeout_error(&tool_name);
+    let arguments = prepare_local_tool_arguments(&tool_name, arguments)?;
+    if session.is_none() {
+        *session = Some(LocalToolSession::start(host).await?);
+    }
+    let tool_session = session.as_mut().ok_or("FORGE_DESKTOP_LOCAL_TOOL_RUNNER_UNAVAILABLE")?;
+    let payload = json!({
+        "controllerHome": &tool_session.controller_home,
+        "sourceRoot": &tool_session.source_root,
+        "repoId": repo_id,
+        "checkoutId": checkout_id,
+        "conversationId": conversation_id,
+        "tool": tool_name,
+        "arguments": arguments,
+        "allowEffects": allow_effects,
+    });
+    tool_session.call(payload, tool_timeout, timeout_error).await
 }
-
 
 // Provider-specific tool-call envelope parsing. Execution remains a single
 // canonical Forge path independent of the remote model protocol.
@@ -2752,27 +2951,31 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
     repository_effect_access: bool,
     cancel_receiver: &mut tokio::sync::watch::Receiver<bool>,
 ) -> Result<Value, String> {
-    // The saved provider is a new-session default. The thread provider is
-    // passed explicitly so changing defaults never redirects an existing thread.
-    let config = read_local_api_settings()?;
-    let provider = provider_override.as_deref()
-        .unwrap_or_else(|| config.get("provider").and_then(Value::as_str).unwrap_or("api"));
-    if !matches!(provider, "api" | "joycode") {
+    // The saved default only selects new conversations. Existing threads carry
+    // a stable provider/profile identity so editing defaults cannot redirect them.
+    let config = local_api_config()?;
+    let requested_provider = provider_override.as_deref()
+        .unwrap_or_else(|| config.get("defaultProvider").and_then(Value::as_str).unwrap_or("codex"));
+    let resolved_provider = if requested_provider == "api" {
+        let profile = api_profile_from_config(&config, "api")?;
+        api_provider_id(profile.get("id").and_then(Value::as_str).unwrap_or(""))
+    } else {
+        requested_provider.to_string()
+    };
+    if resolved_provider != "joycode" && api_profile_id(&resolved_provider).is_none() {
         return Err("FORGE_DESKTOP_API_PROVIDER_INVALID".into());
     }
-    let (endpoint, protocol, key, joycode_session, configured_model) = if provider == "joycode" {
+
+    let (endpoint, protocol, key, joycode_session, configured_model) = if resolved_provider == "joycode" {
         let session = read_joycode_session()?;
         let model = config.get("joyCodeModel").and_then(Value::as_str)
             .filter(|value| !value.trim().is_empty()).unwrap_or(JOYCODE_DEFAULT_MODEL);
-        (JOYCODE_COLOR_GATEWAY_ORIGIN.to_string(), "openai", None, Some(session), model)
+        (JOYCODE_COLOR_GATEWAY_ORIGIN.to_string(), "openai", None, Some(session), model.to_string())
     } else {
-        let endpoint = validated_local_api_endpoint(
-            config.get("endpoint").and_then(Value::as_str).unwrap_or("")
-        )?;
-        let protocol = config.get("apiProtocol").and_then(Value::as_str).unwrap_or("openai");
-        if !matches!(protocol, "openai" | "anthropic" | "responses") {
-            return Err("FORGE_DESKTOP_API_PROTOCOL_INVALID".into());
-        }
+        let profile = api_profile_from_config(&config, &resolved_provider)?;
+        let endpoint = profile.get("endpoint").and_then(Value::as_str)
+            .ok_or("FORGE_DESKTOP_API_ENDPOINT_INVALID")?.to_string();
+        let protocol = profile.get("apiProtocol").and_then(Value::as_str).unwrap_or("openai");
         let endpoint_url = reqwest::Url::parse(&endpoint)
             .map_err(|_| "FORGE_DESKTOP_API_ENDPOINT_INVALID")?;
         let local = matches!(
@@ -2784,7 +2987,7 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
         } else if local {
             None
         } else {
-            let credential_ref = config.get("credentialRef").and_then(Value::as_str)
+            let credential_ref = profile.get("credentialRef").and_then(Value::as_str)
                 .filter(|value| valid_managed_credential_ref(value))
                 .ok_or("FORGE_DESKTOP_CREDENTIAL_REF_REQUIRED")?;
             managed_credential_matches_endpoint(credential_ref, &endpoint)?;
@@ -2795,10 +2998,10 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
             read_managed_api_credential_secret(credential_ref)?
         };
         if key.is_none() && !local { return Err("FORGE_DESKTOP_API_KEY_MISSING".into()); }
-        let model = config.get("model").and_then(Value::as_str).unwrap_or("");
+        let model = profile.get("model").and_then(Value::as_str).unwrap_or("").to_string();
         (endpoint, protocol, key, None, model)
     };
-    let model = model_override.as_deref().unwrap_or(configured_model).trim();
+    let model = model_override.as_deref().unwrap_or(&configured_model).trim();
     if model.is_empty() || model.len() > 120 {
         return Err("FORGE_DESKTOP_API_MODEL_INVALID".into());
     }
@@ -2832,6 +3035,7 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
         .redirect(reqwest::redirect::Policy::none())
         .build().map_err(|_| "FORGE_DESKTOP_API_CLIENT_FAILED")?;
     let available_tools = if repo_id.is_some() { local_tool_catalog(repository_effect_access) } else { Vec::new() };
+    let mut local_tool_session: Option<LocalToolSession> = None;
     let system_instruction = if let Some(id) = repo_id.as_ref() {
         let checkout = checkout_id.as_deref().unwrap_or("unbound (read-only)");
         let access_mode = local_api_access_mode_instruction(repository_effect_access);
@@ -3001,7 +3205,7 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
                 "requestId": effect_request_id, "toolCallId": id,
             }));
             let tool_result = run_local_forge_tool(
-                host, repo_id.clone().unwrap_or_default(), checkout_id.clone(),
+                host, &mut local_tool_session, repo_id.clone().unwrap_or_default(), checkout_id.clone(),
                 conversation_id.clone(), name.clone(), args, repository_effect_access
             ).await;
             let result = match tool_result {
@@ -3030,7 +3234,8 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
                         "processId":process_id, "requestId":effect_request_id, "toolCallId":id
                     }));
                     match local_wait_running_process(
-                        host, repo_id.as_deref().unwrap_or_default(), checkout_id.as_deref(),
+                        host, &mut local_tool_session,
+                        repo_id.as_deref().unwrap_or_default(), checkout_id.as_deref(),
                         &conversation_id, process_id, command_budget_ms, cancel_receiver
                     ).await {
                         Some(terminal) => terminal,
@@ -3135,7 +3340,7 @@ async fn send_local_api_conversation(
     };
     let host = TauriLocalApiHost { app };
     let provider = provider.unwrap_or_else(|| "api".to_string());
-    if !matches!(provider.as_str(), "api" | "joycode") {
+    if provider != "api" && provider != "joycode" && api_profile_id(&provider).is_none() {
         return Err("FORGE_DESKTOP_API_PROVIDER_INVALID".into());
     }
     let repository_effect_access = resolve_repository_effect_access(repo_id.as_deref(), checkout_id.as_deref()).await?;
@@ -3834,11 +4039,38 @@ mod tests {
     }
 
     #[test]
-    fn api_default_provider_requires_ready_endpoint_but_codex_allows_backup_profile() {
-        assert!(validate_local_api_default_endpoint("api", "https://api.example.com/v1", false).is_err());
-        assert!(validate_local_api_default_endpoint("api", "https://api.example.com/v1", true).is_ok());
-        assert!(validate_local_api_default_endpoint("api", "http://127.0.0.1:11434/v1", false).is_ok());
-        assert!(validate_local_api_default_endpoint("codex", "https://api.example.com/v1", false).is_ok());
+    fn api_profile_schema_migrates_single_slot_and_supports_multiple_profiles() {
+        let legacy = normalize_local_api_config(json!({
+            "provider":"api",
+            "endpoint":"https://api.example.com/v1",
+            "model":"legacy-model",
+            "apiProtocol":"openai",
+            "joyCodeModel":"JoyAI-Code-1.6"
+        })).unwrap();
+        assert_eq!(legacy["schemaVersion"], LOCAL_API_CONFIG_SCHEMA_VERSION);
+        assert_eq!(legacy["defaultProvider"], "api:legacy-api");
+        assert_eq!(legacy["apiProfiles"][0]["id"], "legacy-api");
+        assert_eq!(legacy["apiProfiles"][0]["model"], "legacy-model");
+
+        let multi = normalize_local_api_config(json!({
+            "schemaVersion":2,
+            "defaultProvider":"api:deepseek",
+            "apiProfiles":[
+                {
+                    "id":"deepseek","label":"DeepSeek","endpoint":"https://api.deepseek.com",
+                    "model":"deepseek-flash","apiProtocol":"openai"
+                },
+                {
+                    "id":"openai","label":"OpenAI","endpoint":"https://api.openai.com/v1",
+                    "model":"gpt-test","apiProtocol":"responses"
+                }
+            ],
+            "joyCodeModel":"JoyAI-Code-1.6"
+        })).unwrap();
+        assert_eq!(multi["apiProfiles"].as_array().unwrap().len(),2);
+        assert_eq!(api_profile_from_config(&multi,"api:deepseek").unwrap()["model"],"deepseek-flash");
+        assert_eq!(api_profile_from_config(&multi,"api:openai").unwrap()["apiProtocol"],"responses");
+        assert!(api_profile_from_config(&multi,"api:missing").is_err());
     }
 
     #[test]

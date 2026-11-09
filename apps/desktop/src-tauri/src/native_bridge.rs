@@ -181,11 +181,8 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
             ).await,
         "read_local_api_settings" => read_local_api_settings(),
         "save_local_api_settings" => save_local_api_settings(
-            required(args,"provider")?,
-            required(args,"endpoint")?,
-            args.get("model").and_then(Value::as_str).unwrap_or("").to_string(),
-            args.get("credentialRef").and_then(Value::as_str).map(str::to_owned),
-            args.get("apiProtocol").and_then(Value::as_str).map(str::to_owned),
+            required(args,"defaultProvider")?,
+            args.get("profiles").cloned().unwrap_or_else(|| json!([])),
             args.get("joyCodeModel").and_then(Value::as_str).map(str::to_owned),
         ),
         "managed_api_credential_control" => managed_api_credential_control(
@@ -233,7 +230,11 @@ fn parse_api_turn_request(value: &Value) -> Result<NativeApiTurnRequest, String>
     let checkout_id = value.get("checkoutId").and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty()).map(str::to_owned);
     let provider = value.get("provider").and_then(Value::as_str).unwrap_or("api");
-    if !matches!(provider, "api" | "joycode") {
+    let valid_api_profile = provider.strip_prefix("api:").is_some_and(|profile_id| {
+        !profile_id.is_empty() && profile_id.len() <= 64
+            && profile_id.chars().all(|char| char.is_ascii_alphanumeric() || "._-".contains(char))
+    });
+    if !matches!(provider, "api" | "joycode") && !valid_api_profile {
         return Err("FORGE_NATIVE_API_PROVIDER_INVALID".into());
     }
     let allow_effects = match value.get("allowEffects") {

@@ -150,7 +150,7 @@ final class NativeWorkspaceTests: XCTestCase {
     }
 
     @MainActor
-    func testProviderIsThreadOwnedAndLegacyHistoryStaysCodex() throws {
+    func testProviderProfileIsThreadOwnedAndCanSwitchAfterHistory() throws {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let store = folder.appendingPathComponent("conversations.json")
         defer { try? FileManager.default.removeItem(at:folder) }
@@ -159,16 +159,20 @@ final class NativeWorkspaceTests: XCTestCase {
             provider:"api",endpoint:"https://api.example.com/v1",model:"model-a",
             apiProtocol:"openai",hasKey:true,endpointReady:true
         )
-        XCTAssertEqual(model.selectedProvider,"api")
-        model.selectThreadProvider("api")
-        XCTAssertEqual(model.thread?.provider,"api")
+        XCTAssertEqual(model.selectedProvider,"api:legacy-api")
+        model.selectThreadProvider("api:legacy-api")
+        XCTAssertEqual(model.thread?.provider,"api:legacy-api")
         model.threads[0].messages.append(ChatMessage(role:"user",text:"hello"))
+
         model.selectThreadProvider("codex")
-        XCTAssertEqual(model.thread?.provider,"api")
+        XCTAssertEqual(model.thread?.provider,"codex")
+        model.selectThreadProvider("api:legacy-api")
+        XCTAssertEqual(model.thread?.provider,"api:legacy-api")
+
         model.persist()
         let restored = NativeWorkspace(store:store)
-        XCTAssertEqual(restored.thread?.provider,"api")
-        XCTAssertEqual(restored.selectedProvider,"api")
+        XCTAssertEqual(restored.thread?.provider,"api:legacy-api")
+        XCTAssertEqual(restored.selectedProvider,"api:legacy-api")
 
         restored.threads[0].provider = nil
         XCTAssertEqual(restored.selectedProvider,"codex")
@@ -612,21 +616,39 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(result?.items.first?.memory.scope.kind,"project")
     }
 
-    func testSavedApiProfileProjectionAndOneShotBridgeBoundary() {
+    func testSavedApiProfileProjectionAndBridgeBoundary() {
         let settings = NativeWorkspace.localApiSettingsDetail([
-            "provider":"api","endpoint":"https://api.example.com/v1",
-            "model":"model-a","apiProtocol":"openai","credentialRef":"cred_fixture","hasKey":true,"endpointReady":true
+            "schemaVersion":2,
+            "defaultProvider":"api:deepseek",
+            "profiles":[
+                [
+                    "id":"deepseek","providerId":"api:deepseek","label":"DeepSeek",
+                    "endpoint":"https://api.deepseek.com","model":"deepseek-flash",
+                    "apiProtocol":"openai","credentialRef":"cred_fixture",
+                    "hasKey":true,"endpointReady":true
+                ],
+                [
+                    "id":"openai","providerId":"api:openai","label":"OpenAI",
+                    "endpoint":"https://api.openai.com/v1","model":"gpt-test",
+                    "apiProtocol":"responses","hasKey":true,"endpointReady":true
+                ]
+            ],
+            "joyCodeModel":"JoyAI-Code-1.6","joyCodeReady":false
         ])
+        XCTAssertEqual(settings?.schemaVersion,2)
+        XCTAssertEqual(settings?.defaultProvider,"api:deepseek")
+        XCTAssertEqual(settings?.profiles.count,2)
+        XCTAssertEqual(settings?.profile(providerId:"api:deepseek")?.model,"deepseek-flash")
+        XCTAssertEqual(settings?.profile(providerId:"api:openai")?.apiProtocol,"responses")
         XCTAssertEqual(settings?.provider,"api")
-        XCTAssertEqual(settings?.endpoint,"https://api.example.com/v1")
-        XCTAssertEqual(settings?.model,"model-a")
-        XCTAssertEqual(settings?.apiProtocol,"openai")
+        XCTAssertEqual(settings?.endpoint,"https://api.deepseek.com")
         XCTAssertEqual(settings?.credentialRef,"cred_fixture")
         XCTAssertEqual(settings?.hasKey,true)
         XCTAssertEqual(settings?.endpointReady,true)
         XCTAssertEqual(settings?.joyCodeModel,"JoyAI-Code-1.6")
         XCTAssertEqual(settings?.joyCodeReady,false)
         XCTAssertFalse(ForgeBridge.allowed.contains("send_local_api_conversation"))
+
         let credential = NativeWorkspace.managedCredentialDetail([
             "credentialRef":"cred_fixture",
             "label":"Fixture",

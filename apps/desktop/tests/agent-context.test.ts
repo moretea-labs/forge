@@ -150,7 +150,8 @@ describe('Forge Desktop Agent thread identity', () => {
       const codexDefault = renderHistory([api, codex], 'codex');
       expect(codexDefault).toContain('Continue API task');
       expect(codexDefault).toContain('发送时校验钥匙串');
-      expect(codexDefault).toContain('允许本轮编辑文件和执行命令');
+      expect(codexDefault).toContain('Checkout 未核实，暂时禁止执行');
+      expect(codexDefault).not.toContain('允许本轮编辑文件和执行命令');
       const nav = localConversationNavItems([codex, api], {});
       expect(nav.map((item) => item.provider).sort()).toEqual(['api', 'codex']);
       expect(nav.map((item) => item.title).sort()).toEqual(['API task', 'Codex task']);
@@ -388,7 +389,8 @@ describe('Forge Desktop Agent thread identity', () => {
       expect(html).toContain('aria-label="Agent 项目上下文"');
       expect(html).toContain('aria-label="Agent 执行的 Git Checkout"');
       expect(html).not.toContain('aria-label="会话关联的 Forge Work"');
-      expect(html).toContain('aria-label="允许本轮编辑文件和执行命令"');
+      expect(html).toContain('Checkout 未核实，暂时禁止执行');
+      expect(html).not.toContain('aria-label="允许本轮编辑文件和执行命令"');
       expect(html).toContain('aria-label="发送消息"');
       expect((html.match(/class="local-send-button"/g) ?? [])).toHaveLength(1);
       expect(html).not.toContain('aria-label="请求停止当前 Agent 回复"');
@@ -441,6 +443,33 @@ describe('Forge Desktop Agent thread identity', () => {
     expect(JSON.parse(output)).toEqual({
       ok: false, error: 'LOCAL_FORGE_EFFECT_CHECKOUT_REQUIRED',
     });
+  });
+
+
+  test('local Agent Harness reuses one direct tool session for multiple tool calls', async () => {
+    const script = new URL('../src-tauri/resources/forge-local-tool.mjs', import.meta.url).pathname;
+    const runner = Bun.spawn([process.execPath, script, '--session'], { stdin: 'pipe', stdout: 'pipe' });
+    const requests = [
+      {
+        tool: 'git_commit', repoId: 'repo_forge', checkoutId: 'checkout_forge',
+        conversationId: 'conv_session', controllerHome: '/does-not-exist', sourceRoot: '/does-not-exist',
+        allowEffects: false, arguments: { message: 'fix: test', paths: ['src/file.ts'] },
+      },
+      {
+        tool: 'run_command', repoId: 'repo_forge', conversationId: 'conv_session',
+        controllerHome: '/does-not-exist', sourceRoot: '/does-not-exist',
+        allowEffects: true, arguments: { command: ['git', 'status'] },
+      },
+    ];
+    runner.stdin.write(requests.map((request) => JSON.stringify(request)).join('\n') + '\n');
+    runner.stdin.end();
+    const output = await new Response(runner.stdout).text();
+    expect(await runner.exited).toBe(0);
+    const responses = output.trim().split('\n').map((line) => JSON.parse(line));
+    expect(responses).toEqual([
+      { ok: false, error: 'LOCAL_FORGE_TOOL_REQUIRES_USER_APPROVAL' },
+      { ok: false, error: 'LOCAL_FORGE_EFFECT_CHECKOUT_REQUIRED' },
+    ]);
   });
 
   test('failed project read reports the selected project failure rather than showing stale semantic records', () => {

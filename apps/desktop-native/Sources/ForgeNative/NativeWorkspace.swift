@@ -362,17 +362,41 @@ struct ManagedApiCredentialDetail: Identifiable, Equatable {
     var id: String { credentialRef }
 }
 
-struct LocalApiSettingsDetail {
-    let provider: String
+struct ApiProviderProfileDetail: Identifiable, Equatable {
+    let id: String
+    let providerId: String
+    let label: String
     let endpoint: String
     let model: String
     let apiProtocol: String
     let credentialRef: String?
     let hasKey: Bool
     let endpointReady: Bool
+}
+
+struct LocalApiSettingsDetail {
+    let schemaVersion: Int
+    let defaultProvider: String
+    let profiles: [ApiProviderProfileDetail]
     let joyCodeModel: String
     let joyCodeReady: Bool
 
+    init(
+        schemaVersion:Int = 2,
+        defaultProvider:String,
+        profiles:[ApiProviderProfileDetail],
+        joyCodeModel:String = "JoyAI-Code-1.6",
+        joyCodeReady:Bool = false
+    ) {
+        self.schemaVersion=schemaVersion
+        self.defaultProvider=defaultProvider
+        self.profiles=profiles
+        self.joyCodeModel=joyCodeModel
+        self.joyCodeReady=joyCodeReady
+    }
+
+    // Test/backward-construction compatibility only. Persisted settings use
+    // schema v2 profiles and never write the historical single-slot shape.
     init(
         provider:String,
         endpoint:String,
@@ -384,18 +408,37 @@ struct LocalApiSettingsDetail {
         joyCodeModel:String = "JoyAI-Code-1.6",
         joyCodeReady:Bool = false
     ) {
-        self.provider = provider
-        self.endpoint = endpoint
-        self.model = model
-        self.apiProtocol = apiProtocol
-        self.credentialRef = credentialRef
-        self.hasKey = hasKey
-        self.endpointReady = endpointReady
-        self.joyCodeModel = joyCodeModel
-        self.joyCodeReady = joyCodeReady
+        let profile=ApiProviderProfileDetail(
+            id:"legacy-api",providerId:"api:legacy-api",label:"Compatible API",
+            endpoint:endpoint,model:model,apiProtocol:apiProtocol,credentialRef:credentialRef,
+            hasKey:hasKey,endpointReady:endpointReady
+        )
+        self.init(
+            defaultProvider:provider == "api" ? profile.providerId : provider,
+            profiles:[profile],joyCodeModel:joyCodeModel,joyCodeReady:joyCodeReady
+        )
     }
-}
 
+    func profile(providerId:String) -> ApiProviderProfileDetail? {
+        if providerId == "api" {
+            if let selectedId=defaultProvider.split(separator:":",maxSplits:1).dropFirst().first {
+                return profiles.first { $0.id == String(selectedId) }
+            }
+            return profiles.first
+        }
+        guard providerId.hasPrefix("api:") else { return nil }
+        return profiles.first { $0.providerId == providerId }
+    }
+    var defaultApiProfile: ApiProviderProfileDetail? { profile(providerId:defaultProvider) ?? profiles.first }
+    // Compatibility projections are read-only; no writer persists the old shape.
+    var provider:String { defaultProvider.hasPrefix("api:") ? "api" : defaultProvider }
+    var endpoint:String { defaultApiProfile?.endpoint ?? "https://api.openai.com/v1" }
+    var model:String { defaultApiProfile?.model ?? "" }
+    var apiProtocol:String { defaultApiProfile?.apiProtocol ?? "openai" }
+    var credentialRef:String? { defaultApiProfile?.credentialRef }
+    var hasKey:Bool { defaultApiProfile?.hasKey ?? false }
+    var endpointReady:Bool { defaultApiProfile?.endpointReady ?? false }
+}
 struct RepositoryCheckoutContext {
     let checkoutId: String?
     let checkoutRoot: URL?
@@ -570,14 +613,21 @@ final class NativeWorkspace: ObservableObject {
         }
     }
     var selectedProvider: String {
-        if let provider = thread?.provider { return provider }
+        if let provider = thread?.provider {
+            if provider == "api" {
+                return localApiSettings?.defaultApiProfile?.providerId ?? "api"
+            }
+            return provider
+        }
         if thread?.messages.isEmpty == false { return "codex" }
-        return localApiSettings?.provider ?? "codex"
+        return localApiSettings?.defaultProvider ?? "codex"
+    }
+    var selectedApiProfile: ApiProviderProfileDetail? {
+        localApiSettings?.profile(providerId:selectedProvider)
     }
     var apiProfileReady: Bool {
-        guard let settings = localApiSettings else { return false }
-        return settings.endpointReady
-            && !settings.model.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty
+        guard let profile = localApiSettings?.defaultApiProfile else { return false }
+        return profile.endpointReady && !profile.model.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty
     }
     var joyCodeProfileReady: Bool {
         guard let settings = localApiSettings else { return false }
@@ -585,8 +635,8 @@ final class NativeWorkspace: ObservableObject {
             && !settings.joyCodeModel.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty
     }
     var selectedProviderReady: Bool {
-        if selectedProvider == "api" {
-            return localApiSettings?.endpointReady == true && !selectedApiModel.isEmpty
+        if selectedProvider.hasPrefix("api:") || selectedProvider == "api" {
+            return selectedApiProfile?.endpointReady == true && !selectedApiModel.isEmpty
         }
         if selectedProvider == "joycode" {
             return localApiSettings?.joyCodeReady == true && !selectedApiModel.isEmpty
@@ -605,11 +655,11 @@ final class NativeWorkspace: ObservableObject {
             if !checkoutIsAvailable { return "checkout 不可用，请切换到有效的工作区。" }
         }
         if !selectedProviderReady {
-            switch selectedProvider {
-            case "joycode": return "JoyCode 未就绪，请检查登录与模型配置。"
-            case "api": return "兼容 API 未就绪，请检查 Endpoint、Key 和模型。"
-            default: return "Codex 未就绪，请刷新 Provider 状态。"
+            if selectedProvider == "joycode" { return "JoyCode 未就绪，请检查登录与模型配置。" }
+            if Self.matchesExternalProvider(selectedProvider) {
+                return "API Provider 未就绪，请检查 Profile、Endpoint、Key 和模型。"
             }
+            return "Codex 未就绪，请刷新 Provider 状态。"
         }
         if !pendingImageURLs.isEmpty && !selectedProviderSupportsImages {
             return "当前模型不支持图片输入，请移除图片后发送。"
@@ -622,7 +672,7 @@ final class NativeWorkspace: ObservableObject {
         if selectedProvider == "joycode" {
             return localApiSettings?.joyCodeModel.trimmingCharacters(in:.whitespacesAndNewlines) ?? ""
         }
-        return localApiSettings?.model.trimmingCharacters(in:.whitespacesAndNewlines) ?? ""
+        return selectedApiProfile?.model.trimmingCharacters(in:.whitespacesAndNewlines) ?? ""
     }
     var selectedProviderSupportsImages: Bool {
         selectedProvider == "codex" && imageInputAvailable
@@ -668,16 +718,15 @@ final class NativeWorkspace: ObservableObject {
             self.error = "请先停止正在运行的会话。"
             return
         }
-        let provider = providerOverride ?? localApiSettings?.provider
+        let provider = providerOverride ?? localApiSettings?.defaultProvider
+        let profile = provider.flatMap { localApiSettings?.profile(providerId:$0) }
         let item = ChatThread(
             repoId:repoId,
             checkoutId:checkoutId,
             requirementId:requirementId,
             planId:planId,
             provider:provider,
-            model:provider == "api"
-                ? localApiSettings?.model
-                : (provider == "joycode" ? localApiSettings?.joyCodeModel : nil)
+            model:profile?.model ?? (provider == "joycode" ? localApiSettings?.joyCodeModel : nil)
         )
         threads.insert(item, at:0)
         // A new conversation must be immediately visible, even when launched
@@ -780,21 +829,26 @@ final class NativeWorkspace: ObservableObject {
     }
     func selectThreadProvider(_ value: String) {
         guard !busy, matchesProvider(value),
-              let index = threads.firstIndex(where:{$0.id == selectedThreadId}),
-              threads[index].messages.isEmpty else { return }
-        if value == "api" && !apiProfileReady {
-            self.error = "请先在设置中完成可用的 API Endpoint、必要的 API Key 与模型配置。"
-            return
-        }
+              let index = threads.firstIndex(where:{$0.id == selectedThreadId}) else { return }
         if value == "joycode" && !joyCodeProfileReady {
             self.error = "请先登录本机 JoyCode，并确认 JoyCode 模型配置可用。"
             return
         }
+        if value.hasPrefix("api:") {
+            guard let profile=localApiSettings?.profile(providerId:value), profile.endpointReady else {
+                self.error = "请先在设置中完成这个 API Profile 的 Endpoint、Key 与模型配置。"
+                return
+            }
+            threads[index].model=profile.model
+        } else if value == "joycode" {
+            threads[index].model=localApiSettings?.joyCodeModel
+        } else {
+            threads[index].model=nil
+        }
+        // Provider switching is explicit thread intent and is valid after a
+        // conversation has started. Preserve Codex session identity so
+        // switching back can resume it; API providers use bounded history.
         threads[index].provider = value
-        threads[index].providerSessionId = nil
-        threads[index].model = value == "api"
-            ? localApiSettings?.model
-            : (value == "joycode" ? localApiSettings?.joyCodeModel : nil)
         threads[index].reasoningEffort = nil
         threads[index].updatedAt = Date()
         pendingImageURLs = []
@@ -803,11 +857,12 @@ final class NativeWorkspace: ObservableObject {
     }
 
     private func matchesProvider(_ value:String) -> Bool {
-        value == "codex" || Self.matchesExternalProvider(value)
+        if value == "codex" || value == "joycode" { return true }
+        return value.hasPrefix("api:") && localApiSettings?.profile(providerId:value) != nil
     }
 
     nonisolated static func matchesExternalProvider(_ value:String) -> Bool {
-        value == "api" || value == "joycode"
+        value == "joycode" || value == "api" || value.hasPrefix("api:")
     }
 
     func selectAgentModel(_ slug: String) {
@@ -1813,16 +1868,26 @@ final class NativeWorkspace: ObservableObject {
     }
 
     nonisolated static func localApiSettingsDetail(_ result:[String:Any]) -> LocalApiSettingsDetail? {
-        guard let provider = result["provider"] as? String,
-              let endpoint = result["endpoint"] as? String,
-              let model = result["model"] as? String,
-              let apiProtocol = result["apiProtocol"] as? String else { return nil }
+        guard let defaultProvider=result["defaultProvider"] as? String,
+              let rows=result["profiles"] as? [[String:Any]] else { return nil }
+        let profiles=rows.compactMap { row -> ApiProviderProfileDetail? in
+            guard let id=row["id"] as? String,
+                  let providerId=row["providerId"] as? String,
+                  let label=row["label"] as? String,
+                  let endpoint=row["endpoint"] as? String,
+                  let model=row["model"] as? String,
+                  let apiProtocol=row["apiProtocol"] as? String else { return nil }
+            return ApiProviderProfileDetail(
+                id:id,providerId:providerId,label:label,endpoint:endpoint,model:model,
+                apiProtocol:apiProtocol,credentialRef:row["credentialRef"] as? String,
+                hasKey:row["hasKey"] as? Bool == true,
+                endpointReady:row["endpointReady"] as? Bool == true
+            )
+        }
+        guard profiles.count == rows.count else { return nil }
         return LocalApiSettingsDetail(
-            provider:provider, endpoint:endpoint, model:model,
-            apiProtocol:apiProtocol,
-            credentialRef:result["credentialRef"] as? String,
-            hasKey:result["hasKey"] as? Bool == true,
-            endpointReady:result["endpointReady"] as? Bool == true,
+            schemaVersion:(result["schemaVersion"] as? Int) ?? 2,
+            defaultProvider:defaultProvider,profiles:profiles,
             joyCodeModel:(result["joyCodeModel"] as? String) ?? "JoyAI-Code-1.6",
             joyCodeReady:result["joyCodeReady"] as? Bool == true
         )
@@ -1886,34 +1951,49 @@ final class NativeWorkspace: ObservableObject {
     }
 
     func saveLocalApiSettings(
-        provider:String,
-        endpoint:String,
-        model:String,
-        apiProtocol:String,
-        credentialRef:String?,
+        defaultProvider:String,
+        profiles:[ApiProviderProfileDetail],
         joyCodeModel:String
     ) async -> Bool {
         guard !settingsLoading else { return false }
         settingsLoading = true
         defer { settingsLoading = false }
         do {
-            var arguments: [String:Any] = [
-                "provider":provider,
-                "endpoint":endpoint.trimmingCharacters(in:.whitespacesAndNewlines),
-                "model":model.trimmingCharacters(in:.whitespacesAndNewlines),
-                "apiProtocol":apiProtocol,
+            let rows:[[String:Any]]=profiles.map { profile in
+                var row:[String:Any] = [
+                    "id":profile.id,
+                    "label":profile.label.trimmingCharacters(in:.whitespacesAndNewlines),
+                    "endpoint":profile.endpoint.trimmingCharacters(in:.whitespacesAndNewlines),
+                    "model":profile.model.trimmingCharacters(in:.whitespacesAndNewlines),
+                    "apiProtocol":profile.apiProtocol
+                ]
+                if let credentialRef=profile.credentialRef, !credentialRef.isEmpty {
+                    row["credentialRef"]=credentialRef
+                }
+                return row
+            }
+            let value = try await ForgeBridge.request("save_local_api_settings",[
+                "defaultProvider":defaultProvider,
+                "profiles":rows,
                 "joyCodeModel":joyCodeModel.trimmingCharacters(in:.whitespacesAndNewlines)
-            ]
-            if let credentialRef, !credentialRef.isEmpty { arguments["credentialRef"] = credentialRef }
-            let value = try await ForgeBridge.request("save_local_api_settings",arguments)
+            ])
             guard let parsed = Self.localApiSettingsDetail(value) else { throw ForgeBridgeError.invalidResponse }
             localApiSettings = parsed
+            if let provider=parsed.defaultApiProfile?.providerId {
+                for index in threads.indices where threads[index].provider == "api" {
+                    threads[index].provider=provider
+                    if threads[index].model?.isEmpty != false {
+                        threads[index].model=parsed.defaultApiProfile?.model
+                    }
+                }
+                persist()
+            }
             error = nil
             return true
         } catch {
             let message = error.localizedDescription
             self.error = message == "FORGE_DESKTOP_API_KEY_MISSING"
-                ? "远程 API Endpoint 需要已创建的受管密钥；本机 loopback Endpoint 可留空。"
+                ? "默认远程 API Profile 需要已创建并授权的受管密钥；本机 loopback Endpoint 可留空。"
                 : message
             return false
         }
@@ -2001,18 +2081,9 @@ final class NativeWorkspace: ObservableObject {
                 "operation":"delete","credentialRef":credentialRef
             ])
             try await reloadManagedApiCredentials()
-            if localApiSettings?.credentialRef == credentialRef {
-                localApiSettings = LocalApiSettingsDetail(
-                    provider:localApiSettings?.provider ?? "codex",
-                    endpoint:localApiSettings?.endpoint ?? "https://api.openai.com/v1",
-                    model:localApiSettings?.model ?? "",
-                    apiProtocol:localApiSettings?.apiProtocol ?? "openai",
-                    credentialRef:nil,
-                    hasKey:false,
-                    endpointReady:false,
-                    joyCodeModel:localApiSettings?.joyCodeModel ?? "JoyAI-Code-1.6",
-                    joyCodeReady:localApiSettings?.joyCodeReady ?? false
-                )
+            if let settingsValue = try? await ForgeBridge.request("read_local_api_settings"),
+               let parsed = Self.localApiSettingsDetail(settingsValue) {
+                localApiSettings = parsed
             }
             error = nil
             return true
@@ -2855,7 +2926,7 @@ final class NativeWorkspace: ObservableObject {
             let current = threads[index].model?.trimmingCharacters(in:.whitespacesAndNewlines) ?? ""
             let configured = turnProvider == "joycode"
                 ? (localApiSettings?.joyCodeModel.trimmingCharacters(in:.whitespacesAndNewlines) ?? "")
-                : (localApiSettings?.model.trimmingCharacters(in:.whitespacesAndNewlines) ?? "")
+                : (localApiSettings?.profile(providerId:turnProvider)?.model.trimmingCharacters(in:.whitespacesAndNewlines) ?? "")
             if current.isEmpty && !configured.isEmpty {
                 threads[index].model = configured
                 persist()
@@ -2886,7 +2957,7 @@ final class NativeWorkspace: ObservableObject {
             toolActivityCount:0,
             lastActivity:turnProvider == "joycode"
                 ? "正在连接 JoyCode"
-                : (turnProvider == "api" ? "正在连接兼容 API" : "正在启动 Codex"),
+                : (Self.matchesExternalProvider(turnProvider) ? "正在连接 API Provider" : "正在启动 Codex"),
             startedAt:nil, updatedAt:nil, events:[]
         )
         if turnProvider == "codex" {
