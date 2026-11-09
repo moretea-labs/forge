@@ -2317,6 +2317,7 @@ test('ReleaseSession preparation builds the isolated immutable candidate without
   execFileSync('git', ['update-ref', 'refs/remotes/origin/main', sourceRevision], { cwd: sourceRoot });
   let stagedFrom = '';
   let candidateHome = '';
+  let stageCalls = 0;
   const result = await prepareConfiguredRuntimeReleaseSession(config, {
     materializeCandidateLane: (input) => {
       expect(existsSync(join(home, 'recovery', 'locks', 'operation.lock'))).toBe(false);
@@ -2329,6 +2330,7 @@ test('ReleaseSession preparation builds the isolated immutable candidate without
       return materializeCandidateExecutionLane(input);
     },
     stage: (input) => {
+      stageCalls += 1;
       stagedFrom = input.sourceRoot;
       candidateHome = input.controllerHome;
       expect(input.sourceRepositoryId).toBe('repo_source_fixture');
@@ -2346,6 +2348,14 @@ test('ReleaseSession preparation builds the isolated immutable candidate without
         action: 'release_session_prepare',
         requestId: 'recovery-gateway:stage-request-1',
       });
+      const competingStableLock = acquireRecoveryOperationLock({
+        controllerHome: home,
+        action: 'restart_primary_connector',
+        requestId: 'recovery-gateway:stage-commit-contention',
+      });
+      expect(competingStableLock.acquired).toBe(true);
+      if (!competingStableLock.acquired) throw new Error('fixture competing Stable A lock unavailable');
+      setTimeout(() => competingStableLock.handle.close(), 50);
       const releasePath = join(input.controllerHome, 'runtime', 'releases', 'release-new');
       mkdirSync(releasePath, { recursive: true });
       const manifestPath = join(releasePath, 'manifest.json');
@@ -2378,6 +2388,7 @@ test('ReleaseSession preparation builds the isolated immutable candidate without
       };
     },
   }, 'recovery-gateway:stage-request-1');
+  expect(stageCalls).toBe(1);
   expect(stagedFrom).not.toBe(resolve(sourceRoot));
   expect(candidateHome).not.toBe(resolve(home));
   expect(result).toMatchObject({
