@@ -22,7 +22,13 @@ import {
   setMacOsBrowserRuntimeHooksForTest,
 } from '../../src/runtime/plugins/browser-macos-bridge';
 import { AssistantPluginError } from '../../src/runtime/plugins/errors';
-import { resolveBrowserHandoffHostPath, browserHandoffHostAvailable } from '../../src/runtime/plugins/browser-handoff';
+import {
+  resolveBrowserHandoffHostPath,
+  browserHandoffHostAvailable,
+  resetBrowserHandoffRuntimeHooksForTest,
+  setBrowserHandoffRuntimeHooksForTest,
+} from '../../src/runtime/plugins/browser-handoff';
+import { patchInteractionSession } from '../../src/runtime/plugins/interaction-session';
 import {
   ensureLegacyBrowserSessionsImported,
   findBrowserSession,
@@ -47,6 +53,7 @@ const roots: string[] = [];
 afterEach(() => {
   resetBrowserPluginRuntimeHooksForTest();
   resetMacOsBrowserRuntimeHooksForTest();
+  resetBrowserHandoffRuntimeHooksForTest();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
@@ -342,6 +349,26 @@ describe('browser session compatibility on Computer target authority', () => {
     });
     expect(auth?.target.kind).toBe('browser-origin');
     expect(auth?.target.id).toBe('chrome@https://example.com');
+    const nativeFingerprint = auth?.target.identityFingerprint;
+
+    writeControllerPluginConfig(controllerHome, 'browser', {
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'attach_preferred',
+      cdpAttachFallback: 'fail_closed',
+      nativeAttachMode: 'auto',
+      profileMode: 'custom',
+      profileDir: '/tmp/unrelated-user-data-dir',
+      profileDirectory: 'Profile 27',
+    });
+    const authWithUnrelatedProfile = await resolveBrowserPluginAuthorizationContext({
+      ...baseInput,
+      requestId: 'browser-authority-adapter-unrelated-profile',
+      actionId: 'click',
+      args: { session_id: 'three', selector: '#submit' },
+    });
+    expect(authWithUnrelatedProfile?.target.identityFingerprint).toBe(nativeFingerprint);
 
     const navigateAuth = await resolveBrowserPluginAuthorizationContext({
       ...baseInput,
@@ -454,7 +481,14 @@ describe('browser session compatibility on Computer target authority', () => {
       actionId: 'create_session',
       args: { url, native_active_tab: true, native_browser_product: 'chrome' },
     });
-    const connection = explicit.browserConnection as { sessionResume?: { reason?: string } };
+    const connection = explicit.browserConnection as {
+      provider?: string;
+      browserProduct?: string;
+      profile?: unknown;
+      sessionResume?: { reason?: string };
+    };
+    expect(connection.profile).toBeUndefined();
+    expect(connection).toMatchObject({ provider: 'macos-apple-events', browserProduct: 'chrome' });
     expect(connection.sessionResume?.reason).toContain('system-frontmost authority was not established');
 
     await expect(executeBrowserPluginAction({
@@ -463,6 +497,57 @@ describe('browser session compatibility on Computer target authority', () => {
       actionId: 'create_session',
       args: { url, native_active_tab: true },
     })).rejects.toMatchObject({ code: 'PLUGIN_BROWSER_ACTIVE_TAB_UNAVAILABLE' });
+  });
+
+  test('native handoff owns the exact live tab target without materializing a browser profile', async () => {
+    const { controllerHome, repoA } = fixture();
+    mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
+    writeControllerPluginConfig(controllerHome, 'browser', {
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'attach_preferred',
+      cdpAttachFallback: 'fail_closed',
+      nativeAttachMode: 'auto',
+      nativeBrowserCandidates: ['chrome'],
+    });
+    const nativeSession = session('native-handoff', '2026-08-24T04:00:00.000Z', {
+      native: true, windowId: '7', tabId: '9',
+    });
+    saveBrowserSession(controllerHome, 'repo-a', repoA, nativeSession);
+
+    let launchSpec: Record<string, unknown> | undefined;
+    setBrowserHandoffRuntimeHooksForTest({
+      pidAlive: () => true,
+      wait: async () => undefined,
+      spawnHost: (specPath) => {
+        launchSpec = JSON.parse(readFileSync(specPath, 'utf8')) as Record<string, unknown>;
+        const interactionId = String(launchSpec.interactionId);
+        patchInteractionSession(repoA, 'browser', interactionId, {
+          status: 'waiting_for_user',
+          host: { pid: 4242, startedAt: '2026-08-24T04:00:00.000Z', heartbeatAt: '2026-08-24T04:00:00.000Z' },
+        });
+        return { pid: 4242 };
+      },
+    });
+
+    const result = await executeBrowserPluginAction({
+      controllerHome,
+      repoId: 'repo-a',
+      repoRoot: repoA,
+      pluginId: 'browser',
+      requestId: 'native-handoff-no-profile',
+      origin: { surface: 'mcp', actor: 'test' },
+      actionId: 'request_human_handoff',
+      args: { session_id: 'native-handoff', reason: 'login' },
+    });
+    expect(launchSpec?.profileDir).toBeUndefined();
+    expect(launchSpec?.profileDirectory).toBeUndefined();
+    expect(launchSpec?.nativeBrowser).toEqual({
+      product: 'chrome',
+      ref: { windowId: '7', tabId: '9' },
+    });
+    expect((result.handoff as { targetId?: string }).targetId).toBe('macos-apple-events:chrome:7:9');
   });
 
   test('activate_page recovers system foreground through Desktop Operator and preserves exact native tab for trusted input', async () => {
