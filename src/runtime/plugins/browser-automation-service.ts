@@ -6,6 +6,7 @@ import type {
   ComputerTrustedInput,
 } from '../../../packages/protocols/computer/index';
 import { executeRuntimeComputerBrowserAutomation, executeRuntimeComputerBrowserTrustedInput } from '../root/computer-composition';
+import { ComputerProviderError } from '../../../packages/plugin-runtime/computer/index';
 import { AssistantPluginError } from './errors';
 
 export type BrowserAutomationProduct = ComputerBrowserProduct;
@@ -27,18 +28,36 @@ export type BrowserAutomationBrokerAction =
   | Exclude<ComputerBrowserAutomationRequest, { action: 'trusted_input' }>
   | BrowserAutomationTrustedInputRequest;
 
+// Computer owns the provider transport and typed effect outcome. Preserve that
+// authority at the Browser boundary instead of degrading a provider timeout or
+// uncertain mutation into a generic, retryable Browser action failure.
+export function rethrowBrowserAutomationBrokerError(error: unknown): never {
+  if (error instanceof ComputerProviderError) {
+    throw new AssistantPluginError(error.code, error.detailMessage, {
+      retryable: error.retryable,
+      effectOutcome: error.effectOutcome,
+      details: error.details,
+    });
+  }
+  throw error;
+}
+
 export async function callBrowserAutomationBroker(
   request: BrowserAutomationBrokerAction,
   timeoutMs: number,
 ): Promise<Record<string, unknown>> {
-  if (request.action === 'trusted_input'
-      && (request.input.kind === 'key' || (request.input.kind === 'text' && request.semanticTarget))) {
-    return await executeRuntimeComputerBrowserTrustedInput(request, timeoutMs);
+  try {
+    if (request.action === 'trusted_input'
+        && (request.input.kind === 'key' || (request.input.kind === 'text' && request.semanticTarget))) {
+      return await executeRuntimeComputerBrowserTrustedInput(request, timeoutMs);
+    }
+    // Generic trusted text remains on the explicit Browser compatibility contract.
+    // Only Browser-owned semantic proof authorizes the Unified Computer text path.
+    const { semanticTarget: _semanticTarget, ...compatibilityRequest } = request as BrowserAutomationTrustedInputRequest;
+    return await executeRuntimeComputerBrowserAutomation(compatibilityRequest as ComputerBrowserAutomationRequest, timeoutMs);
+  } catch (error) {
+    rethrowBrowserAutomationBrokerError(error);
   }
-  // Generic trusted text remains on the explicit Browser compatibility contract.
-  // Only Browser-owned semantic proof authorizes the Unified Computer text path.
-  const { semanticTarget: _semanticTarget, ...compatibilityRequest } = request as BrowserAutomationTrustedInputRequest;
-  return await executeRuntimeComputerBrowserAutomation(compatibilityRequest as ComputerBrowserAutomationRequest, timeoutMs);
 }
 
 export async function captureBrowserAutomationRegion(region: BrowserAutomationRegion, timeoutMs: number): Promise<Buffer> {

@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
+import { ComputerProviderError } from '../../packages/plugin-runtime/computer/index';
+import { AssistantPluginError } from '../../src/runtime/plugins/errors';
+import { rethrowBrowserAutomationBrokerError } from '../../src/runtime/plugins/browser-automation-service';
 import {
   browserExplicitPostActionWaitMs,
   browserNativeForegroundVerificationWaitMs,
@@ -75,6 +78,32 @@ test('bounded browser batches use the existing non-replayable mutation transacti
     foreground: 'none',
     replaySafety: 'non_idempotent',
   });
+});
+
+test('Computer-to-Browser broker preserves typed uncertain external mutation instead of making it retryable', () => {
+  const external = new ComputerProviderError(
+    'BROWSER_AUTOMATION_MUTATION_OUTCOME_UNKNOWN',
+    'Apple Events timed out after dispatch.',
+    { retryable: false, effectOutcome: 'outcome_unknown', details: { stage: 'native_event' } },
+  );
+  try {
+    rethrowBrowserAutomationBrokerError(external);
+    throw new Error('expected provider failure');
+  } catch (error) {
+    expect(error).toBeInstanceOf(AssistantPluginError);
+    expect(error).toMatchObject({
+      code: 'BROWSER_AUTOMATION_MUTATION_OUTCOME_UNKNOWN',
+      retryable: false,
+      effectOutcome: 'outcome_unknown',
+      details: { stage: 'native_event' },
+    });
+  }
+  const readonlyFailure = new ComputerProviderError('BROWSER_AUTOMATION_PROCESS_PROBE_UNAVAILABLE',
+    'Process probe unavailable.', { retryable: true, effectOutcome: 'failed' });
+  expect(() => rethrowBrowserAutomationBrokerError(readonlyFailure)).toThrow(
+    /BROWSER_AUTOMATION_PROCESS_PROBE_UNAVAILABLE/,
+  );
+  expect(() => rethrowBrowserAutomationBrokerError(new Error('unrelated'))).toThrow('unrelated');
 });
 
 describe('Browser Runtime completion wait policy', () => {
