@@ -2,7 +2,7 @@ import { randomBytes } from 'crypto';
 import { existsSync, mkdirSync, rmSync, statSync, writeFileSync } from 'fs';
 import { chmodSync } from 'fs';
 import { basename, dirname, join, resolve } from 'path';
-import { backupControlPlaneDatabase, type ControlPlaneDatabaseInspection } from '../control-plane/persistence/sqlite-store';
+import { backupControlPlaneDatabase, inspectControlPlaneDatabaseFile, type ControlPlaneDatabaseInspection } from '../control-plane/persistence/sqlite-store';
 import { normalizeRuntimeDeploymentTopology } from './deployment-topology';
 import { forgeRuntimeServicePaths, readForgeRuntimeServiceConfig, writeForgeRuntimeServiceConfig, type ForgeRuntimeServiceConfig } from './service';
 
@@ -115,6 +115,65 @@ function candidateServiceConfig(stable: ForgeRuntimeServiceConfig, lane: Candida
  * service contract. It deliberately does not copy Stable A's Runtime release
  * authority and never starts/stops a service; portable artifacts are published into B under B's own authority.
  */
+export function materializeCandidateExecutionLane(input: {
+  stable: StableExecutionLane;
+  candidate: CandidateExecutionLane;
+}): { stable: StableExecutionLane; candidate: CandidateExecutionLane; database: ControlPlaneDatabaseInspection } {
+  const { stable, candidate } = input;
+  if (resolve(candidate.sourceStableControllerHome) !== resolve(stable.controllerHome)) {
+    throw new Error('RUNTIME_CANDIDATE_STABLE_HOME_MISMATCH');
+  }
+  assertCandidateExecutionLaneIsolation(stable, candidate);
+
+  if (existsSync(candidate.controllerHome)) {
+    const configPath = forgeRuntimeServicePaths(candidate.controllerHome).configPath;
+    const tokenExists = existsSync(candidate.authTokenFile);
+    const databaseExists = existsSync(candidate.databaseSnapshotPath);
+    const configExists = existsSync(configPath);
+    if (tokenExists || databaseExists || configExists) {
+      if (
+        !tokenExists
+        || !statSync(candidate.authTokenFile).isFile()
+        || !databaseExists
+        || !statSync(candidate.databaseSnapshotPath).isFile()
+        || !configExists
+        || !statSync(configPath).isFile()
+      ) {
+        throw new Error('RUNTIME_CANDIDATE_FOUNDATION_INCOMPLETE');
+      }
+      const config = readForgeRuntimeServiceConfig(configPath, { missingRepositoryRoot: 'omit' });
+      if (
+        resolve(config.controllerHome) !== resolve(candidate.controllerHome)
+        || config.port !== candidate.port
+        || resolve(config.authTokenFile) !== resolve(candidate.authTokenFile)
+      ) {
+        throw new Error('RUNTIME_CANDIDATE_SERVICE_CONTRACT_MISMATCH');
+      }
+      return {
+        stable,
+        candidate,
+        database: inspectControlPlaneDatabaseFile(candidate.databaseSnapshotPath),
+      };
+    }
+  }
+
+  try {
+    createPrivateCandidateToken(stable.authTokenFile, candidate.authTokenFile);
+    const database = backupControlPlaneDatabase(stable.controllerHome, candidate.databaseSnapshotPath);
+    writeForgeRuntimeServiceConfig(candidateServiceConfig(
+      readForgeRuntimeServiceConfig(forgeRuntimeServicePaths(stable.controllerHome).configPath, { missingRepositoryRoot: 'omit' }),
+      candidate,
+    ));
+    assertCandidateExecutionLaneIsolation(stable, candidate);
+    return { stable, candidate, database };
+  } catch (error) {
+    // No recursive cleanup is attempted here: this function never guesses at
+    // a pre-existing user directory. The ReleaseSession owner fails closed and
+    // retires this exact candidate path when materialization is incomplete.
+    throw error;
+  }
+}
+
 export function createCandidateExecutionLane(input: {
   stableControllerHome: string;
   candidateControllerHome: string;
@@ -129,21 +188,7 @@ export function createCandidateExecutionLane(input: {
     sessionId: input.sessionId,
   });
   if (existsSync(candidate.controllerHome)) throw new Error('RUNTIME_CANDIDATE_CONTROLLER_HOME_ALREADY_EXISTS');
-  try {
-    createPrivateCandidateToken(stable.authTokenFile, candidate.authTokenFile);
-    const database = backupControlPlaneDatabase(stable.controllerHome, candidate.databaseSnapshotPath);
-    writeForgeRuntimeServiceConfig(candidateServiceConfig(
-      readForgeRuntimeServiceConfig(forgeRuntimeServicePaths(stable.controllerHome).configPath, { missingRepositoryRoot: 'omit' }),
-      candidate,
-    ));
-    assertCandidateExecutionLaneIsolation(stable, candidate);
-    return { stable, candidate, database };
-  } catch (error) {
-    // No recursive cleanup is attempted here: this function never guesses at
-    // a pre-existing user directory. The only writable target was required to
-    // be absent, so the caller can inspect or explicitly retire a partial B.
-    throw error;
-  }
+  return materializeCandidateExecutionLane({ stable, candidate });
 }
 
 export function assertCandidateExecutionLaneIsolation(

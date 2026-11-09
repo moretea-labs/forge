@@ -90,6 +90,7 @@ import {
 } from '../../src/runtime/root/release-store';
 import { advanceReleaseSession, createReleaseSession, readReleaseSession, recordReleaseSessionTransaction } from '../../src/runtime/release/release-session';
 import { observeRuntimeStatus, readRuntimeStatusSnapshot, writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
+import { materializeCandidateExecutionLane } from '../../src/runtime/root/runtime-lane';
 import { ensureForgeRuntimeLaunchAgentContract, forgeRuntimeServicePaths } from '../../src/runtime/root/service';
 import { systemdUserUnitPath } from '../../src/cli/controller/systemd-user';
 import {
@@ -2317,6 +2318,16 @@ test('ReleaseSession preparation builds the isolated immutable candidate without
   let stagedFrom = '';
   let candidateHome = '';
   const result = await prepareConfiguredRuntimeReleaseSession(config, {
+    materializeCandidateLane: (input) => {
+      expect(existsSync(join(home, 'recovery', 'locks', 'operation.lock'))).toBe(false);
+      const candidateOperationLock = JSON.parse(readFileSync(join(input.candidate.controllerHome, 'recovery', 'locks', 'operation.lock'), 'utf8')) as Record<string, unknown>;
+      expect(candidateOperationLock).toMatchObject({
+        pid: process.pid,
+        action: 'release_session_prepare',
+        requestId: 'recovery-gateway:stage-request-1',
+      });
+      return materializeCandidateExecutionLane(input);
+    },
     stage: (input) => {
       stagedFrom = input.sourceRoot;
       candidateHome = input.controllerHome;
