@@ -192,6 +192,52 @@ describe('whole Runtime release store', () => {
     expect(value).toBe('after');
   });
 
+  test('rollback ignores retained audit row-count regression and preserves changed live SQLite', () => {
+    const fx = fixture();
+    const first = fx.manifest('release-a', 'artifact-a');
+    const second = fx.manifest('release-b', 'artifact-b');
+    ensureActiveRuntimeRelease(fx.controllerHome, first);
+    let backupCall = 0;
+    const restores: string[] = [];
+    const dependencies = {
+      backupDatabase: (_home: string, path: string) => {
+        mkdirSync(dirname(path), { recursive: true });
+        backupCall += 1;
+        writeFileSync(path, backupCall === 1 ? 'rollback-snapshot' : 'live-after-audit-retention');
+        return {
+          path,
+          integrity: 'ok' as const,
+          schemaVersion: 1,
+          recordCount: 7,
+          auditEventCount: backupCall === 1 ? 100 : 80,
+          orphanRecordCount: 0,
+        };
+      },
+      restoreDatabase: (_home: string, path: string) => {
+        restores.push(path);
+        return {
+          path,
+          integrity: 'ok' as const,
+          schemaVersion: 1,
+          recordCount: 7,
+          auditEventCount: 100,
+          orphanRecordCount: 0,
+        };
+      },
+    };
+
+    const published = publishRuntimeRelease(fx.controllerHome, second, 'publish-b', dependencies);
+    expect(published.previous?.databaseBackup?.auditEventCount).toBe(100);
+
+    const rolled = rollbackRuntimeReleaseWithResult(fx.controllerHome, 'rollback-a', dependencies);
+
+    expect(rolled.authority.active.releaseId).toBe('release-a');
+    expect(rolled.databaseDisposition).toBe('preserved_newer_live_state');
+    expect(rolled.rollbackAuditEventCount).toBe(100);
+    expect(rolled.liveAuditEventCount).toBe(80);
+    expect(restores).toEqual([]);
+  });
+
   test('real unchanged SQLite snapshots retain identical whole-database identity and restore on rollback', () => {
     const fx = fixture();
     const first = fx.manifest('release-a', 'artifact-a');

@@ -581,13 +581,9 @@ export function rollbackRuntimeReleaseWithResult(
   const currentDatabaseSha256 = sha256ControlPlaneDatabaseFile(currentBackup);
   const rollbackDatabaseSha256 = target.databaseBackup.databaseSha256;
   const rollbackAuditEventCount = target.databaseBackup.auditEventCount;
-  if (rollbackAuditEventCount !== undefined && currentInspection.auditEventCount < rollbackAuditEventCount) {
-    rmSync(currentBackup, { force: true });
-    throw new Error(`RUNTIME_RELEASE_DATABASE_GENERATION_REGRESSED: rollback=${rollbackAuditEventCount}; live=${currentInspection.auditEventCount}`);
-  }
-  // auditEventCount covers only record-store mutations and is retained as
-  // diagnostic/legacy evidence. Whole-snapshot identity is the only proof that
-  // no SQLite domain state changed after cutover.
+  // auditEventCount is retention-sensitive diagnostic evidence, not a durable
+  // mutation generation. Whole-snapshot identity is the only proof that no
+  // SQLite domain state changed after cutover.
   const databaseDisposition: RuntimeDatabaseRollbackDisposition = rollbackDatabaseSha256 === undefined
     ? 'preserved_unversioned_backup'
     : currentDatabaseSha256 === rollbackDatabaseSha256
