@@ -323,6 +323,11 @@ private struct ForgeWorkspaceView: View {
                         .fixedSize(horizontal:false,vertical:true)
                         .textSelection(.enabled)
                     Spacer(minLength:6)
+                    Button("刷新") { Task { await model.loadUserRequests() } }
+                        .buttonStyle(.plain)
+                        .font(.system(size:10.5,weight:.semibold))
+                        .disabled(model.userRequestsLoading)
+                        .accessibilityIdentifier("inbox.retry")
                 }
                 .foregroundStyle(.orange)
                 .padding(.horizontal,14).padding(.vertical,10)
@@ -362,7 +367,13 @@ private struct ForgeWorkspaceView: View {
                 inboxDismissRequestId=nil
                 Task { await model.resolveUserRequest(item,decision:"",dismiss:true) }
             }
+            .disabled(model.userRequestsLoading)
             Button("取消",role:.cancel) { inboxDismissRequestId=nil }
+        } message: {
+            if let id=inboxDismissRequestId,
+               let item=model.relevantUserRequests.first(where:{ $0.requestId == id }) {
+                Text("“\(item.title)”将从待处理列表关闭，不会执行请求中的操作。")
+            }
         }
     }
 
@@ -376,13 +387,16 @@ private struct ForgeWorkspaceView: View {
                     .foregroundStyle(ForgePalette.secondary)
                     .frame(width:16,height:16)
                 VStack(alignment:.leading,spacing:4) {
-                    Text(item.title).font(.system(size:11.5,weight:.semibold)).lineLimit(2)
+                    Text(item.title)
+                        .font(.system(size:12,weight:.semibold))
+                        .lineLimit(editing || expanded ? nil : 2)
+                        .fixedSize(horizontal:false,vertical:editing || expanded)
                     Text(item.summary)
-                        .font(.system(size:10.5))
+                        .font(.system(size:11))
                         .foregroundStyle(ForgePalette.secondary)
                         .lineLimit(editing || expanded ? nil : 3)
                         .textSelection(.enabled)
-                    if item.summary.count > 100 && !editing {
+                    if (item.summary.count > 80 || item.title.count > 44) && !editing {
                         Button(expanded ? "收起说明" : "查看完整说明") {
                             if !expandedInboxRequestIds.insert(item.requestId).inserted {
                                 expandedInboxRequestIds.remove(item.requestId)
@@ -2703,6 +2717,7 @@ private struct AgentPlanningInspector: View {
     @State private var loading = false
     @State private var error: String?
     @State private var query = ""
+    @State private var loadToken = UUID()
 
     var body: some View {
         VStack(alignment:.leading,spacing:0) {
@@ -2815,9 +2830,9 @@ private struct AgentPlanningInspector: View {
     }
 
     private var currentContextLabel: String? {
-        if let planId=model.thread?.planId,!planId.isEmpty { return "Plan · \\(String(planId.prefix(18)))" }
+        if let planId=model.thread?.planId,!planId.isEmpty { return "Plan · \(String(planId.prefix(18)))" }
         if let requirementId=model.thread?.requirementId,!requirementId.isEmpty {
-            return "Requirement · \\(String(requirementId.prefix(18)))"
+            return "Requirement · \(String(requirementId.prefix(18)))"
         }
         return nil
     }
@@ -2890,17 +2905,19 @@ private struct AgentPlanningInspector: View {
 
     @MainActor
     private func reload() async {
-        guard model.repoId != nil else {
-            records=[]
-            error=nil
-            return
-        }
+        let token=UUID()
+        loadToken=token
+        records=[]
+        error=nil
+        guard let repoId=model.repoId else { loading=false; return }
         loading=true
-        defer { loading=false }
+        defer { if loadToken == token { loading=false } }
         do {
-            records=try await model.readPlanningRecordsForCurrentProject()
-            error=nil
+            let fresh=try await model.readPlanningRecordsForCurrentProject()
+            guard loadToken == token, model.repoId == repoId, !Task.isCancelled else { return }
+            records=fresh
         } catch {
+            guard loadToken == token, model.repoId == repoId, !Task.isCancelled else { return }
             self.error=error.localizedDescription
         }
     }
@@ -2913,6 +2930,7 @@ private struct AgentKnowledgeInspector: View {
     @State private var result: KnowledgeAuditDetail?
     @State private var loading = false
     @State private var error: String?
+    @State private var loadToken = UUID()
 
     var body: some View {
         VStack(alignment:.leading,spacing:0) {
@@ -2993,7 +3011,7 @@ private struct AgentKnowledgeInspector: View {
             Divider()
             HStack(spacing:6) {
                 if let result {
-                    Text("\\(result.items.count) 条结果")
+                    Text("\(result.items.count) 条结果")
                     if result.truncated { Text("· 已截断") }
                 } else {
                     Text("只读 · advisory")
@@ -3029,7 +3047,7 @@ private struct AgentKnowledgeInspector: View {
                 .buttonStyle(.plain)
                 .font(.system(size:10,weight:.semibold))
                 .disabled(model.busy)
-                .accessibilityIdentifier("agent.knowledge-inspector.use.\\(memory.id)")
+                .accessibilityIdentifier("agent.knowledge-inspector.use.\(memory.id)")
             }
             Text(memory.canonicalText)
                 .font(.system(size:11)).lineSpacing(3)
@@ -3046,17 +3064,24 @@ private struct AgentKnowledgeInspector: View {
 
     @MainActor
     private func reload() async {
-        guard model.repoId != nil else {
-            result=nil
-            error=nil
-            return
-        }
+        let token=UUID()
+        loadToken=token
+        result=nil
+        error=nil
+        guard let repoId=model.repoId else { loading=false; return }
+        let searchQuery=query.trimmingCharacters(in:.whitespacesAndNewlines)
         loading=true
-        defer { loading=false }
+        defer { if loadToken == token { loading=false } }
         do {
-            result=try await model.readKnowledge(query.trimmingCharacters(in:.whitespacesAndNewlines))
-            error=nil
+            let fresh=try await model.readKnowledge(searchQuery)
+            guard loadToken == token, model.repoId == repoId,
+                  query.trimmingCharacters(in:.whitespacesAndNewlines) == searchQuery,
+                  !Task.isCancelled else { return }
+            result=fresh
         } catch {
+            guard loadToken == token, model.repoId == repoId,
+                  query.trimmingCharacters(in:.whitespacesAndNewlines) == searchQuery,
+                  !Task.isCancelled else { return }
             self.error=error.localizedDescription
         }
     }
