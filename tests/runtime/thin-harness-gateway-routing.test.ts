@@ -122,7 +122,6 @@ afterEach(() => {
   while (roots.length > 0) rmSync(roots.pop()!, { recursive: true, force: true });
 });
 
-
 describe('controller.plugins capability', () => {
   test('adapts the typed management snapshot into the MCP structured result', async () => {
     const fx = fixture();
