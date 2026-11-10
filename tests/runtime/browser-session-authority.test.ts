@@ -47,6 +47,7 @@ import {
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { withControllerLockAsync } from '../../src/cli/repositories/locks';
 import { submitAssistantPluginAction } from '../../src/runtime/plugins/store';
+import { computerPluginAdapter } from '../../src/runtime/plugins/computer-registration';
 import { writeControllerPluginConfig } from '../../src/runtime/plugins/config-store';
 
 const roots: string[] = [];
@@ -497,6 +498,75 @@ describe('browser session compatibility on Computer target authority', () => {
       actionId: 'create_session',
       args: { url, native_active_tab: true },
     })).rejects.toMatchObject({ code: 'PLUGIN_BROWSER_ACTIVE_TAB_UNAVAILABLE' });
+  });
+
+  test('Computer fresh sessions never adopt an unrelated user-owned native tab by URL', async () => {
+    const { controllerHome, repoA } = fixture();
+    mkdirSync(repoA, { recursive: true });
+    const separator = String.fromCharCode(30);
+    const fieldSeparator = String.fromCharCode(31);
+    const url = 'https://example.com/computer-fresh-session';
+    let created = false;
+    let createCalls = 0;
+    let closeCalls = 0;
+    const userTab = { windowId: '7', tabId: '3', active: true, url, title: 'Existing User Tab' };
+    const ownedTab = { windowId: '7', tabId: '9', active: false, url, title: 'Forge Owned' };
+    const inventoryRaw = () => {
+      const records = [`7${fieldSeparator}3${fieldSeparator}true${fieldSeparator}${url}${fieldSeparator}Existing User Tab`];
+      if (created) records.push(`7${fieldSeparator}9${fieldSeparator}false${fieldSeparator}${url}${fieldSeparator}Forge Owned`);
+      return `false${separator}${records.join(separator)}`;
+    };
+
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin',
+      appExists: (path) => path.includes('Google Chrome'),
+      processRunning: async () => true,
+      tabInventory: async (product) => ({
+        product,
+        truncated: false,
+        tabs: created ? [userTab, ownedTab] : [userTab],
+      }),
+      runAppleScript: async (script) => {
+        if (script.includes('set outputText to "false"')) return inventoryRaw();
+        if (script.includes('make new tab at end of tabs of targetWindow')) {
+          createCalls += 1;
+          created = true;
+          return `7${separator}9`;
+        }
+        if (script.includes('close targetTab')) {
+          closeCalls += 1;
+          return '';
+        }
+        if (script.includes('execute targetTab javascript')) {
+          return JSON.stringify({ ok: true, value: { url, title: 'Forge Owned' }, page: { url, title: 'Forge Owned' } });
+        }
+        return [
+          'false', url, created ? 'Forge Owned' : 'Existing User Tab',
+          '0', '0', '1200', '800', '7', created ? '9' : '3', 'true', 'false',
+        ].join(separator);
+      },
+    });
+
+    const opened = await computerPluginAdapter.executeAction({
+      controllerHome,
+      repoId: 'repo-a',
+      repoRoot: repoA,
+      pluginId: 'computer',
+      actionId: 'create_session',
+      requestId: 'computer-fresh-native-session',
+      args: { url },
+      origin: { surface: 'mcp', actor: 'test' },
+    });
+    const openedSession = opened.session as {
+      sessionId: string;
+      browser?: { provider?: string; tab?: { ownership?: string; windowId?: string; tabId?: string } };
+    };
+    expect(openedSession.browser?.provider).toBe('macos-apple-events');
+    expect(openedSession.browser?.tab).toMatchObject({ ownership: 'plugin_owned', windowId: '7', tabId: '9' });
+    expect(createCalls).toBe(1);
+    expect(created).toBe(true);
+    expect(closeCalls).toBe(0);
   });
 
   test('native handoff owns the exact live tab target without materializing a browser profile', async () => {

@@ -3,10 +3,8 @@ import { mkdtempSync, rmSync, symlinkSync, writeFileSync, mkdirSync, realpathSyn
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
-  browserMayReuseExistingNativeTab,
   chooseTab,
   resolveBrowserAttachmentPaths,
-  selectExactNativeTab,
 } from '../../src/runtime/plugins/browser-adapter';
 import { authorizeWorkspaceTargetGrant } from '../../src/runtime/workspace-targets';
 import { browserActions } from '../../src/runtime/plugins/browser-manifest-surface';
@@ -22,37 +20,8 @@ afterEach(() => {
   while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true });
 });
 
-describe('Computer Browser exact tab selection', () => {
+describe('Browser exact tab selection', () => {
   const url = 'https://example.com/work';
-  const nativeTab = (windowId: string, tabId: string, active: boolean) => ({
-    windowId, tabId, active, url, title: 'Work',
-  });
-  const inventory = (tabs: ReturnType<typeof nativeTab>[], truncated = false) => ({
-    product: 'chrome' as const, tabs, truncated,
-  });
-
-  test('normal fresh Browser sessions never implicitly reuse another native tab authority (#619)', () => {
-    expect(browserMayReuseExistingNativeTab({})).toBe(false);
-    expect(browserMayReuseExistingNativeTab({ session_id: '' })).toBe(false);
-    expect(browserMayReuseExistingNativeTab({ url: 'https://chatgpt.com/' })).toBe(false);
-    expect(browserMayReuseExistingNativeTab({ __forge_computer_native_only: true })).toBe(true);
-  });
-
-  test('does not pick the frontmost of two otherwise identical native tabs', () => {
-    const tabs = inventory([nativeTab('1', '11', false), nativeTab('2', '22', true)]);
-    expect(selectExactNativeTab(url, tabs)).toEqual({ match: 'ambiguous', candidateCount: 2 });
-  });
-
-  test('never treats truncated inventory as proof of uniqueness', () => {
-    const tabs = inventory([nativeTab('1', '11', true)], true);
-    expect(selectExactNativeTab(url, tabs).match).toBe('ambiguous');
-  });
-
-  test('unique complete native inventory still reuses its exact tab', () => {
-    const tab = nativeTab('1', '11', false);
-    expect(selectExactNativeTab(url, inventory([tab]))).toMatchObject({ match: 'exact_url', candidate: tab });
-  });
-
   test('CDP and isolated contexts refuse a first-match URL or blank tab guess', () => {
     const pages = [
       { index: 0, key: 'a', url, title: 'Work' },

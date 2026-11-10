@@ -88,7 +88,6 @@ import {
 import {
   closeTrackedNativeOwnedSession,
   inspectNativeOwnedSessions,
-  nativeTabInventoryUnsupported,
   nativeOwnedAliasSessionIds,
 } from './browser-native-session-service';
 export { browserActionCanReplayAfterDispatch } from './browser-runtime';
@@ -1437,58 +1436,6 @@ function sameOrigin(left: string, right: string): boolean {
   }
 }
 
-export function selectLiveForgeOwnedNativeTab(
-  repoRoot: string,
-  targetUrl: string,
-  product: MacOsBrowserProduct,
-  inventory: Awaited<ReturnType<typeof listMacOsBrowserTabs>>,
-): {
-  session?: BrowserSessionState;
-  candidate?: (typeof inventory.tabs)[number];
-  match: 'exact_url' | 'same_origin' | 'none' | 'ambiguous';
-  candidateCount: number;
-} {
-  const liveByRef = new Map(inventory.tabs.map((tab) => [`${tab.windowId}:${tab.tabId}`, tab]));
-  const candidates = new Map<string, { session: BrowserSessionState; candidate: (typeof inventory.tabs)[number] }>();
-  for (const session of listSavedBrowserSessions(repoRoot)) {
-    const browser = session.browser;
-    const tab = browser?.tab;
-    if (browser?.provider !== 'macos-apple-events' || browser.browserProduct !== product || tab?.ownership !== 'plugin_owned') continue;
-    if (!tab.windowId || !tab.tabId) continue;
-    const key = `${tab.windowId}:${tab.tabId}`;
-    const live = liveByRef.get(key);
-    if (!live) continue;
-    const previous = candidates.get(key);
-    if (!previous || session.updatedAt > previous.session.updatedAt) candidates.set(key, { session, candidate: live });
-  }
-
-  const values = [...candidates.values()];
-  if (inventory.truncated) return { match: 'ambiguous', candidateCount: values.length };
-  const exact = values.filter(({ candidate }) => comparableUrl(candidate.url) === comparableUrl(targetUrl));
-  const choose = (matches: typeof values, match: 'exact_url' | 'same_origin') => {
-    if (matches.length === 1) return { ...matches[0], match, candidateCount: 1 } as const;
-    // Multiple matching tabs remain ambiguous even when one is active.
-    return { match: 'ambiguous' as const, candidateCount: matches.length };
-  };
-  if (exact.length > 0) return choose(exact, 'exact_url');
-
-  const sameOriginCandidates = values.filter(({ candidate }) => sameOrigin(candidate.url, targetUrl));
-  if (sameOriginCandidates.length > 0) return choose(sameOriginCandidates, 'same_origin');
-  return { match: 'none', candidateCount: 0 };
-}
-
-export function selectExactNativeTab(
-  targetUrl: string,
-  inventory: Awaited<ReturnType<typeof listMacOsBrowserTabs>>,
-): { candidate?: (typeof inventory.tabs)[number]; match: 'exact_url' | 'none' | 'ambiguous'; candidateCount: number } {
-  if (inventory.truncated) return { match: 'ambiguous', candidateCount: inventory.tabs.length };
-  const matches = inventory.tabs.filter((candidate) => comparableUrl(candidate.url) === comparableUrl(targetUrl));
-  if (matches.length === 0) return { match: 'none', candidateCount: 0 };
-  if (matches.length === 1) return { candidate: matches[0], match: 'exact_url', candidateCount: 1 };
-  // A frontmost tab does not disambiguate two tabs with the same URL.
-  return { match: 'ambiguous', candidateCount: matches.length };
-}
-
 function isBlankPage(url: string): boolean {
   return !url || url === 'about:blank' || url === 'chrome://newtab/';
 }
@@ -2616,13 +2563,6 @@ function nativeBackgroundNavigationRequiresReplacement(error: unknown): boolean 
   return message.includes('BROWSER_AUTOMATION_BACKGROUND_NAVIGATION_REQUIRES_REPLACEMENT');
 }
 
-export function browserMayReuseExistingNativeTab(args: Record<string, unknown>): boolean {
-  // Only Computer's native-only composition may select/reuse an existing tab.
-  // A normal Browser call without session_id is a fresh session and must create
-  // its own plugin-owned tab instead of adopting another session's authority.
-  return args.__forge_computer_native_only === true;
-}
-
 async function openNativeAttachedContext(
   repoRoot: string,
   config: BrowserPluginConfig,
@@ -2920,79 +2860,8 @@ async function openNativeAttachedContext(
     }
   };
   try {
-    if (!page && !savedTab && !target.existingSession && browserMayReuseExistingNativeTab(args)) {
-      let inventory: Awaited<ReturnType<typeof listMacOsBrowserTabs>> | undefined;
-      try {
-        inventory = await listMacOsBrowserTabs(activeAttachment.metadata.product, timeout);
-      } catch (error) {
-        if (!nativeTabInventoryUnsupported(error)) throw error;
-        if (args.__forge_computer_native_only === true) {
-          throw new AssistantPluginError('PLUGIN_COMPUTER_BROWSER_INVENTORY_UNAVAILABLE',
-            'Native tab inventory unavailable; Computer cannot prove an existing tab is absent.',
-            { retryable: true });
-        }
-      }
-      if (inventory) {
-        const ownedSelection = selectLiveForgeOwnedNativeTab(repoRoot, target.url, activeAttachment.metadata.product, inventory);
-        if (ownedSelection.match === 'ambiguous') {
-          throw new AssistantPluginError(
-            'PLUGIN_BROWSER_REUSABLE_TAB_AMBIGUOUS',
-            'Multiple live Forge-owned browser tabs can satisfy this sessionless navigation; refusing to open another duplicate tab.',
-            { retryable: false, details: { targetUrl: target.url, candidateCount: ownedSelection.candidateCount } },
-          );
-        }
-        if (ownedSelection.candidate) {
-          if (ownedSelection.session) {
-            target.sessionId = ownedSelection.session.sessionId;
-            target.existingSession = ownedSelection.session;
-          }
-          const rebound = await reattachMacOsBrowserOwnedPage(
-            activeAttachment.metadata.product,
-            { windowId: ownedSelection.candidate.windowId, tabId: ownedSelection.candidate.tabId },
-            timeout,
-          );
-          page = rebound.page as unknown as PageLike;
-          discovered = { attachment: rebound.attachment, attempts: rebound.attachment.attempts };
-          activeAttachment = rebound.attachment;
-          matchedBy = 'owned_token';
-          effectiveOwnership = 'plugin_owned';
-          sessionResume = {
-            sessionId: target.sessionId,
-            status: 'matched',
-            reason: ownedSelection.match === 'exact_url'
-              ? 'No session id was supplied; reused the unique live Forge-owned native tab already at the target URL.'
-              : 'No session id was supplied; reused the unique live Forge-owned native tab for the same origin and navigated it in place.',
-            savedTab: ownedSelection.session?.browser?.tab,
-          };
-        } else {
-          const exactSelection = selectExactNativeTab(target.url, inventory);
-          if (exactSelection.match === 'ambiguous') {
-            throw new AssistantPluginError(
-              'PLUGIN_BROWSER_REUSABLE_TAB_AMBIGUOUS',
-              'Multiple existing browser tabs already match the target URL; refusing to open another duplicate tab.',
-              { retryable: false, details: { targetUrl: target.url, candidateCount: exactSelection.candidateCount } },
-            );
-          }
-          if (exactSelection.candidate) {
-            const rebound = await reattachMacOsBrowserOwnedPage(
-              activeAttachment.metadata.product,
-              { windowId: exactSelection.candidate.windowId, tabId: exactSelection.candidate.tabId },
-              timeout,
-            );
-            page = rebound.page as unknown as PageLike;
-            discovered = { attachment: rebound.attachment, attempts: rebound.attachment.attempts };
-            activeAttachment = rebound.attachment;
-            matchedBy = 'exact_url';
-            effectiveOwnership = 'user_owned';
-            sessionResume = {
-              sessionId: target.sessionId,
-              status: 'matched',
-              reason: 'No session id was supplied; reused the unique existing native browser tab with the exact target URL instead of opening a duplicate.',
-            };
-          }
-        }
-      }
-    }
+    // Sessionless opens never adopt a native tab by URL. User-owned adoption
+    // is handled only by the explicit create_session native target path above.
     if (!page) {
       // Explicit existing-resource requests (including read-only live
       // acceptance) must never create a new tab if no exact tab was found.
