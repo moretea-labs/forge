@@ -2,7 +2,7 @@ import { afterEach, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
 import { backupControlPlaneDatabase, restoreControlPlaneDatabase, withControlPlaneTransaction, writeControlPlaneRecord } from '../../src/runtime/control-plane/persistence/sqlite-store';
-import { createRequirement, normalizeLegacyRequirementAcceptance, readRequirement, reviseRequirementSemantic, updateRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
+import { createRequirement, listRequirements, normalizeLegacyRequirementAcceptance, readRequirement, reviseRequirementSemantic, updateRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { listWorkContracts } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { implementationReviewChangedPathDigest } from '../../packages/kernel/work/api/index';
 import { executionPlacement, scopeRef, semanticRecordMetadata } from '../../packages/kernel/identity/api/index';
@@ -134,6 +134,62 @@ test('restores a verified SQLite backup without losing Requirement authority', (
   expect(readRequirement(options, 'req-backup')?.value.state).toBe('planned');
 });
 
+
+test('two independent sessions share one Requirement and reconcile CAS conflicts without silent overwrite', () => {
+  const home = mkdtempSync(join('/tmp', 'forge-requirement-'));
+  homes.push(home);
+  // Two independent session contexts over the same canonical store home: no
+  // per-session registration lock exists, only the store's expected-revision CAS.
+  const sessionA = { controllerHome: home };
+  const sessionB = { controllerHome: home };
+
+  createRequirement(sessionA, { requirementId: 'req-shared', title: 'Shared outcome', outcomeStatement: 'Two sessions attach evidence to one Requirement.' });
+  const located = readRequirement(sessionB, 'req-shared');
+  expect(located?.value.state).toBe('planned');
+
+  // Both sessions observe semantic revision 1; session A commits first.
+  const baseRevision = located!.value.semanticRevision ?? 1;
+  reviseRequirementSemantic(sessionA, 'req-shared', { expectedRevision: baseRevision, progressSummary: 'Session A attached evidence.' });
+
+  // Session B's stale write is rejected with the actual current revision, and
+  // nothing is silently overwritten.
+  expect(() => reviseRequirementSemantic(sessionB, 'req-shared', { expectedRevision: baseRevision, progressSummary: 'Session B stale write.' }))
+    .toThrow(/REQUIREMENT_REVISION_CONFLICT:req-shared:expected=1:actual=2/);
+  expect(readRequirement(sessionB, 'req-shared')!.value.progressSummary).toBe('Session A attached evidence.');
+
+  // Session B reconciles from the current revision and appends its own evidence.
+  const current = readRequirement(sessionB, 'req-shared')!.value;
+  const reconciled = reviseRequirementSemantic(sessionB, 'req-shared', {
+    expectedRevision: current.semanticRevision ?? 2,
+    progressSummary: `${current.progressSummary} Session B reconciled and attached evidence.`,
+  });
+  expect(reconciled.semanticRevision).toBe(3);
+  const merged = readRequirement(sessionA, 'req-shared')!.value;
+  expect(merged.progressSummary).toContain('Session A attached evidence.');
+  expect(merged.progressSummary).toContain('Session B reconciled and attached evidence.');
+});
+
+test('independent sessions register distinct active Requirements without a global mutex', () => {
+  const home = mkdtempSync(join('/tmp', 'forge-requirement-'));
+  homes.push(home);
+  const sessionA = { controllerHome: home };
+  const sessionB = { controllerHome: home };
+
+  const a = createRequirement(sessionA, { requirementId: 'req-issue-a', title: 'Issue A', outcomeStatement: 'Deliver A.' });
+  const b = createRequirement(sessionB, { requirementId: 'req-issue-b', title: 'Issue B', outcomeStatement: 'Deliver B.' });
+  expect(a.state).toBe('planned');
+  expect(b.state).toBe('planned');
+
+  // Both active Requirements are independently visible to either session.
+  const seenByA = listRequirements(sessionA).map((record) => record.value.requirementId);
+  expect(seenByA).toContain('req-issue-a');
+  expect(seenByA).toContain('req-issue-b');
+
+  // Activating one does not block or mutate the other.
+  updateRequirement(sessionB, { requirementId: 'req-issue-b', action: 'activate', mutate: (current) => ({ ...current, state: 'active' }) });
+  expect(readRequirement(sessionA, 'req-issue-a')!.value.state).toBe('planned');
+  expect(readRequirement(sessionA, 'req-issue-b')!.value.state).toBe('active');
+});
 
 test('keeps portable semantic scope separate from local execution placement', () => {
   const scope = scopeRef('requirement', 'REQ-portable');
