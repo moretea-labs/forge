@@ -102,6 +102,7 @@ interface LiveMonitor {
   maxDiskBytes: number;
   logTruncated: boolean;
   settled: boolean;
+  terminalIntent?: 'timed_out' | 'cancelled';
   timeoutHandle?: NodeJS.Timeout;
   waiters: Array<(record: ManagedProcessRecord) => void>;
   stdoutPath: string;
@@ -1006,6 +1007,7 @@ function attachRunnerMonitor(
 
   // Controller-side timeout is a safety net; runner also enforces timeout.
   monitor.timeoutHandle = setTimeout(() => {
+    monitor.terminalIntent = 'timed_out';
     void killTree(runner).finally(() => {
       if (pollTimer) clearInterval(pollTimer);
       finalizeMonitor(monitor, 'timed_out', 1, true, false, `process timed out after ${options.timeoutMs}ms`);
@@ -1013,12 +1015,13 @@ function attachRunnerMonitor(
   }, Math.max(1, options.timeoutMs + 2_000));
   monitor.timeoutHandle.unref?.();
 
-  runner.on('error', (error) => {
+  const finalizeFromRunnerExit = () => {
+    if (monitor.settled) return;
     if (pollTimer) clearInterval(pollTimer);
-    finalizeMonitor(monitor, 'failed', 1, false, false, error.message);
-  });
-  runner.on('close', () => {
-    if (pollTimer) clearInterval(pollTimer);
+    // The Runner writes and closes its bounded log files before writing the
+    // terminal receipt and exiting. Its `exit` event is therefore authoritative;
+    // waiting for `close` can strand the Process when an inherited descendant
+    // keeps the Runner's stdout/stderr pipe descriptors open.
     pollLogs();
     const receipt = readExitReceipt(options.exitReceiptPath);
     if (receipt) {
@@ -1031,12 +1034,25 @@ function attachRunnerMonitor(
       );
       return;
     }
+    // A controller-owned cancel/timeout is still writing its terminal receipt.
+    // Let that authority finish instead of racing it with completed_unknown.
+    if (monitor.terminalIntent) return;
     // Runner exited without receipt. The actual command may have succeeded or
     // failed, so do not fabricate a deterministic failure.
     finalizeMonitor(monitor, 'completed_unknown', 1, false, false, 'process runner exited without receipt; outcome unknown');
+  };
+
+  runner.on('error', (error) => {
+    if (pollTimer) clearInterval(pollTimer);
+    finalizeMonitor(monitor, 'failed', 1, false, false, error.message);
   });
+  runner.on('exit', finalizeFromRunnerExit);
+  runner.on('close', finalizeFromRunnerExit);
 
   liveMonitors.set(record.processId, monitor);
+  // A very short command may let the Runner exit while Controller identity and
+  // record setup are still in progress, before these listeners were attached.
+  if (runner.exitCode !== null || runner.signalCode !== null) finalizeFromRunnerExit();
   return monitor;
 }
 
@@ -1944,6 +1960,7 @@ export async function cancelProcess(
 
   const monitor = liveMonitors.get(processId);
   if (monitor) {
+    monitor.terminalIntent = 'cancelled';
     await killTree(monitor.child);
     await new Promise((r) => setTimeout(r, 100));
     const after = getProcessRecord(controllerHome, repoId, processId);
@@ -1959,12 +1976,7 @@ export async function cancelProcess(
           cancelled: true,
         });
       }
-      completeProcessFromEvidence(controllerHome, repoId, processId, after.terminalFenceToken, {
-        status: 'cancelled',
-        exitCode: 1,
-        cancelled: true,
-        exitReceiptPath: path,
-      });
+      finalizeMonitor(monitor, 'cancelled', 1, false, true);
     }
     return recordToHandle(getProcessRecord(controllerHome, repoId, processId)!, { completed: true });
   }

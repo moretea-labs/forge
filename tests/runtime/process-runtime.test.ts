@@ -1445,6 +1445,72 @@ describe('Unified Process Runtime', () => {
     }
   });
 
+  test('Runner exit receipt terminalizes before an inherited descendant closes Runner stdio', async () => {
+    const fx = fixture();
+    const runnerEntry = join(fx.root, 'delayed-close-runner.mjs');
+    const descendantPidPath = join(fx.root, 'runner-descendant.pid');
+    const previousRunnerEntry = process.env.FORGE_PROCESS_RUNNER_ENTRY;
+    writeFileSync(runnerEntry, [
+      "import { readFileSync, writeFileSync } from 'node:fs';",
+      "import { spawn } from 'node:child_process';",
+      "const descriptorPath = process.argv[process.argv.indexOf('--descriptor') + 1];",
+      "const descriptor = JSON.parse(readFileSync(descriptorPath, 'utf8'));",
+      "writeFileSync(descriptor.exitReceiptPath, JSON.stringify({ schemaVersion: 1, processId: descriptor.processId, exitCode: 65, finishedAt: new Date().toISOString(), startedAt: descriptor.startedAt, stdoutBytes: 0, stderrBytes: 0, stdoutStoredBytes: 0, stderrStoredBytes: 0, logTruncated: false, runnerPid: process.pid, commandExecutedOnce: true }));",
+      `const descendant = spawn(process.execPath, ['-e', 'setTimeout(() => process.exit(0), 5000)'], { detached: true, stdio: 'inherit' });`,
+      `writeFileSync(${JSON.stringify(descendantPidPath)}, String(descendant.pid));`,
+      'descendant.unref();',
+      'process.exit(1);',
+    ].join('\n'));
+    process.env.FORGE_PROCESS_RUNNER_ENTRY = runnerEntry;
+
+    try {
+      const handle = await spawnManagedProcess({
+        controllerHome: fx.controllerHome,
+        repoId: fx.repository.repoId,
+        checkoutId: fx.repository.activeCheckoutId,
+        executionIdentity: executionIdentityForRepository(fx.repository),
+        command: { kind: 'argv', executable: 'node', args: ['-e', 'process.exit(0)'], cwd: fx.repoRoot },
+        interactiveWaitMs: 0,
+        timeoutMs: 10_000,
+        returnHandleImmediately: true,
+      });
+      process.env.FORGE_PROCESS_RUNNER_ENTRY = previousRunnerEntry ?? '';
+      const observedAt = Date.now();
+      const terminal = await waitForProcess(fx.controllerHome, fx.repository.repoId, handle.processId, { timeoutMs: 1_000 });
+      expect(Date.now() - observedAt).toBeLessThan(1_000);
+      expect(terminal).toMatchObject({ processId: handle.processId, status: 'failed', completed: true, exitCode: 65 });
+      expect(processRuntimeResourceDiagnostics().activeProcessIds).not.toContain(handle.processId);
+    } finally {
+      if (process.env.FORGE_PROCESS_RUNNER_ENTRY === runnerEntry) process.env.FORGE_PROCESS_RUNNER_ENTRY = previousRunnerEntry ?? '';
+      if (existsSync(descendantPidPath)) {
+        const pid = Number(readFileSync(descendantPidPath, 'utf8'));
+        if (Number.isInteger(pid) && pid > 0) {
+          try { process.kill(pid, 'SIGTERM'); } catch { /* descendant may have exited */ }
+        }
+      }
+    }
+  });
+
+  test('controller cancellation owns terminalization when Runner exits without a receipt', async () => {
+    const fx = fixture();
+    const runnerEntry = join(fx.root, 'no-receipt-runner.mjs');
+    const previous = process.env.FORGE_PROCESS_RUNNER_ENTRY;
+    writeFileSync(runnerEntry, "import { spawn } from 'node:child_process'; spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'inherit' }); setInterval(() => {}, 1000);");
+    process.env.FORGE_PROCESS_RUNNER_ENTRY = runnerEntry;
+    let processId: string | undefined;
+    try {
+      const handle = await spawnManagedProcess({ controllerHome: fx.controllerHome, repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId, executionIdentity: executionIdentityForRepository(fx.repository), command: { kind: 'argv', executable: 'node', args: ['-e', 'process.exit(0)'], cwd: fx.repoRoot }, interactiveWaitMs: 0, timeoutMs: 60_000, returnHandleImmediately: true });
+      process.env.FORGE_PROCESS_RUNNER_ENTRY = previous ?? '';
+      processId = handle.processId;
+      const cancelled = await cancelProcess(fx.controllerHome, fx.repository.repoId, processId);
+      expect(cancelled).toMatchObject({ processId, status: 'cancelled', completed: true, cancelled: true });
+      expect(processRuntimeResourceDiagnostics().activeProcessIds).not.toContain(processId);
+    } finally {
+      if (process.env.FORGE_PROCESS_RUNNER_ENTRY === runnerEntry) process.env.FORGE_PROCESS_RUNNER_ENTRY = previous ?? '';
+      if (processId && getProcessHandle(fx.controllerHome, fx.repository.repoId, processId)?.completed !== true) await cancelProcess(fx.controllerHome, fx.repository.repoId, processId);
+    }
+  });
+
   test('restart attach preserves a recovered runner success after monitor drop', async () => {
     const fx = fixture();
     const handle = await spawnManagedProcess({
