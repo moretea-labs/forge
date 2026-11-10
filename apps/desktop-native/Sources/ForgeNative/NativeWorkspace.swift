@@ -2405,6 +2405,12 @@ final class NativeWorkspace: ObservableObject {
             ])
             let bytes = try JSONSerialization.data(withJSONObject:value)
             let activity = try JSONDecoder().decode(AgentLiveActivity.self,from:bytes)
+            // Runtime is the sole Codex process owner. Its observed JSONL
+            // agent_message is a provisional preview, not a persisted reply.
+            if activeConversationId == conversationId,
+               let preview = value["responsePreview"] as? String {
+                streamedAnswer = String(preview.prefix(32_000))
+            }
             liveActivity = activity.status == "running" ? activity : nil
         } catch {
             // Live activity is advisory UI only; the authoritative send result owns completion/errors.

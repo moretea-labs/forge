@@ -36,6 +36,35 @@ describe('handoff and facade contracts', () => {
     }
   });
 
+  test('Codex Runtime exposes observed interim assistant messages without inventing token deltas', async () => {
+    const conversationId = 'forge-codex-preview-test';
+    const childScript = [
+      'const emit = (event) => process.stdout.write(JSON.stringify(event) + "\\n");',
+      'emit({ type: "thread.started", thread_id: "thread-preview" });',
+      'emit({ type: "turn.started" });',
+      'setTimeout(() => emit({type:"item.started", item:{type:"agent_message"}}), 20);',
+      'setTimeout(() => emit({type:"item.updated", item:{type:"agent_message",text:"Preparing response"}}), 60);',
+      'setTimeout(() => emit({type:"item.completed", item:{type:"agent_message",text:"Final answer"}}), 1100);',
+      'setTimeout(() => emit({type:"turn.completed"}), 1140);',
+    ].join('\n');
+    const completion = runCodexConversation(
+      process.execPath, ['-e', childScript], process.env, process.cwd(), 9_000, conversationId,
+    );
+    let interim = '';
+    for (let check = 0; check < 100; check += 1) {
+      interim = readLocalConversationActivity(conversationId).responsePreview ?? '';
+      if (interim === 'Preparing response') break;
+      await Bun.sleep(25);
+    }
+    expect(interim).toBe('Preparing response');
+    const result = await completion;
+    expect(result.activity.responsePreview).toBe('Final answer');
+    expect(parseCodexConversationJsonl(result.stdout).output).toBe('Final answer');
+    expect(readLocalConversationActivity(conversationId)).toEqual({
+      conversationId, status:'idle', toolActivityCount:0, events:[],
+    });
+  }, 15_000);
+
   test('Controller MCP instructions align GitHub progress authority and prevent unbounded ChatGPT waits', () => {
     const guidance = mcpServerInstructions('controller');
     expect(guidance).toContain('Progressive source discovery');

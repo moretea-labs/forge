@@ -15,6 +15,7 @@ const LOCAL_CONVERSATION_MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
 const LOCAL_CONVERSATION_MAX_PROMPT_CHARS = 20_000;
 const LOCAL_CONVERSATION_ACTIVITY_EVENT_LIMIT = 30;
 const LOCAL_CONVERSATION_ACTIVITY_DETAIL_CHARS = 240;
+const LOCAL_CONVERSATION_RESPONSE_PREVIEW_CHARS = 32_000;
 const LOCAL_CONVERSATION_MAX_IMAGES = 4;
 const LOCAL_CONVERSATION_MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 const LOCAL_CONVERSATION_IMAGE_ROOT = 'forge-local-conversation-images';
@@ -41,6 +42,9 @@ export interface LocalConversationActivitySnapshot {
   lastActivity?: string;
   startedAt?: string;
   updatedAt?: string;
+  // Transient provider-authored assistant content, never a canonical final
+  // reply or reasoning chain. This is observed from the existing Codex JSONL.
+  responsePreview?: string;
   events: LocalConversationActivityEvent[];
 }
 
@@ -310,6 +314,7 @@ function applyActivityLine(active: ActiveLocalTurn, line: string): void {
     return;
   }
   if (type === 'turn.started') {
+    active.activity.responsePreview = undefined;
     update('thinking', '正在推理', 'active');
     return;
   }
@@ -317,15 +322,28 @@ function applyActivityLine(active: ActiveLocalTurn, line: string): void {
     update('finishing', '正在完成', 'completed');
     return;
   }
-  if (type !== 'item.started' && type !== 'item.completed') return;
+  if (type !== 'item.started' && type !== 'item.updated' && type !== 'item.completed') return;
   const item = record(event.item);
   if (!item) return;
   const itemType = typeof item.type === 'string' ? item.type : '';
   const status: LocalConversationActivityEventStatus = type === 'item.completed' ? 'completed' : 'active';
   if (itemType === 'agent_message') {
-    update('responding', '正在生成回复', status);
+    // item.updated, when exposed by the installed CLI, contains an updated
+    // user-visible message snapshot (not a guaranteed token delta).
+    // item.completed may be the first message event on some Codex versions.
+    const text = agentMessageText(item);
+    if (text) {
+      active.activity.responsePreview = text.slice(0, LOCAL_CONVERSATION_RESPONSE_PREVIEW_CHARS);
+      active.activity.updatedAt = now;
+    }
+    if (type !== 'item.updated') update('responding', '正在生成回复', status);
+    else if (text) {
+      active.activity.phase = 'responding';
+      active.activity.lastActivity = '正在接收 Codex 回复';
+    }
     return;
   }
+  if (type === 'item.updated') return;
   if (['mcp_tool_call', 'command_execution', 'file_change', 'web_search'].includes(itemType)) {
     if (type === 'item.completed') active.activity.toolActivityCount += 1;
     update('tool', activityLabel(itemType, item), status, activityDetail(itemType, item));
