@@ -234,8 +234,12 @@ export async function runSchedulerValidationReconciliation(input: {
   for (const repository of input.repositories) {
     const editValidation = await input.editValidationReconcile(input.controllerHome, repository, 200);
     if (editValidation.errors.length > 0) {
+      const sample = editValidation.errors
+        .slice(0, 3)
+        .map((item) => `${item.validationId}: ${item.error}`)
+        .join('; ');
       console.error(
-        `[forge validation] background EditSession reconciliation reported ${editValidation.errors.length} error(s) for ${repository.repoId}`,
+        `[forge validation] background EditSession reconciliation reported ${editValidation.errors.length} error(s) for ${repository.repoId}: ${sample}`,
       );
     }
   }
