@@ -3,7 +3,12 @@ import { ContextOptionList, contextOptionIndex, localPendingCopy, advanceLocalTo
 import { ForgeIcon } from '../src/ui-icons';
 import { RuntimeView, Sidebar, codexBoundPrompt, sidebarToggleShortcut } from '../src/App';
 import { SettingsView } from '../src/settings-view';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { recordProcessHandleIndexEntry, repositoryExecutionTarget } from '../../../src/runtime/execution/process-runtime/handle-index';
+import { createProcessRecord } from '../../../src/runtime/execution/process-runtime/store';
+import { callProcessTool } from '../../../adapters/mcp/runtime-gateway/process-tools';
 import { repositoryLabel } from '../src/runtime-client';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -427,6 +432,79 @@ describe('Forge Desktop Agent thread identity', () => {
     expect(await runGitCommit(true, ['../outside'])).toEqual({
       ok: false, error: 'LOCAL_FORGE_GIT_COMMIT_ARGUMENTS_INVALID',
     });
+  });
+
+  test('direct Process controls are principal-bound and cancellation is effect- and checkout-gated', async () => {
+    const script = new URL('../src-tauri/resources/forge-local-tool.mjs', import.meta.url).pathname;
+    const sourceRoot = new URL('../../../', import.meta.url).pathname;
+    const controllerHome = mkdtempSync(join(tmpdir(), 'desktop-agent-process-control-'));
+    try {
+      const processId = 'proc_foreign_owner_1';
+      const principalId = 'forge-desktop-local-harness';
+      recordProcessHandleIndexEntry(controllerHome, {
+        processId,
+        lane: 'managed',
+        target: repositoryExecutionTarget(controllerHome, 'repo_forge', 'checkout_forge'),
+        principalId,
+      });
+      createProcessRecord({
+        schemaVersion: 1,
+        processId,
+        repoId: 'repo_forge',
+        checkoutId: 'checkout_forge',
+        principalId,
+        controllerHome,
+        status: 'succeeded',
+        route: 'managed',
+        command: { kind: 'argv', executable: process.execPath, args: ['--version'], cwd: sourceRoot },
+        resourceClaims: [],
+        interactiveWaitMs: 0,
+        timeoutMs: 10_000,
+        maxOutputBytes: 4096,
+        startedAt: '2026-11-10T00:00:00.000Z',
+        updatedAt: '2026-11-10T00:00:01.000Z',
+        finishedAt: '2026-11-10T00:00:01.000Z',
+        exitCode: 0,
+        terminalFenceToken: 'fence-test',
+        terminalWritten: true,
+      });
+      async function run(tool: string, allowEffects: boolean, conversationId = 'conv_1', checkoutId?: string) {
+        const runner = Bun.spawn([process.execPath, script], { stdin: 'pipe', stdout: 'pipe' });
+        runner.stdin.write(JSON.stringify({
+          tool, repoId: 'repo_forge', checkoutId, conversationId,
+          controllerHome, sourceRoot, allowEffects,
+          arguments: { process_id: 'proc_foreign_owner_1' },
+        }));
+        runner.stdin.end();
+        const output = await new Response(runner.stdout).text();
+        expect(await runner.exited).toBe(0);
+        return JSON.parse(output);
+      }
+
+      expect(await run('process_cancel', false, 'conv_1', 'checkout_forge')).toEqual({
+        ok: false, error: 'LOCAL_FORGE_TOOL_REQUIRES_USER_APPROVAL',
+      });
+      expect(await run('process_cancel', true)).toEqual({
+        ok: false, error: 'LOCAL_FORGE_EFFECT_CHECKOUT_REQUIRED',
+      });
+      const foreignPrincipal = await callProcessTool({
+        controllerHome, repo: sourceRoot, principalId: 'outer-chatgpt-principal', sessionId: 'outer-chatgpt-session',
+      }, 'process_cancel', { repo_id: 'repo_forge', process_id: processId });
+      expect(foreignPrincipal?.isError).toBe(true);
+      expect(foreignPrincipal?.content?.map((part) => part.type === 'text' ? part.text : '').join(' '))
+        .toContain('PROCESS_HANDLE_PRINCIPAL_MISMATCH');
+      expect(await run('process_cancel', true, 'conv_1', 'checkout_other')).toEqual({
+        ok: false, error: 'LOCAL_FORGE_PROCESS_CHECKOUT_MISMATCH',
+      });
+      expect(await run('process_status', false, 'conv_1', 'checkout_forge')).toMatchObject({
+        ok: true, result: { processId, status: 'succeeded', completed: true, exitCode: 0 },
+      });
+      expect(await run('process_cancel', true, 'conv_1', 'checkout_forge')).toMatchObject({
+        ok: true, result: { processId, status: 'succeeded', completed: true, cancelled: false },
+      });
+    } finally {
+      rmSync(controllerHome, { recursive: true, force: true });
+    }
   });
 
   test('direct Forge runner denies mutations without a pinned checkout before touching source', async () => {

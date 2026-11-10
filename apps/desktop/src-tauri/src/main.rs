@@ -2389,7 +2389,7 @@ fn local_running_process_id(receipt: &Value) -> Option<&str> {
 
 fn local_api_process_pause(process_id: &str, total_calls: usize, events: &[Value]) -> Value {
     json!({
-        "output": format!("Forge 命令已受理，但尚未确认终态：可能仍在执行，也可能已经结束而查询未成功。Process ID: {process_id}。不要重复执行该命令。继续时先使用 process_status 获取权威终态，再决定后续步骤。"),
+        "output": format!("Forge 命令已受理，但尚未确认终态：可能仍在执行，也可能已经结束而查询未成功。Process ID: {process_id}。不要重复执行该命令；先用 process_status 检查同一 Process。不要仅因观察中断就取消，只有用户明确要求停止或继续执行存在具体安全风险时才使用 process_cancel。"),
         "incomplete":true,
         "toolActivityCount":total_calls,
         "toolEvents":events
@@ -2459,6 +2459,7 @@ fn local_tool_catalog(allow_effects: bool) -> Vec<Value> {
         tools.extend([
             json!({"type":"function","function":{"name":"apply_patch","description":"Apply typed Forge safe-patch operations to the selected registered repository. Forge owns mutation exclusion, fingerprint validation and evidence.","parameters":{"type":"object","properties":{"purpose":{"type":"string"},"operations":{"type":"array","items":{"type":"object"},"minItems":1,"maxItems":16},"allowed_paths":{"type":"array","items":{"type":"string"}}},"required":["purpose","operations"],"additionalProperties":false}}}),
             json!({"type":"function","function":{"name":"run_command","description":"Execute typed command arguments via Forge's authorized Process Runtime and checkout leases. Up to 10 minutes execution; if a managed Process ID is returned, inspect it with process_status before proceeding, never replay the command. No host scope.","parameters":{"type":"object","properties":{"command":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":24},"timeout_ms":{"type":"integer","minimum":1000,"maximum":600000},"max_output_bytes":{"type":"integer","minimum":1000,"maximum":12000}},"required":["command"],"additionalProperties":false}}}),
+            json!({"type":"function","function":{"name":"process_cancel","description":"Cancel a previously returned managed Process through the same Native Agent principal, repository and checkout. Use only when the user explicitly asks to stop it or continuing is unsafe; an interrupted observation alone is not a reason to cancel. Read process_status afterward and never replay the command.","parameters":{"type":"object","properties":{"process_id":{"type":"string","minLength":5,"maxLength":128}},"required":["process_id"],"additionalProperties":false}}}),
             json!({"type":"function","function":{"name":"git_commit","description":"Commit only explicitly listed repository-relative paths using Forge's canonical structured Git authority. Examine the diff first and supply a nonempty commit message. Never implicitly commit the entire index.","parameters":{"type":"object","properties":{"message":{"type":"string","minLength":1,"maxLength":500},"paths":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":32}},"required":["message","paths"],"additionalProperties":false}}}),
         ]);
     }
@@ -2479,6 +2480,13 @@ fn local_effect_outcome(name: &str, receipt: &Value) -> LocalEffectOutcome {
     }
     let result = &receipt["result"];
     match name {
+        "process_cancel" => {
+            let status = result.get("status").and_then(Value::as_str);
+            match result.get("completed").and_then(Value::as_bool) {
+                Some(true) if !matches!(status, Some("completed_unknown" | "orphaned")) => LocalEffectOutcome::Succeeded,
+                _ => LocalEffectOutcome::Unknown,
+            }
+        }
         "run_command" => match result.get("status").and_then(Value::as_str) {
             Some("succeeded") if result.get("exitCode").and_then(Value::as_i64) == Some(0)
                 && result.get("ok").and_then(Value::as_bool) != Some(false)
@@ -2535,7 +2543,7 @@ fn local_tool_execution_timeout(name: &str, arguments: &Value) -> std::time::Dur
 }
 
 fn local_tool_timeout_error(name: &str) -> &'static str {
-    if matches!(name, "run_command" | "apply_patch" | "git_commit") {
+    if matches!(name, "run_command" | "apply_patch" | "git_commit" | "process_cancel") {
         "FORGE_DESKTOP_LOCAL_TOOL_OUTCOME_UNKNOWN"
     } else {
         "FORGE_DESKTOP_LOCAL_TOOL_TIMEOUT"
@@ -3446,11 +3454,13 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
                     "FORGE_DESKTOP_API_TOOL_NOT_AUTHORIZED".into(), last_effect_request_id.as_deref()
                 ));
             }
-            let effectful = matches!(name.as_str(), "apply_patch" | "run_command" | "git_commit");
+            let effectful = matches!(name.as_str(), "apply_patch" | "run_command" | "git_commit" | "process_cancel");
             let verification_attempt = name == "run_command" && local_verification_command(&args);
             let command_budget_ms = args.get("timeout_ms").and_then(Value::as_u64)
                 .unwrap_or(60_000).clamp(1_000, 600_000);
-            let effect_request_id = if effectful {
+            let effect_request_id = if name == "process_cancel" {
+                args.get("process_id").and_then(Value::as_str).map(|process_id| format!("process-cancel:{process_id}"))
+            } else if effectful {
                 let nonce = SystemTime::now().duration_since(UNIX_EPOCH)
                     .unwrap_or_default().as_nanos();
                 let id = format!("forge-desktop-api-{}-{nonce}", std::process::id());
@@ -4195,6 +4205,18 @@ mod tests {
     }
 
     #[test]
+    fn process_cancel_outcome_requires_a_known_terminal_process_result() {
+        let cancelled = json!({"ok":true,"result":{"status":"cancelled","completed":true,"cancelled":true}});
+        assert_eq!(local_effect_outcome("process_cancel", &cancelled), LocalEffectOutcome::Succeeded);
+        let already_terminal = json!({"ok":true,"result":{"status":"failed","completed":true,"cancelled":false}});
+        assert_eq!(local_effect_outcome("process_cancel", &already_terminal), LocalEffectOutcome::Succeeded);
+        let unknown = json!({"ok":true,"result":{"status":"completed_unknown","completed":true,"cancelled":true}});
+        assert_eq!(local_effect_outcome("process_cancel", &unknown), LocalEffectOutcome::Unknown);
+        let still_running = json!({"ok":true,"result":{"status":"running","completed":false,"cancelled":false}});
+        assert_eq!(local_effect_outcome("process_cancel", &still_running), LocalEffectOutcome::Unknown);
+    }
+
+    #[test]
     fn managed_process_terminal_receipt_preserves_result_and_identity() {
         let succeeded = json!({"ok":true,"result":{
             "processId":"proc_abc_123","status":"succeeded",
@@ -4375,9 +4397,11 @@ mod tests {
         assert!(readonly_names.contains(&"git_status".to_string()));
         assert!(!readonly_names.contains(&"run_command".to_string()));
         assert!(!readonly_names.contains(&"apply_patch".to_string()));
+        assert!(!readonly_names.contains(&"process_cancel".to_string()));
         let with_permission = names(local_tool_catalog(true));
         assert!(with_permission.contains(&"run_command".to_string()));
         assert!(with_permission.contains(&"apply_patch".to_string()));
+        assert!(with_permission.contains(&"process_cancel".to_string()));
     }
 
     #[test]
@@ -4389,6 +4413,7 @@ mod tests {
         assert_eq!(local_tool_execution_timeout("apply_patch", &json!({})).as_secs(), 180);
         assert_eq!(local_tool_timeout_error("git_status"), "FORGE_DESKTOP_LOCAL_TOOL_TIMEOUT");
         assert_eq!(local_tool_timeout_error("apply_patch"), "FORGE_DESKTOP_LOCAL_TOOL_OUTCOME_UNKNOWN");
+        assert_eq!(local_tool_timeout_error("process_cancel"), "FORGE_DESKTOP_LOCAL_TOOL_OUTCOME_UNKNOWN");
     }
 
     #[test]

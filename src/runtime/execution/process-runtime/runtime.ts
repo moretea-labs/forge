@@ -1326,10 +1326,14 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
   createProcessRecord(record);
   // Instance-level locator so attachment resolves the target from the handle
   // instead of replaying placement inputs or scanning repository partitions.
+  const processScope = processScopeFromKey(input.repoId);
+  if (processScope.kind === 'repository' && input.checkoutId) {
+    processScope.checkoutId = input.checkoutId;
+  }
   recordProcessHandleIndexEntry(input.controllerHome, {
     processId,
     lane: 'managed',
-    target: processScopeExecutionTarget(input.controllerHome, processScopeFromKey(input.repoId)),
+    target: processScopeExecutionTarget(input.controllerHome, processScope),
     principalId: input.principalId,
     commandId: record.commandId,
   });
@@ -1797,6 +1801,17 @@ export function getProcessHandle(
     }
   }
   return recordToHandle(getProcessRecord(controllerHome, repoId, processId)!);
+}
+
+/** Read the canonical Process record's managed lane and exact checkout binding. */
+export function getManagedProcessExecutionBinding(
+  controllerHome: string,
+  repoId: string,
+  processId: string,
+): { checkoutId?: string } | undefined {
+  const record = getProcessRecord(controllerHome, repoId, processId);
+  if (!record || record.route !== 'managed') return undefined;
+  return { checkoutId: record.checkoutId };
 }
 
 export async function waitForProcess(

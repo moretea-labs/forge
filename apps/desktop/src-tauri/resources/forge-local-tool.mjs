@@ -11,6 +11,7 @@ const tools = Object.freeze({
   git_status: { name: 'repository_git_status', effect: false },
   git_diff: { name: 'repository_git_diff', effect: false },
   process_status: { name: 'process_get', effect: false },
+  process_cancel: { name: 'process_cancel', effect: true },
   patch_plan: { name: 'repository_safe_patch_plan', effect: false },
   apply_patch: { name: 'repository_safe_patch_apply', effect: true },
   run_command: { name: 'execute_command', effect: true },
@@ -47,6 +48,7 @@ async function execute(raw) {
     git_status: ['refresh'],
     git_diff: ['paths','staged','max_bytes'],
     process_status: ['process_id','wait_ms'],
+    process_cancel: ['process_id'],
     patch_plan: ['operations','chunk_size'],
     apply_patch: ['operations','purpose','allowed_paths','request_id'],
     run_command: ['command','timeout_ms','max_output_bytes','interactive_wait_ms','request_id'],
@@ -85,23 +87,51 @@ async function execute(raw) {
     }
   }
 
-  if (input.tool === 'process_status') {
+  if (input.tool === 'process_status' || input.tool === 'process_cancel') {
     const processId = requireId(args.process_id, 'PROCESS');
     if (!processId.startsWith('proc_')) throw Error('LOCAL_FORGE_PROCESS_INVALID');
-    const waitMs = args.wait_ms;
+    const waitMs = input.tool === 'process_status' ? args.wait_ms : undefined;
     if (waitMs !== undefined && (!Number.isSafeInteger(waitMs) || waitMs < 1 || waitMs > 15000)) {
       throw Error('LOCAL_FORGE_PROCESS_WAIT_INVALID');
     }
-    const entry = join(sourceRoot, 'src/runtime/execution/process-runtime/runtime.ts');
-    const { getProcessHandle, waitForProcess } = await import(pathToFileURL(entry).href);
-    const handle = waitMs === undefined
-      ? getProcessHandle(controllerHome, repoId, processId)
-      : await waitForProcess(controllerHome, repoId, processId, { timeoutMs: waitMs });
-    if (!handle) throw Error('LOCAL_FORGE_PROCESS_NOT_FOUND');
+    if (!checkoutId) throw Error('LOCAL_FORGE_PROCESS_CHECKOUT_REQUIRED');
+    const runtimeEntry = join(sourceRoot, 'src/runtime/execution/process-runtime/runtime.ts');
+    const { getManagedProcessExecutionBinding } = await import(pathToFileURL(runtimeEntry).href);
+    const binding = getManagedProcessExecutionBinding(controllerHome, repoId, processId);
+    if (!binding) throw Error('LOCAL_FORGE_PROCESS_NOT_MANAGED');
+    if (binding.checkoutId !== checkoutId) throw Error('LOCAL_FORGE_PROCESS_CHECKOUT_MISMATCH');
+    const entry = join(sourceRoot, 'adapters/mcp/runtime-gateway/process-tools.ts');
+    const { callProcessTool } = await import(pathToFileURL(entry).href);
+    const processToolName = input.tool === 'process_cancel'
+      ? 'process_cancel'
+      : waitMs === undefined ? 'process_get' : 'process_wait';
+    const processToolArgs = {
+      repo_id: repoId,
+      process_id: processId,
+      ...(processToolName === 'process_wait' ? { timeout_ms: waitMs } : {}),
+    };
+    const toolResult = await callProcessTool({
+      controllerHome,
+      repo: sourceRoot,
+      principalId: 'forge-desktop-local-harness',
+      sessionId: 'desktop-agent:' + conversationId,
+    }, processToolName, processToolArgs);
+    if (!toolResult) throw Error('LOCAL_FORGE_PROCESS_TOOL_NOT_SUPPORTED');
+    const value = toolResult.structuredContent ?? {
+      content: toolResult.content?.filter((part) => part.type === 'text').map((part) => part.text).join('\\n') ?? '',
+    };
+    if (toolResult.isError) throw Error(value.error?.message ?? 'LOCAL_FORGE_PROCESS_FAILED');
+    const handle = value.process;
+    if (!handle || typeof handle !== 'object') throw Error('LOCAL_FORGE_PROCESS_NOT_FOUND');
     return { ok: true, result: {
-      processId: handle.processId, status: handle.status, completed: handle.completed,
-      ok: handle.ok ?? null, exitCode: handle.exitCode ?? null,
+      processId: handle.processId,
+      status: handle.status,
+      completed: handle.completed === true,
+      observationInterrupted: handle.observationInterrupted === true,
+      ok: handle.ok ?? null,
+      exitCode: handle.exitCode ?? null,
       timedOut: handle.timedOut ?? false,
+      cancelled: input.tool === 'process_cancel' ? value.cancelled === true : handle.cancelled ?? false,
       stdoutTail: String(handle.stdoutTail ?? '').slice(-2000),
       stderrTail: String(handle.stderrTail ?? '').slice(-2000),
     }};
