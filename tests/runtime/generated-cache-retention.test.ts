@@ -156,6 +156,289 @@ describe('generated repository cache retention', () => {
     expect(existsSync(join(projectBuild, 'Build'))).toBe(false);
   });
 
+  test('reclaims only proven aged SwiftPM, Cargo and Next build output inside bounded checkout paths', () => {
+    const root = repository();
+    const swift = join(root, 'integrations', 'note-editor');
+    const swiftOutput = join(swift, '.build', 'arm64-apple-macosx', 'debug');
+    mkdirSync(join(swiftOutput, 'Modules'), { recursive: true });
+    writeFileSync(join(swift, 'Package.swift'), '// swift-tools-version: 6.0');
+    writeFileSync(join(swiftOutput, 'Modules', 'editor.swiftmodule'), 'generated');
+
+    const cargo = join(root, 'apps', 'desktop', 'src-tauri');
+    const cargoOutput = join(cargo, 'target', 'debug');
+    mkdirSync(join(cargoOutput, '.fingerprint'), { recursive: true });
+    mkdirSync(join(cargoOutput, 'deps'), { recursive: true });
+    writeFileSync(join(cargo, 'Cargo.toml'), '[package]\nname = "app"');
+    writeFileSync(join(cargo, 'target', 'CACHEDIR.TAG'), 'Signature: 8a477f597d28d172789f06886806bc55');
+
+    const site = join(root, 'apps', 'site');
+    const nextOutput = join(site, '.next');
+    mkdirSync(join(nextOutput, 'cache'), { recursive: true });
+    writeFileSync(join(nextOutput, 'cache', 'generated-cache'), 'temporary');
+    writeFileSync(join(site, 'package.json'), JSON.stringify({ dependencies: { next: '15.0.0' } }));
+    writeFileSync(join(nextOutput, 'BUILD_ID'), 'generated');
+
+    const unknown = join(root, 'apps', 'docs', '.next');
+    mkdirSync(unknown, { recursive: true });
+    writeFileSync(join(unknown, 'BUILD_ID'), 'user data');
+    writeFileSync(join(root, 'apps', 'docs', 'package.json'), '{"name":"docs"}');
+    for (const p of [join(swift, '.build'), join(swift, '.build', 'arm64-apple-macosx'), swiftOutput,
+      join(cargo, 'target'), cargoOutput, join(cargoOutput, 'deps'),
+      join(cargoOutput, '.fingerprint'), join(swiftOutput, 'Modules'),
+      nextOutput, join(nextOutput, 'cache'), unknown]) age(p);
+
+    const report = cleanupGeneratedRepositoryCaches(root, {
+      nowMs: Date.parse('2026-11-10T00:00:00.000Z'), maxEntries: 300,
+      processCommands: [], maxRemovals: 8,
+    });
+    expect(report.removedPaths).toContain('integrations/note-editor/.build/arm64-apple-macosx/debug');
+    expect(report.removedPaths).toContain('apps/desktop/src-tauri/target/debug');
+    expect(report.removedPaths).toContain('apps/site/.next/cache');
+    expect(existsSync(join(nextOutput, 'BUILD_ID'))).toBe(true);
+    expect(existsSync(join(swift, 'Package.swift'))).toBe(true);
+    expect(existsSync(join(swift, '.build'))).toBe(true);
+    expect(existsSync(join(cargo, 'target', 'CACHEDIR.TAG'))).toBe(true);
+    expect(existsSync(join(cargo, 'Cargo.toml'))).toBe(true);
+    expect(existsSync(join(site, 'package.json'))).toBe(true);
+    expect(existsSync(unknown)).toBe(true);
+    expect(report.byClass.swiftpm_build).toMatchObject({ scanned: 1, eligible: 1, retained: 0, removed: 1 });
+    expect(report.byClass.cargo_build).toMatchObject({ scanned: 1, eligible: 1, retained: 0, removed: 1 });
+    expect(report.byClass.next_build).toMatchObject({ scanned: 1, eligible: 1, retained: 0, removed: 1 });
+    expect(report.errors).toEqual([]);
+  });
+
+  test('protects active, tracked, recent, unknown and symlinked toolchain caches', () => {
+    const root = repository();
+    const cargo = join(root, 'target');
+    const debug = join(cargo, 'debug');
+    mkdirSync(join(debug, 'deps'), { recursive: true });
+    mkdirSync(join(debug, '.fingerprint'), { recursive: true });
+    writeFileSync(join(root, 'Cargo.toml'), '[workspace]');
+    writeFileSync(join(cargo, 'CACHEDIR.TAG'), 'generated');
+    writeFileSync(join(debug, 'deps', 'save'), 'keep');
+    age(join(debug, 'deps')); age(join(debug, '.fingerprint')); age(debug); age(cargo);
+
+    const live = cleanupGeneratedRepositoryCaches(root, { processCommands: ['cargo build'],
+      nowMs: Date.parse('2026-11-10T00:00:00.000Z') });
+    expect(existsSync(debug)).toBe(true);
+    expect(live.skippedByReason.active_process ?? 0).toBeGreaterThanOrEqual(1);
+    expect(live.byClass.cargo_build).toMatchObject({ scanned: 1, retained: 1, removed: 0 });
+
+    execFileSync('git', ['-C', root, 'add', 'target/debug/deps/save']);
+    const tracked = cleanupGeneratedRepositoryCaches(root, { processCommands: [],
+      nowMs: Date.parse('2026-11-10T00:00:00.000Z') });
+    expect(existsSync(debug)).toBe(true);
+    expect(tracked.skippedByReason.tracked_content ?? 0).toBeGreaterThanOrEqual(1);
+
+    const fake = join(root, 'target', 'release');
+    mkdirSync(join(fake, 'deps'), { recursive: true });
+    writeFileSync(join(fake, 'keep'), 'unknown'); age(fake);
+    const unknown = cleanupGeneratedRepositoryCaches(root, { processCommands: [],
+      nowMs: Date.parse('2026-11-10T00:00:00.000Z') });
+    expect(existsSync(fake)).toBe(true);
+    expect(unknown.removedPaths).not.toContain('target/release');
+  });
+
+  test('retains active SwiftPM and Next build outputs when compiler commands are present', () => {
+    const root = repository();
+    writeFileSync(join(root, 'Package.swift'), '// swift-tools-version: 6.0');
+    writeFileSync(join(root, 'package.json'), JSON.stringify({ devDependencies: { next: '15.0.0' } }));
+
+    const swiftRoot = join(root, '.build');
+    const swiftOutput = join(swiftRoot, 'arm64-apple-macosx', 'debug');
+    mkdirSync(join(swiftOutput, 'Modules'), { recursive: true });
+    writeFileSync(join(swiftOutput, 'Modules', 'editor.swiftmodule'), 'compiled');
+    age(join(swiftOutput, 'Modules')); age(swiftOutput); age(join(swiftRoot, 'arm64-apple-macosx')); age(swiftRoot);
+
+    const nextRoot = join(root, '.next');
+    const nextCache = join(nextRoot, 'cache');
+    mkdirSync(nextCache, { recursive: true });
+    writeFileSync(join(nextRoot, 'BUILD_ID'), 'generated');
+    writeFileSync(join(nextCache, 'cache.bin'), 'compiled');
+    age(nextCache); age(nextRoot);
+
+    const report = cleanupGeneratedRepositoryCaches(root, {
+      nowMs: Date.parse('2026-11-10T00:00:00.000Z'),
+      processCommands: ['swiftc -module-name Editor', 'node /tmp/project/node_modules/next/dist/bin/next build'],
+    });
+    expect(existsSync(swiftOutput)).toBe(true);
+    expect(existsSync(nextCache)).toBe(true);
+    expect(report.skippedByReason.active_process ?? 0).toBeGreaterThanOrEqual(2);
+  });
+
+  test('retains recently updated compiler markers and refuses symlinked Cargo cache roots', () => {
+    const root = repository();
+    writeFileSync(join(root, 'Cargo.toml'), '[workspace]');
+    const cargo = join(root, 'target');
+    const output = join(cargo, 'debug');
+    mkdirSync(join(output, '.fingerprint'), { recursive: true });
+    mkdirSync(join(output, 'deps'), { recursive: true });
+    writeFileSync(join(cargo, 'CACHEDIR.TAG'), 'generated');
+    writeFileSync(join(output, 'deps', 'live.bin'), 'just rebuilt');
+    age(output); age(cargo); age(join(output, '.fingerprint'));
+    const recent = cleanupGeneratedRepositoryCaches(root, {
+      nowMs: Date.now(), processCommands: [],
+    });
+    expect(existsSync(output)).toBe(true);
+    expect(recent.skippedByReason.retention_grace ?? 0).toBeGreaterThanOrEqual(1);
+
+    const outside = join(root, 'not-a-cache');
+    mkdirSync(join(outside, '.fingerprint'), { recursive: true });
+    mkdirSync(join(outside, 'deps'), { recursive: true });
+    symlinkSync(outside, join(cargo, 'release'), 'dir');
+    const linked = cleanupGeneratedRepositoryCaches(root, {
+      nowMs: Date.parse('2026-11-10T00:00:00.000Z'), processCommands: [],
+    });
+    expect(existsSync(join(cargo, 'release'))).toBe(true);
+    expect(existsSync(outside)).toBe(true);
+    expect(linked.removedPaths).not.toContain('target/release');
+  });
+
+  test('reclaims SwiftPM and Next caches across multiple clean integrated linked checkouts', () => {
+    const canonicalRoot = repository();
+    writeFileSync(join(canonicalRoot, 'Package.swift'), '// swift-tools-version: 6.0');
+    writeFileSync(join(canonicalRoot, 'package.json'), JSON.stringify({ devDependencies: { next: '15.0.0' } }));
+    writeFileSync(join(canonicalRoot, '.gitignore'), '.build/\n.next/\n');
+    writeFileSync(join(canonicalRoot, 'README.md'), 'baseline');
+    execFileSync('git', ['-C', canonicalRoot, 'add', '.']);
+    execFileSync('git', ['-C', canonicalRoot, '-c', 'user.name=Test', '-c',
+      'user.email=test@example.org', 'commit', '-qm', 'initial']);
+
+    const parent = mkdtempSync(join(tmpdir(), 'forge-gc-multi-checkouts-'));
+    roots.push(parent);
+    const swiftCheckout = join(parent, 'swift');
+    const nextCheckout = join(parent, 'next');
+    execFileSync('git', ['-C', canonicalRoot, 'worktree', 'add', '--detach', swiftCheckout]);
+    execFileSync('git', ['-C', canonicalRoot, 'worktree', 'add', '--detach', nextCheckout]);
+
+    const swiftRoot = join(swiftCheckout, '.build');
+    const swiftOutput = join(swiftRoot, 'arm64-apple-macosx', 'debug');
+    mkdirSync(join(swiftOutput, 'Modules'), { recursive: true });
+    writeFileSync(join(swiftOutput, 'Modules', 'editor.swiftmodule'), 'compiled');
+    age(join(swiftOutput, 'Modules')); age(swiftOutput); age(join(swiftRoot, 'arm64-apple-macosx')); age(swiftRoot);
+
+    const nextRoot = join(nextCheckout, '.next');
+    const nextCache = join(nextRoot, 'cache');
+    mkdirSync(nextCache, { recursive: true });
+    writeFileSync(join(nextRoot, 'BUILD_ID'), 'generated');
+    writeFileSync(join(nextCache, 'cache.bin'), 'compiled');
+    age(nextCache); age(nextRoot);
+
+    const report = cleanupGeneratedRepositoryCheckoutCaches({
+      canonicalRoot,
+      checkouts: [
+        { localRoot: swiftCheckout, worktree: true, lifecycle: 'active' },
+        { localRoot: nextCheckout, worktree: true, lifecycle: 'active' },
+      ],
+    }, {
+      nowMs: Date.parse('2026-11-10T00:00:00.000Z'),
+      processCommands: [],
+      maxEntries: 300,
+      maxRemovals: 8,
+    });
+    expect(report.removedPaths.some((path) => path.startsWith(swiftCheckout + ':') && path.endsWith('.build/arm64-apple-macosx/debug'))).toBe(true);
+    expect(report.removedPaths.some((path) => path.startsWith(nextCheckout + ':') && path.endsWith('.next/cache'))).toBe(true);
+    expect(report.byClass.swiftpm_build).toMatchObject({ scanned: 1, eligible: 1, removed: 1 });
+    expect(report.byClass.next_build).toMatchObject({ scanned: 1, eligible: 1, removed: 1 });
+    expect(typeof report.filesystemAvailableBytesDelta).toBe('number');
+    const canonicalHead = execFileSync('git', ['-C', canonicalRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    for (const root of [canonicalRoot, swiftCheckout, nextCheckout]) {
+      expect(execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()).toBe(canonicalHead);
+      expect(execFileSync('git', ['-C', root, 'status', '--porcelain', '--untracked-files=normal'], { encoding: 'utf8' }).trim()).toBe('');
+    }
+    expect(existsSync(join(swiftCheckout, 'Package.swift'))).toBe(true);
+    expect(existsSync(join(nextCheckout, 'package.json'))).toBe(true);
+  });
+
+  test('reclaims clean integrated linked worktree caches but preserves dirty and unmerged worktrees', () => {
+    const canonicalRoot = repository();
+    writeFileSync(join(canonicalRoot, 'Cargo.toml'), '[workspace]');
+    writeFileSync(join(canonicalRoot, '.gitignore'), 'target/');
+    writeFileSync(join(canonicalRoot, 'README.md'), 'baseline');
+    execFileSync('git', ['-C', canonicalRoot, 'add', '.']);
+    execFileSync('git', ['-C', canonicalRoot, '-c', 'user.name=Test', '-c',
+      'user.email=test@example.org', 'commit', '-qm', 'initial']);
+
+    const parent = mkdtempSync(join(tmpdir(), 'forge-gc-linked-checkout-'));
+    roots.push(parent);
+    const linked = join(parent, 'linked');
+    execFileSync('git', ['-C', canonicalRoot, 'worktree', 'add', '--detach', linked]);
+    const output = join(linked, 'target', 'debug');
+    const createCache = () => {
+      mkdirSync(join(output, 'deps'), { recursive: true });
+      mkdirSync(join(output, '.fingerprint'), { recursive: true });
+      writeFileSync(join(linked, 'target', 'CACHEDIR.TAG'), 'cargo-generated');
+      writeFileSync(join(output, 'deps', 'artifact'), 'compiled');
+      age(join(output, 'deps')); age(join(output, '.fingerprint'));
+      age(output); age(join(linked, 'target'));
+    };
+    const options = {
+      nowMs: Date.parse('2026-11-10T00:00:00.000Z'), processCommands: [],
+      maxEntries: 300, maxRemovals: 5, rootStartIndex: 1,
+    };
+    const repoSet = { canonicalRoot, checkouts: [{ localRoot: linked, worktree: true, lifecycle: 'active' as const }] };
+    createCache();
+    const clean = cleanupGeneratedRepositoryCheckoutCaches(repoSet, options);
+    expect(clean.removedPaths.some((path) => path.includes(linked) && path.endsWith('target/debug'))).toBe(true);
+    expect(existsSync(join(linked, 'Cargo.toml'))).toBe(true);
+
+    createCache();
+    writeFileSync(join(linked, 'README.md'), 'dirty source');
+    const dirty = cleanupGeneratedRepositoryCheckoutCaches(repoSet, options);
+    expect(existsSync(output)).toBe(true);
+    expect(dirty.skippedByReason.worktree_source_protected ?? 0).toBeGreaterThanOrEqual(1);
+
+    execFileSync('git', ['-C', linked, 'checkout', '--', 'README.md']);
+    writeFileSync(join(linked, 'untracked-source.md'), 'new source');
+    const untracked = cleanupGeneratedRepositoryCheckoutCaches(repoSet, options);
+    expect(existsSync(output)).toBe(true);
+    expect(untracked.skippedByReason.worktree_source_protected ?? 0).toBeGreaterThanOrEqual(1);
+    rmSync(join(linked, 'untracked-source.md'));
+    writeFileSync(join(linked, 'extra.md'), 'independent commit');
+    execFileSync('git', ['-C', linked, 'add', 'extra.md']);
+    execFileSync('git', ['-C', linked, '-c', 'user.name=Test', '-c',
+      'user.email=test@example.org', 'commit', '-qm', 'unmerged']);
+    const unmerged = cleanupGeneratedRepositoryCheckoutCaches(repoSet, options);
+    expect(existsSync(output)).toBe(true);
+    expect(unmerged.skippedByReason.worktree_source_protected ?? 0).toBeGreaterThanOrEqual(1);
+  });
+
+  test('repeated bounded passes converge on old Cargo outputs without deleting source or producer metadata', () => {
+    const root = repository();
+    writeFileSync(join(root, 'Cargo.toml'), '[workspace]');
+    const target = join(root, 'target');
+    mkdirSync(target, { recursive: true });
+    writeFileSync(join(target, 'CACHEDIR.TAG'), 'cargo-generated');
+    for (const variant of ['debug', 'release']) {
+      const output = join(target, variant);
+      mkdirSync(join(output, '.fingerprint'), { recursive: true });
+      mkdirSync(join(output, 'deps'), { recursive: true });
+      writeFileSync(join(output, 'deps', 'cache.bin'), 'rebuildable compilation cache');
+      age(join(output, '.fingerprint'));
+      age(join(output, 'deps'));
+      age(output);
+    }
+    age(target);
+    const options = {
+      nowMs: Date.parse('2026-11-10T00:00:00.000Z'), processCommands: [],
+      maxEntries: 300, maxRemovals: 1,
+    };
+    const first = cleanupGeneratedRepositoryCaches(root, options);
+    expect(first.removedPaths).toHaveLength(1);
+    expect(first.byClass.cargo_build).toMatchObject({ scanned: 2, eligible: 1, removed: 1, retained: 1 });
+    expect(first.reclaimedBytes).toBeGreaterThan(0);
+    // Removing debug updates target mtime. Simulate the configured grace
+    // elapsing before the next bounded repository scan.
+    age(target);
+    const second = cleanupGeneratedRepositoryCaches(root, { ...options, scanStartIndex: 1 });
+    expect(second.removedPaths).toHaveLength(1);
+    expect(second.byClass.cargo_build?.removed).toBe(1);
+    expect(existsSync(join(target, 'debug'))).toBe(false);
+    expect(existsSync(join(target, 'release'))).toBe(false);
+    expect(existsSync(join(root, 'Cargo.toml'))).toBe(true);
+    expect(existsSync(join(target, 'CACHEDIR.TAG'))).toBe(true);
+  });
+
   test('discovers only valid sibling DerivedData-* buckets under .forge/ios and preserves guarded content', () => {
     const root = repository();
     const ios = join(root, '.forge', 'ios');
@@ -247,7 +530,7 @@ describe('generated repository cache retention', () => {
     const first = cleanupGeneratedRepositoryCaches(root, { ...options, scanStartIndex: 0 });
     expect(first.removedPaths).toContain('.forge/ios/DerivedData/nested/Build');
     expect(existsSync(join(sibling, 'Build'))).toBe(true);
-    const next = cleanupGeneratedRepositoryCaches(root, { ...options, scanStartIndex: 5 });
+    const next = cleanupGeneratedRepositoryCaches(root, { ...options, scanStartIndex: 6 });
     expect(next.removedPaths).toContain('.forge/ios/DerivedData-sibling/Build');
     expect(existsSync(join(sibling, 'Build'))).toBe(false);
   });
@@ -271,7 +554,7 @@ describe('generated repository cache retention', () => {
       maxRemovals: 1,
     };
     const removed: string[] = [];
-    for (const scanStartIndex of [0, 5, 10, 15]) {
+    for (const scanStartIndex of [0, 6, 12, 18]) {
       removed.push(...cleanupGeneratedRepositoryCaches(root, { ...options, scanStartIndex }).removedPaths);
     }
     expect(removed).toContain('.forge/ios/DerivedData/nested-a/Build');
@@ -326,7 +609,7 @@ describe('generated repository cache retention', () => {
       processCommands: [] as string[],
     };
     const firstRound = cleanupGeneratedRepositoryCaches(root, { ...options, scanStartIndex: 0 });
-    const secondRound = cleanupGeneratedRepositoryCaches(root, { ...options, scanStartIndex: 5 });
+    const secondRound = cleanupGeneratedRepositoryCaches(root, { ...options, scanStartIndex: 6 });
     expect(firstRound.removedPaths).toContain('.repo-harness/a-older-xcode/Build');
     expect(secondRound.removedPaths).toContain('.repo-harness/z-older-xcode/Build');
     expect(firstRound.inspected).toBe(1);
@@ -426,7 +709,7 @@ describe('generated repository cache retention', () => {
     const next = cleanupGeneratedRepositoryCheckoutCaches({
       canonicalRoot, checkouts: [{ localRoot: activeWorktreeRoot, worktree: true }],
     }, { nowMs: Date.parse('2026-08-25T12:00:00.000Z'), graceMs: 60_000,
-      maxEntries: 1, maxRemovals: 1, rootStartIndex: 21, processCommands: [`xcodebuild -derivedDataPath ${protectedCache}`] });
+      maxEntries: 1, maxRemovals: 1, rootStartIndex: 25, processCommands: [`xcodebuild -derivedDataPath ${protectedCache}`] });
     expect(next.rootsInspected).toBe(1);
     expect(existsSync(join(protectedCache, 'Build'))).toBe(true);
     expect(existsSync(join(lateCache, 'Build'))).toBe(false);

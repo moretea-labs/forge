@@ -6,7 +6,9 @@ import {
   opendirSync,
   readdirSync,
   realpathSync,
+  readFileSync,
   rmSync,
+  statfsSync,
 } from 'fs';
 import { homedir } from 'os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'path';
@@ -30,11 +32,17 @@ export interface GeneratedCacheRetentionOptions {
   maxEntries?: number;
   maxRemovals?: number;
   processCommands?: string[];
+  /** Internal checkout ownership fence: only verified integrated worktrees may prune toolchain output. */
+  protectToolchainOutputs?: boolean;
   rootStartIndex?: number;
   scanStartIndex?: number;
 }
 
 export interface GeneratedCacheRetentionReport {
+  /** Bounded per-class accounting; retained = scanned - removed. Bytes are logical, not disk-free delta. */
+  byClass: Record<string, { scanned: number; eligible: number; retained: number; removed: number; reclaimedBytes: number }>;
+  /** Observed statfs available-byte delta on the report root's filesystem; concurrent I/O is not attributable to cleanup. */
+  filesystemAvailableBytesDelta?: number | null;
   inspected: number;
   eligible: number;
   removedPaths: string[];
@@ -110,6 +118,10 @@ interface Candidate {
     | 'forge_ios_derived_data'
     | 'forge_ios_derived_data_sibling'
     | 'project_build_derived_data'
+    | 'toolchain_scan'
+    | 'swiftpm_build'
+    | 'cargo_build'
+    | 'next_build'
     | 'harness_derived_data'
     | 'repo_harness_derived_data'
     | 'tmp_derived_data'
@@ -287,6 +299,147 @@ function nestedDerivedDataDirectories(root: string, maxDepth: number, budget: { 
   return found;
 }
 
+function regularFile(path: string): boolean {
+  try { const stat = lstatSync(path); return stat.isFile() && !stat.isSymbolicLink(); }
+  catch { return false; }
+}
+
+function directoryNotSymlink(path: string): boolean {
+  try { const stat = lstatSync(path); return stat.isDirectory() && !stat.isSymbolicLink(); }
+  catch { return false; }
+}
+
+function filesystemAvailableBytes(path: string): number | null {
+  try {
+    const stats = statfsSync(path);
+    const bytes = Number(stats.bavail) * Number(stats.bsize);
+    return Number.isFinite(bytes) && bytes >= 0 ? bytes : null;
+  } catch { return null; }
+}
+
+function nextBuildManifestValid(project: string): boolean {
+  const path = join(project, 'package.json');
+  if (!regularFile(path)) return false;
+  try {
+    if (lstatSync(path).size > 128 * 1024) return false;
+    const manifest = JSON.parse(readFileSync(path, 'utf8')) as {
+      dependencies?: Record<string, unknown>;
+      devDependencies?: Record<string, unknown>;
+    };
+    return typeof (manifest.dependencies?.next ?? manifest.devDependencies?.next) === 'string';
+  } catch { return false; }
+}
+
+function verifiedToolchainCandidate(candidate: Candidate): boolean {
+  if (!candidate.cacheRoot) return false;
+  const project = dirname(candidate.cacheRoot);
+  if (candidate.kind === 'swiftpm_build') {
+    if (!regularFile(join(project, 'Package.swift'))) return false;
+    if (!['debug', 'release'].includes(basename(candidate.path))) return false;
+    if (!directoryNotSymlink(candidate.cacheRoot)) return false;
+    return ['Modules', 'build.db', 'description.json'].some((name) => existsSync(join(candidate.path, name)));
+  }
+  if (candidate.kind === 'cargo_build') {
+    return regularFile(join(project, 'Cargo.toml'))
+      && regularFile(join(candidate.cacheRoot, 'CACHEDIR.TAG'))
+      && ['debug', 'release'].includes(basename(candidate.path))
+      && directoryNotSymlink(join(candidate.path, 'deps'))
+      && directoryNotSymlink(join(candidate.path, '.fingerprint'));
+  }
+  if (candidate.kind === 'next_build') {
+    return nextBuildManifestValid(project)
+      && candidate.path === join(candidate.cacheRoot, 'cache')
+      && regularFile(join(candidate.cacheRoot, 'BUILD_ID'));
+  }
+  return false;
+}
+
+function cleanIntegratedWorktree(root: string, canonicalRoot: string): boolean {
+  try {
+    const status = execFileSync('git', ['-C', root, 'status', '--porcelain', '--untracked-files=normal'], {
+      encoding: 'utf8', timeout: 2_000, maxBuffer: 128 * 1024,
+    });
+    if (status.trim() !== '') return false;
+    const head = execFileSync('git', ['-C', canonicalRoot, 'rev-parse', 'HEAD'], {
+      encoding: 'utf8', timeout: 2_000, stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    execFileSync('git', ['-C', root, 'merge-base', '--is-ancestor', 'HEAD', head], {
+      stdio: 'ignore', timeout: 2_000,
+    });
+    return true;
+  } catch { return false; }
+}
+
+function generatedToolchainCandidates(root: string, budget: { remaining: number }, round: number): Candidate[] {
+  const found: Candidate[] = [];
+  const projectRoots = [root];
+  // Discover bounded project roots, including apps/desktop/src-tauri and
+  // integrations/<package>. Never follow symlinks, node_modules or worktrees.
+  for (const namespace of ['apps', 'integrations', 'packages']) {
+    const parents = directChildDirectories(join(root, namespace), () => true, budget, round);
+    for (const parent of parents) {
+      projectRoots.push(parent);
+      projectRoots.push(...directChildDirectories(parent, (name) =>
+        !['.git', '.build', '.next', 'target', 'node_modules', 'build', 'dist'].includes(name),
+      budget, round));
+    }
+  }
+  if (projectRoots.length > 1) {
+    const offset = ((Math.trunc(round) % projectRoots.length) + projectRoots.length) % projectRoots.length;
+    projectRoots.push(...projectRoots.splice(0, offset));
+  }
+  for (const project of projectRoots) {
+    if (budget.remaining <= 0) break;
+    const swiftRoot = join(project, '.build');
+    if (regularFile(join(project, 'Package.swift')) && !hasSymlinkAncestor(root, swiftRoot)
+        && existsSync(swiftRoot)) {
+      for (const variant of directChildDirectories(swiftRoot, (name) =>
+        name === 'debug' || name === 'release' || /^[a-z0-9_]+-apple-(macosx|ios[a-z]*)$/.test(name),
+      budget, round)) {
+        const configurations = basename(variant) === 'debug' || basename(variant) === 'release'
+          ? [variant] : directChildDirectories(variant, (name) => name === 'debug' || name === 'release', budget, round);
+        for (const output of configurations) {
+          if (!regularFile(join(project, 'Package.swift'))) continue;
+          if (!existsSync(join(output, 'Modules')) && !existsSync(join(output, 'build.db'))
+              && !existsSync(join(output, 'description.json'))) continue;
+          found.push({ kind: 'swiftpm_build', path: output, cacheRoot: swiftRoot });
+        }
+      }
+    }
+    const cargoRoot = join(project, 'target');
+    if (regularFile(join(project, 'Cargo.toml')) && regularFile(join(cargoRoot, 'CACHEDIR.TAG'))
+        && !hasSymlinkAncestor(root, cargoRoot)) {
+      for (const output of directChildDirectories(cargoRoot, (name) => name === 'debug' || name === 'release', budget, round)) {
+        if (existsSync(join(output, '.fingerprint')) && existsSync(join(output, 'deps'))) {
+          found.push({ kind: 'cargo_build', path: output, cacheRoot: cargoRoot });
+        }
+      }
+    }
+    const nextRoot = join(project, '.next');
+    const nextCache = join(nextRoot, 'cache');
+    // Server/chunk output in .next may serve a live deployment: only its
+    // documented rebuildable cache subdirectory is disposable.
+    if (regularFile(join(nextRoot, 'BUILD_ID')) && nextBuildManifestValid(project)
+        && directoryNotSymlink(nextCache) && !hasSymlinkAncestor(root, nextCache)
+        && budget.remaining > 0) {
+      budget.remaining -= 1;
+      found.push({ kind: 'next_build', path: nextCache, cacheRoot: nextRoot });
+    }
+  }
+  return found;
+}
+
+function toolchainProcessActive(commands: readonly string[], candidate: Candidate): boolean {
+  const executable = candidate.kind === 'swiftpm_build'
+    ? /(?:^|[\s/])(?:swiftc|swift-frontend|swift|xcodebuild)(?:\s|$)/
+    : candidate.kind === 'cargo_build'
+      ? /(?:^|[\s/])(?:cargo|rustc|rustdoc)(?:\s|$)/
+      : /(?:^|[\s/])(?:next|next-server)(?:\s|$)/;
+  // ps does not reliably expose cwd. A language compiler without an exact
+  // checkout path is not proof that this particular build output is idle.
+  return commands.some((command) => executable.test(command));
+}
+
 function discoverCandidates(repoRoot: string, maxEntries: number, scanRound: number): { candidates: Candidate[]; inspected: number; truncated: boolean } {
   const root = resolve(repoRoot);
   const budget = { remaining: Math.max(1, maxEntries) };
@@ -299,6 +452,7 @@ function discoverCandidates(repoRoot: string, maxEntries: number, scanRound: num
   const namespaces: Array<{ root: string; kind: Candidate['kind']; depth?: number }> = [
     { root: join(root, '.forge', 'ios', 'DerivedData'), kind: 'forge_ios_derived_data' },
     { root: join(root, 'build'), kind: 'project_build_derived_data' },
+    { root, kind: 'toolchain_scan' },
     { root: join(root, '.ai', 'harness'), kind: 'harness_derived_data' },
     { root: join(root, '.repo-harness'), kind: 'repo_harness_derived_data', depth: 5 },
     { root: join(root, '.tmp'), kind: 'tmp_derived_data', depth: 6 },
@@ -307,6 +461,10 @@ function discoverCandidates(repoRoot: string, maxEntries: number, scanRound: num
   namespaces.push(...namespaces.splice(0, offset));
   const entryRound = Math.floor(scanRound / namespaces.length);
   for (const namespace of namespaces) {
+    if (namespace.kind === 'toolchain_scan') {
+      candidates.push(...generatedToolchainCandidates(root, budget, entryRound));
+      continue;
+    }
     const iosNamespace = namespace.kind === 'forge_ios_derived_data';
     const projectBuildNamespace = namespace.kind === 'project_build_derived_data';
     const roots: Array<{ path: string; kind: Candidate['kind']; matches: (name: string) => boolean }> =
@@ -357,6 +515,10 @@ function candidateOwnedRoot(repoRoot: string, candidate: Candidate): string {
     case 'forge_ios_derived_data': return join(repoRoot, '.forge', 'ios', 'DerivedData');
     case 'forge_ios_derived_data_sibling': return join(repoRoot, '.forge', 'ios');
     case 'project_build_derived_data': return join(repoRoot, 'build');
+    case 'toolchain_scan':
+    case 'swiftpm_build':
+    case 'cargo_build':
+    case 'next_build': return repoRoot;
     case 'harness_derived_data': return join(repoRoot, '.ai', 'harness');
     case 'repo_harness_derived_data': return join(repoRoot, '.repo-harness');
     case 'tmp_derived_data': return join(repoRoot, '.tmp');
@@ -377,12 +539,15 @@ export function cleanupGeneratedRepositoryCaches(
   options: GeneratedCacheRetentionOptions = {},
 ): GeneratedCacheRetentionReport {
   const nowMs = options.nowMs ?? Date.now();
+  const diskFreeBefore = filesystemAvailableBytes(repoRoot);
   const maxEntries = Math.max(1, Math.floor(options.maxEntries ?? DEFAULT_SCAN_BUDGET));
   let remainingRemovals = Math.max(1, Math.floor(options.maxRemovals ?? DEFAULT_REMOVAL_BUDGET));
   const commands = options.processCommands ?? collectProcessCommands();
   const discovered = discoverCandidates(repoRoot, maxEntries, options.scanStartIndex ?? 0);
   const report: GeneratedCacheRetentionReport = {
     inspected: discovered.inspected,
+    byClass: {},
+    filesystemAvailableBytesDelta: null,
     eligible: 0,
     removedPaths: [],
     reclaimedBytes: 0,
@@ -393,12 +558,20 @@ export function cleanupGeneratedRepositoryCaches(
     budgetExhausted: discovered.truncated,
   };
 
+  const recordDiskFreeDelta = (): void => {
+    const after = filesystemAvailableBytes(repoRoot);
+    report.filesystemAvailableBytesDelta = diskFreeBefore === null || after === null ? null : after - diskFreeBefore;
+  };
   if (commands === undefined) {
     report.errors.push('process_inventory_unavailable: generated-cache reclamation skipped');
     report.skippedByReason.process_inventory_unavailable = 1;
+    recordDiskFreeDelta();
     return report;
   }
   for (const candidate of discovered.candidates) {
+    const classReport = report.byClass[candidate.kind] ??= { scanned: 0, eligible: 0, retained: 0, removed: 0, reclaimedBytes: 0 };
+    classReport.scanned += 1;
+    classReport.retained += 1;
     const ownedRoot = candidateOwnedRoot(repoRoot, candidate);
     const fileCandidate = candidate.kind === 'forge_browser_upload' || candidate.kind === 'forge_browser_screenshot';
     try {
@@ -408,12 +581,27 @@ export function cleanupGeneratedRepositoryCaches(
         report.retainedPaths.push(relative(repoRoot, candidate.path));
         continue;
       }
-      const usedAt = candidate.cacheRoot ? Math.max(stat.mtimeMs, lstatSync(candidate.cacheRoot).mtimeMs) : stat.mtimeMs;
+      // Build tools rewrite files inside a stable output directory without
+      // updating its parent mtime. Include bounded toolchain marker activity.
+      const marker = candidate.kind === 'swiftpm_build' ? 'Modules'
+        : candidate.kind === 'cargo_build' ? 'deps' : undefined;
+      const markerMtime = marker && directoryNotSymlink(join(candidate.path, marker))
+        ? lstatSync(join(candidate.path, marker)).mtimeMs : 0;
+      const usedAt = Math.max(stat.mtimeMs,
+        candidate.cacheRoot ? lstatSync(candidate.cacheRoot).mtimeMs : 0, markerMtime);
       if (nowMs - usedAt < retentionGraceMs(candidate, options.graceMs)) {
         increment(report.skippedByReason, 'retention_grace');
         continue;
       }
+      if (['swiftpm_build', 'cargo_build', 'next_build'].includes(candidate.kind)
+          && (options.protectToolchainOutputs || !verifiedToolchainCandidate(candidate))) {
+        increment(report.skippedByReason, options.protectToolchainOutputs ? 'worktree_source_protected' : 'ownership_unproven');
+        report.retainedPaths.push(relative(repoRoot, candidate.path));
+        continue;
+      }
       if (commandReferencesPath(commands, repoRoot, candidate.cacheRoot ?? candidate.path)
+        || (['swiftpm_build', 'cargo_build', 'next_build'].includes(candidate.kind)
+          && toolchainProcessActive(commands, candidate))
         || (candidate.cacheRoot && commands.some((command) => /(?:^|[/\s])xcodebuild(?:\s|$)/.test(command)
           && !/(?:^|\s)-derivedDataPath(?:\s|=)/.test(command)))) {
         increment(report.skippedByReason, 'active_process');
@@ -426,6 +614,7 @@ export function cleanupGeneratedRepositoryCaches(
         continue;
       }
       report.eligible += 1;
+      classReport.eligible += 1;
       if (remainingRemovals <= 0) {
         report.budgetExhausted = true;
         increment(report.skippedByReason, 'cleanup_budget_exhausted');
@@ -437,12 +626,20 @@ export function cleanupGeneratedRepositoryCaches(
         increment(report.skippedByReason, 'retention_grace');
         continue;
       }
+      if (['swiftpm_build', 'cargo_build', 'next_build'].includes(candidate.kind)
+          && !verifiedToolchainCandidate(candidate)) {
+        increment(report.skippedByReason, 'ownership_unproven');
+        continue;
+      }
       // Size accounting must never turn cleanup into an unbounded tree walk or
       // claim exact reclaimed bytes when the scan was truncated.
       const measured = measureReclaimablePath(candidate.path);
       remainingRemovals -= 1;
       rmSync(candidate.path, { recursive: true, force: true });
       report.removedPaths.push(relative(repoRoot, candidate.path).replace(/\\/g, '/'));
+      classReport.removed += 1;
+      classReport.retained -= 1;
+      if (measured.complete) classReport.reclaimedBytes += measured.bytes;
       if (measured.complete) report.reclaimedBytes += measured.bytes;
       else report.unknownReclaimedByteCount += 1;
     } catch (error) {
@@ -450,6 +647,7 @@ export function cleanupGeneratedRepositoryCaches(
     }
   }
 
+  recordDiskFreeDelta();
   return report;
 }
 
@@ -465,6 +663,7 @@ export function cleanupGeneratedRepositoryCheckoutCaches(
   repository: GeneratedCacheRepositoryRootSet,
   options: GeneratedCacheRetentionOptions = {},
 ): RepositoryGeneratedCacheRetentionReport {
+  const diskFreeBefore = filesystemAvailableBytes(repository.canonicalRoot);
   let remainingEntries = Math.max(1, Math.floor(options.maxEntries ?? DEFAULT_SCAN_BUDGET));
   let remainingRemovals = Math.max(1, Math.floor(options.maxRemovals ?? DEFAULT_REMOVAL_BUDGET));
   const processCommands = options.processCommands ?? collectProcessCommands();
@@ -494,6 +693,8 @@ export function cleanupGeneratedRepositoryCheckoutCaches(
 
   const aggregate: RepositoryGeneratedCacheRetentionReport = {
     rootsInspected: 0,
+    byClass: {},
+    filesystemAvailableBytesDelta: null,
     inspected: 0,
     eligible: 0,
     removedPaths: [],
@@ -505,9 +706,14 @@ export function cleanupGeneratedRepositoryCheckoutCaches(
     budgetExhausted: false,
   };
 
+  const recordDiskFreeDelta = (): void => {
+    const after = filesystemAvailableBytes(repository.canonicalRoot);
+    aggregate.filesystemAvailableBytesDelta = diskFreeBefore === null || after === null ? null : after - diskFreeBefore;
+  };
   if (processCommands === undefined) {
     aggregate.errors.push('process_inventory_unavailable: generated-cache reclamation skipped');
     aggregate.skippedByReason.process_inventory_unavailable = 1;
+    recordDiskFreeDelta();
     return aggregate;
   }
   for (const root of roots) {
@@ -517,6 +723,9 @@ export function cleanupGeneratedRepositoryCheckoutCaches(
     }
     const report = cleanupGeneratedRepositoryCaches(root, {
       ...options,
+      protectToolchainOutputs: options.protectToolchainOutputs
+        || (canonical(root) !== canonical(repository.canonicalRoot)
+          && !cleanIntegratedWorktree(root, repository.canonicalRoot)),
       processCommands: processCommandsForRoot(root),
       scanStartIndex: options.scanStartIndex ?? Math.floor((options.rootStartIndex ?? 0) / Math.max(1, roots.length)),
       maxEntries: remainingEntries,
@@ -525,6 +734,14 @@ export function cleanupGeneratedRepositoryCheckoutCaches(
     aggregate.rootsInspected += 1;
     aggregate.inspected += report.inspected;
     aggregate.eligible += report.eligible;
+    for (const [kind, classReport] of Object.entries(report.byClass)) {
+      const total = aggregate.byClass[kind] ??= { scanned: 0, eligible: 0, retained: 0, removed: 0, reclaimedBytes: 0 };
+      total.scanned += classReport.scanned;
+      total.eligible += classReport.eligible;
+      total.retained += classReport.retained;
+      total.removed += classReport.removed;
+      total.reclaimedBytes += classReport.reclaimedBytes;
+    }
     aggregate.removedPaths.push(...report.removedPaths.map((path) => `${root}:${path}`));
     aggregate.reclaimedBytes += report.reclaimedBytes;
     aggregate.unknownReclaimedByteCount += report.unknownReclaimedByteCount;
@@ -538,6 +755,7 @@ export function cleanupGeneratedRepositoryCheckoutCaches(
     aggregate.budgetExhausted ||= report.budgetExhausted;
   }
   if (remainingEntries <= 0 || remainingRemovals <= 0) aggregate.budgetExhausted = true;
+  recordDiskFreeDelta();
   return aggregate;
 }
 
@@ -873,6 +1091,7 @@ export function cleanupReleasableIosTestEvidence(
   const report: IosTestEvidenceRetentionReport = {
     policyVersion: 'ios-test-evidence-retention-v1',
     rootsInspected: 0,
+    byClass: {},
     inspected: 0,
     eligible: 0,
     removedPaths: [],
