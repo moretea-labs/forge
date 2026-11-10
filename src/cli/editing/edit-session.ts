@@ -2,6 +2,7 @@ import { createHash, randomBytes } from 'crypto';
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'fs';
 import { dirname, join, relative } from 'path';
 import { atomicWriteFile } from '../../effects/fs-transaction';
+import { resolveRepoPreferredControllerHome } from '../../effects/controller-home';
 import { runProcess } from '../../effects/process-runner';
 import { splitRepositoryGitStatus } from '../repositories/structured-git';
 import { workspaceValidationFingerprint } from '../../runtime/control-plane/execution/verification-evidence';
@@ -704,19 +705,22 @@ function committedChangedPathsBetween(repoRoot: string, baseRevision: string, ta
 
 export function adoptEditSessionSuccessorHead(repoRoot: string, sessionId: string, input: {
   binding?: EditSessionBinding;
+  controllerHome?: string;
+  expectedRevision?: number;
   reviewer?: string;
   note?: string;
 } = {}): EditSession {
   let session = getEditSession(repoRoot, sessionId);
   assertDurableEditSessionStorageBound(repoRoot, session.repoId);
-  if (!['dirty', 'checked', 'check_failed'].includes(session.status) || session.operations.length === 0) {
+  if (!['dirty', 'checked', 'check_failed', 'reconciled_unverified'].includes(session.status) || session.operations.length === 0) {
     throw new Error(`EDIT_SESSION_SUCCESSOR_HEAD_NOT_ELIGIBLE: ${session.status}`);
   }
+  if (input.expectedRevision !== undefined && Math.trunc(input.expectedRevision) !== session.currentRevision) {
+    throw new Error(`EDIT_SESSION_REVISION_MISMATCH: expected ${Math.trunc(input.expectedRevision)}, got ${session.currentRevision}`);
+  }
   assertEditSessionDurableBinding(session, input.binding, { requireBoundIdentity: true });
-  // Work is not an edit-session admission prerequisite. An ordinary
-  // (non-Work) Safe Patch session still has durable repo/checkout/principal
-  // identity; reuse that exact identity instead of forcing a WorkHandle round
-  // trip merely to adopt a proven non-overlapping successor HEAD.
+  // Work is not an edit-session admission prerequisite. A durable repo,
+  // checkout and principal binding is sufficient for a proven successor HEAD.
   if (!session.repoId || !session.checkoutId || !session.principalId) {
     throw new Error('EDIT_SESSION_SUCCESSOR_HEAD_DURABLE_BINDING_REQUIRED');
   }
@@ -724,17 +728,49 @@ export function adoptEditSessionSuccessorHead(repoRoot: string, sessionId: strin
   const successorRevision = gitRevision(repoRoot)?.trim();
   if (!previousBaseRevision || !successorRevision) throw new Error('EDIT_SESSION_SUCCESSOR_HEAD_REVISION_REQUIRED');
   if (previousBaseRevision === successorRevision) return assertBoundEditSession(session, input.binding);
+  if (session.assurance?.approvalRequired) {
+    throw new Error('EDIT_SESSION_SUCCESSOR_HEAD_APPROVAL_REQUIRED');
+  }
+
+  const controllerHome = input.controllerHome?.trim() || resolveRepoPreferredControllerHome(repoRoot);
+  const activeLease = listActiveLeases(controllerHome, session.repoId).find((lease) => {
+    const leaseCheckoutId = lease.checkoutId ?? lease.ownerIdentity?.checkoutId;
+    return !leaseCheckoutId || leaseCheckoutId === 'unscoped' || leaseCheckoutId === session.checkoutId;
+  });
+  if (activeLease) {
+    throw new Error(`EDIT_SESSION_SUCCESSOR_HEAD_ACTIVE_LEASE: ${activeLease.leaseId}:${activeLease.resourceKey}`);
+  }
 
   const committedPaths = committedChangedPathsBetween(repoRoot, previousBaseRevision, successorRevision);
   const tracked = new Set(sessionTrackedPaths(session));
   const overlaps = committedPaths.filter((path) => tracked.has(path));
-  if (overlaps.length > 0) {
-    throw new Error(`EDIT_SESSION_SUCCESSOR_HEAD_PATH_OVERLAP: ${overlaps.join(',')}`);
-  }
   const mismatches = currentHashMismatches(repoRoot, session);
   if (mismatches.length > 0) {
     throw new Error(`EDIT_SESSION_SUCCESSOR_HEAD_CONTENT_DRIFT: ${mismatches.join(',')}`);
   }
+  if (overlaps.length > 0) {
+    const dirtyPaths = uncommittedSessionPaths(repoRoot, sessionTrackedPaths(session));
+    if (dirtyPaths.length > 0) {
+      throw new Error(`EDIT_SESSION_SUCCESSOR_HEAD_DIRTY_PATHS: ${dirtyPaths.join(',')}`);
+    }
+    const latest = latestOperations(session);
+    const unverifiedOverlaps = overlaps.filter((path) => {
+      const operation = latest.get(path);
+      if (!operation || operation.type === 'delete' || !operation.afterSha256) return true;
+      const blob = runProcess('git', ['show', `HEAD:${path}`], {
+        cwd: repoRoot, timeoutMs: 10_000, maxOutputBytes: 4 * 1024 * 1024,
+      });
+      return !blob.ok || hash(blob.stdout) !== operation.afterSha256;
+    });
+    if (unverifiedOverlaps.length > 0) {
+      throw new Error(`EDIT_SESSION_SUCCESSOR_HEAD_PATH_OVERLAP: ${unverifiedOverlaps.join(',')}`);
+    }
+  }
+
+  const previousStatus = session.status;
+  const previousReviewNote = session.reviewNote;
+  const previousRequestedChecks = [...session.requestedChecks];
+  const previousUnverifiedChecks = [...(session.unverifiedChecks ?? [])];
 
   session = assertBoundEditSession(session, input.binding);
   const revision = session.currentRevision + 1;
@@ -759,6 +795,7 @@ export function adoptEditSessionSuccessorHead(repoRoot: string, sessionId: strin
   session.checkResults = [];
   session.reviewer = undefined;
   session.reviewNote = undefined;
+  session.unverifiedChecks = undefined;
   session.assurance = calculateAssurance(repoRoot, session, at);
   session.requestedChecks = session.assurance.requiredChecks;
   session.workspaceFingerprint = workspaceFingerprint(repoRoot);
@@ -767,7 +804,7 @@ export function adoptEditSessionSuccessorHead(repoRoot: string, sessionId: strin
   tryAppendControllerWorklogEvent(repoRoot, {
     category: 'edit',
     action: 'edit_session_successor_head_adopted',
-    summary: `${session.purpose}: adopted non-overlapping successor HEAD`,
+    summary: `${session.purpose}: adopted verified successor HEAD`,
     actor: input.reviewer?.trim() || undefined,
     issueId: session.issueId,
     taskId: session.taskId,
@@ -775,7 +812,13 @@ export function adoptEditSessionSuccessorHead(repoRoot: string, sessionId: strin
     details: {
       previousBaseRevision,
       successorRevision,
+      previousStatus,
+      previousReviewNote,
+      previousRequestedChecks,
+      previousUnverifiedChecks,
       committedPaths,
+      overlaps,
+      verifiedOverlaps: overlaps,
       revision,
       note: input.note?.trim() || undefined,
     },
@@ -1551,8 +1594,10 @@ export function getEditSessionDiff(repoRoot: string, sessionId: string): {
 }
 
 export function applyEditOperations(repoRoot: string, policy: McpPolicy, sessionId: string, operations: EditOperation[], options: {
+  controllerHome?: string;
   expectedRevision?: number;
   maxBatchOperations?: number;
+  allowSuccessorHeadAdoption?: boolean;
   binding?: EditSessionBinding;
 } = {}): EditSession {
   let session = getEditSession(repoRoot, sessionId);
@@ -1591,7 +1636,17 @@ export function applyEditOperations(repoRoot: string, policy: McpPolicy, session
   const uniquePaths = new Set(operations.map((operation) => operation.path));
   if (uniquePaths.size !== operations.length) throw new Error('each path may appear only once per patch batch');
   session = assertBoundEditSession(session, options.binding);
-  if (session.baseRevision && gitRevision(repoRoot) !== session.baseRevision) throw new Error('EDIT_SESSION_BASE_REVISION_CHANGED');
+  if (session.baseRevision && gitRevision(repoRoot) !== session.baseRevision) {
+    if (options.allowSuccessorHeadAdoption === false || options.expectedRevision === undefined) {
+      throw new Error('EDIT_SESSION_BASE_REVISION_CHANGED');
+    }
+    session = adoptEditSessionSuccessorHead(repoRoot, sessionId, {
+      binding: options.binding,
+      controllerHome: options.controllerHome,
+      expectedRevision: Math.trunc(options.expectedRevision),
+      note: 'The exact after-images and same-checkout ownership were revalidated before continuing this session.',
+    });
+  }
   if (session.workspaceFingerprint && workspaceFingerprint(repoRoot) !== session.workspaceFingerprint) throw new Error('EDIT_SESSION_WORKSPACE_FINGERPRINT_CHANGED');
   try {
     assertCurrentHashes(repoRoot, session);

@@ -15,6 +15,7 @@ import { normalizeEditOperation, type EditOperation } from '../editing/edit-oper
 import { getMcpPolicy } from '../../../adapters/mcp/policy';
 import type { RepositoryRecord } from './types';
 import { ensureRepositoryRuntimeStorageBinding } from './runtime-storage';
+import { resolveRepoPreferredControllerHome } from '../../effects/controller-home';
 
 export interface SafePatchFingerprint {
   path: string;
@@ -298,6 +299,7 @@ function patchErrorFailures(error: unknown, chunkIndex: number): SafePatchPrefli
 }
 
 export function applySafePatch(repository: RepositoryRecord, input: {
+  controllerHome?: string;
   sessionId?: unknown;
   purpose?: unknown;
   operations: unknown;
@@ -318,6 +320,7 @@ export function applySafePatch(repository: RepositoryRecord, input: {
   const size = chunkSize(input.chunkSize);
   const refresh = input.refreshFingerprints !== false;
   const continueOnError = input.continueOnError === true;
+  const controllerHome = input.controllerHome?.trim() || resolveRepoPreferredControllerHome(repository.canonicalRoot);
   const policy = getMcpPolicy('controller', { repoRoot: repository.canonicalRoot });
   const sessionId = typeof input.sessionId === 'string' ? input.sessionId.trim() : '';
   const allowedPaths = Array.isArray(input.allowedPaths) ? input.allowedPaths.map((item) => String(item).trim()).filter(Boolean) : undefined;
@@ -343,18 +346,40 @@ export function applySafePatch(repository: RepositoryRecord, input: {
       continue;
     }
     try {
-      session = applyEditOperations(repository.canonicalRoot, policy, session.sessionId, preflight.operations.map(stripInternalIndex), { expectedRevision, maxBatchOperations: MAX_SAFE_PATCH_CHUNK_SIZE, binding: input.binding });
+      const previousBaseRevision = session.baseRevision;
+      session = applyEditOperations(repository.canonicalRoot, policy, session.sessionId, preflight.operations.map(stripInternalIndex), {
+        controllerHome,
+        expectedRevision,
+        maxBatchOperations: MAX_SAFE_PATCH_CHUNK_SIZE,
+        allowSuccessorHeadAdoption: input.recoverStaleSession !== false,
+        binding: input.binding,
+      });
+      if (session.baseRevision !== previousBaseRevision) {
+        recoveredSession = {
+          reason: 'Existing edit session adopted a verified successor HEAD.',
+          previousSessionId: session.sessionId,
+          newSessionId: session.sessionId,
+        };
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (sessionId && input.recoverStaleSession !== false && message.includes('EDIT_SESSION_BASE_REVISION_CHANGED')) {
         const previousSessionId = session.sessionId;
         try {
-          session = adoptEditSessionSuccessorHead(repository.canonicalRoot, session.sessionId, { binding: input.binding });
+          session = adoptEditSessionSuccessorHead(repository.canonicalRoot, session.sessionId, {
+            binding: input.binding,
+            controllerHome,
+          });
           expectedRevision = session.currentRevision;
-          recoveredSession = { reason: 'Existing edit session adopted a proven non-overlapping successor HEAD.', previousSessionId, newSessionId: session.sessionId };
+          recoveredSession = { reason: 'Existing edit session adopted a verified successor HEAD.', previousSessionId, newSessionId: session.sessionId };
           const retry = preflightChunk(repository, group, chunkIndex, refresh);
           if (retry.failures.length === 0) {
-            session = applyEditOperations(repository.canonicalRoot, policy, session.sessionId, retry.operations.map(stripInternalIndex), { expectedRevision, maxBatchOperations: MAX_SAFE_PATCH_CHUNK_SIZE, binding: input.binding });
+            session = applyEditOperations(repository.canonicalRoot, policy, session.sessionId, retry.operations.map(stripInternalIndex), {
+              expectedRevision,
+              maxBatchOperations: MAX_SAFE_PATCH_CHUNK_SIZE,
+              allowSuccessorHeadAdoption: input.recoverStaleSession !== false,
+              binding: input.binding,
+            });
           } else {
             failures.push(...retry.failures);
             failedChunk = chunkIndex;
@@ -374,7 +399,12 @@ export function applySafePatch(repository: RepositoryRecord, input: {
         recoveredSession = { reason: 'Previous edit session fingerprints were stale; remaining chunks were moved into a fresh session.', previousSessionId, newSessionId: session.sessionId };
         const retry = preflightChunk(repository, group, chunkIndex, refresh);
         if (retry.failures.length === 0) {
-          session = applyEditOperations(repository.canonicalRoot, policy, session.sessionId, retry.operations.map(stripInternalIndex), { expectedRevision, maxBatchOperations: MAX_SAFE_PATCH_CHUNK_SIZE, binding: input.binding });
+          session = applyEditOperations(repository.canonicalRoot, policy, session.sessionId, retry.operations.map(stripInternalIndex), {
+            expectedRevision,
+            maxBatchOperations: MAX_SAFE_PATCH_CHUNK_SIZE,
+            allowSuccessorHeadAdoption: input.recoverStaleSession !== false,
+            binding: input.binding,
+          });
         } else {
           failures.push(...retry.failures);
           failedChunk = chunkIndex;
