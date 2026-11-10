@@ -178,6 +178,23 @@ export async function runSchedulerPeriodicCleanup(input: {
       const generated = cleanupGeneratedRepositoryCheckoutCaches(cacheRepo, {
         nowMs: input.nowMs, rootStartIndex: plan.generatedCacheRootStartIndex,
       });
+      if (Object.keys(generated.byClass).length > 0 || generated.errors.length > 0 || generated.budgetExhausted) {
+        console.info(`[forge cleanup] generated-cache report ${JSON.stringify({
+          repoId: cacheRepo.repoId,
+          rootsInspected: generated.rootsInspected,
+          byClass: generated.byClass,
+          eligible: generated.eligible,
+          removedPaths: generated.removedPaths,
+          retainedPathCount: generated.retainedPaths.length,
+          retainedPathSamples: generated.retainedPaths.slice(0, 8),
+          logicalReclaimedBytes: generated.reclaimedBytes,
+          filesystemAvailableBytesDelta: generated.filesystemAvailableBytesDelta ?? null,
+          skippedByReason: generated.skippedByReason,
+          errorCount: generated.errors.length,
+          errors: generated.errors.slice(0, 8),
+          budgetExhausted: generated.budgetExhausted,
+        })}`);
+      }
       if (generated.errors.length > 0) console.error(`[forge cleanup] generated-cache retention reported ${generated.errors.length} error(s) for ${cacheRepo.repoId}`);
       const evidence = cleanupReleasableIosTestEvidence(cacheRepo, {
         owner: { controllerHome: input.controllerHome, repoId: cacheRepo.repoId },
