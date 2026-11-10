@@ -84,7 +84,7 @@ export const processToolDefinitions: McpToolDefinition[] = [
   ),
   definition(
     'process_wait',
-    'Explicit dependency synchronization for one lightweight or durable process. Call only when the next decision or acceptance boundary is blocked on this exact result; do not use as periodic polling. Waits never re-execute the command.',
+    'Explicit dependency synchronization for one lightweight or durable process. Call only when the next decision or acceptance boundary is blocked on this exact result; do not use as periodic polling. Caller interruption only ends observation for a durable Process; use process_cancel for explicit termination. Waits never re-execute the command.',
     {
       repo_id: repoIdProp,
       process_id: processIdProp,
@@ -131,12 +131,21 @@ export const DEFAULT_PROCESS_WAIT_ATTACH_BUDGET_MS = 5_000;
  * This is deliberately response-only: Process Runtime remains the sole owner
  * of execution and no polling scheduler or second state authority is created.
  */
-export function managedProcessContinuation(handle: { completed?: boolean }): Record<string, string> {
+export function managedProcessContinuation(handle: { completed?: boolean; observationInterrupted?: boolean }): Record<string, string> {
   if (handle.completed === true) {
     return {
       state: 'terminal',
       nextAction: 'consume_terminal_result',
       join: 'complete',
+      reexecution: 'forbidden',
+    };
+  }
+  if (handle.observationInterrupted === true) {
+    return {
+      state: 'observation_interrupted',
+      nextAction: 'reconcile_same_process',
+      join: 'required_at_dependency_boundary',
+      observation: 'caller_signal_aborted; durable_process_continues',
       reexecution: 'forbidden',
     };
   }
@@ -234,6 +243,7 @@ function handleToPayload(handle: NonNullable<ReturnType<typeof getRepositoryComm
     interactiveWaitMs: handle.interactiveWaitMs,
     timeoutMs: handle.timeoutMs,
     completed: handle.completed === true,
+    ...(handle.observationInterrupted === true ? { observationInterrupted: true } : {}),
     ok: handle.ok,
     exitCode: handle.exitCode,
     timedOut: handle.timedOut,
@@ -282,11 +292,13 @@ export async function callProcessTool(
         const startedAt = Date.now();
         const handle = await waitRepositoryCommandProcess(ctx.controllerHome, repoId, processId, {
           timeoutMs: Math.min(requestedWaitMs, attachBudgetMs),
+          signal: ctx.signal,
         });
         return result({
           ...scopePayload,
           process: handleToPayload(handle),
-          synchronization: handle.completed === true ? 'terminal_result_available' : 'continue_independent_work',
+          synchronization: handle.completed === true ? 'terminal_result_available'
+            : handle.observationInterrupted === true ? 'observation_interrupted' : 'continue_independent_work',
           waitedMs: Date.now() - startedAt,
           requestedWaitMs,
           attachBudgetMs,

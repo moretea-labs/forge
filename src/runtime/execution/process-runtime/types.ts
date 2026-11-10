@@ -317,6 +317,7 @@ export interface SpawnManagedProcessInput {
   releaseId?: string;
   artifactIdentity?: string;
   workerProtocolVersion?: number;
+  /** If already aborted before acceptance, prevents dispatch; later aborts only interrupt observation. Use process_cancel to stop accepted execution. */
   signal?: AbortSignal;
   /** Reuse only an exact active Process with identical source identity, principal, command and resource claims. */
   reuseActiveEquivalent?: boolean;
@@ -337,6 +338,8 @@ export interface ProcessHandle {
   interactiveWaitMs: number;
   timeoutMs: number;
   completed?: boolean;
+  /** Caller observation was interrupted; the durable Process itself remains active. */
+  observationInterrupted?: boolean;
   /** True when this response reused a previously claimed request binding. */
   deduplicated?: boolean;
   /** True when a semantic Check identity reused another caller's physical Process. */
@@ -361,6 +364,7 @@ export interface ProcessHandle {
 
 export interface WaitProcessOptions {
   timeoutMs?: number;
+  /** For durable Process waits this detaches observation only; lightweight process APIs retain their separate lifecycle semantics. */
   signal?: AbortSignal;
 }
 

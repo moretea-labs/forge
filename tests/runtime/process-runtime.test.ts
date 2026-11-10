@@ -1059,6 +1059,141 @@ describe('Unified Process Runtime', () => {
     expect(waited.processId).toBe(handle.processId);
   });
 
+  test('request abort detaches an accepted Process and retry reuses its original request id', async () => {
+    const fx = fixture();
+    const started = join(fx.root, 'accepted-process-started.txt');
+    const counter = join(fx.root, 'accepted-process-count.txt');
+    const finished = join(fx.root, 'accepted-process-finished.txt');
+    const requestId = 'request-abort-after-acceptance';
+    const command = {
+      kind: 'argv' as const,
+      executable: 'node',
+      args: [
+        '-e',
+        'const fs=require("fs"); fs.appendFileSync(process.argv[1], "x"); fs.writeFileSync(process.argv[2], "started"); setTimeout(() => { fs.writeFileSync(process.argv[3], "finished"); process.exit(0); }, 1200);',
+        counter,
+        started,
+        finished,
+      ],
+      cwd: fx.repoRoot,
+    };
+    const signal = new AbortController();
+    const execution = spawnManagedProcess({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
+      command,
+      interactiveWaitMs: 10_000,
+      timeoutMs: 15_000,
+      signal: signal.signal,
+      origin: { surface: 'command', toolName: 'execute_command', requestId },
+    });
+    const startDeadline = Date.now() + 3_000;
+    while (!existsSync(started) && Date.now() < startDeadline) await Bun.sleep(5);
+    expect(existsSync(started)).toBe(true);
+    signal.abort();
+
+    const handle = await execution;
+    expect(handle).toMatchObject({ completed: false, status: 'running', observationInterrupted: true, requestId });
+    const completed = await waitForProcess(fx.controllerHome, fx.repository.repoId, handle.processId, { timeoutMs: 5_000 });
+    expect(completed).toMatchObject({ completed: true, status: 'succeeded', ok: true });
+    expect(readFileSync(counter, 'utf8')).toBe('x');
+    expect(readFileSync(finished, 'utf8')).toBe('finished');
+
+    const replay = await spawnManagedProcess({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
+      command,
+      interactiveWaitMs: 0,
+      timeoutMs: 15_000,
+      origin: { surface: 'command', toolName: 'execute_command', requestId },
+    });
+    expect(replay.processId).toBe(handle.processId);
+    expect(replay.deduplicated).toBe(true);
+    expect(readFileSync(counter, 'utf8')).toBe('x');
+  }, 15_000);
+
+  test('wait abort interrupts observation without cancelling the Process across monitor restart', async () => {
+    const fx = fixture();
+    const handle = await spawnManagedProcess({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
+      command: { kind: 'argv', executable: 'node', args: ['-e', 'setTimeout(() => process.exit(0), 1500)'], cwd: fx.repoRoot },
+      interactiveWaitMs: 0,
+      timeoutMs: 10_000,
+      returnHandleImmediately: true,
+    });
+
+    const firstAbort = new AbortController();
+    const firstTimer = setTimeout(() => firstAbort.abort(), 50);
+    const interrupted = await waitForProcess(fx.controllerHome, fx.repository.repoId, handle.processId, {
+      timeoutMs: 5_000,
+      signal: firstAbort.signal,
+    });
+    clearTimeout(firstTimer);
+    expect(interrupted).toMatchObject({ completed: false, status: 'running', observationInterrupted: true });
+
+    __resetLiveMonitorsForTests();
+    const restartAbort = new AbortController();
+    const restartTimer = setTimeout(() => restartAbort.abort(), 50);
+    const afterRestart = await waitForProcess(fx.controllerHome, fx.repository.repoId, handle.processId, {
+      timeoutMs: 5_000,
+      signal: restartAbort.signal,
+    });
+    clearTimeout(restartTimer);
+    expect(afterRestart).toMatchObject({ completed: false, status: 'running', observationInterrupted: true });
+
+    const terminal = await waitForProcess(fx.controllerHome, fx.repository.repoId, handle.processId, { timeoutMs: 5_000 });
+    expect(terminal).toMatchObject({ completed: true, status: 'succeeded', ok: true });
+  }, 15_000);
+
+  test('an already-aborted wait still reconciles a terminal receipt after monitor restart', async () => {
+    const fx = fixture();
+    const handle = await spawnManagedProcess({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
+      command: { kind: 'argv', executable: 'node', args: ['-e', 'setTimeout(() => process.exit(0), 100)'], cwd: fx.repoRoot },
+      interactiveWaitMs: 0,
+      timeoutMs: 10_000,
+      returnHandleImmediately: true,
+    });
+    __resetLiveMonitorsForTests();
+    await Bun.sleep(250);
+    const signal = new AbortController();
+    signal.abort();
+    const terminal = await waitForProcess(fx.controllerHome, fx.repository.repoId, handle.processId, {
+      timeoutMs: 1_000,
+      signal: signal.signal,
+    });
+    expect(terminal).toMatchObject({ completed: true, status: 'succeeded', ok: true });
+  });
+
+  test('a signal already aborted before Process acceptance records a no-dispatch cancellation', async () => {
+    const fx = fixture();
+    const marker = join(fx.root, 'must-not-start.txt');
+    const signal = new AbortController();
+    signal.abort();
+    const handle = await spawnManagedProcess({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
+      command: { kind: 'argv', executable: 'node', args: ['-e', 'require("fs").writeFileSync(process.argv[1], "ran")', marker], cwd: fx.repoRoot },
+      interactiveWaitMs: 0,
+      timeoutMs: 10_000,
+      signal: signal.signal,
+    });
+    expect(handle).toMatchObject({ completed: true, status: 'cancelled', cancelled: true });
+    expect(existsSync(marker)).toBe(false);
+  });
+
   test('same request id concurrently reuses one process and survives monitor restart', async () => {
     const fx = fixture();
     const counter = join(fx.root, 'request-counter.txt');
@@ -2509,6 +2644,55 @@ describe('Process Runtime real lease contention', () => {
     expect((await waitForProcess(fx.controllerHome, fx.repository.repoId, holder.processId, { timeoutMs: 10_000 })).ok).toBe(true);
   }, 25_000);
 
+  test('caller abort during resource admission leaves the durable queued Process joinable', async () => {
+    const fx = fixture();
+    const deviceClaim = [{ resourceKey: 'host-service:ios-simulator-test', mode: 'write' as const }];
+    const holder = await spawnManagedProcess({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
+      command: { kind: 'argv', executable: 'node', args: ['-e', 'setTimeout(() => process.exit(0), 900)'], cwd: fx.repoRoot },
+      resourceClaims: deviceClaim,
+      timeoutMs: 10_000,
+      interactiveWaitMs: 0,
+      returnHandleImmediately: true,
+    });
+    let signalQueued!: (handle: ProcessHandle) => void;
+    const queued = new Promise<ProcessHandle>((resolve) => { signalQueued = resolve; });
+    const output = join(fx.root, 'queued-after-observation-abort.txt');
+    const signal = new AbortController();
+    const execution = spawnManagedProcess({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
+      command: {
+        kind: 'argv', executable: 'node',
+        args: ['-e', 'require("fs").writeFileSync(process.argv[1], "ran")', output], cwd: fx.repoRoot,
+      },
+      resourceClaims: deviceClaim,
+      timeoutMs: 10_000,
+      interactiveWaitMs: 0,
+      leaseWaitMs: 5_000,
+      onAdmissionWait: signalQueued,
+      signal: signal.signal,
+    });
+    const queuedHandle = await queued;
+    expect(queuedHandle).toMatchObject({ status: 'starting', completed: false });
+    signal.abort();
+    expect(getProcessHandle(fx.controllerHome, fx.repository.repoId, queuedHandle.processId))
+      .toMatchObject({ status: 'starting', completed: false });
+
+    const admitted = await execution;
+    expect(admitted.processId).toBe(queuedHandle.processId);
+    const completed = await waitForProcess(fx.controllerHome, fx.repository.repoId, admitted.processId, { timeoutMs: 5_000 });
+    expect(completed).toMatchObject({ completed: true, status: 'succeeded', ok: true });
+    expect(readFileSync(output, 'utf8')).toBe('ran');
+    expect((await waitForProcess(fx.controllerHome, fx.repository.repoId, holder.processId, { timeoutMs: 5_000 })).status)
+      .toBe('succeeded');
+  }, 15_000);
+
   test('execute_command scripted iOS journey joins the same device Process queue', async () => {
     const fx = fixture();
     mkdirSync(join(fx.repoRoot, 'scripts'), { recursive: true });
@@ -2786,9 +2970,8 @@ describe('Process Runtime real lease contention', () => {
     expect(String(blocked.stderr ?? '') + String(blocked.stdout ?? '')).toMatch(/PROCESS_LEASE_CONFLICT|resource busy/i);
     expect(blocked.concurrencyWait).toMatchObject({
       source: 'resource_lease',
-      blockingWorkId: 'work-lease-a',
       blockingProcessId: first.processId,
-      blockingOwnerRelation: 'other_work_or_checkout',
+      blockingOwnerRelation: 'process_owner',
     });
 
     const sameWorkDenied = await spawnManagedProcess({
@@ -2800,8 +2983,9 @@ describe('Process Runtime real lease contention', () => {
       timeoutMs: 10_000,
     });
     expect(sameWorkDenied).toMatchObject({ completed: true, ok: false, concurrencyWait: {
-      source: 'resource_lease', blockingWorkId: 'work-lease-a',
-      blockingProcessId: first.processId, blockingOwnerRelation: 'same_work_same_checkout',
+      source: 'resource_lease',
+      blockingProcessId: first.processId,
+      blockingOwnerRelation: 'process_owner',
     } });
     expect(sameWorkDenied.stdout).not.toContain('must-not-run');
     const { getWorkContract } = await import('../../src/runtime/control-plane/facade/work-contract-store');
@@ -3836,7 +4020,7 @@ describe('process MCP live surface', () => {
     expect(String((logs?.structuredContent as { stdout?: string })?.stdout ?? '')).toContain('mcp-ok');
   });
 
-  test('process_get and process_wait expose the exact same-Work Process lease join target', async () => {
+  test('process_get and process_wait expose the exact Process lease join target', async () => {
     const fx = fixture();
     const marker = join(fx.root, 'blocked-mutation.txt');
     const resourceClaims = [{ resourceKey: `workspace:${fx.repository.activeCheckoutId}`, mode: 'write' as const }];
@@ -3876,7 +4060,7 @@ describe('process MCP live surface', () => {
     expect(blocked).toMatchObject({ completed: true, ok: false, concurrencyWait: {
       source: 'resource_lease',
       blockingProcessId: first.processId,
-      blockingOwnerRelation: 'same_work_same_checkout',
+      blockingOwnerRelation: 'process_owner',
     } });
     expect(existsSync(marker)).toBe(false);
 
@@ -3892,7 +4076,7 @@ describe('process MCP live surface', () => {
     expect((got?.structuredContent as { process?: { concurrencyWait?: unknown } })?.process?.concurrencyWait).toMatchObject({
       source: 'resource_lease',
       blockingProcessId: first.processId,
-      blockingOwnerRelation: 'same_work_same_checkout',
+      blockingOwnerRelation: 'process_owner',
     });
 
     const waited = await callProcessTool(ctx, 'process_wait', {
@@ -3904,7 +4088,7 @@ describe('process MCP live surface', () => {
     expect((waited?.structuredContent as { process?: { concurrencyWait?: unknown } })?.process?.concurrencyWait).toMatchObject({
       source: 'resource_lease',
       blockingProcessId: first.processId,
-      blockingOwnerRelation: 'same_work_same_checkout',
+      blockingOwnerRelation: 'process_owner',
     });
 
     await waitForProcess(fx.controllerHome, fx.repository.repoId, first.processId, { timeoutMs: 10_000 });
@@ -3974,4 +4158,42 @@ describe('process MCP live surface', () => {
     expect((second?.structuredContent as { process?: { completed?: boolean } }).process?.completed).toBe(true);
     expect(readFileSync(marker, 'utf8')).toBe('1');
   });
+
+  test('process_wait abort returns observation-interrupted state without cancelling durable execution', async () => {
+    const fx = fixture();
+    const started = await spawnManagedProcess({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
+      command: { kind: 'argv', executable: 'node', args: ['-e', 'setTimeout(() => process.exit(0), 1500)'], cwd: fx.repoRoot },
+      interactiveWaitMs: 0,
+      timeoutMs: 10_000,
+      returnHandleImmediately: true,
+    });
+    const abort = new AbortController();
+    const ctx = {
+      controllerHome: fx.controllerHome,
+      repo: fx.repoRoot,
+      processWaitAttachBudgetMs: 5_000,
+      signal: abort.signal,
+    } as unknown as MultiRepositoryMcpToolContext;
+    const waiting = callProcessTool(ctx, 'process_wait', {
+      repo_id: fx.repository.repoId,
+      process_id: started.processId,
+      timeout_ms: 5_000,
+    });
+    const timer = setTimeout(() => abort.abort(), 50);
+    const interrupted = await waiting;
+    clearTimeout(timer);
+    expect(interrupted?.isError).not.toBe(true);
+    expect(interrupted?.structuredContent).toMatchObject({
+      process: { processId: started.processId, status: 'running', completed: false, observationInterrupted: true },
+      synchronization: 'observation_interrupted',
+      reExecuted: false,
+    });
+
+    const terminal = await waitForProcess(fx.controllerHome, fx.repository.repoId, started.processId, { timeoutMs: 5_000 });
+    expect(terminal).toMatchObject({ completed: true, status: 'succeeded', ok: true });
+  }, 15_000);
 });

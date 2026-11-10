@@ -927,7 +927,6 @@ function attachRunnerMonitor(
   options: {
     timeoutMs: number;
     maxOutputBytes: number;
-    signal?: AbortSignal;
     stdoutPath: string;
     stderrPath: string;
     exitReceiptPath: string;
@@ -1005,14 +1004,6 @@ function attachRunnerMonitor(
   const pollTimer = streaming ? undefined : setInterval(pollLogs, 1_000);
   pollTimer?.unref?.();
 
-  const onAbort = () => {
-    void killTree(runner).finally(() => {
-      if (pollTimer) clearInterval(pollTimer);
-      finalizeMonitor(monitor, 'cancelled', 1, false, true, 'cancelled by signal');
-    });
-  };
-  options.signal?.addEventListener('abort', onAbort, { once: true });
-
   // Controller-side timeout is a safety net; runner also enforces timeout.
   monitor.timeoutHandle = setTimeout(() => {
     void killTree(runner).finally(() => {
@@ -1025,10 +1016,8 @@ function attachRunnerMonitor(
   runner.on('error', (error) => {
     if (pollTimer) clearInterval(pollTimer);
     finalizeMonitor(monitor, 'failed', 1, false, false, error.message);
-    options.signal?.removeEventListener('abort', onAbort);
   });
   runner.on('close', () => {
-    options.signal?.removeEventListener('abort', onAbort);
     if (pollTimer) clearInterval(pollTimer);
     pollLogs();
     const receipt = readExitReceipt(options.exitReceiptPath);
@@ -1053,7 +1042,14 @@ function attachRunnerMonitor(
 
 function recordToHandle(
   record: ManagedProcessRecord,
-  extras?: { stdout?: string; stderr?: string; completed?: boolean; deduplicated?: boolean; semanticDeduplicated?: boolean },
+  extras?: {
+    stdout?: string;
+    stderr?: string;
+    completed?: boolean;
+    deduplicated?: boolean;
+    semanticDeduplicated?: boolean;
+    observationInterrupted?: boolean;
+  },
 ): ProcessHandle {
   const hintedStatus = effectiveProcessStatus(record, extras?.completed === true);
   const completed = isTerminalProcessStatus(hintedStatus) || record.terminalWritten === true;
@@ -1082,6 +1078,7 @@ function recordToHandle(
     interactiveWaitMs: safeRecord.interactiveWaitMs,
     timeoutMs: safeRecord.timeoutMs,
     completed,
+    observationInterrupted: extras?.observationInterrupted,
     deduplicated: extras?.deduplicated,
     semanticDeduplicated: extras?.semanticDeduplicated,
     requestId: safeRecord.origin?.requestId,
@@ -1143,6 +1140,7 @@ function spawnProcessRunner(descriptor: ProcessCommandDescriptor, descriptorPath
  *   receipt / cancel / timeout / failure → release leases exactly once
  */
 export async function spawnManagedProcess(input: SpawnManagedProcessInput): Promise<ProcessHandle> {
+  const callerAbortedBeforeAcceptance = input.signal?.aborted === true;
   if (!input.executionIdentity) {
     throw new Error('EXECUTION_IDENTITY_REQUIRED: spawnManagedProcess requires an immutable executionIdentity');
   }
@@ -1336,7 +1334,7 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
     commandId: record.commandId,
   });
 
-  if (input.signal?.aborted) {
+  if (callerAbortedBeforeAcceptance) {
     completeProcessFromEvidence(input.controllerHome, input.repoId, processId, fenceToken, {
       status: 'cancelled',
       exitCode: 1,
@@ -1463,11 +1461,9 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
       while (!acquisition.acquired && Date.now() < leaseDeadline) {
         const current = getProcessRecord(input.controllerHome, input.repoId, processId);
         if (current?.terminalWritten) return recordToHandle(current, { completed: true });
-        if (input.signal?.aborted) break;
         await new Promise((resolvePromise) => setTimeout(resolvePromise, 500));
         const afterSleep = getProcessRecord(input.controllerHome, input.repoId, processId);
         if (afterSleep?.terminalWritten) return recordToHandle(afterSleep, { completed: true });
-        if (input.signal?.aborted) break;
         // An active waiter must not look like an abandoned pre-spawn request
         // to Process maintenance. Abandoned waiters still reconcile normally.
         if (Date.now() - lastHeartbeat >= 30_000) {
@@ -1488,13 +1484,6 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
           },
         );
       }
-    }
-    if (!acquisition.acquired && input.signal?.aborted) {
-      const cancelled = completeProcessFromEvidence(input.controllerHome, input.repoId, processId, fenceToken, {
-        status: 'cancelled', exitCode: 1, cancelled: true,
-        errorMessage: 'cancelled during lease admission', exitReceiptPath,
-      }, { authority: 'durable_pre_spawn_abandonment' });
-      return recordToHandle(cancelled ?? record, { completed: true });
     }
     if (!acquisition.acquired) {
       const resourceKeys = [...new Set(acquisition.blockers.map((blocker) => blocker.resourceKey))].sort();
@@ -1569,14 +1558,6 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
       checkoutId: lease.checkoutId,
     }));
     updateProcessRecord(input.controllerHome, input.repoId, processId, { leaseRefs, concurrencyWait: undefined });
-  }
-
-  if (input.signal?.aborted) {
-    const cancelled = completeProcessFromEvidence(input.controllerHome, input.repoId, processId, fenceToken, {
-      status: 'cancelled', exitCode: 1, cancelled: true,
-      errorMessage: 'cancelled before spawn', exitReceiptPath,
-    }, { authority: 'durable_pre_spawn_abandonment' });
-    return recordToHandle(cancelled ?? record, { completed: true });
   }
 
   // A checkout may change while a device admission waits in another session.
@@ -1677,7 +1658,6 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
     {
       timeoutMs,
       maxOutputBytes,
-      signal: input.signal,
       stdoutPath,
       stderrPath,
       exitReceiptPath,
@@ -1691,16 +1671,23 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
     return recordToHandle({ ...runningRecord, route: 'managed' }, { completed: false });
   }
 
-  const completed = await new Promise<ManagedProcessRecord | 'timeout'>((resolve) => {
-    const finish = (done: ManagedProcessRecord | 'timeout') => {
+  const completed = await new Promise<ManagedProcessRecord | 'timeout' | 'interrupted'>((resolve) => {
+    let settled = false;
+    const finish = (done: ManagedProcessRecord | 'timeout' | 'interrupted') => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
+      input.signal?.removeEventListener('abort', onAbort);
       const index = monitor.waiters.indexOf(finish);
       if (index >= 0) monitor.waiters.splice(index, 1);
       resolve(done);
     };
     const timer = setTimeout(() => finish('timeout'), interactiveWaitMs);
     timer.unref?.();
+    const onAbort = () => finish('interrupted');
     monitor.waiters.push(finish);
+    if (input.signal?.aborted) onAbort();
+    else input.signal?.addEventListener('abort', onAbort, { once: true });
     if (monitor.settled) {
       const current = getProcessRecord(input.controllerHome, input.repoId, processId);
       if (current?.terminalWritten) {
@@ -1709,10 +1696,15 @@ export async function spawnManagedProcess(input: SpawnManagedProcessInput): Prom
     }
   });
 
-  if (completed === 'timeout') {
-    updateProcessRecord(input.controllerHome, input.repoId, processId, { route: 'managed' });
+  if (completed === 'timeout' || completed === 'interrupted') {
     const current = getProcessRecord(input.controllerHome, input.repoId, processId)!;
-    return recordToHandle({ ...current, route: 'managed' }, { completed: false });
+    if (current.terminalWritten) return recordToHandle(current, { completed: true });
+    updateProcessRecord(input.controllerHome, input.repoId, processId, { route: 'managed' });
+    const managed = getProcessRecord(input.controllerHome, input.repoId, processId)!;
+    return recordToHandle({ ...managed, route: 'managed' }, {
+      completed: false,
+      ...(completed === 'interrupted' ? { observationInterrupted: true } : {}),
+    });
   }
 
   const stdout = monitor.stdoutTail.length
@@ -1822,8 +1814,11 @@ export async function waitForProcess(
   const monitor = liveMonitors.get(processId);
   if (monitor) {
     const waitMs = options.timeoutMs ?? existing.timeoutMs;
-    const done = await new Promise<ManagedProcessRecord | 'timeout'>((resolve) => {
-      const finish = (record: ManagedProcessRecord | 'timeout') => {
+    const done = await new Promise<ManagedProcessRecord | 'timeout' | 'interrupted'>((resolve) => {
+      let settled = false;
+      const finish = (record: ManagedProcessRecord | 'timeout' | 'interrupted') => {
+        if (settled) return;
+        settled = true;
         clearTimeout(timer);
         options.signal?.removeEventListener('abort', onAbort);
         const index = monitor.waiters.indexOf(finish);
@@ -1832,16 +1827,10 @@ export async function waitForProcess(
       };
       const timer = setTimeout(() => finish('timeout'), Math.max(1, waitMs));
       timer.unref?.();
-      const onAbort = () => {
-        clearTimeout(timer);
-        void cancelProcess(controllerHome, repoId, processId).then(() => {
-          const current = getProcessRecord(controllerHome, repoId, processId);
-          if (current) finish(current);
-          else finish('timeout');
-        });
-      };
+      const onAbort = () => finish('interrupted');
       options.signal?.addEventListener('abort', onAbort, { once: true });
       monitor.waiters.push(finish);
+      if (options.signal?.aborted) onAbort();
       if (monitor.settled) {
         const current = getProcessRecord(controllerHome, repoId, processId);
         if (current?.terminalWritten) {
@@ -1851,6 +1840,14 @@ export async function waitForProcess(
     });
     if (done === 'timeout') {
       return recordToHandle(getProcessRecord(controllerHome, repoId, processId)!, { completed: false });
+    }
+    if (done === 'interrupted') {
+      const current = getProcessRecord(controllerHome, repoId, processId);
+      if (!current) throw new Error(`PROCESS_NOT_FOUND: ${processId}`);
+      if (current.terminalWritten) {
+        return recordToHandle(reconcileObservedTerminalProcess(controllerHome, repoId, current), { completed: true });
+      }
+      return recordToHandle(current, { completed: false, observationInterrupted: true });
     }
     return recordToHandle(done, { completed: true });
   }
@@ -1864,6 +1861,7 @@ export async function waitForProcess(
     if (current.terminalWritten) return recordToHandle(current, { completed: true });
     const fromReceipt = applyReceiptIfPresent(controllerHome, repoId, processId, current);
     if (fromReceipt) return recordToHandle(fromReceipt, { completed: true });
+    if (options.signal?.aborted) return recordToHandle(current, { completed: false, observationInterrupted: true });
     if (current.status === 'starting' && current.concurrencyWait?.source === 'resource_lease') {
       await new Promise((r) => setTimeout(r, pollIntervalMs));
       continue;
@@ -1882,6 +1880,7 @@ export async function waitForProcess(
         if (latest.terminalWritten) return recordToHandle(latest, { completed: true });
         const delayedReceipt = applyReceiptIfPresent(controllerHome, repoId, processId, latest);
         if (delayedReceipt) return recordToHandle(delayedReceipt, { completed: true });
+        if (options.signal?.aborted) return recordToHandle(latest, { completed: false, observationInterrupted: true });
         if (identityStillMatches(latest.identity, latest.identityUntrusted)) {
           identityRecovered = true;
           break;
@@ -1891,6 +1890,7 @@ export async function waitForProcess(
       const latest = getProcessRecord(controllerHome, repoId, processId)!;
       const delayedReceipt = applyReceiptIfPresent(controllerHome, repoId, processId, latest);
       if (delayedReceipt) return recordToHandle(delayedReceipt, { completed: true });
+      if (options.signal?.aborted) return recordToHandle(latest, { completed: false, observationInterrupted: true });
       if (identityStillMatches(latest.identity, latest.identityUntrusted)) continue;
       const completed = completeProcessFromEvidence(controllerHome, repoId, processId, latest.terminalFenceToken, {
         status: 'completed_unknown',
@@ -1901,7 +1901,15 @@ export async function waitForProcess(
     await new Promise((r) => setTimeout(r, pollIntervalMs));
     pollIntervalMs = Math.min(1_000, pollIntervalMs * 2);
   }
-  return recordToHandle(getProcessRecord(controllerHome, repoId, processId)!, { completed: false });
+  const finalRecord = getProcessRecord(controllerHome, repoId, processId);
+  if (!finalRecord) throw new Error(`PROCESS_NOT_FOUND: ${processId}`);
+  if (finalRecord.terminalWritten) return recordToHandle(finalRecord, { completed: true });
+  const finalReceipt = applyReceiptIfPresent(controllerHome, repoId, processId, finalRecord);
+  if (finalReceipt) return recordToHandle(finalReceipt, { completed: true });
+  return recordToHandle(finalRecord, {
+    completed: false,
+    ...(options.signal?.aborted ? { observationInterrupted: true } : {}),
+  });
 }
 
 export async function cancelProcess(
