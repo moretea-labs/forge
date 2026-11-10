@@ -109,6 +109,8 @@ interface Candidate {
   kind:
     | 'forge_ios_derived_data'
     | 'forge_ios_derived_data_sibling'
+    | 'project_build_derived_data'
+    | 'project_build_derived_data'
     | 'harness_derived_data'
     | 'repo_harness_derived_data'
     | 'tmp_derived_data'
@@ -336,6 +338,16 @@ function discoverCandidates(repoRoot: string, maxEntries: number, scanRound: num
       }
     }
   }
+  // Project-specific Xcode output directories are also rebuildable. Keep the
+  // existing Forge namespace rotation unchanged: this additional group only
+  // consumes the residual bounded scan budget.
+  for (const cacheRoot of directChildValidCacheRoots(join(root, 'build'),
+    (name) => name === 'DerivedData' || name.startsWith('DerivedData-'), budget, scanRound)) {
+    for (const name of REBUILDABLE_XCODE_CHILDREN) {
+      const path = join(cacheRoot, name);
+      if (existsSync(path)) candidates.push({ path, kind: 'project_build_derived_data', cacheRoot });
+    }
+  }
   return { candidates, inspected: initial - budget.remaining, truncated: budget.remaining <= 0 };
 }
 
@@ -350,6 +362,7 @@ function candidateOwnedRoot(repoRoot: string, candidate: Candidate): string {
   switch (candidate.kind) {
     case 'forge_ios_derived_data': return join(repoRoot, '.forge', 'ios', 'DerivedData');
     case 'forge_ios_derived_data_sibling': return join(repoRoot, '.forge', 'ios');
+    case 'project_build_derived_data': return join(repoRoot, 'build');
     case 'harness_derived_data': return join(repoRoot, '.ai', 'harness');
     case 'repo_harness_derived_data': return join(repoRoot, '.repo-harness');
     case 'tmp_derived_data': return join(repoRoot, '.tmp');

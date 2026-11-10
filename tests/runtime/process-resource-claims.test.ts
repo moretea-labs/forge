@@ -203,6 +203,26 @@ describe('Process Runtime fine-grained resource claims', () => {
     }
   });
 
+  test('source text mentioning xcodebuild never claims a live iOS host slot', () => {
+    const unrelated: Array<string | readonly string[]> = [
+      ['zsh', '-lc', "python3 - <<'PY'\nprint('xcodebuild test -derivedDataPath build/DerivedData')\nPY\nbun test tests/runtime/generated-cache-retention.test.ts"],
+      ['zsh', '-lc', "rg -n 'xcodebuild test' src && bun test tests/runtime/process-resource-claims.test.ts"],
+      'echo "xcodebuild test" && bun test tests/runtime/generated-cache-retention.test.ts',
+    ];
+    for (const command of unrelated) {
+      const claims = claimsForRepositoryCommand(command, 'repo1', 'co1');
+      expect(claims.some((claim) => claim.resourceKey === 'host-service:ios-build'
+        || claim.resourceKey === 'host-service:ios-simulator-test')).toBe(false);
+    }
+    for (const command of [
+      ['zsh', '-lc', 'cd /repo && xcodebuild test -project App.xcodeproj'],
+      'xcrun xcodebuild -project App.xcodeproj build > build.log 2>&1',
+    ] as const) {
+      const claims = claimsForRepositoryCommand(command, 'repo1', 'co1');
+      expect(claims).toContainEqual({ resourceKey: 'host-service:ios-build', mode: 'write' });
+    }
+  });
+
   test('host build capacity bounds disjoint Xcode caches while preserving cache identity fences', () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-xcode-cache-'));
     try {

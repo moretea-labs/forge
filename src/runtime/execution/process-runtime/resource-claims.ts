@@ -202,6 +202,20 @@ function browserAppleScriptHeredocClaims(script: string): ResourceClaimSpec[] | 
   return [claimHostService(`osascript:${uniqueTargets[0]}`, 'write')];
 }
 
+function shellXcodebuildCommands(shell: string): string[] {
+  // Inspect executable command positions, not arbitrary words in a shell
+  // script, heredoc, grep pattern or generated source payload. Otherwise a
+  // TypeScript test containing "xcodebuild test" monopolizes iOS hardware.
+  return shellSegments(shell)
+    .flatMap((segment) => segment.split(/\r?\n/))
+    .map((segment) => segment.trim())
+    .filter((segment) => {
+      const words = shellWordsPreservingQuotes(segment);
+      return basename(words[0] ?? '') === 'xcodebuild'
+        || (basename(words[0] ?? '') === 'xcrun' && words[1] === 'xcodebuild');
+    });
+}
+
 function iosSimulatorTestCommandClaims(
   command: string | readonly string[],
   repoId: string,
@@ -216,11 +230,11 @@ function iosSimulatorTestCommandClaims(
     if (program === 'xcodebuild') matches = (canonical.args ?? []).some((arg) => /^(?:test|test-without-building)$/i.test(arg));
     if (!matches) {
       const wrapped = fixedShellWrapperCommand([canonical.executable ?? '', ...(canonical.args ?? [])]);
-      matches = Boolean(wrapped && /\bxcodebuild\b/i.test(wrapped) && isTestAction(wrapped));
+      matches = Boolean(wrapped && shellXcodebuildCommands(wrapped).some(isTestAction));
     }
   } else {
     const shell = canonical.shellCommand ?? '';
-    matches = /\bxcodebuild\b/i.test(shell) && isTestAction(shell);
+    matches = shellXcodebuildCommands(shell).some(isTestAction);
   }
   if (!matches) return undefined;
   return normalizeClaims([
@@ -717,14 +731,14 @@ export function claimsForRepositoryCommand(
   if (canonical.kind === 'argv') {
     const words = [canonical.executable!, ...(canonical.args ?? [])];
     const wrapped = fixedShellWrapperCommand(words);
-    if (wrapped) nativeBuild = /\bxcodebuild\b/.test(wrapped);
+    if (wrapped) nativeBuild = shellXcodebuildCommands(wrapped).length > 0;
     else {
       const program = basename(words[0]!);
       const args = program === 'xcrun' && words[1] === 'xcodebuild' ? words.slice(2) : words.slice(1);
       nativeBuild = (program === 'xcodebuild' || (program === 'xcrun' && words[1] === 'xcodebuild'))
         && !args.some((arg) => ['-list', '-version', '-showsdks', '-showdestinations', '-showBuildSettings', '-help'].includes(arg));
     }
-  } else nativeBuild = /\bxcodebuild\b/.test(canonical.shellCommand ?? '');
+  } else nativeBuild = shellXcodebuildCommands(canonical.shellCommand ?? '').length > 0;
   const inferredClaims = repositoryCommandClaims(command, repoId, checkoutId, defaultBranch, repoRoot, executionCwd);
   nativeBuild ||= inferredClaims.some((claim) => claim.resourceKey === 'host-service:ios-simulator-test');
   const nativeBuildClaims = nativeBuild ? [claimHostService('ios-build')] : [];

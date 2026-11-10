@@ -97,6 +97,44 @@ describe('generated repository cache retention', () => {
     expect(report.skippedByReason.tracked_content ?? 0).toBeGreaterThanOrEqual(2);
   });
 
+  test('reclaims aged build/DerivedData-* caches while preserving evidence, active builds and unknown content', () => {
+    const root = repository();
+    const stale = join(root, 'build', 'DerivedData-courses-old');
+    const active = join(root, 'build', 'DerivedData-active');
+    const tracked = join(root, 'build', 'DerivedData-tracked');
+    const unknown = join(root, 'build', 'DerivedData-no-xcode-info');
+    const unrelated = join(root, 'build', 'other-cache');
+    for (const path of [stale, active, tracked, unrelated]) {
+      xcodeCache(path);
+      age(path);
+    }
+    writeFileSync(join(tracked, 'keep.txt'), 'tracked build input');
+    execFileSync('git', ['-C', root, 'add', 'build/DerivedData-tracked/keep.txt']);
+    age(tracked);
+    mkdirSync(join(unknown, 'Build'), { recursive: true });
+    writeFileSync(join(unknown, 'Build', 'do-not-delete'), 'unknown');
+    age(unknown);
+    const evidence = join(stale, 'Logs', 'Test', 'result.xcresult');
+    mkdirSync(evidence, { recursive: true });
+    writeFileSync(join(evidence, 'report.txt'), 'persistent test evidence');
+    age(stale);
+
+    const report = cleanupGeneratedRepositoryCaches(root, {
+      nowMs: Date.parse('2026-11-10T00:00:00.000Z'),
+      processCommands: [`xcodebuild -derivedDataPath ${active}`],
+      maxRemovals: 10,
+    });
+    expect(report.removedPaths).toContain('build/DerivedData-courses-old/Build');
+    expect(existsSync(join(stale, 'Build'))).toBe(false);
+    expect(existsSync(evidence)).toBe(true);
+    expect(existsSync(join(active, 'Build'))).toBe(true);
+    expect(existsSync(join(tracked, 'Build'))).toBe(true);
+    expect(existsSync(join(unknown, 'Build', 'do-not-delete'))).toBe(true);
+    expect(existsSync(join(unrelated, 'Build'))).toBe(true);
+    expect(report.skippedByReason.active_process ?? 0).toBeGreaterThanOrEqual(1);
+    expect(report.skippedByReason.tracked_content ?? 0).toBeGreaterThanOrEqual(1);
+  });
+
   test('discovers only valid sibling DerivedData-* buckets under .forge/ios and preserves guarded content', () => {
     const root = repository();
     const ios = join(root, '.forge', 'ios');
