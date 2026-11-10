@@ -298,6 +298,7 @@ function discoverCandidates(repoRoot: string, maxEntries: number, scanRound: num
   for (const path of directChildFiles(join(root, '.forge', 'browser', 'screenshots'), budget)) candidates.push({ path, kind: 'forge_browser_screenshot' });
   const namespaces: Array<{ root: string; kind: Candidate['kind']; depth?: number }> = [
     { root: join(root, '.forge', 'ios', 'DerivedData'), kind: 'forge_ios_derived_data' },
+    { root: join(root, 'build'), kind: 'project_build_derived_data' },
     { root: join(root, '.ai', 'harness'), kind: 'harness_derived_data' },
     { root: join(root, '.repo-harness'), kind: 'repo_harness_derived_data', depth: 5 },
     { root: join(root, '.tmp'), kind: 'tmp_derived_data', depth: 6 },
@@ -307,6 +308,7 @@ function discoverCandidates(repoRoot: string, maxEntries: number, scanRound: num
   const entryRound = Math.floor(scanRound / namespaces.length);
   for (const namespace of namespaces) {
     const iosNamespace = namespace.kind === 'forge_ios_derived_data';
+    const projectBuildNamespace = namespace.kind === 'project_build_derived_data';
     const roots: Array<{ path: string; kind: Candidate['kind']; matches: (name: string) => boolean }> =
       iosNamespace
         ? [
@@ -314,7 +316,10 @@ function discoverCandidates(repoRoot: string, maxEntries: number, scanRound: num
             { path: join(root, '.forge', 'ios'), kind: 'forge_ios_derived_data_sibling',
               matches: (name) => name.startsWith('DerivedData-') && name.length > 'DerivedData-'.length },
           ]
-        : [{ path: namespace.root, kind: namespace.kind, matches: () => true }];
+        : projectBuildNamespace
+          ? [{ path: namespace.root, kind: namespace.kind,
+              matches: (name) => name === 'DerivedData' || name.startsWith('DerivedData-') }]
+          : [{ path: namespace.root, kind: namespace.kind, matches: () => true }];
     // Keep the existing namespace rotation stable; alternate iOS bucket priority
     // so a busy nested DerivedData directory cannot starve sibling caches. The
     // entry ordinal advances once per priority cycle, independently of the
@@ -323,7 +328,7 @@ function discoverCandidates(repoRoot: string, maxEntries: number, scanRound: num
     if (roots.length > 1 && entryRound % 2 === 1) roots.reverse();
     for (const group of roots) {
       const cacheRoots = namespace.depth === undefined
-        ? (iosNamespace
+        ? (iosNamespace || projectBuildNamespace
           ? directChildValidCacheRoots(group.path, group.matches, budget, groupRound)
           : directChildDirectories(group.path, group.matches, budget, groupRound).filter(isXcodeCacheRoot))
         : nestedDerivedDataDirectories(group.path, namespace.depth, budget, groupRound);
@@ -335,15 +340,6 @@ function discoverCandidates(repoRoot: string, maxEntries: number, scanRound: num
           if (existsSync(path)) candidates.push({ path, kind: group.kind, cacheRoot });
         }
       }
-    }
-  }
-  // Project build outputs are independently scanned after the original four
-  // namespaces, preserving their bounded rotation and evidence protection.
-  for (const cacheRoot of directChildValidCacheRoots(join(root, 'build'),
-    (name) => name === 'DerivedData' || name.startsWith('DerivedData-'), budget, scanRound)) {
-    for (const name of REBUILDABLE_XCODE_CHILDREN) {
-      const path = join(cacheRoot, name);
-      if (existsSync(path)) candidates.push({ path, kind: 'project_build_derived_data', cacheRoot });
     }
   }
   return { candidates, inspected: initial - budget.remaining, truncated: budget.remaining <= 0 };

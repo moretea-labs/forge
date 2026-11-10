@@ -247,7 +247,7 @@ describe('generated repository cache retention', () => {
     const first = cleanupGeneratedRepositoryCaches(root, { ...options, scanStartIndex: 0 });
     expect(first.removedPaths).toContain('.forge/ios/DerivedData/nested/Build');
     expect(existsSync(join(sibling, 'Build'))).toBe(true);
-    const next = cleanupGeneratedRepositoryCaches(root, { ...options, scanStartIndex: 4 });
+    const next = cleanupGeneratedRepositoryCaches(root, { ...options, scanStartIndex: 5 });
     expect(next.removedPaths).toContain('.forge/ios/DerivedData-sibling/Build');
     expect(existsSync(join(sibling, 'Build'))).toBe(false);
   });
@@ -271,7 +271,7 @@ describe('generated repository cache retention', () => {
       maxRemovals: 1,
     };
     const removed: string[] = [];
-    for (const scanStartIndex of [0, 4, 8, 12]) {
+    for (const scanStartIndex of [0, 5, 10, 15]) {
       removed.push(...cleanupGeneratedRepositoryCaches(root, { ...options, scanStartIndex }).removedPaths);
     }
     expect(removed).toContain('.forge/ios/DerivedData/nested-a/Build');
@@ -326,7 +326,7 @@ describe('generated repository cache retention', () => {
       processCommands: [] as string[],
     };
     const firstRound = cleanupGeneratedRepositoryCaches(root, { ...options, scanStartIndex: 0 });
-    const secondRound = cleanupGeneratedRepositoryCaches(root, { ...options, scanStartIndex: 4 });
+    const secondRound = cleanupGeneratedRepositoryCaches(root, { ...options, scanStartIndex: 5 });
     expect(firstRound.removedPaths).toContain('.repo-harness/a-older-xcode/Build');
     expect(secondRound.removedPaths).toContain('.repo-harness/z-older-xcode/Build');
     expect(firstRound.inspected).toBe(1);
@@ -418,7 +418,7 @@ describe('generated repository cache retention', () => {
     const next = cleanupGeneratedRepositoryCheckoutCaches({
       canonicalRoot, checkouts: [{ localRoot: activeWorktreeRoot, worktree: true }],
     }, { nowMs: Date.parse('2026-08-25T12:00:00.000Z'), graceMs: 60_000,
-      maxEntries: 1, maxRemovals: 1, rootStartIndex: 17, processCommands: [`xcodebuild -derivedDataPath ${protectedCache}`] });
+      maxEntries: 1, maxRemovals: 1, rootStartIndex: 21, processCommands: [`xcodebuild -derivedDataPath ${protectedCache}`] });
     expect(next.rootsInspected).toBe(1);
     expect(existsSync(join(protectedCache, 'Build'))).toBe(true);
     expect(existsSync(join(lateCache, 'Build'))).toBe(false);
