@@ -110,7 +110,6 @@ interface Candidate {
     | 'forge_ios_derived_data'
     | 'forge_ios_derived_data_sibling'
     | 'project_build_derived_data'
-    | 'project_build_derived_data'
     | 'harness_derived_data'
     | 'repo_harness_derived_data'
     | 'tmp_derived_data'
@@ -338,9 +337,8 @@ function discoverCandidates(repoRoot: string, maxEntries: number, scanRound: num
       }
     }
   }
-  // Project-specific Xcode output directories are also rebuildable. Keep the
-  // existing Forge namespace rotation unchanged: this additional group only
-  // consumes the residual bounded scan budget.
+  // Project build outputs are independently scanned after the original four
+  // namespaces, preserving their bounded rotation and evidence protection.
   for (const cacheRoot of directChildValidCacheRoots(join(root, 'build'),
     (name) => name === 'DerivedData' || name.startsWith('DerivedData-'), budget, scanRound)) {
     for (const name of REBUILDABLE_XCODE_CHILDREN) {

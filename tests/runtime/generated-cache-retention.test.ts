@@ -135,6 +135,27 @@ describe('generated repository cache retention', () => {
     expect(report.skippedByReason.tracked_content ?? 0).toBeGreaterThanOrEqual(1);
   });
 
+  test('project build caches get a fair turn when older namespaces exhaust the scan budget', () => {
+    const root = repository();
+    const existing = join(root, '.forge', 'ios', 'DerivedData', 'preexisting');
+    const projectBuild = join(root, 'build', 'DerivedData-course');
+    for (const cache of [existing, projectBuild]) {
+      xcodeCache(cache);
+      age(cache);
+    }
+    const report = cleanupGeneratedRepositoryCaches(root, {
+      nowMs: Date.parse('2026-11-10T00:00:00.000Z'),
+      maxEntries: 1,
+      maxRemovals: 1,
+      scanStartIndex: 1,
+      processCommands: [],
+    });
+    expect(report.inspected).toBe(1);
+    expect(report.removedPaths).toContain('build/DerivedData-course/Build');
+    expect(existsSync(join(existing, 'Build'))).toBe(true);
+    expect(existsSync(join(projectBuild, 'Build'))).toBe(false);
+  });
+
   test('discovers only valid sibling DerivedData-* buckets under .forge/ios and preserves guarded content', () => {
     const root = repository();
     const ios = join(root, '.forge', 'ios');
