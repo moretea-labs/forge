@@ -408,6 +408,14 @@ describe('generated repository cache retention', () => {
     }));
     expect(visits.map((visit) => [visit.generatedCacheRepositoryIndex, visit.generatedCacheRootStartIndex % 2]))
       .toEqual([[0, 0], [1, 0], [0, 1], [1, 1]]);
+    // Thirty registered repositories must not turn five-minute retention
+    // cadence into a 150-minute generated-cache collection cycle.
+    const thirty = [0, 1, 29, 30].map((minute) => planSchedulerPeriodicMaintenance({
+      nowMs: minute * 60_000, cleanupIntervalMs: 60_000, repositoryCount: 30,
+    }));
+    expect(thirty.map((visit) => [visit.generatedCacheRepositoryIndex, visit.generatedCacheRootStartIndex]))
+      .toEqual([[0, 0], [1, 0], [29, 0], [0, 1]]);
+    expect(thirty.map((visit) => visit.runRetention)).toEqual([true, false, false, true]);
     // Advance entry rotation after a complete root/namespace cycle.
     const protectedCache = join(activeWorktreeRoot, '.forge', 'ios', 'DerivedData', 'aaa-protected');
     const lateCache = join(activeWorktreeRoot, '.forge', 'ios', 'DerivedData', 'zzz-late');

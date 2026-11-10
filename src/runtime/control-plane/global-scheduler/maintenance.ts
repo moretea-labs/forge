@@ -9,6 +9,7 @@ import { cleanupRetiredExecutionJobs } from '../../execution/jobs/store';
 import type { reconcilePendingEditValidations } from '../execution/edit-validation-coordinator';
 import { deriveForgeActionableFailureCode, maybeRegisterFailedReleaseSessionRepairs, maybeRegisterForgeActionableFailureRepair } from '../../diagnostics/incident-repair';
 
+const GENERATED_CACHE_SWEEP_INTERVAL_MS = 60_000;
 const PERIODIC_RETENTION_INTERVAL_MS = 5 * 60_000;
 const PERIODIC_DEEP_RETENTION_INTERVAL_MS = 15 * 60_000;
 
@@ -61,6 +62,7 @@ export function planSchedulerPeriodicMaintenance(input: {
 } {
   const cleanupIntervalMs = Math.max(1, input.cleanupIntervalMs);
   const periodicSequence = Math.floor(input.nowMs / cleanupIntervalMs);
+  const cacheEvery = Math.max(1, Math.ceil(GENERATED_CACHE_SWEEP_INTERVAL_MS / cleanupIntervalMs));
   const retentionEvery = Math.max(1, Math.ceil(PERIODIC_RETENTION_INTERVAL_MS / cleanupIntervalMs));
   const deepRetentionEvery = Math.max(retentionEvery, Math.ceil(PERIODIC_DEEP_RETENTION_INTERVAL_MS / cleanupIntervalMs));
   const repositoryCount = Math.max(0, Math.trunc(input.repositoryCount));
@@ -68,9 +70,9 @@ export function planSchedulerPeriodicMaintenance(input: {
   return {
     periodicSequence,
     deepRetentionSequence,
-    generatedCacheRepositoryIndex: repositoryCount > 0 && periodicSequence % retentionEvery === 0
-      ? Math.floor(periodicSequence / retentionEvery) % repositoryCount : undefined,
-    generatedCacheRootStartIndex: repositoryCount > 0 ? Math.floor(periodicSequence / retentionEvery / repositoryCount) : 0,
+    generatedCacheRepositoryIndex: repositoryCount > 0 && periodicSequence % cacheEvery === 0
+      ? Math.floor(periodicSequence / cacheEvery) % repositoryCount : undefined,
+    generatedCacheRootStartIndex: repositoryCount > 0 ? Math.floor(periodicSequence / cacheEvery / repositoryCount) : 0,
     runRetention: periodicSequence % retentionEvery === 0,
     runDeepRetention: periodicSequence % deepRetentionEvery === 0,
     processGcRepositoryIndex: repositoryCount > 0 ? periodicSequence % repositoryCount : undefined,
@@ -165,8 +167,9 @@ export async function runSchedulerPeriodicCleanup(input: {
     }
   }
 
-  // Cache production is much faster than evidence retention. Reuse the existing
-  // five-minute pass, one repository and one bounded budget per pass. The root
+  // Cache production outpaces five-minute-per-repository scans on large registries.
+  // Sweep one bounded repository every minute; keep evidence/deep retention on
+  // their slower cadence. The root
   // ordinal advances per repository visit, not by the correlated global index.
   if (plan.generatedCacheRepositoryIndex !== undefined) {
     if (!runtimeMaintenanceAuthorityCurrent(input.controllerHome)) return;
