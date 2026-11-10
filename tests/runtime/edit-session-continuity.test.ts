@@ -8,14 +8,19 @@ import {
   adoptEditSessionSuccessorHead,
   applyEditOperations,
   beginEditSession,
+  cleanupEditSession,
+  inspectIntegratedEditSession,
   finalizeEditSession,
   getEditSession,
+  listEditSessions,
   type EditSessionBinding,
 } from '../../src/cli/editing/edit-session';
 import { getMcpPolicy } from '../../adapters/mcp/policy';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { ensureRepositoryRuntimeStorageBinding } from '../../src/cli/repositories/runtime-storage';
 import { applySafePatch } from '../../src/cli/repositories/safe-patch';
+import { acquireExecutionLeases } from '../../src/runtime/resources/leases/store';
+import { buildRuntimeMaintenanceStatus } from '../../src/runtime/recovery/maintenance-executor';
 
 const roots: string[] = [];
 
@@ -250,6 +255,108 @@ test('adopts a non-overlapping successor HEAD in the same durable edit session a
     expect(second.session.baseRevision).toBe(spawnSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).stdout.trim());
     expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toBe('export const value = 3;\n');
   });
+
+test('Swift-only medium edit does not inject unavailable Forge package checks', () => {
+  const fx = fixture();
+  const session = beginEditSession(fx.repoRoot, {
+    purpose: 'Swift-like repository with no package check registry',
+    allowedPaths: ['source.ts'], binding: durableBinding(),
+  });
+  const larger = 'value = 2;' + Array.from({ length: 550 }, (_, i) => '\n// line ' + i).join('');
+  const edited = applyEditOperations(fx.repoRoot, fx.policy, session.sessionId, [{
+    type: 'replace', path: 'source.ts', expectedSha256: sha256(fx.initial),
+    replacements: [{ oldText: 'value = 1', newText: larger }],
+  }], { binding: durableBinding() });
+  expect(edited.assurance?.semanticRisk).toBe('medium');
+  expect(edited.assurance?.requiredChecks).toEqual([]);
+  expect(edited.requestedChecks).toEqual([]);
+});
+
+test('available package type check is required for medium edits', () => {
+  const fx = fixture();
+  writeFileSync(join(fx.repoRoot, 'package.json'), JSON.stringify({ scripts: { 'check:type': 'tsc --noEmit' } }));
+  const session = beginEditSession(fx.repoRoot, {
+    purpose: 'Registered package check is real',
+    allowedPaths: ['source.ts'], binding: durableBinding(),
+  });
+  const larger = 'value = 2;' + Array.from({ length: 550 }, (_, i) => '\n// line ' + i).join('');
+  const edited = applyEditOperations(fx.repoRoot, fx.policy, session.sessionId, [{
+    type: 'replace', path: 'source.ts', expectedSha256: sha256(fx.initial),
+    replacements: [{ oldText: 'value = 1', newText: larger }],
+  }], { binding: durableBinding() });
+  expect(edited.assurance?.requiredChecks).toContain('package:check:type');
+});
+
+test('integrated legacy missing check records explicitly UNVERIFIED without claiming PASS', () => {
+  const fx = fixture();
+  const session = beginEditSession(fx.repoRoot, {
+    purpose: 'Already-integrated Swift source with unavailable package check',
+    allowedPaths: ['source.ts'], checks: ['package:check:type'], binding: durableBinding(),
+  });
+  applyEditOperations(fx.repoRoot, fx.policy, session.sessionId, [{
+    type: 'replace', path: 'source.ts', expectedSha256: sha256(fx.initial),
+    replacements: [{ oldText: 'value = 1', newText: 'value = 2' }],
+  }], { binding: durableBinding() });
+  spawnSync('git', ['add', 'source.ts'], { cwd: fx.repoRoot });
+  spawnSync('git', ['commit', '-qm', 'source already integrated'], { cwd: fx.repoRoot });
+  const inspect = () => inspectIntegratedEditSession(fx.repoRoot, session.sessionId, {
+    repoId: fx.repository.repoId, controllerHome: fx.controllerHome,
+  });
+  expect(inspect()).toMatchObject({ safe: true, unverifiedChecks: ['package:check:type'] });
+  const cleanup = cleanupEditSession(fx.repoRoot, session.sessionId, {
+    repoId: fx.repository.repoId, controllerHome: fx.controllerHome,
+  });
+  expect(cleanup.status).toBe('reconciled_unverified');
+  expect(cleanup.checkResults).toEqual([]);
+  expect(cleanup.verifiedAt).toBeUndefined();
+  expect(cleanup.unverifiedChecks).toEqual(['package:check:type']);
+  expect(cleanup.reviewNote).toContain('UNVERIFIED');
+  expect(getEditSession(fx.repoRoot, session.sessionId).status).toBe('reconciled_unverified');
+  expect(listEditSessions(fx.repoRoot).find((entry) => entry.sessionId === session.sessionId)?.reconciledAt).toBeDefined();
+  expect(cleanupEditSession(fx.repoRoot, session.sessionId).status).toBe('reconciled_unverified');
+});
+
+test('metadata-only reconciliation rejects live lease and leaves dirty session unchanged', () => {
+  const fx = fixture();
+  const session = beginEditSession(fx.repoRoot, {
+    purpose: 'Lease owner still active',
+    allowedPaths: ['source.ts'], checks: ['package:check:type'], binding: durableBinding(),
+  });
+  applyEditOperations(fx.repoRoot, fx.policy, session.sessionId, [{
+    type: 'replace', path: 'source.ts', expectedSha256: sha256(fx.initial),
+    replacements: [{ oldText: 'value = 1', newText: 'value = 2' }],
+  }], { binding: durableBinding() });
+  spawnSync('git', ['add', 'source.ts'], { cwd: fx.repoRoot });
+  spawnSync('git', ['commit', '-qm', 'integrated under lease'], { cwd: fx.repoRoot });
+  const held = acquireExecutionLeases(fx.controllerHome, fx.repository.repoId, 'test-owner', [
+    { resourceKey: 'workspace:checkout-runtime-continuity', mode: 'write' },
+  ], { visibility: 'ephemeral', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false });
+  expect(held.acquired).toBe(true);
+  const inspect = inspectIntegratedEditSession(fx.repoRoot, session.sessionId, {
+    repoId: fx.repository.repoId, controllerHome: fx.controllerHome,
+  });
+  expect(inspect).toMatchObject({ safe: false, reason: 'EDIT_SESSION_RECONCILIATION_ACTIVE_LEASE' });
+  expect(() => cleanupEditSession(fx.repoRoot, session.sessionId, {
+    repoId: fx.repository.repoId, controllerHome: fx.controllerHome,
+  })).toThrow('EDIT_SESSION_RECONCILIATION_ACTIVE_LEASE');
+  expect(getEditSession(fx.repoRoot, session.sessionId).status).toBe('dirty');
+});
+
+test('maintenance never considers an empty reserved successor session safe garbage', () => {
+  const fx = fixture();
+  const session = beginEditSession(fx.repoRoot, {
+    purpose: 'Reserved P0B session', allowedPaths: ['source.ts'], binding: durableBinding(),
+  });
+  const state = buildRuntimeMaintenanceStatus({
+    repoId: fx.repository.repoId, canonicalRoot: fx.repoRoot,
+  }, fx.controllerHome, { minAgeMinutes: 0, maxCandidates: 25 });
+  const candidate = state.candidates.find((entry) => entry.id === session.sessionId);
+  expect(candidate).toMatchObject({
+    kind: 'stale_edit_session', safe: false,
+    reason: 'EDIT_SESSION_RECONCILIATION_NOT_ELIGIBLE',
+  });
+  expect(getEditSession(fx.repoRoot, session.sessionId).status).toBe('open');
+});
 
 function sha256(value: string): string {
   return createHash('sha256').update(value).digest('hex');

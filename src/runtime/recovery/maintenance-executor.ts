@@ -3,7 +3,8 @@ import { basename, dirname, join, relative, resolve } from 'path';
 import { tmpdir } from 'os';
 import { assertStorageHeadroom } from '../shared/storage-capacity';
 import { runProcess } from '../../effects/process-runner';
-import { cleanupEditSession, getEditSession, listEditSessions } from '../../cli/editing/edit-session';
+import { cleanupEditSession, getEditSession, inspectIntegratedEditSession, listEditSessions } from '../../cli/editing/edit-session';
+import { withRepositoryMutationExclusion } from '../resources/leases/store';
 import { ensureRepositoryRuntimeStorage, type RepositoryRuntimeStorageReport } from '../../cli/repositories/runtime-storage';
 import { getRepository, selectRepositoryCheckout, setRepositoryCheckoutLifecycle } from '../../cli/repositories/registry';
 import type { RepositoryRecord } from '../../cli/repositories/types';
@@ -708,6 +709,7 @@ function detachOwnedManagedWorktree(
 
 function scanStaleEditSessionCandidates(
   repository: RuntimeMaintenanceRepository,
+  controllerHome: string,
   options: Required<RuntimeMaintenanceOptions>,
 ): RuntimeMaintenanceCandidate[] {
   const nowMs = Date.now();
@@ -721,16 +723,26 @@ function scanStaleEditSessionCandidates(
     .filter(({ ageMinutes }) => ageMinutes >= options.minAgeMinutes)
     .sort((left, right) => right.ageMinutes - left.ageMinutes)
     .slice(0, options.maxCandidates)
-    .map(({ session, ageMinutes }) => ({
-      kind: 'stale_edit_session' as const,
-      id: session.sessionId,
-      status: session.status,
-      safe: true,
-      reason: 'Work-free Edit Session may reconcile metadata only; cleanupEditSession still refuses unique uncommitted source changes.',
-      ageMinutes,
-      suggestedAction: 'full_maintenance_pass' as const,
-      ownershipStatus: 'explicit' as const,
-    }));
+    .map(({ session, ageMinutes }) => {
+      let safety: { safe: boolean; reason: string };
+      try {
+        safety = inspectIntegratedEditSession(repository.canonicalRoot, session.sessionId, {
+          controllerHome, repoId: repository.repoId,
+        });
+      } catch (error) {
+        safety = { safe: false, reason: error instanceof Error ? error.message : String(error) };
+      }
+      return {
+        kind: 'stale_edit_session' as const,
+        id: session.sessionId,
+        status: session.status,
+        safe: safety.safe,
+        reason: safety.reason,
+        ageMinutes,
+        suggestedAction: 'full_maintenance_pass' as const,
+        ownershipStatus: 'explicit' as const,
+      };
+    });
 }
 
 function readBoolean(input: Record<string, unknown>, snake: string, camel: string): boolean | undefined {
@@ -779,7 +791,7 @@ export function buildRuntimeMaintenanceStatus(
   const localJobCandidates = scanLocalJobCandidates(repository.canonicalRoot, normalized);
   const storageCandidates = runtimeStorageCandidates(storage.report);
   const tempCandidates = scanRuntimeTempCandidates(repository, normalized.maxCandidates);
-  const staleEditCandidates = scanStaleEditSessionCandidates(repository, normalized);
+  const staleEditCandidates = scanStaleEditSessionCandidates(repository, controllerHome, normalized);
   const retainedWorktreeCandidates = scanRetainedWorktreeCandidates(repository, controllerHome, normalized.maxCandidates);
   const candidates = [...localJobCandidates, ...storageCandidates, ...staleEditCandidates, ...retainedWorktreeCandidates, ...tempCandidates].slice(0, normalized.maxCandidates);
   const summary = summarize(candidates);
@@ -1031,11 +1043,15 @@ export function applyRuntimeMaintenance(
         return detachOwnedManagedWorktree(repository, controllerHome, candidate);
       }
       if (candidate.kind === 'stale_edit_session') {
-        const cleaned = cleanupEditSession(repository.canonicalRoot, candidate.id, {
-          reviewer: 'runtime-maintenance',
-          note: 'Reconciled by explicit full maintenance after durable ownership became inactive; source files were not rolled back.',
-        });
-        const closed = ['finalized', 'superseded', 'rolled_back'].includes(cleaned.status);
+        const cleaned = withRepositoryMutationExclusion(
+          controllerHome, repository.repoId, 'maintenance-edit-session:' + candidate.id,
+          () => cleanupEditSession(repository.canonicalRoot, candidate.id, {
+            controllerHome, repoId: repository.repoId,
+            reviewer: 'runtime-maintenance',
+            note: 'Exact integrated bytes retained; missing checks remain unverified.',
+          }),
+        );
+        const closed = ['finalized', 'reconciled_unverified', 'superseded', 'rolled_back'].includes(cleaned.status);
         return {
           ...candidate,
           applied: closed,

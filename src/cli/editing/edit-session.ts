@@ -7,6 +7,7 @@ import { splitRepositoryGitStatus } from '../repositories/structured-git';
 import { workspaceValidationFingerprint } from '../../runtime/control-plane/execution/verification-evidence';
 import {
   runControllerCheck,
+  listControllerChecks,
   runControllerCheckAsync,
   type ControllerCheckResult,
 } from '../controller/check-runner';
@@ -16,6 +17,7 @@ import type { McpPolicy } from '../../../adapters/mcp/types';
 import type { ProcessCheckCompletionReceipt, ProcessCheckReceiptStatus } from '../../runtime/execution/process-runtime/check-receipt';
 import { invalidateRepositoryReadCaches } from '../repository/inspector';
 import type { EditOperation } from './edit-operation-contract';
+import { listActiveLeases } from '../../runtime/resources/leases/store';
 export type { EditOperation } from './edit-operation-contract';
 
 export type EditSessionStatus =
@@ -24,6 +26,7 @@ export type EditSessionStatus =
   | 'checked'
   | 'check_failed'
   | 'finalized'
+  | 'reconciled_unverified'
   | 'superseded'
   | 'rolled_back';
 
@@ -124,6 +127,8 @@ export interface EditSession {
   appliedAt?: string;
   verifiedAt?: string;
   finalizedAt?: string;
+  reconciledAt?: string;
+  unverifiedChecks?: string[];
   supersededAt?: string;
   supersededPaths?: string[];
   rolledBackAt?: string;
@@ -145,6 +150,7 @@ export interface EditSessionSummary {
   createdAt: string;
   updatedAt: string;
   finalizedAt?: string;
+  reconciledAt?: string;
 }
 
 export interface EditSessionFingerprintEntry {
@@ -298,7 +304,7 @@ function checkedAfterImageCommitted(repoRoot: string, session: EditSession): boo
   return changed.length > 0 && changed.every((path) => owned.has(path));
 }
 
-function calculateAssurance(session: EditSession, at: string): EditSessionAssurance {
+function calculateAssurance(repoRoot: string, session: EditSession, at: string): EditSessionAssurance {
   const changedPaths = [...new Set(session.operations.map((operation) => operation.path))].sort();
   const protectedPaths = changedPaths.filter((path) => ASSURANCE_PROTECTED_PATH.test(path));
   const changedLines = session.operations.reduce((sum, operation) => sum + operation.changedLines, 0);
@@ -307,10 +313,15 @@ function calculateAssurance(session: EditSession, at: string): EditSessionAssura
     : changedLines > 500 || changedPaths.length > 10
       ? 'medium'
       : 'low';
+  // Auto checks must be real executable repository checks. Swift repositories
+  // do not acquire nonexistent Forge package:* checks merely for being risky.
+  // Explicitly requested checks remain required (and reported unavailable by
+  // the check runner); never silently turn them into a successful receipt.
+  const available = new Set(listControllerChecks(repoRoot).map((check) => check.id));
   const requiredChecks = [...new Set([
     ...session.requestedChecks,
-    ...(semanticRisk !== 'low' ? ['package:check:type'] : []),
-    ...(protectedPaths.length > 0 ? ['package:check:runtime-architecture'] : []),
+    ...(semanticRisk !== 'low' && available.has('package:check:type') ? ['package:check:type'] : []),
+    ...(protectedPaths.length > 0 && available.has('package:check:runtime-architecture') ? ['package:check:runtime-architecture'] : []),
   ])].sort();
   return {
     changedPaths,
@@ -387,7 +398,7 @@ function normalizeLegacyStatus(value: unknown): EditSessionStatus {
   if (value === 'applied') return 'dirty';
   if (value === 'verified') return 'checked';
   if (value === 'verification_failed') return 'check_failed';
-  if (['open', 'dirty', 'checked', 'check_failed', 'finalized', 'superseded', 'rolled_back'].includes(String(value))) {
+  if (['open', 'dirty', 'checked', 'check_failed', 'finalized', 'reconciled_unverified', 'superseded', 'rolled_back'].includes(String(value))) {
     return String(value) as EditSessionStatus;
   }
   return 'open';
@@ -445,6 +456,8 @@ function normalizeStoredSession(value: Partial<EditSession> & { sessionId: strin
     appliedAt: value.appliedAt,
     verifiedAt: value.verifiedAt,
     finalizedAt: value.finalizedAt,
+    reconciledAt: value.reconciledAt,
+    unverifiedChecks: value.unverifiedChecks,
     supersededAt: value.supersededAt,
     supersededPaths: value.supersededPaths,
     rolledBackAt: value.rolledBackAt,
@@ -746,7 +759,7 @@ export function adoptEditSessionSuccessorHead(repoRoot: string, sessionId: strin
   session.checkResults = [];
   session.reviewer = undefined;
   session.reviewNote = undefined;
-  session.assurance = calculateAssurance(session, at);
+  session.assurance = calculateAssurance(repoRoot, session, at);
   session.requestedChecks = session.assurance.requiredChecks;
   session.workspaceFingerprint = workspaceFingerprint(repoRoot);
   session.updatedAt = at;
@@ -819,7 +832,7 @@ export function reconcileEditSession(repoRoot: string, sessionId: string, input:
   note?: string;
 } = {}): EditSession {
   const session = getEditSession(repoRoot, sessionId);
-  if (['finalized', 'superseded', 'rolled_back'].includes(session.status)) return session;
+  if (['finalized', 'reconciled_unverified', 'superseded', 'rolled_back'].includes(session.status)) return session;
 
   const emptyOpenSession = session.status === 'open' && session.operations.length === 0;
   if (emptyOpenSession) return session;
@@ -867,23 +880,80 @@ export function reconcileOpenEditSessions(repoRoot: string, input: {
 }
 
 /**
- * Safe cleanup for sessions that must not permanently block later work.
- * Refuses to discard sessions that still own unique uncommitted content.
+ * Read-only reconciliation preview: each after-image must be in HEAD,
+ * except an explicitly ignored protected generated file. A clean checkout
+ * alone never establishes verification or historical lease release.
  */
+export function inspectIntegratedEditSession(
+  repoRoot: string, sessionId: string, input: { controllerHome: string; repoId: string },
+): { safe: boolean; reason: string; unverifiedChecks: string[] } {
+  const reject = (reason: string) => ({ safe: false, reason, unverifiedChecks: [] as string[] });
+  const session = getEditSession(repoRoot, sessionId);
+  if (session.repoId !== input.repoId || !session.checkoutId || !session.principalId)
+    return reject('EDIT_SESSION_RECONCILIATION_IDENTITY_REQUIRED');
+  if (!['dirty', 'checked', 'check_failed'].includes(session.status) || session.operations.length === 0)
+    return reject('EDIT_SESSION_RECONCILIATION_NOT_ELIGIBLE');
+  if (listActiveLeases(input.controllerHome, input.repoId).length)
+    return reject('EDIT_SESSION_RECONCILIATION_ACTIVE_LEASE');
+  if (currentHashMismatches(repoRoot, session).length)
+    return reject('EDIT_SESSION_RECONCILIATION_AFTER_IMAGE_MISMATCH');
+  if (uncommittedSessionPaths(repoRoot, sessionTrackedPaths(session)).length)
+    return reject('EDIT_SESSION_RECONCILIATION_UNCOMMITTED_SOURCE');
+  const head = gitRevision(repoRoot);
+  if (!head || !session.baseRevision || head === session.baseRevision)
+    return reject('EDIT_SESSION_RECONCILIATION_COMMITTED_HEAD_REQUIRED');
+  if (!runProcess('git', ['merge-base', '--is-ancestor', session.baseRevision, head], {
+    cwd: repoRoot, timeoutMs: 10_000, maxOutputBytes: 1024,
+  }).ok) return reject('EDIT_SESSION_RECONCILIATION_NOT_DESCENDANT');
+  for (const operation of latestOperations(session).values()) {
+    if (operation.type === 'delete') return reject('EDIT_SESSION_RECONCILIATION_DELETED_PATH_REQUIRES_VERIFICATION');
+    const tracked = runProcess('git', ['ls-files', '--error-unmatch', '--', operation.path], {
+      cwd: repoRoot, timeoutMs: 10_000, maxOutputBytes: 1024,
+    });
+    if (tracked.ok) {
+      const blob = runProcess('git', ['show', 'HEAD:' + operation.path], {
+        cwd: repoRoot, timeoutMs: 10_000, maxOutputBytes: 4 * 1024 * 1024,
+      });
+      if (!blob.ok || !operation.afterSha256 || operation.afterSha256 !== hash(blob.stdout))
+        return reject('EDIT_SESSION_RECONCILIATION_HEAD_BLOB_MISMATCH: ' + operation.path);
+    } else {
+      const ignored = runProcess('git', ['check-ignore', '-q', '--', operation.path], {
+        cwd: repoRoot, timeoutMs: 10_000, maxOutputBytes: 1024,
+      });
+      if (!session.assurance?.protectedPaths.includes(operation.path) || !ignored.ok)
+        return reject('EDIT_SESSION_RECONCILIATION_PATH_NOT_COMMITTED: ' + operation.path);
+    }
+  }
+  const available = new Set(listControllerChecks(repoRoot).map((check) => check.id));
+  const unverifiedChecks = session.requestedChecks.filter((id) =>
+    !session.checkResults.some((result) => result.checkId === id && result.ok));
+  if (!unverifiedChecks.length) return reject('EDIT_SESSION_RECONCILIATION_CHECKS_ALREADY_PASSED');
+  if (unverifiedChecks.some((id) => available.has(id)))
+    return reject('EDIT_SESSION_RECONCILIATION_EXECUTABLE_CHECK_INCOMPLETE');
+  return {
+    safe: true,
+    reason: 'Exact committed after-images, no live lease; checks remain UNVERIFIED and protected-path approval remains required.',
+    unverifiedChecks,
+  };
+}
+
+/** Safe metadata cleanup, never a source rollback or a fabricated Check PASS. */
 export function cleanupEditSession(repoRoot: string, sessionId: string, input: {
   reviewer?: string;
   note?: string;
   allowFinalized?: boolean;
+  controllerHome?: string;
+  repoId?: string;
 } = {}): EditSession {
   const session = getEditSession(repoRoot, sessionId);
-  if (['finalized', 'superseded', 'rolled_back'].includes(session.status)) return session;
+  if (['finalized', 'reconciled_unverified', 'superseded', 'rolled_back'].includes(session.status)) return session;
 
   if (session.status === 'open' && session.operations.length === 0) {
     return rollbackEditSession(repoRoot, sessionId);
   }
 
   const reconciled = reconcileEditSession(repoRoot, sessionId, input);
-  if (['finalized', 'superseded', 'rolled_back'].includes(reconciled.status)) return reconciled;
+  if (['finalized', 'reconciled_unverified', 'superseded', 'rolled_back'].includes(reconciled.status)) return reconciled;
 
   const paths = sessionTrackedPaths(reconciled);
   const mismatches = currentHashMismatches(repoRoot, reconciled);
@@ -898,6 +968,34 @@ export function cleanupEditSession(repoRoot: string, sessionId: string, input: {
       reviewer: input.reviewer,
       note: input.note?.trim() || 'Cleanup closed a session superseded by newer workspace content.',
     });
+  }
+  if (input.controllerHome && input.repoId) {
+    const inspection = inspectIntegratedEditSession(repoRoot, sessionId, {
+      controllerHome: input.controllerHome, repoId: input.repoId,
+    });
+    if (!inspection.safe) throw new Error(inspection.reason);
+    reconciled.status = 'reconciled_unverified';
+    reconciled.reconciledAt = now();
+    reconciled.updatedAt = reconciled.reconciledAt;
+    reconciled.unverifiedChecks = inspection.unverifiedChecks;
+    reconciled.reviewer = input.reviewer?.trim() || 'runtime-maintenance';
+    reconciled.reviewNote = 'UNVERIFIED metadata-only reconciliation: ' + inspection.reason
+      + (input.note?.trim() ? ' ' + input.note.trim() : '');
+    writeSession(repoRoot, reconciled);
+    tryAppendControllerWorklogEvent(repoRoot, {
+      category: 'edit', action: 'edit_session_reconciled_unverified',
+      summary: reconciled.purpose + ': integrated bytes retained; checks remain UNVERIFIED',
+      actor: reconciled.reviewer, issueId: reconciled.issueId,
+      taskId: reconciled.taskId, editSessionId: reconciled.sessionId,
+      details: {
+        head: gitRevision(repoRoot), files: sessionTrackedPaths(reconciled),
+        unverifiedChecks: inspection.unverifiedChecks,
+        approvalRequired: reconciled.assurance?.approvalRequired ?? false,
+        currentLeaseObservation: 'none_at_reconciliation',
+        historicalLeaseDisposition: 'unknown',
+      },
+    });
+    return reconciled;
   }
   throw new Error(`edit session cannot be cleaned up from ${reconciled.status}`);
 }
@@ -1191,6 +1289,7 @@ function sessionSummary(session: EditSession): EditSessionSummary {
     createdAt: session.createdAt,
     updatedAt: session.updatedAt,
     finalizedAt: session.finalizedAt,
+    reconciledAt: session.reconciledAt,
   };
 }
 
@@ -1387,7 +1486,7 @@ export function cleanupTerminalEditSessionRecords(repoRoot: string, input: {
       skip('session_unreadable');
       continue;
     }
-    if (!['finalized', 'superseded', 'rolled_back'].includes(session.status)) {
+    if (!['finalized', 'reconciled_unverified', 'superseded', 'rolled_back'].includes(session.status)) {
       skip('active_session');
       continue;
     }
@@ -1732,7 +1831,7 @@ export function applyEditOperations(repoRoot: string, policy: McpPolicy, session
   session.appliedAt = session.appliedAt ?? at;
   session.verifiedAt = undefined;
   session.checkResults = [];
-  session.assurance = calculateAssurance(session, at);
+  session.assurance = calculateAssurance(repoRoot, session, at);
   session.requestedChecks = session.assurance.requiredChecks;
   session.workspaceFingerprint = workspaceFingerprint(repoRoot);
   session.updatedAt = at;
@@ -1931,7 +2030,7 @@ export function rollbackEditSession(repoRoot: string, sessionId: string, input: 
   session.verifiedAt = undefined;
   session.reviewer = undefined;
   session.reviewNote = undefined;
-  session.assurance = target === 0 ? undefined : calculateAssurance(session, at);
+  session.assurance = target === 0 ? undefined : calculateAssurance(repoRoot, session, at);
   session.requestedChecks = session.assurance?.requiredChecks ?? session.requestedChecks;
   session.workspaceFingerprint = workspaceFingerprint(repoRoot);
   session.updatedAt = at;
