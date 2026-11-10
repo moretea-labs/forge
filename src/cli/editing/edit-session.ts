@@ -778,8 +778,10 @@ export function adoptEditSessionSuccessorHead(repoRoot: string, sessionId: strin
         return !tree.ok || tree.stdout.split('\0').includes(path);
       }
       if (!operation.afterSha256) return true;
+      // Git blob bytes are integrity evidence, not user-visible output. Redaction
+      // would corrupt credential-shaped source identifiers and cause false drift.
       const blob = runProcess('git', ['show', `HEAD:${path}`], {
-        cwd: repoRoot, timeoutMs: 10_000, maxOutputBytes: 4 * 1024 * 1024,
+        cwd: repoRoot, timeoutMs: 10_000, maxOutputBytes: 4 * 1024 * 1024, structuredStdout: true,
       });
       return !blob.ok || hash(blob.stdout) !== operation.afterSha256;
     });
@@ -986,8 +988,9 @@ export function inspectIntegratedEditSession(
       cwd: repoRoot, timeoutMs: 10_000, maxOutputBytes: 1024,
     });
     if (tracked.ok) {
+      // Hash the exact Git blob; redacted text is not a valid content digest input.
       const blob = runProcess('git', ['show', 'HEAD:' + operation.path], {
-        cwd: repoRoot, timeoutMs: 10_000, maxOutputBytes: 4 * 1024 * 1024,
+        cwd: repoRoot, timeoutMs: 10_000, maxOutputBytes: 4 * 1024 * 1024, structuredStdout: true,
       });
       if (!blob.ok || !operation.afterSha256 || operation.afterSha256 !== hash(blob.stdout))
         return reject('EDIT_SESSION_RECONCILIATION_HEAD_BLOB_MISMATCH: ' + operation.path);

@@ -678,6 +678,53 @@ test('protected generated paths retain explicit approval across metadata cleanup
   expect(readFileSync(join(fx.repoRoot, protectedPath), 'utf8')).toBe('value = 2;\n');
 });
 
+test('successor adoption hashes exact committed source bytes with credential-shaped assignments', () => {
+  const fx = fixture();
+  const binding = durableBinding();
+  const session = beginEditSession(fx.repoRoot, {
+    purpose: 'Exact Git blob hash with credential-shaped source',
+    allowedPaths: ['source.ts'],
+    binding,
+  });
+  const after = "export const authorization = 'fixture-value';\n";
+  applyEditOperations(fx.repoRoot, fx.policy, session.sessionId, [{
+    type: 'replace', path: 'source.ts', expectedSha256: sha256(fx.initial),
+    replacements: [{ oldText: 'export const value = 1;', newText: "export const authorization = 'fixture-value';" }],
+  }], { binding });
+  expect(spawnSync('git', ['add', 'source.ts'], { cwd: fx.repoRoot }).status).toBe(0);
+  expect(spawnSync('git', ['commit', '-qm', 'integrate credential-shaped source'], { cwd: fx.repoRoot }).status).toBe(0);
+  const successor = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).stdout.trim();
+
+  const adopted = adoptEditSessionSuccessorHead(fx.repoRoot, session.sessionId, {
+    binding, controllerHome: fx.controllerHome, expectedRevision: 1,
+  });
+  expect(adopted.baseRevision).toBe(successor);
+  expect(adopted.currentRevision).toBe(2);
+  expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toBe(after);
+});
+
+test('integrated EditSession inspection hashes exact committed source bytes before redaction', () => {
+  const fx = fixture();
+  const binding = durableBinding();
+  const session = beginEditSession(fx.repoRoot, {
+    purpose: 'Inspect exact Git blob with credential-shaped source',
+    allowedPaths: ['source.ts'],
+    binding,
+  });
+  const after = "export const authorization = 'fixture-value';\n";
+  applyEditOperations(fx.repoRoot, fx.policy, session.sessionId, [{
+    type: 'replace', path: 'source.ts', expectedSha256: sha256(fx.initial),
+    replacements: [{ oldText: 'export const value = 1;', newText: "export const authorization = 'fixture-value';" }],
+  }], { binding });
+  expect(spawnSync('git', ['add', 'source.ts'], { cwd: fx.repoRoot }).status).toBe(0);
+  expect(spawnSync('git', ['commit', '-qm', 'integrate credential-shaped source'], { cwd: fx.repoRoot }).status).toBe(0);
+  expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toBe(after);
+
+  expect(inspectIntegratedEditSession(fx.repoRoot, session.sessionId, {
+    repoId: fx.repository.repoId, controllerHome: fx.controllerHome,
+  })).toMatchObject({ safe: true, unverifiedChecks: [] });
+});
+
 function sha256(value: string): string {
   return createHash('sha256').update(value).digest('hex');
 }
