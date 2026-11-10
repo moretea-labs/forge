@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import { cpSync, lstatSync, mkdirSync, readlinkSync, rmSync } from 'fs';
 import { join, resolve } from 'path';
 import type {
@@ -17,6 +18,11 @@ import { AssistantPluginError } from './errors';
 const BROWSER_STATE_ROOT = '.forge/browser';
 const BROWSER_SESSION_COMPATIBILITY_NAMESPACE = 'browser.session.v1';
 const BROWSER_SESSION_COMPUTER_MIGRATION_ID = 'browser-session-authority-v1-to-computer-surface-v1';
+export const BROWSER_OWNER_PREFIX = 'forge-browser-owned:';
+
+export function browserSessionOwnerToken(sessionId: string): string {
+  return `${BROWSER_OWNER_PREFIX}${createHash('sha256').update(sessionId).digest('hex').slice(0, 24)}`;
+}
 
 function requireBrowserSessionExecutionContext() {
   const context = currentRuntimeBrowserSessionExecutionContext();
@@ -57,7 +63,11 @@ function surfaceProviderBinding(session: BrowserSessionState): ComputerSurfacePr
     ...(browser.browserProduct ? { browserProduct: browser.browserProduct } : {}),
     ...(tab?.windowId ? { windowId: tab.windowId } : {}),
     ...(tab?.tabId ? { tabId: tab.tabId } : {}),
-    ...(tab?.ownerToken ? { ownerToken: tab.ownerToken } : {}),
+    ...(tab?.ownerToken
+      ? { ownerToken: tab.ownerToken }
+      : browser.provider === 'macos-apple-events' && tab?.ownership === 'plugin_owned'
+        ? { ownerToken: browserSessionOwnerToken(session.sessionId) }
+        : {}),
   };
 }
 
@@ -83,6 +93,21 @@ function browserSessionFromSurface(target: ComputerSurfaceTarget): BrowserSessio
   }
   const canonicalSessionId = target.compatibilityAliases[0] ?? session.sessionId;
   session.sessionId = canonicalSessionId;
+  if (session.browser?.provider === 'macos-apple-events' && session.browser.tab?.ownership === 'plugin_owned'
+    && session.browser.tab.windowId && session.browser.tab.tabId && !session.browser.tab.ownerToken) {
+    session.browser.tab.ownerToken = browserSessionOwnerToken(canonicalSessionId);
+  }
+  if (session.browser?.provider === 'macos-apple-events' && session.browser.tab?.ownership === 'plugin_owned'
+    && session.browser.tab.windowId && session.browser.tab.tabId) {
+    const ownerToken = target.providerBinding?.ownerToken ?? browserSessionOwnerToken(canonicalSessionId);
+    if (session.browser.tab.ownerToken && session.browser.tab.ownerToken !== ownerToken) {
+      throw new AssistantPluginError('PLUGIN_BROWSER_SESSION_OWNERSHIP_MISMATCH', 'Saved Browser session owner token does not match the canonical Computer Surface owner binding.', {
+        retryable: false,
+        details: { sessionId: canonicalSessionId, targetId: target.targetId },
+      });
+    }
+    session.browser.tab.ownerToken = ownerToken;
+  }
   if (session.browser?.sessionResume) session.browser.sessionResume.sessionId = canonicalSessionId;
   return session;
 }

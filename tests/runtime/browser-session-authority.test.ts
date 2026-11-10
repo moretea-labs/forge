@@ -37,7 +37,7 @@ import {
   saveBrowserSession,
   tombstoneBrowserSession,
 } from '../../src/runtime/plugins/browser-session-authority';
-import { findBrowserSession as findComputerBackedBrowserSession } from '../../src/runtime/plugins/browser-session-store';
+import { browserSessionOwnerToken, findBrowserSession as findComputerBackedBrowserSession } from '../../src/runtime/plugins/browser-session-store';
 import { readLegacyBrowserSessionMigrationEntries } from '../../src/runtime/plugins/browser-session-legacy-migration';
 import { withRuntimeBrowserSessionExecutionContext } from '../../src/runtime/root/browser-session-composition';
 import {
@@ -120,6 +120,7 @@ function session(
     native?: boolean; windowId?: string; tabId?: string; repoMarker?: string; product?: 'chrome' | 'vivaldi';
     mode?: 'attach_preferred' | 'managed_persistent' | 'isolated';
     activeMode?: 'attach_preferred' | 'managed_persistent' | 'isolated';
+    ownership?: 'plugin_owned' | 'user_owned';
   } = {},
 ) {
   const mode = options.mode ?? (options.native ? 'attach_preferred' : 'managed_persistent');
@@ -143,7 +144,7 @@ function session(
         matchedBy: 'saved_url',
         inventoryCount: 1,
         capturedAt: updatedAt,
-        ownership: 'user_owned',
+        ownership: options.ownership ?? 'user_owned',
         windowId: options.windowId ?? '7',
         tabId: options.tabId ?? '9',
       },
@@ -244,6 +245,26 @@ describe('browser session compatibility on Computer target authority', () => {
     saveBrowserSession(controllerHome, 'repo-a', repoA, session('managed-a', '2026-08-24T03:00:00.000Z'));
     expect(listBrowserSessions(controllerHome, 'repo-b', repoB).sessions.map((entry) => entry.sessionId)).toEqual(['native-a']);
     expect(listBrowserSessions(controllerHome, 'repo-a', repoA).sessions.map((entry) => entry.sessionId)).toEqual(['managed-a', 'native-a']);
+  });
+
+  test('plugin-owned native tabs cannot be aliased by a different session owner', () => {
+    const { controllerHome, repoA, repoB } = fixture();
+    const first = saveBrowserSession(controllerHome, 'repo-a', repoA, session(
+      'native-owned-a',
+      '2026-08-24T01:00:00.000Z',
+      { native: true, ownership: 'plugin_owned' },
+    ));
+    const ownerToken = browserSessionOwnerToken('native-owned-a');
+    expect(first.browser?.tab).toMatchObject({ ownership: 'plugin_owned', ownerToken });
+    expect(computerBackedSession(controllerHome, 'repo-a', repoA, 'native-owned-a')?.browser?.tab?.ownerToken).toBe(ownerToken);
+
+    expect(() => saveBrowserSession(controllerHome, 'repo-b', repoB, session(
+      'native-owned-b',
+      '2026-08-24T02:00:00.000Z',
+      { native: true, ownership: 'plugin_owned' },
+    ))).toThrow('COMPUTER_SURFACE_PROVIDER_BINDING_OWNERSHIP_CONFLICT');
+    expect(findBrowserSession(controllerHome, 'repo-a', repoA, 'native-owned-a')?.sessionId).toBe('native-owned-a');
+    expect(findBrowserSession(controllerHome, 'repo-b', repoB, 'native-owned-b')).toBeUndefined();
   });
 
   test('Computer-backed browser tombstones remain authoritative without Browser retention', () => {

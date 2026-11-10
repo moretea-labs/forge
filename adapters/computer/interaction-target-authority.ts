@@ -206,7 +206,18 @@ function surfaceBindingMatches(left: ComputerSurfaceProviderBinding | undefined,
   return left.providerId === right.providerId
     && (left.browserProduct ?? '') === (right.browserProduct ?? '')
     && left.windowId === right.windowId
-    && left.tabId === right.tabId;
+    && left.tabId === right.tabId
+    && (left.ownerToken ?? '') === (right.ownerToken ?? '');
+}
+
+function requireNativeBrowserOwnerToken(
+  identity: ComputerSurfaceStableIdentity,
+  binding: ComputerSurfaceProviderBinding | undefined,
+): void {
+  if (identity.surfaceType === 'browser-tab' && identity.ownership === 'plugin_owned'
+    && binding?.providerId === 'macos-apple-events' && !binding.ownerToken) {
+    throw new Error('COMPUTER_SURFACE_NATIVE_OWNER_TOKEN_REQUIRED');
+  }
 }
 
 interface ComputerSurfaceIndexRecord {
@@ -587,18 +598,21 @@ export function createComputerInteractionTargetAuthority(
       providerBinding?: ComputerSurfaceProviderBinding;
     },
   ): ComputerSurfaceTarget {
+    const stableIdentity = normalizeSurfaceStableIdentity(input.stableIdentity);
+    const providerBinding = input.providerBinding ? normalizeSurfaceProviderBinding(input.providerBinding) : undefined;
+    requireNativeBrowserOwnerToken(stableIdentity, providerBinding);
     const at = now();
     const targetId = `computer_target_${randomUUID().replaceAll('-', '')}`;
     const target: ComputerSurfaceTarget = {
       schemaVersion: 1,
       targetId,
       kind: 'surface',
-      stableIdentity: normalizeSurfaceStableIdentity(input.stableIdentity),
+      stableIdentity,
       compatibilityAliases: normalizeCompatibilityAliases(input.compatibilityAliases),
       visibility: normalizeSurfaceVisibility(input.visibility),
       repositoryIds: normalizeRepositoryIds(input.repositoryIds),
       compatibilityRecords: normalizeCompatibilityRecords(input.compatibilityRecords),
-      ...(input.providerBinding ? { providerBinding: normalizeSurfaceProviderBinding(input.providerBinding) } : {}),
+      ...(providerBinding ? { providerBinding } : {}),
       createdAt: at,
       updatedAt: at,
     };
@@ -624,6 +638,7 @@ export function createComputerInteractionTargetAuthority(
     const repositoryIds = normalizeRepositoryIds(rawInput.repositoryIds);
     const compatibilityRecords = normalizeCompatibilityRecords(rawInput.compatibilityRecords);
     const providerBinding = rawInput.providerBinding ? normalizeSurfaceProviderBinding(rawInput.providerBinding) : undefined;
+    requireNativeBrowserOwnerToken(stableIdentity, providerBinding);
     const lockKey = surfaceConvergenceLockKey(rawInput);
     const inputIndexKeys = surfaceInputIndexKeys({ stableIdentity, visibility, compatibilityAliases, repositoryIds, providerBinding });
     return persistence.transaction(controllerHome, (transaction) => {
@@ -681,6 +696,27 @@ export function createComputerInteractionTargetAuthority(
       }
 
       const currentTarget = normalizedSurfaceTarget(existing.value.target as ComputerSurfaceTarget);
+      const currentBinding = currentTarget.providerBinding;
+      const sameSessionAlias = currentTarget.compatibilityAliases.some((alias) => compatibilityAliases.includes(alias));
+      const browserOwnershipConflict = currentTarget.stableIdentity.surfaceType === 'browser-tab'
+        && stableIdentity.surfaceType === 'browser-tab'
+        && currentTarget.stableIdentity.ownership !== stableIdentity.ownership;
+      if (browserOwnershipConflict) {
+        throw new Error(`COMPUTER_SURFACE_PROVIDER_BINDING_OWNERSHIP_CONFLICT: ${lockKey}`);
+      }
+      if (currentTarget.stableIdentity.surfaceType === 'browser-tab'
+        && stableIdentity.surfaceType === 'browser-tab'
+        && currentTarget.stableIdentity.ownership === 'plugin_owned'
+        && stableIdentity.ownership === 'plugin_owned') {
+        const currentOwnerToken = currentBinding?.ownerToken;
+        const nextOwnerToken = providerBinding?.ownerToken;
+        const sameOwner = Boolean(currentOwnerToken && currentOwnerToken === nextOwnerToken);
+        const legacySameSession = !currentOwnerToken && !nextOwnerToken && sameSessionAlias;
+        const legacyOwnerUpgrade = !currentOwnerToken && Boolean(nextOwnerToken) && sameSessionAlias;
+        if (!sameOwner && !legacySameSession && !legacyOwnerUpgrade) {
+          throw new Error(`COMPUTER_SURFACE_PROVIDER_BINDING_OWNERSHIP_CONFLICT: ${lockKey}`);
+        }
+      }
       // The physical browser tab is not an authority to rename a durable
       // conversation/bootstrap identity. Navigation requires an explicit
       // provider-binding transfer, never an implicit Surface overwrite.
@@ -937,9 +973,18 @@ export function createComputerInteractionTargetAuthority(
       const lease: ComputerSurfaceTargetLease = {
         current: () => structuredClone(normalizedSurfaceTarget(record.value.target)),
         bind(binding) {
+          const current = normalizedSurfaceTarget(record.value.target);
+          const providerBinding = normalizeSurfaceProviderBinding(binding);
+          requireNativeBrowserOwnerToken(current.stableIdentity, providerBinding);
+          if (current.stableIdentity.surfaceType === 'browser-tab'
+            && current.stableIdentity.ownership === 'plugin_owned'
+            && current.providerBinding?.ownerToken
+            && current.providerBinding.ownerToken !== providerBinding.ownerToken) {
+            throw new Error(`COMPUTER_SURFACE_PROVIDER_BINDING_OWNERSHIP_CONFLICT: ${key}`);
+          }
           return persist({
-            ...record.value.target,
-            providerBinding: normalizeSurfaceProviderBinding(binding),
+            ...current,
+            providerBinding,
             updatedAt: now(),
           }, 'computer_surface_target_bind_provider');
         },

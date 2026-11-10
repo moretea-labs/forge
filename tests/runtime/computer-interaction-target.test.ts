@@ -480,6 +480,7 @@ describe('Computer durable InteractionTarget authority', () => {
           browserProduct: 'chrome',
           windowId: '7',
           tabId: '9',
+          ownerToken: 'forge-browser-owned:legacy-session-a',
         },
       });
 
@@ -505,6 +506,7 @@ describe('Computer durable InteractionTarget authority', () => {
           browserProduct: 'chrome',
           windowId: '99',
           tabId: '9',
+          ownerToken: 'forge-browser-owned:legacy-session-a',
         });
       });
 
@@ -543,6 +545,7 @@ describe('Computer durable InteractionTarget authority', () => {
           browserProduct: 'chrome',
           windowId: '111',
           tabId: '9',
+          ownerToken: 'forge-browser-owned:legacy-session-a',
         },
       });
       expect(converged.created).toBe(false);
@@ -599,6 +602,54 @@ describe('Computer durable InteractionTarget authority', () => {
       await targetAuthority.withSurfaceLease(controllerHome, second.target.targetId, async (lease) => { lease.tombstone(); });
       const third = targetAuthority.upsertSurface(controllerHome, { stableIdentity: stable('task-c'), providerBinding: binding });
       expect(targetAuthority.findSurfaceByProviderBinding(controllerHome, binding)?.targetId).toBe(third.target.targetId);
+    } finally {
+      rmSync(controllerHome, { recursive: true, force: true });
+    }
+  });
+
+  test('native plugin-owned browser tabs reject a different session owner token', async () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-computer-surface-owner-token-'));
+    const stableIdentity = { surfaceType: 'browser-tab' as const, ownership: 'plugin_owned' as const };
+    const binding = (ownerToken: string) => ({
+      providerId: 'macos-apple-events',
+      browserProduct: 'chrome',
+      windowId: '17',
+      tabId: '29',
+      ownerToken,
+      observedAt: '2026-11-11T00:00:00.000Z',
+    });
+    try {
+      const first = targetAuthority.upsertSurface(controllerHome, {
+        stableIdentity,
+        compatibilityAliases: ['session-a'],
+        repositoryIds: ['repo-a'],
+        providerBinding: binding('forge-browser-owned:session-a'),
+      });
+      const sameOwner = targetAuthority.upsertSurface(controllerHome, {
+        stableIdentity,
+        compatibilityAliases: ['session-a-alias'],
+        repositoryIds: ['repo-b'],
+        providerBinding: binding('forge-browser-owned:session-a'),
+      });
+      expect(sameOwner.target.targetId).toBe(first.target.targetId);
+      expect(targetAuthority.findSurfaceByProviderBinding(controllerHome, binding('forge-browser-owned:session-a'))?.targetId)
+        .toBe(first.target.targetId);
+      await expect(targetAuthority.withSurfaceLease(controllerHome, first.target.targetId, async (lease) => {
+        lease.bind(binding('forge-browser-owned:session-b'));
+      })).rejects.toThrow('COMPUTER_SURFACE_PROVIDER_BINDING_OWNERSHIP_CONFLICT');
+      expect(() => targetAuthority.upsertSurface(controllerHome, {
+        stableIdentity,
+        compatibilityAliases: ['session-b'],
+        repositoryIds: ['repo-c'],
+        providerBinding: binding('forge-browser-owned:session-b'),
+      })).toThrow('COMPUTER_SURFACE_PROVIDER_BINDING_OWNERSHIP_CONFLICT');
+      expect(targetAuthority.findSurfaceByProviderBinding(controllerHome, binding('forge-browser-owned:session-b'))).toBeUndefined();
+      expect(targetAuthority.findSurfaceByAlias(controllerHome, 'session-b', 'repo-c')).toBeUndefined();
+      expect(() => targetAuthority.upsertSurface(controllerHome, {
+        stableIdentity,
+        compatibilityAliases: ['session-without-token'],
+        providerBinding: { ...binding(''), ownerToken: undefined },
+      })).toThrow('COMPUTER_SURFACE_NATIVE_OWNER_TOKEN_REQUIRED');
     } finally {
       rmSync(controllerHome, { recursive: true, force: true });
     }

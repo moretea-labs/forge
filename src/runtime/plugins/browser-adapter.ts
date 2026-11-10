@@ -78,6 +78,8 @@ import {
   startRuntimeManagedBrowserHandoff,
 } from './browser-handoff';
 import {
+  BROWSER_OWNER_PREFIX,
+  browserSessionOwnerToken,
   browserStateDir,
   findBrowserSession,
   listSavedBrowserSessions,
@@ -1189,18 +1191,12 @@ function selectedProfile(config: BrowserPluginConfig, repoRoot: string, activeMo
   };
 }
 
-const BROWSER_OWNER_PREFIX = 'forge-browser-owned:';
-
 interface BrowserTabInventoryEntry {
   index: number;
   key: string;
   url: string;
   title?: string;
   ownerToken?: string;
-}
-
-function ownerTokenForSession(sessionId: string): string {
-  return `${BROWSER_OWNER_PREFIX}${createHash('sha256').update(sessionId).digest('hex').slice(0, 24)}`;
 }
 
 interface BrowserConnectionSummary {
@@ -1913,7 +1909,7 @@ async function selectManagedSessionPage(
 ) {
   const pages = state.context.pages();
   const inventory = await inventoryTabs(state.context);
-  const ownerToken = ownerTokenForSession(target.sessionId);
+  const ownerToken = browserSessionOwnerToken(target.sessionId);
   const mapped = state.pagesBySession.get(target.sessionId);
   if (mapped && pages.includes(mapped)) {
     const index = pages.indexOf(mapped);
@@ -2012,7 +2008,7 @@ async function runtimeManagedPageForSession(
   let page = state.pagesBySession.get(session.sessionId);
   if (page && state.context.pages().includes(page)) return { page, profile };
   state.pagesBySession.delete(session.sessionId);
-  const expectedOwnerToken = session.browser.tab?.ownerToken ?? ownerTokenForSession(session.sessionId);
+  const expectedOwnerToken = session.browser.tab?.ownerToken ?? browserSessionOwnerToken(session.sessionId);
   const inventory = await inventoryTabs(state.context).catch(() => [] as BrowserTabInventoryEntry[]);
   const index = inventory.findIndex((entry) => entry.ownerToken === expectedOwnerToken);
   page = index >= 0 ? state.context.pages()[index] : undefined;
@@ -2034,7 +2030,7 @@ async function closeManagedSessionPage(repoRoot: string, config: BrowserPluginCo
   }
   let page = state.pagesBySession.get(session.sessionId);
   if (!page) {
-    const expectedOwnerToken = session.browser.tab?.ownerToken ?? ownerTokenForSession(session.sessionId);
+    const expectedOwnerToken = session.browser.tab?.ownerToken ?? browserSessionOwnerToken(session.sessionId);
     const inventory = await inventoryTabs(state.context).catch(() => [] as BrowserTabInventoryEntry[]);
     const index = inventory.findIndex((entry) => entry.ownerToken === expectedOwnerToken);
     if (index >= 0) page = state.context.pages()[index];
@@ -2962,6 +2958,7 @@ async function openNativeAttachedContext(
       sessionResume,
     }, pageUrl, title, matchedBy, {
       ownership: effectiveOwnership === 'user_owned' ? 'user_owned' : 'plugin_owned',
+      ...(effectiveOwnership === 'user_owned' ? {} : { ownerToken: browserSessionOwnerToken(target.sessionId) }),
       windowId: nativeRef.windowId,
       tabId: nativeRef.tabId,
     });
