@@ -572,18 +572,22 @@ function writeRegistry(controllerHome: string, repoId: string, manifests: Assist
   return index;
 }
 
-function browserRemoteResourceKey(
+export function browserRemoteResourceKey(
   pluginId: string,
   args: Record<string, unknown> | undefined,
   requestId?: string,
 ): string {
-  if (pluginId !== 'browser') return `provider-state:${pluginId}`;
+  // Browser and Computer browser actions share one native BrowserSession
+  // authority. Scope their remote claims identically so distinct sessions do
+  // not contend globally, while the same session/tab remains mutually fenced.
+  if (pluginId !== 'browser' && pluginId !== 'computer') return `provider-state:${pluginId}`;
   const text = (value: unknown): string | undefined => typeof value === 'string' && value.trim() ? value.trim() : undefined;
   const browserProduct = text(args?.native_browser_product) ?? 'auto';
+  const windowId = text(args?.native_window_id) ?? 'unknown-window';
   const tabId = text(args?.native_tab_id);
   const sessionId = text(args?.session_id);
   const identity = tabId
-    ? `native-tab:${browserProduct}:${tabId}`
+    ? `native-tab:${browserProduct}:${windowId}:${tabId}`
     : args?.native_active_tab === true
       ? `native-active-tab:${browserProduct}`
       : sessionId
@@ -591,9 +595,9 @@ function browserRemoteResourceKey(
         : requestId
           ? `request:${requestId}`
           : undefined;
-  if (!identity) return `provider-state:${pluginId}`;
+  if (!identity) return 'provider-state:browser';
   const digest = createHash('sha256').update(identity).digest('hex').slice(0, 24);
-  return `provider-resource:${pluginId}:${digest}`;
+  return `provider-resource:browser:${digest}`;
 }
 
 function claimsForPluginActionScope(

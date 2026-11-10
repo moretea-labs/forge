@@ -39,11 +39,61 @@ import {
   submitControllerPluginAction,
   submitAssistantPluginAction,
   readPluginActionReceiptForRequest,
+  browserRemoteResourceKey,
 } from '../../src/runtime/plugins/store';
+import { resourceClaimsConflict } from '../../src/runtime/resources/claims/conflicts';
 import { FORGE_INSTANCE_SCOPE_KEY } from '../../src/effects/controller-home';
 import { acquireRuntimeOwnership } from '../../src/runtime/root/ownership';
 import { ensureActiveRuntimeRelease } from '../../src/runtime/root/release-store';
 import { bindRuntimeWriteClaim, clearRuntimeWriteClaimForTests } from '../../src/runtime/root/write-fence';
+
+describe('Browser and Computer native remote resource claims', () => {
+  const claim = (pluginId: string, args: Record<string, unknown> | undefined, requestId?: string) => ({
+    resourceKey: browserRemoteResourceKey(pluginId, args, requestId),
+    mode: 'exclusive' as const,
+  });
+
+  test('Computer and Browser share one exact session claim while distinct sessions remain independent', () => {
+    const computerA = claim('computer', { session_id: 'session-a' }, 'computer-a');
+    const browserA = claim('browser', { session_id: 'session-a' }, 'browser-a');
+    const computerB = claim('computer', { session_id: 'session-b' }, 'computer-b');
+
+    expect(computerA.resourceKey).toBe(browserA.resourceKey);
+    expect(resourceClaimsConflict(computerA, browserA)).toBe(true);
+    expect(resourceClaimsConflict(computerA, computerB)).toBe(false);
+  });
+
+  test('fresh requests and exact native tab identities are scoped without a provider-global lock', () => {
+    const freshA = claim('computer', undefined, 'fresh-a');
+    const freshB = claim('computer', undefined, 'fresh-b');
+    expect(resourceClaimsConflict(freshA, freshB)).toBe(false);
+
+    const nativeTab = { native_browser_product: 'chrome', native_window_id: '7', native_tab_id: '11' };
+    const computerTab = claim('computer', nativeTab, 'computer-tab');
+    const browserTab = claim('browser', nativeTab, 'browser-tab');
+    const anotherWindow = claim('computer', { ...nativeTab, native_window_id: '8' }, 'other-window');
+    const anotherTab = claim('computer', { ...nativeTab, native_tab_id: '12' }, 'other-tab');
+
+    expect(computerTab.resourceKey).toBe(browserTab.resourceKey);
+    expect(resourceClaimsConflict(computerTab, browserTab)).toBe(true);
+    expect(resourceClaimsConflict(computerTab, anotherWindow)).toBe(false);
+    expect(resourceClaimsConflict(computerTab, anotherTab)).toBe(false);
+  });
+
+  test('native active-tab selection stays product-scoped and unknown browser effects fail closed globally', () => {
+    const chromeActive = claim('computer', { native_active_tab: true, native_browser_product: 'chrome' }, 'chrome-active');
+    const sameChromeActive = claim('browser', { native_active_tab: true, native_browser_product: 'chrome' }, 'other-chrome-active');
+    const vivaldiActive = claim('computer', { native_active_tab: true, native_browser_product: 'vivaldi' }, 'vivaldi-active');
+    const unknownComputer = claim('computer', undefined);
+    const unknownBrowser = claim('browser', undefined);
+
+    expect(chromeActive.resourceKey).toBe(sameChromeActive.resourceKey);
+    expect(resourceClaimsConflict(chromeActive, sameChromeActive)).toBe(true);
+    expect(resourceClaimsConflict(chromeActive, vivaldiActive)).toBe(false);
+    expect(unknownComputer.resourceKey).toBe('provider-state:browser');
+    expect(unknownComputer.resourceKey).toBe(unknownBrowser.resourceKey);
+  });
+});
 
 const roots: string[] = [];
 const children: ChildProcess[] = [];
