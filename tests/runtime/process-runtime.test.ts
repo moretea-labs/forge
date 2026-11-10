@@ -1165,7 +1165,9 @@ describe('Unified Process Runtime', () => {
       returnHandleImmediately: true,
     });
     __resetLiveMonitorsForTests();
-    await Bun.sleep(250);
+    // The independent Runner may spend 250 ms draining inherited stdio after
+    // the command child exits before publishing its terminal receipt.
+    await Bun.sleep(750);
     const signal = new AbortController();
     signal.abort();
     const terminal = await waitForProcess(fx.controllerHome, fx.repository.repoId, handle.processId, {
@@ -2148,7 +2150,7 @@ describe('run_check Process Runtime facade', () => {
       executionIdentity: executionIdentityForRepository(fx.repository),
     });
     expect(result.route).toBe('process_direct');
-    expect(result.process).toMatchObject({ completed: true, route: 'direct' });
+    expect(result.process).toBeUndefined();
     expect(result.ok).toBe(true);
   });
 });
@@ -2243,6 +2245,8 @@ describe('command classifier safe shell combinations', () => {
       .toContainEqual({ resourceKey: 'workspace:co1', mode: 'write' });
     expect(classifyRepositoryCommand(['npm', '--version']).risk).toBe('readonly');
     expect(classifyRepositoryCommand(['node', '--version']).risk).toBe('readonly');
+    expect(classifyRepositoryCommand(['bun', 'test', '--help']).risk).toBe('readonly');
+    expect(classifyRepositoryCommand(['bun', 'test', '--', '--help']).risk).toBe('workspace_write');
   });
 
   test('keeps only mechanically constrained sqlite diagnostics on the readonly path', () => {

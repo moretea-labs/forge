@@ -607,7 +607,11 @@ function classifyArgvCommand(
   if (['bun', 'node', 'npm', 'pnpm', 'yarn', 'python', 'python3', 'cargo', 'go', 'swift'].includes(program)
     && argv.slice(1).some((word) => word === '--help' || word === '-h' || word === '--version' || word === '-V' || word === 'version' || word === 'help')) {
     const mutating = argv.slice(1).some((word) => ['install', 'add', 'remove', 'update', 'publish', 'run', 'test', 'build'].includes(word.toLowerCase()));
-    if (!mutating) {
+    // `bun test --help` is a Bun CLI query, not a test execution; the `test`
+    // token must not override the explicit help request.
+    const bunTestHelp = program === 'bun' && subcommand === 'test'
+      && ['--help', '-h', '--version', '-V'].includes(argv[2] ?? '');
+    if (!mutating || bunTestHelp) {
       return { risk: 'readonly', confirmation: 'none', reasons: ['the argv command only requests help or version information'] };
     }
   }
