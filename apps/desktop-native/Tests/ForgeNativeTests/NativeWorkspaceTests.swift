@@ -1672,6 +1672,102 @@ extension NativeWorkspaceTests {
 
 
 extension NativeWorkspaceTests {
+    func testProviderProcessNarrationDoesNotBecomeToolCompletionAuthority() {
+        XCTAssertNil(NativeWorkspace.modelNarrativeEvent(" \n ",now:"start"))
+        let narrative = NativeWorkspace.modelNarrativeEvent(
+            String(repeating:"A",count:1300),now:"now"
+        )
+        XCTAssertEqual(narrative?.phase,"message")
+        XCTAssertEqual(narrative?.detail?.count,800)
+        let tool = AgentLiveActivityEvent(
+            phase:"tool", label:"read_file", detail:nil, status:"running",
+            startedAt:"start", completedAt:nil, toolCallId:"call-1"
+        )
+        let canonical = AgentLiveActivityEvent(
+            phase:"tool", label:"read_file", detail:"AGENTS.md", status:"completed",
+            startedAt:"start", completedAt:"end", toolCallId:"call-1"
+        )
+        let merged = NativeWorkspace.mergeActivityReceipts(
+            [narrative!,tool], receipts:[canonical]
+        )
+        XCTAssertEqual(merged.map(\.phase),["message","tool"])
+        XCTAssertEqual(merged[1].status,"completed")
+        XCTAssertEqual(merged[1].detail,"AGENTS.md")
+        let unknown = NativeWorkspace.mergeActivityReceipts([tool],receipts:[])
+        XCTAssertEqual(unknown[0].status,"unknown")
+        XCTAssertEqual(unknown[0].toolCallId,"call-1")
+    }
+
+    func testAgentRichResponseParsesMarkdownTablesAndTasks() {
+        let input = """
+        # Overview
+
+        A **bold** detail with [link](https://example.com).
+
+        - [ ] Inspect source
+        - [x] Verify tests
+          1. Record evidence
+
+        | Item | Status |
+        | :--- | ---: |
+        | Build | PASS |
+        | Tests | 71 |
+
+        > Actual check result.
+
+        ---
+
+        ~~~bash
+        echo hello
+        ~~~
+        """
+        let result = AgentMessageBlock.parse(input)
+        XCTAssertEqual(result[0], .heading(level:1,text:"Overview"))
+        XCTAssertEqual(result[1], .markdown("A **bold** detail with [link](https://example.com)."))
+        XCTAssertEqual(result[2], .list([
+            AgentListItem(marker:"",text:"Inspect source",indent:0,checked:false),
+            AgentListItem(marker:"",text:"Verify tests",indent:0,checked:true),
+            AgentListItem(marker:"1.",text:"Record evidence",indent:1,checked:nil)
+        ]))
+        XCTAssertEqual(result[3], .table(headers:["Item","Status"],rows:[
+            ["Build","PASS"],["Tests","71"]
+        ]))
+        XCTAssertEqual(result[4], .quote("Actual check result."))
+        XCTAssertEqual(result[5], .divider)
+        XCTAssertEqual(result[6], .code(language:"bash",text:"echo hello"))
+    }
+
+    func testAgentRichResponseDeclarativeChoicesNeverInvokeNativeExecution() {
+        let valid = """
+        ~~~forge-options
+        {"prompt":"Choose","options":[{"label":"Run tests","value":"Run focused tests"},{"label":"Inspect","value":"Review diff"}]}
+        ~~~
+        """
+        XCTAssertEqual(AgentMessageBlock.parse(valid),[
+            .choices(prompt:"Choose", options:[
+                AgentResponseChoice(label:"Run tests",value:"Run focused tests"),
+                AgentResponseChoice(label:"Inspect",value:"Review diff")
+            ])
+        ])
+        let invalid = """
+        ~~~forge-options
+        {"prompt":"Single","options":[{"label":"one","value":"one"}]}
+        ~~~
+        """
+        guard case .code(let lang, _) = AgentMessageBlock.parse(invalid).first else {
+            return XCTFail("invalid choice payload must stay inert code")
+        }
+        XCTAssertEqual(lang,"forge-options")
+        XCTAssertEqual(AgentMessageBlock.parse("{\"z\":2,\"a\":1}").count,1)
+        XCTAssertTrue(AgentMessageBlock.isShellLanguage("BASH"))
+        XCTAssertFalse(AgentMessageBlock.isShellLanguage("json"))
+        XCTAssertFalse(AgentMessageBlock.isShellLanguage(nil))
+        let prompt = AgentMessageBlock.commandExecutionPrompt("git status")
+        XCTAssertTrue(prompt.contains("git status"))
+        XCTAssertTrue(prompt.contains("Repository AccessPolicy"))
+        XCTAssertTrue(prompt.contains("Process"))
+    }
+
     func testAgentMessageBlocksSeparateMarkdownAndFencedCodeWithoutDuplicatingContent() {
         let text = "**Done**\n\n```swift\nlet answer = 42\nprint(answer)\n```\n\nNext step."
         XCTAssertEqual(AgentMessageBlock.parse(text),[

@@ -3291,6 +3291,11 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
     } else {
         "You are the Forge Desktop assistant. No Forge project is attached: tools are disabled. Do not invent repository changes or imply that you ran a command. Ask the user to attach a project to work on files.".to_string()
     };
+    // Pure response presentation contract. Choice buttons only prepare a user
+    // reply; no model-emitted action grants permissions or runs code.
+    let system_instruction = format!(
+        "{system_instruction} If a user decision is required, you may add a fenced ~~~forge-options JSON block with keys prompt and options; each option has label and value (2-8 entries). These buttons only fill the user's draft, they do not execute tools or approve effects. Use ordinary Markdown for text, tables, lists, and fenced code. Do not fabricate private reasoning content."
+    );
     compact_local_api_history(&mut history);
     let mut tool_events: Vec<Value> = Vec::new();
     let mut total_calls = 0usize;

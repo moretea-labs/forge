@@ -1163,6 +1163,8 @@ private struct AgentPane: View {
     @State private var showChanges = false
     @State private var showActivityDetails = false
     @State private var expandedMessageActivities: Set<String> = []
+    @State private var pendingAgentCommand: String?
+    @State private var showProviderThinking = false
     @State private var isComposerDropTarget = false
     @State private var semanticInspector: AgentSemanticContextInspector?
     @FocusState private var composerFocused: Bool
@@ -1247,28 +1249,46 @@ private struct AgentPane: View {
                                         .padding(.top,1)
                                         .accessibilityHidden(true)
                                     VStack(alignment:.leading,spacing:8) {
-                                        AgentAssistantMessageBody(text:message.text)
-                                        HStack(spacing:10) {
-                                            if let count = message.toolActivityCount, count > 0 {
-                                                if message.activityEvents?.isEmpty == false {
-                                                    Button {
-                                                        if expandedMessageActivities.contains(message.id) {
-                                                            expandedMessageActivities.remove(message.id)
-                                                        } else {
-                                                            expandedMessageActivities.insert(message.id)
-                                                        }
-                                                    } label: {
-                                                        HStack(spacing:5) {
-                                                            Label("\(count) 次工具调用",systemImage:"hammer")
-                                                            Image(systemName:expandedMessageActivities.contains(message.id)
-                                                                  ? "chevron.up" : "chevron.down")
-                                                                .font(.system(size:8,weight:.semibold))
-                                                        }
-                                                    }
-                                                    .buttonStyle(.plain)
-                                                } else {
-                                                    Label("\(count) 次工具调用",systemImage:"hammer")
+                                        AgentAssistantMessageBody(
+                                            text:message.text,
+                                            onExecuteCommand: { command in
+                                                guard !model.busy else { return }
+                                                guard model.repoId != nil, model.checkoutId != nil else {
+                                                    model.error = "执行命令前请先绑定项目与 checkout。"
+                                                    return
                                                 }
+                                                guard model.draft.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty else {
+                                                    model.error = "输入框已有未发送内容。请先发送或保存，再执行这段命令，避免覆盖草稿。"
+                                                    return
+                                                }
+                                                pendingAgentCommand = command
+                                            },
+                                            onReplySelection: { reply in
+                                                guard !model.busy else { return }
+                                                model.draft += model.draft.isEmpty ? reply : "\n\n" + reply
+                                                composerFocused = true
+                                            }
+                                        )
+                                        HStack(spacing:10) {
+                                            if message.activityEvents?.isEmpty == false {
+                                                Button {
+                                                    if expandedMessageActivities.contains(message.id) {
+                                                        expandedMessageActivities.remove(message.id)
+                                                    } else {
+                                                        expandedMessageActivities.insert(message.id)
+                                                    }
+                                                } label: {
+                                                    HStack(spacing:5) {
+                                                        Label(message.toolActivityCount.map { "\($0) 次工具调用 · 过程" } ?? "查看过程",
+                                                              systemImage:"list.bullet.rectangle")
+                                                        Image(systemName:expandedMessageActivities.contains(message.id)
+                                                              ? "chevron.up" : "chevron.down")
+                                                            .font(.system(size:8,weight:.semibold))
+                                                    }
+                                                }
+                                                .buttonStyle(.plain)
+                                            } else if let count = message.toolActivityCount, count > 0 {
+                                                Label("\(count) 次工具调用",systemImage:"hammer")
                                             }
                                             Spacer(minLength:0)
                                             Button {
@@ -1348,7 +1368,7 @@ private struct AgentPane: View {
                                         ProgressView().controlSize(.mini)
                                     }
                                     VStack(alignment:.leading,spacing:2) {
-                                        Text("Agent 正在执行")
+                                        Text(agentActivityTitle)
                                             .font(.system(size:11.5,weight:.semibold))
                                             .foregroundStyle(ForgePalette.ink)
                                         Text(model.liveActivity?.lastActivity ?? "正在处理请求…")
@@ -1374,25 +1394,31 @@ private struct AgentPane: View {
                                 }
 
                                 if !model.streamedReasoning.isEmpty {
-                                    VStack(alignment:.leading,spacing:4) {
-                                        Label("Provider Thinking",systemImage:"brain.head.profile")
-                                            .font(.system(size:10,weight:.medium))
-                                            .foregroundStyle(ForgePalette.secondary)
+                                    VStack(alignment:.leading,spacing:5) {
+                                        Button {
+                                            showProviderThinking.toggle()
+                                        } label: {
+                                            HStack(spacing:6) {
+                                                Image(systemName:"brain.head.profile")
+                                                Text("Provider 返回的思考内容")
+                                                Image(systemName:showProviderThinking ? "chevron.up" : "chevron.down")
+                                                    .font(.system(size:9))
+                                            }
+                                        }
+                                        .buttonStyle(.plain)
+                                        .font(.system(size:10.5,weight:.medium))
+                                        .foregroundStyle(ForgePalette.secondary)
                                         Text(model.streamedReasoning)
                                             .font(.system(size:11))
                                             .foregroundStyle(ForgePalette.secondary)
-                                            .lineSpacing(3)
-                                            .lineLimit(5)
+                                            .lineSpacing(4)
+                                            .lineLimit(showProviderThinking ? nil : 3)
                                             .textSelection(.enabled)
                                     }
                                     .accessibilityIdentifier("agent.streaming-reasoning")
                                 }
                                 if !model.streamedAnswer.isEmpty {
-                                    Text(model.streamedAnswer)
-                                        .font(.system(size:13))
-                                        .foregroundStyle(ForgePalette.ink)
-                                        .lineSpacing(5)
-                                        .textSelection(.enabled)
+                                    AgentAssistantMessageBody(text:model.streamedAnswer)
                                         .accessibilityIdentifier("agent.streaming-response")
                                 }
 
@@ -1622,12 +1648,40 @@ private struct AgentPane: View {
             }
         }
         .animation(.easeOut(duration:0.18),value:showChanges)
+        .confirmationDialog(
+            "将命令交给 Forge Agent？",
+            isPresented:Binding(
+                get:{ pendingAgentCommand != nil },
+                set:{ if !$0 { pendingAgentCommand = nil } }
+            ),
+            titleVisibility:.visible
+        ) {
+            Button("发送执行请求") {
+                guard let command = pendingAgentCommand, !model.busy,
+                      model.repoId != nil, model.checkoutId != nil else { return }
+                pendingAgentCommand = nil
+                model.draft = AgentMessageBlock.commandExecutionPrompt(command)
+                Task { await model.send() }
+            }
+            Button("取消",role:.cancel) { pendingAgentCommand = nil }
+        } message: {
+            Text("仅将这段命令作为请求提交给现有 Agent；执行必须经过 Forge Repository AccessPolicy 和 Process Runtime。可能产生文件改动，请先确认命令内容。")
+        }
         .onAppear {
             if !model.busy { composerFocused = true }
         }
         .onChange(of:model.selectedThreadId) { _ in
             showChanges = false
             if !model.busy { composerFocused = true }
+        }
+    }
+
+    private var agentActivityTitle: String {
+        switch model.liveActivity?.phase {
+        case "thinking", "starting", "model": return "正在思考"
+        case "tool": return "正在执行工具"
+        case "responding": return "正在生成回复"
+        default: return model.streamedAnswer.isEmpty ? "正在等待模型" : "正在生成回复"
         }
     }
 
@@ -1954,7 +2008,8 @@ private struct AgentPane: View {
                     Text(detail)
                         .font(.system(size:9.5,design:.monospaced))
                         .foregroundStyle(.tertiary)
-                        .lineLimit(2)
+                        .lineLimit(event.phase == "message" ? 7 : 2)
+                        .textSelection(.enabled)
                 }
             }
             Spacer(minLength:8)
@@ -1971,6 +2026,7 @@ private struct AgentPane: View {
     }
 
     private func activityStatusColor(_ event: AgentLiveActivityEvent) -> Color {
+        if event.phase == "message" { return ForgePalette.secondary }
         switch event.status {
         case "completed": return Color.green
         case "failed": return Color.red
@@ -1980,6 +2036,7 @@ private struct AgentPane: View {
     }
 
     private func activityStatusIcon(_ event: AgentLiveActivityEvent) -> String {
+        if event.phase == "message" { return "text.bubble" }
         switch event.status {
         case "completed": return "checkmark"
         case "failed": return "exclamationmark"
@@ -2292,88 +2349,6 @@ private func copyAgentText(_ text: String) {
     NSPasteboard.general.setString(text,forType:.string)
 }
 
-private struct AgentAssistantMessageBody: View {
-    let text: String
-    private var blocks: [AgentMessageBlock] { AgentMessageBlock.parse(text) }
-
-    var body: some View {
-        VStack(alignment:.leading,spacing:10) {
-            ForEach(Array(blocks.enumerated()),id:\.offset) { _, block in
-                switch block {
-                case .markdown(let markdown):
-                    markdownView(markdown)
-                case .code(let language,let code):
-                    AgentCodeBlockView(language:language,code:code)
-                }
-            }
-        }
-        .frame(maxWidth:.infinity,alignment:.leading)
-    }
-
-    @ViewBuilder
-    private func markdownView(_ markdown: String) -> some View {
-        if let attributed = try? AttributedString(markdown:markdown) {
-            Text(attributed)
-                .font(.system(size:13))
-                .lineSpacing(6)
-                .textSelection(.enabled)
-        } else {
-            Text(markdown)
-                .font(.system(size:13))
-                .lineSpacing(6)
-                .textSelection(.enabled)
-        }
-    }
-}
-
-private struct AgentCodeBlockView: View {
-    let language: String?
-    let code: String
-
-    var body: some View {
-        VStack(alignment:.leading,spacing:0) {
-            HStack(spacing:8) {
-                Image(systemName:"chevron.left.forwardslash.chevron.right")
-                    .font(.system(size:9,weight:.semibold))
-                    .foregroundStyle(.tertiary)
-                Text(language?.isEmpty == false ? language! : "code")
-                    .font(.system(size:9.5,weight:.medium,design:.monospaced))
-                    .foregroundStyle(ForgePalette.secondary)
-                    .lineLimit(1)
-                Spacer()
-                Button {
-                    copyAgentText(code)
-                } label: {
-                    Label("复制",systemImage:"doc.on.doc")
-                        .font(.system(size:9.5,weight:.medium))
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(ForgePalette.secondary)
-                .help("复制代码")
-            }
-            .padding(.horizontal,10)
-            .frame(height:30)
-            .background(ForgePalette.selection)
-
-            ScrollView(.horizontal) {
-                Text(code)
-                    .font(.system(size:11.5,design:.monospaced))
-                    .lineSpacing(4)
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal:true,vertical:false)
-                    .padding(11)
-            }
-            .scrollIndicators(.automatic)
-            .frame(maxWidth:.infinity,alignment:.leading)
-            .background(ForgePalette.softFill)
-        }
-        .clipShape(RoundedRectangle(cornerRadius:10,style:.continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius:10,style:.continuous)
-                .strokeBorder(Color.primary.opacity(0.055),lineWidth:0.5)
-        }
-    }
-}
 private struct AgentChangesPane: View {
     @ObservedObject var model: NativeWorkspace
     @Binding var isPresented: Bool
@@ -6397,13 +6372,13 @@ private struct SettingsPane: View {
                     HStack {
                         VStack(alignment:.leading,spacing:4) {
                             Text("模型与 API").font(.system(size:17,weight:.semibold))
-                            Text("选择配置、填写连接信息，然后保存。")
+                            Text("先选择左侧配置，再编辑右侧连接信息。保存后在会话中测试。")
                                 .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
                         }
                         Spacer()
                         Menu {
                             Button("DeepSeek（官方 API）") {
-                                addProfile(label:"DeepSeek",endpoint:"https://api.deepseek.com",model:"deepseek-v4-flash",apiProtocol:"openai")
+                                addProfile(label:"DeepSeek",endpoint:"https://api.deepseek.com",model:"deepseek-chat",apiProtocol:"openai")
                             }
                             Button("DeepSeek · Zro（第三方兼容）") {
                                 addProfile(label:"DeepSeek · Zro",endpoint:"https://zro.moonmath.ai/v1",model:"deepseek-v4.1-flash",apiProtocol:"openai")
@@ -6450,7 +6425,7 @@ private struct SettingsPane: View {
                     } else {
                         HStack(alignment:.top,spacing:22) {
                             VStack(alignment:.leading,spacing:5) {
-                                Text("已保存的配置")
+                                Text("API 配置")
                                     .font(.system(size:11,weight:.semibold))
                                     .foregroundStyle(ForgePalette.secondary)
                                     .padding(.bottom,7)
@@ -6745,7 +6720,7 @@ private struct SettingsPane: View {
     }
 
     private func profileReadiness(_ profile:ProviderProfileDraft) -> String {
-        profileReady(profile) ? "已就绪" : "待保存/验证"
+        profileReady(profile) ? "配置已保存 · 未测试连接" : "有未保存更改或连接未配置"
     }
 
     private func saveApiSettings() {

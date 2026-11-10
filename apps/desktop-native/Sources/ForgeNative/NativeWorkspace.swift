@@ -75,58 +75,6 @@ struct AgentLiveActivity: Codable {
     }
 }
 
-enum AgentMessageBlock: Equatable {
-    case markdown(String)
-    case code(language: String?, text: String)
-
-    static func parse(_ source: String) -> [AgentMessageBlock] {
-        let lines = source.components(separatedBy:"\n")
-        var blocks: [AgentMessageBlock] = []
-        var prose: [String] = []
-        var code: [String] = []
-        var language: String?
-        var inCode = false
-
-        func normalizedProse(_ lines: [String]) -> String {
-            lines.joined(separator:"\n").trimmingCharacters(in:.newlines)
-        }
-        func fenceLanguage(_ line: String) -> String? {
-            let trimmed = line.trimmingCharacters(in:.whitespaces)
-            guard trimmed.hasPrefix("```") else { return nil }
-            let suffix = String(trimmed.dropFirst(3)).trimmingCharacters(in:.whitespaces)
-            return suffix.isEmpty ? nil : suffix
-        }
-
-        for line in lines {
-            let trimmed = line.trimmingCharacters(in:.whitespaces)
-            if trimmed.hasPrefix("```") {
-                if inCode {
-                    blocks.append(.code(language:language,text:code.joined(separator:"\n")))
-                    code.removeAll(keepingCapacity:true)
-                    language = nil
-                    inCode = false
-                } else {
-                    let text = normalizedProse(prose)
-                    if !text.isEmpty { blocks.append(.markdown(text)) }
-                    prose.removeAll(keepingCapacity:true)
-                    language = fenceLanguage(line)
-                    inCode = true
-                }
-                continue
-            }
-            if inCode { code.append(line) } else { prose.append(line) }
-        }
-
-        if inCode {
-            blocks.append(.code(language:language,text:code.joined(separator:"\n")))
-        } else {
-            let text = normalizedProse(prose)
-            if !text.isEmpty { blocks.append(.markdown(text)) }
-        }
-        return blocks
-    }
-}
-
 struct ChatMessage: Codable, Identifiable {
     var id = UUID().uuidString
     let role: String
@@ -2864,10 +2812,14 @@ final class NativeWorkspace: ObservableObject {
         let now = ISO8601DateFormatter().string(from:Date())
         var title = liveActivity?.lastActivity ?? "正在请求模型"
         var phase = liveActivity?.phase ?? "thinking"
+        var events = liveActivity?.events ?? []
         switch kind {
         case "round_start":
-            // A model round may precede a tool call. Its preview is not a
-            // confirmed answer and must not leak into the next round.
+            // Earlier model text is process narration, not the next round's
+            // final answer. Retain a bounded UI event before resetting preview.
+            if let narration = Self.modelNarrativeEvent(streamedAnswer,now:now) {
+                events.append(narration)
+            }
             streamedAnswer = ""
             streamedReasoning = ""
             phase = "thinking"
@@ -2891,8 +2843,50 @@ final class NativeWorkspace: ObservableObject {
             toolActivityCount:liveActivity?.toolActivityCount ?? 0,
             lastActivity:title,
             startedAt:liveActivity?.startedAt ?? now, updatedAt:now,
-            events:liveActivity?.events
+            events:events
         )
+    }
+
+    nonisolated static func modelNarrativeEvent(
+        _ text:String, now:String
+    ) -> AgentLiveActivityEvent? {
+        let summary = text.trimmingCharacters(in:.whitespacesAndNewlines)
+        guard !summary.isEmpty else { return nil }
+        return AgentLiveActivityEvent(
+            phase:"message", label:"模型过程说明",
+            detail:String(summary.prefix(800)), status:"completed",
+            startedAt:now, completedAt:now, toolCallId:nil
+        )
+    }
+
+    nonisolated static func mergeActivityReceipts(
+        _ events:[AgentLiveActivityEvent],
+        receipts:[AgentLiveActivityEvent]
+    ) -> [AgentLiveActivityEvent] {
+        var unused = receipts
+        var result:[AgentLiveActivityEvent] = []
+        for event in events {
+            guard event.phase == "tool" else {
+                result.append(event)
+                continue
+            }
+            let index = unused.firstIndex { receipt in
+                if let call = event.toolCallId { return receipt.toolCallId == call }
+                return receipt.label == event.label
+            }
+            if let index {
+                result.append(unused.remove(at:index))
+            } else {
+                // Missing canonical receipt is an unknown outcome, never
+                // promote an advisory progress event into a success claim.
+                result.append(AgentLiveActivityEvent(
+                    phase:event.phase,label:event.label,detail:event.detail,
+                    status:"unknown",startedAt:event.startedAt,
+                    completedAt:event.completedAt,toolCallId:event.toolCallId
+                ))
+            }
+        }
+        return result + unused
     }
 
     nonisolated static func appendBoundedPreview(_ current:String,delta:String,limit:Int) -> String {
@@ -2907,7 +2901,9 @@ final class NativeWorkspace: ObservableObject {
         let events = Self.apiToolProgressEvents(
             liveActivity?.events ?? [], payload:payload, now:now
         )
-        let completedCount = events.filter { $0.status != "running" }.count
+        let completedCount = events.filter {
+            $0.phase == "tool" && $0.status != "running"
+        }.count
         liveActivity = AgentLiveActivity(
             conversationId:conversationId,
             status:"running", phase:"tool",
@@ -3083,11 +3079,15 @@ final class NativeWorkspace: ObservableObject {
             let answer = response["output"] as? String ?? ""
             let toolActivityCount = response["toolActivityCount"] as? Int
             let activityEvents = Self.matchesExternalProvider(turnProvider)
-                ? Self.apiActivityEvents(response["toolEvents"])
-                : Self.decodeActivityEvents(response["activityEvents"])
+                ? Self.mergeActivityReceipts(
+                    liveActivity?.events ?? [],
+                    receipts:Self.apiActivityEvents(response["toolEvents"]) ?? []
+                )
+                : Self.decodeActivityEvents(response["activityEvents"]) ?? []
             threads[current].messages.append(ChatMessage(
                 role:"assistant", text:answer, toolActivityCount:toolActivityCount,
-                activityEvents:activityEvents, incomplete:response["incomplete"] as? Bool
+                activityEvents:activityEvents.isEmpty ? nil : activityEvents,
+                incomplete:response["incomplete"] as? Bool
             ))
             if turnProvider == "codex" {
                 threads[current].providerSessionId = response["providerSessionId"] as? String ??
