@@ -28,7 +28,7 @@ import {
   executeBrowserPluginAction,
   resolveBrowserPluginAuthorizationContext,
 } from './browser-adapter';
-import { desktopOperatorActions } from './desktop-operator-registration';
+import { desktopOperatorActions, DESKTOP_OPERATOR_PROVIDER_STATE_WRITE_CLAIMS } from './desktop-operator-registration';
 import { getExternalPluginAdapter } from './external-adapter';
 import { AssistantPluginError } from './errors';
 import { executeIosPhysicalDeviceAction, iosPhysicalDeviceActions, iosPhysicalDeviceCapabilities, iosPhysicalDeviceStatus, isIosPhysicalDeviceAction, resolveIosPhysicalDeviceAuthorizationContext } from './ios-physical-device';
@@ -46,6 +46,7 @@ import type {
 
 const DESKTOP_PROVIDER_ID = 'desktop_operator';
 const computerTargetAuthority = runtimeComputerInteractionTargetAuthority();
+const DESKTOP_TARGET_LIST_ACTION = 'desktop_target_list';
 const DESKTOP_TARGET_OPEN_ACTION = 'desktop_target_open';
 const DESKTOP_TARGET_CLOSE_ACTION = 'desktop_target_close';
 const DESKTOP_ELEMENT_OBSERVE_ACTION = 'desktop_element_observe';
@@ -70,6 +71,7 @@ const DESKTOP_SEMANTIC_ACTION_IDS = new Set([
   'desktop_screenshot',
 ]);
 const DESKTOP_PRODUCT_ACTION_IDS = new Set([
+  DESKTOP_TARGET_LIST_ACTION,
   DESKTOP_TARGET_OPEN_ACTION,
   DESKTOP_TARGET_CLOSE_ACTION,
   ...DESKTOP_SEMANTIC_ACTION_IDS,
@@ -219,6 +221,25 @@ function desktopProductActions(): AssistantPluginActionDescriptor[] {
   const open = providerActionDescriptor('desktop_session_open');
   const close = providerActionDescriptor('desktop_session_close');
   return [
+    {
+      actionId: DESKTOP_TARGET_LIST_ACTION,
+      title: 'List Computer desktop targets',
+      description: 'Read active Forge-owned desktop application targets and provider-binding status without exposing native provider session identifiers.',
+      readOnly: true,
+      risk: 'readonly',
+      confirmation: 'none',
+      defaultTimeoutMs: 5_000,
+      cancellable: true,
+      idempotent: true,
+      foregroundEffect: 'none',
+      scopes: ['desktop.session'],
+      resourceClaims: [],
+      argumentsSchema: {
+        type: 'object',
+        properties: { limit: { type: 'integer', minimum: 1, maximum: 100 } },
+        additionalProperties: false,
+      },
+    },
     {
       ...open,
       actionId: DESKTOP_TARGET_OPEN_ACTION,
@@ -384,7 +405,7 @@ function desktopProductActions(): AssistantPluginActionDescriptor[] {
       idempotent: false,
       foregroundEffect: 'none',
       scopes: ['desktop.interact'],
-      resourceClaims: [],
+      resourceClaims: DESKTOP_OPERATOR_PROVIDER_STATE_WRITE_CLAIMS,
       argumentsSchema: {
         type: 'object',
         properties: {
@@ -425,7 +446,7 @@ function desktopProductPermissions(ready: boolean): AssistantPluginPermissionSco
 
 function desktopProductCapabilities(): AssistantPluginCapability[] {
   return [
-    { capabilityId: 'computer.desktop_target.v1', title: 'Desktop targets', description: 'Bind and retire Forge-owned desktop application targets.', scopes: ['desktop.session'], actions: [DESKTOP_TARGET_OPEN_ACTION, DESKTOP_TARGET_CLOSE_ACTION] },
+    { capabilityId: 'computer.desktop_target.v1', title: 'Desktop targets', description: 'Inspect, bind and retire Forge-owned desktop application targets.', scopes: ['desktop.session'], actions: [DESKTOP_TARGET_LIST_ACTION, DESKTOP_TARGET_OPEN_ACTION, DESKTOP_TARGET_CLOSE_ACTION] },
     { capabilityId: 'computer.observe.v1', title: 'Computer observation', description: 'Observe bounded desktop semantic state.', scopes: ['desktop.observe'], actions: ['desktop_observe'] },
     { capabilityId: 'computer.input.v1', title: 'Computer input', description: 'Perform bounded semantic desktop input.', scopes: ['desktop.interact'], actions: ['desktop_press', 'desktop_select_rows', 'desktop_type_text', 'desktop_key', 'desktop_open_url'] },
     { capabilityId: 'computer.capture.v1', title: 'Computer capture', description: 'Capture authorized desktop state.', scopes: ['desktop.capture'], actions: ['desktop_screenshot'] },
@@ -753,7 +774,7 @@ async function rebindProviderSession(
   const rebound = await provider.executeAction(providerInput(input, 'desktop_session_open', {
     ...(target.stableIdentity.bundleId ? { bundle_id: target.stableIdentity.bundleId } : { app_name: target.stableIdentity.appName }),
     launch: false,
-    activate: false,
+    activate: input.args.activate === true,
   }, 'binding-reopen'));
   const interactionId = providerSessionId(rebound);
   if (!targetMatchesProviderSession(target, rebound)) {
@@ -780,18 +801,6 @@ async function rebindProviderSession(
     ...(processId !== undefined ? { processId } : {}),
   });
   return interactionId;
-}
-
-async function ensureProviderBinding(
-  input: AssistantPluginActionExecutionInput,
-  lease: ComputerApplicationTargetLease,
-  provider: AssistantPluginAdapter,
-): Promise<string> {
-  const target = lease.current();
-  if (target.providerBinding?.providerId === DESKTOP_PROVIDER_ID) {
-    return target.providerBinding.providerSessionId;
-  }
-  return rebindProviderSession(input, lease, provider);
 }
 
 function providerProcessId(result: Record<string, unknown>): number | undefined {
@@ -873,13 +882,88 @@ function stableIdentityFromProviderResult(
   };
 }
 
+function desktopTargetSummary(target: ComputerApplicationTarget): Record<string, unknown> {
+  return {
+    targetId: target.targetId,
+    kind: target.kind,
+    stableIdentity: target.stableIdentity,
+    providerBound: target.providerBinding?.providerId === DESKTOP_PROVIDER_ID,
+    launchOwnership: target.launchProvenance?.kind ?? 'unknown',
+    createdAt: target.createdAt,
+    updatedAt: target.updatedAt,
+  };
+}
+
+function listDesktopTargets(input: AssistantPluginActionExecutionInput): Record<string, unknown> {
+  const requestedLimit = typeof input.args.limit === 'number' && Number.isInteger(input.args.limit)
+    ? input.args.limit
+    : 50;
+  const limit = Math.min(100, Math.max(1, requestedLimit));
+  const all = computerTargetAuthority.listAllApplications(input.controllerHome)
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+  const targets = all.slice(0, limit).map(desktopTargetSummary);
+  return { targets, total: all.length, returned: targets.length, truncated: all.length > targets.length };
+}
+
+function sameRequestedApplication(target: ComputerApplicationTarget, requested: ComputerApplicationStableIdentity): boolean {
+  return requested.bundleId
+    ? target.stableIdentity.bundleId === requested.bundleId
+    : target.stableIdentity.appName === requested.appName;
+}
+
+function staleProviderBinding(targetId: string, providerBound: boolean): AssistantPluginError {
+  return new AssistantPluginError(
+    'COMPUTER_TARGET_PROVIDER_BINDING_STALE',
+    'The stored Computer provider binding is missing or stale. Use desktop_target_open to explicitly reattach the target before observing or acting.',
+    { retryable: true, details: { targetId, providerBound } },
+  );
+}
+
 async function openDesktopTarget(
   input: AssistantPluginActionExecutionInput,
   provider: AssistantPluginAdapter,
 ): Promise<Record<string, unknown>> {
+  const requested = stableIdentityFromArgs(input.args);
+  const existing = computerTargetAuthority.listAllApplications(input.controllerHome)
+    .filter((target) => sameRequestedApplication(target, requested));
+  if (existing.length > 1) {
+    throw new AssistantPluginError(
+      'PLUGIN_COMPUTER_TARGET_IDENTITY_AMBIGUOUS',
+      'More than one active Computer target matches this application identity; refusing to create or rebind another target.',
+      { retryable: false, details: { targetIds: existing.map((target) => target.targetId).slice(0, 8) } },
+    );
+  }
+  const current = existing[0];
+  if (current) {
+    return computerTargetAuthority.withLease(input.controllerHome, current.targetId, async (lease) => {
+      const target = lease.current();
+      const binding = target.providerBinding;
+      if (binding && binding.providerId !== DESKTOP_PROVIDER_ID) {
+        throw new AssistantPluginError(
+          'PLUGIN_COMPUTER_TARGET_PROVIDER_MISMATCH',
+          'Computer target is bound to a different provider and cannot be reattached through Desktop Operator.',
+          { retryable: false, details: { targetId: target.targetId, providerId: binding.providerId } },
+        );
+      }
+      if (binding && input.args.activate !== true) {
+        try {
+          await provider.executeAction(providerInput(input, 'desktop_observe', {
+            interaction_id: binding.providerSessionId,
+            max_depth: 1,
+            max_nodes: 1,
+          }, 'target-open-verify-binding'));
+          return desktopTargetSummary(target);
+        } catch (error) {
+          if (!isMissingProviderSessionFailure(error)) throw error;
+        }
+      }
+      await rebindProviderSession(input, lease, provider);
+      return desktopTargetSummary(lease.current());
+    });
+  }
+
   const opened = await provider.executeAction(providerInput(input, 'desktop_session_open', input.args, 'target-open'));
   const interactionId = providerSessionId(opened);
-  const requested = stableIdentityFromArgs(input.args);
   let stableIdentity: ComputerApplicationStableIdentity;
   try {
     stableIdentity = stableIdentityFromProviderResult(opened, requested);
@@ -924,12 +1008,7 @@ async function openDesktopTarget(
         ...(processId !== undefined ? { processId } : {}),
       },
     });
-    return {
-      targetId: target.targetId,
-      kind: target.kind,
-      stableIdentity: target.stableIdentity,
-      providerBound: true,
-    };
+    return desktopTargetSummary(target);
   } catch (error) {
     try {
       await provider.executeAction(providerInput(input, 'desktop_session_close', { interaction_id: interactionId }, 'target-open-compensate'));
@@ -992,7 +1071,7 @@ async function closeDesktopTarget(
 
 async function executeDesktopSemanticAction(
   input: AssistantPluginActionExecutionInput,
-  provider: AssistantPluginAdapter,
+  _provider: AssistantPluginAdapter,
 ): Promise<Record<string, unknown>> {
   if (input.actionId === 'desktop_open_url') {
     return executeRetainedDesktopAction(input, input.args);
@@ -1013,7 +1092,12 @@ async function executeDesktopSemanticAction(
         );
       }
       const { target_id: _targetId, ...rest } = input.args;
-      return await executeRetainedDesktopAction(input, rest, binding.providerSessionId);
+      try {
+        return await executeRetainedDesktopAction(input, rest, binding.providerSessionId);
+      } catch (error) {
+        if (isMissingProviderSessionFailure(error)) throw staleProviderBinding(targetId, true);
+        throw error;
+      }
     });
   }
   if (!targetId) {
@@ -1023,18 +1107,14 @@ async function executeDesktopSemanticAction(
     throw new AssistantPluginError('PLUGIN_COMPUTER_TARGET_REQUIRED', `${input.actionId} requires target_id.`, { retryable: false });
   }
   return computerTargetAuthority.withLease(input.controllerHome, targetId, async (lease) => {
-    let interactionId = await ensureProviderBinding(input, lease, provider);
+    const binding = lease.current().providerBinding;
+    if (!binding || binding.providerId !== DESKTOP_PROVIDER_ID) throw staleProviderBinding(targetId, Boolean(binding));
     const { target_id: _targetId, ...rest } = input.args;
-    const dispatch = () => executeRetainedDesktopAction(input, rest, interactionId);
     try {
-      return await dispatch();
+      return await executeRetainedDesktopAction(input, rest, binding.providerSessionId);
     } catch (error) {
-      // SESSION_NOT_FOUND is emitted by Desktop Operator before UI/input dispatch.
-      // It is the only provider failure that permits one binding rebuild + retry.
-      // Transport/timeout/outcome-unknown failures remain fenced and are never replayed.
-      if (!isMissingProviderSessionFailure(error)) throw error;
-      interactionId = await rebindProviderSession(input, lease, provider);
-      return await dispatch();
+      if (isMissingProviderSessionFailure(error)) throw staleProviderBinding(targetId, true);
+      throw error;
     }
   });
 }
@@ -1046,6 +1126,7 @@ function targetAuthorization(identity: ComputerApplicationStableIdentity): Assis
 }
 
 async function resolveDesktopAuthorizationContext(input: AssistantPluginActionExecutionInput): Promise<AssistantPluginAuthorizationContext | undefined> {
+  if (input.actionId === DESKTOP_TARGET_LIST_ACTION) return undefined;
   if ([COMPUTER_CONSOLE_UNLOCK_PREPARE_ACTION, COMPUTER_CONSOLE_UNLOCK_ACTION, COMPUTER_CONSOLE_UNLOCK_ENROLL_ACTION, COMPUTER_CONSOLE_UNLOCK_STATUS_ACTION, COMPUTER_CONSOLE_UNLOCK_RECOVER_ACTION, COMPUTER_CONSOLE_UNLOCK_REVOKE_ACTION].includes(input.actionId)) return undefined;
   if (input.actionId === DESKTOP_TARGET_OPEN_ACTION) return targetAuthorization(stableIdentityFromArgs(input.args));
   const targetId = typeof input.args.target_id === 'string' ? input.args.target_id.trim() : '';
@@ -1119,6 +1200,7 @@ export const computerPluginAdapter: AssistantPluginAdapter = {
     if (input.actionId === COMPUTER_CONSOLE_UNLOCK_REVOKE_ACTION) {
       return executeProtectedConsoleUnlockLifecycle('console_unlock_revoke', { confirmAuthorization: input.confirmAuthorization === true, timeoutMs: input.timeoutMs }, input.controllerHome);
     }
+    if (input.actionId === DESKTOP_TARGET_LIST_ACTION) return listDesktopTargets(input);
     if (input.actionId === DESKTOP_TARGET_CLOSE_ACTION) return closeDesktopTarget(input, optionalDesktopProvider(input));
     const provider = desktopProvider(input);
     if (input.actionId === DESKTOP_TARGET_OPEN_ACTION) return openDesktopTarget(input, provider);

@@ -10,6 +10,7 @@ import type { ExecutionLease } from '../../src/runtime/resources/leases/types';
 import { claimsForAssistantPluginAction } from '../../src/runtime/plugins/store';
 import type { AssistantPluginActionDescriptor } from '../../src/runtime/plugins/types';
 import { createDesktopOperatorRegistrationInput } from '../../src/runtime/plugins/desktop-operator-registration';
+import { computerPluginAdapter } from '../../src/runtime/plugins/computer-registration';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -538,25 +539,35 @@ describe('Process Runtime fine-grained resource claims', () => {
     expect(claims).toContainEqual({ resourceKey: 'heavy-check:repo1', mode: 'exclusive' });
   });
 
-  test('Desktop Operator interaction input does not acquire the provider-global state lease (#608)', () => {
+  test('Computer and Desktop Operator mutations share one provider-state lease while reads remain unclaimed (#638)', () => {
     const registration = createDesktopOperatorRegistrationInput({
       socketPath: '/tmp/forge-desktop-operator.sock',
       pluginVersion: '0.4.7',
     });
     const repository = { repoId: 'repo1', activeCheckoutId: 'co1' } as Parameters<typeof claimsForAssistantPluginAction>[1];
+    const canonicalClaim = [{ resourceKey: 'provider-state:desktop_operator', mode: 'write' as const }];
 
-    for (const actionId of ['desktop_press', 'desktop_select_rows', 'desktop_pointer_click', 'desktop_pointer_drag', 'desktop_type_text', 'desktop_key']) {
+    for (const actionId of ['desktop_press', 'desktop_select_rows', 'desktop_pointer_click', 'desktop_pointer_drag', 'desktop_type_text', 'desktop_key', 'desktop_open_url', 'desktop_clipboard_write', 'desktop_copy', 'desktop_paste', 'desktop_permissions_request', 'desktop_session_open', 'desktop_session_close', 'desktop_batch']) {
       const action = registration.actions.find((candidate) => candidate.actionId === actionId);
-      expect(action).toBeDefined();
+      expect(action, `Desktop Operator action ${actionId}`).toBeDefined();
+      expect(claimsForAssistantPluginAction(action!, repository, registration.pluginId)).toEqual(canonicalClaim);
+    }
+    for (const actionId of ['desktop_status', 'desktop_observe', 'desktop_screenshot', 'desktop_clipboard_read']) {
+      const action = registration.actions.find((candidate) => candidate.actionId === actionId);
+      expect(action, `Desktop Operator read ${actionId}`).toBeDefined();
       expect(claimsForAssistantPluginAction(action!, repository, registration.pluginId)).toEqual([]);
     }
 
-    for (const actionId of ['desktop_permissions_request', 'desktop_session_open', 'desktop_session_close']) {
-      const action = registration.actions.find((candidate) => candidate.actionId === actionId);
-      expect(action).toBeDefined();
-      expect(claimsForAssistantPluginAction(action!, repository, registration.pluginId)).toEqual([
-        { resourceKey: 'provider-state:desktop_operator', mode: 'write' },
-      ]);
+    const computer = computerPluginAdapter.buildManifest(0, undefined, '/tmp').actions;
+    for (const actionId of ['desktop_target_open', 'desktop_target_close', 'desktop_press', 'desktop_select_rows', 'desktop_type_text', 'desktop_key', 'desktop_open_url', 'desktop_element_action']) {
+      const action = computer.find((candidate) => candidate.actionId === actionId);
+      expect(action, `Computer action ${actionId}`).toBeDefined();
+      expect(claimsForAssistantPluginAction(action!, repository, 'computer')).toEqual(canonicalClaim);
+    }
+    for (const actionId of ['desktop_target_list', 'desktop_observe', 'desktop_screenshot', 'desktop_element_observe']) {
+      const action = computer.find((candidate) => candidate.actionId === actionId);
+      expect(action, `Computer read ${actionId}`).toBeDefined();
+      expect(claimsForAssistantPluginAction(action!, repository, 'computer')).toEqual([]);
     }
   });
 
@@ -754,6 +765,33 @@ describe('Process Runtime fine-grained resource claims', () => {
           },
         });
       expect(listActiveLeases(controllerHome, repoId)).toEqual([]);
+    } finally {
+      rmSync(controllerHome, { recursive: true, force: true });
+    }
+  });
+
+  test('provider-state lease blockers expose the existing owner and expiry without a fencing token', () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-provider-state-blocker-'));
+    const repoId = 'repo-provider-state-blocker';
+    const claim = [{ resourceKey: 'provider-state:desktop_operator', mode: 'write' as const, repoId }];
+    try {
+      const held = acquireExecutionLeases(controllerHome, repoId, 'desktop-owner-a', claim, {
+        visibility: 'ephemeral', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false, ttlMs: 60_000,
+      });
+      expect(held.acquired).toBe(true);
+      const blocked = acquireExecutionLeases(controllerHome, repoId, 'computer-owner-b', claim, {
+        visibility: 'ephemeral', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false, ttlMs: 60_000,
+      });
+      expect(blocked.acquired).toBe(false);
+      expect(blocked.blockers[0]).toMatchObject({
+        resourceKey: 'provider-state:desktop_operator',
+        ownerJobId: 'desktop-owner-a',
+        leaseId: held.leases[0]?.leaseId,
+        mode: 'write',
+        expiresAt: held.leases[0]?.expiresAt,
+      });
+      expect(blocked.blockers[0]).not.toHaveProperty('fencingToken');
+      expect(releaseExecutionLeases(controllerHome, repoId, 'desktop-owner-a')).toBe(1);
     } finally {
       rmSync(controllerHome, { recursive: true, force: true });
     }

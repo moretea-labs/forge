@@ -9,7 +9,8 @@ import {
 import type { ExternalPluginRegistrationInput } from './external-registration';
 import type { AssistantPluginActionDescriptor } from './types';
 
-const CONTROLLER_WRITE = [{ resource: 'provider-state' as const, mode: 'write' as const }];
+export const DESKTOP_OPERATOR_PROVIDER_STATE_WRITE_CLAIMS = [{ resource: 'provider-state' as const, mode: 'write' as const }];
+const CONTROLLER_WRITE = DESKTOP_OPERATOR_PROVIDER_STATE_WRITE_CLAIMS;
 const SELECTOR_SCHEMA = {
   type: 'object',
   properties: {
@@ -135,7 +136,7 @@ export function desktopOperatorActions(): AssistantPluginActionDescriptor[] {
       cancellable: true,
       idempotent: false,
       scopes: ['desktop.interact'],
-      resourceClaims: [],
+      resourceClaims: CONTROLLER_WRITE,
       argumentsSchema: {
         type: 'object',
         properties: {
@@ -162,7 +163,7 @@ export function desktopOperatorActions(): AssistantPluginActionDescriptor[] {
       cancellable: true,
       idempotent: false,
       scopes: ['desktop.interact'],
-      resourceClaims: [],
+      resourceClaims: CONTROLLER_WRITE,
       argumentsSchema: {
         type: 'object',
         properties: {
@@ -186,7 +187,7 @@ export function desktopOperatorActions(): AssistantPluginActionDescriptor[] {
       cancellable: true,
       idempotent: false,
       scopes: ['desktop.interact', 'desktop.capture'],
-      resourceClaims: [],
+      resourceClaims: CONTROLLER_WRITE,
       argumentsSchema: {
         type: 'object',
         properties: {
@@ -215,7 +216,7 @@ export function desktopOperatorActions(): AssistantPluginActionDescriptor[] {
       cancellable: true,
       idempotent: false,
       scopes: ['desktop.interact', 'desktop.capture'],
-      resourceClaims: [],
+      resourceClaims: CONTROLLER_WRITE,
       argumentsSchema: {
         type: 'object',
         properties: {
@@ -250,7 +251,7 @@ export function desktopOperatorActions(): AssistantPluginActionDescriptor[] {
       cancellable: true,
       idempotent: false,
       scopes: ['desktop.interact'],
-      resourceClaims: [],
+      resourceClaims: CONTROLLER_WRITE,
       argumentsSchema: {
         type: 'object',
         properties: {
@@ -274,7 +275,7 @@ export function desktopOperatorActions(): AssistantPluginActionDescriptor[] {
       cancellable: true,
       idempotent: false,
       scopes: ['desktop.interact'],
-      resourceClaims: [],
+      resourceClaims: CONTROLLER_WRITE,
       argumentsSchema: {
         type: 'object',
         properties: {

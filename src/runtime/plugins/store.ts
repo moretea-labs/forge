@@ -605,9 +605,12 @@ function claimsForPluginActionScope(
 ): ResourceClaimSpec[] {
   const pluginId = trustedPluginId.trim().replace(/[^a-zA-Z0-9._-]+/g, '-');
   if (!pluginId) throw new Error('PLUGIN_ID_REQUIRED_FOR_RESOURCE_CLAIMS');
+  const providerStateResourceKey = pluginId === 'computer' || pluginId === 'desktop_operator'
+    ? 'provider-state:desktop_operator'
+    : `provider-state:${pluginId}`;
   const claims = action.resourceClaims.map((claim) => ({
     resourceKey: claim.resource === 'provider-state'
-      ? `provider-state:${pluginId}`
+      ? providerStateResourceKey
       : claim.resource === 'remote'
         ? browserRemoteResourceKey(pluginId, args, requestId)
         : scope.kind === 'controller'
@@ -689,7 +692,18 @@ async function withAssistantPluginResourceLeases<T>(
     throw new AssistantPluginError(
       'PLUGIN_RESOURCE_CONTENTION',
       `${request.pluginId}/${request.actionId} could not acquire its declared resource claims before dispatch.`,
-      { retryable: true, details: { blockers: acquisition.blockers } },
+      {
+        retryable: true,
+        details: {
+          blockers: acquisition.blockers.map((blocker) => ({
+            resourceKey: blocker.resourceKey,
+            ownerJobId: blocker.ownerJobId,
+            leaseId: blocker.leaseId,
+            mode: blocker.mode,
+            ...('expiresAt' in blocker && typeof blocker.expiresAt === 'string' ? { expiresAt: blocker.expiresAt } : {}),
+          })).slice(0, 16),
+        },
+      },
     );
   }
   const expected = acquisition.leases.map((lease) => ({
@@ -1788,7 +1802,12 @@ function compatibilityJobFromReceipt(receipt: PluginActionReceipt, checkoutId: s
     attempt: 1,
     maxAttempts: 1,
     result: receipt.result,
-    error: receipt.error ? { code: receipt.error.code, message: receipt.error.message } : undefined,
+    error: receipt.error ? {
+      code: receipt.error.code,
+      message: receipt.error.message,
+      retryable: receipt.error.retryable === true,
+      ...(receipt.error.details ? { details: structuredClone(receipt.error.details) } : {}),
+    } : undefined,
   } as unknown as ExecutionJob;
 }
 

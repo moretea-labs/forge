@@ -347,7 +347,7 @@ export function acquireExecutionLeases(
       .filter((lease) => lease.ownerJobId !== ownerJobId || lease.repoId !== repoId);
     const blockers = claims.flatMap((claim) => active
       .filter((lease) => claimsConflict(claim, lease))
-      .map((lease) => ({ resourceKey: lease.resourceKey, ownerJobId: lease.ownerJobId, leaseId: lease.leaseId, mode: lease.mode, ownerIdentityDigest: lease.ownerIdentityDigest })));
+      .map((lease) => ({ resourceKey: lease.resourceKey, ownerJobId: lease.ownerJobId, leaseId: lease.leaseId, mode: lease.mode, expiresAt: lease.expiresAt, ownerIdentityDigest: lease.ownerIdentityDigest })));
     if (blockers.length > 0) return { acquired: false, leases: [], blockers };
     const timestamp = new Date().toISOString();
     const expiresAt = new Date(Date.now() + Math.max(5_000, ttlMs)).toISOString();

@@ -223,6 +223,55 @@ describe('plugin action resource replay fencing', () => {
 
   });
 
+  test('resource contention reports the existing provider owner and lease expiry before dispatch', async () => {
+    const { controllerHome, socketPath } = fixture(true, undefined, true);
+    const logPath = join(controllerHome, 'provider-owner-expiry.log');
+    await startExternalProviderFixture(controllerHome, socketPath, logPath);
+    const first = submitControllerPluginAction(controllerHome, {
+      pluginId: 'desktop_operator', actionId: 'desktop_mutate_slow', requestId: 'provider-state-owner-first',
+      args: {}, origin: { surface: 'mcp', actor: 'test' },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    let contention: unknown;
+    try {
+      await submitControllerPluginAction(controllerHome, {
+        pluginId: 'desktop_operator', actionId: 'desktop_mutate_slow', requestId: 'provider-state-owner-second',
+        args: {}, origin: { surface: 'mcp', actor: 'test' },
+      });
+    } catch (error) {
+      contention = error;
+    }
+    let completed: Awaited<typeof first>;
+    try {
+      const blocker = (contention as { details: { blockers: Array<Record<string, unknown>> } }).details.blockers[0]!;
+      expect(typeof blocker.expiresAt).toBe('string');
+      expect(blocker.expiresAt).not.toBe('');
+      const expiry = Number(blocker.expiresAt) || Date.parse(String(blocker.expiresAt));
+      expect(Number.isFinite(expiry)).toBe(true);
+      expect(expiry).toBeGreaterThan(Date.now());
+      expect(blocker).not.toHaveProperty('fencingToken');
+      expect(contention).toMatchObject({
+        code: 'PLUGIN_RESOURCE_CONTENTION',
+        retryable: true,
+        details: {
+          blockers: [{
+            resourceKey: 'provider-state:desktop_operator',
+            ownerJobId: expect.stringContaining('plugin:provider-state-owner-first:'),
+            leaseId: expect.any(String),
+            mode: 'write',
+          }],
+        },
+      });
+    } finally {
+      completed = await first;
+    }
+
+    expect(completed.receipt.status).toBe('succeeded');
+    const executes = readFileSync(logPath, 'utf8').trim().split(String.fromCharCode(10)).filter((line) => line === 'execute');
+    expect(executes).toHaveLength(1);
+  });
+
   test('process loss after provider dispatch reconciles the same request as unknown without duplicate effects', async () => {
     const { controllerHome, socketPath } = fixture(true, undefined, true);
     const logPath = join(controllerHome, 'provider-crash-replay.log');

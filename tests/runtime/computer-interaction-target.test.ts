@@ -308,17 +308,89 @@ function actionInput(
   };
 }
 
-async function openTarget(fixture: ProviderFixture, launch = false): Promise<string> {
+async function openTarget(fixture: ProviderFixture, launch = false, bundleId = 'com.example.Editor'): Promise<string> {
   const result = await computerPluginAdapter.executeAction(actionInput(
     fixture.controllerHome,
     'desktop_target_open',
-    { bundle_id: 'com.example.Editor', launch, activate: false },
+    { bundle_id: bundleId, launch, activate: false },
   ));
   expect(result.targetId).toBeString();
   return String(result.targetId);
 }
 
 describe('Computer durable InteractionTarget authority', () => {
+  test('target open reuses an existing stable application target and provider binding', async () => {
+    const fixture = await providerFixture();
+    const targetId = await openTarget(fixture);
+
+    const reopened = await computerPluginAdapter.executeAction(actionInput(
+      fixture.controllerHome,
+      'desktop_target_open',
+      { bundle_id: 'com.example.Editor', launch: false, activate: false },
+      'target-open-idempotent-repeat',
+    ));
+
+    expect(reopened.targetId).toBe(targetId);
+    expect(fixture.state.sessionOpenCount).toBe(1);
+    expect(fixture.state.observeCount).toBe(1);
+    expect(targetAuthority.listAllApplications(fixture.controllerHome).map((target) => target.targetId)).toEqual([targetId]);
+  });
+
+  test('target inventory is read-only and never exposes native provider session identifiers', async () => {
+    const fixture = await providerFixture();
+    const targetId = await openTarget(fixture);
+
+    const inventory = await computerPluginAdapter.executeAction(actionInput(
+      fixture.controllerHome,
+      'desktop_target_list',
+      { limit: 10 },
+      'target-list-readonly',
+    ));
+
+    expect(inventory).toMatchObject({
+      total: 1,
+      returned: 1,
+      truncated: false,
+      targets: [{ targetId, kind: 'application', stableIdentity: { bundleId: 'com.example.Editor' }, providerBound: true, launchOwnership: 'preexisting' }],
+    });
+    expect((inventory.targets as Array<Record<string, unknown>>)[0]).not.toHaveProperty('providerBinding');
+    expect(fixture.state.sessionOpenCount).toBe(1);
+  });
+
+  test('desktop observations fail closed on a stale binding until explicit target open reattaches it', async () => {
+    const fixture = await providerFixture();
+    const targetId = await openTarget(fixture);
+    const before = targetAuthority.get(fixture.controllerHome, targetId);
+    fixture.sessions.clear();
+
+    await expect(computerPluginAdapter.executeAction(actionInput(
+      fixture.controllerHome, 'desktop_observe', { target_id: targetId }, 'observe-stale-binding',
+    ))).rejects.toMatchObject({ code: 'COMPUTER_TARGET_PROVIDER_BINDING_STALE' });
+    await expect(computerPluginAdapter.executeAction(actionInput(
+      fixture.controllerHome, 'desktop_element_observe', { target_id: targetId }, 'element-observe-stale-binding',
+    ))).rejects.toMatchObject({ code: 'COMPUTER_TARGET_PROVIDER_BINDING_STALE' });
+
+    expect(fixture.state.sessionOpenCount).toBe(1);
+    expect(fixture.state.observeCount).toBe(0);
+    expect(fixture.state.elementObserveCount).toBe(0);
+    expect(targetAuthority.get(fixture.controllerHome, targetId)).toEqual(before);
+
+    const reattached = await computerPluginAdapter.executeAction(actionInput(
+      fixture.controllerHome,
+      'desktop_target_open',
+      { bundle_id: 'com.example.Editor', launch: false, activate: false },
+      'target-open-explicit-reattach',
+    ));
+    expect(reattached.targetId).toBe(targetId);
+    expect(fixture.state.sessionOpenCount).toBe(2);
+    expect(targetAuthority.get(fixture.controllerHome, targetId)?.providerBinding?.providerSessionId).toBe('provider_session_2');
+
+    await computerPluginAdapter.executeAction(actionInput(
+      fixture.controllerHome, 'desktop_element_observe', { target_id: targetId }, 'element-observe-after-reattach',
+    ));
+    expect(fixture.state.elementObserveCount).toBe(1);
+  });
+
   test('rejects a native Desktop action on an unsupported platform before provider discovery', async () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-computer-target-unsupported-'));
     setComputerPlatformForTest('win32');
@@ -564,20 +636,39 @@ describe('Computer durable InteractionTarget authority', () => {
     expect(fixture.sessions.size).toBe(0);
   });
 
-  test('rebinds a lost provider session once and serializes concurrent use of the same target', async () => {
+  test('stale observations fail without rebinding; explicit target open reattaches once before serialized use', async () => {
     const fixture = await providerFixture();
     const targetId = await openTarget(fixture);
+    const before = targetAuthority.get(fixture.controllerHome, targetId);
     expect(fixture.state.sessionOpenCount).toBe(1);
-    expect(targetAuthority.get(fixture.controllerHome, targetId)?.providerBinding?.providerSessionId).toBe('provider_session_1');
+    expect(before?.providerBinding?.providerSessionId).toBe('provider_session_1');
 
-    // Provider restart/session loss: durable target remains, transport binding disappears.
     fixture.sessions.clear();
     const observeArgs = { target_id: targetId, max_depth: 2, max_nodes: 20 };
-    await Promise.all([
+    const stale = await Promise.allSettled([
       computerPluginAdapter.executeAction(actionInput(fixture.controllerHome, 'desktop_observe', observeArgs, 'observe-a')),
       computerPluginAdapter.executeAction(actionInput(fixture.controllerHome, 'desktop_observe', observeArgs, 'observe-b')),
     ]);
+    expect(stale).toHaveLength(2);
+    for (const result of stale) {
+      expect(result.status).toBe('rejected');
+      if (result.status === 'rejected') expect(result.reason).toMatchObject({ code: 'COMPUTER_TARGET_PROVIDER_BINDING_STALE' });
+    }
+    expect(fixture.state.sessionOpenCount).toBe(1);
+    expect(fixture.state.observeCount).toBe(0);
+    expect(targetAuthority.get(fixture.controllerHome, targetId)).toEqual(before);
 
+    await computerPluginAdapter.executeAction(actionInput(
+      fixture.controllerHome,
+      'desktop_target_open',
+      { bundle_id: 'com.example.Editor', launch: false, activate: false },
+      'explicit-target-reattach',
+    ));
+    const observeAfterReattach = await Promise.all([
+      computerPluginAdapter.executeAction(actionInput(fixture.controllerHome, 'desktop_observe', observeArgs, 'observe-after-a')),
+      computerPluginAdapter.executeAction(actionInput(fixture.controllerHome, 'desktop_observe', observeArgs, 'observe-after-b')),
+    ]);
+    expect(observeAfterReattach).toHaveLength(2);
     expect(fixture.state.sessionOpenCount).toBe(2);
     expect(fixture.state.statusCount).toBe(0);
     expect(fixture.state.observeCount).toBe(2);
@@ -608,20 +699,37 @@ describe('Computer durable InteractionTarget authority', () => {
     expect(fixture.state.observeCount).toBe(5);
   });
 
-  test('retries a non-idempotent semantic mutation only after explicit pre-effect session loss', async () => {
+  test('semantic mutations fail closed on a missing provider session and require explicit target reattachment', async () => {
     const fixture = await providerFixture();
     const targetId = await openTarget(fixture);
+    const before = targetAuthority.get(fixture.controllerHome, targetId);
     fixture.sessions.clear();
 
-    await computerPluginAdapter.executeAction(actionInput(
+    await expect(computerPluginAdapter.executeAction(actionInput(
       fixture.controllerHome,
       'desktop_press',
       { target_id: targetId, selector: { title: 'Save' } },
       'press-stale-binding',
+    ))).rejects.toMatchObject({ code: 'COMPUTER_TARGET_PROVIDER_BINDING_STALE' });
+
+    expect(fixture.state.sessionOpenCount).toBe(1);
+    expect(fixture.state.pressCount).toBe(0);
+    expect(targetAuthority.get(fixture.controllerHome, targetId)).toEqual(before);
+
+    await computerPluginAdapter.executeAction(actionInput(
+      fixture.controllerHome,
+      'desktop_target_open',
+      { bundle_id: 'com.example.Editor', launch: false, activate: false },
+      'target-open-before-press-retry',
+    ));
+    await computerPluginAdapter.executeAction(actionInput(
+      fixture.controllerHome,
+      'desktop_press',
+      { target_id: targetId, selector: { title: 'Save' } },
+      'press-after-explicit-reattach',
     ));
 
     expect(fixture.state.sessionOpenCount).toBe(2);
-    expect(fixture.state.statusCount).toBe(0);
     expect(fixture.state.pressCount).toBe(1);
     expect(targetAuthority.get(fixture.controllerHome, targetId)?.providerBinding?.providerSessionId).toBe('provider_session_2');
   });
@@ -692,32 +800,19 @@ describe('Computer durable InteractionTarget authority', () => {
     expect(targetAuthority.get(fixture.controllerHome, targetId)).toBeUndefined();
   });
 
-  test('keeps a shared provider session alive until the final target then terminates the owned process', async () => {
+  test('closing a provider-launched target terminates only the process it owns', async () => {
     const fixture = await providerFixture();
-    fixture.state.reuseProviderSession = true;
-    const firstTargetId = await openTarget(fixture, true);
-    const secondTargetId = await openTarget(fixture, true);
-    const first = targetAuthority.get(fixture.controllerHome, firstTargetId);
-    const second = targetAuthority.get(fixture.controllerHome, secondTargetId);
-    expect(first?.launchProvenance).toEqual({ kind: 'provider_launched', processId: 4242 });
-    expect(second?.launchProvenance).toEqual({ kind: 'provider_launched', processId: 4242 });
-    expect(second?.providerBinding?.providerSessionId).toBe(first?.providerBinding?.providerSessionId);
+    const targetId = await openTarget(fixture, true);
+    expect(targetAuthority.get(fixture.controllerHome, targetId)?.launchProvenance).toEqual({ kind: 'provider_launched', processId: 4242 });
 
-    await computerPluginAdapter.executeAction(actionInput(
+    const closed = await computerPluginAdapter.executeAction(actionInput(
       fixture.controllerHome,
       'desktop_target_close',
-      { target_id: firstTargetId },
-      'target-close-shared-first',
+      { target_id: targetId },
+      'target-close-provider-owned',
     ));
-    expect(fixture.state.sessionCloseCount).toBe(0);
-    expect(fixture.sessions.size).toBe(1);
 
-    await computerPluginAdapter.executeAction(actionInput(
-      fixture.controllerHome,
-      'desktop_target_close',
-      { target_id: secondTargetId },
-      'target-close-shared-last',
-    ));
+    expect(closed.retired).toBe(true);
     expect(fixture.state.sessionCloseCount).toBe(1);
     expect(fixture.state.lastSessionCloseArgs?.terminate_owned_pid).toBe(4242);
     expect(fixture.sessions.size).toBe(0);
@@ -731,9 +826,9 @@ describe('Computer durable InteractionTarget authority', () => {
 
     await computerPluginAdapter.executeAction(actionInput(
       fixture.controllerHome,
-      'desktop_observe',
-      { target_id: targetId, max_depth: 1, max_nodes: 5 },
-      'owned-target-rebind',
+      'desktop_target_open',
+      { bundle_id: 'com.example.Editor', launch: false, activate: false },
+      'owned-target-explicit-rebind',
     ));
 
     const rebound = targetAuthority.get(fixture.controllerHome, targetId);
@@ -758,9 +853,9 @@ describe('Computer durable InteractionTarget authority', () => {
 
   test('bounds tombstones without reclaiming active Computer targets', async () => {
     const fixture = await providerFixture();
-    const activeTargetId = await openTarget(fixture);
-    const staleTargetId = await openTarget(fixture);
-    const freshTargetId = await openTarget(fixture);
+    const activeTargetId = await openTarget(fixture, false, 'com.example.Active');
+    const staleTargetId = await openTarget(fixture, false, 'com.example.Stale');
+    const freshTargetId = await openTarget(fixture, false, 'com.example.Fresh');
     await targetAuthority.withLease(fixture.controllerHome, staleTargetId, async (lease) => { lease.tombstone(); });
     await targetAuthority.withLease(fixture.controllerHome, freshTargetId, async (lease) => { lease.tombstone(); });
 
