@@ -217,6 +217,9 @@ describe('Process Runtime fine-grained resource claims', () => {
     for (const command of [
       ['zsh', '-lc', 'cd /repo && xcodebuild test -project App.xcodeproj'],
       'xcrun xcodebuild -project App.xcodeproj build > build.log 2>&1',
+      'env TEST=1 xcodebuild test -project App.xcodeproj',
+      'FOO=bar xcodebuild test -project App.xcodeproj',
+      'env TEST=1 xcrun xcodebuild test -project App.xcodeproj',
     ] as const) {
       const claims = claimsForRepositoryCommand(command, 'repo1', 'co1');
       expect(claims).toContainEqual({ resourceKey: 'host-service:ios-build', mode: 'write' });

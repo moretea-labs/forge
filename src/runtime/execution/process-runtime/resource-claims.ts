@@ -211,8 +211,16 @@ function shellXcodebuildCommands(shell: string): string[] {
     .map((segment) => segment.trim())
     .filter((segment) => {
       const words = shellWordsPreservingQuotes(segment);
-      return basename(words[0] ?? '') === 'xcodebuild'
-        || (basename(words[0] ?? '') === 'xcrun' && words[1] === 'xcodebuild');
+      let index = 0;
+      // Literal shell assignments and env are execution prefixes, unlike
+      // echo/grep/source text. Keep real native builds under the host lease.
+      if (basename(words[index] ?? '') === 'env') {
+        index += 1;
+        if (words[index] === '--') index += 1;
+      }
+      while (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[index] ?? '')) index += 1;
+      return basename(words[index] ?? '') === 'xcodebuild'
+        || (basename(words[index] ?? '') === 'xcrun' && words[index + 1] === 'xcodebuild');
     });
 }
 
