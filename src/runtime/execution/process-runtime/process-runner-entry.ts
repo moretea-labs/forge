@@ -84,6 +84,8 @@ export interface ProcessRunnerExitReceipt {
   commandExecutedOnce: true;
 }
 
+const PROCESS_RUNNER_STDIO_DRAIN_GRACE_MS = 250;
+
 function option(name: string): string | undefined {
   const index = process.argv.indexOf(name);
   return index >= 0 ? process.argv[index + 1] : undefined;
@@ -405,18 +407,37 @@ export async function runProcessRunnerFromDescriptor(
   spawnedChild.stderr?.on('data', (chunk: Buffer) => forward(process.stderr, stderr.write(chunk), 'stderr'));
 
   const closeResult = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
-    spawnedChild.on('error', (error) => {
+    let settled = false;
+    let exitResult: { code: number | null; signal: NodeJS.Signals | null } | undefined;
+    let drainTimer: ReturnType<typeof setTimeout> | undefined;
+    const finish = (result: { code: number | null; signal: NodeJS.Signals | null }) => {
       if (settled) return;
       settled = true;
+      if (drainTimer) clearTimeout(drainTimer);
+      resolve(result);
+    };
+
+    spawnedChild.on('error', (error) => {
+      if (settled || exitResult) return;
       clearTimeout(timeoutHandle);
       stderr.write(Buffer.from(`\n[process-runner] spawn error: ${error.message}\n`));
-      resolve({ code: 1, signal: null });
+      finish({ code: 1, signal: null });
+    });
+    spawnedChild.on('exit', (code, signal) => {
+      if (settled) return;
+      clearTimeout(timeoutHandle);
+      exitResult = { code, signal };
+      // Preserve trailing output, but do not let descendants that inherited the
+      // command's stdio keep the durable Process nonterminal indefinitely.
+      drainTimer = setTimeout(() => {
+        spawnedChild.stdout?.destroy();
+        spawnedChild.stderr?.destroy();
+        finish(exitResult!);
+      }, PROCESS_RUNNER_STDIO_DRAIN_GRACE_MS);
     });
     spawnedChild.on('close', (code, signal) => {
-      if (settled) return;
-      settled = true;
       clearTimeout(timeoutHandle);
-      resolve({ code, signal });
+      finish(exitResult ?? { code, signal });
     });
   });
 

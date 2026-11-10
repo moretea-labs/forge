@@ -3779,6 +3779,48 @@ describe('Process Runner exactly-once semantics', () => {
     expect(exited).toEqual({ code: 0, signal: null });
   }, 10_000);
 
+  test('terminal receipt follows command exit when a descendant inherits stdio', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'process-runner-inherited-stdio-'));
+    roots.push(root);
+    const pidPath = join(root, 'inherited-stdio-child.pid');
+    const descriptor: ProcessCommandDescriptor = {
+      schemaVersion: 1,
+      processId: 'proc_runner_inherited_stdio',
+      repoId: 'repo',
+      controllerHome: root,
+      command: {
+        kind: 'argv',
+        executable: 'node',
+        args: [
+          '-e',
+          `const fs=require('node:fs'); const {spawn}=require('node:child_process'); const child=spawn(process.execPath,['-e','setTimeout(()=>process.exit(0),2000)'],{stdio:'inherit'}); fs.writeFileSync(${JSON.stringify(pidPath)},String(child.pid)); process.exit(65);`,
+        ],
+        cwd: root,
+      },
+      timeoutMs: 5_000,
+      maxStdoutBytes: 4_096,
+      maxStderrBytes: 4_096,
+      stdoutPath: join(root, 'out.log'),
+      stderrPath: join(root, 'err.log'),
+      exitReceiptPath: join(root, 'exit.json'),
+      startedAt: new Date().toISOString(),
+    };
+
+    const pending = runProcessRunnerFromDescriptor(descriptor);
+    const pidDeadline = Date.now() + 2_000;
+    while (!existsSync(pidPath) && Date.now() < pidDeadline) await Bun.sleep(5);
+    expect(existsSync(pidPath)).toBe(true);
+    const grandchildPid = Number(readFileSync(pidPath, 'utf8'));
+    const observed = await Promise.race([
+      pending.then((receipt) => ({ receipt })),
+      Bun.sleep(800).then(() => ({ timedOut: true as const })),
+    ]);
+    try { process.kill(grandchildPid, 'SIGTERM'); } catch { /* child may have exited naturally */ }
+    const receipt = await pending;
+    expect(observed).toHaveProperty('receipt');
+    expect(receipt.exitCode).toBe(65);
+  }, 10_000);
+
   test('repository command environment strips runtime-private identity after descriptor overrides', async () => {
     const root = mkdtempSync(join(tmpdir(), 'process-runner-env-boundary-'));
     roots.push(root);
