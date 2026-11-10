@@ -10,11 +10,12 @@ import type { ExecutionLease } from '../../src/runtime/resources/leases/types';
 import { claimsForAssistantPluginAction } from '../../src/runtime/plugins/store';
 import type { AssistantPluginActionDescriptor } from '../../src/runtime/plugins/types';
 import { createDesktopOperatorRegistrationInput } from '../../src/runtime/plugins/desktop-operator-registration';
-import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { acquireExecutionLeases, releaseExecutionLeases, withRepositoryMutationExclusion } from '../../src/runtime/resources/leases/store';
+import { acquireExecutionLeases, assertFencingToken, listActiveLeases, releaseExecutionLeases, releaseTerminalProcessLeases, withRepositoryMutationExclusion } from '../../src/runtime/resources/leases/store';
 import { classifyRepositoryCommandRoute } from '../../src/runtime/execution/process-runtime/command-facade';
+import { repositoryControllerRoot } from '../../src/effects/controller-home';
 
 function lease(resourceKey: string, mode: 'read' | 'write' | 'exclusive'): ExecutionLease {
   return { resourceKey, mode } as ExecutionLease;
@@ -557,6 +558,170 @@ describe('Process Runtime fine-grained resource claims', () => {
     expect(claimsForAssistantPluginAction(providerAction, repository, 'browser', { session_id: 'session-a' }, 'provider-a')).toEqual([
       { resourceKey: 'provider-state:browser', mode: 'write' },
     ]);
+  });
+
+  test('terminal Process release persists owner, fencing and resource receipt for ephemeral leases', () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-terminal-lease-audit-'));
+    const repoId = 'repo-lease-audit';
+    const processId = 'proc-audit-1';
+    const ownerJobId = `process:${processId}`;
+    try {
+      const acquired = acquireExecutionLeases(controllerHome, repoId, ownerJobId, [{
+        resourceKey: 'host-service:ios-simulator-test',
+        mode: 'write',
+        repoId,
+        checkoutId: 'checkout-audit',
+      }], {
+        visibility: 'ephemeral',
+        notifyScheduler: false,
+        invalidateProjection: false,
+        emitRuntimeEvent: false,
+      });
+      expect(acquired.acquired).toBe(true);
+      const held = acquired.leases[0]!;
+      const released = releaseTerminalProcessLeases(controllerHome, repoId, processId, acquired.leases.map((lease) => ({
+        leaseId: lease.leaseId,
+        fencingToken: lease.fencingToken,
+        repoId: lease.repoId,
+        checkoutId: lease.checkoutId,
+        resourceKey: lease.resourceKey,
+        ownerIdentityDigest: lease.ownerIdentityDigest,
+      })), {
+        visibility: 'ephemeral',
+        notifyScheduler: false,
+        invalidateProjection: false,
+        emitRuntimeEvent: false,
+      });
+      expect(released).toBe(1);
+
+      const ledger = join(repositoryControllerRoot(controllerHome, repoId), 'events', 'ledger.jsonl');
+      const events = readFileSync(ledger, 'utf8').split(/\r?\n/).filter(Boolean)
+        .map((line) => JSON.parse(line) as {
+          eventType: string; entityId: string; requestId: string; correlationId?: string;
+          revision: number; data?: Record<string, unknown>;
+        });
+      const receipt = events.find((event) => event.eventType === 'lease_released' && event.entityId === held.leaseId);
+      expect(receipt).toMatchObject({
+        eventType: 'lease_released',
+        entityId: held.leaseId,
+        requestId: ownerJobId,
+        correlationId: ownerJobId,
+        revision: held.fencingToken,
+        data: {
+          ownerJobId,
+          ownerIdentityDigest: held.ownerIdentityDigest,
+          checkoutId: 'checkout-audit',
+          resourceKey: 'host-service:ios-simulator-test',
+          fencingToken: held.fencingToken,
+          releaseReason: 'explicit_release',
+          terminalProcessId: processId,
+        },
+      });
+      expect(listActiveLeases(controllerHome, repoId)).toEqual([]);
+    } finally {
+      rmSync(controllerHome, { recursive: true, force: true });
+    }
+  });
+
+  test('listing an expired lease persists a durable owner and fencing receipt before removal', () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-expired-lease-audit-'));
+    const repoId = 'repo-expired-lease-audit';
+    try {
+      const acquired = acquireExecutionLeases(controllerHome, repoId, 'expired-owner', [{
+        resourceKey: 'workspace:checkout-expired',
+        mode: 'write',
+        repoId,
+        checkoutId: 'checkout-expired',
+      }], {
+        visibility: 'ephemeral',
+        notifyScheduler: false,
+        invalidateProjection: false,
+        emitRuntimeEvent: false,
+        ttlMs: 5_000,
+      });
+      expect(acquired.acquired).toBe(true);
+      const held = acquired.leases[0]!;
+      expect(listActiveLeases(controllerHome, repoId)).toEqual([held]);
+
+      const originalNow = Date.now;
+      Date.now = () => Date.parse(held.expiresAt) + 1;
+      try {
+        expect(listActiveLeases(controllerHome, repoId)).toEqual([]);
+      } finally {
+        Date.now = originalNow;
+      }
+
+      const ledger = join(repositoryControllerRoot(controllerHome, repoId), 'events', 'ledger.jsonl');
+      const events = readFileSync(ledger, 'utf8').split(/\r?\n/).filter(Boolean)
+        .map((line) => JSON.parse(line) as {
+          eventType: string; entityId: string; requestId: string; revision: number; data?: Record<string, unknown>;
+        });
+      const receipt = events.find((event) => event.eventType === 'lease_expired' && event.entityId === held.leaseId);
+      expect(receipt).toMatchObject({
+        eventType: 'lease_expired',
+        entityId: held.leaseId,
+        requestId: 'expired-owner',
+        revision: held.fencingToken,
+        data: {
+          ownerJobId: 'expired-owner',
+          ownerIdentityDigest: held.ownerIdentityDigest,
+          checkoutId: 'checkout-expired',
+          resourceKey: 'workspace:checkout-expired',
+          fencingToken: held.fencingToken,
+          expiryReason: 'ttl_expired',
+        },
+      });
+    } finally {
+      rmSync(controllerHome, { recursive: true, force: true });
+    }
+  });
+
+  test('fencing assertions persist expiry receipts before rejecting expired owners', () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-fencing-expiry-audit-'));
+    const repoId = 'repo-fencing-expiry-audit';
+    try {
+      const acquired = acquireExecutionLeases(controllerHome, repoId, 'fenced-owner', [{
+        resourceKey: 'workspace:checkout-fenced',
+        mode: 'write',
+        repoId,
+        checkoutId: 'checkout-fenced',
+      }], {
+        visibility: 'ephemeral',
+        notifyScheduler: false,
+        invalidateProjection: false,
+        emitRuntimeEvent: false,
+        ttlMs: 5_000,
+      });
+      expect(acquired.acquired).toBe(true);
+      const held = acquired.leases[0]!;
+      const originalNow = Date.now;
+      Date.now = () => Date.parse(held.expiresAt) + 1;
+      try {
+        expect(() => assertFencingToken(controllerHome, repoId, held.leaseId, held.fencingToken))
+          .toThrow(`LEASE_EXPIRED: ${held.leaseId}`);
+      } finally {
+        Date.now = originalNow;
+      }
+
+      const ledger = join(repositoryControllerRoot(controllerHome, repoId), 'events', 'ledger.jsonl');
+      const events = readFileSync(ledger, 'utf8').split(/\r?\n/).filter(Boolean)
+        .map((line) => JSON.parse(line) as {
+          eventType: string; entityId: string; requestId: string; revision: number; data?: Record<string, unknown>;
+        });
+      expect(events.find((event) => event.eventType === 'lease_expired' && event.entityId === held.leaseId))
+        .toMatchObject({
+          requestId: 'fenced-owner',
+          revision: held.fencingToken,
+          data: {
+            ownerIdentityDigest: held.ownerIdentityDigest,
+            resourceKey: 'workspace:checkout-fenced',
+            expiryReason: 'ttl_expired',
+          },
+        });
+      expect(listActiveLeases(controllerHome, repoId)).toEqual([]);
+    } finally {
+      rmSync(controllerHome, { recursive: true, force: true });
+    }
   });
 
   test('trusted provider state serializes only the same provider, never repository workspace state', () => {

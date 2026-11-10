@@ -30,15 +30,16 @@ export interface ExecutionLease {
   acquiredAt: string;
   expiresAt: string;
   heartbeatAt: string;
-  /** ephemeral = Fast Path ownership: active set only, no scheduler/projection noise */
+  /** ephemeral = Fast Path ownership without scheduler/projection noise; release and expiry receipts remain durable. */
   visibility?: LeaseVisibility;
 }
 
 export interface LeaseAcquisitionOptions {
-  /** Default durable (existing Job path). ephemeral skips scheduler/projection/events. */
+  /** Default durable. ephemeral suppresses scheduler/projection and acquisition-event noise; release/expiry receipts remain durable. */
   visibility?: LeaseVisibility;
   notifyScheduler?: boolean;
   invalidateProjection?: boolean;
+  /** Controls lease_acquired receipts only; release and expiry receipts are always persisted. */
   emitRuntimeEvent?: boolean;
   ttlMs?: number;
   ownerIdentity?: ExecutionLeaseOwnerIdentity;

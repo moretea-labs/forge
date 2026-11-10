@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { createHash } from 'crypto';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
@@ -356,6 +356,60 @@ test('maintenance never considers an empty reserved successor session safe garba
     reason: 'EDIT_SESSION_RECONCILIATION_NOT_ELIGIBLE',
   });
   expect(getEditSession(fx.repoRoot, session.sessionId).status).toBe('open');
+});
+
+test('protected generated paths retain explicit approval across metadata cleanup', () => {
+  const fx = fixture();
+  const protectedPath = 'Generated.xcodeproj/project.pbxproj';
+  mkdirSync(join(fx.repoRoot, 'Generated.xcodeproj'), { recursive: true });
+  writeFileSync(join(fx.repoRoot, protectedPath), 'value = 1;\n');
+  writeFileSync(join(fx.repoRoot, '.gitignore'), protectedPath + '\n');
+  spawnSync('git', ['add', '.gitignore'], { cwd: fx.repoRoot });
+  spawnSync('git', ['commit', '-qm', 'ignore generated project file'], { cwd: fx.repoRoot });
+
+  const binding: EditSessionBinding = {
+    repoId: fx.repository.repoId,
+    checkoutId: fx.repository.activeCheckoutId,
+    principalId: 'principal-runtime-continuity',
+  };
+  const session = beginEditSession(fx.repoRoot, {
+    purpose: 'Protected generated project approval boundary',
+    allowedPaths: [protectedPath],
+    binding,
+  });
+  applyEditOperations(fx.repoRoot, fx.policy, session.sessionId, [{
+    type: 'replace',
+    path: protectedPath,
+    expectedSha256: sha256('value = 1;\n'),
+    replacements: [{ oldText: 'value = 1', newText: 'value = 2' }],
+  }], { binding });
+
+  writeFileSync(join(fx.repoRoot, 'unrelated.txt'), 'advance HEAD\n');
+  spawnSync('git', ['add', 'unrelated.txt'], { cwd: fx.repoRoot });
+  spawnSync('git', ['commit', '-qm', 'advance unrelated HEAD'], { cwd: fx.repoRoot });
+
+  expect(getEditSession(fx.repoRoot, session.sessionId).assurance?.approvalRequired).toBe(true);
+  expect(inspectIntegratedEditSession(fx.repoRoot, session.sessionId, {
+    repoId: fx.repository.repoId, controllerHome: fx.controllerHome,
+  })).toMatchObject({
+    safe: false,
+    reason: 'EDIT_SESSION_RECONCILIATION_APPROVAL_REQUIRED',
+  });
+  expect(() => cleanupEditSession(fx.repoRoot, session.sessionId, {
+    repoId: fx.repository.repoId,
+    controllerHome: fx.controllerHome,
+  })).toThrow('EDIT_SESSION_RECONCILIATION_APPROVAL_REQUIRED');
+  expect(getEditSession(fx.repoRoot, session.sessionId).status).toBe('dirty');
+  expect(() => finalizeEditSession(fx.repoRoot, session.sessionId, { binding }))
+    .toThrow('EDIT_SESSION_APPROVAL_REQUIRED');
+
+  const finalized = finalizeEditSession(fx.repoRoot, session.sessionId, {
+    binding,
+    approvalConfirmed: true,
+  });
+  expect(finalized.status).toBe('finalized');
+  expect(finalized.assurance?.approvalRequired).toBe(true);
+  expect(readFileSync(join(fx.repoRoot, protectedPath), 'utf8')).toBe('value = 2;\n');
 });
 
 function sha256(value: string): string {

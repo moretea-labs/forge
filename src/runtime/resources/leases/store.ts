@@ -128,6 +128,39 @@ function resolveSideEffects(options?: LeaseAcquisitionOptions, visibility?: Leas
   };
 }
 
+function leaseLifecycleData(lease: ExecutionLease): Record<string, unknown> {
+  return {
+    ownerJobId: lease.ownerJobId,
+    ownerIdentityDigest: lease.ownerIdentityDigest,
+    checkoutId: lease.checkoutId,
+    resourceKey: lease.resourceKey,
+    mode: lease.mode,
+    visibility: lease.visibility ?? 'durable',
+    fencingToken: lease.fencingToken,
+    acquiredAt: lease.acquiredAt,
+    expiresAt: lease.expiresAt,
+    heartbeatAt: lease.heartbeatAt,
+  };
+}
+
+function appendLeaseLifecycleEvent(
+  controllerHome: string,
+  lease: ExecutionLease,
+  eventType: 'lease_acquired' | 'lease_released' | 'lease_expired' | 'lease_fenced',
+  additionalData: Record<string, unknown> = {},
+): void {
+  appendRuntimeEvent(controllerHome, {
+    repoId: lease.repoId,
+    entityType: 'lease',
+    entityId: lease.leaseId,
+    eventType,
+    requestId: lease.ownerJobId,
+    correlationId: lease.ownerJobId,
+    revision: lease.fencingToken,
+    data: { ...leaseLifecycleData(lease), ...additionalData },
+  });
+}
+
 /** Instrumentation counters for Thin Harness metrics (process-local). */
 const leaseSideEffectMetrics = {
   durableAcquireEvents: 0,
@@ -163,8 +196,15 @@ function listAllActiveLeases(controllerHome: string): ExecutionLease[] {
       if (!lease?.leaseId || !lease.repoId || !lease.resourceKey || !lease.ownerJobId) {
         throw new Error('required lease identity is missing');
       }
-      if (expired(lease) || fencedEphemeralOwner(lease, currentRuntime)) removeFile(path);
-      else leases.push(lease);
+      if (expired(lease)) {
+        appendLeaseLifecycleEvent(controllerHome, lease, 'lease_expired', { expiryReason: 'ttl_expired' });
+        removeFile(path);
+      } else if (fencedEphemeralOwner(lease, currentRuntime)) {
+        appendLeaseLifecycleEvent(controllerHome, lease, 'lease_fenced', { fenceReason: 'runtime_instance_changed' });
+        removeFile(path);
+      } else {
+        leases.push(lease);
+      }
     } catch (error) {
       throw new Error(`LEASE_STORE_CORRUPT: ${path}: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -172,8 +212,18 @@ function listAllActiveLeases(controllerHome: string): ExecutionLease[] {
   return leases;
 }
 
-export function listActiveLeases(controllerHome: string, repoId: string): ExecutionLease[] {
+function listActiveLeasesUnlocked(controllerHome: string, repoId: string): ExecutionLease[] {
   return listAllActiveLeases(controllerHome).filter((lease) => lease.repoId === repoId);
+}
+
+export function listActiveLeases(controllerHome: string, repoId: string): ExecutionLease[] {
+  return withControllerLock(
+    controllerHome,
+    { scope: 'global', resource: 'execution-leases' },
+    `lease-list:${repoId}`,
+    () => listActiveLeasesUnlocked(controllerHome, repoId),
+    10_000,
+  );
 }
 
 // Editor mutations and managed repository processes already have separate
@@ -207,7 +257,7 @@ function assertRepositoryProcessMutationAvailable(
     controllerHome,
     { scope: 'global', resource: 'execution-leases' },
     'editor-lease-check:' + owner,
-    () => listActiveLeases(controllerHome, repoId)
+    () => listActiveLeasesUnlocked(controllerHome, repoId)
       .find((lease) => repositorySourceResourceKey(lease.resourceKey)
         && (mutationClaims === undefined || mutationClaims.some((claim) => claimsConflict(claim, lease)))),
   );
@@ -320,21 +370,7 @@ export function acquireExecutionLeases(
     for (const lease of leases) {
       writeJsonAtomic(leasePath(controllerHome, repoId, lease.leaseId), lease);
       if (effects.emitRuntimeEvent) {
-        appendRuntimeEvent(controllerHome, {
-          repoId,
-          entityType: 'lease',
-          entityId: lease.leaseId,
-          eventType: 'lease_acquired',
-          requestId: ownerJobId,
-          correlationId: ownerJobId,
-          revision: lease.fencingToken,
-          data: {
-            resourceKey: lease.resourceKey,
-            mode: lease.mode,
-            expiresAt: lease.expiresAt,
-            visibility: lease.visibility,
-          },
-        });
+        appendLeaseLifecycleEvent(controllerHome, lease, 'lease_acquired');
         leaseSideEffectMetrics.durableAcquireEvents += 1;
       } else {
         leaseSideEffectMetrics.ephemeralAcquires += 1;
@@ -407,7 +443,7 @@ export function renewExecutionLeases(
   return withControllerLock(controllerHome, { scope: 'global', resource: 'execution-leases' }, `lease-renew:${ownerJobId}`, () => {
     const expectedRefs = expectedLeaseMap(expected);
     const timestamp = new Date().toISOString();
-    const owned = listActiveLeases(controllerHome, repoId)
+    const owned = listActiveLeasesUnlocked(controllerHome, repoId)
       .filter((lease) => lease.ownerJobId === ownerJobId)
       .filter((lease) => !expectedRefs || leaseMatchesExpected(lease, expectedRefs.get(lease.leaseId)));
     if (expectedRefs && owned.length !== expectedRefs.size) {
@@ -440,27 +476,14 @@ export function releaseExecutionLeases(
     const expectedRefs = expectedLeaseMap(expected);
     let releasedCount = 0;
     let visibility: LeaseVisibility = options?.visibility ?? 'durable';
-    for (const lease of listActiveLeases(controllerHome, repoId)) {
+    for (const lease of listActiveLeasesUnlocked(controllerHome, repoId)) {
       if (lease.ownerJobId !== ownerJobId) continue;
       if (expectedRefs && !leaseMatchesExpected(lease, expectedRefs.get(lease.leaseId))) continue;
       visibility = lease.visibility ?? visibility;
+      appendLeaseLifecycleEvent(controllerHome, lease, 'lease_released', { releaseReason: 'explicit_release' });
       removeFile(leasePath(controllerHome, repoId, lease.leaseId));
-      const effects = resolveSideEffects(options, lease.visibility);
-      if (effects.emitRuntimeEvent) {
-        appendRuntimeEvent(controllerHome, {
-          repoId,
-          entityType: 'lease',
-          entityId: lease.leaseId,
-          eventType: 'lease_released',
-          requestId: ownerJobId,
-          correlationId: ownerJobId,
-          revision: lease.fencingToken,
-          data: { resourceKey: lease.resourceKey, mode: lease.mode, visibility: lease.visibility },
-        });
-        leaseSideEffectMetrics.durableReleaseEvents += 1;
-      } else {
-        leaseSideEffectMetrics.ephemeralReleases += 1;
-      }
+      leaseSideEffectMetrics.durableReleaseEvents += 1;
+      if (lease.visibility === 'ephemeral') leaseSideEffectMetrics.ephemeralReleases += 1;
       releasedCount += 1;
     }
     if (releasedCount > 0) {
@@ -496,7 +519,7 @@ export function releaseExactExecutionLeases(
     if (expectedRefs.size !== expected.length) {
       throw new Error(`LEASE_SET_INVALID: ${ownerJobId} contains duplicate lease ids`);
     }
-    const owned = listActiveLeases(controllerHome, repoId)
+    const owned = listActiveLeasesUnlocked(controllerHome, repoId)
       .filter((lease) => lease.ownerJobId === ownerJobId);
     if (owned.length !== expectedRefs.size) {
       throw new Error(`LEASE_SET_MISMATCH: ${ownerJobId} owns ${owned.length} active leases, expected ${expectedRefs.size}`);
@@ -511,23 +534,13 @@ export function releaseExactExecutionLeases(
     let visibility: LeaseVisibility = options?.visibility ?? 'durable';
     for (const lease of owned) {
       visibility = lease.visibility ?? visibility;
+      appendLeaseLifecycleEvent(controllerHome, lease, 'lease_released', {
+        releaseReason: 'explicit_release',
+        exactSet: true,
+      });
       removeFile(leasePath(controllerHome, repoId, lease.leaseId));
-      const effects = resolveSideEffects(options, lease.visibility);
-      if (effects.emitRuntimeEvent) {
-        appendRuntimeEvent(controllerHome, {
-          repoId,
-          entityType: 'lease',
-          entityId: lease.leaseId,
-          eventType: 'lease_released',
-          requestId: ownerJobId,
-          correlationId: ownerJobId,
-          revision: lease.fencingToken,
-          data: { resourceKey: lease.resourceKey, mode: lease.mode, visibility: lease.visibility, exactSet: true },
-        });
-        leaseSideEffectMetrics.durableReleaseEvents += 1;
-      } else {
-        leaseSideEffectMetrics.ephemeralReleases += 1;
-      }
+      leaseSideEffectMetrics.durableReleaseEvents += 1;
+      if (lease.visibility === 'ephemeral') leaseSideEffectMetrics.ephemeralReleases += 1;
       releasedCount += 1;
     }
     if (releasedCount > 0) {
@@ -575,7 +588,7 @@ export function releaseTerminalProcessLeases(
       }
     }
 
-    const owned = listActiveLeases(controllerHome, repoId)
+    const owned = listActiveLeasesUnlocked(controllerHome, repoId)
       .filter((lease) => lease.ownerJobId === ownerJobId);
     for (const lease of owned) {
       const ref = expectedRefs.get(lease.leaseId);
@@ -591,23 +604,13 @@ export function releaseTerminalProcessLeases(
     let visibility: LeaseVisibility = options?.visibility ?? 'durable';
     for (const lease of owned) {
       visibility = lease.visibility ?? visibility;
+      appendLeaseLifecycleEvent(controllerHome, lease, 'lease_released', {
+        releaseReason: 'explicit_release',
+        terminalProcessId: normalizedProcessId,
+      });
       removeFile(leasePath(controllerHome, repoId, lease.leaseId));
-      const effects = resolveSideEffects(options, lease.visibility);
-      if (effects.emitRuntimeEvent) {
-        appendRuntimeEvent(controllerHome, {
-          repoId,
-          entityType: 'lease',
-          entityId: lease.leaseId,
-          eventType: 'lease_released',
-          requestId: ownerJobId,
-          correlationId: ownerJobId,
-          revision: lease.fencingToken,
-          data: { resourceKey: lease.resourceKey, mode: lease.mode, visibility: lease.visibility, terminalProcessId: normalizedProcessId },
-        });
-        leaseSideEffectMetrics.durableReleaseEvents += 1;
-      } else {
-        leaseSideEffectMetrics.ephemeralReleases += 1;
-      }
+      leaseSideEffectMetrics.durableReleaseEvents += 1;
+      if (lease.visibility === 'ephemeral') leaseSideEffectMetrics.ephemeralReleases += 1;
       releasedCount += 1;
     }
     if (releasedCount > 0) {
@@ -631,14 +634,23 @@ export function assertFencingToken(
   leaseId: string,
   fencingToken: number,
 ): ExecutionLease {
-  const path = leasePath(controllerHome, repoId, leaseId);
-  if (!existsSync(path)) throw new Error(`LEASE_EXPIRED: ${leaseId}`);
-  const lease = readJsonFile<ExecutionLease>(path);
-  if (lease.repoId !== repoId) throw new Error(`LEASE_REPOSITORY_SCOPE_MISMATCH: expected ${repoId}, received ${lease.repoId}`);
-  if (expired(lease)) {
-    removeFile(path);
-    throw new Error(`LEASE_EXPIRED: ${leaseId}`);
-  }
-  if (lease.fencingToken !== fencingToken) throw new Error(`FENCING_TOKEN_STALE: ${leaseId}`);
-  return lease;
+  return withControllerLock(
+    controllerHome,
+    { scope: 'global', resource: 'execution-leases' },
+    `lease-assert:${leaseId}`,
+    () => {
+      const path = leasePath(controllerHome, repoId, leaseId);
+      if (!existsSync(path)) throw new Error(`LEASE_EXPIRED: ${leaseId}`);
+      const lease = readJsonFile<ExecutionLease>(path);
+      if (lease.repoId !== repoId) throw new Error(`LEASE_REPOSITORY_SCOPE_MISMATCH: expected ${repoId}, received ${lease.repoId}`);
+      if (expired(lease)) {
+        appendLeaseLifecycleEvent(controllerHome, lease, 'lease_expired', { expiryReason: 'ttl_expired' });
+        removeFile(path);
+        throw new Error(`LEASE_EXPIRED: ${leaseId}`);
+      }
+      if (lease.fencingToken !== fencingToken) throw new Error(`FENCING_TOKEN_STALE: ${leaseId}`);
+      return lease;
+    },
+    10_000,
+  );
 }

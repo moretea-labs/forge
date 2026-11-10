@@ -830,6 +830,7 @@ export function revalidateEditSessionOwnership(repoRoot: string, sessionId: stri
 export function reconcileEditSession(repoRoot: string, sessionId: string, input: {
   reviewer?: string;
   note?: string;
+  approvalConfirmed?: boolean;
 } = {}): EditSession {
   const session = getEditSession(repoRoot, sessionId);
   if (['finalized', 'reconciled_unverified', 'superseded', 'rolled_back'].includes(session.status)) return session;
@@ -846,6 +847,7 @@ export function reconcileEditSession(repoRoot: string, sessionId: string, input:
   }
 
   if (!['dirty', 'checked', 'check_failed'].includes(session.status)) return session;
+  if (session.assurance?.approvalRequired && input.approvalConfirmed !== true) return session;
   if (session.requestedChecks.length > 0 && !requestedChecksPassed(session)) return session;
   if (session.requestedChecks.length > 0) {
     const currentInputMatches = Boolean(session.validatedWorkspaceFingerprint &&
@@ -880,9 +882,8 @@ export function reconcileOpenEditSessions(repoRoot: string, input: {
 }
 
 /**
- * Read-only reconciliation preview: each after-image must be in HEAD,
- * except an explicitly ignored protected generated file. A clean checkout
- * alone never establishes verification or historical lease release.
+ * Read-only maintenance preview. A safe result means the selected metadata-only
+ * cleanup can complete without rewriting source or bypassing approval.
  */
 export function inspectIntegratedEditSession(
   repoRoot: string, sessionId: string, input: { controllerHome: string; repoId: string },
@@ -891,12 +892,19 @@ export function inspectIntegratedEditSession(
   const session = getEditSession(repoRoot, sessionId);
   if (session.repoId !== input.repoId || !session.checkoutId || !session.principalId)
     return reject('EDIT_SESSION_RECONCILIATION_IDENTITY_REQUIRED');
-  if (!['dirty', 'checked', 'check_failed'].includes(session.status) || session.operations.length === 0)
-    return reject('EDIT_SESSION_RECONCILIATION_NOT_ELIGIBLE');
   if (listActiveLeases(input.controllerHome, input.repoId).length)
     return reject('EDIT_SESSION_RECONCILIATION_ACTIVE_LEASE');
-  if (currentHashMismatches(repoRoot, session).length)
-    return reject('EDIT_SESSION_RECONCILIATION_AFTER_IMAGE_MISMATCH');
+  if (!['dirty', 'checked', 'check_failed'].includes(session.status) || session.operations.length === 0)
+    return reject('EDIT_SESSION_RECONCILIATION_NOT_ELIGIBLE');
+  if (currentHashMismatches(repoRoot, session).length) {
+    return {
+      safe: true,
+      reason: 'EDIT_SESSION_RECONCILIATION_SUPERSEDED',
+      unverifiedChecks: [],
+    };
+  }
+  if (session.assurance?.approvalRequired)
+    return reject('EDIT_SESSION_RECONCILIATION_APPROVAL_REQUIRED');
   if (uncommittedSessionPaths(repoRoot, sessionTrackedPaths(session)).length)
     return reject('EDIT_SESSION_RECONCILIATION_UNCOMMITTED_SOURCE');
   const head = gitRevision(repoRoot);
@@ -927,12 +935,18 @@ export function inspectIntegratedEditSession(
   const available = new Set(listControllerChecks(repoRoot).map((check) => check.id));
   const unverifiedChecks = session.requestedChecks.filter((id) =>
     !session.checkResults.some((result) => result.checkId === id && result.ok));
-  if (!unverifiedChecks.length) return reject('EDIT_SESSION_RECONCILIATION_CHECKS_ALREADY_PASSED');
   if (unverifiedChecks.some((id) => available.has(id)))
     return reject('EDIT_SESSION_RECONCILIATION_EXECUTABLE_CHECK_INCOMPLETE');
+  if (!unverifiedChecks.length) {
+    return {
+      safe: true,
+      reason: 'Exact committed after-images, no live lease; requested checks are already PASSED or not required.',
+      unverifiedChecks: [],
+    };
+  }
   return {
     safe: true,
-    reason: 'Exact committed after-images, no live lease; checks remain UNVERIFIED and protected-path approval remains required.',
+    reason: 'Exact committed after-images, no live lease; missing checks remain UNVERIFIED.',
     unverifiedChecks,
   };
 }

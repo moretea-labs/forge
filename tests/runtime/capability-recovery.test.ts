@@ -676,15 +676,22 @@ describe('runtime maintenance executor', () => {
     expect(readFileSync(join(fx.repoRoot, 'src/session.ts'), 'utf8')).toBe('export const sessionValue = 2;\n');
   });
 
-  it('fails closed without changing source when a terminal Work edit session still owns unique uncommitted content', () => {
+  it('does not select a stale EditSession that still owns unique uncommitted content', () => {
     const fx = editFixture();
+    const status = buildRuntimeMaintenanceStatus(fx.repository, fx.controllerHome, { minAgeMinutes: 0, maxCandidates: 50 });
+    expect(status.candidates).toContainEqual(expect.objectContaining({
+      kind: 'stale_edit_session',
+      id: fx.sessionId,
+      safe: false,
+      reason: 'EDIT_SESSION_RECONCILIATION_UNCOMMITTED_SOURCE',
+    }));
     const applied = applyRuntimeMaintenance(fx.repository, fx.controllerHome, {
       actionId: 'full_maintenance_pass', confirmMaintenance: true, minAgeMinutes: 0, maxCandidates: 50,
     });
     expect(applied.applied).toContainEqual(expect.objectContaining({
       id: fx.sessionId,
       applied: false,
-      error: expect.stringContaining('unique uncommitted changes'),
+      result: 'not_selected',
     }));
     expect(getEditSession(fx.repoRoot, fx.sessionId).status).toBe('dirty');
     expect(readFileSync(join(fx.repoRoot, 'src/session.ts'), 'utf8')).toBe('export const sessionValue = 1;\n');
@@ -708,21 +715,41 @@ describe('runtime maintenance executor', () => {
   it('treats historical Work ownership as provenance while EditSession source safety remains authoritative', () => {
     const fx = editFixture({ createWork: false });
     const status = buildRuntimeMaintenanceStatus(fx.repository, fx.controllerHome, { minAgeMinutes: 0, maxCandidates: 50 });
-    expect(status.candidates).toContainEqual(expect.objectContaining({ kind: 'stale_edit_session', id: fx.sessionId, safe: true }));
+    expect(status.candidates).toContainEqual(expect.objectContaining({
+      kind: 'stale_edit_session',
+      id: fx.sessionId,
+      safe: false,
+      reason: 'EDIT_SESSION_RECONCILIATION_UNCOMMITTED_SOURCE',
+    }));
     const applied = applyRuntimeMaintenance(fx.repository, fx.controllerHome, {
       actionId: 'full_maintenance_pass', confirmMaintenance: true, minAgeMinutes: 0, maxCandidates: 50,
     });
-    expect(applied.applied.some((candidate) => candidate.id === fx.sessionId && candidate.applied)).toBe(false);
+    expect(applied.applied).toContainEqual(expect.objectContaining({
+      id: fx.sessionId,
+      applied: false,
+      result: 'not_selected',
+    }));
     expect(getEditSession(fx.repoRoot, fx.sessionId).status).toBe('dirty');
   });
 
-  it('rolls back an empty stale open session regardless of historical Work provenance', () => {
+  it('preserves an empty OPEN EditSession until an explicit owner action closes it', () => {
     const fx = editFixture({ applyEdit: false });
+    const status = buildRuntimeMaintenanceStatus(fx.repository, fx.controllerHome, { minAgeMinutes: 0, maxCandidates: 50 });
+    expect(status.candidates).toContainEqual(expect.objectContaining({
+      kind: 'stale_edit_session',
+      id: fx.sessionId,
+      safe: false,
+      reason: 'EDIT_SESSION_RECONCILIATION_NOT_ELIGIBLE',
+    }));
     const applied = applyRuntimeMaintenance(fx.repository, fx.controllerHome, {
       actionId: 'full_maintenance_pass', confirmMaintenance: true, minAgeMinutes: 0, maxCandidates: 50,
     });
-    expect(applied.applied).toContainEqual(expect.objectContaining({ id: fx.sessionId, applied: true, result: 'edit_session_rolled_back' }));
-    expect(getEditSession(fx.repoRoot, fx.sessionId).status).toBe('rolled_back');
+    expect(applied.applied).toContainEqual(expect.objectContaining({
+      id: fx.sessionId,
+      applied: false,
+      result: 'not_selected',
+    }));
+    expect(getEditSession(fx.repoRoot, fx.sessionId).status).toBe('open');
     expect(existsSync(join(fx.repoRoot, 'src/session.ts'))).toBe(false);
   });
 
