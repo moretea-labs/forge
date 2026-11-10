@@ -227,6 +227,93 @@ describe('mcp http transport', () => {
     }
   });
 
+  test('reclaims stalled POST admission slots that never receive a terminal event', () => {
+    // Bun 1.3 never emits close/aborted and never updates destroyed/closed when
+    // a client disconnects before the response settles. Without the bounded
+    // reclaim these entries hold all 32 slots forever and every POST returns
+    // MCP_SERVER_BUSY until the gateway restarts.
+    const stats = {
+      initializing: 0,
+      activePostStartedAt: new Map<import('express').Response, number>(),
+      rejectedOverload: 0,
+      reclaimedStalePosts: 0,
+    };
+    const mockResponse = (startedAt: number, streaming = false) => {
+      let statusCode = 0;
+      let body: unknown;
+      const emitter = new EventEmitter();
+      const res = Object.assign(emitter, {
+        headersSent: streaming,
+        setHeader: () => undefined,
+        status(code: number) {
+          statusCode = code;
+          return res;
+        },
+        json(value: unknown) {
+          body = value;
+          res.headersSent = true;
+          emitter.emit('finish');
+          return res;
+        },
+        destroy() {
+          emitter.emit('close');
+        },
+      });
+      stats.activePostStartedAt.set(res as unknown as import('express').Response, startedAt);
+      return {
+        res: res as unknown as import('express').Response,
+        statusCode: () => statusCode,
+        body: () => body,
+      };
+    };
+    const admitFresh = () => {
+      const emitter = new EventEmitter();
+      const res = Object.assign(emitter, {
+        headersSent: false,
+        setHeader: () => undefined,
+        status() { return res; },
+        json() { return res; },
+        destroy() { emitter.emit('close'); },
+      });
+      return { res: res as unknown as import('express').Response, admitted: admitMcpPost(stats, res as unknown as import('express').Response) };
+    };
+
+    // A fresh in-flight POST is retained.
+    for (let i = 0; i < 31; i++) mockResponse(Date.now());
+    expect(admitFresh().admitted).toBe(true);
+    expect(stats.reclaimedStalePosts ?? 0).toBe(0);
+    expect(stats.activePostStartedAt.size).toBe(32);
+
+    stats.activePostStartedAt.clear();
+    const stalled = [];
+    for (let i = 0; i < 32; i++) stalled.push(mockResponse(Date.now() - 11 * 60_000));
+    const afterStall = admitFresh();
+    expect(afterStall.admitted).toBe(true);
+    expect(stats.reclaimedStalePosts).toBe(32);
+    expect(stats.activePostStartedAt.size).toBe(1);
+    for (const entry of stalled) {
+      expect(entry.statusCode()).toBe(504);
+      expect(entry.body()).toMatchObject({ code: 'MCP_ACTIVE_POST_STALLED', retryable: true });
+    }
+
+    // A streaming POST (for example subscriptions/listen) is retained within
+    // its existing stream lease even when it has not started responding.
+    stats.activePostStartedAt.clear();
+    stats.reclaimedStalePosts = 0;
+    for (let i = 0; i < 31; i++) mockResponse(Date.now());
+    mockResponse(Date.now() - 11 * 60_000, true);
+    expect(admitFresh().admitted).toBe(false);
+    expect(stats.reclaimedStalePosts).toBe(0);
+
+    stats.activePostStartedAt.clear();
+    for (let i = 0; i < 31; i++) mockResponse(Date.now());
+    const expiredStream = mockResponse(Date.now() - 31 * 60_000, true);
+    expect(admitFresh().admitted).toBe(true);
+    expect(stats.reclaimedStalePosts).toBe(1);
+    expect(expiredStream.statusCode()).toBe(0);
+    expect(stats.activePostStartedAt.size).toBe(32);
+  });
+
   test('transport session retirement does not invalidate durable execution session authority', async () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-mcp-transport-durable-session-'));
     try {

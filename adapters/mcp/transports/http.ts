@@ -37,7 +37,7 @@ import {
 import { McpSessionRegistry, type ClosableMcpTransport, type McpSessionRegistryOptions, type McpSessionRoute } from './session-registry';
 import { getConfiguredPublicOrigin, getPublicOrigin, registerMcpOAuthHttpRoutes } from './oauth-http';
 import { registerMcpHttpObservationRoutes } from './http-observation';
-import { reconcileFinishedMcpPosts } from './http-post-lifecycle';
+import { reconcileActiveMcpPosts } from './http-post-lifecycle';
 import { RUNTIME_MCP_CUTOVER_OUTCOME_UNKNOWN } from '../../../src/runtime/root/mcp-transport';
 import { packageConnectorCutoverDrainIsActive } from '../../../src/runtime/root/package-connector-service';
 export { isAllowedMcpOAuthRedirectUri, isIncompleteOAuthAuthorizeRequest } from './oauth-http';
@@ -331,6 +331,8 @@ interface McpRuntimeStats {
   /** Canonical HTTP POST admission owner; one entry per unfinished response. */
   activePostStartedAt: Map<Response, number>;
   rejectedOverload: number;
+  /** Bounded stale responses removed from admission because no terminal event arrived. */
+  reclaimedStalePosts?: number;
 }
 
 function positiveIntegerEnv(name: string, fallback: number): number {
@@ -369,6 +371,18 @@ function connectorCutoverDrainActive(req: Request, controllerHome?: string): boo
   );
 }
 
+/**
+ * Reconcile the POST admission registry. Bun does not report client aborts, so
+ * terminal event listeners alone cannot release admission capacity; apply the
+ * existing stall/stream bounds as the bounded liveness authority.
+ */
+function reconcileRuntimeMcpPosts(stats: McpRuntimeStats): void {
+  reconcileActiveMcpPosts(stats, {
+    stalledPostMs: MCP_ACTIVE_POST_STALL_MS,
+    streamLeaseMs: MCP_STREAM_LEASE_MS,
+  });
+}
+
 export function admitMcpPost(
   stats: McpRuntimeStats,
   res: Response,
@@ -378,7 +392,7 @@ export function admitMcpPost(
     sendReleaseCutoverDraining(res);
     return false;
   }
-  reconcileFinishedMcpPosts(stats.activePostStartedAt);
+  reconcileRuntimeMcpPosts(stats);
   if (stats.activePostStartedAt.size >= MAX_ACTIVE_POSTS) {
     stats.rejectedOverload += 1;
     res.setHeader('retry-after', '1');
@@ -833,6 +847,8 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
     },
     maxInitializingSessions: MAX_INITIALIZING_SESSIONS,
     maxActivePosts: MAX_ACTIVE_POSTS,
+    activePostStallMs: MCP_ACTIVE_POST_STALL_MS,
+    streamLeaseMs: MCP_STREAM_LEASE_MS,
   });
 
   if (authMode === 'oauth' && oauthProvider) {
@@ -910,6 +926,9 @@ export async function startMcpHttp(opts: McpHttpOptions): Promise<void> {
 
   const cleanupTimer = setInterval(() => {
     void sessionRegistry.prune();
+    // A client that disconnects before the response settles may never produce a
+    // terminal event (Bun), so admission slots also need a time-bounded sweep.
+    reconcileRuntimeMcpPosts(runtimeStats);
   }, 60_000);
   cleanupTimer.unref();
 

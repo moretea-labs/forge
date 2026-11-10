@@ -20,7 +20,7 @@ import {
   repositoryIdentity,
 } from '../../../src/cli/controller/runtime-config';
 import { McpSessionRegistry } from './session-registry';
-import { reconcileFinishedMcpPosts } from './http-post-lifecycle';
+import { reconcileActiveMcpPosts } from './http-post-lifecycle';
 
 type McpToolContext = ReturnType<typeof createMcpToolContext>;
 type HttpSessionRegistry = McpSessionRegistry<NodeStreamableHTTPServerTransport, McpToolContext>;
@@ -29,6 +29,7 @@ interface McpRuntimeStats {
   initializing: number;
   activePostStartedAt: Map<Response, number>;
   rejectedOverload: number;
+  reclaimedStalePosts?: number;
 }
 
 export interface McpHttpObservationRouteOptions {
@@ -58,6 +59,10 @@ export interface McpHttpObservationRouteOptions {
   };
   maxInitializingSessions: number;
   maxActivePosts: number;
+  /** Bounded liveness for POSTs that never started responding. */
+  activePostStallMs: number;
+  /** Bounded liveness for POSTs already streaming a response. */
+  streamLeaseMs: number;
 }
 
 function localControllerDiagnosticMatchesRuntime(
@@ -153,7 +158,12 @@ export function registerMcpHttpObservationRoutes(input: McpHttpObservationRouteO
     localController,
     maxInitializingSessions,
     maxActivePosts,
+    activePostStallMs,
+    streamLeaseMs,
   } = input;
+  const reconcileRuntimePosts = (): void => {
+    reconcileActiveMcpPosts(runtimeStats, { stalledPostMs: activePostStallMs, streamLeaseMs });
+  };
   const compatibilityToolCount = buildMcpToolDefinitions(toolContext.policy, { enableChatgptBrowser }).length;
   const repoId = toolContext.policy.profile === 'controller' || !repoRoot ? undefined : repositoryIdentity(repoRoot);
   const startedAt = new Date().toISOString();
@@ -194,7 +204,7 @@ export function registerMcpHttpObservationRoutes(input: McpHttpObservationRouteO
     // Legacy session age excludes modern stateless POSTs. The same response-
     // owned admission map backs both capacity and this diagnostic; no second
     // activity counter or release authority is introduced.
-    reconcileFinishedMcpPosts(runtimeStats.activePostStartedAt);
+    reconcileRuntimePosts();
     const oldestActivePostAt = runtimeStats.activePostStartedAt.size
       ? Math.min(...runtimeStats.activePostStartedAt.values()) : undefined;
     const oldestActivePostAgeMs = oldestActivePostAt === undefined
@@ -250,13 +260,14 @@ export function registerMcpHttpObservationRoutes(input: McpHttpObservationRouteO
         oldestActivePostAgeMs,
         maximumActivePosts: maxActivePosts,
         rejectedOverload: runtimeStats.rejectedOverload,
+        reclaimedStalePosts: runtimeStats.reclaimedStalePosts ?? 0,
       },
     });
   });
 
   app.get('/transport-ready', (_req, res) => {
     const sessionSnapshot = sessionRegistry.snapshot();
-    reconcileFinishedMcpPosts(runtimeStats.activePostStartedAt);
+    reconcileRuntimePosts();
     const sessionCapacityReady = sessionSnapshot.acceptingNewSessions
       && runtimeStats.initializing < maxInitializingSessions
       && runtimeStats.activePostStartedAt.size < maxActivePosts;
@@ -277,7 +288,7 @@ export function registerMcpHttpObservationRoutes(input: McpHttpObservationRouteO
   app.get('/ready', async (_req, res) => {
     const runtimeGeneration = runtimeControllerHome ? readRuntimeGeneration(runtimeControllerHome) : undefined;
     const sessionSnapshot = sessionRegistry.snapshot();
-    reconcileFinishedMcpPosts(runtimeStats.activePostStartedAt);
+    reconcileRuntimePosts();
     const sessionCapacityReady = sessionSnapshot.acceptingNewSessions
       && runtimeStats.initializing < maxInitializingSessions
       && runtimeStats.activePostStartedAt.size < maxActivePosts;
