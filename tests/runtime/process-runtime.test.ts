@@ -1362,6 +1362,89 @@ describe('Unified Process Runtime', () => {
     expect(cancelled.cancelled === true || cancelled.status === 'cancelled' || cancelled.completed).toBe(true);
   });
 
+  test('Native Agent local tool cancels a live managed Process through the canonical Process Runtime', async () => {
+    const fx = fixture();
+    const checkoutId = fx.repository.activeCheckoutId;
+    const principalId = 'forge-desktop-local-harness';
+    const handle = await spawnManagedProcess({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      checkoutId,
+      principalId,
+      executionIdentity: executionIdentityForRepository(fx.repository),
+      command: {
+        kind: 'argv',
+        executable: 'node',
+        args: ['-e', 'setInterval(() => {}, 1000)'],
+        cwd: fx.repoRoot,
+      },
+      interactiveWaitMs: 500,
+      timeoutMs: 60_000,
+    });
+    expect(handle.completed).toBe(false);
+
+    async function runLocalTool(tool: 'process_status' | 'process_cancel', allowEffects: boolean, selectedCheckoutId = checkoutId) {
+      const script = join(FORGE_ROOT, 'apps/desktop/src-tauri/resources/forge-local-tool.mjs');
+      const child = spawn(process.execPath, [script], { stdio: ['pipe', 'pipe', 'pipe'] });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.setEncoding('utf8');
+      child.stderr.setEncoding('utf8');
+      child.stdout.on('data', (chunk: string) => { stdout += chunk; });
+      child.stderr.on('data', (chunk: string) => { stderr += chunk; });
+      const exitCode = await new Promise<number>((resolve, reject) => {
+        child.once('error', reject);
+        child.once('close', (code) => resolve(code ?? -1));
+        child.stdin.end(JSON.stringify({
+          tool,
+          repoId: fx.repository.repoId,
+          checkoutId: selectedCheckoutId,
+          conversationId: 'native-agent-process-cancel-test',
+          controllerHome: fx.controllerHome,
+          sourceRoot: FORGE_ROOT,
+          allowEffects,
+          arguments: { process_id: handle.processId },
+        }));
+      });
+      if (exitCode !== 0) throw new Error(`Native Agent local tool exited ${exitCode}: ${stderr}`);
+      return JSON.parse(stdout) as { ok: boolean; error?: string; result?: Record<string, unknown> };
+    }
+
+    try {
+      const before = await runLocalTool('process_status', false);
+      expect(before).toMatchObject({ ok: true, result: { processId: handle.processId, completed: false, status: 'running' } });
+      expect(await runLocalTool('process_cancel', false)).toEqual({
+        ok: false, error: 'LOCAL_FORGE_TOOL_REQUIRES_USER_APPROVAL',
+      });
+      const afterDenied = await runLocalTool('process_status', false);
+      expect(afterDenied).toMatchObject({
+        ok: true, result: { processId: handle.processId, completed: false, status: 'running' },
+      });
+      expect(await runLocalTool('process_cancel', true, 'checkout_other')).toEqual({
+        ok: false, error: 'LOCAL_FORGE_PROCESS_CHECKOUT_MISMATCH',
+      });
+      const afterWrongCheckout = await runLocalTool('process_status', false);
+      expect(afterWrongCheckout).toMatchObject({
+        ok: true, result: { processId: handle.processId, completed: false, status: 'running' },
+      });
+      const cancelled = await runLocalTool('process_cancel', true);
+      expect(cancelled).toMatchObject({
+        ok: true,
+        result: { processId: handle.processId, completed: true, status: 'cancelled', cancelled: true },
+      });
+      const after = await runLocalTool('process_status', false);
+      expect(after).toMatchObject({
+        ok: true,
+        result: { processId: handle.processId, completed: true, status: 'cancelled', cancelled: true },
+      });
+    } finally {
+      const terminal = getProcessHandle(fx.controllerHome, fx.repository.repoId, handle.processId);
+      if (terminal?.completed !== true) {
+        await cancelProcess(fx.controllerHome, fx.repository.repoId, handle.processId);
+      }
+    }
+  });
+
   test('restart attach preserves a recovered runner success after monitor drop', async () => {
     const fx = fixture();
     const handle = await spawnManagedProcess({
