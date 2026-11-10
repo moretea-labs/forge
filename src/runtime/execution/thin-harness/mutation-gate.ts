@@ -109,10 +109,12 @@ export function normalizeMutationOwnerIdentity(input: {
     branch: supplied?.branch?.trim() || 'unknown',
     principalId: supplied?.principalId?.trim() || `owner:${input.owner}`,
     controllerInstanceId: supplied?.controllerInstanceId?.trim()
+      || process.env.FORGE_RUNTIME_INSTANCE_ID?.trim()
       || process.env.FORGE_WRITER_INSTANCE_ID?.trim()
       || process.env.FORGE_DAEMON_INSTANCE_ID?.trim()
       || `process:${process.pid}`,
     controllerGeneration: supplied?.controllerGeneration?.trim()
+      || process.env.FORGE_RUNTIME_INCARNATION_GENERATION?.trim()
       || process.env.FORGE_WRITER_GENERATION?.trim()
       || process.env.FORGE_ACTIVE_RUNTIME_REVISION?.trim()
       || 'unbound',

@@ -16,12 +16,47 @@ import { join } from 'node:path';
 import { acquireExecutionLeases, assertFencingToken, listActiveLeases, releaseExecutionLeases, releaseTerminalProcessLeases, withRepositoryMutationExclusion } from '../../src/runtime/resources/leases/store';
 import { classifyRepositoryCommandRoute } from '../../src/runtime/execution/process-runtime/command-facade';
 import { repositoryControllerRoot } from '../../src/effects/controller-home';
+import { normalizeMutationOwnerIdentity } from '../../src/runtime/execution/thin-harness/mutation-gate';
 
 function lease(resourceKey: string, mode: 'read' | 'write' | 'exclusive'): ExecutionLease {
   return { resourceKey, mode } as ExecutionLease;
 }
 
 describe('Process Runtime fine-grained resource claims', () => {
+  test('MutationGate owner identity follows the canonical Runtime fencing claim', () => {
+    const keys = [
+      'FORGE_RUNTIME_INSTANCE_ID',
+      'FORGE_RUNTIME_INCARNATION_GENERATION',
+      'FORGE_WRITER_INSTANCE_ID',
+      'FORGE_WRITER_GENERATION',
+      'FORGE_DAEMON_INSTANCE_ID',
+      'FORGE_ACTIVE_RUNTIME_REVISION',
+    ] as const;
+    const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+    try {
+      process.env.FORGE_RUNTIME_INSTANCE_ID = 'runtime-canonical-instance';
+      process.env.FORGE_RUNTIME_INCARNATION_GENERATION = '17';
+      process.env.FORGE_WRITER_INSTANCE_ID = 'legacy-writer-instance';
+      process.env.FORGE_WRITER_GENERATION = 'legacy-writer-generation';
+      process.env.FORGE_DAEMON_INSTANCE_ID = 'legacy-daemon-instance';
+      process.env.FORGE_ACTIVE_RUNTIME_REVISION = 'legacy-runtime-revision';
+      expect(normalizeMutationOwnerIdentity({
+        repoId: 'repo1',
+        checkoutId: 'checkout1',
+        owner: 'fast:identity-test',
+      })).toMatchObject({
+        controllerInstanceId: 'runtime-canonical-instance',
+        controllerGeneration: '17',
+      });
+    } finally {
+      for (const key of keys) {
+        const value = previous[key];
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
   test('model-declared mutation paths narrow source claims without platform inference (#478)', () => {
     const command = ['bash', 'scripts/run_module_check.sh', 'integration'];
     const inferred = claimsForRepositoryCommand(command, 'repo1', 'co1');

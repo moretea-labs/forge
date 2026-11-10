@@ -732,6 +732,7 @@ export async function executeFast(
         try {
           helpers?.assert();
           applied = await trace.measure('executionMs', async () => applySafePatch(ctx.repository, {
+            controllerHome: ctx.controllerHome,
             sessionId: request.input.session_id,
             purpose: request.input.purpose ?? 'fast-path-patch',
             operations: request.input.operations,
@@ -741,6 +742,7 @@ export async function executeFast(
             continueOnError: false,
             refreshFingerprints: request.input.refresh_fingerprints !== false,
             recoverStaleSession: request.input.recover_stale_session !== false,
+            leaseOwnerJobId: helpers?.getGate().ownerJobId,
           }));
         } catch (error) {
           const restored = restoreWorkspaceSavepoint(savepoint);

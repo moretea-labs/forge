@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { createHash } from 'crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
@@ -45,7 +45,11 @@ test('adopts a non-overlapping successor HEAD in the same durable edit session a
     spawnSync('git', ['commit', '-qm', 'parallel unrelated change'], { cwd: fx.repoRoot });
     const successor = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).stdout.trim();
 
-    const adopted = adoptEditSessionSuccessorHead(fx.repoRoot, session.sessionId, { binding: durableBinding() });
+    const adopted = adoptEditSessionSuccessorHead(fx.repoRoot, session.sessionId, {
+      binding: durableBinding(),
+      controllerHome: fx.controllerHome,
+      expectedRevision: getEditSession(fx.repoRoot, session.sessionId).currentRevision,
+    });
     expect(adopted.sessionId).toBe(session.sessionId);
     expect(adopted.baseRevision).toBe(successor);
     expect(adopted.currentRevision).toBe(2);
@@ -85,8 +89,10 @@ test('adopts a non-overlapping successor HEAD in the same durable edit session a
     const successor = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).stdout.trim();
 
     const adopted = adoptEditSessionSuccessorHead(fx.repoRoot, session.sessionId, {
-    binding, controllerHome: fx.controllerHome,
-  });
+      binding,
+      controllerHome: fx.controllerHome,
+      expectedRevision: getEditSession(fx.repoRoot, session.sessionId).currentRevision,
+    });
     expect(adopted.baseRevision).toBe(successor);
     expect(adopted.currentRevision).toBe(2);
     expect('workId' in adopted).toBe(false);
@@ -152,6 +158,7 @@ test('adopts a non-overlapping successor HEAD in the same durable edit session a
 
     expect(() => adoptEditSessionSuccessorHead(fx.repoRoot, session.sessionId, {
       binding: { ...binding, principalId: 'foreign-principal' },
+      expectedRevision: getEditSession(fx.repoRoot, session.sessionId).currentRevision,
     })).toThrow('EDIT_SESSION_IDENTITY_MISMATCH: principalId');
     expect(getEditSession(fx.repoRoot, session.sessionId).baseRevision).toBe(baseBefore);
   });
@@ -226,22 +233,36 @@ test('adopts a non-overlapping successor HEAD in the same durable edit session a
     expect(() => applyEditOperations(fx.repoRoot, fx.policy, session.sessionId, [{
       type: 'replace', path: 'source.ts', expectedSha256: sha256('export const value = 2;\n'),
       replacements: [{ oldText: 'value = 2', newText: 'value = 3' }],
-    }], { controllerHome: fx.controllerHome, expectedRevision: first.currentRevision, binding }))
-      .toThrow('EDIT_SESSION_SUCCESSOR_HEAD_ACTIVE_LEASE');
+    }], {
+      controllerHome: fx.controllerHome,
+      expectedRevision: first.currentRevision,
+      allowSuccessorHeadAdoption: true,
+      binding,
+    })).toThrow('EDIT_SESSION_SUCCESSOR_HEAD_ACTIVE_LEASE');
     expect(getEditSession(fx.repoRoot, session.sessionId).currentRevision).toBe(first.currentRevision);
-    expect(releaseExecutionLeases(fx.controllerHome, fx.repository.repoId, 'successor-owner')).toBe(1);
 
-    const continued = applyEditOperations(fx.repoRoot, fx.policy, session.sessionId, [{
-      type: 'replace', path: 'source.ts', expectedSha256: sha256('export const value = 2;\n'),
-      replacements: [{ oldText: 'value = 2', newText: 'value = 3' }],
-    }], { expectedRevision: first.currentRevision, binding });
-    expect(continued).toMatchObject({
+    const continued = applySafePatch(fx.repository, {
+      controllerHome: fx.controllerHome,
+      leaseOwnerJobId: 'successor-owner',
+      sessionId: session.sessionId,
+      expectedRevision: first.currentRevision,
+      operations: [{ type: 'replace', path: 'source.ts', old_text: 'value = 2', new_text: 'value = 3' }],
+      binding,
+    });
+    expect(continued.status).toBe('applied');
+    expect(continued.recoveredSession).toMatchObject({
+      previousSessionId: session.sessionId,
+      newSessionId: session.sessionId,
+    });
+    expect(continued.session.currentRevision).toBe(first.currentRevision + 2);
+    expect(releaseExecutionLeases(fx.controllerHome, fx.repository.repoId, 'successor-owner')).toBe(1);
+    expect(continued.session).toMatchObject({
       status: 'dirty',
       baseRevision: successor,
       currentRevision: first.currentRevision + 2,
     });
-    expect(continued.revisions[first.currentRevision].operations).toEqual([]);
-    expect(continued.revisions[0].patchSha256).toBe(first.revisions[0].patchSha256);
+    expect(continued.session.revisions[first.currentRevision].operations).toEqual([]);
+    expect(continued.session.revisions[0].patchSha256).toBe(first.revisions[0].patchSha256);
     expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toBe('export const value = 3;\n');
 
     const drift = fixture();
@@ -260,10 +281,113 @@ test('adopts a non-overlapping successor HEAD in the same durable edit session a
     expect(() => applyEditOperations(drift.repoRoot, drift.policy, driftSession.sessionId, [{
       type: 'replace', path: 'source.ts', expectedSha256: sha256('export const value = 2;\n'),
       replacements: [{ oldText: 'value = 2', newText: 'value = 3' }],
-    }], { expectedRevision: driftFirst.currentRevision, binding: driftBinding }))
+    }], {
+      controllerHome: drift.controllerHome,
+      expectedRevision: driftFirst.currentRevision,
+      allowSuccessorHeadAdoption: true,
+      binding: driftBinding,
+    }))
       .toThrow('EDIT_SESSION_SUCCESSOR_HEAD_CONTENT_DRIFT: source.ts');
     expect(getEditSession(drift.repoRoot, driftSession.sessionId).currentRevision).toBe(driftFirst.currentRevision);
     expect(readFileSync(join(drift.repoRoot, 'source.ts'), 'utf8')).toBe('export const value = 99;\n');
+  });
+
+  test('does not adopt an integrated after-image when its file mode has drifted', () => {
+    const fx = fixture();
+    const binding = durableBinding();
+    const session = beginEditSession(fx.repoRoot, {
+      purpose: 'Exact after-image includes executable mode',
+      allowedPaths: ['source.ts'],
+      binding,
+    });
+    const first = applyEditOperations(fx.repoRoot, fx.policy, session.sessionId, [{
+      type: 'replace', path: 'source.ts', expectedSha256: sha256(fx.initial),
+      replacements: [{ oldText: 'value = 1', newText: 'value = 2' }],
+    }], { expectedRevision: session.currentRevision, binding });
+    spawnSync('git', ['add', 'source.ts'], { cwd: fx.repoRoot });
+    spawnSync('git', ['commit', '-qm', 'integrate before mode drift'], { cwd: fx.repoRoot });
+    chmodSync(join(fx.repoRoot, 'source.ts'), 0o755);
+
+    expect(() => applyEditOperations(fx.repoRoot, fx.policy, session.sessionId, [{
+      type: 'replace', path: 'source.ts', expectedSha256: sha256('export const value = 2;\n'),
+      replacements: [{ oldText: 'value = 2', newText: 'value = 3' }],
+    }], {
+      controllerHome: fx.controllerHome,
+      expectedRevision: first.currentRevision,
+      allowSuccessorHeadAdoption: true,
+      binding,
+    })).toThrow('EDIT_SESSION_SUCCESSOR_HEAD_CONTENT_DRIFT: source.ts');
+    expect(getEditSession(fx.repoRoot, session.sessionId).currentRevision).toBe(first.currentRevision);
+  });
+
+  test('continues a session when only some exact after-images were committed', () => {
+    const fx = fixture();
+    const binding = durableBinding();
+    const otherInitial = 'export const other = 1;\n';
+    writeFileSync(join(fx.repoRoot, 'other.ts'), otherInitial);
+    spawnSync('git', ['add', 'other.ts'], { cwd: fx.repoRoot });
+    spawnSync('git', ['commit', '-qm', 'add second tracked source'], { cwd: fx.repoRoot });
+
+    const session = beginEditSession(fx.repoRoot, {
+      purpose: 'Partial exact after-image integration',
+      allowedPaths: ['source.ts', 'other.ts'],
+      binding,
+    });
+    const first = applyEditOperations(fx.repoRoot, fx.policy, session.sessionId, [
+      {
+        type: 'replace', path: 'source.ts', expectedSha256: sha256(fx.initial),
+        replacements: [{ oldText: 'value = 1', newText: 'value = 2' }],
+      },
+      {
+        type: 'replace', path: 'other.ts', expectedSha256: sha256(otherInitial),
+        replacements: [{ oldText: 'other = 1', newText: 'other = 2' }],
+      },
+    ], { expectedRevision: session.currentRevision, binding });
+    spawnSync('git', ['add', 'source.ts'], { cwd: fx.repoRoot });
+    spawnSync('git', ['commit', '-qm', 'integrate one exact after-image'], { cwd: fx.repoRoot });
+    const successor = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).stdout.trim();
+
+    const continued = applyEditOperations(fx.repoRoot, fx.policy, session.sessionId, [{
+      type: 'replace', path: 'other.ts', expectedSha256: sha256('export const other = 2;\n'),
+      replacements: [{ oldText: 'other = 2', newText: 'other = 3' }],
+    }], {
+      controllerHome: fx.controllerHome,
+      expectedRevision: first.currentRevision,
+      allowSuccessorHeadAdoption: true,
+      binding,
+    });
+    expect(continued.baseRevision).toBe(successor);
+    expect(continued.currentRevision).toBe(first.currentRevision + 2);
+    expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toBe('export const value = 2;\n');
+    expect(readFileSync(join(fx.repoRoot, 'other.ts'), 'utf8')).toBe('export const other = 3;\n');
+  });
+
+  test('continues a session after an exact committed deletion', () => {
+    const fx = fixture();
+    const binding = durableBinding();
+    const session = beginEditSession(fx.repoRoot, {
+      purpose: 'Exact deleted after-image integration',
+      allowedPaths: ['source.ts'],
+      binding,
+    });
+    const first = applyEditOperations(fx.repoRoot, fx.policy, session.sessionId, [{
+      type: 'delete', path: 'source.ts', expectedSha256: sha256(fx.initial),
+    }], { expectedRevision: session.currentRevision, binding });
+    spawnSync('git', ['add', '-u', 'source.ts'], { cwd: fx.repoRoot });
+    spawnSync('git', ['commit', '-qm', 'integrate exact deletion'], { cwd: fx.repoRoot });
+    const successor = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: fx.repoRoot, encoding: 'utf8' }).stdout.trim();
+
+    const continued = applyEditOperations(fx.repoRoot, fx.policy, session.sessionId, [{
+      type: 'create', path: 'source.ts', content: 'export const value = 3;\n',
+    }], {
+      controllerHome: fx.controllerHome,
+      expectedRevision: first.currentRevision,
+      allowSuccessorHeadAdoption: true,
+      binding,
+    });
+    expect(continued.baseRevision).toBe(successor);
+    expect(continued.currentRevision).toBe(first.currentRevision + 2);
+    expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toBe('export const value = 3;\n');
   });
 
   test('fails closed when an active repository lease has no checkout identity', () => {
@@ -292,7 +416,9 @@ test('adopts a non-overlapping successor HEAD in the same durable edit session a
     ownerIdentity: expect.objectContaining({ checkoutId: 'unscoped' }),
   }));
   expect(() => adoptEditSessionSuccessorHead(fx.repoRoot, session.sessionId, {
-    binding, controllerHome: fx.controllerHome,
+    binding,
+    controllerHome: fx.controllerHome,
+    expectedRevision: getEditSession(fx.repoRoot, session.sessionId).currentRevision,
   })).toThrow('EDIT_SESSION_SUCCESSOR_HEAD_ACTIVE_LEASE');
   expect(releaseExecutionLeases(fx.controllerHome, fx.repository.repoId, 'unscoped-owner')).toBe(1);
 });
@@ -320,7 +446,11 @@ test('does not block successor adoption for a different checkout lease', () => {
     checkoutId: 'checkout-other',
   }], { visibility: 'ephemeral', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false });
   expect(held.acquired).toBe(true);
-  const adopted = adoptEditSessionSuccessorHead(fx.repoRoot, session.sessionId, { binding });
+  const adopted = adoptEditSessionSuccessorHead(fx.repoRoot, session.sessionId, {
+    binding,
+    controllerHome: fx.controllerHome,
+    expectedRevision: getEditSession(fx.repoRoot, session.sessionId).currentRevision,
+  });
   expect(adopted.baseRevision).toBe(successor);
   expect(releaseExecutionLeases(fx.controllerHome, fx.repository.repoId, 'other-checkout-owner')).toBe(1);
 });
@@ -336,7 +466,10 @@ test('rejects successor HEAD adoption after a non-descendant branch rewrite', ()
     const unrelatedRoot = spawnSync('git', ['commit-tree', tree, '-m', 'unrelated root'], { cwd: fx.repoRoot, encoding: 'utf8' }).stdout.trim();
     spawnSync('git', ['update-ref', 'refs/heads/main', unrelatedRoot], { cwd: fx.repoRoot });
 
-    expect(() => adoptEditSessionSuccessorHead(fx.repoRoot, session.sessionId, { binding: durableBinding() }))
+    expect(() => adoptEditSessionSuccessorHead(fx.repoRoot, session.sessionId, {
+      binding: durableBinding(),
+      expectedRevision: getEditSession(fx.repoRoot, session.sessionId).currentRevision,
+    }))
       .toThrow('EDIT_SESSION_SUCCESSOR_HEAD_NOT_DESCENDANT');
   });
 
@@ -431,7 +564,12 @@ test('integrated legacy missing check records explicitly UNVERIFIED without clai
   const continued = applyEditOperations(fx.repoRoot, fx.policy, session.sessionId, [{
     type: 'replace', path: 'source.ts', expectedSha256: sha256('export const value = 2;\n'),
     replacements: [{ oldText: 'value = 2', newText: 'value = 3' }],
-  }], { expectedRevision: cleanup.currentRevision, binding: durableBinding() });
+  }], {
+    controllerHome: fx.controllerHome,
+    expectedRevision: cleanup.currentRevision,
+    allowSuccessorHeadAdoption: true,
+    binding: durableBinding(),
+  });
   expect(continued.status).toBe('dirty');
   expect(continued.baseRevision).toBe(head);
   expect(continued.checkResults).toEqual([]);
@@ -513,8 +651,10 @@ test('protected generated paths retain explicit approval across metadata cleanup
   spawnSync('git', ['commit', '-qm', 'advance unrelated HEAD'], { cwd: fx.repoRoot });
 
   expect(getEditSession(fx.repoRoot, session.sessionId).assurance?.approvalRequired).toBe(true);
-  expect(() => adoptEditSessionSuccessorHead(fx.repoRoot, session.sessionId, { binding }))
-    .toThrow('EDIT_SESSION_SUCCESSOR_HEAD_APPROVAL_REQUIRED');
+  expect(() => adoptEditSessionSuccessorHead(fx.repoRoot, session.sessionId, {
+    binding,
+    expectedRevision: getEditSession(fx.repoRoot, session.sessionId).currentRevision,
+  })).toThrow('EDIT_SESSION_SUCCESSOR_HEAD_APPROVAL_REQUIRED');
   expect(inspectIntegratedEditSession(fx.repoRoot, session.sessionId, {
     repoId: fx.repository.repoId, controllerHome: fx.controllerHome,
   })).toMatchObject({

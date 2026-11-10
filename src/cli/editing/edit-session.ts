@@ -657,7 +657,12 @@ function currentHashMismatches(repoRoot: string, session: EditSession): string[]
   for (const operation of latestOperations(session).values()) {
     const absolute = join(repoRoot, operation.path);
     if (operation.type === 'delete') {
-      if (existsSync(absolute)) mismatches.push(operation.path);
+      try {
+        lstatSync(absolute);
+        mismatches.push(operation.path);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
       continue;
     }
     if (!existsSync(absolute)) {
@@ -665,7 +670,8 @@ function currentHashMismatches(repoRoot: string, session: EditSession): string[]
       continue;
     }
     const current = readFileSync(absolute, 'utf-8');
-    if (operation.afterSha256 && hash(current) !== operation.afterSha256) mismatches.push(operation.path);
+    const modeMismatch = operation.afterMode !== undefined && (statSync(absolute).mode & 0o777) !== operation.afterMode;
+    if ((operation.afterSha256 && hash(current) !== operation.afterSha256) || modeMismatch) mismatches.push(operation.path);
   }
   return mismatches;
 }
@@ -706,16 +712,17 @@ function committedChangedPathsBetween(repoRoot: string, baseRevision: string, ta
 export function adoptEditSessionSuccessorHead(repoRoot: string, sessionId: string, input: {
   binding?: EditSessionBinding;
   controllerHome?: string;
-  expectedRevision?: number;
+  expectedRevision: number;
+  leaseOwnerJobId?: string;
   reviewer?: string;
   note?: string;
-} = {}): EditSession {
+}): EditSession {
   let session = getEditSession(repoRoot, sessionId);
   assertDurableEditSessionStorageBound(repoRoot, session.repoId);
   if (!['dirty', 'checked', 'check_failed', 'reconciled_unverified'].includes(session.status) || session.operations.length === 0) {
     throw new Error(`EDIT_SESSION_SUCCESSOR_HEAD_NOT_ELIGIBLE: ${session.status}`);
   }
-  if (input.expectedRevision !== undefined && Math.trunc(input.expectedRevision) !== session.currentRevision) {
+  if (Math.trunc(input.expectedRevision) !== session.currentRevision) {
     throw new Error(`EDIT_SESSION_REVISION_MISMATCH: expected ${Math.trunc(input.expectedRevision)}, got ${session.currentRevision}`);
   }
   assertEditSessionDurableBinding(session, input.binding, { requireBoundIdentity: true });
@@ -733,10 +740,17 @@ export function adoptEditSessionSuccessorHead(repoRoot: string, sessionId: strin
   }
 
   const controllerHome = input.controllerHome?.trim() || resolveRepoPreferredControllerHome(repoRoot);
-  const activeLease = listActiveLeases(controllerHome, session.repoId).find((lease) => {
+  const checkoutLeases = listActiveLeases(controllerHome, session.repoId).filter((lease) => {
     const leaseCheckoutId = lease.checkoutId ?? lease.ownerIdentity?.checkoutId;
     return !leaseCheckoutId || leaseCheckoutId === 'unscoped' || leaseCheckoutId === session.checkoutId;
   });
+  const ownedWriteLease = input.leaseOwnerJobId
+    ? checkoutLeases.find((lease) => lease.ownerJobId === input.leaseOwnerJobId && lease.mode !== 'read')
+    : undefined;
+  if (input.leaseOwnerJobId && !ownedWriteLease) {
+    throw new Error(`EDIT_SESSION_SUCCESSOR_HEAD_OWNER_LEASE_MISSING: ${input.leaseOwnerJobId}`);
+  }
+  const activeLease = checkoutLeases.find((lease) => lease.ownerJobId !== input.leaseOwnerJobId);
   if (activeLease) {
     throw new Error(`EDIT_SESSION_SUCCESSOR_HEAD_ACTIVE_LEASE: ${activeLease.leaseId}:${activeLease.resourceKey}`);
   }
@@ -749,14 +763,21 @@ export function adoptEditSessionSuccessorHead(repoRoot: string, sessionId: strin
     throw new Error(`EDIT_SESSION_SUCCESSOR_HEAD_CONTENT_DRIFT: ${mismatches.join(',')}`);
   }
   if (overlaps.length > 0) {
-    const dirtyPaths = uncommittedSessionPaths(repoRoot, sessionTrackedPaths(session));
+    const dirtyPaths = uncommittedSessionPaths(repoRoot, overlaps);
     if (dirtyPaths.length > 0) {
       throw new Error(`EDIT_SESSION_SUCCESSOR_HEAD_DIRTY_PATHS: ${dirtyPaths.join(',')}`);
     }
     const latest = latestOperations(session);
     const unverifiedOverlaps = overlaps.filter((path) => {
       const operation = latest.get(path);
-      if (!operation || operation.type === 'delete' || !operation.afterSha256) return true;
+      if (!operation) return true;
+      if (operation.type === 'delete') {
+        const tree = runProcess('git', ['ls-tree', '-r', '-z', '--name-only', 'HEAD', '--', path], {
+          cwd: repoRoot, timeoutMs: 10_000, maxOutputBytes: 4 * 1024 * 1024,
+        });
+        return !tree.ok || tree.stdout.split('\0').includes(path);
+      }
+      if (!operation.afterSha256) return true;
       const blob = runProcess('git', ['show', `HEAD:${path}`], {
         cwd: repoRoot, timeoutMs: 10_000, maxOutputBytes: 4 * 1024 * 1024,
       });
@@ -792,9 +813,12 @@ export function adoptEditSessionSuccessorHead(repoRoot: string, sessionId: strin
   session.baseRevision = successorRevision;
   session.status = 'dirty';
   session.verifiedAt = undefined;
+  session.validatedWorkspaceFingerprint = undefined;
+  session.validatedOutsideWorkspaceFingerprint = undefined;
   session.checkResults = [];
   session.reviewer = undefined;
   session.reviewNote = undefined;
+  session.reconciledAt = undefined;
   session.unverifiedChecks = undefined;
   session.assurance = calculateAssurance(repoRoot, session, at);
   session.requestedChecks = session.assurance.requiredChecks;
@@ -1598,6 +1622,7 @@ export function applyEditOperations(repoRoot: string, policy: McpPolicy, session
   expectedRevision?: number;
   maxBatchOperations?: number;
   allowSuccessorHeadAdoption?: boolean;
+  leaseOwnerJobId?: string;
   binding?: EditSessionBinding;
 } = {}): EditSession {
   let session = getEditSession(repoRoot, sessionId);
@@ -1637,13 +1662,14 @@ export function applyEditOperations(repoRoot: string, policy: McpPolicy, session
   if (uniquePaths.size !== operations.length) throw new Error('each path may appear only once per patch batch');
   session = assertBoundEditSession(session, options.binding);
   if (session.baseRevision && gitRevision(repoRoot) !== session.baseRevision) {
-    if (options.allowSuccessorHeadAdoption === false || options.expectedRevision === undefined) {
+    if (options.allowSuccessorHeadAdoption !== true || options.expectedRevision === undefined) {
       throw new Error('EDIT_SESSION_BASE_REVISION_CHANGED');
     }
     session = adoptEditSessionSuccessorHead(repoRoot, sessionId, {
       binding: options.binding,
       controllerHome: options.controllerHome,
       expectedRevision: Math.trunc(options.expectedRevision),
+      leaseOwnerJobId: options.leaseOwnerJobId,
       note: 'The exact after-images and same-checkout ownership were revalidated before continuing this session.',
     });
   }

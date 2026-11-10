@@ -300,6 +300,7 @@ function patchErrorFailures(error: unknown, chunkIndex: number): SafePatchPrefli
 
 export function applySafePatch(repository: RepositoryRecord, input: {
   controllerHome?: string;
+  leaseOwnerJobId?: string;
   sessionId?: unknown;
   purpose?: unknown;
   operations: unknown;
@@ -352,6 +353,7 @@ export function applySafePatch(repository: RepositoryRecord, input: {
         expectedRevision,
         maxBatchOperations: MAX_SAFE_PATCH_CHUNK_SIZE,
         allowSuccessorHeadAdoption: input.recoverStaleSession !== false,
+        leaseOwnerJobId: input.leaseOwnerJobId,
         binding: input.binding,
       });
       if (session.baseRevision !== previousBaseRevision) {
@@ -369,6 +371,8 @@ export function applySafePatch(repository: RepositoryRecord, input: {
           session = adoptEditSessionSuccessorHead(repository.canonicalRoot, session.sessionId, {
             binding: input.binding,
             controllerHome,
+            expectedRevision,
+            leaseOwnerJobId: input.leaseOwnerJobId,
           });
           expectedRevision = session.currentRevision;
           recoveredSession = { reason: 'Existing edit session adopted a verified successor HEAD.', previousSessionId, newSessionId: session.sessionId };
@@ -378,6 +382,8 @@ export function applySafePatch(repository: RepositoryRecord, input: {
               expectedRevision,
               maxBatchOperations: MAX_SAFE_PATCH_CHUNK_SIZE,
               allowSuccessorHeadAdoption: input.recoverStaleSession !== false,
+              controllerHome,
+              leaseOwnerJobId: input.leaseOwnerJobId,
               binding: input.binding,
             });
           } else {
@@ -403,6 +409,8 @@ export function applySafePatch(repository: RepositoryRecord, input: {
             expectedRevision,
             maxBatchOperations: MAX_SAFE_PATCH_CHUNK_SIZE,
             allowSuccessorHeadAdoption: input.recoverStaleSession !== false,
+            controllerHome,
+            leaseOwnerJobId: input.leaseOwnerJobId,
             binding: input.binding,
           });
         } else {
