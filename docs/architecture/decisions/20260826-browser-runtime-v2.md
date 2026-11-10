@@ -11,6 +11,23 @@ The durable source of truth for Browser sessions is Controller Home SQLite. A pr
 
 A Browser session separates **stable target identity** from **mutable observed state**. The identity names the exact provider resource (for example a Chrome window/tab identity or a managed page identity). URL and title are observations of that resource and may change without invalidating the session. This applies to supported browser-internal resources such as `chrome://bookmarks/`: changing an internal route or query parameter is not a new tab identity.
 
+## Product Browser vs existing Chrome (Codex reference, 2026-11-10)
+
+The Codex/ChatGPT desktop Browser distinguishes a separately owned browser profile from the user's regular Chrome session. The useful design constraint is **environment ownership**, not a new Agent loop or a second Browser API. Forge already supports these modes under the same Browser Runtime and Controller Home session authority:
+
+| User intent | Existing Forge capability | Ownership / permission boundary |
+| --- | --- | --- |
+| Preview a local web app or automate a public page independently | `browser_mode=isolated` | Dedicated per-session repository-local Playwright profile; no implicit user Chrome cookies/tabs |
+| Work in an existing signed-in Chrome/Vivaldi tab | `browser_mode=attach_preferred` | Explicit native tab adoption, exact product/window/tab identity; user-owned tabs are not closed implicitly |
+| Reuse a Forge-managed persistent profile | `browser_mode=managed_persistent` | Explicit selected profile and session ownership, not a fallback from Chrome |
+| Interact with a native app or physical desktop | `computer` / Desktop Operator | Separate semantic capability, shared global input/foreground authority where necessary |
+
+Current `attach_preferred` defaults are retained for existing supervisor/ChatGPT workflows. Changing the default to isolated browsing requires an explicit caller migration; do not silently reinterpret an existing Chrome session as a new profile. **An existing session ID must not switch modes**, even when a later action provides `browser_mode`: reject the request before launching another provider or replacing its tab; create a new explicitly authorized session instead. Pin this comparison to the persisted requested `browser.mode`, not the resolved `activeMode`: an allowed `attach_preferred` provider fallback may run as `managed_persistent` without changing the session's requested mode.
+
+Reuse `snapshot_interactive`, `get_text`, `screenshot`, `get_console_errors`, `get_failed_requests`, `verify_state` and existing action authorization for the Codex-style observe -> act -> verify loop. Page content remains untrusted; browser-origin permission is not approval for payment, account changes, uploads or other consequential actions. Exact session/tab identity is not URL/title. Keep Desktop Operator's serialized physical input path.
+
+Future UI work may attach a selected element or screenshot coordinate and user's comment to a **chat instruction** for iterative visual review. It should not create a second persistent BrowserSession or Browser workflow manager. Rich CDP inspection (performance, network internals, arbitrary JavaScript) is **not** granted by a normal browser-origin permission and would need explicit elevated authorization, origin scoping and separate safety acceptance; no generic CDP passthrough is introduced here. This document records product direction, not a claim that page annotation, full CDP developer mode or an integrated Codex browser UI is already implemented.
+
 ## Capability ladder
 
 The Runtime selects providers by declared capability rather than by catching one provider failure and falling through a long chain. Capabilities include DOM read, DOM interaction, browser-internal resources, screenshot/vision, trusted physical input, foreground authority, provider transaction execution, and persistent handle reuse.

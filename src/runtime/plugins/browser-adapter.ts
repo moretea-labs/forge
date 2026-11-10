@@ -889,6 +889,19 @@ function effectiveBrowserActionConfig(
   existingSession?: BrowserSessionState,
 ): BrowserPluginConfig {
   const explicitBrowserMode = parseBrowserModeInput(args.browser_mode);
+  // `mode` is the session's pinned request; `activeMode` may differ when
+  // attach_preferred legitimately resolved to a managed provider fallback.
+  const savedMode = existingSession?.browser?.mode ?? existingSession?.browser?.activeMode;
+  if (explicitBrowserMode && savedMode && explicitBrowserMode !== savedMode) {
+    throw new AssistantPluginError(
+      'PLUGIN_BROWSER_SESSION_PROVIDER_MISMATCH',
+      'An existing Browser session cannot switch browser modes. Create a new explicitly authorized session for a different browser environment.',
+      {
+        retryable: false,
+        details: { sessionId: existingSession?.sessionId, savedMode, requestedMode: explicitBrowserMode },
+      },
+    );
+  }
   const explicitNativeBrowserCandidates = parseNativeBrowserCandidatesInput(args.native_browser_candidates);
   const existingNativeProduct = existingSession?.browser?.provider === 'macos-apple-events'
     ? existingSession.browser.browserProduct

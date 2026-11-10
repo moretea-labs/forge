@@ -116,8 +116,14 @@ function computerBackedSession(controllerHome: string, repoId: string, repoRoot:
 function session(
   sessionId: string,
   updatedAt: string,
-  options: { native?: boolean; windowId?: string; tabId?: string; repoMarker?: string; product?: 'chrome' | 'vivaldi' } = {},
+  options: {
+    native?: boolean; windowId?: string; tabId?: string; repoMarker?: string; product?: 'chrome' | 'vivaldi';
+    mode?: 'attach_preferred' | 'managed_persistent' | 'isolated';
+    activeMode?: 'attach_preferred' | 'managed_persistent' | 'isolated';
+  } = {},
 ) {
+  const mode = options.mode ?? (options.native ? 'attach_preferred' : 'managed_persistent');
+  const activeMode = options.activeMode ?? mode;
   return {
     schemaVersion: 1 as const,
     sessionId,
@@ -126,8 +132,8 @@ function session(
     createdAt: '2026-08-24T00:00:00.000Z',
     updatedAt,
     browser: options.native ? {
-      mode: 'attach_preferred',
-      activeMode: 'attach_preferred',
+      mode,
+      activeMode,
       provider: 'macos-apple-events',
       browserProduct: options.product ?? 'chrome',
       tab: {
@@ -142,12 +148,72 @@ function session(
         tabId: options.tabId ?? '9',
       },
     } : {
-      mode: 'managed_persistent',
-      activeMode: 'managed_persistent',
+      mode,
+      activeMode,
       provider: 'playwright-persistent-context',
     },
   };
 }
+
+describe('Browser vs Chrome environment boundary', () => {
+  test('rejects switching an existing native Chrome session into an isolated profile before provider execution', async () => {
+    const { controllerHome, repoA } = fixture();
+    saveBrowserSession(controllerHome, 'repo-a', repoA, session('owned-chrome', '2026-08-24T01:00:00.000Z', { native: true }));
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => { throw new Error('unexpected provider discovery'); } });
+
+    await expect(executeBrowserPluginAction({
+      controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser',
+      actionId: 'create_session', requestId: 'cross-mode-native-to-isolated',
+      origin: { surface: 'mcp', actor: 'test' },
+      args: { session_id: 'owned-chrome', url: 'https://example.com/owned-chrome', browser_mode: 'isolated' },
+    })).rejects.toMatchObject({
+      code: 'PLUGIN_BROWSER_SESSION_PROVIDER_MISMATCH',
+      details: { sessionId: 'owned-chrome', savedMode: 'attach_preferred', requestedMode: 'isolated' },
+    });
+    expect(findBrowserSession(controllerHome, 'repo-a', repoA, 'owned-chrome')?.browser?.provider).toBe('macos-apple-events');
+  });
+
+  test('rejects switching an existing managed session into the user Chrome provider', async () => {
+    const { controllerHome, repoA } = fixture();
+    saveBrowserSession(controllerHome, 'repo-a', repoA, session('managed-owned', '2026-08-24T01:00:00.000Z'));
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => { throw new Error('unexpected provider discovery'); } });
+
+    await expect(executeBrowserPluginAction({
+      controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser',
+      actionId: 'get_text', requestId: 'cross-mode-managed-to-chrome',
+      origin: { surface: 'mcp', actor: 'test' },
+      args: { session_id: 'managed-owned', browser_mode: 'attach_preferred' },
+    })).rejects.toMatchObject({
+      code: 'PLUGIN_BROWSER_SESSION_PROVIDER_MISMATCH',
+      details: { sessionId: 'managed-owned', savedMode: 'managed_persistent', requestedMode: 'attach_preferred' },
+    });
+    expect(findBrowserSession(controllerHome, 'repo-a', repoA, 'managed-owned')?.browser?.provider).toBe('playwright-persistent-context');
+  });
+
+  test('pins the requested session mode when attach_preferred previously resolved to a managed provider', async () => {
+    const { controllerHome, repoA } = fixture();
+    saveBrowserSession(controllerHome, 'repo-a', repoA, session('attach-fallback-owned', '2026-08-24T01:00:00.000Z', {
+      mode: 'attach_preferred',
+      activeMode: 'managed_persistent',
+    }));
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => { throw new Error('unexpected provider discovery'); } });
+
+    await expect(executeBrowserPluginAction({
+      controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser',
+      actionId: 'get_text', requestId: 'cross-mode-attach-fallback-to-managed',
+      origin: { surface: 'mcp', actor: 'test' },
+      args: { session_id: 'attach-fallback-owned', browser_mode: 'managed_persistent' },
+    })).rejects.toMatchObject({
+      code: 'PLUGIN_BROWSER_SESSION_PROVIDER_MISMATCH',
+      details: { sessionId: 'attach-fallback-owned', savedMode: 'attach_preferred', requestedMode: 'managed_persistent' },
+    });
+    expect(findBrowserSession(controllerHome, 'repo-a', repoA, 'attach-fallback-owned')?.browser).toMatchObject({
+      mode: 'attach_preferred',
+      activeMode: 'managed_persistent',
+      provider: 'playwright-persistent-context',
+    });
+  });
+});
 
 describe('browser session compatibility on Computer target authority', () => {
   test('imports repo-local legacy sessions only once', () => {
