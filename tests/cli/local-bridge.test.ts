@@ -36,7 +36,7 @@ import {
   type LocalBridgeServerHandle,
 } from "../../src/cli/local-bridge/server";
 import { isProcessAlive } from "../../src/runtime/shared/process-tree";
-import { loadRepositoryRegistry, registerRepository, resolveRepositorySelection } from "../../src/cli/repositories/registry";
+import { addRepositoryCheckout, loadRepositoryRegistry, registerRepository, resolveRepositorySelection } from "../../src/cli/repositories/registry";
 import { acquireControllerLock, releaseControllerLock } from "../../src/cli/repositories/locks";
 import { acquireExecutionLeases, releaseExecutionLeases } from '../../src/runtime/resources/leases/store';
 import { createMcpToolContext, callMultiRepositoryTool } from '../../adapters/mcp/multi-repository';
@@ -924,6 +924,118 @@ describe("Local Execution Bridge", () => {
     const finalized = await finalization.then((response) => response.json());
     expect(finalized.status).toBe("finalized");
   });
+  test("legacy EditSession mutation leases are scoped to the explicitly selected checkout", async () => {
+    const root = repo();
+    const controllerHome = process.env.FORGE_CONTROLLER_HOME!;
+    const runGit = (args: string[]) => {
+      const result = spawnSync("git", args, { cwd: root, encoding: "utf-8" });
+      if (result.status !== 0) throw new Error(result.stderr || `git ${args.join(" ")} failed`);
+      return result.stdout.trim();
+    };
+    runGit(["config", "user.name", "Forge Test"]);
+    runGit(["config", "user.email", "forge-test@example.com"]);
+    runGit(["add", "--all"]);
+    runGit(["commit", "-m", "base"]);
+
+    const worktreePath = mkdtempSync(join(tmpdir(), "forge-local-bridge-checkout-"));
+    roots.push(worktreePath);
+    const addedWorktree = spawnSync("git", ["worktree", "add", "-b", "test/checkout-b", worktreePath, "HEAD"], {
+      cwd: root,
+      encoding: "utf-8",
+    });
+    expect(addedWorktree.status).toBe(0);
+    repoRoots.push(worktreePath);
+
+    const repository = resolveRepositorySelection({ explicitPath: root, controllerHome });
+    const updatedRepository = addRepositoryCheckout({ repoId: repository.repoId, path: worktreePath, controllerHome });
+    const checkoutB = updatedRepository.checkouts.find((entry) => entry.checkoutId !== repository.activeCheckoutId);
+    expect(checkoutB).toBeDefined();
+    const checkoutRoot = checkoutB!.canonicalRoot;
+    const session = beginEditSession(checkoutRoot, {
+      purpose: "Verify checkout-scoped legacy EditSession mutation fencing",
+      allowedPaths: ["src/**"],
+      maxFiles: 1,
+      maxChangedLines: 5,
+    });
+    const current = readFileSync(join(checkoutRoot, "src/example.ts"), "utf-8");
+    const hash = new Bun.CryptoHasher("sha256").update(current).digest("hex");
+    applyEditOperations(checkoutRoot, getMcpPolicy("controller", { repoRoot: checkoutRoot }), session.sessionId, [{
+      type: "replace",
+      path: "src/example.ts",
+      expectedSha256: hash,
+      replacements: [{ oldText: "value = 1", newText: "value = 2" }],
+    }]);
+
+    const handle = await startLocalBridgeServer({ repoRoot: root, port: 0 });
+    servers.push(handle);
+    const headers = { "x-forge-local-token": handle.token };
+    const query = `?checkoutId=${encodeURIComponent(checkoutB!.checkoutId)}`;
+    const leaseOptions = { visibility: "ephemeral" as const, notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false };
+    const foreignCheckoutLease = acquireExecutionLeases(controllerHome, repository.repoId, "test:checkout-a-writer", [
+      { resourceKey: `workspace:${repository.activeCheckoutId}`, mode: "write" },
+    ], leaseOptions);
+    expect(foreignCheckoutLease.acquired).toBe(true);
+    try {
+      const savepoint = await fetch(new URL(`/api/edit-sessions/${session.sessionId}/savepoints${query}`, handle.url), {
+        method: "POST",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({ name: "foreign-checkout-savepoint" }),
+      });
+      expect(savepoint.status).toBe(200);
+
+      // The legacy completion wrapper must derive the exact checkout from repoRoot too.
+      // This session has no Issue/Task binding, so reaching that validation proves the
+      // unrelated checkout's lease was not treated as a repository-wide source fence.
+      const finish = await fetch(new URL(`/api/edit-sessions/${session.sessionId}/finish${query}`, handle.url), {
+        method: "POST",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({ decision: "auto" }),
+      });
+      expect(finish.status).toBe(400);
+      expect((await finish.json()).error).toContain("Direct Edit completion requires a session bound to an Issue and Task.");
+
+      const verified = await fetch(new URL(`/api/edit-sessions/${session.sessionId}/verify${query}`, handle.url), {
+        method: "POST",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({ reviewer: "checkout-isolation-test" }),
+      });
+      expect(verified.status).toBe(200);
+      expect((await verified.json()).status).toBe("succeeded");
+
+      const finalized = await fetch(new URL(`/api/edit-sessions/${session.sessionId}/finalize${query}`, handle.url), {
+        method: "POST",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({ reviewer: "checkout-isolation-test" }),
+      });
+      expect(finalized.status).toBe(200);
+      expect((await finalized.json()).status).toBe("finalized");
+    } finally {
+      releaseExecutionLeases(controllerHome, repository.repoId, "test:checkout-a-writer", foreignCheckoutLease.leases, leaseOptions);
+    }
+
+    const sameCheckoutSession = beginEditSession(checkoutRoot, {
+      purpose: "Preserve same-checkout legacy EditSession lease fencing",
+      allowedPaths: ["src/**"],
+      maxFiles: 1,
+      maxChangedLines: 5,
+    });
+    const sameCheckoutLease = acquireExecutionLeases(controllerHome, repository.repoId, "test:checkout-b-writer", [
+      { resourceKey: `workspace:${checkoutB!.checkoutId}`, mode: "write" },
+    ], leaseOptions);
+    expect(sameCheckoutLease.acquired).toBe(true);
+    try {
+      const blocked = await fetch(new URL(`/api/edit-sessions/${sameCheckoutSession.sessionId}/savepoints${query}`, handle.url), {
+        method: "POST",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({ name: "same-checkout-blocked" }),
+      });
+      expect(blocked.status).toBe(400);
+      expect((await blocked.json()).error).toContain("REPOSITORY_PROCESS_LEASE_HELD");
+    } finally {
+      releaseExecutionLeases(controllerHome, repository.repoId, "test:checkout-b-writer", sameCheckoutLease.leases, leaseOptions);
+    }
+  });
+
   test("preserves executable mode when an Edit Session replaces a shebang file", () => {
     const root = repo();
     const executablePath = join(root, "src/executable.ts");

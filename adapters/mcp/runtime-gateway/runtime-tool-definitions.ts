@@ -406,6 +406,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
   }, ['capability_id', 'action', 'request_id'], false),
   definition('plugin_action_execute', 'Execute one typed repository or controller-scoped plugin action through the plugin provider authority. rh_context exposes plugin schemas/policy; rh_work does not execute plugin capabilities. For confirmation=authorization, normal host permission is authoritative and an exact-target Forge capability grant may be reused; do not set confirm_authorization merely because an ordinary authorization-class action was previously allowed. Strong-confirmation actions still require their explicit confirmation contract.', {
     repo_id: repoId,
+    checkout_id: { type: 'string', description: 'Optional exact checkout identity for repository-scoped plugin actions.' },
     plugin_id: { type: 'string' },
     action_id: { type: 'string' },
     request_id: { type: 'string' },

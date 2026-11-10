@@ -1618,6 +1618,10 @@ function withLegacyCompletionWrite<T>(
       cutover.repoId!,
       `completion:${identity}`,
       operation,
+      undefined,
+      cutover.checkoutId
+        ? [{ resourceKey: `workspace:${cutover.checkoutId}`, mode: 'write' as const }]
+        : undefined,
     ),
     30 * 60_000,
   );

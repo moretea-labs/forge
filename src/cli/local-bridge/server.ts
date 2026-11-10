@@ -603,6 +603,13 @@ function requestRepositoryRoot(request: Request, options: LocalBridgeServerOptio
   return requestRepositorySelection(request, options, controllerHome).canonicalRoot;
 }
 
+function workspaceWriteMutationClaims(repository: ReturnType<typeof requestRepositorySelection>) {
+  const checkoutId = repository.activeCheckoutId?.trim();
+  return checkoutId
+    ? [{ resourceKey: `workspace:${checkoutId}`, mode: 'write' as const }]
+    : undefined;
+}
+
 function userFacingPluginStatus(plugin: LocalControllerSnapshot['assistantPlugins'][number]) {
   const health = plugin.health;
   const lifecycle = plugin.lifecycle;
@@ -1912,6 +1919,8 @@ export async function startLocalBridgeServer(
       response.json(withRepositoryMutationExclusion(
         controllerHome, repository.repoId, 'local_bridge:create_edit_savepoint',
         () => createEditSavepoint(repository.canonicalRoot, request.params.sessionId, String(request.body?.name ?? "")),
+        undefined,
+        workspaceWriteMutationClaims(repository),
       ));
     } catch (error) {
       response.status(400).json({ error: errorMessage(error) });
@@ -1932,6 +1941,8 @@ export async function startLocalBridgeServer(
           reviewer: queryString(request.body?.reviewer) ?? "local-controller-human",
           note: queryString(request.body?.note),
         }),
+        undefined,
+        workspaceWriteMutationClaims(repository),
       );
       response.status(200).json({
         accepted: true,
@@ -1958,6 +1969,8 @@ export async function startLocalBridgeServer(
           reviewer: queryString(request.body?.reviewer) ?? "local-controller-human",
           note: queryString(request.body?.note),
         }),
+        undefined,
+        workspaceWriteMutationClaims(repository),
       ));
     } catch (error) {
       response.status(400).json({ error: errorMessage(error) });
@@ -1993,6 +2006,8 @@ export async function startLocalBridgeServer(
           toRevision: typeof request.body?.toRevision === "number" ? Math.trunc(request.body.toRevision) : undefined,
           savepoint: queryString(request.body?.savepoint),
         }),
+        undefined,
+        workspaceWriteMutationClaims(repository),
       ));
     } catch (error) {
       response.status(400).json({ error: errorMessage(error) });

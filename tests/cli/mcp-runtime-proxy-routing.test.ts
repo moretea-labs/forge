@@ -45,7 +45,7 @@ import {
   startRuntimeMcpTransport,
 } from '../../src/runtime/root/mcp-transport';
 import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
-import { registerRepository } from '../../src/cli/repositories/registry';
+import { addRepositoryCheckout, registerRepository } from '../../src/cli/repositories/registry';
 import { callRepositoryTool } from '../../adapters/mcp/tool-mapping/repository-tools';
 import { implementationReviewChangedPathDigest } from '../../packages/kernel/work/api/index';
 import { cognitionReadPort } from '../../src/runtime/control-plane/persistence/cognition-store';
@@ -1064,6 +1064,70 @@ function postFinalizeAttributionFixture() {
     },
   };
 }
+
+test('plugin_action_execute honors an exact checkout_id for iOS repository path validation', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-plugin-checkout-routing-'));
+  const controllerHome = join(root, 'controller');
+  const repoRoot = join(root, 'repo');
+  const checkoutRoot = join(root, 'checkout-b');
+  mkdirSync(repoRoot, { recursive: true });
+  runPostFinalizeGit(repoRoot, ['init', '-b', 'main']);
+  runPostFinalizeGit(repoRoot, ['config', 'user.name', 'Forge Checkout Test']);
+  runPostFinalizeGit(repoRoot, ['config', 'user.email', 'forge-checkout@example.test']);
+  writeFileSync(join(repoRoot, 'README.md'), 'checkout routing fixture\n');
+  runPostFinalizeGit(repoRoot, ['add', 'README.md']);
+  runPostFinalizeGit(repoRoot, ['commit', '-m', 'init']);
+  const repository = registerRepository({ path: repoRoot, controllerHome, defaultBranch: 'main' });
+  const worktree = spawnSync('git', ['worktree', 'add', '-b', 'ios/checkout-b', checkoutRoot, 'HEAD'], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+  });
+  expect(worktree.status).toBe(0);
+  const updatedRepository = addRepositoryCheckout({ repoId: repository.repoId, path: checkoutRoot, controllerHome });
+  const checkoutB = updatedRepository.checkouts.find((entry) => entry.checkoutId !== repository.activeCheckoutId);
+  expect(checkoutB).toBeDefined();
+
+  // This project belongs to checkout A. An iOS action explicitly routed to B
+  // must reject it before xcodebuild or any provider-side work is attempted.
+  const outsideProject = join(repoRoot, 'App.xcodeproj');
+  mkdirSync(outsideProject, { recursive: true });
+  const context = {
+    ...createMcpToolContext({ repo: repoRoot, controllerHome, profile: 'controller' }),
+    principalId: 'controller-ios-checkout-test',
+    sessionId: 'session-ios-checkout-test',
+    controllerInstanceId: 'runtime-ios-checkout-test',
+    controllerType: 'chatgpt' as const,
+  };
+  const server = createForgeMcpServerFromContext(context);
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  const client = new Client({ name: 'ios-checkout-routing', version: '1.0.0' }, { capabilities: {} });
+  await client.connect(clientTransport);
+  try {
+    const listed = await client.listTools();
+    const actionTool = listed.tools.find((tool) => tool.name === 'plugin_action_execute');
+    expect((actionTool?.inputSchema as any)?.properties?.checkout_id).toBeDefined();
+
+    const response = await client.callTool({
+      name: 'plugin_action_execute',
+      arguments: {
+        repo_id: repository.repoId,
+        checkout_id: checkoutB!.checkoutId,
+        plugin_id: 'ios',
+        action_id: 'list_schemes',
+        request_id: 'ios-list-schemes-exact-checkout',
+        arguments: { project: outsideProject },
+      },
+    });
+    expect(response.isError).toBe(true);
+    expect(JSON.stringify(response.structuredContent ?? response)).toContain('IOS_PATH_OUTSIDE_REPOSITORY');
+  } finally {
+    await client.close();
+    await server.close();
+    rmSync(checkoutRoot, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 describe('MCP terminal Work command context', () => {
   test('keeps completed Work as historical context through the canonical MCP command entry', async () => {

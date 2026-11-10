@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, realpathSync } from 'fs';
 import { join } from 'path';
 import { resolveRepoPreferredControllerHome } from '../../effects/controller-home';
 import { findRegisteredRepositoryByCheckoutRoot } from '../repositories/registry';
@@ -24,6 +24,8 @@ export interface LegacyIssueCutoverState {
   retired: boolean;
   controllerHome: string;
   repoId?: string;
+  /** Exact registered checkout for legacy source-mutation lease fencing. */
+  checkoutId?: string;
   migration?: RequirementPortfolioMigrationRecord;
 }
 
@@ -47,6 +49,13 @@ export function legacyIssueCutoverState(repoRoot: string): LegacyIssueCutoverSta
   // Legacy unregistered repositories retain their historical projection lookup.
   const registered = findRegisteredRepositoryByCheckoutRoot(repoRoot, controllerHome);
   const repoId = registered?.repoId ?? repositoryIdentity(repoRoot).repoId;
+  const checkoutId = registered?.checkouts.find((checkout) => {
+    try {
+      return realpathSync(checkout.canonicalRoot) === realpathSync(repoRoot);
+    } catch {
+      return false;
+    }
+  })?.checkoutId;
   if (!repoId) return { retired: false, controllerHome };
   const record = readControlPlaneRecord<RequirementPortfolioMigrationRecord>(
     controllerHome,
@@ -54,7 +63,13 @@ export function legacyIssueCutoverState(repoRoot: string): LegacyIssueCutoverSta
     repoId,
     REQUIREMENT_PORTFOLIO_MIGRATION_ID,
   );
-  return { retired: Boolean(record), controllerHome, repoId, migration: record?.value };
+  return {
+    retired: Boolean(record),
+    controllerHome,
+    repoId,
+    ...(checkoutId ? { checkoutId } : {}),
+    migration: record?.value,
+  };
 }
 
 export function legacyIssueAuthorityRetired(repoRoot: string): boolean {
