@@ -103,7 +103,7 @@ export interface ComputerInteractionTargetEntry {
 
 export interface ComputerApplicationTargetLease {
   current(): ComputerApplicationTarget;
-  bind(binding: ComputerProviderTargetBinding): ComputerApplicationTarget;
+  bind(binding: ComputerProviderTargetBinding, launchProvenance?: ComputerApplicationLaunchProvenance): ComputerApplicationTarget;
   tombstone(): ComputerApplicationTarget;
 }
 

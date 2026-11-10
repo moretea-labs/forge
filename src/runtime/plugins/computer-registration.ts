@@ -773,7 +773,7 @@ async function rebindProviderSession(
   const target = lease.current();
   const rebound = await provider.executeAction(providerInput(input, 'desktop_session_open', {
     ...(target.stableIdentity.bundleId ? { bundle_id: target.stableIdentity.bundleId } : { app_name: target.stableIdentity.appName }),
-    launch: false,
+    launch: input.args.launch === true,
     activate: input.args.activate === true,
   }, 'binding-reopen'));
   const interactionId = providerSessionId(rebound);
@@ -794,12 +794,19 @@ async function rebindProviderSession(
     );
   }
   const processId = providerProcessId(rebound);
+  const reportedProvenance = explicitLaunchProvenanceFromProviderResult(rebound, processId);
+  // Reattaching the same owned PID keeps its ownership. A newly launched PID
+  // must replace stale provenance in the single durable target authority.
+  const launchProvenance = target.launchProvenance?.kind === 'provider_launched'
+    && target.launchProvenance.processId === processId
+    ? target.launchProvenance
+    : reportedProvenance;
   lease.bind({
     providerId: DESKTOP_PROVIDER_ID,
     providerSessionId: interactionId,
     observedAt: new Date().toISOString(),
     ...(processId !== undefined ? { processId } : {}),
-  });
+  }, launchProvenance);
   return interactionId;
 }
 

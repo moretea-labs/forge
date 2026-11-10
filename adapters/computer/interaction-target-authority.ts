@@ -538,12 +538,14 @@ export function createComputerInteractionTargetAuthority(
       let record = requireActiveApplicationTargetRecord(controllerHome, key);
       const lease: ComputerApplicationTargetLease = {
         current: () => structuredClone(record.value.target),
-        bind(binding) {
+        bind(binding, launchProvenance) {
           const target: ComputerApplicationTarget = {
             ...record.value.target,
             providerBinding: normalizeProviderBinding(binding),
             updatedAt: now(),
           };
+          if (launchProvenance) target.launchProvenance = normalizeApplicationLaunchProvenance(launchProvenance);
+          else delete target.launchProvenance;
           record = persistence.write(controllerHome, {
             namespace: COMPUTER_TARGET_NAMESPACE,
             scope: COMPUTER_TARGET_SCOPE,

@@ -26,6 +26,9 @@ interface ProviderFixture {
     handshakeCount: number;
     manifestCount: number;
     sessionOpenCount: number;
+    applicationRunning: boolean;
+    processId: number;
+    lastSessionOpenArgs?: Record<string, unknown>;
     sessionCloseCount: number;
     lastSessionCloseArgs?: Record<string, unknown>;
     omitLaunchProvenance: boolean;
@@ -84,6 +87,9 @@ async function providerFixture(): Promise<ProviderFixture> {
     handshakeCount: 0,
     manifestCount: 0,
     sessionOpenCount: 0,
+    applicationRunning: true,
+    processId: 4242,
+    lastSessionOpenArgs: undefined as Record<string, unknown> | undefined,
     sessionCloseCount: 0,
     lastSessionCloseArgs: undefined as Record<string, unknown> | undefined,
     omitLaunchProvenance: false,
@@ -167,6 +173,12 @@ async function providerFixture(): Promise<ProviderFixture> {
           state.statusCount += 1;
           result = { sessions: [...sessions.values()] };
         } else if (actionId === 'desktop_session_open') {
+          state.lastSessionOpenArgs = { ...params };
+          if (!state.applicationRunning && params.launch !== true) {
+            fail('APP_NOT_RUNNING', 'Target application is not running');
+            continue;
+          }
+          state.applicationRunning = true;
           state.sessionOpenCount += 1;
           const requestedBundle = typeof params.bundle_id === 'string' ? params.bundle_id : undefined;
           const requestedName = typeof params.app_name === 'string' ? params.app_name : undefined;
@@ -175,7 +187,7 @@ async function providerFixture(): Promise<ProviderFixture> {
             result = existing;
           } else {
             const interactionId = `provider_session_${state.sessionOpenCount}`;
-            const processId = 4242;
+            const processId = state.processId;
             const launched = params.launch === true;
             const session = {
               interactionId,
@@ -389,6 +401,41 @@ describe('Computer durable InteractionTarget authority', () => {
       fixture.controllerHome, 'desktop_element_observe', { target_id: targetId }, 'element-observe-after-reattach',
     ));
     expect(fixture.state.elementObserveCount).toBe(1);
+  });
+
+  test('relaunches a stopped app through its existing durable target and refreshes owned PID', async () => {
+    const fixture = await providerFixture();
+    const targetId = await openTarget(fixture);
+    fixture.sessions.clear();
+    fixture.state.applicationRunning = false;
+    fixture.state.processId = 4343;
+
+    await expect(computerPluginAdapter.executeAction(actionInput(
+      fixture.controllerHome,
+      'desktop_target_open',
+      { bundle_id: 'com.example.Editor', launch: false, activate: false },
+      'target-open-reattach-stopped',
+    ))).rejects.toMatchObject({ code: 'APP_NOT_RUNNING' });
+    expect(targetAuthority.get(fixture.controllerHome, targetId)?.providerBinding?.providerSessionId).toBe('provider_session_1');
+
+    const reopened = await computerPluginAdapter.executeAction(actionInput(
+      fixture.controllerHome,
+      'desktop_target_open',
+      { bundle_id: 'com.example.Editor', launch: true, activate: false },
+      'target-open-relaunch-stopped',
+    ));
+    expect(reopened.targetId).toBe(targetId);
+    expect(fixture.state.lastSessionOpenArgs).toMatchObject({ launch: true, activate: false });
+    expect(fixture.state.sessionOpenCount).toBe(2);
+    expect(targetAuthority.get(fixture.controllerHome, targetId)).toMatchObject({
+      launchProvenance: { kind: 'provider_launched', processId: 4343 },
+      providerBinding: { processId: 4343, providerSessionId: 'provider_session_2' },
+    });
+
+    await computerPluginAdapter.executeAction(actionInput(
+      fixture.controllerHome, 'desktop_target_close', { target_id: targetId }, 'target-close-relaunched',
+    ));
+    expect(fixture.state.lastSessionCloseArgs?.terminate_owned_pid).toBe(4343);
   });
 
   test('rejects a native Desktop action on an unsupported platform before provider discovery', async () => {
