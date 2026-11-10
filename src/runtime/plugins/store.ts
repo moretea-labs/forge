@@ -582,14 +582,16 @@ export function browserRemoteResourceKey(
   // not contend globally, while the same session/tab remains mutually fenced.
   if (pluginId !== 'browser' && pluginId !== 'computer') return `provider-state:${pluginId}`;
   const text = (value: unknown): string | undefined => typeof value === 'string' && value.trim() ? value.trim() : undefined;
-  const browserProduct = text(args?.native_browser_product) ?? 'auto';
-  const windowId = text(args?.native_window_id) ?? 'unknown-window';
+  const browserProduct = text(args?.native_browser_product);
+  const windowId = text(args?.native_window_id);
   const tabId = text(args?.native_tab_id);
   const sessionId = text(args?.session_id);
-  const identity = tabId
+  const exactNativeTab = (browserProduct === 'chrome' || browserProduct === 'vivaldi')
+    && Boolean(windowId && tabId);
+  const identity = exactNativeTab
     ? `native-tab:${browserProduct}:${windowId}:${tabId}`
     : args?.native_active_tab === true
-      ? `native-active-tab:${browserProduct}`
+      ? `native-active-tab:${browserProduct === 'chrome' || browserProduct === 'vivaldi' ? browserProduct : 'auto'}`
       : sessionId
         ? `session:${sessionId}`
         : requestId

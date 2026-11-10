@@ -78,6 +78,31 @@ describe('Browser and Computer native remote resource claims', () => {
     expect(resourceClaimsConflict(computerTab, browserTab)).toBe(true);
     expect(resourceClaimsConflict(computerTab, anotherWindow)).toBe(false);
     expect(resourceClaimsConflict(computerTab, anotherTab)).toBe(false);
+
+    const partialTabComputer = claim('computer', {
+      native_browser_product: 'chrome', native_tab_id: '11', session_id: 'session-a',
+    }, 'partial-computer');
+    const partialTabBrowser = claim('browser', {
+      native_browser_product: 'chrome', native_tab_id: '11', session_id: 'session-a',
+    }, 'partial-browser');
+    const partialTabOtherSession = claim('computer', {
+      native_browser_product: 'chrome', native_tab_id: '11', session_id: 'session-b',
+    }, 'partial-other-session');
+    const partialTabMissingProduct = claim('computer', {
+      native_window_id: '7', native_tab_id: '11', session_id: 'session-a',
+    }, 'partial-missing-product');
+    const partialTabFreshA = claim('computer', { native_browser_product: 'chrome', native_tab_id: '11' }, 'partial-fresh-a');
+    const partialTabFreshB = claim('computer', { native_browser_product: 'chrome', native_tab_id: '11' }, 'partial-fresh-b');
+    const partialTabUnknown = claim('computer', { native_tab_id: '11' });
+
+    // A tab id alone is not a canonical native identity: preserve session fencing,
+    // otherwise isolate by request or fail closed when even that identity is absent.
+    expect(partialTabComputer.resourceKey).toBe(partialTabBrowser.resourceKey);
+    expect(partialTabComputer.resourceKey).toBe(partialTabMissingProduct.resourceKey);
+    expect(resourceClaimsConflict(partialTabComputer, partialTabBrowser)).toBe(true);
+    expect(resourceClaimsConflict(partialTabComputer, partialTabOtherSession)).toBe(false);
+    expect(resourceClaimsConflict(partialTabFreshA, partialTabFreshB)).toBe(false);
+    expect(partialTabUnknown.resourceKey).toBe('provider-state:browser');
   });
 
   test('native active-tab selection stays product-scoped and unknown browser effects fail closed globally', () => {

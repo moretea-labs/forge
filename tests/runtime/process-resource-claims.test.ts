@@ -592,7 +592,7 @@ describe('Process Runtime fine-grained resource claims', () => {
     const freshA = claimsForAssistantPluginAction(remoteAction, repository, 'browser', {}, 'fresh-a');
     const freshB = claimsForAssistantPluginAction(remoteAction, repository, 'browser', {}, 'fresh-b');
     const exactTab = claimsForAssistantPluginAction(remoteAction, repository, 'browser', {
-      native_browser_product: 'chrome', native_tab_id: 'tab-42',
+      native_browser_product: 'chrome', native_window_id: 'window-7', native_tab_id: 'tab-42',
     }, 'tab-request');
 
     expect(sessionA[0]?.resourceKey).toBe(sessionAAgain[0]?.resourceKey);
