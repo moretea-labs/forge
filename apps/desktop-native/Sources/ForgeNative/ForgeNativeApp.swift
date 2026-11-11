@@ -2,6 +2,10 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 
+func shellQuotedMcpPath(_ path:String) -> String {
+    "'" + path.replacingOccurrences(of:"'",with:"'\\''") + "'"
+}
+
 // Native visual contract: content first, icon-only secondary actions, quiet selection,
 // one consistent input surface; avoid decorative cards around navigation and status.
 private enum ForgePalette {
@@ -238,14 +242,13 @@ private struct ForgeWorkspaceView: View {
                 .padding(.horizontal,16).padding(.bottom,4)
             }
 
-            sectionLabel("工作区").padding(.top,15)
+            // One continuous translucent navigation rail; the rows and project
+            // names already communicate hierarchy without repeated section titles.
             ForEach(NativePage.allCases.filter { $0 != .settings && $0 != .plan && $0 != .agent }) { section in
                 navigationRow(section)
             }
+            .padding(.top, 12)
 
-            sectionLabel(isGlobalThreadSearch ? "搜索结果 · \(model.visibleThreads.count)" : "会话")
-                .padding(.top,21)
-                .padding(.bottom,4)
             ScrollView {
                 LazyVStack(alignment:.leading,spacing:2) {
                     if model.visibleThreads.isEmpty {
@@ -278,7 +281,9 @@ private struct ForgeWorkspaceView: View {
                         }
                     }
                 }.padding(.horizontal,10)
-            }.scrollIndicators(.hidden)
+            }
+            .scrollIndicators(.hidden)
+            .padding(.top,16)
             Spacer(minLength:5)
 
             projectSwitcher
@@ -684,14 +689,6 @@ private struct ForgeWorkspaceView: View {
         .frame(width:280)
     }
 
-    private func sectionLabel(_ name: String) -> some View {
-        Text(name.uppercased())
-            .font(.system(size:9.5,weight:.semibold))
-            .tracking(0.55)
-            .foregroundStyle(ForgePalette.secondary.opacity(0.88))
-            .padding(.horizontal,21).padding(.bottom,7)
-    }
-
     private var isGlobalThreadSearch: Bool {
         model.showSearch
     }
@@ -1050,8 +1047,10 @@ private struct ForgeWorkspaceView: View {
             }
             .padding(.horizontal,10)
             .frame(height:32)
-            .background(model.page == section ? ForgePalette.selection.opacity(0.62) : .clear,
-                        in:RoundedRectangle(cornerRadius:8,style:.continuous))
+            .background(model.page == section
+                            ? Color(nsColor:.controlBackgroundColor).opacity(0.63)
+                            : .clear,
+                        in:RoundedRectangle(cornerRadius:9,style:.continuous))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -5815,22 +5814,30 @@ private struct RuntimeSettingsSection: View {
     private var externalClientGuide: some View {
         DisclosureGroup("在其他客户端使用 Forge") {
             VStack(alignment:.leading,spacing:12) {
-                VStack(alignment:.leading,spacing:4) {
+                VStack(alignment:.leading,spacing:5) {
                     Text("ChatGPT").font(.system(size:11.5,weight:.semibold))
-                    Text("在 ChatGPT 的连接设置中添加 Forge；使用已配置的 Secure MCP Tunnel 或 HTTPS /mcp 地址。")
-                    Text("连接后调用 rh_status 验证。配置完成不代表客户端已成功调用。")
+                    Text("在 ChatGPT 的连接设置中添加 Forge，使用现有 Secure MCP Tunnel 或 HTTPS /mcp 地址。")
+                    Text("添加后用下面的提示进行只读连通性验证。")
+                    copyableMcpCommand("Use Forge. Call rh_status and report whether the Runtime is ready. Do not modify anything yet.")
                 }
-                Divider()
-                VStack(alignment:.leading,spacing:5) {
-                    Text("Claude Code").font(.system(size:11.5,weight:.semibold))
-                    Text("在终端运行一次以下命令，由 Claude Code 管理自己的 MCP 配置。")
-                    copyableMcpCommand("forge mcp setup claude --scope user --profile controller")
-                }
-                Divider()
-                VStack(alignment:.leading,spacing:5) {
-                    Text("其他支持 stdio 的 MCP 客户端").font(.system(size:11.5,weight:.semibold))
-                    Text("在目标 Git 仓库目录下，将以下命令配置为 MCP 服务启动命令。")
-                    copyableMcpCommand("forge mcp serve --transport stdio --profile controller")
+                if model.checkoutIsAvailable, let checkoutPath = model.checkoutRoot?.path {
+                    let repoArgument = shellQuotedMcpPath(checkoutPath)
+                    Divider()
+                    VStack(alignment:.leading,spacing:5) {
+                        Text("Claude Code").font(.system(size:11.5,weight:.semibold))
+                        Text("写入 Claude Code 用户级 MCP 配置；执行后用 claude mcp get forge 验证。")
+                        copyableMcpCommand("forge mcp setup claude --repo \(repoArgument) --scope user --profile controller")
+                    }
+                    Divider()
+                    VStack(alignment:.leading,spacing:5) {
+                        Text("其他支持 stdio 的 MCP 客户端").font(.system(size:11.5,weight:.semibold))
+                        Text("将命令配置为 MCP 服务启动命令。它会固定暴露当前选中的 Checkout。")
+                        copyableMcpCommand("forge mcp serve --repo \(repoArgument) --transport stdio --profile controller")
+                    }
+                } else {
+                    Text("先在左侧选择有效的项目与 Checkout，再显示绑定该工作区的本地客户端命令。")
+                        .font(.system(size:11))
+                        .foregroundStyle(ForgePalette.secondary)
                 }
             }
             .font(.system(size:11))

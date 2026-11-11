@@ -639,6 +639,17 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertFalse(NativeWorkspace.localProviderStatusReady([:]))
     }
 
+    func testMcpShellPathQuotingPreservesSpacesAndEmbeddedQuotes() {
+        XCTAssertEqual(
+            shellQuotedMcpPath("/Users/greyson/Dev Projects/forge"),
+            "'/Users/greyson/Dev Projects/forge'"
+        )
+        XCTAssertEqual(
+            shellQuotedMcpPath("/Users/greyson/Dev/grey's repo"),
+            "'/Users/greyson/Dev/grey'\\''s repo'"
+        )
+    }
+
     func testRuntimeAndConnectionProjectionsUseCanonicalAuthorityFields() {
         let runtime = NativeWorkspace.runtimeStatusDetail([
             "running":true,"ready":true,"stale":false,
