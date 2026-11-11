@@ -505,6 +505,7 @@ export function executeRepositoryCommand(
 export async function executeRepositoryReadOnlyCommandDirect(
   repository: RepositoryCommandScopeTarget,
   input: ExecuteRepositoryCommandInput,
+  hooks: RepositoryCommandAsyncHooks = {},
 ): Promise<RepositoryCommandExecution> {
   const prepared = await prepareRepositoryCommandExecutionAsync(
     repository,
@@ -519,7 +520,7 @@ export async function executeRepositoryReadOnlyCommandDirect(
   if (!prepared.executable) {
     throw new Error('READONLY_DIRECT_ROUTE_REJECTED: readonly command was not executable after policy evaluation');
   }
-  const signal = input.signal;
+  const signal = hooks.signal ?? input.signal;
   if (signal?.aborted) {
     return {
       ...base,
@@ -538,7 +539,7 @@ export async function executeRepositoryReadOnlyCommandDirect(
     };
   }
 
-  const result = await runCanonicalCommand(command, cwd, timeoutMs, maxOutputBytes, { signal });
+  const result = await runCanonicalCommand(command, cwd, timeoutMs, maxOutputBytes, { ...hooks, signal });
   // This entry point is reachable only after the bounded classifier has proven
   // the command readonly. Mutation evidence is explicitly unobserved rather than
   // fabricated: no before/after Git snapshot is taken, while write-capable lanes

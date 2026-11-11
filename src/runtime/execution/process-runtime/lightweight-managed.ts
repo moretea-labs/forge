@@ -13,7 +13,10 @@ import { join } from 'path';
 import { capProcessOutput, redactProcessOutput } from '../../../effects/process-runner';
 import {
   executeRepositoryCommandAsync,
+  executeRepositoryReadOnlyCommandDirect,
   type ExecuteRepositoryCommandInput,
+  type RepositoryCommandAsyncHooks,
+  type RepositoryCommandExecution,
 } from '../../../cli/repositories/command-executor';
 import {
   releaseControllerCheckSubscription,
@@ -56,6 +59,7 @@ const MAX_TERMINAL_RECEIPTS = 256;
 const RUNNING_RECEIPT_PERSIST_INTERVAL_MS = 250;
 
 interface LightweightExecutionResult {
+  execution?: RepositoryCommandExecution;
   ok?: boolean;
   exitCode?: number;
   timedOut?: boolean;
@@ -604,6 +608,8 @@ export interface StartLightweightCommandInput {
   /** Repository identity is optional: an arbitrary workspace target carries a workspace scope key. */
   repository: RepositoryCommandScopeTarget;
   execution: ExecuteRepositoryCommandInput;
+  /** Keep the mutation-free readonly executor while retaining bounded Process observation. */
+  readonlyDirect?: boolean;
   interactiveWaitMs: number;
   timeoutMs: number;
   maxOutputBytes?: number;
@@ -660,7 +666,7 @@ export interface StartLightweightInternalProcessInput {
 
 export async function startLightweightRepositoryCommand(
   input: StartLightweightCommandInput,
-): Promise<{ handle: ProcessHandle; metrics: LightweightCommandMetrics }> {
+): Promise<{ handle: ProcessHandle; metrics: LightweightCommandMetrics; execution?: RepositoryCommandExecution }> {
   sweep();
   // Repository targets keep their repository partition; an arbitrary workspace
   // target is scoped by its workspace id instead of a synthetic repository id.
@@ -696,6 +702,7 @@ export async function startLightweightRepositoryCommand(
           durableWrites: 0,
           leaseOperations: 0,
         },
+        ...(input.readonlyDirect && existing.result?.execution ? { execution: existing.result.execution } : {}),
       };
     }
     const recovered = findPersistedHandleForCommand(
@@ -751,53 +758,62 @@ export async function startLightweightRepositoryCommand(
   };
   const onCallerAbort = () => abort.abort();
   input.execution.signal?.addEventListener('abort', onCallerAbort, { once: true });
-  const startExecution = () => executeRepositoryCommandAsync(
-    input.controllerHome,
-    input.repository,
-    { ...input.execution, timeoutMs: input.timeoutMs, maxOutputBytes, signal: abort.signal },
-    {
-      signal: abort.signal,
-      onSpawn: (pid) => {
-        entry.pid = pid;
-        entry.spawnedAtMs = Date.now();
-        entry.identity = captureProcessIdentity(pid);
-        persistRunningReceipt(entry, true);
-      },
-      onStdout: (chunk) => {
-        entry.stdout = boundedAppend(entry.stdout, chunk, maxOutputBytes);
-        entry.stdoutTail = boundedTailAppend(entry.stdoutTail, chunk);
-        persistRunningReceipt(entry);
-      },
-      onStderr: (chunk) => {
-        entry.stderr = boundedAppend(entry.stderr, chunk, maxOutputBytes);
-        entry.stderrTail = boundedTailAppend(entry.stderrTail, chunk);
-        persistRunningReceipt(entry);
-      },
-      onExit: (result) => {
-        entry.exitObservation = {
-          ok: result.ok,
-          exitCode: result.exitCode,
-          timedOut: result.timedOut,
-          cancelled: result.cancelled,
-        };
-        // Child exit is the authoritative Process terminal boundary. Repository
-        // post-processing may continue, but it must never keep this Process
-        // logically running or make process_get/process_wait lose the exit fact.
-        entry.result = result;
-        entry.finishedAtMs = Date.now();
-        input.execution.signal?.removeEventListener('abort', onCallerAbort);
-        persistTerminalReceipt(input.controllerHome, entry);
-      },
+  const executionInput: ExecuteRepositoryCommandInput = {
+    ...input.execution,
+    timeoutMs: input.timeoutMs,
+    maxOutputBytes,
+    signal: abort.signal,
+  };
+  const executionHooks: RepositoryCommandAsyncHooks = {
+    signal: abort.signal,
+    onSpawn: (pid) => {
+      entry.pid = pid;
+      entry.spawnedAtMs = Date.now();
+      entry.identity = captureProcessIdentity(pid);
+      persistRunningReceipt(entry, true);
     },
+    onStdout: (chunk) => {
+      entry.stdout = boundedAppend(entry.stdout, chunk, maxOutputBytes);
+      entry.stdoutTail = boundedTailAppend(entry.stdoutTail, chunk);
+      persistRunningReceipt(entry);
+    },
+    onStderr: (chunk) => {
+      entry.stderr = boundedAppend(entry.stderr, chunk, maxOutputBytes);
+      entry.stderrTail = boundedTailAppend(entry.stderrTail, chunk);
+      persistRunningReceipt(entry);
+    },
+    onExit: (result) => {
+      entry.exitObservation = {
+        ok: result.ok,
+        exitCode: result.exitCode,
+        timedOut: result.timedOut,
+        cancelled: result.cancelled,
+      };
+      // Child exit is the authoritative Process terminal boundary. Repository
+      // post-processing may continue, but it must never keep this Process
+      // logically running or make process_get/process_wait lose the exit fact.
+      entry.result = result;
+      entry.finishedAtMs = Date.now();
+      input.execution.signal?.removeEventListener('abort', onCallerAbort);
+      persistTerminalReceipt(input.controllerHome, entry);
+    },
+  };
+  const startExecution = () => (input.readonlyDirect
+    ? executeRepositoryReadOnlyCommandDirect(input.repository, executionInput, executionHooks)
+    : executeRepositoryCommandAsync(input.controllerHome, input.repository, executionInput, executionHooks)
   ).then((result) => {
     // Enriched execution evidence may replace the compact child-exit result in
     // memory. The already-persisted terminal Process identity remains stable.
     // Work lifecycle settlement belongs here, after repository evidence has
     // either been proven or explicitly marked unavailable.
-    entry.result = result;
-    input.onCompleted?.(result);
+    const observedResult: LightweightExecutionResult = {
+      ...result,
+      ...(input.readonlyDirect ? { execution: result } : {}),
+    };
+    entry.result = observedResult;
+    input.onCompleted?.(observedResult);
     persistTerminalReceipt(input.controllerHome, entry);
-    return result;
+    return observedResult;
   }).catch((error) => {
     // Once child exit has been observed, later bookkeeping failure cannot revoke
     // the terminal Process fact or trigger command replay. Expected snapshot
@@ -871,6 +887,7 @@ export async function startLightweightRepositoryCommand(
       durableWrites: 0,
       leaseOperations: 0,
     },
+    ...(input.readonlyDirect && entry.result?.execution ? { execution: entry.result.execution } : {}),
   };
 }
 

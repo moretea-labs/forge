@@ -16,6 +16,7 @@ import { classifyRepositoryCommand, fixedShellWrapperCommand } from '../../../cl
 import {
   executeRepositoryCommandAsync,
   executeRepositoryReadOnlyCommandDirect,
+  REPOSITORY_COMMAND_DEFAULT_TIMEOUT_MS,
   type RepositoryCommandExecution,
 } from '../../../cli/repositories/command-executor';
 import { normalizeRepositoryCommand } from '../../../cli/repositories/command-normalization';
@@ -325,6 +326,60 @@ export async function executeRepositoryCommandViaProcessRuntime(
         || decision.reason === 'lightweight_local_inline_interpreter',
     };
     const readonly = classifyRepositoryCommand(input.command, input.repository.defaultBranch).risk === 'readonly';
+    if (readonly) {
+      const interactiveWaitMs = durationAwareInteractiveWaitMs(
+        input.command,
+        input.returnHandleImmediately ? 0 : input.interactiveWaitMs,
+        Math.min(DEFAULT_INTERACTIVE_WAIT_MS, 250),
+      );
+      const timeoutMs = Math.max(
+        interactiveWaitMs + 1,
+        Math.min(input.timeoutMs ?? REPOSITORY_COMMAND_DEFAULT_TIMEOUT_MS, 24 * 60 * 60_000),
+      );
+      const lightweight = await startLightweightRepositoryCommand({
+        controllerHome: input.controllerHome,
+        repository: input.repository,
+        execution: directInput,
+        readonlyDirect: true,
+        interactiveWaitMs,
+        timeoutMs,
+        maxOutputBytes: input.maxOutputBytes,
+        commandId: input.commandId ?? input.requestId,
+        ...(input.principalId ? { principalId: input.principalId } : {}),
+      });
+      const handle = lightweight.handle;
+      if (!handle.completed) {
+        return {
+          route: 'process_managed',
+          reason: 'interactive_budget_exceeded_lightweight_handle',
+          process: handle,
+          durableSideEffects: emptyEffects,
+          executionMetrics: lightweight.metrics,
+        };
+      }
+      const completed = lightweight.execution;
+      return {
+        route: 'process_direct',
+        reason: decision.reason,
+        ...(completed ? {
+          ok: completed.ok,
+          exitCode: completed.exitCode,
+          stdout: completed.stdout,
+          stderr: completed.stderr,
+          executionStatus: completed.status,
+          policyDecision: completed.policyDecision,
+          authorizationDecision: completed.authorizationDecision,
+          approvalRequestId: completed.approvalRequestId,
+        } : {
+          ok: handle.ok,
+          exitCode: handle.exitCode,
+          stdout: handle.stdout,
+          stderr: handle.stderr,
+        }),
+        durableSideEffects: emptyEffects,
+        executionMetrics: { ...lightweight.metrics, lane: 'ephemeral_direct' },
+      };
+    }
     if (!readonly) {
       const deferLongPreparation = decision.reason === 'ephemeral_local_build_or_test';
       const interactiveWaitMs = deferLongPreparation

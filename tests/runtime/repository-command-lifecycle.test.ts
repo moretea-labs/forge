@@ -669,6 +669,40 @@ describe('repository command execution lifecycle', () => {
     expect(listActiveLeases(controllerHome, repository.repoId)).toHaveLength(0);
   });
 
+  test('long readonly command returns a lightweight handle after the interactive budget and reuses it for the same request', async () => {
+    if (process.platform === 'win32') return;
+    const controllerHome = tempRoot('forge-cmd-readonly-long-home-');
+    const repoRoot = tempRoot('forge-cmd-readonly-long-repo-');
+    const repository = seedRepo(controllerHome, repoRoot);
+    persistControllerAccessMode(controllerHome, 'full_access');
+    const processCount = listProcessRecords(controllerHome, repository.repoId).length;
+    const input = {
+      controllerHome,
+      repository,
+      command: ['sleep', '0.5'],
+      timeoutMs: 5_000,
+      interactiveWaitMs: 25,
+      requestId: 'long-readonly-command',
+      executionIdentity: executionIdentityForRepository(repository),
+    } as const;
+
+    const result = await executeRepositoryCommandViaProcessRuntime(input);
+    expect(result.route).toBe('process_managed');
+    expect(result.reason).toBe('interactive_budget_exceeded_lightweight_handle');
+    expect(result.process?.processId).toStartWith('lightweight:');
+    expect(result.process?.completed).toBe(false);
+    expect(result.executionMetrics).toMatchObject({ lane: 'lightweight_managed', durableWrites: 0, leaseOperations: 0 });
+    expect(listProcessRecords(controllerHome, repository.repoId)).toHaveLength(processCount);
+    expect(listActiveLeases(controllerHome, repository.repoId)).toHaveLength(0);
+
+    const replay = await executeRepositoryCommandViaProcessRuntime(input);
+    expect(replay.process?.processId).toBe(result.process?.processId);
+    const terminal = await waitRepositoryCommandProcess(controllerHome, repository.repoId, result.process!.processId, { timeoutMs: 5_000 });
+    expect(terminal).toMatchObject({ completed: true, ok: true });
+    expect(listProcessRecords(controllerHome, repository.repoId)).toHaveLength(processCount);
+    expect(listActiveLeases(controllerHome, repository.repoId)).toHaveLength(0);
+  });
+
   test('local shell and inline workspace writes use Process leases rather than unclaimed lightweight subprocesses', async () => {
     const controllerHome = tempRoot('forge-cmd-opaque-home-'); const repoRoot = tempRoot('forge-cmd-opaque-repo-'); const repository = seedRepo(controllerHome, repoRoot);
     persistControllerAccessMode(controllerHome, 'full_access'); const processCount = listProcessRecords(controllerHome, repository.repoId).length;
