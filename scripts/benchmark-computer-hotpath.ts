@@ -8,6 +8,7 @@
  * Desktop Operator or the repository checkout.
  */
 import { randomUUID } from 'crypto';
+import { execFileSync } from 'child_process';
 import { mkdtempSync, rmSync } from 'fs';
 import { createServer, type Server } from 'net';
 import { tmpdir } from 'os';
@@ -75,6 +76,7 @@ async function closeServer(server: Server): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  const featureRevision = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
   const controllerHome = mkdtempSync(join(tmpdir(), 'forge-computer-hotpath-'));
   const socketPath = process.platform === 'win32'
     ? `\\\\.\\pipe\\forge-computer-hotpath-${randomUUID()}`
@@ -226,9 +228,19 @@ async function main(): Promise<void> {
       samples.push(performance.now() - startedAt);
     }
     const warmDelta = counterDelta(counters, warmBefore);
+    const acceptance = {
+      noNewWarmConnections: warmDelta.connections === 0,
+      noWarmHandshake: warmDelta.handshakes === 0,
+      noWarmManifestPreflight: warmDelta.manifests === 0,
+      noWarmStatusPreflight: warmDelta.statuses === 0,
+      noWarmSessionOpen: warmDelta.sessionOpens === 0,
+      oneProviderRpcPerAction: warmDelta.observes === SAMPLES,
+    };
+    const allPassed = Object.values(acceptance).every(Boolean);
 
     console.log(JSON.stringify({
       benchmark: 'computer-hotpath',
+      featureRevision,
       samples: SAMPLES,
       warmup: WARMUP,
       cold: {
@@ -243,13 +255,16 @@ async function main(): Promise<void> {
         providerRpcsPerAction: rounded(warmDelta.observes / SAMPLES),
       },
       contract: {
-        warmHandshakePerAction: 0,
-        warmManifestPreflightPerAction: 0,
-        warmStatusPreflightPerAction: 0,
-        retainedConnectionsDuringSamples: 0,
-        removedLegacyStatusPreflightRpcsPerWarmAction: 1,
+        newConnectionsDuringSamples: warmDelta.connections,
+        warmHandshakePerAction: rounded(warmDelta.handshakes / SAMPLES),
+        warmManifestPreflightPerAction: rounded(warmDelta.manifests / SAMPLES),
+        warmStatusPreflightPerAction: rounded(warmDelta.statuses / SAMPLES),
+        warmSessionOpenPerAction: rounded(warmDelta.sessionOpens / SAMPLES),
       },
+      acceptance,
+      allPassed,
     }, null, 2));
+    if (!allPassed) process.exitCode = 1;
   } finally {
     disposeRuntimeComputerComposition();
     setComputerPlatformForTest(undefined);
