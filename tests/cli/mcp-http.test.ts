@@ -689,6 +689,40 @@ describe('mcp http transport', () => {
           acceptingNewSessions: true,
           closed: { clientDelete: 1 },
         });
+
+        const expiredSession = await fetch(`http://127.0.0.1:${port}/mcp`, {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${token}`,
+            'content-type': 'application/json',
+            accept: 'application/json, text/event-stream',
+            'mcp-session-id': sessionId!,
+          },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 'expired-session-ping', method: 'ping' }),
+        });
+        expect(expiredSession.status).toBe(404);
+        expect(expiredSession.headers.get('Mcp-Session-Reset')).toBe('reinitialize');
+        expect(expiredSession.headers.get('x-forge-session-reset')).toBe('reinitialize');
+        expect(await expiredSession.json()).toMatchObject({ code: 'MCP_SESSION_EXPIRED', recoverable: true, action: 'reinitialize' });
+
+        const reinitialized = await fetch(`http://127.0.0.1:${port}/mcp`, {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${token}`,
+            'content-type': 'application/json',
+            accept: 'application/json, text/event-stream',
+          },
+          body: initializeBody('forge-reconnected'),
+        });
+        expect(reinitialized.status).toBe(200);
+        const reinitializedSessionId = reinitialized.headers.get('mcp-session-id');
+        expect(reinitializedSessionId).toBeTruthy();
+        expect(reinitializedSessionId).not.toBe(sessionId);
+        const reinitializedDelete = await fetch(`http://127.0.0.1:${port}/mcp`, {
+          method: 'DELETE',
+          headers: { authorization: `Bearer ${token}`, 'mcp-session-id': reinitializedSessionId! },
+        });
+        expect(reinitializedDelete.status).toBe(200);
       });
     } finally {
       await stopMcpServerProcess(proc);
