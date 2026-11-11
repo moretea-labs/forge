@@ -12,7 +12,7 @@ import {
   resolveExternalPluginProbeSidecarPath,
 } from '../../src/runtime/plugins/external-unix-socket';
 import { AssistantPluginError } from '../../src/runtime/plugins/errors';
-import { ExternalUnixJsonlChannel, MAX_PLUGIN_ACTION_TIMEOUT_MS, normalizeExternalUnixJsonlCall } from '../../packages/plugin-runtime/external/unix-jsonl-transport';
+import { decodeExternalUnixJsonlResponse, ExternalUnixJsonlChannel, ExternalUnixJsonlTransportError, MAX_PLUGIN_ACTION_TIMEOUT_MS, normalizeExternalUnixJsonlCall } from '../../packages/plugin-runtime/external/unix-jsonl-transport';
 
 const roots: string[] = [];
 const servers: Server[] = [];
@@ -141,6 +141,45 @@ describe('external local socket / named-pipe provider transport', () => {
       expect((error as AssistantPluginError).code).toBe('ELEMENT_NOT_FOUND');
       expect((error as AssistantPluginError).effectOutcome).toBe('failed');
     }
+  });
+
+  test('preserves provider effectOutcome and fails closed for legacy unknown-outcome error codes', () => {
+    const legacyUnknown = JSON.stringify({
+      id: 'provider-unknown-1',
+      ok: false,
+      error: {
+        code: 'BROWSER_AUTOMATION_MUTATION_OUTCOME_UNKNOWN',
+        message: 'Apple Event timed out after dispatch.',
+        retryable: true,
+      },
+    });
+    let legacyError: unknown;
+    try { decodeExternalUnixJsonlResponse(legacyUnknown, 'provider-unknown-1'); } catch (error) { legacyError = error; }
+    expect(legacyError).toBeInstanceOf(ExternalUnixJsonlTransportError);
+    expect(legacyError).toMatchObject({
+      code: 'BROWSER_AUTOMATION_MUTATION_OUTCOME_UNKNOWN',
+      retryable: false,
+      effectOutcome: 'outcome_unknown',
+      source: 'provider',
+    });
+
+    const explicitUnknown = JSON.stringify({
+      id: 'provider-unknown-2',
+      ok: false,
+      error: { code: 'PROVIDER_ACTION_FAILED', message: 'Outcome not known.', retryable: true, effectOutcome: 'outcome_unknown' },
+    });
+    let explicitError: unknown;
+    try { decodeExternalUnixJsonlResponse(explicitUnknown, 'provider-unknown-2'); } catch (error) { explicitError = error; }
+    expect(explicitError).toMatchObject({ code: 'PROVIDER_ACTION_FAILED', retryable: false, effectOutcome: 'outcome_unknown' });
+
+    const explicitFailed = JSON.stringify({
+      id: 'provider-failed-1',
+      ok: false,
+      error: { code: 'ELEMENT_NOT_FOUND', message: 'No matching element.', retryable: true, effectOutcome: 'failed' },
+    });
+    let failedError: unknown;
+    try { decodeExternalUnixJsonlResponse(explicitFailed, 'provider-failed-1'); } catch (error) { failedError = error; }
+    expect(failedError).toMatchObject({ code: 'ELEMENT_NOT_FOUND', retryable: true, effectOutcome: 'failed' });
   });
 
   test('marks transport loss after effect dispatch as outcome_unknown', async () => {

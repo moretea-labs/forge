@@ -52,6 +52,7 @@ interface RpcFailure {
     code: string;
     message: string;
     retryable?: boolean;
+    effectOutcome?: ExternalUnixJsonlEffectOutcome;
     domain?: string;
     details?: unknown;
   };
@@ -241,9 +242,15 @@ export function decodeExternalUnixJsonlResponse(raw: string, requestId: string):
   if (!failure.error || typeof failure.error.code !== 'string' || typeof failure.error.message !== 'string') {
     throw transportError('EXTERNAL_PLUGIN_PROTOCOL_ERROR', 'External provider returned an invalid structured error.');
   }
+  const explicitOutcome = failure.error.effectOutcome;
+  const effectOutcome: ExternalUnixJsonlEffectOutcome = explicitOutcome === 'failed' || explicitOutcome === 'outcome_unknown'
+    ? explicitOutcome
+    : failure.error.code.endsWith('_OUTCOME_UNKNOWN') ? 'outcome_unknown' : 'failed';
   throw transportError(failure.error.code, failure.error.message, {
-    retryable: failure.error.retryable === true,
-    effectOutcome: 'failed',
+    // An unknown external effect is never safe for automatic retry, even if an
+    // older provider incorrectly marks the transport failure as retryable.
+    retryable: effectOutcome === 'outcome_unknown' ? false : failure.error.retryable === true,
+    effectOutcome,
     source: 'provider',
     details: {
       ...(typeof failure.error.domain === 'string' ? { domain: failure.error.domain } : {}),
