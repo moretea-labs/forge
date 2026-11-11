@@ -219,6 +219,18 @@ export async function executeProtectedConsoleUnlockLifecycle(
 
 function desktopProductActions(): AssistantPluginActionDescriptor[] {
   const open = providerActionDescriptor('desktop_session_open');
+  const openSchema = structuredClone(open.argumentsSchema) as Record<string, unknown>;
+  const openProperties = openSchema.properties && typeof openSchema.properties === 'object'
+    ? { ...(openSchema.properties as Record<string, unknown>) }
+    : {};
+  openProperties.target_id = {
+    type: 'string',
+    minLength: 1,
+    description: 'Existing Forge-owned durable Computer target id. Reattach this exact target without creating another target.',
+  };
+  openSchema.properties = openProperties;
+  const openAnyOf = Array.isArray(openSchema.anyOf) ? openSchema.anyOf : [];
+  openSchema.anyOf = [{ required: ['target_id'] }, ...openAnyOf];
   const close = providerActionDescriptor('desktop_session_close');
   return [
     {
@@ -249,7 +261,8 @@ function desktopProductActions(): AssistantPluginActionDescriptor[] {
       ...open,
       actionId: DESKTOP_TARGET_OPEN_ACTION,
       title: 'Open Computer desktop target',
-      description: 'Bind one application as a Forge-owned durable Computer target. Native provider session ids remain internal rebuildable bindings.',
+      description: 'Open a unique application identity or reattach one exact existing target_id. Exact-target reattachment preserves the durable target and rebuilds only its provider session binding.',
+      argumentsSchema: openSchema,
     },
     {
       ...close,
@@ -620,6 +633,21 @@ function firstString(value: unknown, ...keys: string[]): string | undefined {
   return undefined;
 }
 
+function explicitTargetIdFromArgs(args: Record<string, unknown>): string | undefined {
+  const targetId = typeof args.target_id === 'string' ? args.target_id.trim() : '';
+  if (!targetId) return undefined;
+  const hasIdentity = (typeof args.bundle_id === 'string' && Boolean(args.bundle_id.trim()))
+    || (typeof args.app_name === 'string' && Boolean(args.app_name.trim()));
+  if (hasIdentity) {
+    throw new AssistantPluginError(
+      'PLUGIN_COMPUTER_TARGET_SELECTOR_AMBIGUOUS',
+      'Specify target_id or bundle_id/app_name, not both.',
+      { retryable: false },
+    );
+  }
+  return targetId;
+}
+
 function stableIdentityFromArgs(args: Record<string, unknown>): ComputerApplicationStableIdentity {
   const bundleId = typeof args.bundle_id === 'string' ? args.bundle_id.trim() : '';
   const appName = typeof args.app_name === 'string' ? args.app_name.trim() : '';
@@ -956,17 +984,23 @@ async function openDesktopTarget(
   input: AssistantPluginActionExecutionInput,
   provider: AssistantPluginAdapter,
 ): Promise<Record<string, unknown>> {
-  const requested = stableIdentityFromArgs(input.args);
-  const existing = computerTargetAuthority.listAllApplications(input.controllerHome)
-    .filter((target) => sameRequestedApplication(target, requested));
-  if (existing.length > 1) {
-    throw new AssistantPluginError(
-      'PLUGIN_COMPUTER_TARGET_IDENTITY_AMBIGUOUS',
-      'More than one active Computer target matches this application identity; refusing to create or rebind another target.',
-      { retryable: false, details: { targetIds: existing.map((target) => target.targetId).slice(0, 8) } },
-    );
+  const requestedTargetId = explicitTargetIdFromArgs(input.args);
+  let current: ComputerApplicationTarget | undefined;
+  if (requestedTargetId) {
+    current = computerTargetAuthority.require(input.controllerHome, requestedTargetId);
+  } else {
+    const requested = stableIdentityFromArgs(input.args);
+    const existing = computerTargetAuthority.listAllApplications(input.controllerHome)
+      .filter((target) => sameRequestedApplication(target, requested));
+    if (existing.length > 1) {
+      throw new AssistantPluginError(
+        'PLUGIN_COMPUTER_TARGET_IDENTITY_AMBIGUOUS',
+        'More than one active Computer target matches this application identity; specify one exact target_id to reattach without creating another target.',
+        { retryable: false, details: { targetIds: existing.map((target) => target.targetId).slice(0, 8) } },
+      );
+    }
+    current = existing[0];
   }
-  const current = existing[0];
   if (current) {
     return computerTargetAuthority.withLease(input.controllerHome, current.targetId, async (lease) => {
       const target = lease.current();
@@ -995,6 +1029,7 @@ async function openDesktopTarget(
     });
   }
 
+  const requested = stableIdentityFromArgs(input.args);
   const opened = await provider.executeAction(providerInput(input, 'desktop_session_open', input.args, 'target-open'));
   const interactionId = providerSessionId(opened);
   let stableIdentity: ComputerApplicationStableIdentity;
@@ -1161,7 +1196,12 @@ function targetAuthorization(identity: ComputerApplicationStableIdentity): Assis
 async function resolveDesktopAuthorizationContext(input: AssistantPluginActionExecutionInput): Promise<AssistantPluginAuthorizationContext | undefined> {
   if (input.actionId === DESKTOP_TARGET_LIST_ACTION) return undefined;
   if ([COMPUTER_CONSOLE_UNLOCK_PREPARE_ACTION, COMPUTER_CONSOLE_UNLOCK_ACTION, COMPUTER_CONSOLE_UNLOCK_ENROLL_ACTION, COMPUTER_CONSOLE_UNLOCK_STATUS_ACTION, COMPUTER_CONSOLE_UNLOCK_RECOVER_ACTION, COMPUTER_CONSOLE_UNLOCK_REVOKE_ACTION].includes(input.actionId)) return undefined;
-  if (input.actionId === DESKTOP_TARGET_OPEN_ACTION) return targetAuthorization(stableIdentityFromArgs(input.args));
+  if (input.actionId === DESKTOP_TARGET_OPEN_ACTION) {
+    const targetId = explicitTargetIdFromArgs(input.args);
+    return targetAuthorization(targetId
+      ? computerTargetAuthority.require(input.controllerHome, targetId).stableIdentity
+      : stableIdentityFromArgs(input.args));
+  }
   const targetId = typeof input.args.target_id === 'string' ? input.args.target_id.trim() : '';
   if (targetId) return targetAuthorization(computerTargetAuthority.require(input.controllerHome, targetId).stableIdentity);
   const provider = desktopProvider(input);

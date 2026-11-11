@@ -444,6 +444,55 @@ describe('Computer durable InteractionTarget authority', () => {
     expect(fixture.state.elementObserveCount).toBe(1);
   });
 
+  test('exact target id reattaches one stale binding when application identity is ambiguous', async () => {
+    const fixture = await providerFixture();
+    const originalTargetId = await openTarget(fixture);
+    const originalTarget = targetAuthority.get(fixture.controllerHome, originalTargetId);
+    const staleTargetId = targetAuthority.create(fixture.controllerHome, {
+      stableIdentity: { bundleId: 'com.example.Editor' },
+      providerBinding: {
+        providerId: 'desktop_operator',
+        providerSessionId: 'stale_provider_session',
+        observedAt: new Date(0).toISOString(),
+      },
+    }).targetId;
+    fixture.sessions.clear();
+
+    await expect(computerPluginAdapter.executeAction(actionInput(
+      fixture.controllerHome,
+      'desktop_target_open',
+      { bundle_id: 'com.example.Editor', launch: false, activate: false },
+      'target-open-ambiguous-identity',
+    ))).rejects.toMatchObject({ code: 'PLUGIN_COMPUTER_TARGET_IDENTITY_AMBIGUOUS' });
+
+    await expect(computerPluginAdapter.executeAction(actionInput(
+      fixture.controllerHome,
+      'desktop_target_open',
+      { target_id: staleTargetId, bundle_id: 'com.example.Editor', launch: false, activate: false },
+      'target-open-conflicting-selectors',
+    ))).rejects.toMatchObject({ code: 'PLUGIN_COMPUTER_TARGET_SELECTOR_AMBIGUOUS' });
+
+    expect(fixture.state.sessionOpenCount).toBe(1);
+    const reattached = await computerPluginAdapter.executeAction(actionInput(
+      fixture.controllerHome,
+      'desktop_target_open',
+      { target_id: staleTargetId, launch: false, activate: false },
+      'target-open-exact-id-reattach',
+    ));
+
+    expect(reattached.targetId).toBe(staleTargetId);
+    expect(fixture.state.sessionOpenCount).toBe(2);
+    expect(fixture.state.lastSessionOpenArgs).toMatchObject({
+      bundle_id: 'com.example.Editor',
+      launch: false,
+      activate: false,
+    });
+    expect(targetAuthority.get(fixture.controllerHome, originalTargetId)).toEqual(originalTarget);
+    expect(targetAuthority.get(fixture.controllerHome, staleTargetId)?.providerBinding?.providerSessionId).toBe('provider_session_2');
+    expect(new Set(targetAuthority.listAllApplications(fixture.controllerHome).map(target => target.targetId)))
+      .toEqual(new Set([originalTargetId, staleTargetId]));
+  });
+
   test('relaunches a stopped app through its existing durable target and refreshes owned PID', async () => {
     const fixture = await providerFixture();
     const targetId = await openTarget(fixture);
