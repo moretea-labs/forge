@@ -55,6 +55,9 @@ import { cognitionReadPort } from '../../src/runtime/control-plane/persistence/c
 import { ensureForgeInstanceIdentity } from '../../packages/kernel/identity/api/index';
 import { writeProjectIdentity, writeProjectPlacement, writeWorkspaceIdentity } from '../../src/runtime/control-plane/workspace/workspace-store';
 import { seedHistoricalWorkContract } from '../helpers/historical-work-contract';
+import { processToolDefinitions } from '../../adapters/mcp/runtime-gateway/process-tools';
+import { routeDurableMcpCall } from '../../adapters/mcp/runtime-gateway/router';
+import { callProcessTool } from '../../src/runtime/execution/process-runtime/tool-dispatch';
 
 describe('MCP ordinary tool cognition settlement', () => {
   test('exposes and settles model-authored learning after a successful repository tool outcome', async () => {
@@ -732,6 +735,199 @@ describe('MCP canonical Runtime proxy routing', () => {
       await proxy.close();
       await runtimeTransport.close();
       rmSync(controllerHome, { recursive: true, force: true });
+    }
+  }, 15_000);
+
+  test('durable Process survives real MCP client Session replacement and is queryable from the new Session', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-process-session-replacement-'));
+    const controllerHome = join(root, 'controller');
+    const repoRoot = join(root, 'repo');
+    mkdirSync(repoRoot, { recursive: true });
+    runPostFinalizeGit(repoRoot, ['init', '-b', 'main']);
+    runPostFinalizeGit(repoRoot, ['config', 'user.name', 'Forge Session Replacement Test']);
+    runPostFinalizeGit(repoRoot, ['config', 'user.email', 'forge-session-replacement@example.test']);
+    writeFileSync(join(repoRoot, 'README.md'), 'durable process survives MCP session replacement\n');
+    runPostFinalizeGit(repoRoot, ['add', 'README.md']);
+    runPostFinalizeGit(repoRoot, ['commit', '-m', 'init']);
+    mkdirSync(join(repoRoot, '.forge'), { recursive: true });
+    const marker = join(root, 'session-replacement-process-ran.txt');
+    writeFileSync(join(repoRoot, '.forge', 'checks.json'), JSON.stringify({
+      version: 1,
+      checks: {
+        session_survival: {
+          description: 'long check survives MCP transport session replacement',
+          command: [process.execPath, '-e', `setTimeout(() => { require('node:fs').appendFileSync(${JSON.stringify(marker)}, '1'); console.log('session-survived'); }, 3_000);`],
+          timeoutMs: 10_000,
+        },
+      },
+    }, null, 2));
+    const repository = registerRepository({ path: repoRoot, controllerHome, defaultBranch: 'main' });
+    const context = {
+      ...createMcpToolContext({ controllerHome, profile: 'controller', repo: repoRoot }),
+      principalId: 'oauth-client:session-replacement-fixture',
+      sessionId: 'runtime-session-replacement-fixture',
+      controllerInstanceId: 'runtime-session-replacement-fixture',
+      controllerType: 'chatgpt' as const,
+    };
+    const definitions = processToolDefinitions.filter((tool) => ['run_check', 'process_get', 'process_wait'].includes(tool.name));
+    const runtimeSchema: CanonicalRuntimeToolSchema = {
+      definitions,
+      toolNames: definitions.map((tool) => tool.name),
+      fingerprint: forgeToolSurfaceFingerprint(definitions),
+    };
+    const runtimeToken = 'runtime-session-replacement-token';
+    const observedAt = new Date().toISOString();
+    let runtimeTransport: Awaited<ReturnType<typeof startRuntimeMcpTransport>> | undefined;
+    let proxy: CanonicalRuntimeProxy | undefined;
+    let gatewayServer: ReturnType<typeof createServer> | undefined;
+    let first: { client: Client; transport: StreamableHTTPClientTransport } | undefined;
+    let second: { client: Client; transport: StreamableHTTPClientTransport } | undefined;
+    let processId: string | undefined;
+
+    try {
+      mkdirSync(join(controllerHome, 'mcp'), { recursive: true });
+      writeFileSync(join(controllerHome, 'mcp', 'runtime-token'), runtimeToken, 'utf8');
+      runtimeTransport = await startRuntimeMcpTransport({
+        host: '127.0.0.1',
+        port: 0,
+        authToken: runtimeToken,
+        readiness: () => ({
+          ready: true,
+          reasonCodes: [],
+          observedAt: new Date().toISOString(),
+          diagnostics: {
+            database: { outcome: 'pass' },
+            scheduler: { outcome: 'pass' },
+            releaseCoherence: { outcome: 'pass' },
+            mcpEndToEnd: { outcome: 'pass' },
+          },
+        }),
+        createServer: () => {
+          const runtimeServer = new Server(
+            { name: 'fixture-runtime-process-session-replacement', version: '1.0.0' },
+            { capabilities: { tools: { listChanged: false } } },
+          );
+          runtimeServer.setRequestHandler('tools/list', async () => ({ tools: definitions.map(mcpToolDefinitionToSdk) }));
+          runtimeServer.setRequestHandler('tools/call', async (request) => {
+            const name = request.params.name;
+            const args = (request.params.arguments ?? {}) as Record<string, unknown>;
+            const result = name === 'run_check'
+              ? await routeDurableMcpCall(context, name, args)
+              : await callProcessTool(context, name, args);
+            if (!result) throw new Error(`test Runtime did not handle ${name}`);
+            return {
+              content: result.content,
+              ...(result.structuredContent ? { structuredContent: result.structuredContent } : {}),
+              ...(result.isError ? { isError: true } : {}),
+            };
+          });
+          return runtimeServer;
+        },
+      });
+      writeRuntimeStatusSnapshot(controllerHome, {
+        schemaVersion: 1,
+        runtimeInstanceId: 'runtime-process-session-replacement',
+        pid: process.pid,
+        releaseId: 'release-process-session-replacement',
+        artifactIdentity: 'artifact-process-session-replacement',
+        endpoint: runtimeTransport.endpoint,
+        readiness: {
+          ready: true,
+          reasonCodes: [],
+          observedAt,
+          diagnostics: {
+            database: { outcome: 'pass' },
+            scheduler: { outcome: 'pass' },
+            releaseCoherence: { outcome: 'pass' },
+            mcpEndToEnd: { outcome: 'pass' },
+          },
+        },
+        startedAt: observedAt,
+        updatedAt: observedAt,
+      });
+      proxy = createCanonicalRuntimeProxy(context);
+      const gateway = createModernMcpHttpHandler(
+        { controllerHome, profile: 'controller' },
+        async () => runtimeSchema,
+        proxy,
+      );
+      gatewayServer = createServer((request, response) => { void gateway.nodeHandler(request, response); });
+      await new Promise<void>((resolve, reject) => {
+        gatewayServer!.once('error', reject);
+        gatewayServer!.listen(0, '127.0.0.1', resolve);
+      });
+      const gatewayAddress = gatewayServer.address();
+      if (!gatewayAddress || typeof gatewayAddress === 'string') throw new Error('session replacement Gateway did not bind');
+      const gatewayUrl = new URL(`http://127.0.0.1:${gatewayAddress.port}/mcp`);
+      const createOuterSession = async (name: string) => {
+        const transport = new StreamableHTTPClientTransport(gatewayUrl);
+        const client = new Client({ name, version: '1.0.0' }, {
+          capabilities: {}, versionNegotiation: { mode: { pin: '2026-07-28' } },
+        });
+        await client.connect(transport);
+        return { client, transport };
+      };
+
+      first = await createOuterSession('process-session-before-replacement');
+      const started = await first.client.callTool({
+        name: 'run_check',
+        arguments: {
+          repo_id: repository.repoId,
+          check_id: 'session_survival',
+          interactive_wait_ms: 25,
+          request_id: 'mcp-session-survival-process',
+        },
+      });
+      expect(started.isError).not.toBe(true);
+      const startedPayload = started.structuredContent as Record<string, unknown>;
+      expect(startedPayload).toMatchObject({ path: 'process_managed', completed: false });
+      processId = String(startedPayload.processId ?? '');
+      expect(processId).toBeTruthy();
+      expect(existsSync(marker)).toBe(false);
+
+      await first.client.close();
+      first = undefined;
+      expect(existsSync(marker)).toBe(false);
+
+      second = await createOuterSession('process-session-after-replacement');
+      const stillRunning = await second.client.callTool({
+        name: 'process_get',
+        arguments: { repo_id: repository.repoId, process_id: processId },
+      });
+      expect(stillRunning.isError).not.toBe(true);
+      expect(stillRunning.structuredContent).toMatchObject({ process: { processId, completed: false, status: 'running' } });
+
+      const waited = await second.client.callTool({
+        name: 'process_wait',
+        arguments: { repo_id: repository.repoId, process_id: processId, timeout_ms: 10_000 },
+      });
+      expect(waited.isError).not.toBe(true);
+      expect(waited.structuredContent).toMatchObject({
+        synchronization: 'terminal_result_available',
+        process: { processId, completed: true, ok: true },
+      });
+      expect(readFileSync(marker, 'utf8')).toBe('1');
+      const terminalReadback = await second.client.callTool({
+        name: 'process_get',
+        arguments: { repo_id: repository.repoId, process_id: processId },
+      });
+      expect(terminalReadback.structuredContent).toMatchObject({ process: { processId, completed: true, ok: true } });
+    } finally {
+      await first?.client.close().catch(() => undefined);
+      await second?.client.close().catch(() => undefined);
+      if (processId) await callProcessTool(context, 'process_wait', {
+        repo_id: repository.repoId,
+        process_id: processId,
+        timeout_ms: 10_000,
+      }).catch(() => undefined);
+      if (gatewayServer?.listening) {
+        await new Promise<void>((resolve, reject) => {
+          gatewayServer!.close((error) => error ? reject(error) : resolve());
+        });
+      }
+      await proxy?.close();
+      await runtimeTransport?.close();
+      rmSync(root, { recursive: true, force: true });
     }
   }, 15_000);
 
