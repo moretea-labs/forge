@@ -400,7 +400,7 @@ function scanRuntimeTempCandidates(
   // immediately before mutation. Explicit roots narrow scope; they do not create
   // a second ownership authority.
   return scan.entries
-    .filter((entry) => entry.cleanupCandidate)
+    .filter((entry) => entry.cleanupCandidate || entry.protectionReason !== undefined)
     .slice(0, maxCandidates)
     .map((entry) => ({
       kind: 'stale_runtime_temp_entry',
@@ -411,7 +411,9 @@ function scanRuntimeTempCandidates(
         ? 'Symbolic links are never eligible for automatic cleanup.'
         : entry.occupiedByPid
           ? `Temp entry is referenced by live process ${entry.occupiedByPid}.`
-          : `Forge temp entry is unoccupied, not a symbolic link, and ${entry.ageMinutes} minute(s) old.`,
+          : entry.protectionReason === 'git_source_or_uninspectable'
+            ? 'Contains Git source or an uninspectable subtree; retained by RUNTIME_TEMP_GIT_SOURCE_PROTECTED.'
+            : `Forge temp entry is unoccupied, not a symbolic link, and ${entry.ageMinutes} minute(s) old.`,
       ageMinutes: entry.ageMinutes,
       suggestedAction: 'full_maintenance_pass',
       ownershipStatus: 'explicit' as const,

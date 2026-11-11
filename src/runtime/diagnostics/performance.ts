@@ -25,6 +25,7 @@ export interface RuntimeTempEntry {
   ageMinutes: number;
   occupiedByPid?: number;
   symbolicLink?: boolean;
+  protectionReason?: 'git_source_or_uninspectable';
   cleanupCandidate: boolean;
 }
 
@@ -276,13 +277,18 @@ export function scanRuntimeTempEntries(
         const symbolicLink = stat.isSymbolicLink();
         const occupied = processes.find((process) => process.command.includes(path));
         const ageMinutes = Math.max(0, Math.round((now - stat.mtimeMs) / 60000));
+        const sourceProtectionRequired = stat.isDirectory() && !symbolicLink && !occupied && ageMinutes >= minAgeMinutes;
+        const protectionReason = sourceProtectionRequired && tempEntryProtectsGitSource(path)
+          ? 'git_source_or_uninspectable' as const
+          : undefined;
         entries.push({
           path,
           mtime: stat.mtime.toISOString(),
           ageMinutes,
           occupiedByPid: occupied?.pid,
           symbolicLink,
-          cleanupCandidate: !symbolicLink && !occupied && ageMinutes >= minAgeMinutes,
+          protectionReason,
+          cleanupCandidate: !symbolicLink && !occupied && ageMinutes >= minAgeMinutes && protectionReason === undefined,
         });
       } catch (_error) {}
     }
