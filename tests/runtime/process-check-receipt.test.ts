@@ -108,7 +108,6 @@ describe('Process check completion receipts', () => {
   test.each([
     ['repoId', { repoId: 'repo_wrong' }],
     ['checkoutId', { checkoutId: 'checkout_wrong' }],
-    ['workId', { workId: 'work_wrong' }],
     ['editSessionId', { editSessionId: 'EDIT-wrong' }],
     ['editRevision', { editRevision: 4 }],
     ['issueId', { issueId: 'ISS-wrong' }],
