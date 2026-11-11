@@ -117,8 +117,11 @@ private struct ForgeWorkspaceView: View {
 
     var body: some View {
         NavigationSplitView(columnVisibility:$visibility) {
-            sidebar
-                .navigationSplitViewColumnWidth(min:218,ideal:246,max:285)
+            HStack(spacing:0) {
+                navigationRail
+                sidebar
+            }
+            .navigationSplitViewColumnWidth(min:296,ideal:318,max:352)
         } detail: {
             main
         }
@@ -146,20 +149,65 @@ private struct ForgeWorkspaceView: View {
         }
     }
 
+    private var navigationRail: some View {
+        VStack(spacing:10) {
+            Image(systemName:"square.stack.3d.up.fill")
+                .symbolRenderingMode(.hierarchical)
+                .font(.system(size:18,weight:.medium))
+                .foregroundStyle(ForgePalette.ink)
+                .frame(width:40,height:40)
+                .padding(.bottom,12)
+                .accessibilityLabel("Forge")
+
+            ForEach([NativePage.agent,.requirement,.schedule,.plugins,.knowledge]) { section in
+                railButton(section)
+            }
+            Spacer(minLength:8)
+            railButton(.settings)
+        }
+        .padding(.top,14)
+        .padding(.bottom,14)
+        .frame(width:62)
+        .frame(maxHeight:.infinity)
+        .background(.regularMaterial)
+    }
+
+    private func railButton(_ section:NativePage) -> some View {
+        Button { model.show(section) } label: {
+            Image(systemName:section.symbol)
+                .symbolRenderingMode(.hierarchical)
+                .font(.system(size:16,weight:model.page == section ? .semibold : .regular))
+                .foregroundStyle(model.page == section ? ForgePalette.ink : ForgePalette.secondary)
+                .frame(width:40,height:38)
+                .background(model.page == section ? ForgePalette.selectionStrong : .clear,
+                            in:RoundedRectangle(cornerRadius:11,style:.continuous))
+                .contentShape(RoundedRectangle(cornerRadius:11,style:.continuous))
+        }
+        .buttonStyle(.plain)
+        .help(section.rawValue)
+        .accessibilityLabel(section.rawValue)
+        .accessibilityIdentifier(section.accessibilityId)
+    }
+
     private var sidebar: some View {
         VStack(alignment:.leading,spacing:0) {
             HStack(spacing:6) {
+                Text("会话")
+                    .font(.system(size:13,weight:.semibold))
+                    .lineLimit(1)
+                Spacer(minLength:0)
                 Button {
                     model.newThread()
                 } label: {
-                    Label("新会话",systemImage:"square.and.pencil")
+                    Image(systemName:"square.and.pencil")
                         .font(.system(size:12.5,weight:.medium))
-                        .frame(maxWidth:.infinity,alignment:.leading)
+                        .frame(width:28,height:30)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .disabled(model.busy)
                 .help(model.repoId == nil ? "创建不绑定项目的会话 (⌘N)" : "在当前项目新建会话 (⌘N)")
+                .accessibilityLabel("新会话")
                 .accessibilityIdentifier("sidebar.thread.new")
 
                 Button { model.toggleConversationSearch() } label: {
@@ -242,13 +290,6 @@ private struct ForgeWorkspaceView: View {
                 .padding(.horizontal,16).padding(.bottom,4)
             }
 
-            // One continuous translucent navigation rail; the rows and project
-            // names already communicate hierarchy without repeated section titles.
-            ForEach(NativePage.allCases.filter { $0 != .settings && $0 != .plan && $0 != .agent }) { section in
-                navigationRow(section)
-            }
-            .padding(.top, 12)
-
             ScrollView {
                 LazyVStack(alignment:.leading,spacing:2) {
                     if model.visibleThreads.isEmpty {
@@ -287,8 +328,7 @@ private struct ForgeWorkspaceView: View {
             Spacer(minLength:5)
 
             projectSwitcher
-                .padding(.horizontal,10).padding(.top,5)
-            navigationRow(.settings).padding(.bottom,11)
+                .padding(.horizontal,10).padding(.top,5).padding(.bottom,11)
         }
         .foregroundStyle(ForgePalette.ink)
         .background(.ultraThinMaterial)
@@ -1032,30 +1072,6 @@ private struct ForgeWorkspaceView: View {
                 projectSearch = ""
             }
         }
-    }
-
-    private func navigationRow(_ section: NativePage) -> some View {
-        Button { model.show(section) } label: {
-            HStack(spacing:10) {
-                Image(systemName:section.symbol)
-                    .symbolRenderingMode(.hierarchical)
-                    .font(.system(size:12.5,weight:model.page == section ? .semibold : .regular))
-                    .foregroundStyle(model.page == section ? ForgePalette.ink : ForgePalette.secondary)
-                    .frame(width:18)
-                Text(section.rawValue).font(.system(size:12,weight:model.page == section ? .semibold : .regular))
-                Spacer()
-            }
-            .padding(.horizontal,10)
-            .frame(height:32)
-            .background(model.page == section
-                            ? Color(nsColor:.controlBackgroundColor).opacity(0.63)
-                            : .clear,
-                        in:RoundedRectangle(cornerRadius:9,style:.continuous))
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityIdentifier(section.accessibilityId)
-        .padding(.horizontal,10)
     }
 
     private var main: some View {
@@ -5778,7 +5794,6 @@ private struct RuntimeSettingsSection: View {
                         .foregroundStyle(ForgePalette.secondary)
                 }
             }
-            .accessibilityIdentifier("settings.runtime.disclosure")
         }
     }
 
