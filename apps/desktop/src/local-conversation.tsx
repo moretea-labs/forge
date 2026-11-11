@@ -846,7 +846,8 @@ export function LocalConversationSurface({
               ? (joyCodeReady ? `JoyCode · ${apiSettings?.joyCodeModel}` : 'JoyCode 尚未就绪')
               : apiSelected ? (apiReady
                 ? `API · ${selectedApiProfile?.model}${credentialDeferredForProfile ? ' · 发送时校验钥匙串' : ''}`
-                : 'API 尚未配置')
+                : selectedThreadProvider === 'api' ? '历史 API 会话未绑定固定 Provider'
+                  : !selectedApiProfile ? '会话绑定的 API Provider 不存在' : 'API 尚未配置')
                 : providerError ?? provider?.detail ?? 'Codex CLI 状态待确认'}>
             <span className={'health-dot ' + ((joyCodeSelected ? joyCodeReady
               : apiSelected ? (apiReady && !credentialDeferredForProfile) : provider?.status === 'ready')

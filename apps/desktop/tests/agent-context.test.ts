@@ -138,7 +138,7 @@ describe('Forge Desktop Agent thread identity', () => {
     const codex = { ...createThread('codex', 'repo_one', 'checkout_one'),
       title: 'Codex task', updatedAt: '2026-11-06T08:00:00Z', messages: [{ id: 'c1', role: 'user' as const,
         content: 'Continue Codex task', createdAt: '2026-11-06T08:00:00Z' }] };
-    const api = { ...createThread('api', 'repo_two', 'checkout_two'),
+    const api = { ...createThread('api:deepseek', 'repo_two', 'checkout_two'),
       title: 'API task', updatedAt: '2026-11-06T08:01:00Z', messages: [{ id: 'a1', role: 'user' as const,
         content: 'Continue API task', createdAt: '2026-11-06T08:01:00Z' }] };
     const originalStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
@@ -146,7 +146,7 @@ describe('Forge Desktop Agent thread identity', () => {
       { repoId: 'repo_one', name: 'One', repository: 'example/one', checkoutId: 'checkout_one' },
       { repoId: 'repo_two', name: 'Two', repository: 'example/two', checkoutId: 'checkout_two' },
     ];
-    const renderHistory = (threads: typeof codex[], defaultProvider: 'codex' | 'api') => {
+    const renderHistory = (threads: typeof codex[], defaultProvider: 'codex' | 'api:openai') => {
       Object.defineProperty(globalThis, 'localStorage', {
         configurable: true, value: {
           getItem(key: string) {
@@ -158,8 +158,18 @@ describe('Forge Desktop Agent thread identity', () => {
         projects, defaultProjectRepoId: 'repo_one', newThreadRequested: false,
         provider: { status: 'ready', label: 'Codex', detail: 'Connected', streaming: false, tools: true },
         providerLoading: false, providerError: null,
-        apiSettings: { provider: defaultProvider, endpoint: 'https://api.example.com/v1',
-          model: 'test-model', apiProtocol: 'openai', hasKey: false },
+        apiSettings: {
+          schemaVersion: 2, defaultProvider,
+          profiles: [
+            { id: 'deepseek', providerId: 'api:deepseek', label: 'DeepSeek', endpoint: 'https://api.deepseek.com/v1',
+              model: 'deepseek-chat', apiProtocol: 'openai', credentialRef: 'credential-deepseek', hasKey: true, endpointReady: true },
+            { id: 'openai', providerId: 'api:openai', label: 'OpenAI', endpoint: 'https://api.openai.com/v1',
+              model: 'gpt-test', apiProtocol: 'responses', credentialRef: 'credential-openai', hasKey: true, endpointReady: true },
+          ],
+          joyCodeModel: 'joycode-test', joyCodeReady: false,
+          provider: defaultProvider === 'codex' ? 'codex' : 'api', endpoint: 'https://api.openai.com/v1',
+          model: 'gpt-test', apiProtocol: 'responses', credentialRef: 'credential-openai', hasKey: true, endpointReady: true,
+        },
         onOpenSettings() {}, onOpenProjects() {}, onOpenKnowledge() {},
         onNewThreadHandled() {}, onOpenThreadHandled() {},
         onThreadsChange() {}, async onRefreshProvider() {},
@@ -167,17 +177,24 @@ describe('Forge Desktop Agent thread identity', () => {
       }));
     };
     try {
-      const apiDefault = renderHistory([codex, api], 'api');
+      const apiDefault = renderHistory([codex, api], 'api:openai');
       expect(apiDefault).toContain('Continue API task');
-      expect(apiDefault).toContain('API 尚未配置');
+      expect(apiDefault).toContain('API · deepseek-chat');
       const codexDefault = renderHistory([api, codex], 'codex');
       expect(codexDefault).toContain('Continue API task');
-      expect(codexDefault).toContain('API 尚未配置');
+      expect(codexDefault).toContain('API · deepseek-chat');
+      expect(codexDefault).not.toContain('gpt-test');
       expect(codexDefault).not.toContain('发送时校验钥匙串');
       expect(codexDefault).toContain('Checkout 未核实，暂时禁止执行');
       expect(codexDefault).not.toContain('允许本轮编辑文件和执行命令');
+      const legacyApi = { ...createThread('api', 'repo_two', 'checkout_two'), title: 'Legacy API task',
+        updatedAt: '2026-11-06T08:02:00Z', messages: [{ id: 'legacy', role: 'user' as const,
+          content: 'Continue legacy API task', createdAt: '2026-11-06T08:02:00Z' }] };
+      const legacy = renderHistory([legacyApi], 'api:openai');
+      expect(legacy).toContain('历史 API 会话未绑定固定 Provider');
+      expect(legacy).not.toContain('API · gpt-test');
       const nav = localConversationNavItems([codex, api], {});
-      expect(nav.map((item) => item.provider).sort()).toEqual(['api', 'codex']);
+      expect(nav.map((item) => item.provider).sort()).toEqual(['api:deepseek', 'codex']);
       expect(nav.map((item) => item.title).sort()).toEqual(['API task', 'Codex task']);
     } finally {
       if (originalStorage) Object.defineProperty(globalThis, 'localStorage', originalStorage);
