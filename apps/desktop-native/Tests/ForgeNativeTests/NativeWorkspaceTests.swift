@@ -728,7 +728,29 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(authFailedConnection?.repairLabel,"重新连接")
         XCTAssertEqual(NativeWorkspace.connectionLabel(authFailedConnection),"远程 MCP 未连接")
         XCTAssertEqual(NativeWorkspace.connectionLabel(nil),"MCP 暂不可用")
+        XCTAssertEqual(NativeWorkspace.connectionLabel(nil,loading:true),"正在读取连接")
+        XCTAssertEqual(NativeWorkspace.runtimeLabel(nil,loading:false),"Runtime 暂不可用")
+        XCTAssertEqual(NativeWorkspace.runtimeLabel(nil,loading:true),"正在读取运行时")
+        XCTAssertEqual(NativeWorkspace.runtimeDescription(nil,loading:false),"暂时无法读取 Runtime 状态；可刷新或运行诊断。")
+        XCTAssertEqual(NativeWorkspace.runtimeDescription(nil,loading:true),"正在读取主运行时状态。")
         XCTAssertNil(NativeWorkspace.controllerConnectionDetail(["unexpected":true]))
+    }
+
+    @MainActor
+    func testUnavailableStatusLabelsAreDerivedFromCanonicalWorkspaceState() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+
+        XCTAssertEqual(model.connection,"MCP 暂不可用")
+        XCTAssertEqual(model.runtimeLabel,"Runtime 暂不可用")
+        XCTAssertEqual(model.runtimeDescription,"暂时无法读取 Runtime 状态；可刷新或运行诊断。")
+
+        model.connectionLoading = true
+        model.runtimeLoading = true
+        XCTAssertEqual(model.connection,"正在读取连接")
+        XCTAssertEqual(model.runtimeLabel,"正在读取运行时")
+        XCTAssertEqual(model.runtimeDescription,"正在读取主运行时状态。")
     }
 
     func testKnowledgeProjectionDecodesCanonicalReadOnlyAudit() {

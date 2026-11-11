@@ -525,7 +525,15 @@ final class NativeWorkspace: ObservableObject {
     // Transient model deltas. Only a finished turn becomes canonical thread history.
     @Published private(set) var streamedAnswer = ""
     @Published private(set) var streamedReasoning = ""
-    @Published var connection = "MCP 状态未知"
+    var connection: String {
+        Self.connectionLabel(connectionStatus,loading:connectionLoading)
+    }
+    var runtimeLabel: String {
+        Self.runtimeLabel(runtimeStatus,loading:runtimeLoading)
+    }
+    var runtimeDescription: String {
+        Self.runtimeDescription(runtimeStatus,loading:runtimeLoading)
+    }
     @Published var error: String?
     @Published var records: [ForgeRecord] = []
     @Published var selectedRecord: String?
@@ -1215,10 +1223,8 @@ final class NativeWorkspace: ObservableObject {
             let connectionValue = try? await ForgeBridge.request("read_connection_status")
             if let connectionValue, let parsed = Self.controllerConnectionDetail(connectionValue) {
                 connectionStatus = parsed
-                connection = Self.connectionLabel(parsed)
             } else {
                 connectionStatus = nil
-                connection = "MCP 状态未知"
             }
             await refreshProject()
             await loadUserRequests()
@@ -1784,8 +1790,20 @@ final class NativeWorkspace: ObservableObject {
         )
     }
 
-    nonisolated static func connectionLabel(_ detail: ControllerConnectionDetail?) -> String {
-        guard let detail else { return "MCP 暂不可用" }
+    nonisolated static func runtimeLabel(_ detail: RuntimeStatusDetail?, loading: Bool) -> String {
+        guard let detail else { return loading ? "正在读取运行时" : "Runtime 暂不可用" }
+        return detail.label
+    }
+
+    nonisolated static func runtimeDescription(_ detail: RuntimeStatusDetail?, loading: Bool) -> String {
+        guard let detail else {
+            return loading ? "正在读取主运行时状态。" : "暂时无法读取 Runtime 状态；可刷新或运行诊断。"
+        }
+        return detail.detail
+    }
+
+    nonisolated static func connectionLabel(_ detail: ControllerConnectionDetail?, loading: Bool = false) -> String {
+        guard let detail else { return loading ? "正在读取连接" : "MCP 暂不可用" }
         if detail.ready { return "MCP 配置就绪" }
         if !detail.configured { return "MCP 未配置" }
         if !detail.controller.ready { return "控制器未就绪" }
@@ -1809,10 +1827,8 @@ final class NativeWorkspace: ObservableObject {
             let value = try await ForgeBridge.request("read_connection_status")
             guard let parsed = Self.controllerConnectionDetail(value) else { throw ForgeBridgeError.invalidResponse }
             connectionStatus = parsed
-            connection = Self.connectionLabel(parsed)
         } catch {
             connectionStatus = nil
-            connection = "MCP 状态未知"
             failures.append("连接：\(error.localizedDescription)")
         }
         self.error = failures.isEmpty ? nil : failures.joined(separator:"\n")
@@ -1841,7 +1857,6 @@ final class NativeWorkspace: ObservableObject {
             ])
             guard let parsed = Self.controllerConnectionDetail(value) else { throw ForgeBridgeError.invalidResponse }
             connectionStatus = parsed
-            connection = Self.connectionLabel(parsed)
             error = nil
         } catch { self.error = error.localizedDescription }
     }
@@ -1854,7 +1869,6 @@ final class NativeWorkspace: ObservableObject {
             let value = try await ForgeBridge.request("repair_connection")
             guard let parsed = Self.controllerConnectionDetail(value) else { throw ForgeBridgeError.invalidResponse }
             connectionStatus = parsed
-            connection = Self.connectionLabel(parsed)
             error = nil
         } catch { self.error = error.localizedDescription }
     }
