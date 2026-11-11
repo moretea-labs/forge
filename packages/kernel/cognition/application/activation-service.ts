@@ -79,9 +79,18 @@ function cognitiveQueryTerms(text: string): Set<string> {
   return terms;
 }
 
+function retrievalMemoryTerms(memory: MemoryUnit): Set<string> {
+  // Admission/valence/source/portability facets describe storage metadata, not
+  // semantic content. Counting them in memory coverage dilutes a valid cue and
+  // can hide a portable Workspace memory from an unrelated Project.
+  const semanticFacets = memory.facets.filter(facet =>
+    !/^(?:learning|admission\.|valence\.|source\.|portability\.)/i.test(facet));
+  return cognitiveTerms(`${memory.canonicalText}\n${memory.concepts.join(' ')}\n${semanticFacets.join(' ')}`);
+}
+
 function associativeLexicalCueScore(memory: MemoryUnit, terms: ReadonlySet<string>, allowCjkQueryCoverage = false): number {
   if (!terms.size) return 0;
-  const haystack = cognitiveTerms(`${memory.canonicalText}\n${memory.concepts.join(' ')}\n${memory.facets.join(' ')}`);
+  const haystack = retrievalMemoryTerms(memory);
   if (!haystack.size) return 0;
   let matches = 0;
   for (const term of terms) if (haystack.has(term)) matches += 1;
@@ -161,7 +170,7 @@ function active(memory: MemoryUnit, now: number): boolean {
 }
 
 function lexicalScore(memory: MemoryUnit, terms: ReadonlySet<string>): number {
-  const haystack = cognitiveTerms(`${memory.canonicalText}\n${memory.concepts.join(' ')}\n${memory.facets.join(' ')}`);
+  const haystack = retrievalMemoryTerms(memory);
   let matches = 0;
   for (const term of terms) if (haystack.has(term)) matches += 1;
   return terms.size ? matches / terms.size : 0;
