@@ -13,8 +13,9 @@ import {
 import { homedir } from 'os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'path';
 import { repositoryControllerRoot } from '../../effects/controller-home';
+import { stableCheckoutId } from '../../cli/repositories/identity';
 import { measureReclaimablePath } from './lifecycle-retention-metrics';
-import { assertOwnedResourceCleanupTarget, getOwnedResource, listOwnedResources, markOwnedResourceCleaned, recordOwnedResource, type OwnedResource } from '../../../packages/kernel/identity/api/index';
+import { assertOwnedResourceCleanupTarget, getOwnedResource, listOwnedResources, markOwnedResourceCleaned, recordOwnedResource, ownedFilesystemIdentityFingerprint, type OwnedResource } from '../../../packages/kernel/identity/api/index';
 import { fixedShellWrapperCommand, shellSegments, shellWordsPreservingQuotes } from '../../core/shell-command';
 
 const DEFAULT_GENERATED_CACHE_GRACE_MS = 6 * 60 * 60_000;
@@ -32,8 +33,6 @@ export interface GeneratedCacheRetentionOptions {
   maxEntries?: number;
   maxRemovals?: number;
   processCommands?: string[];
-  /** Internal checkout ownership fence: only verified integrated worktrees may prune toolchain output. */
-  protectToolchainOutputs?: boolean;
   rootStartIndex?: number;
   scanStartIndex?: number;
 }
@@ -63,6 +62,22 @@ export interface GeneratedCacheRepositoryRootSet {
     worktree: boolean;
     lifecycle?: 'active' | 'removed' | 'archived';
   }>;
+}
+
+export interface GeneratedCacheRepositoryCheckoutSet {
+  repoId: string;
+  canonicalRoot: string;
+  checkouts: ReadonlyArray<{
+    checkoutId: string;
+    localRoot: string;
+    canonicalRoot: string;
+    worktree: boolean;
+    lifecycle?: 'active' | 'removed' | 'archived';
+  }>;
+}
+
+export interface GeneratedCacheRepositoryRetentionOptions extends GeneratedCacheRetentionOptions {
+  controllerHome: string;
 }
 
 export interface RepositoryGeneratedCacheRetentionReport extends GeneratedCacheRetentionReport {
@@ -356,6 +371,54 @@ function verifiedToolchainCandidate(candidate: Candidate): boolean {
   return false;
 }
 
+function registeredCheckoutIdentityMatches(
+  repository: GeneratedCacheRepositoryCheckoutSet,
+  checkout: GeneratedCacheRepositoryCheckoutSet['checkouts'][number],
+): boolean {
+  try {
+    const root = resolve(checkout.localRoot);
+    const canonicalRoot = realpathSync(root);
+    if (!checkout.checkoutId || checkout.worktree !== true
+        || canonicalRoot !== checkout.canonicalRoot
+        || checkout.checkoutId !== stableCheckoutId(repository.repoId, canonicalRoot)
+        || lstatSync(root).isSymbolicLink() || !lstatSync(root).isDirectory()) return false;
+    const topLevel = realpathSync(execFileSync('git', ['-C', root, 'rev-parse', '--show-toplevel'], {
+      encoding: 'utf8', timeout: 2_000, maxBuffer: 8 * 1024,
+    }).trim());
+    if (topLevel !== canonicalRoot) return false;
+    const checkoutCommon = realpathSync(execFileSync('git', ['-C', root, 'rev-parse', '--path-format=absolute', '--git-common-dir'], {
+      encoding: 'utf8', timeout: 2_000, maxBuffer: 8 * 1024,
+    }).trim());
+    const repositoryCommon = realpathSync(execFileSync('git', ['-C', repository.canonicalRoot, 'rev-parse', '--path-format=absolute', '--git-common-dir'], {
+      encoding: 'utf8', timeout: 2_000, maxBuffer: 8 * 1024,
+    }).trim());
+    return checkoutCommon === repositoryCommon;
+  } catch { return false; }
+}
+
+function ownedWorktreeIdentityMatches(
+  repository: GeneratedCacheRepositoryCheckoutSet,
+  checkout: GeneratedCacheRepositoryCheckoutSet['checkouts'][number],
+  resources: readonly OwnedResource[],
+): boolean {
+  const root = canonical(checkout.canonicalRoot);
+  const matches = resources.filter((resource) => resource.kind === 'worktree'
+    && (canonical(resource.targetRef) === root
+      || (resource.locator?.kind === 'filesystem_path' && canonical(resource.locator.value) === root)));
+  if (matches.length === 0) return true;
+  if (matches.length !== 1) return false;
+  const resource = matches[0]!;
+  if (resource.provenance.repoId !== repository.repoId
+      || resource.targetRef !== checkout.canonicalRoot
+      || resource.locator?.kind !== 'filesystem_path'
+      || resource.locator.value !== checkout.canonicalRoot
+      || !resource.ownerForgeInstanceId || !resource.identityFingerprint) return false;
+  try {
+    return ownedFilesystemIdentityFingerprint(resource.ownerForgeInstanceId, resource.locator.value)
+      === resource.identityFingerprint;
+  } catch { return false; }
+}
+
 function cleanIntegratedWorktree(root: string, canonicalRoot: string): boolean {
   try {
     const status = execFileSync('git', ['-C', root, 'status', '--porcelain', '--untracked-files=normal'], {
@@ -596,8 +659,8 @@ export function cleanupGeneratedRepositoryCaches(
         continue;
       }
       if (['swiftpm_build', 'cargo_build', 'next_build'].includes(candidate.kind)
-          && (options.protectToolchainOutputs || !verifiedToolchainCandidate(candidate))) {
-        increment(report.skippedByReason, options.protectToolchainOutputs ? 'worktree_source_protected' : 'ownership_unproven');
+          && !verifiedToolchainCandidate(candidate)) {
+        increment(report.skippedByReason, 'ownership_unproven');
         report.retainedPaths.push(relative(repoRoot, candidate.path));
         continue;
       }
@@ -654,26 +717,24 @@ export function cleanupGeneratedRepositoryCaches(
 }
 
 /**
- * Apply the same generated-cache policy to the canonical checkout and every
- * active managed worktree, sharing one scan/removal budget across the whole
- * repository. Work lifecycle is intentionally not cache authority: stale but
- * recoverable Work may keep its source checkout while rebuildable caches age
- * out independently. Active build/test processes are still protected by
- * cleanupGeneratedRepositoryCaches().
+ * Apply one policy to the canonical and registered linked checkouts. Revalidate
+ * stable Checkout ID, shared Git common dir, optional Owner inode witness, and
+ * clean/integrated source before scanning any linked root.
  */
 export function cleanupGeneratedRepositoryCheckoutCaches(
-  repository: GeneratedCacheRepositoryRootSet,
-  options: GeneratedCacheRetentionOptions = {},
+  repository: GeneratedCacheRepositoryCheckoutSet,
+  options: GeneratedCacheRepositoryRetentionOptions,
 ): RepositoryGeneratedCacheRetentionReport {
   const diskFreeBefore = filesystemAvailableBytes(repository.canonicalRoot);
+  const { controllerHome, ...retentionOptions } = options;
   let remainingEntries = Math.max(1, Math.floor(options.maxEntries ?? DEFAULT_SCAN_BUDGET));
   let remainingRemovals = Math.max(1, Math.floor(options.maxRemovals ?? DEFAULT_REMOVAL_BUDGET));
   const processCommands = options.processCommands ?? collectProcessCommands();
+  const activeCheckouts = repository.checkouts.filter((checkout) =>
+    checkout.worktree && (checkout.lifecycle ?? 'active') === 'active');
   const roots = [
     repository.canonicalRoot,
-    ...repository.checkouts
-      .filter((checkout) => checkout.worktree && (checkout.lifecycle ?? 'active') === 'active')
-      .map((checkout) => checkout.localRoot),
+    ...activeCheckouts.map((checkout) => checkout.localRoot),
   ].filter((root, index, values) => values.findIndex((item) => canonical(item) === canonical(root)) === index);
   if (roots.length > 1) {
     const offset = ((Math.trunc(options.rootStartIndex ?? 0) % roots.length) + roots.length) % roots.length;
@@ -719,16 +780,46 @@ export function cleanupGeneratedRepositoryCheckoutCaches(
     recordDiskFreeDelta();
     return aggregate;
   }
+  let ownedWorktreeResources: OwnedResource[] = [];
+  let ownedWorktreeInventoryAvailable = true;
+  try {
+    ownedWorktreeResources = listOwnedResources(controllerHome, { kind: 'worktree' });
+  } catch (error) {
+    ownedWorktreeInventoryAvailable = false;
+    aggregate.errors.push(`owned_resource_inventory_unavailable: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const skipRoot = (root: string, reason: string): void => {
+    aggregate.rootsInspected += 1;
+    aggregate.filesystemAvailableBytesDeltaByRoot[canonical(root)] = null;
+    increment(aggregate.skippedByReason, reason);
+  };
   for (const root of roots) {
     if (remainingEntries <= 0 || remainingRemovals <= 0) {
       aggregate.budgetExhausted = true;
       break;
     }
+    if (canonical(root) !== canonical(repository.canonicalRoot)) {
+      const matchingCheckouts = activeCheckouts.filter((checkout) => canonical(checkout.localRoot) === canonical(root));
+      if (matchingCheckouts.length !== 1 || !registeredCheckoutIdentityMatches(repository, matchingCheckouts[0]!)) {
+        skipRoot(root, 'checkout_identity_unproven');
+        continue;
+      }
+      const checkout = matchingCheckouts[0]!;
+      if (!ownedWorktreeInventoryAvailable) {
+        skipRoot(root, 'owned_resource_inventory_unavailable');
+        continue;
+      }
+      if (!ownedWorktreeIdentityMatches(repository, checkout, ownedWorktreeResources)) {
+        skipRoot(root, 'owned_resource_identity_mismatch');
+        continue;
+      }
+      if (!cleanIntegratedWorktree(root, repository.canonicalRoot)) {
+        skipRoot(root, 'worktree_source_protected');
+        continue;
+      }
+    }
     const report = cleanupGeneratedRepositoryCaches(root, {
-      ...options,
-      protectToolchainOutputs: options.protectToolchainOutputs
-        || (canonical(root) !== canonical(repository.canonicalRoot)
-          && !cleanIntegratedWorktree(root, repository.canonicalRoot)),
+      ...retentionOptions,
       processCommands: processCommandsForRoot(root),
       scanStartIndex: options.scanStartIndex ?? Math.floor((options.rootStartIndex ?? 0) / Math.max(1, roots.length)),
       maxEntries: remainingEntries,

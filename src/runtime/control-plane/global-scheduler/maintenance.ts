@@ -176,6 +176,7 @@ export async function runSchedulerPeriodicCleanup(input: {
     const cacheRepo = input.repositories[plan.generatedCacheRepositoryIndex]!;
     try {
       const generated = cleanupGeneratedRepositoryCheckoutCaches(cacheRepo, {
+        controllerHome: input.controllerHome,
         nowMs: input.nowMs, rootStartIndex: plan.generatedCacheRootStartIndex,
       });
       if (Object.keys(generated.byClass).length > 0 || generated.errors.length > 0 || generated.budgetExhausted) {

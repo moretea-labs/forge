@@ -1082,6 +1082,7 @@ export function applyRuntimeMaintenance(
   let iosTestEvidenceInventory: IosTestEvidenceInventoryReport | undefined;
   if (options.actionId === 'full_maintenance_pass') {
     let cacheRepository: Parameters<typeof cleanupGeneratedRepositoryCheckoutCaches>[0] = {
+      repoId: repository.repoId,
       canonicalRoot: repository.canonicalRoot,
       checkouts: [],
     };
@@ -1096,6 +1097,7 @@ export function applyRuntimeMaintenance(
     // root and cannot reach later managed checkouts or high-cardinality caches.
     const cacheScanNowMs = Date.now();
     generatedCacheGc = cleanupGeneratedRepositoryCheckoutCaches(cacheRepository, {
+      controllerHome,
       nowMs: cacheScanNowMs,
       rootStartIndex: Math.floor(cacheScanNowMs / 60_000),
       graceMs: 60_000,

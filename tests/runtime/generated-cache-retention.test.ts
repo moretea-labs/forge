@@ -4,7 +4,8 @@ import { existsSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, s
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { cleanupControllerHomeBrowserArtifacts, cleanupGeneratedRepositoryCaches, cleanupGeneratedRepositoryCheckoutCaches, cleanupReleasableIosTestEvidence, inspectRepositoryIosTestEvidence, iosTestEvidenceResourceId, recordIosTestEvidenceOwner, recordProcessXcodeTestEvidenceOwner } from '../../src/runtime/control-plane/generated-cache-retention';
-import { getOwnedResource, markOwnedResourceRetained } from '../../packages/kernel/identity/api/index';
+import { getOwnedResource, markOwnedResourceRetained, recordOwnedResource } from '../../packages/kernel/identity/api/index';
+import { stableCheckoutId } from '../../src/cli/repositories/identity';
 
 import { planSchedulerPeriodicMaintenance } from '../../src/runtime/control-plane/global-scheduler/maintenance';
 
@@ -22,6 +23,21 @@ function repository(): string {
   roots.push(root);
   execFileSync('git', ['init', '-q', root]);
   return root;
+}
+
+function controllerHome(): string {
+  const home = mkdtempSync(join(tmpdir(), 'forge-generated-cache-owner-'));
+  roots.push(home);
+  return home;
+}
+
+function registeredCheckout(repoId: string, localRoot: string, lifecycle: 'active' | 'removed' | 'archived' = 'active') {
+  const canonicalRoot = realpathSync(localRoot);
+  return { checkoutId: stableCheckoutId(repoId, canonicalRoot), localRoot, canonicalRoot, worktree: true, lifecycle };
+}
+
+function repositoryRootSet(canonicalRoot: string, checkouts: ReturnType<typeof registeredCheckout>[]) {
+  return { repoId: 'test-repo', canonicalRoot: realpathSync(canonicalRoot), checkouts };
 }
 
 function age(path: string): void {
@@ -335,14 +351,12 @@ describe('generated repository cache retention', () => {
     writeFileSync(join(cargoOutput, 'deps', 'editor'), 'compiled');
     age(join(cargoOutput, '.fingerprint')); age(join(cargoOutput, 'deps')); age(cargoOutput); age(cargoRoot);
 
-    const report = cleanupGeneratedRepositoryCheckoutCaches({
-      canonicalRoot,
-      checkouts: [
-        { localRoot: swiftCheckout, worktree: true, lifecycle: 'active' },
-        { localRoot: nextCheckout, worktree: true, lifecycle: 'active' },
-        { localRoot: cargoCheckout, worktree: true, lifecycle: 'active' },
-      ],
-    }, {
+    const report = cleanupGeneratedRepositoryCheckoutCaches(repositoryRootSet(canonicalRoot, [
+      registeredCheckout('test-repo', swiftCheckout),
+      registeredCheckout('test-repo', nextCheckout),
+      registeredCheckout('test-repo', cargoCheckout),
+    ]), {
+      controllerHome: controllerHome(),
       nowMs: Date.parse('2026-11-10T00:00:00.000Z'),
       processCommands: [],
       maxEntries: 300,
@@ -390,10 +404,11 @@ describe('generated repository cache retention', () => {
       age(output); age(join(linked, 'target'));
     };
     const options = {
+      controllerHome: controllerHome(),
       nowMs: Date.parse('2026-11-10T00:00:00.000Z'), processCommands: [],
       maxEntries: 300, maxRemovals: 5, rootStartIndex: 1,
     };
-    const repoSet = { canonicalRoot, checkouts: [{ localRoot: linked, worktree: true, lifecycle: 'active' as const }] };
+    const repoSet = repositoryRootSet(canonicalRoot, [registeredCheckout('test-repo', linked)]);
     createCache();
     const clean = cleanupGeneratedRepositoryCheckoutCaches(repoSet, options);
     expect(clean.removedPaths.some((path) => path.includes(linked) && path.endsWith('target/debug'))).toBe(true);
@@ -418,6 +433,45 @@ describe('generated repository cache retention', () => {
     const unmerged = cleanupGeneratedRepositoryCheckoutCaches(repoSet, options);
     expect(existsSync(output)).toBe(true);
     expect(unmerged.skippedByReason.worktree_source_protected ?? 0).toBeGreaterThanOrEqual(1);
+  });
+
+  test('fails closed on a foreign clone and a recycled linked-worktree Owner identity', () => {
+    const canonicalRoot = repository();
+    writeFileSync(join(canonicalRoot, '.gitignore'), '.repo-harness/\n');
+    writeFileSync(join(canonicalRoot, 'README.md'), 'baseline');
+    execFileSync('git', ['-C', canonicalRoot, 'add', '.']);
+    execFileSync('git', ['-C', canonicalRoot, '-c', 'user.name=Test', '-c',
+      'user.email=test@example.org', 'commit', '-qm', 'initial']);
+    const parent = mkdtempSync(join(tmpdir(), 'forge-gc-owner-identity-'));
+    roots.push(parent);
+    const validRoot = join(parent, 'valid');
+    const recycledRoot = join(parent, 'recycled');
+    const foreignClone = join(parent, 'foreign-clone');
+    execFileSync('git', ['-C', canonicalRoot, 'worktree', 'add', '--detach', validRoot]);
+    execFileSync('git', ['-C', canonicalRoot, 'worktree', 'add', '--detach', recycledRoot]);
+    execFileSync('git', ['clone', '-q', canonicalRoot, foreignClone]);
+    const validCache = join(validRoot, '.repo-harness', 'ios-build', 'DerivedData-valid');
+    const recycledCache = join(recycledRoot, '.repo-harness', 'ios-build', 'DerivedData-recycled');
+    const foreignCache = join(foreignClone, '.repo-harness', 'ios-build', 'DerivedData-foreign');
+    for (const cache of [validCache, recycledCache, foreignCache]) { xcodeCache(cache); age(cache); }
+    const home = controllerHome();
+    const validCheckout = registeredCheckout('test-repo', validRoot);
+    const recycledCheckout = registeredCheckout('test-repo', recycledRoot);
+    const foreignCheckout = registeredCheckout('test-repo', foreignClone);
+    recordOwnedResource(home, { resourceId: 'test-worktree-owner-valid', kind: 'worktree',
+      targetRef: validCheckout.canonicalRoot, creator: 'forge:managed-workspace', repoId: 'test-repo' });
+    recordOwnedResource(home, { resourceId: 'test-worktree-owner-recycled', kind: 'worktree',
+      targetRef: recycledCheckout.canonicalRoot, creator: 'forge:managed-workspace', repoId: 'test-repo',
+      identityFingerprint: 'not-the-current-filesystem-identity' });
+    const report = cleanupGeneratedRepositoryCheckoutCaches(repositoryRootSet(canonicalRoot, [
+      validCheckout, recycledCheckout, foreignCheckout,
+    ]), { controllerHome: home, nowMs: Date.parse('2026-11-10T00:00:00.000Z'),
+      graceMs: 60_000, processCommands: [], maxEntries: 300, maxRemovals: 10 });
+    expect(existsSync(join(validCache, 'Build'))).toBe(false);
+    expect(existsSync(join(recycledCache, 'Build'))).toBe(true);
+    expect(existsSync(join(foreignCache, 'Build'))).toBe(true);
+    expect(report.skippedByReason.owned_resource_identity_mismatch).toBe(1);
+    expect(report.skippedByReason.checkout_identity_unproven).toBe(1);
   });
 
   test('repeated bounded passes converge on old Cargo outputs without deleting source or producer metadata', () => {
@@ -636,9 +690,19 @@ describe('generated repository cache retention', () => {
 
   test('reclaims stale generated caches from active managed worktrees with one repository budget', () => {
     const canonicalRoot = repository();
-    const activeWorktreeRoot = repository();
-    const siblingWorktreeRoot = repository();
-    const removedWorktreeRoot = repository();
+    writeFileSync(join(canonicalRoot, '.gitignore'), '.repo-harness/\n');
+    writeFileSync(join(canonicalRoot, 'README.md'), 'baseline');
+    execFileSync('git', ['-C', canonicalRoot, 'add', '.']);
+    execFileSync('git', ['-C', canonicalRoot, '-c', 'user.name=Test', '-c',
+      'user.email=test@example.org', 'commit', '-qm', 'initial']);
+    const parent = mkdtempSync(join(tmpdir(), 'forge-gc-active-worktrees-'));
+    roots.push(parent);
+    const activeWorktreeRoot = join(parent, 'active');
+    const siblingWorktreeRoot = join(parent, 'sibling');
+    const removedWorktreeRoot = join(parent, 'removed');
+    for (const root of [activeWorktreeRoot, siblingWorktreeRoot, removedWorktreeRoot]) {
+      execFileSync('git', ['-C', canonicalRoot, 'worktree', 'add', '--detach', root]);
+    }
     const activeCache = join(activeWorktreeRoot, '.repo-harness', 'ios-build', 'DerivedData-generic-simulator');
     const siblingCache = join(siblingWorktreeRoot, '.repo-harness', 'ios-build', 'DerivedData-generic-simulator');
     const removedCache = join(removedWorktreeRoot, '.repo-harness', 'ios-build', 'DerivedData-generic-simulator');
@@ -652,14 +716,12 @@ describe('generated repository cache retention', () => {
     age(siblingCache);
     age(removedCache);
 
-    const report = cleanupGeneratedRepositoryCheckoutCaches({
-      canonicalRoot,
-      checkouts: [
-        { localRoot: activeWorktreeRoot, worktree: true, lifecycle: 'active' },
-        { localRoot: siblingWorktreeRoot, worktree: true, lifecycle: 'active' },
-        { localRoot: removedWorktreeRoot, worktree: true, lifecycle: 'removed' },
-      ],
-    }, {
+    const report = cleanupGeneratedRepositoryCheckoutCaches(repositoryRootSet(canonicalRoot, [
+      registeredCheckout('test-repo', activeWorktreeRoot),
+      registeredCheckout('test-repo', siblingWorktreeRoot),
+      registeredCheckout('test-repo', removedWorktreeRoot, 'removed'),
+    ]), {
+      controllerHome: controllerHome(),
       nowMs: Date.parse('2026-08-25T12:00:00.000Z'),
       graceMs: 60_000,
       maxEntries: 100,
@@ -677,7 +739,17 @@ describe('generated repository cache retention', () => {
 
   test('rotates repository roots so an earlier root cannot permanently starve a managed worktree', () => {
     const canonicalRoot = repository();
-    const activeWorktreeRoot = repository();
+    writeFileSync(join(canonicalRoot, '.gitignore'), '.forge/ios/DerivedData/\n');
+    writeFileSync(join(canonicalRoot, 'README.md'), 'baseline');
+    execFileSync('git', ['-C', canonicalRoot, 'add', '.']);
+    execFileSync('git', ['-C', canonicalRoot, '-c', 'user.name=Test', '-c',
+      'user.email=test@example.org', 'commit', '-qm', 'initial']);
+    const parent = mkdtempSync(join(tmpdir(), 'forge-gc-root-rotation-'));
+    roots.push(parent);
+    const activeWorktreeRoot = join(parent, 'active');
+    execFileSync('git', ['-C', canonicalRoot, 'worktree', 'add', '--detach', activeWorktreeRoot]);
+    const repoSet = repositoryRootSet(canonicalRoot, [registeredCheckout('test-repo', activeWorktreeRoot)]);
+    const home = controllerHome();
     const canonicalCache = join(canonicalRoot, '.forge', 'ios', 'DerivedData', 'canonical');
     const activeCache = join(activeWorktreeRoot, '.forge', 'ios', 'DerivedData', 'worktree');
     xcodeCache(canonicalCache);
@@ -687,10 +759,8 @@ describe('generated repository cache retention', () => {
     age(canonicalCache);
     age(activeCache);
 
-    const report = cleanupGeneratedRepositoryCheckoutCaches({
-      canonicalRoot,
-      checkouts: [{ localRoot: activeWorktreeRoot, worktree: true, lifecycle: 'active' }],
-    }, {
+    const report = cleanupGeneratedRepositoryCheckoutCaches(repoSet, {
+      controllerHome: home,
       nowMs: Date.parse('2026-08-25T12:00:00.000Z'),
       graceMs: 60_000,
       maxEntries: 1,
@@ -723,9 +793,8 @@ describe('generated repository cache retention', () => {
     xcodeCache(lateCache);
     age(protectedCache);
     age(lateCache);
-    const next = cleanupGeneratedRepositoryCheckoutCaches({
-      canonicalRoot, checkouts: [{ localRoot: activeWorktreeRoot, worktree: true }],
-    }, { nowMs: Date.parse('2026-08-25T12:00:00.000Z'), graceMs: 60_000,
+    const next = cleanupGeneratedRepositoryCheckoutCaches(repoSet, { controllerHome: home,
+      nowMs: Date.parse('2026-08-25T12:00:00.000Z'), graceMs: 60_000,
       maxEntries: 1, maxRemovals: 1, rootStartIndex: 25, processCommands: [`xcodebuild -derivedDataPath ${protectedCache}`] });
     expect(next.rootsInspected).toBe(1);
     expect(existsSync(join(protectedCache, 'Build'))).toBe(true);
@@ -773,9 +842,8 @@ describe('generated repository cache retention', () => {
     expect(second.removedPaths).toEqual([]);
     expect(existsSync(join(recent, 'Build'))).toBe(true);
 
-    const aggregate = cleanupGeneratedRepositoryCheckoutCaches({
-      canonicalRoot: root, checkouts: [],
-    }, { nowMs: Date.parse('2026-11-03T12:00:00Z'), graceMs: 60_000,
+    const aggregate = cleanupGeneratedRepositoryCheckoutCaches(repositoryRootSet(root, []), {
+      controllerHome: controllerHome(), nowMs: Date.parse('2026-11-03T12:00:00Z'), graceMs: 60_000,
       processCommands: [`xcodebuild -derivedDataPath ${recent}`], maxEntries: 100 });
     expect(aggregate.reclaimedBytes).toBe(0);
     expect(aggregate.unknownReclaimedByteCount).toBe(0);
