@@ -102,6 +102,7 @@ async function main(): Promise<void> {
       const acceptedAt = performance.now();
       const terminal = await waitForProcess(controllerHome, repository.repoId, handle.processId, { timeoutMs: 15_000 });
       const observedAt = performance.now();
+      const observedWallAt = Date.now();
       if (!terminal.completed || terminal.status !== 'succeeded') {
         throw new Error('sample ' + sample + ' failed: ' + terminal.status + ' exit=' + terminal.exitCode);
       }
@@ -116,7 +117,7 @@ async function main(): Promise<void> {
         submissionLatencyMs: roundMs(acceptedAt - submitStartedAt),
         childExecutionMs: childFinishedAt - childStartedAt,
         runnerFinalizationLagMs: runnerFinishedAt - childFinishedAt,
-        callerObservationLagMs: Date.now() - childFinishedAt,
+        callerObservationLagMs: observedWallAt - childFinishedAt,
         observerWaitMs: roundMs(observedAt - acceptedAt),
         processLifecycleMs: roundMs(runnerFinishedAt - Date.parse(record.startedAt)),
       });
