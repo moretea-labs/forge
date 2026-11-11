@@ -6616,7 +6616,6 @@ private struct SettingsPane: View {
 
                 Divider()
                 RuntimeSettingsSection(model:model)
-                    .accessibilityIdentifier("settings.mcp")
                 DisclosureGroup("插件管理") {
                     PluginSettingsSection(model:model)
                         .padding(.top,12)
