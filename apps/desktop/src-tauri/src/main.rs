@@ -2437,6 +2437,23 @@ fn local_api_process_pause(process_id: &str, total_calls: usize, events: &[Value
     })
 }
 
+fn local_api_terminal_progress(conversation_id: &str, result: &Result<Value, String>) -> Value {
+    match result {
+        Ok(data) => json!({
+            "conversationId":conversation_id, "kind":"terminal",
+            "status":if data.get("incomplete").and_then(Value::as_bool) == Some(true) { "paused" } else { "completed" }
+        }),
+        Err(error) if error.contains("CANCELLED") => json!({
+            "conversationId":conversation_id, "kind":"cancelled",
+            "error":error.chars().take(1_000).collect::<String>()
+        }),
+        Err(error) => json!({
+            "conversationId":conversation_id, "kind":"error",
+            "error":error.chars().take(1_000).collect::<String>()
+        }),
+    }
+}
+
 // Reconcile a long-running command through the same Forge Process record.
 // A terminal query is evidence, not a second execution of the command.
 fn local_terminal_process_receipt(process_id: &str, query: &Value) -> Option<Value> {
@@ -2616,8 +2633,20 @@ trait LocalApiHost {
     fn emit_model_progress(&self, payload: Value);
 }
 
+fn sequence_local_api_event(
+    mut payload: Value,
+    sequence: &std::sync::atomic::AtomicU64,
+) -> Value {
+    if let Some(object) = payload.as_object_mut() {
+        let next = sequence.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        object.insert("sequence".into(), Value::from(next));
+    }
+    payload
+}
+
 struct TauriLocalApiHost {
     app: tauri::AppHandle,
+    sequence: std::sync::atomic::AtomicU64,
 }
 
 impl LocalApiHost for TauriLocalApiHost {
@@ -2627,10 +2656,10 @@ impl LocalApiHost for TauriLocalApiHost {
     }
 
     fn emit_tool_progress(&self, payload: Value) {
-        let _ = self.app.emit("forge-agent-tool-progress", payload);
+        let _ = self.app.emit("forge-agent-tool-progress", sequence_local_api_event(payload, &self.sequence));
     }
     fn emit_model_progress(&self, payload: Value) {
-        let _ = self.app.emit("forge-agent-model-progress", payload);
+        let _ = self.app.emit("forge-agent-model-progress", sequence_local_api_event(payload, &self.sequence));
     }
 }
 
@@ -3011,9 +3040,8 @@ impl StreamedModelRound {
                     self.text.push_str(text);
                     Self::emit_delta(host, conversation_id, "text_delta", text);
                 }
-                if let Some(reasoning) = delta.get("reasoning_content").and_then(Value::as_str) {
-                    Self::emit_delta(host, conversation_id, "reasoning_delta", reasoning);
-                }
+                // Chat Completions reasoning_content is a private reasoning channel,
+                // not a provider-declared summary; never forward it to the UI.
                 if let Some(calls) = delta.get("tool_calls").and_then(Value::as_array) {
                     for call in calls {
                         let index = call.get("index").and_then(Value::as_u64)
@@ -3043,7 +3071,7 @@ impl StreamedModelRound {
                 }
                 Some("response.reasoning_summary_text.delta") => {
                     if let Some(delta) = value.get("delta").and_then(Value::as_str) {
-                        Self::emit_delta(host, conversation_id, "reasoning_delta", delta);
+                        Self::emit_delta(host, conversation_id, "reasoning_summary_delta", delta);
                     }
                 }
                 Some("response.completed") => {
@@ -3077,11 +3105,8 @@ impl StreamedModelRound {
                                 Self::emit_delta(host, conversation_id, "text_delta", text);
                             }
                         }
-                        Some("thinking_delta") => {
-                            if let Some(text) = delta.get("thinking").and_then(Value::as_str) {
-                                Self::emit_delta(host, conversation_id, "reasoning_delta", text);
-                            }
-                        }
+                        // Anthropic thinking_delta is private reasoning, not a summary.
+                        Some("thinking_delta") => {}
                         Some("signature_delta") => {
                             if let Some(signature) = delta.get("signature").and_then(Value::as_str) {
                                 let block = self.anthropic_blocks.get_mut(&index)
@@ -3594,23 +3619,34 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
                 ));
             }
             let process_id = result.pointer("/result/processId").and_then(Value::as_str);
-            tool_events.push(json!({ "name": name, "ok": ok,
-                "processId":process_id, "requestId": effect_request_id, "toolCallId": id }));
-            host.emit_tool_progress(json!({
-                "conversationId": conversation_id, "name": name,
-                "phase": if ok { "completed" } else { "failed" },
-                "processId":process_id, "requestId": effect_request_id, "toolCallId": id,
-            }));
             total_calls += 1;
             if verification_attempt && ok {
                 patch_needs_verification = false;
             }
-            // A real tool result is the only source of truth sent back to the model.
+            // The same bounded receipt shown to the model is available in the live tool row.
             let serialized = result.to_string();
             let bounded = if serialized.chars().count() > LOCAL_API_TOOL_RESULT_MAX_CHARS {
                 format!("{}...[truncated; re-read from Forge if needed]",
                     serialized.chars().take(LOCAL_API_TOOL_RESULT_MAX_CHARS - 60).collect::<String>())
             } else { serialized };
+            host.emit_tool_progress(json!({
+                "conversationId":conversation_id, "name":name, "phase":"output",
+                "output":bounded.chars().take(2_000).collect::<String>(),
+                "processId":process_id, "requestId":effect_request_id, "toolCallId":id,
+            }));
+            let progress_phase = match effect_outcome {
+                Some(LocalEffectOutcome::Succeeded) => "completed",
+                Some(LocalEffectOutcome::TerminalFailure) => "failed",
+                Some(LocalEffectOutcome::Unknown) => "unknown",
+                None if ok => "completed",
+                None => "failed",
+            };
+            host.emit_tool_progress(json!({
+                "conversationId":conversation_id, "name":name, "phase":progress_phase,
+                "processId":process_id, "requestId":effect_request_id, "toolCallId":id,
+            }));
+            tool_events.push(json!({ "name": name, "ok": ok,
+                "processId":process_id, "requestId": effect_request_id, "toolCallId": id }));
             if effect_outcome == Some(LocalEffectOutcome::Unknown) {
                 // Only a missing or ambiguous terminal receipt requires reconciliation.
                 // Known failures and partial outcomes are sent back to the model verbatim
@@ -3659,16 +3695,21 @@ async fn send_local_api_conversation(
     let _registration = LocalApiTurnRegistration {
         app:app.clone(), conversation_id:conversation_id.clone(),
     };
-    let host = TauriLocalApiHost { app };
-    let provider = provider.unwrap_or_else(|| "api".to_string());
-    if provider != "api" && provider != "joycode" && api_profile_id(&provider).is_none() {
-        return Err("FORGE_DESKTOP_API_PROVIDER_INVALID".into());
-    }
-    let repository_effect_access = resolve_repository_effect_access(repo_id.as_deref(), checkout_id.as_deref()).await?;
-    run_local_api_turn(
-        &host, messages, repo_id, checkout_id, conversation_id, Some(provider), None,
-        repository_effect_access && allow_effects.unwrap_or(true), &mut cancel_receiver,
-    ).await
+    let host = TauriLocalApiHost { app, sequence: std::sync::atomic::AtomicU64::new(0) };
+    let terminal_conversation_id = conversation_id.clone();
+    let result = async {
+        let provider = provider.unwrap_or_else(|| "api".to_string());
+        if provider != "api" && provider != "joycode" && api_profile_id(&provider).is_none() {
+            return Err("FORGE_DESKTOP_API_PROVIDER_INVALID".into());
+        }
+        let repository_effect_access = resolve_repository_effect_access(repo_id.as_deref(), checkout_id.as_deref()).await?;
+        run_local_api_turn(
+            &host, messages, repo_id, checkout_id, conversation_id, Some(provider), None,
+            repository_effect_access && allow_effects.unwrap_or(true), &mut cancel_receiver,
+        ).await
+    }.await;
+    host.emit_model_progress(local_api_terminal_progress(&terminal_conversation_id, &result));
+    result
 }
 
 
@@ -3746,7 +3787,7 @@ mod tests {
     }
 
     #[test]
-    fn streamed_openai_reassembles_answer_reasoning_and_incremental_tool_arguments() {
+    fn streamed_openai_reassembles_answer_and_tool_arguments_without_leaking_private_reasoning() {
         let host = RecordingStreamHost::default();
         let mut round = StreamedModelRound::default();
         let frames = vec![
@@ -3769,7 +3810,8 @@ mod tests {
         assert_eq!(calls[0].1,"read_file");
         assert_eq!(calls[0].2["path"],"AGENTS.md");
         let events = host.events.lock().unwrap();
-        assert!(events.iter().any(|event| event["kind"] == "reasoning_delta"));
+        assert!(!events.iter().any(|event| event["kind"] == "reasoning_summary_delta"),
+            "private Chat Completions reasoning must not be emitted as a summary");
         assert!(events.iter().any(|event| event["kind"] == "text_delta"));
     }
 
@@ -3851,6 +3893,8 @@ mod tests {
                 "content_block":{"type":"text","text":""}}).to_string(),
             json!({"type":"content_block_delta","index":0,
                 "delta":{"type":"text_delta","text":"Checking"}}).to_string(),
+            json!({"type":"content_block_delta","index":0,
+                "delta":{"type":"thinking_delta","thinking":"private thought"}}).to_string(),
             json!({"type":"content_block_start","index":1,
                 "content_block":{"type":"tool_use","id":"tool-1","name":"git_status","input":{}}}).to_string(),
             json!({"type":"content_block_delta","index":1,
@@ -3863,15 +3907,22 @@ mod tests {
         let output = claude.finish("anthropic").expect("Anthropic finished");
         assert_eq!(output["content"][0]["text"],"Checking");
         assert_eq!(provider_tool_calls("anthropic",&output).unwrap()[0].1,"git_status");
+        assert!(!host.events.lock().unwrap().iter().any(|event| event["kind"] == "reasoning_summary_delta"),
+            "Anthropic thinking_delta must remain private");
 
         let mut responses = StreamedModelRound::default();
         let completed = json!({"output":[{"type":"message","content":[
             {"type":"output_text","text":"Final answer"}
         ]}]});
         responses.consume("responses",&json!({
+            "type":"response.reasoning_summary_text.delta","delta":"Checked two sources."
+        }).to_string(),&host,"conv-3").expect("provider summary delta");
+        responses.consume("responses",&json!({
             "type":"response.completed","response":completed
         }).to_string(),&host,"conv-3").expect("Responses complete");
         assert_eq!(responses.finish("responses").unwrap(),completed);
+        assert!(host.events.lock().unwrap().iter().any(|event|
+            event["kind"] == "reasoning_summary_delta" && event["delta"] == "Checked two sources."));
 
         assert_eq!(
             StreamedModelRound::default().finish("openai").unwrap_err(),
@@ -3916,6 +3967,25 @@ mod tests {
         assert!(url.contains("t=123"));
         assert!(url.contains("sign=5f785c6166e27cfd3cde642443b02d57ece51ce47cc30482151722ce59a79dc5"));
     }
+    #[test]
+    fn native_progress_events_share_a_monotonic_per_turn_sequence() {
+        let sequence = std::sync::atomic::AtomicU64::new(0);
+        let first = sequence_local_api_event(json!({"kind":"text_delta","delta":"a"}), &sequence);
+        let second = sequence_local_api_event(json!({"kind":"started"}), &sequence);
+        let terminal = sequence_local_api_event(json!({"kind":"terminal"}), &sequence);
+        assert_eq!(first["sequence"], 1);
+        assert_eq!(second["sequence"], 2);
+        assert_eq!(terminal["sequence"], 3);
+    }
+
+    #[test]
+    fn local_api_terminal_progress_distinguishes_pause_cancel_and_error() {
+        assert_eq!(local_api_terminal_progress("c1", &Ok(json!({"incomplete":true}))) ["status"], "paused");
+        assert_eq!(local_api_terminal_progress("c1", &Ok(json!({"incomplete":false}))) ["status"], "completed");
+        assert_eq!(local_api_terminal_progress("c1", &Err("FORGE_DESKTOP_API_TURN_CANCELLED".into())) ["kind"], "cancelled");
+        assert_eq!(local_api_terminal_progress("c1", &Err("provider failed".into())) ["kind"], "error");
+    }
+
     #[test]
     fn local_conversation_binds_checkout_or_rejects_incomplete_context() {
         let build = |repo: Option<&str>, checkout: Option<&str>| local_conversation_request(

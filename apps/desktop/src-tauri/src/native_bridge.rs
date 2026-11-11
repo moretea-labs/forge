@@ -268,7 +268,9 @@ fn write_api_turn_event(value: Value) {
     let _ = stdout.flush();
 }
 
-struct NativeApiHost;
+struct NativeApiHost {
+    sequence: std::sync::atomic::AtomicU64,
+}
 impl LocalApiHost for NativeApiHost {
     fn packaged_tool_script(&self) -> Result<PathBuf, String> {
         let executable = std::env::current_exe()
@@ -277,10 +279,10 @@ impl LocalApiHost for NativeApiHost {
     }
 
     fn emit_tool_progress(&self, payload: Value) {
-        write_api_turn_event(json!({ "type":"progress", "data":payload }));
+        write_api_turn_event(json!({ "type":"progress", "data":sequence_local_api_event(payload, &self.sequence) }));
     }
     fn emit_model_progress(&self, payload: Value) {
-        write_api_turn_event(json!({ "type":"progress", "data":payload }));
+        write_api_turn_event(json!({ "type":"progress", "data":sequence_local_api_event(payload, &self.sequence) }));
     }
 }
 
@@ -321,7 +323,8 @@ pub fn run_api_turn() -> i32 {
     // Keep one sender owned by the turn itself. EOF on the parent pipe means
     // "no more control frames", not "cancel channel failed".
     let _cancel_channel_lifetime = cancel_sender;
-    let host = NativeApiHost;
+    let host = NativeApiHost { sequence: std::sync::atomic::AtomicU64::new(0) };
+    let terminal_conversation_id = request.conversation_id.clone();
     let result = tauri::async_runtime::block_on(async {
         let repository_effect_access = resolve_repository_effect_access(
             request.repo_id.as_deref(), request.checkout_id.as_deref()
@@ -338,6 +341,7 @@ pub fn run_api_turn() -> i32 {
             &mut cancel_receiver,
         ).await
     });
+    host.emit_model_progress(local_api_terminal_progress(&terminal_conversation_id, &result));
     match result {
         Ok(data) => write_api_turn_event(json!({ "type":"result", "ok":true, "data":data })),
         Err(error) => write_api_turn_event(json!({ "type":"result", "ok":false, "error":error })),
