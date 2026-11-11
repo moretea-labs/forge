@@ -44,6 +44,7 @@ import {
   finalizeEditSession,
   reconcileEditSession,
   getEditSession,
+  recordEditSessionProcessCheckReceipts,
 } from '../../src/cli/editing/edit-session';
 import { getToolPolicy } from '../../src/cli/controller/tool-policy';
 import {
@@ -1587,4 +1588,62 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
 
 
 describe('automatic execution identity isolation', () => {
+});
+
+test('explicit environment repair revalidates the same edit revision and preserves immutable evidence', async () => {
+  const fx = fixture(); roots.push(fx.root);
+  const previousHome = process.env.FORGE_CONTROLLER_HOME;
+  process.env.FORGE_CONTROLLER_HOME = fx.controllerHome;
+  try {
+  writeFileSync(join(fx.repoRoot, '.gitignore'), 'node_modules/\n');
+  writeFileSync(join(fx.repoRoot, '.forge', 'checks.json'), JSON.stringify({version:1, checks:{verify:{
+    description:'dependency availability check',
+    command:[process.execPath, '-e', "process.exit(require('fs').existsSync('node_modules/repaired') ? 0 : 7)"],
+    timeoutMs:10000,
+  }}}));
+  git(fx.repoRoot, ['add','.']); git(fx.repoRoot, ['commit','-m','fixture check definition']);
+  const binding = {repoId:fx.repository.repoId, checkoutId:fx.repository.activeCheckoutId, principalId:fx.ctx.principalId};
+  ensureRepositoryRuntimeStorageBinding(fx.repository,'edit-sessions',fx.controllerHome);
+  const edit = beginEditSession(fx.repoRoot,{purpose:'637 isolated RED',allowedPaths:['src/lib.ts'],checks:['verify'],binding});
+  applyEditOperations(fx.repoRoot,getToolPolicy('controller'),edit.sessionId,[{
+    type:'replace',path:'src/lib.ts',expectedSha256:createHash('sha256').update(readFileSync(join(fx.repoRoot,'src/lib.ts'))).digest('hex'),replacements:[{oldText:'n = 1',newText:'n = 2'}],
+  }],{binding});
+  async function validate(id:string) {
+    const args = {editSessionId:edit.sessionId,checkIds:['verify'],validationRequestId:id};
+    const started = await startOrJoinEditValidation(fx.controllerHome,fx.repository,args);
+    for(const p of started.processes) await waitForProcess(fx.controllerHome,fx.repository.repoId,p.processId,{timeoutMs:10000});
+    return startOrJoinEditValidation(fx.controllerHome,fx.repository,args);
+  }
+  const first = await validate('before-dependency-repair');
+  expect(first.ok).toBe(false);
+  expect(first.receipts?.[0]?.exitCode).toBe(7);
+  const revision = getEditSession(fx.repoRoot,edit.sessionId).currentRevision;
+  mkdirSync(join(fx.repoRoot,'node_modules')); writeFileSync(join(fx.repoRoot,'node_modules/repaired'),'ok');
+  const second = await validate('after-dependency-repair');
+  expect(second.processes[0]?.processId).not.toBe(first.processes[0]?.processId);
+  expect(second).toMatchObject({completed:true,ok:true});
+  expect(getEditSession(fx.repoRoot,edit.sessionId).currentRevision).toBe(revision);
+  const selected = getEditSession(fx.repoRoot, edit.sessionId);
+  const receipt = second.receipts![0]!;
+  expect((await validate('before-dependency-repair')).receipts).toEqual(first.receipts);
+  expect((await validate('after-dependency-repair')).receipts).toEqual(second.receipts);
+  expect(getEditSession(fx.repoRoot, edit.sessionId).checkResults[0]?.receiptId).toBe(receipt.receiptId);
+  const record = (incoming: typeof receipt, expectedCheckReceipts?: Record<string, {receiptId:string; resultDigest:string} | null>) =>
+    recordEditSessionProcessCheckReceipts(fx.repoRoot, edit.sessionId, {
+      repoId: fx.repository.repoId, checkoutId: fx.repository.activeCheckoutId!,
+      receipts: [incoming], expectedCheckReceipts,
+      validatedWorkspaceFingerprint: selected.validatedWorkspaceFingerprint,
+    });
+  expect(() => record({...receipt, resultDigest:'tampered'})).toThrow('EDIT_CHECK_RECEIPT_CONTRADICTION');
+  const staleReceipt = {...receipt, receiptId:'different-receipt', resultDigest:'different-digest', processId:'different-process'};
+  expect(() => record(staleReceipt, {verify: null})).toThrow('EDIT_CHECK_RECEIPT_SELECTION_CHANGED');
+  expect(() => record(staleReceipt, {verify:{receiptId:first.receipts![0]!.receiptId,resultDigest:first.receipts![0]!.resultDigest}}))
+    .toThrow('EDIT_CHECK_RECEIPT_SELECTION_CHANGED');
+  expect(() => record(staleReceipt)).toThrow('EDIT_CHECK_RECEIPT_CONTRADICTION');
+  expect(getEditSession(fx.repoRoot, edit.sessionId).checkResults[0]?.receiptId).toBe(receipt.receiptId);
+  expect(finalizeEditSession(fx.repoRoot,edit.sessionId,{binding}).status).toBe('finalized');
+  } finally {
+    if (previousHome === undefined) delete process.env.FORGE_CONTROLLER_HOME;
+    else process.env.FORGE_CONTROLLER_HOME = previousHome;
+  }
 });

@@ -53,6 +53,8 @@ export interface EditValidationRunState {
   ok?: boolean;
   error?: { code: string; message: string };
   receipts?: ProcessCheckCompletionReceipt[];
+  /** Selected receipt CAS captured before this explicit validation attempt runs. */
+  expectedCheckReceipts?: Record<string, { receiptId: string; resultDigest: string } | null>;
   createdAt: string;
   updatedAt: string;
 }
@@ -505,6 +507,7 @@ export async function reconcileEditValidationRun(
       repoId: validationRepository.repoId,
       checkoutId: validationRepository.activeCheckoutId,
       receipts,
+      expectedCheckReceipts: run.expectedCheckReceipts,
       validatedWorkspaceFingerprint: run.workspaceFingerprint,
       validatedOutsideWorkspaceFingerprint: run.outsideWorkspaceFingerprint,
       reviewer: run.reviewer,
@@ -620,6 +623,12 @@ export async function startOrJoinEditValidation(
     workspaceFingerprint: validationWorkspaceFingerprint,
     outsideWorkspaceFingerprint: validationOutsideFingerprint,
     checkIds,
+    expectedCheckReceipts: Object.fromEntries(checkIds.map((checkId) => {
+      const selected = session.checkResults.find((entry) => entry.checkId === checkId);
+      return [checkId, selected?.receiptId && selected.resultDigest
+        ? { receiptId: selected.receiptId, resultDigest: selected.resultDigest }
+        : null];
+    })),
     lanes: checkLanes(validationRepository, checkIds),
     processes: {},
     reviewer: input.reviewer,

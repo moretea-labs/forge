@@ -1284,6 +1284,8 @@ export function recordEditSessionProcessCheckReceipts(
     repoId: string;
     checkoutId: string;
     receipts: ProcessCheckCompletionReceipt[];
+    /** Selected receipts captured before the explicit validation attempt starts. */
+    expectedCheckReceipts?: Record<string, { receiptId: string; resultDigest: string } | null>;
     validatedWorkspaceFingerprint?: string;
     validatedOutsideWorkspaceFingerprint?: string;
     reviewer?: string;
@@ -1323,9 +1325,20 @@ export function recordEditSessionProcessCheckReceipts(
       throw new Error('EDIT_CHECK_RECEIPT_TASK_MISMATCH: receipt task does not match the edit session');
     }
     const existing = session.checkResults.find((entry) => entry.checkId === receipt.checkId);
-    if (existing?.receiptId) {
-      if (existing.receiptId === receipt.receiptId && existing.resultDigest === receipt.resultDigest) return existing;
-      throw new Error(`EDIT_CHECK_RECEIPT_CONTRADICTION: check ${receipt.checkId} already has different evidence for revision ${session.currentRevision}`);
+    if (existing?.receiptId === receipt.receiptId && existing.resultDigest === receipt.resultDigest) return existing;
+    if (existing?.receiptId && (existing.receiptId === receipt.receiptId || existing.processId === receipt.processId)) {
+      throw new Error(`EDIT_CHECK_RECEIPT_CONTRADICTION: check ${receipt.checkId} changed immutable Process evidence`);
+    }
+    const expected = input.expectedCheckReceipts?.[receipt.checkId];
+    if (expected !== undefined) {
+      // Replace the selected result, never its immutable receipt. The predecessor
+      // CAS prevents concurrent/older attempts overwriting a newer selection.
+      const matches = expected === null
+        ? !existing?.receiptId
+        : existing?.receiptId === expected.receiptId && existing.resultDigest === expected.resultDigest;
+      if (!matches) throw new Error(`EDIT_CHECK_RECEIPT_SELECTION_CHANGED: check ${receipt.checkId} has newer selected evidence`);
+    } else if (existing?.receiptId) {
+      throw new Error(`EDIT_CHECK_RECEIPT_CONTRADICTION: check ${receipt.checkId} requires an explicit revalidation attempt`);
     }
     return {
       checkId: receipt.checkId,
