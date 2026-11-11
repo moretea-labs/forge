@@ -934,7 +934,15 @@ export function createCanonicalRuntimeProxy(
           args,
           call: async () => await activeClient.callTool(
             forwardedRequest,
-            { timeout: CANONICAL_RUNTIME_TOOL_CALL_TIMEOUT_MS },
+            {
+              timeout: CANONICAL_RUNTIME_TOOL_CALL_TIMEOUT_MS,
+              // A disconnected caller may stop observing, but never cancel or
+              // replay an external mutation. Only read-only Process observations
+              // propagate cancellation to the inner Runtime wait.
+              ...(canonicalRuntimeProcessObservationToolNames.has(name) && callerContext.signal
+                ? { signal: callerContext.signal }
+                : {}),
+            },
           ),
           reconnect: async () => {
             await closeLane(laneId, activeClient);

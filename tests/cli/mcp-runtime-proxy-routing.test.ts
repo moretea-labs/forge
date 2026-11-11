@@ -546,6 +546,164 @@ describe('MCP canonical Runtime proxy routing', () => {
     }
   });
 
+  test('propagates observation cancellation without cancelling a dispatched mutation across MCP sessions', async () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-proxy-observation-cancel-'));
+    const runtimeToken = 'fixture-observation-cancel-token';
+    const processId = 'proc-fixture-observation-only';
+    const schema: CanonicalRuntimeToolSchema = {
+      definitions: ['process_wait', 'process_get', 'execute_command'].map((name) => ({
+        name, description: 'fixture call', inputSchema: { type: 'object' },
+      })),
+      toolNames: ['process_wait', 'process_get', 'execute_command'],
+      fingerprint: 'fixture-observation-cancel',
+    };
+    let waitCalls = 0;
+    let waitCancelled = false;
+    let mutationCalls = 0;
+    let mutationCancelled = false;
+    let mutationCompleted = false;
+    let signalWaitAdmitted!: () => void;
+    let signalMutationAdmitted!: () => void;
+    const waitAdmitted = new Promise<void>((resolve) => { signalWaitAdmitted = resolve; });
+    const mutationAdmitted = new Promise<void>((resolve) => { signalMutationAdmitted = resolve; });
+    const runtimeTransport = await startRuntimeMcpTransport({
+      host: '127.0.0.1',
+      port: 0,
+      authToken: runtimeToken,
+      readiness: () => ({
+        ready: true, reasonCodes: [], observedAt: new Date().toISOString(),
+        diagnostics: {
+          database: { outcome: 'pass' },
+          scheduler: { outcome: 'pass' },
+          releaseCoherence: { outcome: 'pass' },
+          mcpEndToEnd: { outcome: 'pass' },
+        },
+      }),
+      createServer: () => {
+        const runtimeServer = new Server(
+          { name: 'fixture-runtime-observation-cancel', version: '1.0.0' },
+          { capabilities: { tools: { listChanged: false } } },
+        );
+        runtimeServer.setRequestHandler('tools/list', async () => ({ tools: schema.definitions.map(mcpToolDefinitionToSdk) }));
+        runtimeServer.setRequestHandler('tools/call', async (request, ctx) => {
+          if (request.params.name === 'process_wait') {
+            waitCalls += 1;
+            signalWaitAdmitted();
+            await new Promise<void>((resolve) => {
+              const timeout = setTimeout(resolve, 1_500);
+              const signal = ctx.mcpReq.signal;
+              if (signal.aborted) {
+                waitCancelled = true;
+                clearTimeout(timeout);
+                resolve();
+              } else {
+                signal.addEventListener('abort', () => {
+                  waitCancelled = true;
+                  clearTimeout(timeout);
+                  resolve();
+                }, { once: true });
+              }
+            });
+          }
+          if (request.params.name === 'execute_command') {
+            mutationCalls += 1;
+            signalMutationAdmitted();
+            await Bun.sleep(100);
+            mutationCancelled = ctx.mcpReq.signal.aborted;
+            mutationCompleted = true;
+          }
+          return {
+            content: [{ type: 'text', text: JSON.stringify({ processId, completed: true }) }],
+            structuredContent: { processId, completed: true, ok: true },
+          };
+        });
+        return runtimeServer;
+      },
+    });
+    const observedAt = new Date().toISOString();
+    mkdirSync(join(controllerHome, 'mcp'), { recursive: true });
+    writeFileSync(join(controllerHome, 'mcp', 'runtime-token'), runtimeToken, 'utf8');
+    writeRuntimeStatusSnapshot(controllerHome, {
+      schemaVersion: 1,
+      runtimeInstanceId: 'runtime-observation-cancel-fixture',
+      pid: process.pid,
+      releaseId: 'release-observation-cancel-fixture',
+      artifactIdentity: 'artifact-observation-cancel-fixture',
+      endpoint: runtimeTransport.endpoint,
+      readiness: {
+        ready: true, reasonCodes: [], observedAt,
+        diagnostics: {
+          database: { outcome: 'pass' },
+          scheduler: { outcome: 'pass' },
+          releaseCoherence: { outcome: 'pass' },
+          mcpEndToEnd: { outcome: 'pass' },
+        },
+      },
+      startedAt: observedAt,
+      updatedAt: observedAt,
+    });
+    const baseContext = createMcpToolContext({ controllerHome, profile: 'controller' });
+    const proxy = createCanonicalRuntimeProxy(baseContext);
+    const createOuterSession = async (sessionId: string) => {
+      const server = createForgeMcpServerFromContext({
+        ...baseContext, principalId: 'oauth-client:fixture', sessionId, controllerType: 'chatgpt',
+      }, schema, proxy);
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      await server.connect(serverTransport);
+      const client = new Client({ name: sessionId, version: '1.0.0' }, { capabilities: {} });
+      await client.connect(clientTransport);
+      return { client, server };
+    };
+    let first: Awaited<ReturnType<typeof createOuterSession>> | undefined;
+    let second: Awaited<ReturnType<typeof createOuterSession>> | undefined;
+    try {
+      first = await createOuterSession('outer-observation-cancel');
+      const controller = new AbortController();
+      const pending = first.client.callTool(
+        { name: 'process_wait', arguments: { process_id: processId } },
+        { signal: controller.signal, timeout: 5_000 },
+      );
+      await waitAdmitted;
+      controller.abort();
+      await expect(pending).rejects.toThrow();
+      for (let i = 0; i < 30 && !waitCancelled; i += 1) await Bun.sleep(10);
+      expect(waitCancelled).toBe(true);
+
+      await first.client.close();
+      await first.server.close();
+      first = undefined;
+      second = await createOuterSession('outer-observation-readback');
+      const readback = await second.client.callTool({
+        name: 'process_get', arguments: { process_id: processId },
+      });
+      expect(readback.structuredContent).toMatchObject({ processId, completed: true, ok: true });
+      expect(waitCalls).toBe(1);
+
+      // Disconnecting the outer response does not send a cancellation to a
+      // mutation already accepted by the inner Runtime, nor replay it.
+      const mutationObserver = new AbortController();
+      const mutationResult = second.client.callTool(
+        { name: 'execute_command', arguments: { request_id: 'one-mutation', command: ['git', 'status'] } },
+        { signal: mutationObserver.signal, timeout: 5_000 },
+      );
+      await mutationAdmitted;
+      mutationObserver.abort();
+      await expect(mutationResult).rejects.toThrow();
+      for (let i = 0; i < 30 && !mutationCompleted; i += 1) await Bun.sleep(10);
+      expect(mutationCompleted).toBe(true);
+      expect(mutationCancelled).toBe(false);
+      expect(mutationCalls).toBe(1);
+    } finally {
+      await first?.client.close();
+      await first?.server.close();
+      await second?.client.close();
+      await second?.server.close();
+      await proxy.close();
+      await runtimeTransport.close();
+      rmSync(controllerHome, { recursive: true, force: true });
+    }
+  }, 15_000);
+
   test('reclaims idle shared proxy lanes and reconnects on demand', async () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-runtime-proxy-idle-reclaim-'));
     const runtimeToken = 'runtime-proxy-idle-token';
