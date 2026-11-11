@@ -5,12 +5,10 @@
  * Measures the same order as createForgeMcpServerFromContext:
  *   routeDurableMcpCall → (if undefined) callRepositoryTool
  *
- * Phase breakdown:
- *   dispatchMs, selectionMs, classificationMs, thinRoutingMs,
- *   queueDelayMs, workerStartupMs, localJobStartupMs,
- *   operationMs, receiptMs, serializationMs, totalMs
- *
- * Fast cases must keep ExecutionJob / LocalJob / Worker / scheduler wake at 0.
+ * Observed phases: classification, router admission, facade invocation,
+ * reported receipt, serialization, caller response, and (separately) terminal
+ * Process observation. Queue delay/worker startup are not instrumented here.
+ * Fixture-persisted Jobs, Processes and recorded worker PIDs are checked per run.
  *
  * Usage:
  *   bun scripts/benchmark-thin-harness-mcp-e2e.ts
@@ -20,7 +18,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync, existsSync, readdirSync 
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
-import { ensureControllerHome, repositoryControllerRoot } from '../src/effects/controller-home';
+import { ensureControllerHome, controllerSystemRoot } from '../src/effects/controller-home';
 import { registerRepository } from '../src/cli/repositories/registry';
 import { createMcpToolContext } from '../adapters/mcp/server';
 import { callRepositoryTool } from '../src/runtime/control-plane/facade/repository-tool-dispatch';
@@ -29,6 +27,7 @@ import {
   routeDurableMcpCall,
 } from '../adapters/mcp/runtime-gateway/router';
 import { listExecutionJobs } from '../src/runtime/execution/jobs/store';
+import { listProcessRecords } from '../src/runtime/execution/process-runtime/store';
 import { listLocalBridgeJobSnapshots } from '../src/cli/local-bridge/job-store';
 import { listFastReceipts } from '../src/runtime/execution/thin-harness/fast-receipt';
 import {
@@ -84,33 +83,44 @@ function p95(values: number[]): number {
   return sorted[Math.max(0, index)]!;
 }
 
-function countLeaseFiles(controllerHome: string, repoId: string): number {
-  try {
-    const active = join(repositoryControllerRoot(controllerHome, repoId), 'leases', 'active');
-    if (!existsSync(active)) return 0;
-    return readdirSync(active).filter((name) => name.endsWith('.json')).length;
-  } catch {
-    return 0;
-  }
+function countLeaseFiles(controllerHome: string): number {
+  // The same controller-global lease authority used by the Runtime, not a legacy repo folder.
+  const active = join(controllerSystemRoot(controllerHome), 'execution-leases', 'active');
+  if (!existsSync(active)) return 0;
+  return readdirSync(active).filter((name) => name.endsWith('.json')).length;
+}
+
+function observeEffects(fixture: ReturnType<typeof createFixture>) {
+  const jobs = listExecutionJobs(fixture.controllerHome, fixture.repository.repoId, 1000);
+  return {
+    jobIds: new Set(jobs.map((job) => job.jobId)),
+    localJobIds: new Set(listLocalBridgeJobSnapshots(fixture.repoRoot, 500).map((job) => job.jobId)),
+    processIds: new Set(listProcessRecords(fixture.controllerHome, fixture.repository.repoId, 1000).map((item) => item.processId)),
+    recordedWorkerPids: new Set(jobs.map((job) => job.workerPid).filter((pid): pid is number => typeof pid === 'number')),
+  };
+}
+
+function newCount<T>(before: Set<T>, after: Set<T>): number {
+  return [...after].filter((value) => !before.has(value)).length;
 }
 
 interface PhaseSample {
-  dispatchMs: number;
-  selectionMs: number;
   classificationMs: number;
   thinRoutingMs: number;
-  queueDelayMs: number;
-  workerStartupMs: number;
-  localJobStartupMs: number;
   operationMs: number;
   receiptMs: number;
   serializationMs: number;
   totalMs: number;
+  /** Wait after the response, not part of totalMs; does not equal worker execution time. */
+  terminalObservationMs: number;
+  /** Null for operations with no managed Process to settle. */
+  terminalOk: boolean | null;
   path: 'direct' | 'fast' | 'process_direct' | 'process_managed' | 'durable' | 'reject';
   ok: boolean;
   executionJobDelta: number;
   localJobDelta: number;
-  workerSpawnCount: number;
+  recordedWorkerPidDelta: number;
+  managedProcessDelta: number;
   schedulerWakeDelta: number;
   projectionInvalidationDelta: number;
   runtimeEventDelta: number;
@@ -122,16 +132,10 @@ async function dispatchMcpLike(
   name: string,
   args: Record<string, unknown>,
 ): Promise<{
-  phases: Omit<PhaseSample, 'executionJobDelta' | 'localJobDelta' | 'workerSpawnCount' | 'schedulerWakeDelta' | 'projectionInvalidationDelta' | 'runtimeEventDelta' | 'receiptCount'>;
+  phases: Omit<PhaseSample, 'executionJobDelta' | 'localJobDelta' | 'recordedWorkerPidDelta' | 'managedProcessDelta' | 'schedulerWakeDelta' | 'projectionInvalidationDelta' | 'runtimeEventDelta' | 'receiptCount' | 'terminalObservationMs' | 'terminalOk'>;
   payload: Record<string, unknown>;
 }> {
   const wallStart = performance.now();
-  const dispatchStart = performance.now();
-
-  const selectionStart = performance.now();
-  // Selection is embedded in handlers; measure classification + routing explicitly.
-  const selectionMs = Math.round((performance.now() - selectionStart) * 100) / 100;
-
   const classificationStart = performance.now();
   const classification = classifyGatewayExecutionPath(name, {
     ...args,
@@ -146,9 +150,6 @@ async function dispatchMcpLike(
   });
   const thinRoutingMs = Math.round((performance.now() - thinStart) * 100) / 100;
 
-  let queueDelayMs = 0;
-  let workerStartupMs = 0;
-  let localJobStartupMs = 0;
   let operationMs = 0;
   let receiptMs = 0;
   let payload: Record<string, unknown> = {};
@@ -163,9 +164,6 @@ async function dispatchMcpLike(
       || reported === 'process_managed' || reported === 'reject' || reported === 'durable'
       ? reported
       : 'durable';
-    queueDelayMs = thinRoutingMs;
-    workerStartupMs = 0;
-    localJobStartupMs = typeof payload.jobId === 'string' ? thinRoutingMs : 0;
     operationMs = 0;
     ok = durableResult.isError !== true && payload.accepted !== false;
   } else {
@@ -195,17 +193,11 @@ async function dispatchMcpLike(
   JSON.stringify(payload);
   const serializationMs = Math.round((performance.now() - serializationStart) * 100) / 100;
   const totalMs = Math.round((performance.now() - wallStart) * 100) / 100;
-  const dispatchMs = Math.round((performance.now() - dispatchStart) * 100) / 100;
 
   return {
     phases: {
-      dispatchMs,
-      selectionMs,
       classificationMs,
       thinRoutingMs,
-      queueDelayMs,
-      workerStartupMs,
-      localJobStartupMs,
       operationMs,
       receiptMs,
       serializationMs,
@@ -225,16 +217,13 @@ async function sampleCase(
 ): Promise<PhaseSample> {
   resetLeaseSideEffectMetrics();
   const sideBefore = getLeaseSideEffectMetrics();
-  const jobsBefore = listExecutionJobs(fixture.controllerHome, fixture.repository.repoId).length;
-  const localBefore = listLocalBridgeJobSnapshots(fixture.repoRoot).length;
+  const effectsBefore = observeEffects(fixture);
   const receiptsBefore = listFastReceipts(fixture.controllerHome, fixture.repository.repoId, 200).length;
 
   const { phases, payload } = await dispatchMcpLike(fixture, tool, args);
-  const sideAfter = getLeaseSideEffectMetrics();
   const side = (payload.durableSideEffects ?? {}) as {
     executionJobCount?: number;
     localJobCount?: number;
-    workerSpawnCount?: number;
     projectionUpdateCount?: number;
     schedulerWakeCount?: number;
     runtimeEventCount?: number;
@@ -242,31 +231,31 @@ async function sampleCase(
 
   const acceptedJob = typeof payload.jobId === 'string' && payload.jobId.trim() ? 1 : 0;
   const processId = typeof payload.processId === 'string' ? payload.processId.trim() : '';
-  // Admission latency was already captured above. Settle a managed Process before
-  // the next sample so a correct same-checkout resource claim is not misreported
-  // as a benchmark regression.
-  if (phases.path === 'process_managed' && processId) {
+  let terminalObservationMs = 0;
+  let terminalOk: boolean | null = null;
+  // Record only the time spent observing after admission. Never relabel that as
+  // worker startup, queue delay, or execution. A settled failure fails this case.
+  if (phases.path === 'process_managed') {
+    if (!processId) throw new Error('BENCHMARK_MANAGED_PROCESS_HANDLE_MISSING');
+    const started = performance.now();
     const settled = isLightweightProcessId(processId)
       ? await waitForLightweightProcess(fixture.controllerHome, fixture.repository.repoId, processId, { timeoutMs: 10_000 })
       : await waitForProcess(fixture.controllerHome, fixture.repository.repoId, processId, { timeoutMs: 10_000 });
-    if (!settled.completed) {
-      throw new Error(`BENCHMARK_PROCESS_DID_NOT_SETTLE: ${processId}`);
-    }
+    terminalObservationMs = Math.round((performance.now() - started) * 100) / 100;
+    if (!settled.completed) throw new Error(`BENCHMARK_PROCESS_DID_NOT_SETTLE: ${processId}`);
+    terminalOk = settled.ok === true || (settled.status === 'succeeded' && settled.exitCode === 0);
   }
+  const sideAfter = getLeaseSideEffectMetrics();
+  const effectsAfter = observeEffects(fixture);
   return {
     ...phases,
-    executionJobDelta: Math.max(
-      0,
-      acceptedJob,
-      (side.executionJobCount ?? 0)
-        + (listExecutionJobs(fixture.controllerHome, fixture.repository.repoId).length - jobsBefore),
-    ),
-    localJobDelta: Math.max(
-      0,
-      (side.localJobCount ?? 0)
-        + (listLocalBridgeJobSnapshots(fixture.repoRoot).length - localBefore),
-    ),
-    workerSpawnCount: side.workerSpawnCount ?? 0,
+    terminalObservationMs,
+    terminalOk,
+    ok: phases.ok && terminalOk !== false,
+    executionJobDelta: Math.max(acceptedJob, side.executionJobCount ?? 0, newCount(effectsBefore.jobIds, effectsAfter.jobIds)),
+    localJobDelta: Math.max(side.localJobCount ?? 0, newCount(effectsBefore.localJobIds, effectsAfter.localJobIds)),
+    recordedWorkerPidDelta: newCount(effectsBefore.recordedWorkerPids, effectsAfter.recordedWorkerPids),
+    managedProcessDelta: newCount(effectsBefore.processIds, effectsAfter.processIds),
     schedulerWakeDelta: Math.max(0, (side.schedulerWakeCount ?? 0) + sideAfter.schedulerWakes - sideBefore.schedulerWakes),
     projectionInvalidationDelta: Math.max(
       0,
@@ -287,7 +276,7 @@ async function sampleCase(
 
 function summarize(samples: PhaseSample[]) {
   const pick = (key: keyof PhaseSample) => {
-    if (key === 'ok' || key === 'path') return undefined;
+    if (key === 'ok' || key === 'path' || key === 'terminalOk') return undefined;
     return {
       p50: median(samples.map((s) => Number(s[key]))),
       p95: p95(samples.map((s) => Number(s[key]))),
@@ -302,10 +291,14 @@ function summarize(samples: PhaseSample[]) {
     operationMs: pick('operationMs'),
     receiptMs: pick('receiptMs'),
     serializationMs: pick('serializationMs'),
-    queueDelayMs: pick('queueDelayMs'),
+    terminalObservationMs: pick('terminalObservationMs'),
+    terminalOk: samples.some((sample) => sample.terminalOk !== null)
+      ? samples.every((sample) => sample.terminalOk === true)
+      : null,
     executionJobDelta: median(samples.map((s) => s.executionJobDelta)),
     localJobDelta: median(samples.map((s) => s.localJobDelta)),
-    workerSpawnCount: median(samples.map((s) => s.workerSpawnCount)),
+    recordedWorkerPidDelta: median(samples.map((s) => s.recordedWorkerPidDelta)),
+    managedProcessDelta: median(samples.map((s) => s.managedProcessDelta)),
     schedulerWakeDelta: median(samples.map((s) => s.schedulerWakeDelta)),
     projectionInvalidationDelta: median(samples.map((s) => s.projectionInvalidationDelta)),
     runtimeEventDelta: median(samples.map((s) => s.runtimeEventDelta)),
@@ -420,26 +413,36 @@ async function main() {
     const processCases = cases.filter((entry) => entry.name === 'async_command_process_handle');
     const fastCases = cases.filter((entry) => entry.name !== 'async_command_process_handle');
 
+    const fastSamples = fastCases.flatMap((entry) => entry.samples);
+    const processSamples = processCases.flatMap((entry) => entry.samples);
+    const allSamples = cases.flatMap((entry) => entry.samples);
+    const activeLeaseFilesAtEnd = countLeaseFiles(fixture.controllerHome);
+
     const report = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       kind: 'mcp_gateway_thin_harness_e2e_benchmark',
       featureRevision: head,
       at: new Date().toISOString(),
-      note: 'Measures real Gateway classification before ExecutionJob creation, then repository facade execution. Cold = first sample; warm = next three. No synthetic historical A/B ratios.',
+      note: 'MCP-like in-process routing and repository facade, not the external ChatGPT transport. Cold = first sample; warm = next three. Caller return excludes terminal Process observation. Queue delay and worker startup are unmeasured (not zero). Physical Job/Process IDs and recorded worker PIDs are sampled from the fixture stores; arbitrary OS child spawns are unmeasured. All-sample acceptance; no synthetic A/B claim.',
       cases,
       acceptance: {
-        fastZeroExecutionJobs: fastCases.every((entry) => entry.executionJobDelta === 0),
-        fastZeroLocalJobs: fastCases.every((entry) => entry.localJobDelta === 0),
-        fastZeroWorkers: fastCases.every((entry) => entry.workerSpawnCount === 0),
-        fastZeroSchedulerWakes: fastCases.every((entry) => entry.schedulerWakeDelta === 0),
-        fastZeroProjectionInvalidations: fastCases.every((entry) => entry.projectionInvalidationDelta === 0),
-        processRuntimeAsyncAccepted: processCases.every((entry) => entry.ok && entry.path === 'process_managed'),
-        processRuntimeAsyncZeroExecutionJobs: processCases.every((entry) => entry.executionJobDelta === 0),
-        processRuntimeAsyncZeroLocalJobs: processCases.every((entry) => entry.localJobDelta === 0),
-        processRuntimeAsyncZeroWorkers: processCases.every((entry) => entry.workerSpawnCount === 0),
-        allOk: cases.every((entry) => entry.ok),
+        fastZeroExecutionJobs: fastSamples.every((sample) => sample.executionJobDelta === 0),
+        fastZeroLocalJobs: fastSamples.every((sample) => sample.localJobDelta === 0),
+        fastZeroRecordedWorkerPids: fastSamples.every((sample) => sample.recordedWorkerPidDelta === 0),
+        fastZeroManagedProcesses: fastSamples.every((sample) => sample.managedProcessDelta === 0),
+        fastZeroSchedulerWakes: fastSamples.every((sample) => sample.schedulerWakeDelta === 0),
+        fastZeroProjectionInvalidations: fastSamples.every((sample) => sample.projectionInvalidationDelta === 0),
+        fastZeroRuntimeEvents: fastSamples.every((sample) => sample.runtimeEventDelta === 0),
+        processRuntimeAsyncAccepted: processSamples.every((sample) => sample.path === 'process_managed'),
+        processRuntimeAsyncSettled: processSamples.every((sample) => sample.terminalOk === true),
+        processRuntimeAsyncManagedProcessesObserved: processSamples.every((sample) => sample.managedProcessDelta > 0),
+        processRuntimeAsyncZeroExecutionJobs: processSamples.every((sample) => sample.executionJobDelta === 0),
+        processRuntimeAsyncZeroLocalJobs: processSamples.every((sample) => sample.localJobDelta === 0),
+        processRuntimeAsyncZeroRecordedWorkerPids: processSamples.every((sample) => sample.recordedWorkerPidDelta === 0),
+        noActiveLeasesAtEnd: activeLeaseFilesAtEnd === 0,
+        allOk: allSamples.every((sample) => sample.ok),
       },
-      leaseFiles: countLeaseFiles(fixture.controllerHome, fixture.repository.repoId),
+      activeLeaseFilesAtEnd,
     };
 
     if (asJson) {
@@ -455,8 +458,11 @@ async function main() {
         'class'.padStart(8),
         'route'.padStart(8),
         'op'.padStart(8),
+        'obs'.padStart(8),
         'jobs'.padStart(5),
         'loc'.padStart(5),
+        'pid'.padStart(5),
+        'proc'.padStart(5),
         'sch'.padStart(5),
         'ok'.padStart(4),
       );
@@ -469,8 +475,11 @@ async function main() {
           (entry.classificationMs?.p50 ?? 0).toFixed(1).padStart(8),
           (entry.thinRoutingMs?.p50 ?? 0).toFixed(1).padStart(8),
           (entry.operationMs?.p50 ?? 0).toFixed(1).padStart(8),
+          (entry.terminalOk === null ? '-' : (entry.terminalObservationMs?.p50 ?? 0).toFixed(1)).padStart(8),
           String(entry.executionJobDelta).padStart(5),
           String(entry.localJobDelta).padStart(5),
+          String(entry.recordedWorkerPidDelta).padStart(5),
+          String(entry.managedProcessDelta).padStart(5),
           String(entry.schedulerWakeDelta).padStart(5),
           String(entry.ok).padStart(4),
         );
@@ -478,15 +487,7 @@ async function main() {
       console.log('\nAcceptance:', report.acceptance);
     }
 
-    const failed = !report.acceptance.allOk
-      || !report.acceptance.fastZeroExecutionJobs
-      || !report.acceptance.fastZeroLocalJobs
-      || !report.acceptance.fastZeroWorkers
-      || !report.acceptance.processRuntimeAsyncAccepted
-      || !report.acceptance.processRuntimeAsyncZeroExecutionJobs
-      || !report.acceptance.processRuntimeAsyncZeroLocalJobs
-      || !report.acceptance.processRuntimeAsyncZeroWorkers;
-    process.exitCode = failed ? 1 : 0;
+    process.exitCode = Object.values(report.acceptance).every(Boolean) ? 0 : 1;
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
   }
