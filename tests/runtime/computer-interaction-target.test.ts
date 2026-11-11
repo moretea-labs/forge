@@ -369,6 +369,47 @@ describe('Computer durable InteractionTarget authority', () => {
     expect(fixture.state.sessionOpenCount).toBe(1);
   });
 
+  test('target inventory filters by application identity and paginates beyond the first page', async () => {
+    const fixture = await providerFixture();
+    const firstId = targetAuthority.create(fixture.controllerHome, {
+      stableIdentity: { bundleId: 'com.example.Editor', appName: 'Editor' },
+    }).targetId;
+    const secondId = targetAuthority.create(fixture.controllerHome, {
+      stableIdentity: { bundleId: 'com.example.Editor', appName: 'Editor' },
+    }).targetId;
+    targetAuthority.create(fixture.controllerHome, {
+      stableIdentity: { bundleId: 'com.example.Other', appName: 'Other' },
+    });
+
+    const firstPage = await computerPluginAdapter.executeAction(actionInput(
+      fixture.controllerHome,
+      'desktop_target_list',
+      { bundle_id: 'com.example.Editor', limit: 1 },
+      'target-list-filter-page-one',
+    ));
+    expect(firstPage).toMatchObject({ total: 2, returned: 1, truncated: true, nextOffset: 1 });
+
+    const secondPage = await computerPluginAdapter.executeAction(actionInput(
+      fixture.controllerHome,
+      'desktop_target_list',
+      { bundle_id: 'com.example.Editor', limit: 1, offset: firstPage.nextOffset },
+      'target-list-filter-page-two',
+    ));
+    expect(secondPage).toMatchObject({ total: 2, returned: 1, truncated: false });
+    expect(new Set([
+      (firstPage.targets as Array<Record<string, unknown>>)[0].targetId,
+      (secondPage.targets as Array<Record<string, unknown>>)[0].targetId,
+    ])).toEqual(new Set([firstId, secondId]));
+
+    const byName = await computerPluginAdapter.executeAction(actionInput(
+      fixture.controllerHome,
+      'desktop_target_list',
+      { app_name: 'Other' },
+      'target-list-filter-by-name',
+    ));
+    expect(byName).toMatchObject({ total: 1, returned: 1, truncated: false });
+  });
+
   test('desktop observations fail closed on a stale binding until explicit target open reattaches it', async () => {
     const fixture = await providerFixture();
     const targetId = await openTarget(fixture);

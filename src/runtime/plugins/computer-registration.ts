@@ -236,7 +236,12 @@ function desktopProductActions(): AssistantPluginActionDescriptor[] {
       resourceClaims: [],
       argumentsSchema: {
         type: 'object',
-        properties: { limit: { type: 'integer', minimum: 1, maximum: 100 } },
+        properties: {
+          limit: { type: 'integer', minimum: 1, maximum: 100 },
+          offset: { type: 'integer', minimum: 0 },
+          bundle_id: { type: 'string' },
+          app_name: { type: 'string' },
+        },
         additionalProperties: false,
       },
     },
@@ -906,10 +911,31 @@ function listDesktopTargets(input: AssistantPluginActionExecutionInput): Record<
     ? input.args.limit
     : 50;
   const limit = Math.min(100, Math.max(1, requestedLimit));
+  const requestedOffset = typeof input.args.offset === 'number' && Number.isInteger(input.args.offset)
+    ? input.args.offset
+    : 0;
+  const offset = Math.max(0, requestedOffset);
+  const bundleId = typeof input.args.bundle_id === 'string' ? input.args.bundle_id.trim() : '';
+  const appName = typeof input.args.app_name === 'string' ? input.args.app_name.trim() : '';
+  if (bundleId && appName) {
+    throw new AssistantPluginError('PLUGIN_COMPUTER_TARGET_FILTER_AMBIGUOUS', 'Specify bundle_id or app_name, not both.', { retryable: false });
+  }
   const all = computerTargetAuthority.listAllApplications(input.controllerHome)
-    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
-  const targets = all.slice(0, limit).map(desktopTargetSummary);
-  return { targets, total: all.length, returned: targets.length, truncated: all.length > targets.length };
+    .filter((target) => bundleId
+      ? target.stableIdentity.bundleId === bundleId
+      : appName
+        ? target.stableIdentity.appName === appName
+        : true)
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt) || left.targetId.localeCompare(right.targetId));
+  const targets = all.slice(offset, offset + limit).map(desktopTargetSummary);
+  const nextOffset = offset + targets.length < all.length ? offset + targets.length : undefined;
+  return {
+    targets,
+    total: all.length,
+    returned: targets.length,
+    truncated: nextOffset !== undefined,
+    ...(nextOffset !== undefined ? { nextOffset } : {}),
+  };
 }
 
 function sameRequestedApplication(target: ComputerApplicationTarget, requested: ComputerApplicationStableIdentity): boolean {
