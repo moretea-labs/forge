@@ -65,6 +65,12 @@ export interface McpSessionCloseCounters {
   shutdown: number;
 }
 
+export interface McpSessionLastClose {
+  reason: McpSessionCloseReason;
+  closedAt: string;
+  route: McpSessionRoute;
+}
+
 export interface McpSessionSnapshot {
   active: number;
   maximum: number;
@@ -82,6 +88,7 @@ export interface McpSessionSnapshot {
   oldestPostAgeMs: number;
   recoveryRecommended: boolean;
   closed: McpSessionCloseCounters;
+  lastClosed?: McpSessionLastClose;
 }
 
 export interface McpSessionRegistryOptions<
@@ -183,6 +190,7 @@ export class McpSessionRegistry<
   private readonly now: () => number;
   private readonly onSessionClosed?: (session: ManagedMcpSession<TTransport, TContext>, reason: McpSessionCloseReason) => void;
   private readonly closeCounters = emptyCloseCounters();
+  private lastClosed?: McpSessionLastClose;
   private readonly initializeReservations = new Map<string, InitializeReservation>();
   private admissionQueue: Promise<void> = Promise.resolve();
   private nextReservationId = 0;
@@ -311,6 +319,7 @@ export class McpSessionRegistry<
     this.sessions.delete(sessionId);
     clearSessionCachesForSession(sessionId);
     session.pendingCloseReason = reason;
+    this.lastClosed = { reason, closedAt: new Date(this.now()).toISOString(), route: session.route };
     this.incrementCloseCounter(reason);
     this.observeSessionClosed(session, reason);
     return session;
@@ -477,6 +486,7 @@ export class McpSessionRegistry<
       oldestPostAgeMs,
       recoveryRecommended: !acceptingNewSessions && oldestPostAgeMs >= this.activePostStallMs,
       closed: { ...this.closeCounters },
+      ...(this.lastClosed ? { lastClosed: { ...this.lastClosed } } : {}),
     };
   }
 

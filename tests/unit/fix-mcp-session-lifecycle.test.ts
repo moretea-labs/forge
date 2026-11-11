@@ -87,6 +87,7 @@ describe('MCP session lifecycle registry', () => {
     expect(await registry.close('explicit-close', 'client_delete')).toBe(true);
     expect(registry.detach('explicit-close')).toBe(false);
     expect(registry.detach('transport-close', 'transport_close')).toBe(true);
+    expect(registry.snapshot().lastClosed).toMatchObject({ reason: 'transport_close', route: '/mcp', closedAt: expect.any(String) });
     expect(observed).toEqual([
       { sessionId: 'explicit-close', reason: 'client_delete', marker: 'first' },
       { sessionId: 'transport-close', reason: 'transport_close', marker: 'second' },
@@ -108,6 +109,22 @@ describe('MCP session lifecycle registry', () => {
       capacityAvailable: 4,
       acceptingNewSessions: true,
       closed: { clientDelete: 500 },
+      lastClosed: { reason: 'client_delete', route: '/mcp', closedAt: expect.any(String) },
+    });
+  });
+
+  test('reports idle TTL as the exact last close reason', async () => {
+    let now = 1_000;
+    const registry = new McpSessionRegistry({ idleTtlMs: 500, now: () => now });
+    addSession(registry, 'idle');
+    now += 500;
+
+    await registry.prune();
+
+    expect(registry.snapshot().lastClosed).toEqual({
+      reason: 'idle_ttl',
+      closedAt: new Date(now).toISOString(),
+      route: '/mcp',
     });
   });
 
@@ -137,6 +154,7 @@ describe('MCP session lifecycle registry', () => {
       protected: 1,
       acceptingNewSessions: true,
       closed: { capacityEviction: 1 },
+      lastClosed: { reason: 'capacity_eviction', route: '/mcp', closedAt: expect.any(String) },
     });
   });
 
@@ -245,7 +263,7 @@ describe('MCP session lifecycle registry', () => {
     const registry = new McpSessionRegistry({
       maximumSessions: 4,
       streamLeaseMs: 1_000,
-      absoluteLifetimeMs: 2_000,
+      absoluteLifetimeMs: 10_000,
       now: () => now,
     });
     const leased = addSession(registry, 'leased');
@@ -258,13 +276,17 @@ describe('MCP session lifecycle registry', () => {
     await registry.prune();
     expect(registry.get('leased')).toBeUndefined();
     expect(leased.closeCalls).toBe(1);
+    expect(registry.snapshot().lastClosed).toMatchObject({ reason: 'stream_lease', route: '/mcp' });
     expect(registry.get('working')).toBeDefined();
     expect(working.closeCalls).toBe(0);
 
     registry.endPost('working');
+    registry.endStream('working');
+    now += 8_000;
     await registry.prune();
     expect(registry.get('working')).toBeUndefined();
     expect(working.closeCalls).toBe(1);
+    expect(registry.snapshot().lastClosed).toMatchObject({ reason: 'absolute_lifetime', route: '/mcp' });
   });
 
   test('detects stale tool-surface fingerprints while tolerating missing compatibility metadata', () => {

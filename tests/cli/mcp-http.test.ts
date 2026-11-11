@@ -688,6 +688,7 @@ describe('mcp http transport', () => {
           capacityAvailable: 64,
           acceptingNewSessions: true,
           closed: { clientDelete: 1 },
+          lastClosed: { reason: 'client_delete', route: '/mcp', closedAt: expect.any(String) },
         });
 
         const expiredSession = await fetch(`http://127.0.0.1:${port}/mcp`, {
