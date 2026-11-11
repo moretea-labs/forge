@@ -813,7 +813,11 @@ function listAgentDeviceInteractions(repoRoot: string): InteractionSessionRecord
 }
 
 const SIMULATOR_TEST_LEASE_RESOURCE = 'host-service:ios-simulator-test';
-const SIMULATOR_LEASE_CLEANUP_GRACE_MS = 30 * 60_000;
+// A paused Simulator interaction must not fence every repository's XCTest for
+// the full two-hour physical-device session lifetime. Real activity renews it.
+const SIMULATOR_IDLE_TIMEOUT_MS = 10 * 60_000;
+// The provider may still be finishing an admitted command when idle expiry hits.
+const SIMULATOR_LEASE_CLEANUP_GRACE_MS = 4 * 60_000;
 
 function simulatorInteractionLeaseOwner(record: InteractionSessionRecord): string {
   return `ios-agent-device:${record.interactionId}`;
@@ -930,7 +934,11 @@ function requireRecord(input: AssistantPluginActionExecutionInput, allowTerminal
       { retryable: !closed },
     );
   }
-  if (ensureSimulatorLease) ensureSimulatorInteractionLease(input, record);
+  if (record.provider === SIMULATOR_PROVIDER) {
+    const expiresAt = new Date(hooks.now().getTime() + SIMULATOR_IDLE_TIMEOUT_MS).toISOString();
+    if (ensureSimulatorLease) ensureSimulatorInteractionLease(input, { ...record, expiresAt });
+    return patchInteractionSession(input.repoRoot, record.provider, interactionId, { expiresAt }) ?? record;
+  }
   if (record.provider === DEVICE_PROVIDER) {
     const ownership = ensureIosDeviceOwnership(input.controllerHome, input.repoId, interactionId, record.targetId);
     if (!ownership.acquired) {
@@ -2533,7 +2541,8 @@ export async function executeIosAgentDeviceAction(input: AssistantPluginActionEx
       owner: { repoId: input.repoId, requestId: input.requestId, jobId: input.jobId },
       createdAt,
       updatedAt: createdAt,
-      expiresAt: new Date(hooks.now().getTime() + SESSION_EXPIRY_MS).toISOString(),
+      expiresAt: new Date(hooks.now().getTime() + (provider === SIMULATOR_PROVIDER
+        ? SIMULATOR_IDLE_TIMEOUT_MS : SESSION_EXPIRY_MS)).toISOString(),
     };
     writeInteractionSession(input.repoRoot, record);
     try {
@@ -2557,7 +2566,13 @@ export async function executeIosAgentDeviceAction(input: AssistantPluginActionEx
         timeoutMs: 4 * 60_000,
         failureCode: 'AGENT_DEVICE_OPEN_FAILED',
       });
-      const active = patchInteractionSession(input.repoRoot, provider, interactionId, { status: 'waiting_for_user' }) ?? record;
+      const active = patchInteractionSession(input.repoRoot, provider, interactionId, {
+        status: 'waiting_for_user',
+        ...(provider === SIMULATOR_PROVIDER
+          ? { expiresAt: new Date(hooks.now().getTime() + SIMULATOR_IDLE_TIMEOUT_MS).toISOString() }
+          : {}),
+      }) ?? record;
+      if (provider === SIMULATOR_PROVIDER) ensureSimulatorInteractionLease(input, active);
       return {
         provider: 'agent-device',
         version: dependency.detectedVersion ?? IOS_AGENT_DEVICE_VERSION,
