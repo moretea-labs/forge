@@ -361,6 +361,7 @@ function actions(): AssistantPluginActionDescriptor[] {
         properties: {
           udid: { type: 'string' },
           label: { type: 'string' },
+          display: { type: 'number', minimum: 0, maximum: 16 },
         },
         required: ['udid'],
         additionalProperties: false,
@@ -551,6 +552,7 @@ export async function executeIosPluginAction(input: AssistantPluginActionExecuti
       const screenshot = iosSimulatorScreenshot(repository, {
         udid,
         label: stringValue(input.args.label),
+        display: typeof input.args.display === 'number' ? input.args.display : undefined,
         artifactRoot,
       });
       return {

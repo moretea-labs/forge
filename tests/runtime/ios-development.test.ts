@@ -319,7 +319,9 @@ describe('iOS development simulator reliability', () => {
     });
     const boundOwner = bound.resultBundleOwnership as { recorded: boolean; resourceId: string };
     expect(boundOwner.recorded).toBe(true);
-    expect(getOwnedResource(controllerHome, boundOwner.resourceId)?.provenance.associatedWorkId).toBe('work-exact-current');
+    // Plugin execution binds physical evidence to producer request/repository,
+    // not an optional semantic Work label even when supplied by a caller.
+    expect(getOwnedResource(controllerHome, boundOwner.resourceId)?.provenance.associatedWorkId).toBeUndefined();
     const crossRepo = await action('JOB-ios-xcresult-cross-repo', {
       workId: 'work-other-repo', workRepoId: 'repo-unrelated',
     });
@@ -539,6 +541,60 @@ describe('iOS development simulator reliability', () => {
     expect(first.ready).toBe(true);
     expect(second.ready).toBe(true);
     expect('screenshot' in first ? first.screenshot : undefined).not.toBe('screenshot' in second ? second.screenshot : undefined);
+  });
+
+  test('Duo multi-display screenshots select the reported primary and allow exact alternate display', () => {
+    const repo = repository();
+    const calls: string[][] = [];
+    const ambiguity = [
+      'Cannot choose between 2 displays. Specify one with --display:',
+      '    --display=3  LCD-1 (primary-1) 2007x2853',
+      '    --display=1  LCD (primary) 1398x2034',
+    ].join('\n');
+    setIosDevelopmentHooksForTest({
+      platform: () => 'darwin',
+      runCommand: (command, args) => {
+        calls.push([command, ...args]);
+        return result(command, args, !args.some((arg) => arg.startsWith('--display='))
+          ? { ok: false, stderr: ambiguity }
+          : {});
+      },
+    });
+
+    const primary = iosSimulatorScreenshot(repo.record, { udid: 'DUO', label: 'duo-primary' });
+    expect(primary.ready).toBe(true);
+    expect('display' in primary ? primary.display : undefined).toBe(1);
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).not.toContain('--display=1');
+    expect(calls[1]).toContain('--display=1');
+    expect(calls[1]).not.toContain('--display=3');
+
+    const alternate = iosSimulatorScreenshot(repo.record, { udid: 'DUO', label: 'duo-secondary', display: 3 });
+    expect(alternate.ready).toBe(true);
+    expect('display' in alternate ? alternate.display : undefined).toBe(3);
+    expect(calls).toHaveLength(3);
+    expect(calls[2]).toContain('--display=3');
+    expect(() => iosSimulatorScreenshot(repo.record, { udid: 'DUO', display: 17 })).toThrow('IOS_SIMULATOR_DISPLAY_INVALID');
+    expect(() => iosSimulatorScreenshot(repo.record, { udid: 'DUO', display: 1.5 })).toThrow('IOS_SIMULATOR_DISPLAY_INVALID');
+  });
+
+  test('ambiguous multi-display capture without a unique primary fails closed', () => {
+    const repo = repository();
+    let attempts = 0;
+    setIosDevelopmentHooksForTest({
+      platform: () => 'darwin',
+      runCommand: (command, args) => {
+        attempts += 1;
+        return result(command, args, {
+          ok: false,
+          stderr: 'Cannot choose between 2 displays. Specify one with --display:\n--display=3 External\n--display=4 Inner',
+        });
+      },
+    });
+    const screenshot = iosSimulatorScreenshot(repo.record, { udid: 'DUO' });
+    expect(screenshot.ready).toBe(false);
+    expect(attempts).toBe(1);
+    expect(screenshot.error?.code).toBe('IOS_SCREENSHOT_FAILED');
   });
 
   test('accepts Controller-owned prebuilt apps for skip-build smoke while rejecting arbitrary external paths', async () => {

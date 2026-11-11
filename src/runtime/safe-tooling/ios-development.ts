@@ -802,20 +802,41 @@ export function iosAppLaunch(input: { udid: string; bundleId: string; arguments?
   };
 }
 
-export function iosSimulatorScreenshot(repository: RepositoryRecord, input: { udid: string; label?: string; artifactRoot?: string }) {
+export function iosSimulatorScreenshot(repository: RepositoryRecord, input: { udid: string; label?: string; display?: number; artifactRoot?: string }) {
   const unsupported = assertDarwin();
   if (unsupported) return unsupported;
   const udid = String(input.udid ?? '').trim();
   if (!udid) throw new Error('IOS_SIMULATOR_UDID_REQUIRED');
+  if (input.display !== undefined && (!Number.isInteger(input.display) || input.display < 0 || input.display > 16)) {
+    throw new Error('IOS_SIMULATOR_DISPLAY_INVALID');
+  }
   const dir = safeArtifactDir(repository, 'screenshots', input.artifactRoot);
   const file = join(dir, `${artifactStamp()}-${sanitize(input.label ?? udid)}.png`);
-  const result = runCommand('xcrun', ['simctl', 'io', udid, 'screenshot', file], { timeoutMs: 60_000 });
+  let display = input.display;
+  const screenshotArgs = (selectedDisplay?: number): string[] => [
+    'simctl', 'io', udid, 'screenshot',
+    ...(selectedDisplay === undefined ? [] : ['--display=' + selectedDisplay]),
+    file,
+  ];
+  let result = runCommand('xcrun', screenshotArgs(display), { timeoutMs: 60_000 });
+  if (!result.ok && display === undefined && /Cannot choose between \d+ displays/.test(result.stderr || result.stdout)) {
+    // Multi-display iPhone Duo reports both (primary) and (primary-1).
+    // Only select the *exact* primary, never guess a display identifier.
+    const candidates = [...(result.stderr + '\n' + result.stdout).matchAll(
+      /--display=(\d+)\s+[^\n]*\(primary\)(?:\s|$)/g,
+    )];
+    if (candidates.length === 1) {
+      display = Number(candidates[0]![1]);
+      result = runCommand('xcrun', screenshotArgs(display), { timeoutMs: 60_000 });
+    }
+  }
   return {
     ready: result.ok,
     screenshot: result.ok ? artifactRelativePath(repository, file, input.artifactRoot) : undefined,
     absolutePath: result.ok ? file : undefined,
     artifactType: 'ios_simulator_screenshot',
     udid,
+    display,
     command: result.command,
     error: result.ok ? undefined : { code: 'IOS_SCREENSHOT_FAILED', message: result.stderr || result.stdout },
     safety: { boundedPath: true, arbitraryPathAccepted: false },
