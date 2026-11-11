@@ -7,7 +7,7 @@
  * surfaces. Attachment never re-executes the original command; the Process
  * Runtime handle remains the sole execution authority.
  */
-import type { CallToolResult } from '../../../../packages/protocols/mcp/tool-contract';
+import type { ToolDispatchResult } from '../../shared/tool-dispatch-result';
 import {
   cancelRepositoryCommandProcess,
   getRepositoryCommandProcess,
@@ -72,7 +72,7 @@ export function managedProcessContinuation(handle: { completed?: boolean; observ
   };
 }
 
-export function result(value: Record<string, unknown>, isError = false): CallToolResult {
+export function result(value: Record<string, unknown>, isError = false): ToolDispatchResult {
   const safe = redactSensitiveValue(value).value;
   return {
     content: [{ type: 'text', text: JSON.stringify(safe, null, 2) }],
@@ -81,7 +81,7 @@ export function result(value: Record<string, unknown>, isError = false): CallToo
   };
 }
 
-export function failure(error: unknown): CallToolResult {
+export function failure(error: unknown): ToolDispatchResult {
   const message = redactSensitiveText(error instanceof Error ? error.message : String(error)).text;
   const code = leadingErrorCode(message, 'PROCESS_TOOL_FAILED');
   return result({ error: { code, message } }, true);
@@ -179,7 +179,7 @@ export async function callProcessTool(
   ctx: ProcessToolCallContext,
   name: string,
   args: Record<string, unknown>,
-): Promise<CallToolResult | undefined> {
+): Promise<ToolDispatchResult | undefined> {
   // run_check shares this module's public schema, but its execution authority is
   // the Gateway check facade in router.ts. Only attachment/lifecycle operations
   // consume an existing process_id here.

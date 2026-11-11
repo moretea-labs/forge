@@ -67,7 +67,7 @@ import { normalizeRepositoryCommand } from '../../../cli/repositories/command-no
 import { readRepositoryRange } from '../../../cli/repository/inspector';
 import { getToolPolicy } from '../../../cli/controller/tool-policy';
 import { redactSensitiveText } from '../../evidence/sensitive-output';
-import type { CallToolResult } from '../../../../packages/protocols/mcp/tool-contract';
+import type { ToolDispatchResult } from '../../shared/tool-dispatch-result';
 import {
   boundUtf8,
   compactCommandOutput,
@@ -77,7 +77,7 @@ import {
   RESPONSE_BUDGET,
 } from '../../shared/response-budget';
 
-export type RepositoryToolResult = CallToolResult;
+export type RepositoryToolResult = ToolDispatchResult;
 
 function result(value: Record<string, unknown>): RepositoryToolResult {
   // Compact text channel by default; structuredContent remains the machine view.

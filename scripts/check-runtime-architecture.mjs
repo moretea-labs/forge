@@ -52,6 +52,8 @@ forbid('src/cli/controller/tool-policy.ts', /profile === 'orchestrator'|value ==
 // The desktop native Agent local harness must execute tools through the
 // protocol-neutral dispatchers, never through the MCP adapter surface.
 forbid('apps/desktop/src-tauri/resources/forge-local-tool.mjs', /adapters\/mcp/, 'local Agent harness must not import the MCP adapter execution owner');
+forbid('src/runtime/control-plane/facade/repository-tool-dispatch.ts', /from\s+['"][^'"]*(?:adapters\/mcp|packages\/protocols\/mcp)\//, 'protocol-neutral Repository dispatch must not import MCP adapter or SDK types');
+forbid('src/runtime/execution/process-runtime/tool-dispatch.ts', /from\s+['"][^'"]*(?:adapters\/mcp|packages\/protocols\/mcp)\//, 'protocol-neutral Process dispatch must not import MCP adapter or SDK types');
 // The neutral tool authority sits below every transport; it must never depend
 // back on a transport adapter.
 for (const path of [
