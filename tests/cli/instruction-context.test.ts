@@ -69,6 +69,31 @@ describe('repository UI instruction context', () => {
     }
   });
 
+  test('first-turn UI intent resolves root guidance with only AGENTS.md known', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-root-design-bootstrap-'));
+    try {
+      mkdirSync(join(root, 'docs', 'design'), { recursive: true });
+      writeFileSync(join(root, 'AGENTS.md'), 'UI guidance lives in \`docs/design/design-rules.md\`.\\n');
+      writeFileSync(join(root, 'DESIGN.md'), 'Avoid decorative shadows.\\n');
+      writeFileSync(join(root, 'docs', 'design', 'design-rules.md'), 'Use flat cards.\\n');
+      expect(Bun.spawnSync(['git', 'init', '-q'], { cwd: root }).exitCode).toBe(0);
+      expect(Bun.spawnSync([
+        'git', '-c', 'user.name=Forge Test', '-c', 'user.email=forge@test.invalid',
+        'commit', '--allow-empty', '-qm', 'init',
+      ], { cwd: root }).exitCode).toBe(0);
+      const pack = buildControllerContextPack(root, getMcpPolicy('controller', { repoRoot: root }), {
+        description: '按用户设计规范继续修改用药界面',
+        knownPaths: ['AGENTS.md'], maxFiles: 1, maxSnippets: 1,
+      });
+      const paths = pack.instructionContext.contracts.map(contract => contract.path);
+      expect(paths).toContain('AGENTS.md');
+      expect(paths).toContain('DESIGN.md');
+      expect(paths).toContain('docs/design/design-rules.md');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test('preserves bounded truncation evidence for long design documents', () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-design-bounds-'));
     try {

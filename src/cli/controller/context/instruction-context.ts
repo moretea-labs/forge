@@ -54,7 +54,14 @@ export function buildRepositoryInstructionContext(
   const maxCharsPerContract = Math.max(500, Math.min(50_000, Math.trunc(options.maxCharsPerContract ?? DEFAULT_MAX_CHARS_PER_CONTRACT)));
   const maxTotalChars = Math.max(2_000, Math.min(100_000, Math.trunc(options.maxTotalChars ?? DEFAULT_MAX_TOTAL_CHARS)));
   const allTargets = [...new Set(targetPaths.map((path) => path.trim()).filter(Boolean).filter((path) => !isInstructionContract(path)))];
-  const targets = allTargets.slice(0, maxTargets);
+  // The first Requirement-only lookup may explicitly name just root AGENTS.md.
+  // Use that guide as a root-scoped anchor when no source file is known yet;
+  // otherwise excluding it here silently drops all repository design rules.
+  const rootGuide = targetPaths.find((path) => isInstructionContract(path.trim())
+    && posix.dirname(path.trim()) === '.');
+  const targets = allTargets.length > 0
+    ? allTargets.slice(0, maxTargets)
+    : rootGuide ? [rootGuide.trim()] : [];
   const coverageGaps: string[] = [];
   if (allTargets.length > targets.length) coverageGaps.push(`instruction_targets_truncated:${allTargets.length - targets.length}`);
 
