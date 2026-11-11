@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { describe, expect, test } from 'bun:test';
 import {
   claimsForCheck,
@@ -16,7 +17,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { acquireExecutionLeases, acquireExecutionLeasesAsync, assertFencingToken, listActiveLeases, releaseExecutionLeases, releaseExactExecutionLeases, releaseTerminalProcessLeases, withRepositoryMutationExclusion } from '../../src/runtime/resources/leases/store';
 import { classifyRepositoryCommandRoute } from '../../src/runtime/execution/process-runtime/command-facade';
-import { repositoryControllerRoot } from '../../src/effects/controller-home';
+import { ensureControllerHome, repositoryControllerRoot } from '../../src/effects/controller-home';
+import { registerRepository } from '../../src/cli/repositories/registry';
+import { buildWorkflowWatchdogReport } from '../../src/runtime/watchdog/workflow-watchdog';
 import { withControllerLockAsync } from '../../src/cli/repositories/locks';
 import { normalizeMutationOwnerIdentity } from '../../src/runtime/execution/thin-harness/mutation-gate';
 
@@ -713,7 +716,7 @@ describe('Process Runtime fine-grained resource claims', () => {
     ]);
   });
 
-  test('ordinary ephemeral lease release honors no-runtime-event semantics on both release routes', () => {
+  test('ephemeral explicit releases retain durable owner and fencing receipts on both release routes', () => {
     const controllerHome = mkdtempSync(join(tmpdir(), 'forge-ephemeral-release-'));
     const repoId = 'repo-ephemeral-release';
     const options = { visibility: 'ephemeral' as const, notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false };
@@ -736,9 +739,110 @@ describe('Process Runtime fine-grained resource claims', () => {
         ownerIdentityDigest: lease.ownerIdentityDigest,
       })), options)).toBe(1);
       expect(listActiveLeases(controllerHome, repoId)).toHaveLength(0);
-      expect(existsSync(join(repositoryControllerRoot(controllerHome, repoId), 'events', 'ledger.jsonl'))).toBe(false);
+      const ledger = join(repositoryControllerRoot(controllerHome, repoId), 'events', 'ledger.jsonl');
+      const events = readFileSync(ledger, 'utf8').split(/\r?\n/).filter(Boolean)
+        .map((line) => JSON.parse(line) as { eventType: string; requestId: string; data?: Record<string, unknown> });
+      expect(events.filter((event) => event.eventType === 'lease_released')).toMatchObject([
+        { requestId: 'fast:general-release', data: { releaseReason: 'explicit_release' } },
+        { requestId: 'fast:exact-release', data: { releaseReason: 'explicit_release', exactSet: true } },
+      ]);
+      expect(events.some((event) => event.eventType === 'lease_acquired')).toBe(false);
     } finally {
       rmSync(controllerHome, { recursive: true, force: true });
+    }
+  });
+
+  test('workflow watchdog exposes active plugin leases and durable release/expiry history', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-watchdog-lease-visibility-'));
+    const controllerHome = ensureControllerHome(join(root, 'controller'));
+    const repoRoot = join(root, 'repo');
+    mkdirSync(repoRoot, { recursive: true });
+    try {
+      execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repoRoot });
+      execFileSync('git', ['config', 'user.email', 'watchdog-lease@example.test'], { cwd: repoRoot });
+      execFileSync('git', ['config', 'user.name', 'Watchdog Lease Test'], { cwd: repoRoot });
+      writeFileSync(join(repoRoot, 'README.md'), 'watchdog lease fixture\n');
+      execFileSync('git', ['add', '.'], { cwd: repoRoot });
+      execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
+      const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'watchdog lease fixture' });
+      const ownerJobId = 'plugin:m03-voiceover-preflight-screenshot';
+      const resourceKey = 'provider-state:computer';
+      const acquired = acquireExecutionLeases(controllerHome, repository.repoId, ownerJobId, [{
+        resourceKey,
+        mode: 'write',
+        repoId: repository.repoId,
+        checkoutId: repository.activeCheckoutId,
+      }], {
+        visibility: 'ephemeral',
+        notifyScheduler: false,
+        invalidateProjection: false,
+        emitRuntimeEvent: false,
+      });
+      expect(acquired.acquired).toBe(true);
+      const held = acquired.leases[0]!;
+      const activeReport = buildWorkflowWatchdogReport(controllerHome, repository, { includeProcesses: false });
+      expect(activeReport.performance.controller.activeLeases).toBe(1);
+      expect(activeReport.activeLeases).toMatchObject([{
+        leaseId: held.leaseId,
+        ownerJobId,
+        checkoutId: repository.activeCheckoutId,
+        resourceKey,
+        mode: 'write',
+        fencingToken: held.fencingToken,
+        expiresAt: held.expiresAt,
+        visibility: 'ephemeral',
+      }]);
+      expect(activeReport.recentLeaseEvents).toEqual([]);
+      expect(releaseExecutionLeases(controllerHome, repository.repoId, ownerJobId)).toBe(1);
+      const releasedReport = buildWorkflowWatchdogReport(controllerHome, repository, { includeProcesses: false });
+      expect(releasedReport.activeLeases).toEqual([]);
+      expect(releasedReport.recentLeaseEvents).toContainEqual(expect.objectContaining({
+        eventType: 'lease_released',
+        entityId: held.leaseId,
+        requestId: ownerJobId,
+        data: expect.objectContaining({
+          ownerJobId,
+          resourceKey,
+          releaseReason: 'explicit_release',
+          fencingToken: held.fencingToken,
+        }),
+      }));
+      const expiringOwner = 'plugin:computer-expiry-probe';
+      const expiring = acquireExecutionLeases(controllerHome, repository.repoId, expiringOwner, [{
+        resourceKey: 'provider-state:computer',
+        mode: 'write',
+        repoId: repository.repoId,
+        checkoutId: repository.activeCheckoutId,
+      }], {
+        visibility: 'ephemeral',
+        notifyScheduler: false,
+        invalidateProjection: false,
+        emitRuntimeEvent: false,
+        ttlMs: 5_000,
+      });
+      expect(expiring.acquired).toBe(true);
+      const expiringLease = expiring.leases[0]!;
+      const originalNow = Date.now;
+      let expiredReport: ReturnType<typeof buildWorkflowWatchdogReport>;
+      Date.now = () => Date.parse(expiringLease.expiresAt) + 1;
+      try {
+        expiredReport = buildWorkflowWatchdogReport(controllerHome, repository, { includeProcesses: false });
+      } finally {
+        Date.now = originalNow;
+      }
+      expect(expiredReport.activeLeases).toEqual([]);
+      expect(expiredReport.recentLeaseEvents).toContainEqual(expect.objectContaining({
+        eventType: 'lease_expired',
+        entityId: expiringLease.leaseId,
+        requestId: expiringOwner,
+        data: expect.objectContaining({
+          ownerJobId: expiringOwner,
+          resourceKey: 'provider-state:computer',
+          expiryReason: 'ttl_expired',
+        }),
+      }));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 

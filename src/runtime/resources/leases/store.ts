@@ -503,10 +503,8 @@ export function releaseExecutionLeases(
       if (lease.ownerJobId !== ownerJobId) continue;
       if (expectedRefs && !leaseMatchesExpected(lease, expectedRefs.get(lease.leaseId))) continue;
       visibility = lease.visibility ?? visibility;
-      if (resolveSideEffects(options, lease.visibility).emitRuntimeEvent) {
-        appendLeaseLifecycleEvent(controllerHome, lease, 'lease_released', { releaseReason: 'explicit_release' });
-        leaseSideEffectMetrics.durableReleaseEvents += 1;
-      }
+      appendLeaseLifecycleEvent(controllerHome, lease, 'lease_released', { releaseReason: 'explicit_release' });
+      leaseSideEffectMetrics.durableReleaseEvents += 1;
       removeFile(leasePath(controllerHome, repoId, lease.leaseId));
       if (lease.visibility === 'ephemeral') leaseSideEffectMetrics.ephemeralReleases += 1;
       releasedCount += 1;
@@ -559,13 +557,11 @@ export function releaseExactExecutionLeases(
     let visibility: LeaseVisibility = options?.visibility ?? 'durable';
     for (const lease of owned) {
       visibility = lease.visibility ?? visibility;
-      if (resolveSideEffects(options, lease.visibility).emitRuntimeEvent) {
-        appendLeaseLifecycleEvent(controllerHome, lease, 'lease_released', {
-          releaseReason: 'explicit_release',
-          exactSet: true,
-        });
-        leaseSideEffectMetrics.durableReleaseEvents += 1;
-      }
+      appendLeaseLifecycleEvent(controllerHome, lease, 'lease_released', {
+        releaseReason: 'explicit_release',
+        exactSet: true,
+      });
+      leaseSideEffectMetrics.durableReleaseEvents += 1;
       removeFile(leasePath(controllerHome, repoId, lease.leaseId));
       if (lease.visibility === 'ephemeral') leaseSideEffectMetrics.ephemeralReleases += 1;
       releasedCount += 1;

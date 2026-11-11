@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import { join } from 'path';
-import { readFileSync } from 'fs';
+import { closeSync, fstatSync, openSync, readFileSync, readSync } from 'fs';
 import { repositoryControllerRoot } from '../../effects/controller-home';
 import { appendJsonLine } from '../shared/json-files';
 import type { ExecutionJob, ExecutionJobEvent } from '../execution/jobs/types';
@@ -40,6 +40,56 @@ export function appendRuntimeEvent(
   };
   appendJsonLine(ledgerPath(controllerHome, input.repoId), event);
   return event;
+}
+
+const MAX_RUNTIME_EVENT_READ_BYTES = 1024 * 1024;
+const MAX_RUNTIME_EVENT_READ_LIMIT = 200;
+
+export function readRuntimeEvents(
+  controllerHome: string,
+  repoId: string,
+  options: { entityType?: RuntimeEntityEvent['entityType']; limit?: number } = {},
+): RuntimeEntityEvent[] {
+  const path = ledgerPath(controllerHome, repoId);
+  let descriptor: number;
+  try {
+    descriptor = openSync(path, 'r');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw error;
+  }
+
+  try {
+    const size = fstatSync(descriptor).size;
+    const length = Math.min(size, MAX_RUNTIME_EVENT_READ_BYTES);
+    if (length === 0) return [];
+    const buffer = Buffer.alloc(length);
+    const bytesRead = readSync(descriptor, buffer, 0, length, size - length);
+    let content = buffer.subarray(0, bytesRead).toString('utf8');
+    if (size > bytesRead) {
+      const firstLineEnd = content.indexOf('\n');
+      if (firstLineEnd < 0) return [];
+      content = content.slice(firstLineEnd + 1);
+    }
+    const lines = content.split(/\r?\n/);
+    lines.pop();
+    const limit = Math.max(1, Math.min(
+      MAX_RUNTIME_EVENT_READ_LIMIT,
+      Math.trunc(options.limit ?? 100),
+    ));
+    const events = lines.filter(Boolean).map((line) => {
+      try {
+        return JSON.parse(line) as RuntimeEntityEvent;
+      } catch {
+        throw new Error(`RUNTIME_EVENT_LEDGER_CORRUPT: ${path}`);
+      }
+    }).filter((event) => event.schemaVersion === 1
+      && event.repoId === repoId
+      && (!options.entityType || event.entityType === options.entityType));
+    return events.slice(-limit);
+  } finally {
+    closeSync(descriptor);
+  }
 }
 
 export function appendJobEvent(

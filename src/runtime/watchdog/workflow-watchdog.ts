@@ -2,6 +2,9 @@ import { listActiveAgentJobSnapshots } from '../../cli/agent-jobs/job-manager';
 import { getLocalBridgeJobEventsSnapshot, listLocalBridgeJobSnapshots } from '../../cli/local-bridge/job-store';
 import type { RepositoryRecord } from '../../cli/repositories/types';
 import { listExecutionJobs } from '../execution/jobs/store';
+import { readRuntimeEvents, type RuntimeEntityEvent } from '../evidence/event-ledger';
+import { listActiveLeases } from '../resources/leases/store';
+import type { ExecutionLease } from '../resources/leases/types';
 import { collectRuntimePerformanceDiagnostics, type RuntimePerformanceDiagnostics } from '../diagnostics/performance';
 import { listSchedules } from '../../../packages/kernel/scheduler/api/index';
 
@@ -15,11 +18,18 @@ export interface WorkflowWatchdogFinding {
   next: string;
 }
 
+export type WorkflowWatchdogLease = Pick<ExecutionLease,
+  | 'leaseId' | 'repoId' | 'checkoutId' | 'resourceKey' | 'mode' | 'ownerJobId'
+  | 'ownerIdentityDigest' | 'fencingToken' | 'acquiredAt' | 'expiresAt' | 'heartbeatAt' | 'visibility'
+>;
+
 export interface WorkflowWatchdogReport {
   repoId: string;
   generatedAt: string;
   status: 'normal' | 'warning' | 'critical';
   findings: WorkflowWatchdogFinding[];
+  activeLeases: WorkflowWatchdogLease[];
+  recentLeaseEvents: RuntimeEntityEvent[];
   performance: RuntimePerformanceDiagnostics;
   queues: {
     executionJobs: Record<string, number>;
@@ -63,6 +73,25 @@ export function buildWorkflowWatchdogReport(controllerHome: string, repository: 
   const localJobs = listLocalBridgeJobSnapshots(repository.canonicalRoot, 200);
   const agentJobs = listActiveAgentJobSnapshots(repository.canonicalRoot, 200);
   const schedules = listSchedules(controllerHome, repository.repoId);
+  const leases = listActiveLeases(controllerHome, repository.repoId);
+  const activeLeaseEvidence: WorkflowWatchdogLease[] = leases.map((lease) => ({
+    leaseId: lease.leaseId,
+    repoId: lease.repoId,
+    checkoutId: lease.checkoutId,
+    resourceKey: lease.resourceKey,
+    mode: lease.mode,
+    ownerJobId: lease.ownerJobId,
+    ownerIdentityDigest: lease.ownerIdentityDigest,
+    fencingToken: lease.fencingToken,
+    acquiredAt: lease.acquiredAt,
+    expiresAt: lease.expiresAt,
+    heartbeatAt: lease.heartbeatAt,
+    visibility: lease.visibility ?? 'durable',
+  }));
+  const recentLeaseEvents = readRuntimeEvents(controllerHome, repository.repoId, {
+    entityType: 'lease',
+    limit: 50,
+  });
   const activeJobIds = executionJobs.filter((job) => ['queued', 'running', 'dispatched'].includes(job.status)).map((job) => job.jobId);
   const performance = collectRuntimePerformanceDiagnostics({
     repoId: repository.repoId,
@@ -70,6 +99,7 @@ export function buildWorkflowWatchdogReport(controllerHome: string, repository: 
     activeJobIds,
     queueDepth: executionJobs.filter((job) => job.status === 'queued').length,
     runningWorkers: executionJobs.filter((job) => job.status === 'running' || job.status === 'dispatched').length,
+    activeLeases: activeLeaseEvidence.length,
     includeProcesses: input.includeProcesses !== false,
     includeTempDirs: true,
     cleanupPreview: true,
@@ -87,6 +117,13 @@ export function buildWorkflowWatchdogReport(controllerHome: string, repository: 
   ];
   const findings: WorkflowWatchdogFinding[] = [
     ...performance.findings.map((finding) => ({ ...finding, next: finding.severity === 'critical' ? 'Run runtime_cleanup_preview, then decide whether to apply cleanup.' : 'Watch the next monitor tick before mutating runtime state.' })),
+    ...(activeLeaseEvidence.length > 0 ? [{
+      severity: 'info' as const,
+      code: 'ACTIVE_RESOURCE_LEASES',
+      message: `${activeLeaseEvidence.length} active resource lease(s) are held for this repository.`,
+      evidence: { leases: activeLeaseEvidence },
+      next: 'Inspect the exact owner, resource key, checkout, expiry and fencing token before retrying a conflicting mutation; never reclaim without matching fencing evidence.',
+    }] : []),
     ...(staleWork.length > 0 ? [{ severity: 'warning' as const, code: 'STALE_WORK_ITEMS', message: `${staleWork.length} active work item(s) have not updated for ${staleThreshold}+ minutes.`, evidence: { staleWork }, next: 'Inspect get_job/get_local_job output and cancel or retry only after confirming the work is stale.' }] : []),
     ...(schedules.filter((schedule) => schedule.enabled).length > 20 ? [{ severity: 'warning' as const, code: 'SCHEDULE_VOLUME_HIGH', message: 'Many enabled schedules can repeatedly wake the runtime.', evidence: { enabled: schedules.filter((schedule) => schedule.enabled).length }, next: 'Run schedule_dedupe_report and pause duplicate or obsolete schedules.' }] : []),
   ];
@@ -104,6 +141,8 @@ export function buildWorkflowWatchdogReport(controllerHome: string, repository: 
     generatedAt: now(),
     status: maxSeverity(findings),
     findings,
+    activeLeases: activeLeaseEvidence,
+    recentLeaseEvents,
     performance,
     queues: {
       executionJobs: countBy(executionJobs),
