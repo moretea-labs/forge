@@ -2782,8 +2782,57 @@ async function openNativeAttachedContext(
   let navigationUsedReplacement = false;
   const navigateNativePageWithReplacement = async (candidate: PageLike): Promise<PageLike> => {
     const obsoleteRef = (candidate as unknown as { tabRef?: () => MacOsBrowserTabRef | undefined }).tabRef?.();
+    const previousUrl = candidate.url();
     try {
       await candidate.goto(target.url, { waitUntil: waitUntil(args.wait_until), timeout });
+      const actualUrl = candidate.url();
+      if (!nativeReplacementUrlMatchesTarget(target.url, actualUrl)) {
+        const mismatch = nativeReplacementMismatchDiagnostic({
+          requestedUrl: target.url,
+          actualUrl,
+          previousUrl,
+          obsoleteRef,
+        });
+        if (effectiveOwnership === 'user_owned') {
+          throw new AssistantPluginError(
+            'PLUGIN_BROWSER_ADOPTED_TAB_URL_MISMATCH',
+            'Explicitly adopted user-owned tab did not reach the requested URL; Forge will not perform a second navigation on the user tab.',
+            { retryable: false, effectOutcome: 'failed', details: mismatch },
+          );
+        }
+        if (target.existingSession && effectiveOwnership === 'plugin_owned') {
+          try {
+            await candidate.goto(previousUrl, { waitUntil: waitUntil(args.wait_until), timeout });
+            const restoredUrl = candidate.url();
+            if (comparableUrl(restoredUrl) !== comparableUrl(previousUrl)) {
+              throw new Error('native Browser restore did not return to the original URL');
+            }
+          } catch (restoreError) {
+            throw new AssistantPluginError(
+              'PLUGIN_BROWSER_MUTATION_OUTCOME_UNKNOWN',
+              'Native Browser navigation reached an unexpected URL and Forge could not restore the original plugin-owned tab; inspect the exact tab before retrying.',
+              {
+                retryable: false,
+                effectOutcome: 'outcome_unknown',
+                details: {
+                  ...mismatch,
+                  restoreError: restoreError instanceof Error ? restoreError.message : String(restoreError),
+                },
+              },
+            );
+          }
+          throw new AssistantPluginError(
+            'PLUGIN_BROWSER_NATIVE_REPLACEMENT_MISMATCH',
+            'Native Browser navigation did not reach the requested URL; the original plugin-owned tab was restored.',
+            { retryable: false, effectOutcome: 'failed', details: { ...mismatch, restored: true } },
+          );
+        }
+        throw new AssistantPluginError(
+          'PLUGIN_BROWSER_NATIVE_REPLACEMENT_MISMATCH',
+          'New native Browser tab did not reach the requested URL and will not be accepted as a successful session.',
+          { retryable: false, effectOutcome: 'failed', details: mismatch },
+        );
+      }
       return candidate;
     } catch (error) {
       if (!nativeBackgroundNavigationRequiresReplacement(error) || effectiveOwnership === 'user_owned' || !obsoleteRef) throw error;
@@ -3103,11 +3152,18 @@ async function withPage<T>(
         ? error.retryable
         : /timeout|timed out|net::|ERR_|Navigation failed|Target closed|Protocol error/i.test(message);
       if (!transient) throw error;
+      // The provider can prove that a transient operation failed before taking effect.
+      // Preserve that typed outcome so the caller can safely retry after backoff; only
+      // failures with an unknown external effect must be fenced as non-replayable.
+      if (error instanceof AssistantPluginError && error.effectOutcome === 'failed') throw error;
       if (actionDispatched && !postDispatchReplaySafe) {
+        const causeDetails = error instanceof AssistantPluginError
+          ? { causeCode: error.code, causeRetryable: error.retryable, causeEffectOutcome: error.effectOutcome ?? null }
+          : { causeName: error instanceof Error ? error.name : 'UnknownError' };
         throw new AssistantPluginError(
           'PLUGIN_BROWSER_MUTATION_OUTCOME_UNKNOWN',
           `Browser action ${actionId} reported a transient failure after dispatch. Forge refused automatic replay because the external mutation outcome is unknown; verify current browser state before retrying.`,
-          { retryable: false, effectOutcome: 'outcome_unknown', details: { actionId, requestedRetries: retries } },
+          { retryable: false, effectOutcome: 'outcome_unknown', details: { actionId, requestedRetries: retries, ...causeDetails } },
         );
       }
       if (attempt >= retries) throw error;

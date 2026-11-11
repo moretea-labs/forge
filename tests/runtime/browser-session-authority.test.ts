@@ -693,6 +693,68 @@ describe('browser session compatibility on Computer target authority', () => {
     expect(closeCalls).toBe(0);
   });
 
+  test('preserves a definitive retryable native serialization failure after a session handle is acquired', async () => {
+    const { controllerHome, repoA } = fixture();
+    mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
+    writeControllerPluginConfig(controllerHome, 'browser', {
+      schemaVersion: 1,
+      enabled: true,
+      provider: 'playwright',
+      browserMode: 'attach_preferred',
+      cdpAttachFallback: 'fail_closed',
+      nativeAttachMode: 'auto',
+      nativeBrowserCandidates: ['chrome'],
+    });
+    const url = 'https://example.com/native-serialization-busy';
+    saveBrowserSession(controllerHome, 'repo-a', repoA, session(
+      'native-serialization-busy', '2026-08-24T04:00:00.000Z', { native: true, ownership: 'plugin_owned' },
+    ));
+
+    let reloadCalls = 0;
+    let closeCalls = 0;
+    const separator = String.fromCharCode(30);
+    const metadata = () => ['false', url, 'Native Serialization Busy', '0', '0', '1200', '800', '7', '9', 'false', 'false'].join(separator);
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin',
+      appExists: (path) => path.includes('Google Chrome'),
+      processRunning: async () => true,
+      runAppleScript: async (script) => {
+        if (script.includes('reload targetTab')) {
+          reloadCalls += 1;
+          throw new Error('BROWSER_AUTOMATION_SERIALIZATION_BUSY');
+        }
+        if (script.includes('close targetTab')) {
+          closeCalls += 1;
+          return '';
+        }
+        if (script.includes('execute targetTab javascript')) {
+          return JSON.stringify({ ok: true, value: { url, title: 'Native Serialization Busy' }, page: { url, title: 'Native Serialization Busy' } });
+        }
+        return metadata();
+      },
+    });
+
+    await expect(executeBrowserPluginAction({
+      controllerHome,
+      repoId: 'repo-a',
+      repoRoot: repoA,
+      pluginId: 'browser',
+      actionId: 'reload',
+      requestId: 'native-serialization-busy-after-open',
+      args: { session_id: 'native-serialization-busy' },
+      origin: { surface: 'mcp', actor: 'test' },
+    })).rejects.toMatchObject({
+      code: 'BROWSER_AUTOMATION_SERIALIZATION_BUSY',
+      retryable: true,
+      effectOutcome: 'failed',
+    });
+    expect(reloadCalls).toBe(1);
+    expect(closeCalls).toBe(0);
+    expect(findBrowserSession(controllerHome, 'repo-a', repoA, 'native-serialization-busy')?.browser?.tab)
+      .toMatchObject({ ownership: 'plugin_owned', windowId: '7', tabId: '9' });
+  });
+
   test('native handoff owns the exact live tab target without materializing a browser profile', async () => {
     const { controllerHome, repoA } = fixture();
     mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });

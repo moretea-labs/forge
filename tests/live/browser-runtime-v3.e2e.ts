@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { strict as assert } from 'node:assert';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -13,6 +13,8 @@ import {
   type MacOsBrowserProduct,
 } from '../../src/runtime/plugins/browser-macos-bridge';
 import { callBrowserAutomationBroker } from '../../src/runtime/plugins/browser-automation-service';
+import { disposeRuntimeComputerComposition } from '../../src/runtime/root/computer-composition';
+import { writeControllerPluginConfig } from '../../src/runtime/plugins/config-store';
 
 if (process.platform !== 'darwin') throw new Error('Browser Runtime V3 live E2E requires macOS.');
 
@@ -27,6 +29,7 @@ const requireCompetingForeground = process.env.FORGE_BROWSER_V3_REQUIRE_COMPETIN
 const requireDomAll = process.env.FORGE_BROWSER_V3_REQUIRE_DOM_ALL === '1';
 const samplesPerProduct = Math.max(3, Math.min(Number(process.env.FORGE_BROWSER_V3_SAMPLES ?? 5), 20));
 const openSessions = new Set<string>();
+let safeProviderRetries = 0;
 const brokerOwnedTabs: Array<{ product: MacOsBrowserProduct; ref: { windowId: string; tabId: string } }> = [];
 let server: ReturnType<typeof Bun.serve> | undefined;
 
@@ -62,11 +65,11 @@ function parseMetadata(value: unknown): BrokerMetadata {
 }
 
 async function productMetadata(product: MacOsBrowserProduct): Promise<BrokerMetadata> {
-  return parseMetadata((await callBrowserAutomationBroker({ action: 'metadata', product }, 5_000)).value);
+  return parseMetadata((await callBrowserAutomationBroker({ action: 'metadata', product }, 15_000)).value);
 }
 
 async function exactMetadata(product: MacOsBrowserProduct, ref: { windowId: string; tabId: string }): Promise<BrokerMetadata> {
-  return parseMetadata((await callBrowserAutomationBroker({ action: 'metadata', product, ref }, 5_000)).value);
+  return parseMetadata((await callBrowserAutomationBroker({ action: 'metadata', product, ref }, 15_000)).value);
 }
 
 function assertActiveUserTabPreserved(product: MacOsBrowserProduct, before: BrokerMetadata, after: BrokerMetadata, stage: string): void {
@@ -96,16 +99,29 @@ function resultTabRef(result: Record<string, unknown>): { windowId: string; tabI
 }
 
 async function action(actionId: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
-  return await executeBrowserPluginAction({
-    controllerHome,
-    repoId: 'browser-v3-live',
-    repoRoot,
-    pluginId: 'browser',
-    actionId,
-    requestId: `browser-v3-live-${actionId}-${crypto.randomUUID()}`,
-    args,
-    origin: { surface: 'local-ui', actor: 'browser-v3-live' },
-  });
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      return await executeBrowserPluginAction({
+        controllerHome,
+        repoId: 'browser-v3-live',
+        repoRoot,
+        pluginId: 'browser',
+        actionId,
+        requestId: `browser-v3-live-${actionId}-${crypto.randomUUID()}`,
+        args,
+        origin: { surface: 'local-ui', actor: 'browser-v3-live' },
+      });
+    } catch (error) {
+      const providerFailure = error as { code?: unknown; retryable?: unknown; effectOutcome?: unknown };
+      const safeSerializationRetry = providerFailure.code === 'BROWSER_AUTOMATION_SERIALIZATION_BUSY'
+        && providerFailure.retryable === true
+        && providerFailure.effectOutcome === 'failed';
+      if (!safeSerializationRetry || attempt === 3) throw error;
+      safeProviderRetries += 1;
+      await Bun.sleep(100 * attempt);
+    }
+  }
+  throw new Error('Browser action retry loop exhausted unexpectedly.');
 }
 
 async function closeSession(sessionId: string): Promise<void> {
@@ -114,7 +130,7 @@ async function closeSession(sessionId: string): Promise<void> {
 }
 
 async function createBrokerTab(product: MacOsBrowserProduct, url: string): Promise<{ windowId: string; tabId: string }> {
-  const created = await callBrowserAutomationBroker({ action: 'create_tab', product, url }, 8_000);
+  const created = await callBrowserAutomationBroker({ action: 'create_tab', product, url }, 15_000);
   const [legacyWindowId, legacyTabId] = String(created.value ?? '').split(separator);
   const structuredRef = created.ref as Record<string, unknown> | undefined;
   const navigation = created.navigation as Record<string, unknown> | undefined;
@@ -133,11 +149,11 @@ async function createBrokerTab(product: MacOsBrowserProduct, url: string): Promi
 async function closeBrokerTab(product: MacOsBrowserProduct, ref: { windowId: string; tabId: string }): Promise<void> {
   const index = brokerOwnedTabs.findIndex((entry) => entry.product === product && entry.ref.windowId === ref.windowId && entry.ref.tabId === ref.tabId);
   if (index >= 0) brokerOwnedTabs.splice(index, 1);
-  await callBrowserAutomationBroker({ action: 'close_tab', product, ref }, 5_000).catch(() => undefined);
+  await callBrowserAutomationBroker({ action: 'close_tab', product, ref }, 10_000).catch(() => undefined);
 }
 
 async function waitForExactUrl(product: MacOsBrowserProduct, ref: { windowId: string; tabId: string }, predicate: (url: string) => boolean): Promise<BrokerMetadata> {
-  const deadline = Date.now() + 8_000;
+  const deadline = Date.now() + 15_000;
   let latest = await exactMetadata(product, ref);
   while (Date.now() < deadline) {
     if (!latest.loading && predicate(latest.url)) return latest;
@@ -148,8 +164,6 @@ async function waitForExactUrl(product: MacOsBrowserProduct, ref: { windowId: st
 }
 
 try {
-  process.env.FORGE_CONTROLLER_HOME = controllerHome;
-  mkdirSync(join(repoRoot, '.forge', 'plugins'), { recursive: true });
   server = Bun.serve({
     hostname: '127.0.0.1',
     port: 0,
@@ -170,7 +184,7 @@ try {
   const report: Record<string, unknown> = { schemaVersion: 1, source: 'current-worktree', products: {} };
 
   for (const product of requestedProducts) {
-    writeFileSync(join(repoRoot, '.forge', 'plugins', 'browser.json'), `${JSON.stringify({
+    writeControllerPluginConfig(controllerHome, 'browser', {
       schemaVersion: 1,
       enabled: true,
       provider: 'playwright',
@@ -179,9 +193,62 @@ try {
       nativeAttachMode: 'auto',
       nativeBrowserCandidates: [product],
       defaultTimeoutMs: 10_000,
-    }, null, 2)}\n`);
+    });
 
     const userBefore = await productMetadata(product);
+    const createIsolationSession = async (sessionId: string) => {
+      openSessions.add(sessionId);
+      const created = await action('create_session', {
+        session_id: sessionId,
+        url: one,
+        browser_mode: 'attach_preferred',
+        native_browser_candidates: [product],
+        cdp_attach_fallback: 'fail_closed',
+        extract_text: false,
+      });
+      assert.equal(resultSessionId(created), sessionId, `${product} concurrent session identity was aliased`);
+      return { sessionId, ref: resultTabRef(created) };
+    };
+    const isolationA = await createIsolationSession(`browser-v3-isolation-a-${product}`);
+    const isolationB = await createIsolationSession(`browser-v3-isolation-b-${product}`);
+    assert.notDeepEqual(isolationA.ref, isolationB.ref, `${product} concurrent fresh sessions shared one native tab`);
+    const isolationThird = await createIsolationSession(`browser-v3-isolation-third-${product}`);
+    assert.notDeepEqual(isolationThird.ref, isolationA.ref, `${product} third session reused session A's tab`);
+    assert.notDeepEqual(isolationThird.ref, isolationB.ref, `${product} third session reused session B's tab`);
+    for (const entry of [isolationA, isolationB, isolationThird]) {
+      assert.equal((await exactMetadata(product, entry.ref)).url, one, `${product} session did not retain its assigned URL`);
+    }
+
+    const [reopenedA, reopenedB] = await Promise.all([
+      action('open_page', { session_id: isolationA.sessionId, url: one }),
+      action('open_page', { session_id: isolationB.sessionId, url: one }),
+    ]);
+    assert.deepEqual(resultTabRef(reopenedA), isolationA.ref, `${product} session A lost its exact tab binding`);
+    assert.deepEqual(resultTabRef(reopenedB), isolationB.ref, `${product} session B lost its exact tab binding`);
+
+    const closedIsolationA = await action('close_session', { session_id: isolationA.sessionId });
+    openSessions.delete(isolationA.sessionId);
+    assert.equal(closedIsolationA.resourceClosed, true, `${product} session A did not close its own tab`);
+    const [survivingB, survivingThird] = await Promise.all([
+      action('open_page', { session_id: isolationB.sessionId, url: one }),
+      action('open_page', { session_id: isolationThird.sessionId, url: one }),
+    ]);
+    assert.deepEqual(resultTabRef(survivingB), isolationB.ref, `${product} closing session A disturbed session B`);
+    assert.deepEqual(resultTabRef(survivingThird), isolationThird.ref, `${product} closing session A disturbed the third session`);
+    for (const entry of [isolationB, isolationThird]) {
+      const closed = await action('close_session', { session_id: entry.sessionId });
+      openSessions.delete(entry.sessionId);
+      assert.equal(closed.resourceClosed, true, `${product} session ${entry.sessionId} did not close its own tab`);
+    }
+    assertActiveUserTabPreserved(product, userBefore, await productMetadata(product), 'concurrent session isolation');
+    const concurrentSessionIsolation = {
+      concurrentDistinctTabs: true,
+      thirdFreshSessionDistinct: true,
+      exactReattachment: true,
+      closeIsolation: true,
+    };
+
+
     if (requireCompetingForeground) assert.equal(userBefore.frontmost, false, `${product} must start behind a competing foreground app`);
 
     const replacementProbe = await action('create_session', {
@@ -326,6 +393,7 @@ try {
     if (requireCompetingForeground) assert.equal(userAfter.frontmost, false, `${product} stole system foreground during background flow`);
 
     (report.products as Record<string, unknown>)[product] = {
+      concurrentSessionIsolation,
       competingForeground: { before: !userBefore.frontmost, after: !userAfter.frontmost },
       activeUserTabPreserved: true,
       activeUserIdentityEvidence: userBefore.windowId && userBefore.tabId ? 'stable_ref+url+title' : 'legacy_metadata_url+title',
@@ -364,14 +432,14 @@ try {
     report.internalResource = { product: 'chrome', url: internalMetadata.url, exactRefPreserved: true, userOwnedClosePreserved: true };
   }
 
-  console.log(JSON.stringify({ ok: true, ...report }));
+  console.log(JSON.stringify({ ok: true, ...report, safeProviderRetries }));
 } finally {
   for (const sessionId of [...openSessions]) await closeSession(sessionId);
   for (const entry of [...brokerOwnedTabs]) await closeBrokerTab(entry.product, entry.ref);
   server?.stop(true);
   invalidateMacOsBrowserPageHandles();
+  disposeRuntimeComputerComposition();
   resetBrowserPluginRuntimeHooksForTest();
-  delete process.env.FORGE_CONTROLLER_HOME;
   rmSync(repoRoot, { recursive: true, force: true });
   rmSync(controllerHome, { recursive: true, force: true });
 }
