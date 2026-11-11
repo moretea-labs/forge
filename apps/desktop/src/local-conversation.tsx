@@ -15,18 +15,108 @@ const MAX_THREADS = 100;
 
 export type LocalConversationRole = 'user' | 'assistant' | 'tool' | 'system';
 
-export function localPendingCopy(provider: LocalProviderChoice, cancelRequested: boolean, toolProgress: LocalToolProgress[]): string {
-  if (cancelRequested) return '已请求停止；如果 Forge 工具正在运行，将在收到结果后结束…';
-  if (provider === 'codex') return 'Codex CLI 正在处理请求；运行期间不提供工具进度；支持时可使用停止。';
-  if (toolProgress.some((event) => event.phase === 'started')) return 'Agent 正在使用 Forge 工具…';
-  return toolProgress.length > 0 ? '工具调用已返回，正在整理回复…' : 'Agent 正在处理请求…';
-}
+export type LocalToolProgressPhase = 'started' | 'running' | 'output' | 'completed' | 'failed' | 'unknown';
 
 export interface LocalToolProgress {
   conversationId: string;
   name: string;
-  phase: 'started' | 'completed' | 'failed';
+  phase: LocalToolProgressPhase;
+  sequence?: number;
   requestId?: string;
+  toolCallId?: string;
+  processId?: string;
+  output?: string;
+}
+
+export interface LocalModelProgress {
+  conversationId: string;
+  sequence?: number;
+  kind: 'round_start' | 'text_delta' | 'reasoning_summary_delta' | 'terminal' | 'error' | 'cancelled';
+  delta?: string;
+  round?: number;
+  status?: string;
+  error?: string;
+}
+
+export interface LocalPendingTurnState {
+  cancelRequested: boolean;
+  toolProgress: LocalToolProgress[];
+  lastSequence: number;
+  streamedText: string;
+  reasoningSummary: string;
+  round?: number;
+  terminalStatus?: string;
+  terminalError?: string;
+}
+
+export function createLocalPendingTurnState(): LocalPendingTurnState {
+  return { cancelRequested: false, toolProgress: [], lastSequence: 0, streamedText: '', reasoningSummary: '' };
+}
+
+export function localPendingCopy(
+  provider: LocalProviderChoice, cancelRequested: boolean, toolProgress: LocalToolProgress[], hasStreamedText = false,
+): string {
+  if (cancelRequested) return '已请求停止；如果 Forge 工具正在运行，将在收到结果后结束…';
+  if (provider === 'codex') return 'Codex CLI 正在处理请求；运行期间不提供工具进度；支持时可使用停止。';
+  if (toolProgress.some((event) => event.phase === 'unknown')) return '工具操作结果待核对…';
+  if (toolProgress.some((event) => event.phase === 'started' || event.phase === 'running')) return 'Agent 正在使用 Forge 工具…';
+  if (hasStreamedText) return '正在生成回复…';
+  return toolProgress.length > 0 ? '工具调用已返回，正在整理回复…' : 'Agent 正在处理请求…';
+}
+
+/** Reconcile each tool call by its stable call/request identity, not by display name alone. */
+export function advanceLocalToolProgress(
+  events: LocalToolProgress[], event: LocalToolProgress,
+): LocalToolProgress[] {
+  const matchesCall = (entry: LocalToolProgress): boolean => entry.conversationId === event.conversationId
+    && (event.toolCallId ? entry.toolCallId === event.toolCallId
+      : event.requestId ? entry.requestId === event.requestId : entry.name === event.name);
+  const isOpen = (phase: LocalToolProgressPhase): boolean =>
+    phase === 'started' || phase === 'running' || phase === 'output';
+  let index = -1;
+  for (let cursor = events.length - 1; cursor >= 0; cursor -= 1) {
+    const entry = events[cursor];
+    if (entry && matchesCall(entry) && isOpen(entry.phase)) { index = cursor; break; }
+  }
+  if (index < 0) return [...events, event].slice(-12);
+  return events.map((entry, cursor) => cursor === index ? {
+    ...entry, ...event,
+    requestId: event.requestId ?? entry.requestId,
+    toolCallId: event.toolCallId ?? entry.toolCallId,
+    processId: event.processId ?? entry.processId,
+    output: event.output ?? entry.output,
+  } : entry);
+}
+
+/** A shared per-turn sequence prevents late model/tool events from regressing visible state. */
+export function advanceLocalPendingProgress(
+  state: LocalPendingTurnState,
+  source: 'model' | 'tool',
+  event: LocalModelProgress | LocalToolProgress,
+): LocalPendingTurnState {
+  const sequence = event.sequence;
+  if (typeof sequence === 'number' && (!Number.isSafeInteger(sequence) || sequence <= state.lastSequence)) return state;
+  const lastSequence = typeof sequence === 'number' ? sequence : state.lastSequence;
+  if (source === 'tool') {
+    return { ...state, lastSequence, toolProgress: advanceLocalToolProgress(state.toolProgress, event as LocalToolProgress) };
+  }
+  const progress = event as LocalModelProgress;
+  switch (progress.kind) {
+    case 'text_delta':
+      return { ...state, lastSequence, streamedText: (state.streamedText + (progress.delta ?? '')).slice(-30_000) };
+    case 'reasoning_summary_delta':
+      return { ...state, lastSequence, reasoningSummary: (state.reasoningSummary + (progress.delta ?? '')).slice(-4_000) };
+    case 'round_start':
+      return { ...state, lastSequence, round: progress.round };
+    case 'terminal':
+      return { ...state, lastSequence, terminalStatus: progress.status ?? 'completed' };
+    case 'error':
+      return { ...state, lastSequence, terminalStatus: 'error', terminalError: progress.error };
+    case 'cancelled':
+      return { ...state, lastSequence, terminalStatus: 'cancelled', terminalError: progress.error };
+    default:
+      return state;
+  }
 }
 
 /** Geometry-based following avoids moving the viewport while reading earlier messages. */
@@ -41,25 +131,6 @@ export function shouldSubmitComposerKey(
 ): boolean {
   return !busy && event.key === 'Enter' && !event.shiftKey && !event.altKey
     && !event.isComposing && event.keyCode !== 229;
-}
-
-/** Append each start; reconcile its matching completion without inventing success. */
-export function advanceLocalToolProgress(
-  events: LocalToolProgress[], event: LocalToolProgress,
-): LocalToolProgress[] {
-  if (event.phase === 'started') return [...events, event].slice(-12);
-  let index = -1;
-  for (let cursor = events.length - 1; cursor >= 0; cursor -= 1) {
-    const entry = events[cursor];
-    if (entry && entry.conversationId === event.conversationId
-      && entry.name === event.name && entry.phase === 'started'
-      && (!event.requestId || entry.requestId === event.requestId)) {
-      index = cursor;
-      break;
-    }
-  }
-  if (index < 0) return [...events, event].slice(-12);
-  return events.map((entry, cursor) => cursor === index ? event : entry);
 }
 
 export interface LocalConversationMessage {
@@ -363,9 +434,7 @@ export function LocalConversationSurface({
   const [drafts, setDrafts] = useState<Record<string, string>>(loadDrafts);
   // Each conversation owns one in-flight turn. Independent repositories can
   // progress together; Forge remains responsible for checkout/process locks.
-  const [pendingTurns, setPendingTurns] = useState<Record<string, {
-    cancelRequested: boolean; toolProgress: LocalToolProgress[];
-  }>>({});
+  const [pendingTurns, setPendingTurns] = useState<Record<string, LocalPendingTurnState>>({});
   const pendingTurnIds = useRef(new Set<string>());
   const [sendErrors, setSendErrors] = useState<Record<string, string | null>>({});
   const [diffVisible, setDiffVisible] = useState(false);
@@ -433,25 +502,39 @@ export function LocalConversationSurface({
     };
   }, [diffVisible, committing]);
 
-  // Pure observation from the native agent's existing tool loop. Events never
-  // authorize effects or persist another transcript; completed receipts still
-  // come only from the native command response.
+  // Ordered native progress is observational only; durable messages and receipts
+  // still come exclusively from the completed native command response.
   useEffect(() => {
     let stopped = false;
     let unsubscribe: (() => void) | undefined;
-    void listen<LocalToolProgress>(
-      'forge-agent-tool-progress', (event) => {
-        const id = event.payload.conversationId;
-        if (stopped || !pendingTurnIds.current.has(id)) return;
-        setPendingTurns((current) => {
-          const turn = current[id];
-          return turn ? { ...current, [id]: {
-            ...turn, toolProgress: advanceLocalToolProgress(turn.toolProgress, event.payload),
-          } } : current;
-        });
-      },
-    ).then((unlisten) => { if (stopped) unlisten(); else unsubscribe = unlisten; })
+    void listen<LocalToolProgress>('forge-agent-tool-progress', (event) => {
+      const id = event.payload.conversationId;
+      if (stopped || !pendingTurnIds.current.has(id)) return;
+      setPendingTurns((current) => {
+        const turn = current[id];
+        if (!turn) return current;
+        const next = advanceLocalPendingProgress(turn, 'tool', event.payload);
+        return next === turn ? current : { ...current, [id]: next };
+      });
+    }).then((unlisten) => { if (stopped) unlisten(); else unsubscribe = unlisten; })
       .catch(() => { /* Codex CLI or browser-only preview has no native tool events. */ });
+    return () => { stopped = true; unsubscribe?.(); };
+  }, []);
+
+  useEffect(() => {
+    let stopped = false;
+    let unsubscribe: (() => void) | undefined;
+    void listen<LocalModelProgress>('forge-agent-model-progress', (event) => {
+      const id = event.payload.conversationId;
+      if (stopped || !pendingTurnIds.current.has(id)) return;
+      setPendingTurns((current) => {
+        const turn = current[id];
+        if (!turn) return current;
+        const next = advanceLocalPendingProgress(turn, 'model', event.payload);
+        return next === turn ? current : { ...current, [id]: next };
+      });
+    }).then((unlisten) => { if (stopped) unlisten(); else unsubscribe = unlisten; })
+      .catch(() => { /* Providers without native model streaming still complete through the command response. */ });
     return () => { stopped = true; unsubscribe?.(); };
   }, []);
 
@@ -461,13 +544,14 @@ export function LocalConversationSurface({
   const activeThreads = useMemo(() => threads.filter((thread) => !thread.archived), [threads]);
   const selectedThread = activeThreads.find((thread) => thread.id === selectedThreadId) ?? activeThreads[0];
   const selectedThreadProvider: LocalProviderChoice = selectedThread?.provider ?? 'codex';
-  const sending = Boolean(selectedThread && pendingTurns[selectedThread.id]);
+  const pendingTurn = selectedThread ? pendingTurns[selectedThread.id] : undefined;
+  const sending = Boolean(pendingTurn);
   const selectedCheckoutTurnPending = Boolean(selectedThread?.projectRepoId && selectedThread.checkoutId
     && threads.some((thread) => pendingTurns[thread.id]
       && thread.projectRepoId === selectedThread.projectRepoId
       && thread.checkoutId === selectedThread.checkoutId));
-  const toolProgress = selectedThread ? pendingTurns[selectedThread.id]?.toolProgress ?? [] : [];
-  const cancelRequested = Boolean(selectedThread && pendingTurns[selectedThread.id]?.cancelRequested);
+  const toolProgress = pendingTurn?.toolProgress ?? [];
+  const cancelRequested = Boolean(pendingTurn?.cancelRequested);
   const sendError = selectedThread ? sendErrors[selectedThread.id] ?? null : null;
   const setSendError = (value: string | null) => {
     if (!selectedThread) return;
@@ -762,7 +846,7 @@ export function LocalConversationSurface({
     setSendError(null);
     pendingTurnIds.current.add(selectedThread.id);
     setPendingTurns((current) => ({
-      ...current, [selectedThread.id]: { cancelRequested: false, toolProgress: [] },
+      ...current, [selectedThread.id]: createLocalPendingTurnState(),
     }));
     try {
       const reply = await onSend({ thread: pendingThread, prompt });
@@ -948,18 +1032,35 @@ export function LocalConversationSurface({
               <div className="local-pending-message" role="status">
                 <span className="local-pending-indicator" />
                 <div className="local-pending-content">
-                <span>{localPendingCopy(selectedThreadProvider, cancelRequested, toolProgress)}</span>
+                <span>{localPendingCopy(selectedThreadProvider, cancelRequested, toolProgress, Boolean(pendingTurn?.streamedText))}</span>
+                {pendingTurn?.streamedText && (
+                  <div className="local-pending-stream" aria-live="off">
+                    <LocalMessageBody content={pendingTurn.streamedText} />
+                  </div>
+                )}
+                {pendingTurn?.reasoningSummary && (
+                  <details className="local-pending-summary">
+                    <summary>模型摘要</summary>
+                    <LocalMessageBody content={pendingTurn.reasoningSummary} />
+                  </details>
+                )}
                 {toolProgress.length > 0 && (
                   <details className="agent-tool-activity" aria-label="本轮 Forge 工具进度">
                     <summary>
-                      {toolProgress.some((event) => event.phase === 'failed') ? '有工具执行失败' : '工具调用记录'}
+                      {toolProgress.some((event) => event.phase === 'unknown') ? '有工具结果待核对'
+                        : toolProgress.some((event) => event.phase === 'failed') ? '有工具执行失败' : '工具调用记录'}
                       <span>{toolProgress.length} 项 · 展开详情</span>
                     </summary>
                     <div className="local-tool-progress-list">
                       {toolProgress.slice(-6).map((event, index) => (
-                        <div className={'local-tool-progress-row ' + event.phase} key={index}>
+                        <div className={'local-tool-progress-row ' + event.phase}
+                          key={event.toolCallId ?? event.requestId ?? `${event.name}-${index}`}>
                           <span>{event.name}</span>
-                          <small>{event.phase === 'started' ? '执行中' : event.phase === 'completed' ? '已完成' : '失败'}</small>
+                          <small>{event.phase === 'started' || event.phase === 'running' ? '执行中'
+                            : event.phase === 'output' ? '已返回输出'
+                            : event.phase === 'completed' ? '已完成'
+                            : event.phase === 'unknown' ? '结果待核对' : '失败'}</small>
+                          {event.output && <details><summary>查看工具输出</summary><pre>{event.output}</pre></details>}
                         </div>
                       ))}
                     </div>

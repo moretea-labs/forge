@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { ContextOptionList, contextOptionIndex, localPendingCopy, advanceLocalToolProgress, createThread, localConversationNavItems, LocalConversationSurface, LocalMessageBody, selectThreadCheckout, selectThreadRepository, shouldSubmitComposerKey, transcriptIsNearBottom } from '../src/local-conversation';
+import { ContextOptionList, contextOptionIndex, localPendingCopy, advanceLocalToolProgress, advanceLocalPendingProgress, createLocalPendingTurnState, createThread, localConversationNavItems, LocalConversationSurface, LocalMessageBody, selectThreadCheckout, selectThreadRepository, shouldSubmitComposerKey, transcriptIsNearBottom } from '../src/local-conversation';
 import { ForgeIcon } from '../src/ui-icons';
 import { isApiProvider, providerForNewThread } from '../src/local-api';
 import { RuntimeView, Sidebar, codexBoundPrompt, sidebarToggleShortcut } from '../src/App';
@@ -692,24 +692,58 @@ describe('Forge Desktop Agent thread identity', () => {
     expect(empty.checkoutId).toBeUndefined();
   });
 
-  test('keeps one truthful tool row per start and terminal receipt, with a bounded timeline', () => {
-    const start = { conversationId: 'thread1', name: 'run_command', phase: 'started' as const, requestId: 'effect-123' };
-    const finish = { ...start, phase: 'completed' as const };
-    const running = advanceLocalToolProgress([], start);
-    expect(running).toHaveLength(1);
-    expect(running[0]?.phase).toBe('started');
-    const completed = advanceLocalToolProgress(running, finish);
+  test('reconciles started, running, output and terminal phases into one truthful tool row', () => {
+    const start = { conversationId: 'thread1', name: 'run_command', phase: 'started' as const,
+      requestId: 'effect-123', toolCallId: 'call-1', sequence: 1 };
+    const running = { ...start, phase: 'running' as const, processId: 'proc-1', sequence: 2 };
+    const output = { ...running, phase: 'output' as const, output: '{"exitCode":0}', sequence: 3 };
+    const finish = { ...output, phase: 'completed' as const, sequence: 4 };
+    const started = advanceLocalToolProgress([], start);
+    expect(started).toHaveLength(1);
+    const inFlight = advanceLocalToolProgress(started, running);
+    const withOutput = advanceLocalToolProgress(inFlight, output);
+    const completed = advanceLocalToolProgress(withOutput, finish);
     expect(completed).toHaveLength(1);
-    expect(completed[0]).toEqual(finish);
-    // Another operation's completion is never attributed to this one.
-    const different = { ...finish, requestId: 'effect-456' };
-    expect(advanceLocalToolProgress(running, different)).toHaveLength(2);
+    expect(completed[0]).toMatchObject({ phase: 'completed', processId: 'proc-1', output: '{"exitCode":0}' });
+    // Another operation's terminal event is never attributed to this call.
+    const different = { ...finish, requestId: 'effect-456', toolCallId: 'call-2' };
+    expect(advanceLocalToolProgress(started, different)).toHaveLength(2);
     const recent = Array.from({ length: 15 }, (_, index) => ({
       conversationId: 'thread1', name: 'read_file', phase: 'started' as const,
       requestId: 'r' + index,
     })).reduce(advanceLocalToolProgress, [] as ReturnType<typeof advanceLocalToolProgress>);
     expect(recent).toHaveLength(12);
     expect(recent[0]?.requestId).toBe('r3');
+  });
+
+  test('orders model and tool deltas together and ignores late sequence regressions', () => {
+    let state = createLocalPendingTurnState();
+    state = advanceLocalPendingProgress(state, 'model', {
+      conversationId: 'thread1', sequence: 1, kind: 'text_delta', delta: 'Hello',
+    });
+    state = advanceLocalPendingProgress(state, 'tool', {
+      conversationId: 'thread1', sequence: 2, name: 'run_command', phase: 'started', toolCallId: 'call-1',
+    });
+    const afterTool = state;
+    state = advanceLocalPendingProgress(state, 'model', {
+      conversationId: 'thread1', sequence: 1, kind: 'text_delta', delta: 'stale',
+    });
+    expect(state).toBe(afterTool);
+    state = advanceLocalPendingProgress(state, 'model', {
+      conversationId: 'thread1', sequence: 3, kind: 'reasoning_summary_delta', delta: 'Checked two sources.',
+    });
+    state = advanceLocalPendingProgress(state, 'tool', {
+      conversationId: 'thread1', sequence: 4, name: 'run_command', phase: 'unknown', toolCallId: 'call-1',
+    });
+    state = advanceLocalPendingProgress(state, 'model', {
+      conversationId: 'thread1', sequence: 5, kind: 'terminal', status: 'paused',
+    });
+    expect(state.streamedText).toBe('Hello');
+    expect(state.reasoningSummary).toBe('Checked two sources.');
+    expect(state.toolProgress).toHaveLength(1);
+    expect(state.toolProgress[0]?.phase).toBe('unknown');
+    expect(state.terminalStatus).toBe('paused');
+    expect(localPendingCopy('api', false, state.toolProgress, true)).toBe('工具操作结果待核对…');
   });
 
 
