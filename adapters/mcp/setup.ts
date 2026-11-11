@@ -23,6 +23,7 @@ import {
   MAX_AGENT_TIMEOUT_MS,
 } from "../../src/cli/controller/runtime-config";
 import { ensureControllerHome, ensureRepoPreferredControllerHome } from "../../src/effects/controller-home";
+import { observeRuntimeStatus } from "../../src/runtime/root/status";
 import { configuredControllerAccessMode } from './access-mode';
 import { ensureForgeInstanceIdentity, normalizeConfiguredForgeInstanceId, readForgeInstanceIdentity } from "../../packages/kernel/identity/api/index";
 
@@ -568,6 +569,10 @@ export function runMcpDoctor(opts: {
   const controllerHome = ensureRepoPreferredControllerHome(repoRoot);
   const localConfig = loadMcpServiceLocalConfig(controllerHome);
   const runtimeState = loadMcpServiceRuntimeState(controllerHome);
+  // The Canonical Runtime owner/status projection is the single authoritative
+  // runtime liveness source; the connector service state below only describes
+  // the optional ChatGPT connector tunnel/server process.
+  const runtimeObservation = observeRuntimeStatus(controllerHome);
   const configuredServerName = localConfig?.chatgpt?.serverName;
   const forgeInstanceId = localConfig?.identity?.forgeInstanceId?.trim()
     || readForgeInstanceIdentity(controllerHome)?.instanceId;
@@ -636,6 +641,15 @@ export function runMcpDoctor(opts: {
           updatedAt: runtimeState.updatedAt,
         }
       : null,
+    canonicalRuntime: {
+      running: runtimeObservation.running,
+      ready: runtimeObservation.ready,
+      stale: runtimeObservation.stale,
+      reasonCodes: runtimeObservation.reasonCodes,
+      pid: runtimeObservation.snapshot?.pid,
+      endpoint: runtimeObservation.snapshot?.endpoint,
+      observedAt: runtimeObservation.observedAt,
+    },
   };
   return {
     status: "ok",
@@ -657,14 +671,21 @@ export function runMcpDoctor(opts: {
             `[forge mcp] Local Controller: ${report.mcp.localController.enabled ? report.chatgpt.localController : "disabled"}`,
             `[forge mcp] ChatGPT auth: ${report.mcp.authConfigured ? `${authMode} present` : "missing"}`,
             `[forge mcp] Runtime: ${
-              report.runtime
-                ? `${report.runtime.status} (local=${report.runtime.localHealthy ? "ok" : "down"}${
-                    report.runtime.tunnelMode !== "none"
-                      ? `, public=${report.runtime.publicHealthy ? "ok" : "down"} via ${report.runtime.tunnelMode}`
-                      : ""
+              runtimeObservation.running
+                ? `running (${runtimeObservation.ready ? "ready" : "not ready"}, pid=${runtimeObservation.snapshot?.pid ?? "unknown"}${
+                    runtimeObservation.snapshot?.endpoint ? `, endpoint=${runtimeObservation.snapshot.endpoint}` : ""
                   })`
-                : "not running"
+                : `not running (${runtimeObservation.reasonCodes.join(", ") || "no runtime status published"})`
             }`,
+            ...(runtimeState
+              ? [
+                  `[forge mcp] ChatGPT connector service: ${runtimeState.status} (local=${runtimeState.server.healthy ? "ok" : "down"}${
+                    runtimeState.tunnelMode !== "none"
+                      ? `, public=${runtimeState.tunnel?.healthy ? "ok" : "down"} via ${runtimeState.tunnelMode}`
+                      : ""
+                  })`,
+                ]
+              : []),
             ...(report.runtime?.connectorNeedsReconnect === true
               ? [
                   "[forge mcp] Runtime note: public quick tunnel URL changed; update the ChatGPT connector or switch to a named tunnel",
