@@ -886,7 +886,7 @@ export function buildControllerContextPack(
     repoRoot,
     policy,
     [...exactKnownFiles, ...inspectedFiles],
-    { maxCharsPerContract: Math.min(maxCharsPerSnippet, 12_000) },
+    { maxCharsPerContract: Math.min(maxCharsPerSnippet, 12_000), uiIntent: retrievalIntent },
   );
   const governanceStartedAt = performance.now();
   const governanceResolution = resolveRepositoryGovernance(repoRoot, policy, {
@@ -1114,7 +1114,7 @@ export function buildControllerContextPack(
           : `Investigation mode performed ${timingsMs.waveCount} bounded evidence wave(s) inside this request; expansion budget ${timingsMs.expansionBudgetUsed}/${timingsMs.expansionBudgetMax}.`,
         "Search/structural ranking is discovery evidence, not a business-semantics authority. readiness and impactContext make the bounded evidence surface and unresolved gaps explicit; ChatGPT still decides semantic sufficiency.",
         instructionContext.contracts.length > 0
-          ? `Applicable repository guidance was resolved hierarchically for selected source paths: ${instructionContext.contracts.map((entry) => entry.path).join(", ")}. These AGENTS.md/CLAUDE.md files are guidance-only evidence and do not define semantic scope.`
+          ? `Applicable repository guidance was resolved hierarchically for selected source paths: ${instructionContext.contracts.map((entry) => entry.path).join(", ")}. These repository instruction/design documents are guidance-only evidence, not semantic or acceptance authority. The caller must inspect relevant content and resolve conflicts against current product requirements and explicit user feedback.`
           : "No applicable AGENTS.md/CLAUDE.md guidance file was found for the selected source paths.",
         impactDomains.length > 0 ? `Impact domains were selected by ChatGPT and expanded mechanically in this same retrieval call: ${impactDomains.join(", ")}. Missing or omitted domain evidence is an ambiguity signal, not proof that the domain is irrelevant.` : "No explicit cross-cutting impact domains were requested; ChatGPT may add them when state, scheduling, notifications, events, caching, API, or concurrency could materially change the implementation.",
         governanceContext.status === 'none'

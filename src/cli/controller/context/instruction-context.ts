@@ -4,6 +4,10 @@ import type { McpPolicy } from '../../../../adapters/mcp/types';
 import { readableFile } from './known-paths';
 
 const CONTRACT_NAMES = ['AGENTS.md', 'CLAUDE.md'] as const;
+// UI sources need the repository's existing design rules as read evidence,
+// not a second policy store or a new design-approval gate.
+const UI_INTENT = /\b(?:ui|ux|swiftui|view|screen|layout|design|visual|style|sheet|form)\b|界面|页面|布局|设计|视觉|交互|样式|复刻|卡片|弹窗/i;
+const DESIGN_REFERENCE = /\x60([^\x60\n]+\.md)\x60/g;
 const DEFAULT_MAX_TARGETS = 12;
 const DEFAULT_MAX_CONTRACTS = 12;
 const DEFAULT_MAX_CHARS_PER_CONTRACT = 12_000;
@@ -43,7 +47,7 @@ export function buildRepositoryInstructionContext(
   repoRoot: string,
   policy: McpPolicy,
   targetPaths: string[],
-  options: { maxTargets?: number; maxContracts?: number; maxCharsPerContract?: number; maxTotalChars?: number } = {},
+  options: { maxTargets?: number; maxContracts?: number; maxCharsPerContract?: number; maxTotalChars?: number; uiIntent?: string } = {},
 ): RepositoryInstructionContext {
   const maxTargets = Math.max(1, Math.min(30, Math.trunc(options.maxTargets ?? DEFAULT_MAX_TARGETS)));
   const maxContracts = Math.max(1, Math.min(30, Math.trunc(options.maxContracts ?? DEFAULT_MAX_CONTRACTS)));
@@ -69,6 +73,44 @@ export function buildRepositoryInstructionContext(
         appliesTo.add(target);
         contractTargets.set(readable.path, appliesTo);
       }
+    }
+  }
+  // Opt-in by the user's UI/design task or a concrete View owner. Only read
+  // design paths already declared by repository guidance, plus root DESIGN.md.
+  // Policy and byte limits are the same as for AGENTS.md.
+  const isUiTask = UI_INTENT.test(options.uiIntent ?? '')
+    || targets.some(path => /(?:\/Views?\/|(?:View|Screen)\.(?:swift|tsx|jsx)$)/i.test(path));
+  if (isUiTask && targets.length > 0) {
+    const designPaths = new Set<string>();
+    const declaredGuidance = [...contractTargets.keys()];
+      // Never derive product facts or design requirements from the retriever.
+    for (const guidePath of declaredGuidance) {
+      try {
+        const text = readFileSync(resolve(repoRoot, guidePath), 'utf8').slice(0, 64_000);
+        for (const match of text.matchAll(DESIGN_REFERENCE)) {
+          const reference = match[1]?.trim();
+          if (!reference || !/(?:^|\/)(?:design\/|design-rules\.md$)|^DESIGN\.md$/i.test(reference)) continue;
+          if (reference.startsWith('/') || reference.includes('..')) continue;
+          for (const candidate of [
+            reference,
+            posix.normalize(posix.join(posix.dirname(guidePath), reference)),
+          ]) {
+            const readable = readableFile(repoRoot, policy, candidate);
+            if (readable.ok) { designPaths.add(readable.path); break; }
+          }
+          if (designPaths.size >= 4) break;
+        }
+      } catch {
+        coverageGaps.push(`instruction_contract_read_failed:${guidePath}`);
+      }
+      if (designPaths.size >= 4) break;
+    }
+    const rootDesign = readableFile(repoRoot, policy, 'DESIGN.md');
+    if (rootDesign.ok) designPaths.add(rootDesign.path);
+    for (const path of designPaths) {
+      const appliesTo = contractTargets.get(path) ?? new Set<string>();
+      targets.forEach(target => appliesTo.add(target));
+      contractTargets.set(path, appliesTo);
     }
   }
   if (denied.size > 0) coverageGaps.push(...[...denied].sort().map((entry) => `instruction_contract_unreadable:${entry}`));

@@ -697,6 +697,10 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
           ...(!isSummary || semanticNavigation.requested > 0 ? { semanticNavigation } : {}),
           ...(semanticEvidence ? { semanticEvidence } : {}),
           contextClosure,
+          // The original context pack already resolves and bounds repository
+          // guidance. Surface that *content* to the model; paths-only closure
+          // receipts proved discovery but did not let an assistant read rules.
+          instructionContext: pack.instructionContext,
           readiness,
           files: pack.files,
           coverage: isSummary ? {
@@ -741,6 +745,23 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
       // but it must not corrupt this runtime-issued round-trip contract because rh_work validates
       // the exact full receipt digest supplied by the Controller during engineering re-entry.
       (facade.data as typeof facade.data & { contextClosure: typeof contextClosure }).contextClosure = contextClosure;
+      // Keep the already-owned instruction pack readable in the MCP response.
+      // The generic facade bounds nested strings to 1k characters and otherwise
+      // silently hides the design rules after they have been found on disk.
+      const readableInstructions = {
+        ...pack.instructionContext,
+        contracts: pack.instructionContext.contracts.map(contract => {
+          const limit = isSummary
+            ? /(?:^|\/)(?:DESIGN\.md|design\/[^/]+\.md)$/i.test(contract.path) ? 6_000 : 1_600
+            : contract.content.length;
+          return {
+            ...contract,
+            content: contract.content.slice(0, limit),
+            truncated: contract.truncated || contract.content.length > limit,
+          };
+        }),
+      };
+      (facade.data as typeof facade.data & { instructionContext: typeof readableInstructions }).instructionContext = readableInstructions;
       if (semanticEvidence) {
         (facade.data as typeof facade.data & { semanticEvidence: typeof semanticEvidence }).semanticEvidence = semanticEvidence;
       }
