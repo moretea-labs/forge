@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { ContextOptionList, contextOptionIndex, localPendingCopy, advanceLocalToolProgress, createThread, localConversationNavItems, LocalConversationSurface, LocalMessageBody, selectThreadCheckout, selectThreadRepository, shouldSubmitComposerKey, transcriptIsNearBottom } from '../src/local-conversation';
 import { ForgeIcon } from '../src/ui-icons';
+import { isApiProvider, providerForNewThread } from '../src/local-api';
 import { RuntimeView, Sidebar, codexBoundPrompt, sidebarToggleShortcut } from '../src/App';
 import { SettingsView } from '../src/settings-view';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
@@ -46,6 +47,23 @@ describe('Forge Desktop Agent thread identity', () => {
     expect(localPendingCopy('codex', false, [])).toContain('停止');
     expect(localPendingCopy('codex', true, [])).toContain('已请求停止');
     expect(localPendingCopy('api', false, [])).toBe('Agent 正在处理请求…');
+  });
+
+  test('new API sessions pin exact provider profile while legacy generic API fails closed', () => {
+    const deepseek = providerForNewThread({ provider: 'api', defaultProvider: 'api:deepseek' });
+    const pinned = createThread(deepseek, 'repo_one', 'checkout_one');
+    expect(deepseek).toBe('api:deepseek');
+    expect(isApiProvider(pinned.provider)).toBe(true);
+    expect(providerForNewThread({ provider: 'api', defaultProvider: 'api:openai' })).toBe('api:openai');
+    expect(pinned.provider).toBe('api:deepseek');
+    const established = { ...pinned, messages: [{ id: 'one', role: 'user' as const,
+      content: 'task', createdAt: '2026-11-11T00:00:00Z' }] };
+    expect(selectThreadRepository(established, established.provider!, 'repo_two', 'checkout_two').thread.provider).toBe('api:deepseek');
+    expect(providerForNewThread({ provider: 'codex', defaultProvider: 'codex' })).toBe('codex');
+    expect(createThread('api', 'repo_one').provider).toBe('api');
+    expect(isApiProvider('api')).toBe(true);
+    const native = readFileSync(new URL('../src-tauri/src/main.rs', import.meta.url), 'utf8');
+    expect(native).toContain('FORGE_DESKTOP_API_THREAD_PROFILE_UNPINNED');
   });
 
   test('Codex send passes the thread checkout through the Tauri client', () => {
@@ -154,7 +172,8 @@ describe('Forge Desktop Agent thread identity', () => {
       expect(apiDefault).toContain('API 尚未配置');
       const codexDefault = renderHistory([api, codex], 'codex');
       expect(codexDefault).toContain('Continue API task');
-      expect(codexDefault).toContain('发送时校验钥匙串');
+      expect(codexDefault).toContain('API 尚未配置');
+      expect(codexDefault).not.toContain('发送时校验钥匙串');
       expect(codexDefault).toContain('Checkout 未核实，暂时禁止执行');
       expect(codexDefault).not.toContain('允许本轮编辑文件和执行命令');
       const nav = localConversationNavItems([codex, api], {});

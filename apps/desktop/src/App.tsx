@@ -26,7 +26,7 @@ import forgeAppIcon from '../src-tauri/icons/128x128.png';
 import { ProjectRecordsView } from './project-records-view';
 import { KnowledgeView } from './knowledge-view';
 import { SettingsView } from './settings-view';
-import { readLocalApiSettings, saveLocalApiSettings, sendLocalApiConversation, cancelLocalApiConversation, type LocalApiSettings, type LocalProviderChoice } from './local-api';
+import { isApiProvider, readLocalApiSettings, saveLocalApiSettings, sendLocalApiConversation, cancelLocalApiConversation, type LocalApiSettings, type LocalProviderChoice } from './local-api';
 import {
   performRecoveryAction,
   readRecoveryStatus,
@@ -233,7 +233,7 @@ export function Sidebar({
                     className={'nav-row sidebar-thread-row'
                       + (activeView === 'assistant' && selectedLocalThreadId === thread.id ? ' active' : '')}
                     aria-current={activeView === 'assistant' && selectedLocalThreadId === thread.id ? 'page' : undefined}
-                    title={thread.title + ' · ' + (thread.provider === 'api' ? '兼容 API' : 'Codex CLI')} onClick={() => {
+                    title={thread.title + ' · ' + (isApiProvider(thread.provider) ? '兼容 API' : thread.provider === 'joycode' ? 'JoyCode' : 'Codex CLI')} onClick={() => {
                       onSelectLocalThread(thread.id);
                       setConversationSearchOpen(false);
                       setConversationQuery('');
@@ -241,7 +241,7 @@ export function Sidebar({
                     <span className="nav-symbol"><ForgeIcon name={thread.draft ? 'draft' : 'conversation'} /></span>
                     <span className="nav-label">{thread.title}</span>
                     {thread.running && <span className="sidebar-turn-running" role="status" title="Agent 运行中" />}
-                    {thread.provider === 'api' && <span className="sidebar-thread-provider" title="兼容 API 会话">API</span>}
+                    {isApiProvider(thread.provider) && <span className="sidebar-thread-provider" title="兼容 API 会话">API</span>}
                     {thread.draft && <span className="sidebar-draft-indicator">草稿</span>}
                   </button>
                 ))}
@@ -792,7 +792,8 @@ export function App() {
   }, []);
 
   const sendLocal = useCallback(async ({ thread, prompt }: { thread: LocalConversationThread; prompt: string }): Promise<LocalConversationReply> => {
-    if (thread.provider === 'api' || thread.provider === 'joycode') {
+    if (isApiProvider(thread.provider) || thread.provider === 'joycode') {
+      if (thread.provider === 'api') throw new Error('FORGE_DESKTOP_API_THREAD_PROFILE_UNPINNED: 历史会话未绑定固定 API Provider，请新建会话');
       const messages = thread.messages.filter(message => message.role === 'user' || message.role === 'assistant')
         .slice(-40).map(message => ({ role: message.role as 'user' | 'assistant', content: message.content }));
       const reply = await sendLocalApiConversation({
@@ -1189,7 +1190,7 @@ export function App() {
           onRefreshProvider={refreshLocalProvider}
           onSendLocal={sendLocal}
           onCancelLocal={async (thread) => {
-            if (thread.provider === 'api') await cancelLocalApiConversation(thread.id);
+            if (isApiProvider(thread.provider)) await cancelLocalApiConversation(thread.id);
             else await cancelLocalConversation(thread.id);
           }}
         />

@@ -1,6 +1,16 @@
 import { invoke } from '@tauri-apps/api/core';
 
-export type LocalProviderChoice = 'codex' | 'api' | 'joycode';
+export type LocalProviderChoice = 'codex' | 'api' | 'joycode' | `api:${string}`;
+
+export const isApiProvider = (provider?: string): boolean =>
+  provider === 'api' || provider?.startsWith('api:') === true;
+
+/** New conversations bind the canonical provider profile, never a mutable default projection. */
+export function providerForNewThread(settings: Pick<LocalApiSettings, 'provider' | 'defaultProvider'> | null): LocalProviderChoice {
+  const provider = settings?.defaultProvider ?? settings?.provider ?? 'codex';
+  return (provider === 'codex' || provider === 'joycode' || provider.startsWith('api:'))
+    ? provider as LocalProviderChoice : 'api';
+}
 export type LocalApiProtocol = 'openai' | 'anthropic' | 'responses';
 
 export interface ApiProviderProfile {

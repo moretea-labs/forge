@@ -6,7 +6,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { LocalProviderStatusProjection } from './runtime-client';
 import type { ProjectListItemProjection } from './runtime-projection';
-import type { LocalApiSettings, LocalProviderChoice, LocalApiToolEvent } from './local-api';
+import { isApiProvider, providerForNewThread, type LocalApiSettings, type LocalProviderChoice, type LocalApiToolEvent } from './local-api';
 import { ForgeIcon as AgentControlIcon } from './ui-icons';
 
 const LOCAL_THREADS_KEY = 'forge.desktop.local-threads.v1';
@@ -457,7 +457,7 @@ export function LocalConversationSurface({
 
   // Settings determine the provider for NEW sessions only. Existing Codex/API
   // conversations retain their own provider, history, checkout and resume ID.
-  const defaultProvider: LocalProviderChoice = apiSettings?.provider ?? 'codex';
+  const defaultProvider = providerForNewThread(apiSettings);
   const activeThreads = useMemo(() => threads.filter((thread) => !thread.archived), [threads]);
   const selectedThread = activeThreads.find((thread) => thread.id === selectedThreadId) ?? activeThreads[0];
   const selectedThreadProvider: LocalProviderChoice = selectedThread?.provider ?? 'codex';
@@ -564,16 +564,19 @@ export function LocalConversationSurface({
   const projectBindingReady = !selectedRepoId || Boolean(selectedProject);
   const checkoutBindingReady = !selectedRepoId || Boolean(selectedThread?.checkoutId
     && checkoutIndex.some((checkout) => checkout.checkoutId === selectedThread.checkoutId));
-  const apiSelected = selectedThreadProvider === 'api';
+  const apiSelected = isApiProvider(selectedThreadProvider);
   const joyCodeSelected = selectedThreadProvider === 'joycode';
   const externalSelected = apiSelected || joyCodeSelected;
-  const loopbackApi = Boolean(apiSettings && /^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::[0-9]+)?(?:\/|$)/.test(apiSettings.endpoint));
+  const selectedApiProfile = apiSettings?.profiles?.find((profile) => selectedThreadProvider === `api:${profile.id}`);
+  const loopbackApi = Boolean(selectedApiProfile && /^http:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::[0-9]+)?(?:\/|$)/.test(selectedApiProfile.endpoint));
   // When Codex is the new-session default, the settings read deliberately
   // does not query the API Keychain. A historical API thread can still send:
   // the native API command checks the exact saved secret at execution time.
   const apiCredentialDeferred = apiSelected && apiSettings?.provider !== 'api' && !loopbackApi;
-  const apiReady = Boolean(apiSettings?.model.trim()
-    && (apiSettings?.hasKey || loopbackApi || apiCredentialDeferred));
+  const credentialDeferredForProfile = Boolean(apiCredentialDeferred && selectedApiProfile?.credentialRef
+    && apiSettings?.defaultProvider === selectedThreadProvider);
+  const apiReady = Boolean(selectedApiProfile?.model.trim()
+    && (selectedApiProfile.hasKey || loopbackApi || credentialDeferredForProfile));
   const joyCodeReady = Boolean(apiSettings?.joyCodeReady && apiSettings?.joyCodeModel.trim());
   const providerReady = (joyCodeSelected ? joyCodeReady : apiSelected ? apiReady : provider?.status === 'ready')
     && Boolean(onSend) && projectBindingReady && checkoutBindingReady;
@@ -842,11 +845,11 @@ export function LocalConversationSurface({
             title={joyCodeSelected
               ? (joyCodeReady ? `JoyCode · ${apiSettings?.joyCodeModel}` : 'JoyCode 尚未就绪')
               : apiSelected ? (apiReady
-                ? `API · ${apiSettings?.model}${apiCredentialDeferred ? ' · 发送时校验钥匙串' : ''}`
+                ? `API · ${selectedApiProfile?.model}${credentialDeferredForProfile ? ' · 发送时校验钥匙串' : ''}`
                 : 'API 尚未配置')
                 : providerError ?? provider?.detail ?? 'Codex CLI 状态待确认'}>
             <span className={'health-dot ' + ((joyCodeSelected ? joyCodeReady
-              : apiSelected ? (apiReady && !apiCredentialDeferred) : provider?.status === 'ready')
+              : apiSelected ? (apiReady && !credentialDeferredForProfile) : provider?.status === 'ready')
               ? 'connected' : 'degraded')} aria-hidden="true" />
             <span>{joyCodeSelected ? (joyCodeReady ? 'JoyCode' : '未配置')
               : apiSelected ? (apiReady ? 'API' : '未配置')
@@ -1004,7 +1007,9 @@ export function LocalConversationSurface({
                   ?? (!projectBindingReady ? '项目已不在 Forge 注册目录中，请重新选择'
                     : !checkoutBindingReady && selectedRepoId ? 'Checkout 未核实，暂时禁止执行'
                     : joyCodeSelected ? '请先登录 JoyCode 并配置可用模型'
-                    : apiSelected ? '请配置可用的 API 模型与密钥'
+                    : apiSelected && selectedThreadProvider === 'api' ? '历史 API 会话未绑定固定 Provider，请新建会话'
+                    : apiSelected && !selectedApiProfile ? '会话绑定的 API Provider 不存在，请恢复配置或新建会话'
+                    : apiSelected ? '请配置会话绑定的 API 模型与密钥'
                     : providerError ?? 'Codex CLI 尚未就绪')}
               </div>
             )}
@@ -1053,7 +1058,7 @@ export function LocalConversationSurface({
                   aria-label="选择模型与 API 设置" onClick={onOpenSettings}>
                   <AgentControlIcon name="settings" />
                   <span>{joyCodeSelected ? (apiSettings?.joyCodeModel || 'JoyCode')
-                    : apiSelected ? (apiSettings?.model || '兼容 API') : 'Codex'}</span>
+                    : apiSelected ? (selectedApiProfile?.model || '兼容 API') : 'Codex'}</span>
                   <AgentControlIcon name="chevron" />
                 </button>
                 {sending ? (

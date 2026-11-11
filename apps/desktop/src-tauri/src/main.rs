@@ -3261,12 +3261,12 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
     let config = local_api_config()?;
     let requested_provider = provider_override.as_deref()
         .unwrap_or_else(|| config.get("defaultProvider").and_then(Value::as_str).unwrap_or("codex"));
-    let resolved_provider = if requested_provider == "api" {
-        let profile = api_profile_from_config(&config, "api")?;
-        api_provider_id(profile.get("id").and_then(Value::as_str).unwrap_or(""))
-    } else {
-        requested_provider.to_string()
-    };
+    // An old generic API thread has no stable profile identity. Never redirect
+    // its established history to whichever profile is the current default.
+    if requested_provider == "api" {
+        return Err("FORGE_DESKTOP_API_THREAD_PROFILE_UNPINNED".into());
+    }
+    let resolved_provider = requested_provider.to_string();
     if resolved_provider != "joycode" && api_profile_id(&resolved_provider).is_none() {
         return Err("FORGE_DESKTOP_API_PROVIDER_INVALID".into());
     }
