@@ -4715,6 +4715,37 @@ mod tests {
     }
 
     #[test]
+    fn local_tool_adapter_matches_provider_catalog_and_effect_gates() {
+        let source = include_str!("../resources/forge-local-tool.mjs");
+        let adapter_body = source.split_once("const tools = Object.freeze({")
+            .expect("direct adapter catalog").1.split_once("\n});")
+            .expect("direct adapter catalog end").0;
+        let mut adapters = std::collections::BTreeMap::new();
+        for line in adapter_body.lines() {
+            let line = line.trim().trim_end_matches(',');
+            let Some((name, definition)) = line.split_once(": { name: '") else { continue; };
+            let (canonical_name, effect) = definition.split_once("', effect: ")
+                .expect("adapter entry has canonical tool and effect");
+            let effect = effect.strip_suffix(" }").expect("adapter entry end");
+            adapters.insert(name.to_string(), (canonical_name.to_string(), effect == "true"));
+        }
+        let names = |items: Vec<Value>| items.iter().filter_map(|item|
+            item.pointer("/function/name").and_then(Value::as_str).map(str::to_owned)
+        ).collect::<std::collections::BTreeSet<_>>();
+        let all = names(local_tool_catalog(true));
+        let readonly = names(local_tool_catalog(false));
+        assert_eq!(adapters.keys().cloned().collect::<std::collections::BTreeSet<_>>(), all,
+            "the provider-facing catalog and direct adapter must expose the same tool names");
+        for (name, (canonical_name, effect)) in adapters {
+            assert!(!canonical_name.is_empty(), "{name} must resolve to a canonical Forge tool");
+            assert_eq!(effect, !readonly.contains(&name), "effect grant mismatch for {name}");
+        }
+        assert!(source.contains("repository-tool-dispatch.ts"));
+        assert!(source.contains("callRepositoryTool(controllerHome, tool.name"));
+        assert!(source.contains("callProcessTool"), "managed Process controls use their canonical dispatcher");
+    }
+
+    #[test]
     fn local_tool_catalog_requires_user_grant_for_effects() {
         let readonly = local_tool_catalog(false);
         let names = |items: Vec<Value>| items.iter().filter_map(|item|

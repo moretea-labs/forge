@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { ensureControllerHome } from '../../src/effects/controller-home';
@@ -29,6 +29,12 @@ function fixture() {
   writeFileSync(join(repoRoot, 'README.md'), 'Native Cognitive test\n');
   const git = spawnSync('git', ['init', '-q', '-b', 'main'], { cwd: repoRoot, encoding: 'utf8' });
   expect(git.status).toBe(0);
+  for (const [key, value] of [['user.name', 'Forge Test'], ['user.email', 'forge-test@example.com']]) {
+    const configured = spawnSync('git', ['config', key, value], { cwd: repoRoot, encoding: 'utf8' });
+    expect(configured.status, configured.stderr).toBe(0);
+  }
+  expect(spawnSync('git', ['add', 'README.md'], { cwd: repoRoot }).status).toBe(0);
+  expect(spawnSync('git', ['commit', '-m', 'fixture'], { cwd: repoRoot, encoding: 'utf8' }).status).toBe(0);
   const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'Native Cognition' });
   const instance = ensureForgeInstanceIdentity({
     controllerHome, preferredInstanceId: 'forge-native-cognitive-test',
@@ -42,11 +48,11 @@ function fixture() {
     projectId: 'project-native-cognition', forgeInstanceId: instance.instanceId,
     repositoryId: repository.repoId, checkoutId: repository.activeCheckoutId,
   } });
-  return { controllerHome, repository };
+  return { controllerHome, repository, repoRoot };
 }
 
 function invoke(
-  fx: ReturnType<typeof fixture>, tool: string, conversationId: string,
+  fx: Pick<ReturnType<typeof fixture>, 'controllerHome' | 'repository'>, tool: string, conversationId: string,
   args: Record<string, unknown>, allowEffects = false,
 ): { ok: boolean; error?: string; result?: Record<string, any> } {
   const payload = JSON.stringify({
@@ -127,6 +133,74 @@ describe('Native Agent model-authored Cognition without Work', () => {
     const phrases = foreign.result?.items?.map((item: any) => item.text) ?? [];
     expect(phrases).toContain('All workspace inventory cards should remain readable.');
     expect(phrases.some((t: string) => t.includes('Project one inventory card'))).toBe(false);
+  });
+
+  test('direct non-MCP adapter delegates read, safe edit and test command to canonical Forge authorities', () => {
+    const fx = fixture();
+    const read = invoke(fx, 'read_file', 'native-adapter-read', { path: 'README.md' });
+    expect(read.ok, read.error).toBe(true);
+    expect(read.result?.content).toContain('Native Cognitive test');
+
+    const patchArguments = {
+      purpose: 'native direct-adapter fixture edit',
+      allowed_paths: ['README.md'],
+      operations: [{ type: 'replace', path: 'README.md', replacements: [{
+        old_text: 'Native Cognitive test', new_text: 'Native Agent adapter test',
+      }] }],
+    };
+    expect(invoke(fx, 'apply_patch', 'native-adapter-edit', patchArguments)).toEqual({
+      ok: false, error: 'LOCAL_FORGE_TOOL_REQUIRES_USER_APPROVAL',
+    });
+    const applied = invoke(fx, 'apply_patch', 'native-adapter-edit', patchArguments, true);
+    expect(applied.ok, applied.error).toBe(true);
+    expect(applied.result).toMatchObject({ status: 'applied', repoId: fx.repository.repoId,
+      checkoutId: fx.repository.activeCheckoutId });
+    expect(readFileSync(join(fx.repoRoot, 'README.md'), 'utf8')).toContain('Native Agent adapter test');
+
+    mkdirSync(join(fx.repoRoot, 'tests'), { recursive: true });
+    writeFileSync(join(fx.repoRoot, 'tests/fixture.test.ts'), [
+      "import { expect, test } from 'bun:test';",
+      "import { readFileSync } from 'node:fs';",
+      "test('the canonical patch is visible to the test command', () => {",
+      "  expect(readFileSync(new URL('../README.md', import.meta.url), 'utf8')).toContain('Native Agent adapter test');",
+      '});',
+      '',
+    ].join('\n'));
+    const testCommandArguments = {
+      command: ['bun', 'test', 'tests/fixture.test.ts'], timeout_ms: 30_000,
+      interactive_wait_ms: 5_000, max_output_bytes: 4_096,
+    };
+    expect(invoke(fx, 'run_command', 'native-adapter-test', testCommandArguments)).toEqual({
+      ok: false, error: 'LOCAL_FORGE_TOOL_REQUIRES_USER_APPROVAL',
+    });
+    let command = invoke(fx, 'run_command', 'native-adapter-test', testCommandArguments, true);
+    if (command.result?.status === 'running' && typeof command.result.processId === 'string') {
+      command = invoke(fx, 'process_status', 'native-adapter-test', {
+        process_id: command.result.processId, wait_ms: 5_000,
+      });
+    }
+    expect(command.ok, command.error).toBe(true);
+    expect(command.result).toMatchObject({ status: 'succeeded', exitCode: 0 });
+    const commandOutput = [
+      command.result?.stdout, command.result?.stderr,
+      command.result?.stdoutTail, command.result?.stderrTail,
+    ].filter((part) => typeof part === 'string').join('\n');
+    expect(commandOutput).toContain('1 pass');
+
+    const pending = invoke(fx, 'run_command', 'native-adapter-process', {
+      command: ['bun', '-e', 'await new Promise(resolve => setTimeout(resolve, 500)); console.log("managed-process-terminal")'],
+      timeout_ms: 30_000, interactive_wait_ms: 5, max_output_bytes: 4_096,
+    }, true);
+    expect(pending.ok, pending.error).toBe(true);
+    expect(pending.result).toMatchObject({ status: 'running' });
+    const processId = pending.result?.processId;
+    expect(typeof processId).toBe('string');
+    const terminal = invoke(fx, 'process_status', 'native-adapter-process', {
+      process_id: processId, wait_ms: 5_000,
+    });
+    expect(terminal.ok, terminal.error).toBe(true);
+    expect(terminal.result).toMatchObject({ status: 'succeeded', exitCode: 0 });
+    expect(terminal.result?.stdoutTail).toContain('managed-process-terminal');
   });
 
   test('read/record/re-recall/reject uses the same Project authority and preserves grants', () => {
