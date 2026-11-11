@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
+import { execFileSync } from 'child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -7,6 +8,10 @@ import type { RuntimeReleaseAuthority } from '../../src/runtime/root/release-sto
 import { advanceConfiguredRuntimeRelease, decideConfiguredRuntimeReleaseAction, decideConfiguredRuntimeReleaseReconciliation } from '../../src/runtime/release/release-coordinator';
 import { cancelConfiguredRuntimeReleaseSession, createRecoveryConfig } from '../../src/runtime/standalone-recovery/core';
 import type { CandidateExecutionLane, StableExecutionLane } from '../../src/runtime/root/runtime-lane';
+import { registerRepository } from '../../src/cli/repositories/registry';
+import { executionIdentityForRepository } from '../../src/runtime/control-plane/execution/execution-identity';
+import { ensureControllerHome } from '../../src/effects/controller-home';
+import { __resetLiveMonitorsForTests, spawnManagedProcess, waitForProcess } from '../../src/runtime/execution/process-runtime';
 
 const roots: string[] = [];
 afterEach(() => { while (roots.length) rmSync(roots.pop()!, { recursive: true, force: true }); });
@@ -543,13 +548,12 @@ describe('Recovery ReleaseSession', () => {
     });
   });
 
-  test('keeps Work completion and Watchdog outside normal release authority', () => {
+  test('keeps retired Work completion and Watchdog outside normal release authority', () => {
     const root = join(import.meta.dir, '..', '..');
     expect(existsSync(join(root, 'src/runtime/control-plane/execution/work-finalization-service.ts'))).toBe(false);
-    const workCompletion = readFileSync(join(root, 'src/runtime/control-plane/execution/work-completion-authority.ts'), 'utf8');
+    // #483 retired Work as a mutable domain authority and removed this owner.
+    expect(existsSync(join(root, 'src/runtime/control-plane/execution/work-completion-authority.ts'))).toBe(false);
     const watchdog = readFileSync(join(root, 'src/runtime/watchdog/workflow-watchdog.ts'), 'utf8');
-    expect(workCompletion).not.toContain('release-session');
-    expect(workCompletion).not.toContain('standalone-recovery');
     expect(watchdog).not.toContain('release-session');
     expect(watchdog).not.toContain('release-coordinator');
     const coordinator = readFileSync(join(root, 'src/runtime/release/release-coordinator.ts'), 'utf8');
@@ -995,6 +999,127 @@ describe('Recovery ReleaseSession', () => {
     advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'built', candidateRelease });
     expect(() => advanceReleaseSession({ controllerHome: home, sessionId: session.sessionId, expectedRevision: session.revision, phase: 'failed' })).toThrow('RELEASE_SESSION_REVISION_FENCED');
   });
+
+  test('ReleaseSession mutation survives Process observer interruption and same-request reattach', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'forge-release-session-process-'));
+    roots.push(home);
+    const controllerHome = join(home, 'controller');
+    const repoRoot = join(home, 'repo');
+    mkdirSync(repoRoot, { recursive: true });
+    ensureControllerHome(controllerHome);
+    execFileSync('git', ['init', '-b', 'main'], { cwd: repoRoot, stdio: 'ignore' });
+    execFileSync('git', [
+      '-c', 'user.name=Forge Test',
+      '-c', 'user.email=forge@example.test',
+      '-c', 'commit.gpgsign=false',
+      'commit', '--allow-empty', '-m', 'release session process fixture',
+    ], { cwd: repoRoot, stdio: 'ignore' });
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'release-session-process-test' });
+    const { stable, stableRelease, candidate, candidateRelease } = lanes(home);
+    const session = createReleaseSession({
+      controllerHome,
+      sessionId: candidate.sessionId,
+      stable,
+      stableRelease,
+      candidate,
+      sourceRevision: 'abc123',
+    });
+    const built = advanceReleaseSession({
+      controllerHome,
+      sessionId: session.sessionId,
+      expectedRevision: session.revision,
+      phase: 'built',
+      candidateRelease,
+    });
+
+    const requestId = 'release-session-process-observation';
+    const startedPath = join(controllerHome, 'process-started.log');
+    const resultPath = join(controllerHome, 'process-result.json');
+    const scriptPath = join(controllerHome, 'advance-release-session.ts');
+    const childSource = [
+      "import { appendFileSync, writeFileSync } from 'node:fs';",
+      "import { advanceReleaseSession } from " + JSON.stringify(join(process.cwd(), 'src/runtime/release/release-session.ts')) + ";",
+      "appendFileSync(" + JSON.stringify(startedPath) + ", 'started\\n');",
+      'await new Promise((resolve) => setTimeout(resolve, 250));',
+      'const updated = advanceReleaseSession(' + JSON.stringify({
+        controllerHome,
+        sessionId: session.sessionId,
+        expectedRevision: built.revision,
+        phase: 'candidate_booted',
+      }) + ');',
+      "writeFileSync(" + JSON.stringify(resultPath) + ", JSON.stringify({ phase: updated.phase, revision: updated.revision }));",
+    ].join(String.fromCharCode(10));
+    writeFileSync(scriptPath, childSource);
+
+    const command = { kind: 'argv' as const, executable: process.execPath, args: [scriptPath], cwd: repoRoot };
+    const signal = new AbortController();
+    const execution = spawnManagedProcess({
+      controllerHome,
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      executionIdentity: executionIdentityForRepository(repository),
+      command,
+      interactiveWaitMs: 10_000,
+      timeoutMs: 15_000,
+      signal: signal.signal,
+      origin: { surface: 'command', toolName: 'execute_command', requestId },
+    });
+    let processId: string | undefined;
+    try {
+      const deadline = Date.now() + 5_000;
+      while (Date.now() < deadline && !existsSync(startedPath)) await Bun.sleep(5);
+      expect(existsSync(startedPath)).toBe(true);
+      signal.abort();
+      const interrupted = await execution;
+      processId = interrupted.processId;
+      expect(interrupted).toMatchObject({
+        completed: false,
+        status: 'running',
+        observationInterrupted: true,
+        requestId,
+      });
+
+      __resetLiveMonitorsForTests();
+      const replay = await spawnManagedProcess({
+        controllerHome,
+        repoId: repository.repoId,
+        checkoutId: repository.activeCheckoutId,
+        executionIdentity: executionIdentityForRepository(repository),
+        command,
+        interactiveWaitMs: 0,
+        timeoutMs: 15_000,
+        returnHandleImmediately: true,
+        origin: { surface: 'command', toolName: 'execute_command', requestId },
+      });
+      expect(replay.processId).toBe(processId);
+      const terminal = await waitForProcess(controllerHome, repository.repoId, replay.processId, { timeoutMs: 15_000 });
+      expect(terminal).toMatchObject({ completed: true, status: 'succeeded' });
+      expect(readFileSync(startedPath, 'utf8').trim().split('\n')).toHaveLength(1);
+      expect(JSON.parse(readFileSync(resultPath, 'utf8'))).toEqual({
+        phase: 'candidate_booted',
+        revision: built.revision + 1,
+      });
+      expect(readReleaseSession(controllerHome, session.sessionId)).toMatchObject({
+        phase: 'candidate_booted',
+        revision: built.revision + 1,
+      });
+      expect(() => advanceReleaseSession({
+        controllerHome,
+        sessionId: session.sessionId,
+        expectedRevision: built.revision,
+        phase: 'candidate_booted',
+      })).toThrow('RELEASE_SESSION_REVISION_FENCED');
+    } finally {
+      signal.abort();
+      const handle = await execution.catch(() => undefined);
+      processId ??= handle?.processId;
+      if (processId) {
+        await waitForProcess(controllerHome, repository.repoId, processId, { timeoutMs: 5_000 }).catch(() => undefined);
+      }
+      __resetLiveMonitorsForTests();
+    }
+  }, 15_000);
+
 });
 
 // Old persisted deadline receipts have no authority to retire a healthy Runtime.
