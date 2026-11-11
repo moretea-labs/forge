@@ -61,6 +61,74 @@ function invoke(
 }
 
 describe('Native Agent model-authored Cognition without Work', () => {
+  test('rejects secret-like memory without partially writing a mixed batch', () => {
+    const fx = fixture();
+    const ordinary = {
+      scope_kind: 'project', kind: 'design-correction', valence: 'positive',
+      summary: 'Keep medicine stock surfaces visually quiet.',
+      concepts: ['medication', 'inventory'], admission_source: 'explicit_human',
+      portability: 'local', salience: 1, confidence: 1, utility: 1,
+    };
+    const secret = {
+      ...ordinary,
+      scope_kind: 'workspace',
+      portability: 'portable',
+      summary: 'Do not share this placeholder credential sk-TESTONLY0123456789abcdef0123456789',
+    };
+    const refused = invoke(fx, 'record_learning', 'agent-security',
+      { signals: [ordinary, secret] }, true);
+    expect(refused.ok).toBe(false);
+    expect(refused.error).toContain('CONTROL_PLANE_METADATA_SECRET_REFUSED');
+    const recall = invoke(fx, 'recall_knowledge', 'agent-next', { query: 'medicine stock surfaces' });
+    expect(recall.ok, recall.error).toBe(true);
+    expect(recall.result?.items).toHaveLength(0);
+  });
+
+  test('keeps Project memory isolated while reusing portable Workspace guidance', () => {
+    const fx = fixture();
+    const secondRoot = join(roots.at(-1)!, 'repo2');
+    mkdirSync(secondRoot);
+    writeFileSync(join(secondRoot, 'README.md'), 'Another project.\\n');
+    expect(spawnSync('git', ['init', '-q', '-b', 'main'], { cwd: secondRoot }).status).toBe(0);
+    const second = registerRepository({
+      path: secondRoot, controllerHome: fx.controllerHome, displayName: 'Independent Project',
+    });
+    writeProjectIdentity({
+      controllerHome: fx.controllerHome,
+      value: {
+        projectId: 'project-unrelated', workspaceId: 'workspace-native-cognition',
+        displayName: 'Independent Project',
+      },
+    });
+    writeProjectPlacement({
+      controllerHome: fx.controllerHome,
+      value: {
+        projectId: 'project-unrelated', forgeInstanceId: 'forge-native-cognitive-test',
+        repositoryId: second.repoId, checkoutId: second.activeCheckoutId,
+      },
+    });
+    const base = {
+      kind: 'design-correction', valence: 'positive',
+      concepts: ['inventory', 'cards'], admission_source: 'explicit_human',
+      salience: 1, confidence: 1, utility: 1,
+    };
+    const signals = [
+      { ...base, scope_kind: 'project', portability: 'local',
+        summary: 'Project one inventory card detail is different.' },
+      { ...base, scope_kind: 'workspace', portability: 'portable',
+        summary: 'All workspace inventory cards should remain readable.' },
+    ];
+    const saved = invoke(fx, 'record_learning', 'agent-save', { signals }, true);
+    expect(saved.ok, saved.error).toBe(true);
+    expect(saved.result?.storedMemoryIds).toHaveLength(2);
+    const foreign = invoke({ controllerHome: fx.controllerHome, repository: second },
+      'recall_knowledge', 'agent-foreign', { query: 'workspace inventory cards remain readable' });
+    expect(foreign.ok, foreign.error).toBe(true);
+    const phrases = foreign.result?.items?.map((item: any) => item.text) ?? [];
+    expect(phrases).toContain('All workspace inventory cards should remain readable.');
+    expect(phrases.some((t: string) => t.includes('Project one inventory card'))).toBe(false);
+  });
+
   test('read/record/re-recall/reject uses the same Project authority and preserves grants', () => {
     const fx = fixture();
     const signals = [{
@@ -84,6 +152,13 @@ describe('Native Agent model-authored Cognition without Work', () => {
       (item: any) => item.text?.includes('Preserve flat inventory cards'),
     );
     expect(match?.memoryId).toBeTruthy();
+
+    const unsafeFeedback = invoke(fx, 'memory_feedback', 'agent-b', { feedback: [{
+      memory_address: match.memoryId, decision: 'used',
+      reason: 'Avoid storing this synthetic credential sk-TESTONLY0123456789abcdef0123456789',
+    }] }, true);
+    expect(unsafeFeedback.ok).toBe(false);
+    expect(unsafeFeedback.error).toContain('CONTROL_PLANE_METADATA_SECRET_REFUSED');
 
     expect(invoke(fx, 'memory_feedback', 'agent-b', { feedback: [{
       memory_address: match.memoryId, decision: 'rejected',

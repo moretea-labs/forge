@@ -15,6 +15,7 @@ import { cognitionMemoryStore, cognitionReadPort, recordCognitiveUsageObservatio
 import { readRequirement } from '../control-plane/persistence/requirement-store';
 import { resolveProjectForRepositoryPlacement } from '../control-plane/workspace/workspace-store';
 import { findPluginActionReceipt } from '../plugins/store';
+import { assertControlPlaneMetadataPayload } from '../control-plane/persistence/metadata-payload-policy';
 import {
   associateStoredMemories,
   consolidateAffectedMemories,
@@ -152,6 +153,7 @@ export function recordDirectControllerLearningFeedback(input: {
   now?: string;
 }): DirectControllerLearningFeedbackResult {
   if (!input.feedback.length || input.feedback.length > 32) throw new Error('COGNITION_DIRECT_FEEDBACK_ITEMS_INVALID');
+  assertControlPlaneMetadataPayload({ feedback: input.feedback }, 'cognition_feedback');
   const principalId = input.principalId?.trim();
   if (!principalId) throw new Error('COGNITION_DIRECT_FEEDBACK_PRINCIPAL_REQUIRED');
   const interactionId = input.sessionId?.trim() || input.controllerInstanceId?.trim();
@@ -213,6 +215,9 @@ export function persistDirectControllerLearning(input: {
   if (!input.signals.length || input.signals.length > CONTROLLER_LEARNING_SIGNAL_ENVELOPE_MAX_ITEMS) {
     throw new Error('COGNITION_DIRECT_LEARNING_SIGNALS_INVALID');
   }
+  // One canonical metadata/secret boundary for all model-authored memory
+  // fields, before even the first Project or portable Workspace write.
+  assertControlPlaneMetadataPayload({ signals: input.signals }, 'cognition_learning');
   const scopes = directLearningScopes(input.controllerHome, input.repository, input.requirementId);
   const observedAt = input.now ?? new Date().toISOString();
   const sourceId = directSourceId(input);
