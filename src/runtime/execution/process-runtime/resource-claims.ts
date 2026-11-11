@@ -17,13 +17,14 @@ import { normalizeRepositoryCommand } from '../../../cli/repositories/command-no
 import { isProtectedRemoteBranchDeletionTarget } from '../../../core/git-branch-policy';
 import { isFocusedCheckCommand } from '../thin-harness/execution-router';
 import type { ProcessResourceClaim } from './types';
-import { normalizeClaimPath, normalizeClaims } from '../../resources/claims/conflicts';
+import { IOS_SIMULATOR_TEST_RESOURCE, iosSimulatorResourceKey, normalizeClaimPath, normalizeClaims } from '../../resources/claims/conflicts';
 
 export const LIVE_DEVICE_ADMISSION_WAIT_MS = 2 * 60 * 60_000;
 
 export function claimsRequireLiveDeviceAdmission(claims: readonly { resourceKey: string }[]): boolean {
   return claims.some((claim) => claim.resourceKey === 'host-service:ios-build'
-    || claim.resourceKey === 'host-service:ios-simulator-test'
+    || claim.resourceKey === IOS_SIMULATOR_TEST_RESOURCE
+    || claim.resourceKey.startsWith(`${IOS_SIMULATOR_TEST_RESOURCE}:udid:`)
     || claim.resourceKey === 'host-service:android-emulator-test');
 }
 
@@ -224,6 +225,38 @@ function shellXcodebuildCommands(shell: string): string[] {
     });
 }
 
+/**
+ * Select a device-specific claim only for an unambiguous literal xcodebuild
+ * -destination id=<UDID>. Names, placeholders, multiple destinations or
+ * opaque scripts keep the host-wide simulator fence.
+ */
+function exactXcodebuildSimulatorUdid(command: string | readonly string[]): string | undefined {
+  const canonical = normalizeRepositoryCommand(command);
+  const argv = canonical.kind === 'argv'
+    ? [canonical.executable ?? '', ...(canonical.args ?? [])]
+    : [];
+  const wrapped = canonical.kind === 'argv' ? fixedShellWrapperCommand(argv) : undefined;
+  const commands = wrapped
+    ? shellXcodebuildCommands(wrapped)
+    : canonical.kind === 'argv'
+      ? [argv.join(' ')]
+      : shellXcodebuildCommands(canonical.shellCommand ?? '');
+  if (commands.length !== 1) return undefined;
+  const words = canonical.kind === 'argv' && !wrapped
+    ? argv
+    : shellWordsPreservingQuotes(commands[0]!);
+  const destinations = words.flatMap((word, index) =>
+    word === '-destination' ? [words[index + 1] ?? ''] : []);
+  if (destinations.length !== 1) return undefined;
+  const normalized = destinations[0]!.replace(/^['"]|['"]$/g, '');
+  const match = /(?:^|,)id=([0-9a-f-]+)(?:,|$)/i.exec(normalized);
+  if (!match) return undefined;
+  // Guard against a physical iPhone selector disguised as a destination.
+  if (/platform=/i.test(normalized) && !/(?:^|,)platform=iOS Simulator(?:,|$)/i.test(normalized)) return undefined;
+  const key = iosSimulatorResourceKey(match[1]);
+  return key === IOS_SIMULATOR_TEST_RESOURCE ? undefined : match[1];
+}
+
 function iosSimulatorTestCommandClaims(
   command: string | readonly string[],
   repoId: string,
@@ -248,7 +281,7 @@ function iosSimulatorTestCommandClaims(
   return normalizeClaims([
     claimWorkspaceRead(checkoutId, repoId),
     ...cacheClaims,
-    claimHostService('ios-simulator-test', 'write'),
+    { resourceKey: iosSimulatorResourceKey(exactXcodebuildSimulatorUdid(command)), mode: 'write' },
   ]);
 }
 

@@ -14,6 +14,19 @@ import type { ExecutionLease } from '../leases/types';
  *   workspace-read:<checkoutId>  → treated as workspace:<checkoutId> mode=read
  */
 
+/** One canonical simulator device identity across Process, Plugin and Lease owners.
+ * Unknown/name-selected devices retain the legacy host-wide fence.
+ */
+export const IOS_SIMULATOR_TEST_RESOURCE = 'host-service:ios-simulator-test';
+
+export function iosSimulatorResourceKey(udid?: unknown): string {
+  if (typeof udid !== 'string') return IOS_SIMULATOR_TEST_RESOURCE;
+  const exact = udid.trim();
+  return /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(exact)
+    ? `${IOS_SIMULATOR_TEST_RESOURCE}:udid:${exact.toUpperCase()}`
+    : IOS_SIMULATOR_TEST_RESOURCE;
+}
+
 function normalizeResourceKey(key: string): string {
   const trimmed = key.trim();
   if (trimmed.startsWith('workspace-read:')) {
@@ -111,6 +124,11 @@ export function resourceKeysOverlap(leftRaw: string, rightRaw: string): boolean 
   const left = normalizeResourceKey(leftRaw);
   const right = normalizeResourceKey(rightRaw);
   if (left === right) return true;
+  // Legacy host-wide claims remain a conservative wildcard while exact UDIDs
+  // on different booted simulators may proceed independently.
+  const scopedPrefix = `${IOS_SIMULATOR_TEST_RESOURCE}:udid:`;
+  if ((left === IOS_SIMULATOR_TEST_RESOURCE && right.startsWith(scopedPrefix))
+      || (right === IOS_SIMULATOR_TEST_RESOURCE && left.startsWith(scopedPrefix))) return true;
 
   // A single exact remote ref is independent from different review refs,
   // while opaque Git pushes and repo-wide remote mutations stay exclusive.

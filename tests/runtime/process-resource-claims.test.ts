@@ -410,6 +410,60 @@ describe('Process Runtime fine-grained resource claims', () => {
     expect(claims.some((claim) => claimsConflict(claim, reader))).toBe(false);
   });
 
+  test('two exact Simulator UDIDs admit independent validation while same device and legacy claims conflict', () => {
+    const duo = '96EDA0C4-D3A9-407C-8692-BE28234C5F43';
+    const pro = '633B2CBC-B2A5-4DAD-A9AE-BC3B1E883A9A';
+    const duoClaim = `host-service:ios-simulator-test:udid:${duo}`;
+    const proClaim = `host-service:ios-simulator-test:udid:${pro}`;
+    expect(claimsConflict({ resourceKey: duoClaim, mode: 'write' },
+      lease(proClaim, 'write'))).toBe(false);
+    expect(claimsConflict({ resourceKey: duoClaim, mode: 'write' },
+      lease(duoClaim, 'write'))).toBe(true);
+    expect(claimsConflict({ resourceKey: duoClaim, mode: 'write' },
+      lease('host-service:ios-simulator-test', 'write'))).toBe(true);
+    expect(claimsConflict({ resourceKey: 'host-service:ios-simulator-test', mode: 'write' },
+      lease(proClaim, 'write'))).toBe(true);
+
+    const typed = claimsForRepositoryCommand([
+      'xcodebuild', 'test-without-building', '-destination', `platform=iOS Simulator,id=${duo.toLowerCase()}`,
+    ], 'avela', 'co-a');
+    const wrapped = claimsForRepositoryCommand([
+      'bash', '-lc', `xcodebuild test -project App.xcodeproj -destination 'platform=iOS Simulator,id=${pro}'`,
+    ], 'other', 'co-b');
+    expect(typed).toContainEqual({ resourceKey: duoClaim, mode: 'write' });
+    expect(wrapped).toContainEqual({ resourceKey: proClaim, mode: 'write' });
+    const typedSim = typed.filter((claim) => claim.resourceKey.includes('ios-simulator-test'));
+    const wrappedSim = wrapped.filter((claim) => claim.resourceKey.includes('ios-simulator-test'));
+    expect(typedSim.some((claim) => wrappedSim.some((other) => claimsConflict(claim, lease(other.resourceKey, other.mode)))))
+      .toBe(false);
+    expect(claimsForRepositoryCommand(['xcodebuild', 'test', '-destination', 'name=iPhone 18 Pro'], 'r', 'c'))
+      .toContainEqual({ resourceKey: 'host-service:ios-simulator-test', mode: 'write' });
+    expect(claimsForRepositoryCommand(['xcodebuild', 'test', '-destination', `id=${duo}`, '-destination', `id=${pro}`], 'r', 'c'))
+      .toContainEqual({ resourceKey: 'host-service:ios-simulator-test', mode: 'write' });
+    expect(claimsForRepositoryCommand(['xcodebuild', 'test', '-destination', `platform=iOS,id=${duo}`], 'r', 'c'))
+      .toContainEqual({ resourceKey: 'host-service:ios-simulator-test', mode: 'write' });
+  });
+
+  test('iOS plugin exact UDIDs use the same host authority across repositories', () => {
+    const duo = '96EDA0C4-D3A9-407C-8692-BE28234C5F43';
+    const pro = '633B2CBC-B2A5-4DAD-A9AE-BC3B1E883A9A';
+    const repoA = { repoId: 'avela', activeCheckoutId: 'co-a' } as Parameters<typeof claimsForAssistantPluginAction>[1];
+    const repoB = { repoId: 'kidney', activeCheckoutId: 'co-b' } as Parameters<typeof claimsForAssistantPluginAction>[1];
+    const action: AssistantPluginActionDescriptor = {
+      actionId: 'capture_screenshot', title: 'Screenshot', description: '',
+      readOnly: false, risk: 'workspace_write', confirmation: 'authorization',
+      defaultTimeoutMs: 60000, cancellable: true, idempotent: false, scopes: ['ios.simulator'],
+      resourceClaims: [], argumentsSchema: {},
+    };
+    const a = claimsForAssistantPluginAction(action, repoA, 'ios', { udid: duo });
+    const b = claimsForAssistantPluginAction(action, repoB, 'ios', { udid: pro });
+    expect(a).toContainEqual({ resourceKey: `host-service:ios-simulator-test:udid:${duo}`, mode: 'write' });
+    expect(b).toContainEqual({ resourceKey: `host-service:ios-simulator-test:udid:${pro}`, mode: 'write' });
+    expect(a.some((x) => b.some((y) => claimsConflict(x, lease(y.resourceKey, y.mode))))).toBe(false);
+    expect(claimsForAssistantPluginAction(action, repoA, 'ios', { udid: 'iPhone Duo' }))
+      .toContainEqual({ resourceKey: 'host-service:ios-simulator-test', mode: 'write' });
+  });
+
   test('xcodebuild simulator tests serialize host-wide without taking a workspace writer', () => {
     const claims = claimsForRepositoryCommand([
       '/Applications/Xcode-beta.app/Contents/Developer/usr/bin/xcodebuild',

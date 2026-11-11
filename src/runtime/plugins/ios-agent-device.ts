@@ -10,6 +10,7 @@ import { resolveTrustedNodeExecutable } from '../shared/trusted-node-executable'
 import { AssistantPluginError, toAssistantPluginError } from './errors';
 import { ensureIosDeviceOwnership, releaseIosDeviceOwnership, withIosDeviceTransientOwnership } from './ios-device-ownership';
 import { acquireExecutionLeases, listActiveLeases, releaseExecutionLeases, renewExecutionLeases } from '../resources/leases/store';
+import { IOS_SIMULATOR_TEST_RESOURCE, iosSimulatorResourceKey } from '../resources/claims/conflicts';
 import {
   interactionAutomationEngine,
   interactionMayOwnTarget,
@@ -812,7 +813,6 @@ function listAgentDeviceInteractions(repoRoot: string): InteractionSessionRecord
     .filter(isAgentDeviceInteraction);
 }
 
-const SIMULATOR_TEST_LEASE_RESOURCE = 'host-service:ios-simulator-test';
 // A paused Simulator interaction must not fence every repository's XCTest for
 // the full two-hour physical-device session lifetime. Real activity renews it.
 const SIMULATOR_IDLE_TIMEOUT_MS = 10 * 60_000;
@@ -831,8 +831,12 @@ function simulatorInteractionLeaseTtl(record: InteractionSessionRecord): number 
 
 function simulatorInteractionLeaseRefs(input: AssistantPluginActionExecutionInput, record: InteractionSessionRecord) {
   const ownerJobId = simulatorInteractionLeaseOwner(record);
+  const scoped = iosSimulatorResourceKey(record.targetId);
   return listActiveLeases(input.controllerHome, record.owner.repoId)
-    .filter((lease) => lease.ownerJobId === ownerJobId && lease.resourceKey === SIMULATOR_TEST_LEASE_RESOURCE)
+    // A live session created before the upgrade may own the legacy global
+    // resource. Renew that same receipt rather than minting a second owner.
+    .filter((lease) => lease.ownerJobId === ownerJobId
+      && (lease.resourceKey === scoped || lease.resourceKey === IOS_SIMULATOR_TEST_RESOURCE))
     .map((lease) => ({
       leaseId: lease.leaseId,
       fencingToken: lease.fencingToken,
@@ -858,7 +862,7 @@ function ensureSimulatorInteractionLease(
     input.controllerHome,
     record.owner.repoId,
     ownerJobId,
-    [{ resourceKey: SIMULATOR_TEST_LEASE_RESOURCE, mode: 'write' }],
+    [{ resourceKey: iosSimulatorResourceKey(record.targetId), mode: 'write' }],
     { ttlMs, visibility: 'durable' },
   );
   if (!acquisition.acquired) {
@@ -870,7 +874,7 @@ function ensureSimulatorInteractionLease(
         details: {
           interactionId: record.interactionId,
           targetId: record.targetId,
-          resourceKey: SIMULATOR_TEST_LEASE_RESOURCE,
+          resourceKey: iosSimulatorResourceKey(record.targetId),
           blockers: acquisition.blockers,
         },
       },

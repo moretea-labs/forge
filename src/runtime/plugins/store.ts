@@ -23,6 +23,7 @@ import {
 } from './capability-authorization-grants';
 import { markControllerContextProjectionDirty } from '../projections/controller-context';
 import { acquireExecutionLeases, releaseExactExecutionLeases } from '../resources/leases/store';
+import { iosSimulatorResourceKey } from '../resources/claims/conflicts';
 import { isRuntimeWriteFenceError } from '../root/write-fence';
 import type {
   AssistantPluginAdapter,
@@ -628,14 +629,14 @@ function claimsForPluginActionScope(
               : `repo-state:${scope.scopeKey}`,
     mode: claim.mode,
   }));
-  if (pluginId === 'ios' && ['build', 'xcode_test', 'smoke_review'].includes(action.actionId)) {
+  if (pluginId === 'ios' && ['build', 'xcode_test', 'smoke_review', 'agent_device_prepare'].includes(action.actionId)) {
     claims.push({ resourceKey: 'host-service:ios-build', mode: 'write' });
   }
   // The Process Runtime and iOS plugin must arbitrate the same physical
   // Simulator rather than independent provider-local / repository locks.
   if (pluginId === 'ios' && (
     ['xcode_test', 'smoke_review', 'launch_simulator', 'capture_screenshot', 'agent_device_prepare'].includes(action.actionId)
-  )) claims.push({ resourceKey: 'host-service:ios-simulator-test', mode: 'write' });
+  )) claims.push({ resourceKey: iosSimulatorResourceKey(args?.udid ?? args?.device), mode: 'write' });
   return claims;
 }
 

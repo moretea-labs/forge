@@ -13,7 +13,9 @@ import { acquireExecutionLeases, listActiveLeases, releaseExecutionLeases } from
 const roots: string[] = [];
 const oldId = 'ios_agent_device_old_simulator';
 const oldSession = 'forge-old-simulator-session';
-const targetId = 'SIM-192';
+const targetId = '96EDA0C4-D3A9-407C-8692-BE28234C5F43';
+const simulatorResource = 'host-service:ios-simulator-test:udid:' + targetId;
+const otherResource = 'host-service:ios-simulator-test:udid:633B2CBC-B2A5-4DAD-A9AE-BC3B1E883A9A';
 
 function fixture() {
   const repoRoot = mkdtempSync(join(tmpdir(), 'forge-ios-orphan-reclaim-'));
@@ -108,7 +110,7 @@ describe('iOS agent-device abandoned interaction recovery (Issue #192)', () => {
     const f = fixture();
     patchInteractionSession(f.repoRoot, 'ios-simulator', oldId, { status: 'closed' });
     const calls = installMock([]);
-    const claim = [{ resourceKey: 'host-service:ios-simulator-test', mode: 'write' as const }];
+    const claim = [{ resourceKey: simulatorResource, mode: 'write' as const }];
 
     // Reverse ordering: a running XCTest/Simulator owner prevents AgentDevice
     // from starting its provider session. No second ownership path is consulted.
@@ -123,7 +125,7 @@ describe('iOS agent-device abandoned interaction recovery (Issue #192)', () => {
     const opened = await open(f);
     const interactionId = (opened.interaction as { interactionId: string }).interactionId;
     const held = listActiveLeases(f.controllerHome, 'repo-ios-192')
-      .filter((lease) => lease.resourceKey === 'host-service:ios-simulator-test');
+      .filter((lease) => lease.resourceKey === simulatorResource);
     expect(held).toHaveLength(1);
     expect((opened.interaction as { expiresAt: string }).expiresAt).toBe('2026-11-02T08:48:00.000Z');
     // Global XCTest must never wait two hours (plus a 30-minute grace) after
@@ -134,10 +136,26 @@ describe('iOS agent-device abandoned interaction recovery (Issue #192)', () => {
     expect(leaseMinutesRemaining).toBeLessThan(15);
     expect(held[0]).toMatchObject({
       ownerJobId: `ios-agent-device:${interactionId}`,
-      resourceKey: 'host-service:ios-simulator-test',
+      resourceKey: simulatorResource,
       mode: 'write',
       visibility: 'durable',
     });
+    // Device B does not wait for AgentDevice/XCTest on device A.
+    const separate = acquireExecutionLeases(
+      f.controllerHome, 'repo-other-xctest', 'independent-device', [{
+        resourceKey: otherResource, mode: 'write',
+      }], { visibility: 'ephemeral' },
+    );
+    expect(separate.acquired).toBe(true);
+    releaseExecutionLeases(f.controllerHome, 'repo-other-xctest', 'independent-device');
+    // A still-live legacy host-wide owner fences all exact devices.
+    const legacy = acquireExecutionLeases(
+      f.controllerHome, 'repo-legacy-xctest', 'legacy-fence', [{
+        resourceKey: 'host-service:ios-simulator-test', mode: 'write',
+      }], { visibility: 'ephemeral' },
+    );
+    expect(legacy.acquired).toBe(false);
+
 
     // Forward ordering: repository/plugin XCTest uses the same global lease
     // authority and cannot co-run while the interaction is still active.
@@ -146,7 +164,7 @@ describe('iOS agent-device abandoned interaction recovery (Issue #192)', () => {
     );
     expect(blocked.acquired).toBe(false);
     expect(blocked.blockers).toContainEqual(expect.objectContaining({
-      resourceKey: 'host-service:ios-simulator-test',
+      resourceKey: simulatorResource,
       ownerJobId: `ios-agent-device:${interactionId}`,
     }));
 
@@ -161,7 +179,7 @@ describe('iOS agent-device abandoned interaction recovery (Issue #192)', () => {
       origin: { surface: 'local-ui', actor: 'test' },
     })).rejects.toMatchObject({ code: 'AGENT_DEVICE_CLEANUP_UNVERIFIED' });
     expect(listActiveLeases(f.controllerHome, 'repo-ios-192')
-      .filter((lease) => lease.resourceKey === 'host-service:ios-simulator-test')).toHaveLength(1);
+      .filter((lease) => lease.resourceKey === simulatorResource)).toHaveLength(1);
 
     // Provider-confirmed terminal close releases the exact lifetime owner.
     installMock([], 'already_absent');
@@ -173,12 +191,40 @@ describe('iOS agent-device abandoned interaction recovery (Issue #192)', () => {
     });
     expect((closed.interaction as { status: string }).status).toBe('closed');
     expect(listActiveLeases(f.controllerHome, 'repo-ios-192')
-      .filter((lease) => lease.resourceKey === 'host-service:ios-simulator-test')).toEqual([]);
+      .filter((lease) => lease.resourceKey === simulatorResource)).toEqual([]);
 
     expect(acquireExecutionLeases(
       f.controllerHome, 'repo-other-xctest', 'xctest-after-close', claim, { visibility: 'ephemeral' },
     ).acquired).toBe(true);
     releaseExecutionLeases(f.controllerHome, 'repo-other-xctest', 'xctest-after-close');
+  });
+
+  it('renews an in-flight legacy global Simulator lease without minting a second device owner', async () => {
+    const f = fixture();
+    installMock([], 'already_absent');
+    const legacyResource = 'host-service:ios-simulator-test';
+    expect(acquireExecutionLeases(
+      f.controllerHome, 'repo-ios-192', 'ios-agent-device:' + oldId, [
+        { resourceKey: legacyResource, mode: 'write' },
+      ], { visibility: 'durable' },
+    ).acquired).toBe(true);
+
+    await executeIosAgentDeviceAction({
+      controllerHome: f.controllerHome, repoId: 'repo-ios-192', repoRoot: f.repoRoot,
+      pluginId: 'ios', actionId: 'agent_device_events', requestId: 'legacy-session-renew',
+      args: { interaction_id: oldId },
+      origin: { surface: 'local-ui', actor: 'test' },
+    });
+    const held = listActiveLeases(f.controllerHome, 'repo-ios-192')
+      .filter((lease) => lease.ownerJobId === 'ios-agent-device:' + oldId);
+    expect(held).toHaveLength(1);
+    expect(held[0]?.resourceKey).toBe(legacyResource);
+    expect(acquireExecutionLeases(
+      f.controllerHome, 'repo-other-xctest', 'cannot-pass-old-global', [
+        { resourceKey: otherResource, mode: 'write' },
+      ], { visibility: 'ephemeral' },
+    ).acquired).toBe(false);
+    releaseExecutionLeases(f.controllerHome, 'repo-ios-192', 'ios-agent-device:' + oldId);
   });
 
   it('extends the same lease only on real session activity, never on status polling', async () => {
