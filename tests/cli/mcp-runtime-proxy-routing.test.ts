@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { createServer, type ServerResponse } from 'http';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -34,6 +35,7 @@ import {
   type CanonicalRuntimeToolSchema,
 } from '../../adapters/mcp/server';
 import {
+  createModernMcpHttpHandler,
   isMcpToolsListRequest,
   mcpSessionToolSurfaceFingerprintIsCurrent,
   resolveMcpSessionCurrentFingerprint,
@@ -644,33 +646,58 @@ describe('MCP canonical Runtime proxy routing', () => {
     });
     const baseContext = createMcpToolContext({ controllerHome, profile: 'controller' });
     const proxy = createCanonicalRuntimeProxy(baseContext);
+    const gateway = createModernMcpHttpHandler(
+      { controllerHome, profile: 'controller' },
+      async () => schema,
+      proxy,
+    );
+    let gatewayResponseClosed = 0;
+    let activeToolResponse: ServerResponse | undefined;
+    const gatewayServer = createServer((request, response) => {
+      response.once('close', () => {
+        gatewayResponseClosed += 1;
+        if (activeToolResponse === response) activeToolResponse = undefined;
+      });
+      if (request.method === 'POST') activeToolResponse = response;
+      void gateway.nodeHandler(request, response);
+    });
+    const disconnectActiveToolResponse = () => {
+      if (!activeToolResponse) throw new Error('Gateway did not retain the active tool response');
+      activeToolResponse.destroy();
+    };
+    await new Promise<void>((resolve, reject) => {
+      gatewayServer.once('error', reject);
+      gatewayServer.listen(0, '127.0.0.1', resolve);
+    });
+    const gatewayAddress = gatewayServer.address();
+    if (!gatewayAddress || typeof gatewayAddress === 'string') throw new Error('gateway HTTP server did not bind');
+    const gatewayUrl = new URL(`http://127.0.0.1:${gatewayAddress.port}/mcp`);
     const createOuterSession = async (sessionId: string) => {
-      const server = createForgeMcpServerFromContext({
-        ...baseContext, principalId: 'oauth-client:fixture', sessionId, controllerType: 'chatgpt',
-      }, schema, proxy);
-      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-      await server.connect(serverTransport);
-      const client = new Client({ name: sessionId, version: '1.0.0' }, { capabilities: {} });
-      await client.connect(clientTransport);
-      return { client, server };
+      const transport = new StreamableHTTPClientTransport(gatewayUrl);
+      const client = new Client({ name: sessionId, version: '1.0.0' }, {
+        capabilities: {}, versionNegotiation: { mode: { pin: '2026-07-28' } },
+      });
+      await client.connect(transport);
+      return { client, transport };
     };
     let first: Awaited<ReturnType<typeof createOuterSession>> | undefined;
     let second: Awaited<ReturnType<typeof createOuterSession>> | undefined;
     try {
       first = await createOuterSession('outer-observation-cancel');
-      const controller = new AbortController();
-      const pending = first.client.callTool(
+      const responseCloseBaseline = gatewayResponseClosed;
+      const pendingObservation = first.client.callTool(
         { name: 'process_wait', arguments: { process_id: processId } },
-        { signal: controller.signal, timeout: 5_000 },
+        { timeout: 5_000 },
       );
       await waitAdmitted;
-      controller.abort();
-      await expect(pending).rejects.toThrow();
+      disconnectActiveToolResponse();
+      await expect(pendingObservation).rejects.toThrow();
+      for (let i = 0; i < 30 && gatewayResponseClosed === responseCloseBaseline; i += 1) await Bun.sleep(10);
+      expect(gatewayResponseClosed).toBeGreaterThan(responseCloseBaseline);
       for (let i = 0; i < 30 && !waitCancelled; i += 1) await Bun.sleep(10);
       expect(waitCancelled).toBe(true);
 
-      await first.client.close();
-      await first.server.close();
+      await first.client.close().catch(() => undefined);
       first = undefined;
       second = await createOuterSession('outer-observation-readback');
       const readback = await second.client.callTool({
@@ -679,25 +706,29 @@ describe('MCP canonical Runtime proxy routing', () => {
       expect(readback.structuredContent).toMatchObject({ processId, completed: true, ok: true });
       expect(waitCalls).toBe(1);
 
-      // Disconnecting the outer response does not send a cancellation to a
-      // mutation already accepted by the inner Runtime, nor replay it.
-      const mutationObserver = new AbortController();
-      const mutationResult = second.client.callTool(
+      // Closing the HTTP response stream does not cancel or replay an accepted mutation.
+      const mutationResponseCloseBaseline = gatewayResponseClosed;
+      const pendingMutation = second.client.callTool(
         { name: 'execute_command', arguments: { request_id: 'one-mutation', command: ['git', 'status'] } },
-        { signal: mutationObserver.signal, timeout: 5_000 },
+        { timeout: 5_000 },
       );
       await mutationAdmitted;
-      mutationObserver.abort();
-      await expect(mutationResult).rejects.toThrow();
+      disconnectActiveToolResponse();
+      await expect(pendingMutation).rejects.toThrow();
+      for (let i = 0; i < 30 && gatewayResponseClosed === mutationResponseCloseBaseline; i += 1) await Bun.sleep(10);
+      expect(gatewayResponseClosed).toBeGreaterThan(mutationResponseCloseBaseline);
       for (let i = 0; i < 30 && !mutationCompleted; i += 1) await Bun.sleep(10);
       expect(mutationCompleted).toBe(true);
       expect(mutationCancelled).toBe(false);
       expect(mutationCalls).toBe(1);
     } finally {
-      await first?.client.close();
-      await first?.server.close();
-      await second?.client.close();
-      await second?.server.close();
+      await first?.client.close().catch(() => undefined);
+      await second?.client.close().catch(() => undefined);
+      if (gatewayServer.listening) {
+        await new Promise<void>((resolve, reject) => {
+          gatewayServer.close((error) => error ? reject(error) : resolve());
+        });
+      }
       await proxy.close();
       await runtimeTransport.close();
       rmSync(controllerHome, { recursive: true, force: true });

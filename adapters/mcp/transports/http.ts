@@ -451,7 +451,7 @@ function principalIdFromModernRequestContext(context: McpRequestContext): string
   return /^Bearer\s+/i.test(authorization) ? 'mcp-bearer-client' : 'controller-http-client';
 }
 
-function createModernMcpHttpHandler(
+export function createModernMcpHttpHandler(
   baseOptions: McpServerOptions,
   resolveRuntimeSchema?: (context: McpToolContext) => Promise<CanonicalRuntimeToolSchema | undefined>,
   sharedRuntimeProxy?: CanonicalRuntimeProxy,
