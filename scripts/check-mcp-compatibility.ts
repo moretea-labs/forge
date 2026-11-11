@@ -77,7 +77,10 @@ const EXPECTED_PREFERRED_TOOL_NAME_FINGERPRINT = 'f22e635a213b45fa';
 // instead of depending on the retired rh_status requirementBoard projection.
 // 2026-11-09: #592 adds rh_inbox.scope (list-only all/global) so scoped counts
 // come from the inbox owner. Refresh the exact combined schema fingerprint.
-const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = '1d6cff781781ce37';
+// 2026-11-11: #235 documents bounded process_wait attachments (5000ms) and the
+// workspace_root direct-execution cap (30000ms); names and input schemas are
+// unchanged. Refresh the exact combined schema fingerprint.
+const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = '5e4f9799e6eb3468';
 
 const policy = runtimePolicy(process.cwd(), {
   profile: 'controller',
