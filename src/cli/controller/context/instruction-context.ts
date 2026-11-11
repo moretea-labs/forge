@@ -1,6 +1,6 @@
 import { readFileSync } from 'fs';
 import { posix, resolve } from 'path';
-import type { McpPolicy } from '../../../../adapters/mcp/types';
+import type { ToolPolicy } from '../tool-policy';
 import { readableFile } from './known-paths';
 
 const CONTRACT_NAMES = ['AGENTS.md', 'CLAUDE.md'] as const;
@@ -45,7 +45,7 @@ function directoryChain(path: string): string[] {
 
 export function buildRepositoryInstructionContext(
   repoRoot: string,
-  policy: McpPolicy,
+  policy: ToolPolicy,
   targetPaths: string[],
   options: { maxTargets?: number; maxContracts?: number; maxCharsPerContract?: number; maxTotalChars?: number; uiIntent?: string } = {},
 ): RepositoryInstructionContext {

@@ -10,7 +10,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
-import { getMcpPolicy } from '../adapters/mcp/policy';
+import { getToolPolicy } from '../src/cli/controller/tool-policy';
 import { createMcpToolContext } from '../adapters/mcp/multi-repository';
 import { exposedControllerToolDefinitions } from '../adapters/mcp/toolset';
 import {

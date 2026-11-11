@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
-import type { McpPolicy, McpProfileName } from '../types';
+import type { ToolPolicy, ToolProfileName } from '../../../src/cli/controller/tool-policy';
 import { buildControllerContextPackAsync } from '../../../src/cli/controller/context-pack';
 import type { ControllerContextPackOptions } from '../../../src/cli/controller/context/types';
 import { PROCESS_RUNTIME_RELEASE_CANARY_ARG } from '../../../src/runtime/execution/process-runtime/canary';
@@ -9,11 +9,11 @@ import { PROCESS_RUNTIME_RELEASE_CANARY_ARG } from '../../../src/runtime/executi
 interface ContextPackEnvelope {
   schemaVersion: 1;
   repoRoot: string;
-  policy: McpPolicy;
+  policy: ToolPolicy;
   options: ControllerContextPackOptions;
 }
 
-function profile(value: unknown): McpProfileName {
+function profile(value: unknown): ToolProfileName {
   if (value === 'planner' || value === 'executor' || value === 'controller') return value;
   throw new Error('CONTEXT_PACK_POLICY_PROFILE_INVALID');
 }
@@ -25,7 +25,7 @@ function stringList(value: unknown): string[] {
   return value.map(String);
 }
 
-function policy(value: unknown): McpPolicy {
+function policy(value: unknown): ToolPolicy {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('CONTEXT_PACK_POLICY_INVALID');
   const input = value as Record<string, unknown>;
   const execution = input.execution;

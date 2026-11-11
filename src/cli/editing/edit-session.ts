@@ -14,7 +14,7 @@ import {
 } from '../controller/check-runner';
 import { tryAppendControllerWorklogEvent } from '../controller/worklog';
 import { globMatches, resolveMcpPath } from '../../../adapters/mcp/paths';
-import type { McpPolicy } from '../../../adapters/mcp/types';
+import type { ToolPolicy } from '../controller/tool-policy';
 import type { ProcessCheckCompletionReceipt, ProcessCheckReceiptStatus } from '../../runtime/execution/process-runtime/check-receipt';
 import { invalidateRepositoryReadCaches } from '../repository/inspector';
 import type { EditOperation } from './edit-operation-contract';
@@ -1620,7 +1620,7 @@ export function getEditSessionDiff(repoRoot: string, sessionId: string): {
   return { sessionId, path: session.diffPath, sha256: session.diffSha256, revision: session.currentRevision, patch };
 }
 
-export function applyEditOperations(repoRoot: string, policy: McpPolicy, sessionId: string, operations: EditOperation[], options: {
+export function applyEditOperations(repoRoot: string, policy: ToolPolicy, sessionId: string, operations: EditOperation[], options: {
   controllerHome?: string;
   expectedRevision?: number;
   maxBatchOperations?: number;

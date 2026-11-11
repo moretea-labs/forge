@@ -85,7 +85,7 @@ import { applyCompletionDecision, completionDecisionQueues, finishCompletionBack
 import { finishEditSession, finishTaskRun } from "../controller/completion-orchestrator";
 import { prepareCodexContinuation } from "../controller/codex-continuation";
 import { applyStuckStateMigration, inspectStuckControllerStates } from "../controller/stuck-state-migration";
-import { getMcpPolicy } from "../../../adapters/mcp/policy";
+import { getToolPolicy } from '../controller/tool-policy';
 import type { MultiRepositoryMcpToolContext } from "../../../adapters/mcp/multi-repository";
 import { createMcpToolContext as createControllerMcpToolContext } from "../../../adapters/mcp/server";
 import { loadMcpServiceLocalConfig, loadMcpServiceRuntimeState } from "../../../adapters/mcp/auth";
@@ -2250,7 +2250,7 @@ export async function startLocalBridgeServer(
       const repoRoot = requestRepositoryRoot(request, options, controllerHome);
       const integrated = integrateAgentJob(
         repoRoot,
-        getMcpPolicy("controller", { repoRoot }),
+        getToolPolicy("controller", { repoRoot }),
         request.params.runId,
       );
       const cleanup = cleanupIntegratedWorktree(

@@ -3,7 +3,7 @@ import { execFileSync } from 'child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { getMcpPolicy } from '../../adapters/mcp/policy';
+import { getToolPolicy } from '../../src/cli/controller/tool-policy';
 import type { MultiRepositoryMcpToolContext } from '../../adapters/mcp/multi-repository';
 import { ensureControllerHome } from '../../src/effects/controller-home';
 import { addRepositoryCheckout, registerRepository } from '../../src/cli/repositories/registry';
@@ -58,7 +58,7 @@ function mcpContext(controllerHome: string, repository: ReturnType<typeof regist
   return {
     repoRoot: repository.canonicalRoot,
     controllerHome,
-    policy: getMcpPolicy('controller', { repoRoot: repository.canonicalRoot }),
+    policy: getToolPolicy('controller', { repoRoot: repository.canonicalRoot }),
     toolset: 'full',
     enableChatgptBrowser: false,
     explicitRepository: repository,

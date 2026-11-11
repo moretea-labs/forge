@@ -8,7 +8,7 @@ import {
 } from "../repository/inspector";
 import { globMatches } from "../../../adapters/mcp/paths";
 import { posix } from "path";
-import type { McpPolicy } from "../../../adapters/mcp/types";
+import type { ToolPolicy } from './tool-policy';
 import { exactCodeOwnerEvidence, exactCodeOwnerQueries, materializeSource } from "./context/source-materializer";
 import { projectBoard } from "./issue-store";
 import { buildControllerTaskLedgerProjection } from "./task-ledger";
@@ -83,7 +83,7 @@ function sourceReferenceSpecifiers(contents: string): string[] {
   return Array.from(specifiers).slice(0, 24);
 }
 
-function resolveSourceReference(repoRoot: string, policy: McpPolicy, sourcePath: string, specifier: string): string | undefined {
+function resolveSourceReference(repoRoot: string, policy: ToolPolicy, sourcePath: string, specifier: string): string | undefined {
   const base = posix.normalize(posix.join(posix.dirname(sourcePath), specifier));
   if (!base || base === '..' || base.startsWith('../') || posix.isAbsolute(base)) return undefined;
   const hasExtension = /\.[A-Za-z0-9]+$/.test(posix.basename(base));
@@ -123,7 +123,7 @@ function lexicalDiscoveryExclusions(
 
 export function buildControllerContextPack(
   repoRoot: string,
-  policy: McpPolicy,
+  policy: ToolPolicy,
   options: ControllerContextPackOptions = {},
   dependencies: ControllerContextPackDependencies = {},
 ): ControllerContextPackProjection {
@@ -1198,7 +1198,7 @@ function cacheDeferredStructuralResult(
 
 export async function buildControllerContextPackAsync(
   repoRoot: string,
-  policy: McpPolicy,
+  policy: ToolPolicy,
   options: ControllerContextPackOptions = {},
   dependencies: ControllerContextPackDependencies = {},
 ): Promise<ControllerContextPackProjection> {

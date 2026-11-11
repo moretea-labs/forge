@@ -6,7 +6,7 @@ import {
   previewRepositoryCommandExecutionAsync,
   type RepositoryCommandSnapshot,
 } from '../../../cli/repositories/command-executor';
-import { getMcpPolicy } from '../../../../adapters/mcp/policy';
+import { getToolPolicy } from '../../../cli/controller/tool-policy';
 import { readRepositoryRange } from '../../../cli/repository/inspector';
 import type { RepositoryRecord } from '../../../cli/repositories/types';
 import { getLeaseSideEffectMetrics } from '../../resources/leases/store';
@@ -198,7 +198,7 @@ async function executeFastGitCommit(
 }
 
 function policyFor(repoRoot: string) {
-  return getMcpPolicy('controller', { repoRoot });
+  return getToolPolicy('controller', { repoRoot });
 }
 
 function summaryFrom(value: unknown, max = 512): string {

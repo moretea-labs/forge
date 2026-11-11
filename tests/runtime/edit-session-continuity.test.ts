@@ -15,7 +15,7 @@ import {
   listEditSessions,
   type EditSessionBinding,
 } from '../../src/cli/editing/edit-session';
-import { getMcpPolicy } from '../../adapters/mcp/policy';
+import { getToolPolicy } from '../../src/cli/controller/tool-policy';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { ensureRepositoryRuntimeStorageBinding } from '../../src/cli/repositories/runtime-storage';
 import { applySafePatch } from '../../src/cli/repositories/safe-patch';
@@ -746,7 +746,7 @@ function fixture() {
   spawnSync('git', ['commit', '-qm', 'fixture'], { cwd: repoRoot });
   const repository = registerRepository({ path: repoRoot, controllerHome, repoIdOverride: 'repo-runtime-continuity' });
   ensureRepositoryRuntimeStorageBinding(repository, 'edit-sessions', controllerHome);
-  return { repoRoot, controllerHome, repository, initial, policy: getMcpPolicy('controller', { repoRoot }) };
+  return { repoRoot, controllerHome, repository, initial, policy: getToolPolicy('controller', { repoRoot }) };
 }
 
 function durableBinding(overrides: Partial<EditSessionBinding> = {}): EditSessionBinding {

@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
-import type { McpPolicy } from '../../adapters/mcp/types';
+import type { ToolPolicy } from '../../src/cli/controller/tool-policy';
 import { buildControllerContextPack } from '../../src/cli/controller/context-pack';
 import { controllerCheckSelection, listControllerChecks } from '../../src/cli/controller/check-runner';
 import {
@@ -17,7 +17,7 @@ import {
 
 const roots: string[] = [];
 
-const POLICY: McpPolicy = {
+const POLICY: ToolPolicy = {
   profile: 'controller',
   readGlobs: ['**'],
   writeGlobs: ['**'],

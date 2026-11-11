@@ -24,7 +24,7 @@ import {
 import { FORGE_TOOL_SURFACE } from "../../src/cli/controller/runtime-config";
 import { createIssue, getIssue, updateTask } from "../../src/cli/controller/issue-store";
 import { beginEditSession, applyEditOperations } from "../../src/cli/editing/edit-session";
-import { getMcpPolicy } from "../../adapters/mcp/policy";
+import { getToolPolicy } from '../../src/cli/controller/tool-policy';
 import {
   getLocalBridgeJob,
   cancelLocalBridgeJob,
@@ -808,7 +808,7 @@ describe("Local Execution Bridge", () => {
     });
     const current = readFileSync(join(root, "src/example.ts"), "utf-8");
     const hash = new Bun.CryptoHasher("sha256").update(current).digest("hex");
-    applyEditOperations(root, getMcpPolicy("controller", { repoRoot: root }), session.sessionId, [{
+    applyEditOperations(root, getToolPolicy("controller", { repoRoot: root }), session.sessionId, [{
       type: "replace",
       path: "src/example.ts",
       expectedSha256: hash,
@@ -959,7 +959,7 @@ describe("Local Execution Bridge", () => {
     });
     const current = readFileSync(join(checkoutRoot, "src/example.ts"), "utf-8");
     const hash = new Bun.CryptoHasher("sha256").update(current).digest("hex");
-    applyEditOperations(checkoutRoot, getMcpPolicy("controller", { repoRoot: checkoutRoot }), session.sessionId, [{
+    applyEditOperations(checkoutRoot, getToolPolicy("controller", { repoRoot: checkoutRoot }), session.sessionId, [{
       type: "replace",
       path: "src/example.ts",
       expectedSha256: hash,
@@ -1049,7 +1049,7 @@ describe("Local Execution Bridge", () => {
     });
     const current = readFileSync(executablePath, "utf8");
     const hash = new Bun.CryptoHasher("sha256").update(current).digest("hex");
-    applyEditOperations(root, getMcpPolicy("controller", { repoRoot: root }), session.sessionId, [{
+    applyEditOperations(root, getToolPolicy("controller", { repoRoot: root }), session.sessionId, [{
       type: "replace",
       path: "src/executable.ts",
       expectedSha256: hash,

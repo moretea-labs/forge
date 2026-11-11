@@ -27,11 +27,11 @@ import { ensureRepositoryRuntimeStorageBinding } from '../../../src/cli/reposito
 import { resolveMcpPath } from "../paths";
 import { currentGitBranch, isForgeAdopted } from "../repo";
 import { redactMcpText } from "../redaction";
-import type { McpPolicy } from "../types";
+import type { ToolPolicy } from '../../../src/cli/controller/tool-policy';
 
 export interface McpToolContext {
   repoRoot: string;
-  policy: McpPolicy;
+  policy: ToolPolicy;
   /** Controller Home authority for legacy read-only Runtime projections. */
   runtimeControllerHome?: string;
   enableChatgptBrowser?: boolean;
@@ -312,7 +312,7 @@ function parseNativeBrowserChannel(
 }
 
 export function buildMcpToolDefinitions(
-  policy: McpPolicy,
+  policy: ToolPolicy,
   opts: { enableChatgptBrowser?: boolean } = {},
 ): McpToolDefinition[] {
   const readOnly = { readOnlyHint: true, openWorldHint: false };

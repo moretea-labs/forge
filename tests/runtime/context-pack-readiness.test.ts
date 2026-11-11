@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { buildControllerContextPack, buildControllerContextPackAsync, type ControllerContextPackOptions } from '../../src/cli/controller/context-pack';
-import { getMcpPolicy } from '../../adapters/mcp/policy';
+import { getToolPolicy } from '../../src/cli/controller/tool-policy';
 import { exactCodeOwnerEvidence, exactCodeOwnerQueries } from '../../src/cli/controller/context/source-materializer';
 
 const roots: string[] = [];
@@ -22,7 +22,7 @@ test('marks exact-known evidence incomplete when an authored required symbol is 
   execFileSync('git', ['add', '.'], { cwd: root });
   execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: root });
 
-  const pack = buildControllerContextPack(root, getMcpPolicy('controller'), {
+  const pack = buildControllerContextPack(root, getToolPolicy('controller'), {
     description: 'Inspect ENTRY_MARKER and MissingOwner in the exact known implementation file.',
     searchTerms: ['ENTRY_MARKER', 'MissingOwner'],
     knownPaths: ['src/exact.ts'],
@@ -160,7 +160,7 @@ test('recovers late owners and requires emitted owner evidence before accepting 
   execFileSync('git', ['add', '.'], { cwd: root });
   execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: root });
 
-  const pack = buildControllerContextPack(root, getMcpPolicy('controller'), {
+  const pack = buildControllerContextPack(root, getToolPolicy('controller'), {
     description: 'Inspect alphaOwner and betaMethod in the exact known implementation file.',
     searchTerms: ['alphaOwner', 'betaMethod'],
     knownPaths: ['src/saturated.ts'],
@@ -181,7 +181,7 @@ test('recovers late owners and requires emitted owner evidence before accepting 
   // Implementation retrieval is lexical by default: it must not launch a
   // second TypeScript compiler sidecar just to bound ordinary source windows.
   expect(pack.files[0]?.snippets.every((snippet) => snippet.materialization === 'line_window')).toBe(true);
-  const reviewed = buildControllerContextPack(root, getMcpPolicy('controller'), {
+  const reviewed = buildControllerContextPack(root, getToolPolicy('controller'), {
     description: 'Inspect WINDOW_MARKER_0 in the exact known implementation file.',
     searchTerms: ['WINDOW_MARKER_0'],
     knownPaths: ['src/exact-window.ts'],
@@ -196,7 +196,7 @@ test('recovers late owners and requires emitted owner evidence before accepting 
   expect(pack.readiness.status).toBe('ready');
   expect(pack.readiness.readyForHighConfidenceMutation).toBe(true);
 
-  const lateOwnerPack = buildControllerContextPack(root, getMcpPolicy('controller'), {
+  const lateOwnerPack = buildControllerContextPack(root, getToolPolicy('controller'), {
     description: 'Inspect alphaOwner after a dense reference block in the exact known implementation file.',
     searchTerms: ['alphaOwner'],
     knownPaths: ['src/late-owner.ts'],
@@ -211,7 +211,7 @@ test('recovers late owners and requires emitted owner evidence before accepting 
   expect(lateOwnerPack.readiness.status).toBe('ready');
   expect(lateOwnerPack.readiness.readyForHighConfidenceMutation).toBe(true);
 
-  const lateMethodOwnerPack = buildControllerContextPack(root, getMcpPolicy('controller'), {
+  const lateMethodOwnerPack = buildControllerContextPack(root, getToolPolicy('controller'), {
     description: 'Inspect betaMethod after a dense reference block in the exact known implementation file.',
     searchTerms: ['betaMethod'],
     knownPaths: ['src/late-method-owner.ts'],
@@ -226,7 +226,7 @@ test('recovers late owners and requires emitted owner evidence before accepting 
   expect(lateMethodOwnerPack.readiness.status).toBe('ready');
   expect(lateMethodOwnerPack.readiness.readyForHighConfidenceMutation).toBe(true);
 
-  const methodOwnerPack = buildControllerContextPack(root, getMcpPolicy('controller'), {
+  const methodOwnerPack = buildControllerContextPack(root, getToolPolicy('controller'), {
     description: 'Inspect betaMethod in the exact known implementation file.',
     searchTerms: ['betaMethod'],
     knownPaths: ['src/method-owner.ts'],
@@ -241,7 +241,7 @@ test('recovers late owners and requires emitted owner evidence before accepting 
   expect(methodOwnerPack.readiness.status).toBe('ready');
   expect(methodOwnerPack.readiness.readyForHighConfidenceMutation).toBe(true);
 
-  const objectOwnerPack = buildControllerContextPack(root, getMcpPolicy('controller'), {
+  const objectOwnerPack = buildControllerContextPack(root, getToolPolicy('controller'), {
     description: 'Inspect readValue in the exact known implementation file.',
     searchTerms: ['readValue'],
     knownPaths: ['src/object-owner.ts'],
@@ -256,7 +256,7 @@ test('recovers late owners and requires emitted owner evidence before accepting 
   expect(objectOwnerPack.readiness.status).toBe('ready');
   expect(objectOwnerPack.readiness.readyForHighConfidenceMutation).toBe(true);
 
-  const arrowOwnerPack = buildControllerContextPack(root, getMcpPolicy('controller'), {
+  const arrowOwnerPack = buildControllerContextPack(root, getToolPolicy('controller'), {
     description: 'Inspect readValue arrow property with a multiline inline object type in the exact known implementation file.',
     searchTerms: ['readValue'],
     knownPaths: ['src/arrow-owner.ts'],
@@ -271,7 +271,7 @@ test('recovers late owners and requires emitted owner evidence before accepting 
   expect(arrowOwnerPack.readiness.status).toBe('ready');
   expect(arrowOwnerPack.readiness.readyForHighConfidenceMutation).toBe(true);
 
-  const multiRequiredPack = buildControllerContextPack(root, getMcpPolicy('controller'), {
+  const multiRequiredPack = buildControllerContextPack(root, getToolPolicy('controller'), {
     description: 'Inspect alphaOwner, betaMethod, and gammaHandler in the exact known implementation file.',
     searchTerms: ['alphaOwner', 'betaMethod', 'gammaHandler'],
     knownPaths: ['src/multi-required.ts'],
@@ -293,7 +293,7 @@ test('recovers late owners and requires emitted owner evidence before accepting 
   expect(multiRequiredPack.readiness.status).toBe('degraded');
   expect(multiRequiredPack.readiness.readyForHighConfidenceMutation).toBe(false);
 
-  const saturatedThreeOwnerPack = buildControllerContextPack(root, getMcpPolicy('controller'), {
+  const saturatedThreeOwnerPack = buildControllerContextPack(root, getToolPolicy('controller'), {
     description: 'Recover all three required owners after saturated earlier references within three exact-known windows.',
     searchTerms: ['alphaOwner', 'betaMethod', 'gammaHandler'],
     knownPaths: ['src/multi-required.ts'],
@@ -312,7 +312,7 @@ test('recovers late owners and requires emitted owner evidence before accepting 
   expect(saturatedThreeOwnerPack.readiness.status).toBe('ready');
   expect(saturatedThreeOwnerPack.readiness.readyForHighConfidenceMutation).toBe(true);
 
-  const completeMultiRequiredPack = buildControllerContextPack(root, getMcpPolicy('controller'), {
+  const completeMultiRequiredPack = buildControllerContextPack(root, getToolPolicy('controller'), {
     description: 'Inspect all three required owners in a complete exact-known implementation file.',
     searchTerms: ['alphaOwner', 'betaMethod', 'gammaHandler'],
     knownPaths: ['src/multi-required-complete.ts'],
@@ -331,7 +331,7 @@ test('recovers late owners and requires emitted owner evidence before accepting 
   expect(completeMultiRequiredPack.readiness.status).toBe('ready');
   expect(completeMultiRequiredPack.readiness.readyForHighConfidenceMutation).toBe(true);
 
-  const caseLabelOwnerPack = buildControllerContextPack(root, getMcpPolicy('controller'), {
+  const caseLabelOwnerPack = buildControllerContextPack(root, getToolPolicy('controller'), {
     description: 'Inspect gammaHandler after a matching switch case label and dense references in the exact known implementation file.',
     searchTerms: ['gammaHandler'],
     knownPaths: ['src/case-label-owner.ts'],
@@ -350,7 +350,7 @@ test('recovers late owners and requires emitted owner evidence before accepting 
   expect(exactCodeOwnerEvidence('/*\nfunction fakeOwner() { return true; }\n*/', 'fakeOwner')).toEqual({ declared: undefined, owner: false });
   expect(exactCodeOwnerEvidence('const example = ' + String.fromCharCode(96) + '\nfunction fakeOwner() { return true; }\n' + String.fromCharCode(96) + ';', 'fakeOwner')).toEqual({ declared: undefined, owner: false });
 
-  const commentOnlyOwnerPack = buildControllerContextPack(root, getMcpPolicy('controller'), {
+  const commentOnlyOwnerPack = buildControllerContextPack(root, getToolPolicy('controller'), {
     description: 'Inspect commentOnlyOwner in the exact known implementation file.',
     searchTerms: ['commentOnlyOwner'],
     knownPaths: ['src/comment-only-owner.ts'],
@@ -365,7 +365,7 @@ test('recovers late owners and requires emitted owner evidence before accepting 
   expect(commentOnlyOwnerPack.readiness.status).toBe('degraded');
   expect(commentOnlyOwnerPack.readiness.readyForHighConfidenceMutation).toBe(false);
 
-  const commentBeforeRealOwnerPack = buildControllerContextPack(root, getMcpPolicy('controller'), {
+  const commentBeforeRealOwnerPack = buildControllerContextPack(root, getToolPolicy('controller'), {
     description: 'Inspect commentThenRealOwner after an earlier commented-out declaration in the exact known implementation file.',
     searchTerms: ['commentThenRealOwner'],
     knownPaths: ['src/comment-before-real-owner.ts'],
@@ -380,7 +380,7 @@ test('recovers late owners and requires emitted owner evidence before accepting 
   expect(commentBeforeRealOwnerPack.readiness.status).toBe('ready');
   expect(commentBeforeRealOwnerPack.readiness.readyForHighConfidenceMutation).toBe(true);
 
-  const templateOnlyOwnerPack = buildControllerContextPack(root, getMcpPolicy('controller'), {
+  const templateOnlyOwnerPack = buildControllerContextPack(root, getToolPolicy('controller'), {
     description: 'Inspect templateOnlyOwner in the exact known implementation file.',
     searchTerms: ['templateOnlyOwner'],
     knownPaths: ['src/template-only-owner.ts'],
@@ -395,7 +395,7 @@ test('recovers late owners and requires emitted owner evidence before accepting 
   expect(templateOnlyOwnerPack.readiness.status).toBe('degraded');
   expect(templateOnlyOwnerPack.readiness.readyForHighConfidenceMutation).toBe(false);
 
-  const templateBeforeRealOwnerPack = buildControllerContextPack(root, getMcpPolicy('controller'), {
+  const templateBeforeRealOwnerPack = buildControllerContextPack(root, getToolPolicy('controller'), {
     description: 'Inspect templateThenRealOwner after earlier template-literal text in the exact known implementation file.',
     searchTerms: ['templateThenRealOwner'],
     knownPaths: ['src/template-before-real-owner.ts'],
@@ -509,11 +509,11 @@ test('retains separate explicit code symbols in sync and async discovery beyond 
     maxFiles: 2,
     maxSnippets: 2,
   } satisfies ControllerContextPackOptions;
-  const pack = buildControllerContextPack(root, getMcpPolicy('controller'), options);
+  const pack = buildControllerContextPack(root, getToolPolicy('controller'), options);
   expect(pack.files.map((file) => file.path)).toEqual(['src/zz-first.ts', 'src/zz-second.ts']);
   expect(pack.files.every((file) => file.reasons.some((reason) => reason.startsWith('search:inspect')))).toBe(true);
   expect(pack.search.scannedFiles).toBeLessThan(30);
-  const asyncPack = await buildControllerContextPackAsync(root, getMcpPolicy('controller'), options);
+  const asyncPack = await buildControllerContextPackAsync(root, getToolPolicy('controller'), options);
   expect(asyncPack.files.map((file) => file.path)).toEqual(pack.files.map((file) => file.path));
   expect(asyncPack.search.scannedFiles).toBeLessThan(30);
 });
@@ -542,9 +542,9 @@ test('prioritizes implementation sources when explicit code hints accompany a mi
     maxFiles: 4,
     maxSnippets: 8,
   } satisfies ControllerContextPackOptions;
-  const pack = buildControllerContextPack(root, getMcpPolicy('controller'), options);
+  const pack = buildControllerContextPack(root, getToolPolicy('controller'), options);
   expect(pack.files.map(file => file.path)).toContain('src/z-owner.ts');
-  const asyncPack = await buildControllerContextPackAsync(root, getMcpPolicy('controller'), {
+  const asyncPack = await buildControllerContextPackAsync(root, getToolPolicy('controller'), {
     ...options, session: { sessionId: root, repoId: 'source-first', checkoutId: root },
   });
   expect(asyncPack.timingsMs.parallelFirstPass).toBe(true);
@@ -552,7 +552,7 @@ test('prioritizes implementation sources when explicit code hints accompany a mi
 
 
   for (const intent of ['documentation', 'Documentation', 'Docs', 'README', 'Tutorial', 'Guide', '文档', '源码文档 Guide']) {
-    const docsPack = buildControllerContextPack(root, getMcpPolicy('controller'), {
+    const docsPack = buildControllerContextPack(root, getToolPolicy('controller'), {
       ...options, description: `Read ${intent} explaining requirement scheduler migration`,
     });
     expect(docsPack.files.some(file => file.path.startsWith('docs/'))).toBe(true);
@@ -573,7 +573,7 @@ test('ranks the full natural-language discovery result before applying the bound
   execFileSync('git', ['add', '.'], { cwd: root });
   execFileSync('git', ['commit', '-qm', 'fixture'], { cwd: root });
 
-  const pack = buildControllerContextPack(root, getMcpPolicy('controller'), {
+  const pack = buildControllerContextPack(root, getToolPolicy('controller'), {
     description: 'App Store Connect release rejection submission',
     retrievalMode: 'implementation',
     structuralContext: 'off',
@@ -602,9 +602,9 @@ test('preserves late lexical hits in explicitly selected documentation roots', a
       description: 'Inspect migrationNeedle', searchTerms: ['migrationNeedle'], knownPaths: [knownPath],
       structuralContext: 'off', maxFiles: 1, maxSnippets: 2, maxCharsPerSnippet: 500,
     } satisfies ControllerContextPackOptions;
-    const sync = buildControllerContextPack(root, getMcpPolicy('controller'), options);
+    const sync = buildControllerContextPack(root, getToolPolicy('controller'), options);
     expect(sync.files.some(file => file.hitLines.includes(1501))).toBe(true);
-    const asyncPack = await buildControllerContextPackAsync(root, getMcpPolicy('controller'), {
+    const asyncPack = await buildControllerContextPackAsync(root, getToolPolicy('controller'), {
       ...options, session: { sessionId: `${root}-${knownPath}`, repoId: 'known-docs', checkoutId: root },
     });
     expect(asyncPack.files.some(file => file.hitLines.includes(1501))).toBe(true);

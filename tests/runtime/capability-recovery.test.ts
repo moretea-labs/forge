@@ -22,7 +22,7 @@ import {
 import { applyEditOperations, beginEditSession, getEditSession } from '../../src/cli/editing/edit-session';
 import { addRepositoryCheckout, getRepository, registerRepository } from '../../src/cli/repositories/registry';
 import { ensureRepositoryRuntimeStorageBinding } from '../../src/cli/repositories/runtime-storage';
-import { getMcpPolicy } from '../../adapters/mcp/policy';
+import { getToolPolicy } from '../../src/cli/controller/tool-policy';
 import { applyControllerHomeMigration } from '../../src/runtime/control-plane/persistence/controller-home-migration';
 import { assertOwnedResourceCleanupTarget, getOwnedResource, recordOwnedResource } from '../../packages/kernel/identity/api/index';
 import { managedBranchOwnedResourceId, managedBranchOwnedResourceLocator, managedWorkspaceOwnedResourceId } from '../../src/runtime/execution/managed-workspace';
@@ -384,7 +384,7 @@ describe('runtime maintenance executor', () => {
       binding,
     });
     if (input.applyEdit !== false) {
-      applyEditOperations(repoRoot, getMcpPolicy('controller'), session.sessionId, [
+      applyEditOperations(repoRoot, getToolPolicy('controller'), session.sessionId, [
         { type: 'create', path: 'src/session.ts', content: 'export const sessionValue = 1;\n' },
       ], { binding });
     }

@@ -13,10 +13,11 @@ import {
   type MultiRepositoryMcpToolContext,
 } from './multi-repository';
 import { callAccessTool } from './tool-mapping/access-tools';
-import { callRepositoryTool } from './tool-mapping/repository-tools';
+import { callRepositoryTool } from '../../src/runtime/control-plane/facade/repository-tool-dispatch';
 import { callRuntimeTool } from './runtime-gateway/runtime-tools';
 import { callExecutionTool } from './runtime-gateway/execution-tools';
-import { callProcessTool, executeAuthorizedHostCommand } from './runtime-gateway/process-tools';
+import { callProcessTool } from '../../src/runtime/execution/process-runtime/tool-dispatch';
+import { executeAuthorizedHostCommand } from './runtime-gateway/process-tools';
 import { injectDurableCommandFields, isGatewayIsolatedTool, routeDurableMcpCall } from './runtime-gateway/router';
 import { controllerExposureSnapshot, controllerToolSurfaceStatus, isControllerToolExposed } from './toolset';
 import { settleCognitionAfterTool } from './runtime-gateway/cognition-settlement';

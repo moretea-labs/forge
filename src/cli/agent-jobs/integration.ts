@@ -14,7 +14,7 @@ import {
   type EditSession,
 } from "../editing/edit-session";
 import { resolveMcpPath } from "../../../adapters/mcp/paths";
-import type { McpPolicy } from "../../../adapters/mcp/types";
+import type { ToolPolicy } from '../controller/tool-policy';
 import { getAgentJob, markAgentJobClosure, markAgentJobIntegrated, markAgentJobIntegrationReview } from "./job-manager";
 import type { AgentJobMeta, AgentJobPreservationReason } from "./types";
 import { assertRuntimeMayWriteOrThrow, isRuntimeWriteFenceError } from "../../runtime/root/write-fence";
@@ -301,7 +301,7 @@ function buildIntegrationPlan(
   repoRoot: string,
   worktreeRoot: string,
   baseRevision: string,
-  policy: McpPolicy,
+  policy: ToolPolicy,
   changedPaths: string[],
 ): IntegrationPlan {
   const operations: EditOperation[] = [];
@@ -464,7 +464,7 @@ function finalizeAlreadyIntegratedSession(
 function planFromCurrentWorkspace(
   repoRoot: string,
   run: AgentJobMeta,
-  policy: McpPolicy,
+  policy: ToolPolicy,
 ): IntegrationPlan {
   if (!run.baseRevision)
     throw new Error("isolated Task Run is missing a base revision");
@@ -491,7 +491,7 @@ function concurrentPatchError(error: unknown): boolean {
 
 export function integrateAgentJob(
   repoRoot: string,
-  policy: McpPolicy,
+  policy: ToolPolicy,
   runId: string,
 ): {
   session: EditSession;

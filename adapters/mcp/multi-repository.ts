@@ -1,8 +1,8 @@
 import { loadMcpLocalConfig, loadMcpServiceLocalConfig } from './auth';
-import { getMcpPolicy, parseMcpProfile } from './policy';
+import { getToolPolicy, parseToolProfile } from '../../src/cli/controller/tool-policy';
 import { buildMcpToolDefinitions, callMcpTool, type CallToolResult, type McpToolContext, type McpToolDefinition } from './tool-mapping/tools';
 import { DEFAULT_AGENT_TIMEOUT_MS, MAX_AGENT_TIMEOUT_MS, normalizeAgentTimeoutMs } from '../../src/cli/controller/runtime-config';
-import type { McpAgentRunnerName } from './types';
+import type { ToolAgentRunnerName } from '../../src/cli/controller/tool-policy';
 import { realpathSync } from 'fs';
 import { resolve } from 'path';
 import { ensureRepoPreferredControllerHome } from '../../src/effects/controller-home';
@@ -90,15 +90,15 @@ function parseBooleanSetting(value: string | undefined): boolean | undefined {
   return undefined;
 }
 
-function parseAgentList(value: unknown): McpAgentRunnerName[] {
+function parseAgentList(value: unknown): ToolAgentRunnerName[] {
   const raw = Array.isArray(value) ? value : typeof value === 'string' ? value.split(',') : [];
   return Array.from(new Set(raw
     .map((entry) => String(entry).trim().toLowerCase())
-    .filter((entry): entry is McpAgentRunnerName => entry === 'claude')));
+    .filter((entry): entry is ToolAgentRunnerName => entry === 'claude')));
 }
 
 export function runtimePolicy(repoRoot: string, opts: McpServerOptions) {
-  const profile = parseMcpProfile(opts.profile ?? 'controller');
+  const profile = parseToolProfile(opts.profile ?? 'controller');
   const config = profile === 'controller' && opts.controllerHome
     ? loadMcpServiceLocalConfig(opts.controllerHome)
     : loadMcpLocalConfig(repoRoot);
@@ -116,7 +116,7 @@ export function runtimePolicy(repoRoot: string, opts: McpServerOptions) {
     opts.devRunnerTimeoutMs ?? process.env.FORGE_MCP_DEV_RUNNER_TIMEOUT_MS ?? config?.devMode?.timeoutMs,
     { defaultMs: DEFAULT_AGENT_TIMEOUT_MS, maxMs: runnerMaxTimeoutMs, label: 'dev runner timeout' },
   );
-  return getMcpPolicy(profile, {
+  return getToolPolicy(profile, {
     devAgentRunner,
     allowedAgents,
     runnerTimeoutMs,

@@ -27,7 +27,7 @@ import { resolveControllerAccessState, persistControllerAccessMode, configuredCo
 import { createForgeMcpServer } from '../../adapters/mcp/server';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { repositoryControllerRoot } from '../../src/effects/controller-home';
-import { callRepositoryTool } from '../../adapters/mcp/tool-mapping/repository-tools';
+import { callRepositoryTool } from '../../src/runtime/control-plane/facade/repository-tool-dispatch';
 import { buildRuntimeMaintenanceStatus } from '../../src/runtime/recovery';
 import { writeJsonAtomic } from '../../src/runtime/shared/json-files';
 import { acquireRuntimeOwnership, type RuntimeOwnershipHandle } from '../../src/runtime/root/ownership';

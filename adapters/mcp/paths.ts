@@ -1,7 +1,8 @@
 import { existsSync, lstatSync, realpathSync } from 'fs';
 import { dirname, isAbsolute, resolve, sep } from 'path';
 import { DEFAULT_PROJECT_ENGINEERING_CONTRACT_PATH } from '../../packages/kernel/work/api/index';
-import type { McpPathDecision, McpPathIntent, McpPolicy } from './types';
+import type { McpPathDecision, McpPathIntent } from './types';
+import type { ToolPolicy } from '../../src/cli/controller/tool-policy';
 
 function toPosixPath(value: string): string {
   return value.split(sep).join('/').replace(/\\+/g, '/');
@@ -97,7 +98,7 @@ function nearestExistingPath(path: string): string | undefined {
 export function resolveMcpPath(
   repoRoot: string,
   inputPath: string,
-  policy: McpPolicy,
+  policy: ToolPolicy,
   intent: McpPathIntent,
   canonicalRepoRoot?: string,
 ): McpPathDecision {

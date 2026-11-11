@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { recordProcessHandleIndexEntry, repositoryExecutionTarget } from '../../../src/runtime/execution/process-runtime/handle-index';
 import { createProcessRecord } from '../../../src/runtime/execution/process-runtime/store';
-import { callProcessTool } from '../../../adapters/mcp/runtime-gateway/process-tools';
+import { callProcessTool } from '../../../src/runtime/execution/process-runtime/tool-dispatch';
 import { repositoryLabel } from '../src/runtime-client';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';

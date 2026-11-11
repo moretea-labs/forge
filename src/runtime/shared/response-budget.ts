@@ -50,9 +50,18 @@ export function boundUtf8(value: string, maxBytes: number): { text: string; trun
   return { text: `${value.slice(0, Math.max(0, end - 3))}...`, truncated: true, byteLength };
 }
 
+/**
+ * Forge errors carry a stable `CODE: human-readable message` convention. This
+ * extracts the leading code for structured error envelopes without re-scanning
+ * the human-readable tail at each tool surface.
+ */
+export function leadingErrorCode(message: string, fallback: string): string {
+  const separator = message.indexOf(':');
+  return separator > 0 ? message.slice(0, separator) : fallback;
+}
+
 /** Prevent recursive JSON dumps inside error.message. */
-export function compactErrorMessage(error: unknown, maxChars = RESPONSE_BUDGET.errorMessageChars): string {
-  if (error instanceof Error) {
+export function compactErrorMessage(error: unknown, maxChars = RESPONSE_BUDGET.errorMessageChars): string {  if (error instanceof Error) {
     const message = error.message?.trim() || error.name || 'Error';
     if (looksLikeSerializedJson(message)) {
       return boundText(summarizeSerializedJson(message), maxChars);

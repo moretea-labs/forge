@@ -46,7 +46,7 @@ import {
 } from '../../src/runtime/root/mcp-transport';
 import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 import { addRepositoryCheckout, registerRepository } from '../../src/cli/repositories/registry';
-import { callRepositoryTool } from '../../adapters/mcp/tool-mapping/repository-tools';
+import { callRepositoryTool } from '../../src/runtime/control-plane/facade/repository-tool-dispatch';
 import { waitRepositoryCommandProcess } from '../../src/runtime/execution/process-runtime/command-facade';
 import { implementationReviewChangedPathDigest } from '../../packages/kernel/work/api/index';
 import { cognitionReadPort } from '../../src/runtime/control-plane/persistence/cognition-store';

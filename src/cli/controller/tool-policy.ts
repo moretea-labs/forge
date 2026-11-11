@@ -1,7 +1,24 @@
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
-import { DEFAULT_AGENT_TIMEOUT_MS, defaultLocalAgentRunners, MAX_AGENT_TIMEOUT_MS } from '../../src/cli/controller/runtime-config';
-import type { McpAgentRunnerName, McpPolicy, McpProfileName } from './types';
+import { DEFAULT_AGENT_TIMEOUT_MS, defaultLocalAgentRunners, MAX_AGENT_TIMEOUT_MS } from './runtime-config';
+
+
+export type ToolProfileName = 'planner' | 'executor' | 'controller';
+export type ToolAgentRunnerName = 'claude';
+
+export interface ToolPolicy {
+  profile: ToolProfileName;
+  readGlobs: string[];
+  writeGlobs: string[];
+  denyGlobs: string[];
+  maxFileBytes: number;
+  execution: {
+    agentRunner: boolean;
+    allowedAgents: ToolAgentRunnerName[];
+    runnerTimeoutMs: number;
+    runnerMaxTimeoutMs: number;
+  };
+}
 
 const COMMON_DENY_GLOBS = [
   '.env',
@@ -47,15 +64,15 @@ export const PLANNER_WRITE_GLOBS = [
   'plans/plan-*.md',
 ];
 
-export interface McpPolicyOptions {
+export interface ToolPolicyOptions {
   devAgentRunner?: boolean;
-  allowedAgents?: McpAgentRunnerName[];
+  allowedAgents?: ToolAgentRunnerName[];
   runnerTimeoutMs?: number;
   runnerMaxTimeoutMs?: number;
   repoRoot?: string;
 }
 
-interface McpPolicyOverrideProfile {
+interface ToolPolicyOverrideProfile {
   readGlobs?: string[];
   writeGlobs?: string[];
   denyGlobs?: string[];
@@ -65,11 +82,11 @@ interface McpPolicyOverrideProfile {
   maxFileBytes?: number;
 }
 
-interface McpPolicyOverrideFile {
-  profiles?: Partial<Record<McpProfileName, McpPolicyOverrideProfile>>;
+interface ToolPolicyOverrideFile {
+  profiles?: Partial<Record<ToolProfileName, ToolPolicyOverrideProfile>>;
 }
 
-function executionPolicy(overrides: Partial<McpPolicy['execution']> = {}): McpPolicy['execution'] {
+function executionPolicy(overrides: Partial<ToolPolicy['execution']> = {}): ToolPolicy['execution'] {
   return {
     agentRunner: false,
     allowedAgents: [],
@@ -89,14 +106,15 @@ function parseStringArray(value: unknown): string[] | undefined {
   return normalized;
 }
 
-function loadMcpPolicyOverrides(repoRoot?: string): McpPolicyOverrideFile | undefined {
+function loadToolPolicyOverrides(repoRoot?: string): ToolPolicyOverrideFile | undefined {
   if (!repoRoot) return undefined;
-  const path = join(repoRoot, '.forge', 'mcp.policy.json');
+  const path = // Data-file name kept for existing repository config compatibility.
+			join(repoRoot, '.forge', 'mcp.policy.json');
   if (!existsSync(path)) return undefined;
   const raw = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown>;
   const profilesRaw = raw.profiles;
   if (!profilesRaw || typeof profilesRaw !== 'object' || Array.isArray(profilesRaw)) return undefined;
-  const profiles: Partial<Record<McpProfileName, McpPolicyOverrideProfile>> = {};
+  const profiles: Partial<Record<ToolProfileName, ToolPolicyOverrideProfile>> = {};
   for (const profile of ['planner', 'executor', 'controller'] as const) {
     const entry = (profilesRaw as Record<string, unknown>)[profile];
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
@@ -118,11 +136,11 @@ function loadMcpPolicyOverrides(repoRoot?: string): McpPolicyOverrideFile | unde
 }
 
 function applyPolicyOverrides(
-  base: McpPolicy,
-  profile: McpProfileName,
+  base: ToolPolicy,
+  profile: ToolProfileName,
   repoRoot?: string,
-): McpPolicy {
-  const override = loadMcpPolicyOverrides(repoRoot)?.profiles?.[profile];
+): ToolPolicy {
+  const override = loadToolPolicyOverrides(repoRoot)?.profiles?.[profile];
   if (!override) return base;
   return {
     ...base,
@@ -133,7 +151,7 @@ function applyPolicyOverrides(
   };
 }
 
-export function getMcpPolicy(profile: McpProfileName, opts: McpPolicyOptions = {}): McpPolicy {
+export function getToolPolicy(profile: ToolProfileName, opts: ToolPolicyOptions = {}): ToolPolicy {
   if (profile === 'planner') {
     return applyPolicyOverrides({
       profile,
@@ -198,7 +216,7 @@ export function getMcpPolicy(profile: McpProfileName, opts: McpPolicyOptions = {
   throw new Error(`unknown MCP profile: ${String(profile)}`);
 }
 
-export function parseMcpProfile(value: string): McpProfileName {
+export function parseToolProfile(value: string): ToolProfileName {
   if (value === 'planner' || value === 'executor' || value === 'controller') return value;
   throw new Error(`invalid MCP profile "${value}" (expected: planner, executor, controller)`);
 }

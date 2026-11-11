@@ -1,4 +1,4 @@
-import type { McpPolicy } from '../../../../adapters/mcp/types';
+import type { ToolPolicy } from '../tool-policy';
 import { extractTypeScriptSourceSymbolsInSidecar } from '../../../runtime/context/typescript-navigation-process';
 import { redactMcpText } from '../../../../adapters/mcp/redaction';
 import { exactCodeNeedleMatches, readRepositoryRange, type RepositoryReadSession } from '../../repository/inspector';
@@ -31,7 +31,7 @@ export interface MaterializedSourceSnippet {
 }
 export interface MaterializeSourceOptions {
   repoRoot: string;
-  policy: McpPolicy;
+  policy: ToolPolicy;
   path: string;
   hitLines: number[];
   reasons: string[];

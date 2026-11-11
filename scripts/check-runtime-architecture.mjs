@@ -48,7 +48,23 @@ function forbidBetween(path, startNeedle, endNeedle, expression, description) {
 forbid('adapters/mcp/runtime-gateway/runtime-tool-definitions.ts', /definition\('ios_(?:xcode_status|simulators_list|project_discover|schemes_list|simulator_boot|app_build|app_install|app_launch|simulator_screenshot|simulator_log_tail|ui_smoke_test)'/, 'retired iOS MCP aliases must not be re-exposed');
 // The orchestrator MCP profile and unregistered run_agent_goal operation were retired.
 // Do not allow a second model runner or legacy profile to reappear as a bypass.
-forbid('adapters/mcp/policy.ts', /profile === 'orchestrator'|value === 'orchestrator'/, 'orchestrator MCP policy must stay retired');
+forbid('src/cli/controller/tool-policy.ts', /profile === 'orchestrator'|value === 'orchestrator'/, 'orchestrator MCP policy must stay retired');
+// The desktop native Agent local harness must execute tools through the
+// protocol-neutral dispatchers, never through the MCP adapter surface.
+forbid('apps/desktop/src-tauri/resources/forge-local-tool.mjs', /adapters\/mcp/, 'local Agent harness must not import the MCP adapter execution owner');
+// The neutral tool authority sits below every transport; it must never depend
+// back on a transport adapter.
+for (const path of [
+  'src/runtime/control-plane/facade/repository-tool-dispatch.ts',
+  'src/runtime/execution/process-runtime/tool-dispatch.ts',
+  'src/cli/controller/tool-policy.ts',
+]) {
+  forbid(path, /from\s+['"][^'"]*adapters\//, 'protocol-neutral tool authority must not depend on transport adapters');
+}
+// Exactly one dispatcher owns execution; the MCP surfaces keep schema
+// definitions only.
+forbid('adapters/mcp/tool-mapping/repository-tools.ts', /export async function callRepositoryTool/, 'repository tool dispatch must stay in the protocol-neutral dispatcher');
+forbid('adapters/mcp/runtime-gateway/process-tools.ts', /export async function callProcessTool/, 'process attachment dispatch must stay in the protocol-neutral dispatcher');
 forbid('adapters/mcp/tool-mapping/legacy-tool-service.ts', /\bfunction runAgentGoal\b|case "run_agent_goal"/, 'legacy in-process model runner must stay removed');
 // Legacy Agent Run and Local Bridge submission tool names must stay absent:
 forbid('adapters/mcp/tool-mapping/legacy-tool-service.ts', /name:\s*["'](?:quick_agent_session|submit_local_job)["']/, 'retired Agent/Local Job submit schemas must remain deleted');
@@ -551,7 +567,6 @@ if (semanticAuthorityGuardrailFixture) {
 
 const SEMANTIC_STRING_AUTHORITY_DEBT = new Set([
   `adapters/mcp/runtime-gateway/execution-tools.ts::message.includes(':')`,
-  `adapters/mcp/runtime-gateway/process-tools.ts::message.includes(':')`,
   `adapters/mcp/runtime-gateway/context-adapter.ts::error.message.startsWith('PLUGIN_NOT_FOUND:')`,
   `src/cli/local-bridge/job-store.ts::message.startsWith(\"LOCAL_JOB_ID_REQUIRED:\")`,
   `src/cli/local-bridge/job-store.ts::message.startsWith(\"LOCAL_JOB_PATH_INVALID:\")`,
@@ -1665,10 +1680,10 @@ requireText('src/cli/agent-jobs/executable-resolver.ts', 'AGENT_EXECUTABLE_IDENT
 requireText('packages/kernel/scheduler/infrastructure/schedule-store.ts', "'occurrences'");
 requireText('src/runtime/projections/git-status-sampler.ts', 'writeRepositoryGitStatusSample');
 requireText('src/runtime/projections/git-status-sampler.ts', 'readRepositoryGitStatusSample');
-requireText('adapters/mcp/tool-mapping/repository-tools.ts', 'readRepositoryGitStatusSample');
-requireText('adapters/mcp/tool-mapping/repository-tools.ts', 'args.refresh === true');
+requireText('src/runtime/control-plane/facade/repository-tool-dispatch.ts', 'readRepositoryGitStatusSample');
+requireText('src/runtime/control-plane/facade/repository-tool-dispatch.ts', 'args.refresh === true');
 forbidBetween(
-  'adapters/mcp/tool-mapping/repository-tools.ts',
+  'src/runtime/control-plane/facade/repository-tool-dispatch.ts',
   "case 'repository_git_status':",
   "case 'repository_git_diff':",
   /repositoryGitStatus\s*\(/,

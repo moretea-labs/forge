@@ -3,14 +3,14 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { hashMcpInput, mcpAuditLogPath, tryWriteMcpAuditEntry, writeMcpAuditEntry } from '../../adapters/mcp/audit';
-import { getMcpPolicy, parseMcpProfile } from '../../adapters/mcp/policy';
+import { getToolPolicy, parseToolProfile } from '../../src/cli/controller/tool-policy';
 import { redactMcpText } from '../../adapters/mcp/redaction';
 import { globMatches, normalizeMcpRelativePath, resolveMcpPath } from '../../adapters/mcp/paths';
 import { buildMcpToolDefinitions } from '../../adapters/mcp/tool-mapping/tools';
 
 describe('mcp policy and paths', () => {
   test('retired Agent and Local Bridge submission aliases have no public schema', () => {
-    const definitions = buildMcpToolDefinitions(getMcpPolicy('controller'));
+    const definitions = buildMcpToolDefinitions(getToolPolicy('controller'));
     const names = definitions.map((tool) => tool.name);
     expect(names).not.toContain('quick_agent_session');
     expect(names).not.toContain('submit_local_job');
@@ -19,7 +19,7 @@ describe('mcp policy and paths', () => {
   });
 
   test('direct edit schema does not advertise retired Work authority', () => {
-    const definitions = buildMcpToolDefinitions(getMcpPolicy('controller'));
+    const definitions = buildMcpToolDefinitions(getToolPolicy('controller'));
     const beginEdit = definitions.find((tool) => tool.name === 'begin_edit_session');
     expect(beginEdit).toBeDefined();
     const properties = (beginEdit?.inputSchema as { properties?: Record<string, unknown> } | undefined)?.properties ?? {};
@@ -56,7 +56,7 @@ describe('mcp policy and paths', () => {
       writeFileSync(join(tmp, '.forge/mcp.policy.json'), '{}');
       writeFileSync(join(tmp, '.forge/mcp.oauth.json'), '{"token":"secret"}');
 
-      const policy = getMcpPolicy('controller');
+      const policy = getToolPolicy('controller');
       expect(resolveMcpPath(tmp, '.forge/project-engineering.json', policy, 'write')).toMatchObject({
         ok: true,
         relativePath: '.forge/project-engineering.json',
@@ -87,7 +87,7 @@ describe('mcp policy and paths', () => {
       mkdirSync(join(tmp, '.ai/harness/nested'), { recursive: true });
       writeFileSync(join(tmp, '.ai/harness/nested/private.key'), 'SECRET=secret\n');
 
-      const policy = getMcpPolicy('planner');
+      const policy = getToolPolicy('planner');
       expect(resolveMcpPath(tmp, 'plans/prds/test.prd.md', policy, 'read')).toMatchObject({
         ok: true,
         relativePath: 'plans/prds/test.prd.md',
@@ -99,7 +99,7 @@ describe('mcp policy and paths', () => {
         relativePath: 'plans/prds/new.prd.md',
       });
 
-      const executor = getMcpPolicy('executor');
+      const executor = getToolPolicy('executor');
       expect(resolveMcpPath(tmp, 'tasks/secrets/token.txt', executor, 'read')).toMatchObject({ ok: false });
       expect(resolveMcpPath(tmp, '.ai/harness/nested/private.key', executor, 'read')).toMatchObject({ ok: false });
     } finally {
@@ -128,7 +128,7 @@ describe('mcp policy and paths', () => {
       writeFileSync(join(tmp, '.forge', 'mcp.oauth.json'), '{"passphrase":"secret"}\n');
       writeFileSync(join(tmp, '.ai', 'harness', 'security', 'token.txt'), 'secret\n');
 
-      const policy = getMcpPolicy('planner', { repoRoot: tmp });
+      const policy = getToolPolicy('planner', { repoRoot: tmp });
       expect(resolveMcpPath(tmp, 'ios/Domain/MedicationPlanRuntimeCoordinator.swift', policy, 'read')).toMatchObject({
         ok: true,
         relativePath: 'ios/Domain/MedicationPlanRuntimeCoordinator.swift',
@@ -148,7 +148,7 @@ describe('mcp policy and paths', () => {
       writeFileSync(join(outside, 'secret.md'), '# outside\n');
       symlinkSync(join(outside, 'secret.md'), join(tmp, 'plans', 'linked.md'));
 
-      const policy = getMcpPolicy('planner');
+      const policy = getToolPolicy('planner');
       const decision = resolveMcpPath(tmp, 'plans/linked.md', policy, 'read');
       expect(decision.ok).toBe(false);
       expect(decision.reason).toContain('escapes repository root');
@@ -159,8 +159,8 @@ describe('mcp policy and paths', () => {
   });
 
   test('retired orchestrator profile is rejected instead of reopening an agent runner', () => {
-    expect(() => parseMcpProfile('orchestrator')).toThrow('invalid MCP profile');
-    expect(() => getMcpPolicy('orchestrator' as never)).toThrow('unknown MCP profile');
+    expect(() => parseToolProfile('orchestrator')).toThrow('invalid MCP profile');
+    expect(() => getToolPolicy('orchestrator' as never)).toThrow('unknown MCP profile');
   });
 
 });

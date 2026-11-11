@@ -1,7 +1,7 @@
 import { closeSync, openSync, readSync, statSync } from 'fs';
 import { extname, resolve } from 'path';
 import { globMatches } from '../../../../adapters/mcp/paths';
-import type { McpPolicy } from '../../../../adapters/mcp/types';
+import type { ToolPolicy } from '../tool-policy';
 import { readableFile } from './known-paths';
 
 export const GOVERNANCE_RULES_PATH = '.ai/context/governance-rules.json';
@@ -223,7 +223,7 @@ function normalizeException(value: unknown, index: number, gaps: string[]): Gove
 
 function readBoundedRepositoryFile(
   repoRoot: string,
-  policy: McpPolicy,
+  policy: ToolPolicy,
   path: string,
   maxBytes: number,
   allowTruncate = false,
@@ -256,7 +256,7 @@ function readBoundedRepositoryFile(
 
 function parseRegistry<T>(
   repoRoot: string,
-  policy: McpPolicy,
+  policy: ToolPolicy,
   path: string,
   key: 'rules' | 'exceptions',
   cap: number,
@@ -316,7 +316,7 @@ function exceptionExpired(exception: GovernanceException, nowMs: number): boolea
 
 export function resolveRepositoryGovernance(
   repoRoot: string,
-  policy: McpPolicy,
+  policy: ToolPolicy,
   input: GovernanceResolutionInput = {},
 ): RepositoryGovernanceResolution {
   const startedAt = performance.now();

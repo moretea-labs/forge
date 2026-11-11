@@ -6,7 +6,7 @@ import { spawnSync } from 'child_process';
 import { createHash } from 'crypto';
 import { ensureControllerHome } from '../../src/effects/controller-home';
 import { createMcpToolContext } from '../../adapters/mcp/multi-repository';
-import { callRepositoryTool } from '../../adapters/mcp/tool-mapping/repository-tools';
+import { callRepositoryTool } from '../../src/runtime/control-plane/facade/repository-tool-dispatch';
 import {
   addRepositoryCheckout,
   loadRepositoryRegistry,

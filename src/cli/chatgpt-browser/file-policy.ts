@@ -2,7 +2,7 @@ import { createHash } from 'crypto';
 import { existsSync, readFileSync, statSync } from 'fs';
 import { isAbsolute, resolve } from 'path';
 import { resolveMcpPath } from '../../../adapters/mcp/paths';
-import type { McpPolicy } from '../../../adapters/mcp/types';
+import type { ToolPolicy } from '../controller/tool-policy';
 import type { BrowserWriteOutputPolicy, PromptBundleFile } from './types';
 
 const READ_ALLOW_GLOBS = [
@@ -52,7 +52,7 @@ const WRITE_DENY_GLOBS = [
   '.github/workflows/**',
 ];
 
-const BROWSER_READ_POLICY: McpPolicy = {
+const BROWSER_READ_POLICY: ToolPolicy = {
   profile: 'planner',
   readGlobs: READ_ALLOW_GLOBS,
   writeGlobs: [],
@@ -61,7 +61,7 @@ const BROWSER_READ_POLICY: McpPolicy = {
   execution: { agentRunner: false, allowedAgents: [], runnerTimeoutMs: 0, runnerMaxTimeoutMs: 0 },
 };
 
-const BROWSER_CLI_OUTPUT_POLICY: McpPolicy = {
+const BROWSER_CLI_OUTPUT_POLICY: ToolPolicy = {
   profile: 'planner',
   readGlobs: [],
   writeGlobs: ['**'],
@@ -70,7 +70,7 @@ const BROWSER_CLI_OUTPUT_POLICY: McpPolicy = {
   execution: { agentRunner: false, allowedAgents: [], runnerTimeoutMs: 0, runnerMaxTimeoutMs: 0 },
 };
 
-const BROWSER_MCP_OUTPUT_POLICY: McpPolicy = {
+const BROWSER_MCP_OUTPUT_POLICY: ToolPolicy = {
   profile: 'planner',
   readGlobs: [],
   writeGlobs: [

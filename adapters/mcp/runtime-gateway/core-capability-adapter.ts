@@ -1,6 +1,6 @@
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
-import { callRepositoryTool } from '../tool-mapping/repository-tools';
+import { callRepositoryTool } from '../../../src/runtime/control-plane/facade/repository-tool-dispatch';
 import { commitSelectedPaths, restoreSelectedPaths, selectedPathDiff, stageSelectedPaths } from '../../../src/cli/repositories/selected-path-actions';
 import { result } from './result-adapter';
 import { selected } from './shared-adapter';

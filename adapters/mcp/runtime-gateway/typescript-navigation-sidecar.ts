@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
-import type { McpPolicy, McpProfileName } from '../types';
+import type { ToolPolicy, ToolProfileName } from '../../../src/cli/controller/tool-policy';
 import { resolveMcpPath } from '../paths';
 import { PROCESS_RUNTIME_RELEASE_CANARY_ARG } from '../../../src/runtime/execution/process-runtime/canary';
 import {
@@ -31,12 +31,12 @@ interface Envelope {
   };
 }
 
-function profile(value: string): McpProfileName {
+function profile(value: string): ToolProfileName {
   if (value === 'planner' || value === 'executor' || value === 'controller') return value;
   throw new Error('TYPESCRIPT_NAVIGATION_POLICY_PROFILE_INVALID');
 }
 
-function readPolicy(input: SemanticNavigationReadPolicy): McpPolicy {
+function readPolicy(input: SemanticNavigationReadPolicy): ToolPolicy {
   return {
     profile: profile(input.profile),
     readGlobs: [...input.readGlobs],

@@ -6,7 +6,7 @@ import { join } from 'path';
 import type { WorkflowPublicationReceipt } from '../../packages/workflow-runtime/api/index';
 import { memoryAddressKey } from '../../packages/kernel/cognition/api/index';
 import { ensureForgeInstanceIdentity } from '../../packages/kernel/identity/api/index';
-import { getMcpPolicy } from '../../adapters/mcp/policy';
+import { getToolPolicy } from '../../src/cli/controller/tool-policy';
 import { ensureControllerHome } from '../../src/effects/controller-home';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { writeWorkflowRunCheckpoint } from '../../src/runtime/control-plane/persistence/workflow-run-store';
@@ -161,7 +161,7 @@ describe('connected assistant learning loops', () => {
       sessionId: 'session-direct-learning',
       controllerInstanceId: 'instance-direct-learning',
       controllerType: 'chatgpt' as const,
-      policy: getMcpPolicy('controller', { repoRoot: fx.repoRoot }),
+      policy: getToolPolicy('controller', { repoRoot: fx.repoRoot }),
       toolset: 'full',
     } as unknown as MultiRepositoryMcpToolContext;
 
@@ -339,7 +339,7 @@ describe('connected assistant learning loops', () => {
       sessionId: 'session-direct-learning-association',
       controllerInstanceId: 'instance-direct-learning',
       controllerType: 'chatgpt' as const,
-      policy: getMcpPolicy('controller', { repoRoot: fx.repoRoot }),
+      policy: getToolPolicy('controller', { repoRoot: fx.repoRoot }),
       toolset: 'full',
     } as unknown as MultiRepositoryMcpToolContext;
 
@@ -514,7 +514,7 @@ describe('connected assistant learning loops', () => {
       sessionId: 'session-direct-learning',
       controllerInstanceId: 'instance-direct-learning',
       controllerType: 'chatgpt' as const,
-      policy: getMcpPolicy('controller', { repoRoot: fx.repoRoot }),
+      policy: getToolPolicy('controller', { repoRoot: fx.repoRoot }),
       toolset: 'full',
     } as unknown as MultiRepositoryMcpToolContext;
 

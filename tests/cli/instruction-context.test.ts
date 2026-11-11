@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { getMcpPolicy } from '../../adapters/mcp/policy';
+import { getToolPolicy } from '../../src/cli/controller/tool-policy';
 import { buildRepositoryInstructionContext } from '../../src/cli/controller/context/instruction-context';
 import { buildControllerContextPack } from '../../src/cli/controller/context-pack';
 
@@ -20,7 +20,7 @@ describe('repository UI instruction context', () => {
         '# Design rules\nNo decorative outlines.\n');
       writeFileSync(join(root, 'apps', 'ios', 'Features', 'MedicationView.swift'), 'struct MedicationView {}\n');
       const paths = ['apps/ios/Features/MedicationView.swift'];
-      const policy = getMcpPolicy('controller', { repoRoot: root });
+      const policy = getToolPolicy('controller', { repoRoot: root });
 
       const ui = buildRepositoryInstructionContext(root, policy, paths, { uiIntent: '优化用药界面' });
       expect(ui.status).toBe('ready');
@@ -53,7 +53,7 @@ describe('repository UI instruction context', () => {
         'git', '-c', 'user.name=Forge Test', '-c', 'user.email=forge@test.invalid',
         'commit', '--allow-empty', '-qm', 'init',
       ], { cwd: root }).exitCode).toBe(0);
-      const pack = buildControllerContextPack(root, getMcpPolicy('controller', { repoRoot: root }), {
+      const pack = buildControllerContextPack(root, getToolPolicy('controller', { repoRoot: root }), {
         description: 'Requirement-only: 复刻 SwiftUI 用药界面',
         knownPaths: ['src/MedicationView.swift'],
         maxFiles: 1,
@@ -81,7 +81,7 @@ describe('repository UI instruction context', () => {
         'git', '-c', 'user.name=Forge Test', '-c', 'user.email=forge@test.invalid',
         'commit', '--allow-empty', '-qm', 'init',
       ], { cwd: root }).exitCode).toBe(0);
-      const pack = buildControllerContextPack(root, getMcpPolicy('controller', { repoRoot: root }), {
+      const pack = buildControllerContextPack(root, getToolPolicy('controller', { repoRoot: root }), {
         description: '按用户设计规范继续修改用药界面',
         knownPaths: ['AGENTS.md'], maxFiles: 1, maxSnippets: 1,
       });
@@ -108,7 +108,7 @@ describe('repository UI instruction context', () => {
         'git', '-c', 'user.name=Forge Test', '-c', 'user.email=forge@test.invalid',
         'commit', '--allow-empty', '-qm', 'init',
       ], { cwd: root }).exitCode).toBe(0);
-      const pack = buildControllerContextPack(root, getMcpPolicy('controller', { repoRoot: root }), {
+      const pack = buildControllerContextPack(root, getToolPolicy('controller', { repoRoot: root }), {
         description: '用药 UI 源码迁移',
         knownPaths: ['docs/mvp2/AGENTS.md'], maxFiles: 1, maxSnippets: 1,
       });
@@ -129,7 +129,7 @@ describe('repository UI instruction context', () => {
       writeFileSync(join(root, 'AGENTS.md'), '# Rules\nSee `DESIGN.md` for UI.\n');
       writeFileSync(join(root, 'DESIGN.md'), 'A'.repeat(20_000));
       writeFileSync(join(root, 'src', 'EditorView.swift'), 'struct EditorView {}\n');
-      const ui = buildRepositoryInstructionContext(root, getMcpPolicy('controller', { repoRoot: root }),
+      const ui = buildRepositoryInstructionContext(root, getToolPolicy('controller', { repoRoot: root }),
         ['src/EditorView.swift'], { uiIntent: 'UI', maxCharsPerContract: 800, maxTotalChars: 2_000 });
       expect(ui.contracts.find(contract => contract.path === 'DESIGN.md')?.truncated).toBe(true);
       expect(ui.coverageGaps.some(gap => gap.includes('instruction_contract_content_truncated:DESIGN.md'))).toBe(true);

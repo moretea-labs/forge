@@ -20,10 +20,10 @@ import { commitSelectedPaths } from '../../src/cli/repositories/selected-path-ac
 import { ensureRepositoryRuntimeStorageBinding } from '../../src/cli/repositories/runtime-storage';
 import { listExecutionJobs } from '../../src/runtime/execution/jobs/store';
 import { listLocalBridgeJobSnapshots } from '../../src/cli/local-bridge/job-store';
-import { callRepositoryTool } from '../../adapters/mcp/tool-mapping/repository-tools';
+import { callRepositoryTool } from '../../src/runtime/control-plane/facade/repository-tool-dispatch';
 import { callExecutionTool } from '../../adapters/mcp/runtime-gateway/execution-tools';
 import { callRuntimeTool } from '../../adapters/mcp/runtime-gateway/runtime-tools';
-import { callProcessTool } from '../../adapters/mcp/runtime-gateway/process-tools';
+import { callProcessTool } from '../../src/runtime/execution/process-runtime/tool-dispatch';
 import { classifyRepositoryCommand } from '../../src/cli/repositories/command-classifier';
 import { classifyRepositoryCommandRoute, waitRepositoryCommandProcess } from '../../src/runtime/execution/process-runtime/command-facade';
 import { routeExecution, isFastEligibleTool } from '../../src/runtime/execution/thin-harness';
@@ -45,7 +45,7 @@ import {
   reconcileEditSession,
   getEditSession,
 } from '../../src/cli/editing/edit-session';
-import { getMcpPolicy } from '../../adapters/mcp/policy';
+import { getToolPolicy } from '../../src/cli/controller/tool-policy';
 import {
   reconcilePendingEditValidations,
   startOrJoinEditValidation,
@@ -1264,7 +1264,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       checks: [checkId],
       binding,
     });
-    applyEditOperations(fx.repoRoot, getMcpPolicy('controller'), edit.sessionId, [{
+    applyEditOperations(fx.repoRoot, getToolPolicy('controller'), edit.sessionId, [{
       type: 'replace',
       path: 'src/lib.ts',
       expectedSha256: createHash('sha256').update(readFileSync(join(fx.repoRoot, 'src', 'lib.ts'))).digest('hex'),
@@ -1330,7 +1330,7 @@ describe('Gateway Thin Harness routing before ExecutionJob', () => {
       checks: ['verify'],
       binding,
     });
-    applyEditOperations(fx.repoRoot, getMcpPolicy('controller'), edit.sessionId, [{
+    applyEditOperations(fx.repoRoot, getToolPolicy('controller'), edit.sessionId, [{
       type: 'replace',
       path: 'src/lib.ts',
       expectedSha256: createHash('sha256').update(readFileSync(join(fx.repoRoot, 'src', 'lib.ts'))).digest('hex'),

@@ -1,6 +1,6 @@
 import { existsSync, lstatSync, readdirSync, statSync } from 'fs';
 import { globMatches, resolveMcpPath } from '../../../../adapters/mcp/paths';
-import type { McpPolicy } from '../../../../adapters/mcp/types';
+import type { ToolPolicy } from '../tool-policy';
 
 export function looksLikeGlob(path: string): boolean { return /[*?{[]/.test(path); }
 export function coveredByGlob(path: string, globs: string[]): boolean {
@@ -18,7 +18,7 @@ export function addReason(
   map.set(path, entry);
 }
 
-export function readableFile(repoRoot: string, policy: McpPolicy, path: string): { ok: true; path: string } | { ok: false; path: string; reason: string } {
+export function readableFile(repoRoot: string, policy: ToolPolicy, path: string): { ok: true; path: string } | { ok: false; path: string; reason: string } {
   const decision = resolveMcpPath(repoRoot, path, policy, 'read');
   if (!decision.ok || !decision.relativePath || !decision.absolutePath) {
     return { ok: false, path: decision.relativePath ?? path, reason: decision.reason ?? 'path denied' };
@@ -35,7 +35,7 @@ export interface ExpandedKnownPath {
   truncated: boolean;
 }
 
-export function expandKnownPath(repoRoot: string, policy: McpPolicy, path: string, maxFiles: number): ExpandedKnownPath {
+export function expandKnownPath(repoRoot: string, policy: ToolPolicy, path: string, maxFiles: number): ExpandedKnownPath {
   const decision = resolveMcpPath(repoRoot, path, policy, 'read');
   if (!decision.ok || !decision.relativePath || !decision.absolutePath) {
     return { files: [], denied: [{ path: decision.relativePath ?? path, reason: decision.reason ?? 'path denied' }], truncated: false };

@@ -82,7 +82,8 @@ import { defaultProcessIdentityProbe, executableFingerprint } from '../../src/ru
 import { ensureRepositoryRuntimeStorage } from '../../src/cli/repositories/runtime-storage';
 import { resolveEphemeralWorkspaceTarget } from '../../src/cli/repositories/ephemeral-workspace';
 import { sanitizeFileComponent } from '../../src/runtime/shared/json-files';
-import { callProcessTool, DEFAULT_PROCESS_WAIT_ATTACH_BUDGET_MS, processToolDefinitions } from '../../adapters/mcp/runtime-gateway/process-tools';
+import { callProcessTool, DEFAULT_PROCESS_WAIT_ATTACH_BUDGET_MS } from '../../src/runtime/execution/process-runtime/tool-dispatch';
+import { processToolDefinitions } from '../../adapters/mcp/runtime-gateway/process-tools';
 import type { MultiRepositoryMcpToolContext } from '../../adapters/mcp/multi-repository';
 import { rebuildRepositoryProjection } from '../../src/runtime/projections/materialized-view';
 import { rotateRuntimeGeneration } from '../../src/runtime/control-plane/runtime-generation';

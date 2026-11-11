@@ -4,8 +4,8 @@
  */
 import { isMainThread, parentPort, workerData, Worker } from 'worker_threads';
 import { fileURLToPath } from 'url';
-import { getMcpPolicy } from '../../../../adapters/mcp/policy';
-import type { McpPolicy } from '../../../../adapters/mcp/types';
+import { getToolPolicy } from '../../../cli/controller/tool-policy';
+import type { ToolPolicy } from '../../../cli/controller/tool-policy';
 import {
   searchRepository,
   searchRepositoryMany,
@@ -21,7 +21,7 @@ export interface SearchWorkerInput {
 
 export interface SearchManyWorkerInput {
   repoRoot: string;
-  policy: McpPolicy;
+  policy: ToolPolicy;
   queries: string[];
   files?: string[];
   includeGlobs?: string[];
@@ -57,7 +57,7 @@ function runSearchSync(input: SearchWorkerInput | SearchManyWorkerInput): Search
       }) as unknown as Record<string, unknown>;
       return { ok: true, payload: result };
     }
-    const result = searchRepository(input.repoRoot, getMcpPolicy('controller', { repoRoot: input.repoRoot }), {
+    const result = searchRepository(input.repoRoot, getToolPolicy('controller', { repoRoot: input.repoRoot }), {
       query: input.query,
       maxResults: input.maxResults,
       maxFiles: input.maxFiles,

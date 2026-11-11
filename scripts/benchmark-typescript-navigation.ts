@@ -27,7 +27,7 @@ const cases: BenchmarkCase[] = [
   },
   {
     label: 'MCP repository dispatch',
-    path: 'adapters/mcp/tool-mapping/repository-tools.ts',
+    path: 'src/runtime/control-plane/facade/repository-tool-dispatch.ts',
     symbol: 'callRepositoryTool',
     marker: 'export async function callRepositoryTool(',
   },

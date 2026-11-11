@@ -3,7 +3,7 @@ import { execFileSync } from 'child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { getMcpPolicy } from '../../adapters/mcp/policy';
+import { getToolPolicy } from '../../src/cli/controller/tool-policy';
 import type { MultiRepositoryMcpToolContext } from '../../adapters/mcp/multi-repository';
 import { ensureControllerHome, repositoryControllerRoot } from '../../src/effects/controller-home';
 import { addRepositoryCheckout, registerRepository } from '../../src/cli/repositories/registry';
@@ -103,7 +103,7 @@ function writeProjectEngineeringContract(root: string): void {
 }
 
 function mcpContext(controllerHome: string, repository: ReturnType<typeof registerRepository>): MultiRepositoryMcpToolContext {
-  const policy = getMcpPolicy('controller', { repoRoot: repository.canonicalRoot });
+  const policy = getToolPolicy('controller', { repoRoot: repository.canonicalRoot });
   return {
     repoRoot: repository.canonicalRoot,
     controllerHome,

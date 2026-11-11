@@ -3,8 +3,9 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createInterface } from 'node:readline';
 
-// Local direct adapter: it imports the canonical Repository tool mapping.
-// MCP is intentionally not involved in the built-in local Agent Harness path.
+// Local direct adapter: it imports the protocol-neutral canonical dispatchers.
+// Neither MCP HTTP nor the MCP adapter is involved in the built-in local Agent
+// Harness path; every transport shares the same tool authority below it.
 const tools = Object.freeze({
   read_file: { name: 'read_repository_file', effect: false },
   search_code: { name: 'execute_command', effect: false },
@@ -106,7 +107,7 @@ async function execute(raw) {
     const binding = getManagedProcessExecutionBinding(controllerHome, repoId, processId);
     if (!binding) throw Error('LOCAL_FORGE_PROCESS_NOT_MANAGED');
     if (binding.checkoutId !== checkoutId) throw Error('LOCAL_FORGE_PROCESS_CHECKOUT_MISMATCH');
-    const entry = join(sourceRoot, 'adapters/mcp/runtime-gateway/process-tools.ts');
+    const entry = join(sourceRoot, 'src/runtime/execution/process-runtime/tool-dispatch.ts');
     const { callProcessTool } = await import(pathToFileURL(entry).href);
     const processToolName = input.tool === 'process_cancel'
       ? 'process_cancel'
@@ -227,7 +228,7 @@ async function execute(raw) {
     }};
   }
 
-  const entry = join(sourceRoot, 'adapters/mcp/tool-mapping/repository-tools.ts');
+  const entry = join(sourceRoot, 'src/runtime/control-plane/facade/repository-tool-dispatch.ts');
   const { callRepositoryTool } = await import(pathToFileURL(entry).href);
   const toolArgs = input.tool === 'search_code'
     ? { command: ['rg', '-n', '-F', '--no-heading', '--max-count', '20', '--',

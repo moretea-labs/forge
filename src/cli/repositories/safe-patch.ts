@@ -12,7 +12,7 @@ import {
   type EditSessionPatchError,
 } from '../editing/edit-session';
 import { normalizeEditOperation, type EditOperation } from '../editing/edit-operation-contract';
-import { getMcpPolicy } from '../../../adapters/mcp/policy';
+import { getToolPolicy } from '../controller/tool-policy';
 import type { RepositoryRecord } from './types';
 import { ensureRepositoryRuntimeStorageBinding } from './runtime-storage';
 import { resolveRepoPreferredControllerHome } from '../../effects/controller-home';
@@ -322,7 +322,7 @@ export function applySafePatch(repository: RepositoryRecord, input: {
   const refresh = input.refreshFingerprints !== false;
   const continueOnError = input.continueOnError === true;
   const controllerHome = input.controllerHome?.trim() || resolveRepoPreferredControllerHome(repository.canonicalRoot);
-  const policy = getMcpPolicy('controller', { repoRoot: repository.canonicalRoot });
+  const policy = getToolPolicy('controller', { repoRoot: repository.canonicalRoot });
   const sessionId = typeof input.sessionId === 'string' ? input.sessionId.trim() : '';
   const allowedPaths = Array.isArray(input.allowedPaths) ? input.allowedPaths.map((item) => String(item).trim()).filter(Boolean) : undefined;
   let session = sessionId

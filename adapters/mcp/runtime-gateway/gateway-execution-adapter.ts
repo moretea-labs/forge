@@ -1,7 +1,7 @@
 import { createHash } from 'crypto';
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
-import { callRepositoryTool } from '../tool-mapping/repository-tools';
+import { callRepositoryTool } from '../../../src/runtime/control-plane/facade/repository-tool-dispatch';
 import { resolveRepositorySelection } from '../../../src/cli/repositories/registry';
 import { listControllerChecks } from '../../../src/cli/controller/check-runner';
 import { executionIdentityForRepository } from '../../../src/runtime/control-plane/execution/execution-identity';

@@ -1,27 +1,11 @@
-export type McpProfileName = 'planner' | 'executor' | 'controller';
-export type McpPathIntent = 'read' | 'write';
-export type McpAgentRunnerName = 'claude';
-
-export interface McpPolicy {
-  profile: McpProfileName;
-  readGlobs: string[];
-  writeGlobs: string[];
-  denyGlobs: string[];
-  maxFileBytes: number;
-  execution: {
-    agentRunner: boolean;
-    allowedAgents: McpAgentRunnerName[];
-    runnerTimeoutMs: number;
-    runnerMaxTimeoutMs: number;
-  };
-}
-
 export interface McpPathDecision {
   ok: boolean;
   relativePath?: string;
   absolutePath?: string;
   reason?: string;
 }
+
+export type McpPathIntent = 'read' | 'write';
 
 export interface McpAuditEntry {
   timestamp: string;

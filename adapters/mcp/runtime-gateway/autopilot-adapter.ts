@@ -9,7 +9,8 @@ import {
   startAutopilot,
   autopilotProviderReadiness,
 } from '../../../src/runtime/autopilot';
-import { callRepositoryTool, repositoryToolDefinitions } from '../tool-mapping/repository-tools';
+import { callRepositoryTool } from '../../../src/runtime/control-plane/facade/repository-tool-dispatch';
+import { repositoryToolDefinitions } from '../tool-mapping/repository-tools';
 import { result } from './result-adapter';
 import { selected } from './shared-adapter';
 

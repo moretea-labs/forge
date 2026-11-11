@@ -1,5 +1,5 @@
 import type { GitHubStatus } from "../github/contracts";
-import type { McpAgentRunnerName } from "../../../adapters/mcp/types";
+import type { ToolAgentRunnerName } from '../controller/tool-policy';
 import type { ControllerAgent } from "../controller/types";
 
 export type ExecutorHealthStatus =
@@ -44,7 +44,7 @@ export interface ExecutorHealth {
 
 export interface LocalExecutorPolicy {
   agentRunner: boolean;
-  allowedAgents: McpAgentRunnerName[];
+  allowedAgents: ToolAgentRunnerName[];
 }
 
 export class ExecutorHealthError extends Error {

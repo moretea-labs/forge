@@ -1,6 +1,6 @@
-import type { McpProfileName } from './types';
+import type { ToolProfileName } from '../../src/cli/controller/tool-policy';
 
-export function mcpServerInstructions(profile: McpProfileName): string {
+export function mcpServerInstructions(profile: ToolProfileName): string {
   const common = [
     'Forge is the repository execution and safety control plane. Follow the canonical repository progress owner and current project instructions (Forge source uses GitHub Issue/Project); Requirement/Plan records are optional semantic context, while legacy Work records are historical read-only compatibility only. Process/Job/effect receipts and direct capabilities own execution outcomes; provider/session binding and transport recovery remain internal.',
     'Treat the configured repository tracker as progress authority, repository files as source/instruction authority, Git identity as code-state authority, Controller Home as optional semantic context, and exact receipts as execution authority. Do not infer terminal effects from ChatGPT thinking/stop indicators.',

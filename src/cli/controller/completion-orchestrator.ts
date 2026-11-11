@@ -6,7 +6,7 @@ import { getAgentJob, markAgentJobClosure, markAgentJobReviewedCompletion, recor
 import type { AgentJobMeta } from '../agent-jobs/types';
 import { cleanupIntegratedWorktree, cleanupNoChangeWorktree, integrateAgentJob, IntegrationReviewRequiredError, taskRunDiff } from '../agent-jobs/integration';
 import { finalizeEditSession, getEditSession, revalidateEditSessionOwnership, rollbackEditSession, verifyEditSession } from '../editing/edit-session';
-import { getMcpPolicy } from '../../../adapters/mcp/policy';
+import { getToolPolicy } from './tool-policy';
 import { resolveRepoPreferredControllerHome } from '../../effects/controller-home';
 import { withControllerLock } from '../repositories/locks';
 import { listActiveLeases, withRepositoryMutationExclusion } from '../../runtime/resources/leases/store';
@@ -1321,7 +1321,7 @@ function finishTaskRunUnlocked(repoRoot: string, options: FinishTaskRunOptions):
     try {
       updateTask(repoRoot, issue.id, task.id, { status: 'ready_to_integrate', note: `${run.runId} is verified as ready for serialized integration.` });
       updateTask(repoRoot, issue.id, task.id, { status: 'integrating', note: `${run.runId} entered the integration executor.` });
-      const integratedSession = integrateAgentJob(repoRoot, getMcpPolicy('controller', { repoRoot }), run.runId);
+      const integratedSession = integrateAgentJob(repoRoot, getToolPolicy('controller', { repoRoot }), run.runId);
       integrated = true;
       changedPaths = integratedSession.changedPaths;
       changeOutcome = integratedSession.changeOutcome;

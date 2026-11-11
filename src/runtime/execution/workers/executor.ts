@@ -1,6 +1,6 @@
 import { bindRepositoryEntities } from '../../../cli/repositories/entity-migration';
 import { getRepository, repositorySummary, selectRepositoryCheckout } from '../../../cli/repositories/registry';
-import { callRepositoryTool } from '../../../../adapters/mcp/tool-mapping/repository-tools';
+import { callRepositoryTool } from '../../control-plane/facade/repository-tool-dispatch';
 import { callMcpTool, type CallToolResult, type McpToolContext } from '../../../../adapters/mcp/tool-mapping/tools';
 import { runtimePolicy, type MultiRepositoryMcpToolContext } from '../../../../adapters/mcp/multi-repository';
 import { callRuntimeTool } from '../../../../adapters/mcp/runtime-gateway/runtime-tools';

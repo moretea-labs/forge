@@ -37,7 +37,7 @@ import {
 import { listExecutionJobs } from '../src/runtime/execution/jobs/store';
 import { listLocalBridgeJobSnapshots } from '../src/cli/local-bridge/job-store';
 import { listFastReceipts } from '../src/runtime/execution/thin-harness/fast-receipt';
-import { callRepositoryTool } from '../adapters/mcp/tool-mapping/repository-tools';
+import { callRepositoryTool } from '../src/runtime/control-plane/facade/repository-tool-dispatch';
 
 const BASELINE_REV = 'e1582c573b738c29ff41eda6884685488654e5b9';
 

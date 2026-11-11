@@ -1,6 +1,6 @@
 import { existsSync, lstatSync, readFileSync } from 'fs';
 import { dirname, join, resolve } from 'path';
-import type { McpPolicy } from '../../../adapters/mcp/types';
+import type { ToolPolicy } from '../../cli/controller/tool-policy';
 import type {
   ControllerContextPackOptions,
   ControllerContextPackProjection,
@@ -75,7 +75,7 @@ export function resolveContextPackSidecarCommand(
 
 export async function buildControllerContextPackInSidecar(input: {
   repoRoot: string;
-  policy: McpPolicy;
+  policy: ToolPolicy;
   options: ControllerContextPackOptions;
 }): Promise<ControllerContextPackProjection> {
   const command = resolveContextPackSidecarCommand();

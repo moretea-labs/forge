@@ -4,7 +4,7 @@ import { delimiter, join, resolve } from 'path';
 import { runProcess } from '../../effects/process-runner';
 import { redactSensitiveText } from '../../runtime/evidence/sensitive-output';
 import { globMatches, resolveMcpPath } from '../../../adapters/mcp/paths';
-import type { McpPolicy } from '../../../adapters/mcp/types';
+import type { ToolPolicy } from '../controller/tool-policy';
 import {
   collectSessionIdentity,
   getOrCreateSessionCache,
@@ -765,7 +765,7 @@ function ripgrepCandidateLines(
  */
 export function searchRepositoryMany(
   repoRoot: string,
-  policy: McpPolicy,
+  policy: ToolPolicy,
   opts: SearchRepositoryManyOptions,
 ): SearchRepositoryManyResult {
   const {
@@ -959,14 +959,14 @@ export function searchRepositoryMany(
  */
 export async function searchRepositoryManyAsync(
   repoRoot: string,
-  policy: McpPolicy,
+  policy: ToolPolicy,
   opts: SearchRepositoryManyOptions,
 ): Promise<SearchRepositoryManyResult> {
   return searchRepositoryMany(repoRoot, policy, opts);
 }
 
 /** Single-query facade delegates to the canonical policy-checked rg engine. */
-export function searchRepository(repoRoot: string, policy: McpPolicy, opts: SearchRepositoryOptions & {
+export function searchRepository(repoRoot: string, policy: ToolPolicy, opts: SearchRepositoryOptions & {
   session?: RepositoryReadSession;
 }): {
   query: string;
@@ -1003,7 +1003,7 @@ export function clearSearchFileInventoryCacheForTest(): void {
 
 export function readRepositoryRange(
   repoRoot: string,
-  policy: McpPolicy,
+  policy: ToolPolicy,
   path: string,
   startLine = 1,
   endLine = startLine + 199,

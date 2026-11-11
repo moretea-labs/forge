@@ -3,7 +3,7 @@
  * Focused smoke: local MCP tool surface + connector freshness semantics.
  * Does not require a live ChatGPT connector session.
  */
-import { getMcpPolicy } from '../adapters/mcp/policy';
+import { getToolPolicy } from '../src/cli/controller/tool-policy';
 import {
   PREFERRED_CONTROLLER_TOOL_NAMES,
   PREFERRED_FACADE_TOOL_NAMES,
@@ -20,7 +20,7 @@ function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(`SMOKE_FAIL: ${message}`);
 }
 
-const policy = getMcpPolicy('controller');
+const policy = getToolPolicy('controller');
 const fullCtx = {
   policy,
   toolset: 'full' as const,
