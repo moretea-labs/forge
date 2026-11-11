@@ -961,8 +961,11 @@ export function inspectIntegratedEditSession(
   const session = getEditSession(repoRoot, sessionId);
   if (session.repoId !== input.repoId || !session.checkoutId || !session.principalId)
     return reject('EDIT_SESSION_RECONCILIATION_IDENTITY_REQUIRED');
-  if (listActiveLeases(input.controllerHome, input.repoId).length)
-    return reject('EDIT_SESSION_RECONCILIATION_ACTIVE_LEASE');
+  const activeCheckoutLease = listActiveLeases(input.controllerHome, input.repoId).find((lease) => {
+    const leaseCheckoutId = lease.checkoutId ?? lease.ownerIdentity?.checkoutId;
+    return !leaseCheckoutId || leaseCheckoutId === 'unscoped' || leaseCheckoutId === session.checkoutId;
+  });
+  if (activeCheckoutLease) return reject('EDIT_SESSION_RECONCILIATION_ACTIVE_LEASE');
   if (!['dirty', 'checked', 'check_failed'].includes(session.status) || session.operations.length === 0)
     return reject('EDIT_SESSION_RECONCILIATION_NOT_ELIGIBLE');
   if (currentHashMismatches(repoRoot, session).length) {

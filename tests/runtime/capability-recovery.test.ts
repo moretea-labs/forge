@@ -339,7 +339,7 @@ describe('runtime maintenance executor', () => {
   }
 
 
-  function editFixture(input: { workStatus?: 'cancelled' | 'running'; createWork?: boolean; applyEdit?: boolean; contractFree?: boolean } = {}) {
+  function editFixture(input: { workStatus?: 'cancelled' | 'running'; createWork?: boolean; applyEdit?: boolean; contractFree?: boolean; checks?: string[] } = {}) {
     const root = mkdtempSync(join(tmpdir(), 'forge-maintenance-edit-session-'));
     temporaryRoots.push(root);
     const controllerHome = join(root, 'controller');
@@ -381,6 +381,7 @@ describe('runtime maintenance executor', () => {
     const session = beginEditSession(repoRoot, {
       purpose: 'Stale Edit Session maintenance fixture',
       allowedPaths: ['src/**'],
+      checks: input.checks,
       binding,
     });
     if (input.applyEdit !== false) {
@@ -660,6 +661,40 @@ describe('runtime maintenance executor', () => {
     const applied = applyRuntimeMaintenance(fx.repository, fx.controllerHome, { actionId: 'full_maintenance_pass', confirmMaintenance: true, minAgeMinutes: 0, maxCandidates: 50 });
     expect(applied.applied).toContainEqual(expect.objectContaining({ id: fx.sessionId, applied: true, result: 'edit_session_finalized' }));
     expect(getEditSession(fx.repoRoot, fx.sessionId).status).toBe('finalized');
+  });
+
+  it('reconciles integrated legacy EditSessions with unavailable checks as UNVERIFIED during explicit maintenance', () => {
+    const fx = editFixture({ checks: ['package:check:type'] });
+    execFileSync('git', ['add', 'src/session.ts'], { cwd: fx.repoRoot });
+    execFileSync('git', ['commit', '-qm', 'integrate legacy edit with unavailable check'], { cwd: fx.repoRoot });
+
+    const before = getEditSession(fx.repoRoot, fx.sessionId);
+    const status = buildRuntimeMaintenanceStatus(fx.repository, fx.controllerHome, { minAgeMinutes: 0, maxCandidates: 50 });
+    expect(status.candidates).toContainEqual(expect.objectContaining({
+      kind: 'stale_edit_session',
+      id: fx.sessionId,
+      safe: true,
+      reason: 'Exact committed after-images, no live lease; missing checks remain UNVERIFIED.',
+    }));
+    expect(getEditSession(fx.repoRoot, fx.sessionId)).toEqual(before);
+
+    const applied = applyRuntimeMaintenance(fx.repository, fx.controllerHome, {
+      actionId: 'full_maintenance_pass',
+      confirmMaintenance: true,
+      minAgeMinutes: 0,
+      maxCandidates: 50,
+    });
+    expect(applied.applied).toContainEqual(expect.objectContaining({
+      id: fx.sessionId,
+      applied: true,
+      result: 'edit_session_reconciled_unverified',
+    }));
+    const reconciled = getEditSession(fx.repoRoot, fx.sessionId);
+    expect(reconciled.status).toBe('reconciled_unverified');
+    expect(reconciled.unverifiedChecks).toEqual(['package:check:type']);
+    expect(reconciled.checkResults).toEqual([]);
+    expect(reconciled.verifiedAt).toBeUndefined();
+    expect(readFileSync(join(fx.repoRoot, 'src/session.ts'), 'utf8')).toBe('export const sessionValue = 1;\n');
   });
 
   it('keeps supersession reconciliation out of status reads and applies it only during explicit maintenance', () => {

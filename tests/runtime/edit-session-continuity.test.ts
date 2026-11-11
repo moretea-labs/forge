@@ -591,7 +591,12 @@ test('metadata-only reconciliation rejects live lease and leaves dirty session u
   spawnSync('git', ['add', 'source.ts'], { cwd: fx.repoRoot });
   spawnSync('git', ['commit', '-qm', 'integrated under lease'], { cwd: fx.repoRoot });
   const held = acquireExecutionLeases(fx.controllerHome, fx.repository.repoId, 'test-owner', [
-    { resourceKey: 'workspace:checkout-runtime-continuity', mode: 'write' },
+    {
+      resourceKey: 'workspace:checkout-runtime-continuity',
+      mode: 'write',
+      repoId: fx.repository.repoId,
+      checkoutId: durableBinding().checkoutId,
+    },
   ], { visibility: 'ephemeral', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false });
   expect(held.acquired).toBe(true);
   const inspect = inspectIntegratedEditSession(fx.repoRoot, session.sessionId, {
@@ -602,6 +607,50 @@ test('metadata-only reconciliation rejects live lease and leaves dirty session u
     repoId: fx.repository.repoId, controllerHome: fx.controllerHome,
   })).toThrow('EDIT_SESSION_RECONCILIATION_ACTIVE_LEASE');
   expect(getEditSession(fx.repoRoot, session.sessionId).status).toBe('dirty');
+  releaseExecutionLeases(fx.controllerHome, fx.repository.repoId, 'test-owner');
+
+  const unscoped = acquireExecutionLeases(fx.controllerHome, fx.repository.repoId, 'legacy-unscoped-owner', [
+    { resourceKey: 'workspace:checkout-runtime-continuity', mode: 'write' },
+  ], { visibility: 'ephemeral', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false });
+  expect(unscoped.acquired).toBe(true);
+  expect(inspectIntegratedEditSession(fx.repoRoot, session.sessionId, {
+    repoId: fx.repository.repoId, controllerHome: fx.controllerHome,
+  })).toMatchObject({ safe: false, reason: 'EDIT_SESSION_RECONCILIATION_ACTIVE_LEASE' });
+  releaseExecutionLeases(fx.controllerHome, fx.repository.repoId, 'legacy-unscoped-owner');
+});
+
+test('metadata-only reconciliation ignores a lease held by another checkout', () => {
+  const fx = fixture();
+  const binding = durableBinding();
+  const session = beginEditSession(fx.repoRoot, {
+    purpose: 'Unrelated checkout owns a provider lease',
+    allowedPaths: ['source.ts'], checks: ['package:check:type'], binding,
+  });
+  applyEditOperations(fx.repoRoot, fx.policy, session.sessionId, [{
+    type: 'replace', path: 'source.ts', expectedSha256: sha256(fx.initial),
+    replacements: [{ oldText: 'value = 1', newText: 'value = 2' }],
+  }], { binding });
+  spawnSync('git', ['add', 'source.ts'], { cwd: fx.repoRoot });
+  spawnSync('git', ['commit', '-qm', 'integrated while another checkout is active'], { cwd: fx.repoRoot });
+
+  const held = acquireExecutionLeases(fx.controllerHome, fx.repository.repoId, 'plugin:other-checkout', [{
+    resourceKey: 'provider-state:computer',
+    mode: 'write',
+    repoId: fx.repository.repoId,
+    checkoutId: 'checkout-unrelated',
+  }], { visibility: 'ephemeral', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false });
+  expect(held.acquired).toBe(true);
+  expect(inspectIntegratedEditSession(fx.repoRoot, session.sessionId, {
+    repoId: fx.repository.repoId, controllerHome: fx.controllerHome,
+  })).toMatchObject({ safe: true, unverifiedChecks: ['package:check:type'] });
+
+  const reconciled = cleanupEditSession(fx.repoRoot, session.sessionId, {
+    repoId: fx.repository.repoId, controllerHome: fx.controllerHome,
+  });
+  expect(reconciled.status).toBe('reconciled_unverified');
+  expect(reconciled.unverifiedChecks).toEqual(['package:check:type']);
+  expect(reconciled.checkResults).toEqual([]);
+  releaseExecutionLeases(fx.controllerHome, fx.repository.repoId, 'plugin:other-checkout');
 });
 
 test('maintenance never considers an empty reserved successor session safe garbage', () => {
