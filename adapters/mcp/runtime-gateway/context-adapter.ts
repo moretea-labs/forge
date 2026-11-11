@@ -186,6 +186,7 @@ function rhContextLearningRecall(
     maxBytes: 12 * 1024,
     usageFeedback: usage,
   });
+  const usageByAddress = new Map(usage.map(item => [memoryAddressKey(item.address), item]));
   return {
     advisoryOnly: true,
     authorityBoundary: 'Learned context may guide model decisions but never grants execution, lifecycle, or acceptance authority.',
@@ -200,6 +201,10 @@ function rhContextLearningRecall(
       facets: entry.memory.facets,
       concepts: entry.memory.concepts,
       provenance: entry.memory.provenance,
+      // Rejected/stale memory can still have a high lexical match score.
+      // Present actual feedback to the model; do not make Forge a semantic
+      // supersession judge or silently erase historically useful advice.
+      recentUsage: usageByAddress.get(memoryAddressKey({ scope: entry.memory.scope, id: entry.memory.id })),
     })),
     gaps: [...resolved.gaps, ...activation.gaps],
     progressiveAttention: {
@@ -762,6 +767,12 @@ export async function callContextAdapter(ctx: MultiRepositoryMcpToolContext, nam
         }),
       };
       (facade.data as typeof facade.data & { instructionContext: typeof readableInstructions }).instructionContext = readableInstructions;
+      // Like source guidance, the bounded Cognitive working set must retain
+      // provenance and rejection feedback; generic nested depth bounding drops
+      // these details exactly when conflicting memories need inspection.
+      if (learningRecall) {
+        (facade.data as typeof facade.data & { learningRecall: typeof learningRecall }).learningRecall = learningRecall;
+      }
       if (semanticEvidence) {
         (facade.data as typeof facade.data & { semanticEvidence: typeof semanticEvidence }).semanticEvidence = semanticEvidence;
       }
