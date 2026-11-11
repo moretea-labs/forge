@@ -5773,7 +5773,7 @@ private struct RuntimeSettingsSection: View {
                     Text("Runtime 与诊断")
                         .font(.system(size:11.5,weight:.semibold))
                     Spacer()
-                    Text(model.runtimeStatus?.label ?? "状态未知")
+                    Text(model.runtimeLabel)
                         .font(.system(size:10.5))
                         .foregroundStyle(ForgePalette.secondary)
                 }
@@ -5870,17 +5870,17 @@ private struct RuntimeSettingsSection: View {
         VStack(alignment:.leading,spacing:13) {
             HStack(spacing:9) {
                 Circle().fill(runtimeColor).frame(width:8,height:8)
-                Text(model.runtimeStatus?.label ?? (model.runtimeLoading ? "正在读取运行时" : "运行时状态未知"))
+                Text(model.runtimeLabel)
                     .font(.system(size:14,weight:.semibold))
                 Spacer()
                 Button("刷新") { Task { await model.loadRuntimePage() } }
                     .buttonStyle(.plain).disabled(model.runtimeLoading)
                     .accessibilityIdentifier("runtime.refresh")
-                Button(model.runtimeLoading ? "诊断中…" : "诊断") { Task { await model.diagnoseRuntime() } }
+                Button("诊断") { Task { await model.diagnoseRuntime() } }
                     .buttonStyle(.bordered).disabled(model.runtimeLoading)
                     .accessibilityIdentifier("runtime.diagnose")
             }
-            Text(model.runtimeStatus?.detail ?? "等待独立 Recovery 返回主运行时状态。")
+            Text(model.runtimeDescription)
                 .font(.system(size:12)).foregroundStyle(ForgePalette.secondary)
             if let status = model.runtimeStatus {
                 HStack(spacing:14) {
@@ -5897,7 +5897,7 @@ private struct RuntimeSettingsSection: View {
         VStack(alignment:.leading,spacing:13) {
             HStack(spacing:9) {
                 Circle().fill(connectionColor).frame(width:8,height:8)
-                Text(connectionTitle).font(.system(size:14,weight:.semibold))
+                Text(model.connection).font(.system(size:14,weight:.semibold))
                 Spacer()
                 Button("刷新连接") { Task { await model.loadRuntimePage() } }
                     .buttonStyle(.plain).disabled(model.connectionLoading)
@@ -5963,13 +5963,13 @@ private struct RuntimeSettingsSection: View {
                              ? "使用 Forge 自动远程传输；不需要手工填写内部 MCP 状态。"
                              : "使用本机控制器，不启用远程 tunnel。")
                             .font(.system(size:11)).foregroundStyle(ForgePalette.secondary)
-                        Text("连接配置由 Forge Setup 保存；实际连通性请在外部客户端验证。")
+                        Text("保存后，请在对应客户端验证实际连接。")
                             .font(.system(size:10.5)).foregroundStyle(.tertiary)
                     }
                     .padding(.top,2)
                 }
             } else {
-                Text("连接状态来自 Forge Setup authority；客户端不保存第二份连接配置。")
+                Text(model.connectionLoading ? "正在读取连接状态。" : "暂时无法读取 MCP 连接状态。请刷新连接后重试。")
                     .font(.system(size:12)).foregroundStyle(ForgePalette.secondary)
             }
         }
@@ -5985,14 +5985,6 @@ private struct RuntimeSettingsSection: View {
     private var connectionColor: Color {
         guard let status = model.connectionStatus else { return .secondary }
         return status.ready ? .green : status.configured ? .orange : .red
-    }
-
-    private var connectionTitle: String {
-        guard let status = model.connectionStatus else { return model.connectionLoading ? "正在读取连接" : "MCP 连接状态未知" }
-        if status.ready { return "MCP 配置就绪" }
-        if !status.controller.ready { return "控制器需要处理" }
-        if !status.tunnel.ready { return "远程传输需要处理" }
-        return status.configured ? "连接未就绪" : "连接尚未配置"
     }
 
     private func runtimeMeta(_ label:String,_ value:String) -> some View {
