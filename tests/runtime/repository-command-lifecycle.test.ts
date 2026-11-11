@@ -29,6 +29,7 @@ import { readWorkHandle, WorkHandleState } from '../../src/runtime/control-plane
 import { getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { classifyRepositoryCommandRoute, executeRepositoryCommandViaProcessRuntime, waitRepositoryCommandProcess } from '../../src/runtime/execution/process-runtime/command-facade';
 import { listProcessRecords } from '../../src/runtime/execution/process-runtime/store';
+import { processScopeRoot } from '../../src/runtime/execution/process-runtime/process-scope';
 import { getExecutionJob, updateExecutionJob } from '../../src/runtime/execution/jobs/store';
 import { waitForExecutionJob } from '../../src/runtime/execution/jobs/wait';
 import { executeExecutionJob } from '../../src/runtime/execution/workers/executor';
@@ -654,8 +655,9 @@ describe('repository command execution lifecycle', () => {
     const result = await executeRepositoryCommandViaProcessRuntime({
       controllerHome,
       repository,
-      command: ['git', 'status', '--short'],
+      command: ['pwd'],
       timeoutMs: 10_000,
+      interactiveWaitMs: 1_000,
       executionIdentity: executionIdentityForRepository(repository),
     });
     expect(result).toMatchObject({
@@ -667,6 +669,9 @@ describe('repository command execution lifecycle', () => {
     expect(result.process).toBeUndefined();
     expect(listProcessRecords(controllerHome, repository.repoId)).toHaveLength(processCount);
     expect(listActiveLeases(controllerHome, repository.repoId)).toHaveLength(0);
+    const root = join(processScopeRoot(controllerHome, repository.repoId), 'process-runtime');
+    expect(existsSync(join(root, 'lightweight-running'))).toBe(false);
+    expect(existsSync(join(root, 'lightweight-terminal'))).toBe(false);
   });
 
   test('long readonly command returns a lightweight handle after the interactive budget and reuses it for the same request', async () => {

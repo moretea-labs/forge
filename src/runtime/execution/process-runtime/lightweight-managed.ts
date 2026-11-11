@@ -756,6 +756,8 @@ export async function startLightweightRepositoryCommand(
     abort,
     promise: undefined as never,
   };
+  // Fast readonly commands need no Process locator unless they outlive the interactive budget.
+  let publishedHandle = input.readonlyDirect !== true;
   const onCallerAbort = () => abort.abort();
   input.execution.signal?.addEventListener('abort', onCallerAbort, { once: true });
   const executionInput: ExecuteRepositoryCommandInput = {
@@ -770,17 +772,17 @@ export async function startLightweightRepositoryCommand(
       entry.pid = pid;
       entry.spawnedAtMs = Date.now();
       entry.identity = captureProcessIdentity(pid);
-      persistRunningReceipt(entry, true);
+      if (publishedHandle) persistRunningReceipt(entry, true);
     },
     onStdout: (chunk) => {
       entry.stdout = boundedAppend(entry.stdout, chunk, maxOutputBytes);
       entry.stdoutTail = boundedTailAppend(entry.stdoutTail, chunk);
-      persistRunningReceipt(entry);
+      if (publishedHandle) persistRunningReceipt(entry);
     },
     onStderr: (chunk) => {
       entry.stderr = boundedAppend(entry.stderr, chunk, maxOutputBytes);
       entry.stderrTail = boundedTailAppend(entry.stderrTail, chunk);
-      persistRunningReceipt(entry);
+      if (publishedHandle) persistRunningReceipt(entry);
     },
     onExit: (result) => {
       entry.exitObservation = {
@@ -795,7 +797,7 @@ export async function startLightweightRepositoryCommand(
       entry.result = result;
       entry.finishedAtMs = Date.now();
       input.execution.signal?.removeEventListener('abort', onCallerAbort);
-      persistTerminalReceipt(input.controllerHome, entry);
+      if (publishedHandle) persistTerminalReceipt(input.controllerHome, entry);
     },
   };
   const startExecution = () => (input.readonlyDirect
@@ -812,7 +814,7 @@ export async function startLightweightRepositoryCommand(
     };
     entry.result = observedResult;
     input.onCompleted?.(observedResult);
-    persistTerminalReceipt(input.controllerHome, entry);
+    if (publishedHandle) persistTerminalReceipt(input.controllerHome, entry);
     return observedResult;
   }).catch((error) => {
     // Once child exit has been observed, later bookkeeping failure cannot revoke
@@ -843,7 +845,7 @@ export async function startLightweightRepositoryCommand(
       const callbackMessage = callbackError instanceof Error ? callbackError.message : String(callbackError);
       failed.stderr = visibleOutput([failed.stderr, callbackMessage].filter(Boolean).join('\n'), maxOutputBytes);
     }
-    persistTerminalReceipt(input.controllerHome, entry);
+    if (publishedHandle) persistTerminalReceipt(input.controllerHome, entry);
     return failed;
   });
   entry.promise = input.deferStart
@@ -856,14 +858,17 @@ export async function startLightweightRepositoryCommand(
   entries.set(processId, entry);
   // Instance-level locator: a lightweight handle must be attachable from the
   // returned processId alone, including after Runtime memory loss.
-  recordProcessHandleIndexEntry(input.controllerHome, {
-    processId,
-    lane: 'lightweight',
-    target: processScopeExecutionTarget(input.controllerHome, processScopeFromKey(entry.scopeKey)),
-    principalId: entry.principalId,
-    commandId: entry.commandId,
-  });
-  persistRunningReceipt(entry, true);
+  const publishHandle = () => {
+    recordProcessHandleIndexEntry(input.controllerHome, {
+      processId,
+      lane: 'lightweight',
+      target: processScopeExecutionTarget(input.controllerHome, processScopeFromKey(entry.scopeKey)),
+      principalId: entry.principalId,
+      commandId: entry.commandId,
+    });
+    persistRunningReceipt(entry, true);
+  };
+  if (publishedHandle) publishHandle();
 
   if (entry.interactiveWaitMs > 0) {
     await Promise.race([
@@ -873,6 +878,10 @@ export async function startLightweightRepositoryCommand(
         timer.unref?.();
       }),
     ]);
+  }
+  if (!publishedHandle && entry.result === undefined) {
+    publishedHandle = true;
+    publishHandle();
   }
   const returnedAtMs = Date.now();
   return {
