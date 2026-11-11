@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import { decideConfiguredRuntimeReleaseReconciliation } from '../../src/runtime/release/release-coordinator';
 import { CLIENT_CAPABILITIES_META_KEY, CLIENT_INFO_META_KEY, PROTOCOL_VERSION_META_KEY } from '@modelcontextprotocol/server';
-import { execFileSync } from 'child_process';
+import { execFileSync, spawn } from 'child_process';
 import { createHash } from 'crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http';
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'fs';
@@ -113,7 +113,7 @@ import {
 import { ensureMcpControllerHomeOAuthPassphrase, writeMcpServiceLocalConfig } from '../../adapters/mcp/auth';
 import { acquireRecoveryReleaseLock, installStandaloneRecovery, inspectPrimaryConnectorLaunchdContract, inspectPrimaryPublicTunnelLaunchdContract, inspectRecoveryTunnelLaunchdContract, RECOVERY_DAEMON_LABEL, resolveRecoveryCompilerExecutable, retireStaleRecoveryLaunchAgents } from '../../src/runtime/standalone-recovery/installer';
 import { acquireRecoveryOperationLock, recoveryOperationLockPath } from '../../src/runtime/standalone-recovery/operation-lock';
-import { readCurrentRecoveryRelease, recoveryGatewayIsDraining } from '../../src/runtime/standalone-recovery/release';
+import { publishRecoveryRelease, readCurrentRecoveryRelease, recoveryGatewayIsDraining, writeRecoveryReleaseManifest } from '../../src/runtime/standalone-recovery/release';
 import { createRecoveryHttpTransport } from '../../src/runtime/standalone-recovery/http-transport';
 
 import { measureRuntimePerformance, assertRuntimePerformanceEvidence, readRuntimeCpu, RECOVERY_RUNAWAY_MEAN_CPU_PERCENT, RECOVERY_RUNAWAY_P95_CPU_PERCENT } from '../../src/runtime/standalone-recovery/performance';
@@ -6231,6 +6231,124 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(serialized).not.toContain('bearerToken');
     expect(serialized).not.toContain('gateway-token');
   });
+  test('standalone Recovery daemon bootstraps authenticated MCP while the primary endpoint is unavailable', async () => {
+    const home = controllerHome();
+    const primary = await failingPublicGatewayServer(503);
+    const reservation = createServer();
+    await new Promise<void>((done, reject) => {
+      reservation.once('error', reject);
+      reservation.listen(0, '127.0.0.1', () => done());
+    });
+    const address = reservation.address();
+    if (!address || typeof address === 'string') throw new Error('Recovery bootstrap port reservation failed');
+    const port = address.port;
+    await new Promise<void>((done, reject) => reservation.close((error) => error ? reject(error) : done()));
+
+    const entryPath = resolve('src/runtime/standalone-recovery/entry.ts');
+    const releaseRoot = join(home, 'recovery', 'releases', 'recovery-bootstrap-fixture');
+    const executable = join(releaseRoot, 'forge-recovery');
+    mkdirSync(releaseRoot, { recursive: true });
+    const shellQuote = (value: string) => `'${value.replace(/'/g, "'\\''")}'`;
+    const executableSource = `#!/bin/sh\nexec ${shellQuote(process.execPath)} ${shellQuote(entryPath)} "$@"\n`;
+    writeFileSync(executable, executableSource, { mode: 0o700 });
+    writeRecoveryReleaseManifest(releaseRoot, {
+      schemaVersion: 1,
+      releaseRevision: 'recovery-bootstrap-fixture',
+      sourceCommit: 'a'.repeat(40),
+      sourceRoot: process.cwd(),
+      cleanWorkspace: true,
+      builtAt: new Date().toISOString(),
+      productVersion: FORGE_VERSION,
+      artifacts: { 'forge-recovery': { sha256: createHash('sha256').update(executableSource).digest('hex') } },
+    });
+    publishRecoveryRelease(home, releaseRoot);
+
+    const config = initializeStandaloneRecovery(home, port, {
+      installProfile: 'gateway',
+      publicMcpUrl: primary.endpoint,
+    });
+    const tokenPath = config.gateway?.bearerTokenFile;
+    if (!tokenPath) throw new Error('Recovery bootstrap token path missing');
+    const token = (JSON.parse(readFileSync(tokenPath, 'utf8')) as { token: string }).token;
+    const child = spawn(process.execPath, [entryPath, 'daemon', '--controller-home', home], {
+      cwd: process.cwd(),
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+
+    try {
+      await new Promise<void>((done, reject) => {
+        const timer = setTimeout(() => reject(new Error(`Recovery daemon did not bind port ${port}; stdout=${stdout}; stderr=${stderr}`)), 10_000);
+        child.stdout?.on('data', (chunk) => {
+          stdout += chunk.toString('utf8');
+          if (stdout.includes(`"port":${port}`)) {
+            clearTimeout(timer);
+            done();
+          }
+        });
+        child.stderr?.on('data', (chunk) => { stderr += chunk.toString('utf8'); });
+        child.once('error', (error) => { clearTimeout(timer); reject(error); });
+        child.once('exit', (code, signal) => {
+          clearTimeout(timer);
+          reject(new Error(`Recovery daemon exited before Gateway readiness: code=${code} signal=${signal}; stderr=${stderr}`));
+        });
+      });
+
+      expect((await fetch(primary.endpoint)).status).toBe(503);
+      const health = await fetch(`http://127.0.0.1:${port}/recovery/health`);
+      expect(health.status).toBe(200);
+      expect(await health.json()).toMatchObject({ service: 'forge-standalone-recovery' });
+
+      const endpoint = `http://127.0.0.1:${port}/recovery/mcp`;
+      const headers = {
+        authorization: `Bearer ${token}`,
+        accept: 'application/json, text/event-stream',
+        'content-type': 'application/json',
+      };
+      const send = (body: Record<string, unknown>) => fetch(endpoint, { method: 'POST', headers, body: JSON.stringify(body) });
+      const decode = async (response: Response) => {
+        const raw = await response.text();
+        const data = raw.split(/\r?\n/).find((line) => line.startsWith('data:'));
+        return JSON.parse(data ? data.slice(5).trim() : raw) as Record<string, any>;
+      };
+
+      const initialized = await send({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'recovery-bootstrap-test', version: '1' } },
+      });
+      expect(initialized.status).toBe(200);
+      expect((await decode(initialized)).result.serverInfo.name).toBe('forge-standalone-recovery');
+      expect(initialized.headers.get('mcp-session-id')).toBeNull();
+
+      const initializedNotification = await send({ jsonrpc: '2.0', method: 'notifications/initialized' });
+      expect(initializedNotification.status).toBe(202);
+      const listed = await send({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
+      expect(listed.status).toBe(200);
+      const toolNames = ((await decode(listed)).result.tools as Array<{ name: string }>).map((tool) => tool.name);
+      expect(toolNames).toEqual(expect.arrayContaining(['runtime_status', 'restart_primary_runtime', 'recover_primary_runtime']));
+      expect(listed.headers.get('mcp-session-id')).toBeNull();
+
+      const status = await send({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'runtime_status', arguments: {} } });
+      expect(status.status).toBe(200);
+      expect((await decode(status)).result.structuredContent).toMatchObject({
+        running: false,
+        ready: false,
+        reasonCodes: ['RUNTIME_NOT_RUNNING'],
+      });
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill('SIGTERM');
+        await new Promise<void>((done) => {
+          const timer = setTimeout(done, 5_000);
+          child.once('exit', () => { clearTimeout(timer); done(); });
+        });
+      }
+    }
+  });
+
   test('Recovery Connector verifier requires stateless legacy MCP across SSE responses', async () => {
     const home = controllerHome();
     ensureMcpControllerHomeOAuthPassphrase(home);
