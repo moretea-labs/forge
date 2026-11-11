@@ -3889,12 +3889,195 @@ mod tests {
         }
     }
 
+
+    struct NativeProviderToolFixture {
+        root: PathBuf,
+        controller_home: PathBuf,
+        repo_root: PathBuf,
+        source_root: PathBuf,
+        script: PathBuf,
+        bun: PathBuf,
+        repo_id: String,
+        checkout_id: String,
+    }
+
+    impl Drop for NativeProviderToolFixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn native_provider_tool_fixture() -> NativeProviderToolFixture {
+        use std::process::Command;
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH)
+            .expect("test clock").as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "forge-native-provider-e2e-{}-{nonce}", std::process::id()
+        ));
+        let controller_home = root.join("controller");
+        let repo_root = root.join("repo");
+        std::fs::create_dir_all(&repo_root).expect("fixture repository");
+        std::fs::create_dir_all(repo_root.join("tests")).expect("fixture tests");
+        std::fs::write(repo_root.join("fixture.txt"), "before\n").expect("fixture source");
+        std::fs::write(repo_root.join("tests/fixture.test.ts"), [
+            "import { expect, test } from 'bun:test';",
+            "import { readFileSync } from 'node:fs';",
+            "test('the native Agent edit is visible to Forge Process', () => {",
+            "  expect(readFileSync(new URL('../fixture.txt', import.meta.url), 'utf8')).toContain('after');",
+            "});",
+            "",
+        ].join("\n")).expect("fixture test");
+        for args in [
+            vec!["init", "-q", "-b", "main"],
+            vec!["config", "user.name", "Forge Native E2E"],
+            vec!["config", "user.email", "forge-native-e2e@example.com"],
+            vec!["add", "."],
+            vec!["commit", "-q", "-m", "native provider fixture"],
+        ] {
+            let output = Command::new("git").args(&args).current_dir(&repo_root).output()
+                .expect("git fixture command");
+            assert!(output.status.success(), "git fixture failed: {}",
+                String::from_utf8_lossy(&output.stderr));
+        }
+
+        let source_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..").canonicalize().expect("source root");
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let script = manifest_dir.join("resources/forge-local-tool.mjs");
+        let bun = dirs::home_dir().map(|home| home.join(".bun/bin/bun"))
+            .filter(|candidate| candidate.is_file()).unwrap_or_else(|| PathBuf::from("bun"));
+        let setup = r#"
+            const { join } = await import('node:path');
+            const { pathToFileURL } = await import('node:url');
+            const root = process.cwd();
+            const load = (path) => import(pathToFileURL(join(root, path)).href);
+            const controllerHome = process.env.FORGE_TEST_CONTROLLER_HOME;
+            const repoRoot = process.env.FORGE_TEST_REPOSITORY_ROOT;
+            const { ensureControllerHome } = await load('src/effects/controller-home.ts');
+            const { registerRepository } = await load('src/cli/repositories/registry.ts');
+            const { ensureForgeInstanceIdentity } = await load('packages/kernel/identity/api/index.ts');
+            const {
+              writeWorkspaceIdentity, writeProjectIdentity, writeProjectPlacement,
+            } = await load('src/runtime/control-plane/workspace/workspace-store.ts');
+            ensureControllerHome(controllerHome);
+            const repository = registerRepository({
+              path: repoRoot, controllerHome, displayName: 'Native Provider E2E',
+            });
+            const instance = ensureForgeInstanceIdentity({
+              controllerHome, preferredInstanceId: 'forge-native-provider-e2e',
+              now: () => new Date().toISOString(), label: 'Native Provider E2E',
+            });
+            writeWorkspaceIdentity({ controllerHome, value: {
+              workspaceId: 'workspace-native-provider-e2e', title: 'Native Provider E2E',
+            }});
+            writeProjectIdentity({ controllerHome, value: {
+              projectId: 'project-native-provider-e2e',
+              workspaceId: 'workspace-native-provider-e2e',
+              displayName: 'Native Provider E2E',
+            }});
+            writeProjectPlacement({ controllerHome, value: {
+              projectId: 'project-native-provider-e2e',
+              forgeInstanceId: instance.instanceId,
+              repositoryId: repository.repoId,
+              checkoutId: repository.activeCheckoutId,
+            }});
+            process.stdout.write(JSON.stringify({
+              repoId: repository.repoId, checkoutId: repository.activeCheckoutId,
+            }));
+        "#;
+        let output = Command::new(&bun).arg("-e").arg(setup).current_dir(&source_root)
+            .env("FORGE_TEST_CONTROLLER_HOME", &controller_home)
+            .env("FORGE_TEST_REPOSITORY_ROOT", &repo_root)
+            .output().expect("Bun repository fixture setup");
+        assert!(output.status.success(), "Bun fixture setup failed: {}",
+            String::from_utf8_lossy(&output.stderr));
+        let registry: Value = serde_json::from_slice(&output.stdout)
+            .expect("registered fixture identity");
+        NativeProviderToolFixture {
+            root, controller_home, repo_root, source_root, script, bun,
+            repo_id: registry["repoId"].as_str().expect("repo id").to_string(),
+            checkout_id: registry["checkoutId"].as_str().expect("checkout id").to_string(),
+        }
+    }
+
+    struct NativeProviderToolHost {
+        sequence: std::sync::atomic::AtomicU64,
+        events: std::sync::Mutex<Vec<Value>>,
+        tool_calls: std::sync::Mutex<Vec<Value>>,
+        controller_home: PathBuf,
+        source_root: PathBuf,
+        script: PathBuf,
+        bun: PathBuf,
+    }
+
+    impl NativeProviderToolHost {
+        fn new(fixture: &NativeProviderToolFixture) -> Self {
+            Self {
+                sequence: std::sync::atomic::AtomicU64::new(0),
+                events: std::sync::Mutex::new(Vec::new()),
+                tool_calls: std::sync::Mutex::new(Vec::new()),
+                controller_home: fixture.controller_home.clone(),
+                source_root: fixture.source_root.clone(),
+                script: fixture.script.clone(),
+                bun: fixture.bun.clone(),
+            }
+        }
+    }
+
+    impl LocalApiHost for NativeProviderToolHost {
+        fn packaged_tool_script(&self) -> Result<PathBuf, String> {
+            Ok(self.script.clone())
+        }
+        fn emit_tool_progress(&self, payload: Value) {
+            self.events.lock().unwrap().push(json!({
+                "channel":"tool", "payload":sequence_local_api_event(payload, &self.sequence)
+            }));
+        }
+        fn emit_model_progress(&self, payload: Value) {
+            self.events.lock().unwrap().push(json!({
+                "channel":"model", "payload":sequence_local_api_event(payload, &self.sequence)
+            }));
+        }
+        fn execute_test_tool(&self, payload: &Value) -> Option<Result<Value, String>> {
+            use std::io::Write;
+            use std::process::Stdio;
+            use std::process::Command;
+            self.tool_calls.lock().unwrap().push(payload.clone());
+            let mut request = payload.clone();
+            request["controllerHome"] = Value::String(self.controller_home.to_string_lossy().to_string());
+            request["sourceRoot"] = Value::String(self.source_root.to_string_lossy().to_string());
+            let mut child = match Command::new(&self.bun).arg(&self.script)
+                .current_dir(&self.source_root)
+                .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
+                .spawn() {
+                    Ok(child) => child,
+                    Err(error) => return Some(Err(format!("native tool runner spawn: {error}"))),
+                };
+            let input = request.to_string();
+            if let Some(mut stdin) = child.stdin.take() {
+                if let Err(error) = stdin.write_all(input.as_bytes()) {
+                    return Some(Err(format!("native tool runner input: {error}")));
+                }
+            }
+            let output = match child.wait_with_output() {
+                Ok(output) => output,
+                Err(error) => return Some(Err(format!("native tool runner wait: {error}"))),
+            };
+            if !output.status.success() {
+                return Some(Err(format!("native tool runner failed: {}",
+                    String::from_utf8_lossy(&output.stderr))));
+            }
+            Some(serde_json::from_slice(&output.stdout)
+                .map_err(|error| format!("native tool runner result: {error}")))
+        }
+    }
     fn spawn_scripted_agent_provider(
-        protocol: &'static str,
+        protocol: &'static str, bun_executable: &str,
     ) -> (String, std::thread::JoinHandle<Vec<Value>>) {
         use std::{io::{Read, Write}, net::TcpListener, thread, time::Duration};
         let listener = TcpListener::bind("127.0.0.1:0").expect("mock provider socket");
         let port = listener.local_addr().unwrap().port();
+        let bun_executable = bun_executable.to_string();
         let server = thread::spawn(move || {
             let mut requests = Vec::new();
             for round in 0..4 {
@@ -3936,11 +4119,11 @@ mod tests {
                         0 => ("call-read", "read_file", json!({"path":"fixture.txt","start_line":1,"end_line":3})),
                         1 => ("call-patch", "apply_patch", json!({
                             "purpose":"fixture edit",
-                            "operations":[{"type":"replace","path":"fixture.txt","old_text":"before","new_text":"after"}],
+                            "operations":[{"type":"replace","path":"fixture.txt","replacements":[{"old_text":"before","new_text":"after"}]}],
                             "allowed_paths":["fixture.txt"]
                         })),
                         _ => ("call-test", "run_command", json!({
-                            "command":["bun","test","tests/fixture.test.ts"],"timeout_ms":1000
+                            "command":[bun_executable.as_str(),"test","tests/fixture.test.ts"],"timeout_ms":1000
                         })),
                     };
                     if protocol == "anthropic" {
@@ -3983,9 +4166,36 @@ mod tests {
     }
 
     #[test]
+    fn native_provider_loop_executes_real_adapter_for_openai_and_anthropic() {
+        for (profile_id, protocol) in [("openai-real-adapter", "openai"), ("anthropic-real-adapter", "anthropic")] {
+            let fixture = native_provider_tool_fixture();
+            let (endpoint, server) = spawn_scripted_agent_provider(protocol, fixture.bun.to_str().unwrap());
+            let host = NativeProviderToolHost::new(&fixture);
+            let config = json!({"defaultProvider":format!("api:{profile_id}"),"apiProfiles":[{"id":profile_id,"endpoint":endpoint,"model":"test-model","apiProtocol":protocol}]});
+            let (_cancel_sender, mut cancel_receiver) = tokio::sync::watch::channel(false);
+            let result = tauri::async_runtime::block_on(run_local_api_turn_with_config(&host, config, vec![json!({"role":"user","content":"Read fixture.txt, edit it, run its test, and report the result."})], Some(fixture.repo_id.clone()), Some(fixture.checkout_id.clone()), format!("conv-{profile_id}"), Some(format!("api:{profile_id}")), None, true, &mut cancel_receiver)).expect("real non-MCP provider loop");
+            assert_eq!(result["output"], "Read, edited and verified.");
+            assert_eq!(result["toolActivityCount"], 3);
+            assert_eq!(std::fs::read_to_string(fixture.repo_root.join("fixture.txt")).unwrap(), "after\n");
+            let calls = host.tool_calls.lock().unwrap();
+            assert_eq!(calls.iter().take(3).map(|call| call["tool"].as_str().unwrap()).collect::<Vec<_>>(), vec!["read_file", "apply_patch", "run_command"]);
+            assert!(calls.iter().take(3).all(|call| call["repoId"] == fixture.repo_id && call["checkoutId"] == fixture.checkout_id && call["allowEffects"] == true));
+            let events = host.events.lock().unwrap();
+            let sequences = events.iter().map(|event| event.pointer("/payload/sequence").and_then(Value::as_u64).unwrap()).collect::<Vec<_>>();
+            assert!(sequences.windows(2).all(|pair| pair[0] < pair[1]));
+            for call_id in ["call-read", "call-patch", "call-test"] { let phases = events.iter().filter(|event| event["channel"] == "tool" && event["payload"]["toolCallId"] == call_id).map(|event| event["payload"]["phase"].as_str().unwrap()).collect::<Vec<_>>(); assert_eq!(phases.first(), Some(&"started")); assert!(phases.contains(&"output")); assert_eq!(phases.last(), Some(&"completed")); }
+            let requests = server.join().expect("mock provider joined");
+            assert_eq!(requests.len(), 4);
+            assert!(requests[1].to_string().contains("before"));
+            assert!(requests[2].to_string().contains("applied"));
+            assert!(requests[3].to_string().contains("1 pass"));
+        }
+    }
+
+    #[test]
     fn same_native_agent_loop_runs_read_edit_and_test_for_openai_and_anthropic() {
         for (profile_id, protocol) in [("openai-test", "openai"), ("anthropic-test", "anthropic")] {
-            let (endpoint, server) = spawn_scripted_agent_provider(protocol);
+            let (endpoint, server) = spawn_scripted_agent_provider(protocol, "bun");
             let host = ScriptedAgentLoopHost::default();
             let config = json!({
                 "defaultProvider":format!("api:{profile_id}"),
