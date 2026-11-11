@@ -489,6 +489,13 @@ describe('Computer durable InteractionTarget authority', () => {
     });
     expect(targetAuthority.get(fixture.controllerHome, originalTargetId)).toEqual(originalTarget);
     expect(targetAuthority.get(fixture.controllerHome, staleTargetId)?.providerBinding?.providerSessionId).toBe('provider_session_2');
+    await computerPluginAdapter.executeAction(actionInput(
+      fixture.controllerHome,
+      'desktop_press',
+      { target_id: staleTargetId, selector: { title: 'Save' }, semantic_action: 'press' },
+      'target-press-after-exact-id-reattach',
+    ));
+    expect(fixture.state.pressCount).toBe(1);
     expect(new Set(targetAuthority.listAllApplications(fixture.controllerHome).map(target => target.targetId)))
       .toEqual(new Set([originalTargetId, staleTargetId]));
   });
