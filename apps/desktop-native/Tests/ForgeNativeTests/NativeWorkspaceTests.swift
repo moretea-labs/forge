@@ -137,6 +137,61 @@ final class NativeWorkspaceTests: XCTestCase {
         )
     }
 
+    func testInitialAgentRecallIsAdvisoryAndAvailableToBothProviderPrompts() {
+        let recall = KnowledgeRecallDetail(
+            advisoryOnly:true,
+            items:[
+                KnowledgeRecallItemDetail(
+                    memoryId:"project:new",text:"Keep cards flat and preserve current product requirements.",
+                    provenance:KnowledgeProvenanceDetail(sourceKind:"controller",recordedAt:"2026-11-11"),
+                    recentUsage:nil
+                ),
+                KnowledgeRecallItemDetail(
+                    memoryId:"project:old",text:"Old layout guidance.",
+                    provenance:KnowledgeProvenanceDetail(sourceKind:"controller",recordedAt:"2026-10-01"),
+                    recentUsage:KnowledgeRecallUsageDetail(rejectedCount:2,staleCount:2)
+                )
+            ],
+            gaps:[],
+            repositoryGuidance:[
+                KnowledgeRepositoryGuidanceDetail(
+                    path:"DESIGN.md",content:"Do not add decorative shadows to cards.",
+                    truncated:false
+                ),
+                KnowledgeRepositoryGuidanceDetail(
+                    path:"docs/mvp2/design/design-rules.md",
+                    content:"Preserve the original inventory tracking layout.",
+                    truncated:true
+                )
+            ]
+        )
+        let context = NativeWorkspace.advisoryKnowledgeText(recall)
+        XCTAssertNotNil(context)
+        XCTAssertTrue(context?.contains("project:new") == true)
+        XCTAssertTrue(context?.contains("earlier rejection recorded") == true)
+        let codex = NativeWorkspace.providerPrompt(
+            "Continue implementation",contextPaths:[],
+            requirementId:"REQ-1",advisoryKnowledge:context
+        )
+        XCTAssertTrue(codex.contains("Forge project knowledge"))
+        XCTAssertTrue(codex.contains("repository contracts"))
+        XCTAssertTrue(codex.contains("project:old"))
+        XCTAssertTrue(codex.contains("DESIGN.md"))
+        XCTAssertTrue(codex.contains("Do not add decorative shadows"))
+        XCTAssertTrue(codex.contains("partial: read full source before editing"))
+        var thread = ChatThread(provider:"api")
+        thread.requirementId = "REQ-1"
+        let messages = NativeWorkspace.apiTurnMessages(
+            thread,prompt:"Continue implementation",contextPaths:[],advisoryKnowledge:context
+        )
+        XCTAssertEqual(messages.count,1)
+        XCTAssertTrue(messages[0]["content"]?.contains("project:new") == true)
+        XCTAssertFalse(NativeWorkspace.providerPrompt("Continue",contextPaths:[]).contains("Forge project knowledge"))
+        XCTAssertNil(NativeWorkspace.advisoryKnowledgeText(KnowledgeRecallDetail(
+            advisoryOnly:true,items:[],gaps:[]
+        )))
+    }
+
     @MainActor
     func testKnowledgeInspectorCannotInsertAfterConversationChanges() {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

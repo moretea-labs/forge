@@ -123,6 +123,8 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
             read_project_knowledge(
                 required(args, "repoId")?,
                 args.get("query").and_then(Value::as_str).unwrap_or("").to_string(),
+                args.get("recall").and_then(Value::as_bool),
+                args.get("checkoutId").and_then(Value::as_str).map(str::to_owned),
             ).await,
         "read_recovery_status" => read_recovery_status().await,
         "verify_recovery_runtime" => verify_recovery_runtime().await,

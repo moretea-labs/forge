@@ -929,11 +929,51 @@ async fn read_local_provider_models() -> Result<Value, String> {
 
 
 #[tauri::command]
-async fn read_project_knowledge(repo_id: String, query: String) -> Result<Value, String> {
+async fn read_project_knowledge(repo_id: String, query: String, recall: Option<bool>, checkout_id: Option<String>) -> Result<Value, String> {
     if repo_id.trim().is_empty() || repo_id.len() > 256 || query.chars().count() > 160 {
         return Err("FORGE_DESKTOP_KNOWLEDGE_ARGUMENT_INVALID".to_string());
     }
-    let arguments = json!({
+    if recall == Some(true) {
+        if query.trim().is_empty() {
+            return Err("FORGE_DESKTOP_KNOWLEDGE_RECALL_QUERY_REQUIRED".to_string());
+        }
+        // Same Cognitive owner as ChatGPT MCP, with project/workspace scopes
+        // derived by rh_context. Do not resurrect Work-specific knowledge.
+        let mut arguments = json!({
+            "repo_id": repo_id,
+            "operation": "search",
+            "query": query.trim(),
+            // A known root guidance path lets the existing context engine
+            // discover relevant DESIGN.md references, even for a Chinese
+            // first-turn prompt with no English code search terms.
+            "known_paths": ["AGENTS.md"],
+            "max_files": 2,
+            "max_snippets": 1,
+            "include_learning_recall": true
+        });
+        if let Some(ref checkout_id) = checkout_id { arguments["checkout_id"] = json!(checkout_id); }
+        let result = call_runtime_tool("rh_context", arguments).await?;
+        let mut recall = result.pointer("/data/learningRecall")
+            .filter(|value| value.get("advisoryOnly").and_then(Value::as_bool) == Some(true))
+            .cloned()
+            .ok_or_else(|| "FORGE_DESKTOP_KNOWLEDGE_UNAVAILABLE".to_string())?;
+        // Reuse the MCP context owner's bounded current-file evidence.
+        // Do not introduce a second native design-document registry.
+        if let Some(contracts) = result.pointer("/data/instructionContext/contracts").and_then(Value::as_array) {
+            recall["repositoryGuidance"] = Value::Array(contracts.iter().take(5).filter_map(|item| {
+                let path = item.get("path")?.as_str()?;
+                let content = item.get("content")?.as_str()?;
+                Some(json!({
+                    "path": path,
+                    "content": content.chars().take(1_800).collect::<String>(),
+                    "truncated": item.get("truncated").and_then(Value::as_bool).unwrap_or(false)
+                        || content.chars().count() > 1_800,
+                }))
+            }).collect());
+        }
+        return Ok(recall);
+    }
+    let mut arguments = json!({
         "repo_id": repo_id,
         "operation": "search",
         "query": "Read bounded Cognitive advisory memory",
@@ -944,6 +984,7 @@ async fn read_project_knowledge(repo_id: String, query: String) -> Result<Value,
         "knowledge_query": if query.trim().is_empty() { "*" } else { query.trim() },
         "knowledge_limit": 24
     });
+    if let Some(ref checkout_id) = checkout_id { arguments["checkout_id"] = json!(checkout_id); }
     let result = call_runtime_tool("rh_context", arguments).await?;
     let audit = result.pointer("/data/cognitionAudit")
         .filter(|value| value.get("readonly").and_then(Value::as_bool) == Some(true))
@@ -2454,6 +2495,7 @@ fn local_tool_catalog(allow_effects: bool) -> Vec<Value> {
         json!({"type":"function","function":{"name":"git_diff","description":"Inspect a bounded Git diff in the selected repository.","parameters":{"type":"object","properties":{"paths":{"type":"array","items":{"type":"string"}},"staged":{"type":"boolean"},"max_bytes":{"type":"integer","minimum":100,"maximum":16000}},"additionalProperties":false}}}),
         json!({"type":"function","function":{"name":"process_status","description":"Read the canonical Forge Process Runtime status for a previously returned managed process ID. Never re-run a pending command.","parameters":{"type":"object","properties":{"process_id":{"type":"string","minLength":5,"maxLength":128}},"required":["process_id"],"additionalProperties":false}}}),
         json!({"type":"function","function":{"name":"patch_plan","description":"Review the preconditions and affected paths of proposed canonical Forge edit operations before applying anything.","parameters":{"type":"object","properties":{"operations":{"type":"array","items":{"type":"object"}}},"required":["operations"],"additionalProperties":false}}}),
+        json!({"type":"function","function":{"name":"recall_knowledge","description":"Retrieve a small relevance-ranked advisory Cognitive working set by current task intent, with memory IDs and actual rejection/usage evidence. Use on meaningful strategy changes, not on every tool step. Never treat memory as current code or authorization truth.","parameters":{"type":"object","properties":{"query":{"type":"string","minLength":1,"maxLength":160}},"required":["query"],"additionalProperties":false}}}),
     ];
     if allow_effects {
         tools.extend([
@@ -2461,6 +2503,8 @@ fn local_tool_catalog(allow_effects: bool) -> Vec<Value> {
             json!({"type":"function","function":{"name":"run_command","description":"Execute typed command arguments via Forge's authorized Process Runtime and checkout leases. Up to 10 minutes execution; if a managed Process ID is returned, inspect it with process_status before proceeding, never replay the command. No host scope.","parameters":{"type":"object","properties":{"command":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":24},"timeout_ms":{"type":"integer","minimum":1000,"maximum":600000},"max_output_bytes":{"type":"integer","minimum":1000,"maximum":12000}},"required":["command"],"additionalProperties":false}}}),
             json!({"type":"function","function":{"name":"process_cancel","description":"Cancel a previously returned managed Process through the same Native Agent principal, repository and checkout. Use only when the user explicitly asks to stop it or continuing is unsafe; an interrupted observation alone is not a reason to cancel. Read process_status afterward and never replay the command.","parameters":{"type":"object","properties":{"process_id":{"type":"string","minLength":5,"maxLength":128}},"required":["process_id"],"additionalProperties":false}}}),
             json!({"type":"function","function":{"name":"git_commit","description":"Commit only explicitly listed repository-relative paths using Forge's canonical structured Git authority. Examine the diff first and supply a nonempty commit message. Never implicitly commit the entire index.","parameters":{"type":"object","properties":{"message":{"type":"string","minLength":1,"maxLength":500},"paths":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":32}},"required":["message","paths"],"additionalProperties":false}}}),
+            json!({"type":"function","function":{"name":"record_learning","description":"Persist model-authored reusable Project/Workspace knowledge after an explicit user correction or verified meaningful outcome, not after routine tool calls. Uses the canonical Forge Cognition store without Work. This is a durable effect; emit an exact structured learning signal with no invented evidence.","parameters":{"type":"object","properties":{"signals":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"object","properties":{"scope_kind":{"type":"string","enum":["project","workspace"]},"kind":{"type":"string"},"valence":{"type":"string","enum":["positive","negative","neutral"]},"summary":{"type":"string","maxLength":2000},"concepts":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":32},"facets":{"type":"array","items":{"type":"string"},"maxItems":12},"admission_source":{"type":"string","enum":["explicit_human","controller_observation","system_inference"]},"portability":{"type":"string","enum":["local","portable"]},"salience":{"type":"number","minimum":0,"maximum":1},"confidence":{"type":"number","minimum":0,"maximum":1},"utility":{"type":"number","minimum":0,"maximum":1},"evidence_refs":{"type":"array","items":{"type":"string"}}},"required":["scope_kind","kind","valence","summary","concepts","admission_source","portability","salience","confidence","utility"],"additionalProperties":false}}},"required":["signals"],"additionalProperties":false}}}),
+            json!({"type":"function","function":{"name":"memory_feedback","description":"After actually using or rejecting a recalled Forge memory, record model-authored use/rejection with the exact memoryId and a reason. For rejection specify stale, contradicted or irrelevant. Only advisory retrieval utility changes; no execution authority.","parameters":{"type":"object","properties":{"feedback":{"type":"array","minItems":1,"maxItems":8,"items":{"type":"object","properties":{"memory_address":{"type":"string","maxLength":1024},"decision":{"type":"string","enum":["used","rejected"]},"reason":{"type":"string","maxLength":1000},"rejection_kind":{"type":"string","enum":["stale","contradicted","irrelevant"]}},"required":["memory_address","decision","reason"],"additionalProperties":false}}},"required":["feedback"],"additionalProperties":false}}}),
         ]);
     }
     tools
@@ -2508,6 +2552,11 @@ fn local_effect_outcome(name: &str, receipt: &Value) -> LocalEffectOutcome {
             Some(false) => LocalEffectOutcome::TerminalFailure,
             None => LocalEffectOutcome::Unknown,
         },
+        "record_learning" | "memory_feedback" => match result.pointer("/result/recorded").and_then(Value::as_bool) {
+            Some(true) => LocalEffectOutcome::Succeeded,
+            Some(false) => LocalEffectOutcome::TerminalFailure,
+            None => LocalEffectOutcome::Unknown,
+        },
         _ => LocalEffectOutcome::Unknown,
     }
 }
@@ -2543,7 +2592,7 @@ fn local_tool_execution_timeout(name: &str, arguments: &Value) -> std::time::Dur
 }
 
 fn local_tool_timeout_error(name: &str) -> &'static str {
-    if matches!(name, "run_command" | "apply_patch" | "git_commit" | "process_cancel") {
+    if matches!(name, "run_command" | "apply_patch" | "git_commit" | "process_cancel" | "record_learning" | "memory_feedback") {
         "FORGE_DESKTOP_LOCAL_TOOL_OUTCOME_UNKNOWN"
     } else {
         "FORGE_DESKTOP_LOCAL_TOOL_TIMEOUT"
@@ -3295,7 +3344,12 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
     let system_instruction = if let Some(id) = repo_id.as_ref() {
         let checkout = checkout_id.as_deref().unwrap_or("unbound (read-only)");
         let access_mode = local_api_access_mode_instruction(repository_effect_access);
-        format!("You are the Forge Desktop local API agent working in registered repository {id}, checkout {checkout}. Use the supplied tools for real facts and repository operations. All calls execute through the existing Forge repository authority in the local process, not MCP HTTP. Never invent a file, command result, Requirement or Plan state. Tools with effects require a pinned checkout and this repository's persistent Forge AccessPolicy to be Full Access. {access_mode} Never claim an operation succeeded unless its tool result confirms it.")
+        let cognitive_guidance = if repository_effect_access {
+            "Recalled Project/Workspace memories are advisory. Use recall_knowledge on a materially new strategy or task, not on routine steps. On a meaningful explicit user correction or verified reusable outcome, use record_learning with model-authored semantic knowledge, never routine tool logs. When a recalled memory materially helped or was rejected, use memory_feedback with its exact ID and reason. Current user instructions and repository source facts always take priority; never invent evidence or silently override authorization."
+        } else {
+            "Recalled Project/Workspace memories are advisory; use recall_knowledge when new task context warrants it, not per tool call. Read-only access does not authorize learning writes. Current user instructions and repository source facts always take priority."
+        };
+        format!("You are the Forge Desktop local API agent working in registered repository {id}, checkout {checkout}. Use the supplied tools for real facts and repository operations. All calls execute through the existing Forge repository authority in the local process, not MCP HTTP. Never invent a file, command result, Requirement or Plan state. Tools with effects require a pinned checkout and this repository's persistent Forge AccessPolicy to be Full Access. {access_mode} Never claim an operation succeeded unless its tool result confirms it. {cognitive_guidance}")
     } else {
         "You are the Forge Desktop assistant. No Forge project is attached: tools are disabled. Do not invent repository changes or imply that you ran a command. Ask the user to attach a project to work on files.".to_string()
     };
@@ -3454,7 +3508,7 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
                     "FORGE_DESKTOP_API_TOOL_NOT_AUTHORIZED".into(), last_effect_request_id.as_deref()
                 ));
             }
-            let effectful = matches!(name.as_str(), "apply_patch" | "run_command" | "git_commit" | "process_cancel");
+            let effectful = matches!(name.as_str(), "apply_patch" | "run_command" | "git_commit" | "process_cancel" | "record_learning" | "memory_feedback");
             let verification_attempt = name == "run_command" && local_verification_command(&args);
             let command_budget_ms = args.get("timeout_ms").and_then(Value::as_u64)
                 .unwrap_or(60_000).clamp(1_000, 600_000);
@@ -4394,11 +4448,17 @@ mod tests {
         let readonly_names = names(readonly);
         assert!(readonly_names.contains(&"read_file".to_string()));
         assert!(readonly_names.contains(&"search_code".to_string()));
+        assert!(readonly_names.contains(&"recall_knowledge".to_string()));
         assert!(readonly_names.contains(&"git_status".to_string()));
         assert!(!readonly_names.contains(&"run_command".to_string()));
         assert!(!readonly_names.contains(&"apply_patch".to_string()));
         assert!(!readonly_names.contains(&"process_cancel".to_string()));
+        assert!(!readonly_names.contains(&"record_learning".to_string()));
+        assert!(!readonly_names.contains(&"memory_feedback".to_string()));
         let with_permission = names(local_tool_catalog(true));
+        assert!(with_permission.contains(&"record_learning".to_string()));
+        assert!(with_permission.contains(&"recall_knowledge".to_string()));
+        assert!(with_permission.contains(&"memory_feedback".to_string()));
         assert!(with_permission.contains(&"run_command".to_string()));
         assert!(with_permission.contains(&"apply_patch".to_string()));
         assert!(with_permission.contains(&"process_cancel".to_string()));
