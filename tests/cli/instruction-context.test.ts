@@ -94,6 +94,34 @@ describe('repository UI instruction context', () => {
     }
   });
 
+  test('module guidance alone resolves its AGENTS and referenced design contract', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-module-design-bootstrap-'));
+    try {
+      mkdirSync(join(root, 'docs', 'mvp2', 'design'), { recursive: true });
+      writeFileSync(join(root, 'AGENTS.md'), '# Repository constraints\\n');
+      writeFileSync(join(root, 'docs', 'mvp2', 'AGENTS.md'),
+        'For UI read \`docs/mvp2/design/design-rules.md\`.\\n');
+      writeFileSync(join(root, 'DESIGN.md'), 'Flat surfaces.\\n');
+      writeFileSync(join(root, 'docs', 'mvp2', 'design', 'design-rules.md'), 'Do not add card shadows.\\n');
+      expect(Bun.spawnSync(['git', 'init', '-q'], { cwd: root }).exitCode).toBe(0);
+      expect(Bun.spawnSync([
+        'git', '-c', 'user.name=Forge Test', '-c', 'user.email=forge@test.invalid',
+        'commit', '--allow-empty', '-qm', 'init',
+      ], { cwd: root }).exitCode).toBe(0);
+      const pack = buildControllerContextPack(root, getMcpPolicy('controller', { repoRoot: root }), {
+        description: '用药 UI 源码迁移',
+        knownPaths: ['docs/mvp2/AGENTS.md'], maxFiles: 1, maxSnippets: 1,
+      });
+      const paths = pack.instructionContext.contracts.map(contract => contract.path);
+      expect(paths).toContain('AGENTS.md');
+      expect(paths).toContain('docs/mvp2/AGENTS.md');
+      expect(paths).toContain('DESIGN.md');
+      expect(paths).toContain('docs/mvp2/design/design-rules.md');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test('preserves bounded truncation evidence for long design documents', () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-design-bounds-'));
     try {
