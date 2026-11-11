@@ -22,9 +22,10 @@ import {
   type PluginCapabilityAuthorizationGrant,
 } from './capability-authorization-grants';
 import { markControllerContextProjectionDirty } from '../projections/controller-context';
-import { acquireExecutionLeasesAsync, releaseExactExecutionLeases } from '../resources/leases/store';
+import { acquireExecutionLeasesAsync, releaseExactExecutionLeases, renewExecutionLeases } from '../resources/leases/store';
 import { iosSimulatorResourceKey } from '../resources/claims/conflicts';
 import { isRuntimeWriteFenceError } from '../root/write-fence';
+import { ControllerLockContentionError } from '../../cli/repositories/locks';
 import type {
   AssistantPluginAdapter,
   AssistantPluginActionDescriptor,
@@ -729,9 +730,28 @@ async function withAssistantPluginResourceLeases<T>(
     resourceKey: lease.resourceKey,
     ownerIdentityDigest: lease.ownerIdentityDigest,
   }));
+  // Native file attachment can outlive the nominal action timeout while many
+  // bounded Apple Events stage bytes. Keep the same exact lease alive only
+  // while its one invocation is executing; crashed owners still expire.
+  let heartbeatError: unknown;
+  const heartbeat = setInterval(() => {
+    try {
+      renewExecutionLeases(controllerHome, scope.scopeKey, ownerJobId, timeoutMs + 60_000, expected);
+    } catch (error) {
+      if (error instanceof ControllerLockContentionError) return; // Retry the existing lock next tick.
+      clearInterval(heartbeat);
+      if (!isRuntimeWriteFenceError(error)) heartbeatError = error;
+    }
+  }, 5_000);
+  heartbeat.unref?.();
   let retainForReconciliation = false;
   try {
     const result = await operation();
+    if (heartbeatError) {
+      throw new AssistantPluginError('PLUGIN_RESOURCE_LEASE_LOST',
+        `${request.pluginId}/${request.actionId} lost its exact execution lease during dispatch; reconcile the external effect before another attempt.`,
+        { retryable: false, effectOutcome: 'outcome_unknown', details: { cause: heartbeatError instanceof Error ? heartbeatError.message : String(heartbeatError) } });
+    }
     const nestedResult = result && typeof result === 'object' && !Array.isArray(result)
       ? (result as Record<string, unknown>).result
       : undefined;
@@ -742,6 +762,7 @@ async function withAssistantPluginResourceLeases<T>(
     retainForReconciliation = isAssistantPluginError(error) && error.effectOutcome === 'outcome_unknown';
     throw error;
   } finally {
+    clearInterval(heartbeat);
     if (!retainForReconciliation) {
       try {
         releaseExactExecutionLeases(controllerHome, scope.scopeKey, ownerJobId, expected, { visibility: 'ephemeral' });
@@ -751,7 +772,15 @@ async function withAssistantPluginResourceLeases<T>(
         // after it is fenced, but that cleanup denial must not overwrite the
         // already-known provider result. The canonical successor Runtime can
         // reclaim this ephemeral lease from its fenced owner immediately.
-        if (!isRuntimeWriteFenceError(error)) throw error;
+        if (!isRuntimeWriteFenceError(error)) {
+          // Cleanup is not proof the provider failed. A lease that expired
+          // after dispatch must be reconciled, never recorded as a definite
+          // failed external effect (which could invite an unsafe replay).
+          throw new AssistantPluginError('PLUGIN_RESOURCE_LEASE_CLEANUP_UNKNOWN',
+            `${request.pluginId}/${request.actionId} completed dispatch but exact lease cleanup failed; reconcile the external effect.`,
+            { retryable: false, effectOutcome: 'outcome_unknown',
+              details: { cause: error instanceof Error ? error.message : String(error) } });
+        }
       }
     }
   }

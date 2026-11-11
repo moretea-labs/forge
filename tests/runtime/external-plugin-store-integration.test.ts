@@ -44,7 +44,8 @@ import {
   browserRemoteResourceKey,
 } from '../../src/runtime/plugins/store';
 import { resourceClaimsConflict } from '../../src/runtime/resources/claims/conflicts';
-import { ensureControllerHome, FORGE_INSTANCE_SCOPE_KEY } from '../../src/effects/controller-home';
+import { listActiveLeases } from '../../src/runtime/resources/leases/store';
+import { controllerSystemRoot, ensureControllerHome, FORGE_INSTANCE_SCOPE_KEY } from '../../src/effects/controller-home';
 import { createRecoveryConfig, restartPrimaryConnector } from '../../src/runtime/standalone-recovery/core';
 import { acquireRuntimeOwnership } from '../../src/runtime/root/ownership';
 import { ensureActiveRuntimeRelease } from '../../src/runtime/root/release-store';
@@ -131,7 +132,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
 
-function fixture(enabled = true, exposure?: 'product' | 'provider', includeSlowMutation = false) {
+function fixture(enabled = true, exposure?: 'product' | 'provider', includeSlowMutation = false, slowMutationTimeoutMs = 2_000) {
   const controllerHome = mkdtempSync(join(tmpdir(), 'forge-external-store-'));
   roots.push(controllerHome);
   const socketPath = join(controllerHome, 'missing-desktop.sock');
@@ -145,18 +146,18 @@ function fixture(enabled = true, exposure?: 'product' | 'provider', includeSlowM
     scope: 'controller',
     enabled,
     ...(exposure ? { exposure } : {}),
-    transport: { kind: 'unix_socket_jsonl', socketPath, healthTimeoutMs: 100, actionTimeoutMs: 500 },
+    transport: { kind: 'unix_socket_jsonl', socketPath, healthTimeoutMs: 100, actionTimeoutMs: slowMutationTimeoutMs },
     permissions: [{ scope: 'desktop.observe', mode: 'read', description: 'Observe desktop.', granted: true, required: true }],
     capabilities: [{ capabilityId: 'desktop-observe', title: 'Desktop observe', description: 'Observe desktop.', scopes: ['desktop.observe'], actions: ['desktop_status'] }],
     actions: [
       { actionId: 'desktop_status', title: 'Desktop status', description: 'Read status.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 500, cancellable: true, idempotent: true, scopes: ['desktop.observe'], resourceClaims: [], argumentsSchema: { type: 'object', properties: {}, additionalProperties: false } },
-      ...(includeSlowMutation ? [{ actionId: 'desktop_mutate_slow', title: 'Slow mutation', description: 'Slow resource-claimed mutation fixture.', readOnly: false, risk: 'workspace_write' as const, confirmation: 'authorization' as const, defaultTimeoutMs: 2_000, cancellable: true, idempotent: false, scopes: ['desktop.observe'], resourceClaims: [{ resource: 'provider-state' as const, mode: 'write' as const }], argumentsSchema: { type: 'object', properties: {}, additionalProperties: false } }] : []),
+      ...(includeSlowMutation ? [{ actionId: 'desktop_mutate_slow', title: 'Slow mutation', description: 'Slow resource-claimed mutation fixture.', readOnly: false, risk: 'workspace_write' as const, confirmation: 'authorization' as const, defaultTimeoutMs: slowMutationTimeoutMs, cancellable: true, idempotent: false, scopes: ['desktop.observe'], resourceClaims: [{ resource: 'provider-state' as const, mode: 'write' as const }], argumentsSchema: { type: 'object', properties: {}, additionalProperties: false } }] : []),
     ],
   });
   return { controllerHome, socketPath };
 }
 
-async function startExternalProviderFixture(root: string, socketPath: string, logPath: string, driftPath?: string, pluginId = 'desktop_operator'): Promise<void> {
+async function startExternalProviderFixture(root: string, socketPath: string, logPath: string, driftPath?: string, pluginId = 'desktop_operator', mutationDelayMs = 250): Promise<void> {
   const scriptPath = join(root, 'provider.cjs');
   writeFileSync(scriptPath, `
 const fs = require('fs');
@@ -186,7 +187,7 @@ const server = net.createServer((socket) => {
     } else {
       result = { observed: true };
       if (request.params && request.params.action === 'desktop_mutate_slow') {
-        return setTimeout(() => socket.end(JSON.stringify({ id: request.id, ok: true, result }) + '\\n'), 250);
+        return setTimeout(() => socket.end(JSON.stringify({ id: request.id, ok: true, result }) + '\\n'), ${mutationDelayMs});
       }
     }
     socket.end(JSON.stringify({ id: request.id, ok: true, result }) + '\\n');
@@ -272,6 +273,59 @@ describe('plugin action resource replay fencing', () => {
     const executes = readFileSync(logPath, 'utf8').trim().split('\n').filter((line) => line === 'execute');
     expect(executes).toHaveLength(2);
     replacement.release();
+  });
+
+  test('a slow provider effect renews its exact lease until a single terminal receipt', async () => {
+    const { controllerHome, socketPath } = fixture(true, undefined, true, 8_000);
+    const logPath = join(controllerHome, 'provider-slow-lease.log');
+    await startExternalProviderFixture(controllerHome, socketPath, logPath, undefined, 'desktop_operator', 6_500);
+    const first = submitControllerPluginAction(controllerHome, {
+      pluginId: 'desktop_operator', actionId: 'desktop_mutate_slow', requestId: 'slow-provider-lease-heartbeat',
+      args: {}, origin: { surface: 'mcp', actor: 'test' },
+    });
+    let initial = listActiveLeases(controllerHome, FORGE_INSTANCE_SCOPE_KEY);
+    for (let attempt = 0; initial.length === 0 && attempt < 20; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      initial = listActiveLeases(controllerHome, FORGE_INSTANCE_SCOPE_KEY);
+    }
+    expect(initial).toHaveLength(1);
+    await new Promise((resolve) => setTimeout(resolve, 5_300));
+    const current = listActiveLeases(controllerHome, FORGE_INSTANCE_SCOPE_KEY);
+    expect(current).toHaveLength(1);
+    expect(current[0]?.leaseId).toBe(initial[0]?.leaseId);
+    expect(Date.parse(current[0]!.expiresAt)).toBeGreaterThan(Date.parse(initial[0]!.expiresAt));
+    const completed = await first;
+    expect(completed.receipt.status).toBe('succeeded');
+    expect(listActiveLeases(controllerHome, FORGE_INSTANCE_SCOPE_KEY)).toHaveLength(0);
+    expect(readFileSync(logPath, 'utf8').trim().split(String.fromCharCode(10)).filter((line) => line === 'execute')).toHaveLength(1);
+  });
+
+  test('a lease expiring after dispatch produces one unknown receipt, never a false definitive failure', async () => {
+    const { controllerHome, socketPath } = fixture(true, undefined, true);
+    const logPath = join(controllerHome, 'provider-expired-lease.log');
+    await startExternalProviderFixture(controllerHome, socketPath, logPath);
+    const request = {
+      pluginId: 'desktop_operator', actionId: 'desktop_mutate_slow', requestId: 'expired-after-provider-dispatch',
+      args: {}, origin: { surface: 'mcp' as const, actor: 'test' },
+    };
+    const pending = submitControllerPluginAction(controllerHome, request);
+    let held = listActiveLeases(controllerHome, FORGE_INSTANCE_SCOPE_KEY);
+    for (let attempt = 0; held.length === 0 && attempt < 20; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      held = listActiveLeases(controllerHome, FORGE_INSTANCE_SCOPE_KEY);
+    }
+    expect(held).toHaveLength(1);
+    writeFileSync(join(controllerSystemRoot(controllerHome), 'execution-leases', 'active', `${held[0]!.leaseId}.json`),
+      JSON.stringify({ ...held[0], expiresAt: new Date(0).toISOString() }));
+    const result = await pending;
+    expect(result.receipt).toMatchObject({
+      status: 'failed', effectOutcome: 'outcome_unknown',
+      error: { code: 'PLUGIN_RESOURCE_LEASE_CLEANUP_UNKNOWN' },
+    });
+    const repeated = await submitControllerPluginAction(controllerHome, request);
+    expect(repeated.deduplicated).toBe(true);
+    expect(repeated.receipt.receiptId).toBe(result.receipt.receiptId);
+    expect(readFileSync(logPath, 'utf8').trim().split(String.fromCharCode(10)).filter((line) => line === 'execute')).toHaveLength(1);
   });
 
   test('concurrent same-request replay contends instead of executing the non-idempotent action twice', async () => {
