@@ -1771,7 +1771,7 @@ final class NativeWorkspace: ObservableObject {
                 detail:tunnel["detail"] as? String ?? ""
             ),
             repairAvailable:repair["available"] as? Bool == true,
-            repairLabel:repair["label"] as? String ?? "刷新 Forge Connector",
+            repairLabel:repair["label"] as? String ?? "重新连接",
             setup:setupRaw.map { setup in
                 ConnectionSetupNextDetail(
                     status:setup["status"] as? String ?? "open",
@@ -1785,7 +1785,7 @@ final class NativeWorkspace: ObservableObject {
     }
 
     nonisolated static func connectionLabel(_ detail: ControllerConnectionDetail?) -> String {
-        guard let detail else { return "MCP 状态未知" }
+        guard let detail else { return "MCP 暂不可用" }
         if detail.ready { return "MCP 配置就绪" }
         if !detail.configured { return "MCP 未配置" }
         if !detail.controller.ready { return "控制器未就绪" }

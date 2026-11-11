@@ -714,7 +714,20 @@ final class NativeWorkspaceTests: XCTestCase {
             ]
         ])
         XCTAssertEqual(NativeWorkspace.connectionLabel(unconfiguredConnection),"MCP 未配置")
-        XCTAssertEqual(NativeWorkspace.connectionLabel(nil),"MCP 状态未知")
+        let authFailedConnection = NativeWorkspace.controllerConnectionDetail([
+            "connection":[
+                "configured":true,"ready":false,
+                "controller":["ready":true,"title":"Controller ready","detail":"local"],
+                "tunnel":["ready":false,"title":"认证失败","detail":"远程 MCP 凭据无效"],
+                "repair":["available":true]
+            ]
+        ])
+        XCTAssertEqual(authFailedConnection?.tunnel.title,"认证失败")
+        XCTAssertEqual(authFailedConnection?.tunnel.detail,"远程 MCP 凭据无效")
+        XCTAssertEqual(authFailedConnection?.repairAvailable,true)
+        XCTAssertEqual(authFailedConnection?.repairLabel,"重新连接")
+        XCTAssertEqual(NativeWorkspace.connectionLabel(authFailedConnection),"远程 MCP 未连接")
+        XCTAssertEqual(NativeWorkspace.connectionLabel(nil),"MCP 暂不可用")
         XCTAssertNil(NativeWorkspace.controllerConnectionDetail(["unexpected":true]))
     }
 
