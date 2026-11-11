@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getMcpPolicy } from '../../adapters/mcp/policy';
 import { buildRepositoryInstructionContext } from '../../src/cli/controller/context/instruction-context';
+import { buildControllerContextPack } from '../../src/cli/controller/context-pack';
 
 describe('repository UI instruction context', () => {
   test('includes existing design guidance declared by AGENTS without a separate registry', () => {
@@ -33,6 +34,36 @@ describe('repository UI instruction context', () => {
       const backend = buildRepositoryInstructionContext(root, policy, ['apps/api/Domain/Medicine.ts'], { uiIntent: 'fix transaction persistence' });
       expect(backend.contracts.map(contract => contract.path)).not.toContain('DESIGN.md');
       expect(backend.contracts.map(contract => contract.path)).not.toContain('docs/mvp2/design/design-rules.md');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('Requirement-only source retrieval includes relevant design guidance without a Work ID', () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-requirement-design-context-'));
+    try {
+      mkdirSync(join(root, 'src'), { recursive: true });
+      writeFileSync(join(root, 'AGENTS.md'), 'Before UI edits read `docs/design/design-rules.md`.\n');
+      mkdirSync(join(root, 'docs', 'design'), { recursive: true });
+      writeFileSync(join(root, 'docs', 'design', 'design-rules.md'), 'Flat cards and restrained color.\n');
+      writeFileSync(join(root, 'DESIGN.md'), 'No ornamental shadows.\n');
+      writeFileSync(join(root, 'src', 'MedicationView.swift'), 'struct MedicationView {}\n');
+      expect(Bun.spawnSync(['git', 'init', '-q'], { cwd: root }).exitCode).toBe(0);
+      expect(Bun.spawnSync([
+        'git', '-c', 'user.name=Forge Test', '-c', 'user.email=forge@test.invalid',
+        'commit', '--allow-empty', '-qm', 'init',
+      ], { cwd: root }).exitCode).toBe(0);
+      const pack = buildControllerContextPack(root, getMcpPolicy('controller', { repoRoot: root }), {
+        description: 'Requirement-only: 复刻 SwiftUI 用药界面',
+        knownPaths: ['src/MedicationView.swift'],
+        maxFiles: 1,
+        maxSnippets: 2,
+      });
+      expect(pack.files.some(file => file.path === 'src/MedicationView.swift')).toBe(true);
+      expect(pack.instructionContext.contracts.map(contract => contract.path)).toContain('DESIGN.md');
+      expect(pack.instructionContext.contracts.map(contract => contract.path)).toContain('docs/design/design-rules.md');
+      expect(pack.instructionContext.contracts.find(contract => contract.path === 'DESIGN.md')?.content)
+        .toContain('No ornamental shadows');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
