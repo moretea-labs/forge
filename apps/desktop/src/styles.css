@@ -350,7 +350,7 @@ a { color: #353535; text-decoration: underline; text-underline-offset: 3px; }
   width: 28px; height: 28px; border: 0; border-radius: var(--radius-control);
   background: transparent; color: #8b919a; }
 .sidebar-search-toggle:hover, .sidebar-search-toggle[aria-expanded="true"] {
-  color: #6856b4; background: rgba(103,86,184,.09); }
+  color: #30343a; background: rgba(255,255,255,.60); }
 .sidebar-conversation-search { box-sizing: border-box; display: block; width: calc(100% - 14px);
   margin: 4px 7px 8px; padding: 8px 10px; border: 1px solid rgba(85,95,110,.2);
   border-radius: var(--radius-control); background: rgba(255,255,255,.86);
@@ -956,10 +956,11 @@ a { color: #353535; text-decoration: underline; text-underline-offset: 3px; }
 }
 .sidebar {
   padding: 18px 12px 12px;
-  background: var(--glass);
-  border-right: 1px solid var(--line);
-  -webkit-backdrop-filter: none;
-  backdrop-filter: none;
+  /* One quiet translucent rail; no edge rule or tinted gradient. */
+  background: rgba(236, 239, 241, 0.76);
+  border-right: 0;
+  -webkit-backdrop-filter: blur(28px) saturate(1);
+  backdrop-filter: blur(28px) saturate(1);
 }
 .sidebar-brand { min-height: 54px; padding: 7px 10px 17px; gap: 10px; }
 .sidebar-brand-icon { width: 24px; height: 24px; }
@@ -976,23 +977,23 @@ a { color: #353535; text-decoration: underline; text-underline-offset: 3px; }
 }
 .sidebar-primary > .nav-row:hover:not(:disabled) { background: var(--hover); }
 .sidebar-primary > .nav-row.active {
-  background: var(--accent-soft);
+  background: rgba(255, 255, 255, 0.74);
   color: var(--ink);
   font-weight: 635;
 }
-.sidebar-primary > .nav-row.active .nav-symbol { color: var(--accent); }
+.sidebar-primary > .nav-row.active .nav-symbol { color: var(--ink); }
 .sidebar-primary .sidebar-new-thread {
   margin: 0 0 2px;
-  background: var(--surface);
-  border: 1px solid var(--border-strong);
-  box-shadow: 0 1px 2px rgba(40,43,50,.035);
+  background: transparent;
+  border: 0;
+  box-shadow: none;
   color: var(--ink);
   font-weight: 610;
 }
 .sidebar-primary .sidebar-new-thread:hover:not(:disabled) {
-  background: var(--surface);
-  border-color: var(--focus);
-  box-shadow: 0 1px 5px rgba(40,43,50,.06);
+  background: var(--hover);
+  border-color: transparent;
+  box-shadow: none;
 }
 .sidebar-quick-search { color: var(--muted) !important; }
 .sidebar-primary .sidebar-destinations-heading {
@@ -1010,9 +1011,9 @@ a { color: #353535; text-decoration: underline; text-underline-offset: 3px; }
   flex: 1 1 auto;
   min-height: 0;
   max-height: none;
-  margin: 16px 0 5px;
-  padding-top: 12px;
-  border-top: 1px solid var(--line);
+  margin: 12px 0 5px;
+  padding-top: 0;
+  border-top: 0;
   overflow-y: auto;
   scrollbar-color: var(--border-strong) transparent;
 }
@@ -1028,14 +1029,14 @@ a { color: #353535; text-decoration: underline; text-underline-offset: 3px; }
 .sidebar-thread-project-heading { margin: 5px 5px; padding: 0 3px; color: var(--muted); }
 .sidebar-thread-row { min-height: 34px; padding: 7px 9px; border-radius: 9px; }
 .sidebar-thread-row .nav-label { font-size: 12.5px; }
-.sidebar-thread-row.active { background: var(--accent-soft); color: var(--ink); }
+.sidebar-thread-row.active { background: rgba(255,255,255,.74); color: var(--ink); }
 .sidebar-thread-row:hover:not(:disabled) { background: var(--hover); }
 .sidebar-keyboard { font-size: 10px; color: var(--subtle); }
 .sidebar-project-popover {
   flex: 0 0 auto;
   margin-top: auto;
   padding: 9px 0 1px;
-  border-top: 1px solid var(--line);
+  border-top: 0;
 }
 .sidebar-project-heading { padding: 1px 0 0; }
 .sidebar-project-picker {
@@ -1051,7 +1052,7 @@ a { color: #353535; text-decoration: underline; text-underline-offset: 3px; }
   gap: 2px;
   margin: 0;
   padding: 7px 0 0;
-  border-top: 1px solid var(--line);
+  border-top: 0;
 }
 .sidebar-footer > .nav-row {
   min-height: 36px;
@@ -1060,7 +1061,7 @@ a { color: #353535; text-decoration: underline; text-underline-offset: 3px; }
   color: var(--muted);
   font-size: 12.5px;
 }
-.sidebar-footer > .nav-row.active { background: var(--accent-soft); color: var(--ink); }
+.sidebar-footer > .nav-row.active { background: rgba(255,255,255,.74); color: var(--ink); }
 
 /* A: calm content canvas. Sections are functional rather than ornamental. */
 .workspace-region, .main-pane { background: var(--canvas); border-radius: 0; }
@@ -1195,3 +1196,8 @@ a { color: #353535; text-decoration: underline; text-underline-offset: 3px; }
 }
 
 .record-row:focus-visible { outline: 2px solid var(--focus); outline-offset: -2px; }
+
+/* Respect the system's reduced-transparency preference even after late theme overrides. */
+@media (prefers-reduced-transparency: reduce) {
+  .sidebar { background: #eef0f1; -webkit-backdrop-filter: none; backdrop-filter: none; }
+}

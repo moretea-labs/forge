@@ -195,7 +195,6 @@ export function Sidebar({
         {(localThreads.length > 0 || conversationSearchOpen) && (
           <section className="sidebar-conversations" aria-label="最近会话">
             <div className="sidebar-conversation-heading">
-              <div className="sidebar-section-title">最近会话</div>
               <button type="button" className="sidebar-search-toggle"
                 aria-label={conversationSearchOpen ? '关闭会话搜索' : '搜索会话'}
                 aria-expanded={conversationSearchOpen} aria-keyshortcuts="Meta+K Control+K"
