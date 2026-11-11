@@ -435,7 +435,7 @@ describe('generated repository cache retention', () => {
     expect(unmerged.skippedByReason.worktree_source_protected ?? 0).toBeGreaterThanOrEqual(1);
   });
 
-  test('fails closed on a foreign clone and a recycled linked-worktree Owner identity', () => {
+  test('fails closed on foreign clones and ambiguous or recycled linked-worktree Owner identities', () => {
     const canonicalRoot = repository();
     writeFileSync(join(canonicalRoot, '.gitignore'), '.repo-harness/\n');
     writeFileSync(join(canonicalRoot, 'README.md'), 'baseline');
@@ -446,32 +446,77 @@ describe('generated repository cache retention', () => {
     roots.push(parent);
     const validRoot = join(parent, 'valid');
     const recycledRoot = join(parent, 'recycled');
+    const ambiguousRoot = join(parent, 'ambiguous');
     const foreignClone = join(parent, 'foreign-clone');
     execFileSync('git', ['-C', canonicalRoot, 'worktree', 'add', '--detach', validRoot]);
     execFileSync('git', ['-C', canonicalRoot, 'worktree', 'add', '--detach', recycledRoot]);
+    execFileSync('git', ['-C', canonicalRoot, 'worktree', 'add', '--detach', ambiguousRoot]);
     execFileSync('git', ['clone', '-q', canonicalRoot, foreignClone]);
     const validCache = join(validRoot, '.repo-harness', 'ios-build', 'DerivedData-valid');
     const recycledCache = join(recycledRoot, '.repo-harness', 'ios-build', 'DerivedData-recycled');
+    const ambiguousCache = join(ambiguousRoot, '.repo-harness', 'ios-build', 'DerivedData-ambiguous');
     const foreignCache = join(foreignClone, '.repo-harness', 'ios-build', 'DerivedData-foreign');
-    for (const cache of [validCache, recycledCache, foreignCache]) { xcodeCache(cache); age(cache); }
+    for (const cache of [validCache, recycledCache, ambiguousCache, foreignCache]) { xcodeCache(cache); age(cache); }
     const home = controllerHome();
     const validCheckout = registeredCheckout('test-repo', validRoot);
     const recycledCheckout = registeredCheckout('test-repo', recycledRoot);
+    const ambiguousCheckout = registeredCheckout('test-repo', ambiguousRoot);
     const foreignCheckout = registeredCheckout('test-repo', foreignClone);
     recordOwnedResource(home, { resourceId: 'test-worktree-owner-valid', kind: 'worktree',
       targetRef: validCheckout.canonicalRoot, creator: 'forge:managed-workspace', repoId: 'test-repo' });
     recordOwnedResource(home, { resourceId: 'test-worktree-owner-recycled', kind: 'worktree',
       targetRef: recycledCheckout.canonicalRoot, creator: 'forge:managed-workspace', repoId: 'test-repo',
       identityFingerprint: 'not-the-current-filesystem-identity' });
+    for (const resourceId of ['test-worktree-owner-ambiguous-a', 'test-worktree-owner-ambiguous-b']) {
+      recordOwnedResource(home, { resourceId, kind: 'worktree', targetRef: ambiguousCheckout.canonicalRoot,
+        creator: 'forge:managed-workspace', repoId: 'test-repo' });
+    }
     const report = cleanupGeneratedRepositoryCheckoutCaches(repositoryRootSet(canonicalRoot, [
-      validCheckout, recycledCheckout, foreignCheckout,
+      validCheckout, recycledCheckout, ambiguousCheckout, foreignCheckout,
     ]), { controllerHome: home, nowMs: Date.parse('2026-11-10T00:00:00.000Z'),
       graceMs: 60_000, processCommands: [], maxEntries: 300, maxRemovals: 10 });
     expect(existsSync(join(validCache, 'Build'))).toBe(false);
     expect(existsSync(join(recycledCache, 'Build'))).toBe(true);
+    expect(existsSync(join(ambiguousCache, 'Build'))).toBe(true);
     expect(existsSync(join(foreignCache, 'Build'))).toBe(true);
-    expect(report.skippedByReason.owned_resource_identity_mismatch).toBe(1);
+    expect(report.skippedByReason.owned_resource_identity_mismatch).toBe(2);
     expect(report.skippedByReason.checkout_identity_unproven).toBe(1);
+  });
+
+  test('preserves linked-worktree caches when the Owner inventory is corrupt', () => {
+    const canonicalRoot = repository();
+    writeFileSync(join(canonicalRoot, 'Cargo.toml'), '[workspace]');
+    writeFileSync(join(canonicalRoot, '.gitignore'), 'target/\n');
+    writeFileSync(join(canonicalRoot, 'README.md'), 'baseline');
+    execFileSync('git', ['-C', canonicalRoot, 'add', '.']);
+    execFileSync('git', ['-C', canonicalRoot, '-c', 'user.name=Test', '-c',
+      'user.email=test@example.org', 'commit', '-qm', 'initial']);
+
+    const parent = mkdtempSync(join(tmpdir(), 'forge-gc-owner-inventory-'));
+    roots.push(parent);
+    const linked = join(parent, 'linked');
+    execFileSync('git', ['-C', canonicalRoot, 'worktree', 'add', '--detach', linked]);
+    const output = join(linked, 'target', 'debug');
+    mkdirSync(join(output, 'deps'), { recursive: true });
+    mkdirSync(join(output, '.fingerprint'), { recursive: true });
+    writeFileSync(join(linked, 'target', 'CACHEDIR.TAG'), 'cargo-generated');
+    writeFileSync(join(output, 'deps', 'artifact'), 'compiled');
+    age(join(output, 'deps')); age(join(output, '.fingerprint')); age(output); age(join(linked, 'target'));
+
+    const home = controllerHome();
+    const checkout = registeredCheckout('test-repo', linked);
+    recordOwnedResource(home, { resourceId: 'test-worktree-owner-corrupt', kind: 'worktree',
+      targetRef: checkout.canonicalRoot, creator: 'forge:managed-workspace', repoId: 'test-repo' });
+    writeFileSync(join(home, 'owned-resources', 'test-worktree-owner-corrupt.json'), '{not-json');
+
+    const report = cleanupGeneratedRepositoryCheckoutCaches(repositoryRootSet(canonicalRoot, [checkout]), {
+      controllerHome: home, nowMs: Date.parse('2026-11-10T00:00:00.000Z'),
+      graceMs: 60_000, processCommands: [], maxEntries: 300, maxRemovals: 10,
+    });
+    expect(existsSync(output)).toBe(true);
+    expect(report.removedPaths).toEqual([]);
+    expect(report.skippedByReason.owned_resource_inventory_unavailable).toBe(1);
+    expect(report.errors.some((error) => error.includes('OWNED_RESOURCE_STORE_CORRUPT'))).toBe(true);
   });
 
   test('repeated bounded passes converge on old Cargo outputs without deleting source or producer metadata', () => {
