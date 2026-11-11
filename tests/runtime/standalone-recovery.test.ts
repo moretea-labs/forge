@@ -3691,7 +3691,7 @@ describe('standalone recovery on canonical Runtime', () => {
     const activeManifest = manifest(home, 'release-gateway-publication-only', 'artifact-gateway-publication-only');
     ensureActiveRuntimeRelease(home, activeManifest);
     const runtime = await runtimeServer();
-    const failedRecoveryPublic = await failingPublicGatewayServer(530);
+    const failedRecoveryPublic = await failingPublicGatewayServer(503);
     writeMainToken(home);
     const config = createRecoveryConfig(home, {
       installProfile: 'gateway',
@@ -3714,6 +3714,12 @@ describe('standalone recovery on canonical Runtime', () => {
     );
 
     const tick = await watchdogTick(config, { failures: 0, rollbackUsed: false });
+    expect(tick.verify.probes.recovery_external_http).toMatchObject({ ok: false, status: 503, detail: 'HTTP 503' });
+    expect(failedRecoveryPublic.requests).toContainEqual(expect.objectContaining({ method: 'GET', url: '/recovery/health' }));
+    expect(tick.verify.probes.recovery_watchdog).toMatchObject({
+      ok: false,
+      detail: 'current immutable Recovery release is unavailable',
+    });
     expect(tick.decision.action).toBe('repair_public_tunnel');
     expect(tick.publicTunnelRepair).toMatchObject({
       attempted: false,
@@ -3722,6 +3728,12 @@ describe('standalone recovery on canonical Runtime', () => {
     expect(tick.primaryConnectorRestart).toBeUndefined();
     expect(tick.primaryRuntimeRestart).toBeUndefined();
     expect(tick.primaryRuntimeRecovery).toBeUndefined();
+
+    const strict = await verifyStableRuntime(config, undefined, { probeMcpProtocol: false });
+    expect(strict.probes.recovery_watchdog).toMatchObject({
+      ok: false,
+      detail: 'current immutable Recovery release is unavailable',
+    });
   });
 
   test('Watchdog cheap healthy ticks use attestation identity without inspecting known-good bundle contents', async () => {

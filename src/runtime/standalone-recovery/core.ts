@@ -869,7 +869,7 @@ export async function verifyStableRuntime(
   if (config.gateway) probes.recovery_gateway = await probe(transport, `http://${config.gateway.host}:${config.gateway.port}/health`);
   const watchdogHealth = observeRecoveryWatchdogHealth(
     config.controllerHome,
-    config.installProfile === 'self-healing',
+    config.installProfile !== 'manual',
   );
   probes.recovery_watchdog = {
     ok: watchdogHealth.ok,
@@ -1469,7 +1469,7 @@ async function observeBoundedRuntimeHealth(
   if (config.gateway) probes.recovery_gateway = await probe(transport, `http://${config.gateway.host}:${config.gateway.port}/health`);
   const watchdogHealth = observeRecoveryWatchdogHealth(
     config.controllerHome,
-    config.installProfile === 'self-healing',
+    config.installProfile !== 'manual',
   );
   probes.recovery_watchdog = {
     ok: watchdogHealth.ok,
@@ -1488,6 +1488,18 @@ async function observeBoundedRuntimeHealth(
   // healthy system and never reaches the bounded tunnel-repair path.
   const recoveryTransport = await probeOpenAiRecoveryTunnel(config);
   if (recoveryTransport) probes.recovery_tunnel_runtime = recoveryTransport;
+  const recoveryPublicUrl = configuredRecoveryPublicUrl(config);
+  if (recoveryPublicUrl && configuredRecoveryTunnel(config)?.platform !== 'openai-secure-tunnel') {
+    try {
+      const recoveryHealthUrl = new URL(recoveryPublicUrl);
+      recoveryHealthUrl.pathname = '/recovery/health';
+      recoveryHealthUrl.search = '';
+      recoveryHealthUrl.hash = '';
+      probes.recovery_external_http = await probe(transport, recoveryHealthUrl.toString());
+    } catch (error) {
+      probes.recovery_external_http = { ok: false, detail: error instanceof Error ? error.message.slice(0, 180) : 'invalid Recovery public health URL' };
+    }
+  }
   const localChecks = Object.entries(probes)
     .filter(([name]) => !name.startsWith('recovery_'))
     .every(([, entry]) => entry.ok);
