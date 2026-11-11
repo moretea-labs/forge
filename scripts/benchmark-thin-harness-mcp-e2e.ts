@@ -414,16 +414,22 @@ async function main() {
     const fastCases = cases.filter((entry) => entry.name !== 'async_command_process_handle');
 
     const fastSamples = fastCases.flatMap((entry) => entry.samples);
+    const readOnlyFastSamples = fastCases
+      .filter((entry) => entry.name !== 'bounded_patch_batch')
+      .flatMap((entry) => entry.samples);
+    const patchSamples = cases
+      .filter((entry) => entry.name === 'bounded_patch_batch')
+      .flatMap((entry) => entry.samples);
     const processSamples = processCases.flatMap((entry) => entry.samples);
     const allSamples = cases.flatMap((entry) => entry.samples);
     const activeLeaseFilesAtEnd = countLeaseFiles(fixture.controllerHome);
 
     const report = {
-      schemaVersion: 2,
+      schemaVersion: 3,
       kind: 'mcp_gateway_thin_harness_e2e_benchmark',
       featureRevision: head,
       at: new Date().toISOString(),
-      note: 'MCP-like in-process routing and repository facade, not the external ChatGPT transport. Cold = first sample; warm = next three. Caller return excludes terminal Process observation. Queue delay and worker startup are unmeasured (not zero). Physical Job/Process IDs and recorded worker PIDs are sampled from the fixture stores; arbitrary OS child spawns are unmeasured. All-sample acceptance; no synthetic A/B claim.',
+      note: 'MCP-like in-process routing and repository facade, not the external ChatGPT transport. Cold = first sample; warm = next three. Caller return excludes terminal Process observation. Queue delay and worker startup are unmeasured (not zero). Physical Job/Process IDs and recorded worker PIDs are sampled from the fixture stores; arbitrary OS child spawns are unmeasured. The bounded_patch_batch write control must emit Runtime events and is excluded from the read-only zero-event gate. All-sample acceptance; no synthetic A/B claim.',
       cases,
       acceptance: {
         fastZeroExecutionJobs: fastSamples.every((sample) => sample.executionJobDelta === 0),
@@ -432,7 +438,9 @@ async function main() {
         fastZeroManagedProcesses: fastSamples.every((sample) => sample.managedProcessDelta === 0),
         fastZeroSchedulerWakes: fastSamples.every((sample) => sample.schedulerWakeDelta === 0),
         fastZeroProjectionInvalidations: fastSamples.every((sample) => sample.projectionInvalidationDelta === 0),
-        fastZeroRuntimeEvents: fastSamples.every((sample) => sample.runtimeEventDelta === 0),
+        readOnlyFastZeroRuntimeEvents: readOnlyFastSamples.every((sample) => sample.runtimeEventDelta === 0),
+        boundedPatchRuntimeEventsObserved: patchSamples.length === 4
+          && patchSamples.every((sample) => sample.runtimeEventDelta > 0),
         processRuntimeAsyncAccepted: processSamples.every((sample) => sample.path === 'process_managed'),
         processRuntimeAsyncSettled: processSamples.every((sample) => sample.terminalOk === true),
         processRuntimeAsyncManagedProcessesObserved: processSamples.every((sample) => sample.managedProcessDelta > 0),
