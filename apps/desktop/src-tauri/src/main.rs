@@ -4094,7 +4094,7 @@ mod tests {
                     }
                 };
                 let headers = String::from_utf8_lossy(&request[..header_end]).to_string();
-                let expected_path = if protocol == "anthropic" { "/v1/messages" } else { "/v1/chat/completions" };
+                let expected_path = match protocol { "anthropic" => "/v1/messages", "responses" => "/v1/responses", _ => "/v1/chat/completions" };
                 assert!(headers.starts_with(&format!("POST {expected_path} HTTP/1.1")));
                 let length = headers.lines().find_map(|line| {
                     line.to_ascii_lowercase().strip_prefix("content-length:")
@@ -4108,13 +4108,38 @@ mod tests {
                 let body: Value = serde_json::from_slice(&request[header_end..header_end + length]).unwrap();
                 assert_eq!(body["stream"], true);
                 assert_eq!(body["model"], "test-model");
+                if protocol == "responses" {
+                    assert_eq!(body["input"][0]["role"], "user");
+                    assert!(body["tools"].as_array().is_some_and(|tools| tools.len() >= 3));
+                }
                 if protocol == "anthropic" {
                     assert!(headers.to_ascii_lowercase().contains("anthropic-version: 2023-06-01"));
                 }
                 requests.push(body);
 
                 let mut frames = Vec::new();
-                if round < 3 {
+                if protocol == "responses" {
+                    let response = if round < 3 {
+                        let (id, name, arguments) = match round {
+                            0 => ("call-read", "read_file", json!({"path":"fixture.txt","start_line":1,"end_line":3})),
+                            1 => ("call-patch", "apply_patch", json!({
+                                "purpose":"fixture edit",
+                                "operations":[{"type":"replace","path":"fixture.txt","replacements":[{"old_text":"before","new_text":"after"}]}],
+                                "allowed_paths":["fixture.txt"]
+                            })),
+                            _ => ("call-test", "run_command", json!({
+                                "command":[bun_executable.as_str(),"test","tests/fixture.test.ts"],"timeout_ms":1000
+                            })),
+                        };
+                        json!({"output":[{"type":"function_call","status":"completed","call_id":id,"name":name,"arguments":arguments.to_string()}]})
+                    } else {
+                        json!({"output":[{"type":"message","content":[{"type":"output_text","text":"Read, edited and verified."}]}]})
+                    };
+                    if round == 3 {
+                        frames.push(json!({"type":"response.output_text.delta","delta":"Read, edited and verified."}).to_string());
+                    }
+                    frames.push(json!({"type":"response.completed","response":response}).to_string());
+                } else if round < 3 {
                     let (id, name, arguments) = match round {
                         0 => ("call-read", "read_file", json!({"path":"fixture.txt","start_line":1,"end_line":3})),
                         1 => ("call-patch", "apply_patch", json!({
@@ -4166,8 +4191,8 @@ mod tests {
     }
 
     #[test]
-    fn native_provider_loop_executes_real_adapter_for_openai_and_anthropic() {
-        for (profile_id, protocol) in [("openai-real-adapter", "openai"), ("anthropic-real-adapter", "anthropic")] {
+    fn native_provider_loop_executes_real_adapter_for_all_api_protocols() {
+        for (profile_id, protocol) in [("openai-real-adapter", "openai"), ("anthropic-real-adapter", "anthropic"), ("responses-real-adapter", "responses")] {
             let fixture = native_provider_tool_fixture();
             let (endpoint, server) = spawn_scripted_agent_provider(protocol, fixture.bun.to_str().unwrap());
             let host = NativeProviderToolHost::new(&fixture);
