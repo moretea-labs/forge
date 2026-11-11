@@ -1,6 +1,6 @@
 import { createHash } from 'crypto';
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'fs';
-import { basename, dirname, join, relative, resolve } from 'path';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'path';
 
 export type ExternalFilesystemGrantMode = 'read' | 'copy_into_repo';
 
@@ -26,6 +26,8 @@ export interface ExternalFilesystemGrantPreview {
   schemaVersion: 1;
   previewTicketId: string;
   accepted: boolean;
+  /** An active grant already covers this exact key, canonical directory and mode. */
+  alreadyAuthorized: boolean;
   key: string;
   root: string;
   canonicalRoot?: string;
@@ -37,7 +39,7 @@ export interface ExternalFilesystemGrantPreview {
   next: string;
   safety: {
     arbitraryPathRead: false;
-    requiresApply: true;
+    requiresApply: boolean;
     secretsPersisted: false;
     repositorySourceMutation: false;
   };
@@ -182,32 +184,40 @@ export function previewExternalFilesystemGrant(repoRoot: string, args: Record<st
   const expiresAt = expiryFromArgs(args.expires_in_minutes);
   const root = canonicalizeRoot(repoRoot, args.root_path ?? args.root);
   const accepted = !root.denialReason && Boolean(reason);
+  const activeGrant = accepted && root.canonical
+    ? loadExternalFilesystemGrants(repoRoot).grants.find((entry) =>
+        entry.key === key && entry.canonicalRoot === root.canonical && entry.mode === mode
+        && !externalFilesystemGrantExpired(entry))
+    : undefined;
   const previewTicketId = stableTicket({ key, canonicalRoot: root.canonical, mode, reason });
   return {
     schemaVersion: 1,
     previewTicketId,
     accepted,
+    alreadyAuthorized: Boolean(activeGrant),
     key,
     root: root.input,
     canonicalRoot: root.canonical,
     mode,
     reason,
-    expiresAt,
+    expiresAt: activeGrant?.expiresAt ?? expiresAt,
     risk: accepted ? 'readonly' : 'denied',
     denialReason: !reason ? 'A reason is required for auditability.' : root.denialReason,
-    next: accepted
-      ? 'Call external_filesystem_grant_apply with this preview_ticket_id and confirm_authorization=true.'
-      : 'Choose a narrower existing directory and include an audit reason.',
+    next: activeGrant
+      ? `An active grant already covers this path; use external_filesystem_text_snapshot with target_key=${key}, without requesting approval again.`
+      : accepted
+        ? 'Call external_filesystem_grant_apply with this preview_ticket_id and confirm_authorization=true.'
+        : 'Choose a narrower existing directory and include an audit reason.',
     safety: {
       arbitraryPathRead: false,
-      requiresApply: true,
+      requiresApply: !activeGrant,
       secretsPersisted: false,
       repositorySourceMutation: false,
     },
   };
 }
 
-export function applyExternalFilesystemGrant(repoRoot: string, args: Record<string, unknown>): { grant: ExternalFilesystemGrant; file: ExternalFilesystemGrantFile; preview: ExternalFilesystemGrantPreview } {
+export function applyExternalFilesystemGrant(repoRoot: string, args: Record<string, unknown>): { grant: ExternalFilesystemGrant; file: { schemaVersion: 1; updatedAt: string; grantCount: number }; preview: ExternalFilesystemGrantPreview } {
   if (args.confirm_authorization !== true) throw new Error('EXTERNAL_FS_AUTHORIZATION_REQUIRED: confirm_authorization=true is required.');
   const preview = previewExternalFilesystemGrant(repoRoot, args);
   if (!preview.accepted || !preview.canonicalRoot) throw new Error(`EXTERNAL_FS_GRANT_DENIED: ${preview.denialReason ?? 'preview not accepted'}`);
@@ -225,13 +235,16 @@ export function applyExternalFilesystemGrant(repoRoot: string, args: Record<stri
     expiresAt: preview.expiresAt,
   };
   const grants = file.grants.filter((entry) => entry.key !== grant.key).concat(grant);
-  return { grant, file: saveExternalFilesystemGrants(repoRoot, { ...file, grants }), preview };
+  const saved = saveExternalFilesystemGrants(repoRoot, { ...file, grants });
+  // Return only the changed grant and a count: echoing the entire grant registry
+  // into every MCP response duplicates persisted authority and exposes unrelated audit history.
+  return { grant, file: { schemaVersion: 1, updatedAt: saved.updatedAt, grantCount: saved.grants.length }, preview };
 }
 
 export function listExternalFilesystemTargets(repoRoot: string): { targets: Array<Omit<ExternalFilesystemGrant, 'root'> & { exists: boolean; rootPreview: string }>; safety: Record<string, unknown> } {
   const file = loadExternalFilesystemGrants(repoRoot);
   return {
-    targets: file.grants.map((grant) => ({
+    targets: file.grants.filter((grant) => !externalFilesystemGrantExpired(grant)).map((grant) => ({
       ...grant,
       rootPreview: `<external:${grant.key}>`,
       exists: existsSync(grant.canonicalRoot),
@@ -242,6 +255,7 @@ export function listExternalFilesystemTargets(repoRoot: string): { targets: Arra
       writeOperationsExposed: false,
       modes: ['read', 'copy_into_repo'],
       grantExpiryEnforced: true,
+      expiredGrantCount: file.grants.filter((grant) => externalFilesystemGrantExpired(grant)).length,
       configPath: CONFIG_PATH,
     },
   };
@@ -254,6 +268,15 @@ function resolveGrantedPath(grant: ExternalFilesystemGrant, relativePath: unknow
   const absolute = resolve(grant.canonicalRoot, normalized);
   const rel = relative(grant.canonicalRoot, absolute);
   if (rel.startsWith('..') || rel === '..') throw new Error('EXTERNAL_FS_PATH_ESCAPE_DENIED: path must stay inside the granted root');
+  // The lexical check alone cannot stop an in-root symlink from reaching files
+  // outside the approved directory. Snapshot reads require an existing target.
+  if (existsSync(absolute)) {
+    const canonical = realpathSync(absolute);
+    const canonicalRel = relative(grant.canonicalRoot, canonical);
+    if (canonicalRel === '..' || canonicalRel.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) || isAbsolute(canonicalRel)) {
+      throw new Error('EXTERNAL_FS_PATH_ESCAPE_DENIED: symlink leaves the granted root');
+    }
+  }
   return { absolute, relativePath: rel || '.' };
 }
 
@@ -275,7 +298,7 @@ export function readExternalFilesystemSnapshot(repoRoot: string, args: Record<st
     const entries = readdirSync(resolved.absolute, { withFileTypes: true }).slice(0, 200).map((entry) => {
       const entryPath = join(resolved.absolute, entry.name);
       let size: number | undefined;
-      try { size = statSync(entryPath).size; } catch { size = undefined; }
+      try { size = lstatSync(entryPath).size; } catch { size = undefined; }
       return { name: entry.name, kind: entry.isDirectory() ? 'directory' as const : entry.isFile() ? 'file' as const : 'other' as const, size };
     });
     return {

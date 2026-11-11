@@ -29,6 +29,7 @@ import { managedBranchOwnedResourceId, managedBranchOwnedResourceLocator, manage
 import { recordIosTestEvidenceOwner } from '../../src/runtime/control-plane/generated-cache-retention';
 import {
   applyExternalFilesystemGrant,
+  listExternalFilesystemTargets,
   buildWorkspaceAuthStatus,
   prepareWorkspaceAuthLogin,
   previewExternalFilesystemGrant,
@@ -865,6 +866,8 @@ describe('auth and external filesystem handoffs', () => {
       reason: 'test fixture',
     });
     expect(preview.accepted).toBe(true);
+    expect(preview.alreadyAuthorized).toBe(false);
+    expect(preview.safety.requiresApply).toBe(true);
     const applied = applyExternalFilesystemGrant(repoRoot, {
       grant_key: 'notes',
       root_path: externalRoot,
@@ -873,9 +876,42 @@ describe('auth and external filesystem handoffs', () => {
       confirm_authorization: true,
     });
     expect(applied.grant.key).toBe('notes');
+    expect(applied.file).toEqual({ schemaVersion: 1, updatedAt: expect.any(String), grantCount: 1 });
+    expect(JSON.stringify(applied)).not.toContain('"grants"');
+    const reusable = previewExternalFilesystemGrant(repoRoot, {
+      grant_key: 'notes', root_path: externalRoot, reason: 'another read of the same authorized path',
+    });
+    expect(reusable.alreadyAuthorized).toBe(true);
+    expect(reusable.safety.requiresApply).toBe(false);
+    expect(reusable.expiresAt).toBe(applied.grant.expiresAt);
+    expect(reusable.next).toContain('without requesting approval again');
+    expect(listExternalFilesystemTargets(repoRoot).targets.map((target) => target.key)).toEqual(['notes']);
     const snapshot = readExternalFilesystemSnapshot(repoRoot, { target_key: 'notes', path: 'note.txt' });
     expect(snapshot.kind).toBe('file');
     expect(snapshot.text).toBe('hello external');
+    const outside = mkdtempSync(join(tmpdir(), 'forge-external-fs-escape-'));
+    temporaryRoots.push(outside);
+    writeFileSync(join(outside, 'outside.txt'), 'not granted');
+    symlinkSync(join(outside, 'outside.txt'), join(externalRoot, 'link.txt'));
+    symlinkSync(outside, join(externalRoot, 'linked-directory'));
+    expect(() => readExternalFilesystemSnapshot(repoRoot, {
+      target_key: 'notes', path: 'link.txt',
+    })).toThrow('EXTERNAL_FS_PATH_ESCAPE_DENIED');
+    expect(() => readExternalFilesystemSnapshot(repoRoot, {
+      target_key: 'notes', path: 'linked-directory/outside.txt',
+    })).toThrow('EXTERNAL_FS_PATH_ESCAPE_DENIED');
+    // Retain the persisted historical record but never advertise an expired
+    // target as a currently usable permission.
+    const grantsPath = join(repoRoot, '.forge/external-filesystem-grants.json');
+    const history = JSON.parse(readFileSync(grantsPath, 'utf8'));
+    history.grants[0].expiresAt = '2000-01-01T00:00:00.000Z';
+    writeFileSync(grantsPath, JSON.stringify(history));
+    const expired = listExternalFilesystemTargets(repoRoot);
+    expect(expired.targets).toEqual([]);
+    expect(expired.safety.expiredGrantCount).toBe(1);
+    expect(previewExternalFilesystemGrant(repoRoot, {
+      grant_key: 'notes', root_path: externalRoot, reason: 'renew expired scope',
+    }).alreadyAuthorized).toBe(false);
   });
 });
 
