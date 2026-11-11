@@ -294,11 +294,12 @@ describe('generated repository cache retention', () => {
     expect(linked.removedPaths).not.toContain('target/release');
   });
 
-  test('reclaims SwiftPM and Next caches across multiple clean integrated linked checkouts', () => {
+  test('reclaims SwiftPM, Cargo and Next caches across multiple clean integrated linked checkouts', () => {
     const canonicalRoot = repository();
     writeFileSync(join(canonicalRoot, 'Package.swift'), '// swift-tools-version: 6.0');
+    writeFileSync(join(canonicalRoot, 'Cargo.toml'), '[workspace]');
     writeFileSync(join(canonicalRoot, 'package.json'), JSON.stringify({ devDependencies: { next: '15.0.0' } }));
-    writeFileSync(join(canonicalRoot, '.gitignore'), '.build/\n.next/\n');
+    writeFileSync(join(canonicalRoot, '.gitignore'), '.build/\n.next/\ntarget/\n');
     writeFileSync(join(canonicalRoot, 'README.md'), 'baseline');
     execFileSync('git', ['-C', canonicalRoot, 'add', '.']);
     execFileSync('git', ['-C', canonicalRoot, '-c', 'user.name=Test', '-c',
@@ -308,8 +309,10 @@ describe('generated repository cache retention', () => {
     roots.push(parent);
     const swiftCheckout = join(parent, 'swift');
     const nextCheckout = join(parent, 'next');
+    const cargoCheckout = join(parent, 'cargo');
     execFileSync('git', ['-C', canonicalRoot, 'worktree', 'add', '--detach', swiftCheckout]);
     execFileSync('git', ['-C', canonicalRoot, 'worktree', 'add', '--detach', nextCheckout]);
+    execFileSync('git', ['-C', canonicalRoot, 'worktree', 'add', '--detach', cargoCheckout]);
 
     const swiftRoot = join(swiftCheckout, '.build');
     const swiftOutput = join(swiftRoot, 'arm64-apple-macosx', 'debug');
@@ -324,11 +327,20 @@ describe('generated repository cache retention', () => {
     writeFileSync(join(nextCache, 'cache.bin'), 'compiled');
     age(nextCache); age(nextRoot);
 
+    const cargoRoot = join(cargoCheckout, 'target');
+    const cargoOutput = join(cargoRoot, 'debug');
+    mkdirSync(join(cargoOutput, '.fingerprint'), { recursive: true });
+    mkdirSync(join(cargoOutput, 'deps'), { recursive: true });
+    writeFileSync(join(cargoRoot, 'CACHEDIR.TAG'), 'Signature: 8a477f597d28d172789f06886806bc55');
+    writeFileSync(join(cargoOutput, 'deps', 'editor'), 'compiled');
+    age(join(cargoOutput, '.fingerprint')); age(join(cargoOutput, 'deps')); age(cargoOutput); age(cargoRoot);
+
     const report = cleanupGeneratedRepositoryCheckoutCaches({
       canonicalRoot,
       checkouts: [
         { localRoot: swiftCheckout, worktree: true, lifecycle: 'active' },
         { localRoot: nextCheckout, worktree: true, lifecycle: 'active' },
+        { localRoot: cargoCheckout, worktree: true, lifecycle: 'active' },
       ],
     }, {
       nowMs: Date.parse('2026-11-10T00:00:00.000Z'),
@@ -338,11 +350,16 @@ describe('generated repository cache retention', () => {
     });
     expect(report.removedPaths.some((path) => path.startsWith(swiftCheckout + ':') && path.endsWith('.build/arm64-apple-macosx/debug'))).toBe(true);
     expect(report.removedPaths.some((path) => path.startsWith(nextCheckout + ':') && path.endsWith('.next/cache'))).toBe(true);
+    expect(report.removedPaths.some((path) => path.startsWith(cargoCheckout + ':') && path.endsWith('target/debug'))).toBe(true);
     expect(report.byClass.swiftpm_build).toMatchObject({ scanned: 1, eligible: 1, removed: 1 });
     expect(report.byClass.next_build).toMatchObject({ scanned: 1, eligible: 1, removed: 1 });
+    expect(report.byClass.cargo_build).toMatchObject({ scanned: 1, eligible: 1, removed: 1 });
     expect(typeof report.filesystemAvailableBytesDelta).toBe('number');
+    for (const root of [canonicalRoot, swiftCheckout, nextCheckout, cargoCheckout]) {
+      expect(typeof report.filesystemAvailableBytesDeltaByRoot[realpathSync(root)]).toBe('number');
+    }
     const canonicalHead = execFileSync('git', ['-C', canonicalRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
-    for (const root of [canonicalRoot, swiftCheckout, nextCheckout]) {
+    for (const root of [canonicalRoot, swiftCheckout, nextCheckout, cargoCheckout]) {
       expect(execFileSync('git', ['-C', root, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()).toBe(canonicalHead);
       expect(execFileSync('git', ['-C', root, 'status', '--porcelain', '--untracked-files=normal'], { encoding: 'utf8' }).trim()).toBe('');
     }

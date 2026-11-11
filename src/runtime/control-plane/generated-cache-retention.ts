@@ -67,6 +67,8 @@ export interface GeneratedCacheRepositoryRootSet {
 
 export interface RepositoryGeneratedCacheRetentionReport extends GeneratedCacheRetentionReport {
   rootsInspected: number;
+  /** Per-root statfs delta during that root's cleanup window; roots on one volume are sequential observations, not independent totals. */
+  filesystemAvailableBytesDeltaByRoot: Record<string, number | null>;
 }
 
 export type BrowserDisposableArtifactKind = 'screenshots' | 'downloads' | 'diagnostics';
@@ -695,6 +697,7 @@ export function cleanupGeneratedRepositoryCheckoutCaches(
     rootsInspected: 0,
     byClass: {},
     filesystemAvailableBytesDelta: null,
+    filesystemAvailableBytesDeltaByRoot: {},
     inspected: 0,
     eligible: 0,
     removedPaths: [],
@@ -732,6 +735,7 @@ export function cleanupGeneratedRepositoryCheckoutCaches(
       maxRemovals: remainingRemovals,
     });
     aggregate.rootsInspected += 1;
+    aggregate.filesystemAvailableBytesDeltaByRoot[canonical(root)] = report.filesystemAvailableBytesDelta ?? null;
     aggregate.inspected += report.inspected;
     aggregate.eligible += report.eligible;
     for (const [kind, classReport] of Object.entries(report.byClass)) {

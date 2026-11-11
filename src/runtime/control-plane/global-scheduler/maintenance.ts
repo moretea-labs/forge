@@ -189,6 +189,10 @@ export async function runSchedulerPeriodicCleanup(input: {
           retainedPathSamples: generated.retainedPaths.slice(0, 8),
           logicalReclaimedBytes: generated.reclaimedBytes,
           filesystemAvailableBytesDelta: generated.filesystemAvailableBytesDelta ?? null,
+          filesystemAvailableBytesDeltaByRootCount: Object.keys(generated.filesystemAvailableBytesDeltaByRoot).length,
+          filesystemAvailableBytesDeltaByRootSample: Object.entries(generated.filesystemAvailableBytesDeltaByRoot)
+            .slice(0, 8)
+            .map(([root, delta]) => ({ root, delta })),
           skippedByReason: generated.skippedByReason,
           errorCount: generated.errors.length,
           errors: generated.errors.slice(0, 8),
