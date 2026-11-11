@@ -14,9 +14,10 @@ import { computerPluginAdapter } from '../../src/runtime/plugins/computer-regist
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { acquireExecutionLeases, assertFencingToken, listActiveLeases, releaseExecutionLeases, releaseTerminalProcessLeases, withRepositoryMutationExclusion } from '../../src/runtime/resources/leases/store';
+import { acquireExecutionLeases, acquireExecutionLeasesAsync, assertFencingToken, listActiveLeases, releaseExecutionLeases, releaseTerminalProcessLeases, withRepositoryMutationExclusion } from '../../src/runtime/resources/leases/store';
 import { classifyRepositoryCommandRoute } from '../../src/runtime/execution/process-runtime/command-facade';
 import { repositoryControllerRoot } from '../../src/effects/controller-home';
+import { withControllerLockAsync } from '../../src/cli/repositories/locks';
 import { normalizeMutationOwnerIdentity } from '../../src/runtime/execution/thin-harness/mutation-gate';
 
 function lease(resourceKey: string, mode: 'read' | 'write' | 'exclusive'): ExecutionLease {
@@ -199,6 +200,35 @@ describe('Process Runtime fine-grained resource claims', () => {
       releaseExecutionLeases(controllerHome, 'repo1', 'first');
       releaseExecutionLeases(controllerHome, 'repo1', 'different');
       releaseExecutionLeases(controllerHome, 'repo1', 'broad');
+      rmSync(controllerHome, { recursive: true, force: true });
+    }
+  });
+
+  test('plugin lease acquisition waits for transient index-lock contention but returns resource conflicts immediately', async () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-async-plugin-lease-'));
+    const claims = [{ resourceKey: 'provider-state:browser', mode: 'write' as const }];
+    let pending: ReturnType<typeof acquireExecutionLeasesAsync> | undefined;
+    try {
+      await withControllerLockAsync(controllerHome, { scope: 'global', resource: 'execution-leases' },
+        'test-index-lock-holder', async () => {
+          pending = acquireExecutionLeasesAsync(controllerHome, 'repo1', 'waiting-owner', claims, { visibility: 'ephemeral' });
+          await new Promise(resolve => setTimeout(resolve, 80));
+        }, 10_000, 0);
+      const acquiredAfterLockRelease = await pending!;
+      expect(acquiredAfterLockRelease.acquired).toBe(true);
+      releaseExecutionLeases(controllerHome, 'repo1', 'waiting-owner');
+
+      const first = acquireExecutionLeases(controllerHome, 'repo1', 'first-owner', claims, { visibility: 'ephemeral' });
+      expect(first.acquired).toBe(true);
+      const startedAt = performance.now();
+      const conflict = await acquireExecutionLeasesAsync(controllerHome, 'repo1', 'second-owner', claims, { visibility: 'ephemeral' });
+      expect(conflict.acquired).toBe(false);
+      expect(conflict.blockers.map(blocker => blocker.resourceKey)).toEqual(['provider-state:browser']);
+      expect(performance.now() - startedAt).toBeLessThan(1_000);
+    } finally {
+      releaseExecutionLeases(controllerHome, 'repo1', 'waiting-owner');
+      releaseExecutionLeases(controllerHome, 'repo1', 'first-owner');
+      releaseExecutionLeases(controllerHome, 'repo1', 'second-owner');
       rmSync(controllerHome, { recursive: true, force: true });
     }
   });

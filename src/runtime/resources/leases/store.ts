@@ -405,6 +405,29 @@ export function acquireExecutionLeases(
   }
 }
 
+/**
+ * Async plugin effects may queue briefly for the shared atomic lease-index lock.
+ * A real resource/Writer conflict never retries here. Every attempt uses the
+ * existing synchronous Lease authority; no provider effect is replayed.
+ */
+export async function acquireExecutionLeasesAsync(
+  controllerHome: string,
+  repoId: string,
+  ownerJobId: string,
+  claims: ResourceClaimSpec[],
+  ttlMsOrOptions: number | LeaseAcquisitionOptions = 30_000,
+): Promise<LeaseAcquisitionResult> {
+  const deadline = performance.now() + 5_000;
+  while (true) {
+    const result = acquireExecutionLeases(controllerHome, repoId, ownerJobId, claims, ttlMsOrOptions);
+    if (result.acquired || result.blockers.length === 0
+        || result.blockers.some((blocker) => blocker.resourceKey !== 'controller-lock')) return result;
+    const remaining = deadline - performance.now();
+    if (remaining <= 0) return result;
+    await new Promise<void>((resolve) => setTimeout(resolve, Math.min(20, remaining)));
+  }
+}
+
 export interface ExpectedLeaseRef {
   leaseId: string;
   fencingToken: number;

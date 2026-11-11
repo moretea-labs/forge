@@ -22,7 +22,7 @@ import {
   type PluginCapabilityAuthorizationGrant,
 } from './capability-authorization-grants';
 import { markControllerContextProjectionDirty } from '../projections/controller-context';
-import { acquireExecutionLeases, releaseExactExecutionLeases } from '../resources/leases/store';
+import { acquireExecutionLeasesAsync, releaseExactExecutionLeases } from '../resources/leases/store';
 import { iosSimulatorResourceKey } from '../resources/claims/conflicts';
 import { isRuntimeWriteFenceError } from '../root/write-fence';
 import type {
@@ -671,7 +671,7 @@ async function withAssistantPluginResourceLeases<T>(
   // second same-owner lease and then failing exact release with LEASE_SET_MISMATCH.
   const ownerJobId = `plugin:${request.requestId}:${randomUUID()}`;
   const timeoutMs = Math.max(5_000, Math.min(10 * 60_000, request.timeoutMs ?? action.defaultTimeoutMs));
-  const acquisition = acquireExecutionLeases(controllerHome, scope.scopeKey, ownerJobId, claims, {
+  const acquisition = await acquireExecutionLeasesAsync(controllerHome, scope.scopeKey, ownerJobId, claims, {
     ttlMs: timeoutMs + 60_000,
     // This lease exists only to fence concurrent invocations of one external
     // effect. It is not Scheduler/recovery authority, so derived projection,
