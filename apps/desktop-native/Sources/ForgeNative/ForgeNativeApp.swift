@@ -128,7 +128,7 @@ private struct ForgeWorkspaceView: View {
             }
             ToolbarItem(placement:.automatic) {
                 HStack(spacing:7) {
-                    Circle().fill(model.connection == "MCP 已连接" ? Color.green : Color.orange)
+                    Circle().fill(model.connection == "MCP 配置就绪" ? Color.green : Color.orange)
                         .frame(width:6,height:6)
                     Text(model.connection).font(.system(size:11))
                 }.foregroundStyle(ForgePalette.secondary)
@@ -1140,7 +1140,7 @@ private struct ForgeWorkspaceView: View {
                 .zIndex(1)
             }
             switch model.page {
-            case .agent: AgentPane(model:model)
+            case .agent: AgentPane(model:model,onChooseProject:{ projectPickerShown = true })
             case .requirement,.plan: RecordsPane(model:model)
             case .schedule: SchedulePane(model:model)
             case .plugins: PluginsPane(model:model)
@@ -1160,6 +1160,7 @@ private enum AgentSemanticContextInspector: String, Identifiable {
 
 private struct AgentPane: View {
     @ObservedObject var model: NativeWorkspace
+    let onChooseProject: () -> Void
     @State private var showChanges = false
     @State private var showActivityDetails = false
     @State private var expandedMessageActivities: Set<String> = []
@@ -1192,13 +1193,28 @@ private struct AgentPane: View {
                                         .lineSpacing(4)
                                         .frame(maxWidth:470)
                                 }
-                                HStack(spacing:8) {
-                                    starterPromptButton("审查当前改动",systemImage:"doc.text.magnifyingglass",
-                                                        prompt:"检查当前 checkout 的未提交改动，指出风险并完成必要修复与验证。")
-                                    starterPromptButton("定位问题",systemImage:"scope",
-                                                        prompt:"读取当前项目真实状态，定位最高价值的问题并直接修复，完成必要验证。")
-                                    starterPromptButton("实现需求",systemImage:"hammer",
-                                                        prompt:"读取当前 Requirement / Plan 与代码现状，选择最高价值的下一项实现并完成验证。")
+                                if !model.checkoutIsAvailable || !model.selectedProviderReady {
+                                    HStack(spacing:12) {
+                                        if !model.checkoutIsAvailable {
+                                            Button("选择或添加项目",action:onChooseProject)
+                                                .buttonStyle(.borderedProminent)
+                                                .accessibilityIdentifier("agent.onboarding.project")
+                                        }
+                                        if !model.selectedProviderReady {
+                                            Button("设置模型") { model.show(.settings) }
+                                                .buttonStyle(.bordered)
+                                                .accessibilityIdentifier("agent.onboarding.provider")
+                                        }
+                                    }
+                                } else {
+                                    HStack(spacing:8) {
+                                        starterPromptButton("审查当前改动",systemImage:"doc.text.magnifyingglass",
+                                                            prompt:"检查当前 checkout 的未提交改动，指出风险并完成必要修复与验证。")
+                                        starterPromptButton("定位问题",systemImage:"scope",
+                                                            prompt:"读取当前项目真实状态，定位最高价值的问题并直接修复，完成必要验证。")
+                                        starterPromptButton("实现需求",systemImage:"hammer",
+                                                            prompt:"读取当前 Requirement / Plan 与代码现状，选择最高价值的下一项实现并完成验证。")
+                                    }
                                 }
                             }
                             .frame(maxWidth:.infinity,minHeight:360)
@@ -1687,9 +1703,13 @@ private struct AgentPane: View {
 
     private var agentEmptyStateDescription: String {
         if model.checkoutId == nil {
-            return "先选择带有 active checkout 的项目，再让 Forge 审查改动、定位问题或实施 Requirement / Plan。"
+            return model.projects.isEmpty
+                ? "添加本地 Git 项目后即可处理代码；不绑定项目也可以直接对话。"
+                : "选择项目与 checkout 后即可处理代码；不绑定项目也可以直接对话。"
         }
-        return "当前项目与 checkout 是执行上下文；Requirement / Plan 保持为可浏览的唯一语义事实。"
+        if !model.checkoutIsAvailable { return "当前 checkout 尚未就绪，请重新选择项目或 checkout。" }
+        if !model.selectedProviderReady { return "已选择项目。设置可用模型后即可开始任务。" }
+        return "描述你想完成的工作，或选择下方的常用操作。"
     }
 
     private var agentWorkspaceStatusLabel: String {
@@ -5721,16 +5741,21 @@ private struct PluginSettingsSection: View {
 private struct RuntimeSettingsSection: View {
     @ObservedObject var model: NativeWorkspace
     @State private var setupController = "chatgpt"
+    @State private var copiedMcpCommand: String?
 
     var body: some View {
         VStack(alignment:.leading,spacing:16) {
             VStack(alignment:.leading,spacing:5) {
                 Text("连接").font(.system(size:13,weight:.semibold))
-                Text("先配置并确认 MCP / Controller 连接；Runtime 细节只在需要诊断时展开。")
+                Text("连接配置和外部客户端接入；Runtime 细节按需展开。")
                     .font(.system(size:11.5)).foregroundStyle(ForgePalette.secondary)
             }
 
             connectionCard
+
+            Divider()
+
+            externalClientGuide
 
             Divider()
 
@@ -5787,6 +5812,53 @@ private struct RuntimeSettingsSection: View {
         .padding(.vertical,6)
     }
 
+    private var externalClientGuide: some View {
+        DisclosureGroup("在其他客户端使用 Forge") {
+            VStack(alignment:.leading,spacing:12) {
+                VStack(alignment:.leading,spacing:4) {
+                    Text("ChatGPT").font(.system(size:11.5,weight:.semibold))
+                    Text("在 ChatGPT 的连接设置中添加 Forge；使用已配置的 Secure MCP Tunnel 或 HTTPS /mcp 地址。")
+                    Text("连接后调用 rh_status 验证。配置完成不代表客户端已成功调用。")
+                }
+                Divider()
+                VStack(alignment:.leading,spacing:5) {
+                    Text("Claude Code").font(.system(size:11.5,weight:.semibold))
+                    Text("在终端运行一次以下命令，由 Claude Code 管理自己的 MCP 配置。")
+                    copyableMcpCommand("forge mcp setup claude --scope user --profile controller")
+                }
+                Divider()
+                VStack(alignment:.leading,spacing:5) {
+                    Text("其他支持 stdio 的 MCP 客户端").font(.system(size:11.5,weight:.semibold))
+                    Text("在目标 Git 仓库目录下，将以下命令配置为 MCP 服务启动命令。")
+                    copyableMcpCommand("forge mcp serve --transport stdio --profile controller")
+                }
+            }
+            .font(.system(size:11))
+            .foregroundStyle(ForgePalette.secondary)
+            .padding(.top,10)
+        }
+        .font(.system(size:12))
+        .accessibilityIdentifier("connection.external-guide")
+    }
+
+    private func copyableMcpCommand(_ command:String) -> some View {
+        HStack(spacing:10) {
+            Text(command)
+                .font(.system(size:10.5,design:.monospaced))
+                .textSelection(.enabled)
+            Spacer(minLength:8)
+            Button(copiedMcpCommand == command ? "已复制" : "复制") {
+                NSPasteboard.general.clearContents()
+                if NSPasteboard.general.setString(command,forType:.string) {
+                    copiedMcpCommand = command
+                } else {
+                    model.error = "复制失败，请手动选择命令。"
+                }
+            }
+            .buttonStyle(.bordered)
+        }
+    }
+
     private var runtimeCard: some View {
         VStack(alignment:.leading,spacing:13) {
             HStack(spacing:9) {
@@ -5834,6 +5906,11 @@ private struct RuntimeSettingsSection: View {
             if let status = model.connectionStatus {
                 connectionRow("控制器",status.controller)
                 connectionRow("传输",status.tunnel)
+                if status.ready {
+                    Text("Forge 连接配置已就绪。请在外部客户端调用 rh_status 确认实际可用。")
+                        .font(.system(size:11))
+                        .foregroundStyle(ForgePalette.secondary)
+                }
                 if status.configured, !status.ready, let setup = status.setup, let summary = setup.summary {
                     Divider()
                     VStack(alignment:.leading,spacing:6) {
@@ -5868,7 +5945,7 @@ private struct RuntimeSettingsSection: View {
                             .frame(width:220,alignment:.leading)
                             .accessibilityIdentifier("connection.setup.controller")
                             Spacer()
-                            Button(model.connectionLoading ? "配置中…" : "配置并连接") {
+                            Button(model.connectionLoading ? "配置中…" : "保存连接配置") {
                                 Task { await model.configureInitialControllerConnection(setupController) }
                             }
                             .buttonStyle(.borderedProminent)
@@ -5879,7 +5956,7 @@ private struct RuntimeSettingsSection: View {
                              ? "使用 Forge 自动远程传输；不需要手工填写内部 MCP 状态。"
                              : "使用本机控制器，不启用远程 tunnel。")
                             .font(.system(size:11)).foregroundStyle(ForgePalette.secondary)
-                        Text("配置仍由 Forge Setup 持久化；Client 只调用 controller.connection，不保存第二份连接配置。")
+                        Text("连接配置由 Forge Setup 保存；实际连通性请在外部客户端验证。")
                             .font(.system(size:10.5)).foregroundStyle(.tertiary)
                     }
                     .padding(.top,2)
@@ -5905,7 +5982,7 @@ private struct RuntimeSettingsSection: View {
 
     private var connectionTitle: String {
         guard let status = model.connectionStatus else { return model.connectionLoading ? "正在读取连接" : "MCP 连接状态未知" }
-        if status.ready { return "MCP 连接已就绪" }
+        if status.ready { return "MCP 配置就绪" }
         if !status.controller.ready { return "控制器需要处理" }
         if !status.tunnel.ready { return "远程传输需要处理" }
         return status.configured ? "连接未就绪" : "连接尚未配置"
@@ -6539,10 +6616,8 @@ private struct SettingsPane: View {
                 .padding(.vertical,10)
 
                 Divider()
-                DisclosureGroup("运行时与连接") {
-                    RuntimeSettingsSection(model:model)
-                        .padding(.top,12)
-                }
+                RuntimeSettingsSection(model:model)
+                    .accessibilityIdentifier("settings.mcp")
                 DisclosureGroup("插件管理") {
                     PluginSettingsSection(model:model)
                         .padding(.top,12)

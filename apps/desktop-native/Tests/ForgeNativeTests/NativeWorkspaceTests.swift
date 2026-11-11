@@ -687,6 +687,22 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(connection?.setup?.risk,"workspace_write")
         XCTAssertEqual(connection?.setup?.requiresUser,false)
         XCTAssertEqual(NativeWorkspace.connectionLabel(connection),"远程 MCP 未连接")
+        let configuredConnection = NativeWorkspace.controllerConnectionDetail([
+            "connection":[
+                "configured":true,"ready":true,
+                "controller":["ready":true,"title":"Controller configured","detail":"setup"],
+                "tunnel":["ready":true,"title":"Transport configured","detail":"setup"]
+            ]
+        ])
+        XCTAssertEqual(NativeWorkspace.connectionLabel(configuredConnection),"MCP 配置就绪")
+        let unconfiguredConnection = NativeWorkspace.controllerConnectionDetail([
+            "connection":[
+                "configured":false,"ready":false,
+                "controller":["ready":false,"title":"Not configured","detail":""],
+                "tunnel":["ready":false,"title":"No transport","detail":""]
+            ]
+        ])
+        XCTAssertEqual(NativeWorkspace.connectionLabel(unconfiguredConnection),"MCP 未配置")
         XCTAssertEqual(NativeWorkspace.connectionLabel(nil),"MCP 状态未知")
         XCTAssertNil(NativeWorkspace.controllerConnectionDetail(["unexpected":true]))
     }
