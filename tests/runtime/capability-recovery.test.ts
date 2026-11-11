@@ -800,27 +800,33 @@ describe('runtime maintenance executor', () => {
     mkdirSync(runtimeTempRoot, { recursive: true });
     const staleEntry = join(runtimeTempRoot, 'forge-old-entry');
     const gitSourceEntry = join(runtimeTempRoot, 'forge-git-source-entry');
+    const highCardinalityEntry = join(runtimeTempRoot, 'forge-high-cardinality-entry');
     const recentEntry = join(runtimeTempRoot, 'forge-recent-entry');
     const target = join(runtimeTempRoot, 'target.txt');
     const symbolicLink = join(runtimeTempRoot, 'forge-symlink');
     mkdirSync(staleEntry, { recursive: true });
     mkdirSync(join(gitSourceEntry, 'nested', '.git'), { recursive: true });
     writeFileSync(join(gitSourceEntry, 'nested', '.git', 'HEAD'), 'ref: refs/heads/main\n');
+    mkdirSync(highCardinalityEntry, { recursive: true });
+    for (let index = 0; index < 256; index += 1) writeFileSync(join(highCardinalityEntry, `entry-${index}.tmp`), 'generated');
     mkdirSync(recentEntry, { recursive: true });
     writeFileSync(target, 'preserve');
     symlinkSync(target, symbolicLink);
     const old = new Date(Date.now() - 26 * 60 * 60 * 1_000);
     utimesSync(staleEntry, old, old);
     utimesSync(gitSourceEntry, old, old);
+    utimesSync(highCardinalityEntry, old, old);
 
     const boundedRepository = { ...repository, runtimeTempRoots: [runtimeTempRoot] };
     const status = buildRuntimeMaintenanceStatus(boundedRepository, controllerHome, { minAgeMinutes: 0, maxCandidates: 50 });
     expect(status.readyForExecution).toBe(true);
-    expect(status.summary.staleRuntimeTempEntries).toBe(2);
+    expect(status.summary.staleRuntimeTempEntries).toBe(3);
     const tempCandidates = status.candidates.filter((candidate) => candidate.kind === 'stale_runtime_temp_entry');
     expect(tempCandidates.find((candidate) => candidate.path === staleEntry)).toMatchObject({ safe: true });
     expect(tempCandidates.find((candidate) => candidate.path === gitSourceEntry)).toMatchObject({ safe: false });
     expect(tempCandidates.find((candidate) => candidate.path === gitSourceEntry)?.reason).toContain('RUNTIME_TEMP_GIT_SOURCE_PROTECTED');
+    expect(tempCandidates.find((candidate) => candidate.path === highCardinalityEntry)).toMatchObject({ safe: false });
+    expect(tempCandidates.find((candidate) => candidate.path === highCardinalityEntry)?.reason).toContain('RUNTIME_TEMP_GIT_SOURCE_PROTECTED');
 
     const applied = applyRuntimeMaintenance(boundedRepository, controllerHome, {
       actionId: 'full_maintenance_pass',
@@ -830,9 +836,11 @@ describe('runtime maintenance executor', () => {
     });
     expect(applied.applied.some((candidate) => candidate.path === staleEntry && candidate.applied)).toBe(true);
     expect(applied.applied.find((candidate) => candidate.path === gitSourceEntry)).toMatchObject({ safe: false, applied: false, result: 'not_selected' });
+    expect(applied.applied.find((candidate) => candidate.path === highCardinalityEntry)).toMatchObject({ safe: false, applied: false, result: 'not_selected' });
     expect(existsSync(staleEntry)).toBe(false);
     expect(existsSync(gitSourceEntry)).toBe(true);
     expect(existsSync(join(gitSourceEntry, 'nested', '.git', 'HEAD'))).toBe(true);
+    expect(existsSync(join(highCardinalityEntry, 'entry-255.tmp'))).toBe(true);
     expect(existsSync(recentEntry)).toBe(true);
     expect(existsSync(symbolicLink)).toBe(true);
     expect(readFileSync(target, 'utf8')).toBe('preserve');
