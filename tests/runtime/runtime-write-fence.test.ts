@@ -14,6 +14,7 @@ import {
   assertRuntimeMayWrite,
   assertRuntimeMayWriteOrThrow,
   bindInheritedRuntimeWriteClaimFromEnvironment,
+  RUNTIME_WRITE_CLAIM_ENV,
   bindRuntimeWriteClaim,
   clearRuntimeWriteClaimForTests,
   isRuntimeWriteFenceError,
@@ -52,6 +53,30 @@ function fixture() {
   const authority = ensureActiveRuntimeRelease(home, manifest(home, 'release-a', 'artifact-a'));
   return { home, owner, authority };
 }
+
+test('ignores metadata-only inherited environment without creating a write claim', () => {
+  const env: NodeJS.ProcessEnv = {
+    [RUNTIME_WRITE_CLAIM_ENV.artifactIdentity]: 'artifact-a',
+    [RUNTIME_WRITE_CLAIM_ENV.workerProtocolVersion]: '1',
+  };
+  expect(bindInheritedRuntimeWriteClaimFromEnvironment(env)).toBeUndefined();
+});
+
+test('rejects a partial inherited owner claim even when release metadata is present', () => {
+  const fx = fixture();
+  const env: NodeJS.ProcessEnv = {
+    [RUNTIME_WRITE_CLAIM_ENV.controllerHome]: fx.home,
+    [RUNTIME_WRITE_CLAIM_ENV.runtimeInstanceId]: 'runtime-a',
+    [RUNTIME_WRITE_CLAIM_ENV.artifactIdentity]: 'artifact-a',
+    [RUNTIME_WRITE_CLAIM_ENV.workerProtocolVersion]: '1',
+  };
+  try {
+    expect(() => bindInheritedRuntimeWriteClaimFromEnvironment(env))
+      .toThrow('RUNTIME_WRITE_CLAIM_BIND_FAILED: inherited claim is incomplete');
+  } finally {
+    fx.owner.release();
+  }
+});
 
 describe('Canonical Runtime write fence', () => {
   test('accepts the current Runtime owner and whole-release claim', () => {
