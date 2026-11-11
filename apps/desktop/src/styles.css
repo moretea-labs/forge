@@ -376,7 +376,7 @@ a { color: #353535; text-decoration: underline; text-underline-offset: 3px; }
   letter-spacing: .02em; color: #74758a; padding: 2px 4px;
   border-radius: 4px; background: rgba(105,108,130,.08); }
 .sidebar-thread-row .nav-symbol { color: #9397a2; }
-.sidebar-thread-row.active .nav-symbol { color: var(--accent); }
+.sidebar-thread-row.active .nav-symbol { color: currentColor; }
 .local-message { width: fit-content; min-width: 0; max-width: 88%; padding: 10px 0; border-radius: 0; }
 .local-message.user { padding: 12px 15px; border-radius: 13px; background: #f5f5f5; }
 .local-message.assistant { width: 100%; max-width: 100%; padding: 13px 0; }
@@ -1017,7 +1017,7 @@ a { color: #353535; text-decoration: underline; text-underline-offset: 3px; }
   overflow-y: auto;
   scrollbar-color: var(--border-strong) transparent;
 }
-.sidebar-conversation-heading { flex: 0 0 auto; padding: 0 3px; }
+.sidebar-conversation-heading { flex: 0 0 auto; justify-content: flex-end; padding: 0 3px; }
 .sidebar-conversation-heading .sidebar-section-title {
   margin: 0 7px 10px;
   color: var(--subtle);
@@ -1062,6 +1062,8 @@ a { color: #353535; text-decoration: underline; text-underline-offset: 3px; }
   font-size: 12.5px;
 }
 .sidebar-footer > .nav-row.active { background: rgba(255,255,255,.74); color: var(--ink); }
+.sidebar-footer > .nav-row.active .nav-symbol { color: currentColor; }
+.sidebar button:focus-visible, .sidebar input:focus-visible { outline-color: #626b72; }
 
 /* A: calm content canvas. Sections are functional rather than ornamental. */
 .workspace-region, .main-pane { background: var(--canvas); border-radius: 0; }
