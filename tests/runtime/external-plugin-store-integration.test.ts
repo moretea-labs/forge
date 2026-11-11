@@ -45,6 +45,7 @@ import {
 } from '../../src/runtime/plugins/store';
 import { resourceClaimsConflict } from '../../src/runtime/resources/claims/conflicts';
 import { ensureControllerHome, FORGE_INSTANCE_SCOPE_KEY } from '../../src/effects/controller-home';
+import { createRecoveryConfig, restartPrimaryConnector } from '../../src/runtime/standalone-recovery/core';
 import { acquireRuntimeOwnership } from '../../src/runtime/root/ownership';
 import { ensureActiveRuntimeRelease } from '../../src/runtime/root/release-store';
 import { bindRuntimeWriteClaim, clearRuntimeWriteClaimForTests } from '../../src/runtime/root/write-fence';
@@ -410,7 +411,7 @@ describe('plugin action resource replay fencing', () => {
     expect(readFileSync(logPath, 'utf8').trim().split('\n').filter((line) => line === 'execute')).toHaveLength(1);
   }, 15_000);
 
-  test('Process observation interruption preserves the Plugin Action effect and resumes the same request after monitor restart', async () => {
+  test('Process observation interruption preserves Plugin Action identity through Recovery Connector restart orchestration', async () => {
     const { controllerHome, socketPath } = fixture(true, undefined, true);
     const logPath = join(controllerHome, 'process-plugin-interruption.log');
     await startExternalProviderFixture(controllerHome, socketPath, logPath);
@@ -473,6 +474,51 @@ describe('plugin action resource replay fencing', () => {
 
     // Drop only the observing Controller monitor; the independent Runner and provider keep executing.
     __resetLiveMonitorsForTests();
+
+    const connectorPlistPath = join(controllerHome, 'connector.plist');
+    writeFileSync(connectorPlistPath, '<plist><dict><key>RunAtLoad</key><true/><key>KeepAlive</key><true/></dict></plist>');
+    const recoveryConfig = createRecoveryConfig(controllerHome, {
+      publicMcpUrl: 'https://mcp.example.test/mcp',
+      primaryConnectorService: { platform: 'launchd', label: 'com.moretea.forge.mcp-gateway', plistPath: connectorPlistPath },
+    });
+    const connectorCommands: string[][] = [];
+    let reconnectCalls = 0;
+    const healthyVerify = () => ({
+      ok: true,
+      at: new Date().toISOString(),
+      runtime: { ok: true, running: true, ready: true, stale: false, reasonCodes: [] },
+      releases: { coherent: true },
+      probes: {
+        runtime_status: { ok: true, detail: 'live' },
+        active_gateway: { ok: true, detail: 'HTTP 200' },
+        mcp_initialize: { ok: true, detail: 'HTTP 200' },
+      },
+    });
+    // Exercise the real Recovery orchestration with deterministic launchd/reconnect adapters; do not touch the host Connector service.
+    const connectorRestart = await restartPrimaryConnector(recoveryConfig, {
+      requestId: 'recovery-gateway:process-plugin-connector-restart',
+      forceHealthyRestart: true,
+      platform: 'darwin',
+      currentUid: async () => 501,
+      verifyLocal: async () => healthyVerify(),
+      repairConnectorBinding: async () => ({ ok: true, attempted: false, noOp: true, detail: 'binding already current' }),
+      probeConnectorLocal: async () => ({ ok: true, detail: 'local Connector reachable' }),
+      probeConnectorOwnership: async () => ({ ok: true, detail: 'configured service owns listener' }),
+      reconnect: async () => {
+        reconnectCalls += 1;
+        if (reconnectCalls > 1) expect(connectorCommands).toContainEqual(['launchctl', 'kickstart', '-k', 'gui/501/com.moretea.forge.mcp-gateway']);
+        await Bun.sleep(75);
+        return { ok: true, detail: 'public MCP reachable', verify: healthyVerify() };
+      },
+      runCommand: async (name, args) => {
+        connectorCommands.push([name, ...args]);
+        return { ok: true, status: 0, stdout: '', stderr: '' };
+      },
+    });
+    expect(connectorRestart).toMatchObject({ ok: true, attempted: true, serviceTarget: 'gui/501/com.moretea.forge.mcp-gateway' });
+    expect(connectorCommands).toContainEqual(['launchctl', 'kickstart', '-k', 'gui/501/com.moretea.forge.mcp-gateway']);
+    expect(reconnectCalls).toBe(2);
+
     const replay = await spawnManagedProcess({
       controllerHome,
       repoId: repository.repoId,
