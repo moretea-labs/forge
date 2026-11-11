@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
@@ -47,6 +47,7 @@ import {
 import { writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 import { addRepositoryCheckout, registerRepository } from '../../src/cli/repositories/registry';
 import { callRepositoryTool } from '../../adapters/mcp/tool-mapping/repository-tools';
+import { waitRepositoryCommandProcess } from '../../src/runtime/execution/process-runtime/command-facade';
 import { implementationReviewChangedPathDigest } from '../../packages/kernel/work/api/index';
 import { cognitionReadPort } from '../../src/runtime/control-plane/persistence/cognition-store';
 import { ensureForgeInstanceIdentity } from '../../packages/kernel/identity/api/index';
@@ -280,6 +281,73 @@ describe('MCP canonical Runtime proxy routing', () => {
     expect(cutoverCalls).toBe(1);
     expect(cutoverReconnects).toBe(0);
   });
+
+  test('a lost proxy response reconciles one real Process without a second effect', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'forge-proxy-response-loss-'));
+    const controllerHome = join(root, 'controller');
+    const repoRoot = join(root, 'repo');
+    mkdirSync(repoRoot, { recursive: true });
+    let processId: string | undefined;
+    let repoId: string | undefined;
+    try {
+      runPostFinalizeGit(repoRoot, ['init', '-b', 'main']);
+      runPostFinalizeGit(repoRoot, ['config', 'user.name', 'Forge Proxy Test']);
+      runPostFinalizeGit(repoRoot, ['config', 'user.email', 'forge-proxy@example.test']);
+      writeFileSync(join(repoRoot, 'README.md'), 'base\n');
+      runPostFinalizeGit(repoRoot, ['add', 'README.md']);
+      runPostFinalizeGit(repoRoot, ['commit', '-m', 'init']);
+      const repository = registerRepository({ path: repoRoot, controllerHome, defaultBranch: 'main' });
+      repoId = repository.repoId;
+      const effectPath = join(repoRoot, 'effect.log');
+      const scriptPath = join(root, 'effect.cjs');
+      writeFileSync(scriptPath, [
+        "const { appendFileSync } = require('node:fs');",
+        "appendFileSync(" + JSON.stringify(effectPath) + ", 'effect\\n');",
+        "setTimeout(() => process.stdout.write('done\\n'), 250);",
+      ].join('\n'));
+      const args = {
+        repo_id: repoId,
+        checkout_id: repository.activeCheckoutId,
+        command: [process.execPath, scriptPath],
+        mutation_paths: ['effect.log'],
+        request_id: 'proxy-response-lost-reconcile-same-process',
+        apply_mode: 'async',
+        timeout_ms: 15_000,
+      };
+      let calls = 0;
+      let reconnects = 0;
+      const observed = await callCanonicalRuntimeToolWithReplay({
+        name: 'execute_command',
+        args,
+        call: async () => {
+          calls += 1;
+          const response = await callRepositoryTool(controllerHome, 'execute_command', args);
+          expect(response?.isError).not.toBe(true);
+          const data = response?.structuredContent as { accepted?: boolean; processId?: string } | undefined;
+          expect(data?.accepted).toBe(true);
+          expect(data?.processId).toBeTruthy();
+          if (calls === 1) {
+            processId = data!.processId;
+            throw new SdkError(SdkErrorCode.ConnectionClosed, 'reply lost after Process admission');
+          }
+          return response;
+        },
+        reconnect: async () => { reconnects += 1; },
+      });
+      expect((observed?.structuredContent as { processId?: string } | undefined)?.processId).toBe(processId);
+      expect(calls).toBe(2);
+      expect(reconnects).toBe(1);
+      const terminal = await waitRepositoryCommandProcess(controllerHome, repoId, processId!, { timeoutMs: 15_000 });
+      expect(terminal).toMatchObject({ completed: true, status: 'succeeded' });
+      expect(readFileSync(effectPath, 'utf8')).toBe('effect\n');
+      const later = await callRepositoryTool(controllerHome, 'execute_command', args);
+      expect((later?.structuredContent as { processId?: string } | undefined)?.processId).toBe(processId);
+      expect(readFileSync(effectPath, 'utf8')).toBe('effect\n');
+    } finally {
+      if (processId) await waitRepositoryCommandProcess(controllerHome, repoId, processId, { timeoutMs: 5_000 }).catch(() => undefined);
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 20_000);
 
   test('does not replay keyed repository commands for non-transient failures or beyond one retry', async () => {
     const args = { request_id: 'stable-bound', command: ['true'] };
