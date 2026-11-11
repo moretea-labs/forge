@@ -6,6 +6,8 @@ import { dirname, join } from 'path';
 import { installExternalPluginRegistration, type ExternalPluginRegistration } from '../../src/runtime/plugins/external-registration';
 import { createExternalPluginAdapter } from '../../src/runtime/plugins/external-adapter';
 import { registerRepository } from '../../src/cli/repositories/registry';
+import { executionIdentityForRepository } from '../../src/runtime/control-plane/execution/execution-identity';
+import { __resetLiveMonitorsForTests, spawnManagedProcess, waitForProcess } from '../../src/runtime/execution/process-runtime';
 import { withControllerLockAsync } from '../../src/cli/repositories/locks';
 import { getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { callRhWorkSemanticOperation } from '../../adapters/mcp/runtime-gateway/work-semantic-operations';
@@ -42,7 +44,7 @@ import {
   browserRemoteResourceKey,
 } from '../../src/runtime/plugins/store';
 import { resourceClaimsConflict } from '../../src/runtime/resources/claims/conflicts';
-import { FORGE_INSTANCE_SCOPE_KEY } from '../../src/effects/controller-home';
+import { ensureControllerHome, FORGE_INSTANCE_SCOPE_KEY } from '../../src/effects/controller-home';
 import { acquireRuntimeOwnership } from '../../src/runtime/root/ownership';
 import { ensureActiveRuntimeRelease } from '../../src/runtime/root/release-store';
 import { bindRuntimeWriteClaim, clearRuntimeWriteClaimForTests } from '../../src/runtime/root/write-fence';
@@ -407,6 +409,97 @@ describe('plugin action resource replay fencing', () => {
       .rejects.toThrow('REQUEST_ID_CONFLICT');
     expect(readFileSync(logPath, 'utf8').trim().split('\n').filter((line) => line === 'execute')).toHaveLength(1);
   }, 15_000);
+
+  test('Process observation interruption preserves the Plugin Action effect and resumes the same request after monitor restart', async () => {
+    const { controllerHome, socketPath } = fixture(true, undefined, true);
+    const logPath = join(controllerHome, 'process-plugin-interruption.log');
+    await startExternalProviderFixture(controllerHome, socketPath, logPath);
+
+    const repoRoot = mkdtempSync(join(tmpdir(), 'forge-plugin-process-repo-'));
+    roots.push(repoRoot);
+    expect(spawnSync('git', ['init', '-b', 'main'], { cwd: repoRoot, encoding: 'utf8' }).status).toBe(0);
+    expect(spawnSync('git', ['config', 'user.name', 'Forge Test'], { cwd: repoRoot, encoding: 'utf8' }).status).toBe(0);
+    expect(spawnSync('git', ['config', 'user.email', 'forge@example.test'], { cwd: repoRoot, encoding: 'utf8' }).status).toBe(0);
+    writeFileSync(join(repoRoot, 'README.md'), 'cross-surface interruption fixture' + String.fromCharCode(10));
+    expect(spawnSync('git', ['add', '.'], { cwd: repoRoot, encoding: 'utf8' }).status).toBe(0);
+    expect(spawnSync('git', ['commit', '-m', 'init'], { cwd: repoRoot, encoding: 'utf8' }).status).toBe(0);
+    ensureControllerHome(controllerHome);
+    const repository = registerRepository({ path: repoRoot, controllerHome, displayName: 'plugin-process-interruption-test' });
+
+    const requestId = 'process-plugin-interrupted-observation';
+    const request = {
+      pluginId: 'desktop_operator',
+      actionId: 'desktop_mutate_slow',
+      requestId,
+      args: {},
+      origin: { surface: 'mcp' as const, actor: 'test' },
+    };
+    const resultPath = join(controllerHome, 'process-plugin-result.json');
+    const scriptPath = join(controllerHome, 'process-plugin-client.ts');
+    writeFileSync(scriptPath, [
+      "import { writeFileSync } from 'node:fs';",
+      'import { submitControllerPluginAction } from ' + JSON.stringify(join(process.cwd(), 'src/runtime/plugins/store.ts')) + ';',
+      'const result = await submitControllerPluginAction(' + JSON.stringify(controllerHome) + ', ' + JSON.stringify(request) + ');',
+      'writeFileSync(' + JSON.stringify(resultPath) + ', JSON.stringify({ receiptId: result.receipt.receiptId, status: result.receipt.status, deduplicated: result.deduplicated }));',
+    ].join(String.fromCharCode(10)));
+
+    const command = { kind: 'argv' as const, executable: process.execPath, args: [scriptPath], cwd: repoRoot };
+    const signal = new AbortController();
+    const execution = spawnManagedProcess({
+      controllerHome,
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      executionIdentity: executionIdentityForRepository(repository),
+      command,
+      interactiveWaitMs: 10_000,
+      timeoutMs: 15_000,
+      signal: signal.signal,
+      origin: { surface: 'command', toolName: 'execute_command', requestId },
+    });
+
+    const dispatchDeadline = Date.now() + 5_000;
+    let dispatched = false;
+    while (Date.now() < dispatchDeadline) {
+      if (existsSync(logPath) && readFileSync(logPath, 'utf8').split(String.fromCharCode(10)).includes('execute')) {
+        dispatched = true;
+        break;
+      }
+      await Bun.sleep(5);
+    }
+    expect(dispatched).toBe(true);
+    signal.abort();
+    const interrupted = await execution;
+    expect(interrupted).toMatchObject({ completed: false, status: 'running', observationInterrupted: true, requestId });
+
+    // Drop only the observing Controller monitor; the independent Runner and provider keep executing.
+    __resetLiveMonitorsForTests();
+    const replay = await spawnManagedProcess({
+      controllerHome,
+      repoId: repository.repoId,
+      checkoutId: repository.activeCheckoutId,
+      executionIdentity: executionIdentityForRepository(repository),
+      command,
+      interactiveWaitMs: 0,
+      timeoutMs: 15_000,
+      origin: { surface: 'command', toolName: 'execute_command', requestId },
+    });
+    expect(replay.processId).toBe(interrupted.processId);
+    expect(replay.deduplicated).toBe(true);
+
+    const terminal = await waitForProcess(controllerHome, repository.repoId, replay.processId, { timeoutMs: 5_000 });
+    expect(terminal).toMatchObject({ completed: true, status: 'succeeded', ok: true });
+    expect(existsSync(resultPath)).toBe(true);
+    const childResult = JSON.parse(readFileSync(resultPath, 'utf8')) as { receiptId: string; status: string; deduplicated: boolean };
+    const receipt = readPluginActionReceiptForRequest(controllerHome, requestId);
+    expect(receipt).toMatchObject({ requestId, status: 'succeeded' });
+    expect(childResult).toMatchObject({ receiptId: receipt!.receiptId, status: 'succeeded', deduplicated: false });
+
+    const pluginReplay = await submitControllerPluginAction(controllerHome, request);
+    expect(pluginReplay.deduplicated).toBe(true);
+    expect(pluginReplay.receipt.receiptId).toBe(receipt!.receiptId);
+    expect(readFileSync(logPath, 'utf8').trim().split(String.fromCharCode(10)).filter((line) => line === 'execute')).toHaveLength(1);
+  }, 20_000);
+
 });
 
 describe('scheduled Gmail automation capability', () => {
