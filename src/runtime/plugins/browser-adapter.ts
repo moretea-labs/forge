@@ -4906,6 +4906,10 @@ async function executeBrowserPluginActionInternal(
             return finalizeInteractiveAction(input.repoRoot, current, page, target, connection, input.actionId, summary, { selector });
           });
         } catch (error) {
+          // Typed provider failures such as BROWSER_AUTOMATION_MUTATION_OUTCOME_UNKNOWN
+          // already carry the mutation-replay authority. Re-wrapping them as retryable
+          // PLUGIN_ACTION_FAILED invited blind replay of an unknown-outcome mutation.
+          if (error instanceof AssistantPluginError) throw error;
           const message = error instanceof Error ? error.message : String(error);
           throw new AssistantPluginError(
             selectorUnavailableInTime(message) ? 'PLUGIN_BROWSER_SELECTOR_UNAVAILABLE' : 'PLUGIN_ACTION_FAILED',

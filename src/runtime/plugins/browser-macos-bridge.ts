@@ -15,6 +15,11 @@ import type { BrowserNativeAttachAttempt, BrowserNativeProduct } from '../../../
 
 const RECORD_SEPARATOR = String.fromCharCode(30);
 const DEFAULT_NATIVE_TIMEOUT_MS = 5_000;
+// ChatGPT-class pages routinely keep the renderer busy for many seconds after a
+// fill dispatches React state updates, so a `execute_javascript` Apple Event can
+// legitimately need more than the action's small default before its reply
+// arrives. The sidecar bounds any request to its own 30 s cap.
+const NATIVE_JS_EVENT_TIMEOUT_MS = 20_000;
 const MAX_NATIVE_OUTPUT_BYTES = 1_048_576;
 const MAX_NATIVE_BROWSER_FILE_ATTACH_BYTES = 16 * 1024 * 1024;
 
@@ -972,7 +977,10 @@ export class MacOsAppleEventsPage {
       throw new AssistantPluginError(brokerFailure ?? 'PLUGIN_BROWSER_NATIVE_OPERATION_FAILED', `${this.browser.appName} Apple Events operation failed: ${message}`, {
         retryable: !nonRetryable && !outcomeUnknown,
         effectOutcome: outcomeUnknown ? 'outcome_unknown' : 'failed',
-        details: { browserProduct: this.browser.product, bundleId: this.browser.bundleId },
+        details: {
+          browserProduct: this.browser.product, bundleId: this.browser.bundleId,
+          ...(message.includes('OSStatus error -1712') ? { appleEventTimedOut: true } : {}),
+        },
       });
     }
   }
@@ -989,12 +997,13 @@ export class MacOsAppleEventsPage {
   }
 
   private async executeJavaScriptRaw(source: string, timeoutMs = this.timeoutMs): Promise<string> {
+    const eventTimeoutMs = Math.max(timeoutMs, NATIVE_JS_EVENT_TIMEOUT_MS);
     try {
       return await this.runAutomation(
         { action: 'execute_javascript', product: this.browser.product, ...(this.targetRef ? { ref: this.targetRef } : {}), source },
         (resolvedRef) => executeJavaScriptScript(this.browser, resolvedRef),
         [source],
-        timeoutMs,
+        eventTimeoutMs,
       );
     } catch (error) {
       if (macOsBrowserJavaScriptAutomationDisabled(error)) {

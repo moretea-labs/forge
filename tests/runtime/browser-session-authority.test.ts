@@ -214,6 +214,43 @@ describe('Browser vs Chrome environment boundary', () => {
       provider: 'playwright-persistent-context',
     });
   });
+
+  test('native click with unknown mutation outcome keeps the typed error instead of retryable PLUGIN_ACTION_FAILED', async () => {
+    const { controllerHome, repoA } = fixture();
+    saveBrowserSession(controllerHome, 'repo-a', repoA, session('native-click-unknown', '2026-08-24T01:00:00.000Z', { native: true }));
+    writeControllerPluginConfig(controllerHome, 'browser', {
+      schemaVersion: 1, enabled: true, provider: 'playwright', browserMode: 'attach_preferred',
+      cdpAttachFallback: 'fail_closed', nativeAttachMode: 'auto',
+    });
+    const nativeSeparator = String.fromCharCode(30);
+    const metadata = ['false', 'https://example.com/native-click-unknown', 'Native Click', '0', '0', '1200', '800', '7', '9', 'false', 'false'].join(nativeSeparator);
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin',
+      appExists: () => true,
+      processRunning: async () => true,
+      runAppleScript: async (script) => {
+        if (script.includes('execute targetTab javascript')) {
+          throw new AssistantPluginError(
+            'BROWSER_AUTOMATION_MUTATION_OUTCOME_UNKNOWN',
+            'Process-bound Chrome Apple Event failed: The operation couldn’t be completed. (OSStatus error -1712.)',
+            { retryable: false, effectOutcome: 'outcome_unknown' },
+          );
+        }
+        return metadata;
+      },
+    });
+
+    await expect(executeBrowserPluginAction({
+      controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser',
+      actionId: 'click', requestId: 'native-click-outcome-unknown-guard',
+      origin: { surface: 'mcp', actor: 'test' },
+      args: { session_id: 'native-click-unknown', selector: '[data-testid="send-button"]' },
+    })).rejects.toMatchObject({
+      code: 'BROWSER_AUTOMATION_MUTATION_OUTCOME_UNKNOWN',
+      retryable: false,
+      effectOutcome: 'outcome_unknown',
+    });
+  });
 });
 
 describe('browser session compatibility on Computer target authority', () => {
