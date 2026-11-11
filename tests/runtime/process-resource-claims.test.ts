@@ -11,10 +11,10 @@ import { claimsForAssistantPluginAction } from '../../src/runtime/plugins/store'
 import type { AssistantPluginActionDescriptor } from '../../src/runtime/plugins/types';
 import { createDesktopOperatorRegistrationInput } from '../../src/runtime/plugins/desktop-operator-registration';
 import { computerPluginAdapter } from '../../src/runtime/plugins/computer-registration';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { acquireExecutionLeases, acquireExecutionLeasesAsync, assertFencingToken, listActiveLeases, releaseExecutionLeases, releaseTerminalProcessLeases, withRepositoryMutationExclusion } from '../../src/runtime/resources/leases/store';
+import { acquireExecutionLeases, acquireExecutionLeasesAsync, assertFencingToken, listActiveLeases, releaseExecutionLeases, releaseExactExecutionLeases, releaseTerminalProcessLeases, withRepositoryMutationExclusion } from '../../src/runtime/resources/leases/store';
 import { classifyRepositoryCommandRoute } from '../../src/runtime/execution/process-runtime/command-facade';
 import { repositoryControllerRoot } from '../../src/effects/controller-home';
 import { withControllerLockAsync } from '../../src/cli/repositories/locks';
@@ -711,6 +711,35 @@ describe('Process Runtime fine-grained resource claims', () => {
     expect(claimsForAssistantPluginAction(providerAction, repository, 'browser', { session_id: 'session-a' }, 'provider-a')).toEqual([
       { resourceKey: 'provider-state:browser', mode: 'write' },
     ]);
+  });
+
+  test('ordinary ephemeral lease release honors no-runtime-event semantics on both release routes', () => {
+    const controllerHome = mkdtempSync(join(tmpdir(), 'forge-ephemeral-release-'));
+    const repoId = 'repo-ephemeral-release';
+    const options = { visibility: 'ephemeral' as const, notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false };
+    try {
+      const first = acquireExecutionLeases(controllerHome, repoId, 'fast:general-release', [
+        { resourceKey: 'workspace:checkout-a', mode: 'write', repoId, checkoutId: 'checkout-a' },
+      ], options);
+      expect(first.acquired).toBe(true);
+      expect(releaseExecutionLeases(controllerHome, repoId, 'fast:general-release', first.leases, options)).toBe(1);
+
+      const second = acquireExecutionLeases(controllerHome, repoId, 'fast:exact-release', [
+        { resourceKey: 'workspace:checkout-a', mode: 'write', repoId, checkoutId: 'checkout-a' },
+      ], options);
+      expect(second.acquired).toBe(true);
+      expect(releaseExactExecutionLeases(controllerHome, repoId, 'fast:exact-release', second.leases.map((lease) => ({
+        leaseId: lease.leaseId,
+        fencingToken: lease.fencingToken,
+        repoId: lease.repoId,
+        checkoutId: lease.checkoutId,
+        ownerIdentityDigest: lease.ownerIdentityDigest,
+      })), options)).toBe(1);
+      expect(listActiveLeases(controllerHome, repoId)).toHaveLength(0);
+      expect(existsSync(join(repositoryControllerRoot(controllerHome, repoId), 'events', 'ledger.jsonl'))).toBe(false);
+    } finally {
+      rmSync(controllerHome, { recursive: true, force: true });
+    }
   });
 
   test('terminal Process release persists owner, fencing and resource receipt for ephemeral leases', () => {

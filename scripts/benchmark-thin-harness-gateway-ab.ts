@@ -21,7 +21,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readdirSync, existsSync 
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
-import { ensureControllerHome, repositoryControllerRoot } from '../src/effects/controller-home';
+import { controllerSystemRoot, ensureControllerHome } from '../src/effects/controller-home';
 import { registerRepository } from '../src/cli/repositories/registry';
 import {
   executeFast,
@@ -35,6 +35,7 @@ import {
   resetLeaseSideEffectMetrics,
 } from '../src/runtime/resources/leases/store';
 import { listExecutionJobs } from '../src/runtime/execution/jobs/store';
+import { listProcessRecords } from '../src/runtime/execution/process-runtime/store';
 import { listLocalBridgeJobSnapshots } from '../src/cli/local-bridge/job-store';
 import { listFastReceipts } from '../src/runtime/execution/thin-harness/fast-receipt';
 import { callRepositoryTool } from '../src/runtime/control-plane/facade/repository-tool-dispatch';
@@ -85,30 +86,25 @@ function serializedBytes(value: unknown): number {
   }
 }
 
-function countLeaseFiles(controllerHome: string, repoId: string): number {
-  try {
-    const active = join(repositoryControllerRoot(controllerHome, repoId), 'leases', 'active');
-    if (!existsSync(active)) return 0;
-    return readdirSync(active).filter((name) => name.endsWith('.json')).length;
-  } catch {
-    return 0;
-  }
+function countLeaseFiles(controllerHome: string): number {
+  // ExecutionLeases have one controller-global authority, not per-repository lease folders.
+  const active = join(controllerSystemRoot(controllerHome), 'execution-leases', 'active');
+  if (!existsSync(active)) return 0;
+  return readdirSync(active).filter((name) => name.endsWith('.json')).length;
 }
 
-function countExecutionJobs(controllerHome: string, repoId: string): number {
-  try {
-    return listExecutionJobs(controllerHome, repoId).length;
-  } catch {
-    return 0;
-  }
+function observeEffects(fixture: ReturnType<typeof createFixture>) {
+  const jobs = listExecutionJobs(fixture.controllerHome, fixture.repository.repoId, 1000);
+  return {
+    executionJobIds: new Set(jobs.map((job) => job.jobId)),
+    localJobIds: new Set(listLocalBridgeJobSnapshots(fixture.repoRoot, 500).map((job) => job.jobId)),
+    managedProcessIds: new Set(listProcessRecords(fixture.controllerHome, fixture.repository.repoId, 1000).map((process) => process.processId)),
+    recordedWorkerPids: new Set(jobs.map((job) => job.workerPid).filter((pid): pid is number => typeof pid === 'number')),
+  };
 }
 
-function countLocalJobs(repoRoot: string): number {
-  try {
-    return listLocalBridgeJobSnapshots(repoRoot).length;
-  } catch {
-    return 0;
-  }
+function newCount<T>(before: Set<T>, after: Set<T>): number {
+  return [...after].filter((value) => !before.has(value)).length;
 }
 
 interface MetricsSample {
@@ -127,7 +123,8 @@ interface MetricsSample {
   eventLoopLagMs: number;
   executionJobCount: number;
   localJobCount: number;
-  workerSpawnCount: number;
+  recordedWorkerPidCount: number;
+  managedProcessRecordCount: number;
   runtimeEventDelta: number;
   projectionInvalidationDelta: number;
   schedulerWakeDelta: number;
@@ -140,6 +137,7 @@ interface MetricsSample {
 interface CaseReport {
   name: string;
   median: MetricsSample;
+  warmup: MetricsSample;
   runs: MetricsSample[];
 }
 
@@ -218,10 +216,9 @@ async function sampleOnce(
 ): Promise<MetricsSample> {
   resetLeaseSideEffectMetrics();
   const sideBefore = getLeaseSideEffectMetrics();
-  const jobsBefore = countExecutionJobs(fixture.controllerHome, fixture.repository.repoId);
-  const localBefore = countLocalJobs(fixture.repoRoot);
+  const effectsBefore = observeEffects(fixture);
   const receiptsBefore = listFastReceipts(fixture.controllerHome, fixture.repository.repoId, 200).length;
-  const leasesBefore = countLeaseFiles(fixture.controllerHome, fixture.repository.repoId);
+  const leasesBefore = countLeaseFiles(fixture.controllerHome);
 
   let result: Awaited<ReturnType<typeof fn>> | undefined;
   let wallClockMs = 0;
@@ -235,6 +232,7 @@ async function sampleOnce(
   });
 
   const sideAfter = getLeaseSideEffectMetrics();
+  const effectsAfter = observeEffects(fixture);
   const side = result?.durableSideEffects ?? {};
   const latency = result?.latency ?? {
     routingMs: 0, policyMs: 0, snapshotMs: 0, executionMs: 0, receiptMs: 0, totalMs: 0,
@@ -270,16 +268,10 @@ async function sampleOnce(
     overheadMs: roundMs(Math.max(0, reportedTotalMs - operationMs)),
     responseBytes: result?.responseBytes ?? serializedBytes(result),
     eventLoopLagMs: lag,
-    executionJobCount: Math.max(
-      0,
-      (side.executionJobCount ?? 0)
-        + (countExecutionJobs(fixture.controllerHome, fixture.repository.repoId) - jobsBefore),
-    ),
-    localJobCount: Math.max(
-      0,
-      (side.localJobCount ?? 0) + (countLocalJobs(fixture.repoRoot) - localBefore),
-    ),
-    workerSpawnCount: side.workerSpawnCount ?? 0,
+    executionJobCount: Math.max(side.executionJobCount ?? 0, newCount(effectsBefore.executionJobIds, effectsAfter.executionJobIds)),
+    localJobCount: Math.max(side.localJobCount ?? 0, newCount(effectsBefore.localJobIds, effectsAfter.localJobIds)),
+    recordedWorkerPidCount: newCount(effectsBefore.recordedWorkerPids, effectsAfter.recordedWorkerPids),
+    managedProcessRecordCount: newCount(effectsBefore.managedProcessIds, effectsAfter.managedProcessIds),
     runtimeEventDelta: Math.max(
       0,
       (side.runtimeEventCount ?? 0)
@@ -299,7 +291,7 @@ async function sampleOnce(
     receiptCount: Math.max(result?.receipt ? 1 : 0, observedReceiptDelta),
     leaseFilesTouched: Math.max(
       0,
-      Math.abs(countLeaseFiles(fixture.controllerHome, fixture.repository.repoId) - leasesBefore)
+      Math.abs(countLeaseFiles(fixture.controllerHome) - leasesBefore)
         + (sideAfter.ephemeralAcquires - sideBefore.ephemeralAcquires)
         + (sideAfter.ephemeralReleases - sideBefore.ephemeralReleases),
     ),
@@ -329,7 +321,8 @@ function medianSample(runs: MetricsSample[]): MetricsSample {
     eventLoopLagMs: pick('eventLoopLagMs') as number,
     executionJobCount: pick('executionJobCount') as number,
     localJobCount: pick('localJobCount') as number,
-    workerSpawnCount: pick('workerSpawnCount') as number,
+    recordedWorkerPidCount: pick('recordedWorkerPidCount') as number,
+    managedProcessRecordCount: pick('managedProcessRecordCount') as number,
     runtimeEventDelta: pick('runtimeEventDelta') as number,
     projectionInvalidationDelta: pick('projectionInvalidationDelta') as number,
     schedulerWakeDelta: pick('schedulerWakeDelta') as number,
@@ -359,13 +352,12 @@ async function runCase(
     };
   }>,
 ): Promise<CaseReport> {
-  // warmup
-  await sampleOnce(fixture, name, fn);
+  const warmup = await sampleOnce(fixture, name, fn);
   const runs: MetricsSample[] = [];
   for (let i = 0; i < 3; i += 1) {
     runs.push(await sampleOnce(fixture, name, fn));
   }
-  return { name, median: medianSample(runs), runs };
+  return { name, median: medianSample(runs), warmup, runs };
 }
 
 async function main() {
@@ -515,8 +507,9 @@ async function main() {
       };
     }));
 
+    const observations = cases.flatMap((entry) => [entry.warmup, ...entry.runs]);
     const report = {
-      schemaVersion: 4,
+      schemaVersion: 5,
       kind: 'repository_facade_feature_benchmark',
       comparisonMode: 'feature_only',
       label,
@@ -528,22 +521,25 @@ async function main() {
         '1 warmup + 3 runs median. Wall time surrounds only the operation; event-loop lag settling is excluded.',
         'Reported time and phases come from LatencyBreakdown; outer gap is wall minus reported total and phase gap is reported total minus named phases.',
         'Response bytes measure the in-process result/envelope serialized by this benchmark.',
-        'Counters come from lease instrumentation and job stores.',
+        'Job, managed Process, and recorded worker-PID counts are observed from existing fixture stores, while lease counts use the controller-global authority; recorded worker PIDs do not count all OS child processes.',
+        'Acceptance evaluates every warmup and timed run, not only medians; counters outside the observed stores remain unknown.',
         `Baseline ${BASELINE_REV} is a historical reference only; no synthetic A/B claim is made.`,
       ].join(' '),
       cases: cases.map((entry) => ({
         name: entry.name,
         median: entry.median,
+        warmup: entry.warmup,
         runs: entry.runs,
       })),
       acceptance: {
-        zeroExecutionJobs: cases.every((entry) => entry.median.executionJobCount === 0),
-        zeroLocalJobs: cases.every((entry) => entry.median.localJobCount === 0),
-        zeroWorkers: cases.every((entry) => entry.median.workerSpawnCount === 0),
-        zeroRuntimeEvents: cases.every((entry) => entry.median.runtimeEventDelta === 0),
-        zeroProjectionInvalidations: cases.every((entry) => entry.median.projectionInvalidationDelta === 0),
-        zeroSchedulerWakes: cases.every((entry) => entry.median.schedulerWakeDelta === 0),
-        allOk: cases.every((entry) => entry.median.ok),
+        zeroExecutionJobs: observations.every((sample) => sample.executionJobCount === 0),
+        zeroLocalJobs: observations.every((sample) => sample.localJobCount === 0),
+        zeroRecordedWorkerPids: observations.every((sample) => sample.recordedWorkerPidCount === 0),
+        zeroManagedProcesses: observations.every((sample) => sample.managedProcessRecordCount === 0),
+        zeroRuntimeEvents: observations.every((sample) => sample.runtimeEventDelta === 0),
+        zeroProjectionInvalidations: observations.every((sample) => sample.projectionInvalidationDelta === 0),
+        zeroSchedulerWakes: observations.every((sample) => sample.schedulerWakeDelta === 0),
+        allOk: observations.every((sample) => sample.ok),
       },
     };
 
@@ -593,7 +589,8 @@ async function main() {
         'case'.padEnd(26),
         'jobs'.padStart(5),
         'loc'.padStart(5),
-        'wrk'.padStart(5),
+        'pid'.padStart(5),
+        'proc'.padStart(5),
         'evt'.padStart(5),
         'proj'.padStart(5),
         'sch'.padStart(5),
@@ -606,7 +603,8 @@ async function main() {
           entry.name.padEnd(26),
           String(m.executionJobCount).padStart(5),
           String(m.localJobCount).padStart(5),
-          String(m.workerSpawnCount).padStart(5),
+          String(m.recordedWorkerPidCount).padStart(5),
+          String(m.managedProcessRecordCount).padStart(5),
           String(m.runtimeEventDelta).padStart(5),
           String(m.projectionInvalidationDelta).padStart(5),
           String(m.schedulerWakeDelta).padStart(5),
@@ -617,10 +615,7 @@ async function main() {
       console.log('\nAcceptance:', report.acceptance);
     }
 
-    const failed = !report.acceptance.allOk
-      || !report.acceptance.zeroExecutionJobs
-      || !report.acceptance.zeroWorkers;
-    process.exitCode = failed ? 1 : 0;
+    process.exitCode = Object.values(report.acceptance).every(Boolean) ? 0 : 1;
   } finally {
     rmSync(fixture.root, { recursive: true, force: true });
   }
