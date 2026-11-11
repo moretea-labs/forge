@@ -22,6 +22,7 @@ export interface ApiProviderProfile {
   apiProtocol: LocalApiProtocol;
   credentialRef?: string | null;
   hasKey: boolean;
+  keychainState?: string | null;
   endpointReady: boolean;
 }
 
@@ -116,3 +117,12 @@ export const sendLocalApiConversation = (input: {
 export const cancelLocalApiConversation = (conversationId: string):
   Promise<{ requested: boolean; conversationId: string }> =>
   invoke('cancel_local_api_conversation', { conversationId });
+
+/** Managed Keychain credential lifecycle. Secrets never enter the UI: import/rotate read the system clipboard. */
+export const managedApiCredentialControl = (input: {
+  operation: 'list' | 'create' | 'rotate' | 'status' | 'authorize' | 'revoke' | 'delete';
+  credentialRef?: string;
+  endpoint?: string;
+  label?: string;
+  confirmAuthorization?: boolean;
+}): Promise<Record<string, unknown>> => invoke('managed_api_credential_control', input);

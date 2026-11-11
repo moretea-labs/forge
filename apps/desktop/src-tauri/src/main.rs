@@ -1402,6 +1402,30 @@ fn api_profile_id(provider: &str) -> Option<&str> {
     provider.strip_prefix("api:").filter(|value| valid_api_profile_id(value))
 }
 
+fn clear_managed_credential_references(config: &mut Value, credential_ref: &str) -> bool {
+    let mut default_provider = config.get("defaultProvider")
+        .and_then(Value::as_str).unwrap_or("codex").to_string();
+    let Some(profiles) = config.get_mut("apiProfiles").and_then(Value::as_array_mut) else {
+        return false;
+    };
+    let mut changed = false;
+    for profile in profiles {
+        if profile.get("credentialRef").and_then(Value::as_str) != Some(credential_ref) {
+            continue;
+        }
+        let profile_provider = profile.get("id").and_then(Value::as_str).map(api_provider_id);
+        if profile_provider.as_deref() == Some(default_provider.as_str()) {
+            default_provider = "codex".to_string();
+        }
+        profile["credentialRef"] = Value::Null;
+        changed = true;
+    }
+    if changed {
+        config["defaultProvider"] = Value::String(default_provider);
+    }
+    changed
+}
+
 fn normalize_api_profile(row: &Value) -> Result<Value, String> {
     let id = row.get("id").and_then(Value::as_str).unwrap_or("").trim();
     if !valid_api_profile_id(id) { return Err("FORGE_DESKTOP_API_PROFILE_ID_INVALID".into()); }
@@ -1886,6 +1910,11 @@ async fn managed_api_credential_control(
                 "request_id":request_id("credential-delete-revoke")
             })).await?;
             delete_managed_api_credential_secret(&credential_ref)?;
+            let mut config = local_api_config()?;
+            if clear_managed_credential_references(&mut config, &credential_ref) {
+                let normalized = normalize_local_api_config(config)?;
+                persist_local_api_config(&normalized)?;
+            }
             let next: Vec<Value> = rows.into_iter()
                 .filter(|item| item.get("credentialRef").and_then(Value::as_str) != Some(credential_ref.as_str()))
                 .collect();
@@ -1981,6 +2010,29 @@ fn read_local_api_settings() -> Result<Value, String> {
     }))
 }
 
+#[cfg(unix)]
+fn persist_local_api_config(normalized: &Value) -> Result<(), String> {
+    let path = local_api_config_path()?;
+    let parent = path.parent().ok_or("FORGE_DESKTOP_LOCAL_SETTINGS_DIR_UNAVAILABLE")?;
+    fs::create_dir_all(parent).map_err(|_| "FORGE_DESKTOP_LOCAL_SETTINGS_WRITE_FAILED")?;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    fs::set_permissions(parent, fs::Permissions::from_mode(0o700))
+        .map_err(|_| "FORGE_DESKTOP_LOCAL_SETTINGS_WRITE_FAILED")?;
+    use std::io::Write;
+    let temp = path.with_extension("json.tmp");
+    let mut file = fs::OpenOptions::new().write(true).truncate(true).create(true)
+        .mode(0o600).open(&temp).map_err(|_| "FORGE_DESKTOP_LOCAL_SETTINGS_WRITE_FAILED")?;
+    file.write_all(normalized.to_string().as_bytes())
+        .map_err(|_| "FORGE_DESKTOP_LOCAL_SETTINGS_WRITE_FAILED")?;
+    fs::rename(&temp, &path).map_err(|_| "FORGE_DESKTOP_LOCAL_SETTINGS_WRITE_FAILED")?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn persist_local_api_config(_normalized: &Value) -> Result<(), String> {
+    Err("FORGE_DESKTOP_LOCAL_SETTINGS_UNSUPPORTED".into())
+}
+
 #[tauri::command]
 fn save_local_api_settings(
     default_provider: String,
@@ -2015,24 +2067,7 @@ fn save_local_api_settings(
         }
     }
 
-    let path = local_api_config_path()?;
-    let parent = path.parent().ok_or("FORGE_DESKTOP_LOCAL_SETTINGS_DIR_UNAVAILABLE")?;
-    fs::create_dir_all(parent).map_err(|_| "FORGE_DESKTOP_LOCAL_SETTINGS_WRITE_FAILED")?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-        fs::set_permissions(parent, fs::Permissions::from_mode(0o700))
-            .map_err(|_| "FORGE_DESKTOP_LOCAL_SETTINGS_WRITE_FAILED")?;
-        use std::io::Write;
-        let temp = path.with_extension("json.tmp");
-        let mut file = fs::OpenOptions::new().write(true).truncate(true).create(true)
-            .mode(0o600).open(&temp).map_err(|_| "FORGE_DESKTOP_LOCAL_SETTINGS_WRITE_FAILED")?;
-        file.write_all(normalized.to_string().as_bytes())
-            .map_err(|_| "FORGE_DESKTOP_LOCAL_SETTINGS_WRITE_FAILED")?;
-        fs::rename(&temp, &path).map_err(|_| "FORGE_DESKTOP_LOCAL_SETTINGS_WRITE_FAILED")?;
-    }
-    #[cfg(not(unix))]
-    { return Err("FORGE_DESKTOP_LOCAL_SETTINGS_UNSUPPORTED".into()); }
+    persist_local_api_config(&normalized)?;
     read_local_api_settings()
 }
 
@@ -4870,6 +4905,24 @@ mod tests {
         assert_eq!(api_profile_from_config(&multi,"api:deepseek").unwrap()["model"],"deepseek-flash");
         assert_eq!(api_profile_from_config(&multi,"api:openai").unwrap()["apiProtocol"],"responses");
         assert!(api_profile_from_config(&multi,"api:missing").is_err());
+    }
+
+    #[test]
+    fn deleting_managed_credential_clears_all_profile_references_and_default_provider() {
+        let mut config = json!({
+            "defaultProvider": "api:deepseek",
+            "apiProfiles": [
+                { "id": "deepseek", "credentialRef": "cred_fixture" },
+                { "id": "shared", "credentialRef": "cred_fixture" },
+                { "id": "openai", "credentialRef": "cred_other" }
+            ]
+        });
+        assert!(clear_managed_credential_references(&mut config, "cred_fixture"));
+        assert_eq!(config["defaultProvider"], "codex");
+        let profiles = config["apiProfiles"].as_array().unwrap();
+        assert!(profiles[..2].iter().all(|row| row["credentialRef"].is_null()));
+        assert_eq!(profiles[2]["credentialRef"], "cred_other");
+        assert!(!clear_managed_credential_references(&mut config, "cred_fixture"));
     }
 
     #[test]

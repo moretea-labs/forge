@@ -1075,13 +1075,19 @@ function recordToHandle(
   // leaving the Controller-side pipe tail empty even though the authoritative
   // bounded log file was persisted before the exit receipt. A terminal handle
   // must therefore fall back to the durable log, including after Controller
-  // recreation, instead of projecting an empty string as final output.
+  // recreation, for both output and its compact tail projection.
   const persistedStdout = completed && !(extras?.stdout || safeRecord.stdoutTail) && safeRecord.stdoutPath
     ? readFileTailBytes(safeRecord.stdoutPath, PROCESS_LOG_TAIL_BYTES).text
     : undefined;
   const persistedStderr = completed && !(extras?.stderr || safeRecord.stderrTail) && safeRecord.stderrPath
     ? readFileTailBytes(safeRecord.stderrPath, PROCESS_LOG_TAIL_BYTES).text
     : undefined;
+  const stdout = extras?.stdout
+    ? safeProcessText(extras.stdout)
+    : completed ? safeProcessText(safeRecord.stdoutTail || persistedStdout || '') : undefined;
+  const stderr = extras?.stderr
+    ? safeProcessText(extras.stderr)
+    : completed ? safeProcessText(safeRecord.stderrTail || persistedStderr || '') : undefined;
   return {
     processId: safeRecord.processId,
     workId: safeRecord.workId,
@@ -1102,14 +1108,10 @@ function recordToHandle(
     exitCode: safeRecord.exitCode,
     timedOut: safeRecord.timedOut,
     cancelled: safeRecord.cancelled,
-    stdout: extras?.stdout
-      ? safeProcessText(extras.stdout)
-      : completed ? safeProcessText(safeRecord.stdoutTail || persistedStdout || '') : undefined,
-    stderr: extras?.stderr
-      ? safeProcessText(extras.stderr)
-      : completed ? safeProcessText(safeRecord.stderrTail || persistedStderr || '') : undefined,
-    stdoutTail: safeRecord.stdoutTail ? safeProcessText(safeRecord.stdoutTail) : undefined,
-    stderrTail: safeRecord.stderrTail ? safeProcessText(safeRecord.stderrTail) : undefined,
+    stdout,
+    stderr,
+    stdoutTail: stdout === undefined ? undefined : tailText(Buffer.from(stdout, 'utf8'), PROCESS_LOG_TAIL_BYTES),
+    stderrTail: stderr === undefined ? undefined : tailText(Buffer.from(stderr, 'utf8'), PROCESS_LOG_TAIL_BYTES),
     concurrencyWait: safeRecord.concurrencyWait,
     durableSideEffects: {
       executionJobCount: 0,

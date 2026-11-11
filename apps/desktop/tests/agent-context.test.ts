@@ -204,13 +204,17 @@ describe('Forge Desktop Agent thread identity', () => {
 
   test('Codex setup and MCP connection are separate app settings, without duplicating authority', () => {
     const html = renderToStaticMarkup(createElement(SettingsView, {
-      settings: { provider: 'codex', endpoint: 'https://api.openai.com/v1',
-        model: '', apiProtocol: 'openai', hasKey: false },
+      settings: {
+        schemaVersion: 2, defaultProvider: 'codex', profiles: [],
+        joyCodeModel: 'JoyAI-Code-1.6', joyCodeReady: false,
+        provider: 'codex', endpoint: 'https://api.openai.com/v1',
+        model: '', apiProtocol: 'openai', hasKey: false, endpointReady: false,
+      },
       loading: false, error: null, mcpReady: true,
       codexStatus: { provider: 'codex', status: 'ready', label: 'Codex 已连接',
         detail: 'Logged in', streaming: false, tools: true },
       codexError: null, async onRefresh() {}, async onSave() {},
-      async onClearKey() {}, async onRefreshCodex() {}, onOpenMcp() {},
+      async onRefreshCodex() {}, onOpenMcp() {},
     }));
     expect(html).toContain('Agent 与连接');
     expect(html).toContain('aria-pressed="true"');
@@ -220,6 +224,35 @@ describe('Forge Desktop Agent thread identity', () => {
     expect(html).toContain('查看连接');
     expect(html).toContain('Forge 控制器连接已就绪');
     expect(html).not.toContain('aria-label="API 协议"');
+  });
+
+  test('API provider profiles show Keychain status without exposing credential references', () => {
+    const html = renderToStaticMarkup(createElement(SettingsView, {
+      settings: {
+        schemaVersion: 2, defaultProvider: 'api:openai',
+        profiles: [{
+          id: 'openai', providerId: 'api:openai', label: 'OpenAI',
+          endpoint: 'https://api.openai.com/v1', model: 'gpt-5.1',
+          apiProtocol: 'responses', credentialRef: 'cred_fixture',
+          hasKey: true, keychainState: 'available', endpointReady: true,
+        }],
+        joyCodeModel: 'JoyAI-Code-1.6', joyCodeReady: false,
+        provider: 'api', endpoint: 'https://api.openai.com/v1',
+        model: 'gpt-5.1', apiProtocol: 'responses', credentialRef: 'cred_fixture',
+        hasKey: true, endpointReady: true,
+      },
+      loading: false, error: null, mcpReady: true,
+      codexStatus: { provider: 'codex', status: 'ready', label: 'Codex 已连接',
+        detail: 'Logged in', streaming: false, tools: true },
+      codexError: null, async onRefresh() {}, async onSave() {},
+      async onRefreshCodex() {}, onOpenMcp() {},
+    }));
+    expect(html).toContain('OpenAI');
+    expect(html).toContain('gpt-5.1');
+    expect(html).toContain('API Key 已保存在本机 Keychain');
+    expect(html).not.toContain('cred_fixture');
+    expect(html).not.toContain('sk-test-secret');
+    expect(html).toContain('aria-label="API 协议"');
   });
 
   test('MCP connection status is first-class and runtime lifecycle is behind disclosure', () => {
