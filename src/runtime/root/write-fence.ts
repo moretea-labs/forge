@@ -227,9 +227,15 @@ export function bindInheritedRuntimeWriteClaimFromEnvironment(
   controllerHomeOverride?: string,
 ): RuntimeWriteClaim | undefined {
   const runtimeInstanceId = env[RUNTIME_WRITE_CLAIM_ENV.runtimeInstanceId]?.trim();
-  const hasCanonicalClaim = Object.values(RUNTIME_WRITE_CLAIM_ENV)
-    .filter((key) => key !== RUNTIME_WRITE_CLAIM_ENV.controllerHome)
-    .some((key) => Boolean(env[key]?.trim()));
+  // Release metadata can be inherited by unrelated CLI children; only owner/fencing fields identify a write claim.
+  const hasCanonicalClaim = [
+    RUNTIME_WRITE_CLAIM_ENV.runtimeInstanceId,
+    RUNTIME_WRITE_CLAIM_ENV.fencingGeneration,
+    RUNTIME_WRITE_CLAIM_ENV.ownerPid,
+    RUNTIME_WRITE_CLAIM_ENV.releaseAuthorityRevision,
+    RUNTIME_WRITE_CLAIM_ENV.releaseFencingToken,
+    RUNTIME_WRITE_CLAIM_ENV.releaseId,
+  ].some((key) => Boolean(env[key]?.trim()));
   if (!hasCanonicalClaim) {
     if (!controllerHomeOverride) return undefined;
     return bindRuntimeWriteClaim({ controllerHome: controllerHomeOverride, allowUnmanagedMissing: true });
