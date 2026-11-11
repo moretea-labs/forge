@@ -3,6 +3,7 @@
 // Never adopts the user's Chrome tabs or changes the foreground application.
 // Measures the Browser adapter/provider path; excludes model and MCP transport.
 import { strict as assert } from 'node:assert';
+import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -10,6 +11,7 @@ import { chromium, type BrowserContext } from 'playwright';
 import { executeBrowserPluginAction, resetBrowserPluginRuntimeHooksForTest, setBrowserPluginRuntimeHooksForTest } from '../../src/runtime/plugins/browser-adapter';
 import { writeControllerPluginConfig } from '../../src/runtime/plugins/config-store';
 
+const featureRevision = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
 const chromeExecutable = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 if (process.platform !== 'darwin' || !existsSync(chromeExecutable)) {
   throw new Error('Browser managed benchmark requires installed macOS Google Chrome.');
@@ -109,9 +111,12 @@ try {
       if (index !== 0) (variant === 'sequential' ? sequential : batched).push(ms);
     }
   }
+  assert.equal(sequential.length, samples, 'all sequential paired samples must complete');
+  assert.equal(batched.length, samples, 'all batched paired samples must complete');
+  assert.equal(launchCount, 1, 'paired trials must reuse exactly one managed Chrome launch');
   console.log(JSON.stringify({
     benchmark: 'browser-managed-batch', provider: 'real-headless-chrome',
-    samples, stepsPerTrial: 6, launchCount,
+    featureRevision, samples, stepsPerTrial: 6, launchCount,
     sequential: { p50Ms: quantile(sequential, 0.5), p95Ms: quantile(sequential, 0.95) },
     batched: { p50Ms: quantile(batched, 0.5), p95Ms: quantile(batched, 0.95) },
     evidence: 'DOM state asserted after each trial; no model/network latency or user Chrome tabs',
