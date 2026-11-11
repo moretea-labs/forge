@@ -363,12 +363,12 @@ function localConversationCwd(): string {
   return root;
 }
 
-function conversationPrompt(prompt: string, repoId?: string): string {
+export function conversationPrompt(prompt: string, repoId?: string): string {
   return [
     'You are the Forge Desktop local controller.',
     'Use the injected Forge MCP capabilities for repository, Runtime, and other Forge operations. Work and ControllerRound are retired and must never be created. Create Requirement, Plan, Schedule, or Workflow state only when the user explicitly requests that durable context or trigger.',
     repoId
-      ? `Attached repository: ${repoId}. Pass repo_id=${repoId} to Forge capabilities that require repository scope.`
+      ? `Attached repository: ${repoId}. Pass repo_id=${repoId} to Forge capabilities that require repository scope. Before source edits, retrieve current applicable repository guidance through rh_context; if a UI/design task has no known source path yet, start with known_paths=["AGENTS.md"], then expand to relevant module guidance and source. Apply current product requirements and explicit user corrections ahead of historical learning. Retrieval gaps are not evidence of compliance.`
       : 'No repository is attached. Do not guess a repository identity.',
     '',
     prompt,

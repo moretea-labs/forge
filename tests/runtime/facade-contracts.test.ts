@@ -5,7 +5,7 @@ import { evaluatePolicyGate } from '../../src/runtime/control-plane/facade/polic
 import { buildFacadeResult } from '../../src/runtime/control-plane/facade/facade-result';
 import { allowedFacadeOperations, validateSuggestedNextActions } from '../../src/runtime/control-plane/facade/suggested-actions';
 import { buildClaudeControllerInvocation, buildCodexControllerInvocation, buildSuperControllerInvocation, type ExternalControllerInvocationRequest } from '../../src/runtime/control-plane/launcher/thin-launcher';
-import { buildLocalConversationProviderArgs, cancelLocalConversation, parseCodexConversationJsonl, parseCodexModelCatalog, readLocalConversationActivity, readLocalConversationProviderStatus, runCodexConversation, validateLocalConversationImagePaths } from '../../src/runtime/control-plane/launcher/local-conversation-controller';
+import { buildLocalConversationProviderArgs, conversationPrompt, cancelLocalConversation, parseCodexConversationJsonl, parseCodexModelCatalog, readLocalConversationActivity, readLocalConversationProviderStatus, runCodexConversation, validateLocalConversationImagePaths } from '../../src/runtime/control-plane/launcher/local-conversation-controller';
 import { RH_WORK_MODEL_OPERATIONS, isRhWorkAcceptedOperation } from '../../src/runtime/control-plane/facade/rh-work-operation-contract';
 import { runtimeToolDefinitions } from '../../adapters/mcp/runtime-gateway/runtime-tool-definitions';
 import { mcpServerInstructions } from '../../adapters/mcp/instructions';
@@ -229,6 +229,19 @@ describe('handoff and facade contracts', () => {
     const sendProperties = (schema?.actions?.send?.argumentsSchema as any)?.properties ?? {};
     expect(sendProperties.image_paths).toMatchObject({ type: 'array', maxItems: 4 });
     expect(FACADE_TOOLS).toHaveLength(6);
+  });
+
+  test('local controller retrieves current guidance without Work or a known source file', () => {
+    const attached = conversationPrompt('继续优化用药 UI', 'repo-medication');
+    expect(attached).toContain('rh_context');
+    expect(attached).toContain('known_paths=["AGENTS.md"]');
+    expect(attached).toContain('relevant module guidance');
+    expect(attached).toContain('explicit user corrections ahead of historical learning');
+    expect(attached).toContain('repo_id=repo-medication');
+    const detached = conversationPrompt('普通聊天');
+    expect(detached).not.toContain('rh_context');
+    expect(detached).toContain('No repository is attached');
+    expect(attached).toContain('Work and ControllerRound are retired');
   });
 
   test('uses the Codex catalog as model authority and builds bounded per-turn overrides', () => {
