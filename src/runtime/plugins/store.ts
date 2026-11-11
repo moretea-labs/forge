@@ -695,21 +695,29 @@ async function withAssistantPluginResourceLeases<T>(
     },
   });
   if (!acquisition.acquired) {
+    const blockers = acquisition.blockers.slice(0, 16).map((blocker) => ({
+      resourceKey: blocker.resourceKey,
+      ownerJobId: blocker.ownerJobId,
+      leaseId: blocker.leaseId,
+      mode: blocker.mode,
+      ...(blocker.ownerIdentityDigest ? { ownerIdentityDigest: blocker.ownerIdentityDigest } : {}),
+      ...('expiresAt' in blocker && typeof blocker.expiresAt === 'string' ? { expiresAt: blocker.expiresAt } : {}),
+    }));
+    // Managed Process failures often surface only the error message, not details.
+    // Include the existing owner's non-secret identity/expiry so the caller can
+    // distinguish a live input owner from an expired/fenced one without bypassing
+    // the canonical global lease or exposing its fencing token.
+    const primary = blockers[0];
+    const ownerEvidence = primary
+      ? ` Blocking ${primary.resourceKey}: owner=${primary.ownerJobId}, lease=${primary.leaseId}`
+        + (primary.expiresAt ? `, expiresAt=${primary.expiresAt}` : '')
+        + (primary.ownerIdentityDigest ? `, ownerDigest=${primary.ownerIdentityDigest}` : '')
+        + '.'
+      : '';
     throw new AssistantPluginError(
       'PLUGIN_RESOURCE_CONTENTION',
-      `${request.pluginId}/${request.actionId} could not acquire its declared resource claims before dispatch.`,
-      {
-        retryable: true,
-        details: {
-          blockers: acquisition.blockers.map((blocker) => ({
-            resourceKey: blocker.resourceKey,
-            ownerJobId: blocker.ownerJobId,
-            leaseId: blocker.leaseId,
-            mode: blocker.mode,
-            ...('expiresAt' in blocker && typeof blocker.expiresAt === 'string' ? { expiresAt: blocker.expiresAt } : {}),
-          })).slice(0, 16),
-        },
-      },
+      `${request.pluginId}/${request.actionId} could not acquire its declared resource claims before dispatch.${ownerEvidence}`,
+      { retryable: true, details: { blockers } },
     );
   }
   const expected = acquisition.leases.map((lease) => ({

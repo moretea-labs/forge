@@ -326,6 +326,15 @@ describe('plugin action resource replay fencing', () => {
       expect(Number.isFinite(expiry)).toBe(true);
       expect(expiry).toBeGreaterThan(Date.now());
       expect(blocker).not.toHaveProperty('fencingToken');
+      expect(blocker.ownerIdentityDigest).toMatch(/^[0-9a-f]{64}$/);
+      const message = (contention as Error).message;
+      // The managed Process route retains stderr, not arbitrary error.details.
+      expect(message).toContain(`Blocking ${blocker.resourceKey}`);
+      expect(message).toContain(`owner=${blocker.ownerJobId}`);
+      expect(message).toContain(`lease=${blocker.leaseId}`);
+      expect(message).toContain(`expiresAt=${blocker.expiresAt}`);
+      expect(message).toContain(`ownerDigest=${blocker.ownerIdentityDigest}`);
+      expect(message).not.toContain('fencingToken');
       expect(contention).toMatchObject({
         code: 'PLUGIN_RESOURCE_CONTENTION',
         retryable: true,
