@@ -289,6 +289,34 @@ exit 1
     }
   });
 
+  test('user-level ChatGPT setup succeeds from a non-Git working directory without invoking Git', () => {
+    const root = temp('forge-setup-user-level-non-git-');
+    const previousCwd = process.cwd();
+    const previousPath = process.env.PATH;
+    try {
+      const controllerHome = join(root, 'controller');
+      const binDir = join(root, 'bin');
+      const gitCalls = join(root, 'git-calls.log');
+      mkdirSync(binDir, { recursive: true });
+      const git = join(binDir, 'git');
+      writeFileSync(git, `#!/bin/sh\nprintf 'called\\n' >> "${gitCalls}"\nexit 1\n`);
+      chmodSync(git, 0o700);
+      process.env.PATH = binDir;
+      process.chdir(root);
+      const result = runMcpSetupChatgpt({ repo: '.', controllerHome, userLevel: true });
+      const localConfig = JSON.parse(require('fs').readFileSync(join(controllerHome, 'mcp', 'mcp.local.json'), 'utf8'));
+      expect(require('fs').existsSync(gitCalls)).toBe(false);
+      expect(result.repoRoot).toBeUndefined();
+      expect(result.lines).toContain(`[forge mcp] Scope: user (${controllerHome})`);
+      expect(result.lines).toContain('[forge mcp] Config: mcp/mcp.local.json');
+      expect(localConfig.repo).toBeUndefined();
+    } finally {
+      process.chdir(previousCwd);
+      if (previousPath === undefined) delete process.env.PATH; else process.env.PATH = previousPath;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test('closes only after the selected controller path is ready', () => {
     const root = temp('forge-setup-close-'); try {
       mkdirSync(join(root, '.codex'), { recursive: true });

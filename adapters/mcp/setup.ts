@@ -29,7 +29,7 @@ import { ensureForgeInstanceIdentity, normalizeConfiguredForgeInstanceId, readFo
 
 export interface McpSetupResult {
   status: "ok";
-  repoRoot: string;
+  repoRoot?: string;
   changed: string[];
   forgeInstanceId?: string;
   lines: string[];
@@ -315,10 +315,10 @@ export function runMcpSetupChatgpt(opts: {
   connectorAuthMode?: string;
   clearEndpoint?: boolean;
 }): McpSetupResult {
-  const repoRoot = resolveMcpRepoRoot(opts.repo ?? ".");
-  const controllerHome = opts.userLevel
-    ? ensureControllerHome(opts.controllerHome)
-    : ensureRepoPreferredControllerHome(repoRoot, opts.controllerHome);
+  const repoRoot = opts.userLevel ? undefined : resolveMcpRepoRoot(opts.repo ?? ".");
+  const controllerHome = repoRoot
+    ? ensureRepoPreferredControllerHome(repoRoot, opts.controllerHome)
+    : ensureControllerHome(opts.controllerHome);
   const changed: string[] = [];
   const configuredInstanceId = opts.instanceId !== undefined
     ? normalizeConfiguredForgeInstanceId(opts.instanceId)
@@ -365,7 +365,7 @@ export function runMcpSetupChatgpt(opts: {
   const existingChatgpt = { ...(existingConfig?.chatgpt ?? {}) };
   if (opts.clearEndpoint === true) delete existingChatgpt.endpoint;
   const configPath = mcpControllerHomeLocalConfigPath(controllerHome);
-  const guidePath = opts.userLevel ? undefined : join(repoRoot, "docs", "forge-chatgpt-mcp-setup.md");
+  const guidePath = repoRoot ? join(repoRoot, "docs", "forge-chatgpt-mcp-setup.md") : undefined;
   const token = ensureMcpControllerHomeBearerToken(controllerHome);
   const oauth = ensureMcpControllerHomeOAuthPassphrase(controllerHome);
   if (token.changed) changed.push(token.path);
@@ -373,7 +373,7 @@ export function runMcpSetupChatgpt(opts: {
   const config = {
     version: Math.max(existingConfig?.version ?? 1, 3),
     identity: { forgeInstanceId: forgeInstance.instanceId },
-    ...(opts.userLevel ? (existingConfig?.repo ? { repo: existingConfig.repo } : {}) : { repo: repoRoot }),
+    ...(repoRoot ? { repo: repoRoot } : (existingConfig?.repo ? { repo: existingConfig.repo } : {})),
     server: {
       ...existingConfig?.server,
       host,
@@ -425,7 +425,7 @@ export function runMcpSetupChatgpt(opts: {
     `${JSON.stringify(config, null, 2)}\n`,
     changed,
   );
-  if (guidePath) {
+  if (repoRoot && guidePath) {
     writeFileIfChanged(guidePath, chatgptGuideMarkdown(), changed);
     ensureGitignoreEntries(
       repoRoot,
@@ -443,9 +443,10 @@ export function runMcpSetupChatgpt(opts: {
     );
   }
 
+  const displayRoot = repoRoot ?? controllerHome;
   return {
     status: "ok",
-    repoRoot,
+    ...(repoRoot ? { repoRoot } : {}),
     changed,
     forgeInstanceId: forgeInstance.instanceId,
     lines: [
@@ -461,10 +462,10 @@ export function runMcpSetupChatgpt(opts: {
       endpoint
         ? `[forge mcp] ChatGPT endpoint: ${endpoint}`
         : "[forge mcp] ChatGPT endpoint: requires stable HTTPS tunnel",
-      `[forge mcp] Auth: OAuth passphrase (${relative(repoRoot, oauth.path)})`,
-      `[forge mcp] Bearer fallback token: ${relative(repoRoot, token.path)}`,
-      `[forge mcp] Config: ${relative(repoRoot, configPath)}`,
-      ...(guidePath ? [`[forge mcp] Guide: ${relative(repoRoot, guidePath)} (generic; endpoint stays in ignored local config)`] : []),
+      `[forge mcp] Auth: OAuth passphrase (${relative(displayRoot, oauth.path)})`,
+      `[forge mcp] Bearer fallback token: ${relative(displayRoot, token.path)}`,
+      `[forge mcp] Config: ${relative(displayRoot, configPath)}`,
+      ...(guidePath ? [`[forge mcp] Guide: ${relative(displayRoot, guidePath)} (generic; endpoint stays in ignored local config)`] : []),
       `[forge mcp] Runtime state: ${mcpControllerHomeRuntimeStatePath(controllerHome)}`,
       opts.userLevel
         ? 'Next: forge setup next'
