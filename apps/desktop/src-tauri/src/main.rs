@@ -2631,6 +2631,8 @@ trait LocalApiHost {
     fn packaged_tool_script(&self) -> Result<PathBuf, String>;
     fn emit_tool_progress(&self, payload: Value);
     fn emit_model_progress(&self, payload: Value);
+    #[cfg(test)]
+    fn execute_test_tool(&self, _payload: &Value) -> Option<Result<Value, String>> { None }
 }
 
 fn sequence_local_api_event(
@@ -2755,6 +2757,13 @@ async fn run_local_forge_tool<H: LocalApiHost + Sync>(
     let tool_timeout = local_tool_execution_timeout(&tool_name, &arguments);
     let timeout_error = local_tool_timeout_error(&tool_name);
     let arguments = prepare_local_tool_arguments(&tool_name, arguments)?;
+    #[cfg(test)]
+    if let Some(result) = host.execute_test_tool(&json!({
+        "repoId":&repo_id, "checkoutId":&checkout_id, "conversationId":&conversation_id,
+        "tool":&tool_name, "arguments":&arguments, "allowEffects":allow_effects,
+    })) {
+        return result;
+    }
     if session.is_none() {
         *session = Some(LocalToolSession::start(host).await?);
     }
@@ -3281,9 +3290,26 @@ async fn run_local_api_turn<H: LocalApiHost + Sync>(
     repository_effect_access: bool,
     cancel_receiver: &mut tokio::sync::watch::Receiver<bool>,
 ) -> Result<Value, String> {
+    run_local_api_turn_with_config(
+        host, local_api_config()?, messages, repo_id, checkout_id, conversation_id,
+        provider_override, model_override, repository_effect_access, cancel_receiver,
+    ).await
+}
+
+async fn run_local_api_turn_with_config<H: LocalApiHost + Sync>(
+    host: &H,
+    config: Value,
+    messages: Vec<Value>,
+    repo_id: Option<String>,
+    checkout_id: Option<String>,
+    conversation_id: String,
+    provider_override: Option<String>,
+    model_override: Option<String>,
+    repository_effect_access: bool,
+    cancel_receiver: &mut tokio::sync::watch::Receiver<bool>,
+) -> Result<Value, String> {
     // The saved default only selects new conversations. Existing threads carry
     // a stable provider/profile identity so editing defaults cannot redirect them.
-    let config = local_api_config()?;
     let requested_provider = provider_override.as_deref()
         .unwrap_or_else(|| config.get("defaultProvider").and_then(Value::as_str).unwrap_or("codex"));
     // An old generic API thread has no stable profile identity. Never redirect
@@ -3783,6 +3809,185 @@ mod tests {
         fn emit_tool_progress(&self, _: Value) {}
         fn emit_model_progress(&self, event: Value) {
             self.events.lock().unwrap().push(event);
+        }
+    }
+
+    #[derive(Default)]
+    struct ScriptedAgentLoopHost {
+        sequence: std::sync::atomic::AtomicU64,
+        events: std::sync::Mutex<Vec<Value>>,
+        tool_calls: std::sync::Mutex<Vec<Value>>,
+    }
+    impl LocalApiHost for ScriptedAgentLoopHost {
+        fn packaged_tool_script(&self) -> Result<PathBuf, String> {
+            Err("scripted loop uses the test tool executor".into())
+        }
+        fn emit_tool_progress(&self, payload: Value) {
+            self.events.lock().unwrap().push(json!({
+                "channel":"tool", "payload":sequence_local_api_event(payload, &self.sequence)
+            }));
+        }
+        fn emit_model_progress(&self, payload: Value) {
+            self.events.lock().unwrap().push(json!({
+                "channel":"model", "payload":sequence_local_api_event(payload, &self.sequence)
+            }));
+        }
+        fn execute_test_tool(&self, payload: &Value) -> Option<Result<Value, String>> {
+            self.tool_calls.lock().unwrap().push(payload.clone());
+            let name = payload.get("tool").and_then(Value::as_str).unwrap_or("");
+            let result = match name {
+                "read_file" => json!({"ok":true,"result":{"content":"before"}}),
+                "apply_patch" => {
+                    assert_eq!(payload.pointer("/arguments/operations/0/path").and_then(Value::as_str),Some("fixture.txt"));
+                    json!({"ok":true,"result":{"status":"applied"}})
+                }
+                "run_command" => {
+                    assert!(local_verification_command(&payload["arguments"]));
+                    json!({"ok":true,"result":{
+                        "accepted":true,"status":"succeeded","exitCode":0,"ok":true,
+                        "timedOut":false,"stdoutTail":"tests passed","stderrTail":""
+                    }})
+                }
+                _ => json!({"ok":false,"error":"LOCAL_FORGE_TOOL_NOT_ALLOWED"}),
+            };
+            Some(Ok(result))
+        }
+    }
+
+    fn spawn_scripted_agent_provider(
+        protocol: &'static str,
+    ) -> (String, std::thread::JoinHandle<Vec<Value>>) {
+        use std::{io::{Read, Write}, net::TcpListener, thread, time::Duration};
+        let listener = TcpListener::bind("127.0.0.1:0").expect("mock provider socket");
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let mut requests = Vec::new();
+            for round in 0..4 {
+                let (mut socket, _) = listener.accept().expect("provider request");
+                socket.set_read_timeout(Some(Duration::from_secs(8))).unwrap();
+                let mut request = Vec::new();
+                let mut temp = [0u8; 4096];
+                let header_end = loop {
+                    let n = socket.read(&mut temp).expect("provider headers");
+                    assert!(n > 0 && request.len() < 128 * 1024);
+                    request.extend_from_slice(&temp[..n]);
+                    if let Some(end) = request.windows(4).position(|item| item == b"\r\n\r\n") {
+                        break end + 4;
+                    }
+                };
+                let headers = String::from_utf8_lossy(&request[..header_end]).to_string();
+                let expected_path = if protocol == "anthropic" { "/v1/messages" } else { "/v1/chat/completions" };
+                assert!(headers.starts_with(&format!("POST {expected_path} HTTP/1.1")));
+                let length = headers.lines().find_map(|line| {
+                    line.to_ascii_lowercase().strip_prefix("content-length:")
+                        .and_then(|value| value.trim().parse::<usize>().ok())
+                }).expect("provider request Content-Length");
+                while request.len() - header_end < length {
+                    let n = socket.read(&mut temp).expect("provider request body");
+                    assert!(n > 0);
+                    request.extend_from_slice(&temp[..n]);
+                }
+                let body: Value = serde_json::from_slice(&request[header_end..header_end + length]).unwrap();
+                assert_eq!(body["stream"], true);
+                assert_eq!(body["model"], "test-model");
+                if protocol == "anthropic" {
+                    assert!(headers.to_ascii_lowercase().contains("anthropic-version: 2023-06-01"));
+                }
+                requests.push(body);
+
+                let mut frames = Vec::new();
+                if round < 3 {
+                    let (id, name, arguments) = match round {
+                        0 => ("call-read", "read_file", json!({"path":"fixture.txt","start_line":1,"end_line":3})),
+                        1 => ("call-patch", "apply_patch", json!({
+                            "purpose":"fixture edit",
+                            "operations":[{"type":"replace","path":"fixture.txt","old_text":"before","new_text":"after"}],
+                            "allowed_paths":["fixture.txt"]
+                        })),
+                        _ => ("call-test", "run_command", json!({
+                            "command":["bun","test","tests/fixture.test.ts"],"timeout_ms":1000
+                        })),
+                    };
+                    if protocol == "anthropic" {
+                        frames.push(json!({"type":"content_block_start","index":0,"content_block":{
+                            "type":"tool_use","id":id,"name":name,"input":{}
+                        }}).to_string());
+                        frames.push(json!({"type":"content_block_delta","index":0,"delta":{
+                            "type":"input_json_delta","partial_json":arguments.to_string()
+                        }}).to_string());
+                        frames.push(json!({"type":"message_stop"}).to_string());
+                    } else {
+                        frames.push(json!({"choices":[{"delta":{"tool_calls":[{
+                            "index":0,"id":id,"type":"function",
+                            "function":{"name":name,"arguments":arguments.to_string()}
+                        }]}}]}).to_string());
+                        frames.push("[DONE]".into());
+                    }
+                } else if protocol == "anthropic" {
+                    frames.push(json!({"type":"content_block_start","index":0,"content_block":{
+                        "type":"text","text":""
+                    }}).to_string());
+                    frames.push(json!({"type":"content_block_delta","index":0,"delta":{
+                        "type":"text_delta","text":"Read, edited and verified."
+                    }}).to_string());
+                    frames.push(json!({"type":"message_stop"}).to_string());
+                } else {
+                    frames.push(json!({"choices":[{"delta":{"content":"Read, edited and verified."}}]}).to_string());
+                    frames.push("[DONE]".into());
+                }
+                let payload = frames.into_iter().map(|frame| format!("data: {frame}\r\n\r\n")).collect::<String>();
+                socket.write_all(format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    payload.len()
+                ).as_bytes()).unwrap();
+                socket.write_all(payload.as_bytes()).unwrap();
+            }
+            requests
+        });
+        (format!("http://127.0.0.1:{port}/v1"), server)
+    }
+
+    #[test]
+    fn same_native_agent_loop_runs_read_edit_and_test_for_openai_and_anthropic() {
+        for (profile_id, protocol) in [("openai-test", "openai"), ("anthropic-test", "anthropic")] {
+            let (endpoint, server) = spawn_scripted_agent_provider(protocol);
+            let host = ScriptedAgentLoopHost::default();
+            let config = json!({
+                "defaultProvider":format!("api:{profile_id}"),
+                "apiProfiles":[{"id":profile_id,"endpoint":endpoint,"model":"test-model","apiProtocol":protocol}]
+            });
+            let (_cancel_sender, mut cancel_receiver) = tokio::sync::watch::channel(false);
+            let result = tauri::async_runtime::block_on(run_local_api_turn_with_config(
+                &host, config, vec![json!({"role":"user","content":"Read fixture.txt, edit it, run its test, and report the result."})],
+                Some("repo_test".into()), Some("checkout_test".into()), format!("conv-{profile_id}"),
+                Some(format!("api:{profile_id}")), None, true, &mut cancel_receiver,
+            )).expect("native provider-neutral Agent loop");
+            assert_eq!(result["output"], "Read, edited and verified.");
+            assert_eq!(result["toolActivityCount"], 3);
+            let calls = host.tool_calls.lock().unwrap();
+            assert_eq!(calls.iter().map(|call| call["tool"].as_str().unwrap()).collect::<Vec<_>>(),
+                vec!["read_file", "apply_patch", "run_command"]);
+            assert!(calls.iter().all(|call| call["repoId"] == "repo_test"
+                && call["checkoutId"] == "checkout_test" && call["allowEffects"] == true));
+            let events = host.events.lock().unwrap();
+            let sequences = events.iter().map(|event| event.pointer("/payload/sequence").and_then(Value::as_u64).unwrap()).collect::<Vec<_>>();
+            assert!(sequences.windows(2).all(|pair| pair[0] < pair[1]), "native progress sequence must be monotonic");
+            assert!(events.iter().any(|event| event["channel"] == "model" && event["payload"]["kind"] == "text_delta"));
+            assert_eq!(events.iter().filter(|event| event["channel"] == "tool" && event["payload"]["phase"] == "completed").count(), 3);
+            for call_id in ["call-read", "call-patch", "call-test"] {
+                let phases = events.iter()
+                    .filter(|event| event["channel"] == "tool" && event["payload"]["toolCallId"] == call_id)
+                    .map(|event| event["payload"]["phase"].as_str().unwrap())
+                    .collect::<Vec<_>>();
+                assert_eq!(phases, vec!["started", "output", "completed"],
+                    "one stable tool-call identity must reconcile its complete visible lifecycle");
+            }
+            let requests = server.join().expect("provider server joined");
+            assert_eq!(requests.len(), 4);
+            assert!(requests.iter().all(|body| body["tools"].as_array().is_some_and(|tools| tools.len() >= 3)));
+            assert!(requests[1].to_string().contains("before"), "read receipt must return to the same model loop");
+            assert!(requests[2].to_string().contains("applied"), "edit receipt must return to the same model loop");
+            assert!(requests[3].to_string().contains("tests passed"), "test receipt must return to the same model loop");
         }
     }
 
