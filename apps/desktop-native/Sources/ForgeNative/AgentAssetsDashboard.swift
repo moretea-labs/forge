@@ -70,9 +70,14 @@ struct AgentAssetsDashboard: View {
         let items = resources
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text("图片资源").font(.system(size: 24, weight: .semibold))
-                    Spacer()
+                HStack(spacing: 16) {
+                    Label("\(items.count) 个资源", systemImage: "photo.on.rectangle")
+                        .font(.system(size: 12, weight: .medium))
+                    Toggle("我的图片", isOn: $showUserImages)
+                        .accessibilityIdentifier("agent.assets.filter.local")
+                    Toggle("回复图片", isOn: $showRemoteImages)
+                        .accessibilityIdentifier("agent.assets.filter.remote")
+                    Spacer(minLength: 8)
                     Picker("项目", selection: $selectedRepoId) {
                         Text("全部项目").tag("")
                         ForEach(model.projects) { project in
@@ -81,16 +86,6 @@ struct AgentAssetsDashboard: View {
                     }
                     .frame(maxWidth: 200)
                     .accessibilityIdentifier("agent.assets.project-filter")
-                }
-
-                HStack(spacing: 16) {
-                    Label("\(items.count) 个资源", systemImage: "photo.on.rectangle")
-                        .font(.system(size: 12, weight: .medium))
-                    Toggle("我的图片", isOn: $showUserImages)
-                        .accessibilityIdentifier("agent.assets.filter.local")
-                    Toggle("回复图片", isOn: $showRemoteImages)
-                        .accessibilityIdentifier("agent.assets.filter.remote")
-                    Spacer()
                 }
                 .toggleStyle(.checkbox)
                 .font(.system(size: 11.5))

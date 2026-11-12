@@ -147,8 +147,7 @@ struct AgentUsageDashboard: View {
         let byProject = makeProjectDistribution(from: usageEntries)
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text("Token 消耗").font(.system(size: 24, weight: .semibold))
+                HStack {
                     Spacer()
                     Picker("项目", selection: $selectedRepoId) {
                         Text("全部项目").tag("")
