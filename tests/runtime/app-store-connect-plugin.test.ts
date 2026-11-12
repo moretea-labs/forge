@@ -42,7 +42,7 @@ describe('App Store Connect Xcode Cloud workflow actions', () => {
     const repoRoot = root();
     await executeAppStoreConnectPluginAction(input(repoRoot, 'configure', { enabled: true, provider: 'mock' }));
     const manifest = buildAppStoreConnectPluginManifest(1, undefined, repoRoot);
-    expect(manifest.pluginVersion).toBe('1.11.0');
+    expect(manifest.pluginVersion).toBe('1.12.0');
     expect(manifest.actions.find((action) => action.actionId === 'list_xcode_cloud_workflows')).toMatchObject({ readOnly: true, risk: 'readonly' });
     for (const actionId of ['list_bundle_ids', 'list_bundle_id_capabilities', 'list_certificates', 'list_devices', 'list_profiles']) {
       expect(manifest.actions.find((action) => action.actionId === actionId)).toMatchObject({
@@ -324,6 +324,122 @@ describe('App Store Connect Xcode Cloud workflow actions', () => {
     } finally {
       globalThis.fetch = original;
     }
+  });
+
+
+  test('Asset Library placements: typed request, ordering and confirmation', async () => {
+    const repoRoot=root();
+    await executeAppStoreConnectPluginAction(input(repoRoot,'configure',{enabled:true,provider:'mock'}));
+    const manifest=buildAppStoreConnectPluginManifest(1,undefined,repoRoot);
+    for(const actionId of ['upload_asset_library_image','create_asset_library_placement','order_asset_library_placements',
+      'delete_asset_library_image','delete_asset_library_placement','update_asset_library_image']) {
+      expect(manifest.actions.find(a=>a.actionId===actionId)).toMatchObject({
+        confirmation:'strong_confirmation',risk:'remote_write',scopes:['appstoreconnect.assets.write'],
+      });
+    }
+    expect(manifest.permissions.some(p=>p.scope==='appstoreconnect.assets.write'&&p.mode==='write')).toBe(true);
+    const placed=await executeAppStoreConnectPluginAction(input(repoRoot,'create_asset_library_placement',{
+      asset_id:'image-1',asset_kind:'image',target_type:'appStoreVersionLocalization',localization_id:'loc-1',
+      placement_type:'APP_SCREENSHOT',placement_group:'IPHONE_DYNAMIC_ISLAND_LARGE_PROFILE',dry_run:true,
+    }));
+    expect(placed).toMatchObject({dryRun:true,request:{method:'POST',path:'/v1/appAssetLibraryPlacements',
+      body:{data:{attributes:{placementType:'APP_SCREENSHOT'},
+        relationships:{image:{data:{type:'appAssetLibraryImages',id:'image-1'}},
+          appStoreVersionLocalization:{data:{type:'appStoreVersionLocalizations',id:'loc-1'}}}}}}});
+    const order=await executeAppStoreConnectPluginAction(input(repoRoot,'order_asset_library_placements',{
+      target_type:'appStoreVersionLocalization',localization_id:'loc-1',
+      placement_group:'IPHONE_DYNAMIC_ISLAND_LARGE_PROFILE',placement_ids:['p-2','p-1'],dry_run:true,
+    }));
+    expect(order).toMatchObject({request:{method:'POST',path:'/v1/appAssetLibraryPlacementOrderingRequests',
+      body:{data:{relationships:{orderedPlacements:{data:[
+        {type:'appAssetLibraryPlacements',id:'p-2'},{type:'appAssetLibraryPlacements',id:'p-1'},
+      ]}}}}}});
+    await expect(executeAppStoreConnectPluginAction(input(repoRoot,'order_asset_library_placements',{
+      target_type:'appStoreVersionLocalization',localization_id:'loc-1',
+      placement_group:'IPHONE_DYNAMIC_ISLAND_LARGE_PROFILE',placement_ids:['p-1','p-1'],dry_run:true,
+    }))).rejects.toThrow('distinct placement IDs');
+  });
+
+
+  test('Asset Library image upload is pinned, dry-run safe and commits uploaded without checksum field', async () => {
+    const repoRoot=root();
+    const keyPath=join(repoRoot,'AuthKey_ASSET_LIBRARY.p8');
+    const {privateKey}=generateKeyPairSync('ec',{namedCurve:'P-256'});
+    writeFileSync(keyPath,privateKey.export({type:'pkcs8',format:'pem'}));
+    const bytes=Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]),Buffer.alloc(20,0x41)]);
+    writeFileSync(join(repoRoot,'asset.png'),bytes);
+    const sha256=createHash('sha256').update(bytes).digest('hex');
+    await executeAppStoreConnectPluginAction(input(repoRoot,'configure',{
+      enabled:true,provider:'app-store-connect-api',issuer_id:'asset-issuer',key_id:'asset-key',
+      private_key_path:keyPath,
+    }));
+    const old=globalThis.fetch;
+    const requests:Array<{path:string;method:string;jwt:boolean}>=[];
+    let existing=false;
+    let hostileUploadHost=false;
+    globalThis.fetch=(async(request:string|URL|Request,init?:RequestInit)=>{
+      const url=new URL(String(request)), method=init?.method??'GET';
+      requests.push({path:url.pathname,method,jwt:new Headers(init?.headers).has('authorization')});
+      if (url.pathname==='/v1/apps/app-1/assetLibrary')
+        return Response.json({data:{type:'appAssetLibraries',id:'library-1'}});
+      if (url.pathname==='/v1/appAssetLibraries/library-1/images') {
+        expect(url.searchParams.get('filter[referenceName]')).toBe('Screenshot one');
+        return Response.json({data:existing?[{id:'other-1',attributes:{referenceName:'Screenshot one',state:'UPLOAD_COMPLETE'}}]:[]});
+      }
+      if (url.pathname==='/v1/appAssetLibraryImages' && method==='POST') {
+        const body=JSON.parse(String(init?.body));
+        expect(body.data).toMatchObject({type:'appAssetLibraryImages',
+          attributes:{fileName:'asset.png',fileSize:bytes.length,referenceName:'Screenshot one',
+            category:'APP_SCREENSHOTS_AND_PREVIEWS'},
+          relationships:{assetLibrary:{data:{type:'appAssetLibraries',id:'library-1'}}}});
+        return Response.json({data:{id:'asset-1',type:'appAssetLibraryImages',
+          attributes:{uploadOperations:[{method:'PUT',url:hostileUploadHost?'https://attacker.example/assets/1':'https://store-030.blobstore.apple.com/assets/1',
+            offset:0,length:bytes.length,requestHeaders:[{name:'Content-Type',value:'image/png'}]}]}}});
+      }
+      if (url.pathname==='/assets/1') {
+        expect(method).toBe('PUT');
+        expect(Buffer.from(init?.body as Uint8Array)).toEqual(bytes);
+        expect(new Headers(init?.headers).has('authorization')).toBe(false);
+        return new Response(null,{status:200});
+      }
+      if (url.pathname==='/v1/appAssetLibraryImages/asset-1' && method==='PATCH') {
+        expect(JSON.parse(String(init?.body))).toEqual({data:{type:'appAssetLibraryImages',
+          id:'asset-1',attributes:{uploaded:true}}});
+        return Response.json({data:{id:'asset-1',type:'appAssetLibraryImages'}});
+      }
+      if (url.pathname==='/v1/appAssetLibraryImages/asset-1' && method==='GET')
+        return Response.json({data:{id:'asset-1',type:'appAssetLibraryImages',
+          attributes:{state:'PREPARE_FOR_SUBMISSION',specId:'spec-1'}}});
+      throw new Error('unexpected path '+url.pathname);
+    }) as typeof fetch;
+    try {
+      const args={app_id:'app-1',file_path:'asset.png',expected_sha256:sha256,
+        category:'APP_SCREENSHOTS_AND_PREVIEWS',reference_name:'Screenshot one'};
+      const preview=await executeAppStoreConnectPluginAction(input(repoRoot,'upload_asset_library_image',{
+        ...args,dry_run:true,
+      }));
+      expect(preview).toMatchObject({dryRun:true,libraryId:'library-1',file:{sha256},
+        request:{method:'POST',path:'/v1/appAssetLibraryImages'}});
+      expect(requests.map(x=>x.method)).toEqual(['GET','GET']);
+      requests.length=0;
+      const result=await executeAppStoreConnectPluginAction(input(repoRoot,'upload_asset_library_image',args));
+      expect(result).toMatchObject({applied:true,assetId:'asset-1',readyToPlace:true,
+        state:'PREPARE_FOR_SUBMISSION',specId:'spec-1',sha256});
+      expect(requests.map(x=>x.method)).toEqual(['GET','GET','POST','PUT','PATCH','GET']);
+      expect(requests[3]?.jwt).toBe(false);
+      requests.length=0;
+      existing=true;
+      await expect(executeAppStoreConnectPluginAction(input(repoRoot,'upload_asset_library_image',args)))
+        .rejects.toThrow('Reference name already belongs');
+      expect(requests.map(x=>x.method)).toEqual(['GET','GET']);
+      requests.length=0;
+      existing=false;
+      hostileUploadHost=true;
+      await expect(executeAppStoreConnectPluginAction(input(repoRoot,'upload_asset_library_image',args)))
+        .rejects.toThrow('outcome is uncertain');
+      expect(requests.map(x=>x.method)).toEqual(['GET','GET','POST']);
+      expect(requests.every(x=>x.path!=='/assets/1')).toBe(true);
+    } finally {globalThis.fetch=old;}
   });
 
   test('official versioned IAP and subscription writes use current version relationships and safe dry-run', async () => {
