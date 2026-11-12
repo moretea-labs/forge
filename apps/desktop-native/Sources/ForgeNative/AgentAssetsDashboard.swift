@@ -145,7 +145,7 @@ struct AgentAssetsDashboard: View {
                 }
             }
             .padding(26)
-            .frame(maxWidth: 940, alignment: .leading)
+            .frame(maxWidth: 960, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .center)
         }
         .accessibilityIdentifier("agent.assets.dashboard")

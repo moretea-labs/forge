@@ -1199,6 +1199,13 @@ private struct ForgeWorkspaceView: View {
         }
     }
 
+    private var pageUsesCenteredContentColumn: Bool {
+        switch model.page {
+        case .schedule, .plugins, .assets, .usage, .settings: return true
+        default: return false
+        }
+    }
+
     private var main: some View {
         VStack(spacing:0) {
             if let error = model.error, model.page != .schedule && model.page != .plugins {
@@ -1279,7 +1286,10 @@ private struct ForgeWorkspaceView: View {
                     .accessibilityLabel(pageRefreshAccessibilityLabel)
                     .accessibilityIdentifier("app.refresh")
                 }
-                .padding(.horizontal,22).frame(height:48)
+                .padding(.horizontal,pageUsesCenteredContentColumn ? 26 : 22)
+                .frame(maxWidth:pageUsesCenteredContentColumn ? 960 : .infinity,alignment:.leading)
+                .frame(maxWidth:.infinity,alignment:.center)
+                .frame(height:48)
                 .background(.ultraThinMaterial)
                 .shadow(color:Color.black.opacity(0.025),radius:5,y:2)
                 .zIndex(1)
@@ -5495,9 +5505,9 @@ private struct SchedulePane: View {
                     }
                 }
             }
+            .padding(26)
             .frame(maxWidth:960,alignment:.leading)
-            .frame(maxWidth:.infinity,alignment:.leading)
-            .padding(30)
+            .frame(maxWidth:.infinity,alignment:.center)
         }
         .confirmationDialog("确认任务操作",isPresented:Binding(
             get:{ pendingAction != nil },
@@ -5711,9 +5721,9 @@ private struct PluginsPane: View {
                     }
                 }
             }
+            .padding(26)
             .frame(maxWidth:960,alignment:.leading)
-            .frame(maxWidth:.infinity,alignment:.leading)
-            .padding(30)
+            .frame(maxWidth:.infinity,alignment:.center)
         }
     }
 
@@ -6791,9 +6801,9 @@ private struct SettingsPane: View {
                         .padding(.top,12)
                 }
             }
+            .padding(26)
             .frame(maxWidth:960,alignment:.leading)
-            .frame(maxWidth:.infinity,alignment:.leading)
-            .padding(28)
+            .frame(maxWidth:.infinity,alignment:.center)
         }
         .task(id:settingsSignature) {
             syncSettingsDraft()

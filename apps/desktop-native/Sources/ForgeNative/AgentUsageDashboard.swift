@@ -264,7 +264,7 @@ struct AgentUsageDashboard: View {
                     .foregroundStyle(.secondary)
             }
             .padding(26)
-            .frame(maxWidth: 1020, alignment: .leading)
+            .frame(maxWidth: 960, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .center)
         }
         .accessibilityIdentifier("agent.usage.dashboard")
