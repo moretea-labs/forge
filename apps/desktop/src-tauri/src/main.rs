@@ -423,6 +423,29 @@ async fn resolve_repository_effect_access(
     Ok(repository_access_allows_effects(&value, repo_id))
 }
 
+
+#[tauri::command]
+async fn read_github_project_items(repo_id: String) -> Result<Value, String> {
+    if repo_id.trim().is_empty() {
+        return Err("FORGE_DESKTOP_REPOSITORY_REQUIRED".to_string());
+    }
+    // GitHub Project status is provided by the existing repository-scoped
+    // GitHub plugin. No second credential, cache, CLI or status writer here.
+    let receipt = call_runtime_tool("plugin_action_execute", json!({
+        "repo_id":repo_id,
+        "plugin_id":"github",
+        "action_id":"list_project_items",
+        "arguments":{"limit":100},
+        "request_id":request_id("zen-project-items")
+    })).await?;
+    let data = receipt.get("result").ok_or("FORGE_DESKTOP_PROJECT_ITEMS_RESULT_MISSING")?;
+    if data.get("configured").and_then(Value::as_bool).is_none()
+        || !data.get("items").is_some_and(Value::is_array) {
+        return Err("FORGE_DESKTOP_PROJECT_ITEMS_SHAPE_INVALID".to_string());
+    }
+    Ok(data.clone())
+}
+
 #[tauri::command]
 async fn read_project_overview(repo_id: String) -> Result<Value, String> {
     if repo_id.trim().is_empty() { return Err("FORGE_DESKTOP_REPOSITORY_REQUIRED".to_string()); }
@@ -822,10 +845,14 @@ async fn revise_requirement(
     title: String,
     outcome: String,
     acceptance_criteria: Vec<String>,
+    state: Option<String>,
+    accepted_evidence_refs: Option<Vec<String>>,
 ) -> Result<Value, String> {
     if repo_id.trim().is_empty() || requirement_id.trim().is_empty()
         || expected_revision == 0 || title.trim().is_empty() || outcome.trim().is_empty()
-        || acceptance_criteria.len() > 50 {
+        || acceptance_criteria.len() > 50
+        || state.as_deref().is_some_and(|value| !matches!(value, "open" | "completed" | "cancelled"))
+        || accepted_evidence_refs.as_ref().is_some_and(|refs| refs.len() > 100 || refs.iter().any(|reference| reference.len() > 512)) {
         return Err("FORGE_DESKTOP_REQUIREMENT_REVISE_ARGUMENT_INVALID".to_string());
     }
     let result = call_runtime_tool("rh_work", json!({
@@ -836,6 +863,8 @@ async fn revise_requirement(
         "requirement_title": title,
         "requirement_outcome": outcome,
         "requirement_acceptance_criteria": acceptance_criteria,
+        "requirement_state": state,
+        "requirement_accepted_evidence_refs": accepted_evidence_refs,
         "request_id": request_id("requirement-revise")
     })).await?;
     let data = semantic_facade_data(result);
@@ -3855,6 +3884,7 @@ fn main() {
             perform_recovery_action,
             read_projects,
             read_project_overview,
+            read_github_project_items,
             read_project_repository,
             read_project_requirement_list,
             read_project_plan_list,

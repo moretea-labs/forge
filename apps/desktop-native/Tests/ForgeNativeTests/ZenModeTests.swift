@@ -33,3 +33,13 @@ extension ZenModeTests {
         XCTAssertTrue(model.zenMode)
     }
 }
+
+extension ZenModeTests {
+    func testLocalKanbanUsesCanonicalRequirementAndPlanFacts() {
+        XCTAssertEqual(ZenBoardBucket.classify(requirementState:"open",runtimeActive:false,hasPlan:true),.planned)
+        XCTAssertEqual(ZenBoardBucket.classify(requirementState:"open",runtimeActive:true,hasPlan:true),.running)
+        XCTAssertEqual(ZenBoardBucket.classify(requirementState:"completed",runtimeActive:true,hasPlan:true),.done)
+        XCTAssertEqual(ZenBoardBucket.classify(requirementState:"cancelled",runtimeActive:true,hasPlan:true),.cancelled)
+        XCTAssertEqual(ZenBoardBucket.classify(requirementState:"open",runtimeActive:false,hasPlan:false),.todo)
+    }
+}

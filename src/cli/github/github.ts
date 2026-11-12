@@ -159,6 +159,78 @@ function versionAtLeast(version: string, minimum: [number, number, number]): boo
   return true;
 }
 
+
+export interface GitHubProjectBoardItem {
+  id: string;
+  title: string;
+  status: string;
+  number?: number;
+  url?: string;
+  repository?: string;
+  isDraft: boolean;
+}
+
+export function buildGitHubProjectItemListArgs(owner: string, projectNumber: number, limit = 100): string[] {
+  const safeOwner = boundedSingleLine(owner, 'GitHub project owner', 80);
+  if (!safeOwner || !/^[A-Za-z0-9-]{1,80}$/.test(safeOwner)) {
+    throw new Error('GITHUB_PROJECT_OWNER_INVALID');
+  }
+  if (!Number.isInteger(projectNumber) || projectNumber < 1 || projectNumber > 1_000_000) {
+    throw new Error('GITHUB_PROJECT_NUMBER_INVALID');
+  }
+  return ['project', 'item-list', String(projectNumber), '--owner', safeOwner,
+    '--format', 'json', '--limit', String(boundedWorkflowLimit(limit, 100))];
+}
+
+export function parseGitHubProjectItems(
+  payload: unknown,
+  repository: string,
+  limit = 100,
+): { items: GitHubProjectBoardItem[]; truncated: boolean } {
+  const target = repositoryName(repository).toLowerCase();
+  const value = payload && typeof payload === 'object' && !Array.isArray(payload)
+    ? payload as Record<string, unknown> : {};
+  if (!Array.isArray(value.items)) throw new Error('GITHUB_PROJECT_ITEMS_SHAPE_INVALID');
+  const raw = value.items.slice(0, limit);
+  const items = raw.flatMap((candidate): GitHubProjectBoardItem[] => {
+    if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return [];
+    const row = candidate as Record<string, unknown>;
+    const content = row.content && typeof row.content === 'object' && !Array.isArray(row.content)
+      ? row.content as Record<string, unknown> : {};
+    const repositoryNameValue = typeof content.repository === 'string'
+      ? content.repository
+      : typeof content.repositoryNameWithOwner === 'string'
+        ? content.repositoryNameWithOwner : undefined;
+    if (repositoryNameValue && repositoryNameValue.toLowerCase() !== target) return [];
+    const itemId = typeof row.id === 'string' ? row.id : '';
+    const title = typeof row.title === 'string' ? row.title.trim() : '';
+    if (!itemId || !title) return [];
+    const rawStatus = typeof row.status === 'string' ? row.status.trim() : '';
+    const status = rawStatus || 'Unassigned';
+    const number = typeof content.number === 'number' && Number.isSafeInteger(content.number) && content.number >= 1
+      ? content.number : undefined;
+    const url = typeof content.url === 'string' && /^https:\/\/github\.com\//.test(content.url) ? content.url : undefined;
+    return [{
+      id: itemId.slice(0, 200), title: title.slice(0, 240), status: status.slice(0, 80),
+      ...(number ? { number } : {}),
+      ...(url ? { url } : {}),
+      ...(repositoryNameValue ? { repository: repositoryNameValue } : {}),
+      isDraft: !number,
+    }];
+  });
+  const count = typeof value.totalCount === 'number' ? value.totalCount : value.items.length;
+  return { items, truncated: count > raw.length };
+}
+
+export function readGitHubProjectItems(
+  repoRoot: string, repository: string, owner: string, projectNumber: number, limit = 100,
+) {
+  const result = gh(repoRoot, buildGitHubProjectItemListArgs(owner, projectNumber, limit));
+  if (!result.ok) throw new Error('failed to read GitHub Project: ' + (result.error || result.stderr));
+  const data = parseJson<unknown>(result.stdout, 'gh project item-list');
+  return parseGitHubProjectItems(data, repository, limit);
+}
+
 export function listGitHubWorkflows(
   repoRoot: string,
   explicitRepo?: string,

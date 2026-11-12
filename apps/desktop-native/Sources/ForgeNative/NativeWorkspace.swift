@@ -1,6 +1,16 @@
 import Foundation
 import Combine
 
+
+struct ZenGitHubBoardItem: Decodable, Identifiable {
+    let id: String
+    let title: String
+    let status: String
+    let number: Int?
+    let url: String?
+    let isDraft: Bool
+}
+
 struct ForgeProject: Identifiable, Decodable {
     let repoId: String
     let displayName: String
@@ -124,6 +134,7 @@ struct RequirementRecordDetail {
     let acceptanceCriteria: [String]
     let progressSummary: String
     let remainingWork: [String]
+    let acceptedEvidenceRefs: [String]
 }
 
 struct PlanRecordItem: Identifiable {
@@ -537,6 +548,11 @@ final class NativeWorkspace: ObservableObject {
         Self.runtimeDescription(runtimeStatus,loading:runtimeLoading)
     }
     @Published var error: String?
+    @Published var zenGitHubBoardItems: [ZenGitHubBoardItem] = []
+    @Published var zenGitHubBoardConfigured: Bool?
+    @Published var zenGitHubBoardTruncated = false
+    @Published var zenGitHubBoardError: String?
+    @Published var zenGitHubBoardLoading = false
     @Published var records: [ForgeRecord] = []
     @Published var selectedRecord: String?
     @Published var recordDetail: SemanticRecordDetail?
@@ -956,13 +972,13 @@ final class NativeWorkspace: ObservableObject {
 
     // Zen switches the Repository context without creating a conversation.
     // The existing thread remains untouched until the user enters Agent Mode.
-    func focusZenProject(_ id:String) {
+    func focusZenProject(_ id:String,requestedCheckoutId:String? = nil) {
         guard !busy else {
             error = "请先停止正在运行的会话。"
             return
         }
         guard let target = projects.first(where:{$0.repoId == id}) else { return }
-        if repoId == id {
+        if repoId == id && (requestedCheckoutId == nil || checkoutId == requestedCheckoutId) {
             if page == .requirement {
                 Task { await loadPage() }
             } else {
@@ -971,7 +987,10 @@ final class NativeWorkspace: ObservableObject {
             return
         }
         repoId = id
-        checkoutId = target.checkoutId
+        zenGitHubBoardItems=[]
+        zenGitHubBoardConfigured=nil
+        zenGitHubBoardError=nil
+        checkoutId = requestedCheckoutId ?? target.checkoutId
         checkoutRoot = nil
         checkoutBranch = nil
         checkoutContextLoading = true
@@ -1037,7 +1056,7 @@ final class NativeWorkspace: ObservableObject {
         }
     }
 
-    func registerProject(path: String) async -> Bool {
+    func registerProject(path: String, openConversation: Bool = true) async -> Bool {
         guard !busy else {
             self.error = "请先停止正在运行的会话。"
             return false
@@ -1060,7 +1079,11 @@ final class NativeWorkspace: ObservableObject {
             // A linked worktree may share the primary repository's display
             // root. Always select the checkout returned by the canonical
             // registration receipt rather than comparing localRoot strings.
-            newThread(inProject:registeredRepoId,checkoutId:registeredCheckoutId)
+            if openConversation {
+                newThread(inProject:registeredRepoId,checkoutId:registeredCheckoutId)
+            } else {
+                focusZenProject(registeredRepoId,requestedCheckoutId:registeredCheckoutId)
+            }
             return true
         } catch {
             self.error = error.localizedDescription
@@ -1267,6 +1290,38 @@ final class NativeWorkspace: ObservableObject {
             error = nil
         } catch { self.error = error.localizedDescription }
     }
+
+    func loadZenGitHubBoard() async {
+        guard let repoId else {
+            zenGitHubBoardItems=[]
+            zenGitHubBoardConfigured=nil
+            zenGitHubBoardError=nil
+            return
+        }
+        zenGitHubBoardLoading=true
+        defer { if self.repoId == repoId { zenGitHubBoardLoading=false } }
+        do {
+            let data=try await ForgeBridge.request("read_github_project_items",["repoId":repoId])
+            guard self.repoId == repoId else { return }
+            guard let configured=data["configured"] as? Bool,
+                  let rows=data["items"] as? [[String:Any]],
+                  JSONSerialization.isValidJSONObject(rows) else {
+                throw ForgeBridgeError.invalidResponse
+            }
+            let bytes=try JSONSerialization.data(withJSONObject:rows)
+            let items=try JSONDecoder().decode([ZenGitHubBoardItem].self,from:bytes)
+            zenGitHubBoardConfigured=configured
+            zenGitHubBoardItems=configured ? items : []
+            zenGitHubBoardTruncated=data["truncated"] as? Bool ?? false
+            zenGitHubBoardError=nil
+        } catch {
+            guard self.repoId == repoId else { return }
+            zenGitHubBoardConfigured=nil
+            zenGitHubBoardItems=[]
+            zenGitHubBoardError=error.localizedDescription
+        }
+    }
+
     nonisolated static func repositoryCheckoutContext(
         _ result:[String:Any], requestedCheckoutId:String?
     ) -> RepositoryCheckoutContext {
@@ -2153,7 +2208,8 @@ final class NativeWorkspace: ObservableObject {
             state:value["state"] as? String ?? "",
             acceptanceCriteria:value["acceptanceCriteria"] as? [String] ?? [],
             progressSummary:value["progressSummary"] as? String ?? "",
-            remainingWork:value["remainingWork"] as? [String] ?? []
+            remainingWork:value["remainingWork"] as? [String] ?? [],
+            acceptedEvidenceRefs:value["acceptedEvidenceRefs"] as? [String] ?? []
         )
     }
 
@@ -2478,6 +2534,51 @@ final class NativeWorkspace: ObservableObject {
             return true
         } catch {
             self.error="修改未确认：\(error.localizedDescription)。请刷新修订版本后核对。"
+            return false
+        }
+    }
+
+
+    func transitionRequirement(
+        id:String,expectedRevision:Int,title:String,outcome:String,
+        acceptanceCriteria:[String],state:String,acceptedEvidenceRefs:[String]?
+    ) async -> Bool {
+        guard let repoId,expectedRevision > 0 else {
+            error="无法确认 Requirement 当前修订版本。"
+            return false
+        }
+        guard state == "open" || state == "completed" || state == "cancelled" else {
+            error="不支持的 Requirement 状态。"
+            return false
+        }
+        let references=acceptedEvidenceRefs?.map{$0.trimmingCharacters(in:.whitespacesAndNewlines)}
+            .filter{!$0.isEmpty}
+        if state == "completed" && (references?.isEmpty != false) {
+            error="完成 Requirement 前必须提供可核查的验收证据。"
+            return false
+        }
+        var args:[String:Any]=[
+            "repoId":repoId,"requirementId":id,
+            "expectedRevision":expectedRevision,"title":title,
+            "outcome":outcome,"acceptanceCriteria":acceptanceCriteria,"state":state
+        ]
+        if let references { args["acceptedEvidenceRefs"]=references }
+        do {
+            let receipt=try await ForgeBridge.request("revise_requirement",args)
+            guard let changed=receipt["requirement"] as? [String:Any],
+                  changed["requirementId"] as? String == id,
+                  changed["revision"] as? Int == expectedRevision + 1,
+                  changed["state"] as? String == state else {
+                throw ForgeBridgeError.invalidResponse
+            }
+            guard self.repoId == repoId else { return false }
+            await loadPage()
+            if let selected=records.first(where:{$0.kind == .requirement && $0.recordId == id}) {
+                await openRecord(selected.id)
+            }
+            return true
+        } catch {
+            self.error="状态更新未确认：\(error.localizedDescription)。请刷新后核对证据与版本。"
             return false
         }
     }

@@ -52,6 +52,8 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
             set_repository_access(required(args, "repoId")?, required(args, "mode")?).await,
         "read_project_overview" =>
             read_project_overview(required(args, "repoId")?).await,
+        "read_github_project_items" =>
+            read_github_project_items(required(args, "repoId")?).await,
         "read_project_requirement_list" =>
             read_project_requirement_list(required(args, "repoId")?).await,
         "read_project_plan_list" =>
@@ -116,6 +118,14 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
                         && items.iter().all(|item| item.as_str().is_some_and(|text| text.len() <= 500)))
                     .ok_or("FORGE_NATIVE_BRIDGE_ACCEPTANCE_CRITERIA_INVALID")?
                     .iter().filter_map(Value::as_str).map(str::to_owned).collect(),
+                args.get("state").and_then(Value::as_str).map(str::to_owned),
+                args.get("acceptedEvidenceRefs").map(|value| {
+                    value.as_array()
+                        .filter(|items| items.len() <= 100
+                            && items.iter().all(|item| item.as_str().is_some_and(|text| text.len() <= 512)))
+                        .map(|items| items.iter().filter_map(Value::as_str).map(str::to_owned).collect::<Vec<String>>())
+                        .ok_or("FORGE_NATIVE_BRIDGE_EVIDENCE_REFS_INVALID")
+                }).transpose()?,
             ).await,
         "revise_plan" =>
             revise_plan(

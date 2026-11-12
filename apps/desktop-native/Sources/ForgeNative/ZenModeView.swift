@@ -7,19 +7,23 @@ enum ZenScreen {
 }
 
 enum ZenBoardBucket: Int, CaseIterable {
-    case todo, running, done
+    case todo, planned, running, done, cancelled
 
     var title: String {
         switch self {
         case .todo: return "To do"
+        case .planned: return "Planned"
         case .running: return "In progress"
         case .done: return "Done"
+        case .cancelled: return "Cancelled"
         }
     }
 
-    static func classify(requirementState: String, runtimeActive: Bool) -> Self {
-        if requirementState == "completed" { return .done }
+    static func classify(requirementState: String, runtimeActive: Bool, hasPlan: Bool = false) -> Self {
+        if requirementState == "completed" || requirementState == "done" { return .done }
+        if requirementState == "cancelled" { return .cancelled }
         if runtimeActive { return .running }
+        if hasPlan { return .planned }
         return .todo
     }
 }
@@ -75,6 +79,7 @@ struct ZenSidebar: View {
     @Binding var focusedRequirementId: String?
     let decisionCount: Int
     let onInbox: () -> Void
+    let onAddProject: () -> Void
 
     var body: some View {
         VStack(alignment:.leading,spacing:0) {
@@ -82,6 +87,13 @@ struct ZenSidebar: View {
                 Text("项目").font(.system(size:13,weight:.semibold))
                 Spacer()
                 Text("\(model.projects.count)").font(.system(size:11)).foregroundStyle(.secondary)
+                Button(action:onAddProject) {
+                    Image(systemName:"plus").frame(width:28,height:28)
+                }
+                .buttonStyle(.plain)
+                .help("添加本地项目")
+                .accessibilityLabel("添加项目")
+                .accessibilityIdentifier("zen.project.add")
             }
             .padding(.horizontal,15).frame(height:54)
 
@@ -178,12 +190,17 @@ struct ZenWorkspacePane: View {
     let onOpenAgent: (ForgeRecord, String, String?) -> Void
     @Environment(\.scenePhase) private var scenePhase
 
+    @State private var boardMode = "forge"
     @State private var showingGoalSheet = false
     @State private var goalDraft = ""
     @State private var showingRequirementSheet = false
     @State private var showingPlanSheet = false
     @State private var pendingReviewRecord: ForgeRecord?
     @State private var editingRecord: ForgeRecord?
+    @State private var pendingAcceptanceRecord: ForgeRecord?
+    @State private var acceptanceReferences = ""
+    @State private var acceptanceAcknowledged = false
+    @State private var cancellingRequirement: RequirementRecordDetail?
     @State private var editRevision = 0
     @State private var editTitle = ""
     @State private var editOutcome = ""
@@ -201,7 +218,8 @@ struct ZenWorkspacePane: View {
     private func bucket(_ item:ForgeRecord) -> ZenBoardBucket {
         ZenBoardBucket.classify(
             requirementState:item.state,
-            runtimeActive:model.planningAutopilotStatuses[item.recordId]?.runtimeActive == true
+            runtimeActive:model.planningAutopilotStatuses[item.recordId]?.runtimeActive == true,
+            hasPlan:model.records.contains(where:{$0.kind == .plan && $0.requirementId == item.recordId})
         )
     }
 
@@ -257,6 +275,7 @@ struct ZenWorkspacePane: View {
                         Task {
                             await model.loadPage()
                             await model.refreshPlanningAutopilotStatuses()
+                            if boardMode == "github" { await model.loadZenGitHubBoard() }
                         }
                     }
                 } label: {
@@ -301,12 +320,33 @@ struct ZenWorkspacePane: View {
         .sheet(isPresented:$showingRequirementSheet) { createRequirementSheet }
         .sheet(isPresented:$showingPlanSheet) { createPlanSheet }
         .sheet(item:$editingRecord) { item in editSheet(for:item) }
+        .sheet(item:$pendingAcceptanceRecord) { item in acceptanceSheet(item) }
+        .confirmationDialog("取消 Requirement？",isPresented:Binding(
+            get:{ cancellingRequirement != nil },
+            set:{ if !$0 { cancellingRequirement=nil } }
+        )) {
+            if let detail=cancellingRequirement {
+                Button("确认取消（无法恢复）",role:.destructive) {
+                    Task {
+                        _ = await model.transitionRequirement(
+                            id:detail.requirementId,expectedRevision:detail.revision,
+                            title:detail.title,outcome:detail.outcomeStatement,
+                            acceptanceCriteria:detail.acceptanceCriteria,state:"cancelled",
+                            acceptedEvidenceRefs:nil
+                        )
+                    }
+                }
+            }
+        } message: {
+            Text("取消是不可逆的终态变更，仅用于已经决定不再交付的需求。")
+        }
         .sheet(item:$pendingReviewRecord) { item in
             ZenReviewSheet(model:model,record:item) { prompt,provider in
                 pendingReviewRecord = nil
                 onOpenAgent(item,prompt,provider)
             }
         }
+        .onChange(of:model.repoId) { _ in boardMode = "forge" }
         .task(id:"\(model.repoId ?? "none")|\(model.planningRequirementIds.joined(separator:"|"))|\(scenePhase == .active ? "active" : "inactive")") {
             guard scenePhase == .active,!model.planningRequirementIds.isEmpty else { return }
             await model.refreshPlanningAutopilotStatuses()
@@ -379,7 +419,35 @@ struct ZenWorkspacePane: View {
                 }
                 .font(.system(size:11)).foregroundStyle(.secondary)
                 .padding(.horizontal,24).padding(.bottom,13)
-
+                HStack(spacing:10) {
+                    Text("Forge · Requirement").font(.system(size:11,weight:.medium))
+                    Spacer()
+                    Menu {
+                        Button("Forge 原生管理") { boardMode = "forge" }
+                        Button("GitHub Project（可选）") {
+                            boardMode = "github"
+                            Task { await model.loadZenGitHubBoard() }
+                        }
+                    } label: {
+                        Label(boardMode == "forge" ? "Forge 看板" : "GitHub 看板",systemImage:"chevron.down")
+                    }
+                    .menuStyle(.borderlessButton)
+                    .frame(width:130)
+                }
+                .padding(.horizontal,24).padding(.bottom,10)
+                if boardMode == "github",let problem=model.zenGitHubBoardError {
+                    Text("GitHub Project 不可用；当前展示 Requirement。\(problem)")
+                        .font(.system(size:10)).foregroundStyle(.secondary)
+                        .lineLimit(2).padding(.horizontal,24).padding(.bottom,11)
+                } else if boardMode == "github" && model.zenGitHubBoardConfigured == false {
+                    Text("未配置 GitHub Project；Forge 原生管理不受影响。")
+                        .font(.system(size:10)).foregroundStyle(.secondary)
+                        .padding(.horizontal,24).padding(.bottom,11)
+                }
+                if model.zenGitHubBoardConfigured == true && boardMode == "github" {
+                    ZenGitHubBoardView(items:model.zenGitHubBoardItems,
+                                       truncated:model.zenGitHubBoardTruncated)
+                } else {
                 GeometryReader { frame in
                     ScrollView(.horizontal) {
                         HStack(alignment:.top,spacing:14) {
@@ -461,6 +529,7 @@ struct ZenWorkspacePane: View {
                         .frame(maxWidth:.infinity)
                         .padding(.bottom,20)
                 }
+                }
             }
         }
     }
@@ -518,6 +587,14 @@ struct ZenWorkspacePane: View {
                         Text(detail.progressSummary).font(.system(size:11))
                             .textSelection(.enabled)
                     }
+                    if !detail.acceptedEvidenceRefs.isEmpty {
+                        Divider()
+                        Text("验收证据").font(.system(size:12,weight:.semibold))
+                        ForEach(detail.acceptedEvidenceRefs,id:\.self) { reference in
+                            Text(reference).font(.system(size:10,design:.monospaced))
+                                .textSelection(.enabled)
+                        }
+                    }
                     if !detail.remainingWork.isEmpty {
                         Divider()
                         Text("尚待完成").font(.system(size:12,weight:.semibold))
@@ -538,7 +615,7 @@ struct ZenWorkspacePane: View {
                     ProgressView().controlSize(.small)
                 }
 
-                if item.kind == .requirement {
+                if item.kind == .requirement && item.state == "open" {
                     zenExecutionSection(item)
                 }
                 Divider()
@@ -548,7 +625,8 @@ struct ZenWorkspacePane: View {
                     Label("编辑",systemImage:"square.and.pencil")
                 }
                 .buttonStyle(.bordered)
-                .disabled(model.recordDetail == nil)
+                .disabled(model.recordDetail == nil
+                          || (item.kind == .requirement && item.state != "open"))
                 Button {
                     onOpenAgent(item,"请基于当前 Requirement / Plan 的实际修订与关联信息分析并提出最小必要优化，先给出差异和影响范围，不要在未经确认时新增同义记录。",nil)
                 } label: {
@@ -562,13 +640,31 @@ struct ZenWorkspacePane: View {
                 }
                 .buttonStyle(.bordered)
                 if item.kind == .requirement {
-                    Button {
-                        newPlanGoal = ""
-                        showingPlanSheet = true
-                    } label: {
-                        Label("新增 Plan",systemImage:"plus")
+                    if case .requirement(let detail) = model.recordDetail,
+                       detail.state == "open" {
+                        Menu {
+                            Button("验收完成") {
+                                acceptanceReferences=detail.acceptedEvidenceRefs.joined(separator:"\n")
+                                acceptanceAcknowledged=false
+                                pendingAcceptanceRecord=item
+                            }
+                            Button("取消 Requirement",role:.destructive) {
+                                cancellingRequirement=detail
+                            }
+                        } label: {
+                            Label("需求状态",systemImage:"checkmark.circle")
+                        }
+                        .accessibilityIdentifier("zen.requirement.lifecycle")
                     }
-                    .buttonStyle(.bordered)
+                    if item.state == "open" {
+                        Button {
+                            newPlanGoal = ""
+                            showingPlanSheet = true
+                        } label: {
+                            Label("新增 Plan",systemImage:"plus")
+                        }
+                        .buttonStyle(.bordered)
+                    }
                 }
             }
             .padding(18)
@@ -577,6 +673,66 @@ struct ZenWorkspacePane: View {
         .accessibilityIdentifier("zen.record.inspector")
     }
 
+
+
+    private func acceptanceSheet(_ item:ForgeRecord) -> some View {
+        VStack(alignment:.leading,spacing:14) {
+            Text("完成 Requirement").font(.system(size:17,weight:.semibold))
+            Text("终态不可重开。请先核查验收标准和交付证据；这里只登记已经存在的证据引用，不创建或伪造证据。")
+                .font(.system(size:11)).foregroundStyle(.secondary)
+            if case .requirement(let detail) = model.recordDetail,
+               detail.requirementId == item.recordId {
+                Text(detail.title).font(.system(size:12,weight:.semibold))
+                if !detail.acceptanceCriteria.isEmpty {
+                    Text("验收标准").font(.system(size:11,weight:.semibold))
+                    ForEach(detail.acceptanceCriteria,id:\.self) { criterion in
+                        Label(criterion,systemImage:"checkmark.circle")
+                            .font(.system(size:11))
+                    }
+                }
+                if !detail.remainingWork.isEmpty {
+                    Text("还有 \(detail.remainingWork.count) 项剩余工作，不能标记完成。")
+                        .font(.system(size:11)).foregroundStyle(.orange)
+                }
+                TextField("验收证据引用（每行一条）",text:$acceptanceReferences,axis:.vertical)
+                    .lineLimit(4...6)
+                    .accessibilityIdentifier("zen.acceptance.references")
+                Toggle("验收标准均已核对，证据引用真实可复查",isOn:$acceptanceAcknowledged)
+                    .font(.system(size:11))
+                HStack {
+                    Spacer()
+                    Button("返回") { pendingAcceptanceRecord=nil }
+                    Button(saving ? "提交中…" : "确认完成") {
+                        saving=true
+                        Task {
+                            let ok=await model.transitionRequirement(
+                                id:detail.requirementId,expectedRevision:detail.revision,
+                                title:detail.title,outcome:detail.outcomeStatement,
+                                acceptanceCriteria:detail.acceptanceCriteria,state:"completed",
+                                acceptedEvidenceRefs:acceptanceReferences.components(separatedBy:.newlines)
+                            )
+                            saving=false
+                            if ok { pendingAcceptanceRecord=nil }
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(saving || !acceptanceAcknowledged
+                              || !detail.remainingWork.isEmpty
+                              || acceptanceReferences.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty)
+                }
+            } else {
+                Text("无法确认当前 Requirement，请返回刷新。")
+                    .font(.system(size:11)).foregroundStyle(.orange)
+                Button("关闭") { pendingAcceptanceRecord=nil }
+            }
+            if let error=model.error {
+                Text(error).font(.system(size:10)).foregroundStyle(.orange)
+                    .textSelection(.enabled)
+            }
+        }
+        .padding(22).frame(width:490)
+        .accessibilityIdentifier("zen.acceptance.confirm")
+    }
 
     private func beginEdit(_ item:ForgeRecord) {
         guard let detail=model.recordDetail else { return }

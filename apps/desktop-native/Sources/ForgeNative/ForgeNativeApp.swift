@@ -128,10 +128,13 @@ private struct ForgeWorkspaceView: View {
                     }
                     ZenSidebar(model:model,screen:$zenScreen,
                                focusedRequirementId:$zenFocusedRequirementId,
-                               decisionCount:model.relevantUserRequests.count) {
+                               decisionCount:model.relevantUserRequests.count,
+                               onInbox:{
                         inboxShown = true
                         Task { await model.loadUserRequests() }
-                    }
+                    },onAddProject:{
+                        chooseProjectDirectory(keepZen:true)
+                    })
                     .popover(isPresented:$inboxShown,arrowEdge:.trailing) {
                         inboxPanel
                     }
@@ -1129,7 +1132,7 @@ private struct ForgeWorkspaceView: View {
         }
     }
 
-    private func chooseProjectDirectory() {
+    private func chooseProjectDirectory(keepZen: Bool = false) {
         let panel = NSOpenPanel()
         panel.title = "添加 Forge 项目"
         panel.prompt = "添加"
@@ -1140,11 +1143,16 @@ private struct ForgeWorkspaceView: View {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         registeringProject = true
         Task {
-            let ok = await model.registerProject(path:url.path)
+            let ok = await model.registerProject(path:url.path,openConversation: !keepZen)
             registeringProject = false
             if ok {
                 projectPickerShown = false
                 projectSearch = ""
+                if keepZen {
+                    model.zenMode = true
+                    zenScreen = .board
+                    zenFocusedRequirementId = nil
+                }
             }
         }
     }

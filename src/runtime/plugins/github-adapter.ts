@@ -10,6 +10,7 @@ import {
   dispatchGitHubWorkflow,
   listGitHubWorkflowRuns,
   listGitHubWorkflows,
+  readGitHubProjectItems,
 } from '../../cli/github/github';
 import type {
   AssistantPluginActionDescriptor,
@@ -33,6 +34,13 @@ function githubPermissions(ready: boolean, projectConfigured: boolean): Assistan
       description: 'Create, refresh, and close linked GitHub issues.',
       granted: ready,
       required: true,
+    },
+    {
+      scope: 'github:projects:read',
+      mode: 'read',
+      description: 'Read the configured GitHub Project item statuses without local copies.',
+      granted: ready,
+      required: false,
     },
     {
       scope: 'github:projects:write',
@@ -78,8 +86,8 @@ function githubCapabilities(): AssistantPluginCapability[] {
       capabilityId: 'project-sync',
       title: 'Project Sync',
       description: 'Attach published issues to a configured GitHub Project when project settings exist.',
-      scopes: ['github:projects:write'],
-      actions: ['configure', 'publish_issue'],
+      scopes: ['github:projects:read', 'github:projects:write'],
+      actions: ['configure', 'publish_issue', 'list_project_items'],
     },
     {
       capabilityId: 'actions-ci',
@@ -166,6 +174,26 @@ function githubActions(projectConfigured: boolean): AssistantPluginActionDescrip
           issue_id: { type: 'string' },
         },
         required: ['issue_id'],
+        additionalProperties: false,
+      },
+    },
+    {
+      actionId: 'list_project_items',
+      title: 'Read GitHub Project items',
+      description: 'Read-only GitHub Project item status projection, using Repository Registry project configuration.',
+      readOnly: true,
+      risk: 'readonly',
+      confirmation: 'none',
+      defaultTimeoutMs: 60_000,
+      cancellable: true,
+      idempotent: true,
+      scopes: ['github:projects:read'],
+      resourceClaims: [{ resource: 'remote', mode: 'read' }],
+      argumentsSchema: {
+        type: 'object',
+        properties: {
+          limit: { type: 'number', minimum: 1, maximum: 100 },
+        },
         additionalProperties: false,
       },
     },
@@ -345,6 +373,22 @@ export async function executeGitHubPluginAction(input: AssistantPluginActionExec
       return { issue: publishIssueWithGitHubPlugin(input.repoRoot, String(input.args.issue_id ?? '').trim()) };
     case 'refresh_issue':
       return refreshIssueWithGitHubPlugin(input.repoRoot, String(input.args.issue_id ?? '').trim()) as Record<string, unknown>;
+    case 'list_project_items': {
+      const config = loadGitHubPluginConfig(input.repoRoot);
+      if (!config.projectOwner || !config.projectNumber) {
+        return { configured: false, items: [], truncated: false };
+      }
+      if (!config.repository) {
+        return { configured: false, items: [], truncated: false };
+      }
+      const limit = typeof input.args.limit === 'number' ? input.args.limit : 100;
+      return {
+        configured: true,
+        owner: config.projectOwner,
+        projectNumber: config.projectNumber,
+        ...readGitHubProjectItems(input.repoRoot, config.repository, config.projectOwner, config.projectNumber, limit),
+      };
+    }
     case 'list_workflows': {
       const config = loadGitHubPluginConfig(input.repoRoot);
       return {

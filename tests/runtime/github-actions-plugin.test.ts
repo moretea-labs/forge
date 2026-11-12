@@ -6,6 +6,8 @@ import {
   buildGitHubWorkflowDispatchArgs,
   buildGitHubWorkflowListArgs,
   buildGitHubWorkflowRunListArgs,
+  buildGitHubProjectItemListArgs,
+  parseGitHubProjectItems,
 } from '../../src/cli/github/github';
 import { buildGitHubPluginManifest } from '../../src/runtime/plugins/github-adapter';
 
@@ -44,11 +46,56 @@ describe('GitHub Actions plugin surface', () => {
       expect(actions.list_workflow_runs).toMatchObject({ readOnly: true, risk: 'readonly', confirmation: 'none', idempotent: true });
       expect(actions.dispatch_workflow).toMatchObject({ readOnly: false, risk: 'remote_write', confirmation: 'authorization', idempotent: false });
       expect(actions.dispatch_workflow.resourceClaims).toEqual([{ resource: 'remote', mode: 'exclusive' }]);
+      expect(actions.list_project_items).toMatchObject({
+        readOnly: true, risk: 'readonly', confirmation: 'none', idempotent: true,
+        scopes: ['github:projects:read'],
+      });
       expect(manifest.capabilities.find((capability) => capability.capabilityId === 'actions-ci')?.actions).toEqual([
         'list_workflows', 'list_workflow_runs', 'dispatch_workflow',
       ]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+});
+
+
+describe('GitHub Project items read-only projection', () => {
+  test('bounded gh project CLI argv and strict owner', () => {
+    expect(buildGitHubProjectItemListArgs('moretea-labs', 12, 30)).toEqual([
+      'project', 'item-list', '12', '--owner', 'moretea-labs', '--format', 'json', '--limit', '30',
+    ]);
+    expect(() => buildGitHubProjectItemListArgs('bad\nowner', 12)).toThrow();
+    expect(() => buildGitHubProjectItemListArgs('moretea-labs', -2)).toThrow();
+    expect(() => buildGitHubProjectItemListArgs('moretea-labs', 3, 101)).toThrow();
+  });
+
+  test('keeps exact GitHub statuses and filters other repository items without synthesizing statuses', () => {
+    const result = parseGitHubProjectItems({
+      totalCount: 4,
+      items: [
+        { id: 'a', title: 'Zen', status: 'In Progress', content: { number: 644, repository: 'moretea-labs/forge', url: 'https://github.com/moretea-labs/forge/issues/644' } },
+        { id: 'b', title: 'Other repo', status: 'Done', content: { number: 9, repository: 'someone/else' } },
+        { id: 'c', title: 'Draft', status: 'Backlog' },
+        { id: 'd', title: 'No status', content: { number: 15, repository: 'moretea-labs/forge' } },
+      ],
+    }, 'moretea-labs/forge', 4);
+    expect(result.items).toEqual([
+      { id: 'a', title: 'Zen', status: 'In Progress', number: 644,
+        repository: 'moretea-labs/forge', url: 'https://github.com/moretea-labs/forge/issues/644', isDraft: false },
+      { id: 'c', title: 'Draft', status: 'Backlog', isDraft: true },
+      { id: 'd', title: 'No status', status: 'Unassigned', number: 15, repository: 'moretea-labs/forge', isDraft: false },
+    ]);
+    expect(result.truncated).toBe(false);
+  });
+
+  test('rejects untrusted/project shape and boundedly signals truncation', () => {
+    expect(() => parseGitHubProjectItems({}, 'moretea-labs/forge')).toThrow(/SHAPE_INVALID/);
+    const result = parseGitHubProjectItems({
+      totalCount: 200,
+      items: [{ id: 'id', title: 'Test', status: 'Todo', content: { number: 1, url: 'https://example.com/attack' } }],
+    }, 'moretea-labs/forge', 1);
+    expect(result.truncated).toBe(true);
+    expect(result.items[0].url).toBeUndefined();
   });
 });
