@@ -377,6 +377,7 @@ describe('App Store Connect Xcode Cloud workflow actions', () => {
     const original = globalThis.fetch;
     const assetUrl = 'https://reports.s3.us-west-2.amazonaws.com/segment.csv.gz?signed=1';
     let invalidChecksum = false;
+    let oversizedStream = false;
     globalThis.fetch = (async (request: string | URL | Request, init?: RequestInit) => {
       const target = String(request);
       if (target.includes('/v1/analyticsReportSegments/')) {
@@ -386,6 +387,15 @@ describe('App Store Connect Xcode Cloud workflow actions', () => {
       }
       expect(target).toBe(assetUrl);
       expect(new Headers(init?.headers).has('authorization')).toBe(false);
+      if (oversizedStream) {
+        return new Response(new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new Uint8Array(9 * 1024 * 1024));
+            controller.enqueue(new Uint8Array(8 * 1024 * 1024));
+            controller.close();
+          },
+        }), {status: 200, headers: {'content-type':'application/a-gzip'}});
+      }
       return new Response(bytes, { status: 200, headers: { 'content-type': 'application/a-gzip' } });
     }) as typeof fetch;
     try {
@@ -393,9 +403,26 @@ describe('App Store Connect Xcode Cloud workflow actions', () => {
         { segment_id: 'segment-1', max_rows: 1 }));
       expect(report).toMatchObject({ checksumVerified: true, totalRows: 2, truncated: true,
         columns: ['Date', 'Source Type', 'Impressions'], rows: [['2026-11-01','App Store search','42']] });
+      const grouped = await executeAppStoreConnectPluginAction(input(repoRoot, 'summarize_analytics_segment',
+        {segment_id:'segment-1',group_by:'Source Type',metric:'Impressions'}));
+      expect(grouped).toMatchObject({checksumVerified:true,groupBy:['Source Type'],metric:'Impressions',
+        distinctGroups:2,sourceRows:2,excludedRows:0,truncated:false,
+        groups:[{dimensions:{'Source Type':'App Store search'},total:42},
+          {dimensions:{'Source Type':'App Store browse'},total:20}],
+      });
+      const filtered = await executeAppStoreConnectPluginAction(input(repoRoot, 'summarize_analytics_segment',
+        {segment_id:'segment-1',group_by:'Date',metric:'Impressions',filter_column:'Source Type',
+          filter_value:'App Store search',max_groups:1}));
+      expect(filtered).toMatchObject({distinctGroups:1,sourceRows:1,excludedRows:1,
+        groups:[{dimensions:{Date:'2026-11-01'},total:42}]});
+      await expect(executeAppStoreConnectPluginAction(input(repoRoot, 'summarize_analytics_segment',
+        {segment_id:'segment-1',group_by:'Missing Column',metric:'Impressions'}))).rejects.toThrow('absent');
       invalidChecksum = true;
       await expect(executeAppStoreConnectPluginAction(input(repoRoot, 'read_analytics_segment_data',
         { segment_id: 'segment-1' }))).rejects.toThrow('checksum mismatch');
+      oversizedStream = true;
+      await expect(executeAppStoreConnectPluginAction(input(repoRoot, 'read_analytics_segment_data',
+        { segment_id: 'segment-1' }))).rejects.toThrow('inline download limit');
     } finally {
       globalThis.fetch = original;
     }

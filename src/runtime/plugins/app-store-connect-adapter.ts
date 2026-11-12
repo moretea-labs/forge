@@ -566,6 +566,7 @@ function additionalAscActions(): AssistantPluginActionDescriptor[] {
   ];
   const reports: AssistantPluginActionDescriptor[] = [
     { actionId: 'check_release_readiness', title: 'Inspect App Store release prerequisites', description: 'Read Apple-owned build, localized metadata and review details without submitting. Returns candidate/unverified, never guarantees Apple acceptance.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 90_000, cancellable: true, idempotent: true, scopes: ['appstoreconnect.apps.read'], resourceClaims: [{ resource:'remote', mode:'read' }], argumentsSchema: { type:'object',properties:{version_id:{type:'string'},app_id:{type:'string'}},required:['version_id'],additionalProperties:false } },
+    { actionId: 'summarize_analytics_segment', title: 'Summarize a historical Apple Analytics segment', description: 'Read a checksum-verified Apple segment and aggregate any one or two available dimensions; no local history database.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 60_000, cancellable: true, idempotent: true, scopes: ['appstoreconnect.analytics.read'], resourceClaims: [{resource:'remote',mode:'read'}], argumentsSchema: {type:'object',properties:{segment_id:{type:'string'},group_by:{type:'string'},metric:{type:'string'},filter_column:{type:'string'},filter_value:{type:'string'},max_groups:{type:'number'}},required:['segment_id','group_by'],additionalProperties:false} },
     { actionId: 'read_analytics_segment_data', title: 'Read Analytics data segment', description: 'Download and verify a signed Apple Analytics TSV segment.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 60_000, cancellable: true, idempotent: true, scopes: ['appstoreconnect.analytics.read'], resourceClaims: [{resource:'remote',mode:'read'}], argumentsSchema: {type:'object',properties:{segment_id:{type:'string'},max_rows:{type:'number'}},required:['segment_id'],additionalProperties:false} },
     ...['sales', 'finance'].map((kind): AssistantPluginActionDescriptor => ({ actionId: 'read_' + kind + '_report', title: 'Read Apple ' + kind + ' report', description: 'Download and decode a bounded Apple gzip report.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 60_000, cancellable: true, idempotent: true, scopes: ['appstoreconnect.reports.read'], resourceClaims: [{resource:'remote',mode:'read'}], argumentsSchema: {type:'object',properties:{vendor_number:{type:'string'},report_date:{type:'string'},region_code:{type:'string'},frequency:{type:'string'},report_type:{type:'string'},report_sub_type:{type:'string'},version:{type:'string'},max_rows:{type:'number'}},required:kind==='finance'?['vendor_number','report_date','region_code']:['vendor_number','report_date'],additionalProperties:false} })),
   ];
@@ -814,6 +815,51 @@ function decodeAppleReport(buffer: Buffer, requestedRows: unknown) {
     totalRows: lines.length, truncated: lines.length > maxRows, format: 'tsv' };
 }
 
+
+function summarizeAppleAnalyticsTsv(buffer: Buffer, args: Record<string, unknown>) {
+  const text = gunzipSync(buffer, {maxOutputLength: ASC_MAX_UNCOMPRESSED}).toString('utf8').replace(/^\uFEFF/, '');
+  const lines = text.split(/\r?\n/);
+  const header = lines.shift() ?? '';
+  const columns = header.split('\t');
+  const groupBy = requiredArg(args, 'group_by').split(',').map(v => v.trim()).filter(Boolean);
+  if (groupBy.length < 1 || groupBy.length > 2 || new Set(groupBy).size !== groupBy.length)
+    throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Specify one or two distinct comma-separated grouping columns.', {retryable:false});
+  const metric = stringValue(args.metric) ?? 'Counts';
+  const indices = groupBy.map(v => columns.indexOf(v));
+  const metricIndex = columns.indexOf(metric);
+  const filterColumn = stringValue(args.filter_column);
+  const filterIndex = filterColumn ? columns.indexOf(filterColumn) : -1;
+  const filterValue = stringValue(args.filter_value);
+  if (metricIndex < 0 || indices.includes(-1) || (filterColumn && (filterIndex < 0 || filterValue === undefined)))
+    throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Grouping, metric or filter column is absent from Apple report TSV.', {
+      retryable:false, details:{availableColumns:columns},
+    });
+  const totals = new Map<string, {dimensions:Record<string,string>;total:number;sourceRows:number}>();
+  let counted = 0;
+  let excluded = 0;
+  for (const line of lines) {
+    if (!line) continue;
+    const fields = line.split('\t');
+    if (filterColumn && fields[filterIndex] !== filterValue) {excluded++;continue;}
+    const value = Number(fields[metricIndex]);
+    if (!Number.isFinite(value)) {excluded++;continue;}
+    const values = indices.map(i => fields[i] ?? '');
+    const key = JSON.stringify(values);
+    const previous = totals.get(key) ?? {dimensions:Object.fromEntries(groupBy.map((name,i)=>[name,values[i]])),total:0,sourceRows:0};
+    previous.total += value;
+    previous.sourceRows++;
+    totals.set(key,previous);
+    counted++;
+  }
+  const maxGroups = typeof args.max_groups === 'number' && Number.isInteger(args.max_groups)
+    ? Math.max(1,Math.min(100,args.max_groups)) : 50;
+  const sorted = [...totals.values()].sort((a,b)=>b.total-a.total);
+  return {groupBy,metric,filter:filterColumn?{column:filterColumn,value:filterValue}:null,
+    groups:sorted.slice(0,maxGroups),distinctGroups:sorted.length,sourceRows:counted,
+    excludedRows:excluded,truncated:sorted.length>maxGroups,
+    precision:'sum_of_report_rows',notes:'Sum only measures present in this Apple segment; not a global App Store total.'};
+}
+
 async function fetchAppleGzip(url: string, expectedMd5?: string, config?: AppStoreConnectPluginConfig): Promise<Buffer> {
   const target = new URL(url);
   // Signed URLs come from Apple's authenticated segment metadata; do not forward the Apple JWT to S3.
@@ -831,9 +877,27 @@ async function fetchAppleGzip(url: string, expectedMd5?: string, config?: AppSto
     });
     if (Number(response.headers.get('content-length')) > ASC_MAX_COMPRESSED)
       throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Report exceeds the inline download limit.', { retryable: false });
-    const bytes = Buffer.from(await response.arrayBuffer());
-    if (bytes.length > ASC_MAX_COMPRESSED)
-      throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Report exceeds the inline download limit.', { retryable: false });
+    if (!response.body)
+      throw new AssistantPluginError('PLUGIN_PROVIDER_ERROR', 'Apple report response did not include a body.', {retryable:false});
+    // Stop at the actual byte ceiling, even when Content-Length is absent/incorrect.
+    const reader = response.body.getReader();
+    const chunks: Buffer[] = [];
+    let received = 0;
+    try {
+      while (true) {
+        const {done, value} = await reader.read();
+        if (done) break;
+        received += value.byteLength;
+        if (received > ASC_MAX_COMPRESSED) {
+          await reader.cancel();
+          throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Report exceeds the inline download limit.', {retryable:false});
+        }
+        chunks.push(Buffer.from(value));
+      }
+    } finally {
+      reader.releaseLock();
+    }
+    const bytes = Buffer.concat(chunks, received);
     if (expectedMd5 && createHash('md5').update(bytes).digest('hex').toLowerCase() !== expectedMd5.toLowerCase())
       throw new AssistantPluginError('PLUGIN_PROVIDER_ERROR', 'Apple Analytics checksum mismatch.', { retryable: false });
     return bytes;
@@ -844,7 +908,7 @@ async function fetchAppleGzip(url: string, expectedMd5?: string, config?: AppSto
 
 async function downloadAppleReport(config: AppStoreConnectPluginConfig, actionId: string, args: Record<string, unknown>):
   Promise<Record<string, unknown>> {
-  if (actionId === 'read_analytics_segment_data') {
+  if (actionId === 'read_analytics_segment_data' || actionId === 'summarize_analytics_segment') {
     const id = requiredArg(args, 'segment_id');
     const segment = await apiRequest<{ data: { attributes?: { checksum?: string; url?: string; sizeInBytes?: number } } }>(config,
       { path: '/v1/analyticsReportSegments/' + encodeURIComponent(id) });
@@ -854,7 +918,8 @@ async function downloadAppleReport(config: AppStoreConnectPluginConfig, actionId
       throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Segment exceeds the inline download limit.', { retryable: false });
     const bytes = await fetchAppleGzip(url, checksum);
     return { segmentId: id, checksumVerified: !!checksum, compressedBytes: bytes.length,
-      ...decodeAppleReport(bytes, args.max_rows) };
+      ...(actionId === 'summarize_analytics_segment'
+        ? summarizeAppleAnalyticsTsv(bytes, args) : decodeAppleReport(bytes, args.max_rows)) };
   }
   const finance = actionId === 'read_finance_report';
   const date = requiredArg(args, 'report_date');
@@ -1000,7 +1065,7 @@ function capabilities(): AssistantPluginCapability[] {
       // Additional release/version reads are advertised in the commerce and ASO groups below.
     },
     { capabilityId: 'sales-finance', title: 'Sales and Finance Reports', description: 'Download bounded official TSV reports.', scopes: ['appstoreconnect.reports.read', 'appstoreconnect.analytics.read'], actions: ['read_sales_report', 'read_finance_report', 'read_analytics_segment_data'] },
-    { capabilityId: 'analytics-and-aso', title: 'Analytics and ASO', description: 'Read Apple Analytics reports, historical snapshots, keyword configuration, and store discovery.', scopes: ['appstoreconnect.analytics.read','appstoreconnect.analytics.write'], actions: [...additionalAscReads.filter(s => s.scope === 'appstoreconnect.analytics.read').map(s => s.id), 'request_analytics_report'] },
+    { capabilityId: 'analytics-and-aso', title: 'Analytics and ASO', description: 'Read Apple Analytics reports, historical snapshots, keyword configuration, and store discovery.', scopes: ['appstoreconnect.analytics.read','appstoreconnect.analytics.write'], actions: [...additionalAscReads.filter(s => s.scope === 'appstoreconnect.analytics.read').map(s => s.id), 'request_analytics_report','read_analytics_segment_data','summarize_analytics_segment'] },
     { capabilityId: 'commerce', title: 'In-App Purchases and Subscriptions', description: 'Read products, subscriptions and manage IAP v2.', scopes: ['appstoreconnect.commerce.read','appstoreconnect.commerce.write'], actions: [...additionalAscReads.filter(s => s.scope === 'appstoreconnect.commerce.read').map(s => s.id), ...['create_in_app_purchase','update_in_app_purchase','create_in_app_purchase_version','create_in_app_purchase_version_localization','update_in_app_purchase_version_localization','create_subscription_group','create_subscription','create_subscription_version','create_subscription_version_localization','create_subscription_group_version','create_subscription_group_version_localization','create_subscription_price','create_in_app_purchase_price_schedule']] },
     { capabilityId: 'customer-reviews', title: 'Customer Reviews', description: 'Read ratings and response to reviews.', scopes: ['appstoreconnect.reviews.read','appstoreconnect.reviews.write'], actions: [...additionalAscReads.filter(s => s.scope === 'appstoreconnect.reviews.read').map(s => s.id), 'create_customer_review_response'] },
     {
@@ -1392,7 +1457,7 @@ function mockResponse(actionId: string, args: Record<string, unknown>, config: A
   const additionalRead = additionalAscReads.find(spec => spec.id === actionId);
   if (actionId === 'check_release_readiness')
     return { preflightOnly: true, appleSubmissionAcceptanceVerified: false, result: 'candidate_unverified', blockers: [], evidence: {versionId: requiredArg(args, 'version_id')}, notVerified: ['Mock provider has no real Apple submission evidence'], provider:'mock' };
-  if (['read_analytics_segment_data','read_sales_report','read_finance_report'].includes(actionId))
+  if (['read_analytics_segment_data','summarize_analytics_segment','read_sales_report','read_finance_report'].includes(actionId))
     return { columns:['Date','Units'], rows:[['2026-11-01','2']], totalRows:1, truncated:false, format:'tsv', provider:'mock' };
   if (additionalRead) return { data: [], meta: { provider: 'mock', resource: additionalAscReadRequest(additionalRead, args, config).path } };
   const additionalWrite = additionalAscWriteRequest(actionId, args, config);
@@ -1607,7 +1672,7 @@ export async function executeAppStoreConnectPluginAction(input: AssistantPluginA
   if (!config.enabled || !auth.ready) throw new AssistantPluginError('PLUGIN_NOT_READY', 'App Store Connect plugin is not ready.', { retryable: false, details: { enabled: config.enabled, errors: auth.errors } });
 
   if (input.actionId === 'check_release_readiness') return inspectAppStoreReleaseReadiness(config, input.args);
-  if (['read_analytics_segment_data','read_sales_report','read_finance_report'].includes(input.actionId))
+  if (['read_analytics_segment_data','summarize_analytics_segment','read_sales_report','read_finance_report'].includes(input.actionId))
     return downloadAppleReport(config, input.actionId, input.args);
   const additionalRead = additionalAscReads.find(spec => spec.id === input.actionId);
   if (additionalRead) {
