@@ -1915,12 +1915,12 @@ final class NativeWorkspace: ObservableObject {
     }
 
     nonisolated static func connectionLabel(_ detail: ControllerConnectionDetail?, loading: Bool = false) -> String {
-        guard let detail else { return loading ? "正在读取连接" : "MCP 暂不可用" }
-        if detail.ready { return "MCP 配置就绪" }
-        if !detail.configured { return "MCP 未配置" }
-        if !detail.controller.ready { return "控制器未就绪" }
-        if !detail.tunnel.ready { return "远程 MCP 未连接" }
-        return "MCP 未就绪"
+        guard let detail else { return loading ? "正在读取连接" : "连接状态未知" }
+        if detail.ready { return "已连接" }
+        if !detail.configured { return "尚未配置连接" }
+        if !detail.controller.ready { return "本机连接未就绪" }
+        if !detail.tunnel.ready { return "远程连接未就绪" }
+        return "连接未就绪"
     }
 
     func loadRuntimePage() async {

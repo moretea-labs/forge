@@ -697,7 +697,7 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(connection?.setup?.summary,"Install Forge Runtime")
         XCTAssertEqual(connection?.setup?.risk,"workspace_write")
         XCTAssertEqual(connection?.setup?.requiresUser,false)
-        XCTAssertEqual(NativeWorkspace.connectionLabel(connection),"远程 MCP 未连接")
+        XCTAssertEqual(NativeWorkspace.connectionLabel(connection),"远程连接未就绪")
         let configuredConnection = NativeWorkspace.controllerConnectionDetail([
             "connection":[
                 "configured":true,"ready":true,
@@ -705,7 +705,7 @@ final class NativeWorkspaceTests: XCTestCase {
                 "tunnel":["ready":true,"title":"Transport configured","detail":"setup"]
             ]
         ])
-        XCTAssertEqual(NativeWorkspace.connectionLabel(configuredConnection),"MCP 配置就绪")
+        XCTAssertEqual(NativeWorkspace.connectionLabel(configuredConnection),"已连接")
         let unconfiguredConnection = NativeWorkspace.controllerConnectionDetail([
             "connection":[
                 "configured":false,"ready":false,
@@ -713,7 +713,15 @@ final class NativeWorkspaceTests: XCTestCase {
                 "tunnel":["ready":false,"title":"No transport","detail":""]
             ]
         ])
-        XCTAssertEqual(NativeWorkspace.connectionLabel(unconfiguredConnection),"MCP 未配置")
+        XCTAssertEqual(NativeWorkspace.connectionLabel(unconfiguredConnection),"尚未配置连接")
+        let localUnavailableConnection = NativeWorkspace.controllerConnectionDetail([
+            "connection":[
+                "configured":true,"ready":false,
+                "controller":["ready":false,"title":"Unavailable","detail":"local"],
+                "tunnel":["ready":true,"title":"Transport ready","detail":"remote"]
+            ]
+        ])
+        XCTAssertEqual(NativeWorkspace.connectionLabel(localUnavailableConnection),"本机连接未就绪")
         let authFailedConnection = NativeWorkspace.controllerConnectionDetail([
             "connection":[
                 "configured":true,"ready":false,
@@ -726,8 +734,8 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(authFailedConnection?.tunnel.detail,"远程 MCP 凭据无效")
         XCTAssertEqual(authFailedConnection?.repairAvailable,true)
         XCTAssertEqual(authFailedConnection?.repairLabel,"重新连接")
-        XCTAssertEqual(NativeWorkspace.connectionLabel(authFailedConnection),"远程 MCP 未连接")
-        XCTAssertEqual(NativeWorkspace.connectionLabel(nil),"MCP 暂不可用")
+        XCTAssertEqual(NativeWorkspace.connectionLabel(authFailedConnection),"远程连接未就绪")
+        XCTAssertEqual(NativeWorkspace.connectionLabel(nil),"连接状态未知")
         XCTAssertEqual(NativeWorkspace.connectionLabel(nil,loading:true),"正在读取连接")
         XCTAssertEqual(NativeWorkspace.runtimeLabel(nil,loading:false),"Runtime 暂不可用")
         XCTAssertEqual(NativeWorkspace.runtimeLabel(nil,loading:true),"正在读取运行时")
@@ -742,7 +750,7 @@ final class NativeWorkspaceTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at:folder) }
         let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
 
-        XCTAssertEqual(model.connection,"MCP 暂不可用")
+        XCTAssertEqual(model.connection,"连接状态未知")
         XCTAssertEqual(model.runtimeLabel,"Runtime 暂不可用")
         XCTAssertEqual(model.runtimeDescription,"暂时无法读取 Runtime 状态；可刷新或运行诊断。")
 

@@ -201,7 +201,7 @@ private struct ForgeWorkspaceView: View {
             }
             ToolbarItem(placement:.automatic) {
                 HStack(spacing:7) {
-                    Circle().fill(model.connection == "MCP 配置就绪" ? Color.green : Color.orange)
+                    Circle().fill(model.connection == "已连接" ? Color.green : Color.orange)
                         .frame(width:6,height:6)
                     Text(model.connection).font(.system(size:11))
                 }.foregroundStyle(ForgePalette.secondary)
