@@ -51,7 +51,7 @@ struct ForgeNativeApp: App {
                 }.keyboardShortcut("k")
                 Divider()
                 Button("显示会话") { workspace.show(.agent) }.keyboardShortcut("1")
-                Button("显示 Requirement") { workspace.show(.requirement) }.keyboardShortcut("2")
+                Button("显示 Requirement") { workspace.zenMode = true; workspace.show(.requirement) }.keyboardShortcut("2")
                 Button("显示 Plan") { workspace.show(.plan) }.keyboardShortcut("3")
                 Button("显示知识库") { workspace.show(.knowledge) }.keyboardShortcut("4")
                 Divider()
@@ -97,6 +97,8 @@ private struct ProjectCheckoutChoice: Identifiable {
 private struct ForgeWorkspaceView: View {
     @ObservedObject var model: NativeWorkspace
     @State private var visibility: NavigationSplitViewVisibility = .all
+    @State private var zenScreen: ZenScreen = .board
+    @State private var zenFocusedRequirementId: String?
     @State private var renameThreadId: String?
     @State private var renameThreadTitle = ""
     @State private var hoveredThreadId: String?
@@ -118,15 +120,54 @@ private struct ForgeWorkspaceView: View {
     var body: some View {
         NavigationSplitView(columnVisibility:$visibility) {
             HStack(spacing:0) {
-                navigationRail
-                sidebar
+                if model.zenMode {
+                    ZenRail(screen:$zenScreen) {
+                        model.zenMode = false
+                        model.show(.settings)
+                    }
+                    ZenSidebar(model:model,screen:$zenScreen,
+                               focusedRequirementId:$zenFocusedRequirementId,
+                               decisionCount:model.relevantUserRequests.count) {
+                        inboxShown = true
+                        Task { await model.loadUserRequests() }
+                    }
+                    .popover(isPresented:$inboxShown,arrowEdge:.trailing) {
+                        inboxPanel
+                    }
+                } else {
+                    navigationRail
+                    sidebar
+                }
             }
             .navigationSplitViewColumnWidth(min:296,ideal:318,max:352)
         } detail: {
-            main
+            if model.zenMode {
+                ZenWorkspacePane(model:model,screen:$zenScreen,
+                                 focusedRequirementId:$zenFocusedRequirementId) { item, prompt, provider in
+                    model.zenMode = false
+                    model.newThread(
+                        provider:provider,
+                        requirementId:item.kind == .requirement ? item.recordId : item.requirementId,
+                        planId:item.kind == .plan ? item.recordId : nil
+                    )
+                    model.draft = prompt
+                }
+            } else {
+                main
+            }
         }
         .navigationSplitViewStyle(.balanced)
         .toolbar {
+            ToolbarItem(placement:.principal) {
+                Picker("工作模式",selection:$model.zenMode) {
+                    Text("Zen").tag(true)
+                    Text("Agent").tag(false)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(width:134)
+                .accessibilityIdentifier("forge.mode")
+            }
             ToolbarItem(placement:.navigation) {
                 Text(model.project?.label ?? "Forge")
                     .font(.system(size:12,weight:.semibold))
@@ -139,6 +180,20 @@ private struct ForgeWorkspaceView: View {
                         .frame(width:6,height:6)
                     Text(model.connection).font(.system(size:11))
                 }.foregroundStyle(ForgePalette.secondary)
+            }
+        }
+        .task {
+            if model.zenMode { model.show(.requirement) }
+        }
+        .onChange(of:model.zenMode) { active in
+            if active {
+                model.show(.requirement)
+            } else if model.page == .requirement {
+                if let repoId=model.repoId,model.thread?.repoId != repoId {
+                    model.openProject(repoId)
+                } else {
+                    model.show(.agent)
+                }
             }
         }
         .onChange(of:model.showSearch) { visible in

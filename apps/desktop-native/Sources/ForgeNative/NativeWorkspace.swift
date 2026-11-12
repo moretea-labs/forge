@@ -484,6 +484,8 @@ struct NativeNavigationEntry: Equatable {
 @MainActor
 final class NativeWorkspace: ObservableObject {
     @Published var page: NativePage = .agent
+    // Presentation mode only; does not own a second execution or project state.
+    @Published var zenMode = true
     @Published private(set) var navigationBackStack: [NativeNavigationEntry] = []
     @Published private(set) var projects: [ForgeProject] = []
     @Published var repoId: String?
@@ -576,6 +578,8 @@ final class NativeWorkspace: ObservableObject {
             }
         }
         if threads.isEmpty { newThread() }
+        // Bootstrap creates one hidden draft thread; it does not choose Agent Mode.
+        zenMode = true
     }
 
     var project: ForgeProject? { projects.first { $0.repoId == repoId } }
@@ -725,6 +729,7 @@ final class NativeWorkspace: ObservableObject {
             model:profile?.model ?? (provider == "joycode" ? localApiSettings?.joyCodeModel : nil)
         )
         threads.insert(item, at:0)
+        zenMode = false
         // A new conversation must be immediately visible, even when launched
         // with ⌘N while an unrelated search query is active.
         showSearch = false
@@ -824,6 +829,7 @@ final class NativeWorkspace: ObservableObject {
         guard let item = threads.first(where: { $0.id == id }) else { return }
         if page != .agent { pushNavigationOrigin() }
         activateThreadContext(item)
+        zenMode = false
         page = .agent
         error = nil
     }
@@ -948,6 +954,35 @@ final class NativeWorkspace: ObservableObject {
         openProject(id)
     }
 
+    // Zen switches the Repository context without creating a conversation.
+    // The existing thread remains untouched until the user enters Agent Mode.
+    func focusZenProject(_ id:String) {
+        guard !busy else {
+            error = "请先停止正在运行的会话。"
+            return
+        }
+        guard let target = projects.first(where:{$0.repoId == id}) else { return }
+        if repoId == id {
+            if page == .requirement {
+                Task { await loadPage() }
+            } else {
+                show(.requirement)
+            }
+            return
+        }
+        repoId = id
+        checkoutId = target.checkoutId
+        checkoutRoot = nil
+        checkoutBranch = nil
+        checkoutContextLoading = true
+        records = []
+        planningAutopilotStatuses = [:]
+        clearRecordSelection()
+        page = .requirement
+        error = nil
+        Task { await refreshProject() }
+    }
+
     func openCheckout(inProject id: String, checkoutId targetCheckoutId: String) {
         guard !busy else {
             self.error = "请先停止正在运行的会话。"
@@ -1034,6 +1069,7 @@ final class NativeWorkspace: ObservableObject {
     }
 
     func show(_ page: NativePage) {
+        if page != .requirement { zenMode = false }
         guard self.page != page else { return }
         pushNavigationOrigin()
         error = nil
