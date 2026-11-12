@@ -853,6 +853,15 @@ describe('Thin Launcher external Controller invocation', () => {
     expect(resumed.args).not.toContain('workspace-write');
 
     expect(parseCodexConversationJsonl([
+      JSON.stringify({ type: 'thread.started', thread_id: 'thread-tokens' }),
+      JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'answer' } }),
+      JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 300, cached_input_tokens: 90, output_tokens: 120 } }),
+      JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 125, output_tokens: 25 } }),
+    ].join('\n'))).toEqual({
+      providerSessionId: 'thread-tokens', output: 'answer', toolActivityCount: 0,
+      usage: { inputTokens: 425, outputTokens: 145, totalTokens: 570, reportedRounds: 2, totalRounds: 2 },
+    });
+    expect(parseCodexConversationJsonl([
       JSON.stringify({ type: 'thread.started', thread_id: 'thread-1' }),
       JSON.stringify({ type: 'item.completed', item: { type: 'mcp_tool_call', name: 'forge.rh_status' } }),
       JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'done' } }),

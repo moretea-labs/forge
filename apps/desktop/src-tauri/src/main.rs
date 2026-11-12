@@ -3136,6 +3136,46 @@ struct StreamToolCall {
     name: String,
     arguments: String,
 }
+// Provider-reported usage only. Missing or partial streaming usage is never
+// synthesized from message length or presented as the complete turn cost.
+#[derive(Default)]
+struct LocalTokenTotals {
+    input: u64,
+    output: u64,
+    reported_rounds: u32,
+    rounds: u32,
+}
+impl LocalTokenTotals {
+    fn observe(&mut self, response: &Value, protocol: &str) {
+        self.rounds += 1;
+        let usage = &response["usage"];
+        let input = if protocol == "openai" {
+            usage.get("prompt_tokens").and_then(Value::as_u64)
+        } else { usage.get("input_tokens").and_then(Value::as_u64) };
+        let output = if protocol == "openai" {
+            usage.get("completion_tokens").and_then(Value::as_u64)
+        } else { usage.get("output_tokens").and_then(Value::as_u64) };
+        if let (Some(input), Some(output)) = (input, output) {
+            self.input = self.input.saturating_add(input);
+            self.output = self.output.saturating_add(output);
+            self.reported_rounds += 1;
+        }
+    }
+    fn summary(&self) -> Value {
+        if self.reported_rounds == 0 { return Value::Null; }
+        json!({
+            "inputTokens":self.input,
+            "outputTokens":self.output,
+            "totalTokens":self.input.saturating_add(self.output),
+            "reportedRounds":self.reported_rounds,
+            "totalRounds":self.rounds,
+        })
+    }
+}
+fn with_local_token_usage(mut reply: Value, totals: &LocalTokenTotals) -> Value {
+    reply["usage"] = totals.summary();
+    reply
+}
 #[derive(Default)]
 struct StreamedModelRound {
     text: String,
@@ -3143,6 +3183,7 @@ struct StreamedModelRound {
     anthropic_blocks: std::collections::BTreeMap<usize, Value>,
     anthropic_json: std::collections::BTreeMap<usize, String>,
     completed_response: Option<Value>,
+    usage: Option<Value>,
     finished: bool,
 }
 
@@ -3166,6 +3207,21 @@ impl StreamedModelRound {
             .map_err(|_| "FORGE_DESKTOP_API_STREAM_EVENT_INVALID")?;
         if value.get("error").is_some() || value.get("type").and_then(Value::as_str) == Some("error") {
             return Err("FORGE_DESKTOP_API_STREAM_PROVIDER_ERROR".into());
+        }
+        if protocol == "openai" {
+            if value.get("usage").is_some_and(Value::is_object) {
+                self.usage = value.get("usage").cloned();
+            }
+        } else if protocol == "anthropic" {
+            match value.get("type").and_then(Value::as_str) {
+                Some("message_start") => self.usage = value.pointer("/message/usage").cloned(),
+                Some("message_delta") => {
+                    if let Some(output) = value.pointer("/usage/output_tokens").and_then(Value::as_u64) {
+                        self.usage.get_or_insert_with(|| json!({}))["output_tokens"] = json!(output);
+                    }
+                }
+                _ => {}
+            }
         }
         match protocol {
             "openai" => {
@@ -3285,18 +3341,22 @@ impl StreamedModelRound {
                         .ok_or("FORGE_DESKTOP_API_STREAM_EVENT_INVALID")?;
                     block["input"] = value;
                 }
-                Ok(json!({"content":self.anthropic_blocks.into_values().collect::<Vec<_>>()}))
+                let mut result = json!({"content":self.anthropic_blocks.into_values().collect::<Vec<_>>()});
+                if let Some(usage) = self.usage { result["usage"] = usage; }
+                Ok(result)
             }
             "openai" => {
                 let calls = self.tool_calls.into_values().map(|call| json!({
                     "id":call.id, "type":"function",
                     "function":{"name":call.name,"arguments":call.arguments}
                 })).collect::<Vec<_>>();
-                Ok(json!({"choices":[{"message":{
+                let mut result = json!({"choices":[{"message":{
                     "role":"assistant",
                     "content":if self.text.is_empty(){Value::Null}else{Value::String(self.text)},
                     "tool_calls":calls
-                }}]}))
+                }}]});
+                if let Some(usage) = self.usage { result["usage"] = usage; }
+                Ok(result)
             }
             _ => Err("FORGE_DESKTOP_API_PROTOCOL_INVALID".into()),
         }
@@ -3540,6 +3600,7 @@ async fn run_local_api_turn_with_config<H: LocalApiHost + Sync>(
     let mut last_effect_request_id: Option<String> = None;
     let mut patch_needs_verification = false;
     let mut validation_prompt_sent = false;
+    let mut token_totals = LocalTokenTotals::default();
     for round in 0..LOCAL_API_TOOL_ROUNDS {
         compact_local_api_history(&mut history);
         if *cancel_receiver.borrow() {
@@ -3582,6 +3643,9 @@ async fn run_local_api_turn_with_config<H: LocalApiHost + Sync>(
             upstream.push(json!({ "role": "system", "content": system_instruction }));
             upstream.extend(history.iter().cloned());
             let mut body = json!({ "model": model, "messages": upstream, "stream": true });
+            if endpoint.starts_with("https://api.openai.com/") {
+                body["stream_options"] = json!({"include_usage":true});
+            }
             if !available_tools.is_empty() { body["tools"] = Value::Array(available_tools.clone()); }
             body
         };
@@ -3596,6 +3660,7 @@ async fn run_local_api_turn_with_config<H: LocalApiHost + Sync>(
         ).await.map_err(|error| contextualize_api_turn_error(
             error, last_effect_request_id.as_deref()
         ))?;
+        token_totals.observe(&output, protocol);
         let requests = provider_tool_calls(protocol, &output).map_err(|error| {
             contextualize_api_turn_error(error, last_effect_request_id.as_deref())
         })?;
@@ -3618,7 +3683,10 @@ async fn run_local_api_turn_with_config<H: LocalApiHost + Sync>(
                 }
                 if patch_needs_verification {
                     if validation_prompt_sent {
-                        return Ok(local_api_budget_pause("修改后仍未取得成功的验证命令回执", total_calls, &tool_events));
+                        return Ok(with_local_token_usage(
+                            local_api_budget_pause("修改后仍未取得成功的验证命令回执", total_calls, &tool_events),
+                            &token_totals,
+                        ));
                     }
                     validation_prompt_sent = true;
                     history.push(json!({"role":"assistant","content":blocks}));
@@ -3626,7 +3694,8 @@ async fn run_local_api_turn_with_config<H: LocalApiHost + Sync>(
                         "Source edits were applied, but no successful focused test/build/check receipt was recorded. Use run_command for an appropriate verification. git diff --check only checks whitespace and is not sufficient. If verification fails, inspect and repair; if no applicable check exists, state that validation is incomplete. Do not claim verified completion without a successful receipt."}));
                     continue;
                 }
-                return Ok(json!({ "output": text, "toolActivityCount": total_calls, "toolEvents": tool_events }));
+                return Ok(json!({ "output": text, "toolActivityCount": total_calls,
+                    "toolEvents": tool_events, "usage": token_totals.summary() }));
             }
             history.push(json!({ "role": "assistant", "content": blocks }));
         } else {
@@ -3650,7 +3719,10 @@ async fn run_local_api_turn_with_config<H: LocalApiHost + Sync>(
                     ))?;
                 if patch_needs_verification {
                     if validation_prompt_sent {
-                        return Ok(local_api_budget_pause("修改后仍未取得成功的验证命令回执", total_calls, &tool_events));
+                        return Ok(with_local_token_usage(
+                            local_api_budget_pause("修改后仍未取得成功的验证命令回执", total_calls, &tool_events),
+                            &token_totals,
+                        ));
                     }
                     validation_prompt_sent = true;
                     history.push(message);
@@ -3658,7 +3730,8 @@ async fn run_local_api_turn_with_config<H: LocalApiHost + Sync>(
                         "Source edits were applied, but no successful focused test/build/check receipt was recorded. Use run_command for an appropriate verification. git diff --check only checks whitespace and is not sufficient. If verification fails, inspect and repair; if no applicable check exists, state that validation is incomplete. Do not claim verified completion without a successful receipt."}));
                     continue;
                 }
-                return Ok(json!({ "output": text, "toolActivityCount": total_calls, "toolEvents": tool_events }));
+                return Ok(json!({ "output": text, "toolActivityCount": total_calls,
+                    "toolEvents": tool_events, "usage": token_totals.summary() }));
             }
             history.push(message);
         }
@@ -3669,7 +3742,10 @@ async fn run_local_api_turn_with_config<H: LocalApiHost + Sync>(
             ));
         }
         if total_calls + requests.len() > LOCAL_API_TOOL_CALL_BUDGET {
-            return Ok(local_api_budget_pause("工具调用预算上限", total_calls, &tool_events));
+            return Ok(with_local_token_usage(
+                local_api_budget_pause("工具调用预算上限", total_calls, &tool_events),
+                &token_totals,
+            ));
         }
         let mut tool_results = Vec::new();
         for (id, name, mut args) in requests {
@@ -3741,7 +3817,10 @@ async fn run_local_api_turn_with_config<H: LocalApiHost + Sync>(
                                 "name":name, "ok":false, "status":"running",
                                 "processId":process_id, "requestId":effect_request_id, "toolCallId":id
                             }));
-                            return Ok(local_api_process_pause(process_id, total_calls + 1, &tool_events));
+                            return Ok(with_local_token_usage(
+                                local_api_process_pause(process_id, total_calls + 1, &tool_events),
+                                &token_totals,
+                            ));
                         }
                     }
                 } else { result }
@@ -3818,10 +3897,10 @@ async fn run_local_api_turn_with_config<H: LocalApiHost + Sync>(
             history.push(json!({ "role": "user", "content": tool_results }));
         }
     }
-    Ok(local_api_budget_pause(
+    Ok(with_local_token_usage(local_api_budget_pause(
         if patch_needs_verification { "模型轮次上限且写入尚未取得验证回执" }
         else { "模型交互轮次上限" }, total_calls, &tool_events
-    ))
+    ), &token_totals))
 }
 
 #[tauri::command]
@@ -3925,6 +4004,19 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_token_usage_counts_only_complete_real_receipts() {
+        let mut totals = LocalTokenTotals::default();
+        totals.observe(&json!({"usage":{"prompt_tokens":100,"completion_tokens":50}}),"openai");
+        totals.observe(&json!({"usage":{"input_tokens":25,"output_tokens":10}}),"anthropic");
+        totals.observe(&json!({"usage":{"input_tokens":999}}),"responses");
+        assert_eq!(totals.summary(),json!({
+            "inputTokens":125,"outputTokens":60,"totalTokens":185,
+            "reportedRounds":2,"totalRounds":3
+        }));
+        assert_eq!(LocalTokenTotals::default().summary(),Value::Null);
+    }
 
     #[derive(Default)]
     struct RecordingStreamHost {

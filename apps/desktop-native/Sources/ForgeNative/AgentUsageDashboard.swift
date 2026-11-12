@@ -1,0 +1,233 @@
+import SwiftUI
+
+/// Actual provider receipts from the canonical persisted conversation store.
+/// No token estimation, price catalog, shadow database or separate scheduler.
+struct AgentUsageDashboard: View {
+    @ObservedObject var model: NativeWorkspace
+    @State private var days = 30
+    @State private var selectedRepoId = ""
+
+    private struct Entry: Identifiable {
+        let id: String
+        let date: Date
+        let project: String
+        let model: String
+        let provider: String
+        let usage: AgentTokenUsage
+    }
+
+    private struct DayTotal: Identifiable {
+        let date: Date
+        let count: Int
+        var id: Date { date }
+    }
+
+    private var relevantThreads: [ChatThread] {
+        model.threads.filter { selectedRepoId.isEmpty || $0.repoId == selectedRepoId }
+    }
+
+    private var entries: [Entry] {
+        let cutoff = Calendar.current.date(byAdding: .day, value: -(days - 1),
+                                           to: Calendar.current.startOfDay(for: Date())) ?? Date()
+        return relevantThreads.flatMap { thread in
+            thread.messages.compactMap { message -> Entry? in
+                guard message.role == "assistant",
+                      message.createdAt >= cutoff,
+                      let usage = message.usage else { return nil }
+                let projectName = model.projects.first(where: { $0.repoId == thread.repoId })?.displayName
+                    ?? thread.repoId ?? "未关联项目"
+                return Entry(id: message.id, date: message.createdAt,
+                             project: projectName,
+                             model: message.modelUsed ?? thread.model ?? "未标记模型",
+                             provider: message.providerUsed ?? thread.provider ?? "未知",
+                             usage: usage)
+            }
+        }.sorted { $0.date > $1.date }
+    }
+
+    private var unreportedMessages: Int {
+        let cutoff = Calendar.current.date(byAdding: .day, value: -(days - 1),
+                                           to: Calendar.current.startOfDay(for: Date())) ?? Date()
+        return relevantThreads.reduce(0) { count, thread in
+            count + thread.messages.filter {
+                $0.role == "assistant" && $0.createdAt >= cutoff && $0.usage == nil
+            }.count
+        }
+    }
+
+    private var inputTotal: Int { entries.reduce(0) { $0 + $1.usage.inputTokens } }
+    private var outputTotal: Int { entries.reduce(0) { $0 + $1.usage.outputTokens } }
+    private var total: Int { inputTotal + outputTotal }
+    private var partiallyReported: Int { entries.filter { !$0.usage.complete }.count }
+
+    private var timeline: [DayTotal] {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        let totals = Dictionary(grouping: entries, by: { calendar.startOfDay(for: $0.date) })
+            .mapValues { values in values.reduce(0) { $0 + $1.usage.totalTokens } }
+        return (0..<days).reversed().compactMap { offset in
+            calendar.date(byAdding: .day, value: -offset, to: today)
+        }.map { DayTotal(date: $0, count: totals[$0] ?? 0) }
+    }
+
+    private var byModel: [(String, Int)] {
+        let grouped = Dictionary(grouping: entries, by: { $0.model })
+        return grouped.map { ($0.key, $0.value.reduce(0) { $0 + $1.usage.totalTokens }) }
+            .sorted { $0.1 > $1.1 }
+    }
+
+    private var byProject: [(String, Int)] {
+        let grouped = Dictionary(grouping: entries, by: { $0.project })
+        return grouped.map { ($0.key, $0.value.reduce(0) { $0 + $1.usage.totalTokens }) }
+            .sorted { $0.1 > $1.1 }
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 22) {
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Token 消耗").font(.system(size: 24, weight: .semibold))
+                        Text("来自模型 Provider 的实际用量回执")
+                            .font(.system(size: 12)).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Picker("项目", selection: $selectedRepoId) {
+                        Text("全部项目").tag("")
+                        ForEach(model.projects) { project in
+                            Text(project.displayName).tag(project.repoId)
+                        }
+                    }
+                    .frame(maxWidth: 190)
+                    Picker("时间", selection: $days) {
+                        Text("7 天").tag(7)
+                        Text("30 天").tag(30)
+                        Text("90 天").tag(90)
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 192)
+                }
+
+                HStack(spacing: 0) {
+                    metric("已记录 Token", total.formatted(), "仅统计返回用量的模型")
+                    metric("输入 Token", inputTotal.formatted(), "Prompt / Input")
+                    metric("输出 Token", outputTotal.formatted(), "Completion / Output")
+                    metric("可统计回复", entries.count.formatted(), "\(unreportedMessages) 条未提供")
+                }
+                .padding(.vertical, 13)
+                .background(Color.primary.opacity(0.035),
+                            in: RoundedRectangle(cornerRadius: 12))
+
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        Text("每日消耗").font(.system(size: 15, weight: .semibold))
+                        Spacer()
+                        Text("最近 \(days) 天").font(.system(size: 11)).foregroundStyle(.secondary)
+                    }
+                    let maximum = max(1, timeline.map(\.count).max() ?? 0)
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(alignment: .bottom, spacing: 5) {
+                            ForEach(timeline) { day in
+                                VStack(spacing: 5) {
+                                    RoundedRectangle(cornerRadius: 3)
+                                        .fill(day.count == 0 ? Color.primary.opacity(0.075) : Color.accentColor.opacity(0.7))
+                                        .frame(width: 16, height: max(5, 100 * CGFloat(day.count) / CGFloat(maximum)))
+                                        .frame(height: 100, alignment: .bottom)
+                                    Text(day.date.formatted(.dateTime.day()))
+                                        .font(.system(size: 8, design: .rounded))
+                                        .foregroundStyle(.tertiary)
+                                        .frame(width: 17)
+                                }
+                                .help("\(day.date.formatted(date: .abbreviated, time: .omitted)) · \(day.count.formatted()) tokens")
+                            }
+                        }
+                        .padding(.vertical, 3)
+                    }
+                    if total == 0 {
+                        Text("该时间范围内暂无可统计的模型用量；未返回数据的会话不显示为 0 消耗。")
+                            .font(.system(size: 11)).foregroundStyle(.secondary)
+                    }
+                }
+
+                HStack(alignment: .top, spacing: 32) {
+                    distribution("模型消耗", values: byModel)
+                    distribution("项目消耗", values: byProject)
+                }
+
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("最近记录").font(.system(size: 15, weight: .semibold))
+                    if entries.isEmpty {
+                        Text("暂无用量回执").font(.system(size: 12)).foregroundStyle(.secondary)
+                    } else {
+                        ForEach(Array(entries.prefix(12))) { item in
+                            HStack(spacing: 10) {
+                                Text(item.date.formatted(.dateTime.month().day().hour().minute()))
+                                    .foregroundStyle(.secondary).frame(width: 105, alignment: .leading)
+                                Text(item.model).lineLimit(1)
+                                Spacer()
+                                Text(item.project).lineLimit(1).foregroundStyle(.secondary)
+                                Text(item.usage.totalTokens.formatted())
+                                    .monospacedDigit().frame(width: 90, alignment: .trailing)
+                                if !item.usage.complete {
+                                    Image(systemName: "exclamationmark.circle")
+                                        .help("只汇总了 \(item.usage.reportedRounds)/\(item.usage.totalRounds) 个模型回合")
+                                }
+                            }
+                            .font(.system(size: 11.5))
+                            Divider().opacity(0.3)
+                        }
+                    }
+                }
+
+                Text("历史消息在版本升级前没有保存的 Token 统计无法补算。Codex 或兼容 API 未返回 Usage 时标记为未提供；本页不推算费用，也不将 Autopilot 的预算上限当成实际消耗。\(partiallyReported > 0 ? "其中 \(partiallyReported) 条仅有部分回合数据。" : "")")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(26)
+            .frame(maxWidth: 1020, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .center)
+        }
+        .accessibilityIdentifier("agent.usage.dashboard")
+    }
+
+    private func metric(_ label: String, _ value: String, _ caption: String) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(label).font(.system(size: 11)).foregroundStyle(.secondary)
+            Text(value).font(.system(size: 23, weight: .medium, design: .rounded))
+                .monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
+            Text(caption).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 16)
+    }
+
+    private func distribution(_ title: String, values: [(String, Int)]) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(title).font(.system(size: 15, weight: .semibold))
+            if values.isEmpty {
+                Text("暂无数据").font(.system(size: 12)).foregroundStyle(.secondary)
+            }
+            ForEach(Array(values.prefix(6).enumerated()), id: \.offset) { _, value in
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack {
+                        Text(value.0).lineLimit(1)
+                        Spacer()
+                        Text(value.1.formatted()).monospacedDigit()
+                    }
+                    .font(.system(size: 11.5))
+                    GeometryReader { geometry in
+                        Capsule().fill(Color.primary.opacity(0.07))
+                            .overlay(alignment: .leading) {
+                                Capsule().fill(Color.accentColor.opacity(0.65))
+                                    .frame(width: geometry.size.width * CGFloat(value.1) /
+                                           CGFloat(max(1, values.first?.1 ?? 1)))
+                            }
+                    }
+                    .frame(height: 5)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+}

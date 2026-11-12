@@ -85,15 +85,31 @@ struct AgentLiveActivity: Codable {
     }
 }
 
+// API provider receipts are persisted with their message, not in a second
+// stats store. Historical messages without receipts remain unknown.
+struct AgentTokenUsage: Codable, Equatable {
+    let inputTokens: Int
+    let outputTokens: Int
+    let totalTokens: Int
+    let reportedRounds: Int
+    let totalRounds: Int
+
+    var complete: Bool { reportedRounds == totalRounds }
+}
 struct ChatMessage: Codable, Identifiable {
     var id = UUID().uuidString
     let role: String
     let text: String
     var attachmentNames: [String]?
+    // Only explicit user-selected image paths, never model-authored filesystem paths.
+    var attachmentPaths: [String]? = nil
     var contextPaths: [String]?
     var toolActivityCount: Int?
     var activityEvents: [AgentLiveActivityEvent]?
     var incomplete: Bool? = nil
+    var usage: AgentTokenUsage? = nil
+    var providerUsed: String? = nil
+    var modelUsed: String? = nil
     var createdAt = Date()
 }
 struct ChatThread: Codable, Identifiable {
@@ -440,11 +456,14 @@ struct RepositoryCheckoutContext {
 }
 enum NativePage: String, CaseIterable, Identifiable {
     case agent = "会话", requirement = "规划", plan = "Plan",
-         schedule = "计划任务", plugins = "插件", knowledge = "知识库", settings = "设置"
+         schedule = "计划任务", plugins = "插件", knowledge = "知识库",
+         assets = "资源", usage = "消耗统计", settings = "设置"
     var id: String { rawValue }
     var accessibilityId: String {
         switch self {
         case .agent: return "nav.agent"
+        case .usage: return "nav.usage"
+        case .assets: return "nav.assets"
         case .requirement: return "nav.requirement"
         case .plan: return "nav.plan"
         case .schedule: return "nav.schedule"
@@ -456,6 +475,8 @@ enum NativePage: String, CaseIterable, Identifiable {
     var symbol: String {
         switch self {
         case .agent: return "bubble.left.and.bubble.right"
+        case .usage: return "chart.bar.xaxis"
+        case .assets: return "photo.on.rectangle.angled"
         case .requirement: return "point.3.connected.trianglepath.dotted"
         case .plan: return "list.bullet.rectangle"
         case .schedule: return "calendar.badge.clock"
@@ -3295,6 +3316,7 @@ final class NativeWorkspace: ObservableObject {
         threads[index].messages.append(ChatMessage(
             role:"user", text:prompt,
             attachmentNames:imageURLs.isEmpty ? nil : imageURLs.map(\.lastPathComponent),
+            attachmentPaths:imageURLs.isEmpty ? nil : imageURLs.map(\.path),
             contextPaths:contextPaths.isEmpty ? nil : contextPaths
         ))
         if threads[index].messages.count == 1 { threads[index].title = String(prompt.prefix(46)) }
@@ -3405,6 +3427,18 @@ final class NativeWorkspace: ObservableObject {
             guard let current = threads.firstIndex(where:{$0.id == id}) else { return }
             let answer = response["output"] as? String ?? ""
             let toolActivityCount = response["toolActivityCount"] as? Int
+            let usage = (response["usage"] as? [String:Any]).flatMap { receipt -> AgentTokenUsage? in
+                guard let input = receipt["inputTokens"] as? Int,
+                      let output = receipt["outputTokens"] as? Int,
+                      let total = receipt["totalTokens"] as? Int,
+                      let reported = receipt["reportedRounds"] as? Int,
+                      let rounds = receipt["totalRounds"] as? Int,
+                      reported > 0, reported <= rounds else { return nil }
+                return AgentTokenUsage(
+                    inputTokens:input, outputTokens:output, totalTokens:total,
+                    reportedRounds:reported, totalRounds:rounds
+                )
+            }
             let activityEvents = Self.matchesExternalProvider(turnProvider)
                 ? Self.mergeActivityReceipts(
                     liveActivity?.events ?? [],
@@ -3414,7 +3448,13 @@ final class NativeWorkspace: ObservableObject {
             threads[current].messages.append(ChatMessage(
                 role:"assistant", text:answer, toolActivityCount:toolActivityCount,
                 activityEvents:activityEvents.isEmpty ? nil : activityEvents,
-                incomplete:response["incomplete"] as? Bool
+                incomplete:response["incomplete"] as? Bool,
+                usage:usage, providerUsed:turnProvider,
+                modelUsed:item.model ?? (
+                    Self.matchesExternalProvider(turnProvider)
+                    ? localApiSettings?.profile(providerId:turnProvider)?.model
+                    : selectedAgentModel?.slug
+                )
             ))
             if turnProvider == "codex" {
                 threads[current].providerSessionId = response["providerSessionId"] as? String ??

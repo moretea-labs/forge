@@ -123,6 +123,14 @@ export interface LocalConversationSendInput {
   timeoutMs?: number;
 }
 
+interface LocalConversationTokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  reportedRounds: number;
+  totalRounds: number;
+}
+
 export interface LocalConversationSendResult {
   provider: 'codex';
   status: 'completed';
@@ -131,12 +139,14 @@ export interface LocalConversationSendResult {
   output: string;
   toolActivityCount: number;
   activityEvents: LocalConversationActivityEvent[];
+  usage?: LocalConversationTokenUsage;
 }
 
 export interface ParsedCodexConversationEvents {
   providerSessionId?: string;
   output?: string;
   toolActivityCount: number;
+  usage?: LocalConversationTokenUsage;
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {
@@ -166,6 +176,10 @@ export function parseCodexConversationJsonl(stdout: string): ParsedCodexConversa
   let providerSessionId: string | undefined;
   let output: string | undefined;
   let toolActivityCount = 0;
+  let completedRounds = 0;
+  let reportedRounds = 0;
+  let inputTokens = 0;
+  let outputTokens = 0;
   for (const line of stdout.split(/\r?\n/)) {
     const trimmed = line.trim();
     if (!trimmed.startsWith('{')) continue;
@@ -175,6 +189,19 @@ export function parseCodexConversationJsonl(stdout: string): ParsedCodexConversa
     const type = typeof event.type === 'string' ? event.type : '';
     if (type === 'thread.started' && typeof event.thread_id === 'string' && event.thread_id.trim()) {
       providerSessionId = event.thread_id.trim();
+    }
+    if (type === 'turn.completed') {
+      completedRounds += 1;
+      const receipt = record(event.usage);
+      const input = receipt?.input_tokens;
+      const output = receipt?.output_tokens;
+      if (typeof input === 'number' && Number.isSafeInteger(input) && input >= 0
+          && typeof output === 'number' && Number.isSafeInteger(output) && output >= 0) {
+        inputTokens += input;
+        outputTokens += output;
+        reportedRounds += 1;
+      }
+      continue;
     }
     if (type !== 'item.completed') continue;
     const item = record(event.item);
@@ -188,7 +215,15 @@ export function parseCodexConversationJsonl(stdout: string): ParsedCodexConversa
       toolActivityCount += 1;
     }
   }
-  return { providerSessionId, output, toolActivityCount };
+  return {
+    providerSessionId, output, toolActivityCount,
+    ...(reportedRounds > 0 ? {
+      usage: {
+        inputTokens, outputTokens, totalTokens: inputTokens + outputTokens,
+        reportedRounds, totalRounds: completedRounds,
+      },
+    } : {}),
+  };
 }
 
 function activityField(item: Record<string, unknown>, ...keys: string[]): string {
@@ -677,6 +712,7 @@ export async function sendLocalConversation(input: LocalConversationSendInput): 
     providerSessionId: resolvedProviderSessionId,
     output: parsed.output.trim(),
     toolActivityCount: parsed.toolActivityCount,
+    ...(parsed.usage ? { usage: parsed.usage } : {}),
     activityEvents: completed.activity.events
       .filter((event) => event.phase === 'tool')
       .map((event) => ({ ...event })),

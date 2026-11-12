@@ -54,6 +54,8 @@ struct ForgeNativeApp: App {
                 Button("显示 Requirement") { workspace.zenMode = true; workspace.show(.requirement) }.keyboardShortcut("2")
                 Button("显示 Plan") { workspace.show(.plan) }.keyboardShortcut("3")
                 Button("显示知识库") { workspace.show(.knowledge) }.keyboardShortcut("4")
+                Button("消耗统计") { workspace.zenMode = false; workspace.show(.usage) }.keyboardShortcut("5")
+                Button("图片资源") { workspace.zenMode = false; workspace.show(.assets) }.keyboardShortcut("6")
                 Divider()
                 Button("刷新项目") { Task { await workspace.refresh() } }.keyboardShortcut("r")
             }
@@ -241,7 +243,7 @@ private struct ForgeWorkspaceView: View {
                 .padding(.bottom,12)
                 .accessibilityLabel("Forge")
 
-            ForEach([NativePage.agent,.requirement,.schedule,.plugins,.knowledge]) { section in
+            ForEach([NativePage.agent,.requirement,.schedule,.plugins,.knowledge,.assets,.usage]) { section in
                 railButton(section)
             }
             Spacer(minLength:8)
@@ -1247,6 +1249,8 @@ private struct ForgeWorkspaceView: View {
             case .schedule: SchedulePane(model:model)
             case .plugins: PluginsPane(model:model)
             case .knowledge: KnowledgePane(model:model)
+            case .assets: AgentAssetsDashboard(model:model)
+            case .usage: AgentUsageDashboard(model:model)
             case .settings: SettingsPane(model:model)
             }
         }
@@ -1409,6 +1413,13 @@ private struct AgentPane: View {
                                                 .buttonStyle(.plain)
                                             } else if let count = message.toolActivityCount, count > 0 {
                                                 Label("\(count) 次工具调用",systemImage:"hammer")
+                                            }
+                                            if let usage = message.usage {
+                                                Label(
+                                                    "\(usage.totalTokens.formatted()) tokens" + (usage.complete ? "" : " · 部分回合"),
+                                                    systemImage:"chart.bar"
+                                                )
+                                                .help("输入 \(usage.inputTokens.formatted()) · 输出 \(usage.outputTokens.formatted())")
                                             }
                                             Spacer(minLength:0)
                                             Button {

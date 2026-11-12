@@ -53,6 +53,8 @@ struct AgentAssistantMessageBody: View {
         switch block {
         case .markdown(let markdown):
             AgentInlineMarkdown(text: markdown)
+        case .image(let label, let url):
+            AgentRemoteImageView(label: label, source: url)
         case .heading(let level, let title):
             AgentInlineMarkdown(
                 text: title,
@@ -269,5 +271,107 @@ struct AgentCodeBlockView: View {
         if line.hasPrefix("-"), !line.hasPrefix("---") { return .red }
         if line.hasPrefix("@@") { return .blue }
         return .primary
+    }
+}
+
+/// Model-provided remote images are not fetched until explicitly opened.
+/// Native save uses a user-selected destination; file:// is never accepted.
+struct AgentRemoteImageView: View {
+    let label: String
+    let source: String
+    @State private var expanded = false
+    @State private var fullScreen = false
+    @State private var status: String?
+
+    private var remoteURL: URL? {
+        guard let url = URL(string: source), let scheme = url.scheme?.lowercased(),
+              ["http", "https"].contains(scheme), url.host != nil else { return nil }
+        return url
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Image(systemName: "photo").foregroundStyle(.secondary)
+                Text(label.isEmpty ? "图片资源" : label).font(.system(size: 12, weight: .medium))
+                    .lineLimit(1)
+                Spacer(minLength: 8)
+                Button(expanded ? "收起" : "预览") { expanded.toggle() }
+                Button("保存…") { save() }.disabled(remoteURL == nil)
+            }
+            .buttonStyle(.plain)
+            .font(.system(size: 11))
+            if expanded, let url = remoteURL {
+                AsyncImage(url: url) { phase in
+                    switch phase {
+                    case .success(let image):
+                        Button { fullScreen = true } label: {
+                            image.resizable().scaledToFit()
+                                .frame(maxWidth: 560, maxHeight: 300)
+                        }
+                        .buttonStyle(.plain)
+                        .help("放大预览")
+                    case .failure:
+                        Label("图片加载失败", systemImage: "exclamationmark.triangle")
+                            .foregroundStyle(.secondary)
+                    default:
+                        ProgressView().frame(height: 80)
+                    }
+                }
+            }
+            if let status {
+                Text(status).font(.system(size: 10)).foregroundStyle(.secondary)
+            }
+        }
+        .padding(10)
+        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 10))
+        .sheet(isPresented: $fullScreen) {
+            if let url = remoteURL {
+                VStack(spacing: 10) {
+                    HStack {
+                        Text(label.isEmpty ? "图片预览" : label).font(.headline)
+                        Spacer()
+                        Button("完成") { fullScreen = false }
+                    }
+                    AsyncImage(url: url) { image in
+                        image.resizable().scaledToFit()
+                    } placeholder: { ProgressView() }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+                .padding(18)
+                .frame(minWidth: 640, minHeight: 420)
+            }
+        }
+        .accessibilityIdentifier("agent.image.resource")
+    }
+
+    @MainActor
+    private func save() {
+        guard let url = remoteURL else { return }
+        let panel = NSSavePanel()
+        let name = url.lastPathComponent
+        panel.nameFieldStringValue = name.isEmpty || !name.contains(".") ? "image.png" : name
+        guard panel.runModal() == .OK, let target = panel.url else { return }
+        status = "正在保存…"
+        Task {
+            do {
+                let (temporary, response) = try await URLSession.shared.download(from: url)
+                guard let http = response as? HTTPURLResponse,
+                      (200..<300).contains(http.statusCode),
+                      response.mimeType?.lowercased().hasPrefix("image/") == true else {
+                    status = "远程资源不是有效图片"
+                    return
+                }
+                let size = try FileManager.default.attributesOfItem(atPath: temporary.path)[.size] as? NSNumber
+                guard (size?.int64Value ?? Int64.max) <= 25 * 1024 * 1024 else {
+                    status = "图片超过 25 MB 限制"
+                    return
+                }
+                try Data(contentsOf: temporary).write(to: target, options: .atomic)
+                status = "已保存到 " + target.lastPathComponent
+            } catch {
+                status = "保存失败：" + error.localizedDescription
+            }
+        }
     }
 }

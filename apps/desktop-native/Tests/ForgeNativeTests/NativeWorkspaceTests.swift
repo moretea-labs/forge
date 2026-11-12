@@ -1922,3 +1922,36 @@ extension NativeWorkspaceTests {
         XCTAssertTrue(model.threads[0].messages.isEmpty)
     }
 }
+
+
+extension NativeWorkspaceTests {
+    func testRemoteImageResourceParsingRequiresExplicitSafeMarkdown() {
+        let text = "Before\\n![Report](https://example.com/chart.png)\\nAfter"
+            .replacingOccurrences(of:"\\n",with:"\n")
+        XCTAssertEqual(AgentMessageBlock.parse(text), [
+            .markdown("Before"),
+            .image(label:"Report",url:"https://example.com/chart.png"),
+            .markdown("After")
+        ])
+        let localImage = AgentMessageBlock.parse("![secret](file:///Users/test/private.png)")
+        XCTAssertEqual(localImage, [.markdown("![secret](file:///Users/test/private.png)")])
+        let fenced = AgentMessageBlock.parse("~~~md\n![chart](https://example.com/image.png)\n~~~")
+        XCTAssertEqual(fenced, [.code(language:"md",text:"![chart](https://example.com/image.png)")])
+    }
+
+    func testUsageReceiptPersistsAndLegacyMessageRemainsUnknown() throws {
+        let usage = AgentTokenUsage(inputTokens:300,outputTokens:120,totalTokens:420,
+                                    reportedRounds:2,totalRounds:3)
+        let message = ChatMessage(role:"assistant",text:"done",usage:usage,
+                                  providerUsed:"api:test",modelUsed:"test-model")
+        let decoded = try JSONDecoder().decode(ChatMessage.self,from:JSONEncoder().encode(message))
+        XCTAssertEqual(decoded.usage,usage)
+        XCTAssertEqual(decoded.modelUsed,"test-model")
+        XCTAssertFalse(decoded.usage!.complete)
+        let legacy = try JSONDecoder().decode(
+            ChatMessage.self,
+            from:Data(#"{"id":"1","role":"assistant","text":"old","createdAt":0}"#.utf8)
+        )
+        XCTAssertNil(legacy.usage)
+    }
+}

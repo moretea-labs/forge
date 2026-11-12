@@ -15,6 +15,7 @@ struct AgentResponseChoice: Equatable {
 
 enum AgentMessageBlock: Equatable {
     case markdown(String)
+    case image(label: String, url: String)
     case heading(level: Int, text: String)
     case list([AgentListItem])
     case quote(String)
@@ -65,6 +66,12 @@ enum AgentMessageBlock: Equatable {
                 }
                 continue
             }
+            if let image = imageReference(line) {
+                flush()
+                result.append(.image(label: image.0, url: image.1))
+                i += 1
+                continue
+            }
             if let heading = heading(line) {
                 flush(); result.append(.heading(level: heading.0, text: heading.1)); i += 1
                 continue
@@ -112,6 +119,21 @@ enum AgentMessageBlock: Equatable {
         }
         flush()
         return result
+    }
+
+    /// Only an explicit, standalone remote Markdown image is a renderable
+    /// asset. Never auto-read local file URLs or arbitrary model-authored paths.
+    private static func imageReference(_ line: String) -> (String, String)? {
+        let value = line.trimmingCharacters(in: .whitespaces)
+        guard value.count < 2048, value.hasPrefix("!["), value.hasSuffix(")") else { return nil }
+        let remainder = value.dropFirst(2)
+        guard let separator = remainder.range(of: "](") else { return nil }
+        let label = String(remainder[..<separator.lowerBound])
+        let urlText = String(remainder[separator.upperBound..<value.index(before: value.endIndex)])
+        guard label.count <= 180, !urlText.contains(where: \.isWhitespace),
+              let url = URL(string: urlText), let scheme = url.scheme?.lowercased(),
+              ["https", "http"].contains(scheme), url.host != nil else { return nil }
+        return (label, urlText)
     }
 
     private static func parseChoices(_ source: String) -> (String, [AgentResponseChoice])? {
