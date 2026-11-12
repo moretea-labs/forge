@@ -31,6 +31,10 @@ struct AgentUsageDashboard: View {
         message.role == "assistant" && message.createdAt >= cutoff
     }
 
+    static func usageCoverageCaption(unreportedMessages: Int, partiallyReportedMessages: Int) -> String {
+        "未回执 \(unreportedMessages) 条 · 部分回执 \(partiallyReportedMessages) 条"
+    }
+
     private func makeUsageSnapshot(
         from threads: [ChatThread],
         projectLabels: [String: String],
@@ -168,7 +172,13 @@ struct AgentUsageDashboard: View {
                     metric("agent.usage.total", "总 Token", total.formatted())
                     metric("agent.usage.input", "输入", inputTotal.formatted())
                     metric("agent.usage.output", "输出", outputTotal.formatted())
-                    metric("agent.usage.recorded", "有回执回合", usageEntries.count.formatted(), "缺少回执 \(unreportedMessages) 条")
+                    metric(
+                        "agent.usage.recorded", "有回执消息", usageEntries.count.formatted(),
+                        Self.usageCoverageCaption(
+                            unreportedMessages: unreportedMessages,
+                            partiallyReportedMessages: partiallyReported
+                        )
+                    )
                 }
                 .padding(.vertical, 4)
 
@@ -190,9 +200,9 @@ struct AgentUsageDashboard: View {
                                     Text(Calendar.current.component(.day, from: day.date) == 1
                                          ? day.date.formatted(.dateTime.month(.abbreviated))
                                          : day.date.formatted(.dateTime.day()))
-                                        .font(.system(size: 8, design: .rounded))
+                                        .font(.system(size: 9.5, design: .rounded))
                                         .foregroundStyle(.tertiary)
-                                        .frame(width: 17)
+                                        .frame(width: 20)
                                 }
                                 .accessibilityElement(children: .ignore)
                                 .accessibilityLabel("\(day.date.formatted(date: .complete, time: .omitted))，\(day.count.formatted()) Token")
@@ -250,7 +260,7 @@ struct AgentUsageDashboard: View {
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("agent.usage.recent-records")
 
-                Text("仅汇总 Provider 返回的实际用量；缺少回执的回合不估算。\(partiallyReported > 0 ? "另有 \(partiallyReported) 条部分回合数据。" : "")")
+                Text("仅汇总 Provider 返回的实际用量；缺少回执的回合不估算。")
                     .font(.system(size: 10.5))
                     .foregroundStyle(.secondary)
             }

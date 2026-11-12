@@ -2133,6 +2133,13 @@ extension NativeWorkspaceTests {
         XCTAssertFalse(AgentUsageDashboard.isUsageEligibleAssistantMessage(userMessage, since: cutoff))
         XCTAssertFalse(AgentUsageDashboard.isUsageEligibleAssistantMessage(oldReply, since: cutoff))
     }
+
+    func testUsageCoverageCaptionSeparatesMissingAndPartialReceipts() {
+        XCTAssertEqual(
+            AgentUsageDashboard.usageCoverageCaption(unreportedMessages: 2, partiallyReportedMessages: 1),
+            "未回执 2 条 · 部分回执 1 条"
+        )
+    }
 }
 
 
