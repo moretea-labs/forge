@@ -32,7 +32,7 @@ struct ZenReadOnlyReviewPane: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            Text("审查基于同一份 Forge 记录快照，模型工具写入已禁用；意见仅供评估，不自动写入。")
+            Text("同一份 Forge 记录会发送给所选模型服务进行审查。已禁用执行工具的写入能力，审查意见不会自动应用。")
                 .font(.system(size:11)).foregroundStyle(.secondary)
             if let error {
                 Text(error).font(.system(size:11)).foregroundStyle(.orange)
@@ -56,6 +56,43 @@ struct ZenReadOnlyReviewPane: View {
         .accessibilityIdentifier("zen.review.readonly.results")
     }
 
+
+    // Keep the security-critical API transport contract in one testable path.
+    // The model can only use tools exposed by the native helper; false is a
+    // request ceiling even when the repository currently grants Full Access.
+    static func effectDisabledRequest(
+        conversationId:String, repoId:String, checkoutId:String,
+        provider:String, model:String, prompt:String
+    ) -> [String:Any] {
+        [
+            "conversationId":conversationId,
+            "provider":provider,
+            "model":model,
+            "allowEffects":false,
+            "repoId":repoId,
+            "checkoutId":checkoutId,
+            "messages":[["role":"user","content":prompt]]
+        ]
+    }
+
+    static func canonicalSnapshot(
+        _ result:[String:Any], key:String,recordId:String
+    ) throws -> String {
+        let data=result["data"] as? [String:Any] ?? result
+        guard (key == "requirement" || key == "plan"),
+              let source=data[key] as? [String:Any],
+              let id=source[key == "requirement" ? "requirementId" : "planId"] as? String,
+              id == recordId,
+              let revision=source["revision"] as? Int,revision > 0,
+              JSONSerialization.isValidJSONObject(source),
+              let payload=try? JSONSerialization.data(withJSONObject:source,options:[.sortedKeys]),
+              let text=String(data:payload,encoding:.utf8),
+              text.utf8.count <= 48_000 else {
+            throw ForgeBridgeError.invalidResponse
+        }
+        return text
+    }
+
     private func run() async {
         guard let repoId=model.repoId,let checkoutId=model.checkoutId,
               providers.count >= 1,providers.count <= 2,
@@ -69,15 +106,10 @@ struct ZenReadOnlyReviewPane: View {
             let data=try await ForgeBridge.request(operation,[
                 "repoId":repoId,inputKey:record.recordId
             ])
-            let content=data["data"] as? [String:Any] ?? data
-            let recordKey=record.kind == .requirement ? "requirement" : "plan"
-            guard let source=content[recordKey] as? [String:Any],
-                  source[inputKey] as? String == record.recordId,
-                  let payload=try? JSONSerialization.data(withJSONObject:source,options:[.sortedKeys]),
-                  let sourceText=String(data:payload,encoding:.utf8),
-                  sourceText.utf8.count <= 48_000 else {
-                throw ForgeBridgeError.invalidResponse
-            }
+            let sourceText=try Self.canonicalSnapshot(
+                data,key:record.kind == .requirement ? "requirement" : "plan",
+                recordId:record.recordId
+            )
 
             for provider in providers {
                 if Task.isCancelled { return }
@@ -103,18 +135,15 @@ struct ZenReadOnlyReviewPane: View {
                 \(sourceText)
                 """
                 let conversationId=UUID().uuidString
-                let turn=try ForgeBridge.startApiTurn([
-                    "conversationId":conversationId,
-                    "provider":provider,
-                    "model":name,
-                    "allowEffects":false,
-                    "repoId":repoId,
-                    "checkoutId":checkoutId,
-                    "messages":[["role":"user","content":prompt]]
-                ])
+                let turn=try ForgeBridge.startApiTurn(Self.effectDisabledRequest(
+                    conversationId:conversationId,repoId:repoId,checkoutId:checkoutId,
+                    provider:provider,model:name,prompt:prompt
+                ))
                 activeTurn=turn
                 let result=try await turn.wait { _ in }
                 activeTurn=nil
+                guard !Task.isCancelled,model.repoId == repoId,
+                      model.checkoutId == checkoutId else { return }
                 guard let output=result["output"] as? String,
                       !output.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty else {
                     throw ForgeBridgeError.invalidResponse
