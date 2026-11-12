@@ -10,6 +10,7 @@ struct AgentUsageDashboard: View {
     private struct Entry: Identifiable {
         let id: String
         let date: Date
+        let projectId: String?
         let project: String
         let model: String
         let provider: String
@@ -37,7 +38,7 @@ struct AgentUsageDashboard: View {
                 let projectName = model.projects.first(where: { $0.repoId == thread.repoId })?.displayName
                     ?? thread.repoId ?? "未关联项目"
                 return Entry(id: message.id, date: message.createdAt,
-                             project: projectName,
+                             projectId: thread.repoId, project: projectName,
                              model: message.modelUsed ?? thread.model ?? "未标记模型",
                              provider: message.providerUsed ?? thread.provider ?? "未知",
                              usage: usage)
@@ -76,7 +77,7 @@ struct AgentUsageDashboard: View {
             ("\(providerLabel(group.key.provider)) · \(group.key.model)",
              group.value.reduce(0) { $0 + $1.usage.totalTokens })
         }
-            .sorted { $0.1 > $1.1 }
+            .sorted { $0.1 == $1.1 ? $0.0 < $1.0 : $0.1 > $1.1 }
     }
 
     private struct ModelKey: Hashable {
@@ -102,9 +103,16 @@ struct AgentUsageDashboard: View {
     }
 
     private var byProject: [(String, Int)] {
-        let grouped = Dictionary(grouping: entries, by: { $0.project })
-        return grouped.map { ($0.key, $0.value.reduce(0) { $0 + $1.usage.totalTokens }) }
-            .sorted { $0.1 > $1.1 }
+        let grouped = Dictionary(grouping: entries, by: \.projectId)
+        return grouped.map { projectId, values in
+            (values.first?.project ?? "未关联项目",
+             values.reduce(0) { $0 + $1.usage.totalTokens }, projectId ?? "")
+        }
+        .sorted {
+            if $0.1 != $1.1 { return $0.1 > $1.1 }
+            return $0.2 < $1.2
+        }
+        .map { ($0.0, $0.1) }
     }
 
     var body: some View {
