@@ -996,6 +996,27 @@ export class MacOsAppleEventsPage {
     return this.metadata;
   }
 
+  private async refreshResolvedMetadata(): Promise<MacOsBrowserMetadata> {
+    const ref = this.targetRef;
+    if (!ref) {
+      throw new AssistantPluginError('PLUGIN_BROWSER_NATIVE_OWNERSHIP_MISSING',
+        'Native metadata requires an exact saved browser tab.', { retryable: false });
+    }
+    const metadata = await readResolvedMacOsBrowserOwnedTabMetadata(this.browser.product, ref, this.timeoutMs);
+    if (metadata.tabId !== ref.tabId) {
+      throw new AssistantPluginError('PLUGIN_BROWSER_NATIVE_TAB_IDENTITY_UNPROVEN',
+        'Native post-input metadata did not match the authorized tab.', {
+          retryable: false,
+          details: { browserProduct: this.browser.product, requestedTabId: ref.tabId, observedTabId: metadata.tabId },
+        });
+    }
+    this.metadata = metadata;
+    if (metadata.windowId && metadata.tabId) {
+      this.targetRef = { windowId: metadata.windowId, tabId: metadata.tabId };
+    }
+    return metadata;
+  }
+
   private async executeJavaScriptRaw(source: string, timeoutMs = this.timeoutMs): Promise<string> {
     const eventTimeoutMs = Math.max(timeoutMs, NATIVE_JS_EVENT_TIMEOUT_MS);
     try {
@@ -1275,7 +1296,7 @@ export class MacOsAppleEventsPage {
     }
     this.targetRef = await resolveCurrentMacOsBrowserTabRef(this.browser.product, this.targetRef, this.timeoutMs);
     await sendBrowserTrustedInput({ action: 'trusted_input', product: this.browser.product, ref: this.targetRef, input }, this.timeoutMs);
-    await this.refreshMetadata();
+    await this.refreshResolvedMetadata();
   }
 
   /**
@@ -1326,7 +1347,7 @@ export class MacOsAppleEventsPage {
       input: { kind: 'text', text },
       semanticTarget: proof,
     }, this.timeoutMs);
-    await this.refreshMetadata();
+    await this.refreshResolvedMetadata();
   }
 
   async screenshot(options: Record<string, unknown>): Promise<Buffer> {

@@ -610,6 +610,43 @@ describe('Browser Runtime V3 routing', () => {
     expect(attached.page.tabRef()).toEqual({ windowId: '99', tabId: '9' });
   });
 
+  test('trusted native input preserves one preflight inventory and exact targeted post-input metadata', async () => {
+    let currentWindowId = '7';
+    let inventoryReads = 0;
+    const trustedTargets: string[] = [];
+    const metadata = () => [
+      'true', 'https://example.com/native-trusted', 'Trusted Native', '0', '0', '1200', '800',
+      currentWindowId, '9', 'true', 'false',
+    ].join(nativeSeparator);
+
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin',
+      appExists: () => true,
+      processRunning: async () => true,
+      tabInventory: async () => {
+        inventoryReads += 1;
+        return {
+          product: 'chrome',
+          truncated: false,
+          tabs: [{ windowId: currentWindowId, tabId: '9', active: true, url: 'https://example.com/native-trusted', title: 'Trusted Native' }],
+        };
+      },
+      runAppleScript: async () => metadata(),
+      trustedInput: async (request) => {
+        trustedTargets.push(`${request.ref.windowId}:${request.ref.tabId}`);
+      },
+    });
+
+    const attached = await reattachMacOsBrowserOwnedPage('chrome', { windowId: '7', tabId: '9' }, 1_000);
+    currentWindowId = '99';
+    const beforeInput = inventoryReads;
+    await attached.page.trustedInput({ kind: 'click', x: 15, y: 20, button: 'left', clickCount: 1 });
+
+    expect(inventoryReads - beforeInput).toBe(1);
+    expect(trustedTargets).toEqual(['99:9']);
+    expect(attached.page.tabRef()).toEqual({ windowId: '99', tabId: '9' });
+  });
+
   test('fails closed before activation when live native tab identity cannot be proven', async () => {
     let ambiguous = false;
     let activationCalls = 0;
