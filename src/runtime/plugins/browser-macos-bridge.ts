@@ -1043,6 +1043,18 @@ export class MacOsAppleEventsPage {
     return metadata;
   }
 
+  private javascriptPermissionError(): AssistantPluginError {
+    return new AssistantPluginError(
+      'PLUGIN_BROWSER_JAVASCRIPT_PERMISSION_REQUIRED',
+      `${this.browser.appName} rejected JavaScript from Apple Events for the browser instance addressed by macOS automation. This does not prove that the user's visible Chrome instance has this setting disabled. Verify the exact Chrome process/profile and View > Developer > Allow JavaScript from Apple Events before changing settings.`,
+      { retryable: false, details: {
+        browserProduct: this.browser.product, bundleId: this.browser.bundleId,
+        processIdentity: 'unverified',
+        ...(this.targetRef ? { windowId: this.targetRef.windowId, tabId: this.targetRef.tabId } : {}),
+      } },
+    );
+  }
+
   private async executeJavaScriptRaw(source: string, timeoutMs = this.timeoutMs): Promise<string> {
     const eventTimeoutMs = Math.max(timeoutMs, NATIVE_JS_EVENT_TIMEOUT_MS);
     try {
@@ -1053,17 +1065,7 @@ export class MacOsAppleEventsPage {
         eventTimeoutMs,
       );
     } catch (error) {
-      if (macOsBrowserJavaScriptAutomationDisabled(error)) {
-        throw new AssistantPluginError(
-          'PLUGIN_BROWSER_JAVASCRIPT_PERMISSION_REQUIRED',
-          `${this.browser.appName} rejected JavaScript from Apple Events for the browser instance addressed by macOS automation. This does not prove that the user's visible Chrome instance has this setting disabled. Verify the exact Chrome process/profile and View > Developer > Allow JavaScript from Apple Events before changing settings.`,
-          { retryable: false, details: {
-            browserProduct: this.browser.product, bundleId: this.browser.bundleId,
-            processIdentity: 'unverified',
-            ...(this.targetRef ? { windowId: this.targetRef.windowId, tabId: this.targetRef.tabId } : {}),
-          } },
-        );
-      }
+      if (macOsBrowserJavaScriptAutomationDisabled(error)) throw this.javascriptPermissionError();
       throw error;
     }
   }
@@ -1184,11 +1186,16 @@ export class MacOsAppleEventsPage {
     if (!this.targetRef) {
       throw new AssistantPluginError('PLUGIN_BROWSER_NATIVE_OWNERSHIP_MISSING', 'Reading native page text requires an exact bound tab.', { retryable: false });
     }
-    const raw = await this.runAutomation(
-      { action: 'read_text', product: this.browser.product, ref: this.targetRef, ...(selector ? { selector } : {}) },
-      (resolvedRef) => executeJavaScriptScript(this.browser, resolvedRef),
-    );
-    return this.parseEvaluationResult<string>(raw);
+    try {
+      const raw = await this.runAutomation(
+        { action: 'read_text', product: this.browser.product, ref: this.targetRef, ...(selector ? { selector } : {}) },
+        (resolvedRef) => executeJavaScriptScript(this.browser, resolvedRef),
+      );
+      return this.parseEvaluationResult<string>(raw);
+    } catch (error) {
+      if (macOsBrowserJavaScriptAutomationDisabled(error)) throw this.javascriptPermissionError();
+      throw error;
+    }
   }
 
   async evaluate<T>(expression: string | ((...args: unknown[]) => unknown), arg?: unknown): Promise<T> {

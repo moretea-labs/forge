@@ -145,6 +145,10 @@ describe('Native Chrome Apple Events denial identity', () => {
         details: { browserProduct: 'chrome', processIdentity: 'unverified', windowId: '7', tabId: '9' } });
       expect(String(error)).toContain('does not prove');
     }
+    await expect(bound.page.readText('body')).rejects.toMatchObject({
+      code: 'PLUGIN_BROWSER_JAVASCRIPT_PERMISSION_REQUIRED',
+      details: { browserProduct: 'chrome', processIdentity: 'unverified', windowId: '7', tabId: '9' },
+    });
   });
 });
 
