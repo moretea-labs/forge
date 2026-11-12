@@ -67,7 +67,7 @@ struct AgentAssetsDashboard: View {
                     Picker("项目", selection: $selectedRepoId) {
                         Text("全部项目").tag("")
                         ForEach(model.projects) { project in
-                            Text(project.displayName).tag(project.repoId)
+                            Text(project.label).tag(project.repoId)
                         }
                     }
                     .frame(maxWidth: 200)

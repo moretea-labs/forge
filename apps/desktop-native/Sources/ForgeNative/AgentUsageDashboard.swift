@@ -35,7 +35,7 @@ struct AgentUsageDashboard: View {
                 guard message.role == "assistant",
                       message.createdAt >= cutoff,
                       let usage = message.usage else { return nil }
-                let projectName = model.projects.first(where: { $0.repoId == thread.repoId })?.displayName
+                let projectName = model.projects.first(where: { $0.repoId == thread.repoId })?.label
                     ?? thread.repoId ?? "未关联项目"
                 return Entry(id: message.id, date: message.createdAt,
                              projectId: thread.repoId, project: projectName,
@@ -124,7 +124,7 @@ struct AgentUsageDashboard: View {
                     Picker("项目", selection: $selectedRepoId) {
                         Text("全部项目").tag("")
                         ForEach(model.projects) { project in
-                            Text(project.displayName).tag(project.repoId)
+                            Text(project.label).tag(project.repoId)
                         }
                     }
                     .frame(maxWidth: 190)
@@ -162,7 +162,9 @@ struct AgentUsageDashboard: View {
                                         .fill(day.count == 0 ? Color.primary.opacity(0.075) : Color.accentColor.opacity(0.7))
                                         .frame(width: 16, height: max(5, 100 * CGFloat(day.count) / CGFloat(maximum)))
                                         .frame(height: 100, alignment: .bottom)
-                                    Text(day.date.formatted(.dateTime.day()))
+                                    Text(Calendar.current.component(.day, from: day.date) == 1
+                                         ? day.date.formatted(.dateTime.month(.abbreviated))
+                                         : day.date.formatted(.dateTime.day()))
                                         .font(.system(size: 8, design: .rounded))
                                         .foregroundStyle(.tertiary)
                                         .frame(width: 17)
