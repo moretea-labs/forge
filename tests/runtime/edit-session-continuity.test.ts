@@ -186,7 +186,7 @@ test('adopts a non-overlapping successor HEAD in the same durable edit session a
     expect(finalized.controllerInstanceId).toBeUndefined();
   });
 
-  test('does not finalize a stale session while its tracked after-image remains uncommitted', () => {
+  test('finalizes owned dirty source after an unrelated descendant commit', () => {
     const fx = fixture();
     const binding = durableBinding();
     const session = beginEditSession(fx.repoRoot, {
@@ -203,9 +203,61 @@ test('adopts a non-overlapping successor HEAD in the same durable edit session a
     spawnSync('git', ['add', 'unrelated.txt'], { cwd: fx.repoRoot });
     spawnSync('git', ['commit', '-qm', 'parallel unrelated change'], { cwd: fx.repoRoot });
 
+    const finalized = finalizeEditSession(fx.repoRoot, session.sessionId, { binding });
+    expect(finalized.status).toBe('finalized');
+    expect(finalized.currentRevision).toBe(2);
+    expect(finalized.baseRevision).toBe(spawnSync('git', ['rev-parse', 'HEAD'], {
+      cwd: fx.repoRoot, encoding: 'utf8',
+    }).stdout.trim());
+    expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toBe('export const value = 2;\n');
+    expect(readFileSync(join(fx.repoRoot, 'unrelated.txt'), 'utf8')).toBe('parallel\n');
+  });
+
+  test('unrelated dirty status permits an exact patch continuation and finalization', () => {
+    const fx = fixture();
+    const binding = durableBinding();
+    const session = beginEditSession(fx.repoRoot, {
+      purpose: 'Foreign dirty status does not own source', allowedPaths: ['source.ts'], binding,
+    });
+    const first = applyEditOperations(fx.repoRoot, fx.policy, session.sessionId, [{
+      type: 'replace', path: 'source.ts', expectedSha256: sha256(fx.initial),
+      replacements: [{ oldText: 'value = 1', newText: 'value = 2' }],
+    }], { expectedRevision: session.currentRevision, binding });
+    writeFileSync(join(fx.repoRoot, 'unrelated.txt'), 'uncommitted foreign edit\n');
+
+    const second = applyEditOperations(fx.repoRoot, fx.policy, session.sessionId, [{
+      type: 'replace', path: 'source.ts', expectedSha256: sha256('export const value = 2;\n'),
+      replacements: [{ oldText: 'value = 2', newText: 'value = 3' }],
+    }], { expectedRevision: first.currentRevision, binding });
+    expect(second.currentRevision).toBe(2);
+    expect(finalizeEditSession(fx.repoRoot, session.sessionId, { binding }).status).toBe('finalized');
+    expect(readFileSync(join(fx.repoRoot, 'source.ts'), 'utf8')).toBe('export const value = 3;\n');
+    expect(readFileSync(join(fx.repoRoot, 'unrelated.txt'), 'utf8')).toBe('uncommitted foreign edit\n');
+  });
+
+  test('auto-finalization refuses a foreign active checkout lease on successor HEAD', () => {
+    const fx = fixture();
+    const binding = durableBinding();
+    const session = beginEditSession(fx.repoRoot, {
+      purpose: 'Foreign checkout lease blocks auto-adoption', allowedPaths: ['source.ts'], binding,
+    });
+    applyEditOperations(fx.repoRoot, fx.policy, session.sessionId, [{
+      type: 'replace', path: 'source.ts', expectedSha256: sha256(fx.initial),
+      replacements: [{ oldText: 'value = 1', newText: 'value = 2' }],
+    }], { expectedRevision: session.currentRevision, binding });
+    writeFileSync(join(fx.repoRoot, 'unrelated.txt'), 'descendant commit\n');
+    spawnSync('git', ['add', 'unrelated.txt'], { cwd: fx.repoRoot });
+    spawnSync('git', ['commit', '-qm', 'parallel unrelated change'], { cwd: fx.repoRoot });
+
+    const held = acquireExecutionLeases(fx.controllerHome, fx.repository.repoId, 'foreign-session', [{
+      resourceKey: 'workspace:checkout-runtime-continuity', mode: 'write',
+      repoId: fx.repository.repoId, checkoutId: session.checkoutId,
+    }], { visibility: 'ephemeral', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false });
+    expect(held.acquired).toBe(true);
     expect(() => finalizeEditSession(fx.repoRoot, session.sessionId, { binding }))
-      .toThrow('EDIT_SESSION_BASE_REVISION_CHANGED');
+      .toThrow('EDIT_SESSION_SUCCESSOR_HEAD_ACTIVE_LEASE');
     expect(getEditSession(fx.repoRoot, session.sessionId).status).toBe('dirty');
+    expect(releaseExecutionLeases(fx.controllerHome, fx.repository.repoId, 'foreign-session')).toBe(1);
   });
 
   test('continues the same EditSession after exact integrated after-images and rejects unsafe overlap', () => {

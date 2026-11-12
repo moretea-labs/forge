@@ -1692,7 +1692,8 @@ export function applyEditOperations(repoRoot: string, policy: ToolPolicy, sessio
       note: 'The exact after-images and same-checkout ownership were revalidated before continuing this session.',
     });
   }
-  if (session.workspaceFingerprint && workspaceFingerprint(repoRoot) !== session.workspaceFingerprint) throw new Error('EDIT_SESSION_WORKSPACE_FINGERPRINT_CHANGED');
+  // Unrelated workspace-status changes are not owned-path conflicts. Exact
+  // after-images and each patch operation's expected SHA still guard writes.
   try {
     assertCurrentHashes(repoRoot, session);
   } catch (error) {
@@ -2181,12 +2182,18 @@ export function finalizeEditSession(repoRoot: string, sessionId: string, input: 
   const workspaceFingerprintChanged = Boolean(session.workspaceFingerprint && workspaceFingerprint(repoRoot) !== session.workspaceFingerprint);
   if (session.assurance?.approvalRequired && input.approvalConfirmed !== true) throw new Error('EDIT_SESSION_APPROVAL_REQUIRED');
   if (baseRevisionChanged || workspaceFingerprintChanged) {
-    // A commit changes HEAD and Git's workspace fingerprint even when the exact edit-session after-images are now integrated.
-    // Reconcile through the canonical after-image + clean-tracked-path checks before rejecting the stale snapshot.
+    // First reconcile exact committed after-images. Uncommitted owned changes
+    // may still be valid after an unrelated commit or a foreign dirty edit.
     const reconciled = reconcileEditSession(repoRoot, session.sessionId, input);
     if (reconciled.status === 'finalized' || reconciled.status === 'superseded') return reconciled;
-    if (baseRevisionChanged) throw new Error('EDIT_SESSION_BASE_REVISION_CHANGED');
-    throw new Error('EDIT_SESSION_WORKSPACE_FINGERPRINT_CHANGED');
+    if (baseRevisionChanged) {
+      session = adoptEditSessionSuccessorHead(repoRoot, session.sessionId, {
+        binding: input.binding,
+        expectedRevision: session.currentRevision,
+        reviewer: input.reviewer,
+        note: 'Verified non-conflicting successor HEAD before finalization.',
+      });
+    }
   }
   const emptyOpenSession = session.status === 'open' && session.operations.length === 0;
   if (!emptyOpenSession && session.requestedChecks.length > 0 && requestedChecksPassed(session) &&

@@ -1177,6 +1177,9 @@ export async function callMcpTool(
                   ? Math.trunc(args.expected_revision)
                   : undefined,
               maxBatchOperations: PREFERRED_EDIT_PATCH_BATCH_OPERATIONS,
+              // Reuse the canonical descendant/after-image/path/Lease proof.
+              allowSuccessorHeadAdoption: typeof args.expected_revision === "number",
+              controllerHome: ctx.runtimeControllerHome?.trim() || resolveRepoPreferredControllerHome(ctx.repoRoot),
               binding: {
                 repoId: identity.repoId,
                 checkoutId: identity.checkoutId,
