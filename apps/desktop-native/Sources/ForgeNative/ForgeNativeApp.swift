@@ -6548,8 +6548,6 @@ private struct SettingsPane: View {
                 HStack(alignment:.top) {
                     VStack(alignment:.leading,spacing:6) {
                         Text("设置").font(.system(size:22,weight:.medium))
-                        Text("常用 Agent 与 Provider 配置优先；连接、插件与 Runtime 诊断集中在页面后半部分。")
-                            .font(.system(size:12)).foregroundStyle(ForgePalette.secondary)
                     }
                     Spacer()
                     Button {
