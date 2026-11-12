@@ -323,6 +323,18 @@ async function createJwt(config: AppStoreConnectPluginConfig): Promise<string> {
   return `${signingInput}.${derSignatureToJose(der)}`;
 }
 
+// Apple's appStoreReviewDetail can be returned in JSON:API included[] as well as data.
+// Do not leak the demo login password into tool results, errors, receipts or traces.
+function redactAscDemoPasswords<T>(value: T): T {
+  if (Array.isArray(value)) return value.map(redactAscDemoPasswords) as T;
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, entry]) => [
+      key, key === 'demoAccountPassword' ? '[REDACTED]' : redactAscDemoPasswords(entry),
+    ])) as T;
+  }
+  return value;
+}
+
 async function apiRequest<T>(config: AppStoreConnectPluginConfig, options: {
   path: string;
   method?: 'GET' | 'POST' | 'PATCH' | 'DELETE';
@@ -346,7 +358,7 @@ async function apiRequest<T>(config: AppStoreConnectPluginConfig, options: {
       signal: controller.signal,
     });
     const raw = await response.text();
-    const parsed = raw ? JSON.parse(raw) as Record<string, unknown> : undefined;
+    const parsed = raw ? redactAscDemoPasswords(JSON.parse(raw) as Record<string, unknown>) : undefined;
     if (response.status === 401 || response.status === 403) {
       throw new AssistantPluginError('PLUGIN_AUTH_FAILED', 'App Store Connect rejected the API token.', { retryable: false, details: { status: response.status, providerError: parsed } });
     }
@@ -1731,7 +1743,7 @@ export function buildAppStoreConnectPluginManifest(previousRevision = 0, previou
     pluginId: APP_STORE_CONNECT_PLUGIN_ID,
     provider: 'apple',
     displayName: 'App Store Connect API Plugin',
-    pluginVersion: '1.8.0',
+    pluginVersion: '1.8.1',
     authority: { strategy: 'derived', duplicateStateAllowed: false, sourceOfTruth: ['controller-global:system/plugins/config/app-store-connect.json', 'legacy-import-only:system/plugins/profiles|repositories/<repoId>/plugins/config|.forge/plugins|.repo-harness/plugins', 'env:FORGE_ASC_*'] },
     enabled: config.enabled,
     lifecycle: { state: state.lifecycleState, reason: !config.enabled ? 'App Store Connect plugin is disabled.' : auth.ready ? 'App Store Connect API credentials are ready.' : auth.errors[0] ?? auth.warnings[0] },

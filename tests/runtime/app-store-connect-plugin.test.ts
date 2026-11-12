@@ -42,7 +42,7 @@ describe('App Store Connect Xcode Cloud workflow actions', () => {
     const repoRoot = root();
     await executeAppStoreConnectPluginAction(input(repoRoot, 'configure', { enabled: true, provider: 'mock' }));
     const manifest = buildAppStoreConnectPluginManifest(1, undefined, repoRoot);
-    expect(manifest.pluginVersion).toBe('1.8.0');
+    expect(manifest.pluginVersion).toBe('1.8.1');
     expect(manifest.actions.find((action) => action.actionId === 'list_xcode_cloud_workflows')).toMatchObject({ readOnly: true, risk: 'readonly' });
     for (const actionId of ['list_bundle_ids', 'list_bundle_id_capabilities', 'list_certificates', 'list_devices', 'list_profiles']) {
       expect(manifest.actions.find((action) => action.actionId === actionId)).toMatchObject({
@@ -143,6 +143,49 @@ describe('App Store Connect Xcode Cloud workflow actions', () => {
   });
 
 
+
+  test('never exposes App Review demo password from direct data or included version resources', async () => {
+    const repoRoot = root();
+    const keyPath = join(repoRoot, 'AuthKey_REVIEW_SECRET.p8');
+    const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
+    writeFileSync(keyPath, privateKey.export({ type: 'pkcs8', format: 'pem' }));
+    await executeAppStoreConnectPluginAction(input(repoRoot, 'configure', {
+      enabled: true, provider: 'app-store-connect-api', issuer_id: 'issuer-review',
+      key_id: 'key-review', private_key_path: keyPath,
+    }));
+    const original = globalThis.fetch;
+    const password = 'this-is-a-sensitive-demo-password';
+    globalThis.fetch = (async (request: string | URL | Request) => {
+      if (String(request).includes('/appStoreReviewDetail')) {
+        return Response.json({ data: { type: 'appStoreReviewDetails', id: 'detail-1',
+          attributes: { contactEmail: 'review@example.com', demoAccountPassword: password } } });
+      }
+      return Response.json({
+        data: { type: 'appStoreVersions', id: 'version-1',
+          attributes: { versionString: '1.0.5' } },
+        included: [{ type: 'appStoreReviewDetails', id: 'detail-1',
+          attributes: { demoAccountPassword: password, contactEmail: 'review@example.com' } }],
+      });
+    }) as typeof fetch;
+    try {
+      const version = await executeAppStoreConnectPluginAction(input(repoRoot, 'get_app_store_version', {
+        version_id: 'version-1',
+      }));
+      expect(JSON.stringify(version)).not.toContain(password);
+      expect(version).toMatchObject({ included: [{
+        attributes: { demoAccountPassword: '[REDACTED]', contactEmail: 'review@example.com' },
+      }] });
+      const detail = await executeAppStoreConnectPluginAction(input(repoRoot, 'get_app_store_review_detail', {
+        version_id: 'version-1',
+      }));
+      expect(JSON.stringify(detail)).not.toContain(password);
+      expect(detail).toMatchObject({ data: { attributes: {
+        demoAccountPassword: '[REDACTED]', contactEmail: 'review@example.com',
+      } } });
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
 
   test('official versioned IAP and subscription writes use current version relationships and safe dry-run', async () => {
     const repoRoot = root();
