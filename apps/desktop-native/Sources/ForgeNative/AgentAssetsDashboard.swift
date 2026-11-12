@@ -65,11 +65,7 @@ struct AgentAssetsDashboard: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 HStack(alignment: .firstTextBaseline) {
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text("图片资源").font(.system(size: 24, weight: .semibold))
-                        Text("查看会话中的图片，保存原文件")
-                            .font(.system(size: 12)).foregroundStyle(.secondary)
-                    }
+                    Text("图片资源").font(.system(size: 24, weight: .semibold))
                     Spacer()
                     Picker("项目", selection: $selectedRepoId) {
                         Text("全部项目").tag("")
@@ -95,8 +91,6 @@ struct AgentAssetsDashboard: View {
                     VStack(spacing: 9) {
                         Image(systemName: "photo").font(.system(size: 28)).foregroundStyle(.tertiary)
                         Text("暂无图片").font(.system(size: 14, weight: .medium))
-                        Text("这里显示手动加入会话的图片，以及 Agent 回复中的图片链接。")
-                            .font(.system(size: 12)).foregroundStyle(.secondary)
                     }
                     .frame(maxWidth: .infinity, minHeight: 240)
                 } else {
@@ -132,10 +126,6 @@ struct AgentAssetsDashboard: View {
                         }
                     }
                 }
-                Text("本页只索引已记录的用户图片附件及明确的远程 Markdown 图片链接。历史消息如果只保存过附件名称，原图无法自动恢复；其他文件类型暂不列入。")
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
             }
             .padding(26)
             .frame(maxWidth: 940, alignment: .leading)
@@ -162,9 +152,14 @@ private struct AgentLocalImageResourceView: View {
                 Spacer()
                 Button(revealed ? "收起" : "预览") { revealed.toggle() }
                     .disabled(!exists)
-                Button("Finder 中显示") {
+                Button {
                     NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
+                } label: {
+                    Image(systemName: "folder")
                 }
+                .buttonStyle(.plain)
+                .help("在 Finder 中显示")
+                .accessibilityLabel("在 Finder 中显示")
                 .disabled(!exists)
                 Button("另存为…") { save() }.disabled(!exists)
             }
@@ -178,8 +173,6 @@ private struct AgentLocalImageResourceView: View {
                 Text(status).font(.system(size: 10)).foregroundStyle(.secondary)
             }
         }
-        .padding(10)
-        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 10))
     }
 
     @MainActor
