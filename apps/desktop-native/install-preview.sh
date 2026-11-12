@@ -54,10 +54,13 @@ if [ -z "$SIGN_IDENTITY" ]; then
   SIGN_IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null     | sed -n 's/^[[:space:]]*[0-9][0-9]*) [0-9A-F]* "\(Developer ID Application:[^"]*\)".*/\1/p'     | head -1)"
 fi
 if [ -n "$SIGN_IDENTITY" ]; then
-  codesign --force --sign "$SIGN_IDENTITY" "$TMP/Contents/MacOS/Forge"
-  codesign --force --sign "$SIGN_IDENTITY" "$TMP/Contents/MacOS/forge-desktop"
-  codesign --force --sign "$SIGN_IDENTITY" "$TMP"
-  echo "Forge preview signed with stable identity: $SIGN_IDENTITY"
+# Local-only preview: retain the stable Developer ID signing identity while
+  # avoiding Apple online timestamp availability as an installation dependency.
+  # Distribution / release packaging is a separate process with its own gates.
+  codesign --force --timestamp=none --sign "$SIGN_IDENTITY" "$TMP/Contents/MacOS/Forge"
+  codesign --force --timestamp=none --sign "$SIGN_IDENTITY" "$TMP/Contents/MacOS/forge-desktop"
+  codesign --force --timestamp=none --sign "$SIGN_IDENTITY" "$TMP"
+  echo "Forge local preview signed with stable identity (no online timestamp): $SIGN_IDENTITY"
 else
   codesign --force --deep --sign - "$TMP"
   echo "Forge preview warning: no stable code-signing identity; managed Keychain credentials may require re-import after rebuild" >&2
