@@ -898,12 +898,25 @@ describe("Local Execution Bridge", () => {
       });
       expect(blockedByProcess.status).toBe(400);
       expect((await blockedByProcess.json()).error).toContain('REPOSITORY_PROCESS_LEASE_HELD');
-      const legacyAttempt = await callMultiRepositoryTool(
-        createMcpToolContext({ repo: root, controllerHome, profile: 'controller' }),
-        'begin_edit_session', { purpose: 'editor conflicts with managed Process' },
-      );
-      expect(legacyAttempt.isError).toBe(true);
-      expect(JSON.stringify(legacyAttempt.structuredContent)).toContain('REPOSITORY_PROCESS_LEASE_HELD');
+      const legacyContext = createMcpToolContext({ repo: root, controllerHome, profile: 'controller' });
+      const reserved = await callMultiRepositoryTool(legacyContext, 'begin_edit_session', {
+        purpose: 'metadata reservation during managed Process',
+        allowed_paths: ['src/example.ts'],
+      });
+      expect(reserved.isError).not.toBe(true);
+      const reservedSession = reserved.structuredContent as { sessionId: string };
+      const originalSource = readFileSync(join(root, 'src/example.ts'), 'utf8');
+      const overlappingEdit = await callMultiRepositoryTool(legacyContext, 'apply_patch', {
+        session_id: reservedSession.sessionId,
+        expected_revision: 0,
+        operations: [{
+          type: 'replace', path: 'src/example.ts',
+          expected_sha256: new Bun.CryptoHasher('sha256').update(originalSource).digest('hex'),
+          replacements: [{ old_text: 'value = 4', new_text: 'value = 5' }],
+        }],
+      });
+      expect(overlappingEdit.isError).toBe(true);
+      expect(JSON.stringify(overlappingEdit.structuredContent)).toContain('REPOSITORY_PROCESS_LEASE_HELD');
     } finally {
       releaseExecutionLeases(controllerHome, repository.repoId, 'test:managed-writer', running.leases, {
         visibility: 'ephemeral', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false,
@@ -923,6 +936,35 @@ describe("Local Execution Bridge", () => {
     expect(concurrentRead.status).toBe(200);
     const finalized = await finalization.then((response) => response.json());
     expect(finalized.status).toBe("finalized");
+    // Independent checkout and unrelated source scope are not global vetoes
+    // for the direct MCP editor; the same-checkout collision above still fails.
+    const independent = acquireExecutionLeases(controllerHome, repository.repoId, 'test:foreign-desktop-writer', [
+      { resourceKey: 'path:checkout-foreign:apps/desktop-native', mode: 'write' },
+    ], { visibility: 'ephemeral', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false });
+    expect(independent.acquired).toBe(true);
+    try {
+      const legacyContext = createMcpToolContext({ repo: root, controllerHome, profile: 'controller' });
+      const opened = await callMultiRepositoryTool(legacyContext, 'begin_edit_session', {
+        purpose: 'scoped direct MCP edit', allowed_paths: ['src/example.ts'],
+      });
+      expect(opened.isError).not.toBe(true);
+      const originalSource = readFileSync(join(root, 'src/example.ts'), 'utf8');
+      const patched = await callMultiRepositoryTool(legacyContext, 'apply_patch', {
+        session_id: (opened.structuredContent as { sessionId: string }).sessionId,
+        expected_revision: 0,
+        operations: [{
+          type: 'replace', path: 'src/example.ts',
+          expected_sha256: new Bun.CryptoHasher('sha256').update(originalSource).digest('hex'),
+          replacements: [{ old_text: 'value = 4', new_text: 'value = 5' }],
+        }],
+      });
+      expect(patched.isError).not.toBe(true);
+      expect(readFileSync(join(root, 'src/example.ts'), 'utf8')).toContain('value = 5');
+    } finally {
+      releaseExecutionLeases(controllerHome, repository.repoId, 'test:foreign-desktop-writer', independent.leases, {
+        visibility: 'ephemeral', notifyScheduler: false, invalidateProjection: false, emitRuntimeEvent: false,
+      });
+    }
   });
   test("legacy EditSession mutation leases are scoped to the explicitly selected checkout", async () => {
     const root = repo();

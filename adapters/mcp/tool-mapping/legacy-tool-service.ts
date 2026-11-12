@@ -6,6 +6,7 @@ import { join } from "path";
 import { beginEditSession, applyEditOperations, createEditSavepoint, EditSessionPatchError, finalizeEditSession, getEditSession, getEditSessionDiff, listEditSessions, PREFERRED_EDIT_PATCH_BATCH_OPERATIONS, rollbackEditSession } from "../../../src/cli/editing/edit-session";
 import { EDIT_OPERATION_INPUT_SCHEMA, normalizeEditOperations } from "../../../src/cli/editing/edit-operation-contract";
 import { withRepositoryMutationExclusion } from '../../../src/runtime/resources/leases/store';
+import type { ResourceClaimSpec } from '../../../src/runtime/execution/jobs/types';
 import { listAgentJobs } from "../../../src/cli/agent-jobs/job-manager";
 import { listControllerChecks } from "../../../src/cli/controller/check-runner";
 import { buildExecutionDiagnostics, buildRequirementBoard } from '../../../src/runtime/control-plane/facade/requirement-board';
@@ -132,14 +133,28 @@ function editExecutionIdentity(ctx: McpToolContext): {
  * Local Bridge editor. Keep the whole synchronous edit primitive under one
  * lock; no nested lock in edit-session.ts, and no second mutation authority.
  */
-function withLegacyEditMutation<T>(ctx: McpToolContext, operation: string, mutate: () => T): T {
+function editSourceClaims(ctx: McpToolContext, paths: Iterable<string>): ResourceClaimSpec[] | undefined {
+  // Unknown checkout identity keeps the existing conservative repository fence.
+  const controllerHome = ctx.runtimeControllerHome?.trim() || resolveRepoPreferredControllerHome(ctx.repoRoot);
+  const checkoutId = ctx.checkoutId?.trim() || resolveRepositorySelection({
+    explicitPath: ctx.repoRoot, controllerHome, allowSoleRepository: true,
+  }).activeCheckoutId;
+  if (!checkoutId) return undefined;
+  return [...new Set(paths)].filter(Boolean).map((path) => ({
+    resourceKey: `path:${checkoutId}:${path}`, mode: 'write' as const,
+  }));
+}
+
+function withLegacyEditMutation<T>(
+  ctx: McpToolContext, operation: string, mutate: () => T, claims?: ResourceClaimSpec[],
+): T {
   const controllerHome = ctx.runtimeControllerHome?.trim() || resolveRepoPreferredControllerHome(ctx.repoRoot);
   const repoId = ctx.repoId?.trim() || resolveRepositorySelection({
     explicitPath: ctx.repoRoot,
     controllerHome,
     allowSoleRepository: true,
   }).repoId;
-  return withRepositoryMutationExclusion(controllerHome, repoId, `mcp:${operation}`, mutate);
+  return withRepositoryMutationExclusion(controllerHome, repoId, `mcp:${operation}`, mutate, undefined, claims);
 }
 
 function fileSummary(
@@ -1146,7 +1161,7 @@ export async function callMcpTool(
             checkoutId: identity.checkoutId,
             principalId: identity.principalId,
           },
-        }));
+        }), []);
         audit(
           ctx,
           name,
@@ -1166,11 +1181,16 @@ export async function callMcpTool(
         try {
           const current = getEditSession(ctx.repoRoot, String(args.session_id ?? ""));
           const identity = editExecutionIdentity(ctx);
+          const operations = normalizeEditOperations(args.operations);
+          const claims = editSourceClaims(ctx, [
+            ...current.operations.map((entry) => entry.path),
+            ...operations.map((entry) => entry.path),
+          ]);
           session = withLegacyEditMutation(ctx, name, () => applyEditOperations(
             ctx.repoRoot,
             ctx.policy,
             current.sessionId,
-            normalizeEditOperations(args.operations),
+            operations,
             {
               expectedRevision:
                 typeof args.expected_revision === "number"
@@ -1186,7 +1206,7 @@ export async function callMcpTool(
                 principalId: identity.principalId,
               },
             },
-          ));
+          ), claims);
         } catch (error) {
           if (error instanceof EditSessionPatchError) {
             audit(ctx, name, "failed", args, `controller-home://repositories/${editExecutionIdentity(ctx).repoId}/edit-sessions/${error.details.sessionId}`, error.message);
@@ -1239,11 +1259,12 @@ export async function callMcpTool(
       case "create_edit_savepoint": {
         if (ctx.policy.profile !== "controller")
           return errorResult("TOOL_DISABLED", "create_edit_savepoint requires the controller profile");
+        const current = getEditSession(ctx.repoRoot, String(args.session_id ?? ""));
         const session = withLegacyEditMutation(ctx, name, () => createEditSavepoint(
           ctx.repoRoot,
-          String(args.session_id ?? ""),
+          current.sessionId,
           String(args.name ?? ""),
-        ));
+        ), editSourceClaims(ctx, current.operations.map((entry) => entry.path)));
         audit(ctx, name, "ok", args, `controller-home://repositories/${editExecutionIdentity(ctx).repoId}/edit-sessions/${session.sessionId}`);
         return textResult(session);
       }
@@ -1265,14 +1286,15 @@ export async function callMcpTool(
             "TOOL_DISABLED",
             "rollback_edit_session requires the controller profile",
           );
+        const current = getEditSession(ctx.repoRoot, String(args.session_id ?? ""));
         const session = withLegacyEditMutation(ctx, name, () => rollbackEditSession(
           ctx.repoRoot,
-          String(args.session_id ?? ""),
+          current.sessionId,
           {
             toRevision: typeof args.to_revision === "number" ? Math.trunc(args.to_revision) : undefined,
             savepoint: typeof args.savepoint === "string" ? args.savepoint : undefined,
           },
-        ));
+        ), editSourceClaims(ctx, current.operations.map((entry) => entry.path)));
         audit(
           ctx,
           name,
@@ -1303,7 +1325,7 @@ export async function callMcpTool(
               principalId: identity.principalId,
             },
           },
-        ));
+        ), editSourceClaims(ctx, current.operations.map((entry) => entry.path)));
         audit(
           ctx,
           name,

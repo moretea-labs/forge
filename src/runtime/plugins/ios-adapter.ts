@@ -1,6 +1,8 @@
 import { join } from 'path';
 import type { RepositoryRecord } from '../../cli/repositories/types';
 import { repositoryControllerRoot } from '../../effects/controller-home';
+import { claimsConflict, iosSimulatorResourceKey, IOS_SIMULATOR_TEST_RESOURCE } from '../resources/claims/conflicts';
+import { listConflictingResourceLeases } from '../resources/leases/store';
 import {
   iosAppBuild,
   iosAppInstall,
@@ -458,8 +460,32 @@ export async function executeIosPluginAction(input: AssistantPluginActionExecuti
   switch (input.actionId) {
     case 'xcode_status':
       return { ...iosXcodeStatus(), userFacingStatus: userFacingIosStatus() };
-    case 'list_simulators':
-      return { ...iosSimulatorsList({ runtime: stringValue(input.args.runtime), name: stringValue(input.args.name) }) };
+    case 'list_simulators': {
+      const inventory = iosSimulatorsList({ runtime: stringValue(input.args.runtime), name: stringValue(input.args.name) });
+      if (!inventory.ready || !('devices' in inventory) || !Array.isArray(inventory.devices)) return inventory;
+      // A waiting project is not a device owner. Read the canonical global
+      // Lease authority once, including legacy host-wide compatibility claims.
+      const leases = listConflictingResourceLeases(input.controllerHome, IOS_SIMULATOR_TEST_RESOURCE);
+      return {
+        ...inventory,
+        devices: inventory.devices.map((device) => {
+          const resourceKey = iosSimulatorResourceKey(device.udid);
+          return {
+            ...device,
+            forgeLease: {
+              resourceKey,
+              owners: leases.filter((lease) => claimsConflict({ resourceKey, mode: 'write' }, lease))
+                .map((lease) => ({
+                  repoId: lease.repoId,
+                  ownerJobId: lease.ownerJobId,
+                  resourceKey: lease.resourceKey,
+                  expiresAt: lease.expiresAt,
+                })),
+            },
+          };
+        }),
+      };
+    }
     case 'discover_project':
       return { ...iosProjectDiscover(repository) };
     case 'list_schemes':

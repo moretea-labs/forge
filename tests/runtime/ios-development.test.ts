@@ -5,6 +5,8 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { isProcessAlive } from '../../src/runtime/shared/process-tree';
 import { executeIosPluginAction } from '../../src/runtime/plugins/ios-adapter';
+import { iosSimulatorResourceKey, IOS_SIMULATOR_TEST_RESOURCE } from '../../src/runtime/resources/claims/conflicts';
+import { acquireExecutionLeases, releaseExecutionLeases } from '../../src/runtime/resources/leases/store';
 import { getOwnedResource } from '../../packages/kernel/identity/api/index';
 import { inspectRepositoryIosTestEvidence } from '../../src/runtime/control-plane/generated-cache-retention';
 import {
@@ -328,6 +330,53 @@ describe('iOS development simulator reliability', () => {
     const crossRepoOwner = crossRepo.resultBundleOwnership as { recorded: boolean; resourceId: string };
     expect(crossRepoOwner.recorded).toBe(true);
     expect(getOwnedResource(controllerHome, crossRepoOwner.resourceId)?.provenance.associatedWorkId).toBeUndefined();
+  });
+
+  test('simulator inventory reports exact cross-repository Lease ownership', async () => {
+    const repo = repository();
+    const controllerHome = join(repo.root, 'controller-home');
+    const pro = '633B2CBC-B2A5-4DAD-A9AE-BC3B1E883A9A';
+    const duo = '96EDA0C4-D3A9-407C-8692-BE28234C5F43';
+    const inventory = { devices: { 'com.apple.CoreSimulator.SimRuntime.iOS-27-0': [
+      { name: 'iPhone 18 Pro', udid: pro, state: 'Booted', isAvailable: true },
+      { name: 'iPhone Duo', udid: duo, state: 'Booted', isAvailable: true },
+    ] } };
+    setIosDevelopmentHooksForTest({
+      platform: () => 'darwin',
+      runCommand: (command, args) => result(command, args, {
+        stdout: command === 'xcrun' && args.includes('list') ? JSON.stringify(inventory) : '',
+      }),
+    });
+    const list = async () => executeIosPluginAction({
+      controllerHome, repoId: repo.record.repoId, repoRoot: repo.root,
+      pluginId: 'ios', actionId: 'list_simulators', requestId: 'discover-lease',
+      args: {}, origin: { surface: 'cli' },
+    });
+    const foreignRepo = 'another-project';
+    const owner = 'agent-device:active-pro';
+    expect(acquireExecutionLeases(controllerHome, foreignRepo, owner,
+      [{ resourceKey: iosSimulatorResourceKey(pro), mode: 'write' }],
+      { ttlMs: 60_000 }).acquired).toBe(true);
+    const devices = (await list()).devices as Array<{
+      udid: string;
+      forgeLease: { resourceKey: string; owners: Array<{ repoId: string; ownerJobId: string }> };
+    }>;
+    expect(devices.find((device) => device.udid === pro)?.forgeLease.owners)
+      .toEqual([expect.objectContaining({ repoId: foreignRepo, ownerJobId: owner })]);
+    expect(devices.find((device) => device.udid === duo)?.forgeLease).toEqual({
+      resourceKey: iosSimulatorResourceKey(duo), owners: [],
+    });
+    expect(releaseExecutionLeases(controllerHome, foreignRepo, owner)).toBe(1);
+    const globalOwner = 'legacy-xctest';
+    expect(acquireExecutionLeases(controllerHome, foreignRepo, globalOwner,
+      [{ resourceKey: IOS_SIMULATOR_TEST_RESOURCE, mode: 'write' }],
+      { ttlMs: 60_000 }).acquired).toBe(true);
+    const globallyBlocked = (await list()).devices as typeof devices;
+    expect(globallyBlocked.every((device) =>
+      device.forgeLease.owners.some((lease) => lease.ownerJobId === globalOwner))).toBe(true);
+    expect(releaseExecutionLeases(controllerHome, foreignRepo, globalOwner)).toBe(1);
+    const unclaimed = (await list()).devices as typeof devices;
+    expect(unclaimed.every((device) => device.forgeLease.owners.length === 0)).toBe(true);
   });
 
   test('XCTest uses an already booted exact UDID and refuses a third implicit destination', async () => {

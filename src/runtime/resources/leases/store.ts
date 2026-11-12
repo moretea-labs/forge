@@ -226,6 +226,18 @@ export function listActiveLeases(controllerHome: string, repoId: string): Execut
   );
 }
 
+/** Cross-repository ownership of one resource from the sole ExecutionLease store. */
+export function listConflictingResourceLeases(controllerHome: string, resourceKey: string): ExecutionLease[] {
+  return withControllerLock(
+    controllerHome,
+    { scope: 'global', resource: 'execution-leases' },
+    `lease-list-resource:${resourceKey}`,
+    () => listAllActiveLeases(controllerHome).filter((lease) =>
+      claimsConflict({ resourceKey, mode: 'write' }, lease)),
+    10_000,
+  );
+}
+
 // Editor mutations and managed repository processes already have separate
 // historical lock transports. This is a compatibility bridge, not a third
 // authority: Process allocation checks the existing repository lock under its
