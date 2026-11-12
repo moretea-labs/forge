@@ -17,7 +17,6 @@ struct AgentAssetsDashboard: View {
         let date: Date
         let source: String
         let remote: Bool
-        let projectId: String?
     }
 
     private var resources: [Resource] {
@@ -35,8 +34,7 @@ struct AgentAssetsDashboard: View {
                                 threadId: thread.id,
                                 date: message.createdAt,
                                 source: url,
-                                remote: true,
-                                projectId: thread.repoId
+                                remote: true
                             ))
                         }
                     }
@@ -50,8 +48,7 @@ struct AgentAssetsDashboard: View {
                             threadId: thread.id,
                             date: message.createdAt,
                             source: path,
-                            remote: false,
-                            projectId: thread.repoId
+                            remote: false
                         ))
                     }
                 }
@@ -185,7 +182,8 @@ private struct AgentLocalImageResourceView: View {
             let source = URL(fileURLWithPath: path)
             // Atomic Data write also supports replacing an existing destination
             // selected in NSSavePanel; no implicit deletion of unrelated files.
-            try Data(contentsOf: source).write(to: destination, options: .atomic)
+            try Data(contentsOf: source, options: .mappedIfSafe)
+                .write(to: destination, options: .atomic)
             status = "已保存到 " + destination.lastPathComponent
         } catch {
             status = "保存失败：" + error.localizedDescription
