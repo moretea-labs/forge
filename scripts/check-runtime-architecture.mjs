@@ -674,6 +674,7 @@ const required = [
   'src/runtime/platform/launch-agents.ts',
   'src/runtime/platform/systemd-user.ts',
   'src/runtime/local-bridge/types.ts',
+  'src/core/repository-command/normalization.ts',
   'src/runtime/control-plane/global-scheduler/scheduler.ts',
   'src/runtime/control-plane/global-scheduler/config.ts',
   'src/runtime/control-plane/global-scheduler/state.ts',
@@ -1312,6 +1313,9 @@ requireText('src/runtime/projections/invalidation.ts', 'runtimeInstanceId?: stri
 requireText('src/runtime/projections/materialized-view.ts', 'currentOwner.runtimeInstanceId !== owner.runtimeInstanceId');
 requireText('src/runtime/projections/task-ledger-types.ts', 'export interface TaskLedgerProjection');
 requireText('src/runtime/projections/task-ledger-types.ts', 'TASK_LEDGER_SCHEMA_VERSION');
+requireText('src/core/repository-command/normalization.ts', 'export interface CanonicalRepositoryCommand');
+requireText('src/core/repository-command/normalization.ts', 'export function normalizeRepositoryCommand');
+requireMissing('src/cli/repositories/command-normalization.ts');
 requireText('src/runtime/control-plane/global-scheduler/projection-refresh.ts', 'getRuntimeWriteClaim()?.runtimeInstanceId');
 forbid(
   'src/runtime/execution/jobs/receipt-store.ts',
