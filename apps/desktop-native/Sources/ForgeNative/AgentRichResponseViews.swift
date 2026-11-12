@@ -320,6 +320,13 @@ func makeRemoteImageThumbnail(_ data: Data) async throws -> CGImage? {
     }
 }
 
+func validatedRemoteImageDataForSaving(_ data: Data) async throws -> Data {
+    guard try await makeRemoteImageThumbnail(data) != nil else {
+        throw RemoteImageSaveError.invalidImage
+    }
+    return data
+}
+
 func makeLocalImageThumbnail(at path: String) async throws -> CGImage? {
     let decoding = Task.detached(priority: .userInitiated) { () throws -> CGImage? in
         try Task.checkCancellation()
@@ -512,11 +519,12 @@ struct AgentRemoteImageView: View {
         Task {
             defer { isSaving = false }
             do {
-                let data: Data
+                var data: Data
                 if let previewData {
                     data = previewData
                 } else {
                     data = try await downloadRemoteImage(from: url, maximumBytes: 25 * 1024 * 1024)
+                    data = try await validatedRemoteImageDataForSaving(data)
                 }
                 try await Task.detached(priority: .utility) {
                     try data.write(to: target, options: .atomic)

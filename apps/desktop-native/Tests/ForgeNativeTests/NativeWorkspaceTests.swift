@@ -2056,8 +2056,19 @@ extension NativeWorkspaceTests {
 
         XCTAssertLessThanOrEqual(remoteThumbnail.width, 2_400)
         XCTAssertLessThanOrEqual(remoteThumbnail.height, 2_400)
-        let invalidThumbnail = try await makeRemoteImageThumbnail(Data("not an image".utf8))
+        let invalidData = Data("not an image".utf8)
+        let invalidThumbnail = try await makeRemoteImageThumbnail(invalidData)
         XCTAssertNil(invalidThumbnail)
+        let validatedData = try await validatedRemoteImageDataForSaving(data)
+        XCTAssertEqual(validatedData, data)
+        do {
+            _ = try await validatedRemoteImageDataForSaving(invalidData)
+            XCTFail("Expected direct Save to reject malformed image bytes")
+        } catch {
+            guard case RemoteImageSaveError.invalidImage = error else {
+                return XCTFail("Expected invalid-image error for malformed bytes")
+            }
+        }
 
         let localURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString).appendingPathExtension("png")
