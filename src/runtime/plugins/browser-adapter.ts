@@ -314,7 +314,8 @@ type PageLike = {
   goBack?(options?: Record<string, unknown>): Promise<unknown>;
   title(): Promise<string>;
   url(): string;
-  identity?(): Promise<{ url: string; title: string }>;
+  identity?(options?: { preferObservedDom?: boolean }): Promise<{ url: string; title: string }>;
+  beginAction?(): void;
   content?(): Promise<string>;
   evaluate<T>(expression: string | ((...args: unknown[]) => unknown), arg?: unknown): Promise<T>;
   screenshot(options: Record<string, unknown>): Promise<Buffer>;
@@ -3116,10 +3117,14 @@ async function withPage<T>(
         ? { ...args, __forge_require_existing_resource: true }
         : args;
       handle = await openBrowser(repoRoot, config, target, browserArgs);
+      handle.page.beginAction?.();
       actionDispatched = true;
       const result = await run(handle.page, handle.diagnostics, handle.connection);
       if (options.persistSession) {
-        const identity = await readPageIdentity(handle.page, handle.connection, target.url);
+        // Native read-only DOM extraction already returns the page identity
+        // with the data in one verified provider event. Mutations still read
+        // fresh identity, and warm pages cannot reuse an earlier action's receipt.
+        const identity = await readPageIdentity(handle.page, handle.connection, target.url, postDispatchReplaySafe);
         saveBrowserSession(repoRoot, sessionFromPage(target, identity.url, identity.title, handle.connection));
         if (result && typeof result === 'object' && !Array.isArray(result) && Object.prototype.hasOwnProperty.call(result, 'url')) {
           (result as Record<string, unknown>).url = identity.url;
@@ -3664,7 +3669,7 @@ function verifyStateObservationScript(selector: string | undefined, textContains
   })()`;
 }
 
-async function readPageIdentity(page: PageLike, connection?: BrowserConnectionSummary, expectedUrl?: string): Promise<{ url: string; title: string }> {
+async function readPageIdentity(page: PageLike, connection?: BrowserConnectionSummary, expectedUrl?: string, preferObservedDom = false): Promise<{ url: string; title: string }> {
   const normalizeObservedUrl = (value: unknown): string => {
     const internalProduct = browserInternalUrlProduct(value);
     if (connection?.provider === 'macos-apple-events' && connection.tab?.ownership === 'user_owned') {
@@ -3678,7 +3683,7 @@ async function readPageIdentity(page: PageLike, connection?: BrowserConnectionSu
     return normalizedUrl(value);
   };
   if (connection?.provider === 'macos-apple-events' && typeof page.identity === 'function') {
-    const identity = await page.identity();
+    const identity = await page.identity({ preferObservedDom });
     return { url: normalizeObservedUrl(identity.url), title: identity.title };
   }
   return { url: normalizeObservedUrl(page.url()), title: await page.title() };

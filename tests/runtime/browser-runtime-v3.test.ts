@@ -603,6 +603,45 @@ describe('Browser Runtime V3 routing', () => {
     expect(attached.page.tabRef()).toEqual({ windowId: '7', tabId: '9' });
   });
 
+  test('native read identity reuses only the current DOM evaluation receipt', async () => {
+    let nativeJsEvents = 0;
+    const url = 'https://example.com/native-observed-identity';
+    const title = 'Observed Native Page';
+    const metadata = ['false', url, title, '0', '0', '1200', '800', '7', '9', 'false', 'false'].join(nativeSeparator);
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin',
+      appExists: () => true,
+      processRunning: async () => true,
+      runAppleScript: async (script, args) => {
+        if (script.includes('execute targetTab javascript')) {
+          nativeJsEvents += 1;
+          return JSON.stringify({
+            ok: true,
+            value: args[0]?.includes('document.body.innerText') ? 'read-only-content' : { url, title },
+            page: { url, title },
+          });
+        }
+        return metadata;
+      },
+    });
+    const { page } = await reattachMacOsBrowserOwnedPage('chrome', { windowId: '7', tabId: '9' }, 1_000);
+    page.beginAction();
+    expect(await page.evaluate<string>('document.body.innerText')).toBe('read-only-content');
+    expect(await page.identity({ preferObservedDom: true })).toEqual({ url, title });
+    expect(nativeJsEvents).toBe(1);
+
+    // Starting a new action discards the previous DOM receipt.
+    page.beginAction();
+    expect(await page.identity({ preferObservedDom: true })).toEqual({ url, title });
+    expect(nativeJsEvents).toBe(2);
+
+    // Mutation postconditions never consume the read-only fast-path receipt.
+    page.beginAction();
+    expect(await page.evaluate<string>('document.body.innerText')).toBe('read-only-content');
+    expect(await page.identity()).toEqual({ url, title });
+    expect(nativeJsEvents).toBe(4);
+  });
+
   test('re-resolves a stable native tab immediately before activation after window topology drift', async () => {
     let currentWindowId = '7';
     let inventoryReads = 0;

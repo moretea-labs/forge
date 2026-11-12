@@ -926,6 +926,7 @@ export class MacOsAppleEventsPage {
   private readonly browser: MacOsBrowserDefinition;
   private timeoutMs: number;
   private targetRef?: MacOsBrowserTabRef;
+  private domIdentityFromCurrentAction = false;
   private readonly createTabEvidence?: MacOsBrowserCreateTabEvidence;
 
   constructor(attachment: MacOsBrowserAttachment, timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS, targetRef?: MacOsBrowserTabRef, createTabEvidence?: MacOsBrowserCreateTabEvidence) {
@@ -1128,7 +1129,16 @@ export class MacOsAppleEventsPage {
     return this.metadata.url;
   }
 
-  async identity(): Promise<{ url: string; title: string }> {
+  beginAction(): void {
+    this.domIdentityFromCurrentAction = false;
+  }
+
+  async identity(options: { preferObservedDom?: boolean } = {}): Promise<{ url: string; title: string }> {
+    if (options.preferObservedDom && this.domIdentityFromCurrentAction && this.metadata.url) {
+      this.domIdentityFromCurrentAction = false;
+      return { url: this.metadata.url, title: this.metadata.title };
+    }
+    this.domIdentityFromCurrentAction = false;
     try {
       const identity = await this.evaluate<{ url: string; title: string }>(
         '({ url: String(document.location.href || ""), title: String(document.title || "") })',
@@ -1151,6 +1161,7 @@ export class MacOsAppleEventsPage {
   }
 
   async evaluate<T>(expression: string | ((...args: unknown[]) => unknown), arg?: unknown): Promise<T> {
+    this.domIdentityFromCurrentAction = false;
     const raw = await this.executeJavaScriptRaw(serializeEvaluation(expression, arg));
     let parsed: { ok?: boolean; value?: unknown; error?: string; page?: { url?: unknown; title?: unknown } };
     try {
@@ -1167,6 +1178,7 @@ export class MacOsAppleEventsPage {
         url: parsed.page.url,
         title: typeof parsed.page.title === 'string' ? parsed.page.title : this.metadata.title,
       };
+      this.domIdentityFromCurrentAction = true;
     }
     if (parsed.value && typeof parsed.value === 'object' && (parsed.value as { __forgeUndefined?: unknown }).__forgeUndefined === true) {
       return undefined as T;
