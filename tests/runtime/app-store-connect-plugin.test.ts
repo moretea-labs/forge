@@ -42,7 +42,7 @@ describe('App Store Connect Xcode Cloud workflow actions', () => {
     const repoRoot = root();
     await executeAppStoreConnectPluginAction(input(repoRoot, 'configure', { enabled: true, provider: 'mock' }));
     const manifest = buildAppStoreConnectPluginManifest(1, undefined, repoRoot);
-    expect(manifest.pluginVersion).toBe('1.5.0');
+    expect(manifest.pluginVersion).toBe('1.6.0');
     expect(manifest.actions.find((action) => action.actionId === 'list_xcode_cloud_workflows')).toMatchObject({ readOnly: true, risk: 'readonly' });
     for (const actionId of ['list_bundle_ids', 'list_bundle_id_capabilities', 'list_certificates', 'list_devices', 'list_profiles']) {
       expect(manifest.actions.find((action) => action.actionId === actionId)).toMatchObject({
@@ -403,6 +403,51 @@ describe('App Store Connect Xcode Cloud workflow actions', () => {
       expect(calls[5]?.headers.get('accept')).toBe('application/json');
       expect(calls[6]?.url.searchParams.get('filter[state]')).toBe('PUBLISHED');
       expect(calls.every(c=>c.method==='GET')).toBe(true);
+    } finally {globalThis.fetch=original;}
+  });
+
+
+  test('historical ASO instance summary verifies all Apple segments and rejects incomplete pagination', async () => {
+    const repoRoot=root();
+    const privateKeyPath=join(repoRoot,'AuthKey_INSTANCE.p8');
+    const {privateKey}=generateKeyPairSync('ec',{namedCurve:'P-256'});
+    writeFileSync(privateKeyPath,privateKey.export({type:'pkcs8',format:'pem'}));
+    await executeAppStoreConnectPluginAction(input(repoRoot,'configure',{
+      enabled:true,provider:'app-store-connect-api',issuer_id:'issuer-instance',key_id:'key-instance',
+      private_key_path:privateKeyPath,
+    }));
+    const a=gzipSync('Date\tSource Type\tCounts\n2026-11-01\tApp Store search\t8\n2026-11-01\tApp Store browse\t2\n');
+    const b=gzipSync('Date\tSource Type\tCounts\n2026-11-02\tApp Store search\t12\n');
+    const base='https://reports.s3.us-west-2.amazonaws.com';
+    const original=globalThis.fetch;
+    let forceNext=false;
+    globalThis.fetch=(async (request:string|URL|Request)=>{
+      const url=new URL(String(request));
+      if (url.pathname.endsWith('/instances/')) throw new Error('Unexpected list endpoint');
+      if (url.pathname==='/v1/analyticsReportInstances/instance-1/segments') {
+        expect(url.searchParams.get('limit')).toBe('9');
+        return Response.json({data:[
+          {id:'seg-a',attributes:{url:base+'/a.csv.gz',sizeInBytes:a.length,checksum:createHash('md5').update(a).digest('hex')}},
+          {id:'seg-b',attributes:{url:base+'/b.csv.gz',sizeInBytes:b.length,checksum:createHash('md5').update(b).digest('hex')}},
+        ],links:{next:forceNext?'https://api.appstoreconnect.apple.com/v1/analyticsReportInstances/instance-1/segments?cursor=next':null}});
+      }
+      if (url.pathname==='/a.csv.gz') return new Response(a);
+      if (url.pathname==='/b.csv.gz') return new Response(b);
+      throw new Error('Unexpected path '+url.pathname);
+    }) as typeof fetch;
+    try {
+      const summary=await executeAppStoreConnectPluginAction(input(repoRoot,'summarize_analytics_instance',{
+        instance_id:'instance-1',group_by:'Source Type',metric:'Counts',
+      }));
+      expect(summary).toMatchObject({instanceId:'instance-1',complete:true,segmentCount:2,checksumVerified:true,
+        segments:['seg-a','seg-b'],sourceRows:3,distinctGroups:2,truncated:false,
+        groups:[{dimensions:{'Source Type':'App Store search'},total:20},
+          {dimensions:{'Source Type':'App Store browse'},total:2}],
+      });
+      forceNext=true;
+      await expect(executeAppStoreConnectPluginAction(input(repoRoot,'summarize_analytics_instance',{
+        instance_id:'instance-1',group_by:'Source Type',
+      }))).rejects.toThrow('Too many segments');
     } finally {globalThis.fetch=original;}
   });
 
