@@ -316,10 +316,17 @@ private func downloadRemoteImage(from url: URL, maximumBytes: Int) async throws 
 struct AgentRemoteImageView: View {
     let label: String
     let source: String
+    let showsLabel: Bool
     @State private var expanded = false
     @State private var fullScreen = false
     @State private var status: String?
     @State private var isSaving = false
+
+    init(label: String, source: String, showsLabel: Bool = true) {
+        self.label = label
+        self.source = source
+        self.showsLabel = showsLabel
+    }
 
     private var remoteURL: URL? {
         guard let url = URL(string: source), let scheme = url.scheme?.lowercased(),
@@ -330,9 +337,11 @@ struct AgentRemoteImageView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {
-                Image(systemName: "photo").foregroundStyle(.secondary)
-                Text(label.isEmpty ? "图片资源" : label).font(.system(size: 12, weight: .medium))
-                    .lineLimit(1)
+                if showsLabel {
+                    Image(systemName: "photo").foregroundStyle(.secondary)
+                    Text(label.isEmpty ? "图片资源" : label).font(.system(size: 12, weight: .medium))
+                        .lineLimit(1)
+                }
                 Spacer(minLength: 8)
                 Button(expanded ? "收起" : "预览") { expanded.toggle() }
                 Button(isSaving ? "保存中…" : "保存…") { save() }

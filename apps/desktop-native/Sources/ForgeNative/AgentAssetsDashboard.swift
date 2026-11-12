@@ -113,7 +113,7 @@ struct AgentAssetsDashboard: View {
                                     .help(item.threadTitle)
                                 }
                                 if item.remote {
-                                    AgentRemoteImageView(label: item.title, source: item.source)
+                                    AgentRemoteImageView(label: item.title, source: item.source, showsLabel: false)
                                 } else {
                                     AgentLocalImageResourceView(path: item.source)
                                 }
