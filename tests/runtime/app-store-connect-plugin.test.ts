@@ -42,7 +42,7 @@ describe('App Store Connect Xcode Cloud workflow actions', () => {
     const repoRoot = root();
     await executeAppStoreConnectPluginAction(input(repoRoot, 'configure', { enabled: true, provider: 'mock' }));
     const manifest = buildAppStoreConnectPluginManifest(1, undefined, repoRoot);
-    expect(manifest.pluginVersion).toBe('1.2.0');
+    expect(manifest.pluginVersion).toBe('1.3.0');
     expect(manifest.actions.find((action) => action.actionId === 'list_xcode_cloud_workflows')).toMatchObject({ readOnly: true, risk: 'readonly' });
     for (const actionId of ['list_bundle_ids', 'list_bundle_id_capabilities', 'list_certificates', 'list_devices', 'list_profiles']) {
       expect(manifest.actions.find((action) => action.actionId === actionId)).toMatchObject({
@@ -142,6 +142,185 @@ describe('App Store Connect Xcode Cloud workflow actions', () => {
     }
   });
 
+
+
+  test('official versioned IAP and subscription writes use current version relationships and safe dry-run', async () => {
+    const repoRoot = root();
+    await executeAppStoreConnectPluginAction(input(repoRoot, 'configure', { enabled: true, provider: 'mock' }));
+    const cases: Array<{ action: string; args: Record<string, unknown>; path: string; relation: string; type: string; id: string }> = [
+      { action: 'create_in_app_purchase_version', args: { purchase_id: 'iap-1' }, path: '/v1/inAppPurchaseVersions', relation: 'inAppPurchase', type: 'inAppPurchases', id: 'iap-1' },
+      { action: 'create_in_app_purchase_version_localization', args: { version_id: 'iapv-1', locale: 'en-US', name: 'Pro', description: 'Unlimited' }, path: '/v2/inAppPurchaseLocalizations', relation: 'version', type: 'inAppPurchaseVersions', id: 'iapv-1' },
+      { action: 'create_subscription_version', args: { subscription_id: 'sub-1' }, path: '/v1/subscriptionVersions', relation: 'subscription', type: 'subscriptions', id: 'sub-1' },
+      { action: 'create_subscription_version_localization', args: { version_id: 'subv-1', locale: 'en-US', name: 'Monthly Pro' }, path: '/v2/subscriptionLocalizations', relation: 'version', type: 'subscriptionVersions', id: 'subv-1' },
+      { action: 'create_subscription_group_version', args: { group_id: 'group-1' }, path: '/v1/subscriptionGroupVersions', relation: 'subscriptionGroup', type: 'subscriptionGroups', id: 'group-1' },
+      { action: 'create_subscription_group_version_localization', args: { version_id: 'groupv-1', locale: 'en-US', name: 'Pro Group' }, path: '/v2/subscriptionGroupLocalizations', relation: 'version', type: 'subscriptionGroupVersions', id: 'groupv-1' },
+    ];
+    const manifest = buildAppStoreConnectPluginManifest(1, undefined, repoRoot);
+    for (const item of cases) {
+      const descriptor = manifest.actions.find(action => action.actionId === item.action);
+      expect(descriptor).toMatchObject({ readOnly: false, risk: 'remote_write' });
+      const response = await executeAppStoreConnectPluginAction(input(repoRoot, item.action, { ...item.args, dry_run: true }));
+      expect(response).toMatchObject({ dryRun: true, request: {
+        method: 'POST', path: item.path, body: { data: {
+          relationships: { [item.relation]: { data: { type: item.type, id: item.id } } },
+        } },
+      } });
+    }
+    const price = await executeAppStoreConnectPluginAction(input(repoRoot, 'create_subscription_price', {
+      subscription_id: 'sub-1', price_point_id: 'point-USA', plan_type: 'MONTHLY', dry_run: true,
+    }));
+    expect(price).toMatchObject({ dryRun: true, request: { path: '/v1/subscriptionPrices', body: {data: {
+      attributes: { startDate: null, planType: 'MONTHLY' },
+      relationships: { subscriptionPricePoint: { data: { type: 'subscriptionPricePoints', id: 'point-USA' } } },
+    }} } });
+    expect(manifest.actions.find(action => action.actionId === 'create_subscription_price')).toMatchObject({
+      confirmation: 'strong_confirmation',
+    });
+    await expect(executeAppStoreConnectPluginAction(input(repoRoot, 'create_subscription', {
+      group_id: 'group-1', name: 'Pro', product_id: 'pro', subscription_period: 'DAILY', dry_run: true,
+    }))).rejects.toThrow('Invalid subscription period');
+  });
+
+  test('IAP price schedule and subscription prices use Apple fixed endpoints and explicit filters/cursors', async () => {
+    const repoRoot = root();
+    const privateKeyPath = join(repoRoot, 'AuthKey_PRICES.p8');
+    const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
+    writeFileSync(privateKeyPath, privateKey.export({ type: 'pkcs8', format: 'pem' }));
+    await executeAppStoreConnectPluginAction(input(repoRoot, 'configure', {
+      enabled: true, provider: 'app-store-connect-api', issuer_id: 'issuer-prices', key_id: 'key-prices', private_key_path: privateKeyPath,
+    }));
+    const original = globalThis.fetch;
+    const urls: URL[] = [];
+    globalThis.fetch = (async (request: string | URL | Request) => {
+      urls.push(new URL(String(request)));
+      return Response.json({data:[]});
+    }) as typeof fetch;
+    try {
+      await executeAppStoreConnectPluginAction(input(repoRoot, 'get_in_app_purchase_price_schedule', { purchase_id: 'id/special' }));
+      await executeAppStoreConnectPluginAction(input(repoRoot, 'list_subscription_prices', {
+        subscription_id: 'sub1', territory: 'USA', plan_type: 'MONTHLY', cursor: 'opaqueCursor', limit: 25,
+      }));
+      await executeAppStoreConnectPluginAction(input(repoRoot, 'list_subscription_price_points', {
+        subscription_id: 'sub1', territory: 'JPN',
+      }));
+      expect(urls[0]?.pathname).toBe('/v2/inAppPurchases/id%2Fspecial/iapPriceSchedule');
+      expect(urls[1]?.pathname).toBe('/v1/subscriptions/sub1/prices');
+      expect(urls[1]?.searchParams.get('filter[territory]')).toBe('USA');
+      expect(urls[1]?.searchParams.get('filter[planType]')).toBe('MONTHLY');
+      expect(urls[1]?.searchParams.get('cursor')).toBe('opaqueCursor');
+      expect(urls[2]?.pathname).toBe('/v1/subscriptions/sub1/pricePoints');
+      expect(urls[2]?.searchParams.get('filter[territory]')).toBe('JPN');
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
+
+
+  test('IAP schedule mutation pins base territory and inline price point with strong confirmation', async () => {
+    const repoRoot = root();
+    await executeAppStoreConnectPluginAction(input(repoRoot, 'configure', {enabled:true,provider:'mock'}));
+    const manifest = buildAppStoreConnectPluginManifest(1, undefined, repoRoot);
+    expect(manifest.actions.find(a=>a.actionId==='create_in_app_purchase_price_schedule')).toMatchObject({
+      readOnly:false, risk:'remote_write', confirmation:'strong_confirmation',
+    });
+    const output = await executeAppStoreConnectPluginAction(input(repoRoot, 'create_in_app_purchase_price_schedule', {
+      purchase_id:'iap-pro', price_point_id:'point-USA', base_territory:'USA', start_date:'2026-12-01', dry_run:true,
+    }));
+    expect(output).toMatchObject({ dryRun:true, request: {method:'POST',path:'/v1/inAppPurchasePriceSchedules',
+      body:{ data:{type:'inAppPurchasePriceSchedules',relationships:{
+        baseTerritory:{data:{type:'territories',id:'USA'}},
+        inAppPurchase:{data:{type:'inAppPurchases',id:'iap-pro'}},
+        manualPrices:{data:[{type:'inAppPurchasePrices',id:'price-1'}]},
+      }}, included:[{type:'inAppPurchasePrices',id:'price-1',attributes:{startDate:'2026-12-01'},
+        relationships:{inAppPurchasePricePoint:{data:{type:'inAppPurchasePricePoints',id:'point-USA'}}},
+      }] } } });
+    await expect(executeAppStoreConnectPluginAction(input(repoRoot, 'create_in_app_purchase_price_schedule', {
+      purchase_id:'iap-pro',price_point_id:'p',base_territory:'US',dry_run:true,
+    }))).rejects.toThrow('three-letter');
+    await expect(executeAppStoreConnectPluginAction(input(repoRoot, 'create_in_app_purchase_price_schedule', {
+      purchase_id:'iap-pro',price_point_id:'p',base_territory:'USA',start_date:'12/01/2026',dry_run:true,
+    }))).rejects.toThrow('start date');
+  });
+
+  test('App Store release preflight only reads Apple-owned prerequisites and never claims approval', async () => {
+    const repoRoot = root();
+    const privateKeyPath = join(repoRoot, 'AuthKey_RELEASE_PREFLIGHT.p8');
+    const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
+    writeFileSync(privateKeyPath, privateKey.export({ type: 'pkcs8', format: 'pem' }));
+    await executeAppStoreConnectPluginAction(input(repoRoot, 'configure', {
+      enabled: true, provider: 'app-store-connect-api', issuer_id: 'issuer-preflight', key_id: 'key-preflight',
+      private_key_path: privateKeyPath,
+    }));
+    const original = globalThis.fetch;
+    const urls: string[] = [];
+    let missingBuild = false;
+    globalThis.fetch = (async (request: string | URL | Request, init?: RequestInit) => {
+      expect(init?.method ?? 'GET').toBe('GET');
+      const url = new URL(String(request));
+      urls.push(url.pathname);
+      const relationships = { app: {data:{type:'apps', id:'app-1'}},
+        build: {data: missingBuild ? null : {type:'builds',id:'build-1'}},
+        appStoreReviewDetail:{data:{type:'appStoreReviewDetails',id:'detail-1'}} };
+      if (url.pathname === '/v1/appStoreVersions/version-1')
+        return Response.json({data:{id:'version-1',attributes:{versionString:'1.0.5',appStoreState:'PREPARE_FOR_SUBMISSION',platform:'IOS'},relationships}});
+      if (url.pathname.endsWith('/build'))
+        return Response.json({data:{id:'build-1',attributes:{processingState:'VALID',expired:false}}});
+      if (url.pathname.endsWith('/appStoreVersionLocalizations'))
+        return Response.json({data:[{id:'loc-1',attributes:{locale:'en-US',description:'Test',supportUrl:'https://example.com'}}]});
+      if (url.pathname.endsWith('/appStoreReviewDetail'))
+        return Response.json({data:{id:'detail-1',attributes:{contactEmail:'review@example.com',contactPhone:'123',
+          contactFirstName:'A',contactLastName:'B',demoAccountPassword:'secret-not-for-output'}}});
+      throw new Error('unexpected path ' + url.pathname);
+    }) as typeof fetch;
+    try {
+      const valid = await executeAppStoreConnectPluginAction(input(repoRoot, 'check_release_readiness',
+        {app_id:'app-1',version_id:'version-1'}));
+      expect(valid).toMatchObject({preflightOnly:true,appleSubmissionAcceptanceVerified:false,
+        result:'candidate_unverified',blockers:[],evidence:{versionId:'version-1',build:{id:'build-1',processingState:'VALID'}}});
+      expect(JSON.stringify(valid)).not.toContain('secret-not-for-output');
+      expect(urls).toContain('/v1/appStoreVersions/version-1/build');
+      missingBuild = true;
+      const missing = await executeAppStoreConnectPluginAction(input(repoRoot, 'check_release_readiness',
+        {app_id:'app-1',version_id:'version-1'}));
+      expect(missing).toMatchObject({result:'incomplete'});
+      expect((missing.blockers as string[]).join(' ')).toContain('No App Store build');
+      await expect(executeAppStoreConnectPluginAction(input(repoRoot, 'check_release_readiness',
+        {app_id:'different-app',version_id:'version-1'}))).rejects.toThrow('does not belong');
+    } finally { globalThis.fetch = original; }
+  });
+
+
+  test("Asset Library discovery follows Apple's app-to-library-to-asset paths", async () => {
+    const repoRoot = root();
+    const privateKeyPath = join(repoRoot, 'AuthKey_ASSETS.p8');
+    const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
+    writeFileSync(privateKeyPath, privateKey.export({ type: 'pkcs8', format: 'pem' }));
+    await executeAppStoreConnectPluginAction(input(repoRoot, 'configure', {
+      enabled: true, provider: 'app-store-connect-api', issuer_id: 'issuer-assets', key_id: 'key-assets',
+      private_key_path: privateKeyPath,
+    }));
+    const old = globalThis.fetch;
+    const paths: string[] = [];
+    globalThis.fetch = (async (request: string | URL | Request) => {
+      paths.push(new URL(String(request)).pathname);
+      return Response.json({data:[]});
+    }) as typeof fetch;
+    try {
+      await executeAppStoreConnectPluginAction(input(repoRoot, 'get_app_asset_library', { app_id:'app-123' }));
+      await executeAppStoreConnectPluginAction(input(repoRoot, 'list_app_asset_library_images', { library_id:'library-123' }));
+      await executeAppStoreConnectPluginAction(input(repoRoot, 'list_app_asset_library_videos', { library_id:'library-123' }));
+      await executeAppStoreConnectPluginAction(input(repoRoot, 'list_app_asset_library_reference_data', {}));
+      await executeAppStoreConnectPluginAction(input(repoRoot, 'get_app_asset_library_image', { asset_id:'image-123' }));
+      expect(paths).toEqual([
+        '/v1/apps/app-123/assetLibrary',
+        '/v1/appAssetLibraries/library-123/images',
+        '/v1/appAssetLibraries/library-123/videos',
+        '/v1/appAssetLibraryRefData',
+        '/v1/appAssetLibraryImages/image-123',
+      ]);
+    } finally { globalThis.fetch = old; }
+  });
 
   test('verifies Apple-signed Analytics segment checksum and decodes bounded historical TSV', async () => {
     const repoRoot = root();

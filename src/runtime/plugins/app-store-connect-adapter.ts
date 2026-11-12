@@ -467,6 +467,47 @@ const additionalAscReads: AscReadSpec[] = [
   { id: 'list_subscription_groups', title: 'List subscription groups', scope: 'appstoreconnect.commerce.read', path: '/v1/apps/:app_id/subscriptionGroups', required: [], },
   { id: 'list_subscriptions', title: 'List subscriptions in a group', scope: 'appstoreconnect.commerce.read', path: '/v1/subscriptionGroups/:group_id/subscriptions', required: ['group_id'], },
   { id: 'get_subscription', title: 'Read subscription', scope: 'appstoreconnect.commerce.read', path: '/v1/subscriptions/:subscription_id', required: ['subscription_id'], },
+  { id: 'get_in_app_purchase_version', title: 'Read IAP metadata version', scope: 'appstoreconnect.commerce.read', path: '/v1/inAppPurchaseVersions/:version_id', required: ['version_id'],  },
+  { id: 'list_in_app_purchase_version_localizations', title: 'List IAP version localizations', scope: 'appstoreconnect.commerce.read', path: '/v1/inAppPurchaseVersions/:version_id/localizations', required: ['version_id'],  },
+  { id: 'get_in_app_purchase_localization', title: 'Read IAP v2 localization', scope: 'appstoreconnect.commerce.read', path: '/v2/inAppPurchaseLocalizations/:localization_id', required: ['localization_id'],  },
+  { id: 'get_in_app_purchase_price_schedule', title: 'Read IAP price schedule', scope: 'appstoreconnect.commerce.read', path: '/v2/inAppPurchases/:purchase_id/iapPriceSchedule', required: ['purchase_id'],  },
+  { id: 'list_in_app_purchase_price_points', title: 'List IAP price points', scope: 'appstoreconnect.commerce.read', path: '/v2/inAppPurchases/:purchase_id/pricePoints', required: ['purchase_id'], filters: {'territory':'filter[territory]'},  },
+  { id: 'get_in_app_purchase_price_point', title: 'Read IAP price point', scope: 'appstoreconnect.commerce.read', path: '/v1/inAppPurchasePricePoints/:price_point_id', required: ['price_point_id'],  },
+  { id: 'get_in_app_purchase_price_schedule_resource', title: 'Read IAP price schedule resource', scope: 'appstoreconnect.commerce.read', path: '/v1/inAppPurchasePriceSchedules/:schedule_id', required: ['schedule_id'],  },
+  { id: 'list_in_app_purchase_manual_prices', title: 'Read scheduled manual IAP prices', scope: 'appstoreconnect.commerce.read', path: '/v1/inAppPurchasePriceSchedules/:schedule_id/manualPrices', required: ['schedule_id'], filters: {'territory':'filter[territory]'},  },
+  { id: 'list_in_app_purchase_automatic_prices', title: 'Read scheduled automatic IAP prices', scope: 'appstoreconnect.commerce.read', path: '/v1/inAppPurchasePriceSchedules/:schedule_id/automaticPrices', required: ['schedule_id'], filters: {'territory':'filter[territory]'},  },
+  { id: 'get_subscription_group', title: 'Read subscription group', scope: 'appstoreconnect.commerce.read', path: '/v1/subscriptionGroups/:group_id', required: ['group_id'],  },
+  { id: 'list_subscription_group_versions', title: 'List subscription group metadata versions', scope: 'appstoreconnect.commerce.read', path: '/v1/subscriptionGroups/:group_id/versions', required: ['group_id'],  },
+  { id: 'get_subscription_group_version', title: 'Read subscription group version', scope: 'appstoreconnect.commerce.read', path: '/v1/subscriptionGroupVersions/:version_id', required: ['version_id'],  },
+  { id: 'list_subscription_group_version_localizations', title: 'List subscription group version localizations', scope: 'appstoreconnect.commerce.read', path: '/v1/subscriptionGroupVersions/:version_id/localizations', required: ['version_id'],  },
+  { id: 'list_subscription_versions', title: 'List subscription metadata versions', scope: 'appstoreconnect.commerce.read', path: '/v1/subscriptions/:subscription_id/versions', required: ['subscription_id'], filters: {'state':'filter[state]'},  },
+  { id: 'get_subscription_version', title: 'Read subscription metadata version', scope: 'appstoreconnect.commerce.read', path: '/v1/subscriptionVersions/:version_id', required: ['version_id'],  },
+  { id: 'list_subscription_version_localizations', title: 'List subscription version localizations', scope: 'appstoreconnect.commerce.read', path: '/v1/subscriptionVersions/:version_id/localizations', required: ['version_id'],  },
+  { id: 'list_subscription_version_images', title: 'List subscription version images', scope: 'appstoreconnect.commerce.read', path: '/v1/subscriptionVersions/:version_id/images', required: ['version_id'],  },
+  { id: 'get_subscription_localization', title: 'Read subscription v2 localization', scope: 'appstoreconnect.commerce.read', path: '/v2/subscriptionLocalizations/:localization_id', required: ['localization_id'],  },
+  { id: 'list_subscription_prices', title: 'List subscription scheduled prices', scope: 'appstoreconnect.commerce.read', path: '/v1/subscriptions/:subscription_id/prices', required: ['subscription_id'], filters: {'territory':'filter[territory]','plan_type':'filter[planType]'},  },
+  { id: 'list_subscription_price_points', title: 'List subscription price points', scope: 'appstoreconnect.commerce.read', path: '/v1/subscriptions/:subscription_id/pricePoints', required: ['subscription_id', 'territory'], filters: {'territory':'filter[territory]'},  },
+  { id: 'get_subscription_price', title: 'Read subscription price', scope: 'appstoreconnect.commerce.read', path: '/v1/subscriptionPrices/:price_id', required: ['price_id'],  },
+  { id: 'get_subscription_price_point', title: 'Read subscription price point', scope: 'appstoreconnect.commerce.read', path: '/v1/subscriptionPricePoints/:point_id', required: ['point_id'],  },
+  { id: 'list_subscription_introductory_offers', title: 'List subscription introductory offers', scope: 'appstoreconnect.commerce.read', path: '/v1/subscriptions/:subscription_id/introductoryOffers', required: ['subscription_id'],  },
+  { id: 'list_subscription_offer_codes', title: 'List subscription offer codes', scope: 'appstoreconnect.commerce.read', path: '/v1/subscriptions/:subscription_id/offerCodes', required: ['subscription_id'],  },
+  { id: 'list_subscription_promotional_offers', title: 'List subscription promotional offers', scope: 'appstoreconnect.commerce.read', path: '/v1/subscriptions/:subscription_id/promotionalOffers', required: ['subscription_id'],  },
+  { id: 'get_subscription_availability', title: 'Read subscription territory availability', scope: 'appstoreconnect.commerce.read', path: '/v1/subscriptions/:subscription_id/subscriptionAvailability', required: ['subscription_id'],  },
+  { id: 'get_app_price_schedule', title: 'Read app price schedule', scope: 'appstoreconnect.commerce.read', path: '/v1/apps/:app_id/appPriceSchedule', required: [],  },
+  { id: 'list_app_price_points', title: 'List app price points', scope: 'appstoreconnect.commerce.read', path: '/v1/apps/:app_id/appPricePoints', required: [], filters: {'territory':'filter[territory]'},  },
+  { id: 'get_app_availability', title: 'Read app territory availability', scope: 'appstoreconnect.apps.read', path: '/v1/apps/:app_id/appAvailabilityV2', required: [],  },
+  { id: 'list_app_store_version_experiments', title: 'List App Store product page experiments', scope: 'appstoreconnect.analytics.read', path: '/v1/appStoreVersions/:version_id/appStoreVersionExperiments', required: ['version_id'],  },
+  { id: 'list_beta_feedback_crash_submissions', title: 'List beta crash feedback', scope: 'appstoreconnect.apps.read', path: '/v1/apps/:app_id/betaFeedbackCrashSubmissions', required: [],  },
+  { id: 'list_beta_feedback_screenshot_submissions', title: 'List beta screenshots feedback', scope: 'appstoreconnect.apps.read', path: '/v1/apps/:app_id/betaFeedbackScreenshotSubmissions', required: [],  },
+  { id: 'list_prerelease_versions', title: 'List pre-release TestFlight versions', scope: 'appstoreconnect.apps.read', path: '/v1/apps/:app_id/preReleaseVersions', required: [],  },
+  { id: 'list_beta_app_localizations', title: 'List TestFlight app localizations', scope: 'appstoreconnect.apps.read', path: '/v1/apps/:app_id/betaAppLocalizations', required: [],  },
+  { id: 'get_app_asset_library', title: 'Read Apple App Asset Library for app', scope: 'appstoreconnect.apps.read', path: '/v1/apps/:app_id/assetLibrary', required: [] },
+  { id: 'list_app_asset_library_reference_data', title: 'List App Asset Library size and format specifications', scope: 'appstoreconnect.apps.read', path: '/v1/appAssetLibraryRefData', required: [] },
+  { id: 'get_app_asset_library_image', title: 'Read App Asset Library image processing state', scope: 'appstoreconnect.apps.read', path: '/v1/appAssetLibraryImages/:asset_id', required: ['asset_id'] },
+  { id: 'get_app_asset_library_video', title: 'Read App Asset Library video processing state', scope: 'appstoreconnect.apps.read', path: '/v1/appAssetLibraryVideos/:asset_id', required: ['asset_id'] },
+  { id: 'list_app_asset_library_image_placements', title: 'List App Asset Library image placements', scope: 'appstoreconnect.apps.read', path: '/v1/appAssetLibraryImages/:asset_id/placements', required: ['asset_id'] },
+  { id: 'list_app_asset_library_images', title: 'List App Store asset library images', scope: 'appstoreconnect.apps.read', path: '/v1/appAssetLibraries/:library_id/images', required: ['library_id'],  },
+  { id: 'list_app_asset_library_videos', title: 'List App Store asset library videos', scope: 'appstoreconnect.apps.read', path: '/v1/appAssetLibraries/:library_id/videos', required: ['library_id'],  },
   { id: 'list_build_uploads', title: 'List Build Upload resources', scope: 'appstoreconnect.apps.read', path: '/v1/apps/:app_id/buildUploads', required: [], },
   { id: 'list_xcode_cloud_build_runs', title: 'List Xcode Cloud build runs', scope: 'appstoreconnect.xcodecloud.read', path: '/v1/ciWorkflows/:workflow_id/buildRuns', required: ['workflow_id'], },
   { id: 'list_custom_product_pages', title: 'List custom product pages', scope: 'appstoreconnect.analytics.read', path: '/v1/apps/:app_id/appCustomProductPages', required: [], },
@@ -481,6 +522,7 @@ function additionalAscActions(): AssistantPluginActionDescriptor[] {
     }
     if (spec.path.includes(':app_id')) properties.app_id = { type: 'string' };
     properties.limit = { type: 'number' };
+    if (!spec.id.startsWith('get_')) properties.cursor = { type: 'string' };
     return {
       actionId: spec.id, title: spec.title, description: spec.title + ' through the official App Store Connect API.',
       readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 45_000,
@@ -497,8 +539,20 @@ function additionalAscActions(): AssistantPluginActionDescriptor[] {
     { id: 'create_in_app_purchase', title: 'Create in-app purchase v2', scope: 'appstoreconnect.commerce.write', fields: ['app_id','name','product_id','purchase_type'], required: ['name','product_id','purchase_type'], confirmation: 'strong_confirmation' },
     { id: 'update_in_app_purchase', title: 'Update in-app purchase v2', scope: 'appstoreconnect.commerce.write', fields: ['purchase_id','name','review_note','family_sharable'], required: ['purchase_id'], confirmation: 'authorization' },
     { id: 'create_customer_review_response', title: 'Respond to customer review', scope: 'appstoreconnect.reviews.write', fields: ['review_id','response_body'], required: ['review_id','response_body'], confirmation: 'strong_confirmation' },
+    { id: 'create_in_app_purchase_version', title: 'Create versioned IAP review metadata draft', scope: 'appstoreconnect.commerce.write', fields: ['purchase_id'], required: ['purchase_id'], confirmation: 'strong_confirmation' },
+    { id: 'create_in_app_purchase_version_localization', title: 'Create IAP version localization v2', scope: 'appstoreconnect.commerce.write', fields: ['version_id','locale','name','description'], required: ['version_id','locale','name'], confirmation: 'authorization' },
+    { id: 'update_in_app_purchase_version_localization', title: 'Update IAP localization v2', scope: 'appstoreconnect.commerce.write', fields: ['localization_id','name','description'], required: ['localization_id'], confirmation: 'authorization' },
+    { id: 'create_subscription_group', title: 'Create subscription group', scope: 'appstoreconnect.commerce.write', fields: ['app_id','reference_name'], required: ['reference_name'], confirmation: 'strong_confirmation' },
+    { id: 'create_subscription', title: 'Create auto-renewable subscription', scope: 'appstoreconnect.commerce.write', fields: ['group_id','name','product_id','subscription_period','family_sharable'], required: ['group_id','name','product_id','subscription_period'], confirmation: 'strong_confirmation' },
+    { id: 'create_subscription_version', title: 'Create subscription metadata version', scope: 'appstoreconnect.commerce.write', fields: ['subscription_id'], required: ['subscription_id'], confirmation: 'strong_confirmation' },
+    { id: 'create_subscription_version_localization', title: 'Create subscription version localization v2', scope: 'appstoreconnect.commerce.write', fields: ['version_id','locale','name','description'], required: ['version_id','locale','name'], confirmation: 'authorization' },
+    { id: 'create_subscription_group_version', title: 'Create subscription group metadata version', scope: 'appstoreconnect.commerce.write', fields: ['group_id'], required: ['group_id'], confirmation: 'strong_confirmation' },
+    { id: 'create_subscription_group_version_localization', title: 'Create subscription group localization v2', scope: 'appstoreconnect.commerce.write', fields: ['version_id','locale','name','custom_app_name'], required: ['version_id','locale','name'], confirmation: 'authorization' },
+    { id: 'create_in_app_purchase_price_schedule', title: 'Create or change IAP base-territory price schedule', scope: 'appstoreconnect.commerce.write', fields: ['purchase_id','price_point_id','base_territory','start_date'], required: ['purchase_id','price_point_id','base_territory'], confirmation: 'strong_confirmation' },
+    { id: 'create_subscription_price', title: 'Set or schedule a subscription price in one territory', scope: 'appstoreconnect.commerce.write', fields: ['subscription_id','price_point_id','start_date','plan_type'], required: ['subscription_id','price_point_id'], confirmation: 'strong_confirmation' },
   ];
   const reports: AssistantPluginActionDescriptor[] = [
+    { actionId: 'check_release_readiness', title: 'Inspect App Store release prerequisites', description: 'Read Apple-owned build, localized metadata and review details without submitting. Returns candidate/unverified, never guarantees Apple acceptance.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 90_000, cancellable: true, idempotent: true, scopes: ['appstoreconnect.apps.read'], resourceClaims: [{ resource:'remote', mode:'read' }], argumentsSchema: { type:'object',properties:{version_id:{type:'string'},app_id:{type:'string'}},required:['version_id'],additionalProperties:false } },
     { actionId: 'read_analytics_segment_data', title: 'Read Analytics data segment', description: 'Download and verify a signed Apple Analytics TSV segment.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 60_000, cancellable: true, idempotent: true, scopes: ['appstoreconnect.analytics.read'], resourceClaims: [{resource:'remote',mode:'read'}], argumentsSchema: {type:'object',properties:{segment_id:{type:'string'},max_rows:{type:'number'}},required:['segment_id'],additionalProperties:false} },
     ...['sales', 'finance'].map((kind): AssistantPluginActionDescriptor => ({ actionId: 'read_' + kind + '_report', title: 'Read Apple ' + kind + ' report', description: 'Download and decode a bounded Apple gzip report.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 60_000, cancellable: true, idempotent: true, scopes: ['appstoreconnect.reports.read'], resourceClaims: [{resource:'remote',mode:'read'}], argumentsSchema: {type:'object',properties:{vendor_number:{type:'string'},report_date:{type:'string'},region_code:{type:'string'},frequency:{type:'string'},report_type:{type:'string'},report_sub_type:{type:'string'},version:{type:'string'},max_rows:{type:'number'}},required:kind==='finance'?['vendor_number','report_date','region_code']:['vendor_number','report_date'],additionalProperties:false} })),
   ];
@@ -517,17 +571,119 @@ function additionalAscActions(): AssistantPluginActionDescriptor[] {
 }
 
 function additionalAscReadRequest(spec: AscReadSpec, args: Record<string, unknown>, config: AppStoreConnectPluginConfig) {
+  for (const required of spec.required) requiredArg(args, required);
   const path = spec.path.replace(/:([a-z_]+)/g, (_match, key: string) =>
     encodeURIComponent(key === 'app_id' ? appId(args, config) : requiredArg(args, key)));
   const query: Record<string, string | number | undefined> = { ...spec.fixedQuery };
   for (const [arg, parameter] of Object.entries(spec.filters ?? {})) query[parameter] = stringValue(args[arg]);
-  if (!spec.id.startsWith('get_')) query.limit = limit(args.limit);
+  if (!spec.id.startsWith('get_')) {
+    query.limit = limit(args.limit);
+    if (args.cursor !== undefined) query.cursor = requiredArg(args, 'cursor');
+  }
   return { path, query };
 }
 
 function additionalAscWriteRequest(actionId: string, args: Record<string, unknown>, config: AppStoreConnectPluginConfig):
   { path: string; method: 'POST' | 'PATCH'; body: unknown } | undefined {
   const resource = (type: string, id: string) => ({ data: { type, id } });
+
+  if (actionId === 'create_in_app_purchase_version')
+    return { method: 'POST', path: '/v1/inAppPurchaseVersions', body: { data: {
+      type: 'inAppPurchaseVersions', relationships: { inAppPurchase: resource('inAppPurchases', requiredArg(args, 'purchase_id')) },
+    } } };
+  if (actionId === 'create_in_app_purchase_version_localization' || actionId === 'update_in_app_purchase_version_localization') {
+    const update = actionId.startsWith('update_');
+    const id = update ? requiredArg(args, 'localization_id') : undefined;
+    const attrs: Record<string, unknown> = {};
+    for (const key of ['locale','name','description']) if (args[key] !== undefined && (!update || key !== 'locale')) attrs[key] = args[key];
+    if (update && Object.keys(attrs).length === 0)
+      throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'No localization fields to update.', { retryable: false });
+    return {
+      method: update ? 'PATCH' : 'POST', path: update ? '/v2/inAppPurchaseLocalizations/' + encodeURIComponent(id!) : '/v2/inAppPurchaseLocalizations',
+      body: { data: { type: 'inAppPurchaseLocalizations', ...(id ? {id} : {}), attributes: attrs,
+        ...(update ? {} : { relationships: { version: resource('inAppPurchaseVersions', requiredArg(args, 'version_id')) } }) } },
+    };
+  }
+  if (actionId === 'create_subscription_group')
+    return { method: 'POST', path: '/v1/subscriptionGroups', body: { data: {
+      type: 'subscriptionGroups', attributes: { referenceName: requiredArg(args, 'reference_name') },
+      relationships: { app: resource('apps', appId(args, config)) },
+    } } };
+  if (actionId === 'create_subscription') {
+    const period = requiredArg(args, 'subscription_period');
+    if (!['ONE_WEEK','ONE_MONTH','TWO_MONTHS','THREE_MONTHS','SIX_MONTHS','ONE_YEAR'].includes(period))
+      throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Invalid subscription period.', { retryable: false });
+    const attrs: Record<string, unknown> = { name: requiredArg(args, 'name'),
+      productId: requiredArg(args, 'product_id'), subscriptionPeriod: period };
+    if (args.family_sharable !== undefined) attrs.familySharable = args.family_sharable;
+    return { method: 'POST', path: '/v1/subscriptions', body: { data: {
+      type: 'subscriptions', attributes: attrs,
+      relationships: { group: resource('subscriptionGroups', requiredArg(args, 'group_id')) },
+    } } };
+  }
+  if (actionId === 'create_subscription_version')
+    return { method: 'POST', path: '/v1/subscriptionVersions', body: { data: {
+      type: 'subscriptionVersions', relationships: { subscription: resource('subscriptions', requiredArg(args, 'subscription_id')) },
+    } } };
+  if (actionId === 'create_subscription_version_localization') {
+    const attrs: Record<string, unknown> = { locale: requiredArg(args, 'locale'), name: requiredArg(args, 'name') };
+    if (args.description !== undefined) attrs.description = args.description;
+    return { method: 'POST', path: '/v2/subscriptionLocalizations', body: { data: {
+      type: 'subscriptionLocalizations', attributes: attrs,
+      relationships: { version: resource('subscriptionVersions', requiredArg(args, 'version_id')) },
+    } } };
+  }
+  if (actionId === 'create_subscription_group_version')
+    return { method: 'POST', path: '/v1/subscriptionGroupVersions', body: { data: {
+      type: 'subscriptionGroupVersions', relationships: { subscriptionGroup: resource('subscriptionGroups', requiredArg(args, 'group_id')) },
+    } } };
+  if (actionId === 'create_subscription_group_version_localization') {
+    const attrs: Record<string, unknown> = { locale: requiredArg(args, 'locale'), name: requiredArg(args, 'name') };
+    if (args.custom_app_name !== undefined) attrs.customAppName = args.custom_app_name;
+    return { method: 'POST', path: '/v2/subscriptionGroupLocalizations', body: { data: {
+      type: 'subscriptionGroupLocalizations', attributes: attrs,
+      relationships: { version: resource('subscriptionGroupVersions', requiredArg(args, 'version_id')) },
+    } } };
+  }
+
+  if (actionId === 'create_in_app_purchase_price_schedule') {
+    const purchaseId = requiredArg(args, 'purchase_id');
+    const pointId = requiredArg(args, 'price_point_id');
+    const territory = requiredArg(args, 'base_territory');
+    const date = args.start_date === undefined ? null : requiredArg(args, 'start_date');
+    if (!/^[A-Z]{3}$/.test(territory))
+      throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Base territory must be an Apple three-letter territory code.', { retryable: false });
+    if (date !== null && !/^\d{4}-\d{2}-\d{2}$/.test(date))
+      throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Invalid IAP price start date.', { retryable: false });
+    const inlineId = 'price-1';
+    return { method: 'POST', path: '/v1/inAppPurchasePriceSchedules', body: {
+      data: { type: 'inAppPurchasePriceSchedules', relationships: {
+        inAppPurchase: resource('inAppPurchases', purchaseId),
+        baseTerritory: resource('territories', territory),
+        manualPrices: { data: [{type:'inAppPurchasePrices', id:inlineId}] },
+      } },
+      included: [{ type: 'inAppPurchasePrices', id: inlineId, attributes: { startDate: date },
+        relationships: {
+          inAppPurchaseV2: resource('inAppPurchases', purchaseId),
+          inAppPurchasePricePoint: resource('inAppPurchasePricePoints', pointId),
+        },
+      }],
+    } };
+  }
+  if (actionId === 'create_subscription_price') {
+    const attrs: Record<string, unknown> = { startDate: args.start_date === undefined ? null : requiredArg(args, 'start_date') };
+    if (args.plan_type !== undefined) {
+      const plan = requiredArg(args, 'plan_type');
+      if (!['MONTHLY','UPFRONT'].includes(plan))
+        throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Invalid subscription price plan type.', { retryable: false });
+      attrs.planType = plan;
+    }
+    return { method: 'POST', path: '/v1/subscriptionPrices', body: { data: {
+      type: 'subscriptionPrices', attributes: attrs,
+      relationships: { subscription: resource('subscriptions', requiredArg(args, 'subscription_id')),
+        subscriptionPricePoint: resource('subscriptionPricePoints', requiredArg(args, 'price_point_id')) },
+    } } };
+  }
   if (actionId === 'set_app_store_version_build')
     return { method: 'PATCH', path: '/v1/appStoreVersions/' + encodeURIComponent(requiredArg(args, 'version_id')) + '/relationships/build',
       body: { data: { type: 'builds', id: requiredArg(args, 'build_id') } } };
@@ -664,6 +820,80 @@ async function downloadAppleReport(config: AppStoreConnectPluginConfig, actionId
     compressedBytes: bytes.length, ...decodeAppleReport(bytes, args.max_rows) };
 }
 
+
+/**
+ * Read-only evidence, not an alternative Apple acceptance gate. Apple remains
+ * authoritative for completeness and the outcome of Submit for App Review.
+ */
+async function inspectAppStoreReleaseReadiness(config: AppStoreConnectPluginConfig, args: Record<string, unknown>):
+  Promise<Record<string, unknown>> {
+  const versionId = requiredArg(args, 'version_id');
+  const basePath = '/v1/appStoreVersions/' + encodeURIComponent(versionId);
+  const versionResponse = await apiRequest<{
+    data: { id: string; attributes?: { versionString?: string; appStoreState?: string; platform?: string };
+      relationships?: { app?: { data?: { id?: string } | null }; build?: { data?: { id?: string } | null };
+        appStoreReviewDetail?: { data?: { id?: string } | null } } };
+  }>(config, { path: basePath, query: { include: 'app,build,appStoreReviewDetail' } });
+  const version = versionResponse.data;
+  if (!version || version.id !== versionId)
+    throw new AssistantPluginError('PLUGIN_PROVIDER_ERROR', 'Apple returned a different App Store version.', { retryable: false });
+  const appleAppId = version.relationships?.app?.data?.id;
+  const expectedAppId = stringValue(args.app_id) ?? config.defaultAppId;
+  if (expectedAppId && appleAppId !== expectedAppId)
+    throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'App Store version does not belong to the selected app.', { retryable: false });
+  const blockers: string[] = [];
+  const evidence: Record<string, unknown> = { versionId, appId: appleAppId,
+    versionString: version.attributes?.versionString, state: version.attributes?.appStoreState,
+    platform: version.attributes?.platform };
+  const buildId = version.relationships?.build?.data?.id;
+  if (!buildId) blockers.push('No App Store build assigned to this version.');
+  else {
+    const buildResponse = await apiRequest<{
+      data: { id: string; attributes?: { processingState?: string; expired?: boolean; version?: string } };
+    }>(config, { path: basePath + '/build' });
+    const attrs = buildResponse.data.attributes;
+    evidence.build = { id: buildId, processingState: attrs?.processingState, expired: attrs?.expired === true };
+    if (buildResponse.data.id !== buildId || attrs?.expired || attrs?.processingState !== 'VALID')
+      blockers.push('App Store build is not confirmed valid and unexpired.');
+  }
+  const localizationResponse = await apiRequest<{
+    data: Array<{ id: string; attributes?: { locale?: string; description?: string; supportUrl?: string } }>;
+  }>(config, { path: basePath + '/appStoreVersionLocalizations', query: { limit: 100 } });
+  const localizations = localizationResponse.data ?? [];
+  evidence.localizations = localizations.map(item => ({
+    locale: item.attributes?.locale,
+    descriptionPresent: !!item.attributes?.description?.trim(),
+    supportUrlPresent: !!item.attributes?.supportUrl?.trim(),
+  }));
+  if (!localizations.length) blockers.push('No App Store version localizations found.');
+  for (const loc of localizations) {
+    if (!loc.attributes?.description?.trim() || !loc.attributes?.supportUrl?.trim())
+      blockers.push('Required description/support URL appears incomplete for ' + (loc.attributes?.locale ?? loc.id) + '.');
+  }
+  const reviewId = version.relationships?.appStoreReviewDetail?.data?.id;
+  if (!reviewId) blockers.push('No App Review details linked to this version.');
+  else {
+    const detailResponse = await apiRequest<{
+      data: { id: string; attributes?: { contactEmail?: string; contactPhone?: string; contactFirstName?: string;
+        contactLastName?: string } };
+    }>(config, { path: basePath + '/appStoreReviewDetail' });
+    const attrs = detailResponse.data?.attributes;
+    const contactComplete = !!attrs?.contactEmail && !!attrs?.contactPhone
+      && !!attrs?.contactFirstName && !!attrs?.contactLastName;
+    evidence.reviewDetail = { id: reviewId, contactComplete };
+    if (!contactComplete) blockers.push('App Review contact details appear incomplete.');
+  }
+  return { preflightOnly: true, appleSubmissionAcceptanceVerified: false,
+    result: blockers.length ? 'incomplete' : 'candidate_unverified',
+    blockers, evidence,
+    notVerified: [
+      'Screenshot device coverage and asset processing state',
+      'App Privacy, age rating, trade/export compliance and availability',
+      'All required fields and eligibility accepted by the Apple submission endpoint',
+    ],
+  };
+}
+
 function capabilities(): AssistantPluginCapability[] {
   return [
     {
@@ -712,11 +942,12 @@ function capabilities(): AssistantPluginCapability[] {
       title: 'Release Operations',
       description: 'Create App Store versions and gated review submissions with strong confirmation.',
       scopes: ['appstoreconnect.release.write'],
-      actions: ['create_app_store_version', 'create_review_submission', 'submit_for_review', 'set_app_store_version_build', 'add_review_submission_item', 'get_app_store_version', 'get_app_store_version_build', 'get_review_submission', 'list_review_submission_items', 'get_app_store_review_detail', 'update_app_store_review_detail'],
+      actions: ['create_app_store_version', 'create_review_submission', 'submit_for_review', 'set_app_store_version_build', 'add_review_submission_item', 'get_app_store_version', 'get_app_store_version_build', 'get_review_submission', 'list_review_submission_items', 'get_app_store_review_detail', 'update_app_store_review_detail', 'check_release_readiness'],
+      // Additional release/version reads are advertised in the commerce and ASO groups below.
     },
     { capabilityId: 'sales-finance', title: 'Sales and Finance Reports', description: 'Download bounded official TSV reports.', scopes: ['appstoreconnect.reports.read', 'appstoreconnect.analytics.read'], actions: ['read_sales_report', 'read_finance_report', 'read_analytics_segment_data'] },
     { capabilityId: 'analytics-and-aso', title: 'Analytics and ASO', description: 'Read Apple Analytics reports, historical snapshots, keyword configuration, and store discovery.', scopes: ['appstoreconnect.analytics.read','appstoreconnect.analytics.write'], actions: [...additionalAscReads.filter(s => s.scope === 'appstoreconnect.analytics.read').map(s => s.id), 'request_analytics_report'] },
-    { capabilityId: 'commerce', title: 'In-App Purchases and Subscriptions', description: 'Read products, subscriptions and manage IAP v2.', scopes: ['appstoreconnect.commerce.read','appstoreconnect.commerce.write'], actions: [...additionalAscReads.filter(s => s.scope === 'appstoreconnect.commerce.read').map(s => s.id), 'create_in_app_purchase', 'update_in_app_purchase'] },
+    { capabilityId: 'commerce', title: 'In-App Purchases and Subscriptions', description: 'Read products, subscriptions and manage IAP v2.', scopes: ['appstoreconnect.commerce.read','appstoreconnect.commerce.write'], actions: [...additionalAscReads.filter(s => s.scope === 'appstoreconnect.commerce.read').map(s => s.id), ...['create_in_app_purchase','update_in_app_purchase','create_in_app_purchase_version','create_in_app_purchase_version_localization','update_in_app_purchase_version_localization','create_subscription_group','create_subscription','create_subscription_version','create_subscription_version_localization','create_subscription_group_version','create_subscription_group_version_localization','create_subscription_price','create_in_app_purchase_price_schedule']] },
     { capabilityId: 'customer-reviews', title: 'Customer Reviews', description: 'Read ratings and response to reviews.', scopes: ['appstoreconnect.reviews.read','appstoreconnect.reviews.write'], actions: [...additionalAscReads.filter(s => s.scope === 'appstoreconnect.reviews.read').map(s => s.id), 'create_customer_review_response'] },
     {
       capabilityId: 'xcode-cloud-workflows',
@@ -1105,6 +1336,8 @@ function mockBuild(id: string) {
 function mockResponse(actionId: string, args: Record<string, unknown>, config: AppStoreConnectPluginConfig): Record<string, unknown> {
   const id = stringValue(args.app_id) ?? config.defaultAppId ?? stableMockId('app', args);
   const additionalRead = additionalAscReads.find(spec => spec.id === actionId);
+  if (actionId === 'check_release_readiness')
+    return { preflightOnly: true, appleSubmissionAcceptanceVerified: false, result: 'candidate_unverified', blockers: [], evidence: {versionId: requiredArg(args, 'version_id')}, notVerified: ['Mock provider has no real Apple submission evidence'], provider:'mock' };
   if (['read_analytics_segment_data','read_sales_report','read_finance_report'].includes(actionId))
     return { columns:['Date','Units'], rows:[['2026-11-01','2']], totalRows:1, truncated:false, format:'tsv', provider:'mock' };
   if (additionalRead) return { data: [], meta: { provider: 'mock', resource: additionalAscReadRequest(additionalRead, args, config).path } };
@@ -1272,7 +1505,7 @@ export function buildAppStoreConnectPluginManifest(previousRevision = 0, previou
     pluginId: APP_STORE_CONNECT_PLUGIN_ID,
     provider: 'apple',
     displayName: 'App Store Connect API Plugin',
-    pluginVersion: '1.2.0',
+    pluginVersion: '1.3.0',
     authority: { strategy: 'derived', duplicateStateAllowed: false, sourceOfTruth: ['controller-global:system/plugins/config/app-store-connect.json', 'legacy-import-only:system/plugins/profiles|repositories/<repoId>/plugins/config|.forge/plugins|.repo-harness/plugins', 'env:FORGE_ASC_*'] },
     enabled: config.enabled,
     lifecycle: { state: state.lifecycleState, reason: !config.enabled ? 'App Store Connect plugin is disabled.' : auth.ready ? 'App Store Connect API credentials are ready.' : auth.errors[0] ?? auth.warnings[0] },
@@ -1319,6 +1552,7 @@ export async function executeAppStoreConnectPluginAction(input: AssistantPluginA
   }
   if (!config.enabled || !auth.ready) throw new AssistantPluginError('PLUGIN_NOT_READY', 'App Store Connect plugin is not ready.', { retryable: false, details: { enabled: config.enabled, errors: auth.errors } });
 
+  if (input.actionId === 'check_release_readiness') return inspectAppStoreReleaseReadiness(config, input.args);
   if (['read_analytics_segment_data','read_sales_report','read_finance_report'].includes(input.actionId))
     return downloadAppleReport(config, input.actionId, input.args);
   const additionalRead = additionalAscReads.find(spec => spec.id === input.actionId);
