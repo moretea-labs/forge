@@ -201,7 +201,7 @@ private struct ForgeWorkspaceView: View {
             }
             ToolbarItem(placement:.automatic) {
                 HStack(spacing:7) {
-                    Circle().fill(model.connection == "已连接" ? Color.green : Color.orange)
+                    Circle().fill(model.connection == "配置已就绪" ? Color.green : Color.orange)
                         .frame(width:6,height:6)
                     Text(model.connection).font(.system(size:11))
                 }.foregroundStyle(ForgePalette.secondary)
@@ -6059,7 +6059,7 @@ private struct RuntimeSettingsSection: View {
                     .buttonStyle(.plain).disabled(model.connectionLoading)
                     .accessibilityIdentifier("connection.refresh")
                 if model.connectionStatus?.repairAvailable == true {
-                    Button(model.connectionStatus?.repairLabel ?? "刷新 Connector") {
+                    Button(model.connectionStatus?.repairLabel ?? "重新连接") {
                         Task { await model.repairControllerConnection() }
                     }
                     .buttonStyle(.bordered).disabled(model.connectionLoading)
@@ -6067,10 +6067,10 @@ private struct RuntimeSettingsSection: View {
                 }
             }
             if let status = model.connectionStatus {
-                connectionRow("控制器",status.controller)
-                connectionRow("传输",status.tunnel)
+                connectionRow("本机服务",status.controller)
+                connectionRow("远程连接",status.tunnel)
                 if status.ready {
-                    Text("Forge 连接配置已就绪。请在外部客户端调用 rh_status 确认实际可用。")
+                    Text("连接配置已就绪。请在对应客户端发送一条消息确认可用。")
                         .font(.system(size:11))
                         .foregroundStyle(ForgePalette.secondary)
                 }
@@ -6086,8 +6086,17 @@ private struct RuntimeSettingsSection: View {
                                 .disabled(model.connectionLoading)
                         }
                         Text(summary).font(.system(size:11.5)).foregroundStyle(ForgePalette.secondary)
-                        if let risk = setup.risk, !risk.isEmpty {
-                            Text(risk).font(.system(size:10.5)).foregroundStyle(.tertiary)
+                        if let risk = setup.risk {
+                            let riskLabel: String? = switch risk {
+                            case "readonly": "只读操作"
+                            case "workspace_write": "将修改本机文件或配置"
+                            case "remote_write": "将修改远程服务中的数据"
+                            case "destructive": "可能删除或覆盖数据"
+                            default: nil
+                            }
+                            if let riskLabel {
+                                Text(riskLabel).font(.system(size:10.5)).foregroundStyle(.tertiary)
+                            }
                         }
                     }
                     .padding(.top,2)
@@ -6098,7 +6107,7 @@ private struct RuntimeSettingsSection: View {
                     VStack(alignment:.leading,spacing:8) {
                         Text("首次连接").font(.system(size:11.5,weight:.semibold))
                         HStack(spacing:10) {
-                            Picker("控制器",selection:$setupController) {
+                            Picker("客户端",selection:$setupController) {
                                 Text("ChatGPT").tag("chatgpt")
                                 Text("Codex").tag("codex")
                                 Text("Claude Code").tag("claude")
@@ -6116,16 +6125,16 @@ private struct RuntimeSettingsSection: View {
                             .accessibilityIdentifier("connection.setup.apply")
                         }
                         Text(setupController == "chatgpt" || setupController == "mcp"
-                             ? "使用 Forge 自动远程传输；不需要手工填写内部 MCP 状态。"
-                             : "使用本机控制器，不启用远程 tunnel。")
+                             ? "通过 Forge 远程连接。"
+                             : "直接连接本机服务。")
                             .font(.system(size:11)).foregroundStyle(ForgePalette.secondary)
-                        Text("保存后，请在对应客户端验证实际连接。")
+                        Text("保存后，在对应客户端发送一条消息确认可用。")
                             .font(.system(size:10.5)).foregroundStyle(.tertiary)
                     }
                     .padding(.top,2)
                 }
             } else {
-                Text(model.connectionLoading ? "正在读取连接状态。" : "暂时无法读取 MCP 连接状态。请刷新连接后重试。")
+                Text(model.connectionLoading ? "正在读取连接状态。" : "暂时无法读取连接状态。请刷新后重试。")
                     .font(.system(size:12)).foregroundStyle(ForgePalette.secondary)
             }
         }

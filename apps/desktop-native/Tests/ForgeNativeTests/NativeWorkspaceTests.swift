@@ -705,7 +705,7 @@ final class NativeWorkspaceTests: XCTestCase {
                 "tunnel":["ready":true,"title":"Transport configured","detail":"setup"]
             ]
         ])
-        XCTAssertEqual(NativeWorkspace.connectionLabel(configuredConnection),"已连接")
+        XCTAssertEqual(NativeWorkspace.connectionLabel(configuredConnection),"配置已就绪")
         let unconfiguredConnection = NativeWorkspace.controllerConnectionDetail([
             "connection":[
                 "configured":false,"ready":false,
