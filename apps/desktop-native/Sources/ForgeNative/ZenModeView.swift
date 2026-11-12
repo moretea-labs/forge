@@ -187,7 +187,7 @@ struct ZenWorkspacePane: View {
     let onOpenPlanning: () -> Void
     let onDraftGoal: (String) -> Void
     let onOpenInbox: () -> Void
-    let onOpenAgent: (ForgeRecord, String, String?) -> Void
+    let onOpenAgent: (ForgeRecord, String, String?, Bool) -> Void
     @Environment(\.scenePhase) private var scenePhase
 
     @State private var boardMode = "forge"
@@ -196,6 +196,10 @@ struct ZenWorkspacePane: View {
     @State private var showingRequirementSheet = false
     @State private var showingPlanSheet = false
     @State private var pendingReviewRecord: ForgeRecord?
+    @State private var pendingProposal: ZenChangeProposal?
+    @State private var proposalSourceRepoId = ""
+    @State private var proposalProblem = ""
+    @State private var showingProposalProblem = false
     @State private var editingRecord: ForgeRecord?
     @State private var pendingAcceptanceRecord: ForgeRecord?
     @State private var acceptanceReferences = ""
@@ -257,6 +261,14 @@ struct ZenWorkspacePane: View {
                     .buttonStyle(.borderedProminent)
                     .disabled(model.repoId == nil || model.busy)
                     .accessibilityIdentifier("zen.goal.describe")
+                    Button {
+                        reviewLatestProposal()
+                    } label: {
+                        Label("审阅提案",systemImage:"checkmark.document")
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(model.repoId == nil || model.busy)
+                    .accessibilityIdentifier("zen.proposal.open")
                     Menu {
                         Button("直接创建 Requirement") {
                             newTitle = ""; newOutcome = ""; newCriteria = ""
@@ -317,6 +329,17 @@ struct ZenWorkspacePane: View {
             Task { await model.openRecord(first.id) }
         }
         .sheet(isPresented:$showingGoalSheet) { goalSheet }
+        .sheet(item:$pendingProposal) { item in
+            ZenProposalReviewSheet(model:model,sourceRepoId:proposalSourceRepoId,proposal:item) { requirementId in
+                focusedRequirementId=requirementId
+                screen = .canvas
+            }
+        }
+        .alert("提案不可用",isPresented:$showingProposalProblem) {
+            Button("确定",role:.cancel) {}
+        } message: {
+            Text(proposalProblem)
+        }
         .sheet(isPresented:$showingRequirementSheet) { createRequirementSheet }
         .sheet(isPresented:$showingPlanSheet) { createPlanSheet }
         .sheet(item:$editingRecord) { item in editSheet(for:item) }
@@ -343,7 +366,7 @@ struct ZenWorkspacePane: View {
         .sheet(item:$pendingReviewRecord) { item in
             ZenReviewSheet(model:model,record:item) { prompt,provider in
                 pendingReviewRecord = nil
-                onOpenAgent(item,prompt,provider)
+                onOpenAgent(item,prompt,provider,false)
             }
         }
         .onChange(of:model.repoId) { _ in boardMode = "forge" }
@@ -628,7 +651,7 @@ struct ZenWorkspacePane: View {
                 .disabled(model.recordDetail == nil
                           || (item.kind == .requirement && item.state != "open"))
                 Button {
-                    onOpenAgent(item,"请基于当前 Requirement / Plan 的实际修订与关联信息分析并提出最小必要优化，先给出差异和影响范围，不要在未经确认时新增同义记录。",nil)
+                    onOpenAgent(item,"请基于当前 Requirement / Plan 的实际修订与关联信息分析并提出最小必要优化，先给出差异和影响范围，不要在未经确认时新增同义记录。",nil,true)
                 } label: {
                     Label("使用 Agent 优化",systemImage:"sparkles")
                 }
@@ -804,10 +827,30 @@ struct ZenWorkspacePane: View {
     }
 
 
+
+    private func reviewLatestProposal() {
+        guard let repoId=model.repoId,
+              let thread=model.thread,thread.repoId == repoId,
+              let response=thread.messages.last,
+              response.role == "assistant",response.incomplete != true else {
+            proposalProblem="请选择当前项目中已经完成分析的 Agent 会话；若模型还未返回，请先完成分析。"
+            showingProposalProblem=true
+            return
+        }
+        do {
+            let proposal=try ZenChangeProposal.parse(response.text)
+            proposalSourceRepoId=repoId
+            pendingProposal=proposal
+        } catch {
+            proposalProblem=error.localizedDescription
+            showingProposalProblem=true
+        }
+    }
+
     private var goalSheet: some View {
         VStack(alignment:.leading,spacing:14) {
             Text("描述你的目标").font(.system(size:17,weight:.semibold))
-            Text("Forge 将在现有 Agent 中分析需求，先判断修改现有 Requirement / Plan 还是新增，提出差异与验收标准，经你确认后再写入。")
+            Text("由现有 Agent 提出修改或新增建议。Agent 的工具权限不由这个页面限制；请使用只读访问进行分析，Zen 仅在你批准后应用结构化提案。")
                 .font(.system(size:11)).foregroundStyle(.secondary)
             TextField("希望解决什么问题？",text:$goalDraft,axis:.vertical)
                 .lineLimit(5...8)
@@ -1136,7 +1179,7 @@ private struct ZenReviewSheet: View {
                 }
             }
             .pickerStyle(.menu)
-            Text("只读审查，不自动修改 Requirement 或 Plan。")
+            Text("Zen 不自动应用审查建议。Agent 的实际工具权限由当前 Repository Access 决定，需要严格只读时请先核实权限。")
                 .font(.system(size:11)).foregroundStyle(.secondary)
             HStack {
                 Spacer()

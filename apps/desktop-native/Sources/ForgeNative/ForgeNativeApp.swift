@@ -157,19 +157,23 @@ private struct ForgeWorkspaceView: View {
                     model.draft = """
                     当前项目目标：\(description)
 
-                    请以 Requirement-first 方式分析。先查阅当前项目已有的 Requirement 和 Plan，判断应修改现有记录、拆分，还是新增独立 Requirement / Plan。给出判定依据、可核查的验收标准与具体修改差异；优先复用现有记录。不要在用户确认提案前写入任何语义记录或修改源码。需要新增时先询问。
+                    请以 Requirement-first 方式分析。优先复用现有 Requirement / Plan，新增独立目标或方案时说明理由。仅输出经核查的一个提案，不进行写操作。
+
+                    \(ZenChangeProposal.outputContract)
                     """
                 },onOpenInbox:{
                     inboxShown = true
                     Task { await model.loadUserRequests() }
-                }) { item, prompt, provider in
+                }) { item, prompt, provider, wantsProposal in
                     model.zenMode = false
                     model.newThread(
                         provider:provider,
                         requirementId:item.kind == .requirement ? item.recordId : item.requirementId,
                         planId:item.kind == .plan ? item.recordId : nil
                     )
-                    model.draft = prompt
+                    model.draft = wantsProposal
+                        ? prompt + "\n\n" + ZenChangeProposal.outputContract
+                        : prompt
                 }
             } else {
                 main
