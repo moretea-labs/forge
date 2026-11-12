@@ -890,7 +890,7 @@ forbid(
 requireText('packages/kernel/work/domain/types.ts', "export const SEMANTIC_WORK_STATES = ['open', 'completed', 'cancelled'] as const;");
 requireText('packages/kernel/work/domain/types.ts', 'export type SemanticWorkState = (typeof SEMANTIC_WORK_STATES)[number];');
 requireText('packages/kernel/work/api/index.ts', "export * from '../application/work-service'");
-requireText('src/cli/repositories/selected-path-actions.ts', 'beforeCommitGuard');
+requireText('src/runtime/repositories/selected-path-actions.ts', 'beforeCommitGuard');
 requireMissing('src/runtime/control-plane/execution/direct-edit-work-completion.ts');
 requireMissing('src/runtime/control-plane/execution/content-equivalent-commit-authority.ts');
 requireMissing('src/runtime/control-plane/execution/retained-work-resume.ts');
@@ -899,7 +899,7 @@ requireMissing('src/runtime/control-plane/facade/goal-workloop.ts');
 requireMissing('src/runtime/control-plane/facade/goal-workloop-access.ts');
 requireMissing('src/runtime/control-plane/execution/work-finalization-service.ts');
 forbid('adapters/mcp/runtime-gateway/work-adapter.ts', /ImplementationReview|executeWorkVerification|work_finalize/, 'rh_work must not regain review, verification, or finalization behavior authority');
-forbid('src/cli/repositories/selected-path-actions.ts', /ImplementationReview|workRequiresImplementationReview|requestWorkImplementationReview/, 'repository Git safety must not depend on Work review methodology');
+forbid('src/runtime/repositories/selected-path-actions.ts', /ImplementationReview|workRequiresImplementationReview|requestWorkImplementationReview/, 'repository Git safety must not depend on Work review methodology');
 
 // The model-facing rh_work surface is the thin semantic ABI: the schema enum must
 // come from the single operation registry, that registry's model list must not

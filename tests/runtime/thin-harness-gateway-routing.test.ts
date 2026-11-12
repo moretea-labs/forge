@@ -16,7 +16,7 @@ import { callMultiRepositoryTool } from '../../adapters/mcp/multi-repository';
 import { ensureControllerHome } from '../../src/effects/controller-home';
 import { addRepositoryCheckout, getRepository, refreshRepositoryCheckoutGitMetadata, registerRepository, selectRepositoryCheckout, setRepositoryCheckoutLifecycle } from '../../src/runtime/repositories/registry';
 import { repositoryGitStatus } from '../../src/runtime/repositories/structured-git';
-import { commitSelectedPaths } from '../../src/cli/repositories/selected-path-actions';
+import { commitSelectedPaths } from '../../src/runtime/repositories/selected-path-actions';
 import { ensureRepositoryRuntimeStorageBinding } from '../../src/runtime/repositories/runtime-storage';
 import { listExecutionJobs } from '../../src/runtime/execution/jobs/store';
 import { listLocalBridgeJobSnapshots } from '../../src/cli/local-bridge/job-store';

@@ -28,9 +28,10 @@ src/runtime/repositories/registry.ts
 src/runtime/repositories/ephemeral-workspace.ts
 src/runtime/control-plane/execution/execution-identity.ts
 src/effects/managed-worktree-storage.ts
+src/runtime/repositories/selected-path-actions.ts
 ```
 
-Registered work is resolved to `repoId` plus `checkoutId`. Git top-level/common-directory checks prevent a caller from supplying a different checkout through `cwd`. `ephemeral-workspace.ts` represents the separate explicit authority for an existing unregistered local directory. `src/runtime/repositories/structured-git.ts` partitions porcelain status once; `src/runtime/projections/git-status-sampler.ts` uses that parser for its sampled projection rather than maintaining an independent classification. Controller-owned managed-worktree roots and path-overlap checks are shared filesystem effects in `src/effects/managed-worktree-storage.ts`; Runtime cleanup and workspace creation consume that one owner.
+Registered work is resolved to `repoId` plus `checkoutId`. Git top-level/common-directory checks prevent a caller from supplying a different checkout through `cwd`. `ephemeral-workspace.ts` represents the separate explicit authority for an existing unregistered local directory. `src/runtime/repositories/structured-git.ts` partitions porcelain status once; `src/runtime/projections/git-status-sampler.ts` uses that parser for its sampled projection rather than maintaining an independent classification. Controller-owned managed-worktree roots and path-overlap checks are shared filesystem effects in `src/effects/managed-worktree-storage.ts`; Runtime cleanup and workspace creation consume that one owner. Selected-path diff/stage/restore/commit and patch-handoff artifact preparation are owned by `src/runtime/repositories/selected-path-actions.ts`; adapters translate requests without owning Git mutation policy.
 
 ## 3. Context and source access
 

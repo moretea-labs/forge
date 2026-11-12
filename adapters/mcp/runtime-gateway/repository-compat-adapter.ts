@@ -7,7 +7,7 @@ import {
   commitSelectedPaths,
   selectedPathDiff,
   stageSelectedPaths,
-} from '../../../src/cli/repositories/selected-path-actions';
+} from '../../../src/runtime/repositories/selected-path-actions';
 
 
 

@@ -1,6 +1,6 @@
 import type { RepositoryRecord } from '../../core/repository/types';
 import { ensureRepositoryRuntimeStorage } from '../repositories/runtime-storage';
-import { prepareTransferArtifacts } from '../../cli/repositories/selected-path-actions';
+import { prepareTransferArtifacts } from '../repositories/selected-path-actions';
 import { applyRuntimeCleanup, previewRuntimeCleanup } from '../maintenance/cleanup';
 import { rebuildRepositoryProjection } from '../projections/materialized-view';
 import { recoveryActionById } from './actions';

@@ -20,7 +20,7 @@ import {
 import { addRepositoryCheckout, getRepository, registerRepository } from '../../src/runtime/repositories/registry';
 import { repositoryGitRemoveWorktree } from '../../src/runtime/repositories/structured-worktree-cleanup';
 import { recordOwnedResource } from '../../packages/kernel/identity/api/index';
-import { commitSelectedPaths, restoreSelectedPaths, selectedPathDiff } from '../../src/cli/repositories/selected-path-actions';
+import { commitSelectedPaths, restoreSelectedPaths, selectedPathDiff } from '../../src/runtime/repositories/selected-path-actions';
 import { acquireControllerLock, releaseControllerLock } from '../../src/effects/controller-locks';
 import { persistControllerAccessMode } from '../../adapters/mcp/access-mode';
 import { classifyRepositoryCommand } from '../../src/cli/repositories/command-classifier';

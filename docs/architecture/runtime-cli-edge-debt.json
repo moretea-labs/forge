@@ -14,7 +14,6 @@
     "src/runtime/plugins/github-adapter.ts|../../cli/github/github",
     "src/runtime/plugins/github-adapter.ts|../../cli/github/plugin",
     "src/runtime/projections/materialized-view.ts|../../cli/controller/task-ledger",
-    "src/runtime/recovery/capability-action-application.ts|../../cli/repositories/selected-path-actions",
     "src/runtime/recovery/local-jobs-repair.ts|../../cli/local-bridge/types",
     "src/runtime/root/local-bridge.ts|../../cli/local-bridge/server",
     "src/runtime/safe-tooling/job-summary.ts|../../cli/agent-jobs/job-manager",
