@@ -3,7 +3,9 @@ import { existsSync, mkdirSync, realpathSync } from 'fs';
 import { delimiter, dirname, isAbsolute, join } from 'path';
 import { spawnSync } from 'child_process';
 import { performance } from 'perf_hooks';
+import type { RepositoryRecord } from '../../cli/repositories/types';
 import { repositoryControllerRoot } from '../../effects/controller-home';
+import { iosSimulatorScreenshot } from '../safe-tooling/ios-development';
 import { runBoundedProcess } from '../execution/thin-harness/async-process';
 import { readJsonFile, writeJsonAtomic } from '../shared/json-files';
 import { resolveTrustedNodeExecutable } from '../shared/trusted-node-executable';
@@ -2372,10 +2374,10 @@ export function iosAgentDeviceActions(): AssistantPluginActionDescriptor[] {
     },
     {
       actionId: 'agent_device_screenshot', title: 'Capture agent-device screenshot',
-      description: 'Capture a bounded PNG into Controller-owned iOS artifact storage.',
+      description: 'Capture a bounded PNG into Controller-owned iOS artifact storage. On multi-display Simulators, specify the exact display ID.',
       readOnly: false, risk: 'workspace_write', confirmation: 'none', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
       scopes: ['ios.simulator', 'ios.device'], resourceClaims: write,
-      argumentsSchema: { type: 'object', properties: { ...interactionProperty, label: { type: 'string' }, overlay_refs: { type: 'boolean' }, max_size: { type: 'number' } }, required: ['interaction_id'], additionalProperties: false },
+      argumentsSchema: { type: 'object', properties: { ...interactionProperty, label: { type: 'string' }, overlay_refs: { type: 'boolean' }, max_size: { type: 'number' }, display: { type: 'number', minimum: 0, maximum: 16 } }, required: ['interaction_id'], additionalProperties: false },
     },
     {
       actionId: 'agent_device_events', title: 'Read agent-device events',
@@ -2669,6 +2671,34 @@ export async function executeIosAgentDeviceAction(input: AssistantPluginActionEx
     }
     case 'agent_device_screenshot': {
       const label = sanitize(optionalString(input.args.label) ?? 'screenshot');
+      if (input.args.display !== undefined) {
+        if (record.provider !== SIMULATOR_PROVIDER || !Number.isInteger(input.args.display)
+          || (input.args.display as number) < 0 || (input.args.display as number) > 16) {
+          throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'display must be a Simulator display ID from 0 to 16.', { retryable: false });
+        }
+        if (input.args.overlay_refs === true || input.args.max_size !== undefined) {
+          throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'A display-addressed Simulator screenshot cannot use agent-device overlays or resizing.', { retryable: false });
+        }
+        // Reuse the iOS Simulator screenshot authority; agent-device CLI cannot
+        // disambiguate the Duo's inner and outer displays.
+        const captured = iosSimulatorScreenshot({
+          repoId: input.repoId,
+          canonicalRoot: input.repoRoot,
+          activeCheckoutId: 'active',
+        } as RepositoryRecord, {
+          udid: record.targetId,
+          label,
+          display: input.args.display as number,
+          artifactRoot: artifactDir(input, record.interactionId),
+        });
+        if (!('absolutePath' in captured) || typeof captured.absolutePath !== 'string') {
+          throw new AssistantPluginError('AGENT_DEVICE_SCREENSHOT_FAILED', 'Simulator display screenshot failed.', { retryable: false });
+        }
+        return {
+          provider: 'agent-device', interaction: record, result: bounded(captured),
+          artifactCandidates: [{ kind: 'ios_agent_device_screenshot', mediaType: 'image/png', path: captured.absolutePath }],
+        };
+      }
       const path = join(artifactDir(input, record.interactionId), `${label}-${hooks.now().getTime()}.png`);
       const args = ['screenshot', path];
       if (input.args.overlay_refs === true) args.push('--overlay-refs');

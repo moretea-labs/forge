@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'bun:test';
+import { iosAgentDeviceActions } from '../../src/runtime/plugins/ios-agent-device';
 import {
   appendSettleFlag,
   compileBatchCommand,
@@ -71,6 +72,17 @@ describe('agent-device capability contract', () => {
     expect(detectAgentDeviceCapabilities('0.21.0').versionSupported).toBe(false);
     expect(isSupportedAgentDeviceVersion('0.20.0')).toBe(true);
     expect(isSupportedAgentDeviceVersion('0.21.0')).toBe(false);
+  });
+});
+
+describe('agent-device multi-display screenshot contract', () => {
+  it('exposes an explicit simulator display selector while retaining the original optional capture arguments', () => {
+    const screenshot = iosAgentDeviceActions().find((action) => action.actionId === 'agent_device_screenshot');
+    expect(screenshot).toBeDefined();
+    const properties = screenshot?.argumentsSchema?.properties as Record<string, unknown>;
+    expect(properties.display).toEqual({ type: 'number', minimum: 0, maximum: 16 });
+    expect(properties).toHaveProperty('overlay_refs');
+    expect(properties).toHaveProperty('max_size');
   });
 });
 
