@@ -22,53 +22,48 @@ private func polygon(_ coordinates: [(CGFloat, CGFloat)], fill: NSColor) {
 }
 
 private func paint() {
-    let shell = NSBezierPath(roundedRect: NSRect(x: 40, y: 40, width: 944, height: 944),
-                             xRadius: 222, yRadius: 222)
-    NSGraphicsContext.saveGraphicsState()
-    shell.addClip()
-    NSGradient(starting: color(54, 44, 141), ending: color(132, 110, 231))!
-        .draw(in: shell, angle: 118)
-
-    // Fine satin highlight, never a noisy glow; preserves legibility at 16 px.
-    let topLight = NSBezierPath(ovalIn: NSRect(x: 90, y: 370, width: 800, height: 880))
-    color(193, 173, 255, 0.075).setFill()
-    topLight.fill()
-    let bottomShade = NSBezierPath(ovalIn: NSRect(x: 380, y: -210, width: 770, height: 690))
-    color(25, 21, 80, 0.12).setFill()
-    bottomShade.fill()
-    NSGraphicsContext.restoreGraphicsState()
-
-    shell.lineWidth = 7
-    color(238, 230, 255, 0.26).setStroke()
+    // AppKit coordinates run bottom-to-top. Keep the crown above the crossbar.
+    let shell = NSBezierPath(roundedRect: NSRect(x: 56, y: 56, width: 912, height: 912),
+                             xRadius: 210, yRadius: 210)
+    NSGradient(starting: color(25, 29, 34), ending: color(49, 54, 61))!
+        .draw(in: shell, angle: 90)
+    shell.lineWidth = 2
+    color(255, 255, 255, 0.14).setStroke()
     shell.stroke()
 
-    // Chiselled, faceted F. The broad stem and open counters stay distinctive
-    // in macOS Dock, Finder, the menu bar, and compact sidebar placement.
+    // One open, upright F: a substantial stem and two chamfered tool faces.
+    // The broad silhouette and generous counter survive compact Dock sizes.
+    let mark = NSBezierPath()
+    mark.move(to: NSPoint(x: 302, y: 250))
+    for point in [
+        NSPoint(x: 302, y: 772), NSPoint(x: 758, y: 772),
+        NSPoint(x: 702, y: 642), NSPoint(x: 446, y: 642),
+        NSPoint(x: 446, y: 541), NSPoint(x: 678, y: 541),
+        NSPoint(x: 626, y: 417), NSPoint(x: 446, y: 417),
+        NSPoint(x: 446, y: 250),
+    ] { mark.line(to: point) }
+    mark.close()
+
     NSGraphicsContext.saveGraphicsState()
     let shadow = NSShadow()
-    shadow.shadowColor = color(19, 12, 63, 0.22)
-    shadow.shadowBlurRadius = 27
-    shadow.shadowOffset = NSSize(width: 0, height: -16)
+    shadow.shadowColor = color(0, 0, 0, 0.30)
+    shadow.shadowBlurRadius = 20
+    shadow.shadowOffset = NSSize(width: 0, height: -12)
     shadow.set()
-
-    polygon([
-        (316, 258), (745, 258), (695, 369), (445, 369),
-        (445, 474), (666, 474), (624, 574), (445, 574),
-        (445, 759), (316, 805),
-    ], fill: color(251, 249, 255))
+    color(231, 120, 58).setFill()
+    mark.fill()
     NSGraphicsContext.restoreGraphicsState()
 
-    // Two restrained facet tones supply a recognizable forged-metal depth
-    // without compromising the white F silhouette.
+    NSGradient(starting: color(221, 99, 48), ending: color(255, 199, 120))!
+        .draw(in: mark, angle: 90)
+
+    // A single narrow bevel, subordinate to the solid F silhouette.
     polygon([
-        (316, 258), (388, 315), (388, 780), (316, 805),
-    ], fill: color(205, 201, 255, 0.60))
+        (302, 250), (322, 268), (322, 752), (302, 772),
+    ], fill: color(255, 216, 158, 0.45))
     polygon([
-        (388, 780), (445, 759), (316, 805),
-    ], fill: color(178, 179, 245, 0.8))
-    polygon([
-        (445, 474), (666, 474), (624, 574), (445, 574),
-    ], fill: color(227, 223, 255, 0.72))
+        (302, 772), (758, 772), (746, 752), (322, 752),
+    ], fill: color(255, 231, 192, 0.54))
 }
 
 private func render(size: Int, output: URL) throws {
