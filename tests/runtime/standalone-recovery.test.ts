@@ -92,7 +92,7 @@ import { advanceReleaseSession, createReleaseSession, readReleaseSession, record
 import { observeRuntimeStatus, readRuntimeStatusSnapshot, writeRuntimeStatusSnapshot } from '../../src/runtime/root/status';
 import { materializeCandidateExecutionLane } from '../../src/runtime/root/runtime-lane';
 import { ensureForgeRuntimeLaunchAgentContract, forgeRuntimeServicePaths } from '../../src/runtime/root/service';
-import { systemdUserUnitPath } from '../../src/cli/controller/systemd-user';
+import { systemdUserUnitPath } from '../../src/runtime/platform/systemd-user';
 import {
   renderPackageRuntimeSystemdUserService,
   writePackageRuntimeSystemdUserService,

@@ -1,4 +1,4 @@
-import { writeAtomicTextFile } from '../../runtime/shared/atomic-text-file';
+import { writeAtomicTextFile } from '../shared/atomic-text-file';
 import { spawnSync, type SpawnSyncReturns } from 'child_process';
 import { existsSync, rmSync } from 'fs';
 import { homedir } from 'os';

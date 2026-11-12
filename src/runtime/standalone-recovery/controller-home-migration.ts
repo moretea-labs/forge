@@ -50,7 +50,7 @@ import {
   systemdUserAvailable,
   systemdUserServicePid,
   systemdUserUnitPath,
-} from '../../cli/controller/systemd-user';
+} from '../platform/systemd-user';
 import {
   RECOVERY_DAEMON_LABEL,
   RECOVERY_GATEWAY_LABEL,

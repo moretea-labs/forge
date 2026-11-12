@@ -20,7 +20,7 @@ import {
   safeLaunchdHandoff,
   type LaunchctlCommandRunner,
   type SafeHandoffResult,
-} from '../../cli/controller/launch-agents';
+} from '../platform/launch-agents';
 import { isProcessAlive } from '../shared/process-tree';
 import {
   installSystemdUserUnit,
@@ -29,7 +29,7 @@ import {
   systemdUserUnitName,
   systemdUserUnitPath,
   type SystemdUserUnitInput,
-} from '../../cli/controller/systemd-user';
+} from '../platform/systemd-user';
 import { FORGE_VERSION } from '../../version';
 import { initializeStandaloneRecovery, loadRecoveryConfig, normalizeRecoveryInstallProfile, recoveryInstallProfileRoles, type LaunchdPrimaryConnectorServiceConfig, type LaunchdPublicTunnelServiceConfig, type PrimaryConnectorServiceConfig, type PrimaryRuntimeServiceConfig, type PublicTunnelServiceConfig, type RecoveryConfig, type RecoveryInstallProfile, type RecoveryTunnelServiceConfig } from './core';
 import { RECOVERY_DAEMON_LABEL, RECOVERY_GATEWAY_LABEL, RECOVERY_WATCHDOG_LABEL } from './service-labels';
@@ -105,7 +105,8 @@ export function retireStaleRecoveryLaunchAgents(
 const RECOVERY_RELEASE_SOURCE_PATHS = [
   'src/runtime/standalone-recovery',
   'src/runtime/root',
-  'src/cli/controller/launch-agents.ts',
+  'src/runtime/platform/launch-agents.ts',
+  'src/runtime/platform/systemd-user.ts',
   'src/effects/controller-home.ts',
   'src/effects/process-runner.ts',
   'src/runtime/shared/process-tree.ts',

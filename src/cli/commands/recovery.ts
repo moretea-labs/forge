@@ -62,7 +62,7 @@ import {
   type RecoveryControllerHomeMigrationPreflight,
 } from '../../runtime/standalone-recovery/controller-home-migration';
 import { isProcessAlive } from '../../runtime/shared/process-tree';
-import { systemdUserServicePid, systemdUserUnitName, systemdUserUnitPath } from '../controller/systemd-user';
+import { systemdUserServicePid, systemdUserUnitName, systemdUserUnitPath } from '../../runtime/platform/systemd-user';
 import { installWindowsHostRecoveryPlugin } from '../../runtime/plugins/windows-host-recovery-install';
 
 function output(value: unknown, json = true): void {

@@ -2,7 +2,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync,
 import { basename, dirname, join } from 'path';
 import { homedir } from 'os';
 import { runProcess } from '../../effects/process-runner';
-import { isProcessAlive } from '../../runtime/shared/process-tree';
+import { isProcessAlive } from '../shared/process-tree';
 
 export interface LaunchctlCommandResult {
   ok: boolean;

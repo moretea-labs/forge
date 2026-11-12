@@ -671,6 +671,8 @@ const required = [
   'adapters/mcp/runtime-gateway/router.ts',
   'src/runtime/agents/types.ts',
   'src/runtime/agents/executable-resolver.ts',
+  'src/runtime/platform/launch-agents.ts',
+  'src/runtime/platform/systemd-user.ts',
   'src/runtime/control-plane/global-scheduler/scheduler.ts',
   'src/runtime/control-plane/global-scheduler/config.ts',
   'src/runtime/control-plane/global-scheduler/state.ts',
@@ -1401,7 +1403,7 @@ for (const path of [
   'src/runtime/root/package-connector-service.ts',
   'src/runtime/root/package-runtime-service.ts',
   'src/runtime/root/package-runtime-release.ts',
-  'src/cli/controller/systemd-user.ts',
+  'src/runtime/platform/systemd-user.ts',
 ]) {
   forbid(path, /^function\s+atomicWrite\s*\(/m, 'service/release text writes must reuse the shared atomic writer');
   requireText(path, 'writeAtomicTextFile');
@@ -1683,6 +1685,10 @@ requireText('src/runtime/agents/executable-resolver.ts', 'AGENT_EXECUTABLE_IDENT
 requireText('src/runtime/agents/types.ts', 'ControllerAgent');
 requireText('src/runtime/agents/types.ts', 'AgentExecutableIdentity');
 requireMissing('src/cli/agent-jobs/executable-resolver.ts');
+requireText('src/runtime/platform/launch-agents.ts', 'export async function safeLaunchdHandoff');
+requireText('src/runtime/platform/systemd-user.ts', 'export function writeSystemdUserUnit');
+requireMissing('src/cli/controller/launch-agents.ts');
+requireMissing('src/cli/controller/systemd-user.ts');
 requireText('packages/kernel/scheduler/infrastructure/schedule-store.ts', "'occurrences'");
 requireText('src/runtime/projections/git-status-sampler.ts', 'writeRepositoryGitStatusSample');
 requireText('src/runtime/projections/git-status-sampler.ts', 'readRepositoryGitStatusSample');

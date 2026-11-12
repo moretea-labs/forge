@@ -43,12 +43,15 @@ src/runtime/context/context-pack-contract.ts
 src/runtime/context/context-pack-process.ts
 src/runtime/agents/types.ts
 src/runtime/agents/executable-resolver.ts
+src/runtime/platform/launch-agents.ts
+src/runtime/platform/systemd-user.ts
+src/runtime/platform/service-manager.ts
 src/cli/controller/context-pack.ts
 src/runtime/repositories/inspector.ts
 src/runtime/repositories/session-cache.ts
 ```
 
-`src/runtime/context/context-pack-contract.ts` owns the shared Context Pack schema, options/projection, source-snippet and structural-response contracts. `src/runtime/agents/types.ts` owns the shared ControllerAgent and executable identity/auth-readiness contracts; `src/runtime/agents/executable-resolver.ts` owns bounded executable probing and readiness snapshot persistence used by the global scheduler and CLI job metadata. Runtime and MCP adapters consume neutral contracts; CLI builders/metadata import them in the permitted direction. `rh_context` is the normal code-location/context router. Repository observations are bounded and cached by session/repository identity where valid. Clean Git snapshots avoid redundant `git diff --stat` subprocesses because `git status` already proves that no unstaged diff can exist. User-level Brain root discovery and configuration are filesystem effects in `src/effects/brain-root.ts`, shared by Runtime assistant context and CLI setup/brain commands.
+`src/runtime/context/context-pack-contract.ts` owns the shared Context Pack schema, options/projection, source-snippet and structural-response contracts. `src/runtime/agents/types.ts` owns shared agent identity/auth-readiness contracts; `src/runtime/agents/executable-resolver.ts` owns executable probing and readiness snapshot persistence. `src/runtime/platform/launch-agents.ts` and `systemd-user.ts` own native service operations; `service-manager.ts` composes the platform adapter. CLI recovery commands and Runtime recovery consume these Runtime owners. Runtime and MCP adapters consume neutral contracts; CLI builders/metadata import them in the permitted direction. `rh_context` is the normal code-location/context router. Repository observations are bounded and cached by session/repository identity where valid. Clean Git snapshots avoid redundant `git diff --stat` subprocesses because `git status` already proves that no unstaged diff can exist. User-level Brain root discovery and configuration are filesystem effects in `src/effects/brain-root.ts`, shared by Runtime assistant context and CLI setup/brain commands.
 
 Structural CodeGraph context is optional augmentation for call/dependency questions; it is not another mandatory top-level search abstraction.
 

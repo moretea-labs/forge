@@ -5,8 +5,6 @@
     "src/runtime/diagnostics/read-only-tool.ts|../../cli/local-bridge/job-store",
     "src/runtime/execution/workers/executor.ts|../../../cli/local-bridge/job-store",
     "src/runtime/execution/workers/executor.ts|../../../cli/local-bridge/types",
-    "src/runtime/platform/service-manager.ts|../../cli/controller/launch-agents",
-    "src/runtime/platform/service-manager.ts|../../cli/controller/systemd-user",
     "src/runtime/plugins/github-adapter.ts|../../cli/github/github",
     "src/runtime/plugins/github-adapter.ts|../../cli/github/plugin",
     "src/runtime/projections/materialized-view.ts|../../cli/controller/task-ledger",
@@ -14,10 +12,6 @@
     "src/runtime/root/local-bridge.ts|../../cli/local-bridge/server",
     "src/runtime/safe-tooling/job-summary.ts|../../cli/agent-jobs/job-manager",
     "src/runtime/safe-tooling/job-summary.ts|../../cli/local-bridge/job-store",
-    "src/runtime/standalone-recovery/controller-home-migration.ts|../../cli/controller/systemd-user",
-    "src/runtime/standalone-recovery/core.ts|../../cli/controller/systemd-user",
-    "src/runtime/standalone-recovery/installer.ts|../../cli/controller/launch-agents",
-    "src/runtime/standalone-recovery/installer.ts|../../cli/controller/systemd-user",
     "src/runtime/watchdog/workflow-watchdog.ts|../../cli/agent-jobs/job-manager",
     "src/runtime/watchdog/workflow-watchdog.ts|../../cli/local-bridge/job-store"
   ]
