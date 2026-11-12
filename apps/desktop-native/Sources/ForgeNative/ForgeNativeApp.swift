@@ -6730,6 +6730,7 @@ private struct SettingsPane: View {
                                             Button("删除配置",role:.destructive) {
                                                 deleteProfile(index)
                                             }
+                                            .accessibilityIdentifier("settings.profile.delete")
                                         } label: {
                                             Image(systemName:"ellipsis")
                                                 .frame(width:28,height:28)
