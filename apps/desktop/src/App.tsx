@@ -1213,7 +1213,8 @@ export function App() {
           codexStatus={localProvider} codexError={localProviderError}
           onRefreshCodex={refreshLocalProvider}
           onOpenMcp={() => { void handleOpenRuntime(); }}
-          mcpReady={connectionProjection?.ready ?? null} />
+          mcpReady={connectionProjection?.ready ?? null}
+          cleanupRepoId={selectedRepoId ?? projects[0]?.repoId} />
       ) : activeView === 'runtime' ? (
         <RuntimeView
           projection={recoveryProjection}

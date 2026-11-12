@@ -2,6 +2,7 @@
 
 mod native_bridge;
 mod managed_keychain;
+mod disk_inventory;
 
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -351,6 +352,76 @@ async fn perform_recovery_action(action: String) -> Result<Value, String> {
     let status = call_recovery_tool("runtime_status", json!({})).await?;
     let arguments = recovery_mutation_arguments(&status, prefix)?;
     call_recovery_tool(tool, arguments).await
+}
+
+// Disk cleanup is a presentation of Forge's existing Runtime cleanup owner.
+// Never perform file deletion or SQLite mutation from the desktop process.
+fn disk_cleanup_options(repo_id: &str, categories: &[String], confirmed: bool) -> Result<Value, String> {
+    if !confirmed {
+        return Err("FORGE_DESKTOP_DISK_CLEANUP_CONFIRMATION_REQUIRED".to_string());
+    }
+    if repo_id.trim().is_empty() || categories.is_empty() {
+        return Err("FORGE_DESKTOP_DISK_CLEANUP_SELECTION_REQUIRED".to_string());
+    }
+    let mut temp = false;
+    let mut jobs = false;
+    let mut runs = false;
+    for category in categories {
+        match category.as_str() {
+            "temp_dirs" => temp = true,
+            "terminal_local_jobs" => jobs = true,
+            "legacy_runs" => runs = true,
+            _ => return Err("FORGE_DESKTOP_DISK_CLEANUP_UNSUPPORTED_CATEGORY".to_string()),
+        }
+    }
+    Ok(json!({
+        "repo_id": repo_id.trim(),
+        "min_age_minutes": 1440,
+        "max_candidates": 100,
+        "include_temp_dirs": temp,
+        "include_terminal_local_jobs": jobs,
+        "include_legacy_runs": runs,
+        "include_historical_attention": false,
+        "confirm_cleanup": true,
+        "request_id": request_id("disk-cleanup")
+    }))
+}
+
+#[tauri::command]
+async fn read_disk_cleanup_preview(repo_id: String) -> Result<Value, String> {
+    if repo_id.trim().is_empty() {
+        return Err("FORGE_DESKTOP_REPOSITORY_REQUIRED".to_string());
+    }
+    let preview = call_runtime_tool("runtime_cleanup_preview", json!({
+        "repo_id": repo_id.trim(),
+        "min_age_minutes": 1440,
+        "max_candidates": 100,
+        "include_temp_dirs": true,
+        "include_terminal_local_jobs": true,
+        "include_legacy_runs": true,
+        "include_historical_attention": false,
+        "request_id": request_id("disk-preview")
+    })).await?;
+    // Database storage is observed only. Forge Runtime's canonical SQLite
+    // maintenance owns historical audit pruning and VACUUM under live locks.
+    let db_bytes = controller_home().ok()
+        .and_then(|home| fs::metadata(home.join("control-plane.sqlite")).ok())
+        .map(|metadata| metadata.len());
+    let repository_list = call_runtime_tool("repository_list", json!({
+        "include_removed": false, "request_id": request_id("disk-projects")
+    })).await?;
+    let caches = disk_inventory::scan_repository_caches(repository_list.get("repositories").unwrap_or(&Value::Null));
+    Ok(json!({ "runtime": preview, "sqlite": { "bytes": db_bytes, "managedByRuntime": true }, "projectCaches": caches }))
+}
+
+#[tauri::command]
+async fn apply_disk_cleanup(
+    repo_id: String,
+    categories: Vec<String>,
+    confirm_cleanup: bool,
+) -> Result<Value, String> {
+    let options = disk_cleanup_options(&repo_id, &categories, confirm_cleanup)?;
+    call_runtime_tool("runtime_cleanup_apply", options).await
 }
 
 #[tauri::command]
@@ -3882,6 +3953,8 @@ fn main() {
             read_recovery_history,
             verify_recovery_runtime,
             perform_recovery_action,
+            read_disk_cleanup_preview,
+            apply_disk_cleanup,
             read_projects,
             read_project_overview,
             read_github_project_items,
@@ -5293,6 +5366,23 @@ mod tests {
         assert_eq!(arguments.get("expected_recovery_release").and_then(Value::as_str), Some("recovery-revision"));
         assert_eq!(arguments.get("expected_target_runtime").and_then(Value::as_str), Some("launchd:forge-runtime:release"));
         assert!(arguments.get("request_id").and_then(Value::as_str).is_some());
+    }
+
+    #[test]
+    fn disk_cleanup_requires_explicit_authorization_and_known_categories() {
+        assert!(disk_cleanup_options("repo", &["temp_dirs".to_string()], false).is_err());
+        assert!(disk_cleanup_options("repo", &["controller_db".to_string()], true).is_err());
+        assert!(disk_cleanup_options("", &["temp_dirs".to_string()], true).is_err());
+        assert!(disk_cleanup_options("repo", &[], true).is_err());
+        let args = disk_cleanup_options(
+            "repo", &["temp_dirs".to_string(), "terminal_local_jobs".to_string()], true
+        ).expect("valid previewed categories");
+        assert_eq!(args["include_temp_dirs"], true);
+        assert_eq!(args["include_terminal_local_jobs"], true);
+        assert_eq!(args["include_legacy_runs"], false);
+        assert_eq!(args["include_historical_attention"], false);
+        assert_eq!(args["confirm_cleanup"], true);
+        assert_eq!(args["min_age_minutes"], 1440);
     }
 
     #[test]
