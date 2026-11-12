@@ -9,6 +9,11 @@ struct AgentAssetsDashboard: View {
     @State private var showUserImages = true
     @State private var showRemoteImages = true
 
+    static func accessibilityIdentifier(for resourceID: String, control: String? = nil) -> String {
+        let prefix = "agent.assets.resource.\(resourceID)"
+        return control.map { "\(prefix).\($0)" } ?? prefix
+    }
+
     private struct Resource: Identifiable {
         let id: String
         let title: String
@@ -117,17 +122,25 @@ struct AgentAssetsDashboard: View {
                                     .help(item.threadTitle)
                                     .accessibilityLabel("打开来源会话：\(item.threadTitle)")
                                     .accessibilityHint("切换到原始对话")
-                                    .accessibilityIdentifier("agent.assets.source-thread")
+                                    .accessibilityIdentifier(Self.accessibilityIdentifier(for: item.id, control: "source-thread"))
                                 }
                                 if item.remote {
-                                    AgentRemoteImageView(label: item.title, source: item.source, showsLabel: false)
+                                    AgentRemoteImageView(
+                                        label: item.title,
+                                        source: item.source,
+                                        showsLabel: false,
+                                        accessibilityIdentifierPrefix: Self.accessibilityIdentifier(for: item.id, control: "remote-image")
+                                    )
                                 } else {
-                                    AgentLocalImageResourceView(path: item.source)
+                                    AgentLocalImageResourceView(
+                                        path: item.source,
+                                        accessibilityIdentifierPrefix: Self.accessibilityIdentifier(for: item.id, control: "local-image")
+                                    )
                                 }
                             }
                             .padding(.vertical, 14)
                             .accessibilityElement(children: .contain)
-                            .accessibilityIdentifier("agent.assets.resource.\(item.id)")
+                            .accessibilityIdentifier(Self.accessibilityIdentifier(for: item.id))
                             Divider().opacity(0.4)
                         }
                     }
@@ -151,6 +164,7 @@ func copyLocalImageAtomically(from source: URL, to destination: URL) async throw
 
 private struct AgentLocalImageResourceView: View {
     let path: String
+    let accessibilityIdentifierPrefix: String
     @State private var revealed = false
     @State private var status: String?
     @State private var isSaving = false
@@ -170,7 +184,7 @@ private struct AgentLocalImageResourceView: View {
                 Spacer()
                 Button(revealed ? "收起" : "预览") { revealed.toggle() }
                     .disabled(!exists)
-                    .accessibilityIdentifier("agent.assets.local.preview")
+                    .accessibilityIdentifier("\(accessibilityIdentifierPrefix).preview")
                 Button {
                     NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
                 } label: {
@@ -179,11 +193,11 @@ private struct AgentLocalImageResourceView: View {
                 .buttonStyle(.plain)
                 .help("在 Finder 中显示")
                 .accessibilityLabel("在 Finder 中显示")
-                .accessibilityIdentifier("agent.assets.local.finder")
+                .accessibilityIdentifier("\(accessibilityIdentifierPrefix).finder")
                 .disabled(!exists)
                 Button(isSaving ? "保存中…" : "另存为…") { save() }
                     .disabled(!exists || previewLoading || isSaving)
-                    .accessibilityIdentifier("agent.assets.local.save")
+                    .accessibilityIdentifier("\(accessibilityIdentifierPrefix).save")
             }
             .buttonStyle(.plain)
             .font(.system(size: 11))

@@ -385,6 +385,7 @@ struct AgentRemoteImageView: View {
     let label: String
     let source: String
     let showsLabel: Bool
+    let accessibilityIdentifierPrefix: String
     @State private var expanded = false
     @State private var fullScreen = false
     @State private var status: String?
@@ -394,10 +395,16 @@ struct AgentRemoteImageView: View {
     @State private var previewData: Data?
     @State private var previewImage: NSImage?
 
-    init(label: String, source: String, showsLabel: Bool = true) {
+    init(
+        label: String,
+        source: String,
+        showsLabel: Bool = true,
+        accessibilityIdentifierPrefix: String = "agent.image"
+    ) {
         self.label = label
         self.source = source
         self.showsLabel = showsLabel
+        self.accessibilityIdentifierPrefix = accessibilityIdentifierPrefix
     }
 
     private var remoteURL: URL? {
@@ -417,10 +424,10 @@ struct AgentRemoteImageView: View {
                 Spacer(minLength: 8)
                 Button(expanded ? "收起" : "预览") { expanded.toggle() }
                     .disabled(remoteURL == nil)
-                    .accessibilityIdentifier("agent.image.preview")
+                    .accessibilityIdentifier("\(accessibilityIdentifierPrefix).preview")
                 Button(isSaving ? "保存中…" : "保存…") { save() }
                     .disabled(remoteURL == nil || isSaving || previewLoading)
-                    .accessibilityIdentifier("agent.image.save")
+                    .accessibilityIdentifier("\(accessibilityIdentifierPrefix).save")
             }
             .buttonStyle(.plain)
             .font(.system(size: 11))
@@ -433,7 +440,7 @@ struct AgentRemoteImageView: View {
                     }
                     .buttonStyle(.plain)
                     .help("放大预览")
-                    .accessibilityIdentifier("agent.image.fullscreen")
+                    .accessibilityIdentifier("\(accessibilityIdentifierPrefix).fullscreen")
                 } else if previewLoading {
                     ProgressView().frame(height: 80)
                 } else if let previewError {
@@ -454,7 +461,7 @@ struct AgentRemoteImageView: View {
                     Text(label.isEmpty ? "图片预览" : label).font(.headline)
                     Spacer()
                     Button("完成") { fullScreen = false }
-                        .accessibilityIdentifier("agent.image.fullscreen.close")
+                        .accessibilityIdentifier("\(accessibilityIdentifierPrefix).fullscreen.close")
                 }
                 if let previewImage {
                     Image(nsImage: previewImage).resizable().scaledToFit()
@@ -504,7 +511,7 @@ struct AgentRemoteImageView: View {
                 previewError = error.localizedDescription
             }
         }
-        .accessibilityIdentifier("agent.image.resource")
+        .accessibilityIdentifier("\(accessibilityIdentifierPrefix).resource")
     }
 
     @MainActor

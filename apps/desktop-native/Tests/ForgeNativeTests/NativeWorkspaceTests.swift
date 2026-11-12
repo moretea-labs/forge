@@ -2134,3 +2134,22 @@ extension NativeWorkspaceTests {
         XCTAssertFalse(AgentUsageDashboard.isUsageEligibleAssistantMessage(oldReply, since: cutoff))
     }
 }
+
+
+extension NativeWorkspaceTests {
+    func testAssetAccessibilityIdentifiersAreUniquePerResource() {
+        let first = AgentAssetsDashboard.accessibilityIdentifier(
+            for: "thread-a:message-a:remote:0", control: "source-thread"
+        )
+        let second = AgentAssetsDashboard.accessibilityIdentifier(
+            for: "thread-a:message-a:remote:1", control: "source-thread"
+        )
+
+        XCTAssertEqual(first, "agent.assets.resource.thread-a:message-a:remote:0.source-thread")
+        XCTAssertNotEqual(first, second)
+        XCTAssertEqual(
+            AgentAssetsDashboard.accessibilityIdentifier(for: "thread-a:message-a:remote:0"),
+            "agent.assets.resource.thread-a:message-a:remote:0"
+        )
+    }
+}
