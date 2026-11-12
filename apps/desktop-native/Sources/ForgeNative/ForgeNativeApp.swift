@@ -98,6 +98,7 @@ private struct ProjectCheckoutChoice: Identifiable {
 
 private struct ForgeWorkspaceView: View {
     @ObservedObject var model: NativeWorkspace
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var visibility: NavigationSplitViewVisibility = .all
     @State private var zenScreen: ZenScreen = .board
     @State private var zenFocusedRequirementId: String?
@@ -714,7 +715,7 @@ private struct ForgeWorkspaceView: View {
                 hoveredThreadId = nil
             }
         }
-        .animation(.easeOut(duration:0.12),value:hovered)
+        .animation(reduceMotion ? nil : .easeOut(duration:0.12),value:hovered)
         .contextMenu {
             Button {
                 renameThreadId = thread.id
@@ -1266,6 +1267,7 @@ private enum AgentSemanticContextInspector: String, Identifiable {
 
 private struct AgentPane: View {
     @ObservedObject var model: NativeWorkspace
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let onChooseProject: () -> Void
     @State private var showChanges = false
     @State private var showActivityDetails = false
@@ -1515,7 +1517,7 @@ private struct AgentPane: View {
                                     }
                                     if let count = model.liveActivity?.events?.count, count > 4 {
                                         Button(showActivityDetails ? "收起" : "全部") {
-                                            withAnimation(.easeOut(duration:0.16)) {
+                                            withAnimation(reduceMotion ? nil : .easeOut(duration:0.16)) {
                                                 showActivityDetails.toggle()
                                             }
                                         }
@@ -1579,7 +1581,7 @@ private struct AgentPane: View {
                 .overlay(alignment:.bottomTrailing) {
                     if model.busy {
                         Button {
-                            withAnimation(.easeOut(duration:0.18)) {
+                            withAnimation(reduceMotion ? nil : .easeOut(duration:0.18)) {
                                 reader.scrollTo("pending",anchor:.bottom)
                             }
                         } label: {
@@ -1602,14 +1604,14 @@ private struct AgentPane: View {
                 }
                 .onChange(of:model.thread?.messages.count) { _ in
                     if let last = model.thread?.messages.last {
-                        withAnimation(.easeOut(duration:0.2)) { reader.scrollTo(last.id,anchor:.bottom) }
+                        withAnimation(reduceMotion ? nil : .easeOut(duration:0.2)) { reader.scrollTo(last.id,anchor:.bottom) }
                     }
                 }
                 .onChange(of:model.busy) { busy in
                     guard busy else { return }
                     Task { @MainActor in
                         await Task.yield()
-                        withAnimation(.easeOut(duration:0.2)) { reader.scrollTo("pending",anchor:.bottom) }
+                        withAnimation(reduceMotion ? nil : .easeOut(duration:0.2)) { reader.scrollTo("pending",anchor:.bottom) }
                     }
                 }
             }
@@ -1809,10 +1811,10 @@ private struct AgentPane: View {
                     AgentChangesPane(model:model,isPresented:$showChanges)
                         .frame(width:340)
                 }
-                .transition(.move(edge:.trailing).combined(with:.opacity))
+                .transition(reduceMotion ? .identity : .move(edge:.trailing).combined(with:.opacity))
             }
         }
-        .animation(.easeOut(duration:0.18),value:showChanges)
+        .animation(reduceMotion ? nil : .easeOut(duration:0.18),value:showChanges)
         .confirmationDialog(
             "将命令交给 Forge Agent？",
             isPresented:Binding(
@@ -2025,7 +2027,7 @@ private struct AgentPane: View {
 
     private var workspaceChangesControl: some View {
         Button {
-            withAnimation(.easeOut(duration:0.18)) { showChanges.toggle() }
+            withAnimation(reduceMotion ? nil : .easeOut(duration:0.18)) { showChanges.toggle() }
             if showChanges {
                 Task { await model.refreshAgentChanges() }
             }
@@ -2527,6 +2529,7 @@ private func copyAgentText(_ text: String) {
 
 private struct AgentChangesPane: View {
     @ObservedObject var model: NativeWorkspace
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Binding var isPresented: Bool
     @State private var commitMessage = ""
     @State private var restoreSnapshot: AgentGitDiff?
@@ -2575,7 +2578,7 @@ private struct AgentChangesPane: View {
                 .help("刷新改动")
 
                 Button {
-                    withAnimation(.easeOut(duration:0.16)) { isPresented = false }
+                    withAnimation(reduceMotion ? nil : .easeOut(duration:0.16)) { isPresented = false }
                 } label: {
                     Image(systemName:"xmark")
                         .font(.system(size:10,weight:.semibold))
@@ -3460,6 +3463,7 @@ private struct AgentKnowledgeInspector: View {
 private struct RecordsPane: View {
     @ObservedObject var model: NativeWorkspace
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var authoring: PlanningAuthoringContext?
     @State private var autopilotApproval: AutopilotApprovalContext?
     @State private var draftTitle = ""
@@ -3549,7 +3553,7 @@ private struct RecordsPane: View {
                     }
                 }
                 .padding(.trailing,compact ? 8 : 12)
-                .transition(.move(edge:.trailing).combined(with:.opacity))
+                .transition(reduceMotion ? .identity : .move(edge:.trailing).combined(with:.opacity))
             }
             }
         }
@@ -4060,7 +4064,7 @@ private struct RecordsPane: View {
             .onChange(of:planningScrollTarget) { target in
                 guard planningViewMode == "list",let target else { return }
                 DispatchQueue.main.async {
-                    withAnimation(.easeInOut(duration:0.18)) {
+                    withAnimation(reduceMotion ? nil : .easeInOut(duration:0.18)) {
                         proxy.scrollTo(target,anchor:.center)
                     }
                     planningScrollTarget=nil
@@ -4304,7 +4308,7 @@ private struct RecordsPane: View {
                 .onChange(of:planningScrollTarget) { target in
                     guard let target else { return }
                     DispatchQueue.main.async {
-                        withAnimation(.easeInOut(duration:0.18)) {
+                        withAnimation(reduceMotion ? nil : .easeInOut(duration:0.18)) {
                             proxy.scrollTo(target,anchor:.center)
                         }
                         planningScrollTarget=nil
@@ -4709,7 +4713,7 @@ private struct RecordsPane: View {
                     }
                 }
                 .padding(7)
-                .transition(.opacity)
+                .transition(reduceMotion ? .identity : .opacity)
             }
         }
         .opacity(focused ? 1 : 0.52)
@@ -4717,8 +4721,8 @@ private struct RecordsPane: View {
             if inside { hoveredPlanningRecordId=item.id }
             else if hoveredPlanningRecordId == item.id { hoveredPlanningRecordId=nil }
         }
-        .animation(.easeOut(duration:0.12),value:hovered)
-        .animation(.easeOut(duration:0.16),value:focused)
+        .animation(reduceMotion ? nil : .easeOut(duration:0.12),value:hovered)
+        .animation(reduceMotion ? nil : .easeOut(duration:0.16),value:focused)
         .accessibilityElement(children:.contain)
     }
 
