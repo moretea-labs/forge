@@ -540,7 +540,10 @@ const additionalAscReads: AscReadSpec[] = [
   { id: 'list_version_asset_library_placements', title: 'List screenshot and preview placements for a version localization', scope: 'appstoreconnect.apps.read', path: '/v1/appStoreVersionLocalizations/:localization_id/placements', required: ['localization_id'], filters: { 'placement_type': 'filter[placementType]', 'placement_group': 'filter[placementGroup]' }, fixedQuery: { sort: 'placementGroupPosition' } },
   { id: 'list_asset_library_placement_ids', title: 'List asset placement IDs for an image', scope: 'appstoreconnect.apps.read', path: '/v1/appAssetLibraryImages/:asset_id/relationships/placements', required: ['asset_id'] },
   { id: 'list_app_asset_library_images', title: 'List App Store asset library images', scope: 'appstoreconnect.apps.read', path: '/v1/appAssetLibraries/:library_id/images', required: ['library_id'], filters: {'reference_name':'filter[referenceName]','state':'filter[state]','category':'filter[category]','spec_id':'filter[specId]'} },
-  { id: 'list_app_asset_library_videos', title: 'List App Store asset library videos', scope: 'appstoreconnect.apps.read', path: '/v1/appAssetLibraries/:library_id/videos', required: ['library_id'],  },
+
+  { id: 'list_app_asset_library_video_placements', title: 'List reusable video placements', scope: 'appstoreconnect.apps.read', path: '/v1/appAssetLibraryVideos/:asset_id/placements', required: ['asset_id'], filters: { 'placement_type': 'filter[placementType]', 'placement_group': 'filter[placementGroup]' } },
+  { id: 'list_asset_library_video_placement_ids', title: 'List reusable video placement IDs', scope: 'appstoreconnect.apps.read', path: '/v1/appAssetLibraryVideos/:asset_id/relationships/placements', required: ['asset_id'] },
+  { id: 'list_app_asset_library_videos', title: 'List App Store asset library videos', scope: 'appstoreconnect.apps.read', path: '/v1/appAssetLibraries/:library_id/videos', required: ['library_id'], filters:{'reference_name':'filter[referenceName]','state':'filter[state]','category':'filter[category]','spec_id':'filter[specId]'} },
   { id: 'get_beta_group', title: 'Read TestFlight beta group', scope: 'appstoreconnect.apps.read', path: '/v1/betaGroups/:group_id', required: ['group_id'] },
   { id: 'get_beta_tester', title: 'Read TestFlight beta tester', scope: 'appstoreconnect.apps.read', path: '/v1/betaTesters/:tester_id', required: ['tester_id'] },
   { id: 'list_beta_group_testers', title: 'List TestFlight group testers', scope: 'appstoreconnect.apps.read', path: '/v1/betaGroups/:group_id/betaTesters', required: ['group_id'] },
@@ -604,6 +607,9 @@ function additionalAscActions(): AssistantPluginActionDescriptor[] {
     { id: 'delete_asset_library_placement', title: 'Remove one asset placement without deleting its image', scope: 'appstoreconnect.assets.write', fields: ['placement_id'], required: ['placement_id'], confirmation: 'strong_confirmation' },
     { id: 'order_asset_library_placements', title: 'Set exact placement order for one localization and group', scope: 'appstoreconnect.assets.write', fields: ['target_type','localization_id','placement_group','placement_ids'], required: ['target_type','localization_id','placement_group','placement_ids'], confirmation: 'strong_confirmation' },
     { id: 'update_asset_library_image', title: 'Rename or archive a reusable App Store image', scope: 'appstoreconnect.assets.write', fields: ['asset_id','reference_name','archived'], required: ['asset_id'], confirmation: 'strong_confirmation' },
+
+    { id: 'update_asset_library_video', title: 'Rename set preview frame or archive reusable App Store video', scope: 'appstoreconnect.assets.write', fields: ['asset_id','reference_name','preview_frame_time_code','archived'], required: ['asset_id'], confirmation: 'strong_confirmation' },
+    { id: 'delete_asset_library_video', title: 'Delete unplaced reusable App Store video', scope: 'appstoreconnect.assets.write', fields: ['asset_id'], required: ['asset_id'], confirmation: 'strong_confirmation' },
     { id: 'delete_asset_library_image', title: 'Delete unplaced image from App Store Asset Library', scope: 'appstoreconnect.assets.write', fields: ['asset_id'], required: ['asset_id'], confirmation: 'strong_confirmation' },
     { id: 'create_beta_group', title: 'Create TestFlight beta group', scope: 'appstoreconnect.testflight.write', fields: ['app_id','name','is_internal_group','public_link_enabled','public_link_limit'], required: ['name'], confirmation: 'strong_confirmation' },
     { id: 'update_beta_group', title: 'Update TestFlight group and public-link settings', scope: 'appstoreconnect.testflight.write', fields: ['group_id','name','public_link_enabled','public_link_limit'], required: ['group_id'], confirmation: 'strong_confirmation' },
@@ -749,6 +755,29 @@ function additionalAscWriteRequest(actionId: string, args: Record<string, unknow
     return { method: 'PATCH', path: '/v1/appAssetLibraryImages/' + encodeURIComponent(id),
       body: { data: { type: 'appAssetLibraryImages', id, attributes: attrs } } };
   }
+
+  if (actionId === 'update_asset_library_video') {
+    const id = requiredArg(args,'asset_id');
+    const attrs: Record<string,unknown> = {};
+    if (args.reference_name !== undefined) attrs.referenceName = requiredArg(args,'reference_name');
+    if (args.preview_frame_time_code !== undefined) {
+      const timecode = requiredArg(args,'preview_frame_time_code');
+      if (!/^(?:[0-1]?\d|2[0-3]):[0-5]\d:[0-5]\d:\d{2}$/.test(timecode))
+        throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID','Invalid video preview frame timecode (HH:MM:SS:FF).',{retryable:false});
+      attrs.previewFrameTimeCode=timecode;
+    }
+    if (args.archived !== undefined) {
+      if (args.archived !== true)
+        throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID','Only archived=true is supported.',{retryable:false});
+      attrs.archived=true;
+    }
+    if (!Object.keys(attrs).length)
+      throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID','No video fields to change.',{retryable:false});
+    return {method:'PATCH',path:'/v1/appAssetLibraryVideos/'+encodeURIComponent(id),
+      body:{data:{type:'appAssetLibraryVideos',id,attributes:attrs}}};
+  }
+  if (actionId === 'delete_asset_library_video')
+    return {method:'DELETE',path:'/v1/appAssetLibraryVideos/'+encodeURIComponent(requiredArg(args,'asset_id'))};
   if (actionId === 'delete_asset_library_image')
     return { method: 'DELETE', path: '/v1/appAssetLibraryImages/' + encodeURIComponent(requiredArg(args, 'asset_id')) };
   if (actionId === 'create_beta_group' || actionId === 'update_beta_group') {
@@ -1286,7 +1315,7 @@ function capabilities(): AssistantPluginCapability[] {
       actions: ['create_app_store_version', 'create_review_submission', 'submit_for_review', 'set_app_store_version_build', 'add_review_submission_item', 'get_app_store_version', 'get_app_store_version_build', 'get_review_submission', 'list_review_submission_items', 'get_app_store_review_detail', 'get_app_store_review_detail_by_id', 'list_app_store_review_attachments', 'get_app_store_review_attachment', 'list_app_store_review_attachment_ids', 'get_review_submission_item', 'list_review_submission_item_ids', 'get_app_store_version_phased_release', 'create_app_store_version_phased_release', 'update_app_store_version_phased_release', 'delete_app_store_version_phased_release', 'update_app_store_review_detail', 'check_release_readiness'],
       // Additional release/version reads are advertised in the commerce and ASO groups below.
     },
-    {capabilityId:'app-asset-library',title:'App Asset Library',description:'Read reusable assets, upload pinned images and place/order approved assets through official Apple endpoints.',scopes:['appstoreconnect.apps.read','appstoreconnect.assets.write'],actions:['get_app_asset_library','list_app_asset_library_reference_data','list_app_asset_library_images','get_app_asset_library_image','list_app_asset_library_image_placements','get_asset_library_placement','list_version_asset_library_placements','upload_asset_library_image','create_asset_library_placement','order_asset_library_placements','delete_asset_library_placement','update_asset_library_image','delete_asset_library_image']},
+    {capabilityId:'app-asset-library',title:'App Asset Library',description:'Read reusable assets, upload pinned images and place/order approved assets through official Apple endpoints.',scopes:['appstoreconnect.apps.read','appstoreconnect.assets.write'],actions:['get_app_asset_library','list_app_asset_library_reference_data','list_app_asset_library_images','get_app_asset_library_image','list_app_asset_library_image_placements','get_asset_library_placement','list_version_asset_library_placements','upload_asset_library_image','create_asset_library_placement','order_asset_library_placements','delete_asset_library_placement','update_asset_library_image','delete_asset_library_image','update_asset_library_video','delete_asset_library_video','list_app_asset_library_video_placements','list_asset_library_video_placement_ids']},
     {capabilityId:'team-access-read',title:'Team and Access',description:'Read Apple user roles, pending invitations and visible App access.',scopes:['appstoreconnect.team.read'],actions:additionalAscReads.filter(s=>s.scope==='appstoreconnect.team.read').map(s=>s.id)},
     {capabilityId:'webhooks-read',title:'Webhook Delivery Diagnostics',description:'Read Apple webhook configuration and delivery state.',scopes:['appstoreconnect.webhooks.read'],actions:additionalAscReads.filter(s=>s.scope==='appstoreconnect.webhooks.read').map(s=>s.id)},
     {capabilityId:'performance-read',title:'Power and Performance Metrics',description:'Read Apple App and build performance metrics.',scopes:['appstoreconnect.diagnostics.read'],actions:additionalAscReads.filter(s=>s.scope==='appstoreconnect.diagnostics.read').map(s=>s.id)},
@@ -1942,7 +1971,7 @@ export function buildAppStoreConnectPluginManifest(previousRevision = 0, previou
     pluginId: APP_STORE_CONNECT_PLUGIN_ID,
     provider: 'apple',
     displayName: 'App Store Connect API Plugin',
-    pluginVersion: '1.12.0',
+    pluginVersion: '1.13.0',
     authority: { strategy: 'derived', duplicateStateAllowed: false, sourceOfTruth: ['controller-global:system/plugins/config/app-store-connect.json', 'legacy-import-only:system/plugins/profiles|repositories/<repoId>/plugins/config|.forge/plugins|.repo-harness/plugins', 'env:FORGE_ASC_*'] },
     enabled: config.enabled,
     lifecycle: { state: state.lifecycleState, reason: !config.enabled ? 'App Store Connect plugin is disabled.' : auth.ready ? 'App Store Connect API credentials are ready.' : auth.errors[0] ?? auth.warnings[0] },

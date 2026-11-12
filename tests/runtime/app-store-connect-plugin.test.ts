@@ -42,7 +42,7 @@ describe('App Store Connect Xcode Cloud workflow actions', () => {
     const repoRoot = root();
     await executeAppStoreConnectPluginAction(input(repoRoot, 'configure', { enabled: true, provider: 'mock' }));
     const manifest = buildAppStoreConnectPluginManifest(1, undefined, repoRoot);
-    expect(manifest.pluginVersion).toBe('1.12.0');
+    expect(manifest.pluginVersion).toBe('1.13.0');
     expect(manifest.actions.find((action) => action.actionId === 'list_xcode_cloud_workflows')).toMatchObject({ readOnly: true, risk: 'readonly' });
     for (const actionId of ['list_bundle_ids', 'list_bundle_id_capabilities', 'list_certificates', 'list_devices', 'list_profiles']) {
       expect(manifest.actions.find((action) => action.actionId === actionId)).toMatchObject({
@@ -326,6 +326,61 @@ describe('App Store Connect Xcode Cloud workflow actions', () => {
     }
   });
 
+
+
+  test('Asset Library video metadata and preview frames use official resources with strong confirmation', async () => {
+    const repoRoot=root();
+    await executeAppStoreConnectPluginAction(input(repoRoot,'configure',{enabled:true,provider:'mock'}));
+    const manifest=buildAppStoreConnectPluginManifest(1,undefined,repoRoot);
+    for (const actionId of ['update_asset_library_video','delete_asset_library_video']) {
+      expect(manifest.actions.find(a=>a.actionId===actionId)).toMatchObject({
+        readOnly:false,confirmation:'strong_confirmation',scopes:['appstoreconnect.assets.write'],
+      });
+    }
+    const preview=await executeAppStoreConnectPluginAction(input(repoRoot,'update_asset_library_video',{
+      asset_id:'video/1',preview_frame_time_code:'00:00:05:00',reference_name:'Preview',dry_run:true,
+    }));
+    expect(preview).toMatchObject({dryRun:true,request:{method:'PATCH',
+      path:'/v1/appAssetLibraryVideos/video%2F1',body:{data:{type:'appAssetLibraryVideos',
+        id:'video/1',attributes:{previewFrameTimeCode:'00:00:05:00',referenceName:'Preview'}}}}});
+    const deletion=await executeAppStoreConnectPluginAction(input(repoRoot,'delete_asset_library_video',{
+      asset_id:'video-1',dry_run:true,
+    }));
+    expect(deletion).toMatchObject({request:{method:'DELETE',path:'/v1/appAssetLibraryVideos/video-1'}});
+    await expect(executeAppStoreConnectPluginAction(input(repoRoot,'update_asset_library_video',{
+      asset_id:'video-1',preview_frame_time_code:'bad-time',dry_run:true,
+    }))).rejects.toThrow('timecode');
+    const keyPath=join(repoRoot,'AuthKey_VIDEO_READS.p8');
+    const {privateKey}=generateKeyPairSync('ec',{namedCurve:'P-256'});
+    writeFileSync(keyPath,privateKey.export({type:'pkcs8',format:'pem'}));
+    await executeAppStoreConnectPluginAction(input(repoRoot,'configure',{
+      enabled:true,provider:'app-store-connect-api',issuer_id:'issuer-video',key_id:'key-video',private_key_path:keyPath,
+    }));
+    const old=globalThis.fetch;
+    const urls:URL[]=[];
+    globalThis.fetch=(async(request:string|URL|Request)=>{
+      urls.push(new URL(String(request)));
+      return Response.json({data:[]});
+    }) as typeof fetch;
+    try {
+      await executeAppStoreConnectPluginAction(input(repoRoot,'list_app_asset_library_videos',{
+        library_id:'library-1',reference_name:'Preview',state:'PREPARE_FOR_SUBMISSION',
+      }));
+      await executeAppStoreConnectPluginAction(input(repoRoot,'list_app_asset_library_video_placements',{
+        asset_id:'video-1',placement_type:'APP_PREVIEW',
+      }));
+      await executeAppStoreConnectPluginAction(input(repoRoot,'list_asset_library_video_placement_ids',{
+        asset_id:'video-1',
+      }));
+      expect(urls.map(x=>x.pathname)).toEqual([
+        '/v1/appAssetLibraries/library-1/videos',
+        '/v1/appAssetLibraryVideos/video-1/placements',
+        '/v1/appAssetLibraryVideos/video-1/relationships/placements',
+      ]);
+      expect(urls[0]?.searchParams.get('filter[referenceName]')).toBe('Preview');
+      expect(urls[1]?.searchParams.get('filter[placementType]')).toBe('APP_PREVIEW');
+    } finally {globalThis.fetch=old;}
+  });
 
   test('Asset Library placements: typed request, ordering and confirmation', async () => {
     const repoRoot=root();
