@@ -2,8 +2,8 @@ import { createHash } from 'crypto';
 import { existsSync, mkdirSync, realpathSync } from 'fs';
 import { homedir } from 'os';
 import { basename, dirname, join, relative, resolve } from 'path';
-import { durableControllerHome } from '../../effects/controller-home';
-import type { RepositoryRecord } from '../../core/repository/types';
+import { durableControllerHome } from './controller-home';
+import type { RepositoryRecord } from '../core/repository/types';
 
 export const MANAGED_WORKTREE_HOME_ENV = 'FORGE_WORKTREE_HOME';
 

@@ -27,21 +27,23 @@ Primary code:
 src/runtime/repositories/registry.ts
 src/runtime/repositories/ephemeral-workspace.ts
 src/runtime/control-plane/execution/execution-identity.ts
+src/effects/managed-worktree-storage.ts
 ```
 
-Registered work is resolved to `repoId` plus `checkoutId`. Git top-level/common-directory checks prevent a caller from supplying a different checkout through `cwd`. `ephemeral-workspace.ts` represents the separate explicit authority for an existing unregistered local directory. `src/runtime/repositories/structured-git.ts` partitions porcelain status once; `src/runtime/projections/git-status-sampler.ts` uses that parser for its sampled projection rather than maintaining an independent classification.
+Registered work is resolved to `repoId` plus `checkoutId`. Git top-level/common-directory checks prevent a caller from supplying a different checkout through `cwd`. `ephemeral-workspace.ts` represents the separate explicit authority for an existing unregistered local directory. `src/runtime/repositories/structured-git.ts` partitions porcelain status once; `src/runtime/projections/git-status-sampler.ts` uses that parser for its sampled projection rather than maintaining an independent classification. Controller-owned managed-worktree roots and path-overlap checks are shared filesystem effects in `src/effects/managed-worktree-storage.ts`; Runtime cleanup and workspace creation consume that one owner.
 
 ## 3. Context and source access
 
 Primary code:
 
 ```text
+src/effects/brain-root.ts
 src/cli/controller/context-pack.ts
 src/runtime/repositories/inspector.ts
 src/runtime/repositories/session-cache.ts
 ```
 
-`rh_context` is the normal code-location/context router. Repository observations are bounded and cached by session/repository identity where valid. Clean Git snapshots avoid redundant `git diff --stat` subprocesses because `git status` already proves that no unstaged diff can exist.
+`rh_context` is the normal code-location/context router. Repository observations are bounded and cached by session/repository identity where valid. Clean Git snapshots avoid redundant `git diff --stat` subprocesses because `git status` already proves that no unstaged diff can exist. User-level Brain root discovery and configuration are filesystem effects in `src/effects/brain-root.ts`, shared by Runtime assistant context and CLI setup/brain commands.
 
 Structural CodeGraph context is optional augmentation for call/dependency questions; it is not another mandatory top-level search abstraction.
 

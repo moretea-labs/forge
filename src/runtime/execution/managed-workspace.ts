@@ -9,7 +9,7 @@ import {
   repositoryCheckoutRootMatches,
   selectRepositoryCheckout,
 } from '../repositories/registry';
-import { managedWorktreePath } from '../../cli/repositories/worktree-storage';
+import { managedWorktreePath } from '../../effects/managed-worktree-storage';
 import { branchSlugSegment, validateBranchName } from '../../core/git-branch-policy';
 import { withControllerLock } from '../../effects/controller-locks';
 import { resolveGitExecutable } from '../../effects/git-executable';

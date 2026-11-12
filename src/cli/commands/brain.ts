@@ -10,7 +10,7 @@ import { Command } from 'commander';
 import * as fs from 'fs';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
-import { configuredBrainRoot } from './brain-root';
+import { configuredBrainRoot } from '../../effects/brain-root';
 import { addBrainAssistantCommands } from './brain-assistant';
 import { resolveRepoPreferredControllerHome } from '../../effects/controller-home';
 import { findRegisteredRepositoryByCheckoutRoot } from '../../runtime/repositories/registry';

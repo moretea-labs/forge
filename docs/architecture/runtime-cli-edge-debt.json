@@ -2,13 +2,10 @@
   "version": 1,
   "note": "src/runtime -> src/cli reverse dependencies. Shrinking migration debt: entries are removed when their importer migrates to the neutral owner; new entries are forbidden by scripts/check-module-boundaries.mjs.",
   "edges": [
-    "src/runtime/context/assistant-work-context.ts|../../cli/commands/brain-root",
     "src/runtime/context/context-pack-process.ts|../../cli/controller/context/types",
     "src/runtime/control-plane/global-scheduler/scheduler.ts|../../../cli/agent-jobs/executable-resolver",
-    "src/runtime/control-plane/runtime-cleanup.ts|../../cli/repositories/worktree-storage",
     "src/runtime/diagnostics/process-facade.ts|../../cli/runtime-invocation",
     "src/runtime/diagnostics/read-only-tool.ts|../../cli/local-bridge/job-store",
-    "src/runtime/execution/managed-workspace.ts|../../cli/repositories/worktree-storage",
     "src/runtime/execution/process-runtime/persisted-check.ts|../../../cli/runtime-invocation",
     "src/runtime/execution/workers/executor.ts|../../../cli/local-bridge/job-store",
     "src/runtime/execution/workers/executor.ts|../../../cli/local-bridge/types",
