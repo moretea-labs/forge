@@ -422,6 +422,7 @@ struct AgentRemoteImageView: View {
                     Button { fullScreen = true } label: {
                         Image(nsImage: previewImage).resizable().scaledToFit()
                             .frame(maxWidth: 560, maxHeight: 300)
+                            .accessibilityLabel(label.isEmpty ? "图片预览" : label)
                     }
                     .buttonStyle(.plain)
                     .help("放大预览")
@@ -451,6 +452,7 @@ struct AgentRemoteImageView: View {
                 if let previewImage {
                     Image(nsImage: previewImage).resizable().scaledToFit()
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .accessibilityLabel(label.isEmpty ? "图片预览" : label)
                 } else if previewLoading {
                     ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else if let previewError {

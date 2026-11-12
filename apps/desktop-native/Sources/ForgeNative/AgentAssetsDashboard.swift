@@ -189,6 +189,7 @@ private struct AgentLocalImageResourceView: View {
                 if let previewImage {
                     Image(nsImage: previewImage)
                         .resizable().scaledToFit().frame(maxWidth: 500, maxHeight: 300)
+                        .accessibilityLabel("本地图片：\(URL(fileURLWithPath: path).lastPathComponent)")
                 } else if previewLoading {
                     ProgressView().frame(height: 80)
                 } else if let previewError {
