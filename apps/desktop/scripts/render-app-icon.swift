@@ -1,69 +1,22 @@
 import AppKit
 import Foundation
 
-// Canonical Forge desktop app mark. The app, dock, and in-app identity all
-// consume PNGs generated from this single vector drawing.
-private let canvas: CGFloat = 1024
-
-private func color(_ r: CGFloat, _ g: CGFloat, _ b: CGFloat, _ a: CGFloat = 1) -> NSColor {
-    NSColor(calibratedRed: r / 255, green: g / 255, blue: b / 255, alpha: a)
+// The approved, unmasked artwork is the single source for all client surfaces.
+let sourceURL = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+    .appendingPathComponent("../assets/app-icon-source.png").standardizedFileURL
+let sourceData = try Data(contentsOf: sourceURL)
+guard let source = NSBitmapImageRep(data: sourceData),
+      source.pixelsWide == source.pixelsHigh,
+      source.pixelsWide >= 1024,
+      let image = NSImage(data: sourceData) else {
+    fatalError("App icon source must be a square image of at least 1024 pixels")
 }
-
-private func polygon(_ coordinates: [(CGFloat, CGFloat)], fill: NSColor) {
-    guard let first = coordinates.first else { return }
-    let path = NSBezierPath()
-    path.move(to: NSPoint(x: first.0, y: first.1))
-    for point in coordinates.dropFirst() {
-        path.line(to: NSPoint(x: point.0, y: point.1))
+for y in 0..<source.pixelsHigh {
+    for x in 0..<source.pixelsWide {
+        guard source.colorAt(x: x, y: y)?.alphaComponent == 1 else {
+            fatalError("App icon source must be fully opaque, including its corners")
+        }
     }
-    path.close()
-    fill.setFill()
-    path.fill()
-}
-
-private func paint() {
-    // AppKit coordinates run bottom-to-top. Keep the crown above the crossbar.
-    let shell = NSBezierPath(roundedRect: NSRect(x: 56, y: 56, width: 912, height: 912),
-                             xRadius: 210, yRadius: 210)
-    NSGradient(starting: color(25, 29, 34), ending: color(49, 54, 61))!
-        .draw(in: shell, angle: 90)
-    shell.lineWidth = 2
-    color(255, 255, 255, 0.14).setStroke()
-    shell.stroke()
-
-    // One open, upright F: a substantial stem and two chamfered tool faces.
-    // The broad silhouette and generous counter survive compact Dock sizes.
-    let mark = NSBezierPath()
-    mark.move(to: NSPoint(x: 302, y: 250))
-    for point in [
-        NSPoint(x: 302, y: 772), NSPoint(x: 758, y: 772),
-        NSPoint(x: 702, y: 642), NSPoint(x: 446, y: 642),
-        NSPoint(x: 446, y: 541), NSPoint(x: 678, y: 541),
-        NSPoint(x: 626, y: 417), NSPoint(x: 446, y: 417),
-        NSPoint(x: 446, y: 250),
-    ] { mark.line(to: point) }
-    mark.close()
-
-    NSGraphicsContext.saveGraphicsState()
-    let shadow = NSShadow()
-    shadow.shadowColor = color(0, 0, 0, 0.30)
-    shadow.shadowBlurRadius = 20
-    shadow.shadowOffset = NSSize(width: 0, height: -12)
-    shadow.set()
-    color(231, 120, 58).setFill()
-    mark.fill()
-    NSGraphicsContext.restoreGraphicsState()
-
-    NSGradient(starting: color(221, 99, 48), ending: color(255, 199, 120))!
-        .draw(in: mark, angle: 90)
-
-    // A single narrow bevel, subordinate to the solid F silhouette.
-    polygon([
-        (302, 250), (322, 268), (322, 752), (302, 772),
-    ], fill: color(255, 216, 158, 0.45))
-    polygon([
-        (302, 772), (758, 772), (746, 752), (322, 752),
-    ], fill: color(255, 231, 192, 0.54))
 }
 
 private func render(size: Int, output: URL) throws {
@@ -77,10 +30,9 @@ private func render(size: Int, output: URL) throws {
     NSGraphicsContext.saveGraphicsState()
     NSGraphicsContext.current = context
     context.imageInterpolation = .high
-    let scale = NSAffineTransform()
-    scale.scale(by: CGFloat(size) / canvas)
-    scale.concat()
-    paint()
+    // Fill the whole canvas; the operating system owns the outer icon mask.
+    image.draw(in: NSRect(x: 0, y: 0, width: size, height: size),
+               from: .zero, operation: .copy, fraction: 1)
     context.flushGraphics()
     NSGraphicsContext.restoreGraphicsState()
 
@@ -129,4 +81,4 @@ guard iconutil.terminationStatus == 0 else {
     throw NSError(domain: "ForgeIcon", code: Int(iconutil.terminationStatus))
 }
 try fm.removeItem(at: iconset)
-print("Forge icon assets rendered from canonical vector: 32px, 128px, 256px, 1024px, ICNS")
+print("Forge icon assets rendered from approved opaque artwork: 32px, 128px, 256px, 1024px, ICNS")
