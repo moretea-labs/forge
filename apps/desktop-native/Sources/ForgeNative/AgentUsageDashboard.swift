@@ -27,10 +27,8 @@ struct AgentUsageDashboard: View {
         model.threads.filter { selectedRepoId.isEmpty || $0.repoId == selectedRepoId }
     }
 
-    private var entries: [Entry] {
-        let cutoff = Calendar.current.date(byAdding: .day, value: -(days - 1),
-                                           to: Calendar.current.startOfDay(for: Date())) ?? Date()
-        return relevantThreads.flatMap { thread in
+    private func makeEntries(from threads: [ChatThread], since cutoff: Date) -> [Entry] {
+        threads.flatMap { thread in
             thread.messages.compactMap { message -> Entry? in
                 guard message.role == "assistant",
                       message.createdAt >= cutoff,
@@ -46,24 +44,16 @@ struct AgentUsageDashboard: View {
         }.sorted { $0.date > $1.date }
     }
 
-    private var unreportedMessages: Int {
-        let cutoff = Calendar.current.date(byAdding: .day, value: -(days - 1),
-                                           to: Calendar.current.startOfDay(for: Date())) ?? Date()
-        return relevantThreads.reduce(0) { count, thread in
+    private func makeUnreportedMessageCount(from threads: [ChatThread], since cutoff: Date) -> Int {
+        threads.reduce(0) { count, thread in
             count + thread.messages.filter {
                 $0.role == "assistant" && $0.createdAt >= cutoff && $0.usage == nil
             }.count
         }
     }
 
-    private var inputTotal: Int { entries.reduce(0) { $0 + $1.usage.inputTokens } }
-    private var outputTotal: Int { entries.reduce(0) { $0 + $1.usage.outputTokens } }
-    private var total: Int { entries.reduce(0) { $0 + $1.usage.totalTokens } }
-    private var partiallyReported: Int { entries.filter { !$0.usage.complete }.count }
-
-    private var timeline: [DayTotal] {
+    private func makeTimeline(from entries: [Entry], today: Date) -> [DayTotal] {
         let calendar = Calendar.current
-        let today = calendar.startOfDay(for: Date())
         let totals = Dictionary(grouping: entries, by: { calendar.startOfDay(for: $0.date) })
             .mapValues { values in values.reduce(0) { $0 + $1.usage.totalTokens } }
         return (0..<days).reversed().compactMap { offset in
@@ -71,7 +61,7 @@ struct AgentUsageDashboard: View {
         }.map { DayTotal(date: $0, count: totals[$0] ?? 0) }
     }
 
-    private var byModel: [(String, Int)] {
+    private func makeModelDistribution(from entries: [Entry]) -> [(String, Int)] {
         let grouped = Dictionary(grouping: entries, by: { ModelKey(provider: $0.provider, model: $0.model) })
         return grouped.map { group in
             ("\(providerLabel(group.key.provider)) · \(group.key.model)",
@@ -102,7 +92,7 @@ struct AgentUsageDashboard: View {
         }
     }
 
-    private var byProject: [(String, Int)] {
+    private func makeProjectDistribution(from entries: [Entry]) -> [(String, Int)] {
         let grouped = Dictionary(grouping: entries, by: \.projectId)
         return grouped.map { projectId, values in
             (values.first?.project ?? "未关联项目",
@@ -116,6 +106,18 @@ struct AgentUsageDashboard: View {
     }
 
     var body: some View {
+        let threads = relevantThreads
+        let today = Calendar.current.startOfDay(for: Date())
+        let cutoff = Calendar.current.date(byAdding: .day, value: -(days - 1), to: today) ?? today
+        let usageEntries = makeEntries(from: threads, since: cutoff)
+        let unreportedMessages = makeUnreportedMessageCount(from: threads, since: cutoff)
+        let inputTotal = usageEntries.reduce(0) { $0 + $1.usage.inputTokens }
+        let outputTotal = usageEntries.reduce(0) { $0 + $1.usage.outputTokens }
+        let total = usageEntries.reduce(0) { $0 + $1.usage.totalTokens }
+        let partiallyReported = usageEntries.filter { !$0.usage.complete }.count
+        let timeline = makeTimeline(from: usageEntries, today: today)
+        let byModel = makeModelDistribution(from: usageEntries)
+        let byProject = makeProjectDistribution(from: usageEntries)
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
                 HStack(alignment: .firstTextBaseline) {
@@ -143,7 +145,7 @@ struct AgentUsageDashboard: View {
                     metric("总 Token", total.formatted())
                     metric("输入", inputTotal.formatted())
                     metric("输出", outputTotal.formatted())
-                    metric("已记录回复", entries.count.formatted(), "未记录 \(unreportedMessages) 条")
+                    metric("已记录回复", usageEntries.count.formatted(), "未记录 \(unreportedMessages) 条")
                 }
                 .padding(.vertical, 4)
 
@@ -189,10 +191,10 @@ struct AgentUsageDashboard: View {
 
                 VStack(alignment: .leading, spacing: 10) {
                     Text("最近记录").font(.system(size: 15, weight: .semibold))
-                    if entries.isEmpty {
+                    if usageEntries.isEmpty {
                         Text("暂无用量回执").font(.system(size: 12)).foregroundStyle(.secondary)
                     } else {
-                        ForEach(Array(entries.prefix(12))) { item in
+                        ForEach(Array(usageEntries.prefix(12))) { item in
                             HStack(spacing: 10) {
                                 Text(item.date.formatted(.dateTime.month().day().hour().minute()))
                                     .foregroundStyle(.secondary).frame(width: 105, alignment: .leading)

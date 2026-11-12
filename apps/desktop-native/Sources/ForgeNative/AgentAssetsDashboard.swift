@@ -59,6 +59,7 @@ struct AgentAssetsDashboard: View {
     }
 
     var body: some View {
+        let items = resources
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 HStack(alignment: .firstTextBaseline) {
@@ -74,7 +75,7 @@ struct AgentAssetsDashboard: View {
                 }
 
                 HStack(spacing: 16) {
-                    Label("\(resources.count) 个资源", systemImage: "photo.on.rectangle")
+                    Label("\(items.count) 个资源", systemImage: "photo.on.rectangle")
                         .font(.system(size: 12, weight: .medium))
                     Toggle("我的图片", isOn: $showUserImages)
                     Toggle("回复图片", isOn: $showRemoteImages)
@@ -84,7 +85,7 @@ struct AgentAssetsDashboard: View {
                 .font(.system(size: 11.5))
                 .padding(.bottom, 5)
 
-                if resources.isEmpty {
+                if items.isEmpty {
                     VStack(spacing: 9) {
                         Image(systemName: "photo").font(.system(size: 28)).foregroundStyle(.tertiary)
                         Text("暂无图片").font(.system(size: 14, weight: .medium))
@@ -92,7 +93,7 @@ struct AgentAssetsDashboard: View {
                     .frame(maxWidth: .infinity, minHeight: 240)
                 } else {
                     LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(resources) { item in
+                        ForEach(items) { item in
                             VStack(alignment: .leading, spacing: 8) {
                                 HStack(spacing: 10) {
                                     Image(systemName: item.remote ? "network" : "photo")
