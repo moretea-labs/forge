@@ -1716,7 +1716,10 @@ export async function activateMacOsBrowserOwnedTab(
     [],
     timeoutMs,
   );
-  const metadata = await readMacOsBrowserOwnedTabMetadata(product, resolvedRef, timeoutMs);
+  // This exact tab was resolved immediately before activation. Re-read its
+  // targeted metadata for the postcondition instead of enumerating every tab
+  // again; the provider still rejects missing/stale tab identity fail-closed.
+  const metadata = await readResolvedMacOsBrowserOwnedTabMetadata(product, resolvedRef, timeoutMs);
   if (metadata.tabId !== resolvedRef.tabId || metadata.active !== true) {
     throw new AssistantPluginError(
       'PLUGIN_BROWSER_NATIVE_ACTIVATION_POSTCONDITION_FAILED',

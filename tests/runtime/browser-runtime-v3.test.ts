@@ -569,6 +569,7 @@ describe('Browser Runtime V3 routing', () => {
 
   test('re-resolves a stable native tab immediately before activation after window topology drift', async () => {
     let currentWindowId = '7';
+    let inventoryReads = 0;
     const activationScripts: string[] = [];
     const metadata = () => [
       'true', 'https://chatgpt.com/c/native-stable', 'Native Stable', '0', '0', '1200', '800', currentWindowId, '9', 'true', 'false',
@@ -578,11 +579,14 @@ describe('Browser Runtime V3 routing', () => {
       platform: 'darwin',
       appExists: () => true,
       processRunning: async () => true,
-      tabInventory: async () => ({
-        product: 'chrome',
-        truncated: false,
-        tabs: [{ windowId: currentWindowId, tabId: '9', active: true, url: 'https://chatgpt.com/c/native-stable', title: 'Native Stable' }],
-      }),
+      tabInventory: async () => {
+        inventoryReads += 1;
+        return {
+          product: 'chrome',
+          truncated: false,
+          tabs: [{ windowId: currentWindowId, tabId: '9', active: true, url: 'https://chatgpt.com/c/native-stable', title: 'Native Stable' }],
+        };
+      },
       runAppleScript: async (script) => {
         if (script.includes('set active tab index of targetWindow')) {
           activationScripts.push(script);
@@ -594,8 +598,12 @@ describe('Browser Runtime V3 routing', () => {
 
     const attached = await reattachMacOsBrowserOwnedPage('chrome', { windowId: '7', tabId: '9' }, 1_000);
     currentWindowId = '99';
+    const beforeActivationInventoryReads = inventoryReads;
     await attached.page.bringToFront();
 
+    // The exact tab was resolved before activation; the targeted postcondition
+    // must not repeat an expensive full-window Chrome inventory.
+    expect(inventoryReads - beforeActivationInventoryReads).toBe(1);
     expect(activationScripts).toHaveLength(1);
     expect(activationScripts[0]).toContain('set targetTabId to "9"');
     expect(activationScripts[0]).not.toContain('first window whose id is');
