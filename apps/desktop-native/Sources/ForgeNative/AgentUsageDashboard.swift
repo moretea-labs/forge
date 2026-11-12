@@ -27,6 +27,10 @@ struct AgentUsageDashboard: View {
         model.threads.filter { selectedRepoId.isEmpty || $0.repoId == selectedRepoId }
     }
 
+    static func isUsageEligibleAssistantMessage(_ message: ChatMessage, since cutoff: Date) -> Bool {
+        message.role == "assistant" && message.incomplete != true && message.createdAt >= cutoff
+    }
+
     private func makeUsageSnapshot(
         from threads: [ChatThread],
         projectLabels: [String: String],
@@ -42,7 +46,7 @@ struct AgentUsageDashboard: View {
         var total = 0
         var partiallyReported = 0
         for thread in threads {
-            for message in thread.messages where message.role == "assistant" && message.createdAt >= cutoff {
+            for message in thread.messages where Self.isUsageEligibleAssistantMessage(message, since: cutoff) {
                 guard let usage = message.usage else {
                     unreportedCount += 1
                     continue

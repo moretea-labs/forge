@@ -2058,3 +2058,30 @@ extension NativeWorkspaceTests {
         XCTAssertNil(makeRemoteImagePreview(Data("not an image".utf8)))
     }
 }
+
+
+extension NativeWorkspaceTests {
+    func testUsageProjectionExcludesIncompleteAssistantTurns() {
+        let cutoff = Date(timeIntervalSince1970: 100)
+        let completeWithoutReceipt = ChatMessage(role: "assistant", text: "done", createdAt: cutoff)
+        let recordedUsage = AgentTokenUsage(
+            inputTokens: 1, outputTokens: 1, totalTokens: 2,
+            reportedRounds: 1, totalRounds: 1
+        )
+        let interruptedWithoutReceipt = ChatMessage(
+            role: "assistant", text: "interrupted", incomplete: true, createdAt: cutoff
+        )
+        let interruptedWithReceipt = ChatMessage(
+            role: "assistant", text: "interrupted", incomplete: true,
+            usage: recordedUsage, createdAt: cutoff
+        )
+        let userMessage = ChatMessage(role: "user", text: "request", createdAt: cutoff)
+        let oldReply = ChatMessage(role: "assistant", text: "old", createdAt: cutoff.addingTimeInterval(-1))
+
+        XCTAssertTrue(AgentUsageDashboard.isUsageEligibleAssistantMessage(completeWithoutReceipt, since: cutoff))
+        XCTAssertFalse(AgentUsageDashboard.isUsageEligibleAssistantMessage(interruptedWithoutReceipt, since: cutoff))
+        XCTAssertFalse(AgentUsageDashboard.isUsageEligibleAssistantMessage(interruptedWithReceipt, since: cutoff))
+        XCTAssertFalse(AgentUsageDashboard.isUsageEligibleAssistantMessage(userMessage, since: cutoff))
+        XCTAssertFalse(AgentUsageDashboard.isUsageEligibleAssistantMessage(oldReply, since: cutoff))
+    }
+}
