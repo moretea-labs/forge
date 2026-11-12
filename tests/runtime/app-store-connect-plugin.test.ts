@@ -42,7 +42,7 @@ describe('App Store Connect Xcode Cloud workflow actions', () => {
     const repoRoot = root();
     await executeAppStoreConnectPluginAction(input(repoRoot, 'configure', { enabled: true, provider: 'mock' }));
     const manifest = buildAppStoreConnectPluginManifest(1, undefined, repoRoot);
-    expect(manifest.pluginVersion).toBe('1.9.0');
+    expect(manifest.pluginVersion).toBe('1.10.0');
     expect(manifest.actions.find((action) => action.actionId === 'list_xcode_cloud_workflows')).toMatchObject({ readOnly: true, risk: 'readonly' });
     for (const actionId of ['list_bundle_ids', 'list_bundle_id_capabilities', 'list_certificates', 'list_devices', 'list_profiles']) {
       expect(manifest.actions.find((action) => action.actionId === actionId)).toMatchObject({
@@ -143,6 +143,47 @@ describe('App Store Connect Xcode Cloud workflow actions', () => {
   });
 
 
+
+  test('phased release mutations use official typed requests and require strong confirmation', async () => {
+    const repoRoot = root();
+    await executeAppStoreConnectPluginAction(input(repoRoot, 'configure', { enabled: true, provider: 'mock' }));
+    const manifest = buildAppStoreConnectPluginManifest(1, undefined, repoRoot);
+    for (const actionId of ['create_app_store_version_phased_release',
+      'update_app_store_version_phased_release','delete_app_store_version_phased_release']) {
+      expect(manifest.actions.find(action => action.actionId === actionId)).toMatchObject({
+        readOnly: false, risk: 'remote_write', confirmation: 'strong_confirmation',
+      });
+    }
+    const create = await executeAppStoreConnectPluginAction(input(repoRoot,
+      'create_app_store_version_phased_release', { version_id: 'version-1', dry_run: true }));
+    expect(create).toMatchObject({ dryRun: true, request: {
+      method: 'POST', path: '/v1/appStoreVersionPhasedReleases',
+      body: { data: { type: 'appStoreVersionPhasedReleases',
+        attributes: { phasedReleaseState: 'INACTIVE' },
+        relationships: { appStoreVersion: { data: {type:'appStoreVersions',id:'version-1'} } },
+      } },
+    } });
+    const pause = await executeAppStoreConnectPluginAction(input(repoRoot,
+      'update_app_store_version_phased_release', {
+        phased_release_id: 'phased/1', state: 'PAUSED', dry_run: true,
+      }));
+    expect(pause).toMatchObject({ dryRun: true, request: {
+      method: 'PATCH', path: '/v1/appStoreVersionPhasedReleases/phased%2F1',
+      body: { data: { type: 'appStoreVersionPhasedReleases', id: 'phased/1',
+        attributes: { phasedReleaseState: 'PAUSED' } } },
+    } });
+    const cancel = await executeAppStoreConnectPluginAction(input(repoRoot,
+      'delete_app_store_version_phased_release', {
+        phased_release_id: 'phased-1', dry_run: true,
+      }));
+    expect(cancel).toMatchObject({dryRun: true, request: {
+      method: 'DELETE', path: '/v1/appStoreVersionPhasedReleases/phased-1',
+    }});
+    await expect(executeAppStoreConnectPluginAction(input(repoRoot,
+      'update_app_store_version_phased_release', {
+        phased_release_id: 'phased-1', state: 'INACTIVE', dry_run: true,
+      }))).rejects.toThrow('ACTIVE, PAUSED or COMPLETE');
+  });
 
   test('release rollout and review resource reads preserve Apple state and redact direct detail credentials', async () => {
     const repoRoot = root();

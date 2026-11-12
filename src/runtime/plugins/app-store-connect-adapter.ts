@@ -580,6 +580,9 @@ function additionalAscActions(): AssistantPluginActionDescriptor[] {
     };
   });
   const writes: Array<{ id: string; title: string; scope: string; fields: string[]; required: string[]; confirmation: 'authorization' | 'strong_confirmation' }> = [
+    { id: 'create_app_store_version_phased_release', title: 'Enable staged rollout for an App Store version', scope: 'appstoreconnect.release.write', fields: ['version_id'], required: ['version_id'], confirmation: 'strong_confirmation' },
+    { id: 'update_app_store_version_phased_release', title: 'Pause resume or complete App Store staged rollout', scope: 'appstoreconnect.release.write', fields: ['phased_release_id','state'], required: ['phased_release_id','state'], confirmation: 'strong_confirmation' },
+    { id: 'delete_app_store_version_phased_release', title: 'Cancel inactive staged rollout', scope: 'appstoreconnect.release.write', fields: ['phased_release_id'], required: ['phased_release_id'], confirmation: 'strong_confirmation' },
     { id: 'set_app_store_version_build', title: 'Associate processed build with App Store version', scope: 'appstoreconnect.release.write', fields: ['version_id','build_id'], required: ['version_id','build_id'], confirmation: 'strong_confirmation' },
     { id: 'add_review_submission_item', title: 'Add version or purchase version to review submission', scope: 'appstoreconnect.release.write', fields: ['review_submission_id','item_type','item_id'], required: ['review_submission_id','item_type','item_id'], confirmation: 'strong_confirmation' },
     { id: 'update_app_store_review_detail', title: 'Update App Review contact and notes', scope: 'appstoreconnect.metadata.write', fields: ['review_detail_id','contact_first_name','contact_last_name','contact_phone','contact_email','notes','demo_account_required'], required: ['review_detail_id'], confirmation: 'authorization' },
@@ -807,6 +810,26 @@ function additionalAscWriteRequest(actionId: string, args: Record<string, unknow
         subscriptionPricePoint: resource('subscriptionPricePoints', requiredArg(args, 'price_point_id')) },
     } } };
   }
+
+  if (actionId === 'create_app_store_version_phased_release')
+    return { method: 'POST', path: '/v1/appStoreVersionPhasedReleases', body: { data: {
+      type: 'appStoreVersionPhasedReleases', attributes: { phasedReleaseState: 'INACTIVE' },
+      relationships: { appStoreVersion: resource('appStoreVersions', requiredArg(args, 'version_id')) },
+    } } };
+  if (actionId === 'update_app_store_version_phased_release') {
+    const state = requiredArg(args, 'state');
+    if (!['ACTIVE','PAUSED','COMPLETE'].includes(state))
+      throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID',
+        'Phased release update state must be ACTIVE, PAUSED or COMPLETE.', {retryable:false});
+    const id = requiredArg(args, 'phased_release_id');
+    return { method: 'PATCH', path: '/v1/appStoreVersionPhasedReleases/' + encodeURIComponent(id),
+      body: { data: { type: 'appStoreVersionPhasedReleases', id,
+        attributes: { phasedReleaseState: state } } } };
+  }
+  if (actionId === 'delete_app_store_version_phased_release')
+    return { method: 'DELETE', path: '/v1/appStoreVersionPhasedReleases/' +
+      encodeURIComponent(requiredArg(args, 'phased_release_id')) };
+
   if (actionId === 'set_app_store_version_build')
     return { method: 'PATCH', path: '/v1/appStoreVersions/' + encodeURIComponent(requiredArg(args, 'version_id')) + '/relationships/build',
       body: { data: { type: 'builds', id: requiredArg(args, 'build_id') } } };
@@ -1182,7 +1205,7 @@ function capabilities(): AssistantPluginCapability[] {
       title: 'Release Operations',
       description: 'Create App Store versions and gated review submissions with strong confirmation.',
       scopes: ['appstoreconnect.release.write'],
-      actions: ['create_app_store_version', 'create_review_submission', 'submit_for_review', 'set_app_store_version_build', 'add_review_submission_item', 'get_app_store_version', 'get_app_store_version_build', 'get_review_submission', 'list_review_submission_items', 'get_app_store_review_detail', 'get_app_store_review_detail_by_id', 'list_app_store_review_attachments', 'get_app_store_review_attachment', 'list_app_store_review_attachment_ids', 'get_review_submission_item', 'list_review_submission_item_ids', 'get_app_store_version_phased_release', 'update_app_store_review_detail', 'check_release_readiness'],
+      actions: ['create_app_store_version', 'create_review_submission', 'submit_for_review', 'set_app_store_version_build', 'add_review_submission_item', 'get_app_store_version', 'get_app_store_version_build', 'get_review_submission', 'list_review_submission_items', 'get_app_store_review_detail', 'get_app_store_review_detail_by_id', 'list_app_store_review_attachments', 'get_app_store_review_attachment', 'list_app_store_review_attachment_ids', 'get_review_submission_item', 'list_review_submission_item_ids', 'get_app_store_version_phased_release', 'create_app_store_version_phased_release', 'update_app_store_version_phased_release', 'delete_app_store_version_phased_release', 'update_app_store_review_detail', 'check_release_readiness'],
       // Additional release/version reads are advertised in the commerce and ASO groups below.
     },
     {capabilityId:'team-access-read',title:'Team and Access',description:'Read Apple user roles, pending invitations and visible App access.',scopes:['appstoreconnect.team.read'],actions:additionalAscReads.filter(s=>s.scope==='appstoreconnect.team.read').map(s=>s.id)},
@@ -1750,7 +1773,7 @@ export function buildAppStoreConnectPluginManifest(previousRevision = 0, previou
     pluginId: APP_STORE_CONNECT_PLUGIN_ID,
     provider: 'apple',
     displayName: 'App Store Connect API Plugin',
-    pluginVersion: '1.9.0',
+    pluginVersion: '1.10.0',
     authority: { strategy: 'derived', duplicateStateAllowed: false, sourceOfTruth: ['controller-global:system/plugins/config/app-store-connect.json', 'legacy-import-only:system/plugins/profiles|repositories/<repoId>/plugins/config|.forge/plugins|.repo-harness/plugins', 'env:FORGE_ASC_*'] },
     enabled: config.enabled,
     lifecycle: { state: state.lifecycleState, reason: !config.enabled ? 'App Store Connect plugin is disabled.' : auth.ready ? 'App Store Connect API credentials are ready.' : auth.errors[0] ?? auth.warnings[0] },
