@@ -139,10 +139,19 @@ struct AgentAssetsDashboard: View {
     }
 }
 
+func copyLocalImageAtomically(from source: URL, to destination: URL) async throws {
+    let copying = Task.detached(priority: .utility) {
+        let data = try Data(contentsOf: source, options: .mappedIfSafe)
+        try data.write(to: destination, options: .atomic)
+    }
+    try await copying.value
+}
+
 private struct AgentLocalImageResourceView: View {
     let path: String
     @State private var revealed = false
     @State private var status: String?
+    @State private var isSaving = false
     @State private var previewLoading = false
     @State private var previewError: String?
     @State private var previewImage: NSImage?
@@ -170,8 +179,8 @@ private struct AgentLocalImageResourceView: View {
                 .accessibilityLabel("在 Finder 中显示")
                 .accessibilityIdentifier("agent.assets.local.finder")
                 .disabled(!exists)
-                Button("另存为…") { save() }
-                    .disabled(!exists || previewLoading)
+                Button(isSaving ? "保存中…" : "另存为…") { save() }
+                    .disabled(!exists || previewLoading || isSaving)
                     .accessibilityIdentifier("agent.assets.local.save")
             }
             .buttonStyle(.plain)
@@ -224,19 +233,21 @@ private struct AgentLocalImageResourceView: View {
 
     @MainActor
     private func save() {
-        guard exists else { return }
+        guard exists, !isSaving else { return }
         let panel = NSSavePanel()
         panel.nameFieldStringValue = URL(fileURLWithPath: path).lastPathComponent
         guard panel.runModal() == .OK, let destination = panel.url else { return }
-        do {
-            let source = URL(fileURLWithPath: path)
-            // Atomic Data write also supports replacing an existing destination
-            // selected in NSSavePanel; no implicit deletion of unrelated files.
-            try Data(contentsOf: source, options: .mappedIfSafe)
-                .write(to: destination, options: .atomic)
-            status = "已保存到 " + destination.lastPathComponent
-        } catch {
-            status = "保存失败：" + error.localizedDescription
+        let source = URL(fileURLWithPath: path)
+        isSaving = true
+        status = "正在保存…"
+        Task {
+            defer { isSaving = false }
+            do {
+                try await copyLocalImageAtomically(from: source, to: destination)
+                status = "已保存到 " + destination.lastPathComponent
+            } catch {
+                status = "保存失败：" + error.localizedDescription
+            }
         }
     }
 }

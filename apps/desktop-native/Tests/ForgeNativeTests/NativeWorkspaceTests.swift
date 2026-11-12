@@ -2079,6 +2079,26 @@ extension NativeWorkspaceTests {
 
 
 extension NativeWorkspaceTests {
+    func testLocalImageSaveCopiesSourceAndReplacesExistingDestination() async throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true, attributes: nil)
+        defer { try? FileManager.default.removeItem(at: folder) }
+
+        let source = folder.appendingPathComponent("source.img")
+        let destination = folder.appendingPathComponent("saved.img")
+        let sourceData = Data([0x89, 0x50, 0x4E, 0x47])
+        try sourceData.write(to: source)
+        try Data([0x00, 0x01, 0x02]).write(to: destination)
+
+        try await copyLocalImageAtomically(from: source, to: destination)
+
+        XCTAssertEqual(try Data(contentsOf: source), sourceData)
+        XCTAssertEqual(try Data(contentsOf: destination), sourceData)
+    }
+}
+
+extension NativeWorkspaceTests {
     func testUsageProjectionExcludesIncompleteAssistantTurns() {
         let cutoff = Date(timeIntervalSince1970: 100)
         let completeWithoutReceipt = ChatMessage(role: "assistant", text: "done", createdAt: cutoff)

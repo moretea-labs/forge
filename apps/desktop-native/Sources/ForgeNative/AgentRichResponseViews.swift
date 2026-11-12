@@ -441,19 +441,27 @@ struct AgentRemoteImageView: View {
         .padding(10)
         .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 10))
         .sheet(isPresented: $fullScreen) {
-            if let previewImage {
-                VStack(spacing: 10) {
-                    HStack {
-                        Text(label.isEmpty ? "图片预览" : label).font(.headline)
-                        Spacer()
-                        Button("完成") { fullScreen = false }
-                    }
+            VStack(spacing: 10) {
+                HStack {
+                    Text(label.isEmpty ? "图片预览" : label).font(.headline)
+                    Spacer()
+                    Button("完成") { fullScreen = false }
+                        .accessibilityIdentifier("agent.image.fullscreen.close")
+                }
+                if let previewImage {
                     Image(nsImage: previewImage).resizable().scaledToFit()
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if previewLoading {
+                    ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if let previewError {
+                    Label("图片加载失败", systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .help(previewError)
                 }
-                .padding(18)
-                .frame(minWidth: 640, minHeight: 420)
             }
+            .padding(18)
+            .frame(minWidth: 640, minHeight: 420)
         }
         .task(id: expanded ? source : nil) {
             guard expanded, let url = remoteURL else {
@@ -463,6 +471,8 @@ struct AgentRemoteImageView: View {
                 previewLoading = false
                 return
             }
+            previewData = nil
+            previewImage = nil
             previewLoading = true
             previewError = nil
             defer { if !Task.isCancelled { previewLoading = false } }
@@ -506,7 +516,9 @@ struct AgentRemoteImageView: View {
                 } else {
                     data = try await downloadRemoteImage(from: url, maximumBytes: 25 * 1024 * 1024)
                 }
-                try data.write(to: target, options: .atomic)
+                try await Task.detached(priority: .utility) {
+                    try data.write(to: target, options: .atomic)
+                }.value
                 status = "已保存到 " + target.lastPathComponent
             } catch let error as RemoteImageSaveError {
                 status = error.localizedDescription
