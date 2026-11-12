@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, rmSync } from "fs";
 import { join } from "path";
-import { getGitHubStatus, publishIssueToGitHub, refreshGitHubIssue, closeGitHubIssue } from "./github";
+import { getGitHubStatus, publishIssueToGitHub, refreshGitHubIssue, closeGitHubIssue } from "./issue-sync";
 import type { ControllerIssue } from "../controller/types";
 import { tryAppendControllerWorklogEvent } from "../../runtime/evidence/controller-worklog";
 import { resolveRepoPreferredControllerHome } from "../../effects/controller-home";

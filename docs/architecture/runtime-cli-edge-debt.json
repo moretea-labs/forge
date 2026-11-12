@@ -4,7 +4,6 @@
   "edges": [
     "src/runtime/diagnostics/read-only-tool.ts|../../cli/local-bridge/job-store",
     "src/runtime/execution/workers/executor.ts|../../../cli/local-bridge/job-store",
-    "src/runtime/plugins/github-adapter.ts|../../cli/github/github",
     "src/runtime/plugins/github-adapter.ts|../../cli/github/plugin",
     "src/runtime/root/local-bridge.ts|../../cli/local-bridge/server",
     "src/runtime/safe-tooling/job-summary.ts|../../cli/agent-jobs/job-manager",

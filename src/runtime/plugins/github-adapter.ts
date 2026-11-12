@@ -11,7 +11,7 @@ import {
   listGitHubWorkflowRuns,
   listGitHubWorkflows,
   readGitHubProjectItems,
-} from '../../cli/github/github';
+} from './github-client';
 import type {
   AssistantPluginActionDescriptor,
   AssistantPluginActionExecutionInput,

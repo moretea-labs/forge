@@ -723,7 +723,7 @@ const required = [
   'src/runtime/context/semantic-navigation-contract.ts',
   'packages/protocols/mcp/tool-contract.ts',
   'packages/protocols/mcp/execution-context.ts',
-  'src/cli/github/contracts.ts',
+  'src/runtime/plugins/github-client.ts',
   'adapters/mcp/runtime-gateway/runtime-tool-definitions.ts',
   'adapters/mcp/server.ts',
   'adapters/mcp/oauth.ts',

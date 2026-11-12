@@ -8,7 +8,7 @@ import {
   buildGitHubWorkflowRunListArgs,
   buildGitHubProjectItemListArgs,
   parseGitHubProjectItems,
-} from '../../src/cli/github/github';
+} from '../../src/runtime/plugins/github-client';
 import { buildGitHubPluginManifest } from '../../src/runtime/plugins/github-adapter';
 
 describe('GitHub Actions plugin surface', () => {

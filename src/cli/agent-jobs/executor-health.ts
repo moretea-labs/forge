@@ -1,4 +1,4 @@
-import type { GitHubStatus } from "../github/contracts";
+import type { GitHubStatus } from "../../runtime/plugins/github-client";
 import type { ToolAgentRunnerName } from '../../runtime/control-plane/tool-policy';
 import type { ControllerAgent } from "../../runtime/agents/types";
 

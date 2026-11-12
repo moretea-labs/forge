@@ -6,8 +6,8 @@ import {
   classifyGitHubCopilotPreflight,
   executorHealthCode,
 } from '../agent-jobs/executor-health';
-import { getGitHubStatus, resolveGitHubRepository } from './github';
-import type { GitHubRepositoryInfo } from './contracts';
+import { getGitHubStatus } from './issue-sync';
+import { resolveGitHubRepository, type GitHubRepositoryInfo } from '../../runtime/plugins/github-client';
 
 export interface GitHubAgentSession {
   id: string;
