@@ -165,10 +165,10 @@ struct AgentUsageDashboard: View {
                 }
 
                 HStack(alignment: .top, spacing: 24) {
-                    metric("总 Token", total.formatted())
-                    metric("输入", inputTotal.formatted())
-                    metric("输出", outputTotal.formatted())
-                    metric("已记录回复", usageEntries.count.formatted(), "未记录 \(unreportedMessages) 条")
+                    metric("agent.usage.total", "总 Token", total.formatted())
+                    metric("agent.usage.input", "输入", inputTotal.formatted())
+                    metric("agent.usage.output", "输出", outputTotal.formatted())
+                    metric("agent.usage.recorded", "已记录回复", usageEntries.count.formatted(), "未记录 \(unreportedMessages) 条")
                 }
                 .padding(.vertical, 4)
 
@@ -206,10 +206,11 @@ struct AgentUsageDashboard: View {
                             .font(.system(size: 11)).foregroundStyle(.secondary)
                     }
                 }
+                .accessibilityIdentifier("agent.usage.daily-chart")
 
                 HStack(alignment: .top, spacing: 32) {
-                    distribution("模型消耗", values: byModel)
-                    distribution("项目消耗", values: byProject)
+                    distribution("agent.usage.model-distribution", title: "模型消耗", values: byModel)
+                    distribution("agent.usage.project-distribution", title: "项目消耗", values: byProject)
                 }
 
                 VStack(alignment: .leading, spacing: 10) {
@@ -239,10 +240,13 @@ struct AgentUsageDashboard: View {
                                 }
                             }
                             .font(.system(size: 11.5))
+                            .accessibilityElement(children: .contain)
+                            .accessibilityIdentifier("agent.usage.entry.\(item.id)")
                             Divider().opacity(0.3)
                         }
                     }
                 }
+                .accessibilityIdentifier("agent.usage.recent-records")
 
                 Text("仅统计 Provider 返回的实际用量；未记录数据不估算。\(partiallyReported > 0 ? "另有 \(partiallyReported) 条部分回合数据。" : "")")
                     .font(.system(size: 10.5))
@@ -255,7 +259,7 @@ struct AgentUsageDashboard: View {
         .accessibilityIdentifier("agent.usage.dashboard")
     }
 
-    private func metric(_ label: String, _ value: String, _ caption: String? = nil) -> some View {
+    private func metric(_ identifier: String, _ label: String, _ value: String, _ caption: String? = nil) -> some View {
         VStack(alignment: .leading, spacing: 5) {
             Text(label).font(.system(size: 11)).foregroundStyle(.secondary)
             Text(value).font(.system(size: 23, weight: .medium, design: .rounded))
@@ -265,9 +269,11 @@ struct AgentUsageDashboard: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier(identifier)
     }
 
-    private func distribution(_ title: String, values: [(String, Int)]) -> some View {
+    private func distribution(_ identifier: String, title: String, values: [(String, Int)]) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(title).font(.system(size: 15, weight: .semibold))
             if values.isEmpty {
@@ -295,5 +301,6 @@ struct AgentUsageDashboard: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
+        .accessibilityIdentifier(identifier)
     }
 }
