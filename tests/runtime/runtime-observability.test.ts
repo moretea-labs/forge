@@ -17,7 +17,7 @@ import {
 } from '../../src/runtime/projections/materialized-view';
 import { executionJobRoot, rebuildExecutionJobIndexes } from '../../src/runtime/execution/jobs/store';
 import type { ExecutionJob } from '../../src/runtime/execution/jobs/types';
-import type { TaskLedgerProjection } from '../../src/cli/controller/task-ledger';
+import type { TaskLedgerProjection } from '../../src/runtime/projections/task-ledger-types';
 import { flushMcpDiagnostics, recordMcpIncident, recordMcpTiming } from '../../src/runtime/diagnostics/mcp-timing';
 import { classifyForgeIncidentForRepair, maybeRegisterMcpIncidentRepair } from '../../src/runtime/diagnostics/incident-repair';
 import { callRuntimeTool } from '../../adapters/mcp/runtime-gateway/runtime-tools';

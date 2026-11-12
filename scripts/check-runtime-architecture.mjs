@@ -741,6 +741,7 @@ const required = [
   'src/runtime/evidence/evidence-store.ts',
   'src/runtime/evidence/artifact-store.ts',
   'src/runtime/projections/materialized-view.ts',
+  'src/runtime/projections/task-ledger-types.ts',
   'src/runtime/projections/git-status-sampler.ts',
   'src/runtime/projections/controller-context.ts',
   'src/runtime/projections/invalidation.ts',
@@ -1309,6 +1310,8 @@ for (const projectionPath of [
 }
 requireText('src/runtime/projections/invalidation.ts', 'runtimeInstanceId?: string');
 requireText('src/runtime/projections/materialized-view.ts', 'currentOwner.runtimeInstanceId !== owner.runtimeInstanceId');
+requireText('src/runtime/projections/task-ledger-types.ts', 'export interface TaskLedgerProjection');
+requireText('src/runtime/projections/task-ledger-types.ts', 'TASK_LEDGER_SCHEMA_VERSION');
 requireText('src/runtime/control-plane/global-scheduler/projection-refresh.ts', 'getRuntimeWriteClaim()?.runtimeInstanceId');
 forbid(
   'src/runtime/execution/jobs/receipt-store.ts',
@@ -2004,6 +2007,7 @@ forbid('src/runtime/context/cognitive-attention.ts', /resolveCognitiveAttentionF
 forbid('packages/kernel/scheduler/domain/schedule.ts', /scheduleOwnsWork|\bworkId\b/, 'current Scheduler domain must not expose Work ownership in ScheduleResourceClaim or helper APIs');
 forbid('src/runtime/editing/edit-session.ts', /\bworkId\b/, 'current EditSession schema, summary and worklog must not expose legacy Work identity');
 forbid('src/cli/controller/task-ledger.ts', /active_work|Work in progress/, 'current TaskLedger schema must use Run terminology, not first-class Work terminology');
+forbid('src/cli/controller/task-ledger.ts', /export interface TaskLedgerProjection|export type TaskLedgerStatusKind/, 'TaskLedger projection schema must be owned by Runtime projections, not the CLI builder');
 forbid('src/cli/controller/operational-plan.ts', /Current Work/, 'current controller UI projection must expose Current Run, not Current Work');
 forbid(
   'src/runtime/evidence/result-store.ts',

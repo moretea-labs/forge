@@ -1,4 +1,4 @@
-import type { TaskLedgerProjection } from '../../src/cli/controller/task-ledger';
+import type { TaskLedgerProjection } from '../../src/runtime/projections/task-ledger-types';
 import {
   reconcileProjectionWithTaskLedger,
   type RepositoryRuntimeProjectionSnapshot,
