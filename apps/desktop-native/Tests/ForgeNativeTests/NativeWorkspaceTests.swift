@@ -1939,6 +1939,20 @@ extension NativeWorkspaceTests {
         XCTAssertEqual(fenced, [.code(language:"md",text:"![chart](https://example.com/image.png)")])
     }
 
+    func testUsageReceiptPreservesProviderTotalAndIdentity() throws {
+        let usage = AgentTokenUsage(inputTokens:120,outputTokens:30,totalTokens:178,
+                                    reportedRounds:2,totalRounds:2)
+        let message = ChatMessage(role:"assistant",text:"done",usage:usage,
+                                  providerUsed:"api:deepseek",modelUsed:"deepseek-chat")
+        let decoded = try JSONDecoder().decode(
+            ChatMessage.self,
+            from:JSONEncoder().encode(message)
+        )
+        XCTAssertEqual(decoded.usage?.totalTokens,178)
+        XCTAssertEqual(decoded.providerUsed,"api:deepseek")
+        XCTAssertEqual(decoded.modelUsed,"deepseek-chat")
+    }
+
     func testUsageReceiptPersistsAndLegacyMessageRemainsUnknown() throws {
         let usage = AgentTokenUsage(inputTokens:300,outputTokens:120,totalTokens:420,
                                     reportedRounds:2,totalRounds:3)

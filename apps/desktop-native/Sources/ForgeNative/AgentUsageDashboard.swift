@@ -57,7 +57,7 @@ struct AgentUsageDashboard: View {
 
     private var inputTotal: Int { entries.reduce(0) { $0 + $1.usage.inputTokens } }
     private var outputTotal: Int { entries.reduce(0) { $0 + $1.usage.outputTokens } }
-    private var total: Int { inputTotal + outputTotal }
+    private var total: Int { entries.reduce(0) { $0 + $1.usage.totalTokens } }
     private var partiallyReported: Int { entries.filter { !$0.usage.complete }.count }
 
     private var timeline: [DayTotal] {
@@ -71,9 +71,34 @@ struct AgentUsageDashboard: View {
     }
 
     private var byModel: [(String, Int)] {
-        let grouped = Dictionary(grouping: entries, by: { $0.model })
-        return grouped.map { ($0.key, $0.value.reduce(0) { $0 + $1.usage.totalTokens }) }
+        let grouped = Dictionary(grouping: entries, by: { ModelKey(provider: $0.provider, model: $0.model) })
+        return grouped.map { group in
+            ("\(providerLabel(group.key.provider)) · \(group.key.model)",
+             group.value.reduce(0) { $0 + $1.usage.totalTokens })
+        }
             .sorted { $0.1 > $1.1 }
+    }
+
+    private struct ModelKey: Hashable {
+        let provider: String
+        let model: String
+    }
+
+    private func providerLabel(_ provider: String) -> String {
+        if provider.hasPrefix("api:"),
+           let label = model.localApiSettings?.profile(providerId: provider)?.label,
+           !label.isEmpty {
+            return label
+        }
+        switch provider {
+        case "codex": return "Codex"
+        case "joycode": return "JoyCode"
+        case "api": return "API"
+        default:
+            guard provider.hasPrefix("api:") else { return provider }
+            let profileId = String(provider.dropFirst(4))
+            return profileId == "legacy-api" ? "兼容 API" : profileId
+        }
     }
 
     private var byProject: [(String, Int)] {
@@ -95,6 +120,7 @@ struct AgentUsageDashboard: View {
                         }
                     }
                     .frame(maxWidth: 190)
+                    .accessibilityIdentifier("agent.usage.project-filter")
                     Picker("时间", selection: $days) {
                         Text("7 天").tag(7)
                         Text("30 天").tag(30)
@@ -102,6 +128,7 @@ struct AgentUsageDashboard: View {
                     }
                     .pickerStyle(.segmented)
                     .frame(width: 192)
+                    .accessibilityIdentifier("agent.usage.range-filter")
                 }
 
                 HStack(alignment: .top, spacing: 24) {
@@ -132,6 +159,8 @@ struct AgentUsageDashboard: View {
                                         .foregroundStyle(.tertiary)
                                         .frame(width: 17)
                                 }
+                                .accessibilityElement(children: .ignore)
+                                .accessibilityLabel("\(day.date.formatted(date: .complete, time: .omitted))，\(day.count.formatted()) Token")
                                 .help("\(day.date.formatted(date: .abbreviated, time: .omitted)) · \(day.count.formatted()) tokens")
                             }
                         }
@@ -157,7 +186,13 @@ struct AgentUsageDashboard: View {
                             HStack(spacing: 10) {
                                 Text(item.date.formatted(.dateTime.month().day().hour().minute()))
                                     .foregroundStyle(.secondary).frame(width: 105, alignment: .leading)
-                                Text(item.model).lineLimit(1)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(item.model).lineLimit(1)
+                                    Text(providerLabel(item.provider))
+                                        .font(.system(size: 10)).foregroundStyle(.tertiary).lineLimit(1)
+                                }
+                                .frame(minWidth: 0, alignment: .leading)
+                                .accessibilityElement(children: .combine)
                                 Spacer()
                                 Text(item.project).lineLimit(1).foregroundStyle(.secondary)
                                 Text(item.usage.totalTokens.formatted())
@@ -165,6 +200,7 @@ struct AgentUsageDashboard: View {
                                 if !item.usage.complete {
                                     Image(systemName: "exclamationmark.circle")
                                         .help("只汇总了 \(item.usage.reportedRounds)/\(item.usage.totalRounds) 个模型回合")
+                                        .accessibilityLabel("部分回合用量")
                                 }
                             }
                             .font(.system(size: 11.5))
@@ -219,6 +255,7 @@ struct AgentUsageDashboard: View {
                             }
                     }
                     .frame(height: 5)
+                    .accessibilityHidden(true)
                 }
             }
         }
