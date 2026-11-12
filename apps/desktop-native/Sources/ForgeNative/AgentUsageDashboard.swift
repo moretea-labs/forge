@@ -206,6 +206,7 @@ struct AgentUsageDashboard: View {
                             .font(.system(size: 11)).foregroundStyle(.secondary)
                     }
                 }
+                .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("agent.usage.daily-chart")
 
                 HStack(alignment: .top, spacing: 32) {
@@ -246,6 +247,7 @@ struct AgentUsageDashboard: View {
                         }
                     }
                 }
+                .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("agent.usage.recent-records")
 
                 Text("仅统计 Provider 返回的实际用量；未记录数据不估算。\(partiallyReported > 0 ? "另有 \(partiallyReported) 条部分回合数据。" : "")")
@@ -301,6 +303,7 @@ struct AgentUsageDashboard: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier(identifier)
     }
 }
