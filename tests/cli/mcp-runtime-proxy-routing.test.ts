@@ -738,7 +738,7 @@ describe('MCP canonical Runtime proxy routing', () => {
     }
   }, 15_000);
 
-  test('durable Process survives real MCP client Session replacement and is queryable from the new Session', async () => {
+  test('durable Process survives real MCP client Session and Canonical Runtime HTTP transport replacement', async () => {
     const root = mkdtempSync(join(tmpdir(), 'forge-process-session-replacement-'));
     const controllerHome = join(root, 'controller');
     const repoRoot = join(root, 'repo');
@@ -912,6 +912,120 @@ describe('MCP canonical Runtime proxy routing', () => {
         arguments: { repo_id: repository.repoId, process_id: processId },
       });
       expect(terminalReadback.structuredContent).toMatchObject({ process: { processId, completed: true, ok: true } });
+      // Keep the outer Gateway MCP session alive while replacing only the
+      // Canonical Runtime HTTP listener. The Process identity is durable.
+      const previousRuntimePort = runtimeTransport!.port;
+      const previousRuntimeEndpoint = runtimeTransport!.endpoint;
+      await runtimeTransport!.close();
+      runtimeTransport = undefined;
+      runtimeTransport = await startRuntimeMcpTransport({
+        host: '127.0.0.1',
+        port: previousRuntimePort,
+        authToken: runtimeToken,
+        readiness: () => ({
+          ready: true,
+          reasonCodes: [],
+          observedAt: new Date().toISOString(),
+          diagnostics: {
+            database: { outcome: 'pass' },
+            scheduler: { outcome: 'pass' },
+            releaseCoherence: { outcome: 'pass' },
+            mcpEndToEnd: { outcome: 'pass' },
+          },
+        }),
+        createServer: () => {
+          const replacementServer = new Server(
+            { name: 'fixture-runtime-process-session-replacement-v2', version: '1.0.0' },
+            { capabilities: { tools: { listChanged: false } } },
+          );
+          replacementServer.setRequestHandler('tools/list', async () => ({
+            tools: definitions.map(mcpToolDefinitionToSdk),
+          }));
+          replacementServer.setRequestHandler('tools/call', async (request) => {
+            const name = request.params.name;
+            const args = (request.params.arguments ?? {}) as Record<string, unknown>;
+            const result = name === 'run_check'
+              ? await routeDurableMcpCall(context, name, args)
+              : await callProcessTool(context, name, args);
+            if (!result) throw new Error('replacement Runtime did not handle ' + name);
+            return {
+              content: result.content,
+              ...(result.structuredContent ? { structuredContent: result.structuredContent } : {}),
+              ...(result.isError ? { isError: true } : {}),
+            };
+          });
+          return replacementServer;
+        },
+      });
+      expect(runtimeTransport.endpoint).toBe(previousRuntimeEndpoint);
+      const replacementObservedAt = new Date().toISOString();
+      writeRuntimeStatusSnapshot(controllerHome, {
+        schemaVersion: 1,
+        runtimeInstanceId: 'runtime-process-session-replacement-v2',
+        pid: process.pid,
+        releaseId: 'release-process-session-replacement-v2',
+        artifactIdentity: 'artifact-process-session-replacement-v2',
+        endpoint: runtimeTransport.endpoint,
+        readiness: {
+          ready: true,
+          reasonCodes: [],
+          observedAt: replacementObservedAt,
+          diagnostics: {
+            database: { outcome: 'pass' },
+            scheduler: { outcome: 'pass' },
+            releaseCoherence: { outcome: 'pass' },
+            mcpEndToEnd: { outcome: 'pass' },
+          },
+        },
+        startedAt: replacementObservedAt,
+        updatedAt: replacementObservedAt,
+      });
+      const canaryTransport = new StreamableHTTPClientTransport(new URL(runtimeTransport.endpoint), {
+        requestInit: { headers: { Authorization: `Bearer ${runtimeToken}` } },
+      });
+      const canaryClient = new Client({ name: 'canary-after-runtime-replacement', version: '1.0.0' });
+      try {
+        await canaryClient.connect(canaryTransport);
+        expect(canaryClient.getServerVersion()?.name).toBe('fixture-runtime-process-session-replacement-v2');
+        expect(runtimeTransport.sessionSnapshot?.().active).toBe(1);
+        await canaryClient.listTools();
+      } finally {
+        await canaryTransport.terminateSession().catch(() => undefined);
+        await canaryClient.close().catch(() => undefined);
+      }
+      const proxyTiming: Parameters<CanonicalRuntimeProxy['callTool']>[3] = {};
+      const proxyReadback = await proxy!.callTool(context, 'process_get', {
+        repo_id: repository.repoId, process_id: processId,
+      }, proxyTiming).catch((error: unknown) => {
+        throw new Error(`DIRECT_PROXY_RECONNECT_FAILED state=${proxyTiming.gatewayProxyConnectionState ?? 'unset'} active=${runtimeTransport?.sessionSnapshot?.().active ?? -1} cause=${error instanceof Error ? error.stack : String(error)}`);
+      });
+      expect(proxyReadback.structuredContent).toMatchObject({
+        process: { processId, completed: true, ok: true },
+      });
+      expect(proxyTiming.gatewayProxyConnectionState).toBe('identity_reconnect');
+
+      const sameRequest = await second.client.callTool({
+        name: 'run_check',
+        arguments: {
+          repo_id: repository.repoId,
+          check_id: 'session_survival',
+          interactive_wait_ms: 25,
+          request_id: 'mcp-session-survival-process',
+        },
+      });
+      expect(sameRequest.isError).not.toBe(true);
+      expect((sameRequest.structuredContent as Record<string, unknown>).processId).toBe(processId);
+      expect(readFileSync(marker, 'utf8')).toBe('1');
+
+      const afterRuntimeReplacement = await second.client.callTool({
+        name: 'process_get',
+        arguments: { repo_id: repository.repoId, process_id: processId },
+      });
+      expect(afterRuntimeReplacement.structuredContent).toMatchObject({
+        process: { processId, completed: true, ok: true },
+      });
+      expect(readFileSync(marker, 'utf8')).toBe('1');
+
     } finally {
       await first?.client.close().catch(() => undefined);
       await second?.client.close().catch(() => undefined);

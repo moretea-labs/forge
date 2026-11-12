@@ -1,6 +1,6 @@
 import { createHash, randomUUID, timingSafeEqual } from 'crypto';
 import type { Server as NodeHttpServer } from 'http';
-import type { AddressInfo } from 'net';
+import type { AddressInfo, Socket } from 'net';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import type { Server } from "@modelcontextprotocol/server";
 import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
@@ -392,6 +392,11 @@ export async function startRuntimeMcpTransport(
   });
 
   const httpServer = app.listen(options.port, options.host);
+  const acceptedSockets = new Set<Socket>();
+  httpServer.on('connection', (socket: Socket) => {
+    acceptedSockets.add(socket);
+    socket.once('close', () => acceptedSockets.delete(socket));
+  });
   await new Promise<void>((resolve, reject) => {
     const onListening = (): void => {
       httpServer.off('error', onError);
@@ -462,7 +467,13 @@ export async function startRuntimeMcpTransport(
             });
           }
         },
-        forceCloseConnections: () => httpServer.closeAllConnections?.(),
+        forceCloseConnections: () => {
+          httpServer.closeAllConnections?.();
+          // Some keep-alive sockets survive Node-compatible server.close()
+          // during same-port Runtime replacement. The retired server must
+          // never answer a new Runtime's initialize request.
+          for (const socket of acceptedSockets) socket.destroy();
+        },
       });
     },
   };
