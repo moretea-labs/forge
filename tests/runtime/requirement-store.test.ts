@@ -208,3 +208,38 @@ test('keeps portable semantic scope separate from local execution placement', ()
   expect(metadata.revision).toBe(7);
   expect(() => semanticRecordMetadata({ ...metadata, revision: -1 })).toThrow(/SEMANTIC_RECORD_REVISION_INVALID/);
 });
+
+test('Requirement board and diagnostics preserve Plan-derived repository placement', async () => {
+  const { buildExecutionDiagnostics } = await import('../../src/runtime/control-plane/facade/requirement-board');
+  const home = mkdtempSync(join('/tmp', 'forge-requirement-board-'));
+  homes.push(home);
+  createRequirement({ controllerHome: home }, {
+    requirementId: 'req-plan-placement', title: 'Portable Requirement',
+    outcomeStatement: 'Show a Requirement linked to a local Plan.',
+  });
+  createRequirement({ controllerHome: home }, {
+    requirementId: 'req-other-placement', repoId: 'repo-other',
+    title: 'Other Requirement', outcomeStatement: 'Must remain scoped.',
+  });
+  createPlanContract({ controllerHome: home, repoId: 'repo-board' }, {
+    planId: 'plan-placement', repoId: 'repo-board', requirementId: 'req-plan-placement',
+    scopeKey: 'board-slice', sourceRevision: 'base', goal: 'Deliver the linked requirement',
+    steps: [{ id: 'step-1', objective: 'Deliver', dependencies: [], authoritativeFiles: [],
+      allowedPaths: [], forbiddenPaths: [], checks: [], acceptanceCriteria: [] }],
+  });
+  const board = buildRequirementBoard({ controllerHome: home, repoId: 'repo-board' }) as {
+    requirements: Array<{ requirementId: string; activePlanIds: string[] }>;
+  };
+  expect(board.requirements.map(item => item.requirementId)).toEqual(['req-plan-placement']);
+  expect(board.requirements[0]?.activePlanIds).toEqual(['plan-placement']);
+
+  const diagnostics = buildExecutionDiagnostics({
+    controllerHome: home, repoId: 'repo-board', detailLevel: 'detail',
+    requirementId: 'req-plan-placement',
+  }) as {
+    requirements: Array<{ requirementId: string; activePlanIds: string[] }>;
+    plans: Array<{ planId: string }>;
+  };
+  expect(diagnostics.requirements[0]?.activePlanIds).toEqual(['plan-placement']);
+  expect(diagnostics.plans.map(plan => plan.planId)).toEqual(['plan-placement']);
+});

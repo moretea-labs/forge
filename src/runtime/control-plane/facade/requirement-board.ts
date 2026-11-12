@@ -5,7 +5,7 @@ import {
   type RequirementState,
 } from '../persistence/requirement-store';
 import { listRequirementsForRepository } from './requirement-authority';
-import { listPlanContracts, summarizePlanContract } from './plan-contract-store';
+import { isCurrentPlanContract, readPlanContractStore, summarizePlanContract } from './plan-contract-store';
 import type { PlanContract } from './types';
 
 const DEFAULT_REQUIREMENT_LIMIT = 12;
@@ -94,11 +94,12 @@ function projectRequirement(requirement: Requirement, plans: readonly PlanContra
   };
 }
 
-function loadRequirements(options: RequirementBoardOptions): Requirement[] {
+function loadRequirements(options: RequirementBoardOptions, plans?: readonly PlanContract[]): Requirement[] {
   return listRequirementsForRepository(
     { controllerHome: options.controllerHome },
     options.repoId,
     500,
+    plans,
   )
     .map((record) => record.value)
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
@@ -111,10 +112,12 @@ function requirementCounts(requirements: readonly RequirementBoardItem[]): Recor
 }
 
 export function buildRequirementBoard(options: RequirementBoardOptions): Record<string, unknown> {
-  const activePlans = options.repoId?.trim()
-    ? listPlanContracts({ controllerHome: options.controllerHome, repoId: options.repoId, status: 'active', limit: 100 })
+  const contracts = options.repoId?.trim()
+    ? readPlanContractStore({ controllerHome: options.controllerHome, repoId: options.repoId }).contracts
     : [];
-  const allRequirements = loadRequirements(options).map((requirement) => projectRequirement(requirement, activePlans));
+  const activePlans = contracts.filter(isCurrentPlanContract)
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)).slice(0, 100);
+  const allRequirements = loadRequirements(options, contracts).map((requirement) => projectRequirement(requirement, activePlans));
   const requirements = allRequirements.slice(0, DEFAULT_REQUIREMENT_LIMIT);
   const counts = requirementCounts(allRequirements);
   return {
@@ -161,13 +164,14 @@ export function buildExecutionDiagnostics(
   options: RequirementBoardOptions & { detailLevel: 'detail' | 'full'; requirementId?: string },
 ): Record<string, unknown> {
   const limit = options.detailLevel === 'full' ? DIAGNOSTIC_FULL_LIMIT : DIAGNOSTIC_DETAIL_LIMIT;
-  const allRequirements = loadRequirements(options);
+  const contracts = options.repoId?.trim()
+    ? readPlanContractStore({ controllerHome: options.controllerHome, repoId: options.repoId }).contracts
+    : [];
+  const allRequirements = loadRequirements(options, contracts);
   const selectedRequirements = options.requirementId
     ? allRequirements.filter((requirement) => requirement.requirementId === options.requirementId)
     : allRequirements;
-  const allPlans = options.repoId?.trim()
-    ? listPlanContracts({ controllerHome: options.controllerHome, repoId: options.repoId, status: 'all', limit: 100 })
-    : [];
+  const allPlans = contracts.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)).slice(0, 100);
   const scopedPlans = options.requirementId
     ? allPlans.filter((plan) => plan.requirementId === options.requirementId
       || (!plan.requirementId && selectedRequirements.some((requirement) => requirement.activePlanId === plan.planId)))

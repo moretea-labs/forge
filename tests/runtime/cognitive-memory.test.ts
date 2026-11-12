@@ -526,3 +526,43 @@ describe('generic cognitive memory', () => {
     expect(generalized.tier).toBe('warm');
   });
 });
+
+test('batch memory reads preserve sorted evidence and isolation across identical IDs in different scopes', () => {
+  const fx = fixture();
+  const secondScope = { schemaVersion: 1 as const, kind: 'project' as const, id: 'project-cognition-other' };
+  const first = recordCognitiveMemory(fx.store, fx.authority, {
+    ...draft('mem:shared', 'First scope knowledge.', ['scope.first'], 'E-3'),
+    provenance: { ...draft('unused', '', [], 'E-3').provenance, evidenceRefs: ['E-3', 'E-1'] },
+    counterEvidenceRefs: ['E-4', 'E-2'],
+  });
+  const second = recordCognitiveMemory(fx.store, fx.authority, {
+    ...draft('mem:shared', 'Second scope knowledge.', ['scope.second'], 'E-2'),
+    scope: secondScope,
+    provenance: { ...draft('unused', '', [], 'E-2').provenance, evidenceRefs: ['E-2'] },
+    counterEvidenceRefs: ['E-1'],
+  });
+  const additional = Array.from({ length: 20 }, (_, index) => recordCognitiveMemory(fx.store, fx.authority, {
+    ...draft(`mem:batch-${index}`, `Batch item ${index}.`, ['batch.evidence'], 'E-3'),
+    counterEvidenceRefs: ['E-4'],
+  }));
+  const addresses = [
+    { scope: first.scope, id: first.id },
+    { scope: second.scope, id: second.id },
+    ...additional.map(memory => ({ scope: memory.scope, id: memory.id })),
+    { scope: first.scope, id: first.id },
+    { scope, id: 'mem:missing' },
+  ];
+  const memories = cognitionReadPort(fx.controllerHome).readByAddresses(addresses);
+  expect(memories).toHaveLength(22);
+  const firstRead = memories.find(memory => memory.id === first.id && memory.scope.id === first.scope.id);
+  const secondRead = memories.find(memory => memory.id === second.id && memory.scope.id === second.scope.id);
+  expect(firstRead?.provenance.evidenceRefs).toEqual(['E-1', 'E-3']);
+  expect(firstRead?.counterEvidenceRefs).toEqual(['E-2', 'E-4']);
+  expect(secondRead?.provenance.evidenceRefs).toEqual(['E-2']);
+  expect(secondRead?.counterEvidenceRefs).toEqual(['E-1']);
+  for (const memory of additional) {
+    const read = memories.find(item => item.id === memory.id && item.scope.id === memory.scope.id);
+    expect(read?.provenance.evidenceRefs).toEqual(['E-3']);
+    expect(read?.counterEvidenceRefs).toEqual(['E-4']);
+  }
+});

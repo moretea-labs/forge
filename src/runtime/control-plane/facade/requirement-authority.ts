@@ -9,6 +9,7 @@ import {
   type RequirementStoreOptions,
 } from '../persistence/requirement-store';
 import { readPlanContractStore } from './plan-contract-store';
+import type { PlanContract } from './types';
 import { cognitionMemoryStore } from '../persistence/cognition-store';
 import { memoryAddressKey, type MemoryUnit } from '../../../../packages/kernel/cognition/api/index';
 
@@ -101,12 +102,14 @@ export function listRequirementsForRepository(
   options: RequirementStoreOptions,
   repoIdInput?: string,
   limit = 500,
+  plans?: readonly PlanContract[],
 ) {
   const repoId = String(repoIdInput ?? '').trim();
   const all = listRequirements(options, 1000);
   if (!repoId) return all.slice(0, limit);
+  // Reuse the board's canonical Plan snapshot instead of rematerializing rows.
   const relatedRequirementIds = new Set(
-    readPlanContractStore({ controllerHome: options.controllerHome, repoId }).contracts
+    (plans ?? readPlanContractStore({ controllerHome: options.controllerHome, repoId }).contracts)
       .map((plan) => plan.requirementId?.trim())
       .filter((requirementId): requirementId is string => Boolean(requirementId)),
   );

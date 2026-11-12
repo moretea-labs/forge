@@ -257,10 +257,33 @@ function readAddresses(database: SqliteDatabase, addresses: readonly MemoryAddre
   const rows = statement(database,
     `SELECT * FROM cognition_memory_units WHERE ${predicate}`,
     prepared => prepared.all(...params) as Array<Record<string, unknown>>);
+  // One indexed evidence read for the batch instead of an N+1 SELECT loop.
+  // Preserve evidenceFor() ordering for stable provenance.
+  if (!rows.length) return [];
+  const keys = rows.map(row => [row.scope_kind, row.scope_id, row.memory_id]);
+  const evidenceRows = statement(database, `
+    SELECT scope_kind, scope_id, memory_id, evidence_ref, evidence_kind
+    FROM cognition_memory_evidence
+    WHERE (scope_kind, scope_id, memory_id) IN (VALUES ${keys.map(() => '(?, ?, ?)').join(', ')})
+    ORDER BY evidence_kind, evidence_ref
+  `, prepared => prepared.all(...keys.flat()) as Array<{
+    scope_kind: string; scope_id: string; memory_id: string; evidence_ref: string; evidence_kind: string;
+  }>);
+  const evidenceByMemory = new Map<string, { evidence: string[]; counter: string[] }>();
+  const addressKey = (kind: string, scopeId: string, memoryId: string) => JSON.stringify([kind, scopeId, memoryId]);
+  for (const row of evidenceRows) {
+    const key = addressKey(row.scope_kind, row.scope_id, row.memory_id);
+    let refs = evidenceByMemory.get(key);
+    if (!refs) {
+      refs = { evidence: [], counter: [] };
+      evidenceByMemory.set(key, refs);
+    }
+    if (row.evidence_kind === 'support') refs.evidence.push(row.evidence_ref);
+    if (row.evidence_kind === 'counter') refs.counter.push(row.evidence_ref);
+  }
   return rows.map(row => {
-    const scope = { schemaVersion: 1 as const, kind: row.scope_kind as ScopeRef['kind'], id: row.scope_id as string };
-    const refs = evidenceFor(database, scope, row.memory_id as string);
-    return rowToMemory(row, refs.evidence, refs.counter);
+    const refs = evidenceByMemory.get(addressKey(row.scope_kind as string, row.scope_id as string, row.memory_id as string));
+    return rowToMemory(row, refs?.evidence ?? [], refs?.counter ?? []);
   });
 }
 
