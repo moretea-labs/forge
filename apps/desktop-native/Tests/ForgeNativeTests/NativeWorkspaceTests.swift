@@ -2110,7 +2110,7 @@ extension NativeWorkspaceTests {
 }
 
 extension NativeWorkspaceTests {
-    func testUsageProjectionExcludesIncompleteAssistantTurns() {
+    func testUsageProjectionIncludesIncompleteAssistantTurns() {
         let cutoff = Date(timeIntervalSince1970: 100)
         let completeWithoutReceipt = ChatMessage(role: "assistant", text: "done", createdAt: cutoff)
         let recordedUsage = AgentTokenUsage(
@@ -2128,8 +2128,8 @@ extension NativeWorkspaceTests {
         let oldReply = ChatMessage(role: "assistant", text: "old", createdAt: cutoff.addingTimeInterval(-1))
 
         XCTAssertTrue(AgentUsageDashboard.isUsageEligibleAssistantMessage(completeWithoutReceipt, since: cutoff))
-        XCTAssertFalse(AgentUsageDashboard.isUsageEligibleAssistantMessage(interruptedWithoutReceipt, since: cutoff))
-        XCTAssertFalse(AgentUsageDashboard.isUsageEligibleAssistantMessage(interruptedWithReceipt, since: cutoff))
+        XCTAssertTrue(AgentUsageDashboard.isUsageEligibleAssistantMessage(interruptedWithoutReceipt, since: cutoff))
+        XCTAssertTrue(AgentUsageDashboard.isUsageEligibleAssistantMessage(interruptedWithReceipt, since: cutoff))
         XCTAssertFalse(AgentUsageDashboard.isUsageEligibleAssistantMessage(userMessage, since: cutoff))
         XCTAssertFalse(AgentUsageDashboard.isUsageEligibleAssistantMessage(oldReply, since: cutoff))
     }

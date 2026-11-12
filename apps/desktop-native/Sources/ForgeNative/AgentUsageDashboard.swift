@@ -28,7 +28,7 @@ struct AgentUsageDashboard: View {
     }
 
     static func isUsageEligibleAssistantMessage(_ message: ChatMessage, since cutoff: Date) -> Bool {
-        message.role == "assistant" && message.incomplete != true && message.createdAt >= cutoff
+        message.role == "assistant" && message.createdAt >= cutoff
     }
 
     private func makeUsageSnapshot(
