@@ -950,7 +950,13 @@ export class MacOsAppleEventsPage {
       let effectiveRequest = request;
       let resolvedRef: MacOsBrowserTabRef | undefined;
       if ('ref' in request && request.ref) {
-        resolvedRef = await resolveCurrentMacOsBrowserTabRef(this.browser.product, request.ref, timeoutMs);
+        // Chrome's PID-bound native provider validates the exact tab ID for
+        // every DOM JavaScript event (including a tab moved across windows).
+        // Do not run a second, full-Chrome inventory in the Controller first.
+        // Activation and physical input retain their explicit preflight gates.
+        resolvedRef = this.browser.product === 'chrome' && request.action === 'execute_javascript'
+          ? request.ref
+          : await resolveCurrentMacOsBrowserTabRef(this.browser.product, request.ref, timeoutMs);
         this.targetRef = resolvedRef;
         effectiveRequest = { ...request, ref: resolvedRef } as BrowserAutomationBrokerAction;
       }

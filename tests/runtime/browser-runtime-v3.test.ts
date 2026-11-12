@@ -567,6 +567,42 @@ describe('Browser Runtime V3 routing', () => {
     expect(metadataCalls).toBe(2);
   });
 
+  test('process-bound Chrome DOM actions do not repeat a full tab inventory preflight', async () => {
+    let inventoryReads = 0;
+    let exactTabScripts = 0;
+    const url = 'https://example.com/native-query';
+    const metadata = [
+      'false', url, 'Native Query', '0', '0', '1200', '800', '7', '9', 'false', 'false',
+    ].join(nativeSeparator);
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin',
+      appExists: () => true,
+      processRunning: async () => true,
+      tabInventory: async () => {
+        inventoryReads += 1;
+        return {
+          product: 'chrome',
+          truncated: false,
+          tabs: [{ windowId: '7', tabId: '9', active: false, url, title: 'Native Query' }],
+        };
+      },
+      runAppleScript: async (script) => {
+        if (script.includes('execute targetTab javascript')) {
+          exactTabScripts += 1;
+          expect(script).toContain('set targetTabId to "9"');
+          return JSON.stringify({ ok: true, value: 'read-only-content', page: { url, title: 'Native Query' } });
+        }
+        return metadata;
+      },
+    });
+    const attached = await reattachMacOsBrowserOwnedPage('chrome', { windowId: '7', tabId: '9' }, 1_000);
+    const beforeAction = inventoryReads;
+    expect(await attached.page.evaluate<string>('document.body.innerText')).toBe('read-only-content');
+    expect(inventoryReads - beforeAction).toBe(0);
+    expect(exactTabScripts).toBe(1);
+    expect(attached.page.tabRef()).toEqual({ windowId: '7', tabId: '9' });
+  });
+
   test('re-resolves a stable native tab immediately before activation after window topology drift', async () => {
     let currentWindowId = '7';
     let inventoryReads = 0;
