@@ -642,6 +642,42 @@ describe('Browser Runtime V3 routing', () => {
     expect(nativeJsEvents).toBe(4);
   });
 
+  test('bound Chrome metadata uses exact provider identity without another global tab inventory', async () => {
+    let inventoryReads = 0;
+    let metadataTabId = '9';
+    const url = 'https://example.com/exact-metadata';
+    const metadata = () => [
+      'true', url, '', '0', '0', '1200', '800', '7', metadataTabId, 'true', 'false',
+    ].join(nativeSeparator);
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin',
+      appExists: () => true,
+      processRunning: async () => true,
+      tabInventory: async () => {
+        inventoryReads += 1;
+        return {
+          product: 'chrome',
+          truncated: false,
+          tabs: [{ windowId: '7', tabId: '9', active: true, url, title: 'Exact Metadata' }],
+        };
+      },
+      runAppleScript: async () => metadata(),
+    });
+    const { page } = await reattachMacOsBrowserOwnedPage('chrome', { windowId: '7', tabId: '9' }, 1_000);
+    const readsAfterAttach = inventoryReads;
+    expect(await page.foregroundState()).toEqual({ frontmost: true, active: true });
+    expect(inventoryReads).toBe(readsAfterAttach);
+    expect(page.tabRef()).toEqual({ windowId: '7', tabId: '9' });
+
+    // The native provider's tab ID, not a prior inventory guess, is binding.
+    metadataTabId = '10';
+    await expect(page.foregroundState()).rejects.toMatchObject({
+      code: 'PLUGIN_BROWSER_NATIVE_TAB_IDENTITY_UNPROVEN',
+      retryable: false,
+    });
+    expect(page.tabRef()).toEqual({ windowId: '7', tabId: '9' });
+  });
+
   test('re-resolves a stable native tab immediately before activation after window topology drift', async () => {
     let currentWindowId = '7';
     let inventoryReads = 0;

@@ -993,6 +993,13 @@ export class MacOsAppleEventsPage {
   }
 
   private async refreshMetadata(): Promise<MacOsBrowserMetadata> {
+    // The process-bound Chrome provider already validates the exact tab ID
+    // while reading metadata. Reuse that same fail-closed path instead of
+    // enumerating every tab just before asking for the same target.
+    // Physical input and activation retain their separate preflight gates.
+    if (this.browser.product === 'chrome' && this.targetRef) {
+      return await this.refreshResolvedMetadata();
+    }
     this.metadata = parseMetadata(this.browser.product, await this.runAutomation(
       { action: 'metadata', product: this.browser.product, ...(this.targetRef ? { ref: this.targetRef } : {}) },
       (resolvedRef) => resolvedRef ? targetMetadataScript(this.browser, resolvedRef) : metadataScript(this.browser),
