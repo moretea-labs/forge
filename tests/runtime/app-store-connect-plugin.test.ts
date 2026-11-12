@@ -42,7 +42,7 @@ describe('App Store Connect Xcode Cloud workflow actions', () => {
     const repoRoot = root();
     await executeAppStoreConnectPluginAction(input(repoRoot, 'configure', { enabled: true, provider: 'mock' }));
     const manifest = buildAppStoreConnectPluginManifest(1, undefined, repoRoot);
-    expect(manifest.pluginVersion).toBe('1.10.0');
+    expect(manifest.pluginVersion).toBe('1.11.0');
     expect(manifest.actions.find((action) => action.actionId === 'list_xcode_cloud_workflows')).toMatchObject({ readOnly: true, risk: 'readonly' });
     for (const actionId of ['list_bundle_ids', 'list_bundle_id_capabilities', 'list_certificates', 'list_devices', 'list_profiles']) {
       expect(manifest.actions.find((action) => action.actionId === actionId)).toMatchObject({
@@ -109,6 +109,54 @@ describe('App Store Connect Xcode Cloud workflow actions', () => {
       { access_type: 'UNSUPPORTED', dry_run: true }))).rejects.toThrow('access_type');
     await expect(executeAppStoreConnectPluginAction(input(repoRoot, 'add_review_submission_item',
       { review_submission_id: 's', item_type: 'userAccounts', item_id: 'u', dry_run: true }))).rejects.toThrow('Unsupported');
+  });
+
+  test('ASO version/localization reads preserve Apple platform version locale and keyword scope', async () => {
+    const repoRoot = root();
+    const keyPath = join(repoRoot, 'AuthKey_ASO_VERSIONS.p8');
+    const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
+    writeFileSync(keyPath, privateKey.export({ type:'pkcs8', format:'pem' }));
+    await executeAppStoreConnectPluginAction(input(repoRoot, 'configure', {
+      enabled:true, provider:'app-store-connect-api', issuer_id:'issuer-aso-versions',
+      key_id:'key-aso-versions', private_key_path:keyPath,
+    }));
+    const old = globalThis.fetch;
+    const urls: URL[] = [];
+    globalThis.fetch = (async (request:string | URL | Request) => {
+      urls.push(new URL(String(request)));
+      return Response.json({data:[]});
+    }) as typeof fetch;
+    try {
+      await executeAppStoreConnectPluginAction(input(repoRoot, 'list_app_store_versions', {
+        app_id:'app-1', platform:'IOS', version_string:'1.0.4', app_version_state:'READY_FOR_DISTRIBUTION',
+      }));
+      await executeAppStoreConnectPluginAction(input(repoRoot, 'list_app_store_version_localizations', {
+        version_id:'version-1', locale:'en-US',
+      }));
+      await executeAppStoreConnectPluginAction(input(repoRoot, 'get_app_store_version_localization', {
+        localization_id:'loc/1',
+      }));
+      await executeAppStoreConnectPluginAction(input(repoRoot, 'list_version_localization_search_keywords', {
+        localization_id:'loc-1',locale:'en-US',platform:'IOS',limit:25,
+      }));
+      await executeAppStoreConnectPluginAction(input(repoRoot, 'get_app_info_localization', {
+        localization_id:'info-loc-1',
+      }));
+      expect(urls.map(v=>v.pathname)).toEqual([
+        '/v1/apps/app-1/appStoreVersions',
+        '/v1/appStoreVersions/version-1/appStoreVersionLocalizations',
+        '/v1/appStoreVersionLocalizations/loc%2F1',
+        '/v1/appStoreVersionLocalizations/loc-1/searchKeywords',
+        '/v1/appInfoLocalizations/info-loc-1',
+      ]);
+      expect(urls[0]?.searchParams.get('filter[platform]')).toBe('IOS');
+      expect(urls[0]?.searchParams.get('filter[versionString]')).toBe('1.0.4');
+      expect(urls[0]?.searchParams.get('filter[appVersionState]')).toBe('READY_FOR_DISTRIBUTION');
+      expect(urls[1]?.searchParams.get('filter[locale]')).toBe('en-US');
+      expect(urls[3]?.searchParams.get('filter[locale]')).toBe('en-US');
+      expect(urls[3]?.searchParams.get('filter[platform]')).toBe('IOS');
+      expect(urls[3]?.searchParams.get('limit')).toBe('25');
+    } finally {globalThis.fetch=old;}
   });
 
   test('official read endpoints preserve exact version and Apple keyword query filters', async () => {
