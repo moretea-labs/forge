@@ -194,18 +194,22 @@ private struct AgentLocalImageResourceView: View {
             }
             previewLoading = true
             previewError = nil
-            defer { previewLoading = false }
+            defer { if !Task.isCancelled { previewLoading = false } }
             do {
                 try Task.checkCancellation()
-                guard let image = makeLocalImagePreview(at: path) else {
+                guard let thumbnail = try await makeLocalImageThumbnail(at: path) else {
                     previewError = "原图无法解码或格式不受支持"
                     return
                 }
                 try Task.checkCancellation()
-                previewImage = image
+                previewImage = NSImage(
+                    cgImage: thumbnail,
+                    size: NSSize(width: thumbnail.width, height: thumbnail.height)
+                )
             } catch is CancellationError {
                 return
             } catch {
+                guard !Task.isCancelled else { return }
                 previewError = error.localizedDescription
             }
         }

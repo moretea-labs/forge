@@ -2037,7 +2037,7 @@ extension NativeWorkspaceTests {
 
 
 extension NativeWorkspaceTests {
-    func testRemoteImagePreviewUsesBoundedThumbnailAndRejectsInvalidData() throws {
+    func testLocalAndRemoteImageThumbnailsAreBoundedAndRejectInvalidData() async throws {
         let bitmap = try XCTUnwrap(NSBitmapImageRep(
             bitmapDataPlanes: nil,
             pixelsWide: 4_800,
@@ -2051,19 +2051,29 @@ extension NativeWorkspaceTests {
             bitsPerPixel: 0
         ))
         let data = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
-        let preview = try XCTUnwrap(makeRemoteImagePreview(data))
+        let remoteResult = try await makeRemoteImageThumbnail(data)
+        let remoteThumbnail = try XCTUnwrap(remoteResult)
 
-        XCTAssertLessThanOrEqual(preview.size.width, 2_400)
-        XCTAssertLessThanOrEqual(preview.size.height, 2_400)
-        XCTAssertNil(makeRemoteImagePreview(Data("not an image".utf8)))
+        XCTAssertLessThanOrEqual(remoteThumbnail.width, 2_400)
+        XCTAssertLessThanOrEqual(remoteThumbnail.height, 2_400)
+        let invalidThumbnail = try await makeRemoteImageThumbnail(Data("not an image".utf8))
+        XCTAssertNil(invalidThumbnail)
 
         let localURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString).appendingPathExtension("png")
         defer { try? FileManager.default.removeItem(at: localURL) }
         try data.write(to: localURL)
-        let localPreview = try XCTUnwrap(makeLocalImagePreview(at: localURL.path))
-        XCTAssertLessThanOrEqual(localPreview.size.width, 2_400)
-        XCTAssertLessThanOrEqual(localPreview.size.height, 2_400)
+        let localResult = try await makeLocalImageThumbnail(at: localURL.path)
+        let localThumbnail = try XCTUnwrap(localResult)
+        XCTAssertLessThanOrEqual(localThumbnail.width, 2_400)
+        XCTAssertLessThanOrEqual(localThumbnail.height, 2_400)
+
+        let invalidLocalURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString).appendingPathExtension("png")
+        defer { try? FileManager.default.removeItem(at: invalidLocalURL) }
+        try Data("not an image".utf8).write(to: invalidLocalURL)
+        let invalidLocalThumbnail = try await makeLocalImageThumbnail(at: invalidLocalURL.path)
+        XCTAssertNil(invalidLocalThumbnail)
     }
 }
 

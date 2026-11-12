@@ -294,28 +294,45 @@ func appendRemoteImageByte(_ byte: UInt8, to data: inout Data, maximumBytes: Int
     data.append(byte)
 }
 
-private func makeImagePreview(from source: CGImageSource) -> NSImage? {
-    guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(
+private func makeImageThumbnail(from source: CGImageSource) -> CGImage? {
+    CGImageSourceCreateThumbnailAtIndex(
         source, 0,
         [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceThumbnailMaxPixelSize: 2_400,
             kCGImageSourceCreateThumbnailWithTransform: true
         ] as CFDictionary
-    ) else {
-        return nil
+    )
+}
+
+func makeRemoteImageThumbnail(_ data: Data) async throws -> CGImage? {
+    let decoding = Task.detached(priority: .userInitiated) { () throws -> CGImage? in
+        try Task.checkCancellation()
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        let thumbnail = makeImageThumbnail(from: source)
+        try Task.checkCancellation()
+        return thumbnail
     }
-    return NSImage(cgImage: thumbnail, size: NSSize(width: thumbnail.width, height: thumbnail.height))
+    return try await withTaskCancellationHandler {
+        try await decoding.value
+    } onCancel: {
+        decoding.cancel()
+    }
 }
 
-func makeRemoteImagePreview(_ data: Data) -> NSImage? {
-    guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
-    return makeImagePreview(from: source)
-}
-
-func makeLocalImagePreview(at path: String) -> NSImage? {
-    guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil) else { return nil }
-    return makeImagePreview(from: source)
+func makeLocalImageThumbnail(at path: String) async throws -> CGImage? {
+    let decoding = Task.detached(priority: .userInitiated) { () throws -> CGImage? in
+        try Task.checkCancellation()
+        guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil) else { return nil }
+        let thumbnail = makeImageThumbnail(from: source)
+        try Task.checkCancellation()
+        return thumbnail
+    }
+    return try await withTaskCancellationHandler {
+        try await decoding.value
+    } onCancel: {
+        decoding.cancel()
+    }
 }
 
 func validateRemoteImageResponse(
@@ -445,16 +462,23 @@ struct AgentRemoteImageView: View {
             }
             previewLoading = true
             previewError = nil
-            defer { previewLoading = false }
+            defer { if !Task.isCancelled { previewLoading = false } }
             do {
                 let data = try await downloadRemoteImage(from: url, maximumBytes: 25 * 1024 * 1024)
                 try Task.checkCancellation()
-                guard let image = makeRemoteImagePreview(data) else { throw RemoteImageSaveError.invalidImage }
+                guard let thumbnail = try await makeRemoteImageThumbnail(data) else {
+                    throw RemoteImageSaveError.invalidImage
+                }
+                try Task.checkCancellation()
                 previewData = data
-                previewImage = image
+                previewImage = NSImage(
+                    cgImage: thumbnail,
+                    size: NSSize(width: thumbnail.width, height: thumbnail.height)
+                )
             } catch is CancellationError {
                 return
             } catch {
+                guard !Task.isCancelled else { return }
                 previewError = error.localizedDescription
             }
         }
