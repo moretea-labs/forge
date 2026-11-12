@@ -259,8 +259,12 @@ describe("repository MCP command tools", () => {
       git(repoRoot, ["commit", "-m", "base"]);
       // Existing test fixture also exercises a real upstream: status --branch
       // must agree with rev-parse @{u}, not just the local branch name.
-      git(repoRoot, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
-      git(repoRoot, ["branch", "--set-upstream-to=origin/main", "main"]);
+      const remoteRoot = join(workspace, "origin.git");
+      mkdirSync(remoteRoot, { recursive: true });
+      git(remoteRoot, ["init", "--bare"]);
+      git(repoRoot, ["remote", "add", "origin", remoteRoot]);
+      git(repoRoot, ["push", "--set-upstream", "origin", "main"]);
+      git(repoRoot, ["fetch", "origin"]);
       writeFileSync(join(repoRoot, "owned.txt"), "changed-owned\n");
       writeFileSync(join(repoRoot, "outside.txt"), "changed-outside\n");
       git(repoRoot, ["add", "outside.txt"]);
