@@ -52,3 +52,12 @@ A requirement-first, low-noise UI inside the existing native macOS Forge Client.
 - Mac-native route and press feedback uses brief fades/scale changes and honors Reduce Motion. No animations are triggered by status polling or background work. Project switches are disabled during active Agent execution.
 - When a project is loading, show a loading state instead of falsely saying it has no Requirements.
 - GUI/Accessibility acceptance must validate the newly installed binary, not merely a Swift test build. Scope one Forge.app instance and preserve Runtime independently.
+
+## Node-first interaction refinement (2026-11-12)
+
+- The Requirement and Plan canvas is the primary operation surface. On pointer hover (or keyboard-selected node), show **Add Plan / child Plan**, **Edit**, and an ellipsis menu. The menu contains Agent optimization, independent Review, and — only for an open Requirement — actual Autopilot start/pause/resume, approval/settings, acceptance completion and cancellation.
+- The inspector on the right is deliberately **read-only preview**: goal, acceptance criteria, current execution summary, Plan items, remaining work and evidence. It has a Close control but no edit/create/approval/execution buttons. Clicking the node selects it and refreshes canonical preview data; selecting via the menu keeps node operations available for accessibility.
+- Actions use the existing Forge writer / CAS, execution receipt and review owner. Edit/complete/cancel always re-read the selected canonical record and check project ID, selected node ID and revision before showing any write-capable sheet. Completed/cancelled Requirement nodes cannot mutate or spawn child Plans; Review remains available.
+- Hover presentation uses brief opacity only and respects macOS Reduce Motion. No nested buttons or duplicate authority are introduced.
+
+Manual UI acceptance: hover an unselected Requirement root, use `+` without needing the inspector, open the ellipsis and start/pause an authorized run, select a Plan and add a child Plan, edit via pencil, review a terminal node, leave the pointer and ensure the selected node still offers actions, and verify the right inspector has only preview content.

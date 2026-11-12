@@ -6,6 +6,11 @@ enum ZenScreen {
     case projects, board, canvas
 }
 
+enum ZenNodeAction {
+    case addPlan, edit, optimize, review, complete, cancel
+    case toggleExecution, executionSettings
+}
+
 enum ZenBoardBucket: Int, CaseIterable {
     case todo, planned, running, done, cancelled
 
@@ -670,9 +675,16 @@ struct ZenWorkspacePane: View {
         Group {
             if let root = requirements.first(where:{$0.recordId == focusedRequirementId}) {
                 HStack(spacing:0) {
-                    ZenTreeCanvas(root:root,records:model.records,selectedId:model.selectedRecord) { item in
-                        Task { await model.openRecord(item.id) }
-                    }
+                    ZenTreeCanvas(
+                        root:root,records:model.records,selectedId:model.selectedRecord,
+                        executionStatuses:model.planningAutopilotStatuses,
+                        executionBusy:model.autopilotLoading,
+                        onSelect:{ item in
+                            Task { await model.openRecord(item.id) }
+                        },onAction:{ item,action in
+                            handleNodeAction(item,action)
+                        }
+                    )
                     if let selected = model.records.first(where:{$0.id == model.selectedRecord}),
                        selected.id == root.id || selected.requirementId == root.recordId {
                         detailInspector(selected)
@@ -771,67 +783,8 @@ struct ZenWorkspacePane: View {
                         .controlSize(.small)
                 }
 
-                if detailLoaded(for:item) && item.kind == .requirement && item.state == "open" {
+                if detailLoaded(for:item) && item.kind == .requirement {
                     zenExecutionSection(item)
-                }
-                Divider()
-                Button {
-                    beginEdit(item)
-                } label: {
-                    Label("编辑",systemImage:"square.and.pencil")
-                }
-                .buttonStyle(.bordered)
-                .disabled(!detailLoaded(for:item)
-                          || (item.kind == .requirement && item.state != "open"))
-                Button {
-                    onOpenAgent(item,"请基于当前 Requirement / Plan 的实际修订与关联信息分析并提出最小必要优化，先给出差异和影响范围，不要在未经确认时新增同义记录。",nil,true)
-                } label: {
-                    Label("使用 Agent 优化",systemImage:"sparkles")
-                }
-                .buttonStyle(.bordered)
-                Button {
-                    pendingReviewRecord = item
-                } label: {
-                    Label("Review",systemImage:"checkmark.seal")
-                }
-                .buttonStyle(.bordered)
-                if item.kind == .requirement {
-                    if case .requirement(let detail) = model.recordDetail,
-                       detail.requirementId == item.recordId && detail.state == "open" {
-                        Menu {
-                            Button("验收完成") {
-                                acceptanceReferences=detail.acceptedEvidenceRefs.joined(separator:"\n")
-                                acceptanceAcknowledged=false
-                                pendingAcceptanceRecord=item
-                            }
-                            Button("取消 Requirement",role:.destructive) {
-                                cancellingRequirement=detail
-                            }
-                        } label: {
-                            Label("需求状态",systemImage:"checkmark.circle")
-                        }
-                        .accessibilityIdentifier("zen.requirement.lifecycle")
-                    }
-                    if item.state == "open" {
-                        Button {
-                            newPlanGoal = ""
-                            newParentPlanId = nil
-                            showingPlanSheet = true
-                        } label: {
-                            Label("新增 Plan",systemImage:"plus")
-                        }
-                        .buttonStyle(.bordered)
-                    }
-                } else if item.kind == .plan && item.requirementId == focusedRequirementId
-                            && detailLoaded(for:item) {
-                    Button {
-                        newPlanGoal = ""
-                        newParentPlanId = item.recordId
-                        showingPlanSheet = true
-                    } label: {
-                        Label("新增子 Plan",systemImage:"plus")
-                    }
-                    .buttonStyle(.bordered)
                 }
             }
             .padding(18)
@@ -841,6 +794,60 @@ struct ZenWorkspacePane: View {
     }
 
 
+
+    private func handleNodeAction(_ item:ForgeRecord,_ action:ZenNodeAction) {
+        guard let activeRepoId=model.repoId,
+              let root=requirements.first(where:{$0.recordId == focusedRequirementId}),
+              item.id == root.id || item.requirementId == root.recordId else { return }
+        switch action {
+        case .addPlan:
+            guard root.state == "open" else { return }
+            newPlanGoal=""
+            newParentPlanId=item.kind == .plan ? item.recordId : nil
+            showingPlanSheet=true
+        case .edit, .complete, .cancel:
+            guard root.state == "open" else { return }
+            Task {
+                await model.openRecord(item.id)
+                guard model.repoId == activeRepoId,
+                      model.selectedRecord == item.id,
+                      detailLoaded(for:item) else { return }
+                switch action {
+                case .edit:
+                    beginEdit(item)
+                case .complete:
+                    guard case .requirement(let detail)=model.recordDetail,
+                          detail.requirementId == item.recordId,detail.state == "open" else { return }
+                    acceptanceReferences=detail.acceptedEvidenceRefs.joined(separator:"\n")
+                    acceptanceAcknowledged=false
+                    pendingAcceptanceRecord=item
+                case .cancel:
+                    guard case .requirement(let detail)=model.recordDetail,
+                          detail.requirementId == item.recordId,detail.state == "open" else { return }
+                    cancellingRequirement=detail
+                default:
+                    break
+                }
+            }
+        case .optimize:
+            onOpenAgent(item,"请基于当前 Requirement / Plan 的实际修订与关联信息分析并提出最小必要优化，先给出差异和影响范围，不要在未经确认时新增同义记录。",nil,true)
+        case .review:
+            pendingReviewRecord=item
+        case .executionSettings:
+            onOpenPlanning()
+        case .toggleExecution:
+            guard item.kind == .requirement,root.state == "open",
+                  let status=model.planningAutopilotStatuses[item.recordId] else { return }
+            if !status.authorized || status.requiresReapproval {
+                onOpenPlanning()
+            } else if status.runtimeActive {
+                runExecution(item.recordId,"pause")
+            } else if status.providerReady {
+                let operation=["paused","blocked","failed"].contains(status.runStatus ?? "") ? "resume" : "start"
+                runExecution(item.recordId,operation)
+            }
+        }
+    }
 
     private func acceptanceSheet(_ item:ForgeRecord) -> some View {
         VStack(alignment:.leading,spacing:14) {
@@ -1048,31 +1055,14 @@ struct ZenWorkspacePane: View {
                     Text("当前 Plan · \(plan)").font(.system(size:10,design:.monospaced))
                         .foregroundStyle(.secondary)
                 }
-                if status.authorized && !status.requiresReapproval {
-                    HStack {
-                        if status.runStatus == "running" {
-                            Button("暂停") { runExecution(item.recordId,"pause") }
-                                .buttonStyle(.borderedProminent)
-                        } else {
-                            Button(status.runStatus == "paused" || status.runStatus == "blocked" || status.runStatus == "failed" ? "继续" : "开始执行") {
-                                runExecution(item.recordId,["paused","blocked","failed"].contains(status.runStatus ?? "") ? "resume" : "start")
-                            }
-                            .buttonStyle(.borderedProminent)
-                            .disabled(!status.providerReady)
-                        }
-                        Button("执行设置") { onOpenPlanning() }.buttonStyle(.bordered)
-                    }
-                } else {
-                    Button("配置并批准执行") { onOpenPlanning() }
-                        .buttonStyle(.bordered)
+                if !status.authorized || status.requiresReapproval {
+                    Label("需要批准执行",systemImage:"lock")
+                        .font(.system(size:10)).foregroundStyle(.secondary)
                 }
             } else {
                 Text("尚未读取到执行状态。").font(.system(size:11))
                     .foregroundStyle(.secondary)
-                Button("执行设置") { onOpenPlanning() }.buttonStyle(.bordered)
             }
-            Text("执行详情在 Agent 模式查看。授权与执行是独立操作，不会自动发布。")
-                .font(.system(size:10)).foregroundStyle(.secondary)
         }
         .accessibilityIdentifier("zen.execution.summary")
     }
@@ -1154,7 +1144,11 @@ private struct ZenTreeCanvas: View {
     let root: ForgeRecord
     let records: [ForgeRecord]
     let selectedId: String?
+    let executionStatuses: [String:AutopilotStatusDetail]
+    let executionBusy: Bool
     let onSelect: (ForgeRecord) -> Void
+    let onAction: (ForgeRecord,ZenNodeAction) -> Void
+    @State private var hoveredNodeId: String?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var zoom:CGFloat = 1
 
@@ -1162,6 +1156,90 @@ private struct ZenTreeCanvas: View {
         withAnimation(reduceMotion ? nil : .easeInOut(duration:0.16)) {
             zoom = min(1.65,max(0.35,value))
         }
+    }
+
+
+    @ViewBuilder
+    private func nodeToolbar(_ item:ForgeRecord) -> some View {
+        let canChange=root.state == "open"
+            && (item.kind == .requirement || item.requirementId == root.recordId)
+        HStack(spacing:1) {
+            if canChange {
+                Button {
+                    onAction(item,.addPlan)
+                } label: {
+                    Image(systemName:"plus").frame(width:26,height:26)
+                }
+                .help(item.kind == .requirement ? "新增 Plan" : "新增子 Plan")
+                .accessibilityLabel(item.kind == .requirement ? "新增 Plan" : "新增子 Plan")
+                .accessibilityIdentifier("zen.node.add-plan.\(item.recordId)")
+                Button {
+                    onAction(item,.edit)
+                } label: {
+                    Image(systemName:"pencil").frame(width:26,height:26)
+                }
+                .help("编辑节点")
+                .accessibilityLabel("编辑节点")
+                .accessibilityIdentifier("zen.node.edit.\(item.recordId)")
+            }
+            Menu {
+                if canChange {
+                    Button("使用 Agent 优化",systemImage:"sparkles") {
+                        onAction(item,.optimize)
+                    }
+                }
+                Button("Review",systemImage:"checkmark.seal") {
+                    onAction(item,.review)
+                }
+                if canChange && item.kind == .requirement {
+                    Divider()
+                    if let status=executionStatuses[item.recordId] {
+                        if status.authorized && !status.requiresReapproval {
+                            if status.runtimeActive {
+                                Button("暂停执行",systemImage:"pause") {
+                                    onAction(item,.toggleExecution)
+                                }
+                                .disabled(executionBusy)
+                            } else if status.providerReady {
+                                Button(["paused","blocked","failed"].contains(status.runStatus ?? "")
+                                       ? "继续执行" : "开始执行",systemImage:"play") {
+                                    onAction(item,.toggleExecution)
+                                }
+                                .disabled(executionBusy)
+                            }
+                        } else {
+                            Button("批准执行",systemImage:"lock.open") {
+                                onAction(item,.executionSettings)
+                            }
+                        }
+                    }
+                    Button("执行设置",systemImage:"slider.horizontal.3") {
+                        onAction(item,.executionSettings)
+                    }
+                    Divider()
+                    Button("验收完成",systemImage:"checkmark.circle") {
+                        onAction(item,.complete)
+                    }
+                    Button("取消 Requirement",systemImage:"xmark.circle",role:.destructive) {
+                        onAction(item,.cancel)
+                    }
+                }
+            } label: {
+                Image(systemName:"ellipsis").frame(width:27,height:26)
+            }
+            .menuStyle(.borderlessButton)
+            .simultaneousGesture(TapGesture().onEnded {
+                onSelect(item)
+            })
+            .help("更多节点操作")
+            .accessibilityLabel("更多节点操作")
+            .accessibilityIdentifier("zen.node.menu.\(item.recordId)")
+        }
+        .font(.system(size:11,weight:.medium))
+        .buttonStyle(.plain)
+        .foregroundStyle(Color.primary)
+        .padding(.horizontal,3).padding(.vertical,2)
+        .background(.regularMaterial,in:RoundedRectangle(cornerRadius:8))
     }
 
     private var levels: [[ForgeRecord]] {
@@ -1228,34 +1306,50 @@ private struct ZenTreeCanvas: View {
 
                     ForEach(0..<rows.count,id:\.self) { row in
                         ForEach(Array(rows[row].enumerated()),id:\.element.id) { index,item in
-                            Button { onSelect(item) } label: {
-                                VStack(alignment:.leading,spacing:7) {
-                                    HStack(spacing:7) {
-                                        Image(systemName:item.kind == .requirement ? "scope" : "list.bullet.rectangle")
-                                            .font(.system(size:12)).foregroundStyle(.secondary)
-                                        Text(item.kind == .requirement ? "Requirement" : "Plan")
-                                            .font(.system(size:10,weight:.semibold))
-                                            .foregroundStyle(.secondary)
-                                        Spacer()
+                            ZStack(alignment:.topTrailing) {
+                                Button { onSelect(item) } label: {
+                                    VStack(alignment:.leading,spacing:7) {
+                                        HStack(spacing:7) {
+                                            Image(systemName:item.kind == .requirement ? "scope" : "list.bullet.rectangle")
+                                                .font(.system(size:12)).foregroundStyle(.secondary)
+                                            Text(item.kind == .requirement ? "Requirement" : "Plan")
+                                                .font(.system(size:10,weight:.semibold))
+                                                .foregroundStyle(.secondary)
+                                            Spacer()
+                                        }
+                                        Text(item.title).font(.system(size:12,weight:.medium))
+                                            .foregroundStyle(.primary)
+                                            .lineLimit(2).multilineTextAlignment(.leading)
+                                        Text(item.recordId)
+                                            .font(.system(size:9,design:.monospaced))
+                                            .foregroundStyle(.secondary).lineLimit(1)
                                     }
-                                    Text(item.title).font(.system(size:12,weight:.medium))
-                                        .foregroundStyle(.primary)
-                                        .lineLimit(2).multilineTextAlignment(.leading)
-                                    Text(item.recordId)
-                                        .font(.system(size:9,design:.monospaced))
-                                        .foregroundStyle(.secondary).lineLimit(1)
+                                    .frame(width:184,height:62,alignment:.topLeading)
+                                    .padding(10)
+                                    .background(item.id == selectedId
+                                                ? Color.accentColor.opacity(0.09)
+                                                : Color(nsColor:.controlBackgroundColor),
+                                                in:RoundedRectangle(cornerRadius:12))
+                                    .contentShape(RoundedRectangle(cornerRadius:12))
                                 }
-                                .frame(width:184,height:62,alignment:.topLeading)
-                                .padding(10)
-                                .background(item.id == selectedId
-                                            ? Color.accentColor.opacity(0.09)
-                                            : Color(nsColor:.controlBackgroundColor),
-                                            in:RoundedRectangle(cornerRadius:12))
-                                .contentShape(RoundedRectangle(cornerRadius:12))
+                                .buttonStyle(ZenPressStyle())
+                                .accessibilityIdentifier("zen.canvas.node.\(item.recordId)")
+                                if hoveredNodeId == item.id || selectedId == item.id {
+                                    nodeToolbar(item)
+                                        .padding(5)
+                                        .transition(.opacity)
+                                }
                             }
-                            .buttonStyle(ZenPressStyle())
+                            .onHover { isHovering in
+                                withAnimation(reduceMotion ? nil : .easeOut(duration:0.12)) {
+                                    if isHovering {
+                                        hoveredNodeId=item.id
+                                    } else if hoveredNodeId == item.id {
+                                        hoveredNodeId=nil
+                                    }
+                                }
+                            }
                             .position(position(row,index,width:width,columns:rows[row].count))
-                            .accessibilityIdentifier("zen.canvas.node.\(item.recordId)")
                         }
                     }
                 }
@@ -1301,7 +1395,10 @@ private struct ZenTreeCanvas: View {
                 .padding(15)
             }
         }
-        .onChange(of:root.id) { _ in zoom=1 }
+        .onChange(of:root.id) { _ in
+            zoom=1
+            hoveredNodeId=nil
+        }
         .background(Color(nsColor:.textBackgroundColor))
         .accessibilityIdentifier("zen.requirement.canvas")
     }
