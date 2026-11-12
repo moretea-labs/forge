@@ -2,7 +2,7 @@ import { execFile, type ChildProcess } from 'child_process';
 import { resolve } from 'path';
 import { cpus, freemem, loadavg } from 'os';
 import { listRepositories } from '../../repositories/registry';
-import { writeAgentExecutableReadinessSnapshot } from '../../../cli/agent-jobs/executable-resolver';
+import { writeAgentExecutableReadinessSnapshot } from '../../agents/executable-resolver';
 import {
   assertRuntimeMayWrite,
   getRuntimeWriteClaim,

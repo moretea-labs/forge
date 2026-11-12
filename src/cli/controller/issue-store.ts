@@ -4,7 +4,6 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync
 import { join, sep } from 'path';
 import type {
   CompletionReceipt,
-  ControllerAgent,
   ControllerIssue,
   ControllerTask,
   GitHubIssueLink,
@@ -17,6 +16,7 @@ import type {
   TaskVerification,
   TaskReadiness,
 } from './types';
+import type { ControllerAgent } from '../../runtime/agents/types';
 import { clearCurrentIssue, loadControllerProjectState, saveControllerProjectState } from './project-state';
 import { readActiveRunEvidence, readIssueRunEvidence, readTaskRunEvidence } from './run-evidence';
 import {

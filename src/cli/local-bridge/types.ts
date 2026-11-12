@@ -1,4 +1,5 @@
-import type { ControllerAgent, TaskRisk } from "../controller/types";
+import type { ControllerAgent } from "../../runtime/agents/types";
+import type { TaskRisk } from "../controller/types";
 import type { ControllerCheckSnapshot } from "../../runtime/execution/process-runtime/check-runner";
 import type { RepositoryCommandValue } from "../../core/repository-command/normalization";
 

@@ -669,7 +669,8 @@ for (const path of ['README.md', 'docs/ROADMAP.md', 'docs/architecture/CURRENT.m
 
 const required = [
   'adapters/mcp/runtime-gateway/router.ts',
-  'src/cli/agent-jobs/executable-resolver.ts',
+  'src/runtime/agents/types.ts',
+  'src/runtime/agents/executable-resolver.ts',
   'src/runtime/control-plane/global-scheduler/scheduler.ts',
   'src/runtime/control-plane/global-scheduler/config.ts',
   'src/runtime/control-plane/global-scheduler/state.ts',
@@ -1677,8 +1678,11 @@ requireText('src/runtime/control-plane/global-scheduler/worker-process.ts', 'ter
 requireText('src/runtime/control-plane/global-scheduler/worker-process.ts', "child.once('close'");
 requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'writeAgentExecutableReadinessSnapshot');
 requireText('src/runtime/control-plane/global-scheduler/scheduler.ts', 'sampleRepositoryGitStatusForRepositories');
-requireText('src/cli/agent-jobs/executable-resolver.ts', 'revalidateAgentExecutable');
-requireText('src/cli/agent-jobs/executable-resolver.ts', 'AGENT_EXECUTABLE_IDENTITY_CHANGED');
+requireText('src/runtime/agents/executable-resolver.ts', 'revalidateAgentExecutable');
+requireText('src/runtime/agents/executable-resolver.ts', 'AGENT_EXECUTABLE_IDENTITY_CHANGED');
+requireText('src/runtime/agents/types.ts', 'ControllerAgent');
+requireText('src/runtime/agents/types.ts', 'AgentExecutableIdentity');
+requireMissing('src/cli/agent-jobs/executable-resolver.ts');
 requireText('packages/kernel/scheduler/infrastructure/schedule-store.ts', "'occurrences'");
 requireText('src/runtime/projections/git-status-sampler.ts', 'writeRepositoryGitStatusSample');
 requireText('src/runtime/projections/git-status-sampler.ts', 'readRepositoryGitStatusSample');

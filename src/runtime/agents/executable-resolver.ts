@@ -14,8 +14,8 @@ import { delimiter, dirname, isAbsolute, join, resolve } from 'path';
 import type {
   AgentAuthenticationReadiness,
   AgentExecutableIdentity,
+  ControllerAgent,
 } from './types';
-import type { ControllerAgent } from '../controller/types';
 
 export type LocalAgent = Exclude<ControllerAgent, 'github-copilot'>;
 

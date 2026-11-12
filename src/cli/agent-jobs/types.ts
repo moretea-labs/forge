@@ -1,4 +1,5 @@
-import type { CleanupEvidence, ControllerAgent, IntegrationEvidence } from "../controller/types";
+import type { CleanupEvidence, IntegrationEvidence } from "../controller/types";
+import type { AgentExecutableIdentity, ControllerAgent } from "../../runtime/agents/types";
 import type { TaskExecutionClass } from "../controller/execution-policy";
 import type { ExecutorHealth } from "./executor-health";
 import type { ManagedResource } from "../../runtime/resources";
@@ -93,26 +94,6 @@ export interface AgentJobEvent {
     | "run_verified";
   message?: string;
   data?: Record<string, unknown>;
-}
-
-export type AgentAuthenticationReadiness = "ready" | "required" | "unknown";
-
-export interface AgentExecutableIdentity {
-  schemaVersion: 1;
-  agent: Exclude<ControllerAgent, "github-copilot">;
-  command: string;
-  source: "configured" | "path";
-  executablePath: string;
-  resolvedPath: string;
-  version: string;
-  authenticationReadiness: AgentAuthenticationReadiness;
-  probedAt: string;
-  fileIdentity: {
-    device: number;
-    inode: number;
-    size: number;
-    mtimeMs: number;
-  };
 }
 
 export interface AgentJobMeta {
