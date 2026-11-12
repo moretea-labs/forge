@@ -67,6 +67,8 @@ Browser Runtime V3 is the current Browser authority. The V2 ADR in [`../architec
 - typed browser-internal capabilities are preferred for bookmarks/tabs/downloads instead of driving `chrome://` UI;
 - foreground physical input is explicit and separate. Browser `trusted_input` does not silently foreground a tab or reuse Desktop coordinates; use an explicitly authorized Desktop Operator foreground/physical action when that is the intended capability.
 
+On the macOS process-bound Chrome path, `execute_javascript` addresses the exact saved `tabId` through the native Computer provider, which verifies the Chrome GUI PID and exact tab identity before dispatch (including tabs moved between windows). The Controller must not also enumerate every Chrome window/tab before each DOM event. Activation and foreground physical input retain explicit identity and foreground checks; their post-action receipt reads only the resolved target's metadata. A missing or ambiguous native target still fails closed, and unknown mutation outcomes are not replayed. This is a source-level contract; deployment and live p95 acceptance are verified separately against the installed Desktop Operator and Forge Runtime versions.
+
 The warm-path performance targets remain p95 <= 350 ms for reads, <= 600 ms for DOM interaction plus verification, and <= 700 ms for typed browser-internal-resource operations. Explicit physical-input fallback targets p95 <= 1500 ms and is foreground-capable only when requested. Current-source live evidence is emitted by `tests/live/browser-runtime-v3.e2e.ts`; Work/Plan evidence owns measured p50/p95 values rather than this maintained runbook.
 
 ## Configuration
