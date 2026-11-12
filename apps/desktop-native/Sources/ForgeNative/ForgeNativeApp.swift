@@ -1285,7 +1285,6 @@ private struct AgentPane: View {
     var body: some View {
         VStack(spacing:0) {
             agentWorkspaceBar
-            Divider().opacity(0.45)
             ScrollViewReader { reader in
                 ScrollView {
                     LazyVStack(alignment:.leading,spacing:20) {
@@ -1981,9 +1980,11 @@ private struct AgentPane: View {
             .accessibilityValue(agentWorkspaceStatusLabel)
             .accessibilityIdentifier("agent.workspace-refresh")
         }
-        .padding(.horizontal,18)
+        .frame(maxWidth:1320)
+        .padding(.horizontal,28)
+        .frame(maxWidth:.infinity)
         .frame(height:43)
-        .background(ForgePalette.raisedSurface.opacity(0.64))
+        .background(.ultraThinMaterial)
         .accessibilityElement(children:.contain)
         .accessibilityIdentifier("agent.workspace-context")
     }
