@@ -24,12 +24,12 @@ The HTTP transport owns authentication and protocol-era routing. MCP 2026-07-28 
 Primary code:
 
 ```text
-src/cli/repositories/registry.ts
-src/cli/repositories/ephemeral-workspace.ts
+src/runtime/repositories/registry.ts
+src/runtime/repositories/ephemeral-workspace.ts
 src/runtime/control-plane/execution/execution-identity.ts
 ```
 
-Registered work is resolved to `repoId` plus `checkoutId`. Git top-level/common-directory checks prevent a caller from supplying a different checkout through `cwd`. `ephemeral-workspace.ts` represents the separate explicit authority for an existing unregistered local directory. `src/cli/repositories/structured-git.ts` partitions porcelain status once; `src/runtime/projections/git-status-sampler.ts` uses that parser for its sampled projection rather than maintaining an independent classification.
+Registered work is resolved to `repoId` plus `checkoutId`. Git top-level/common-directory checks prevent a caller from supplying a different checkout through `cwd`. `ephemeral-workspace.ts` represents the separate explicit authority for an existing unregistered local directory. `src/runtime/repositories/structured-git.ts` partitions porcelain status once; `src/runtime/projections/git-status-sampler.ts` uses that parser for its sampled projection rather than maintaining an independent classification.
 
 ## 3. Context and source access
 
@@ -37,8 +37,8 @@ Primary code:
 
 ```text
 src/cli/controller/context-pack.ts
-src/cli/repository/inspector.ts
-src/runtime/repository/session-cache.ts
+src/runtime/repositories/inspector.ts
+src/runtime/repositories/session-cache.ts
 ```
 
 `rh_context` is the normal code-location/context router. Repository observations are bounded and cached by session/repository identity where valid. Clean Git snapshots avoid redundant `git diff --stat` subprocesses because `git status` already proves that no unstaged diff can exist.
@@ -50,11 +50,11 @@ Structural CodeGraph context is optional augmentation for call/dependency questi
 Primary code:
 
 ```text
-src/cli/editing/edit-session.ts
+src/runtime/editing/edit-session.ts
 adapters/mcp/tool-mapping/repository-tools.ts
 ```
 
-A bounded patch can be applied directly to the selected checkout with file fingerprints, revisions, savepoints, change budgets, and focused verification. Direct Edit is the default for understood small work; a Plan or worktree is not a prerequisite. Anchor occurrence positioning is owned by `src/cli/editing/edit-session.ts` and reused by `src/cli/repositories/safe-patch.ts` preflight, so preview and the actual patch executor cannot drift on repeated anchors.
+A bounded patch can be applied directly to the selected checkout with file fingerprints, revisions, savepoints, change budgets, and focused verification. Direct Edit is the default for understood small work; a Plan or worktree is not a prerequisite. Anchor occurrence positioning is owned by `src/runtime/editing/edit-session.ts` and reused by `src/runtime/repositories/safe-patch.ts` preflight, so preview and the actual patch executor cannot drift on repeated anchors.
 
 ## 5. Command policy and ephemeral workspaces
 
@@ -62,7 +62,7 @@ Primary code:
 
 ```text
 src/cli/repositories/command-classifier.ts
-src/cli/repositories/command-executor.ts
+src/runtime/repositories/command-executor.ts
 src/runtime/execution/process-runtime/command-facade.ts
 ```
 

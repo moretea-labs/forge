@@ -148,7 +148,7 @@ async function execute(raw) {
     if (typeof args.query !== 'string' || !args.query.trim() || args.query.length > 160) {
       throw Error('LOCAL_FORGE_RECALL_QUERY_INVALID');
     }
-    const registryEntry = join(sourceRoot, 'src/cli/repositories/registry.ts');
+    const registryEntry = join(sourceRoot, 'src/runtime/repositories/registry.ts');
     const { getRepository } = await import(pathToFileURL(registryEntry).href);
     const repository = getRepository(repoId, controllerHome);
     const scopeEntry = join(sourceRoot, 'src/runtime/context/direct-controller-learning.ts');
@@ -182,7 +182,7 @@ async function execute(raw) {
   }
 
   if (input.tool === 'record_learning' || input.tool === 'memory_feedback') {
-    const registryEntry = join(sourceRoot, 'src/cli/repositories/registry.ts');
+    const registryEntry = join(sourceRoot, 'src/runtime/repositories/registry.ts');
     const { getRepository } = await import(pathToFileURL(registryEntry).href);
     const repository = getRepository(repoId, controllerHome);
     if (!repository.checkouts.some(checkout => checkout.checkoutId === checkoutId)) {

@@ -4047,7 +4047,7 @@ mod tests {
             const controllerHome = process.env.FORGE_TEST_CONTROLLER_HOME;
             const repoRoot = process.env.FORGE_TEST_REPOSITORY_ROOT;
             const { ensureControllerHome } = await load('src/effects/controller-home.ts');
-            const { registerRepository } = await load('src/cli/repositories/registry.ts');
+            const { registerRepository } = await load('src/runtime/repositories/registry.ts');
             const { ensureForgeInstanceIdentity } = await load('packages/kernel/identity/api/index.ts');
             const {
               writeWorkspaceIdentity, writeProjectIdentity, writeProjectPlacement,
