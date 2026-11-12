@@ -181,7 +181,7 @@ struct ZenSidebar: View {
             Spacer(minLength:0)
         }
         .frame(maxWidth:.infinity,maxHeight:.infinity,alignment:.leading)
-        .background(.ultraThinMaterial)
+        .background(.regularMaterial)
     }
 }
 
@@ -622,10 +622,8 @@ struct ZenWorkspacePane: View {
                                                         }
                                                         .foregroundStyle(.secondary)
                                                     }
-                                                    .padding(12)
-                                                    .background(Color(nsColor:.controlBackgroundColor).opacity(0.7),
-                                                                in:RoundedRectangle(cornerRadius:10))
-                                                    .contentShape(RoundedRectangle(cornerRadius:10))
+                                                    .padding(.horizontal,8).padding(.vertical,11)
+                                                    .contentShape(Rectangle())
                                                 }
                                                 .buttonStyle(ZenPressStyle())
                                                 .accessibilityIdentifier("zen.requirement.\(item.recordId)")
