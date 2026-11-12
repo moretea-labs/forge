@@ -195,10 +195,12 @@ private struct ForgeWorkspaceView: View {
                 .accessibilityIdentifier("forge.mode")
             }
             ToolbarItem(placement:.navigation) {
-                Text(model.project?.label ?? "Forge")
-                    .font(.system(size:12,weight:.semibold))
-                    .foregroundStyle(ForgePalette.ink)
-                    .lineLimit(1)
+                if model.zenMode {
+                    Text(model.project?.label ?? "Forge")
+                        .font(.system(size:12,weight:.semibold))
+                        .foregroundStyle(ForgePalette.ink)
+                        .lineLimit(1)
+                }
             }
             ToolbarItem(placement:.automatic) {
                 HStack(spacing:7) {
