@@ -254,7 +254,7 @@ private struct ForgeWorkspaceView: View {
         .padding(.bottom,14)
         .frame(width:62)
         .frame(maxHeight:.infinity)
-        .background(.regularMaterial)
+        .background(.ultraThinMaterial)
     }
 
     private func railButton(_ section:NativePage) -> some View {
