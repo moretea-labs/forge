@@ -195,7 +195,7 @@ private struct ForgeWorkspaceView: View {
                 .accessibilityIdentifier("forge.mode")
             }
             ToolbarItem(placement:.navigation) {
-                if model.zenMode {
+                if model.zenMode && zenScreen == .canvas {
                     Text(model.project?.label ?? "Forge")
                         .font(.system(size:12,weight:.semibold))
                         .foregroundStyle(ForgePalette.ink)
