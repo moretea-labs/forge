@@ -27,29 +27,31 @@ struct AgentUsageDashboard: View {
         model.threads.filter { selectedRepoId.isEmpty || $0.repoId == selectedRepoId }
     }
 
-    private func makeEntries(from threads: [ChatThread], since cutoff: Date) -> [Entry] {
-        threads.flatMap { thread in
-            thread.messages.compactMap { message -> Entry? in
-                guard message.role == "assistant",
-                      message.createdAt >= cutoff,
-                      let usage = message.usage else { return nil }
+    private func makeUsageSnapshot(
+        from threads: [ChatThread],
+        since cutoff: Date
+    ) -> (entries: [Entry], unreportedCount: Int) {
+        var entries: [Entry] = []
+        var unreportedCount = 0
+        for thread in threads {
+            for message in thread.messages where message.role == "assistant" && message.createdAt >= cutoff {
+                guard let usage = message.usage else {
+                    unreportedCount += 1
+                    continue
+                }
                 let projectName = model.projects.first(where: { $0.repoId == thread.repoId })?.label
                     ?? thread.repoId ?? "未关联项目"
-                return Entry(id: message.id, date: message.createdAt,
-                             projectId: thread.repoId, project: projectName,
-                             model: message.modelUsed ?? thread.model ?? "未标记模型",
-                             provider: message.providerUsed ?? thread.provider ?? "未知",
-                             usage: usage)
+                entries.append(Entry(
+                    id: message.id, date: message.createdAt,
+                    projectId: thread.repoId, project: projectName,
+                    model: message.modelUsed ?? thread.model ?? "未标记模型",
+                    provider: message.providerUsed ?? thread.provider ?? "未知",
+                    usage: usage
+                ))
             }
-        }.sorted { $0.date > $1.date }
-    }
-
-    private func makeUnreportedMessageCount(from threads: [ChatThread], since cutoff: Date) -> Int {
-        threads.reduce(0) { count, thread in
-            count + thread.messages.filter {
-                $0.role == "assistant" && $0.createdAt >= cutoff && $0.usage == nil
-            }.count
         }
+        entries.sort { $0.date > $1.date }
+        return (entries, unreportedCount)
     }
 
     private func makeTimeline(from entries: [Entry], today: Date) -> [DayTotal] {
@@ -109,8 +111,9 @@ struct AgentUsageDashboard: View {
         let threads = relevantThreads
         let today = Calendar.current.startOfDay(for: Date())
         let cutoff = Calendar.current.date(byAdding: .day, value: -(days - 1), to: today) ?? today
-        let usageEntries = makeEntries(from: threads, since: cutoff)
-        let unreportedMessages = makeUnreportedMessageCount(from: threads, since: cutoff)
+        let usageSnapshot = makeUsageSnapshot(from: threads, since: cutoff)
+        let usageEntries = usageSnapshot.entries
+        let unreportedMessages = usageSnapshot.unreportedCount
         let inputTotal = usageEntries.reduce(0) { $0 + $1.usage.inputTokens }
         let outputTotal = usageEntries.reduce(0) { $0 + $1.usage.outputTokens }
         let total = usageEntries.reduce(0) { $0 + $1.usage.totalTokens }
