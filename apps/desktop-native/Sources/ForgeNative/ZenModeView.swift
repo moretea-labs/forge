@@ -172,8 +172,14 @@ struct ZenWorkspacePane: View {
     @ObservedObject var model: NativeWorkspace
     @Binding var screen: ZenScreen
     @Binding var focusedRequirementId: String?
+    let onOpenPlanning: () -> Void
+    let onDraftGoal: (String) -> Void
+    let onOpenInbox: () -> Void
     let onOpenAgent: (ForgeRecord, String, String?) -> Void
+    @Environment(\.scenePhase) private var scenePhase
 
+    @State private var showingGoalSheet = false
+    @State private var goalDraft = ""
     @State private var showingRequirementSheet = false
     @State private var showingPlanSheet = false
     @State private var pendingReviewRecord: ForgeRecord?
@@ -225,13 +231,25 @@ struct ZenWorkspacePane: View {
                 Spacer(minLength:0)
                 if screen == .board {
                     Button {
-                        newTitle = ""; newOutcome = ""; newCriteria = ""
-                        showingRequirementSheet = true
+                        goalDraft = ""
+                        showingGoalSheet = true
                     } label: {
-                        Label("新需求",systemImage:"plus")
+                        Label("描述目标",systemImage:"sparkles")
                     }
                     .buttonStyle(.borderedProminent)
+                    .disabled(model.repoId == nil || model.busy)
+                    .accessibilityIdentifier("zen.goal.describe")
+                    Menu {
+                        Button("直接创建 Requirement") {
+                            newTitle = ""; newOutcome = ""; newCriteria = ""
+                            showingRequirementSheet = true
+                        }
+                    } label: {
+                        Image(systemName:"plus").frame(width:28,height:28)
+                    }
+                    .menuStyle(.borderlessButton)
                     .disabled(model.repoId == nil)
+                    .help("直接创建 Requirement")
                     .accessibilityIdentifier("zen.requirement.new")
                 }
                 Button {
@@ -273,6 +291,13 @@ struct ZenWorkspacePane: View {
         }
         .frame(maxWidth:.infinity,maxHeight:.infinity)
         .background(Color(nsColor:.textBackgroundColor))
+        .onChange(of:screen) { next in
+            guard next == .canvas,focusedRequirementId == nil,
+                  let first=requirements.first else { return }
+            focusedRequirementId=first.recordId
+            Task { await model.openRecord(first.id) }
+        }
+        .sheet(isPresented:$showingGoalSheet) { goalSheet }
         .sheet(isPresented:$showingRequirementSheet) { createRequirementSheet }
         .sheet(isPresented:$showingPlanSheet) { createPlanSheet }
         .sheet(item:$editingRecord) { item in editSheet(for:item) }
@@ -282,8 +307,13 @@ struct ZenWorkspacePane: View {
                 onOpenAgent(item,prompt,provider)
             }
         }
-        .task(id:model.planningRequirementIds.joined(separator:"|")) {
-            if !model.planningRequirementIds.isEmpty {
+        .task(id:"\(model.repoId ?? "none")|\(model.planningRequirementIds.joined(separator:"|"))|\(scenePhase == .active ? "active" : "inactive")") {
+            guard scenePhase == .active,!model.planningRequirementIds.isEmpty else { return }
+            await model.refreshPlanningAutopilotStatuses()
+            while !Task.isCancelled {
+                do { try await Task.sleep(for:.seconds(12)) }
+                catch { return }
+                guard !Task.isCancelled,scenePhase == .active else { return }
                 await model.refreshPlanningAutopilotStatuses()
             }
         }
@@ -336,6 +366,12 @@ struct ZenWorkspacePane: View {
                 HStack(spacing:12) {
                     Text("\(requirements.count) 个 Requirement")
                     Text("\(requirements.filter{$0.state == "completed"}.count) 已完成")
+                    if !model.relevantUserRequests.isEmpty {
+                        Button("\(model.relevantUserRequests.count) 项待决策") { onOpenInbox() }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.orange)
+                            .accessibilityIdentifier("zen.board.inbox")
+                    }
                     Spacer()
                     if let issue=model.planningAutopilotStatusError {
                         Text(issue).foregroundStyle(.orange).lineLimit(1)
@@ -375,6 +411,14 @@ struct ZenWorkspacePane: View {
                                                             .multilineTextAlignment(.leading)
                                                             .frame(maxWidth:.infinity,alignment:.leading)
                                                             .lineLimit(3)
+                                                        if let status=model.planningAutopilotStatuses[item.recordId],
+                                                           let summary=status.lastSummary,!summary.isEmpty {
+                                                            Text(summary)
+                                                                .font(.system(size:10))
+                                                                .foregroundStyle(.secondary)
+                                                                .multilineTextAlignment(.leading)
+                                                                .lineLimit(2)
+                                                        }
                                                         HStack(spacing:7) {
                                                             Text(item.recordId)
                                                                 .font(.system(size:9,design:.monospaced))
@@ -468,6 +512,12 @@ struct ZenWorkspacePane: View {
                                 .font(.system(size:11))
                         }
                     }
+                    if !detail.progressSummary.isEmpty {
+                        Divider()
+                        Text("当前进展").font(.system(size:12,weight:.semibold))
+                        Text(detail.progressSummary).font(.system(size:11))
+                            .textSelection(.enabled)
+                    }
                     if !detail.remainingWork.isEmpty {
                         Divider()
                         Text("尚待完成").font(.system(size:12,weight:.semibold))
@@ -488,6 +538,9 @@ struct ZenWorkspacePane: View {
                     ProgressView().controlSize(.small)
                 }
 
+                if item.kind == .requirement {
+                    zenExecutionSection(item)
+                }
                 Divider()
                 Button {
                     beginEdit(item)
@@ -594,6 +647,100 @@ struct ZenWorkspacePane: View {
         .accessibilityIdentifier("zen.record.edit")
     }
 
+
+    private var goalSheet: some View {
+        VStack(alignment:.leading,spacing:14) {
+            Text("描述你的目标").font(.system(size:17,weight:.semibold))
+            Text("Forge 将在现有 Agent 中分析需求，先判断修改现有 Requirement / Plan 还是新增，提出差异与验收标准，经你确认后再写入。")
+                .font(.system(size:11)).foregroundStyle(.secondary)
+            TextField("希望解决什么问题？",text:$goalDraft,axis:.vertical)
+                .lineLimit(5...8)
+                .accessibilityIdentifier("zen.goal.input")
+            HStack {
+                Spacer()
+                Button("取消") { showingGoalSheet=false }
+                Button("分析需求") {
+                    let description=goalDraft.trimmingCharacters(in:.whitespacesAndNewlines)
+                    showingGoalSheet=false
+                    onDraftGoal(description)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(goalDraft.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(22).frame(width:475)
+        .accessibilityIdentifier("zen.goal.compose")
+    }
+
+    @ViewBuilder
+    private func zenExecutionSection(_ item:ForgeRecord) -> some View {
+        Divider()
+        VStack(alignment:.leading,spacing:10) {
+            HStack {
+                Text("自主执行").font(.system(size:12,weight:.semibold))
+                Spacer()
+                if model.autopilotLoading { ProgressView().controlSize(.small) }
+            }
+            if let status=model.planningAutopilotStatuses[item.recordId] {
+                HStack(spacing:7) {
+                    Circle()
+                        .fill(status.runtimeActive ? Color.accentColor : Color.secondary.opacity(0.55))
+                        .frame(width:6,height:6)
+                    Text(status.runStatus == "running" && !status.runtimeActive
+                         ? "运行未激活" : (status.runStatus ?? "未开始")).font(.system(size:11))
+                        .foregroundStyle(.secondary)
+                    if status.requiresReapproval {
+                        Text("需求已修订，需重新批准").font(.system(size:10))
+                            .foregroundStyle(.orange)
+                    }
+                }
+                if let summary=status.lastSummary,!summary.isEmpty {
+                    Text(summary).font(.system(size:11)).textSelection(.enabled)
+                }
+                if let reason=status.stopReason,!reason.isEmpty {
+                    Text(reason).font(.system(size:10))
+                        .foregroundStyle(.secondary).textSelection(.enabled)
+                }
+                if let plan=status.currentPlanId,!plan.isEmpty {
+                    Text("当前 Plan · \(plan)").font(.system(size:10,design:.monospaced))
+                        .foregroundStyle(.secondary)
+                }
+                if status.authorized && !status.requiresReapproval {
+                    HStack {
+                        if status.runStatus == "running" {
+                            Button("暂停") { runExecution(item.recordId,"pause") }
+                                .buttonStyle(.borderedProminent)
+                        } else {
+                            Button(status.runStatus == "paused" || status.runStatus == "blocked" || status.runStatus == "failed" ? "继续" : "开始执行") {
+                                runExecution(item.recordId,["paused","blocked","failed"].contains(status.runStatus ?? "") ? "resume" : "start")
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(!status.providerReady)
+                        }
+                        Button("执行设置") { onOpenPlanning() }.buttonStyle(.bordered)
+                    }
+                } else {
+                    Button("配置并批准执行") { onOpenPlanning() }
+                        .buttonStyle(.bordered)
+                }
+            } else {
+                Text("尚未读取到执行状态。").font(.system(size:11))
+                    .foregroundStyle(.secondary)
+                Button("执行设置") { onOpenPlanning() }.buttonStyle(.bordered)
+            }
+            Text("执行详情在 Agent 模式查看。授权与执行是独立操作，不会自动发布。")
+                .font(.system(size:10)).foregroundStyle(.secondary)
+        }
+        .accessibilityIdentifier("zen.execution.summary")
+    }
+
+    private func runExecution(_ requirementId:String,_ operation:String) {
+        guard !model.autopilotLoading else { return }
+        Task {
+            _ = await model.controlAutopilot(requirementId:requirementId,operation:operation)
+        }
+    }
+
     private var createRequirementSheet: some View {
         VStack(alignment:.leading,spacing:12) {
             Text("新建 Requirement").font(.system(size:17,weight:.semibold))
@@ -667,7 +814,11 @@ private struct ZenTreeCanvas: View {
                 let children=records.filter { record in
                     guard record.kind == .plan else { return false }
                     if parent.kind == .requirement {
-                        return record.requirementId == root.recordId && record.parentPlanId == nil
+                        guard record.requirementId == root.recordId else { return false }
+                        let ids=Set(records.filter { $0.kind == .plan && $0.requirementId == root.recordId }
+                            .map(\.recordId))
+                        guard let parentId=record.parentPlanId else { return true }
+                        return !ids.contains(parentId)
                     }
                     return record.requirementId == root.recordId && record.parentPlanId == parent.recordId
                 }
@@ -797,6 +948,8 @@ private struct ZenReviewSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var role: ZenReviewRole = .staff
     @State private var provider = ""
+    @AppStorage("forge.zen.review.role") private var preferredRole = ZenReviewRole.staff.rawValue
+    @AppStorage("forge.zen.review.provider") private var preferredProvider = ""
 
     var body: some View {
         VStack(alignment:.leading,spacing:16) {
@@ -843,5 +996,14 @@ private struct ZenReviewSheet: View {
         .padding(22)
         .frame(width:420)
         .accessibilityIdentifier("zen.review.configure")
+        .onAppear {
+            role = ZenReviewRole(rawValue:preferredRole) ?? .staff
+            let available = model.localApiSettings?.profiles.filter(\.endpointReady).map(\.providerId) ?? []
+            provider = preferredProvider == "codex"
+                || (preferredProvider == "joycode" && model.localApiSettings?.joyCodeReady == true)
+                || available.contains(preferredProvider) ? preferredProvider : ""
+        }
+        .onChange(of:role) { preferredRole = $0.rawValue }
+        .onChange(of:provider) { preferredProvider = $0 }
     }
 }

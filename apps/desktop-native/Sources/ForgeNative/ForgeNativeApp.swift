@@ -99,6 +99,7 @@ private struct ForgeWorkspaceView: View {
     @State private var visibility: NavigationSplitViewVisibility = .all
     @State private var zenScreen: ZenScreen = .board
     @State private var zenFocusedRequirementId: String?
+    @State private var zenOpeningPlanning = false
     @State private var renameThreadId: String?
     @State private var renameThreadTitle = ""
     @State private var hoveredThreadId: String?
@@ -143,7 +144,22 @@ private struct ForgeWorkspaceView: View {
         } detail: {
             if model.zenMode {
                 ZenWorkspacePane(model:model,screen:$zenScreen,
-                                 focusedRequirementId:$zenFocusedRequirementId) { item, prompt, provider in
+                                 focusedRequirementId:$zenFocusedRequirementId,
+                                 onOpenPlanning:{
+                    zenOpeningPlanning = true
+                    model.zenMode = false
+                },onDraftGoal:{ description in
+                    model.zenMode = false
+                    model.newThread()
+                    model.draft = """
+                    当前项目目标：\(description)
+
+                    请以 Requirement-first 方式分析。先查阅当前项目已有的 Requirement 和 Plan，判断应修改现有记录、拆分，还是新增独立 Requirement / Plan。给出判定依据、可核查的验收标准与具体修改差异；优先复用现有记录。不要在用户确认提案前写入任何语义记录或修改源码。需要新增时先询问。
+                    """
+                },onOpenInbox:{
+                    inboxShown = true
+                    Task { await model.loadUserRequests() }
+                }) { item, prompt, provider in
                     model.zenMode = false
                     model.newThread(
                         provider:provider,
@@ -186,6 +202,10 @@ private struct ForgeWorkspaceView: View {
             if model.zenMode { model.show(.requirement) }
         }
         .onChange(of:model.zenMode) { active in
+            if zenOpeningPlanning {
+                zenOpeningPlanning = false
+                return
+            }
             if active {
                 model.show(.requirement)
             } else if model.page == .requirement {

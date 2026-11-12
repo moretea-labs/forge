@@ -19,7 +19,10 @@ A requirement-first, low-noise UI inside the existing native macOS Forge Client.
 - Three Requirement columns: completed; active Autopilot receipt; other. No inferred percentage.
 - Single-Requirement canvas: Requirement root with top-down linked Plan levels. The inspector shows canonical Requirement/Plan details and acceptance criteria.
 - Create Requirement / Plan through the existing Bridge and record API. Direct editing uses the canonical `rh_work` Requirement/Plan revision actions with `expected_revision` CAS and verifies the exact successor revision before indicating success; no silent overwrite on stale versions. Agent-assisted optimization and Review open a prefilled, context-bound conversation for explicit user action; they are **not** yet automatic semantic revisions or independent reviewers.
-- Decision inbox reuses the existing user-action request list. Runtime execution logs remain hidden until entering Agent mode.
+- Decision inbox reuses existing user-action requests, with a visible count on the board. Runtime execution logs remain hidden until entering Agent mode.
+- “Describe goal” opens an explicitly user-controlled, project-bound Agent proposal that first distinguishes revising an existing Requirement/Plan from creating a new one and requests confirmation before semantic or source writes; it is an Agent handoff, not an automatic Zen-local model result.
+- The Requirement inspector displays the existing Autopilot run state, latest summary, current Plan and stop reason. Authorized execution can start, pause or resume from Zen. First-time/renewed authorization opens the established planning approval UI (same Runtime owner and user-selected budgets).
+- Staff/Product/Quality Review role and the available Provider/Model are selectable; last preference is remembered locally. Review is an explicit read-only Agent request, not parallel multi-model orchestration.
 
 ## Follow-up acceptance (not yet implemented)
 
