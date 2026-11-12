@@ -174,6 +174,7 @@ private struct AgentLocalImageResourceView: View {
     @State private var previewLoading = false
     @State private var previewError: String?
     @State private var previewImage: NSImage?
+    @State private var previewSource: String?
 
     private var exists: Bool {
         FileManager.default.fileExists(atPath: path)
@@ -205,11 +206,11 @@ private struct AgentLocalImageResourceView: View {
             .buttonStyle(.plain)
             .font(.system(size: 11))
             if revealed {
-                if let previewImage {
+                if let previewImage, exists, imagePreviewMatchesSource(previewSource, currentSource: path) {
                     Image(nsImage: previewImage)
                         .resizable().scaledToFit().frame(maxWidth: 500, maxHeight: 300)
                         .accessibilityLabel("本地图片：\(URL(fileURLWithPath: path).lastPathComponent)")
-                } else if previewLoading {
+                } else if previewLoading || (previewError == nil && exists && !imagePreviewMatchesSource(previewSource, currentSource: path)) {
                     ProgressView().frame(height: 80)
                 } else if let previewError {
                     Label("图片预览失败", systemImage: "exclamationmark.triangle")
@@ -224,10 +225,12 @@ private struct AgentLocalImageResourceView: View {
         .task(id: revealed ? path : nil) {
             guard revealed, exists else {
                 previewImage = nil
+                previewSource = nil
                 previewError = nil
                 previewLoading = false
                 return
             }
+            previewSource = nil
             previewLoading = true
             previewError = nil
             defer { if !Task.isCancelled { previewLoading = false } }
@@ -242,6 +245,7 @@ private struct AgentLocalImageResourceView: View {
                     cgImage: thumbnail,
                     size: NSSize(width: thumbnail.width, height: thumbnail.height)
                 )
+                previewSource = path
             } catch is CancellationError {
                 return
             } catch {

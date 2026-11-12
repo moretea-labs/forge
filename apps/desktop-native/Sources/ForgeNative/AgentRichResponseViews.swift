@@ -327,10 +327,14 @@ func validatedRemoteImageDataForSaving(_ data: Data) async throws -> Data {
     return data
 }
 
+func imagePreviewMatchesSource(_ previewSource: String?, currentSource: String) -> Bool {
+    previewSource == currentSource
+}
+
 func reusableRemoteImagePreviewData(
     _ data: Data?, previewSource: String?, currentSource: String
 ) -> Data? {
-    guard previewSource == currentSource else { return nil }
+    guard imagePreviewMatchesSource(previewSource, currentSource: currentSource) else { return nil }
     return data
 }
 
@@ -440,7 +444,7 @@ struct AgentRemoteImageView: View {
             .buttonStyle(.plain)
             .font(.system(size: 11))
             if expanded {
-                if let previewImage, previewSource == source {
+                if let previewImage, imagePreviewMatchesSource(previewSource, currentSource: source) {
                     Button { fullScreen = true } label: {
                         Image(nsImage: previewImage).resizable().scaledToFit()
                             .frame(maxWidth: 560, maxHeight: 300)

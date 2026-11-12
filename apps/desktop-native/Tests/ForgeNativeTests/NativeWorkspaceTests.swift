@@ -2201,3 +2201,12 @@ extension NativeWorkspaceTests {
         XCTAssertNil(model.conversationScrollRequest?.messageId)
     }
 }
+
+
+extension NativeWorkspaceTests {
+    func testImagePreviewIdentityMatchesOnlyCurrentSource() {
+        XCTAssertTrue(imagePreviewMatchesSource("/tmp/first.png", currentSource: "/tmp/first.png"))
+        XCTAssertFalse(imagePreviewMatchesSource("/tmp/first.png", currentSource: "/tmp/second.png"))
+        XCTAssertFalse(imagePreviewMatchesSource(nil, currentSource: "/tmp/first.png"))
+    }
+}
