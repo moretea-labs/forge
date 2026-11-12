@@ -39,12 +39,14 @@ Primary code:
 
 ```text
 src/effects/brain-root.ts
+src/runtime/context/context-pack-contract.ts
+src/runtime/context/context-pack-process.ts
 src/cli/controller/context-pack.ts
 src/runtime/repositories/inspector.ts
 src/runtime/repositories/session-cache.ts
 ```
 
-`rh_context` is the normal code-location/context router. Repository observations are bounded and cached by session/repository identity where valid. Clean Git snapshots avoid redundant `git diff --stat` subprocesses because `git status` already proves that no unstaged diff can exist. User-level Brain root discovery and configuration are filesystem effects in `src/effects/brain-root.ts`, shared by Runtime assistant context and CLI setup/brain commands.
+`src/runtime/context/context-pack-contract.ts` owns the shared Context Pack schema, options/projection, source-snippet and structural-response contracts. Runtime and MCP adapters consume this neutral contract; `src/cli/controller/context-pack.ts` remains the CLI-side builder. `rh_context` is the normal code-location/context router. Repository observations are bounded and cached by session/repository identity where valid. Clean Git snapshots avoid redundant `git diff --stat` subprocesses because `git status` already proves that no unstaged diff can exist. User-level Brain root discovery and configuration are filesystem effects in `src/effects/brain-root.ts`, shared by Runtime assistant context and CLI setup/brain commands.
 
 Structural CodeGraph context is optional augmentation for call/dependency questions; it is not another mandatory top-level search abstraction.
 

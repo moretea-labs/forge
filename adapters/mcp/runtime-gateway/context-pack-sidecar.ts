@@ -3,7 +3,7 @@ import { readFileSync } from 'fs';
 import { resolve } from 'path';
 import type { ToolPolicy, ToolProfileName } from '../../../src/runtime/control-plane/tool-policy';
 import { buildControllerContextPackAsync } from '../../../src/cli/controller/context-pack';
-import type { ControllerContextPackOptions } from '../../../src/cli/controller/context/types';
+import type { ControllerContextPackOptions } from '../../../src/runtime/context/context-pack-contract';
 import { PROCESS_RUNTIME_RELEASE_CANARY_ARG } from '../../../src/runtime/execution/process-runtime/canary';
 
 interface ContextPackEnvelope {

@@ -2,7 +2,6 @@
   "version": 1,
   "note": "src/runtime -> src/cli reverse dependencies. Shrinking migration debt: entries are removed when their importer migrates to the neutral owner; new entries are forbidden by scripts/check-module-boundaries.mjs.",
   "edges": [
-    "src/runtime/context/context-pack-process.ts|../../cli/controller/context/types",
     "src/runtime/control-plane/global-scheduler/scheduler.ts|../../../cli/agent-jobs/executable-resolver",
     "src/runtime/diagnostics/read-only-tool.ts|../../cli/local-bridge/job-store",
     "src/runtime/execution/workers/executor.ts|../../../cli/local-bridge/job-store",

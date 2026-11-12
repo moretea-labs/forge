@@ -11,7 +11,7 @@ import { freshGitIdentity } from "../../../src/runtime/repositories/inspector";
 import { repositorySummary, resolveRepositorySelection } from "../../../src/runtime/repositories/registry";
 import { getExecutionJob, listExecutionJobs } from "../../../src/runtime/execution/jobs/store";
 import { isManagedProcessActive, listProcessRecords, listRecoverableProcessRecords, processRuntimeResourceDiagnostics } from "../../../src/runtime/execution/process-runtime";
-import { CONTROLLER_CONTEXT_IMPACT_DOMAINS, type ControllerContextImpactDomain } from "../../../src/cli/controller/context/types";
+import { CONTROLLER_CONTEXT_IMPACT_DOMAINS, type ControllerContextImpactDomain } from "../../../src/runtime/context/context-pack-contract";
 import { buildControllerContextPackInSidecar } from "../../../src/runtime/context/context-pack-process";
 import { isCodeShapedTerm } from "../../../src/cli/controller/context/query-planning";
 import { listControllerChecks } from "../../../src/runtime/execution/process-runtime/check-runner";

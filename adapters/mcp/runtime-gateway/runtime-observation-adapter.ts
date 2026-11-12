@@ -29,7 +29,7 @@ import {
 import { ensureRepositoryRuntimeStorage, inspectRepositoryRuntimeStorage } from '../../../src/runtime/repositories/runtime-storage';
 import { projectBoard } from '../../../src/cli/controller/issue-store';
 import { buildControllerTaskLedgerProjection } from '../../../src/cli/controller/task-ledger';
-import { CONTROLLER_CONTEXT_IMPACT_DOMAINS, type ControllerContextImpactDomain } from '../../../src/cli/controller/context/types';
+import { CONTROLLER_CONTEXT_IMPACT_DOMAINS, type ControllerContextImpactDomain } from '../../../src/runtime/context/context-pack-contract';
 import { legacyIssueAuthorityRetired } from '../../../src/cli/controller/legacy-issue-cutover';
 import { buildControllerOperationalPlan } from '../../../src/cli/controller/operational-plan';
 import { listControllerChecks, readLatestControllerCheckEvidence } from '../../../src/runtime/execution/process-runtime/check-runner';

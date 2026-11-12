@@ -22,7 +22,8 @@ import {
   type ControllerContextPackOptions,
   type ControllerContextPackProjection,
   type ControllerContextPackSnippet,
-} from './context/types';
+  type StructuralReadProviderResponse,
+} from '../../runtime/context/context-pack-contract';
 import {
   DEFAULT_MAX_CHARS_PER_SNIPPET,
   DEFAULT_MAX_FILES,
@@ -44,13 +45,12 @@ import { structuralResult } from './context/structural';
 import {
   unavailableStructuralProvider,
   unavailableStructuralProviderAsync,
-  type StructuralReadProviderResponse,
 } from './context/structural-provider';
 import { buildRepositoryInstructionContext } from './context/instruction-context';
 import { resolveRepositoryGovernance } from './context/rule-resolution';
 import { controllerCheckSelection, listControllerChecks } from '../../runtime/execution/process-runtime/check-runner';
 
-export { CONTROLLER_CONTEXT_IMPACT_DOMAINS } from './context/types';
+export { CONTROLLER_CONTEXT_IMPACT_DOMAINS } from '../../runtime/context/context-pack-contract';
 export type {
   ControllerContextImpactDomain,
   ControllerContextPackDependencies,
@@ -62,7 +62,7 @@ export type {
   ControllerEvidenceReadiness,
   ControllerContextExpansionState,
   StructuralContextMode,
-} from './context/types';
+} from '../../runtime/context/context-pack-contract';
 
 const MAX_CONTEXT_EVIDENCE_WAVES = 3;
 const SOURCE_REFERENCE_EXTENSIONS = ['.ts', '.tsx', '.mts', '.cts', '.js', '.jsx', '.mjs', '.cjs', '.json'] as const;

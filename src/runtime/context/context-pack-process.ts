@@ -4,7 +4,7 @@ import type { ToolPolicy } from '../control-plane/tool-policy';
 import type {
   ControllerContextPackOptions,
   ControllerContextPackProjection,
-} from '../../cli/controller/context/types';
+} from './context-pack-contract';
 import { resolveBunExecutable } from '../shared/process-environment';
 import { runBoundedChild } from '../shared/bounded-child-supervisor';
 

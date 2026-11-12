@@ -1,4 +1,4 @@
-import type { ControllerContextImpactDomain, ControllerContextRetrievalMode } from './types';
+import type { ControllerContextImpactDomain, ControllerContextRetrievalMode } from '../../../runtime/context/context-pack-contract';
 
 export const DEFAULT_MAX_FILES = 8;
 export const DEFAULT_MAX_SNIPPETS = 12;

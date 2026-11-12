@@ -1,5 +1,5 @@
 import type { McpToolDefinition } from '../../../packages/protocols/mcp/tool-contract';
-import { CONTROLLER_CONTEXT_IMPACT_DOMAINS } from '../../../src/cli/controller/context/types';
+import { CONTROLLER_CONTEXT_IMPACT_DOMAINS } from '../../../src/runtime/context/context-pack-contract';
 import { RH_WORK_MODEL_OPERATIONS } from '../../../src/runtime/control-plane/facade/rh-work-operation-contract';
 import { CONTROLLER_LEARNING_SIGNAL_ENVELOPE_MAX_ITEMS } from '../../../src/runtime/context/automatic-learning';
 

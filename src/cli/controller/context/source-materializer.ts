@@ -2,33 +2,12 @@ import type { ToolPolicy } from '../../../runtime/control-plane/tool-policy';
 import { extractTypeScriptSourceSymbolsInSidecar } from '../../../runtime/context/typescript-navigation-process';
 import { redactMcpText } from '../../../../adapters/mcp/redaction';
 import { exactCodeNeedleMatches, readRepositoryRange, type RepositoryReadSession } from '../../../runtime/repositories/inspector';
+import type { MaterializedSourceSnippet, SourceMaterializationKind } from '../../../runtime/context/context-pack-contract';
 
 const DEFAULT_CONTEXT_BEFORE = 12;
 const DEFAULT_CONTEXT_AFTER = 28;
 const COMPLETE_FILE_MAX_LINES = 240;
 
-export type SourceMaterializationKind = 'complete_file' | 'symbol' | 'line_window';
-
-export interface MaterializedSourceSnippet {
-  path: string;
-  startLine: number;
-  endLine: number;
-  totalLines: number;
-  sha256: string;
-  content: string;
-  truncated: boolean;
-  redactions: Array<{ type: string; count: number }>;
-  reason: string;
-  cacheHit?: boolean;
-  /** Internal proof: required owner declarations actually present in this emitted snippet. */
-  ownerQueries?: string[];
-  materialization: SourceMaterializationKind;
-  symbol?: {
-    kind: string;
-    name?: string;
-    enclosing?: string;
-  };
-}
 export interface MaterializeSourceOptions {
   repoRoot: string;
   policy: ToolPolicy;

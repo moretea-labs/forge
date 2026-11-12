@@ -1,6 +1,87 @@
-import type { RepositoryReadSession } from '../../../runtime/repositories/inspector';
-import type { MaterializedSourceSnippet } from './source-materializer';
-import type { StructuralIndexMetadata, StructuralNodeSummary, StructuralReadProviderResponse, unavailableStructuralProvider, unavailableStructuralProviderAsync } from './structural-provider';
+import type { RepositoryReadSession } from '../repositories/inspector';
+
+export type SourceMaterializationKind = 'complete_file' | 'symbol' | 'line_window';
+
+export interface MaterializedSourceSnippet {
+  path: string;
+  startLine: number;
+  endLine: number;
+  totalLines: number;
+  sha256: string;
+  content: string;
+  truncated: boolean;
+  redactions: Array<{ type: string; count: number }>;
+  reason: string;
+  cacheHit?: boolean;
+  /** Internal proof: required owner declarations actually present in this emitted snippet. */
+  ownerQueries?: string[];
+  materialization: SourceMaterializationKind;
+  symbol?: {
+    kind: string;
+    name?: string;
+    enclosing?: string;
+  };
+}
+
+export type StructuralReadOperation = 'status' | 'search' | 'context' | 'impact' | 'file_dependencies';
+export type StructuralProviderStatus = 'ready' | 'stale' | 'unavailable' | 'degraded';
+
+export interface StructuralNodeSummary {
+  id: string;
+  kind: string;
+  name: string;
+  qualifiedName?: string;
+  filePath: string;
+  language?: string;
+  startLine: number;
+  endLine: number;
+  signature?: string;
+}
+
+export interface StructuralIndexMetadata {
+  initialized: boolean;
+  lastIndexedAt: number | null;
+  buildVersion: string | null;
+  extractionVersion: number | null;
+  staleEngine: boolean;
+  changedFiles: {
+    added: string[];
+    modified: string[];
+    removed: string[];
+  };
+  ignoredChangedFileCount?: number;
+}
+
+export interface StructuralReadRequest {
+  operation: StructuralReadOperation;
+  query?: string;
+  nodeId?: string;
+  filePath?: string;
+  limit?: number;
+  maxNodes?: number;
+  maxDepth?: number;
+  refresh?: 'if_stale';
+}
+
+export interface StructuralReadProviderResponse {
+  schemaVersion: 1;
+  provider: 'none';
+  operation: StructuralReadOperation;
+  ok: boolean;
+  status: StructuralProviderStatus;
+  metadata?: StructuralIndexMetadata;
+  result?: Record<string, unknown>;
+  error?: {
+    code: string;
+    message: string;
+  };
+  timingsMs: {
+    total: number;
+    process?: number;
+    open?: number;
+    query?: number;
+  };
+}
 
 export const CONTEXT_PACK_SCHEMA_VERSION = 11;
 export type StructuralContextMode = 'off' | 'auto' | 'required';
@@ -36,8 +117,8 @@ export interface ControllerContextPackOptions {
 }
 
 export interface ControllerContextPackDependencies {
-  queryStructural?: typeof unavailableStructuralProvider;
-  queryStructuralAsync?: typeof unavailableStructuralProviderAsync;
+  queryStructural?: (repoRoot: string, request: StructuralReadRequest) => StructuralReadProviderResponse;
+  queryStructuralAsync?: (repoRoot: string, request: StructuralReadRequest) => Promise<StructuralReadProviderResponse>;
 }
 
 export type ControllerContextPackSnippet = MaterializedSourceSnippet;
