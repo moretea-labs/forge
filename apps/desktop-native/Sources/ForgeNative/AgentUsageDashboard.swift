@@ -29,17 +29,29 @@ struct AgentUsageDashboard: View {
 
     private func makeUsageSnapshot(
         from threads: [ChatThread],
+        projectLabels: [String: String],
         since cutoff: Date
-    ) -> (entries: [Entry], unreportedCount: Int) {
+    ) -> (
+        entries: [Entry], unreportedCount: Int,
+        inputTotal: Int, outputTotal: Int, total: Int, partiallyReported: Int
+    ) {
         var entries: [Entry] = []
         var unreportedCount = 0
+        var inputTotal = 0
+        var outputTotal = 0
+        var total = 0
+        var partiallyReported = 0
         for thread in threads {
             for message in thread.messages where message.role == "assistant" && message.createdAt >= cutoff {
                 guard let usage = message.usage else {
                     unreportedCount += 1
                     continue
                 }
-                let projectName = model.projects.first(where: { $0.repoId == thread.repoId })?.label
+                inputTotal += usage.inputTokens
+                outputTotal += usage.outputTokens
+                total += usage.totalTokens
+                if !usage.complete { partiallyReported += 1 }
+                let projectName = thread.repoId.flatMap { projectLabels[$0] }
                     ?? thread.repoId ?? "未关联项目"
                 entries.append(Entry(
                     id: message.id, date: message.createdAt,
@@ -51,7 +63,7 @@ struct AgentUsageDashboard: View {
             }
         }
         entries.sort { $0.date > $1.date }
-        return (entries, unreportedCount)
+        return (entries, unreportedCount, inputTotal, outputTotal, total, partiallyReported)
     }
 
     private func makeTimeline(from entries: [Entry], today: Date) -> [DayTotal] {
@@ -111,13 +123,17 @@ struct AgentUsageDashboard: View {
         let threads = relevantThreads
         let today = Calendar.current.startOfDay(for: Date())
         let cutoff = Calendar.current.date(byAdding: .day, value: -(days - 1), to: today) ?? today
-        let usageSnapshot = makeUsageSnapshot(from: threads, since: cutoff)
+        let projectLabels = Dictionary(
+            model.projects.map { ($0.repoId, $0.label) },
+            uniquingKeysWith: { _, latest in latest }
+        )
+        let usageSnapshot = makeUsageSnapshot(from: threads, projectLabels: projectLabels, since: cutoff)
         let usageEntries = usageSnapshot.entries
         let unreportedMessages = usageSnapshot.unreportedCount
-        let inputTotal = usageEntries.reduce(0) { $0 + $1.usage.inputTokens }
-        let outputTotal = usageEntries.reduce(0) { $0 + $1.usage.outputTokens }
-        let total = usageEntries.reduce(0) { $0 + $1.usage.totalTokens }
-        let partiallyReported = usageEntries.filter { !$0.usage.complete }.count
+        let inputTotal = usageSnapshot.inputTotal
+        let outputTotal = usageSnapshot.outputTotal
+        let total = usageSnapshot.total
+        let partiallyReported = usageSnapshot.partiallyReported
         let timeline = makeTimeline(from: usageEntries, today: today)
         let byModel = makeModelDistribution(from: usageEntries)
         let byProject = makeProjectDistribution(from: usageEntries)
