@@ -276,12 +276,46 @@ struct AgentCodeBlockView: View {
 
 /// Model-provided remote images are not fetched until explicitly opened.
 /// Native save uses a user-selected destination; file:// is never accepted.
+private enum RemoteImageSaveError: LocalizedError {
+    case invalidImage
+    case tooLarge
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidImage: return "远程资源不是有效图片"
+        case .tooLarge: return "图片超过 25 MB 限制"
+        }
+    }
+}
+
+private func downloadRemoteImage(from url: URL, maximumBytes: Int) async throws -> Data {
+    let (bytes, response) = try await URLSession.shared.bytes(from: url)
+    guard let http = response as? HTTPURLResponse,
+          (200..<300).contains(http.statusCode),
+          response.mimeType?.lowercased().hasPrefix("image/") == true else {
+        throw RemoteImageSaveError.invalidImage
+    }
+    let expectedLength = response.expectedContentLength
+    guard expectedLength <= 0 || expectedLength <= Int64(maximumBytes) else {
+        throw RemoteImageSaveError.tooLarge
+    }
+
+    var data = Data()
+    if expectedLength > 0 { data.reserveCapacity(Int(expectedLength)) }
+    for try await byte in bytes {
+        guard data.count < maximumBytes else { throw RemoteImageSaveError.tooLarge }
+        data.append(byte)
+    }
+    return data
+}
+
 struct AgentRemoteImageView: View {
     let label: String
     let source: String
     @State private var expanded = false
     @State private var fullScreen = false
     @State private var status: String?
+    @State private var isSaving = false
 
     private var remoteURL: URL? {
         guard let url = URL(string: source), let scheme = url.scheme?.lowercased(),
@@ -297,7 +331,8 @@ struct AgentRemoteImageView: View {
                     .lineLimit(1)
                 Spacer(minLength: 8)
                 Button(expanded ? "收起" : "预览") { expanded.toggle() }
-                Button("保存…") { save() }.disabled(remoteURL == nil)
+                Button(isSaving ? "保存中…" : "保存…") { save() }
+                    .disabled(remoteURL == nil || isSaving)
             }
             .buttonStyle(.plain)
             .font(.system(size: 11))
@@ -347,28 +382,21 @@ struct AgentRemoteImageView: View {
 
     @MainActor
     private func save() {
-        guard let url = remoteURL else { return }
+        guard let url = remoteURL, !isSaving else { return }
         let panel = NSSavePanel()
         let name = url.lastPathComponent
         panel.nameFieldStringValue = name.isEmpty || !name.contains(".") ? "image.png" : name
         guard panel.runModal() == .OK, let target = panel.url else { return }
+        isSaving = true
         status = "正在保存…"
         Task {
+            defer { isSaving = false }
             do {
-                let (temporary, response) = try await URLSession.shared.download(from: url)
-                guard let http = response as? HTTPURLResponse,
-                      (200..<300).contains(http.statusCode),
-                      response.mimeType?.lowercased().hasPrefix("image/") == true else {
-                    status = "远程资源不是有效图片"
-                    return
-                }
-                let size = try FileManager.default.attributesOfItem(atPath: temporary.path)[.size] as? NSNumber
-                guard (size?.int64Value ?? Int64.max) <= 25 * 1024 * 1024 else {
-                    status = "图片超过 25 MB 限制"
-                    return
-                }
-                try Data(contentsOf: temporary).write(to: target, options: .atomic)
+                let data = try await downloadRemoteImage(from: url, maximumBytes: 25 * 1024 * 1024)
+                try data.write(to: target, options: .atomic)
                 status = "已保存到 " + target.lastPathComponent
+            } catch let error as RemoteImageSaveError {
+                status = error.localizedDescription
             } catch {
                 status = "保存失败：" + error.localizedDescription
             }
