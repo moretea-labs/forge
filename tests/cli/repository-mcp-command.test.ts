@@ -12,7 +12,8 @@ import { repositoryGitCommit, repositoryGitMergeBranch, repositoryGitRebaseOnto,
 import { callRuntimeTool, runtimeToolDefinitions } from "../../adapters/mcp/runtime-gateway/runtime-tools";
 import { createMcpToolContext } from "../../adapters/mcp/multi-repository";
 import { controllerExposureSnapshot } from '../../adapters/mcp/toolset';
-import { getLocalBridgeJob, readLocalBridgeJobOutput, readLocalBridgeJobOutputSnapshot } from "../../src/cli/local-bridge/job-store";
+import { getLocalBridgeJob } from "../../src/cli/local-bridge/job-store";
+import { readLocalBridgeJobOutputSnapshot } from "../../src/runtime/local-bridge/read-model";
 import { routeDurableMcpCall } from "../../adapters/mcp/runtime-gateway/router";
 import { waitRepositoryCommandProcess } from "../../src/runtime/execution/process-runtime/command-facade";
 import { getExecutionJob, listExecutionJobs } from "../../src/runtime/execution/jobs/store";
@@ -1163,7 +1164,10 @@ describe("repository MCP command tools", () => {
         stderr: "warn-1\n",
       });
 
+      const jobMetaPath = join(repoRoot, ".ai/harness/local-jobs/JOB-output/job.json");
+      const originalJobMeta = readFileSync(jobMetaPath, "utf-8");
       const stdout = readLocalBridgeJobOutputSnapshot(repoRoot, "JOB-output", { stream: "stdout" });
+      expect(readFileSync(jobMetaPath, "utf-8")).toBe(originalJobMeta);
       expect(stdout.status).toBe("ok");
       expect(stdout.content).toContain("line-2");
       expect(stdout.path).toBe(".ai/harness/local-jobs/JOB-output/stdout.log");

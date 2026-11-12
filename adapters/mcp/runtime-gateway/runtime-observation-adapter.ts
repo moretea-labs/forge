@@ -56,8 +56,8 @@ import {
   getLocalBridgeJobEventsSnapshot,
   getLocalBridgeJobSnapshot,
   listLocalBridgeJobSnapshots,
+  readLocalBridgeJobOutputSnapshot,
 } from '../../../src/runtime/local-bridge/read-model';
-import { readLocalBridgeJobOutputSnapshot } from '../../../src/cli/local-bridge/job-store';
 import { callWorkAdapter, contextRecord, contextText, runFacadeRepair, runtimeIdentitySnapshot } from './work-adapter';
 import { summarizeJobEvents, summarizeExecutionJob } from './runtime-tool-shared';
 

@@ -117,3 +117,85 @@ export function getLocalBridgeJobEventsSnapshot(
     .filter(Boolean)
     .map((line) => JSON.parse(line) as LocalBridgeJobEvent);
 }
+
+
+export interface LocalBridgeJobOutputResult {
+  jobId: string;
+  jobStatus?: LocalBridgeJob["status"];
+  stream: "stdout" | "stderr";
+  path?: string;
+  maxBytes: number;
+  truncated: boolean;
+  content: string;
+  status: "ok" | "not_found" | "not_ready" | "rejected";
+  error?: { code: string; message: string };
+}
+
+const DEFAULT_LOCAL_JOB_OUTPUT_BYTES = 16 * 1024;
+const MAX_LOCAL_JOB_OUTPUT_BYTES = 512 * 1024;
+
+function boundedOutputBytes(value: number | undefined): number {
+  return Math.max(1, Math.min(Math.trunc(value ?? DEFAULT_LOCAL_JOB_OUTPUT_BYTES), MAX_LOCAL_JOB_OUTPUT_BYTES));
+}
+
+function relativeOutputPath(jobId: string, stream: "stdout" | "stderr"): string {
+  return `${LOCAL_BRIDGE_JOB_ROOT}/${normalizeLocalJobId(jobId)}/${stream}.log`;
+}
+
+export function readLocalBridgeJobOutputSnapshot(
+  repoRoot: string,
+  jobId: string,
+  input: {
+    stream?: "stdout" | "stderr";
+    maxBytes?: number;
+  } = {},
+): LocalBridgeJobOutputResult {
+  const stream = input.stream === "stderr" ? "stderr" : "stdout";
+  const maxBytes = boundedOutputBytes(input.maxBytes);
+  const snapshot = getLocalBridgeJobSnapshot(repoRoot, jobId);
+  if (snapshot.status !== "ok" || !snapshot.job) {
+    return {
+      jobId: snapshot.jobId,
+      stream,
+      maxBytes,
+      truncated: false,
+      content: "",
+      status: snapshot.status,
+      error: snapshot.error,
+    };
+  }
+  const path = join(jobDir(repoRoot, snapshot.job.jobId), `${stream}.log`);
+  const relativePathValue = relativeOutputPath(snapshot.job.jobId, stream);
+  if (!existsSync(path)) {
+    const active = ["approved", "running", "dispatched"].includes(snapshot.job.status);
+    return {
+      jobId: snapshot.job.jobId,
+      jobStatus: snapshot.job.status,
+      stream,
+      path: relativePathValue,
+      maxBytes,
+      truncated: false,
+      content: "",
+      status: active ? "not_ready" : "not_found",
+      error: {
+        code: active ? "LOCAL_JOB_OUTPUT_NOT_READY" : "LOCAL_JOB_OUTPUT_NOT_FOUND",
+        message: active
+          ? `Local job output is not ready yet for ${snapshot.job.jobId} ${stream}.`
+          : `Local job output file was not found for ${snapshot.job.jobId} ${stream}.`,
+      },
+    };
+  }
+  const bytes = readFileSync(path);
+  const truncated = bytes.byteLength > maxBytes;
+  const content = (truncated ? bytes.subarray(Math.max(0, bytes.byteLength - maxBytes)) : bytes).toString("utf-8");
+  return {
+    jobId: snapshot.job.jobId,
+    jobStatus: snapshot.job.status,
+    stream,
+    path: relativePathValue,
+    maxBytes,
+    truncated,
+    content,
+    status: "ok",
+  };
+}

@@ -38,6 +38,7 @@ import {
   readLocalBridgeJob,
   readStoredJobs,
 } from "../../runtime/local-bridge/read-model";
+import type { LocalBridgeJobOutputResult } from "../../runtime/local-bridge/read-model";
 import type {
   LocalBridgeApproval,
   LocalBridgeConfig,
@@ -50,8 +51,6 @@ import type {
 
 const ACTIVE_INDEX_PATH = `${LOCAL_BRIDGE_JOB_ROOT}/active-index.json`;
 const CONFIG_PATH = ".forge/local-bridge.json";
-const DEFAULT_LOCAL_JOB_OUTPUT_BYTES = 16 * 1024;
-const MAX_LOCAL_JOB_OUTPUT_BYTES = 512 * 1024;
 
 interface LocalBridgeActiveIndex {
   schemaVersion: 1;
@@ -73,22 +72,6 @@ function checkSubscriberId(jobId: string): string {
 }
 
 
-function stdoutPath(repoRoot: string, jobId: string): string {
-  return join(jobDir(repoRoot, jobId), "stdout.log");
-}
-
-function stderrPath(repoRoot: string, jobId: string): string {
-  return join(jobDir(repoRoot, jobId), "stderr.log");
-}
-
-function relativeOutputPath(jobId: string, stream: "stdout" | "stderr"): string {
-  const normalizedJobId = normalizeLocalJobId(jobId);
-  return `${LOCAL_BRIDGE_JOB_ROOT}/${normalizedJobId}/${stream}.log`;
-}
-
-function boundedOutputBytes(value: number | undefined): number {
-  return Math.max(1, Math.min(Math.trunc(value ?? DEFAULT_LOCAL_JOB_OUTPUT_BYTES), MAX_LOCAL_JOB_OUTPUT_BYTES));
-}
 
 
 function activeIndexPath(repoRoot: string): string {
@@ -640,18 +623,6 @@ export function getLocalBridgeJob(repoRoot: string, jobId: string): LocalBridgeJ
 }
 
 
-export interface LocalBridgeJobOutputResult {
-  jobId: string;
-  jobStatus?: LocalBridgeJob["status"];
-  stream: "stdout" | "stderr";
-  path?: string;
-  maxBytes: number;
-  truncated: boolean;
-  content: string;
-  status: "ok" | "not_found" | "not_ready" | "rejected";
-  error?: { code: string; message: string };
-}
-
 export interface LocalBridgeJobHandoff {
   jobId: string;
   status: LocalBridgeJob["status"] | "not_found" | "rejected";
@@ -716,74 +687,7 @@ export function getLocalBridgeJobEvents(
     .map((line) => JSON.parse(line) as LocalBridgeJobEvent);
 }
 
-export function readLocalBridgeJobOutputSnapshot(
-  repoRoot: string,
-  jobId: string,
-  input: {
-    stream?: "stdout" | "stderr";
-    maxBytes?: number;
-  } = {},
-): LocalBridgeJobOutputResult {
-  const stream = input.stream === "stderr" ? "stderr" : "stdout";
-  const maxBytes = boundedOutputBytes(input.maxBytes);
-  const snapshot = getLocalBridgeJobSnapshot(repoRoot, jobId);
-  if (snapshot.status !== "ok" || !snapshot.job) {
-    return {
-      jobId: snapshot.jobId,
-      stream,
-      maxBytes,
-      truncated: false,
-      content: "",
-      status: snapshot.status,
-      error: snapshot.error,
-    };
-  }
-  const path = stream === "stdout" ? stdoutPath(repoRoot, snapshot.job.jobId) : stderrPath(repoRoot, snapshot.job.jobId);
-  const relativePathValue = relativeOutputPath(snapshot.job.jobId, stream);
-  if (!existsSync(path)) {
-    const active = ["approved", "running", "dispatched"].includes(snapshot.job.status);
-    return {
-      jobId: snapshot.job.jobId,
-      jobStatus: snapshot.job.status,
-      stream,
-      path: relativePathValue,
-      maxBytes,
-      truncated: false,
-      content: "",
-      status: active ? "not_ready" : "not_found",
-      error: {
-        code: active ? "LOCAL_JOB_OUTPUT_NOT_READY" : "LOCAL_JOB_OUTPUT_NOT_FOUND",
-        message: active
-          ? `Local job output is not ready yet for ${snapshot.job.jobId} ${stream}.`
-          : `Local job output file was not found for ${snapshot.job.jobId} ${stream}.`,
-      },
-    };
-  }
-  const bytes = readFileSync(path);
-  const truncated = bytes.byteLength > maxBytes;
-  const content = (truncated ? bytes.subarray(Math.max(0, bytes.byteLength - maxBytes)) : bytes).toString("utf-8");
-  return {
-    jobId: snapshot.job.jobId,
-    jobStatus: snapshot.job.status,
-    stream,
-    path: relativePathValue,
-    maxBytes,
-    truncated,
-    content,
-    status: "ok",
-  };
-}
 
-export function readLocalBridgeJobOutput(
-  repoRoot: string,
-  jobId: string,
-  input: {
-    stream?: "stdout" | "stderr";
-    maxBytes?: number;
-  } = {},
-): LocalBridgeJobOutputResult {
-  return readLocalBridgeJobOutputSnapshot(repoRoot, jobId, input);
-}
 
 function saveJob(repoRoot: string, job: LocalBridgeJob): LocalBridgeJob {
   job.updatedAt = now();
