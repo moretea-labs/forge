@@ -54,6 +54,15 @@ struct ZenGitHubBoardView: View {
             }
             .scrollIndicators(.hidden)
         }
+        .safeAreaInset(edge:.top,spacing:0) {
+            if truncated {
+                Label("结果已截断，当前只显示部分条目。",systemImage:"info.circle")
+                    .font(.system(size:10.5)).foregroundStyle(.secondary)
+                    .frame(maxWidth:.infinity,alignment:.leading)
+                    .padding(.horizontal,24).padding(.vertical,7)
+                    .accessibilityIdentifier("zen.github.board.truncated")
+            }
+        }
         .overlay {
             if items.isEmpty {
                 VStack(spacing:9) {
@@ -83,11 +92,10 @@ struct ZenGitHubBoardView: View {
                 if item.url != nil {
                     Image(systemName:"arrow.up.right")
                         .font(.system(size:9)).foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
                 }
             }
         }
-        .padding(12)
-        .background(Color(nsColor:.controlBackgroundColor).opacity(0.7),
-                    in:RoundedRectangle(cornerRadius:10))
+        .padding(.horizontal,4).padding(.vertical,9)
     }
 }
