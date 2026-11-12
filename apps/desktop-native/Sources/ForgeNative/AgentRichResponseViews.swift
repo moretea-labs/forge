@@ -294,19 +294,28 @@ func appendRemoteImageByte(_ byte: UInt8, to data: inout Data, maximumBytes: Int
     data.append(byte)
 }
 
-func makeRemoteImagePreview(_ data: Data) -> NSImage? {
-    guard let source = CGImageSourceCreateWithData(data as CFData, nil),
-          let thumbnail = CGImageSourceCreateThumbnailAtIndex(
-            source, 0,
-            [
-                kCGImageSourceCreateThumbnailFromImageAlways: true,
-                kCGImageSourceThumbnailMaxPixelSize: 2_400,
-                kCGImageSourceCreateThumbnailWithTransform: true
-            ] as CFDictionary
-          ) else {
+private func makeImagePreview(from source: CGImageSource) -> NSImage? {
+    guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(
+        source, 0,
+        [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceThumbnailMaxPixelSize: 2_400,
+            kCGImageSourceCreateThumbnailWithTransform: true
+        ] as CFDictionary
+    ) else {
         return nil
     }
     return NSImage(cgImage: thumbnail, size: NSSize(width: thumbnail.width, height: thumbnail.height))
+}
+
+func makeRemoteImagePreview(_ data: Data) -> NSImage? {
+    guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+    return makeImagePreview(from: source)
+}
+
+func makeLocalImagePreview(at path: String) -> NSImage? {
+    guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil) else { return nil }
+    return makeImagePreview(from: source)
 }
 
 func validateRemoteImageResponse(

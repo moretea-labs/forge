@@ -2056,6 +2056,14 @@ extension NativeWorkspaceTests {
         XCTAssertLessThanOrEqual(preview.size.width, 2_400)
         XCTAssertLessThanOrEqual(preview.size.height, 2_400)
         XCTAssertNil(makeRemoteImagePreview(Data("not an image".utf8)))
+
+        let localURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString).appendingPathExtension("png")
+        defer { try? FileManager.default.removeItem(at: localURL) }
+        try data.write(to: localURL)
+        let localPreview = try XCTUnwrap(makeLocalImagePreview(at: localURL.path))
+        XCTAssertLessThanOrEqual(localPreview.size.width, 2_400)
+        XCTAssertLessThanOrEqual(localPreview.size.height, 2_400)
     }
 }
 
