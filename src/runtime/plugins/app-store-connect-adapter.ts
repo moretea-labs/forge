@@ -329,6 +329,7 @@ async function apiRequest<T>(config: AppStoreConnectPluginConfig, options: {
   query?: Record<string, string | number | boolean | undefined>;
   body?: unknown;
   timeoutMs?: number;
+  accept?: string;
 }): Promise<T> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? config.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS);
@@ -338,7 +339,7 @@ async function apiRequest<T>(config: AppStoreConnectPluginConfig, options: {
       method: options.method ?? 'GET',
       headers: {
         authorization: `Bearer ${await createJwt(config)}`,
-        accept: 'application/json',
+        accept: options.accept ?? 'application/json',
         ...(options.body === undefined ? {} : { 'content-type': 'application/json' }),
       },
       body: options.body === undefined ? undefined : JSON.stringify(options.body),
@@ -435,6 +436,9 @@ function permissions(ready: boolean): AssistantPluginPermissionScope[] {
     permission('appstoreconnect.reviews.read', 'read', 'Read customer reviews and summaries.', ready),
     permission('appstoreconnect.reviews.write', 'write', 'Reply to customer reviews.', ready),
     permission('appstoreconnect.reports.read', 'read', 'Download Apple Sales and Finance gzip reports.', ready),
+    permission('appstoreconnect.team.read','read','Inspect App Store Connect users and access without modifying invitations.',ready),
+    permission('appstoreconnect.webhooks.read','read','Inspect existing webhooks and delivery outcomes.',ready),
+    permission('appstoreconnect.diagnostics.read','read','Read Apple performance and power metrics.',ready),
   ];
 }
 
@@ -443,7 +447,7 @@ function permissions(ready: boolean): AssistantPluginPermissionScope[] {
 // callers cannot supply an arbitrary URL, method, or API path.
 interface AscReadSpec {
   id: string; title: string; scope: string; path: string; required: string[];
-  filters?: Record<string, string>; fixedQuery?: Record<string, string>;
+  filters?: Record<string, string>; fixedQuery?: Record<string, string>; accept?: string;
 }
 const additionalAscReads: AscReadSpec[] = [
   { id: 'get_app_store_version', title: 'Read App Store version', scope: 'appstoreconnect.apps.read', path: '/v1/appStoreVersions/:version_id', required: ['version_id'], fixedQuery: { include: 'build,app,appStoreReviewDetail' }, },
@@ -516,6 +520,21 @@ const additionalAscReads: AscReadSpec[] = [
   { id: 'get_build_beta_detail', title: 'Read TestFlight internal/external build status', scope: 'appstoreconnect.apps.read', path: '/v1/builds/:build_id/buildBetaDetail', required: ['build_id'] },
   { id: 'get_xcode_cloud_build_run', title: 'Read Xcode Cloud build run', scope: 'appstoreconnect.xcodecloud.read', path: '/v1/ciBuildRuns/:run_id', required: ['run_id'] },
   { id: 'list_xcode_cloud_build_actions', title: 'List Xcode Cloud build actions', scope: 'appstoreconnect.xcodecloud.read', path: '/v1/ciBuildRuns/:run_id/actions', required: ['run_id'] },
+  { id: 'list_team_users', title: 'List App Store Connect team users', scope: 'appstoreconnect.team.read', path: '/v1/users', required: [], filters: { 'username':'filter[username]', 'role':'filter[roles]' } },
+  { id: 'get_team_user', title: 'Read team user role and access', scope: 'appstoreconnect.team.read', path: '/v1/users/:user_id', required: ['user_id'] },
+  { id: 'list_user_visible_apps', title: 'List apps visible to a team user', scope: 'appstoreconnect.team.read', path: '/v1/users/:user_id/visibleApps', required: ['user_id'] },
+  { id: 'list_pending_user_invitations', title: 'List pending App Store Connect invitations', scope: 'appstoreconnect.team.read', path: '/v1/userInvitations', required: [] },
+  { id: 'get_user_invitation', title: 'Read pending user invitation', scope: 'appstoreconnect.team.read', path: '/v1/userInvitations/:invitation_id', required: ['invitation_id'] },
+  { id: 'list_app_categories', title: 'List official App Store categories', scope: 'appstoreconnect.apps.read', path: '/v1/appCategories', required: [], filters: { 'platform':'filter[platforms]', 'has_parent':'exists[parent]' } },
+  { id: 'get_app_category', title: 'Read App Store category information', scope: 'appstoreconnect.apps.read', path: '/v1/appCategories/:category_id', required: ['category_id'] },
+  { id: 'get_age_rating_declaration', title: 'Read age rating declaration', scope: 'appstoreconnect.apps.read', path: '/v1/appInfos/:info_id/ageRatingDeclaration', required: ['info_id'] },
+  { id: 'list_accessibility_declarations', title: 'List published app accessibility declarations', scope: 'appstoreconnect.apps.read', path: '/v1/apps/:app_id/accessibilityDeclarations', required: [], filters: { 'device_family':'filter[deviceFamily]', 'state':'filter[state]' } },
+  { id: 'list_app_webhooks', title: 'List App Store Connect app webhooks', scope: 'appstoreconnect.webhooks.read', path: '/v1/apps/:app_id/webhooks', required: [] },
+  { id: 'get_app_webhook', title: 'Read webhook configuration', scope: 'appstoreconnect.webhooks.read', path: '/v1/webhooks/:webhook_id', required: ['webhook_id'] },
+  { id: 'list_webhook_deliveries', title: 'List webhook delivery diagnostics', scope: 'appstoreconnect.webhooks.read', path: '/v1/webhooks/:webhook_id/deliveries', required: ['webhook_id'], filters: { 'state':'filter[deliveryState]' } },
+  { id: 'get_app_power_performance', title: 'Get App power and performance metric report', scope: 'appstoreconnect.diagnostics.read', path: '/v1/apps/:app_id/perfPowerMetrics', required: [], filters: { 'device_type':'filter[deviceType]', 'metric_type':'filter[metricType]', 'platform':'filter[platform]' }, accept: 'application/vnd.apple.xcode-metrics+json, application/json' },
+  { id: 'get_build_power_performance', title: 'Get build power and performance metric report', scope: 'appstoreconnect.diagnostics.read', path: '/v1/builds/:build_id/perfPowerMetrics', required: ['build_id'], filters: { 'device_type':'filter[deviceType]', 'metric_type':'filter[metricType]', 'platform':'filter[platform]' }, accept: 'application/vnd.apple.xcode-metrics+json, application/json' },
+  { id: 'list_app_store_version_experiments_v2', title: 'Read modern App Store product page experiments', scope: 'appstoreconnect.analytics.read', path: '/v1/appStoreVersions/:version_id/appStoreVersionExperimentsV2', required: ['version_id'], filters: { 'state':'filter[state]' } },
   { id: 'list_build_uploads', title: 'List Build Upload resources', scope: 'appstoreconnect.apps.read', path: '/v1/apps/:app_id/buildUploads', required: [], },
   { id: 'list_xcode_cloud_build_runs', title: 'List Xcode Cloud build runs', scope: 'appstoreconnect.xcodecloud.read', path: '/v1/ciWorkflows/:workflow_id/buildRuns', required: ['workflow_id'], },
   { id: 'list_custom_product_pages', title: 'List custom product pages', scope: 'appstoreconnect.analytics.read', path: '/v1/apps/:app_id/appCustomProductPages', required: [], },
@@ -594,7 +613,7 @@ function additionalAscReadRequest(spec: AscReadSpec, args: Record<string, unknow
     query.limit = limit(args.limit);
     if (args.cursor !== undefined) query.cursor = requiredArg(args, 'cursor');
   }
-  return { path, query };
+  return { path, query, ...(spec.accept ? {accept:spec.accept} : {}) };
 }
 
 function additionalAscWriteRequest(actionId: string, args: Record<string, unknown>, config: AppStoreConnectPluginConfig):
@@ -1064,6 +1083,9 @@ function capabilities(): AssistantPluginCapability[] {
       actions: ['create_app_store_version', 'create_review_submission', 'submit_for_review', 'set_app_store_version_build', 'add_review_submission_item', 'get_app_store_version', 'get_app_store_version_build', 'get_review_submission', 'list_review_submission_items', 'get_app_store_review_detail', 'update_app_store_review_detail', 'check_release_readiness'],
       // Additional release/version reads are advertised in the commerce and ASO groups below.
     },
+    {capabilityId:'team-access-read',title:'Team and Access',description:'Read Apple user roles, pending invitations and visible App access.',scopes:['appstoreconnect.team.read'],actions:additionalAscReads.filter(s=>s.scope==='appstoreconnect.team.read').map(s=>s.id)},
+    {capabilityId:'webhooks-read',title:'Webhook Delivery Diagnostics',description:'Read Apple webhook configuration and delivery state.',scopes:['appstoreconnect.webhooks.read'],actions:additionalAscReads.filter(s=>s.scope==='appstoreconnect.webhooks.read').map(s=>s.id)},
+    {capabilityId:'performance-read',title:'Power and Performance Metrics',description:'Read Apple App and build performance metrics.',scopes:['appstoreconnect.diagnostics.read'],actions:additionalAscReads.filter(s=>s.scope==='appstoreconnect.diagnostics.read').map(s=>s.id)},
     { capabilityId: 'sales-finance', title: 'Sales and Finance Reports', description: 'Download bounded official TSV reports.', scopes: ['appstoreconnect.reports.read', 'appstoreconnect.analytics.read'], actions: ['read_sales_report', 'read_finance_report', 'read_analytics_segment_data'] },
     { capabilityId: 'analytics-and-aso', title: 'Analytics and ASO', description: 'Read Apple Analytics reports, historical snapshots, keyword configuration, and store discovery.', scopes: ['appstoreconnect.analytics.read','appstoreconnect.analytics.write'], actions: [...additionalAscReads.filter(s => s.scope === 'appstoreconnect.analytics.read').map(s => s.id), 'request_analytics_report','read_analytics_segment_data','summarize_analytics_segment'] },
     { capabilityId: 'commerce', title: 'In-App Purchases and Subscriptions', description: 'Read products, subscriptions and manage IAP v2.', scopes: ['appstoreconnect.commerce.read','appstoreconnect.commerce.write'], actions: [...additionalAscReads.filter(s => s.scope === 'appstoreconnect.commerce.read').map(s => s.id), ...['create_in_app_purchase','update_in_app_purchase','create_in_app_purchase_version','create_in_app_purchase_version_localization','update_in_app_purchase_version_localization','create_subscription_group','create_subscription','create_subscription_version','create_subscription_version_localization','create_subscription_group_version','create_subscription_group_version_localization','create_subscription_price','create_in_app_purchase_price_schedule']] },
@@ -1624,7 +1646,7 @@ export function buildAppStoreConnectPluginManifest(previousRevision = 0, previou
     pluginId: APP_STORE_CONNECT_PLUGIN_ID,
     provider: 'apple',
     displayName: 'App Store Connect API Plugin',
-    pluginVersion: '1.4.0',
+    pluginVersion: '1.5.0',
     authority: { strategy: 'derived', duplicateStateAllowed: false, sourceOfTruth: ['controller-global:system/plugins/config/app-store-connect.json', 'legacy-import-only:system/plugins/profiles|repositories/<repoId>/plugins/config|.forge/plugins|.repo-harness/plugins', 'env:FORGE_ASC_*'] },
     enabled: config.enabled,
     lifecycle: { state: state.lifecycleState, reason: !config.enabled ? 'App Store Connect plugin is disabled.' : auth.ready ? 'App Store Connect API credentials are ready.' : auth.errors[0] ?? auth.warnings[0] },

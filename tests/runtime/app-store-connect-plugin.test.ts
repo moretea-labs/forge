@@ -42,7 +42,7 @@ describe('App Store Connect Xcode Cloud workflow actions', () => {
     const repoRoot = root();
     await executeAppStoreConnectPluginAction(input(repoRoot, 'configure', { enabled: true, provider: 'mock' }));
     const manifest = buildAppStoreConnectPluginManifest(1, undefined, repoRoot);
-    expect(manifest.pluginVersion).toBe('1.4.0');
+    expect(manifest.pluginVersion).toBe('1.5.0');
     expect(manifest.actions.find((action) => action.actionId === 'list_xcode_cloud_workflows')).toMatchObject({ readOnly: true, risk: 'readonly' });
     for (const actionId of ['list_bundle_ids', 'list_bundle_id_capabilities', 'list_certificates', 'list_devices', 'list_profiles']) {
       expect(manifest.actions.find((action) => action.actionId === actionId)).toMatchObject({
@@ -361,6 +361,49 @@ describe('App Store Connect Xcode Cloud workflow actions', () => {
     await expect(executeAppStoreConnectPluginAction(input(repoRoot, 'update_beta_group', {
       group_id:'group-1',public_link_limit:10_001,dry_run:true,
     }))).rejects.toThrow('1 to 10000');
+  });
+
+
+  test('team access, webhook deliveries, compliance and performance reads use exact Apple APIs', async () => {
+    const repoRoot = root();
+    const privateKeyPath = join(repoRoot, 'AuthKey_TEAM_READS.p8');
+    const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
+    writeFileSync(privateKeyPath, privateKey.export({ type: 'pkcs8', format: 'pem' }));
+    await executeAppStoreConnectPluginAction(input(repoRoot, 'configure', {
+      enabled:true,provider:'app-store-connect-api',issuer_id:'issuer-team',key_id:'key-team',
+      private_key_path:privateKeyPath,
+    }));
+    const original = globalThis.fetch;
+    const calls: Array<{url:URL;headers:Headers;method:string}> = [];
+    globalThis.fetch = (async (request: string | URL | Request, init?: RequestInit) => {
+      calls.push({url:new URL(String(request)),headers:new Headers(init?.headers),method:init?.method??'GET'});
+      return Response.json({data:[]});
+    }) as typeof fetch;
+    try {
+      await executeAppStoreConnectPluginAction(input(repoRoot,'list_team_users',{role:'APP_MANAGER'}));
+      await executeAppStoreConnectPluginAction(input(repoRoot,'list_pending_user_invitations',{}));
+      await executeAppStoreConnectPluginAction(input(repoRoot,'list_webhook_deliveries',{webhook_id:'hook-1',state:'FAILED'}));
+      await executeAppStoreConnectPluginAction(input(repoRoot,'get_app_power_performance',{
+        app_id:'app-1',metric_type:'LAUNCH',device_type:'all_iphones',platform:'IOS',
+      }));
+      await executeAppStoreConnectPluginAction(input(repoRoot,'get_build_power_performance',{build_id:'build-1'}));
+      await executeAppStoreConnectPluginAction(input(repoRoot,'get_age_rating_declaration',{info_id:'info-1'}));
+      await executeAppStoreConnectPluginAction(input(repoRoot,'list_accessibility_declarations',{app_id:'app-1',state:'PUBLISHED'}));
+      await executeAppStoreConnectPluginAction(input(repoRoot,'list_app_store_version_experiments_v2',{version_id:'v-1'}));
+      expect(calls.map(c=>c.url.pathname)).toEqual([
+        '/v1/users','/v1/userInvitations','/v1/webhooks/hook-1/deliveries',
+        '/v1/apps/app-1/perfPowerMetrics','/v1/builds/build-1/perfPowerMetrics',
+        '/v1/appInfos/info-1/ageRatingDeclaration','/v1/apps/app-1/accessibilityDeclarations',
+        '/v1/appStoreVersions/v-1/appStoreVersionExperimentsV2',
+      ]);
+      expect(calls[0]?.url.searchParams.get('filter[roles]')).toBe('APP_MANAGER');
+      expect(calls[2]?.url.searchParams.get('filter[deliveryState]')).toBe('FAILED');
+      expect(calls[3]?.url.searchParams.get('filter[metricType]')).toBe('LAUNCH');
+      expect(calls[3]?.headers.get('accept')).toContain('application/vnd.apple.xcode-metrics+json');
+      expect(calls[5]?.headers.get('accept')).toBe('application/json');
+      expect(calls[6]?.url.searchParams.get('filter[state]')).toBe('PUBLISHED');
+      expect(calls.every(c=>c.method==='GET')).toBe(true);
+    } finally {globalThis.fetch=original;}
   });
 
   test('verifies Apple-signed Analytics segment checksum and decodes bounded historical TSV', async () => {
