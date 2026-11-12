@@ -20,11 +20,11 @@ import {
   integrateAgentJob,
   taskRunDiff,
 } from "../agent-jobs/integration";
-import { listControllerChecks, runControllerCheck } from "../controller/check-runner";
+import { listControllerChecks, runControllerCheck } from "../../runtime/execution/process-runtime/check-runner";
 import { inspectIssueReadiness, inspectTaskReadiness, projectBoard } from "../controller/issue-store";
 import { buildControllerTaskLedgerProjection } from "../controller/task-ledger";
 import { buildControllerOperationalPlan } from "../controller/operational-plan";
-import { exportControllerWorklog, listControllerWorklogEvents, parseWorklogCategory } from "../controller/worklog";
+import { exportControllerWorklog, listControllerWorklogEvents, parseWorklogCategory } from "../../runtime/evidence/controller-worklog";
 import { inspectProjectGovernance, reconcileProjectGovernance } from "../controller/governance";
 import { loadControllerProjectState } from "../controller/project-state";
 import { legacyIssueAuthorityRetired } from "../controller/legacy-issue-cutover";
@@ -50,7 +50,7 @@ import {
   getEditSessionDiff,
   listEditSessions,
   verifyEditSession,
-} from "../editing/edit-session";
+} from "../../runtime/editing/edit-session";
 import { applyConsoleAutomationAction, listConsoleAutomations, summarizeConsoleAutomations } from "./console-automations";
 import {
   ackConsoleHandoff,
@@ -79,21 +79,21 @@ import {
   FORGE_VERSION,
   forgeToolSurfaceFingerprint,
   defaultLocalAgentRunners,
-} from "../controller/runtime-config";
+} from "../../runtime/shared/runtime-config";
 import { taskWriteScopesConflict } from "../controller/execution-policy";
 import { applyCompletionDecision, completionDecisionQueues, finishCompletionBacklog, inspectCompletionBacklog } from "../controller/completion-backlog";
 import { finishEditSession, finishTaskRun } from "../controller/completion-orchestrator";
 import { prepareCodexContinuation } from "../controller/codex-continuation";
 import { applyStuckStateMigration, inspectStuckControllerStates } from "../controller/stuck-state-migration";
-import { getToolPolicy } from '../controller/tool-policy';
+import { getToolPolicy } from '../../runtime/control-plane/tool-policy';
 import type { MultiRepositoryMcpToolContext } from "../../../adapters/mcp/multi-repository";
 import { createMcpToolContext as createControllerMcpToolContext } from "../../../adapters/mcp/server";
 import { loadMcpServiceLocalConfig, loadMcpServiceRuntimeState } from "../../../adapters/mcp/auth";
-import { loadRepositoryRegistry, registerRepository, removeRepository, resolveRepositorySelection } from "../repositories/registry";
+import { loadRepositoryRegistry, registerRepository, removeRepository, resolveRepositorySelection } from "../../runtime/repositories/registry";
 import { withRepositoryMutationExclusion, withRepositoryMutationExclusionAsync } from '../../runtime/resources/leases/store';
 import { runEditSessionMutationInWorker } from './edit-session-worker';
 import { resolveControllerHome, resolveRepoPreferredControllerHome } from "../../effects/controller-home";
-import { ensureRepositoryRuntimeStorage } from "../repositories/runtime-storage";
+import { ensureRepositoryRuntimeStorage } from "../../runtime/repositories/runtime-storage";
 import { readForgeRuntimeStatus } from "../../runtime/control-plane/runtime-status-client";
 import { readRuntimeGeneration } from "../../runtime/control-plane/runtime-generation";
 import { findExecutionJob, listExecutionJobs } from "../../runtime/execution/jobs/store";

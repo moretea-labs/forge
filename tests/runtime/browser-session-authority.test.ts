@@ -44,8 +44,8 @@ import {
   withControlPlaneTransaction,
   writeControlPlaneRecordWithinTransaction,
 } from '../../src/runtime/control-plane/persistence/sqlite-store';
-import { registerRepository } from '../../src/cli/repositories/registry';
-import { withControllerLockAsync } from '../../src/cli/repositories/locks';
+import { registerRepository } from '../../src/runtime/repositories/registry';
+import { withControllerLockAsync } from '../../src/effects/controller-locks';
 import { submitAssistantPluginAction } from '../../src/runtime/plugins/store';
 import { computerPluginAdapter } from '../../src/runtime/plugins/computer-registration';
 import { writeControllerPluginConfig } from '../../src/runtime/plugins/config-store';

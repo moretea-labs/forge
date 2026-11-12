@@ -1,6 +1,6 @@
 import { existsSync, lstatSync, readFileSync } from 'fs';
 import { dirname, join, resolve } from 'path';
-import type { ToolPolicy } from '../../cli/controller/tool-policy';
+import type { ToolPolicy } from '../control-plane/tool-policy';
 import type {
   ControllerContextPackOptions,
   ControllerContextPackProjection,

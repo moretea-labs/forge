@@ -1,16 +1,16 @@
 import { loadMcpLocalConfig, loadMcpServiceLocalConfig } from './auth';
-import { getToolPolicy, parseToolProfile } from '../../src/cli/controller/tool-policy';
+import { getToolPolicy, parseToolProfile } from '../../src/runtime/control-plane/tool-policy';
 import { buildMcpToolDefinitions, callMcpTool, type CallToolResult, type McpToolContext, type McpToolDefinition } from './tool-mapping/tools';
-import { DEFAULT_AGENT_TIMEOUT_MS, MAX_AGENT_TIMEOUT_MS, normalizeAgentTimeoutMs } from '../../src/cli/controller/runtime-config';
-import type { ToolAgentRunnerName } from '../../src/cli/controller/tool-policy';
+import { DEFAULT_AGENT_TIMEOUT_MS, MAX_AGENT_TIMEOUT_MS, normalizeAgentTimeoutMs } from '../../src/runtime/shared/runtime-config';
+import type { ToolAgentRunnerName } from '../../src/runtime/control-plane/tool-policy';
 import { realpathSync } from 'fs';
 import { resolve } from 'path';
 import { ensureRepoPreferredControllerHome } from '../../src/effects/controller-home';
-import { bindRepositoryEntities } from '../../src/cli/repositories/entity-migration';
-import { withControllerLockAsync } from '../../src/cli/repositories/locks';
-import { listRepositories, registerRepository, repositorySummary, resolveRepositorySelection, selectRepositoryCheckout } from '../../src/cli/repositories/registry';
-import { ensureRepositoryRuntimeStorage, type RepositoryRuntimeStorageReport } from '../../src/cli/repositories/runtime-storage';
-import type { RepositoryRecord } from '../../src/cli/repositories/types';
+import { bindRepositoryEntities } from '../../src/runtime/repositories/entity-migration';
+import { withControllerLockAsync } from '../../src/effects/controller-locks';
+import { listRepositories, registerRepository, repositorySummary, resolveRepositorySelection, selectRepositoryCheckout } from '../../src/runtime/repositories/registry';
+import { ensureRepositoryRuntimeStorage, type RepositoryRuntimeStorageReport } from '../../src/runtime/repositories/runtime-storage';
+import type { RepositoryRecord } from '../../src/core/repository/types';
 import {
   compactErrorMessage,
   compactRepositoryRef,
@@ -40,6 +40,10 @@ export interface McpServerOptions {
 export interface MultiRepositoryMcpToolContext extends McpToolContext {
   controllerHome: string;
   explicitRepository?: RepositoryRecord;
+  repositoryAccess: {
+    list: typeof listRepositories;
+    resolve: typeof resolveRepositorySelection;
+  };
   toolset: 'full';
   runtimeSourceRoot?: string;
 }
@@ -321,6 +325,7 @@ export function createMcpToolContext(opts: McpServerOptions): MultiRepositoryMcp
   return {
     controllerHome,
     explicitRepository,
+    repositoryAccess: { list: listRepositories, resolve: resolveRepositorySelection },
     repoRoot: policyRoot,
     policy,
     toolset: 'full',
@@ -340,7 +345,7 @@ export async function callMultiRepositoryTool(
   args: Record<string, unknown> = {},
 ): Promise<ToolResult> {
   try {
-    const repository = resolveRepositorySelection({
+    const repository = ctx.repositoryAccess.resolve({
       repoId: typeof args.repo_id === 'string' ? args.repo_id : undefined,
       checkoutId: typeof args.checkout_id === 'string' ? args.checkout_id : undefined,
       explicitPath: ctx.explicitRepository?.canonicalRoot,

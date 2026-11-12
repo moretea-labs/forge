@@ -12,8 +12,8 @@ import {
 import { join } from 'path';
 import { callMultiRepositoryTool, createMcpToolContext } from '../../adapters/mcp/server';
 import { repositoryControllerRoot } from '../../src/effects/controller-home';
-import { ensureRepositoryRuntimeStorage, ensureRepositoryRuntimeStorageBinding } from '../../src/cli/repositories/runtime-storage';
-import { beginEditSession } from '../../src/cli/editing/edit-session';
+import { ensureRepositoryRuntimeStorage, ensureRepositoryRuntimeStorageBinding } from '../../src/runtime/repositories/runtime-storage';
+import { beginEditSession } from '../../src/runtime/editing/edit-session';
 import { repositoryFixture } from './repository-v81-fixture';
 
 function writeRun(root: string, runId: string, status: string, marker: string): void {
@@ -318,7 +318,7 @@ describe('v8.1 repository runtime storage isolation', () => {
     }
   });
 
-  test('blocks execution while an active legacy Run remains repository-local', async () => {
+  test('blocks edit-session creation while an active legacy Run remains repository-local', async () => {
     const fixture = repositoryFixture();
     try {
       writeRun(fixture.repoA.canonicalRoot, 'RUN-active', 'running', 'active');
@@ -329,10 +329,8 @@ describe('v8.1 repository runtime storage isolation', () => {
       expect(lstatSync(join(fixture.repoA.canonicalRoot, '.ai', 'harness', 'jobs')).isSymbolicLink()).toBe(false);
 
       const ctx = createMcpToolContext({ controllerHome: fixture.controllerHome, profile: 'controller' });
-      const result = await callMultiRepositoryTool(ctx, 'dispatch_task', {
+      const result = await callMultiRepositoryTool(ctx, 'begin_edit_session', {
         repo_id: fixture.repoA.repoId,
-        issue_id: 'ISS-missing',
-        task_id: 'TASK-missing',
       });
       expect(result.isError).toBe(true);
       expect(result.content[0].text).toContain('RUNTIME_STORAGE_NOT_READY');

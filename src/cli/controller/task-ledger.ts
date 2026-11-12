@@ -1,5 +1,5 @@
 import { projectBoard } from "./issue-store";
-import { listControllerWorklogEvents } from "./worklog";
+import { listControllerWorklogEvents } from "../../runtime/evidence/controller-worklog";
 import { legacyIssueCutoverState } from "./legacy-issue-cutover";
 import { resolveRepoPreferredControllerHome } from "../../effects/controller-home";
 import { buildRequirementBoard } from "../../runtime/control-plane/facade/requirement-board";

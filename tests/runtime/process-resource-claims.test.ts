@@ -18,9 +18,9 @@ import { join } from 'node:path';
 import { acquireExecutionLeases, acquireExecutionLeasesAsync, assertFencingToken, listActiveLeases, releaseExecutionLeases, releaseExactExecutionLeases, releaseTerminalProcessLeases, withRepositoryMutationExclusion } from '../../src/runtime/resources/leases/store';
 import { classifyRepositoryCommandRoute } from '../../src/runtime/execution/process-runtime/command-facade';
 import { ensureControllerHome, repositoryControllerRoot } from '../../src/effects/controller-home';
-import { registerRepository } from '../../src/cli/repositories/registry';
+import { registerRepository } from '../../src/runtime/repositories/registry';
 import { buildWorkflowWatchdogReport } from '../../src/runtime/watchdog/workflow-watchdog';
-import { withControllerLockAsync } from '../../src/cli/repositories/locks';
+import { withControllerLockAsync } from '../../src/effects/controller-locks';
 import { normalizeMutationOwnerIdentity } from '../../src/runtime/execution/thin-harness/mutation-gate';
 
 function lease(resourceKey: string, mode: 'read' | 'write' | 'exclusive'): ExecutionLease {

@@ -8,7 +8,7 @@ import type {
   LocalProjectCandidate,
   LocalProjectLatestSourceDiagnosis,
   RepositoryRecord,
-} from './types';
+} from '../../core/repository/types';
 
 const MAX_SCAN_DEPTH = 2;
 const MAX_SCAN_ENTRIES = 2_000;

@@ -1,7 +1,7 @@
 import {
   controllerCheckSelection,
   type ControllerCheck,
-} from '../../../cli/controller/check-runner';
+} from './check-runner';
 
 export type ControllerCheckExecutionClass = 'ordinary' | 'release' | 'live_controller_home';
 

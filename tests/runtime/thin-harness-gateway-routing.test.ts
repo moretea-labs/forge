@@ -14,10 +14,10 @@ import { callCoreCapabilityAdapter } from '../../adapters/mcp/runtime-gateway/co
 import { createMcpToolContext } from '../../adapters/mcp/server';
 import { callMultiRepositoryTool } from '../../adapters/mcp/multi-repository';
 import { ensureControllerHome } from '../../src/effects/controller-home';
-import { addRepositoryCheckout, getRepository, refreshRepositoryCheckoutGitMetadata, registerRepository, selectRepositoryCheckout, setRepositoryCheckoutLifecycle } from '../../src/cli/repositories/registry';
-import { repositoryGitStatus } from '../../src/cli/repositories/structured-git';
+import { addRepositoryCheckout, getRepository, refreshRepositoryCheckoutGitMetadata, registerRepository, selectRepositoryCheckout, setRepositoryCheckoutLifecycle } from '../../src/runtime/repositories/registry';
+import { repositoryGitStatus } from '../../src/runtime/repositories/structured-git';
 import { commitSelectedPaths } from '../../src/cli/repositories/selected-path-actions';
-import { ensureRepositoryRuntimeStorageBinding } from '../../src/cli/repositories/runtime-storage';
+import { ensureRepositoryRuntimeStorageBinding } from '../../src/runtime/repositories/runtime-storage';
 import { listExecutionJobs } from '../../src/runtime/execution/jobs/store';
 import { listLocalBridgeJobSnapshots } from '../../src/cli/local-bridge/job-store';
 import { callRepositoryTool } from '../../src/runtime/control-plane/facade/repository-tool-dispatch';
@@ -33,7 +33,7 @@ import { readControlPlaneRecord } from '../../src/runtime/control-plane/persiste
 import { runPersistedCheckViaProcessRuntime } from '../../src/runtime/execution/process-runtime/persisted-check';
 import { readPersistedCheckResultReceipt } from '../../src/runtime/execution/process-runtime/check-result';
 import { resolveRepositoryCheckStorage } from '../../src/runtime/execution/process-runtime/check-storage';
-import { appendControllerWorklogEvent, listControllerWorklogEvents, resolveControllerWorklogStorage } from '../../src/cli/controller/worklog';
+import { appendControllerWorklogEvent, listControllerWorklogEvents, resolveControllerWorklogStorage } from '../../src/runtime/evidence/controller-worklog';
 import { executionIdentityForRepository } from '../../src/runtime/control-plane/execution/execution-identity';
 import { runReadOnlyDiagnosticViaProcessRuntime } from '../../src/runtime/diagnostics/process-facade';
 import { MCP_SERVER_INSTRUCTIONS } from '../../adapters/mcp/instructions';
@@ -45,14 +45,14 @@ import {
   reconcileEditSession,
   getEditSession,
   recordEditSessionProcessCheckReceipts,
-} from '../../src/cli/editing/edit-session';
-import { getToolPolicy } from '../../src/cli/controller/tool-policy';
+} from '../../src/runtime/editing/edit-session';
+import { getToolPolicy } from '../../src/runtime/control-plane/tool-policy';
 import {
   reconcilePendingEditValidations,
   startOrJoinEditValidation,
 } from '../../src/runtime/control-plane/execution/edit-validation-coordinator';
 import { getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
-import { snapshotControllerCheck } from '../../src/cli/controller/check-runner';
+import { snapshotControllerCheck } from '../../src/runtime/execution/process-runtime/check-runner';
 import { readWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { principalFor } from '../../src/runtime/control-plane/execution/session-execution-support';
 import { verificationInputFingerprint, workspaceValidationFingerprint } from '../../src/runtime/control-plane/execution/verification-evidence';

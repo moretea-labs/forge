@@ -5,20 +5,20 @@ import { atomicWriteFile } from '../../effects/fs-transaction';
 import { resolveRepoPreferredControllerHome } from '../../effects/controller-home';
 import { runProcess } from '../../effects/process-runner';
 import { splitRepositoryGitStatus } from '../repositories/structured-git';
-import { workspaceValidationFingerprint } from '../../runtime/control-plane/execution/verification-evidence';
+import { workspaceValidationFingerprint } from '../control-plane/execution/verification-evidence';
 import {
   runControllerCheck,
   listControllerChecks,
   runControllerCheckAsync,
   type ControllerCheckResult,
-} from '../controller/check-runner';
-import { tryAppendControllerWorklogEvent } from '../controller/worklog';
-import { globMatches, resolveMcpPath } from '../../../adapters/mcp/paths';
-import type { ToolPolicy } from '../controller/tool-policy';
-import type { ProcessCheckCompletionReceipt, ProcessCheckReceiptStatus } from '../../runtime/execution/process-runtime/check-receipt';
-import { invalidateRepositoryReadCaches } from '../repository/inspector';
+} from '../execution/process-runtime/check-runner';
+import { tryAppendControllerWorklogEvent } from '../evidence/controller-worklog';
+import { globMatches, resolveMcpPath } from '../safe-tooling/path-policy';
+import type { ToolPolicy } from '../control-plane/tool-policy';
+import type { ProcessCheckCompletionReceipt, ProcessCheckReceiptStatus } from '../execution/process-runtime/check-receipt';
+import { invalidateRepositoryReadCaches } from '../repositories/inspector';
 import type { EditOperation } from './edit-operation-contract';
-import { listActiveLeases } from '../../runtime/resources/leases/store';
+import { listActiveLeases } from '../resources/leases/store';
 export type { EditOperation } from './edit-operation-contract';
 
 export type EditSessionStatus =

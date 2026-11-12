@@ -3,10 +3,10 @@ import { execFileSync } from 'child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { getToolPolicy } from '../../src/cli/controller/tool-policy';
+import { getToolPolicy } from '../../src/runtime/control-plane/tool-policy';
 import type { MultiRepositoryMcpToolContext } from '../../adapters/mcp/multi-repository';
 import { ensureControllerHome } from '../../src/effects/controller-home';
-import { registerRepository } from '../../src/cli/repositories/registry';
+import { listRepositories, registerRepository, resolveRepositorySelection } from '../../src/runtime/repositories/registry';
 import { callRuntimeTool } from '../../adapters/mcp/runtime-gateway/runtime-tools';
 import { cronDue } from '../../packages/kernel/scheduler/application/eligibility';
 import { getSchedule, saveSchedule } from '../../packages/kernel/scheduler/api/index';
@@ -66,6 +66,7 @@ function fixture() {
     toolset: 'full',
     enableChatgptBrowser: false,
     explicitRepository: repository,
+    repositoryAccess: { list: listRepositories, resolve: resolveRepositorySelection },
     audit: () => undefined,
   } as unknown as MultiRepositoryMcpToolContext;
   return { controllerHome, repository, ctx, workId };
@@ -169,7 +170,7 @@ describe('Work-free observe-only Schedule', () => {
 });
 
 describe('rh_work Scheduler MCP adapter', () => {
-  test('bounds Schedule listing and hides historical model prompts while preserving exact detail', async () => {
+  test('bounds browser Schedule listing and rejects retired controller schedule detail', async () => {
     const { controllerHome, repository, ctx, workId } = fixture();
     const first = await createShadowKeepalive(ctx, repository.repoId, 'bounded-list-first');
     const second = await createShadowKeepalive(ctx, repository.repoId, 'bounded-list-second');
@@ -192,8 +193,8 @@ describe('rh_work Scheduler MCP adapter', () => {
       include_occurrences: true,
     }));
     expect(bounded.status).toBe('ok');
-    expect(bounded.data.totalCount).toBe(3);
-    expect(bounded.data.truncated).toBe(true);
+    expect(bounded.data.totalCount).toBe(2);
+    expect(bounded.data.truncated).toBe(false);
     expect(bounded.data.schedules).toHaveLength(2);
     expect(bounded.data.schedules.every((schedule: { enabled: boolean }) => schedule.enabled)).toBe(true);
     expect(bounded.data.schedules.map((schedule: { scheduleId: string }) => schedule.scheduleId).sort()).toEqual([first, second].sort());
@@ -205,18 +206,19 @@ describe('rh_work Scheduler MCP adapter', () => {
       operation: 'schedule_list',
       limit: 100,
     }));
-    expect(all.data.totalCount).toBe(3);
+    expect(all.data.totalCount).toBe(2);
     expect(all.data.truncated).toBe(false);
-    expect(all.data.schedules).toHaveLength(3);
+    expect(all.data.schedules).toHaveLength(2);
     expect(JSON.stringify(all.data)).not.toContain('CONTINUE');
 
-    const detail = structured(await callRuntimeTool(ctx, 'rh_work', {
+    const detail = await callRuntimeTool(ctx, 'rh_work', {
       repo_id: repository.repoId,
       operation: 'schedule_get',
       schedule_id: retired,
-    }));
-    expect(detail.data.schedule.action.arguments.continuation_prompt).toContain('CONTINUE');
-    expect(detail.data.schedule.action.arguments.continuation_prompt.length).toBeGreaterThan(100);
+    });
+    expect(detail?.isError).toBe(true);
+    expect(detail?.content[0]?.text ?? '').toContain('SCHEDULE_NOT_BROWSER_OBSERVATION');
+    expect(detail?.content[0]?.text ?? '').not.toContain('CONTINUE');
   });
 
   test('routes the complete schedule lifecycle through the Scheduler adapter without external effects', async () => {
@@ -233,7 +235,7 @@ describe('rh_work Scheduler MCP adapter', () => {
       trigger_type: 'manual',
     }));
     expect(retired.status).toBe('blocked');
-    expect(retired.summary).toContain('SCHEDULE_AUTONOMOUS_CONTINUATION_RETIRED');
+    expect(retired.summary).toContain('SCHEDULE_MODE_INVALID');
 
     const listed = structured(await callRuntimeTool(ctx, 'rh_work', {
       repo_id: repository.repoId,

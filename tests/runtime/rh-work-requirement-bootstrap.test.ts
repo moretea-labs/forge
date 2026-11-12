@@ -3,10 +3,10 @@ import { execFileSync } from 'child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { getToolPolicy } from '../../src/cli/controller/tool-policy';
+import { getToolPolicy } from '../../src/runtime/control-plane/tool-policy';
 import type { MultiRepositoryMcpToolContext } from '../../adapters/mcp/multi-repository';
 import { ensureControllerHome } from '../../src/effects/controller-home';
-import { addRepositoryCheckout, registerRepository } from '../../src/cli/repositories/registry';
+import { addRepositoryCheckout, listRepositories, registerRepository, resolveRepositorySelection } from '../../src/runtime/repositories/registry';
 import { getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
 import { createPlanSemanticContext, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { createRequirement, readRequirement, updateRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
@@ -62,6 +62,7 @@ function mcpContext(controllerHome: string, repository: ReturnType<typeof regist
     toolset: 'full',
     enableChatgptBrowser: false,
     explicitRepository: repository,
+    repositoryAccess: { list: listRepositories, resolve: resolveRepositorySelection },
     audit: () => undefined,
   } as unknown as MultiRepositoryMcpToolContext;
 }

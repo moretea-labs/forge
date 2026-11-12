@@ -22,7 +22,7 @@ import {
 import { getIssue, inspectTaskReadiness, removeEphemeralIssue, updateTask } from "../controller/issue-store";
 import { readTaskRunEvidence } from "../controller/run-evidence";
 import { resolveEffectiveTaskState } from "../controller/task-status-resolver";
-import { tryAppendControllerWorklogEvent } from "../controller/worklog";
+import { tryAppendControllerWorklogEvent } from "../../runtime/evidence/controller-worklog";
 import { continueTaskAfterSuccessfulRun } from "../controller/execution-completion";
 import {
   ensureControllerEpoch,

@@ -8,7 +8,7 @@ import {
 import { existsSync, mkdirSync, renameSync } from 'fs';
 import { dirname, join } from 'path';
 import { repositoryControllerRoot } from '../../../effects/controller-home';
-import { withControllerLock } from '../../../cli/repositories/locks';
+import { withControllerLock } from '../../../effects/controller-locks';
 import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../../shared/json-files';
 import {
   type HandoffCreationReason,

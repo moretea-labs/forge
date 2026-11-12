@@ -5,7 +5,7 @@ import { fileURLToPath } from 'url';
 import { resolveControllerHome, resolveRepoPreferredControllerHome } from '../../effects/controller-home';
 import { findExecutionJob, listActiveExecutionJobs, listExecutionJobs } from '../../runtime/execution/jobs/store';
 import { readJobEvents } from '../../runtime/evidence/event-ledger';
-import { findRegisteredRepositoryByCheckoutRoot, getRepository, listRepositories } from '../repositories/registry';
+import { findRegisteredRepositoryByCheckoutRoot, getRepository, listRepositories } from '../../runtime/repositories/registry';
 import { executeReadOnlyDiagnostic, isReadOnlyDiagnosticTool } from '../../runtime/diagnostics/read-only-tool';
 import { readRepositoryProjection } from '../../runtime/projections/materialized-view';
 import { listOccurrences, listSchedules } from '../../../packages/kernel/scheduler/api/index';

@@ -20,11 +20,11 @@ import {
   controllerCheckConcurrencyClass,
   releaseControllerCheckSubscription,
   runControllerCheckAsync,
-} from "../../src/cli/controller/check-runner";
-import { FORGE_TOOL_SURFACE } from "../../src/cli/controller/runtime-config";
+} from "../../src/runtime/execution/process-runtime/check-runner";
+import { FORGE_TOOL_SURFACE } from "../../src/runtime/shared/runtime-config";
 import { createIssue, getIssue, updateTask } from "../../src/cli/controller/issue-store";
-import { beginEditSession, applyEditOperations } from "../../src/cli/editing/edit-session";
-import { getToolPolicy } from '../../src/cli/controller/tool-policy';
+import { beginEditSession, applyEditOperations } from "../../src/runtime/editing/edit-session";
+import { getToolPolicy } from '../../src/runtime/control-plane/tool-policy';
 import {
   getLocalBridgeJob,
   cancelLocalBridgeJob,
@@ -36,8 +36,8 @@ import {
   type LocalBridgeServerHandle,
 } from "../../src/cli/local-bridge/server";
 import { isProcessAlive } from "../../src/runtime/shared/process-tree";
-import { addRepositoryCheckout, loadRepositoryRegistry, registerRepository, resolveRepositorySelection } from "../../src/cli/repositories/registry";
-import { acquireControllerLock, releaseControllerLock } from "../../src/cli/repositories/locks";
+import { addRepositoryCheckout, loadRepositoryRegistry, registerRepository, resolveRepositorySelection } from "../../src/runtime/repositories/registry";
+import { acquireControllerLock, releaseControllerLock } from "../../src/effects/controller-locks";
 import { acquireExecutionLeases, releaseExecutionLeases } from '../../src/runtime/resources/leases/store';
 import { createMcpToolContext, callMultiRepositoryTool } from '../../adapters/mcp/multi-repository';
 import { createSchedule, saveOccurrence, saveSchedule } from "../../src/runtime/workflow/schedules/store";

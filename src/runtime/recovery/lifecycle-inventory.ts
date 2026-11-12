@@ -139,7 +139,7 @@ export const RUNTIME_LIFECYCLE_INVENTORY: readonly RuntimeLifecycleClassDefiniti
     retentionCapacity: 'Terminal unowned sessions retain at most the newest 200 identities and seven days of history; centralized cleanup uses bounded rotating scans/removal budgets.',
     cleanupAuthority: 'Central Runtime maintenance invokes EditSession-owned physical retention using EditSession state and current resource ownership.',
     recoverySemantics: 'Stale fingerprints reconcile into explicit session state before terminality; physical cleanup removes disposable patch/session artifacts only and never implies semantic task completion.',
-    closureStatus: 'existing_bounded', evidencePaths: ['src/cli/editing/edit-session.ts','src/cli/repositories/runtime-storage.ts','src/runtime/control-plane/runtime-cleanup.ts','tests/runtime/runtime-cleanup.test.ts'],
+    closureStatus: 'existing_bounded', evidencePaths: ['src/runtime/editing/edit-session.ts','src/runtime/repositories/runtime-storage.ts','src/runtime/control-plane/runtime-cleanup.ts','tests/runtime/runtime-cleanup.test.ts'],
   }),
   lifecycle({
     id: 'mcp_transport_session', owner: 'MCP HTTP transport lifecycle', scope: 'session', dataClass: 'execution_authority',
@@ -269,7 +269,7 @@ export const RUNTIME_LIFECYCLE_INVENTORY: readonly RuntimeLifecycleClassDefiniti
     retentionCapacity: 'Removed repositories enter a seven-day grace, then centralized maintenance may reclaim only an explicit allowlist of disposable Controller Home children under bounded scan/removal budgets. Semantic/audit/migration directories are never inferred as disposable.',
     cleanupAuthority: 'Central Runtime maintenance invokes repository namespace retention only after live Work/Job/Process/Lease/Browser-session fences and Work cleanup evidence are closed.',
     recoverySemantics: 'Unknown authority state, truncated Browser authority scans, symlinks and incomplete Work cleanup fail closed. Re-registration keeps Registry/SQLite/audit lineage while stale execution placement is rebuilt.',
-    closureStatus: 'existing_bounded', evidencePaths: ['src/runtime/control-plane/repository-namespace-retention.ts','src/runtime/control-plane/runtime-cleanup.ts','src/cli/repositories/registry.ts','tests/runtime/runtime-cleanup.test.ts'],
+    closureStatus: 'existing_bounded', evidencePaths: ['src/runtime/control-plane/repository-namespace-retention.ts','src/runtime/control-plane/runtime-cleanup.ts','src/runtime/repositories/registry.ts','tests/runtime/runtime-cleanup.test.ts'],
   }),
   lifecycle({
     id: 'sqlite_control_plane', owner: 'Controller Home SQLite persistence authority', scope: 'controller', dataClass: 'execution_authority',

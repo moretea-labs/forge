@@ -1,4 +1,4 @@
-import type { RepositoryRecord } from '../repositories/types';
+import type { RepositoryRecord } from '../../core/repository/types';
 import { evaluateSchedule, retiredScheduleReason } from '../../runtime/workflow/schedules/engine';
 import { getSchedule, listOccurrences, listSchedules, saveSchedule } from '../../../packages/kernel/scheduler/api/index';
 import type { RepositorySchedule, ScheduleOccurrence } from '../../../packages/kernel/scheduler/api/index';

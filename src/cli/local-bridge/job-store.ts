@@ -15,16 +15,16 @@ import { removeEphemeralIssue } from "../controller/issue-store";
 import {
   currentControllerCheckRevision,
   releaseControllerCheckSubscription,
-} from "../controller/check-runner";
+} from "../../runtime/execution/process-runtime/check-runner";
 import {
   DEFAULT_AGENT_TIMEOUT_MS,
   MAX_AGENT_TIMEOUT_MS,
   normalizeAgentTimeoutMs,
-} from "../controller/runtime-config";
+} from "../../runtime/shared/runtime-config";
 import { loadMcpServiceLocalConfig } from "../../../adapters/mcp/auth";
 import type { ControllerTask } from "../controller/types";
 import { taskExecutionPolicy } from "../controller/execution-policy";
-import { tryAppendControllerWorklogEvent } from "../controller/worklog";
+import { tryAppendControllerWorklogEvent } from "../../runtime/evidence/controller-worklog";
 import { resolveControllerHome, resolveRepoPreferredControllerHome } from "../../effects/controller-home";
 import { findExecutionJob } from "../../runtime/execution/jobs/store";
 import type {

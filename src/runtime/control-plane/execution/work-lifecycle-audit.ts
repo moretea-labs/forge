@@ -1,7 +1,7 @@
 import { spawnSync } from 'child_process';
 import { existsSync, realpathSync } from 'fs';
 import { resolve } from 'path';
-import type { RepositoryRecord } from '../../../cli/repositories/types';
+import type { RepositoryRecord } from '../../../core/repository/types';
 
 export interface WorkLifecycleAttention {
   jobId: string;

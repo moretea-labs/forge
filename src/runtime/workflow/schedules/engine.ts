@@ -1,7 +1,7 @@
 import { createHash } from 'crypto';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { getRepository } from '../../../cli/repositories/registry';
+import { getRepository } from '../../repositories/registry';
 import { findExecutionJob, listActiveExecutionJobs, listExecutionJobs } from '../../execution/jobs/store';
 import { readRepositoryProjection } from '../../projections/materialized-view';
 import {

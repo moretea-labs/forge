@@ -127,7 +127,7 @@ export async function repositorySnapshotAsync(
   }
   let pathFingerprints: Record<string, string> = {};
   if (includePathFingerprints) {
-    const { computePathFingerprintsAsync } = await import('../../runtime/execution/thin-harness/fingerprint-worker');
+    const { computePathFingerprintsAsync } = await import('../execution/thin-harness/fingerprint-worker');
     const fingerprintTimeoutMs = typeof options.fingerprintTimeoutMs === 'number' && Number.isFinite(options.fingerprintTimeoutMs)
       ? Math.max(1, Math.trunc(options.fingerprintTimeoutMs))
       : 5_000;

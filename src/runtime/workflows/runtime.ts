@@ -1,9 +1,9 @@
-import { withControllerLock, withControllerLockAsync } from '../../cli/repositories/locks';
+import { withControllerLock, withControllerLockAsync } from '../../effects/controller-locks';
 import { readRequirement } from '../control-plane/persistence/requirement-store';
 import { readForgeInstanceIdentity } from '../../../packages/kernel/identity/api/index';
 import { resolveProjectForRepositoryPlacement } from '../control-plane/workspace/workspace-store';
 import { createHash } from 'crypto';
-import type { RepositoryRecord } from '../../cli/repositories/types';
+import type { RepositoryRecord } from '../../core/repository/types';
 import type { ResolvedExecutionIdentity } from '../control-plane/execution/execution-identity';
 import {
   executeWorkflow,

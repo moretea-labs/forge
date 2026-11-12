@@ -12,8 +12,8 @@ import {
   type EditSessionPatchError,
 } from '../editing/edit-session';
 import { normalizeEditOperation, type EditOperation } from '../editing/edit-operation-contract';
-import { getToolPolicy } from '../controller/tool-policy';
-import type { RepositoryRecord } from './types';
+import { getToolPolicy } from '../control-plane/tool-policy';
+import type { RepositoryRecord } from '../../core/repository/types';
 import { ensureRepositoryRuntimeStorageBinding } from './runtime-storage';
 import { resolveRepoPreferredControllerHome } from '../../effects/controller-home';
 

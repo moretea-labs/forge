@@ -1,8 +1,8 @@
 import { spawn, type ChildProcess } from 'child_process';
 import { capProcessOutput, redactProcessOutput } from '../../effects/process-runner';
-import { repositoryChildProcessEnvironment } from '../../runtime/shared/process-environment';
-import { terminateProcessTree } from '../../runtime/shared/process-tree';
-import type { CanonicalRepositoryCommand } from './command-normalization';
+import { repositoryChildProcessEnvironment } from '../shared/process-environment';
+import { terminateProcessTree } from '../shared/process-tree';
+import type { CanonicalRepositoryCommand } from '../../core/repository-command/normalization';
 
 export interface SpawnCommandResult {
   ok: boolean;

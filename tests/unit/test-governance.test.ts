@@ -43,7 +43,7 @@ describe('test governance', () => {
 
   test('maps repository implementation paths to repository regressions', () => {
     const manifest = loadTestManifest(ROOT);
-    const selection = selectTests(manifest, 'affected', ['src/cli/repositories/repository-snapshot.ts']);
+    const selection = selectTests(manifest, 'affected', ['src/runtime/repositories/repository-snapshot.ts']);
     expect(selection.modules).toEqual(['repository']);
     expect(selection.files).toContain('tests/cli/repository-command-scope.test.ts');
   });

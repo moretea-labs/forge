@@ -4,11 +4,11 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { spawnSync } from "child_process";
 import { repositoryControllerRoot } from "../../src/effects/controller-home";
-import { addRepositoryCheckout, getRepository, listRepositories, refreshRepositoryCheckoutGitMetadata, registerRepository, repositorySummary } from "../../src/cli/repositories/registry";
+import { addRepositoryCheckout, getRepository, listRepositories, refreshRepositoryCheckoutGitMetadata, registerRepository, repositorySummary } from "../../src/runtime/repositories/registry";
 import { callMcpTool } from "../../adapters/mcp/tool-mapping/tools";
 import { callRepositoryTool } from "../../src/runtime/control-plane/facade/repository-tool-dispatch";
 import { repositoryToolDefinitions } from "../../adapters/mcp/tool-mapping/repository-tools";
-import { repositoryGitCommit, repositoryGitMergeBranch, repositoryGitRebaseOnto, repositoryGitStatus } from "../../src/cli/repositories/structured-git";
+import { repositoryGitCommit, repositoryGitMergeBranch, repositoryGitRebaseOnto, repositoryGitStatus } from "../../src/runtime/repositories/structured-git";
 import { callRuntimeTool, runtimeToolDefinitions } from "../../adapters/mcp/runtime-gateway/runtime-tools";
 import { createMcpToolContext } from "../../adapters/mcp/multi-repository";
 import { controllerExposureSnapshot } from '../../adapters/mcp/toolset';
@@ -23,7 +23,7 @@ import { readControllerResult } from "../../src/runtime/evidence/result-store";
 import { boundedRuntimeResult } from "../../adapters/mcp/runtime-gateway/bounded-result-runtime";
 import { applyExternalFilesystemGrant, previewExternalFilesystemGrant } from "../../src/runtime/safe-tooling/external-filesystem";
 import { terminateProcessesByCommand, waitForNoProcessesByCommand } from "../runtime/process-hygiene";
-import { clearGitIdentityCacheForTest, clearGitSnapshotCacheForTest, gitSnapshot, gitSnapshotPerformanceSnapshot, searchRepositoryMany } from "../../src/cli/repository/inspector";
+import { clearGitIdentityCacheForTest, clearGitSnapshotCacheForTest, gitSnapshot, gitSnapshotPerformanceSnapshot, searchRepositoryMany } from "../../src/runtime/repositories/inspector";
 import { seedHistoricalWorkContract } from '../helpers/historical-work-contract';
 
 test('oversized direct MCP values externalize through the existing paginated Result Store', () => {

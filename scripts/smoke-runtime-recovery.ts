@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { ensureControllerHome } from '../src/effects/controller-home';
-import { registerRepository } from '../src/cli/repositories/registry';
+import { registerRepository } from '../src/runtime/repositories/registry';
 import { listExecutionJobs } from '../src/runtime/execution/jobs/store';
 import {
   __resetLiveMonitorsForTests,

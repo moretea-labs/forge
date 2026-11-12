@@ -19,10 +19,10 @@ import {
   detectDirtyPathConflicts,
   recoveryActionById,
 } from '../../src/runtime/recovery';
-import { applyEditOperations, beginEditSession, getEditSession } from '../../src/cli/editing/edit-session';
-import { addRepositoryCheckout, getRepository, registerRepository } from '../../src/cli/repositories/registry';
-import { ensureRepositoryRuntimeStorageBinding } from '../../src/cli/repositories/runtime-storage';
-import { getToolPolicy } from '../../src/cli/controller/tool-policy';
+import { applyEditOperations, beginEditSession, getEditSession } from '../../src/runtime/editing/edit-session';
+import { addRepositoryCheckout, getRepository, registerRepository } from '../../src/runtime/repositories/registry';
+import { ensureRepositoryRuntimeStorageBinding } from '../../src/runtime/repositories/runtime-storage';
+import { getToolPolicy } from '../../src/runtime/control-plane/tool-policy';
 import { applyControllerHomeMigration } from '../../src/runtime/control-plane/persistence/controller-home-migration';
 import { assertOwnedResourceCleanupTarget, getOwnedResource, recordOwnedResource } from '../../packages/kernel/identity/api/index';
 import { managedBranchOwnedResourceId, managedBranchOwnedResourceLocator, managedWorkspaceOwnedResourceId } from '../../src/runtime/execution/managed-workspace';

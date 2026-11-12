@@ -1,7 +1,7 @@
 import { executionIdentityForRepository } from '../control-plane/execution/execution-identity';
 import { existsSync } from 'fs';
 import { resolve } from 'path';
-import type { RepositoryRecord } from '../../cli/repositories/types';
+import type { RepositoryRecord } from '../../core/repository/types';
 import {
   currentCliRuntimeTarget,
   resolveCliChildInvocation,

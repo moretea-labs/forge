@@ -1,4 +1,4 @@
-import type { ControllerCheck } from '../../../cli/controller/check-runner';
+import type { ControllerCheck } from './check-runner';
 import type { ResourceClaimSpec } from '../jobs/types';
 import { resourceClaimsConflict } from '../../resources/claims/conflicts';
 import { claimsForCheck } from './resource-claims';

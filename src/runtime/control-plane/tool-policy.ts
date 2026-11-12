@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
-import { DEFAULT_AGENT_TIMEOUT_MS, defaultLocalAgentRunners, MAX_AGENT_TIMEOUT_MS } from './runtime-config';
+import { DEFAULT_AGENT_TIMEOUT_MS, defaultLocalAgentRunners, MAX_AGENT_TIMEOUT_MS } from '../shared/runtime-config';
 
 
 export type ToolProfileName = 'planner' | 'executor' | 'controller';

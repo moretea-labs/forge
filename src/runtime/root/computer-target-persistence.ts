@@ -1,6 +1,6 @@
 import type { ComputerTargetPersistencePort } from '../../../packages/plugin-runtime/computer/target-persistence';
 import { CONTROLLER_SCOPE_REPO_ID } from '../../effects/controller-home';
-import { withControllerLockAsync } from '../../cli/repositories/locks';
+import { withControllerLockAsync } from '../../effects/controller-locks';
 import {
   deleteControlPlaneRecord,
   deleteControlPlaneRecordWithinTransaction,

@@ -3,9 +3,9 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
-import type { ToolPolicy } from '../../src/cli/controller/tool-policy';
+import type { ToolPolicy } from '../../src/runtime/control-plane/tool-policy';
 import { buildControllerContextPack } from '../../src/cli/controller/context-pack';
-import { controllerCheckSelection, listControllerChecks } from '../../src/cli/controller/check-runner';
+import { controllerCheckSelection, listControllerChecks } from '../../src/runtime/execution/process-runtime/check-runner';
 import {
   GOVERNANCE_EXCEPTIONS_PATH,
   GOVERNANCE_MAX_SOURCE_BYTES,

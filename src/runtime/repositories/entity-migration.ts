@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from 'fs';
 import { dirname, join, relative } from 'path';
-import type { EntityMigrationReport, RepositoryRecord } from './types';
+import type { EntityMigrationReport, RepositoryRecord } from '../../core/repository/types';
 
 function atomicJson(path: string, value: unknown): void {
   const temp = join(dirname(path), `.${path.split(/[\\/]/).at(-1)}.${process.pid}.${Date.now()}.tmp`);

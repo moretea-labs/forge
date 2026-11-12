@@ -15,9 +15,9 @@ import {
   snapshotControllerCheck,
   type AsyncControllerCheckOptions,
   type ControllerCheckSnapshot,
-} from '../../src/cli/controller/check-runner';
+} from '../../src/runtime/execution/process-runtime/check-runner';
 import type { RepositoryCheckStorageAuthority } from '../../src/runtime/execution/process-runtime/check-storage';
-import { registerRepository } from '../../src/cli/repositories/registry';
+import { registerRepository } from '../../src/runtime/repositories/registry';
 import { resolvePersistedCheckCliInvocation, resolvePersistedCheckProcessInvocation } from '../../adapters/mcp/runtime-gateway/persisted-check-process';
 import { runPersistedCheckSidecar } from '../../src/runtime/execution/process-runtime/check-runner-sidecar';
 import { claimsForCheck } from '../../src/runtime/execution/process-runtime/resource-claims';
@@ -441,6 +441,14 @@ describe('controller check provenance and failure classification', () => {
     writeFileSync(
       join(repoRoot, 'src/runtime/execution/process-runtime/check-runner-sidecar.ts'),
       readFileSync(join(sourceRoot, 'src/runtime/execution/process-runtime/check-runner-sidecar.ts')),
+    );
+    writeFileSync(
+      join(repoRoot, 'src/runtime/execution/process-runtime/check-runner.ts'),
+      readFileSync(join(sourceRoot, 'src/runtime/execution/process-runtime/check-runner.ts')),
+    );
+    writeFileSync(
+      join(repoRoot, 'src/effects/fs-transaction.ts'),
+      readFileSync(join(sourceRoot, 'src/effects/fs-transaction.ts')),
     );
 
     const packagePath = join(repoRoot, 'package.json');

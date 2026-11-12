@@ -1,4 +1,4 @@
-import type { RepositoryReadSession } from '../../repository/inspector';
+import type { RepositoryReadSession } from '../../../runtime/repositories/inspector';
 import type { MaterializedSourceSnippet } from './source-materializer';
 import type { StructuralIndexMetadata, StructuralNodeSummary, StructuralReadProviderResponse, unavailableStructuralProvider, unavailableStructuralProviderAsync } from './structural-provider';
 

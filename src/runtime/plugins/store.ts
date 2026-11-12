@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from 'crypto';
 import { join } from 'path';
-import type { RepositoryRecord } from '../../cli/repositories/types';
+import type { RepositoryRecord } from '../../core/repository/types';
 import { CONTROLLER_SCOPE_REPO_ID, FORGE_INSTANCE_SCOPE_KEY, controllerSystemRoot, ensureControllerHome, repositoryControllerRoot } from '../../effects/controller-home';
-import { listRepositories } from '../../cli/repositories/registry';
+import { listRepositories } from '../repositories/registry';
 import { existsSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'fs';
 import type { ExecutionJob, ResourceClaimSpec } from '../execution/jobs/types';
 import { appendRuntimeEvent } from '../evidence/event-ledger';
@@ -25,7 +25,7 @@ import { markControllerContextProjectionDirty } from '../projections/controller-
 import { acquireExecutionLeasesAsync, releaseExactExecutionLeases, renewExecutionLeases } from '../resources/leases/store';
 import { iosSimulatorResourceKey } from '../resources/claims/conflicts';
 import { isRuntimeWriteFenceError } from '../root/write-fence';
-import { ControllerLockContentionError } from '../../cli/repositories/locks';
+import { ControllerLockContentionError } from '../../effects/controller-locks';
 import type {
   AssistantPluginAdapter,
   AssistantPluginActionDescriptor,

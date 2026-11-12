@@ -1,9 +1,8 @@
-import { listRepositories, resolveRepositorySelection } from '../../../src/cli/repositories/registry';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
 
 /** Transport selection only. Repository ownership remains in Repository Registry. */
 export function selected(ctx: MultiRepositoryMcpToolContext, args: Record<string, unknown>) {
-  return resolveRepositorySelection({
+  return ctx.repositoryAccess.resolve({
     repoId: typeof args.repo_id === 'string' ? args.repo_id : undefined,
     checkoutId: typeof args.checkout_id === 'string' ? args.checkout_id : undefined,
     explicitPath: ctx.explicitRepository?.canonicalRoot,
@@ -12,8 +11,8 @@ export function selected(ctx: MultiRepositoryMcpToolContext, args: Record<string
   });
 }
 
-export function repositoryRootForRepoId(controllerHome: string, repoId: string): string | undefined {
-  return listRepositories(controllerHome).find((repository) => repository.repoId === repoId)?.canonicalRoot;
+export function repositoryRootForRepoId(ctx: MultiRepositoryMcpToolContext, repoId: string): string | undefined {
+  return ctx.repositoryAccess.list(ctx.controllerHome).find((repository) => repository.repoId === repoId)?.canonicalRoot;
 }
 
 /**
@@ -32,7 +31,7 @@ export function selectedOptional(
   const explicitRepoId = typeof args.repo_id === 'string' ? args.repo_id.trim() : '';
   const explicitCheckoutId = typeof args.checkout_id === 'string' ? args.checkout_id.trim() : '';
   if (explicitRepoId || explicitCheckoutId || ctx.explicitRepository) return selected(ctx, args);
-  const enabled = listRepositories(ctx.controllerHome).filter((record) => record.enabled);
+  const enabled = ctx.repositoryAccess.list(ctx.controllerHome).filter((record) => record.enabled);
   return enabled.length === 1 ? selected(ctx, args) : undefined;
 }
 

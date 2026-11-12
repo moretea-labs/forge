@@ -12,9 +12,9 @@ import {
   rollbackEditSession,
   type EditOperation,
   type EditSession,
-} from "../editing/edit-session";
-import { resolveMcpPath } from "../../../adapters/mcp/paths";
-import type { ToolPolicy } from '../controller/tool-policy';
+} from "../../runtime/editing/edit-session";
+import { resolveMcpPath } from "../../runtime/safe-tooling/path-policy";
+import type { ToolPolicy } from '../../runtime/control-plane/tool-policy';
 import { getAgentJob, markAgentJobClosure, markAgentJobIntegrated, markAgentJobIntegrationReview } from "./job-manager";
 import type { AgentJobMeta, AgentJobPreservationReason } from "./types";
 import { assertRuntimeMayWriteOrThrow, isRuntimeWriteFenceError } from "../../runtime/root/write-fence";

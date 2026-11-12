@@ -15,7 +15,7 @@ export async function callExecutionControlAdapter(ctx: MultiRepositoryMcpToolCon
               const job = typeof args.repo_id === 'string' ? getExecutionJob(ctx.controllerHome, args.repo_id, jobId) : findExecutionJob(ctx.controllerHome, jobId);
               if (!job) return result({ error: { code: 'JOB_NOT_FOUND', message: jobId } }, true);
               const cancelled = await cancelExecutionJob(ctx.controllerHome, job.repoId, job.jobId, typeof args.reason === 'string' ? args.reason : undefined);
-              const repoRoot = repositoryRootForRepoId(ctx.controllerHome, cancelled.repoId);
+              const repoRoot = repositoryRootForRepoId(ctx, cancelled.repoId);
               return result({ job: summarizeExecutionJob(cancelled, repoRoot) });
             }
       default: return undefined;

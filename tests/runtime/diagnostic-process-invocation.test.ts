@@ -11,7 +11,7 @@ import {
 } from '../../src/cli/runtime-invocation';
 import { resolveDiagnosticCliInvocation, runReadOnlyDiagnosticViaProcessRuntime } from '../../src/runtime/diagnostics/process-facade';
 import { ensureControllerHome } from '../../src/effects/controller-home';
-import { registerRepository } from '../../src/cli/repositories/registry';
+import { registerRepository } from '../../src/runtime/repositories/registry';
 import {
   resolvePersistedCheckCliInvocation,
   resolvePersistedCheckProcessInvocation,

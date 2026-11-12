@@ -48,7 +48,7 @@ function forbidBetween(path, startNeedle, endNeedle, expression, description) {
 forbid('adapters/mcp/runtime-gateway/runtime-tool-definitions.ts', /definition\('ios_(?:xcode_status|simulators_list|project_discover|schemes_list|simulator_boot|app_build|app_install|app_launch|simulator_screenshot|simulator_log_tail|ui_smoke_test)'/, 'retired iOS MCP aliases must not be re-exposed');
 // The orchestrator MCP profile and unregistered run_agent_goal operation were retired.
 // Do not allow a second model runner or legacy profile to reappear as a bypass.
-forbid('src/cli/controller/tool-policy.ts', /profile === 'orchestrator'|value === 'orchestrator'/, 'orchestrator MCP policy must stay retired');
+forbid('src/runtime/control-plane/tool-policy.ts', /profile === 'orchestrator'|value === 'orchestrator'/, 'orchestrator MCP policy must stay retired');
 // The desktop native Agent local harness must execute tools through the
 // protocol-neutral dispatchers, never through the MCP adapter surface.
 forbid('apps/desktop/src-tauri/resources/forge-local-tool.mjs', /adapters\/mcp/, 'local Agent harness must not import the MCP adapter execution owner');
@@ -59,7 +59,7 @@ forbid('src/runtime/execution/process-runtime/tool-dispatch.ts', /from\s+['"][^'
 for (const path of [
   'src/runtime/control-plane/facade/repository-tool-dispatch.ts',
   'src/runtime/execution/process-runtime/tool-dispatch.ts',
-  'src/cli/controller/tool-policy.ts',
+  'src/runtime/control-plane/tool-policy.ts',
 ]) {
   forbid(path, /from\s+['"][^'"]*adapters\//, 'protocol-neutral tool authority must not depend on transport adapters');
 }
@@ -1412,16 +1412,16 @@ for (const path of ['src/runtime/control-plane/global-scheduler/reconciliation.t
   forbid(path, /^function\s+isAgentDelegationJob\s*\(/m, 'delegation classification must stay in the shared child-reference owner');
 }
 // Live and sampled Git snapshots share the same porcelain partitioning semantics.
-requireText('src/cli/repositories/structured-git.ts', 'export function splitRepositoryGitStatus');
+requireText('src/runtime/repositories/structured-git.ts', 'export function splitRepositoryGitStatus');
 forbid('src/runtime/projections/git-status-sampler.ts', /^function\s+splitStatus\s*\(/m, 'Git projection must not duplicate the live porcelain parser');
 for (const path of ['src/cli/commands/init.ts', 'src/cli/commands/init-hook.ts', 'src/cli/commands/global-runtime.ts']) {
   forbid(path, /^function\s+(?:withProcessEnv|runProcess)(?:<|\()/m, 'setup commands must import their canonical synchronous process/environment owner');
 }
-requireText('src/cli/editing/edit-session.ts', 'export function findOccurrence');
-forbid('src/cli/repositories/safe-patch.ts', /^function\s+findOccurrence\s*\(/m, 'Safe Patch preflight must reuse Direct Edit anchor occurrence matching');
-requireText('src/cli/editing/edit-session.ts', 'beforeMode');
-requireText('src/cli/editing/edit-session.ts', 'afterMode');
-requireText('src/cli/editing/edit-session.ts', '{ mode: record.beforeMode }');
+requireText('src/runtime/editing/edit-session.ts', 'export function findOccurrence');
+forbid('src/runtime/repositories/safe-patch.ts', /^function\s+findOccurrence\s*\(/m, 'Safe Patch preflight must reuse Direct Edit anchor occurrence matching');
+requireText('src/runtime/editing/edit-session.ts', 'beforeMode');
+requireText('src/runtime/editing/edit-session.ts', 'afterMode');
+requireText('src/runtime/editing/edit-session.ts', '{ mode: record.beforeMode }');
 requireText('src/cli/editing/executable-modes.ts', "mode | 0o111");
 requireText('scripts/repair-executable-modes.ts', "process.argv.includes('--check')");
 requireText('package.json', 'check:executable-modes');
@@ -1988,7 +1988,7 @@ requireMissing('src/runtime/control-plane/execution/work-evidence-policy.ts');
 requireText('packages/kernel/identity/infrastructure/user-request-store.ts', "throw new Error('USER_REQUEST_WORK_SCOPE_RETIRED')");
 forbid('src/runtime/context/cognitive-attention.ts', /resolveCognitiveAttentionForWork|renderCognitiveAttentionForWork/, 'current cognition must not expose Work-scoped convenience APIs');
 forbid('packages/kernel/scheduler/domain/schedule.ts', /scheduleOwnsWork|\bworkId\b/, 'current Scheduler domain must not expose Work ownership in ScheduleResourceClaim or helper APIs');
-forbid('src/cli/editing/edit-session.ts', /\bworkId\b/, 'current EditSession schema, summary and worklog must not expose legacy Work identity');
+forbid('src/runtime/editing/edit-session.ts', /\bworkId\b/, 'current EditSession schema, summary and worklog must not expose legacy Work identity');
 forbid('src/cli/controller/task-ledger.ts', /active_work|Work in progress/, 'current TaskLedger schema must use Run terminology, not first-class Work terminology');
 forbid('src/cli/controller/operational-plan.ts', /Current Work/, 'current controller UI projection must expose Current Run, not Current Work');
 forbid(
@@ -2092,7 +2092,7 @@ forbid(
   'periodic maintenance must not query historical Work state to authorize evidence retention',
 );
 forbid(
-  'src/cli/editing/edit-session.ts',
+  'src/runtime/editing/edit-session.ts',
   /protectedWorkIds|skippedByReason\.active_work/,
   'EditSession retention must be owned by EditSession state/retention rather than Work liveness',
 );

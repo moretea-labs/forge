@@ -1,9 +1,9 @@
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
-import { listControllerChecks } from '../../../src/cli/controller/check-runner';
-import { listRepositories } from '../../../src/cli/repositories/registry';
-import { ensureRepositoryRuntimeStorage } from '../../../src/cli/repositories/runtime-storage';
-import { cachedGitIdentity } from '../../../src/cli/repository/inspector';
+import { listControllerChecks } from '../../../src/runtime/execution/process-runtime/check-runner';
+import { listRepositories } from '../../../src/runtime/repositories/registry';
+import { ensureRepositoryRuntimeStorage } from '../../../src/runtime/repositories/runtime-storage';
+import { cachedGitIdentity } from '../../../src/runtime/repositories/inspector';
 import { inferLocalControllerProcess } from '../../../src/runtime/diagnostics/performance';
 import { listExecutionJobs } from '../../../src/runtime/execution/jobs/store';
 import { listLocalBridgeJobSnapshots } from '../../../src/cli/local-bridge/job-store';

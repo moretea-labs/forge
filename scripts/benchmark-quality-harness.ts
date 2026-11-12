@@ -6,10 +6,10 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { performance } from 'perf_hooks';
 import { buildControllerContextPackAsync } from '../src/cli/controller/context-pack';
-import { getToolPolicy } from '../src/cli/controller/tool-policy';
-import { clearAllSessionCachesForTest } from '../src/cli/repository/session-cache';
+import { getToolPolicy } from '../src/runtime/control-plane/tool-policy';
+import { clearAllSessionCachesForTest } from '../src/runtime/repositories/session-cache';
 import { startLightweightRepositoryCommand } from '../src/runtime/execution/process-runtime/lightweight-managed';
-import { registerRepository } from '../src/cli/repositories/registry';
+import { registerRepository } from '../src/runtime/repositories/registry';
 import { getProcessRecord } from '../src/runtime/execution/process-runtime/store';
 import { readProcessHandleIndexEntry } from '../src/runtime/execution/process-runtime/handle-index';
 

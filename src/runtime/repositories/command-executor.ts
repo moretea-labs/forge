@@ -3,13 +3,13 @@ import { spawnSync } from 'child_process';
 import { appendFileSync, existsSync, lstatSync, mkdirSync } from 'fs';
 import { dirname, join, relative, resolve } from 'path';
 import { capProcessOutput, redactProcessOutput } from '../../effects/process-runner';
-import { MAX_AGENT_TIMEOUT_MS, MIN_AGENT_TIMEOUT_MS } from '../controller/runtime-config';
+import { MAX_AGENT_TIMEOUT_MS, MIN_AGENT_TIMEOUT_MS } from '../shared/runtime-config';
 import { scopedOperationRoot } from '../../effects/controller-home';
 import {
   classifyRepositoryCommand,
   type RepositoryCommandAuthorization,
   type RepositoryCommandClassification,
-} from './command-classifier';
+} from '../../core/repository-command/classification';
 import {
   assertCommandPathOperandsStayInRepository,
   assertRepositoryCommandInputAllowed,
@@ -18,13 +18,13 @@ import {
   type RepositoryCommandExternalPathUsage,
   resolveRepositoryCommandCwd,
 } from './command-scope';
-import { commandValue, type CanonicalRepositoryCommand, type RepositoryCommandValue } from './command-normalization';
-import { loadExternalFilesystemGrants } from '../../runtime/safe-tooling/external-filesystem';
-import type { RepositoryRecord } from './types';
-import { readRepositoryAccessPolicy } from '../../runtime/control-plane/governance/access-policy';
-import { invalidateRepositoryReadCaches } from '../repository/inspector';
-import { assertResolvedAuthorization, decideAuthorization, type AuthorizationDecision } from '../../runtime/control-plane/governance/authorization';
-import { assertRuntimeMayWriteOrThrow, isRuntimeWriteFenceError } from '../../runtime/root/write-fence';
+import { commandValue, type CanonicalRepositoryCommand, type RepositoryCommandValue } from '../../core/repository-command/normalization';
+import { loadExternalFilesystemGrants } from '../safe-tooling/external-filesystem';
+import type { RepositoryRecord } from '../../core/repository/types';
+import { readRepositoryAccessPolicy } from '../control-plane/governance/access-policy';
+import { invalidateRepositoryReadCaches } from './inspector';
+import { assertResolvedAuthorization, decideAuthorization, type AuthorizationDecision } from '../control-plane/governance/authorization';
+import { assertRuntimeMayWriteOrThrow, isRuntimeWriteFenceError } from '../root/write-fence';
 import { commandEnvironment, runCanonicalCommand, type RepositoryCommandAsyncHooks, type SpawnCommandResult } from './command-process';
 import {
   changedSnapshotPaths,
@@ -43,13 +43,13 @@ export type { RepositoryCommandAsyncHooks, SpawnCommandResult } from './command-
 export { runCanonicalCommand } from './command-process';
 export { repositorySnapshotAsync } from './repository-snapshot';
 
-export { classifyRepositoryCommand } from './command-classifier';
+export { classifyRepositoryCommand } from '../../core/repository-command/classification';
 export type {
   RepositoryCommandAuthorization,
   RepositoryCommandClassification,
   RepositoryCommandConfirmation,
   RepositoryCommandRisk,
-} from './command-classifier';
+} from '../../core/repository-command/classification';
 
 export interface ExecuteRepositoryCommandInput {
   command: string | readonly string[];

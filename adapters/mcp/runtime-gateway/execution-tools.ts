@@ -6,7 +6,7 @@ import { resolveAuthorizationRequest } from '../../../src/runtime/control-plane/
 import { readControllerResult, searchControllerResult } from '../../../src/runtime/evidence/result-store';
 import { resumeExecutionJobAfterApproval } from '../../../src/runtime/execution/jobs/store';
 import { principalFor, requireSession } from '../../../src/runtime/control-plane/execution/session-execution-support';
-import { resolveRepositorySelection } from '../../../src/cli/repositories/registry';
+import { resolveRepositorySelection } from '../../../src/runtime/repositories/registry';
 
 function definition(name: string, description: string, properties: Record<string, unknown>, required: string[] = [], readOnlyHint = false, destructiveHint = false): McpToolDefinition {
   return { name, description, inputSchema: { type: 'object', properties, ...(required.length ? { required } : {}), additionalProperties: false }, annotations: { readOnlyHint, openWorldHint: false, destructiveHint } };

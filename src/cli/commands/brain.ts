@@ -13,7 +13,7 @@ import { execFileSync } from 'child_process';
 import { configuredBrainRoot } from './brain-root';
 import { addBrainAssistantCommands } from './brain-assistant';
 import { resolveRepoPreferredControllerHome } from '../../effects/controller-home';
-import { findRegisteredRepositoryByCheckoutRoot } from '../repositories/registry';
+import { findRegisteredRepositoryByCheckoutRoot } from '../../runtime/repositories/registry';
 import { readRequirement, requirementSemanticView } from '../../runtime/control-plane/persistence/requirement-store';
 
 export type BrainLifecycle = 'always-sync' | 'archive-only' | 'never-sync';

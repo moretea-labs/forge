@@ -1,8 +1,8 @@
 import { join } from 'path';
 import { repositoryControllerRoot } from '../../effects/controller-home';
-import { selectRepositoryCheckout } from '../../cli/repositories/registry';
-import { splitRepositoryGitStatus, type RepositoryGitStatusSnapshot } from '../../cli/repositories/structured-git';
-import type { RepositoryRecord } from '../../cli/repositories/types';
+import { selectRepositoryCheckout } from '../repositories/registry';
+import { splitRepositoryGitStatus, type RepositoryGitStatusSnapshot } from '../repositories/structured-git';
+import type { RepositoryRecord } from '../../core/repository/types';
 import { runBoundedGit } from '../execution/thin-harness/async-process';
 import { readJsonFile, sanitizeFileComponent, writeJsonAtomic } from '../shared/json-files';
 

@@ -14,7 +14,7 @@ import { injectDurableCommandFields } from './runtime-gateway/router';
 import { injectCognitionSettlementFields } from './runtime-gateway/cognition-settlement';
 import { PREFERRED_FACADE_TOOL_NAMES } from './toolset-names';
 export { PREFERRED_CONTROLLER_TOOL_NAMES, PREFERRED_FACADE_TOOL_NAMES } from './toolset-names';
-import { forgeToolSurfaceFingerprint } from '../../src/cli/controller/runtime-config';
+import { forgeToolSurfaceFingerprint } from '../../src/runtime/shared/runtime-config';
 
 export type ControllerToolProfile = 'full';
 

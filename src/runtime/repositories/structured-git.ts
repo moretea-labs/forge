@@ -4,9 +4,9 @@ import { existsSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs'
 import { isAbsolute, resolve } from 'path';
 import { capProcessOutput, redactProcessOutput } from '../../effects/process-runner';
 import { executeRepositoryGitCommand, type RepositoryGitExecution } from './git-command-executor';
-import { branchRef, isProtectedRemoteBranchDeletionTarget, validateBranchName } from './branch-name-policy';
-import type { RepositoryRecord } from './types';
-import type { AuthorizationDecision } from '../../runtime/control-plane/governance/authorization';
+import { branchRef, isProtectedRemoteBranchDeletionTarget, validateBranchName } from '../../core/git-branch-policy';
+import type { RepositoryRecord } from '../../core/repository/types';
+import type { AuthorizationDecision } from '../control-plane/governance/authorization';
 
 const MAX_GIT_OUTPUT_BYTES = 512 * 1024;
 const DEFAULT_GIT_OUTPUT_BYTES = 128 * 1024;

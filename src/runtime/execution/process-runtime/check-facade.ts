@@ -14,7 +14,7 @@ import {
   snapshotControllerCheck,
   type ControllerCheck,
   type ControllerCheckSnapshot,
-} from '../../../cli/controller/check-runner';
+} from './check-runner';
 import { claimsForCheck, claimsRequireLiveDeviceAdmission, LIVE_DEVICE_ADMISSION_WAIT_MS, scopeResourceClaims, toProcessClaims } from './resource-claims';
 import { resolveCheckCompletionGraceWaitMs } from '../../control-plane/persistence/operational-prior-store';
 import { spawnWithQueuedAdmission, waitForProcess, getProcessHandle } from './runtime';

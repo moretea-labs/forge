@@ -1,6 +1,6 @@
 import { readFileSync } from 'fs';
 import { posix, resolve } from 'path';
-import type { ToolPolicy } from '../tool-policy';
+import type { ToolPolicy } from '../../../runtime/control-plane/tool-policy';
 import { readableFile } from './known-paths';
 
 const CONTRACT_NAMES = ['AGENTS.md', 'CLAUDE.md'] as const;

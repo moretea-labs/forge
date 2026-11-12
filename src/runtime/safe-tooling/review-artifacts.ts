@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readdirSync, statSync } from 'fs';
 import { join, relative, resolve, sep } from 'path';
-import type { RepositoryRecord } from '../../cli/repositories/types';
+import type { RepositoryRecord } from '../../core/repository/types';
 import { iosProjectDiscover, iosSimulatorScreenshot } from './ios-development';
 
 export interface ReviewArtifactEntry {

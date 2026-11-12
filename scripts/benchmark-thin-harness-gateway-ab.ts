@@ -22,7 +22,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawnSync } from 'child_process';
 import { controllerSystemRoot, ensureControllerHome } from '../src/effects/controller-home';
-import { registerRepository } from '../src/cli/repositories/registry';
+import { registerRepository } from '../src/runtime/repositories/registry';
 import {
   executeFast,
   executeLightweightLanes,

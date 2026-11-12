@@ -1,6 +1,6 @@
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
-import type { RepositoryRecord } from '../../../src/cli/repositories/types';
+import type { RepositoryRecord } from '../../../src/core/repository/types';
 import { createHash } from 'crypto';
 import { result } from './result-adapter';
 import { callPluginAdapter } from './plugin-adapter';

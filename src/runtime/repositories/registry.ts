@@ -17,7 +17,7 @@ import {
   ensureControllerHome,
   ensureRepositoryControllerLayout,
 } from '../../effects/controller-home';
-import { withControllerLock } from './locks';
+import { withControllerLock } from '../../effects/controller-locks';
 import {
   inferDisplayName,
   newLocalRepoId,
@@ -25,7 +25,7 @@ import {
   parseGitHubRemote,
   stableCheckoutId,
   stableRemoteRepoId,
-} from './identity';
+} from '../../core/repository/identity';
 import type {
   RepositoryCheckout,
   RepositoryCheckoutLifecycle,
@@ -35,7 +35,7 @@ import type {
   RepositorySummary,
   RepositoryType,
   RepositoryValidation,
-} from './types';
+} from '../../core/repository/types';
 
 const REGISTRY_FILE = 'repositories.json';
 const FOCUS_FILE = 'focus.json';

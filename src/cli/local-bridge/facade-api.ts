@@ -1,4 +1,4 @@
-import type { RepositoryRecord } from '../repositories/types';
+import type { RepositoryRecord } from '../../core/repository/types';
 import {
   accessModeDescriptor,
   isAccessMode,
@@ -10,7 +10,7 @@ import {
   persistControllerAccessMode,
   resolveControllerAccessState,
 } from '../../../adapters/mcp/access-mode';
-import { listControllerChecks } from '../controller/check-runner';
+import { listControllerChecks } from '../../runtime/execution/process-runtime/check-runner';
 import { createMcpToolContext, type MultiRepositoryMcpToolContext } from '../../../adapters/mcp/multi-repository';
 import { readSchedulerHealthSnapshot } from '../../runtime/control-plane/global-scheduler/scheduler';
 import { observeRuntimeStatus } from '../../runtime/root/status';
@@ -42,8 +42,8 @@ import {
 } from '../../runtime/control-plane/facade';
 import { resolveHandoffItem } from '../../runtime/control-plane/facade/handoff-inbox-store';
 import { buildRuntimeMaintenanceStatus } from '../../runtime/recovery';
-import { applySafePatch } from '../repositories/safe-patch';
-import { withControllerLock } from '../repositories/locks';
+import { applySafePatch } from '../../runtime/repositories/safe-patch';
+import { withControllerLock } from '../../effects/controller-locks';
 import { loadMcpServiceLocalConfig, loadMcpServiceRuntimeState } from '../../../adapters/mcp/auth';
 import {
   buildLocalConnectorStatusForRepo,
@@ -56,7 +56,7 @@ import {
   type UserFacingErrorClass,
   type UserFacingPhase,
 } from '../../runtime/control-plane/facade/operation-digest';
-import { repositoryGitStatus } from '../repositories/structured-git';
+import { repositoryGitStatus } from '../../runtime/repositories/structured-git';
 import { listExecutionJobs } from '../../runtime/execution/jobs/store';
 import {
   createConnectivityObservation,

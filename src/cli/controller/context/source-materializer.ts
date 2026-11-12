@@ -1,7 +1,7 @@
-import type { ToolPolicy } from '../tool-policy';
+import type { ToolPolicy } from '../../../runtime/control-plane/tool-policy';
 import { extractTypeScriptSourceSymbolsInSidecar } from '../../../runtime/context/typescript-navigation-process';
 import { redactMcpText } from '../../../../adapters/mcp/redaction';
-import { exactCodeNeedleMatches, readRepositoryRange, type RepositoryReadSession } from '../../repository/inspector';
+import { exactCodeNeedleMatches, readRepositoryRange, type RepositoryReadSession } from '../../../runtime/repositories/inspector';
 
 const DEFAULT_CONTEXT_BEFORE = 12;
 const DEFAULT_CONTEXT_AFTER = 28;

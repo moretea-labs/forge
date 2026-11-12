@@ -1,7 +1,7 @@
 import { closeSync, openSync, readSync, statSync } from 'fs';
 import { extname, resolve } from 'path';
-import { globMatches } from '../../../../adapters/mcp/paths';
-import type { ToolPolicy } from '../tool-policy';
+import { globMatches } from '../../../runtime/safe-tooling/path-policy';
+import type { ToolPolicy } from '../../../runtime/control-plane/tool-policy';
 import { readableFile } from './known-paths';
 
 export const GOVERNANCE_RULES_PATH = '.ai/context/governance-rules.json';

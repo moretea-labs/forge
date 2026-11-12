@@ -1,8 +1,8 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { stableCheckoutId } from '../../src/cli/repositories/identity';
-import type { RepositoryRecord } from '../../src/cli/repositories/types';
+import { stableCheckoutId } from '../../src/core/repository/identity';
+import type { RepositoryRecord } from '../../src/core/repository/types';
 
 export interface RepositoryFixture {
   root: string;

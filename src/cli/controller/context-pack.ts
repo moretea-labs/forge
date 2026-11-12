@@ -5,10 +5,10 @@ import {
   searchRepositoryMany,
   searchRepositoryManyAsync,
   searchRepositoryManyCacheIdentity,
-} from "../repository/inspector";
-import { globMatches } from "../../../adapters/mcp/paths";
+} from "../../runtime/repositories/inspector";
+import { globMatches } from "../../runtime/safe-tooling/path-policy";
 import { posix } from "path";
-import type { ToolPolicy } from './tool-policy';
+import type { ToolPolicy } from '../../runtime/control-plane/tool-policy';
 import { exactCodeOwnerEvidence, exactCodeOwnerQueries, materializeSource } from "./context/source-materializer";
 import { projectBoard } from "./issue-store";
 import { buildControllerTaskLedgerProjection } from "./task-ledger";
@@ -48,7 +48,7 @@ import {
 } from './context/structural-provider';
 import { buildRepositoryInstructionContext } from './context/instruction-context';
 import { resolveRepositoryGovernance } from './context/rule-resolution';
-import { controllerCheckSelection, listControllerChecks } from './check-runner';
+import { controllerCheckSelection, listControllerChecks } from '../../runtime/execution/process-runtime/check-runner';
 
 export { CONTROLLER_CONTEXT_IMPACT_DOMAINS } from './context/types';
 export type {

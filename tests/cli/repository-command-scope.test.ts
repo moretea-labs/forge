@@ -7,7 +7,7 @@ import {
   assertRepositoryCommandInputAllowed,
   assertRepositoryCommandNoPluginExecutionBypass,
   assertRepositoryCommandStableHostIdentity,
-} from '../../src/cli/repositories/command-scope';
+} from '../../src/runtime/repositories/command-scope';
 
 describe('repository command stable macOS host identity', () => {
   test('rejects direct and shell-wrapped TCC-sensitive tools', () => {

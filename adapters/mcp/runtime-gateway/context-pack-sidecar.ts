@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
-import type { ToolPolicy, ToolProfileName } from '../../../src/cli/controller/tool-policy';
+import type { ToolPolicy, ToolProfileName } from '../../../src/runtime/control-plane/tool-policy';
 import { buildControllerContextPackAsync } from '../../../src/cli/controller/context-pack';
 import type { ControllerContextPackOptions } from '../../../src/cli/controller/context/types';
 import { PROCESS_RUNTIME_RELEASE_CANARY_ARG } from '../../../src/runtime/execution/process-runtime/canary';

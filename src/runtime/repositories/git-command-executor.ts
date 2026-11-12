@@ -4,12 +4,12 @@ import { appendFileSync, mkdirSync, realpathSync } from 'fs';
 import { dirname, join, relative } from 'path';
 import { capProcessOutput, redactProcessOutput } from '../../effects/process-runner';
 import { scopedOperationRoot } from '../../effects/controller-home';
-import { classifyRepositoryCommand, type RepositoryCommandAuthorization, type RepositoryCommandClassification } from './command-classifier';
+import { classifyRepositoryCommand, type RepositoryCommandAuthorization, type RepositoryCommandClassification } from '../../core/repository-command/classification';
 import { resolveRepositoryCommandCwd } from './command-scope';
-import type { RepositoryRecord } from './types';
-import { assertResolvedAuthorization, decideAuthorization, type AuthorizationDecision } from '../../runtime/control-plane/governance/authorization';
-import { readRepositoryAccessPolicy } from '../../runtime/control-plane/governance/access-policy';
-import { invalidateRepositoryReadCaches } from '../repository/inspector';
+import type { RepositoryRecord } from '../../core/repository/types';
+import { assertResolvedAuthorization, decideAuthorization, type AuthorizationDecision } from '../control-plane/governance/authorization';
+import { readRepositoryAccessPolicy } from '../control-plane/governance/access-policy';
+import { invalidateRepositoryReadCaches } from './inspector';
 
 export interface ExecuteRepositoryGitCommandInput {
   args: string[];

@@ -2,9 +2,9 @@ import { createHash } from 'crypto';
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from 'fs';
 import { delimiter, join, resolve } from 'path';
 import { runProcess } from '../../effects/process-runner';
-import { redactSensitiveText } from '../../runtime/evidence/sensitive-output';
-import { globMatches, resolveMcpPath } from '../../../adapters/mcp/paths';
-import type { ToolPolicy } from '../controller/tool-policy';
+import { redactSensitiveText } from '../evidence/sensitive-output';
+import { globMatches, resolveMcpPath } from '../safe-tooling/path-policy';
+import type { ToolPolicy } from '../control-plane/tool-policy';
 import {
   collectSessionIdentity,
   getOrCreateSessionCache,

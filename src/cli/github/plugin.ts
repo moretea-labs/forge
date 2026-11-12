@@ -2,10 +2,10 @@ import { existsSync, readFileSync, rmSync } from "fs";
 import { join } from "path";
 import { getGitHubStatus, publishIssueToGitHub, refreshGitHubIssue, closeGitHubIssue } from "./github";
 import type { ControllerIssue } from "../controller/types";
-import { tryAppendControllerWorklogEvent } from "../controller/worklog";
+import { tryAppendControllerWorklogEvent } from "../../runtime/evidence/controller-worklog";
 import { resolveRepoPreferredControllerHome } from "../../effects/controller-home";
-import { listRepositories, updateRepository } from "../repositories/registry";
-import type { RepositoryRecord } from "../repositories/types";
+import { listRepositories, updateRepository } from "../../runtime/repositories/registry";
+import type { RepositoryRecord } from "../../core/repository/types";
 
 const CONFIG_PATH = ".forge/plugins/github.json";
 const STATUS_CACHE_TTL_MS = 30_000;

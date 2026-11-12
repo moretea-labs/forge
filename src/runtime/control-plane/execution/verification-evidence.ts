@@ -2,7 +2,7 @@ import { createHash } from 'crypto';
 import { spawnSync } from 'child_process';
 import { existsSync, lstatSync, readFileSync, readlinkSync, realpathSync } from 'fs';
 import { isAbsolute, relative, resolve } from 'path';
-import { splitRepositoryGitStatus, type RepositoryGitStatusSnapshot } from '../../../cli/repositories/structured-git';
+import { splitRepositoryGitStatus, type RepositoryGitStatusSnapshot } from '../../repositories/structured-git';
 import type { VerificationRecord } from '../facade/types';
 
 const MAX_VALIDATION_PATHS = 256;

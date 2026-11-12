@@ -16,7 +16,7 @@ import {
   saveRepositoryRegistry,
   selectRepositoryCheckout,
   setRepositoryCheckoutLifecycle,
-} from '../../src/cli/repositories/registry';
+} from '../../src/runtime/repositories/registry';
 import {
   assertExecutionIdentity,
   classifyGitCommonDirectoryDrift,

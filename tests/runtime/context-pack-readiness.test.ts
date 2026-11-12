@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { buildControllerContextPack, buildControllerContextPackAsync, type ControllerContextPackOptions } from '../../src/cli/controller/context-pack';
-import { getToolPolicy } from '../../src/cli/controller/tool-policy';
+import { getToolPolicy } from '../../src/runtime/control-plane/tool-policy';
 import { exactCodeOwnerEvidence, exactCodeOwnerQueries } from '../../src/cli/controller/context/source-materializer';
 
 const roots: string[] = [];

@@ -1,9 +1,9 @@
 import { existsSync, realpathSync, statSync } from 'fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'path';
-import type { ExternalFilesystemGrant } from '../../runtime/safe-tooling/external-filesystem';
-import { externalFilesystemGrantExpired } from '../../runtime/safe-tooling/external-filesystem';
-import type { RepositoryRecord } from './types';
-import { normalizeRepositoryCommand, type CanonicalRepositoryCommand } from './command-normalization';
+import type { ExternalFilesystemGrant } from '../safe-tooling/external-filesystem';
+import { externalFilesystemGrantExpired } from '../safe-tooling/external-filesystem';
+import type { RepositoryRecord } from '../../core/repository/types';
+import { normalizeRepositoryCommand, type CanonicalRepositoryCommand } from '../../core/repository-command/normalization';
 
 const MAX_COMMAND_LENGTH = 32 * 1024;
 

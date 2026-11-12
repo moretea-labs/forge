@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { createHash } from 'crypto';
 import { readFileSync, rmSync, writeFileSync } from 'fs';
-import { getRepository } from '../../cli/repositories/registry';
+import { getRepository } from '../repositories/registry';
 import type { AssistantPluginActionRequest } from './types';
 import { PROCESS_RUNTIME_RELEASE_CANARY_ARG } from '../execution/process-runtime/canary';
 import { submitAssistantPluginAction, submitControllerPluginAction } from './store';

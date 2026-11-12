@@ -1,8 +1,8 @@
 import { Command } from 'commander';
-import { executeRepositoryCommand } from '../repositories/command-executor';
-import { bindRepositoryEntities } from '../repositories/entity-migration';
-import { withControllerLock } from '../repositories/locks';
-import { bootstrapLocalProject, diagnoseLatestLocalProjectSource } from '../repositories/local-project-onboarding';
+import { executeRepositoryCommand } from '../../runtime/repositories/command-executor';
+import { bindRepositoryEntities } from '../../runtime/repositories/entity-migration';
+import { withControllerLock } from '../../effects/controller-locks';
+import { bootstrapLocalProject, diagnoseLatestLocalProjectSource } from '../../runtime/repositories/local-project-onboarding';
 import {
   disableRepository,
   focusRepository,
@@ -16,10 +16,10 @@ import {
   resolveRepositorySelection,
   updateRepository,
   validateRepository,
-} from '../repositories/registry';
-import { ensureRepositoryRuntimeStorage } from '../repositories/runtime-storage';
-import type { RepositoryRecord } from '../repositories/types';
-import { buildControllerWorkbench } from '../repositories/workbench';
+} from '../../runtime/repositories/registry';
+import { ensureRepositoryRuntimeStorage } from '../../runtime/repositories/runtime-storage';
+import type { RepositoryRecord } from '../../core/repository/types';
+import { buildControllerWorkbench } from '../../runtime/repositories/workbench';
 import { createUmbrellaIssue, getUmbrellaIssue, listUmbrellaIssues, updateUmbrellaTask } from '../repositories/umbrella';
 
 function output(value: unknown, json: boolean): void {

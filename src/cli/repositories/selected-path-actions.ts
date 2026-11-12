@@ -3,11 +3,11 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { join, relative, resolve } from 'path';
 import { capProcessOutput, redactProcessOutput } from '../../effects/process-runner';
 import { buildPatchHandoffArtifact } from '../../runtime/recovery/patch-handoff';
-import { executeRepositoryGitCommand, type RepositoryGitExecution } from './git-command-executor';
-import { repositoryGitStatus, resolveRepositoryGitCommitScope } from './structured-git';
-import { withControllerLock } from './locks';
+import { executeRepositoryGitCommand, type RepositoryGitExecution } from '../../runtime/repositories/git-command-executor';
+import { repositoryGitStatus, resolveRepositoryGitCommitScope } from '../../runtime/repositories/structured-git';
+import { withControllerLock } from '../../effects/controller-locks';
 import { withRepositoryMutationExclusion } from '../../runtime/resources/leases/store';
-import type { RepositoryRecord } from './types';
+import type { RepositoryRecord } from '../../core/repository/types';
 
 const DEFAULT_MAX_OUTPUT_BYTES = 128 * 1024;
 const MAX_OUTPUT_BYTES = 512 * 1024;

@@ -14,7 +14,7 @@ import {
   type ControlPlaneDatabaseInspection,
   type ControlPlaneRecord,
 } from './sqlite-store';
-import { listRepositories } from '../../../cli/repositories/registry';
+import { listRepositories } from '../../repositories/registry';
 
 const MIGRATION_NAMESPACE = 'controller_home_migration';
 const MIGRATION_SCOPE = 'controller';

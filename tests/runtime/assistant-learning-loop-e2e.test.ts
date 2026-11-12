@@ -6,9 +6,9 @@ import { join } from 'path';
 import type { WorkflowPublicationReceipt } from '../../packages/workflow-runtime/api/index';
 import { memoryAddressKey } from '../../packages/kernel/cognition/api/index';
 import { ensureForgeInstanceIdentity } from '../../packages/kernel/identity/api/index';
-import { getToolPolicy } from '../../src/cli/controller/tool-policy';
+import { getToolPolicy } from '../../src/runtime/control-plane/tool-policy';
 import { ensureControllerHome } from '../../src/effects/controller-home';
-import { registerRepository } from '../../src/cli/repositories/registry';
+import { listRepositories, registerRepository, resolveRepositorySelection } from '../../src/runtime/repositories/registry';
 import { writeWorkflowRunCheckpoint } from '../../src/runtime/control-plane/persistence/workflow-run-store';
 import { createRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { schedulePublicationOutcomeCollection } from '../../src/runtime/root/assistant-learning-loop';
@@ -155,6 +155,7 @@ describe('connected assistant learning loops', () => {
       controllerHome: fx.controllerHome,
       repoRoot: fx.repoRoot,
       explicitRepository: fx.repository,
+      repositoryAccess: { list: listRepositories, resolve: resolveRepositorySelection },
       repoId: fx.repository.repoId,
       checkoutId: fx.repository.activeCheckoutId,
       principalId: 'chatgpt-direct-learning',
@@ -333,6 +334,7 @@ describe('connected assistant learning loops', () => {
       controllerHome: fx.controllerHome,
       repoRoot: fx.repoRoot,
       explicitRepository: fx.repository,
+      repositoryAccess: { list: listRepositories, resolve: resolveRepositorySelection },
       repoId: fx.repository.repoId,
       checkoutId: fx.repository.activeCheckoutId,
       principalId: 'chatgpt-direct-learning',
@@ -508,6 +510,7 @@ describe('connected assistant learning loops', () => {
       controllerHome: fx.controllerHome,
       repoRoot: fx.repoRoot,
       explicitRepository: fx.repository,
+      repositoryAccess: { list: listRepositories, resolve: resolveRepositorySelection },
       repoId: fx.repository.repoId,
       checkoutId: fx.repository.activeCheckoutId,
       principalId: 'chatgpt-direct-learning',

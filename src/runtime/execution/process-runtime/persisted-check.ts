@@ -7,7 +7,7 @@ import {
   controllerCheckLiveExecutionStateFingerprint,
   listControllerChecks,
   snapshotControllerCheck,
-} from '../../../cli/controller/check-runner';
+} from './check-runner';
 import {
   currentCliRuntimeTarget,
   resolveCliChildInvocation,

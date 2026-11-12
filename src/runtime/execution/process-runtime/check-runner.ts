@@ -7,27 +7,27 @@ import {
   redactProcessOutput,
   runProcess,
   type ProcessRunResult,
-} from '../../effects/process-runner';
-import { atomicWriteFileSync } from '../installer/shared';
-import { runBoundedChild } from '../../runtime/shared/bounded-child-supervisor';
-import { signalProcessTree } from '../../runtime/shared/process-tree';
-import { repositoryChildProcessEnvironment, resolveBunExecutable } from '../../runtime/shared/process-environment';
-import { materializeManagedWorkspaceCheckDependencies } from '../../runtime/execution/managed-workspace';
+} from '../../../effects/process-runner';
+import { atomicWriteFileSync } from '../../../effects/fs-transaction';
+import { runBoundedChild } from '../../shared/bounded-child-supervisor';
+import { signalProcessTree } from '../../shared/process-tree';
+import { repositoryChildProcessEnvironment, resolveBunExecutable } from '../../shared/process-environment';
+import { materializeManagedWorkspaceCheckDependencies } from '../managed-workspace';
 import {
   isStructuredCheckFailureEvidence,
   STRUCTURED_CHECK_RESULT_PATH_ENV,
   type StructuredCheckFailureEvidence,
-} from '../../runtime/execution/process-runtime/check-result';
-import { readRuntimeReleaseAuthority } from '../../runtime/root/release-store';
-import { observeRuntimeStatus } from '../../runtime/root/status';
-import { readCurrentRecoveryRelease } from '../../runtime/standalone-recovery/release';
-import { acquireRecoveryOperationLock, recoveryOperationLockPath } from '../../runtime/standalone-recovery/operation-lock';
+} from './check-result';
+import { readRuntimeReleaseAuthority } from '../../root/release-store';
+import { observeRuntimeStatus } from '../../root/status';
+import { readCurrentRecoveryRelease } from '../../standalone-recovery/release';
+import { acquireRecoveryOperationLock, recoveryOperationLockPath } from '../../standalone-recovery/operation-lock';
 import {
   ensureRepositoryCheckStorage,
   resolveRepositoryCheckStorage,
   type RepositoryCheckStorageAuthority,
   type ResolvedRepositoryCheckStorage,
-} from '../../runtime/execution/process-runtime/check-storage';
+} from './check-storage';
 
 export interface ControllerCheckEffects {
   /** Repository-relative read scopes. Use [\".\"] for the whole checkout. */
@@ -122,7 +122,7 @@ const SAFE_PACKAGE_SCRIPT = /^(test(?::|$)|check(?::|$)|lint(?::|$)|typecheck(?:
  */
 function syncSupervisorBridgePath(repoRoot: string): string {
   const candidates: string[] = [
-    resolve(import.meta.dir, '../../../scripts/run-supervised-command.ts'),
+    resolve(import.meta.dir, '../../../../scripts/run-supervised-command.ts'),
   ];
   try {
     const manifestPath = join(import.meta.dir, 'manifest.json');

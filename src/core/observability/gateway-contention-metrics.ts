@@ -108,22 +108,22 @@ export function gatewayLatencySummaries(repoId?: string): GatewayLatencySummary[
       const first = samples[0]!;
       const count = samples.length;
       const durations = samples.map((sample) => sample.durationMs);
-    const rate = (outcome: GatewayMetricOutcome) => Math.round(
-      (samples.filter((sample) => sample.outcome === outcome).length / count) * 10_000,
-    ) / 10_000;
-    return {
-      repositoryBucket: first.repositoryBucket,
-      checkoutBucket: first.checkoutBucket,
-      operationClass: first.operationClass,
-      phase: first.phase,
-      count,
-      p50Ms: percentile(durations, 0.50),
-      p95Ms: percentile(durations, 0.95),
-      p99Ms: percentile(durations, 0.99),
-      successRate: rate('success'),
-      timeoutRate: rate('timeout'),
-      contentionRate: rate('contention'),
-    };
+      const rate = (outcome: GatewayMetricOutcome) => Math.round(
+        (samples.filter((sample) => sample.outcome === outcome).length / count) * 10_000,
+      ) / 10_000;
+      return {
+        repositoryBucket: first.repositoryBucket,
+        checkoutBucket: first.checkoutBucket,
+        operationClass: first.operationClass,
+        phase: first.phase,
+        count,
+        p50Ms: percentile(durations, 0.50),
+        p95Ms: percentile(durations, 0.95),
+        p99Ms: percentile(durations, 0.99),
+        successRate: rate('success'),
+        timeoutRate: rate('timeout'),
+        contentionRate: rate('contention'),
+      };
   }).sort((left, right) => keyOf(left).localeCompare(keyOf(right)));
 }
 

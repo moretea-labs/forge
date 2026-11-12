@@ -1,4 +1,4 @@
-import { withControllerLock, withControllerLockAsync } from '../../../cli/repositories/locks';
+import { withControllerLock, withControllerLockAsync } from '../../../effects/controller-locks';
 import { sanitizeFileComponent } from '../../shared/json-files';
 import { isTerminalPlanContractStatus, type PlanContract } from './types';
 

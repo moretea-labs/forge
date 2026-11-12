@@ -7,7 +7,7 @@ import {
   addRepositoryCheckout,
   registerRepository,
   selectRepositoryCheckout,
-} from '../src/cli/repositories/registry';
+} from '../src/runtime/repositories/registry';
 import { createMcpToolContext } from '../adapters/mcp/server';
 import { callMultiRepositoryTool } from '../adapters/mcp/multi-repository';
 import { callRuntimeTool } from '../adapters/mcp/runtime-gateway/runtime-tools';
@@ -24,7 +24,7 @@ import {
   spawnManagedProcess,
   waitForProcess,
 } from '../src/runtime/execution/process-runtime';
-import { controllerCheckExecutionIdentity } from '../src/cli/controller/check-runner';
+import { controllerCheckExecutionIdentity } from '../src/runtime/execution/process-runtime/check-runner';
 
 const PHASES = [
   'wallClockMs',

@@ -14,11 +14,11 @@ import {
   getEditSession,
   listEditSessions,
   type EditSessionBinding,
-} from '../../src/cli/editing/edit-session';
-import { getToolPolicy } from '../../src/cli/controller/tool-policy';
-import { registerRepository } from '../../src/cli/repositories/registry';
-import { ensureRepositoryRuntimeStorageBinding } from '../../src/cli/repositories/runtime-storage';
-import { applySafePatch } from '../../src/cli/repositories/safe-patch';
+} from '../../src/runtime/editing/edit-session';
+import { getToolPolicy } from '../../src/runtime/control-plane/tool-policy';
+import { registerRepository } from '../../src/runtime/repositories/registry';
+import { ensureRepositoryRuntimeStorageBinding } from '../../src/runtime/repositories/runtime-storage';
+import { applySafePatch } from '../../src/runtime/repositories/safe-patch';
 import { acquireExecutionLeases, listActiveLeases, releaseExecutionLeases } from '../../src/runtime/resources/leases/store';
 import { buildRuntimeMaintenanceStatus } from '../../src/runtime/recovery/maintenance-executor';
 

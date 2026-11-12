@@ -4,7 +4,7 @@ import * as path from 'path';
 import { fileURLToPath } from 'url';
 import { execFileSync, spawnSync, type StdioOptions } from 'child_process';
 import { repositoryControllerRoot, resolveControllerHome } from '../../effects/controller-home';
-import { findRegisteredRepositoryByCheckoutRoot } from '../repositories/registry';
+import { findRegisteredRepositoryByCheckoutRoot } from '../../runtime/repositories/registry';
 import { getRoute, type HookEvent, type RouteId } from './route-registry';
 
 const OPT_IN_MARKER = 'forge.config.json';

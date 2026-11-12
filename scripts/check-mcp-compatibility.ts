@@ -1,5 +1,5 @@
 import { readFileSync } from 'fs';
-import { FORGE_TOOL_SURFACE, FORGE_VERSION, forgeToolSurfaceFingerprint } from '../src/cli/controller/runtime-config';
+import { FORGE_TOOL_SURFACE, FORGE_VERSION, forgeToolSurfaceFingerprint } from '../src/runtime/shared/runtime-config';
 import { injectCognitionSettlementFields } from '../adapters/mcp/runtime-gateway/cognition-settlement';
 import { injectDurableCommandFields } from '../adapters/mcp/runtime-gateway/router';
 import { runtimePolicy } from '../adapters/mcp/multi-repository';

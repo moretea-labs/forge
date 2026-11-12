@@ -17,14 +17,14 @@ import {
 import { runSchedulerPeriodicCleanup } from '../../src/runtime/control-plane/global-scheduler/maintenance';
 import { applyRuntimeCleanup, previewRuntimeCleanup } from '../../src/runtime/maintenance/cleanup';
 import { markRepositoryProjectionDirty, persistRepositoryProjectionDirty, repositoryProjectionIsDirty } from '../../src/runtime/projections/invalidation';
-import type { RepositoryRecord } from '../../src/cli/repositories/types';
+import type { RepositoryRecord } from '../../src/core/repository/types';
 import { controllerSystemRoot, repositoryControllerRoot } from '../../src/effects/controller-home';
-import { registerRepository, removeRepository } from '../../src/cli/repositories/registry';
+import { registerRepository, removeRepository } from '../../src/runtime/repositories/registry';
 import { cleanupRetiredRepositoryNamespaces } from '../../src/runtime/control-plane/repository-namespace-retention';
 import { resolveGitExecutable } from '../../src/effects/git-executable';
 import { ensureManagedWorkspace } from '../../src/runtime/execution/managed-workspace';
-import { cleanupTerminalEditSessionRecords } from '../../src/cli/editing/edit-session';
-import { ensureRepositoryRuntimeStorage } from '../../src/cli/repositories/runtime-storage';
+import { cleanupTerminalEditSessionRecords } from '../../src/runtime/editing/edit-session';
+import { ensureRepositoryRuntimeStorage } from '../../src/runtime/repositories/runtime-storage';
 import { createSchedule, saveOccurrence } from '../../packages/kernel/scheduler/api/index';
 import { cleanupRetiredExecutionJobs, executionJobRoot } from '../../src/runtime/execution/jobs/store';
 import { writeExecutionArtifact } from '../../src/runtime/evidence/artifact-store';

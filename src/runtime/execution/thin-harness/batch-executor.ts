@@ -1,4 +1,4 @@
-import type { RepositoryRecord } from '../../../cli/repositories/types';
+import type { RepositoryRecord } from '../../../core/repository/types';
 import { writeControllerResult } from '../../evidence/result-store';
 import { extractPatchPaths, routeExecution } from './execution-router';
 import { executeFast } from './fast-executor';

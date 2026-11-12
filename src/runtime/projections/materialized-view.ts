@@ -5,9 +5,9 @@ import { TERMINAL_JOB_STATUSES, type ExecutionJob } from '../execution/jobs/type
 import { listActiveLeases } from '../resources/leases/store';
 import { readJsonFile, writeJsonAtomic } from '../shared/json-files';
 import { repositoryControllerRoot } from '../../effects/controller-home';
-import { listRepositories } from '../../cli/repositories/registry';
-import type { RepositoryRecord } from '../../cli/repositories/types';
-import { repositoryGitStatus } from '../../cli/repositories/structured-git';
+import { listRepositories } from '../repositories/registry';
+import type { RepositoryRecord } from '../../core/repository/types';
+import { repositoryGitStatus } from '../repositories/structured-git';
 import {
   clearRepositoryProjectionDirty,
   gitRevisionsEquivalent,

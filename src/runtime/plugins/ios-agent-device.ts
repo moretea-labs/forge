@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, realpathSync } from 'fs';
 import { delimiter, dirname, isAbsolute, join } from 'path';
 import { spawnSync } from 'child_process';
 import { performance } from 'perf_hooks';
-import type { RepositoryRecord } from '../../cli/repositories/types';
+import type { RepositoryRecord } from '../../core/repository/types';
 import { repositoryControllerRoot } from '../../effects/controller-home';
 import { iosSimulatorScreenshot } from '../safe-tooling/ios-development';
 import { runBoundedProcess } from '../execution/thin-harness/async-process';

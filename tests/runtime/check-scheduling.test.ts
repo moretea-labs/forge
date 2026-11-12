@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { listControllerChecks, type ControllerCheck } from '../../src/cli/controller/check-runner';
+import { listControllerChecks, type ControllerCheck } from '../../src/runtime/execution/process-runtime/check-runner';
 import { buildCheckExecutionSchedule } from '../../src/runtime/execution/process-runtime/check-scheduling';
 
 function check(input: Partial<ControllerCheck> & Pick<ControllerCheck, 'id'>): ControllerCheck {

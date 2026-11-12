@@ -3,7 +3,7 @@
  * Focused smoke: local MCP tool surface + connector freshness semantics.
  * Does not require a live ChatGPT connector session.
  */
-import { getToolPolicy } from '../src/cli/controller/tool-policy';
+import { getToolPolicy } from '../src/runtime/control-plane/tool-policy';
 import {
   PREFERRED_CONTROLLER_TOOL_NAMES,
   PREFERRED_FACADE_TOOL_NAMES,

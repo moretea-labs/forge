@@ -1,5 +1,5 @@
 import type { GitHubStatus } from "../github/contracts";
-import type { ToolAgentRunnerName } from '../controller/tool-policy';
+import type { ToolAgentRunnerName } from '../../runtime/control-plane/tool-policy';
 import type { ControllerAgent } from "../controller/types";
 
 export type ExecutorHealthStatus =

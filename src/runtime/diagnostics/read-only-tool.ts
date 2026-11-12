@@ -1,14 +1,14 @@
-import type { RepositoryRecord } from '../../cli/repositories/types';
+import type { RepositoryRecord } from '../../core/repository/types';
 import { loadMcpRuntimeState } from '../../../adapters/mcp/auth';
-import { listControllerChecks } from '../../cli/controller/check-runner';
+import { listControllerChecks } from '../execution/process-runtime/check-runner';
 import { listLocalBridgeJobSnapshots } from '../../cli/local-bridge/job-store';
-import { ensureRepositoryRuntimeStorage } from '../../cli/repositories/runtime-storage';
-import { sessionCacheGlobalDiagnostics } from '../../cli/repository/session-cache';
+import { ensureRepositoryRuntimeStorage } from '../repositories/runtime-storage';
+import { sessionCacheGlobalDiagnostics } from '../repositories/session-cache';
 import {
   cachedGitIdentity,
   gitIdentityPerformanceSnapshot,
   gitSnapshotPerformanceSnapshot,
-} from '../../cli/repository/inspector';
+} from '../repositories/inspector';
 import { previewRuntimeCleanup } from '../maintenance/cleanup';
 import {
   buildCapabilityRecoverySnapshot,

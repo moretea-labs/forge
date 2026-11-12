@@ -25,7 +25,7 @@ import { authenticatedFacadeControllerIdentity } from '../../adapters/mcp/runtim
 import { createMcpToolContext as createMultiRepositoryContext } from '../../adapters/mcp/multi-repository';
 import { resolveControllerAccessState, persistControllerAccessMode, configuredControllerAccessMode } from '../../adapters/mcp/access-mode';
 import { createForgeMcpServer } from '../../adapters/mcp/server';
-import { registerRepository } from '../../src/cli/repositories/registry';
+import { registerRepository } from '../../src/runtime/repositories/registry';
 import { repositoryControllerRoot } from '../../src/effects/controller-home';
 import { callRepositoryTool } from '../../src/runtime/control-plane/facade/repository-tool-dispatch';
 import { buildRuntimeMaintenanceStatus } from '../../src/runtime/recovery';
@@ -41,7 +41,7 @@ import { createHandoffItem } from '../../src/runtime/control-plane/facade/handof
 import { runHandoffInboxApplication } from '../../src/runtime/control-plane/facade/handoff-inbox-application';
 import { WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { PREFERRED_CONTROLLER_TOOL_NAMES, PREFERRED_FACADE_TOOL_NAMES } from '../../adapters/mcp/toolset-names';
-import { FORGE_VERSION } from '../../src/cli/controller/runtime-config';
+import { FORGE_VERSION } from '../../src/runtime/shared/runtime-config';
 import {
   PROCESS_RUNNER_RELEASE_CANARY_CHILD_ARG,
   processRunnerReleaseCanaryChildCommand,

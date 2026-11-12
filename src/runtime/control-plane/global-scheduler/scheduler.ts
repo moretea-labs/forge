@@ -1,7 +1,7 @@
 import { execFile, type ChildProcess } from 'child_process';
 import { resolve } from 'path';
 import { cpus, freemem, loadavg } from 'os';
-import { listRepositories } from '../../../cli/repositories/registry';
+import { listRepositories } from '../../repositories/registry';
 import { writeAgentExecutableReadinessSnapshot } from '../../../cli/agent-jobs/executable-resolver';
 import {
   assertRuntimeMayWrite,

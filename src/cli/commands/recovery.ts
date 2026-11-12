@@ -11,7 +11,7 @@ import {
   parseOpenAiSecureTunnelRuntimeStatus,
   type OpenAiSecureTunnelRuntimeObservation,
 } from '../../../adapters/mcp/tunnels/openai-secure-tunnel';
-import { findRegisteredRepositoryByCheckoutRoot } from '../repositories/registry';
+import { findRegisteredRepositoryByCheckoutRoot } from '../../runtime/repositories/registry';
 import {
   resolveControllerHome,
   rollbackStoppedControllerHomeAuthorityRelocation,

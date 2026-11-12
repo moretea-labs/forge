@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from 'fs';
 import { isAbsolute, join, resolve } from 'path';
 import { pathToFileURL } from 'url';
 import { resolveControllerHome } from '../src/effects/controller-home';
-import { findRegisteredRepositoryByCheckoutRoot, getRepository } from '../src/cli/repositories/registry.ts';
+import { findRegisteredRepositoryByCheckoutRoot, getRepository } from '../src/runtime/repositories/registry';
 import { createRecoveryConfig, gatewayToken, loadRecoveryConfig } from '../src/runtime/standalone-recovery/core.ts';
 
 export const PLUGIN_ID = 'local_recovery';

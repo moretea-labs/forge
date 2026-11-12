@@ -24,7 +24,7 @@ import {
   clearAllSessionCachesForTest,
   getOrCreateSessionCache,
   invalidateSessionCachesForRepository,
-} from '../../src/cli/repository/session-cache';
+} from '../../src/runtime/repositories/session-cache';
 
 const tempRoots: string[] = [];
 

@@ -18,13 +18,13 @@ import {
 } from '../../src/runtime/plugins/ios/remote-xpc-hid';
 import { AssistantPluginError } from '../../src/runtime/plugins/errors';
 import { readInteractionSession, writeInteractionSession } from '../../src/runtime/plugins/interaction-session';
-import { registerRepository } from '../../src/cli/repositories/registry';
+import { registerRepository } from '../../src/runtime/repositories/registry';
 import { submitAssistantPluginAction, getAssistantPluginManifest, readPluginActionReceiptForRequest } from '../../src/runtime/plugins/store';
 import { computerPluginAdapter } from '../../src/runtime/plugins/computer-registration';
 import { executeAssistantPluginActionApplication } from '../../src/runtime/plugins/action-application';
 import { executeIosPluginAction } from '../../src/runtime/plugins/ios-adapter';
 import { listPluginCapabilityAuthorizations } from '../../src/runtime/plugins/capability-authorization-grants';
-import { acquireControllerLock, readControllerLock, releaseControllerLock, renewControllerLock } from '../../src/cli/repositories/locks';
+import { acquireControllerLock, readControllerLock, releaseControllerLock, renewControllerLock } from '../../src/effects/controller-locks';
 import { ensureIosDeviceOwnership, iosCoreDeviceOwnershipId, releaseIosDeviceOwnership } from '../../src/runtime/plugins/ios-device-ownership';
 
 const roots: string[] = [];
@@ -511,7 +511,7 @@ describe('CoreDevice-first physical iPhone provider', () => {
     await expect(executeAssistantPluginActionApplication({
       controllerHome: value.controllerHome, scope: { kind: 'repository', repository },
       request: { ...openRequest, requestId: 'phone-invalid-work-preflight', workId: 'work-phone-missing' },
-    })).rejects.toThrow('WORK_PLUGIN_ATTRIBUTION_NOT_FOUND');
+    })).rejects.toThrow('PLUGIN_WORK_ATTRIBUTION_RETIRED');
     expect(openedSubmission.authorization).toMatchObject({ source: 'host_permission_model', reusable: true, established: true, capabilityId: 'ios-physical-device' });
     const opened = openedSubmission.result?.result as Record<string, unknown>;
     const interactionId = String((opened.interaction as Record<string, unknown>).interactionId);

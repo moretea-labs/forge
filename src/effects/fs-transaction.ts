@@ -10,6 +10,7 @@ import {
   rmdirSync,
   rmSync,
   writeSync,
+  writeFileSync,
 } from "fs";
 import { createHash } from "crypto";
 import { basename, dirname, relative, resolve } from "path";
@@ -29,6 +30,15 @@ const BACKUP_ROOT = ".ai/harness/backups/fs-transaction";
 const LOCK_SUFFIX = ".forge.lock";
 let atomicWriteSequence = 0;
 let transactionSequence = 0;
+
+export function atomicWriteFileSync(filePath: string, content: string): void {
+  const dir = dirname(filePath);
+  mkdirSync(dir, { recursive: true });
+  const temporaryPath = filePath + '.tmp-' + process.pid + '-' + Date.now();
+  writeFileSync(temporaryPath, content, 'utf-8');
+  renameSync(temporaryPath, filePath);
+}
+
 
 export interface ApplyOperationResult {
   readonly id: string;

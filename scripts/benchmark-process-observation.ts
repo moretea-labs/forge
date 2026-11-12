@@ -9,7 +9,7 @@ import { execFileSync } from 'child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { registerRepository } from '../src/cli/repositories/registry';
+import { registerRepository } from '../src/runtime/repositories/registry';
 import { ensureControllerHome } from '../src/effects/controller-home';
 import { executionIdentityForRepository } from '../src/runtime/control-plane/execution/execution-identity';
 import { getProcessRecord, spawnManagedProcess, waitForProcess } from '../src/runtime/execution/process-runtime';

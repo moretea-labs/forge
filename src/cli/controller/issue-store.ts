@@ -25,10 +25,10 @@ import {
   resolveIssueTaskStates,
   resolveTaskDependencies,
 } from './task-status-resolver';
-import { tryAppendControllerWorklogEvent } from './worklog';
+import { tryAppendControllerWorklogEvent } from '../../runtime/evidence/controller-worklog';
 import { completionEvidenceComplete, executionScopesConflict, taskExecutionPolicy, verificationEvidencePassed } from './execution-policy';
 import { resolveCompletionTargetBranch } from './completion-target';
-import { listControllerChecks } from './check-runner';
+import { listControllerChecks } from '../../runtime/execution/process-runtime/check-runner';
 import { normalizeCheckIds } from '../../runtime/control-plane/facade/check-normalization';
 import { resolveRepoPreferredControllerHome } from '../../effects/controller-home';
 import { markControllerContextProjectionDirty } from '../../runtime/projections/controller-context';

@@ -14,7 +14,7 @@ import {
   FORGE_TOOL_SURFACE,
   FORGE_VERSION,
   forgeToolSurfaceFingerprint,
-} from '../controller/runtime-config';
+} from '../../runtime/shared/runtime-config';
 import { loadMcpServiceLocalConfig } from '../../../adapters/mcp/auth';
 import { PREFERRED_FACADE_TOOL_NAMES } from '../../../adapters/mcp/toolset-names';
 import { resolveRepoPreferredControllerHome } from '../../effects/controller-home';

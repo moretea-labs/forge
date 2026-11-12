@@ -9,7 +9,7 @@ import {
   resolveControllerAccessState,
 } from '../access-mode';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
-import { loadRepositoryRegistry, resolveRepositorySelection } from '../../../src/cli/repositories/registry';
+import { loadRepositoryRegistry, resolveRepositorySelection } from '../../../src/runtime/repositories/registry';
 import type { CallToolResult, McpToolDefinition } from './tools';
 
 function definition(

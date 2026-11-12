@@ -45,9 +45,9 @@ import { AssistantPluginError } from './errors';
 import {
   assertCommandPathOperandsStayInRepository,
   assertRepositoryCommandInputAllowed,
-} from '../../cli/repositories/command-scope';
-import { runCanonicalCommand } from '../../cli/repositories/command-executor';
-import { findRegisteredRepositoryByCheckoutRoot, listRepositories, repositoryCheckoutLifecycle } from '../../cli/repositories/registry';
+} from '../repositories/command-scope';
+import { runCanonicalCommand } from '../repositories/command-executor';
+import { findRegisteredRepositoryByCheckoutRoot, listRepositories, repositoryCheckoutLifecycle } from '../repositories/registry';
 
 const PLUGIN_ID = 'local_system';
 const MAX_OUTPUT_BYTES = 64 * 1024;

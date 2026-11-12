@@ -8,8 +8,8 @@ import { projectionObservation, readRepositoryProjectionSnapshot } from "../../.
 import { buildRuntimeOperationalView, classifyRuntimeReadinessSemantics, evaluateRuntimeHealth, RUNTIME_HEALTH_THRESHOLDS, type RuntimeOperationalView, type GradedObservation } from "../../../src/runtime/health";
 import { buildControllerTaskLedgerProjection } from "../../../src/cli/controller/task-ledger";
 import { legacyIssueAuthorityRetired } from "../../../src/cli/controller/legacy-issue-cutover";
-import { FORGE_MCP_SCHEMA_VERSION, FORGE_TOOL_SURFACE, FORGE_VERSION } from "../../../src/cli/controller/runtime-config";
-import { inspectRepositoryRuntimeStorage } from "../../../src/cli/repositories/runtime-storage";
+import { FORGE_MCP_SCHEMA_VERSION, FORGE_TOOL_SURFACE, FORGE_VERSION } from "../../../src/runtime/shared/runtime-config";
+import { inspectRepositoryRuntimeStorage } from "../../../src/runtime/repositories/runtime-storage";
 import { resolveLocalBridgeSurface } from "../../../src/runtime/shared/local-bridge-surface";
 import { listHandoffItems } from "../../../src/runtime/control-plane/facade";
 

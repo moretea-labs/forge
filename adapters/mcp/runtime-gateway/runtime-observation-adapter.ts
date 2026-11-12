@@ -7,7 +7,7 @@ import { boundedPluginArtifactImageContent, jsonPreview, result, resultWithPlugi
 import { expectedRevision, repositoryRootForRepoId, selected, stringList } from './shared-adapter';
 import { callStatusInboxAdapter, GIT_IDENTITY_SAMPLE_TTL_MS } from './status-inbox-adapter';
 import { ageMs, controllerReadinessEvidence, localControllerDiagnosticMatchesRuntime, probeLocalControllerHealth, runtimeSourceSnapshotStatus, type ControllerReadinessSignals } from './runtime-readiness-observation';
-import { listRepositories, repositorySummary, resolveRepositorySelection } from '../../../src/cli/repositories/registry';
+import { listRepositories, repositorySummary, resolveRepositorySelection } from '../../../src/runtime/repositories/registry';
 import { repositoryControllerRoot } from '../../../src/effects/controller-home';
 import { cancelExecutionJob, findExecutionJob, getExecutionJob, getExecutionJobByRequestId, listExecutionJobs } from '../../../src/runtime/execution/jobs/store';
 import { waitForExecutionJob } from '../../../src/runtime/execution/jobs/wait';
@@ -26,13 +26,13 @@ import {
   type RuntimeOperationalView,
   type GradedObservation,
 } from '../../../src/runtime/health';
-import { ensureRepositoryRuntimeStorage, inspectRepositoryRuntimeStorage } from '../../../src/cli/repositories/runtime-storage';
+import { ensureRepositoryRuntimeStorage, inspectRepositoryRuntimeStorage } from '../../../src/runtime/repositories/runtime-storage';
 import { projectBoard } from '../../../src/cli/controller/issue-store';
 import { buildControllerTaskLedgerProjection } from '../../../src/cli/controller/task-ledger';
 import { CONTROLLER_CONTEXT_IMPACT_DOMAINS, type ControllerContextImpactDomain } from '../../../src/cli/controller/context/types';
 import { legacyIssueAuthorityRetired } from '../../../src/cli/controller/legacy-issue-cutover';
 import { buildControllerOperationalPlan } from '../../../src/cli/controller/operational-plan';
-import { listControllerChecks, readLatestControllerCheckEvidence } from '../../../src/cli/controller/check-runner';
+import { listControllerChecks, readLatestControllerCheckEvidence } from '../../../src/runtime/execution/process-runtime/check-runner';
 import { listActiveAgentJobSnapshots } from '../../../src/cli/agent-jobs/job-manager';
 import {
   controllerContextPerformanceSnapshot,
@@ -49,8 +49,8 @@ import {
 import { loadMcpRuntimeState } from '../auth';
 import { resolveLocalBridgeSurface, summarizeRecentJobs } from '../../../src/runtime/shared/local-bridge-surface';
 import { listAssistantPluginManifests } from '../../../src/runtime/plugins/store';
-import { sessionCacheGlobalDiagnostics } from '../../../src/cli/repository/session-cache';
-import { cachedGitIdentity, gitIdentityPerformanceSnapshot, gitSnapshot, gitSnapshotPerformanceSnapshot } from '../../../src/cli/repository/inspector';
+import { sessionCacheGlobalDiagnostics } from '../../../src/runtime/repositories/session-cache';
+import { cachedGitIdentity, gitIdentityPerformanceSnapshot, gitSnapshot, gitSnapshotPerformanceSnapshot } from '../../../src/runtime/repositories/inspector';
 import { buildWorkflowWatchdogReport } from '../../../src/runtime/watchdog/workflow-watchdog';
 import {
   getLocalBridgeJobEventsSnapshot,
@@ -1017,7 +1017,7 @@ export async function callRuntimeObservationAdapter(ctx: MultiRepositoryMcpToolC
                 waitedMs = waited.waitedMs;
               }
               const full = args.detail_level === 'full';
-              const repoRoot = repositoryRootForRepoId(ctx.controllerHome, job.repoId);
+              const repoRoot = repositoryRootForRepoId(ctx, job.repoId);
               // summarizeExecutionJob already embeds a compact digest + single suggestedNextActions list.
               const jobSummary = summarizeExecutionJob(job, repoRoot);
               return result({
@@ -1038,7 +1038,7 @@ export async function callRuntimeObservationAdapter(ctx: MultiRepositoryMcpToolC
                 timedOut,
                 waitedMs,
                 ...(args.include_events === true
-                  ? { events: summarizeJobEvents(ctx.controllerHome, job.repoId, job.jobId) }
+                  ? { events: summarizeJobEvents(ctx, job.repoId, job.jobId) }
                   : {}),
                 next: full
                   ? 'Raw job state is intentionally not returned through MCP. Use the bounded job summary, events, and get_artifact with artifactId (ART-...), not evidenceId (EVD-...).'

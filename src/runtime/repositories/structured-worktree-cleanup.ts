@@ -2,10 +2,10 @@ import { spawnSync } from 'child_process';
 import { closeSync, existsSync, fstatSync, lstatSync, openSync, realpathSync, unlinkSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import { listOwnedResources } from '../../../packages/kernel/identity/api/index';
-import { withRepositoryMutationExclusion } from '../../runtime/resources/leases/store';
+import { withRepositoryMutationExclusion } from '../resources/leases/store';
 import { getRepository, setRepositoryCheckoutLifecycle } from './registry';
 import { executeRepositoryGitCommand, type RepositoryGitExecution } from './git-command-executor';
-import type { RepositoryRecord } from './types';
+import type { RepositoryRecord } from '../../core/repository/types';
 
 export interface RepositoryWorktreeCleanupResult {
   repoId: string;

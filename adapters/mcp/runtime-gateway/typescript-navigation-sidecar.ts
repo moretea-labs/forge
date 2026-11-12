@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
-import type { ToolPolicy, ToolProfileName } from '../../../src/cli/controller/tool-policy';
-import { resolveMcpPath } from '../paths';
+import type { ToolPolicy, ToolProfileName } from '../../../src/runtime/control-plane/tool-policy';
+import { resolveMcpPath } from '../../../src/runtime/safe-tooling/path-policy';
 import { PROCESS_RUNTIME_RELEASE_CANARY_ARG } from '../../../src/runtime/execution/process-runtime/canary';
 import {
   clearTypeScriptNavigationCache,

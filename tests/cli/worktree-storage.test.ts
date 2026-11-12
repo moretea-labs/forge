@@ -6,7 +6,7 @@ import {
   MANAGED_WORKTREE_HOME_ENV,
   managedWorktreeStorageRoot,
 } from '../../src/cli/repositories/worktree-storage';
-import type { RepositoryCheckout, RepositoryRecord } from '../../src/cli/repositories/types';
+import type { RepositoryCheckout, RepositoryRecord } from '../../src/core/repository/types';
 
 const roots: string[] = [];
 

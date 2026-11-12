@@ -1,7 +1,7 @@
 /** Local Bridge editing runs off-thread while its caller retains the single repository lock. */
 import { isMainThread, parentPort, workerData, Worker } from 'worker_threads';
 import { fileURLToPath } from 'url';
-import { finalizeEditSession, rollbackEditSession, verifyEditSession, type EditSession } from '../editing/edit-session';
+import { finalizeEditSession, rollbackEditSession, verifyEditSession, type EditSession } from '../../runtime/editing/edit-session';
 
 export type EditSessionWorkerInput =
   | { kind: 'finalize'; repoRoot: string; sessionId: string; reviewer: string; note?: string }

@@ -1,4 +1,4 @@
-import type { RepositoryRecord } from '../../../cli/repositories/types';
+import type { RepositoryRecord } from '../../../core/repository/types';
 import { getRuntimeWriteClaim } from '../../root/write-fence';
 import { rebuildRepositoryProjection, refreshRepositoryProjectionForRepository } from '../../projections/materialized-view';
 import { readRepositoryProjectionDirty } from '../../projections/invalidation';

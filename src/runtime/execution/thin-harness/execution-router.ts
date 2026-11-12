@@ -2,8 +2,8 @@ import {
   classifyRepositoryCommand,
   isSafeFixedShellCombination,
   shellCommandHasUnsafeConstructs,
-} from '../../../cli/repositories/command-classifier';
-import { normalizeRepositoryCommand } from '../../../cli/repositories/command-normalization';
+} from '../../../core/repository-command/classification';
+import { normalizeRepositoryCommand } from '../../../core/repository-command/normalization';
 import {
   FAST_BATCH_MAX_STEPS,
   FAST_BATCH_MAX_TOTAL_MS,

@@ -1,4 +1,4 @@
-import type { ToolProfileName } from '../../src/cli/controller/tool-policy';
+import type { ToolProfileName } from '../../src/runtime/control-plane/tool-policy';
 
 export function mcpServerInstructions(profile: ToolProfileName): string {
   const common = [

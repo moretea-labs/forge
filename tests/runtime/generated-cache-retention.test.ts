@@ -5,7 +5,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { cleanupControllerHomeBrowserArtifacts, cleanupGeneratedRepositoryCaches, cleanupGeneratedRepositoryCheckoutCaches, cleanupReleasableIosTestEvidence, inspectRepositoryIosTestEvidence, iosTestEvidenceResourceId, recordIosTestEvidenceOwner, recordProcessXcodeTestEvidenceOwner } from '../../src/runtime/control-plane/generated-cache-retention';
 import { getOwnedResource, markOwnedResourceRetained, recordOwnedResource } from '../../packages/kernel/identity/api/index';
-import { stableCheckoutId } from '../../src/cli/repositories/identity';
+import { stableCheckoutId } from '../../src/core/repository/identity';
 
 import { planSchedulerPeriodicMaintenance } from '../../src/runtime/control-plane/global-scheduler/maintenance';
 

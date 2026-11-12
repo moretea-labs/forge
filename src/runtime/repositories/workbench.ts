@@ -2,7 +2,7 @@ import { existsSync, readFileSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { getRepositoryFocus, listRepositories, repositorySummary, validateRepository } from './registry';
 import { ensureRepositoryRuntimeStorage } from './runtime-storage';
-import type { RepositoryRecord } from './types';
+import type { RepositoryRecord } from '../../core/repository/types';
 
 export interface WorkbenchRunSummary {
   repoId: string;

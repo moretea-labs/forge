@@ -1,5 +1,5 @@
 import { join } from 'path';
-import type { RepositoryRecord } from '../../cli/repositories/types';
+import type { RepositoryRecord } from '../../core/repository/types';
 import { repositoryControllerRoot } from '../../effects/controller-home';
 import { claimsConflict, iosSimulatorResourceKey, IOS_SIMULATOR_TEST_RESOURCE } from '../resources/claims/conflicts';
 import { listConflictingResourceLeases } from '../resources/leases/store';

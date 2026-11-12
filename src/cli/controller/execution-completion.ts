@@ -2,7 +2,7 @@ import { createHash } from 'crypto';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import type { AgentJobMeta } from '../agent-jobs/types';
-import { runControllerCheck } from './check-runner';
+import { runControllerCheck } from '../../runtime/execution/process-runtime/check-runner';
 import { cleanupEvidenceResourceBlockers, completionEvidenceComplete } from './execution-policy';
 import { acceptVerifiedTask, getIssue, recordTaskVerification, updateTask } from './issue-store';
 import type { CompletionReceipt, CompletionReceiptSource, TaskCommandEvidence, TaskVerification } from './types';

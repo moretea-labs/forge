@@ -5,7 +5,7 @@
  * repository-tool-dispatch module, which every transport shares.
  */
 import type { McpToolDefinition } from '../../../packages/protocols/mcp/tool-contract';
-import { EDIT_OPERATION_INPUT_SCHEMA } from '../../../src/cli/editing/edit-operation-contract';
+import { EDIT_OPERATION_INPUT_SCHEMA } from '../../../src/runtime/editing/edit-operation-contract';
 
 function definition(
   name: string,
