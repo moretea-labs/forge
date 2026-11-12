@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { generateKeyPairSync } from 'crypto';
+import { createHash, generateKeyPairSync } from 'crypto';
+import { gzipSync } from 'zlib';
 import { existsSync, mkdirSync, mkdtempSync, promises as fsPromises, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -41,7 +42,7 @@ describe('App Store Connect Xcode Cloud workflow actions', () => {
     const repoRoot = root();
     await executeAppStoreConnectPluginAction(input(repoRoot, 'configure', { enabled: true, provider: 'mock' }));
     const manifest = buildAppStoreConnectPluginManifest(1, undefined, repoRoot);
-    expect(manifest.pluginVersion).toBe('1.1.1');
+    expect(manifest.pluginVersion).toBe('1.2.0');
     expect(manifest.actions.find((action) => action.actionId === 'list_xcode_cloud_workflows')).toMatchObject({ readOnly: true, risk: 'readonly' });
     for (const actionId of ['list_bundle_ids', 'list_bundle_id_capabilities', 'list_certificates', 'list_devices', 'list_profiles']) {
       expect(manifest.actions.find((action) => action.actionId === actionId)).toMatchObject({
@@ -60,6 +61,158 @@ describe('App Store Connect Xcode Cloud workflow actions', () => {
       confirmation: 'strong_confirmation',
       requiredConfirmationText: 'update-xcode-cloud-workflow',
     });
+  });
+
+
+  test('exposes fixed-path analytics, release, review and commerce capabilities with explicit write confirmations', async () => {
+    const repoRoot = root();
+    await executeAppStoreConnectPluginAction(input(repoRoot, 'configure', { enabled: true, provider: 'mock' }));
+    const manifest = buildAppStoreConnectPluginManifest(1, undefined, repoRoot);
+    for (const id of ['get_app_store_version_build', 'list_review_submission_items',
+      'list_search_keywords', 'list_analytics_report_requests', 'list_analytics_report_segments',
+      'list_in_app_purchases', 'list_customer_reviews']) {
+      expect(manifest.actions.find(action => action.actionId === id)).toMatchObject({
+        readOnly: true, confirmation: 'none', risk: 'readonly',
+      });
+    }
+    for (const id of ['set_app_store_version_build', 'add_review_submission_item', 'create_in_app_purchase']) {
+      expect(manifest.actions.find(action => action.actionId === id)).toMatchObject({
+        readOnly: false, confirmation: 'strong_confirmation', risk: 'remote_write',
+      });
+    }
+    expect(manifest.capabilities.some(capability => capability.capabilityId === 'analytics-and-aso')).toBe(true);
+    expect(manifest.capabilities.some(capability => capability.capabilityId === 'commerce')).toBe(true);
+  });
+
+  test('dry run builds official review/version, snapshot and IAP requests without remote writes', async () => {
+    const repoRoot = root();
+    await executeAppStoreConnectPluginAction(input(repoRoot, 'configure', { enabled: true, provider: 'mock' }));
+    const build = await executeAppStoreConnectPluginAction(input(repoRoot, 'set_app_store_version_build',
+      { version_id: 'version-1', build_id: 'build-9', dry_run: true }));
+    expect(build).toMatchObject({ dryRun: true, request: { method: 'PATCH',
+      path: '/v1/appStoreVersions/version-1/relationships/build',
+      body: { data: { type: 'builds', id: 'build-9' } } } });
+    const item = await executeAppStoreConnectPluginAction(input(repoRoot, 'add_review_submission_item',
+      { review_submission_id: 'submission-1', item_type: 'appStoreVersions', item_id: 'version-1', dry_run: true }));
+    expect(item).toMatchObject({ dryRun: true, request: { method: 'POST', path: '/v1/reviewSubmissionItems',
+      body: { data: { relationships: { appStoreVersion: { data: { type: 'appStoreVersions', id: 'version-1' } } } } } } });
+    const analytics = await executeAppStoreConnectPluginAction(input(repoRoot, 'request_analytics_report',
+      { app_id: 'app-1', access_type: 'ONE_TIME_SNAPSHOT', dry_run: true }));
+    expect(analytics).toMatchObject({ dryRun: true, request: { method: 'POST', path: '/v1/analyticsReportRequests',
+      body: { data: { attributes: { accessType: 'ONE_TIME_SNAPSHOT' },
+        relationships: { app: { data: { id: 'app-1' } } } } } } });
+    const purchase = await executeAppStoreConnectPluginAction(input(repoRoot, 'create_in_app_purchase',
+      { app_id: 'app-1', name: 'Pro', product_id: 'com.example.pro', purchase_type: 'NON_CONSUMABLE', dry_run: true }));
+    expect(purchase).toMatchObject({ dryRun: true, request: { method: 'POST', path: '/v2/inAppPurchases',
+      body: { data: { attributes: { productId: 'com.example.pro', inAppPurchaseType: 'NON_CONSUMABLE' } } } } });
+    await expect(executeAppStoreConnectPluginAction(input(repoRoot, 'request_analytics_report',
+      { access_type: 'UNSUPPORTED', dry_run: true }))).rejects.toThrow('access_type');
+    await expect(executeAppStoreConnectPluginAction(input(repoRoot, 'add_review_submission_item',
+      { review_submission_id: 's', item_type: 'userAccounts', item_id: 'u', dry_run: true }))).rejects.toThrow('Unsupported');
+  });
+
+  test('official read endpoints preserve exact version and Apple keyword query filters', async () => {
+    const repoRoot = root();
+    const privateKeyPath = join(repoRoot, 'AuthKey_EXTRA.p8');
+    const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
+    writeFileSync(privateKeyPath, privateKey.export({ type: 'pkcs8', format: 'pem' }));
+    await executeAppStoreConnectPluginAction(input(repoRoot, 'configure', {
+      enabled: true, provider: 'app-store-connect-api', issuer_id: 'issuer-extra',
+      key_id: 'key-extra', private_key_path: privateKeyPath,
+    }));
+    const original = globalThis.fetch;
+    const requests: Array<{ url: URL; method: string }> = [];
+    globalThis.fetch = (async (request: string | URL | Request, init?: RequestInit) => {
+      requests.push({ url: new URL(String(request)), method: init?.method ?? 'GET' });
+      return new Response(JSON.stringify({ data: [] }), { headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch;
+    try {
+      await executeAppStoreConnectPluginAction(input(repoRoot, 'get_app_store_version',
+        { version_id: 'version/special' }));
+      await executeAppStoreConnectPluginAction(input(repoRoot, 'list_search_keywords',
+        { app_id: 'app-1', locale: 'en-US', platform: 'IOS', limit: 25 }));
+      expect(requests[0].url.pathname).toBe('/v1/appStoreVersions/version%2Fspecial');
+      expect(requests[0].url.searchParams.get('include')).toBe('build,app,appStoreReviewDetail');
+      expect(requests[1].url.pathname).toBe('/v1/apps/app-1/searchKeywords');
+      expect(requests[1].url.searchParams.get('filter[locale]')).toBe('en-US');
+      expect(requests[1].url.searchParams.get('filter[platform]')).toBe('IOS');
+      expect(requests[1].url.searchParams.get('limit')).toBe('25');
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
+
+  test('verifies Apple-signed Analytics segment checksum and decodes bounded historical TSV', async () => {
+    const repoRoot = root();
+    const privateKeyPath = join(repoRoot, 'AuthKey_SEGMENT.p8');
+    const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
+    writeFileSync(privateKeyPath, privateKey.export({ type: 'pkcs8', format: 'pem' }));
+    await executeAppStoreConnectPluginAction(input(repoRoot, 'configure', {
+      enabled: true, provider: 'app-store-connect-api', issuer_id: 'issuer-segment',
+      key_id: 'key-segment', private_key_path: privateKeyPath,
+    }));
+    const bytes = gzipSync('Date\tSource Type\tImpressions\n2026-11-01\tApp Store search\t42\n2026-11-02\tApp Store browse\t20\n');
+    const checksum = createHash('md5').update(bytes).digest('hex');
+    const original = globalThis.fetch;
+    const assetUrl = 'https://reports.s3.us-west-2.amazonaws.com/segment.csv.gz?signed=1';
+    let invalidChecksum = false;
+    globalThis.fetch = (async (request: string | URL | Request, init?: RequestInit) => {
+      const target = String(request);
+      if (target.includes('/v1/analyticsReportSegments/')) {
+        expect(new Headers(init?.headers).get('authorization')).toMatch(/^Bearer /);
+        return Response.json({ data: { attributes: { url: assetUrl, sizeInBytes: bytes.length,
+          checksum: invalidChecksum ? '00000000000000000000000000000000' : checksum } } });
+      }
+      expect(target).toBe(assetUrl);
+      expect(new Headers(init?.headers).has('authorization')).toBe(false);
+      return new Response(bytes, { status: 200, headers: { 'content-type': 'application/a-gzip' } });
+    }) as typeof fetch;
+    try {
+      const report = await executeAppStoreConnectPluginAction(input(repoRoot, 'read_analytics_segment_data',
+        { segment_id: 'segment-1', max_rows: 1 }));
+      expect(report).toMatchObject({ checksumVerified: true, totalRows: 2, truncated: true,
+        columns: ['Date', 'Source Type', 'Impressions'], rows: [['2026-11-01','App Store search','42']] });
+      invalidChecksum = true;
+      await expect(executeAppStoreConnectPluginAction(input(repoRoot, 'read_analytics_segment_data',
+        { segment_id: 'segment-1' }))).rejects.toThrow('checksum mismatch');
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
+
+  test('uses team vendor reporting filters and decompresses official Sales and Finance TSV', async () => {
+    const repoRoot = root();
+    const privateKeyPath = join(repoRoot, 'AuthKey_SALES.p8');
+    const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
+    writeFileSync(privateKeyPath, privateKey.export({ type: 'pkcs8', format: 'pem' }));
+    await executeAppStoreConnectPluginAction(input(repoRoot, 'configure', {
+      enabled: true, provider: 'app-store-connect-api', issuer_id: 'issuer-sales',
+      key_id: 'key-sales', private_key_path: privateKeyPath,
+    }));
+    const original = globalThis.fetch;
+    const bytes = gzipSync('Date\tUnits\n2026-11-01\t12\n');
+    const urls: URL[] = [];
+    globalThis.fetch = (async (request: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(request));
+      urls.push(url);
+      expect(new Headers(init?.headers).get('authorization')).toMatch(/^Bearer /);
+      return new Response(bytes, { status: 200, headers: { 'content-type': 'application/a-gzip' } });
+    }) as typeof fetch;
+    try {
+      const sales = await executeAppStoreConnectPluginAction(input(repoRoot, 'read_sales_report',
+        { vendor_number: '12345678', report_date: '2026-11-01' }));
+      expect(sales).toMatchObject({ reportType:'sales', rows:[['2026-11-01','12']], totalRows:1 });
+      expect(urls[0]?.pathname).toBe('/v1/salesReports');
+      expect(urls[0]?.searchParams.get('filter[vendorNumber]')).toBe('12345678');
+      const finance = await executeAppStoreConnectPluginAction(input(repoRoot, 'read_finance_report',
+        { vendor_number: '12345678', report_date: '2026-10', region_code: 'ZZ' }));
+      expect(finance).toMatchObject({ reportType:'finance', totalRows:1 });
+      expect(urls[1]?.pathname).toBe('/v1/financeReports');
+      expect(urls[1]?.searchParams.get('filter[reportType]')).toBe('FINANCIAL');
+      await expect(executeAppStoreConnectPluginAction(input(repoRoot, 'read_finance_report',
+        { vendor_number:'123', report_date:'2026-11-01', region_code:'ZZ' }))).rejects.toThrow('date format');
+    } finally { globalThis.fetch = original; }
   });
 
   test('imports legacy repo-harness config only through an explicit Controller context', async () => {

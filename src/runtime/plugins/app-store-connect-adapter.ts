@@ -1,4 +1,5 @@
 import { createHash, createPrivateKey, sign } from 'crypto';
+import { gunzipSync } from 'zlib';
 import { accessSync, constants as fsConstants, existsSync, promises as fsPromises, readFileSync, statSync } from 'fs';
 import { basename, extname, isAbsolute, join, relative, resolve } from 'path';
 import type {
@@ -427,7 +428,240 @@ function permissions(ready: boolean): AssistantPluginPermissionScope[] {
     permission('appstoreconnect.release.write', 'write', 'Create App Store versions and gated review submissions.', ready),
     permission('appstoreconnect.xcodecloud.read', 'read', 'Read Xcode Cloud products and workflow configuration.', ready),
     permission('appstoreconnect.xcodecloud.write', 'write', 'Update Xcode Cloud workflow configuration after dry-run review and strong confirmation.', ready),
+    permission('appstoreconnect.analytics.read', 'read', 'Read first-party Analytics, search keywords and ASO measurements.', ready),
+    permission('appstoreconnect.analytics.write', 'write', 'Request Apple Analytics reports.', ready),
+    permission('appstoreconnect.commerce.read', 'read', 'Read In-App Purchases and subscriptions.', ready),
+    permission('appstoreconnect.commerce.write', 'write', 'Manage In-App Purchases.', ready),
+    permission('appstoreconnect.reviews.read', 'read', 'Read customer reviews and summaries.', ready),
+    permission('appstoreconnect.reviews.write', 'write', 'Reply to customer reviews.', ready),
+    permission('appstoreconnect.reports.read', 'read', 'Download Apple Sales and Finance gzip reports.', ready),
   ];
+}
+
+
+// Apple API resources remain the authority. These fixed paths only expose typed, bounded reads;
+// callers cannot supply an arbitrary URL, method, or API path.
+interface AscReadSpec {
+  id: string; title: string; scope: string; path: string; required: string[];
+  filters?: Record<string, string>; fixedQuery?: Record<string, string>;
+}
+const additionalAscReads: AscReadSpec[] = [
+  { id: 'get_app_store_version', title: 'Read App Store version', scope: 'appstoreconnect.apps.read', path: '/v1/appStoreVersions/:version_id', required: ['version_id'], fixedQuery: { include: 'build,app,appStoreReviewDetail' }, },
+  { id: 'get_app_store_version_build', title: 'Read App Store version build', scope: 'appstoreconnect.apps.read', path: '/v1/appStoreVersions/:version_id/build', required: ['version_id'], },
+  { id: 'get_review_submission', title: 'Read review submission', scope: 'appstoreconnect.apps.read', path: '/v1/reviewSubmissions/:review_submission_id', required: ['review_submission_id'], },
+  { id: 'list_review_submission_items', title: 'List review submission items', scope: 'appstoreconnect.apps.read', path: '/v1/reviewSubmissions/:review_submission_id/items', required: ['review_submission_id'], },
+  { id: 'get_app_store_review_detail', title: 'Read App Review details', scope: 'appstoreconnect.apps.read', path: '/v1/appStoreVersions/:version_id/appStoreReviewDetail', required: ['version_id'], },
+  { id: 'list_search_keywords', title: 'List configured App Store keywords', scope: 'appstoreconnect.analytics.read', path: '/v1/apps/:app_id/searchKeywords', required: [], filters: { 'locale': 'filter[locale]', 'platform': 'filter[platform]' }, },
+  { id: 'list_analytics_report_requests', title: 'List Analytics report requests', scope: 'appstoreconnect.analytics.read', path: '/v1/apps/:app_id/analyticsReportRequests', required: [], },
+  { id: 'get_analytics_report_request', title: 'Read Analytics request', scope: 'appstoreconnect.analytics.read', path: '/v1/analyticsReportRequests/:report_request_id', required: ['report_request_id'], },
+  { id: 'list_analytics_reports', title: 'List Analytics reports', scope: 'appstoreconnect.analytics.read', path: '/v1/analyticsReportRequests/:report_request_id/reports', required: ['report_request_id'], filters: { 'category': 'filter[category]' }, },
+  { id: 'list_analytics_report_instances', title: 'List report periods', scope: 'appstoreconnect.analytics.read', path: '/v1/analyticsReports/:report_id/instances', required: ['report_id'], filters: { 'granularity': 'filter[granularity]', 'processing_date': 'filter[processingDate]' }, },
+  { id: 'list_analytics_report_segments', title: 'List downloadable report segments', scope: 'appstoreconnect.analytics.read', path: '/v1/analyticsReportInstances/:instance_id/segments', required: ['instance_id'], },
+  { id: 'get_analytics_report_segment', title: 'Get report segment URL and checksum', scope: 'appstoreconnect.analytics.read', path: '/v1/analyticsReportSegments/:segment_id', required: ['segment_id'], },
+  { id: 'list_customer_reviews', title: 'List customer reviews', scope: 'appstoreconnect.reviews.read', path: '/v1/apps/:app_id/customerReviews', required: [], filters: { 'rating': 'filter[rating]', 'territory': 'filter[territory]' }, },
+  { id: 'get_customer_review', title: 'Read customer review', scope: 'appstoreconnect.reviews.read', path: '/v1/customerReviews/:review_id', required: ['review_id'], },
+  { id: 'list_customer_review_summaries', title: 'Read Apple review summaries', scope: 'appstoreconnect.reviews.read', path: '/v1/apps/:app_id/customerReviewSummarizations', required: ['platform'], filters: { 'platform': 'filter[platform]', 'territory': 'filter[territory]' }, },
+  { id: 'list_in_app_purchases', title: 'List in-app purchases v2', scope: 'appstoreconnect.commerce.read', path: '/v1/apps/:app_id/inAppPurchasesV2', required: [], },
+  { id: 'get_in_app_purchase', title: 'Read in-app purchase v2', scope: 'appstoreconnect.commerce.read', path: '/v2/inAppPurchases/:purchase_id', required: ['purchase_id'], },
+  { id: 'list_in_app_purchase_versions', title: 'List in-app purchase versions', scope: 'appstoreconnect.commerce.read', path: '/v2/inAppPurchases/:purchase_id/versions', required: ['purchase_id'], },
+  { id: 'list_subscription_groups', title: 'List subscription groups', scope: 'appstoreconnect.commerce.read', path: '/v1/apps/:app_id/subscriptionGroups', required: [], },
+  { id: 'list_subscriptions', title: 'List subscriptions in a group', scope: 'appstoreconnect.commerce.read', path: '/v1/subscriptionGroups/:group_id/subscriptions', required: ['group_id'], },
+  { id: 'get_subscription', title: 'Read subscription', scope: 'appstoreconnect.commerce.read', path: '/v1/subscriptions/:subscription_id', required: ['subscription_id'], },
+  { id: 'list_build_uploads', title: 'List Build Upload resources', scope: 'appstoreconnect.apps.read', path: '/v1/apps/:app_id/buildUploads', required: [], },
+  { id: 'list_xcode_cloud_build_runs', title: 'List Xcode Cloud build runs', scope: 'appstoreconnect.xcodecloud.read', path: '/v1/ciWorkflows/:workflow_id/buildRuns', required: ['workflow_id'], },
+  { id: 'list_custom_product_pages', title: 'List custom product pages', scope: 'appstoreconnect.analytics.read', path: '/v1/apps/:app_id/appCustomProductPages', required: [], },
+  { id: 'list_in_app_events', title: 'List in-app events', scope: 'appstoreconnect.analytics.read', path: '/v1/apps/:app_id/appEvents', required: [], },
+];
+
+function additionalAscActions(): AssistantPluginActionDescriptor[] {
+  const reads = additionalAscReads.map((spec): AssistantPluginActionDescriptor => {
+    const properties: Record<string, { type: 'string' | 'number' }> = {};
+    for (const key of new Set([...spec.required, ...Array.from(spec.path.matchAll(/:([a-z_]+)/g), (m) => m[1]!), ...Object.keys(spec.filters ?? {})])) {
+      if (key !== 'app_id') properties[key] = { type: 'string' };
+    }
+    if (spec.path.includes(':app_id')) properties.app_id = { type: 'string' };
+    properties.limit = { type: 'number' };
+    return {
+      actionId: spec.id, title: spec.title, description: spec.title + ' through the official App Store Connect API.',
+      readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 45_000,
+      cancellable: true, idempotent: true, scopes: [spec.scope],
+      resourceClaims: [{ resource: 'remote', mode: 'read' }],
+      argumentsSchema: { type: 'object', properties, required: spec.required, additionalProperties: false },
+    };
+  });
+  const writes: Array<{ id: string; title: string; scope: string; fields: string[]; required: string[]; confirmation: 'authorization' | 'strong_confirmation' }> = [
+    { id: 'set_app_store_version_build', title: 'Associate processed build with App Store version', scope: 'appstoreconnect.release.write', fields: ['version_id','build_id'], required: ['version_id','build_id'], confirmation: 'strong_confirmation' },
+    { id: 'add_review_submission_item', title: 'Add version or purchase version to review submission', scope: 'appstoreconnect.release.write', fields: ['review_submission_id','item_type','item_id'], required: ['review_submission_id','item_type','item_id'], confirmation: 'strong_confirmation' },
+    { id: 'update_app_store_review_detail', title: 'Update App Review contact and notes', scope: 'appstoreconnect.metadata.write', fields: ['review_detail_id','contact_first_name','contact_last_name','contact_phone','contact_email','notes','demo_account_required'], required: ['review_detail_id'], confirmation: 'authorization' },
+    { id: 'request_analytics_report', title: 'Request historical snapshot or ongoing Analytics reports', scope: 'appstoreconnect.analytics.write', fields: ['app_id','access_type'], required: ['access_type'], confirmation: 'authorization' },
+    { id: 'create_in_app_purchase', title: 'Create in-app purchase v2', scope: 'appstoreconnect.commerce.write', fields: ['app_id','name','product_id','purchase_type'], required: ['name','product_id','purchase_type'], confirmation: 'strong_confirmation' },
+    { id: 'update_in_app_purchase', title: 'Update in-app purchase v2', scope: 'appstoreconnect.commerce.write', fields: ['purchase_id','name','review_note','family_sharable'], required: ['purchase_id'], confirmation: 'authorization' },
+    { id: 'create_customer_review_response', title: 'Respond to customer review', scope: 'appstoreconnect.reviews.write', fields: ['review_id','response_body'], required: ['review_id','response_body'], confirmation: 'strong_confirmation' },
+  ];
+  const reports: AssistantPluginActionDescriptor[] = [
+    { actionId: 'read_analytics_segment_data', title: 'Read Analytics data segment', description: 'Download and verify a signed Apple Analytics TSV segment.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 60_000, cancellable: true, idempotent: true, scopes: ['appstoreconnect.analytics.read'], resourceClaims: [{resource:'remote',mode:'read'}], argumentsSchema: {type:'object',properties:{segment_id:{type:'string'},max_rows:{type:'number'}},required:['segment_id'],additionalProperties:false} },
+    ...['sales', 'finance'].map((kind): AssistantPluginActionDescriptor => ({ actionId: 'read_' + kind + '_report', title: 'Read Apple ' + kind + ' report', description: 'Download and decode a bounded Apple gzip report.', readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 60_000, cancellable: true, idempotent: true, scopes: ['appstoreconnect.reports.read'], resourceClaims: [{resource:'remote',mode:'read'}], argumentsSchema: {type:'object',properties:{vendor_number:{type:'string'},report_date:{type:'string'},region_code:{type:'string'},frequency:{type:'string'},report_type:{type:'string'},report_sub_type:{type:'string'},version:{type:'string'},max_rows:{type:'number'}},required:kind==='finance'?['vendor_number','report_date','region_code']:['vendor_number','report_date'],additionalProperties:false} })),
+  ];
+  return [...reads, ...reports, ...writes.map((spec): AssistantPluginActionDescriptor => {
+    const properties: Record<string, unknown> = { dry_run: { type: 'boolean' } };
+    for (const field of spec.fields) properties[field] = { type: field === 'demo_account_required' || field === 'family_sharable' ? 'boolean' : 'string' };
+    return {
+      actionId: spec.id, title: spec.title, description: spec.title + '. Review dry_run before applying.',
+      readOnly: false, risk: 'remote_write', confirmation: spec.confirmation,
+      ...(spec.confirmation === 'strong_confirmation' ? { requiredConfirmationText: spec.id.replaceAll('_', '-') } : {}),
+      defaultTimeoutMs: 60_000, cancellable: true, idempotent: false, scopes: [spec.scope],
+      resourceClaims: [{ resource: 'remote', mode: 'exclusive' }],
+      argumentsSchema: { type: 'object', properties, required: spec.required, additionalProperties: false },
+    };
+  })];
+}
+
+function additionalAscReadRequest(spec: AscReadSpec, args: Record<string, unknown>, config: AppStoreConnectPluginConfig) {
+  const path = spec.path.replace(/:([a-z_]+)/g, (_match, key: string) =>
+    encodeURIComponent(key === 'app_id' ? appId(args, config) : requiredArg(args, key)));
+  const query: Record<string, string | number | undefined> = { ...spec.fixedQuery };
+  for (const [arg, parameter] of Object.entries(spec.filters ?? {})) query[parameter] = stringValue(args[arg]);
+  if (!spec.id.startsWith('get_')) query.limit = limit(args.limit);
+  return { path, query };
+}
+
+function additionalAscWriteRequest(actionId: string, args: Record<string, unknown>, config: AppStoreConnectPluginConfig):
+  { path: string; method: 'POST' | 'PATCH'; body: unknown } | undefined {
+  const resource = (type: string, id: string) => ({ data: { type, id } });
+  if (actionId === 'set_app_store_version_build')
+    return { method: 'PATCH', path: '/v1/appStoreVersions/' + encodeURIComponent(requiredArg(args, 'version_id')) + '/relationships/build',
+      body: { data: { type: 'builds', id: requiredArg(args, 'build_id') } } };
+  if (actionId === 'add_review_submission_item') {
+    const type = requiredArg(args, 'item_type');
+    if (!['appStoreVersions', 'inAppPurchaseVersions', 'subscriptionVersions', 'subscriptionGroupVersions'].includes(type))
+      throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Unsupported review submission item type.', { retryable: false });
+    return { method: 'POST', path: '/v1/reviewSubmissionItems', body: { data: {
+      type: 'reviewSubmissionItems', relationships: {
+        reviewSubmission: resource('reviewSubmissions', requiredArg(args, 'review_submission_id')),
+        [type === 'appStoreVersions' ? 'appStoreVersion' : type === 'inAppPurchaseVersions' ? 'inAppPurchaseVersion' :
+          type === 'subscriptionVersions' ? 'subscriptionVersion' : 'subscriptionGroupVersion']:
+          resource(type, requiredArg(args, 'item_id')),
+      },
+    } } };
+  }
+  if (actionId === 'update_app_store_review_detail') {
+    const id = requiredArg(args, 'review_detail_id');
+    const fields: Record<string, string> = { contact_first_name: 'contactFirstName', contact_last_name: 'contactLastName',
+      contact_phone: 'contactPhone', contact_email: 'contactEmail', notes: 'notes', demo_account_required: 'demoAccountRequired' };
+    const attrs: Record<string, unknown> = {};
+    for (const [name, target] of Object.entries(fields)) if (args[name] !== undefined) attrs[target] = args[name];
+    if (!Object.keys(attrs).length) throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'No App Review fields to change.', { retryable: false });
+    return { method: 'PATCH', path: '/v1/appStoreReviewDetails/' + encodeURIComponent(id),
+      body: { data: { type: 'appStoreReviewDetails', id, attributes: attrs } } };
+  }
+  if (actionId === 'request_analytics_report') {
+    const accessType = requiredArg(args, 'access_type');
+    if (!['ONGOING', 'ONE_TIME_SNAPSHOT'].includes(accessType))
+      throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'access_type must be ONGOING or ONE_TIME_SNAPSHOT.', { retryable: false });
+    return { method: 'POST', path: '/v1/analyticsReportRequests', body: { data: {
+      type: 'analyticsReportRequests', attributes: { accessType },
+      relationships: { app: resource('apps', appId(args, config)) },
+    } } };
+  }
+  if (actionId === 'create_in_app_purchase') {
+    const kind = requiredArg(args, 'purchase_type');
+    if (!['CONSUMABLE','NON_CONSUMABLE','NON_RENEWING_SUBSCRIPTION'].includes(kind))
+      throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Invalid in-app purchase type.', { retryable: false });
+    return { method: 'POST', path: '/v2/inAppPurchases', body: { data: {
+      type: 'inAppPurchases', attributes: { name: requiredArg(args, 'name'), productId: requiredArg(args, 'product_id'), inAppPurchaseType: kind },
+      relationships: { app: resource('apps', appId(args, config)) },
+    } } };
+  }
+  if (actionId === 'update_in_app_purchase') {
+    const id = requiredArg(args, 'purchase_id');
+    const attrs: Record<string, unknown> = {};
+    if (args.name !== undefined) attrs.name = args.name;
+    if (args.review_note !== undefined) attrs.reviewNote = args.review_note;
+    if (args.family_sharable !== undefined) attrs.familySharable = args.family_sharable;
+    if (!Object.keys(attrs).length) throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'No purchase fields to change.', { retryable: false });
+    return { method: 'PATCH', path: '/v2/inAppPurchases/' + encodeURIComponent(id),
+      body: { data: { type: 'inAppPurchases', id, attributes: attrs } } };
+  }
+  if (actionId === 'create_customer_review_response')
+    return { method: 'POST', path: '/v1/customerReviewResponses', body: { data: {
+      type: 'customerReviewResponses', attributes: { responseBody: requiredArg(args, 'response_body') },
+      relationships: { review: resource('customerReviews', requiredArg(args, 'review_id')) },
+    } } };
+  return undefined;
+}
+
+
+const ASC_MAX_COMPRESSED = 16 * 1024 * 1024;
+const ASC_MAX_UNCOMPRESSED = 64 * 1024 * 1024;
+
+function decodeAppleReport(buffer: Buffer, requestedRows: unknown) {
+  const text = gunzipSync(buffer, { maxOutputLength: ASC_MAX_UNCOMPRESSED }).toString('utf8').replace(/^\uFEFF/, '');
+  const lines = text.split(/\r?\n/).filter(Boolean);
+  const columns = (lines.shift() ?? '').split('\t');
+  const maxRows = typeof requestedRows === 'number' && Number.isInteger(requestedRows)
+    ? Math.min(500, Math.max(1, requestedRows)) : 100;
+  return { columns, rows: lines.slice(0, maxRows).map(line => line.split('\t')),
+    totalRows: lines.length, truncated: lines.length > maxRows, format: 'tsv' };
+}
+
+async function fetchAppleGzip(url: string, expectedMd5?: string, config?: AppStoreConnectPluginConfig): Promise<Buffer> {
+  const target = new URL(url);
+  // Signed URLs come from Apple's authenticated segment metadata; do not forward the Apple JWT to S3.
+  if (target.protocol !== 'https:' || !(target.hostname === 'api.appstoreconnect.apple.com'
+    || target.hostname.endsWith('.apple.com') || target.hostname.endsWith('.amazonaws.com')))
+    throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Unexpected report download host.', { retryable: false });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 60_000);
+  try {
+    const response = await fetch(url, { signal: controller.signal, redirect: 'error',
+      headers: config ? { authorization: 'Bearer ' + await createJwt(config), accept: 'application/a-gzip' }
+        : { accept: 'application/a-gzip' } });
+    if (!response.ok) throw new AssistantPluginError('PLUGIN_PROVIDER_ERROR', 'Apple report download failed.', {
+      retryable: response.status >= 500 || response.status === 429, details: { status: response.status },
+    });
+    if (Number(response.headers.get('content-length')) > ASC_MAX_COMPRESSED)
+      throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Report exceeds the inline download limit.', { retryable: false });
+    const bytes = Buffer.from(await response.arrayBuffer());
+    if (bytes.length > ASC_MAX_COMPRESSED)
+      throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Report exceeds the inline download limit.', { retryable: false });
+    if (expectedMd5 && createHash('md5').update(bytes).digest('hex').toLowerCase() !== expectedMd5.toLowerCase())
+      throw new AssistantPluginError('PLUGIN_PROVIDER_ERROR', 'Apple Analytics checksum mismatch.', { retryable: false });
+    return bytes;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function downloadAppleReport(config: AppStoreConnectPluginConfig, actionId: string, args: Record<string, unknown>):
+  Promise<Record<string, unknown>> {
+  if (actionId === 'read_analytics_segment_data') {
+    const id = requiredArg(args, 'segment_id');
+    const segment = await apiRequest<{ data: { attributes?: { checksum?: string; url?: string; sizeInBytes?: number } } }>(config,
+      { path: '/v1/analyticsReportSegments/' + encodeURIComponent(id) });
+    const { checksum, url, sizeInBytes } = segment.data.attributes ?? {};
+    if (!url) throw new AssistantPluginError('PLUGIN_PROVIDER_ERROR', 'Apple did not return a segment URL.', { retryable: false });
+    if (sizeInBytes && sizeInBytes > ASC_MAX_COMPRESSED)
+      throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Segment exceeds the inline download limit.', { retryable: false });
+    const bytes = await fetchAppleGzip(url, checksum);
+    return { segmentId: id, checksumVerified: !!checksum, compressedBytes: bytes.length,
+      ...decodeAppleReport(bytes, args.max_rows) };
+  }
+  const finance = actionId === 'read_finance_report';
+  const date = requiredArg(args, 'report_date');
+  if (!(finance ? /^\d{4}-\d{2}$/.test(date) : /^\d{4}-\d{2}-\d{2}$/.test(date)))
+    throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Invalid report date format.', { retryable: false });
+  const vendor = requiredArg(args, 'vendor_number');
+  const query = finance
+    ? { 'filter[regionCode]': requiredArg(args, 'region_code'), 'filter[reportDate]': date,
+      'filter[reportType]': stringValue(args.report_type) ?? 'FINANCIAL', 'filter[vendorNumber]': vendor }
+    : { 'filter[frequency]': stringValue(args.frequency) ?? 'DAILY', 'filter[reportDate]': date,
+      'filter[reportType]': stringValue(args.report_type) ?? 'SALES',
+      'filter[reportSubType]': stringValue(args.report_sub_type) ?? 'SUMMARY',
+      'filter[vendorNumber]': vendor, 'filter[version]': stringValue(args.version) ?? '1_0' };
+  const bytes = await fetchAppleGzip(API_BASE_URL + (finance ? '/v1/financeReports' : '/v1/salesReports')
+    + buildQueryString(query), undefined, config);
+  return { reportType: finance ? 'finance' : 'sales', reportDate: date,
+    compressedBytes: bytes.length, ...decodeAppleReport(bytes, args.max_rows) };
 }
 
 function capabilities(): AssistantPluginCapability[] {
@@ -478,8 +712,12 @@ function capabilities(): AssistantPluginCapability[] {
       title: 'Release Operations',
       description: 'Create App Store versions and gated review submissions with strong confirmation.',
       scopes: ['appstoreconnect.release.write'],
-      actions: ['create_app_store_version', 'create_review_submission', 'submit_for_review'],
+      actions: ['create_app_store_version', 'create_review_submission', 'submit_for_review', 'set_app_store_version_build', 'add_review_submission_item', 'get_app_store_version', 'get_app_store_version_build', 'get_review_submission', 'list_review_submission_items', 'get_app_store_review_detail', 'update_app_store_review_detail'],
     },
+    { capabilityId: 'sales-finance', title: 'Sales and Finance Reports', description: 'Download bounded official TSV reports.', scopes: ['appstoreconnect.reports.read', 'appstoreconnect.analytics.read'], actions: ['read_sales_report', 'read_finance_report', 'read_analytics_segment_data'] },
+    { capabilityId: 'analytics-and-aso', title: 'Analytics and ASO', description: 'Read Apple Analytics reports, historical snapshots, keyword configuration, and store discovery.', scopes: ['appstoreconnect.analytics.read','appstoreconnect.analytics.write'], actions: [...additionalAscReads.filter(s => s.scope === 'appstoreconnect.analytics.read').map(s => s.id), 'request_analytics_report'] },
+    { capabilityId: 'commerce', title: 'In-App Purchases and Subscriptions', description: 'Read products, subscriptions and manage IAP v2.', scopes: ['appstoreconnect.commerce.read','appstoreconnect.commerce.write'], actions: [...additionalAscReads.filter(s => s.scope === 'appstoreconnect.commerce.read').map(s => s.id), 'create_in_app_purchase', 'update_in_app_purchase'] },
+    { capabilityId: 'customer-reviews', title: 'Customer Reviews', description: 'Read ratings and response to reviews.', scopes: ['appstoreconnect.reviews.read','appstoreconnect.reviews.write'], actions: [...additionalAscReads.filter(s => s.scope === 'appstoreconnect.reviews.read').map(s => s.id), 'create_customer_review_response'] },
     {
       capabilityId: 'xcode-cloud-workflows',
       title: 'Xcode Cloud Workflows',
@@ -559,6 +797,7 @@ function actions(): AssistantPluginActionDescriptor[] {
       defaultTimeoutMs: 60_000, cancellable: true, idempotent: false, scopes: ['appstoreconnect.release.write'], resourceClaims: writeRemote,
       argumentsSchema: { type: 'object', properties: { review_submission_id: { type: 'string' }, dry_run: { type: 'boolean' } }, required: ['review_submission_id'], additionalProperties: false },
     },
+    ...additionalAscActions(),
   ];
 }
 
@@ -865,6 +1104,12 @@ function mockBuild(id: string) {
 
 function mockResponse(actionId: string, args: Record<string, unknown>, config: AppStoreConnectPluginConfig): Record<string, unknown> {
   const id = stringValue(args.app_id) ?? config.defaultAppId ?? stableMockId('app', args);
+  const additionalRead = additionalAscReads.find(spec => spec.id === actionId);
+  if (['read_analytics_segment_data','read_sales_report','read_finance_report'].includes(actionId))
+    return { columns:['Date','Units'], rows:[['2026-11-01','2']], totalRows:1, truncated:false, format:'tsv', provider:'mock' };
+  if (additionalRead) return { data: [], meta: { provider: 'mock', resource: additionalAscReadRequest(additionalRead, args, config).path } };
+  const additionalWrite = additionalAscWriteRequest(actionId, args, config);
+  if (additionalWrite) return { dryRun: args.dry_run === true, request: additionalWrite, provider: 'mock', applied: args.dry_run !== true };
   if (actionId === 'auth_status') {
     return {
       ready: true,
@@ -1027,7 +1272,7 @@ export function buildAppStoreConnectPluginManifest(previousRevision = 0, previou
     pluginId: APP_STORE_CONNECT_PLUGIN_ID,
     provider: 'apple',
     displayName: 'App Store Connect API Plugin',
-    pluginVersion: '1.1.1',
+    pluginVersion: '1.2.0',
     authority: { strategy: 'derived', duplicateStateAllowed: false, sourceOfTruth: ['controller-global:system/plugins/config/app-store-connect.json', 'legacy-import-only:system/plugins/profiles|repositories/<repoId>/plugins/config|.forge/plugins|.repo-harness/plugins', 'env:FORGE_ASC_*'] },
     enabled: config.enabled,
     lifecycle: { state: state.lifecycleState, reason: !config.enabled ? 'App Store Connect plugin is disabled.' : auth.ready ? 'App Store Connect API credentials are ready.' : auth.errors[0] ?? auth.warnings[0] },
@@ -1073,6 +1318,25 @@ export async function executeAppStoreConnectPluginAction(input: AssistantPluginA
     };
   }
   if (!config.enabled || !auth.ready) throw new AssistantPluginError('PLUGIN_NOT_READY', 'App Store Connect plugin is not ready.', { retryable: false, details: { enabled: config.enabled, errors: auth.errors } });
+
+  if (['read_analytics_segment_data','read_sales_report','read_finance_report'].includes(input.actionId))
+    return downloadAppleReport(config, input.actionId, input.args);
+  const additionalRead = additionalAscReads.find(spec => spec.id === input.actionId);
+  if (additionalRead) {
+    const result = await apiRequest<Record<string, unknown>>(config, additionalAscReadRequest(additionalRead, input.args, config));
+    if (input.actionId === 'get_app_store_review_detail' && result.data && typeof result.data === 'object') {
+      const data = result.data as { attributes?: Record<string, unknown> };
+      if (data.attributes && Object.hasOwn(data.attributes, 'demoAccountPassword')) {
+        return { ...result, data: { ...data, attributes: { ...data.attributes, demoAccountPassword: '[REDACTED]' } } };
+      }
+    }
+    return result;
+  }
+  const additionalWrite = additionalAscWriteRequest(input.actionId, input.args, config);
+  if (additionalWrite) {
+    if (input.args.dry_run === true) return { dryRun: true, request: additionalWrite };
+    return apiRequest(config, additionalWrite);
+  }
 
   switch (input.actionId) {
     case 'list_apps':
