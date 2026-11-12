@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import ImageIO
 
 /// Declarative assistant content: links and choices are user-driven; model
 /// text never gets an implicit command-execution capability.
@@ -293,6 +294,21 @@ func appendRemoteImageByte(_ byte: UInt8, to data: inout Data, maximumBytes: Int
     data.append(byte)
 }
 
+func makeRemoteImagePreview(_ data: Data) -> NSImage? {
+    guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+          let thumbnail = CGImageSourceCreateThumbnailAtIndex(
+            source, 0,
+            [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceThumbnailMaxPixelSize: 2_400,
+                kCGImageSourceCreateThumbnailWithTransform: true
+            ] as CFDictionary
+          ) else {
+        return nil
+    }
+    return NSImage(cgImage: thumbnail, size: NSSize(width: thumbnail.width, height: thumbnail.height))
+}
+
 func validateRemoteImageResponse(
     statusCode: Int,
     mimeType: String?,
@@ -325,6 +341,7 @@ private func downloadRemoteImage(from url: URL, maximumBytes: Int) async throws 
     var data = Data()
     if expectedLength > 0 { data.reserveCapacity(Int(expectedLength)) }
     for try await byte in bytes {
+        try Task.checkCancellation()
         try appendRemoteImageByte(byte, to: &data, maximumBytes: maximumBytes)
     }
     guard !data.isEmpty else { throw RemoteImageSaveError.invalidImage }
@@ -339,6 +356,10 @@ struct AgentRemoteImageView: View {
     @State private var fullScreen = false
     @State private var status: String?
     @State private var isSaving = false
+    @State private var previewLoading = false
+    @State private var previewError: String?
+    @State private var previewData: Data?
+    @State private var previewImage: NSImage?
 
     init(label: String, source: String, showsLabel: Bool = true) {
         self.label = label
@@ -362,27 +383,26 @@ struct AgentRemoteImageView: View {
                 }
                 Spacer(minLength: 8)
                 Button(expanded ? "收起" : "预览") { expanded.toggle() }
+                    .disabled(remoteURL == nil)
                 Button(isSaving ? "保存中…" : "保存…") { save() }
-                    .disabled(remoteURL == nil || isSaving)
+                    .disabled(remoteURL == nil || isSaving || previewLoading)
             }
             .buttonStyle(.plain)
             .font(.system(size: 11))
-            if expanded, let url = remoteURL {
-                AsyncImage(url: url) { phase in
-                    switch phase {
-                    case .success(let image):
-                        Button { fullScreen = true } label: {
-                            image.resizable().scaledToFit()
-                                .frame(maxWidth: 560, maxHeight: 300)
-                        }
-                        .buttonStyle(.plain)
-                        .help("放大预览")
-                    case .failure:
-                        Label("图片加载失败", systemImage: "exclamationmark.triangle")
-                            .foregroundStyle(.secondary)
-                    default:
-                        ProgressView().frame(height: 80)
+            if expanded {
+                if let previewImage {
+                    Button { fullScreen = true } label: {
+                        Image(nsImage: previewImage).resizable().scaledToFit()
+                            .frame(maxWidth: 560, maxHeight: 300)
                     }
+                    .buttonStyle(.plain)
+                    .help("放大预览")
+                } else if previewLoading {
+                    ProgressView().frame(height: 80)
+                } else if let previewError {
+                    Label("图片加载失败", systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.secondary)
+                        .help(previewError)
                 }
             }
             if let status {
@@ -392,20 +412,41 @@ struct AgentRemoteImageView: View {
         .padding(10)
         .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 10))
         .sheet(isPresented: $fullScreen) {
-            if let url = remoteURL {
+            if let previewImage {
                 VStack(spacing: 10) {
                     HStack {
                         Text(label.isEmpty ? "图片预览" : label).font(.headline)
                         Spacer()
                         Button("完成") { fullScreen = false }
                     }
-                    AsyncImage(url: url) { image in
-                        image.resizable().scaledToFit()
-                    } placeholder: { ProgressView() }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    Image(nsImage: previewImage).resizable().scaledToFit()
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
                 .padding(18)
                 .frame(minWidth: 640, minHeight: 420)
+            }
+        }
+        .task(id: expanded ? source : nil) {
+            guard expanded, let url = remoteURL else {
+                previewData = nil
+                previewImage = nil
+                previewError = nil
+                previewLoading = false
+                return
+            }
+            previewLoading = true
+            previewError = nil
+            defer { previewLoading = false }
+            do {
+                let data = try await downloadRemoteImage(from: url, maximumBytes: 25 * 1024 * 1024)
+                try Task.checkCancellation()
+                guard let image = makeRemoteImagePreview(data) else { throw RemoteImageSaveError.invalidImage }
+                previewData = data
+                previewImage = image
+            } catch is CancellationError {
+                return
+            } catch {
+                previewError = error.localizedDescription
             }
         }
         .accessibilityIdentifier("agent.image.resource")
@@ -423,7 +464,12 @@ struct AgentRemoteImageView: View {
         Task {
             defer { isSaving = false }
             do {
-                let data = try await downloadRemoteImage(from: url, maximumBytes: 25 * 1024 * 1024)
+                let data: Data
+                if let previewData {
+                    data = previewData
+                } else {
+                    data = try await downloadRemoteImage(from: url, maximumBytes: 25 * 1024 * 1024)
+                }
                 try data.write(to: target, options: .atomic)
                 status = "已保存到 " + target.lastPathComponent
             } catch let error as RemoteImageSaveError {

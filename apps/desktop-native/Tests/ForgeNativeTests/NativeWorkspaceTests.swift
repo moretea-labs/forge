@@ -1,4 +1,5 @@
 import XCTest
+import AppKit
 @testable import ForgeNative
 
 final class NativeWorkspaceTests: XCTestCase {
@@ -2031,5 +2032,29 @@ extension NativeWorkspaceTests {
             from:Data(#"{"id":"1","role":"assistant","text":"old","createdAt":0}"#.utf8)
         )
         XCTAssertNil(legacy.usage)
+    }
+}
+
+
+extension NativeWorkspaceTests {
+    func testRemoteImagePreviewUsesBoundedThumbnailAndRejectsInvalidData() throws {
+        let bitmap = try XCTUnwrap(NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: 4_800,
+            pixelsHigh: 2,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ))
+        let data = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+        let preview = try XCTUnwrap(makeRemoteImagePreview(data))
+
+        XCTAssertLessThanOrEqual(preview.size.width, 2_400)
+        XCTAssertLessThanOrEqual(preview.size.height, 2_400)
+        XCTAssertNil(makeRemoteImagePreview(Data("not an image".utf8)))
     }
 }
