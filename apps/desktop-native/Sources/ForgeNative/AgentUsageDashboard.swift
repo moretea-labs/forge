@@ -168,7 +168,7 @@ struct AgentUsageDashboard: View {
                     metric("agent.usage.total", "总 Token", total.formatted())
                     metric("agent.usage.input", "输入", inputTotal.formatted())
                     metric("agent.usage.output", "输出", outputTotal.formatted())
-                    metric("agent.usage.recorded", "已记录回复", usageEntries.count.formatted(), "未记录 \(unreportedMessages) 条")
+                    metric("agent.usage.recorded", "有回执回合", usageEntries.count.formatted(), "缺少回执 \(unreportedMessages) 条")
                 }
                 .padding(.vertical, 4)
 
@@ -250,7 +250,7 @@ struct AgentUsageDashboard: View {
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("agent.usage.recent-records")
 
-                Text("仅统计 Provider 返回的实际用量；未记录数据不估算。\(partiallyReported > 0 ? "另有 \(partiallyReported) 条部分回合数据。" : "")")
+                Text("仅汇总 Provider 返回的实际用量；缺少回执的回合不估算。\(partiallyReported > 0 ? "另有 \(partiallyReported) 条部分回合数据。" : "")")
                     .font(.system(size: 10.5))
                     .foregroundStyle(.secondary)
             }
