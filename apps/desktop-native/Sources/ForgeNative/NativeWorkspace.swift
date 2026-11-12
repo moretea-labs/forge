@@ -2443,6 +2443,74 @@ final class NativeWorkspace: ObservableObject {
         }
     }
 
+
+    func reviseRequirement(
+        id:String, expectedRevision:Int,
+        title:String, outcome:String, acceptanceCriteria:[String]
+    ) async -> Bool {
+        guard let repoId,expectedRevision > 0 else {
+            error="无法确认当前 Requirement 的版本，请刷新后重试。"
+            return false
+        }
+        let cleanTitle=title.trimmingCharacters(in:.whitespacesAndNewlines)
+        let cleanOutcome=outcome.trimmingCharacters(in:.whitespacesAndNewlines)
+        guard !cleanTitle.isEmpty,!cleanOutcome.isEmpty else {
+            error="Requirement 名称和目标不能为空。"
+            return false
+        }
+        do {
+            let receipt=try await ForgeBridge.request("revise_requirement",[
+                "repoId":repoId,"requirementId":id,"expectedRevision":expectedRevision,
+                "title":cleanTitle,"outcome":cleanOutcome,
+                "acceptanceCriteria":acceptanceCriteria.map{$0.trimmingCharacters(in:.whitespacesAndNewlines)}
+                    .filter{!$0.isEmpty}
+            ])
+            guard let changed=receipt["requirement"] as? [String:Any],
+                  changed["requirementId"] as? String == id,
+                  changed["revision"] as? Int == expectedRevision + 1 else {
+                throw ForgeBridgeError.invalidResponse
+            }
+            guard self.repoId == repoId else { return false }
+            await loadPage()
+            if let item=records.first(where:{$0.kind == .requirement && $0.recordId == id}) {
+                await openRecord(item.id)
+            }
+            return true
+        } catch {
+            self.error="修改未确认：\(error.localizedDescription)。请刷新修订版本后核对。"
+            return false
+        }
+    }
+
+    func revisePlan(id:String,expectedRevision:Int,objective:String) async -> Bool {
+        guard let repoId,expectedRevision > 0 else {
+            error="无法确认当前 Plan 的版本，请刷新后重试。"
+            return false
+        }
+        let goal=objective.trimmingCharacters(in:.whitespacesAndNewlines)
+        guard !goal.isEmpty else { error="Plan 目标不能为空。"; return false }
+        do {
+            let receipt=try await ForgeBridge.request("revise_plan",[
+                "repoId":repoId,"planId":id,
+                "expectedRevision":expectedRevision,"objective":goal
+            ])
+            guard let changed=receipt["plan"] as? [String:Any],
+                  changed["planId"] as? String == id,
+                  changed["revision"] as? Int == expectedRevision + 1 else {
+                throw ForgeBridgeError.invalidResponse
+            }
+            guard self.repoId == repoId else { return false }
+            await loadPage()
+            if let item=records.first(where:{$0.kind == .plan && $0.recordId == id}) {
+                await openRecord(item.id)
+            }
+            return true
+        } catch {
+            self.error="修改未确认：\(error.localizedDescription)。请刷新修订版本后核对。"
+            return false
+        }
+    }
+
     nonisolated static func knowledgeAuditDetail(_ result: [String:Any]) -> KnowledgeAuditDetail? {
         guard JSONSerialization.isValidJSONObject(result),
               let bytes = try? JSONSerialization.data(withJSONObject:result) else { return nil }

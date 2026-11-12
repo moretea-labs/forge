@@ -102,6 +102,30 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
                 args.get("requirementId").and_then(Value::as_str).map(str::to_owned),
                 args.get("parentPlanId").and_then(Value::as_str).map(str::to_owned),
             ).await,
+        "revise_requirement" =>
+            revise_requirement(
+                required(args,"repoId")?,
+                required(args,"requirementId")?,
+                args.get("expectedRevision").and_then(Value::as_u64)
+                    .filter(|revision| *revision > 0)
+                    .ok_or("FORGE_NATIVE_BRIDGE_EXPECTED_REVISION_REQUIRED")?,
+                required_bounded(args,"title",240)?,
+                required_bounded(args,"outcome",4000)?,
+                args.get("acceptanceCriteria").and_then(Value::as_array)
+                    .filter(|items| items.len() <= 50
+                        && items.iter().all(|item| item.as_str().is_some_and(|text| text.len() <= 500)))
+                    .ok_or("FORGE_NATIVE_BRIDGE_ACCEPTANCE_CRITERIA_INVALID")?
+                    .iter().filter_map(Value::as_str).map(str::to_owned).collect(),
+            ).await,
+        "revise_plan" =>
+            revise_plan(
+                required(args,"repoId")?,
+                required(args,"planId")?,
+                args.get("expectedRevision").and_then(Value::as_u64)
+                    .filter(|revision| *revision > 0)
+                    .ok_or("FORGE_NATIVE_BRIDGE_EXPECTED_REVISION_REQUIRED")?,
+                required_bounded(args,"objective",4000)?,
+            ).await,
         "autopilot_control" =>
             autopilot_control(
                 required(args,"repoId")?,

@@ -177,6 +177,11 @@ struct ZenWorkspacePane: View {
     @State private var showingRequirementSheet = false
     @State private var showingPlanSheet = false
     @State private var pendingReviewRecord: ForgeRecord?
+    @State private var editingRecord: ForgeRecord?
+    @State private var editRevision = 0
+    @State private var editTitle = ""
+    @State private var editOutcome = ""
+    @State private var editCriteria = ""
     @State private var newTitle = ""
     @State private var newOutcome = ""
     @State private var newCriteria = ""
@@ -270,6 +275,7 @@ struct ZenWorkspacePane: View {
         .background(Color(nsColor:.textBackgroundColor))
         .sheet(isPresented:$showingRequirementSheet) { createRequirementSheet }
         .sheet(isPresented:$showingPlanSheet) { createPlanSheet }
+        .sheet(item:$editingRecord) { item in editSheet(for:item) }
         .sheet(item:$pendingReviewRecord) { item in
             ZenReviewSheet(model:model,record:item) { prompt,provider in
                 pendingReviewRecord = nil
@@ -484,6 +490,13 @@ struct ZenWorkspacePane: View {
 
                 Divider()
                 Button {
+                    beginEdit(item)
+                } label: {
+                    Label("编辑",systemImage:"square.and.pencil")
+                }
+                .buttonStyle(.bordered)
+                .disabled(model.recordDetail == nil)
+                Button {
                     onOpenAgent(item,"请基于当前 Requirement / Plan 的实际修订与关联信息分析并提出最小必要优化，先给出差异和影响范围，不要在未经确认时新增同义记录。",nil)
                 } label: {
                     Label("使用 Agent 优化",systemImage:"sparkles")
@@ -509,6 +522,76 @@ struct ZenWorkspacePane: View {
             .frame(maxWidth:.infinity,alignment:.leading)
         }
         .accessibilityIdentifier("zen.record.inspector")
+    }
+
+
+    private func beginEdit(_ item:ForgeRecord) {
+        guard let detail=model.recordDetail else { return }
+        switch detail {
+        case .requirement(let value) where item.kind == .requirement:
+            editRevision=value.revision
+            editTitle=value.title
+            editOutcome=value.outcomeStatement
+            editCriteria=value.acceptanceCriteria.joined(separator:"\n")
+        case .plan(let value) where item.kind == .plan:
+            editRevision=value.revision
+            editTitle=value.goal
+        default:
+            return
+        }
+        editingRecord=item
+    }
+
+    private func editSheet(for item:ForgeRecord) -> some View {
+        VStack(alignment:.leading,spacing:14) {
+            Text(item.kind == .requirement ? "编辑 Requirement" : "编辑 Plan")
+                .font(.system(size:17,weight:.semibold))
+            Text(item.recordId + " · v\(editRevision)")
+                .font(.system(size:10,design:.monospaced))
+                .foregroundStyle(.secondary)
+
+            if item.kind == .requirement {
+                TextField("名称",text:$editTitle)
+                TextField("预期结果",text:$editOutcome,axis:.vertical)
+                    .lineLimit(3...6)
+                TextField("验收标准（每行一项）",text:$editCriteria,axis:.vertical)
+                    .lineLimit(3...7)
+            } else {
+                TextField("计划目标",text:$editTitle,axis:.vertical)
+                    .lineLimit(3...6)
+            }
+
+            HStack {
+                Spacer()
+                Button("取消") { editingRecord=nil }
+                Button(saving ? "保存中…" : "保存修改") {
+                    saving=true
+                    Task {
+                        let ok:Bool
+                        if item.kind == .requirement {
+                            ok=await model.reviseRequirement(
+                                id:item.recordId,expectedRevision:editRevision,
+                                title:editTitle,outcome:editOutcome,
+                                acceptanceCriteria:editCriteria.components(separatedBy:.newlines)
+                            )
+                        } else {
+                            ok=await model.revisePlan(
+                                id:item.recordId,expectedRevision:editRevision,objective:editTitle
+                            )
+                        }
+                        saving=false
+                        if ok { editingRecord=nil }
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(saving || editTitle.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty
+                          || (item.kind == .requirement
+                              && editOutcome.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty))
+            }
+        }
+        .padding(22)
+        .frame(width:465)
+        .accessibilityIdentifier("zen.record.edit")
     }
 
     private var createRequirementSheet: some View {

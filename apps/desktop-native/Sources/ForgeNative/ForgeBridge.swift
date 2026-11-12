@@ -86,7 +86,7 @@ enum ForgeBridge {
         "read_project_requirement_list", "read_project_plan_list", "read_project_autopilot_statuses",
         "read_project_schedules", "control_project_schedule", "read_project_plugins",
         "read_user_requests", "control_user_request",
-        "read_requirement_detail", "read_plan_detail", "create_requirement", "create_plan", "autopilot_control",
+        "read_requirement_detail", "read_plan_detail", "create_requirement", "create_plan", "revise_requirement", "revise_plan", "autopilot_control",
         "read_project_knowledge", "read_recovery_status", "verify_recovery_runtime",
         "read_connection_status", "configure_initial_connection", "repair_connection",
         "read_plugin_management", "install_official_plugin",

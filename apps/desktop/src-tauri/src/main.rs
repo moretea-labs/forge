@@ -813,6 +813,39 @@ async fn create_requirement(
     Ok(semantic_facade_data(result))
 }
 
+
+#[tauri::command]
+async fn revise_requirement(
+    repo_id: String,
+    requirement_id: String,
+    expected_revision: u64,
+    title: String,
+    outcome: String,
+    acceptance_criteria: Vec<String>,
+) -> Result<Value, String> {
+    if repo_id.trim().is_empty() || requirement_id.trim().is_empty()
+        || expected_revision == 0 || title.trim().is_empty() || outcome.trim().is_empty()
+        || acceptance_criteria.len() > 50 {
+        return Err("FORGE_DESKTOP_REQUIREMENT_REVISE_ARGUMENT_INVALID".to_string());
+    }
+    let result = call_runtime_tool("rh_work", json!({
+        "repo_id": repo_id,
+        "operation": "requirement_revise",
+        "requirement_id": requirement_id,
+        "expected_revision": expected_revision,
+        "requirement_title": title,
+        "requirement_outcome": outcome,
+        "requirement_acceptance_criteria": acceptance_criteria,
+        "request_id": request_id("requirement-revise")
+    })).await?;
+    let data = semantic_facade_data(result);
+    let revision = data.pointer("/requirement/revision").and_then(Value::as_u64);
+    if revision != expected_revision.checked_add(1) {
+        return Err("FORGE_DESKTOP_REQUIREMENT_REVISE_NOT_CONFIRMED: refresh before retrying".to_string());
+    }
+    Ok(data)
+}
+
 #[tauri::command]
 async fn create_plan(
     repo_id: String,
@@ -836,6 +869,34 @@ async fn create_plan(
         "request_id": request_id("plan-create")
     })).await?;
     Ok(semantic_facade_data(result))
+}
+
+
+#[tauri::command]
+async fn revise_plan(
+    repo_id: String,
+    plan_id: String,
+    expected_revision: u64,
+    objective: String,
+) -> Result<Value, String> {
+    if repo_id.trim().is_empty() || plan_id.trim().is_empty()
+        || expected_revision == 0 || objective.trim().is_empty() {
+        return Err("FORGE_DESKTOP_PLAN_REVISE_ARGUMENT_INVALID".to_string());
+    }
+    let result = call_runtime_tool("rh_work", json!({
+        "repo_id": repo_id,
+        "operation": "plan_revise",
+        "plan_id": plan_id,
+        "expected_revision": expected_revision,
+        "objective": objective,
+        "request_id": request_id("plan-revise")
+    })).await?;
+    let data = semantic_facade_data(result);
+    let revision = data.pointer("/plan/revision").and_then(Value::as_u64);
+    if revision != expected_revision.checked_add(1) {
+        return Err("FORGE_DESKTOP_PLAN_REVISE_NOT_CONFIRMED: refresh before retrying".to_string());
+    }
+    Ok(data)
 }
 
 async fn read_project_autopilot_statuses(
@@ -3808,6 +3869,8 @@ fn main() {
             read_plan_detail,
             create_requirement,
             create_plan,
+            revise_requirement,
+            revise_plan,
             autopilot_control,
             read_local_provider_status,
             read_local_provider_models,

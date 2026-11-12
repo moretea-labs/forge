@@ -18,7 +18,7 @@ A requirement-first, low-noise UI inside the existing native macOS Forge Client.
 - macOS native icon rail and lightweight translucent project sidebar.
 - Three Requirement columns: completed; active Autopilot receipt; other. No inferred percentage.
 - Single-Requirement canvas: Requirement root with top-down linked Plan levels. The inspector shows canonical Requirement/Plan details and acceptance criteria.
-- Create Requirement / Plan through the existing Bridge and record API. Agent-assisted optimization and Review open a prefilled, context-bound conversation for explicit user action; these are **not** yet automatic semantic revisions or independent reviewers.
+- Create Requirement / Plan through the existing Bridge and record API. Direct editing uses the canonical `rh_work` Requirement/Plan revision actions with `expected_revision` CAS and verifies the exact successor revision before indicating success; no silent overwrite on stale versions. Agent-assisted optimization and Review open a prefilled, context-bound conversation for explicit user action; they are **not** yet automatic semantic revisions or independent reviewers.
 - Decision inbox reuses the existing user-action request list. Runtime execution logs remain hidden until entering Agent mode.
 
 ## Follow-up acceptance (not yet implemented)
@@ -34,6 +34,6 @@ A requirement-first, low-noise UI inside the existing native macOS Forge Client.
 2. Projects: change projects; verify no new chat thread was created; return to previous project.
 3. Board: inspect real Requirement counts; in-progress only with an active Autopilot receipt; done only with completed state.
 4. Canvas: select Requirement then Plan, confirm canonical details and parent links.
-5. Authoring: create Requirement, create a Plan on it; verify through canonical records after refresh.
-6. Agent: choose Optimize or Review; inspect the bound Requirement/Plan in the new draft. No implicit provider tool execution.
+5. Authoring: create Requirement and Plan; edit both, verify canonical revision increment and refreshed fields; attempt a stale revision and verify the edit fails without clobbering newer content.
+6. Agent: choose Optimize or Review, select an available review Provider / Model and role; inspect the bound Requirement/Plan in the new draft. No implicit provider tool execution.
 7. Error states and keyboard navigation. Verify only one installed app when publishing is separately authorized.
