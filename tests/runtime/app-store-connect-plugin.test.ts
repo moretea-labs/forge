@@ -42,7 +42,7 @@ describe('App Store Connect Xcode Cloud workflow actions', () => {
     const repoRoot = root();
     await executeAppStoreConnectPluginAction(input(repoRoot, 'configure', { enabled: true, provider: 'mock' }));
     const manifest = buildAppStoreConnectPluginManifest(1, undefined, repoRoot);
-    expect(manifest.pluginVersion).toBe('1.8.1');
+    expect(manifest.pluginVersion).toBe('1.9.0');
     expect(manifest.actions.find((action) => action.actionId === 'list_xcode_cloud_workflows')).toMatchObject({ readOnly: true, risk: 'readonly' });
     for (const actionId of ['list_bundle_ids', 'list_bundle_id_capabilities', 'list_certificates', 'list_devices', 'list_profiles']) {
       expect(manifest.actions.find((action) => action.actionId === actionId)).toMatchObject({
@@ -143,6 +143,56 @@ describe('App Store Connect Xcode Cloud workflow actions', () => {
   });
 
 
+
+  test('release rollout and review resource reads preserve Apple state and redact direct detail credentials', async () => {
+    const repoRoot = root();
+    const keyPath = join(repoRoot, 'AuthKey_RELEASE_READS.p8');
+    const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
+    writeFileSync(keyPath, privateKey.export({ type: 'pkcs8', format: 'pem' }));
+    await executeAppStoreConnectPluginAction(input(repoRoot, 'configure', {
+      enabled: true, provider: 'app-store-connect-api', issuer_id: 'issuer-release-reads',
+      key_id: 'key-release-reads', private_key_path: keyPath,
+    }));
+    const original = globalThis.fetch;
+    const requested: string[] = [];
+    globalThis.fetch = (async (request: string | URL | Request) => {
+      const pathname = new URL(String(request)).pathname;
+      requested.push(pathname);
+      if (pathname === '/v1/appStoreReviewDetails/review-1') return Response.json({
+        data: { type: 'appStoreReviewDetails', id: 'review-1',
+          attributes: { contactEmail: 'review@example.com', demoAccountPassword: 'private-review-password' } },
+      });
+      return Response.json({ data: pathname.endsWith('/relationships/items') ? [] :
+        { id: pathname.split('/').pop(), attributes: { phasedReleaseState: 'ACTIVE', currentDayNumber: 3 } } });
+    }) as typeof fetch;
+    try {
+      const actions = [
+        ['get_app_store_version_phased_release', { version_id: 'version/1' }],
+        ['list_app_store_review_attachments', { detail_id: 'review-1' }],
+        ['get_app_store_review_attachment', { attachment_id: 'attachment-1' }],
+        ['list_app_store_review_attachment_ids', { detail_id: 'review-1' }],
+        ['get_review_submission_item', { item_id: 'item-1' }],
+        ['list_review_submission_item_ids', { review_submission_id: 'submission-1' }],
+      ] as const;
+      for (const [actionId, args] of actions)
+        await executeAppStoreConnectPluginAction(input(repoRoot, actionId, args));
+      const detail = await executeAppStoreConnectPluginAction(input(repoRoot,
+        'get_app_store_review_detail_by_id', { detail_id: 'review-1' }));
+      expect(JSON.stringify(detail)).not.toContain('private-review-password');
+      expect(detail).toMatchObject({ data: { attributes: {
+        contactEmail: 'review@example.com', demoAccountPassword: '[REDACTED]',
+      } } });
+      expect(requested).toEqual([
+        '/v1/appStoreVersions/version%2F1/appStoreVersionPhasedRelease',
+        '/v1/appStoreReviewDetails/review-1/appStoreReviewAttachments',
+        '/v1/appStoreReviewAttachments/attachment-1',
+        '/v1/appStoreReviewDetails/review-1/relationships/appStoreReviewAttachments',
+        '/v1/reviewSubmissionItems/item-1',
+        '/v1/reviewSubmissions/submission-1/relationships/items',
+        '/v1/appStoreReviewDetails/review-1',
+      ]);
+    } finally { globalThis.fetch = original; }
+  });
 
   test('never exposes App Review demo password from direct data or included version resources', async () => {
     const repoRoot = root();
