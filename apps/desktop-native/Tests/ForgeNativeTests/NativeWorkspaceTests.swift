@@ -2170,3 +2170,34 @@ extension NativeWorkspaceTests {
         XCTAssertNil(reusableRemoteImagePreviewData(data, previewSource: nil, currentSource: source))
     }
 }
+
+
+extension NativeWorkspaceTests {
+    @MainActor
+    func testAssetSourceSelectionRequestsExactMessageScrollAndCanRepeatSameTarget() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let model = NativeWorkspace(store: folder.appendingPathComponent("conversations.json"))
+        let imageMessage = ChatMessage(role: "assistant", text: "![chart](https://example.com/chart.png)")
+        var sourceThread = ChatThread()
+        sourceThread.messages = [ChatMessage(role: "user", text: "before"), imageMessage]
+        model.threads.append(sourceThread)
+        model.page = .assets
+
+        model.selectThread(sourceThread.id, messageId: imageMessage.id)
+        let first = try XCTUnwrap(model.conversationScrollRequest)
+        XCTAssertEqual(model.selectedThreadId, sourceThread.id)
+        XCTAssertEqual(first.threadId, sourceThread.id)
+        XCTAssertEqual(first.messageId, imageMessage.id)
+
+        model.consumeConversationScrollRequest(first)
+        XCTAssertNil(model.conversationScrollRequest)
+        model.selectThread(sourceThread.id, messageId: imageMessage.id)
+        let second = try XCTUnwrap(model.conversationScrollRequest)
+        XCTAssertNotEqual(second.revision, first.revision)
+        XCTAssertEqual(second.messageId, imageMessage.id)
+
+        model.selectThread(sourceThread.id, messageId: "missing-message")
+        XCTAssertNil(model.conversationScrollRequest?.messageId)
+    }
+}

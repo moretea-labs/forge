@@ -1594,13 +1594,20 @@ private struct AgentPane: View {
                         .accessibilityIdentifier("agent.scroll-to-progress")
                     }
                 }
-                .onChange(of:model.selectedThreadId) { _ in
-                    Task { @MainActor in
-                        await Task.yield()
-                        if let last = model.thread?.messages.last {
+                .task(id:model.conversationScrollRequest) {
+                    guard let request = model.conversationScrollRequest else { return }
+                    await Task.yield()
+                    guard !Task.isCancelled,
+                          model.conversationScrollRequest == request,
+                          model.selectedThreadId == request.threadId else { return }
+                    withAnimation(reduceMotion ? nil : .easeOut(duration:0.18)) {
+                        if let messageId = request.messageId {
+                            reader.scrollTo(messageId,anchor:.center)
+                        } else if let last = model.thread?.messages.last {
                             reader.scrollTo(last.id,anchor:.bottom)
                         }
                     }
+                    model.consumeConversationScrollRequest(request)
                 }
                 .onChange(of:model.thread?.messages.count) { _ in
                     if let last = model.thread?.messages.last {

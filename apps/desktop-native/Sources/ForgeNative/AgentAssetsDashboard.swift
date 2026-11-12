@@ -19,6 +19,7 @@ struct AgentAssetsDashboard: View {
         let title: String
         let threadTitle: String
         let threadId: String
+        let messageId: String
         let date: Date
         let source: String
         let remote: Bool
@@ -37,6 +38,7 @@ struct AgentAssetsDashboard: View {
                                 title: label.isEmpty ? "图片" : label,
                                 threadTitle: thread.title,
                                 threadId: thread.id,
+                                messageId: message.id,
                                 date: message.createdAt,
                                 source: url,
                                 remote: true
@@ -51,6 +53,7 @@ struct AgentAssetsDashboard: View {
                             title: URL(fileURLWithPath: path).lastPathComponent,
                             threadTitle: thread.title,
                             threadId: thread.id,
+                            messageId: message.id,
                             date: message.createdAt,
                             source: path,
                             remote: false
@@ -114,7 +117,7 @@ struct AgentAssetsDashboard: View {
                                     }
                                     Spacer()
                                     Button {
-                                        model.selectThread(item.threadId)
+                                        model.selectThread(item.threadId, messageId: item.messageId)
                                     } label: {
                                         Label("来源会话", systemImage: "arrow.up.right")
                                     }

@@ -513,6 +513,12 @@ struct NativeNavigationEntry: Equatable {
     let recordId: String?
 }
 
+struct ConversationScrollRequest: Equatable {
+    let revision: Int
+    let threadId: String
+    let messageId: String?
+}
+
 @MainActor
 final class NativeWorkspace: ObservableObject {
     @Published var page: NativePage = .agent
@@ -524,6 +530,7 @@ final class NativeWorkspace: ObservableObject {
     @Published var checkoutId: String?
     @Published var threads: [ChatThread] = []
     @Published var selectedThreadId: String?
+    @Published private(set) var conversationScrollRequest: ConversationScrollRequest?
     @Published var draft = ""
     @Published var search = ""
     @Published var showSearch = false
@@ -536,6 +543,7 @@ final class NativeWorkspace: ObservableObject {
     @Published private(set) var activeConversationId: String?
     private var activeApiTurn: ForgeApiTurn?
     private var activeTurnProvider: String?
+    private var conversationScrollRevision = 0
     private var knowledgeRecallPending = false
     private var cancelRequestedBeforeTurn = false
     @Published var provider = "未检测"
@@ -823,8 +831,21 @@ final class NativeWorkspace: ObservableObject {
         if page != .agent { show(.agent) }
         self.error = nil
     }
-    private func activateThreadContext(_ item: ChatThread, refreshProjectContext: Bool = true) {
+    private func activateThreadContext(
+        _ item: ChatThread,
+        refreshProjectContext: Bool = true,
+        scrollToMessageId: String? = nil
+    ) {
         let contextChanged = item.repoId != repoId || item.checkoutId != checkoutId
+        conversationScrollRevision += 1
+        let targetMessageId = scrollToMessageId.flatMap { target in
+            item.messages.contains(where: { $0.id == target }) ? target : nil
+        }
+        conversationScrollRequest = ConversationScrollRequest(
+            revision: conversationScrollRevision,
+            threadId: item.id,
+            messageId: targetMessageId
+        )
         selectedThreadId = item.id
         draft = ""
         pendingImageURLs = []
@@ -855,7 +876,7 @@ final class NativeWorkspace: ObservableObject {
         }
     }
 
-    func selectThread(_ id: String) {
+    func selectThread(_ id: String, messageId: String? = nil) {
         if busy {
             guard id == activeConversationId else {
                 self.error = "请先停止正在运行的会话。"
@@ -865,11 +886,17 @@ final class NativeWorkspace: ObservableObject {
         }
         guard let item = threads.first(where: { $0.id == id }) else { return }
         if page != .agent { pushNavigationOrigin() }
-        activateThreadContext(item)
+        activateThreadContext(item, scrollToMessageId: messageId)
         zenMode = false
         page = .agent
         error = nil
     }
+
+    func consumeConversationScrollRequest(_ request: ConversationScrollRequest) {
+        guard conversationScrollRequest == request else { return }
+        conversationScrollRequest = nil
+    }
+
     func selectThreadProvider(_ value: String) {
         guard !busy, matchesProvider(value),
               let index = threads.firstIndex(where:{$0.id == selectedThreadId}) else { return }
