@@ -570,8 +570,6 @@ if (semanticAuthorityGuardrailFixture) {
 const SEMANTIC_STRING_AUTHORITY_DEBT = new Set([
   `adapters/mcp/runtime-gateway/execution-tools.ts::message.includes(':')`,
   `adapters/mcp/runtime-gateway/context-adapter.ts::error.message.startsWith('PLUGIN_NOT_FOUND:')`,
-  `src/cli/local-bridge/job-store.ts::message.startsWith(\"LOCAL_JOB_ID_REQUIRED:\")`,
-  `src/cli/local-bridge/job-store.ts::message.startsWith(\"LOCAL_JOB_PATH_INVALID:\")`,
   `src/cli/local-bridge/server.ts::message.startsWith(\"REPOSITORY_SELF_PROTECTED\")`,
   `src/runtime/control-plane/facade/requirement-authority.ts::error.message.startsWith('REQUIREMENT_ALREADY_EXISTS:')`,
   `src/runtime/control-plane/global-scheduler/reconciliation.ts::message.includes(':')`,
@@ -724,6 +722,7 @@ const required = [
   'packages/protocols/mcp/tool-contract.ts',
   'packages/protocols/mcp/execution-context.ts',
   'src/runtime/plugins/github-client.ts',
+  'src/runtime/local-bridge/read-model.ts',
   'adapters/mcp/runtime-gateway/runtime-tool-definitions.ts',
   'adapters/mcp/server.ts',
   'adapters/mcp/oauth.ts',
@@ -1616,7 +1615,7 @@ forbidBetween(
   /rebuildRepositoryProjection\s*\(/,
   'repository_runtime_snapshot must be a bounded materialized-view read, never a live rebuild',
 );
-requireText('src/cli/local-bridge/job-store.ts', 'listLocalBridgeJobSnapshots');
+requireText('src/runtime/local-bridge/read-model.ts', 'listLocalBridgeJobSnapshots');
 forbid(
   'src/runtime/execution/workers/executor.ts',
   /\bwriteControllerContextProjection\b/,

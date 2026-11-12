@@ -1,5 +1,5 @@
 import { listActiveAgentJobSnapshots } from '../../cli/agent-jobs/job-manager';
-import { getLocalBridgeJobEventsSnapshot, listLocalBridgeJobSnapshots } from '../../cli/local-bridge/job-store';
+import { getLocalBridgeJobEventsSnapshot, listLocalBridgeJobSnapshots } from '../local-bridge/read-model';
 import type { RepositoryRecord } from '../../core/repository/types';
 import { listExecutionJobs } from '../execution/jobs/store';
 import { readRuntimeEvents, type RuntimeEntityEvent } from '../evidence/event-ledger';

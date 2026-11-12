@@ -6,7 +6,7 @@ import { ensureRepositoryRuntimeStorage } from '../../../src/runtime/repositorie
 import { cachedGitIdentity } from '../../../src/runtime/repositories/inspector';
 import { inferLocalControllerProcess } from '../../../src/runtime/diagnostics/performance';
 import { listExecutionJobs } from '../../../src/runtime/execution/jobs/store';
-import { listLocalBridgeJobSnapshots } from '../../../src/cli/local-bridge/job-store';
+import { listLocalBridgeJobSnapshots } from '../../../src/runtime/local-bridge/read-model';
 import { listAssistantPluginManifests } from '../../../src/runtime/plugins/store';
 import { readRepositoryProjectionSnapshot } from '../../../src/runtime/projections/materialized-view';
 import {

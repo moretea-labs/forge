@@ -1,7 +1,7 @@
 import type { RepositoryRecord } from '../../core/repository/types';
 import { loadMcpRuntimeState } from '../../../adapters/mcp/auth';
 import { listControllerChecks } from '../execution/process-runtime/check-runner';
-import { listLocalBridgeJobSnapshots } from '../../cli/local-bridge/job-store';
+import { listLocalBridgeJobSnapshots } from '../local-bridge/read-model';
 import { ensureRepositoryRuntimeStorage } from '../repositories/runtime-storage';
 import { sessionCacheGlobalDiagnostics } from '../repositories/session-cache';
 import {
