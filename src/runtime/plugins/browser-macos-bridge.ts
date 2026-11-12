@@ -956,7 +956,7 @@ export class MacOsAppleEventsPage {
         // every DOM JavaScript event (including a tab moved across windows).
         // Do not run a second, full-Chrome inventory in the Controller first.
         // Activation and physical input retain their explicit preflight gates.
-        resolvedRef = this.browser.product === 'chrome' && request.action === 'execute_javascript'
+        resolvedRef = this.browser.product === 'chrome' && (request.action === 'execute_javascript' || request.action === 'read_text')
           ? request.ref
           : await resolveCurrentMacOsBrowserTabRef(this.browser.product, request.ref, timeoutMs);
         this.targetRef = resolvedRef;
@@ -1179,9 +1179,25 @@ export class MacOsAppleEventsPage {
     return await this.evaluate<string>('document.documentElement ? document.documentElement.outerHTML : ""');
   }
 
+  async readText(selector?: string): Promise<string> {
+    this.domIdentityFromCurrentAction = false;
+    if (!this.targetRef) {
+      throw new AssistantPluginError('PLUGIN_BROWSER_NATIVE_OWNERSHIP_MISSING', 'Reading native page text requires an exact bound tab.', { retryable: false });
+    }
+    const raw = await this.runAutomation(
+      { action: 'read_text', product: this.browser.product, ref: this.targetRef, ...(selector ? { selector } : {}) },
+      (resolvedRef) => executeJavaScriptScript(this.browser, resolvedRef),
+    );
+    return this.parseEvaluationResult<string>(raw);
+  }
+
   async evaluate<T>(expression: string | ((...args: unknown[]) => unknown), arg?: unknown): Promise<T> {
     this.domIdentityFromCurrentAction = false;
     const raw = await this.executeJavaScriptRaw(serializeEvaluation(expression, arg));
+    return this.parseEvaluationResult<T>(raw);
+  }
+
+  private parseEvaluationResult<T>(raw: string): T {
     let parsed: { ok?: boolean; value?: unknown; error?: string; page?: { url?: unknown; title?: unknown } };
     try {
       parsed = JSON.parse(raw) as { ok?: boolean; value?: unknown; error?: string; page?: { url?: unknown; title?: unknown } };

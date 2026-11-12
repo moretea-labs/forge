@@ -1140,9 +1140,11 @@ describe('browser session compatibility on Computer target authority', () => {
         }
         if (script.includes('execute targetTab javascript')) {
           const source = args[0] ?? '';
+          // read_text carries no caller-supplied JavaScript: the native
+          // provider constructs the bounded text extraction itself.
           const value = source.includes('document.readyState')
             ? 'complete'
-            : source.includes('textContent') || source.includes('innerText')
+            : !source || source.includes('textContent') || source.includes('innerText')
               ? 'Drifted Body'
               : { url: currentUrl, title: 'Native Drift' };
           return JSON.stringify({ ok: true, value, page: { url: currentUrl, title: 'Native Drift' } });

@@ -603,6 +603,38 @@ describe('Browser Runtime V3 routing', () => {
     expect(attached.page.tabRef()).toEqual({ windowId: '7', tabId: '9' });
   });
 
+  test('native DOM text uses one bounded read-only receipt without tab-inventory preflight', async () => {
+    const url = 'https://example.com/constrained-text';
+    const title = 'Constrained Read';
+    const metadata = ['false', url, title, '0', '0', '1200', '800', '7', '9', 'false', 'false'].join(nativeSeparator);
+    let inventoryReads = 0;
+    let domReads = 0;
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin',
+      appExists: () => true,
+      processRunning: async () => true,
+      tabInventory: async () => {
+        inventoryReads += 1;
+        return { product: 'chrome', truncated: false, tabs: [{ windowId: '7', tabId: '9', active: false, url, title }] };
+      },
+      runAppleScript: async (script, _args, timeoutMs) => {
+        if (script.includes('execute targetTab javascript')) {
+          domReads += 1;
+          expect(timeoutMs).toBe(1_000);
+          return JSON.stringify({ ok: true, value: 'constrained-content', page: { url, title } });
+        }
+        return metadata;
+      },
+    });
+    const { page } = await reattachMacOsBrowserOwnedPage('chrome', { windowId: '7', tabId: '9' }, 1_000);
+    const afterAttach = inventoryReads;
+    page.beginAction();
+    expect(await page.readText('#main')).toBe('constrained-content');
+    expect(await page.identity({ preferObservedDom: true })).toEqual({ url, title });
+    expect(domReads).toBe(1);
+    expect(inventoryReads).toBe(afterAttach);
+  });
+
   test('native read identity reuses only the current DOM evaluation receipt', async () => {
     let nativeJsEvents = 0;
     const url = 'https://example.com/native-observed-identity';

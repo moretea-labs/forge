@@ -318,6 +318,7 @@ type PageLike = {
   beginAction?(): void;
   content?(): Promise<string>;
   evaluate<T>(expression: string | ((...args: unknown[]) => unknown), arg?: unknown): Promise<T>;
+  readText?(selector?: string): Promise<string>;
   screenshot(options: Record<string, unknown>): Promise<Buffer>;
   click(selector: string, options?: Record<string, unknown>): Promise<void>;
   dblclick?(selector: string, options?: Record<string, unknown>): Promise<void>;
@@ -3464,7 +3465,7 @@ function selectorRepairHint(selector: string, errorMessage: string): string {
   return `Check selector "${selector}" against the current page structure.`;
 }
 
-type BrowserEvaluationScope = Pick<PageLike, 'evaluate'>;
+type BrowserEvaluationScope = Pick<PageLike, 'evaluate' | 'readText'>;
 
 type BrowserFrameSelection = {
   scope: BrowserEvaluationScope;
@@ -3606,7 +3607,11 @@ function translateFrameGroundingElements(elements: unknown[], offset: { x: numbe
 }
 
 async function extractText(scope: BrowserEvaluationScope, selector: string | undefined, maxChars: number): Promise<Record<string, unknown>> {
-  const raw = await scope.evaluate<string>(scriptText(selector));
+  // The exact native tab can use the provider's constrained read-only action.
+  // Shadow-root selectors retain the canonical script-based implementation.
+  const raw = scope.readText && (!selector || openShadowSelectorParts(selector).length <= 1)
+    ? await scope.readText(selector)
+    : await scope.evaluate<string>(scriptText(selector));
   return truncateText(raw, maxChars);
 }
 
