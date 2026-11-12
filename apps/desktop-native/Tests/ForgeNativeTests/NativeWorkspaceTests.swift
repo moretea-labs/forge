@@ -2153,3 +2153,20 @@ extension NativeWorkspaceTests {
         )
     }
 }
+
+
+extension NativeWorkspaceTests {
+    func testRemoteImageSaveReusesPreviewOnlyForMatchingSource() {
+        let data = Data([0x89, 0x50, 0x4E, 0x47])
+        let source = "https://example.com/first.png"
+
+        XCTAssertEqual(
+            reusableRemoteImagePreviewData(data, previewSource: source, currentSource: source),
+            data
+        )
+        XCTAssertNil(reusableRemoteImagePreviewData(
+            data, previewSource: source, currentSource: "https://example.com/second.png"
+        ))
+        XCTAssertNil(reusableRemoteImagePreviewData(data, previewSource: nil, currentSource: source))
+    }
+}

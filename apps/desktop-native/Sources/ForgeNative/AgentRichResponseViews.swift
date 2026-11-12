@@ -327,6 +327,13 @@ func validatedRemoteImageDataForSaving(_ data: Data) async throws -> Data {
     return data
 }
 
+func reusableRemoteImagePreviewData(
+    _ data: Data?, previewSource: String?, currentSource: String
+) -> Data? {
+    guard previewSource == currentSource else { return nil }
+    return data
+}
+
 func makeLocalImageThumbnail(at path: String) async throws -> CGImage? {
     let decoding = Task.detached(priority: .userInitiated) { () throws -> CGImage? in
         try Task.checkCancellation()
@@ -393,6 +400,7 @@ struct AgentRemoteImageView: View {
     @State private var previewLoading = false
     @State private var previewError: String?
     @State private var previewData: Data?
+    @State private var previewSource: String?
     @State private var previewImage: NSImage?
 
     init(
@@ -482,12 +490,14 @@ struct AgentRemoteImageView: View {
         .task(id: expanded ? source : nil) {
             guard expanded, let url = remoteURL else {
                 previewData = nil
+                previewSource = nil
                 previewImage = nil
                 previewError = nil
                 previewLoading = false
                 return
             }
             previewData = nil
+            previewSource = nil
             previewImage = nil
             previewLoading = true
             previewError = nil
@@ -500,6 +510,7 @@ struct AgentRemoteImageView: View {
                 }
                 try Task.checkCancellation()
                 previewData = data
+                previewSource = source
                 previewImage = NSImage(
                     cgImage: thumbnail,
                     size: NSSize(width: thumbnail.width, height: thumbnail.height)
@@ -527,8 +538,10 @@ struct AgentRemoteImageView: View {
             defer { isSaving = false }
             do {
                 var data: Data
-                if let previewData {
-                    data = previewData
+                if let cachedPreviewData = reusableRemoteImagePreviewData(
+                    previewData, previewSource: previewSource, currentSource: source
+                ) {
+                    data = cachedPreviewData
                 } else {
                     data = try await downloadRemoteImage(from: url, maximumBytes: 25 * 1024 * 1024)
                     data = try await validatedRemoteImageDataForSaving(data)
