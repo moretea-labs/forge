@@ -1166,6 +1166,39 @@ private struct ForgeWorkspaceView: View {
         }
     }
 
+    private var pageRefreshIsLoading: Bool {
+        model.settingsLoading || model.schedulesLoading || model.pluginsLoading
+    }
+
+    private var pageRefreshIsDisabled: Bool {
+        pageRefreshIsLoading || ((model.page == .schedule || model.page == .plugins) && model.repoId == nil)
+    }
+
+    private var pageRefreshHelp: String {
+        switch model.page {
+        case .settings: return "刷新设置与服务状态"
+        case .schedule: return "刷新计划任务"
+        case .plugins: return "刷新插件"
+        default: return "刷新真实 Forge 状态"
+        }
+    }
+
+    private var pageRefreshAccessibilityLabel: String {
+        pageRefreshIsLoading ? "页面操作进行中" : pageRefreshHelp
+    }
+
+    private func refreshCurrentPage() {
+        let page = model.page
+        Task {
+            switch page {
+            case .settings: await model.loadSettingsPage()
+            case .schedule: await model.loadSchedulePage()
+            case .plugins: await model.loadPluginsPage()
+            default: await model.refresh()
+            }
+        }
+    }
+
     private var main: some View {
         VStack(spacing:0) {
             if let error = model.error, model.page != .schedule && model.page != .plugins {
@@ -1230,13 +1263,8 @@ private struct ForgeWorkspaceView: View {
                         }
                     }
                     Spacer()
-                    Button {
-                        Task {
-                            if model.page == .settings { await model.loadSettingsPage() }
-                            else { await model.refresh() }
-                        }
-                    } label: {
-                        if model.settingsLoading {
+                    Button { refreshCurrentPage() } label: {
+                        if pageRefreshIsLoading {
                             ProgressView().controlSize(.small)
                         } else {
                             Image(systemName:"arrow.clockwise")
@@ -1246,9 +1274,9 @@ private struct ForgeWorkspaceView: View {
                     .frame(width:27,height:27)
                     .background(ForgePalette.softFill,in:Circle())
                     .buttonStyle(.plain)
-                    .disabled(model.settingsLoading)
-                    .help(model.settingsLoading ? "设置操作进行中" : model.page == .settings ? "刷新设置与服务状态" : "刷新真实 Forge 状态")
-                    .accessibilityLabel(model.settingsLoading ? "设置操作进行中" : model.page == .settings ? "刷新设置" : "刷新当前页面")
+                    .disabled(pageRefreshIsDisabled)
+                    .help(pageRefreshIsLoading ? "页面操作进行中" : pageRefreshHelp)
+                    .accessibilityLabel(pageRefreshAccessibilityLabel)
                     .accessibilityIdentifier("app.refresh")
                 }
                 .padding(.horizontal,22).frame(height:48)
@@ -5438,22 +5466,6 @@ private struct SchedulePane: View {
     var body: some View {
         ScrollView {
             VStack(alignment:.leading,spacing:18) {
-                HStack(alignment:.top) {
-                    VStack(alignment:.leading,spacing:5) {
-                        Text("计划任务").font(.system(size:22,weight:.medium))
-                        Text("查看定时与条件触发任务，检查执行状态，并管理暂停与恢复。")
-                            .font(.system(size:12)).foregroundStyle(ForgePalette.secondary)
-                    }
-                    Spacer()
-                    Button { Task { await model.loadSchedulePage() } } label: {
-                        if model.schedulesLoading { ProgressView().controlSize(.small) }
-                        else { Label("刷新",systemImage:"arrow.clockwise") }
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(model.schedulesLoading || model.repoId == nil)
-                    .accessibilityIdentifier("schedule.refresh")
-                }
-
                 if let error = model.error, model.repoId != nil {
                     HStack(alignment:.firstTextBaseline,spacing:9) {
                         Image(systemName:"exclamationmark.circle")
@@ -5628,20 +5640,8 @@ private struct PluginsPane: View {
     var body: some View {
         ScrollView {
             VStack(alignment:.leading,spacing:18) {
-                HStack(alignment:.top) {
-                    VStack(alignment:.leading,spacing:5) {
-                        Text("插件").font(.system(size:22,weight:.medium))
-                        Text("查看当前项目可用的插件、连接状态与能力。")
-                            .font(.system(size:12)).foregroundStyle(ForgePalette.secondary)
-                    }
+                HStack {
                     Spacer()
-                    Button { Task { await model.loadPluginsPage() } } label: {
-                        if model.pluginsLoading { ProgressView().controlSize(.small) }
-                        else { Label("刷新",systemImage:"arrow.clockwise") }
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(model.pluginsLoading || model.repoId == nil)
-                    .accessibilityIdentifier("plugins.refresh")
                     Button {
                         searchOpen.toggle()
                         if !searchOpen { query = "" }
@@ -6206,22 +6206,6 @@ private struct KnowledgePane: View {
     var body: some View {
         VStack(alignment:.leading,spacing:0) {
             VStack(alignment:.leading,spacing:11) {
-                HStack(alignment:.top) {
-                    VStack(alignment:.leading,spacing:4) {
-                        Text("知识库")
-                            .font(.system(size:20,weight:.medium))
-                        Text("先找可复用判断，再决定是否带回当前会话。Cognitive 记录保持只读、仅供参考。")
-                            .font(.system(size:11.5))
-                            .foregroundStyle(ForgePalette.secondary)
-                    }
-                    Spacer()
-                    if let result=model.knowledgeResult {
-                        Text("\(result.items.count) 条结果")
-                            .font(.system(size:10.5,weight:.medium))
-                            .foregroundStyle(ForgePalette.secondary)
-                    }
-                }
-
                 HStack(spacing:8) {
                     HStack(spacing:7) {
                         Image(systemName:"magnifyingglass")
@@ -6248,6 +6232,12 @@ private struct KnowledgePane: View {
                     .frame(height:34)
                     .background(ForgePalette.softFill,
                                 in:RoundedRectangle(cornerRadius:9,style:.continuous))
+
+                    if let result=model.knowledgeResult {
+                        Text("\(result.items.count) 条结果")
+                            .font(.system(size:10.5,weight:.medium))
+                            .foregroundStyle(ForgePalette.secondary)
+                    }
 
                     Button { runSearch() } label: {
                         if model.knowledgeLoading {
