@@ -459,6 +459,8 @@ const additionalAscReads: AscReadSpec[] = [
   { id: 'list_analytics_report_requests', title: 'List Analytics report requests', scope: 'appstoreconnect.analytics.read', path: '/v1/apps/:app_id/analyticsReportRequests', required: [], },
   { id: 'get_analytics_report_request', title: 'Read Analytics request', scope: 'appstoreconnect.analytics.read', path: '/v1/analyticsReportRequests/:report_request_id', required: ['report_request_id'], },
   { id: 'list_analytics_reports', title: 'List Analytics reports', scope: 'appstoreconnect.analytics.read', path: '/v1/analyticsReportRequests/:report_request_id/reports', required: ['report_request_id'], filters: { 'category': 'filter[category]' }, },
+  { id: 'get_analytics_report', title: 'Read Apple Analytics report definition', scope: 'appstoreconnect.analytics.read', path: '/v1/analyticsReports/:report_id', required: ['report_id'] },
+  { id: 'get_analytics_report_instance', title: 'Read Analytics instance processing date and granularity', scope: 'appstoreconnect.analytics.read', path: '/v1/analyticsReportInstances/:instance_id', required: ['instance_id'] },
   { id: 'list_analytics_report_instances', title: 'List report periods', scope: 'appstoreconnect.analytics.read', path: '/v1/analyticsReports/:report_id/instances', required: ['report_id'], filters: { 'granularity': 'filter[granularity]', 'processing_date': 'filter[processingDate]' }, },
   { id: 'list_analytics_report_segments', title: 'List downloadable report segments', scope: 'appstoreconnect.analytics.read', path: '/v1/analyticsReportInstances/:instance_id/segments', required: ['instance_id'], },
   { id: 'get_analytics_report_segment', title: 'Get report segment URL and checksum', scope: 'appstoreconnect.analytics.read', path: '/v1/analyticsReportSegments/:segment_id', required: ['segment_id'], },
@@ -563,6 +565,7 @@ function additionalAscActions(): AssistantPluginActionDescriptor[] {
     { id: 'add_review_submission_item', title: 'Add version or purchase version to review submission', scope: 'appstoreconnect.release.write', fields: ['review_submission_id','item_type','item_id'], required: ['review_submission_id','item_type','item_id'], confirmation: 'strong_confirmation' },
     { id: 'update_app_store_review_detail', title: 'Update App Review contact and notes', scope: 'appstoreconnect.metadata.write', fields: ['review_detail_id','contact_first_name','contact_last_name','contact_phone','contact_email','notes','demo_account_required'], required: ['review_detail_id'], confirmation: 'authorization' },
     { id: 'request_analytics_report', title: 'Request historical snapshot or ongoing Analytics reports', scope: 'appstoreconnect.analytics.write', fields: ['app_id','access_type'], required: ['access_type'], confirmation: 'authorization' },
+    { id: 'delete_analytics_report_request', title: 'Delete Apple Analytics request and stop its ongoing reports', scope: 'appstoreconnect.analytics.write', fields: ['report_request_id'], required: ['report_request_id'], confirmation: 'strong_confirmation' },
     { id: 'create_in_app_purchase', title: 'Create in-app purchase v2', scope: 'appstoreconnect.commerce.write', fields: ['app_id','name','product_id','purchase_type'], required: ['name','product_id','purchase_type'], confirmation: 'strong_confirmation' },
     { id: 'update_in_app_purchase', title: 'Update in-app purchase v2', scope: 'appstoreconnect.commerce.write', fields: ['purchase_id','name','review_note','family_sharable'], required: ['purchase_id'], confirmation: 'authorization' },
     { id: 'create_customer_review_response', title: 'Respond to customer review', scope: 'appstoreconnect.reviews.write', fields: ['review_id','response_body'], required: ['review_id','response_body'], confirmation: 'strong_confirmation' },
@@ -811,6 +814,8 @@ function additionalAscWriteRequest(actionId: string, args: Record<string, unknow
     return { method: 'PATCH', path: '/v1/appStoreReviewDetails/' + encodeURIComponent(id),
       body: { data: { type: 'appStoreReviewDetails', id, attributes: attrs } } };
   }
+  if (actionId === 'delete_analytics_report_request')
+    return { method: 'DELETE', path: '/v1/analyticsReportRequests/' + encodeURIComponent(requiredArg(args, 'report_request_id')) };
   if (actionId === 'request_analytics_report') {
     const accessType = requiredArg(args, 'access_type');
     if (!['ONGOING', 'ONE_TIME_SNAPSHOT'].includes(accessType))
@@ -1165,7 +1170,7 @@ function capabilities(): AssistantPluginCapability[] {
     {capabilityId:'webhooks-read',title:'Webhook Delivery Diagnostics',description:'Read Apple webhook configuration and delivery state.',scopes:['appstoreconnect.webhooks.read'],actions:additionalAscReads.filter(s=>s.scope==='appstoreconnect.webhooks.read').map(s=>s.id)},
     {capabilityId:'performance-read',title:'Power and Performance Metrics',description:'Read Apple App and build performance metrics.',scopes:['appstoreconnect.diagnostics.read'],actions:additionalAscReads.filter(s=>s.scope==='appstoreconnect.diagnostics.read').map(s=>s.id)},
     { capabilityId: 'sales-finance', title: 'Sales and Finance Reports', description: 'Download bounded official TSV reports.', scopes: ['appstoreconnect.reports.read', 'appstoreconnect.analytics.read'], actions: ['read_sales_report', 'read_finance_report', 'read_analytics_segment_data'] },
-    { capabilityId: 'analytics-and-aso', title: 'Analytics and ASO', description: 'Read Apple Analytics reports, historical snapshots, keyword configuration, and store discovery.', scopes: ['appstoreconnect.analytics.read','appstoreconnect.analytics.write'], actions: [...additionalAscReads.filter(s => s.scope === 'appstoreconnect.analytics.read').map(s => s.id), 'request_analytics_report','read_analytics_segment_data','summarize_analytics_segment','summarize_analytics_instance'] },
+    { capabilityId: 'analytics-and-aso', title: 'Analytics and ASO', description: 'Read Apple Analytics reports, historical snapshots, keyword configuration, and store discovery.', scopes: ['appstoreconnect.analytics.read','appstoreconnect.analytics.write'], actions: [...additionalAscReads.filter(s => s.scope === 'appstoreconnect.analytics.read').map(s => s.id), 'request_analytics_report','delete_analytics_report_request','read_analytics_segment_data','summarize_analytics_segment','summarize_analytics_instance'] },
     { capabilityId: 'commerce', title: 'In-App Purchases and Subscriptions', description: 'Read products, subscriptions and manage IAP v2.', scopes: ['appstoreconnect.commerce.read','appstoreconnect.commerce.write'], actions: [...additionalAscReads.filter(s => s.scope === 'appstoreconnect.commerce.read').map(s => s.id), ...['create_in_app_purchase','update_in_app_purchase','create_in_app_purchase_version','create_in_app_purchase_version_localization','update_in_app_purchase_version_localization','create_subscription_group','create_subscription','create_subscription_version','create_subscription_version_localization','create_subscription_group_version','create_subscription_group_version_localization','create_subscription_price','create_in_app_purchase_price_schedule']] },
     { capabilityId: 'customer-reviews', title: 'Customer Reviews', description: 'Read ratings and response to reviews.', scopes: ['appstoreconnect.reviews.read','appstoreconnect.reviews.write'], actions: [...additionalAscReads.filter(s => s.scope === 'appstoreconnect.reviews.read').map(s => s.id), 'create_customer_review_response'] },
     {
@@ -1726,7 +1731,7 @@ export function buildAppStoreConnectPluginManifest(previousRevision = 0, previou
     pluginId: APP_STORE_CONNECT_PLUGIN_ID,
     provider: 'apple',
     displayName: 'App Store Connect API Plugin',
-    pluginVersion: '1.7.0',
+    pluginVersion: '1.8.0',
     authority: { strategy: 'derived', duplicateStateAllowed: false, sourceOfTruth: ['controller-global:system/plugins/config/app-store-connect.json', 'legacy-import-only:system/plugins/profiles|repositories/<repoId>/plugins/config|.forge/plugins|.repo-harness/plugins', 'env:FORGE_ASC_*'] },
     enabled: config.enabled,
     lifecycle: { state: state.lifecycleState, reason: !config.enabled ? 'App Store Connect plugin is disabled.' : auth.ready ? 'App Store Connect API credentials are ready.' : auth.errors[0] ?? auth.warnings[0] },

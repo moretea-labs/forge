@@ -42,7 +42,7 @@ describe('App Store Connect Xcode Cloud workflow actions', () => {
     const repoRoot = root();
     await executeAppStoreConnectPluginAction(input(repoRoot, 'configure', { enabled: true, provider: 'mock' }));
     const manifest = buildAppStoreConnectPluginManifest(1, undefined, repoRoot);
-    expect(manifest.pluginVersion).toBe('1.7.0');
+    expect(manifest.pluginVersion).toBe('1.8.0');
     expect(manifest.actions.find((action) => action.actionId === 'list_xcode_cloud_workflows')).toMatchObject({ readOnly: true, risk: 'readonly' });
     for (const actionId of ['list_bundle_ids', 'list_bundle_id_capabilities', 'list_certificates', 'list_devices', 'list_profiles']) {
       expect(manifest.actions.find((action) => action.actionId === actionId)).toMatchObject({
@@ -470,6 +470,52 @@ describe('App Store Connect Xcode Cloud workflow actions', () => {
     } finally {globalThis.fetch=original;}
   });
 
+
+
+  test('Analytics report lifecycle reads status and requires strong confirmation to stop ongoing reports', async () => {
+    const repoRoot = root();
+    await executeAppStoreConnectPluginAction(input(repoRoot, 'configure', {enabled:true,provider:'mock'}));
+    const manifest = buildAppStoreConnectPluginManifest(1, undefined, repoRoot);
+    for (const id of ['get_analytics_report','get_analytics_report_instance']) {
+      expect(manifest.actions.find(item=>item.actionId===id)).toMatchObject({
+        readOnly:true,confirmation:'none',risk:'readonly',
+      });
+    }
+    expect(manifest.actions.find(item=>item.actionId==='delete_analytics_report_request')).toMatchObject({
+      readOnly:false,risk:'remote_write',confirmation:'strong_confirmation',
+    });
+    const preview = await executeAppStoreConnectPluginAction(input(repoRoot,'delete_analytics_report_request',{
+      report_request_id:'report-request/1',dry_run:true,
+    }));
+    expect(preview).toMatchObject({dryRun:true,request:{
+      method:'DELETE',path:'/v1/analyticsReportRequests/report-request%2F1',
+    }});
+    const privateKeyPath = join(repoRoot, 'AuthKey_ANALYTICS_READS.p8');
+    const {privateKey}=generateKeyPairSync('ec',{namedCurve:'P-256'});
+    writeFileSync(privateKeyPath,privateKey.export({type:'pkcs8',format:'pem'}));
+    await executeAppStoreConnectPluginAction(input(repoRoot,'configure',{
+      enabled:true,provider:'app-store-connect-api',issuer_id:'issuer-reports',key_id:'key-reports',
+      private_key_path:privateKeyPath,
+    }));
+    const old=globalThis.fetch;
+    const paths:string[]=[];
+    globalThis.fetch=(async(request:string|URL|Request)=>{
+      const path=new URL(String(request)).pathname;
+      paths.push(path);
+      return Response.json({data:{id:path.split('/').pop(),attributes:{granularity:'DAILY',
+        processingDate:'2026-11-10'}}});
+    }) as typeof fetch;
+    try {
+      await executeAppStoreConnectPluginAction(input(repoRoot,'get_analytics_report',{report_id:'report-1'}));
+      const period=await executeAppStoreConnectPluginAction(input(repoRoot,'get_analytics_report_instance',{
+        instance_id:'instance-1',
+      }));
+      expect(period).toMatchObject({data:{id:'instance-1',attributes:{
+        granularity:'DAILY',processingDate:'2026-11-10',
+      }}});
+      expect(paths).toEqual(['/v1/analyticsReports/report-1','/v1/analyticsReportInstances/instance-1']);
+    } finally {globalThis.fetch=old;}
+  });
 
   test('historical ASO instance summary verifies all Apple segments and rejects incomplete pagination', async () => {
     const repoRoot=root();
