@@ -1377,6 +1377,7 @@ private struct AgentPane: View {
                                     VStack(alignment:.leading,spacing:8) {
                                         AgentAssistantMessageBody(
                                             text:message.text,
+                                            accessibilityIdentifierPrefix: AgentAssistantMessageBody.accessibilityPrefix(for: message.id),
                                             onExecuteCommand: { command in
                                                 guard !model.busy else { return }
                                                 guard model.repoId != nil, model.checkoutId != nil else {
@@ -1551,7 +1552,10 @@ private struct AgentPane: View {
                                     .accessibilityIdentifier("agent.streaming-reasoning")
                                 }
                                 if !model.streamedAnswer.isEmpty {
-                                    AgentAssistantMessageBody(text:model.streamedAnswer)
+                                    AgentAssistantMessageBody(
+                                        text:model.streamedAnswer,
+                                        accessibilityIdentifierPrefix:"agent.streaming-response"
+                                    )
                                         .accessibilityIdentifier("agent.streaming-response")
                                 }
 

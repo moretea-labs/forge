@@ -6,7 +6,12 @@ import ImageIO
 /// text never gets an implicit command-execution capability.
 struct AgentAssistantMessageBody: View {
     let text: String
+    var accessibilityIdentifierPrefix: String = "agent.streaming-response"
     var onExecuteCommand: ((String) -> Void)? = nil
+
+    static func accessibilityPrefix(for messageID: String) -> String {
+        "agent.message.\(messageID)"
+    }
     var onReplySelection: ((String) -> Void)? = nil
     @State private var taskSelections: [String: Bool] = [:]
 
@@ -25,7 +30,7 @@ struct AgentAssistantMessageBody: View {
                         .font(.system(size: 10.5, weight: .medium))
                 }
                 .buttonStyle(.plain)
-                .accessibilityIdentifier("agent.reply-checked-options")
+                .accessibilityIdentifier("\(accessibilityIdentifierPrefix).reply-checked-options")
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -55,7 +60,11 @@ struct AgentAssistantMessageBody: View {
         case .markdown(let markdown):
             AgentInlineMarkdown(text: markdown)
         case .image(let label, let url):
-            AgentRemoteImageView(label: label, source: url)
+            AgentRemoteImageView(
+                label: label,
+                source: url,
+                accessibilityIdentifierPrefix: "\(accessibilityIdentifierPrefix).image.\(blockIndex)"
+            )
         case .heading(let level, let title):
             AgentInlineMarkdown(
                 text: title,
@@ -89,7 +98,7 @@ struct AgentAssistantMessageBody: View {
                             }
                             .buttonStyle(.plain)
                             .accessibilityLabel("\(isChecked ? "取消选择" : "选择") \(item.text)")
-                            .accessibilityIdentifier("agent.checklist.\(blockIndex).\(itemIndex)")
+                            .accessibilityIdentifier("\(accessibilityIdentifierPrefix).checklist.\(blockIndex).\(itemIndex)")
                         } else {
                             Text(item.marker)
                                 .font(.system(size: 12, design: .monospaced))
@@ -120,18 +129,27 @@ struct AgentAssistantMessageBody: View {
                 }
             }
             .scrollIndicators(.automatic)
-            .accessibilityIdentifier("agent.markdown-table")
+            .accessibilityIdentifier("\(accessibilityIdentifierPrefix).markdown-table.\(blockIndex)")
         case .choices(let prompt, let options):
             VStack(alignment: .leading, spacing: 8) {
                 AgentInlineMarkdown(text: prompt)
-                FlowChoiceButtons(options: options, onSelect: onReplySelection)
+                FlowChoiceButtons(
+                    options: options,
+                    onSelect: onReplySelection,
+                    accessibilityIdentifierPrefix: "\(accessibilityIdentifierPrefix).choice.\(blockIndex)"
+                )
                 Text("选择后填入输入框，可以修改再发送")
                     .font(.system(size: 10))
                     .foregroundStyle(.tertiary)
             }
-            .accessibilityIdentifier("agent.interactive-options")
+            .accessibilityIdentifier("\(accessibilityIdentifierPrefix).interactive-options.\(blockIndex)")
         case .code(let language, let code):
-            AgentCodeBlockView(language: language, code: code, onExecuteCommand: onExecuteCommand)
+            AgentCodeBlockView(
+                language: language,
+                code: code,
+                onExecuteCommand: onExecuteCommand,
+                accessibilityIdentifierPrefix: "\(accessibilityIdentifierPrefix).code.\(blockIndex)"
+            )
         }
     }
 
@@ -174,6 +192,7 @@ private struct AgentInlineMarkdown: View {
 private struct FlowChoiceButtons: View {
     let options: [AgentResponseChoice]
     let onSelect: ((String) -> Void)?
+    let accessibilityIdentifierPrefix: String
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -192,7 +211,7 @@ private struct FlowChoiceButtons: View {
                 }
                 .buttonStyle(.borderless)
                 .disabled(onSelect == nil)
-                .accessibilityIdentifier("agent.choice.\(index)")
+                .accessibilityIdentifier("\(accessibilityIdentifierPrefix).\(index)")
             }
         }
     }
@@ -202,6 +221,7 @@ struct AgentCodeBlockView: View {
     let language: String?
     let code: String
     var onExecuteCommand: ((String) -> Void)? = nil
+    var accessibilityIdentifierPrefix: String = "agent.code"
 
     private var isCommand: Bool { AgentMessageBlock.isShellLanguage(language) }
     private var rows: [String] { code.components(separatedBy: "\n") }
@@ -225,7 +245,7 @@ struct AgentCodeBlockView: View {
                 }
                 .buttonStyle(.plain)
                 .help("复制原始代码")
-                .accessibilityIdentifier("agent.code-copy")
+                .accessibilityIdentifier("\(accessibilityIdentifierPrefix).copy")
                 if isCommand, let onExecuteCommand {
                     Button {
                         onExecuteCommand(code)
@@ -234,7 +254,7 @@ struct AgentCodeBlockView: View {
                     }
                     .buttonStyle(.plain)
                     .help("需再次确认；由现有 Forge Agent 按仓库权限执行")
-                    .accessibilityIdentifier("agent.command-run")
+                    .accessibilityIdentifier("\(accessibilityIdentifierPrefix).command-run")
                 }
             }
             .font(.system(size: 10, weight: .medium))

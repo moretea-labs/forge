@@ -2210,3 +2210,16 @@ extension NativeWorkspaceTests {
         XCTAssertFalse(imagePreviewMatchesSource(nil, currentSource: "/tmp/first.png"))
     }
 }
+
+
+extension NativeWorkspaceTests {
+    func testAssistantMessageAccessibilityPrefixScopesMessageAndBlockControls() {
+        let first = AgentAssistantMessageBody.accessibilityPrefix(for: "message-a")
+        let second = AgentAssistantMessageBody.accessibilityPrefix(for: "message-b")
+        XCTAssertEqual(first, "agent.message.message-a")
+        XCTAssertNotEqual(first, second)
+        XCTAssertNotEqual("\(first).code.0.copy", "\(first).code.1.copy")
+        XCTAssertNotEqual("\(first).code.0.copy", "\(second).code.0.copy")
+        XCTAssertNotEqual("\(first).image.0.resource", "\(first).image.1.resource")
+    }
+}
