@@ -570,6 +570,11 @@ function additionalAscActions(): AssistantPluginActionDescriptor[] {
     { id: 'update_beta_group', title: 'Update TestFlight group and public-link settings', scope: 'appstoreconnect.testflight.write', fields: ['group_id','name','public_link_enabled','public_link_limit'], required: ['group_id'], confirmation: 'strong_confirmation' },
     { id: 'create_beta_tester', title: 'Invite a TestFlight beta tester', scope: 'appstoreconnect.testflight.write', fields: ['group_id','email','first_name','last_name'], required: ['group_id','email'], confirmation: 'strong_confirmation' },
     { id: 'assign_beta_tester_to_group', title: 'Assign existing tester to TestFlight group', scope: 'appstoreconnect.testflight.write', fields: ['group_id','tester_id'], required: ['group_id','tester_id'], confirmation: 'strong_confirmation' },
+    { id: 'remove_beta_tester_from_group', title: 'Revoke TestFlight group access for a tester', scope: 'appstoreconnect.testflight.write', fields: ['group_id','tester_id'], required: ['group_id','tester_id'], confirmation: 'strong_confirmation' },
+    { id: 'remove_build_from_beta_group', title: 'Revoke TestFlight group access to a build', scope: 'appstoreconnect.testflight.write', fields: ['group_id','build_id'], required: ['group_id','build_id'], confirmation: 'strong_confirmation' },
+    { id: 'send_beta_tester_invitation', title: 'Send or resend TestFlight invitation', scope: 'appstoreconnect.testflight.write', fields: ['app_id','tester_id'], required: ['tester_id'], confirmation: 'strong_confirmation' },
+    { id: 'delete_beta_group', title: 'Delete TestFlight group and its build access', scope: 'appstoreconnect.testflight.write', fields: ['group_id'], required: ['group_id'], confirmation: 'strong_confirmation' },
+    { id: 'delete_beta_tester', title: 'Remove TestFlight tester from all apps', scope: 'appstoreconnect.testflight.write', fields: ['tester_id'], required: ['tester_id'], confirmation: 'strong_confirmation' },
     { id: 'start_xcode_cloud_build', title: 'Start Xcode Cloud build (may consume quota)', scope: 'appstoreconnect.xcodecloud.write', fields: ['workflow_id'], required: ['workflow_id'], confirmation: 'strong_confirmation' },
     { id: 'create_in_app_purchase_version', title: 'Create versioned IAP review metadata draft', scope: 'appstoreconnect.commerce.write', fields: ['purchase_id'], required: ['purchase_id'], confirmation: 'strong_confirmation' },
     { id: 'create_in_app_purchase_version_localization', title: 'Create IAP version localization v2', scope: 'appstoreconnect.commerce.write', fields: ['version_id','locale','name','description'], required: ['version_id','locale','name'], confirmation: 'authorization' },
@@ -618,9 +623,30 @@ function additionalAscReadRequest(spec: AscReadSpec, args: Record<string, unknow
 }
 
 function additionalAscWriteRequest(actionId: string, args: Record<string, unknown>, config: AppStoreConnectPluginConfig):
-  { path: string; method: 'POST' | 'PATCH'; body: unknown } | undefined {
+  { path: string; method: 'POST' | 'PATCH' | 'DELETE'; body?: unknown } | undefined {
   const resource = (type: string, id: string) => ({ data: { type, id } });
 
+
+
+  if (actionId === 'remove_beta_tester_from_group' || actionId === 'remove_build_from_beta_group') {
+    const groupId = encodeURIComponent(requiredArg(args, 'group_id'));
+    const isTester = actionId === 'remove_beta_tester_from_group';
+    const type = isTester ? 'betaTesters' : 'builds';
+    const id = requiredArg(args, isTester ? 'tester_id' : 'build_id');
+    return { method: 'DELETE', path: '/v1/betaGroups/' + groupId + '/relationships/' + type,
+      body: { data: [{ type, id }] } };
+  }
+  if (actionId === 'send_beta_tester_invitation')
+    return { method: 'POST', path: '/v1/betaTesterInvitations',
+      body: { data: { type: 'betaTesterInvitations', relationships: {
+        app: resource('apps', appId(args, config)),
+        betaTester: resource('betaTesters', requiredArg(args, 'tester_id')),
+      } } } };
+  if (actionId === 'delete_beta_group' || actionId === 'delete_beta_tester') {
+    const group = actionId === 'delete_beta_group';
+    const id = requiredArg(args, group ? 'group_id' : 'tester_id');
+    return { method: 'DELETE', path: '/v1/' + (group ? 'betaGroups/' : 'betaTesters/') + encodeURIComponent(id) };
+  }
 
   if (actionId === 'create_beta_group' || actionId === 'update_beta_group') {
     const create = actionId === 'create_beta_group';
@@ -938,12 +964,15 @@ async function summarizeAppleAnalyticsInstance(config: AppStoreConnectPluginConf
     throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID','Too many segments for bounded full-instance aggregation.',{
       retryable:false,details:{instanceId:id,maxSegments,additionalPage:!!result.links?.next},
     });
+  if (!(result.data?.length))
+    throw new AssistantPluginError('PLUGIN_PROVIDER_ERROR', 'Apple Analytics instance has no downloadable segments yet.', {retryable:true});
   const all=new Map<string,{dimensions:Record<string,string>;total:number;sourceRows:number}>();
   let size=0,rows=0,excluded=0;
   const ids:string[]=[];
   for (const item of result.data??[]) {
     const {url,checksum,sizeInBytes}=item.attributes??{};
-    if (!url || !item.id) throw new AssistantPluginError('PLUGIN_PROVIDER_ERROR','Apple segment lacks a signed URL or ID.',{retryable:false});
+    if (!url || !item.id || !checksum || !/^[a-f0-9]{32}$/i.test(checksum))
+      throw new AssistantPluginError('PLUGIN_PROVIDER_ERROR', 'Apple Analytics segment lacks a verifiable URL, ID or MD5 checksum.', {retryable:false});
     if (size+(sizeInBytes??0)>64*1024*1024)
       throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID','Report instance exceeds the 64 MiB aggregate download limit.',{retryable:false});
     const bytes=await fetchAppleGzip(url,checksum);
@@ -957,6 +986,8 @@ async function summarizeAppleAnalyticsInstance(config: AppStoreConnectPluginConf
     for (const value of summary.groups) {
       const key=JSON.stringify(summary.groupBy.map(col=>value.dimensions[col]));
       const found=all.get(key)??{dimensions:value.dimensions,total:0,sourceRows:0};
+      if (!all.has(key) && all.size >= 10_000)
+        throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Too many distinct groups to aggregate exactly.', {retryable:false});
       found.total+=value.total;found.sourceRows+=value.sourceRows;all.set(key,found);
     }
     ids.push(item.id);
@@ -1120,7 +1151,7 @@ function capabilities(): AssistantPluginCapability[] {
       title: 'TestFlight Operations',
       description: 'Assign builds to beta groups and prepare beta App Review submissions with strong confirmation.',
       scopes: ['appstoreconnect.testflight.write'],
-      actions: ['assign_build_to_beta_group', 'submit_beta_app_review', 'create_beta_group', 'update_beta_group', 'create_beta_tester', 'assign_beta_tester_to_group', ...additionalAscReads.filter(s => ['get_beta_group','get_beta_tester','list_beta_group_testers','list_beta_group_builds','list_beta_tester_groups','get_build_beta_detail'].includes(s.id)).map(s=>s.id)],
+      actions: ['assign_build_to_beta_group', 'submit_beta_app_review', 'create_beta_group', 'update_beta_group', 'create_beta_tester', 'assign_beta_tester_to_group', 'remove_beta_tester_from_group', 'remove_build_from_beta_group', 'send_beta_tester_invitation', 'delete_beta_group', 'delete_beta_tester', ...additionalAscReads.filter(s => ['get_beta_group','get_beta_tester','list_beta_group_testers','list_beta_group_builds','list_beta_tester_groups','get_build_beta_detail'].includes(s.id)).map(s=>s.id)],
     },
     {
       capabilityId: 'app-store-release',
@@ -1695,7 +1726,7 @@ export function buildAppStoreConnectPluginManifest(previousRevision = 0, previou
     pluginId: APP_STORE_CONNECT_PLUGIN_ID,
     provider: 'apple',
     displayName: 'App Store Connect API Plugin',
-    pluginVersion: '1.6.0',
+    pluginVersion: '1.7.0',
     authority: { strategy: 'derived', duplicateStateAllowed: false, sourceOfTruth: ['controller-global:system/plugins/config/app-store-connect.json', 'legacy-import-only:system/plugins/profiles|repositories/<repoId>/plugins/config|.forge/plugins|.repo-harness/plugins', 'env:FORGE_ASC_*'] },
     enabled: config.enabled,
     lifecycle: { state: state.lifecycleState, reason: !config.enabled ? 'App Store Connect plugin is disabled.' : auth.ready ? 'App Store Connect API credentials are ready.' : auth.errors[0] ?? auth.warnings[0] },

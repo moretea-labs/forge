@@ -42,7 +42,7 @@ describe('App Store Connect Xcode Cloud workflow actions', () => {
     const repoRoot = root();
     await executeAppStoreConnectPluginAction(input(repoRoot, 'configure', { enabled: true, provider: 'mock' }));
     const manifest = buildAppStoreConnectPluginManifest(1, undefined, repoRoot);
-    expect(manifest.pluginVersion).toBe('1.6.0');
+    expect(manifest.pluginVersion).toBe('1.7.0');
     expect(manifest.actions.find((action) => action.actionId === 'list_xcode_cloud_workflows')).toMatchObject({ readOnly: true, risk: 'readonly' });
     for (const actionId of ['list_bundle_ids', 'list_bundle_id_capabilities', 'list_certificates', 'list_devices', 'list_profiles']) {
       expect(manifest.actions.find((action) => action.actionId === actionId)).toMatchObject({
@@ -323,6 +323,70 @@ describe('App Store Connect Xcode Cloud workflow actions', () => {
   });
 
 
+
+  test('TestFlight revocations and invitation re-send use official exact relationship paths and strong confirmation', async () => {
+    const repoRoot = root();
+    await executeAppStoreConnectPluginAction(input(repoRoot, 'configure', { enabled: true, provider: 'mock' }));
+    const manifest = buildAppStoreConnectPluginManifest(1, undefined, repoRoot);
+    const cases = [
+      { id: 'remove_beta_tester_from_group', args: { group_id: 'group-1', tester_id: 'tester-1' },
+        method: 'DELETE', path: '/v1/betaGroups/group-1/relationships/betaTesters',
+        body: { data: [{type: 'betaTesters', id: 'tester-1'}] } },
+      { id: 'remove_build_from_beta_group', args: { group_id: 'group-1', build_id: 'build-1' },
+        method: 'DELETE', path: '/v1/betaGroups/group-1/relationships/builds',
+        body: { data: [{type: 'builds', id: 'build-1'}] } },
+      { id: 'send_beta_tester_invitation', args: { app_id: 'app-1', tester_id: 'tester-1' },
+        method: 'POST', path: '/v1/betaTesterInvitations',
+        body: {data: {type:'betaTesterInvitations', relationships:{
+          app:{data:{type:'apps',id:'app-1'}}, betaTester:{data:{type:'betaTesters',id:'tester-1'}},
+        }}} },
+      { id: 'delete_beta_group', args: { group_id: 'group-1' },
+        method: 'DELETE', path: '/v1/betaGroups/group-1' },
+      { id: 'delete_beta_tester', args: { tester_id: 'tester-1' },
+        method: 'DELETE', path: '/v1/betaTesters/tester-1' },
+    ] as const;
+    for (const item of cases) {
+      expect(manifest.actions.find(action => action.actionId === item.id)).toMatchObject({
+        confirmation: 'strong_confirmation', risk: 'remote_write', readOnly: false,
+      });
+      const output = await executeAppStoreConnectPluginAction(input(repoRoot, item.id,
+        {...item.args, dry_run: true}));
+      expect(output).toMatchObject({dryRun: true, request: {
+        method: item.method, path: item.path,
+        ...('body' in item ? {body: item.body} : {}),
+      }});
+    }
+  });
+
+  test('TestFlight 204 no-content revocation returns Apple receipt without retrying the mutation', async () => {
+    const repoRoot = root();
+    const privateKeyPath = join(repoRoot, 'AuthKey_TESTFLIGHT_REVOKE.p8');
+    const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
+    writeFileSync(privateKeyPath, privateKey.export({ type: 'pkcs8', format: 'pem' }));
+    await executeAppStoreConnectPluginAction(input(repoRoot, 'configure', {
+      enabled: true, provider: 'app-store-connect-api', issuer_id: 'issuer-testflight',
+      key_id: 'key-testflight', private_key_path: privateKeyPath,
+    }));
+    const old = globalThis.fetch;
+    const requests: Array<{url: URL; method?: string; body?: string}> = [];
+    globalThis.fetch = (async (request: string | URL | Request, init?: RequestInit) => {
+      requests.push({url: new URL(String(request)), method: init?.method, body: init?.body?.toString()});
+      return new Response(null, {status: 204});
+    }) as typeof fetch;
+    try {
+      const result = await executeAppStoreConnectPluginAction(input(repoRoot, 'remove_beta_tester_from_group', {
+        group_id: 'special/id', tester_id: 'tester-1',
+      }));
+      expect(result).toEqual({});
+      expect(requests).toHaveLength(1);
+      expect(requests[0]?.url.pathname).toBe('/v1/betaGroups/special%2Fid/relationships/betaTesters');
+      expect(requests[0]?.method).toBe('DELETE');
+      expect(JSON.parse(requests[0]?.body ?? '{}')).toEqual({
+        data: [{type: 'betaTesters', id: 'tester-1'}],
+      });
+    } finally { globalThis.fetch = old; }
+  });
+
   test('TestFlight group/tester and Xcode Cloud build actions keep public, invite and quota effects strongly gated', async () => {
     const repoRoot = root();
     await executeAppStoreConnectPluginAction(input(repoRoot, 'configure', {enabled:true,provider:'mock'}));
@@ -421,13 +485,15 @@ describe('App Store Connect Xcode Cloud workflow actions', () => {
     const base='https://reports.s3.us-west-2.amazonaws.com';
     const original=globalThis.fetch;
     let forceNext=false;
+    let missingChecksum=false;
+    let noSegments=false;
     globalThis.fetch=(async (request:string|URL|Request)=>{
       const url=new URL(String(request));
       if (url.pathname.endsWith('/instances/')) throw new Error('Unexpected list endpoint');
       if (url.pathname==='/v1/analyticsReportInstances/instance-1/segments') {
         expect(url.searchParams.get('limit')).toBe('9');
-        return Response.json({data:[
-          {id:'seg-a',attributes:{url:base+'/a.csv.gz',sizeInBytes:a.length,checksum:createHash('md5').update(a).digest('hex')}},
+        return Response.json({data:noSegments?[]:[
+          {id:'seg-a',attributes:{url:base+'/a.csv.gz',sizeInBytes:a.length,checksum:missingChecksum?undefined:createHash('md5').update(a).digest('hex')}},
           {id:'seg-b',attributes:{url:base+'/b.csv.gz',sizeInBytes:b.length,checksum:createHash('md5').update(b).digest('hex')}},
         ],links:{next:forceNext?'https://api.appstoreconnect.apple.com/v1/analyticsReportInstances/instance-1/segments?cursor=next':null}});
       }
@@ -448,6 +514,16 @@ describe('App Store Connect Xcode Cloud workflow actions', () => {
       await expect(executeAppStoreConnectPluginAction(input(repoRoot,'summarize_analytics_instance',{
         instance_id:'instance-1',group_by:'Source Type',
       }))).rejects.toThrow('Too many segments');
+      forceNext=false;
+      missingChecksum=true;
+      await expect(executeAppStoreConnectPluginAction(input(repoRoot,'summarize_analytics_instance',{
+        instance_id:'instance-1',group_by:'Source Type',
+      }))).rejects.toThrow('MD5 checksum');
+      missingChecksum=false;
+      noSegments=true;
+      await expect(executeAppStoreConnectPluginAction(input(repoRoot,'summarize_analytics_instance',{
+        instance_id:'instance-1',group_by:'Source Type',
+      }))).rejects.toThrow('no downloadable segments');
     } finally {globalThis.fetch=original;}
   });
 
