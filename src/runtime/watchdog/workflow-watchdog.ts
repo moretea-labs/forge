@@ -1,4 +1,4 @@
-import { listActiveAgentJobSnapshots } from '../../cli/agent-jobs/job-manager';
+import { listActiveAgentJobSnapshots } from '../agent-jobs/read-model';
 import { getLocalBridgeJobEventsSnapshot, listLocalBridgeJobSnapshots } from '../local-bridge/read-model';
 import type { RepositoryRecord } from '../../core/repository/types';
 import { listExecutionJobs } from '../execution/jobs/store';

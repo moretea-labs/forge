@@ -33,7 +33,7 @@ import { CONTROLLER_CONTEXT_IMPACT_DOMAINS, type ControllerContextImpactDomain }
 import { legacyIssueAuthorityRetired } from '../../../src/cli/controller/legacy-issue-cutover';
 import { buildControllerOperationalPlan } from '../../../src/cli/controller/operational-plan';
 import { listControllerChecks, readLatestControllerCheckEvidence } from '../../../src/runtime/execution/process-runtime/check-runner';
-import { listActiveAgentJobSnapshots } from '../../../src/cli/agent-jobs/job-manager';
+import { listActiveAgentJobSnapshots } from '../../../src/runtime/agent-jobs/read-model';
 import {
   controllerContextPerformanceSnapshot,
   controllerContextProjectionAgeMs,

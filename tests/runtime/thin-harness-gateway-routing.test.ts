@@ -20,6 +20,7 @@ import { commitSelectedPaths } from '../../src/runtime/repositories/selected-pat
 import { ensureRepositoryRuntimeStorageBinding } from '../../src/runtime/repositories/runtime-storage';
 import { listExecutionJobs } from '../../src/runtime/execution/jobs/store';
 import { listLocalBridgeJobSnapshots } from '../../src/runtime/local-bridge/read-model';
+import { listActiveAgentJobSnapshots } from '../../src/runtime/agent-jobs/read-model';
 import { callRepositoryTool } from '../../src/runtime/control-plane/facade/repository-tool-dispatch';
 import { callExecutionTool } from '../../adapters/mcp/runtime-gateway/execution-tools';
 import { callRuntimeTool } from '../../adapters/mcp/runtime-gateway/runtime-tools';
@@ -114,6 +115,77 @@ function fixture() {
 }
 
 const roots: string[] = [];
+
+describe('Runtime AgentJob read model', () => {
+  test('reads active snapshots and normalizes legacy metadata without lifecycle writes', () => {
+    const fx = fixture();
+    roots.push(fx.root);
+    const runId = 'run-active-read-model';
+    const jobRoot = join(fx.repoRoot, '.ai', 'harness', 'jobs', runId);
+    const indexRoot = join(fx.repoRoot, '.ai', 'harness', 'controller', 'run-indexes');
+    mkdirSync(jobRoot, { recursive: true });
+    mkdirSync(indexRoot, { recursive: true });
+
+    writeFileSync(join(indexRoot, 'active.json'), JSON.stringify({
+      schemaVersion: 1,
+      updatedAt: '2026-11-12T00:00:00.000Z',
+      runs: [{
+        runId,
+        issueId: 'ISSUE-1',
+        taskId: 'TASK-1',
+        status: 'running',
+        createdAt: '2026-11-12T00:00:00.000Z',
+        updatedAt: '2026-11-12T00:01:00.000Z',
+        executionMode: 'worktree',
+      }],
+    }));
+    writeFileSync(join(jobRoot, 'meta.json'), JSON.stringify({
+      schemaVersion: 1,
+      runId,
+      issueId: 'ISSUE-1',
+      taskId: 'TASK-1',
+      agent: 'codex',
+      status: 'running',
+      repoRoot: fx.repoRoot,
+      worktree: join(fx.repoRoot, '.ai', 'harness', 'worktrees', runId),
+      promptPath: '',
+      stdoutPath: '',
+      stderrPath: '',
+      resultPath: '',
+      createdAt: '2026-11-12T00:00:00.000Z',
+      lastHeartbeatAt: '2026-11-12T00:01:00.000Z',
+      progress: {
+        phase: 'editing',
+        currentActivity: 'Editing source',
+        lastActivityAt: '2026-11-12T00:01:00.000Z',
+        activityCount: 1,
+      },
+    }));
+
+    const activeIndexPath = join(indexRoot, 'active.json');
+    const metaPath = join(jobRoot, 'meta.json');
+    const rawActiveIndex = readFileSync(activeIndexPath, 'utf-8');
+    const rawMeta = readFileSync(metaPath, 'utf-8');
+    const snapshots = listActiveAgentJobSnapshots(fx.repoRoot, 20);
+    expect(readFileSync(activeIndexPath, 'utf-8')).toBe(rawActiveIndex);
+    expect(readFileSync(metaPath, 'utf-8')).toBe(rawMeta);
+    expect(snapshots).toHaveLength(1);
+    expect(snapshots[0]).toMatchObject({
+      runId,
+      issueId: 'ISSUE-1',
+      taskId: 'TASK-1',
+      status: 'running',
+      agent: 'codex',
+      provider: 'local',
+      executionMode: 'worktree',
+      autoIntegrate: false,
+      closureState: 'integration_pending',
+      eventsPath: `.ai/harness/jobs/${runId}/events.jsonl`,
+      progress: { currentActivity: 'Editing source' },
+    });
+  });
+});
+
 
 beforeEach(() => {
   // no-op; fixtures cleaned in afterEach

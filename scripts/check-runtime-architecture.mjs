@@ -723,6 +723,7 @@ const required = [
   'packages/protocols/mcp/execution-context.ts',
   'src/runtime/plugins/github-client.ts',
   'src/runtime/local-bridge/read-model.ts',
+  'src/runtime/agent-jobs/read-model.ts',
   'adapters/mcp/runtime-gateway/runtime-tool-definitions.ts',
   'adapters/mcp/server.ts',
   'adapters/mcp/oauth.ts',

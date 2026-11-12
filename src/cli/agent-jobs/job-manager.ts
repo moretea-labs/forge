@@ -11,7 +11,7 @@ import {
   writeFileSync,
   appendFileSync,
 } from "fs";
-import { dirname, join, relative } from "path";
+import { dirname, join } from "path";
 import { spawn } from "child_process";
 import { fileURLToPath } from "url";
 import { runProcess } from "../../effects/process-runner";
@@ -43,6 +43,19 @@ import type {
   AgentJobWorkerConfig,
 } from "./types";
 import {
+  AGENT_JOB_ROOT,
+  eventPath,
+  jobDir,
+  metaPath,
+  normalizeAgentMeta,
+  readJson,
+  readRawAgentMeta,
+  readRunIndex,
+  runIndexPath,
+  taskRunIndexPath,
+  type AgentRunIndexEntry as RuntimeAgentRunIndexEntry,
+} from "../../runtime/agent-jobs/read-model";
+import {
   classifyExecutorFailure,
   classifyGitHubCopilotPreflight,
   classifyLocalExecutorHealth,
@@ -50,52 +63,9 @@ import {
   isExecutorHealthError,
 } from "./executor-health";
 
-const JOB_ROOT = ".ai/harness/jobs";
-const RUN_INDEX_ROOT = ".ai/harness/controller/run-indexes";
+type AgentRunIndexEntry = RuntimeAgentRunIndexEntry<AgentJobStatus, AgentExecutionMode>;
+
 const RUN_INDEX_LOCK = ".ai/harness/controller/run-index.lock";
-
-function readJson<T>(path: string): T {
-  return JSON.parse(readFileSync(path, "utf-8")) as T;
-}
-
-function normalizeAgentMeta(
-  repoRoot: string,
-  runId: string,
-  meta: AgentJobMeta,
-): AgentJobMeta {
-  meta.schemaVersion = meta.schemaVersion ?? 1;
-  meta.provider = meta.provider ?? "local";
-  meta.executionMode =
-    meta.executionMode ??
-    (meta.provider === "github"
-      ? "github"
-      : meta.worktree === repoRoot
-        ? "workspace"
-        : "worktree");
-  // Integration is an explicit model decision. Historical worktree Runs may
-  // retain this field for read compatibility, but a missing value must never
-  // turn a completed execution into a workflow transition.
-  meta.autoIntegrate = meta.autoIntegrate ?? false;
-  meta.closureState = meta.closureState ?? (
-    meta.provider === "local" && meta.executionMode === "worktree"
-      ? meta.worktreeCleanedAt
-        ? "completed"
-        : meta.status === "waiting_for_user"
-          ? "preserved"
-          : meta.integratedSessionId
-            ? "cleanup_pending"
-            : ["queued", "starting", "running", "succeeded"].includes(meta.status)
-              ? "integration_pending"
-              : "none"
-      : meta.status === "succeeded"
-        ? "completed"
-        : "none"
-  );
-  meta.eventsPath =
-    meta.eventsPath ??
-    relative(repoRoot, eventPath(repoRoot, runId)).replace(/\\/g, "/");
-  return meta;
-}
 
 function writeJson(path: string, value: unknown): void {
   mkdirSync(dirname(path), { recursive: true });
@@ -124,63 +94,8 @@ function atomicCreateJson(path: string, value: unknown): boolean {
   }
 }
 
-function jobDir(repoRoot: string, runId: string): string {
-  return join(repoRoot, JOB_ROOT, runId);
-}
-
-function metaPath(repoRoot: string, runId: string): string {
-  return join(jobDir(repoRoot, runId), "meta.json");
-}
-
-function eventPath(repoRoot: string, runId: string): string {
-  return join(jobDir(repoRoot, runId), "events.jsonl");
-}
-
 function eventReceiptPath(repoRoot: string, runId: string, eventId: string): string {
   return join(jobDir(repoRoot, runId), "event-receipts", `${createHash("sha256").update(eventId).digest("hex")}.json`);
-}
-
-function rawJobMetaPath(repoRoot: string, runId: string): string {
-  return join(jobDir(repoRoot, runId), "meta.json");
-}
-
-function readRawAgentMeta(
-  repoRoot: string,
-  runId: string,
-): AgentJobMeta | undefined {
-  const path = rawJobMetaPath(repoRoot, runId);
-  if (!existsSync(path)) return undefined;
-  try {
-    return normalizeAgentMeta(repoRoot, runId, readJson<AgentJobMeta>(path));
-  } catch (_error) {
-    return undefined;
-  }
-}
-
-interface AgentRunIndexEntry {
-  runId: string;
-  issueId: string;
-  taskId: string;
-  status: AgentJobStatus;
-  createdAt: string;
-  updatedAt: string;
-  executionMode: AgentExecutionMode;
-  integratedSessionId?: string;
-}
-
-interface AgentRunIndex {
-  schemaVersion: 1;
-  updatedAt: string;
-  runs: AgentRunIndexEntry[];
-}
-
-function runIndexPath(repoRoot: string, name: 'active' | 'recent' | 'pending-integration'): string {
-  return join(repoRoot, RUN_INDEX_ROOT, `${name}.json`);
-}
-
-function taskRunIndexPath(repoRoot: string, issueId: string, taskId: string): string {
-  const digest = createHash('sha256').update(`${issueId}\0${taskId}`).digest('hex');
-  return join(repoRoot, RUN_INDEX_ROOT, 'tasks', `${digest}.json`);
 }
 
 function withRunIndexLock<T>(repoRoot: string, action: () => T): T {
@@ -208,13 +123,6 @@ function withRunIndexLock<T>(repoRoot: string, action: () => T): T {
   finally { closeSync(descriptor); rmSync(path, { force: true }); }
 }
 
-function readRunIndex(repoRoot: string, name: 'active' | 'recent' | 'pending-integration'): AgentRunIndex {
-  const path = runIndexPath(repoRoot, name);
-  if (!existsSync(path)) return { schemaVersion: 1, updatedAt: new Date().toISOString(), runs: [] };
-  try { return readJson<AgentRunIndex>(path); }
-  catch { return { schemaVersion: 1, updatedAt: new Date().toISOString(), runs: [] }; }
-}
-
 function updateRunIndexes(repoRoot: string, meta: AgentJobMeta): void {
   withRunIndexLock(repoRoot, () => {
     const entry: AgentRunIndexEntry = {
@@ -227,21 +135,21 @@ function updateRunIndexes(repoRoot: string, meta: AgentJobMeta): void {
       executionMode: meta.executionMode,
       integratedSessionId: meta.integratedSessionId,
     };
-    const active = readRunIndex(repoRoot, 'active');
+    const active = readRunIndex<AgentJobStatus, AgentExecutionMode>(repoRoot, 'active');
     active.runs = active.runs.filter((candidate) => candidate.runId !== meta.runId);
     if (['queued', 'starting', 'running'].includes(meta.status)) active.runs.push(entry);
     active.updatedAt = new Date().toISOString();
     active.runs = active.runs.sort((a, b) => a.createdAt.localeCompare(b.createdAt)).slice(-5000);
     writeJson(runIndexPath(repoRoot, 'active'), active);
 
-    const recent = readRunIndex(repoRoot, 'recent');
+    const recent = readRunIndex<AgentJobStatus, AgentExecutionMode>(repoRoot, 'recent');
     recent.runs = recent.runs.filter((candidate) => candidate.runId !== meta.runId);
     recent.runs.unshift(entry);
     recent.updatedAt = new Date().toISOString();
     recent.runs = recent.runs.sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 5000);
     writeJson(runIndexPath(repoRoot, 'recent'), recent);
 
-    const pendingIntegration = readRunIndex(repoRoot, 'pending-integration');
+    const pendingIntegration = readRunIndex<AgentJobStatus, AgentExecutionMode>(repoRoot, 'pending-integration');
     pendingIntegration.runs = pendingIntegration.runs.filter((candidate) => candidate.runId !== meta.runId);
     if (meta.closureState && [
       'ready_to_integrate', 'integration_pending', 'integrating', 'integration_blocked',
@@ -471,7 +379,7 @@ function reconcileLocalRunOwnership(
     });
     if (identity.ok && identity.stdout.trim()) {
       const command = identity.stdout.trim();
-      const expectedConfig = join(repoRoot, JOB_ROOT, meta.runId, "worker-config.json");
+      const expectedConfig = join(repoRoot, AGENT_JOB_ROOT, meta.runId, "worker-config.json");
       if (!matchesAgentWorkerCommand(command, expectedConfig)) {
         meta.agentPid = undefined;
         meta.workerPid = undefined;
@@ -559,10 +467,10 @@ export function appendAgentJobEvent(
 
 
 function activeRunIndexEntries(repoRoot: string): AgentRunIndexEntry[] {
-  let active = readRunIndex(repoRoot, 'active').runs;
-  if (active.length === 0 && existsSync(join(repoRoot, JOB_ROOT))) {
+  let active = readRunIndex<AgentJobStatus, AgentExecutionMode>(repoRoot, 'active').runs;
+  if (active.length === 0 && existsSync(join(repoRoot, AGENT_JOB_ROOT))) {
     for (const meta of scanLegacyJobMeta(repoRoot, 5000)) updateRunIndexes(repoRoot, meta);
-    active = readRunIndex(repoRoot, 'active').runs;
+    active = readRunIndex<AgentJobStatus, AgentExecutionMode>(repoRoot, 'active').runs;
   }
   return active;
 }
@@ -729,7 +637,7 @@ function failAcceptedTaskJob(
 
 function scanLegacyJobMeta(repoRoot: string, limit = 50): AgentJobMeta[] {
   const boundedLimit = Math.min(Math.max(limit, 1), 5000);
-  const root = join(repoRoot, JOB_ROOT);
+  const root = join(repoRoot, AGENT_JOB_ROOT);
   if (!existsSync(root)) return [];
   const createdAtFromRunId = (runId: string): number => {
     const match = runId.match(/-(\d{13})-[a-f0-9]+$/i);
@@ -740,7 +648,7 @@ function scanLegacyJobMeta(repoRoot: string, limit = 50): AgentJobMeta[] {
     .sort((a, b) => createdAtFromRunId(b.name) - createdAtFromRunId(a.name))
     .slice(0, boundedLimit)
     .flatMap((entry) => {
-      const meta = readRawAgentMeta(repoRoot, entry.name);
+      const meta = readRawAgentMeta<AgentJobMeta>(repoRoot, entry.name);
       return meta ? [meta] : [];
     })
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
@@ -1001,10 +909,10 @@ export function reconcileAgentJobs(repoRoot: string): {
 
 export function listPendingIntegrationRuns(repoRoot: string, limit = 500): AgentJobMeta[] {
   const bounded = Math.max(1, Math.min(limit, 5000));
-  let pending = readRunIndex(repoRoot, 'pending-integration');
-  if (!existsSync(runIndexPath(repoRoot, 'pending-integration')) && existsSync(join(repoRoot, JOB_ROOT))) {
+  let pending = readRunIndex<AgentJobStatus, AgentExecutionMode>(repoRoot, 'pending-integration');
+  if (!existsSync(runIndexPath(repoRoot, 'pending-integration')) && existsSync(join(repoRoot, AGENT_JOB_ROOT))) {
     for (const meta of scanLegacyJobMeta(repoRoot, bounded)) updateRunIndexes(repoRoot, meta);
-    pending = readRunIndex(repoRoot, 'pending-integration');
+    pending = readRunIndex<AgentJobStatus, AgentExecutionMode>(repoRoot, 'pending-integration');
   }
   return pending.runs.slice(0, bounded).flatMap((entry) => {
     try {
@@ -1040,10 +948,10 @@ export function recordAgentJobIntegrationEvidence(
 
 export function listAgentJobs(repoRoot: string, limit = 50): AgentJobMeta[] {
   const boundedLimit = Math.min(Math.max(limit, 1), 5000);
-  const recentIndex = readRunIndex(repoRoot, 'recent');
+  const recentIndex = readRunIndex<AgentJobStatus, AgentExecutionMode>(repoRoot, 'recent');
   if (recentIndex.runs.length > 0) {
     return recentIndex.runs.slice(0, boundedLimit).flatMap((entry) => {
-      const meta = readRawAgentMeta(repoRoot, entry.runId);
+      const meta = readRawAgentMeta<AgentJobMeta>(repoRoot, entry.runId);
       return meta ? [meta] : [];
     });
   }
@@ -1052,14 +960,6 @@ export function listAgentJobs(repoRoot: string, limit = 50): AgentJobMeta[] {
   const legacy = scanLegacyJobMeta(repoRoot, boundedLimit);
   for (const meta of legacy) updateRunIndexes(repoRoot, meta);
   return legacy;
-}
-
-export function listActiveAgentJobSnapshots(repoRoot: string, limit = 50): AgentJobMeta[] {
-  const boundedLimit = Math.min(Math.max(limit, 1), 500);
-  return readRunIndex(repoRoot, 'active').runs.slice(0, boundedLimit).flatMap((entry) => {
-    const meta = readRawAgentMeta(repoRoot, entry.runId);
-    return meta ? [meta] : [];
-  });
 }
 
 export function getAgentJobEvents(
