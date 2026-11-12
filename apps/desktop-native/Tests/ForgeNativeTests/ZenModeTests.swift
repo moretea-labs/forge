@@ -43,3 +43,21 @@ extension ZenModeTests {
         XCTAssertEqual(ZenBoardBucket.classify(requirementState:"open",runtimeActive:false,hasPlan:false),.todo)
     }
 }
+
+extension ZenModeTests {
+    func testSearchMatchesRequirementTitleOrIdWithoutMutatingSource() {
+        let items = [
+            ForgeRecord(recordId:"REQ-CANVAS-1",title:"画布交互优化",state:"open",
+                        kind:.requirement,depth:0,requirementId:nil,parentPlanId:nil),
+            ForgeRecord(recordId:"REQ-OTHER-2",title:"原生项目管理",state:"open",
+                        kind:.requirement,depth:0,requirementId:nil,parentPlanId:nil)
+        ]
+        XCTAssertEqual(ZenWorkspacePane.filterRequirements(items,query:"  canvas  ").map(\.recordId),
+                       ["REQ-CANVAS-1"])
+        XCTAssertEqual(ZenWorkspacePane.filterRequirements(items,query:"  项目管理 ").map(\.recordId),
+                       ["REQ-OTHER-2"])
+        XCTAssertEqual(ZenWorkspacePane.filterRequirements(items,query:"无匹配").count,0)
+        XCTAssertEqual(ZenWorkspacePane.filterRequirements(items,query:"  ").count,2)
+        XCTAssertEqual(items.count,2)
+    }
+}

@@ -11,11 +11,11 @@ enum ZenBoardBucket: Int, CaseIterable {
 
     var title: String {
         switch self {
-        case .todo: return "To do"
-        case .planned: return "Planned"
-        case .running: return "In progress"
-        case .done: return "Done"
-        case .cancelled: return "Cancelled"
+        case .todo: return "待规划"
+        case .planned: return "已规划"
+        case .running: return "执行中"
+        case .done: return "已完成"
+        case .cancelled: return "已取消"
         }
     }
 
@@ -31,6 +31,7 @@ enum ZenBoardBucket: Int, CaseIterable {
 struct ZenRail: View {
     @Binding var screen: ZenScreen
     let onOpenSettings: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(spacing:10) {
@@ -57,7 +58,11 @@ struct ZenRail: View {
     }
 
     private func navigation(_ target:ZenScreen,symbol:String,label:String) -> some View {
-        Button { screen=target } label: {
+        Button {
+            withAnimation(reduceMotion ? nil : .easeInOut(duration:0.18)) {
+                screen=target
+            }
+        } label: {
             Image(systemName:symbol)
                 .font(.system(size:15,weight:screen == target ? .semibold : .regular))
                 .foregroundStyle(screen == target ? Color.primary : Color.secondary)
@@ -74,6 +79,7 @@ struct ZenRail: View {
 }
 
 struct ZenSidebar: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject var model: NativeWorkspace
     @Binding var screen: ZenScreen
     @Binding var focusedRequirementId: String?
@@ -98,7 +104,9 @@ struct ZenSidebar: View {
             .padding(.horizontal,15).frame(height:54)
 
             Button {
-                screen = .projects
+                withAnimation(reduceMotion ? nil : .easeInOut(duration:0.18)) {
+                    screen = .projects
+                }
             } label: {
                 Label("全部项目",systemImage:"square.grid.2x2")
                     .frame(maxWidth:.infinity,alignment:.leading).frame(height:33)
@@ -127,17 +135,16 @@ struct ZenSidebar: View {
             .padding(.horizontal,9)
             .accessibilityIdentifier("zen.inbox")
 
-            Text("项目").font(.system(size:10,weight:.medium))
-                .foregroundStyle(.secondary)
-                .padding(.horizontal,19).padding(.top,25).padding(.bottom,8)
-
             ScrollView {
                 LazyVStack(alignment:.leading,spacing:3) {
                     ForEach(model.projects) { project in
                         Button {
+                            guard !model.busy else { return }
                             model.focusZenProject(project.repoId)
                             focusedRequirementId = nil
-                            screen = .board
+                            withAnimation(reduceMotion ? nil : .easeInOut(duration:0.18)) {
+                                screen = .board
+                            }
                         } label: {
                             HStack(spacing:9) {
                                 Image(systemName:"folder")
@@ -157,23 +164,16 @@ struct ZenSidebar: View {
                                         in:RoundedRectangle(cornerRadius:9))
                             .contentShape(Rectangle())
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(ZenPressStyle())
+                        .disabled(model.busy)
+                        .help(project.displayName)
                         .accessibilityIdentifier("zen.project.\(project.repoId)")
                     }
                 }
-                .padding(.horizontal,9)
+                .padding(.horizontal,9).padding(.top,16)
             }
             .scrollIndicators(.hidden)
             Spacer(minLength:0)
-            if let project=model.project {
-                HStack(spacing:7) {
-                    Circle().fill(Color.accentColor.opacity(0.7)).frame(width:6,height:6)
-                    Text(project.displayName).lineLimit(1)
-                }
-                .font(.system(size:10,weight:.medium))
-                .foregroundStyle(.secondary)
-                .padding(.horizontal,16).padding(.bottom,16)
-            }
         }
         .frame(maxWidth:.infinity,maxHeight:.infinity,alignment:.leading)
         .background(.ultraThinMaterial)
@@ -189,6 +189,10 @@ struct ZenWorkspacePane: View {
     let onOpenInbox: () -> Void
     let onOpenAgent: (ForgeRecord, String, String?, Bool) -> Void
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @FocusState private var searchFocused: Bool
+    @State private var requirementQuery = ""
+    @State private var hideEmptyColumns = true
 
     @State private var boardMode = "forge"
     @State private var showingGoalSheet = false
@@ -213,10 +217,36 @@ struct ZenWorkspacePane: View {
     @State private var newOutcome = ""
     @State private var newCriteria = ""
     @State private var newPlanGoal = ""
+    @State private var newParentPlanId: String?
     @State private var saving = false
 
     private var requirements: [ForgeRecord] {
         model.records.filter { $0.kind == .requirement }
+    }
+
+    private var visibleRequirements: [ForgeRecord] {
+        Self.filterRequirements(requirements,query:requirementQuery)
+    }
+
+    static func filterRequirements(_ items:[ForgeRecord],query:String) -> [ForgeRecord] {
+        let term=query.trimmingCharacters(in:.whitespacesAndNewlines)
+        guard !term.isEmpty else { return items }
+        return items.filter {
+            $0.title.localizedStandardContains(term)
+            || $0.recordId.localizedStandardContains(term)
+        }
+    }
+
+    private var visibleStages:[ZenBoardBucket] {
+        ZenBoardBucket.allCases.filter { stage in
+            !hideEmptyColumns || visibleRequirements.contains(where:{bucket($0) == stage})
+        }
+    }
+
+    private func navigate(_ next:ZenScreen) {
+        withAnimation(reduceMotion ? nil : .easeInOut(duration:0.18)) {
+            screen=next
+        }
     }
 
     private func bucket(_ item:ForgeRecord) -> ZenBoardBucket {
@@ -232,13 +262,14 @@ struct ZenWorkspacePane: View {
             HStack(spacing:10) {
                 if screen == .canvas {
                     Button {
-                        screen = .board
+                        navigate(.board)
                         focusedRequirementId = nil
                         model.clearRecordSelection()
                     } label: {
                         Image(systemName:"chevron.left").frame(width:28,height:28)
                     }
                     .buttonStyle(.plain).help("返回看板")
+                    .accessibilityLabel("返回看板")
                 }
                 VStack(alignment:.leading,spacing:3) {
                     Text(screen == .projects ? "全部项目" :
@@ -294,8 +325,9 @@ struct ZenWorkspacePane: View {
                     Image(systemName:"arrow.clockwise").frame(width:28,height:28)
                 }
                 .buttonStyle(.plain)
-                .disabled(model.repoId == nil)
+                .disabled(model.repoId == nil || model.checkoutContextLoading)
                 .help("刷新当前项目")
+                .accessibilityLabel("刷新当前项目")
             }
             .padding(.horizontal,24).frame(height:66)
 
@@ -311,22 +343,25 @@ struct ZenWorkspacePane: View {
                 .padding(.horizontal,24).padding(.vertical,8)
             }
 
-            switch screen {
-            case .projects:
-                projectOverview
-            case .board:
-                boardView
-            case .canvas:
-                canvasContent
+            Group {
+                switch screen {
+                case .projects:
+                    projectOverview
+                case .board:
+                    boardView
+                case .canvas:
+                    canvasContent
+                }
             }
+            .transition(.opacity)
         }
         .frame(maxWidth:.infinity,maxHeight:.infinity)
         .background(Color(nsColor:.textBackgroundColor))
         .onChange(of:screen) { next in
-            guard next == .canvas,focusedRequirementId == nil,
-                  let first=requirements.first else { return }
-            focusedRequirementId=first.recordId
-            Task { await model.openRecord(first.id) }
+            selectDefaultRequirementIfNeeded(next)
+        }
+        .onChange(of:requirements.map(\.recordId)) { _ in
+            selectDefaultRequirementIfNeeded(screen)
         }
         .sheet(isPresented:$showingGoalSheet) { goalSheet }
         .sheet(item:$pendingProposal) { item in
@@ -369,7 +404,11 @@ struct ZenWorkspacePane: View {
                 onOpenAgent(item,prompt,provider,false)
             }
         }
-        .onChange(of:model.repoId) { _ in boardMode = "forge" }
+        .onChange(of:model.repoId) { _ in
+            boardMode = "forge"
+            requirementQuery = ""
+            searchFocused = false
+        }
         .task(id:"\(model.repoId ?? "none")|\(model.planningRequirementIds.joined(separator:"|"))|\(scenePhase == .active ? "active" : "inactive")") {
             guard scenePhase == .active,!model.planningRequirementIds.isEmpty else { return }
             await model.refreshPlanningAutopilotStatuses()
@@ -382,14 +421,22 @@ struct ZenWorkspacePane: View {
         }
     }
 
+    private func selectDefaultRequirementIfNeeded(_ next:ZenScreen) {
+        guard next == .canvas,focusedRequirementId == nil,
+              let first=requirements.first else { return }
+        focusedRequirementId=first.recordId
+        Task { await model.openRecord(first.id) }
+    }
+
     private var projectOverview: some View {
         ScrollView {
             LazyVStack(alignment:.leading,spacing:0) {
                 ForEach(model.projects) { project in
                     Button {
+                        guard !model.busy else { return }
                         model.focusZenProject(project.repoId)
                         focusedRequirementId = nil
-                        screen = .board
+                        navigate(.board)
                     } label: {
                         HStack(spacing:15) {
                             Image(systemName:"folder")
@@ -407,7 +454,8 @@ struct ZenWorkspacePane: View {
                         .padding(.vertical,12)
                         .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(ZenPressStyle())
+                    .disabled(model.busy)
                     Divider()
                 }
             }
@@ -443,8 +491,54 @@ struct ZenWorkspacePane: View {
                 .font(.system(size:11)).foregroundStyle(.secondary)
                 .padding(.horizontal,24).padding(.bottom,13)
                 HStack(spacing:10) {
-                    Text("Forge · Requirement").font(.system(size:11,weight:.medium))
+                    if boardMode == "forge" {
+                        HStack(spacing:7) {
+                            Button {
+                                searchFocused=true
+                            } label: {
+                                Image(systemName:"magnifyingglass")
+                                    .foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                            .keyboardShortcut("f",modifiers:.command)
+                            .help("搜索需求（⌘F）")
+                            .accessibilityLabel("搜索需求")
+                            TextField("搜索需求名称或 ID",text:$requirementQuery)
+                                .textFieldStyle(.plain)
+                                .focused($searchFocused)
+                                .accessibilityIdentifier("zen.board.search")
+                            if !requirementQuery.isEmpty {
+                                Button {
+                                    requirementQuery = ""
+                                    searchFocused = true
+                                } label: {
+                                    Image(systemName:"xmark.circle.fill")
+                                        .foregroundStyle(.secondary)
+                                }
+                                .buttonStyle(.plain)
+                                .help("清除搜索")
+                            }
+                        }
+                        .font(.system(size:12))
+                        .padding(.horizontal,10).frame(height:30)
+                        .background(Color.primary.opacity(0.045),
+                                    in:RoundedRectangle(cornerRadius:8))
+                        .frame(maxWidth:320)
+                    }
                     Spacer()
+                    if boardMode == "forge" {
+                        Button {
+                            hideEmptyColumns.toggle()
+                        } label: {
+                            Label(hideEmptyColumns ? "显示空列" : "隐藏空列",
+                                  systemImage:hideEmptyColumns ? "rectangle.split.3x1" : "rectangle.split.3x1.fill")
+                                .labelStyle(.iconOnly)
+                                .frame(width:28,height:28)
+                        }
+                        .buttonStyle(.plain)
+                        .help(hideEmptyColumns ? "显示所有状态列" : "隐藏空状态列")
+                        .accessibilityIdentifier("zen.board.toggleEmptyColumns")
+                    }
                     Menu {
                         Button("Forge 原生管理") { boardMode = "forge" }
                         Button("GitHub Project（可选）") {
@@ -474,8 +568,8 @@ struct ZenWorkspacePane: View {
                 GeometryReader { frame in
                     ScrollView(.horizontal) {
                         HStack(alignment:.top,spacing:14) {
-                            ForEach(ZenBoardBucket.allCases,id:\.rawValue) { stage in
-                                let items = requirements.filter { bucket($0) == stage }
+                            ForEach(visibleStages,id:\.rawValue) { stage in
+                                let items = visibleRequirements.filter { bucket($0) == stage }
                                 VStack(alignment:.leading,spacing:0) {
                                     HStack(spacing:9) {
                                         Circle()
@@ -492,7 +586,7 @@ struct ZenWorkspacePane: View {
                                             ForEach(items) { item in
                                                 Button {
                                                     focusedRequirementId = item.recordId
-                                                    screen = .canvas
+                                                    navigate(.canvas)
                                                     Task { await model.openRecord(item.id) }
                                                 } label: {
                                                     VStack(alignment:.leading,spacing:9) {
@@ -528,7 +622,7 @@ struct ZenWorkspacePane: View {
                                                                 in:RoundedRectangle(cornerRadius:10))
                                                     .contentShape(RoundedRectangle(cornerRadius:10))
                                                 }
-                                                .buttonStyle(.plain)
+                                                .buttonStyle(ZenPressStyle())
                                                 .accessibilityIdentifier("zen.requirement.\(item.recordId)")
                                             }
                                         }
@@ -546,11 +640,26 @@ struct ZenWorkspacePane: View {
                     }
                     .scrollIndicators(.hidden)
                 }
-                if requirements.isEmpty {
-                    Text("当前项目还没有 Requirement")
-                        .font(.system(size:12)).foregroundStyle(.secondary)
-                        .frame(maxWidth:.infinity)
-                        .padding(.bottom,20)
+                if requirements.isEmpty && model.checkoutContextLoading {
+                    ProgressView("正在读取当前项目…")
+                        .controlSize(.small)
+                        .font(.system(size:11))
+                        .frame(maxWidth:.infinity,maxHeight:.infinity)
+                } else if requirements.isEmpty {
+                    ZenEmptyState(title:"暂无 Requirement",
+                                  subtitle:"使用“描述目标”开始，或直接创建一项需求。",
+                                  symbol:"checklist")
+                } else if visibleRequirements.isEmpty {
+                    VStack(spacing:10) {
+                        Text("没有匹配的需求")
+                            .font(.system(size:12,weight:.medium))
+                        Button("清除搜索") {
+                            requirementQuery=""
+                            searchFocused=true
+                        }
+                        .buttonStyle(.link)
+                    }
+                    .frame(maxWidth:.infinity,maxHeight:.infinity)
                 }
                 }
             }
@@ -577,6 +686,17 @@ struct ZenWorkspacePane: View {
         }
     }
 
+    private func detailLoaded(for item:ForgeRecord) -> Bool {
+        switch model.recordDetail {
+        case .requirement(let detail):
+            return item.kind == .requirement && detail.requirementId == item.recordId
+        case .plan(let detail):
+            return item.kind == .plan && detail.planId == item.recordId
+        case nil:
+            return false
+        }
+    }
+
     private func detailInspector(_ item:ForgeRecord) -> some View {
         ScrollView {
             VStack(alignment:.leading,spacing:15) {
@@ -585,6 +705,17 @@ struct ZenWorkspacePane: View {
                         .font(.system(size:10,weight:.semibold)).foregroundStyle(.secondary)
                     Spacer()
                     Text(item.state).font(.system(size:10)).foregroundStyle(.secondary)
+                    Button {
+                        withAnimation(reduceMotion ? nil : .easeOut(duration:0.18)) {
+                            model.clearRecordSelection()
+                        }
+                    } label: {
+                        Image(systemName:"xmark").frame(width:26,height:26)
+                    }
+                    .buttonStyle(.plain)
+                    .help("关闭详情")
+                    .accessibilityLabel("关闭详情")
+                    .accessibilityIdentifier("zen.inspector.close")
                 }
                 Text(item.title).font(.system(size:16,weight:.semibold))
                 Text(item.recordId).font(.system(size:10,design:.monospaced))
@@ -592,7 +723,7 @@ struct ZenWorkspacePane: View {
                     .textSelection(.enabled)
                 Divider()
                 switch model.recordDetail {
-                case .requirement(let detail) where item.kind == .requirement:
+                case .requirement(let detail) where item.kind == .requirement && detail.requirementId == item.recordId:
                     Text("目标").font(.system(size:12,weight:.semibold))
                     Text(detail.outcomeStatement).font(.system(size:12))
                         .textSelection(.enabled)
@@ -625,7 +756,7 @@ struct ZenWorkspacePane: View {
                             Text("· \(work)").font(.system(size:11))
                         }
                     }
-                case .plan(let detail) where item.kind == .plan:
+                case .plan(let detail) where item.kind == .plan && detail.planId == item.recordId:
                     Text("目标").font(.system(size:12,weight:.semibold))
                     Text(detail.goal).font(.system(size:12)).textSelection(.enabled)
                     Divider()
@@ -635,10 +766,12 @@ struct ZenWorkspacePane: View {
                             .frame(maxWidth:.infinity,alignment:.leading)
                     }
                 default:
-                    ProgressView().controlSize(.small)
+                    ProgressView("正在读取当前节点…")
+                        .font(.system(size:11))
+                        .controlSize(.small)
                 }
 
-                if item.kind == .requirement && item.state == "open" {
+                if detailLoaded(for:item) && item.kind == .requirement && item.state == "open" {
                     zenExecutionSection(item)
                 }
                 Divider()
@@ -648,7 +781,7 @@ struct ZenWorkspacePane: View {
                     Label("编辑",systemImage:"square.and.pencil")
                 }
                 .buttonStyle(.bordered)
-                .disabled(model.recordDetail == nil
+                .disabled(!detailLoaded(for:item)
                           || (item.kind == .requirement && item.state != "open"))
                 Button {
                     onOpenAgent(item,"请基于当前 Requirement / Plan 的实际修订与关联信息分析并提出最小必要优化，先给出差异和影响范围，不要在未经确认时新增同义记录。",nil,true)
@@ -664,7 +797,7 @@ struct ZenWorkspacePane: View {
                 .buttonStyle(.bordered)
                 if item.kind == .requirement {
                     if case .requirement(let detail) = model.recordDetail,
-                       detail.state == "open" {
+                       detail.requirementId == item.recordId && detail.state == "open" {
                         Menu {
                             Button("验收完成") {
                                 acceptanceReferences=detail.acceptedEvidenceRefs.joined(separator:"\n")
@@ -682,12 +815,23 @@ struct ZenWorkspacePane: View {
                     if item.state == "open" {
                         Button {
                             newPlanGoal = ""
+                            newParentPlanId = nil
                             showingPlanSheet = true
                         } label: {
                             Label("新增 Plan",systemImage:"plus")
                         }
                         .buttonStyle(.bordered)
                     }
+                } else if item.kind == .plan && item.requirementId == focusedRequirementId
+                            && detailLoaded(for:item) {
+                    Button {
+                        newPlanGoal = ""
+                        newParentPlanId = item.recordId
+                        showingPlanSheet = true
+                    } label: {
+                        Label("新增子 Plan",systemImage:"plus")
+                    }
+                    .buttonStyle(.bordered)
                 }
             }
             .padding(18)
@@ -975,7 +1119,8 @@ struct ZenWorkspacePane: View {
 
     private var createPlanSheet: some View {
         VStack(alignment:.leading,spacing:12) {
-            Text("新增 Plan").font(.system(size:17,weight:.semibold))
+            Text(newParentPlanId == nil ? "新增 Plan" : "新增子 Plan")
+                .font(.system(size:17,weight:.semibold))
             TextField("计划目标",text:$newPlanGoal,axis:.vertical).lineLimit(3...5)
             HStack {
                 Spacer()
@@ -985,9 +1130,16 @@ struct ZenWorkspacePane: View {
                     Task {
                         let id=await model.createPlan(objective:newPlanGoal,
                                                       requirementId:focusedRequirementId,
-                                                      parentPlanId:nil)
+                                                      parentPlanId:newParentPlanId)
                         saving=false
-                        if id != nil { showingPlanSheet=false }
+                        if let id {
+                            showingPlanSheet=false
+                            if let record=model.records.first(where:{
+                                $0.kind == .plan && $0.recordId == id
+                            }) {
+                                await model.openRecord(record.id)
+                            }
+                        }
                     }
                 }
                 .buttonStyle(.borderedProminent)
@@ -1003,23 +1155,29 @@ private struct ZenTreeCanvas: View {
     let records: [ForgeRecord]
     let selectedId: String?
     let onSelect: (ForgeRecord) -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var zoom:CGFloat = 1
+
+    private func setZoom(_ value:CGFloat) {
+        withAnimation(reduceMotion ? nil : .easeInOut(duration:0.16)) {
+            zoom = min(1.65,max(0.35,value))
+        }
+    }
 
     private var levels: [[ForgeRecord]] {
         var result:[[ForgeRecord]]=[[root]]
         var visited:Set<String>=[root.id]
-        while let parents=result.last, !parents.isEmpty, result.count < 10 {
+        let plans=records.filter{$0.kind == .plan && $0.requirementId == root.recordId}
+        let ids=Set(plans.map(\.recordId))
+        while let parents=result.last,!parents.isEmpty,result.count <= plans.count {
             var next:[ForgeRecord]=[]
             for parent in parents {
-                let children=records.filter { record in
-                    guard record.kind == .plan else { return false }
+                let children=plans.filter { record in
                     if parent.kind == .requirement {
-                        guard record.requirementId == root.recordId else { return false }
-                        let ids=Set(records.filter { $0.kind == .plan && $0.requirementId == root.recordId }
-                            .map(\.recordId))
                         guard let parentId=record.parentPlanId else { return true }
                         return !ids.contains(parentId)
                     }
-                    return record.requirementId == root.recordId && record.parentPlanId == parent.recordId
+                    return record.parentPlanId == parent.recordId
                 }
                 for child in children where visited.insert(child.id).inserted {
                     next.append(child)
@@ -1042,6 +1200,7 @@ private struct ZenTreeCanvas: View {
             let maxNodes=rows.map(\.count).max() ?? 1
             let width=max(viewport.size.width,CGFloat(maxNodes)*240+70)
             let height=max(viewport.size.height,CGFloat(rows.count)*156+60)
+            let scopedIds=Set(rows.flatMap{$0}.map(\.recordId))
             ScrollView([.horizontal,.vertical]) {
                 ZStack(alignment:.topLeading) {
                     Canvas { context,_ in
@@ -1050,7 +1209,8 @@ private struct ZenTreeCanvas: View {
                                 let parents=rows[row-1]
                                 guard let parentIndex=parents.firstIndex(where:{ parent in
                                     child.parentPlanId == parent.recordId
-                                    || (parent.kind == .requirement && child.parentPlanId == nil)
+                                    || (parent.kind == .requirement &&
+                                         !scopedIds.contains(child.parentPlanId ?? ""))
                                 }) else { continue }
                                 let start=position(row-1,parentIndex,width:width,columns:parents.count)
                                 let end=position(row,index,width:width,columns:rows[row].count)
@@ -1093,18 +1253,70 @@ private struct ZenTreeCanvas: View {
                                             in:RoundedRectangle(cornerRadius:12))
                                 .contentShape(RoundedRectangle(cornerRadius:12))
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(ZenPressStyle())
                             .position(position(row,index,width:width,columns:rows[row].count))
                             .accessibilityIdentifier("zen.canvas.node.\(item.recordId)")
                         }
                     }
                 }
                 .frame(width:width,height:height)
+                .scaleEffect(zoom,anchor:.topLeading)
+                .frame(width:width*zoom,height:height*zoom,alignment:.topLeading)
             }
             .scrollIndicators(.visible)
+            .overlay(alignment:.topTrailing) {
+                HStack(spacing:4) {
+                    Button {
+                        setZoom(zoom-0.15)
+                    } label: {
+                        Image(systemName:"minus.magnifyingglass").frame(width:30,height:30)
+                    }
+                    .disabled(zoom <= 0.35)
+                    .help("缩小画布")
+                    .accessibilityLabel("缩小画布")
+                    Text("\(Int((zoom*100).rounded()))%")
+                        .font(.system(size:10,weight:.medium,design:.monospaced))
+                        .frame(width:43)
+                        .accessibilityLabel("画布缩放 \(Int((zoom*100).rounded()))%")
+                    Button {
+                        setZoom(zoom+0.15)
+                    } label: {
+                        Image(systemName:"plus.magnifyingglass").frame(width:30,height:30)
+                    }
+                    .disabled(zoom >= 1.65)
+                    .help("放大画布")
+                    .accessibilityLabel("放大画布")
+                    Button {
+                        setZoom(min(1,viewport.size.width/width,viewport.size.height/height))
+                    } label: {
+                        Image(systemName:"arrow.up.left.and.arrow.down.right")
+                            .frame(width:30,height:30)
+                    }
+                    .help("适配全图")
+                    .accessibilityLabel("适配全图")
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal,7).padding(.vertical,5)
+                .background(.regularMaterial,in:RoundedRectangle(cornerRadius:10))
+                .padding(15)
+            }
         }
+        .onChange(of:root.id) { _ in zoom=1 }
         .background(Color(nsColor:.textBackgroundColor))
         .accessibilityIdentifier("zen.requirement.canvas")
+    }
+}
+
+
+private struct ZenPressStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .opacity(configuration.isPressed ? 0.76 : 1)
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.986 : 1)
+            .animation(reduceMotion ? nil : .easeOut(duration:0.12),
+                       value:configuration.isPressed)
     }
 }
 
