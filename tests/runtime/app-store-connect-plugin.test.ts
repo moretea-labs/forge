@@ -42,7 +42,7 @@ describe('App Store Connect Xcode Cloud workflow actions', () => {
     const repoRoot = root();
     await executeAppStoreConnectPluginAction(input(repoRoot, 'configure', { enabled: true, provider: 'mock' }));
     const manifest = buildAppStoreConnectPluginManifest(1, undefined, repoRoot);
-    expect(manifest.pluginVersion).toBe('1.3.0');
+    expect(manifest.pluginVersion).toBe('1.4.0');
     expect(manifest.actions.find((action) => action.actionId === 'list_xcode_cloud_workflows')).toMatchObject({ readOnly: true, risk: 'readonly' });
     for (const actionId of ['list_bundle_ids', 'list_bundle_id_capabilities', 'list_certificates', 'list_devices', 'list_profiles']) {
       expect(manifest.actions.find((action) => action.actionId === actionId)).toMatchObject({
@@ -320,6 +320,47 @@ describe('App Store Connect Xcode Cloud workflow actions', () => {
         '/v1/appAssetLibraryImages/image-123',
       ]);
     } finally { globalThis.fetch = old; }
+  });
+
+
+  test('TestFlight group/tester and Xcode Cloud build actions keep public, invite and quota effects strongly gated', async () => {
+    const repoRoot = root();
+    await executeAppStoreConnectPluginAction(input(repoRoot, 'configure', {enabled:true,provider:'mock'}));
+    const manifest = buildAppStoreConnectPluginManifest(1, undefined, repoRoot);
+    for (const id of ['create_beta_group','update_beta_group','create_beta_tester',
+      'assign_beta_tester_to_group','start_xcode_cloud_build']) {
+      expect(manifest.actions.find(a=>a.actionId===id)).toMatchObject({
+        readOnly:false,risk:'remote_write',confirmation:'strong_confirmation',
+      });
+    }
+    const group = await executeAppStoreConnectPluginAction(input(repoRoot, 'create_beta_group', {
+      app_id:'app-1',name:'External Preview',public_link_enabled:false,dry_run:true,
+    }));
+    expect(group).toMatchObject({dryRun:true,request:{method:'POST',path:'/v1/betaGroups',
+      body:{data:{type:'betaGroups',attributes:{name:'External Preview',isInternalGroup:false,publicLinkEnabled:false},
+        relationships:{app:{data:{type:'apps',id:'app-1'}}}}}}});
+    const tester = await executeAppStoreConnectPluginAction(input(repoRoot, 'create_beta_tester', {
+      group_id:'group-1',email:'tester@example.com',first_name:'Test',dry_run:true,
+    }));
+    expect(tester).toMatchObject({dryRun:true,request:{method:'POST',path:'/v1/betaTesters',
+      body:{data:{attributes:{email:'tester@example.com',firstName:'Test'},
+        relationships:{betaGroups:{data:[{type:'betaGroups',id:'group-1'}]}}}}}});
+    const assign = await executeAppStoreConnectPluginAction(input(repoRoot, 'assign_beta_tester_to_group', {
+      group_id:'group-1',tester_id:'tester-1',dry_run:true,
+    }));
+    expect(assign).toMatchObject({request:{method:'POST',path:'/v1/betaGroups/group-1/relationships/betaTesters',
+      body:{data:[{type:'betaTesters',id:'tester-1'}]}}});
+    const build = await executeAppStoreConnectPluginAction(input(repoRoot, 'start_xcode_cloud_build', {
+      workflow_id:'workflow-1',dry_run:true,
+    }));
+    expect(build).toMatchObject({request:{method:'POST',path:'/v1/ciBuildRuns',
+      body:{data:{type:'ciBuildRuns',relationships:{workflow:{data:{type:'ciWorkflows',id:'workflow-1'}}}}}}});
+    await expect(executeAppStoreConnectPluginAction(input(repoRoot, 'create_beta_tester', {
+      group_id:'group-1',email:'not-an-email',dry_run:true,
+    }))).rejects.toThrow('email is invalid');
+    await expect(executeAppStoreConnectPluginAction(input(repoRoot, 'update_beta_group', {
+      group_id:'group-1',public_link_limit:10_001,dry_run:true,
+    }))).rejects.toThrow('1 to 10000');
   });
 
   test('verifies Apple-signed Analytics segment checksum and decodes bounded historical TSV', async () => {

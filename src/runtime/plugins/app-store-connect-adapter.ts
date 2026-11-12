@@ -508,6 +508,14 @@ const additionalAscReads: AscReadSpec[] = [
   { id: 'list_app_asset_library_image_placements', title: 'List App Asset Library image placements', scope: 'appstoreconnect.apps.read', path: '/v1/appAssetLibraryImages/:asset_id/placements', required: ['asset_id'] },
   { id: 'list_app_asset_library_images', title: 'List App Store asset library images', scope: 'appstoreconnect.apps.read', path: '/v1/appAssetLibraries/:library_id/images', required: ['library_id'],  },
   { id: 'list_app_asset_library_videos', title: 'List App Store asset library videos', scope: 'appstoreconnect.apps.read', path: '/v1/appAssetLibraries/:library_id/videos', required: ['library_id'],  },
+  { id: 'get_beta_group', title: 'Read TestFlight beta group', scope: 'appstoreconnect.apps.read', path: '/v1/betaGroups/:group_id', required: ['group_id'] },
+  { id: 'get_beta_tester', title: 'Read TestFlight beta tester', scope: 'appstoreconnect.apps.read', path: '/v1/betaTesters/:tester_id', required: ['tester_id'] },
+  { id: 'list_beta_group_testers', title: 'List TestFlight group testers', scope: 'appstoreconnect.apps.read', path: '/v1/betaGroups/:group_id/betaTesters', required: ['group_id'] },
+  { id: 'list_beta_group_builds', title: 'List TestFlight group builds', scope: 'appstoreconnect.apps.read', path: '/v1/betaGroups/:group_id/builds', required: ['group_id'] },
+  { id: 'list_beta_tester_groups', title: 'List TestFlight beta tester groups', scope: 'appstoreconnect.apps.read', path: '/v1/betaTesters/:tester_id/betaGroups', required: ['tester_id'] },
+  { id: 'get_build_beta_detail', title: 'Read TestFlight internal/external build status', scope: 'appstoreconnect.apps.read', path: '/v1/builds/:build_id/buildBetaDetail', required: ['build_id'] },
+  { id: 'get_xcode_cloud_build_run', title: 'Read Xcode Cloud build run', scope: 'appstoreconnect.xcodecloud.read', path: '/v1/ciBuildRuns/:run_id', required: ['run_id'] },
+  { id: 'list_xcode_cloud_build_actions', title: 'List Xcode Cloud build actions', scope: 'appstoreconnect.xcodecloud.read', path: '/v1/ciBuildRuns/:run_id/actions', required: ['run_id'] },
   { id: 'list_build_uploads', title: 'List Build Upload resources', scope: 'appstoreconnect.apps.read', path: '/v1/apps/:app_id/buildUploads', required: [], },
   { id: 'list_xcode_cloud_build_runs', title: 'List Xcode Cloud build runs', scope: 'appstoreconnect.xcodecloud.read', path: '/v1/ciWorkflows/:workflow_id/buildRuns', required: ['workflow_id'], },
   { id: 'list_custom_product_pages', title: 'List custom product pages', scope: 'appstoreconnect.analytics.read', path: '/v1/apps/:app_id/appCustomProductPages', required: [], },
@@ -539,6 +547,11 @@ function additionalAscActions(): AssistantPluginActionDescriptor[] {
     { id: 'create_in_app_purchase', title: 'Create in-app purchase v2', scope: 'appstoreconnect.commerce.write', fields: ['app_id','name','product_id','purchase_type'], required: ['name','product_id','purchase_type'], confirmation: 'strong_confirmation' },
     { id: 'update_in_app_purchase', title: 'Update in-app purchase v2', scope: 'appstoreconnect.commerce.write', fields: ['purchase_id','name','review_note','family_sharable'], required: ['purchase_id'], confirmation: 'authorization' },
     { id: 'create_customer_review_response', title: 'Respond to customer review', scope: 'appstoreconnect.reviews.write', fields: ['review_id','response_body'], required: ['review_id','response_body'], confirmation: 'strong_confirmation' },
+    { id: 'create_beta_group', title: 'Create TestFlight beta group', scope: 'appstoreconnect.testflight.write', fields: ['app_id','name','is_internal_group','public_link_enabled','public_link_limit'], required: ['name'], confirmation: 'strong_confirmation' },
+    { id: 'update_beta_group', title: 'Update TestFlight group and public-link settings', scope: 'appstoreconnect.testflight.write', fields: ['group_id','name','public_link_enabled','public_link_limit'], required: ['group_id'], confirmation: 'strong_confirmation' },
+    { id: 'create_beta_tester', title: 'Invite a TestFlight beta tester', scope: 'appstoreconnect.testflight.write', fields: ['group_id','email','first_name','last_name'], required: ['group_id','email'], confirmation: 'strong_confirmation' },
+    { id: 'assign_beta_tester_to_group', title: 'Assign existing tester to TestFlight group', scope: 'appstoreconnect.testflight.write', fields: ['group_id','tester_id'], required: ['group_id','tester_id'], confirmation: 'strong_confirmation' },
+    { id: 'start_xcode_cloud_build', title: 'Start Xcode Cloud build (may consume quota)', scope: 'appstoreconnect.xcodecloud.write', fields: ['workflow_id'], required: ['workflow_id'], confirmation: 'strong_confirmation' },
     { id: 'create_in_app_purchase_version', title: 'Create versioned IAP review metadata draft', scope: 'appstoreconnect.commerce.write', fields: ['purchase_id'], required: ['purchase_id'], confirmation: 'strong_confirmation' },
     { id: 'create_in_app_purchase_version_localization', title: 'Create IAP version localization v2', scope: 'appstoreconnect.commerce.write', fields: ['version_id','locale','name','description'], required: ['version_id','locale','name'], confirmation: 'authorization' },
     { id: 'update_in_app_purchase_version_localization', title: 'Update IAP localization v2', scope: 'appstoreconnect.commerce.write', fields: ['localization_id','name','description'], required: ['localization_id'], confirmation: 'authorization' },
@@ -558,7 +571,7 @@ function additionalAscActions(): AssistantPluginActionDescriptor[] {
   ];
   return [...reads, ...reports, ...writes.map((spec): AssistantPluginActionDescriptor => {
     const properties: Record<string, unknown> = { dry_run: { type: 'boolean' } };
-    for (const field of spec.fields) properties[field] = { type: field === 'demo_account_required' || field === 'family_sharable' ? 'boolean' : 'string' };
+    for (const field of spec.fields) properties[field] = { type: ['demo_account_required','family_sharable','is_internal_group','public_link_enabled'].includes(field) ? 'boolean' : field === 'public_link_limit' ? 'number' : 'string' };
     return {
       actionId: spec.id, title: spec.title, description: spec.title + '. Review dry_run before applying.',
       readOnly: false, risk: 'remote_write', confirmation: spec.confirmation,
@@ -587,6 +600,47 @@ function additionalAscWriteRequest(actionId: string, args: Record<string, unknow
   { path: string; method: 'POST' | 'PATCH'; body: unknown } | undefined {
   const resource = (type: string, id: string) => ({ data: { type, id } });
 
+
+  if (actionId === 'create_beta_group' || actionId === 'update_beta_group') {
+    const create = actionId === 'create_beta_group';
+    const groupId = create ? undefined : requiredArg(args, 'group_id');
+    const attrs: Record<string, unknown> = {};
+    if (args.name !== undefined) attrs.name = requiredArg(args, 'name');
+    if (create) attrs.isInternalGroup = args.is_internal_group === true;
+    if (args.public_link_enabled !== undefined) attrs.publicLinkEnabled = args.public_link_enabled;
+    if (args.public_link_limit !== undefined) {
+      const max = args.public_link_limit;
+      if (typeof max !== 'number' || !Number.isInteger(max) || max < 1 || max > 10_000)
+        throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Public link limit must be an integer from 1 to 10000.', {retryable:false});
+      attrs.publicLinkLimit = max;
+    }
+    if (!create && Object.keys(attrs).length === 0)
+      throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'No beta group fields to change.', {retryable:false});
+    return { method: create ? 'POST' : 'PATCH', path: create ? '/v1/betaGroups' : '/v1/betaGroups/' + encodeURIComponent(groupId!),
+      body: {data: {type:'betaGroups', ...(groupId ? {id:groupId} : {}), attributes:attrs,
+        ...(create ? {relationships:{app:resource('apps',appId(args,config))}} : {})}}};
+  }
+  if (actionId === 'create_beta_tester') {
+    const email = requiredArg(args, 'email');
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email))
+      throw new AssistantPluginError('PLUGIN_ACTION_ARGUMENT_INVALID', 'Tester email is invalid.', {retryable:false});
+    const attrs: Record<string, unknown> = {email};
+    if (args.first_name !== undefined) attrs.firstName = args.first_name;
+    if (args.last_name !== undefined) attrs.lastName = args.last_name;
+    return {method:'POST',path:'/v1/betaTesters',body:{data:{
+      type:'betaTesters', attributes:attrs, relationships:{betaGroups:{data:[
+        {type:'betaGroups',id:requiredArg(args,'group_id')},
+      ]}},
+    }}};
+  }
+  if (actionId === 'assign_beta_tester_to_group') return {
+    method:'POST',path:'/v1/betaGroups/' + encodeURIComponent(requiredArg(args,'group_id')) + '/relationships/betaTesters',
+    body:{data:[{type:'betaTesters',id:requiredArg(args,'tester_id')}]},
+  };
+  if (actionId === 'start_xcode_cloud_build') return {
+    method:'POST',path:'/v1/ciBuildRuns',body:{data:{type:'ciBuildRuns',attributes:{},
+      relationships:{workflow:resource('ciWorkflows',requiredArg(args,'workflow_id'))}}},
+  };
   if (actionId === 'create_in_app_purchase_version')
     return { method: 'POST', path: '/v1/inAppPurchaseVersions', body: { data: {
       type: 'inAppPurchaseVersions', relationships: { inAppPurchase: resource('inAppPurchases', requiredArg(args, 'purchase_id')) },
@@ -935,7 +989,7 @@ function capabilities(): AssistantPluginCapability[] {
       title: 'TestFlight Operations',
       description: 'Assign builds to beta groups and prepare beta App Review submissions with strong confirmation.',
       scopes: ['appstoreconnect.testflight.write'],
-      actions: ['assign_build_to_beta_group', 'submit_beta_app_review'],
+      actions: ['assign_build_to_beta_group', 'submit_beta_app_review', 'create_beta_group', 'update_beta_group', 'create_beta_tester', 'assign_beta_tester_to_group', ...additionalAscReads.filter(s => ['get_beta_group','get_beta_tester','list_beta_group_testers','list_beta_group_builds','list_beta_tester_groups','get_build_beta_detail'].includes(s.id)).map(s=>s.id)],
     },
     {
       capabilityId: 'app-store-release',
@@ -954,7 +1008,7 @@ function capabilities(): AssistantPluginCapability[] {
       title: 'Xcode Cloud Workflows',
       description: 'Read Xcode Cloud products/workflows and preview or update a fixed workflow configuration through the official App Store Connect API.',
       scopes: ['appstoreconnect.xcodecloud.read', 'appstoreconnect.xcodecloud.write'],
-      actions: ['list_xcode_cloud_products', 'list_xcode_cloud_workflows', 'get_xcode_cloud_workflow', 'preview_xcode_cloud_workflow_update', 'update_xcode_cloud_workflow'],
+      actions: ['list_xcode_cloud_products', 'list_xcode_cloud_workflows', 'get_xcode_cloud_workflow', 'preview_xcode_cloud_workflow_update', 'update_xcode_cloud_workflow', 'get_xcode_cloud_build_run','list_xcode_cloud_build_actions','start_xcode_cloud_build'],
     },
   ];
 }
@@ -1505,7 +1559,7 @@ export function buildAppStoreConnectPluginManifest(previousRevision = 0, previou
     pluginId: APP_STORE_CONNECT_PLUGIN_ID,
     provider: 'apple',
     displayName: 'App Store Connect API Plugin',
-    pluginVersion: '1.3.0',
+    pluginVersion: '1.4.0',
     authority: { strategy: 'derived', duplicateStateAllowed: false, sourceOfTruth: ['controller-global:system/plugins/config/app-store-connect.json', 'legacy-import-only:system/plugins/profiles|repositories/<repoId>/plugins/config|.forge/plugins|.repo-harness/plugins', 'env:FORGE_ASC_*'] },
     enabled: config.enabled,
     lifecycle: { state: state.lifecycleState, reason: !config.enabled ? 'App Store Connect plugin is disabled.' : auth.ready ? 'App Store Connect API credentials are ready.' : auth.errors[0] ?? auth.warnings[0] },
