@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { spawnSync } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import { runControllerCheck, runControllerCheckAsync } from '../../src/cli/controller/check-runner';
 import { registerRepository } from '../../src/cli/repositories/registry';
 
@@ -104,5 +104,64 @@ describe('Controller Check post-run input integrity', () => {
     expect(result.ok).toBe(true);
     expect(result.cacheHit).toBe(false);
     expect(existsSync(join(root, 'generated/report.json'))).toBe(true);
+  });
+});
+
+
+function processIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false;
+    throw error;
+  }
+}
+
+async function waitForCondition(predicate: () => boolean, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error('timed out after ' + timeoutMs + 'ms waiting for condition');
+}
+
+describe('Controller Check sidecar cancellation', () => {
+  test('forwards SIGTERM to the detached check process tree', async () => {
+    const markerPath = join(tmpdir(), ['forge-check-child', process.pid, Date.now(), 'pid'].join('-'));
+    const { root, storageAuthority } = repo({
+      longRunning: {
+        command: command("const fs=require('fs');fs.writeFileSync(" + JSON.stringify(markerPath) + ",String(process.pid));setInterval(()=>{},1000)"),
+        timeoutMs: 30_000,
+        effects: { reads: ['.'] },
+      },
+    });
+    const checkRunnerPath = join(process.cwd(), 'src/cli/controller/check-runner.ts');
+    const sidecarScript = "const { runControllerCheckAsync } = await import("
+      + JSON.stringify(checkRunnerPath) + ");" + String.fromCharCode(10)
+      + "await runControllerCheckAsync(" + JSON.stringify(root)
+      + ", 'longRunning', { storageAuthority: " + JSON.stringify(storageAuthority) + " });";
+    const sidecar = spawn(process.execPath, ['-e', sidecarScript], {
+      cwd: process.cwd(),
+      stdio: 'ignore',
+    });
+    let childPid: number | undefined;
+    try {
+      await waitForCondition(() => existsSync(markerPath), 8_000);
+      childPid = Number(readFileSync(markerPath, 'utf8'));
+      expect(childPid).toBeGreaterThan(0);
+
+      sidecar.kill('SIGTERM');
+      await waitForCondition(() => sidecar.exitCode !== null || sidecar.signalCode !== null, 8_000);
+
+      expect(processIsAlive(childPid!)).toBe(false);
+      expect(sidecar.signalCode).toBeNull();
+      expect(sidecar.exitCode).toBe(0);
+    } finally {
+      if (sidecar.exitCode === null && sidecar.signalCode === null) sidecar.kill('SIGKILL');
+      if (childPid && processIsAlive(childPid)) process.kill(childPid, 'SIGKILL');
+      rmSync(markerPath, { force: true });
+    }
   });
 });

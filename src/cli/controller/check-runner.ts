@@ -1240,6 +1240,7 @@ async function executeControllerCheckAsync(
     timeoutMs,
     maxOutputBytes,
     stdio: 'capture',
+    forwardSignals: true,
     onSpawn,
     termination: { gracePeriodMs: 100, killAfterMs: 2_000, pollIntervalMs: 25 },
   });
