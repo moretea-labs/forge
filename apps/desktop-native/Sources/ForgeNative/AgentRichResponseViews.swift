@@ -293,23 +293,41 @@ func appendRemoteImageByte(_ byte: UInt8, to data: inout Data, maximumBytes: Int
     data.append(byte)
 }
 
+func validateRemoteImageResponse(
+    statusCode: Int,
+    mimeType: String?,
+    expectedContentLength: Int64,
+    maximumBytes: Int
+) throws {
+    guard statusCode == 200,
+          mimeType?.lowercased().hasPrefix("image/") == true,
+          expectedContentLength != 0 else {
+        throw RemoteImageSaveError.invalidImage
+    }
+    guard expectedContentLength < 0 || expectedContentLength <= Int64(maximumBytes) else {
+        throw RemoteImageSaveError.tooLarge
+    }
+}
+
 private func downloadRemoteImage(from url: URL, maximumBytes: Int) async throws -> Data {
     let (bytes, response) = try await URLSession.shared.bytes(from: url)
-    guard let http = response as? HTTPURLResponse,
-          (200..<300).contains(http.statusCode),
-          response.mimeType?.lowercased().hasPrefix("image/") == true else {
+    guard let http = response as? HTTPURLResponse else {
         throw RemoteImageSaveError.invalidImage
     }
     let expectedLength = response.expectedContentLength
-    guard expectedLength <= 0 || expectedLength <= Int64(maximumBytes) else {
-        throw RemoteImageSaveError.tooLarge
-    }
+    try validateRemoteImageResponse(
+        statusCode: http.statusCode,
+        mimeType: response.mimeType,
+        expectedContentLength: expectedLength,
+        maximumBytes: maximumBytes
+    )
 
     var data = Data()
     if expectedLength > 0 { data.reserveCapacity(Int(expectedLength)) }
     for try await byte in bytes {
         try appendRemoteImageByte(byte, to: &data, maximumBytes: maximumBytes)
     }
+    guard !data.isEmpty else { throw RemoteImageSaveError.invalidImage }
     return data
 }
 

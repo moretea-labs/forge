@@ -1947,6 +1947,48 @@ extension NativeWorkspaceTests {
         XCTAssertEqual(data, Data([0x89, 0x50]))
     }
 
+    func testRemoteImageResponseRequiresCompleteSuccessfulImage() throws {
+        try validateRemoteImageResponse(
+            statusCode:200,mimeType:"IMAGE/PNG",expectedContentLength:2,maximumBytes:2
+        )
+        try validateRemoteImageResponse(
+            statusCode:200,mimeType:"image/jpeg",expectedContentLength:-1,maximumBytes:2
+        )
+
+        for statusCode in [204,206,302,404] {
+            XCTAssertThrowsError(try validateRemoteImageResponse(
+                statusCode:statusCode,mimeType:"image/png",
+                expectedContentLength:2,maximumBytes:2
+            )) { error in
+                guard case RemoteImageSaveError.invalidImage = error else {
+                    return XCTFail("Expected non-200 responses to be rejected")
+                }
+            }
+        }
+
+        XCTAssertThrowsError(try validateRemoteImageResponse(
+            statusCode:200,mimeType:"text/html",expectedContentLength:2,maximumBytes:2
+        )) { error in
+            guard case RemoteImageSaveError.invalidImage = error else {
+                return XCTFail("Expected non-image MIME types to be rejected")
+            }
+        }
+        XCTAssertThrowsError(try validateRemoteImageResponse(
+            statusCode:200,mimeType:"image/png",expectedContentLength:0,maximumBytes:2
+        )) { error in
+            guard case RemoteImageSaveError.invalidImage = error else {
+                return XCTFail("Expected empty responses to be rejected")
+            }
+        }
+        XCTAssertThrowsError(try validateRemoteImageResponse(
+            statusCode:200,mimeType:"image/png",expectedContentLength:3,maximumBytes:2
+        )) { error in
+            guard case RemoteImageSaveError.tooLarge = error else {
+                return XCTFail("Expected oversized responses to be rejected")
+            }
+        }
+    }
+
     func testRemoteImageResourceParsingRequiresExplicitSafeMarkdown() {
         let text = "Before\\n![Report](https://example.com/chart.png)\\nAfter"
             .replacingOccurrences(of:"\\n",with:"\n")

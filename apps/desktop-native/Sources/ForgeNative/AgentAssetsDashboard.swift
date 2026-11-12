@@ -111,6 +111,9 @@ struct AgentAssetsDashboard: View {
                                     }
                                     .buttonStyle(.plain)
                                     .help(item.threadTitle)
+                                    .accessibilityLabel("打开来源会话：\(item.threadTitle)")
+                                    .accessibilityHint("切换到原始对话")
+                                    .accessibilityIdentifier("agent.assets.source-thread")
                                 }
                                 if item.remote {
                                     AgentRemoteImageView(label: item.title, source: item.source, showsLabel: false)
