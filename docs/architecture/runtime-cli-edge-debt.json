@@ -4,9 +4,7 @@
   "edges": [
     "src/runtime/context/context-pack-process.ts|../../cli/controller/context/types",
     "src/runtime/control-plane/global-scheduler/scheduler.ts|../../../cli/agent-jobs/executable-resolver",
-    "src/runtime/diagnostics/process-facade.ts|../../cli/runtime-invocation",
     "src/runtime/diagnostics/read-only-tool.ts|../../cli/local-bridge/job-store",
-    "src/runtime/execution/process-runtime/persisted-check.ts|../../../cli/runtime-invocation",
     "src/runtime/execution/workers/executor.ts|../../../cli/local-bridge/job-store",
     "src/runtime/execution/workers/executor.ts|../../../cli/local-bridge/types",
     "src/runtime/platform/service-manager.ts|../../cli/controller/launch-agents",

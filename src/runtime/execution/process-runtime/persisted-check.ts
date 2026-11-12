@@ -14,7 +14,7 @@ import {
   type CliChildInvocation,
   type CliChildInvocationOptions,
   type CliRuntimeTarget,
-} from '../../../cli/runtime-invocation';
+} from '../../shared/runtime-invocation';
 import { readRuntimeGeneration, resolveControllerRuntimeSourceRoot } from '../../control-plane/runtime-generation';
 import { resolveBunExecutable } from '../../shared/process-environment';
 import {

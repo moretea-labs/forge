@@ -8,7 +8,7 @@ import {
   CliRuntimeResolutionError,
   currentCliRuntimeTarget,
   resolveCliChildInvocation,
-} from '../../src/cli/runtime-invocation';
+} from '../../src/runtime/shared/runtime-invocation';
 import { resolveDiagnosticCliInvocation, runReadOnlyDiagnosticViaProcessRuntime } from '../../src/runtime/diagnostics/process-facade';
 import { ensureControllerHome } from '../../src/effects/controller-home';
 import { registerRepository } from '../../src/runtime/repositories/registry';

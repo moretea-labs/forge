@@ -94,10 +94,11 @@ src/runtime/execution/process-runtime/runtime.ts
 src/runtime/execution/process-runtime/store.ts
 src/runtime/execution/process-runtime/interactive-admission.ts
 src/runtime/shared/process-identity.ts
+src/runtime/shared/runtime-invocation.ts
 adapters/mcp/runtime-gateway/process-tools.ts
 ```
 
-`spawnManagedProcess` creates one Process record and one physical child execution. Exact PID/start-time/executable identity protects later lifecycle operations. Known-long processes can return handles immediately; short commands may complete during a bounded interactive window. Process startup captures command/start-time together and reuses the running-state persistence result instead of repeating store writes/reads on the hot path.
+`spawnManagedProcess` creates one Process record and one physical child execution. Exact PID/start-time/executable identity protects later lifecycle operations. Known-long processes can return handles immediately; short commands may complete during a bounded interactive window. Process startup captures command/start-time together and reuses the running-state persistence result instead of repeating store writes/reads on the hot path. `src/runtime/shared/runtime-invocation.ts` resolves explicit source, package-launcher, and immutable-release child targets plus argv identity for Runtime diagnostics and persisted-check sidecars.
 
 ## 7. Resource claims, leases, and concurrency
 
