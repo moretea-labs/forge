@@ -6602,7 +6602,7 @@ private struct SettingsPane: View {
                                     : (model.selectedReasoningEffort.isEmpty ? "默认" : model.selectedReasoningEffort))
                         settingMeta("图片输入",model.selectedProviderSupportsImages ? "可用" : "不可用")
                     }
-                    Text("更改默认配置只影响新会话。")
+                    Text("默认服务仅用于新会话。")
                         .font(.system(size:10.5)).foregroundStyle(.tertiary)
                 }
                 .padding(.vertical,10)
@@ -6638,6 +6638,7 @@ private struct SettingsPane: View {
                             Label("添加模型服务",systemImage:"plus")
                         }
                         .menuStyle(.borderlessButton)
+                        .accessibilityIdentifier("settings.profile.add")
                     }
 
                     HStack(spacing:12) {
@@ -6815,8 +6816,9 @@ private struct SettingsPane: View {
             settingsField("名称") {
                 TextField("服务名称",text:$profiles[index].label)
                     .textFieldStyle(.plain)
+                    .accessibilityIdentifier("settings.profile.name")
             }
-            settingsField("Endpoint") {
+            settingsField("服务地址") {
                 TextField("https://api.example.com",text:$profiles[index].endpoint)
                     .textFieldStyle(.plain).font(.system(size:11.5,design:.monospaced))
                     .accessibilityIdentifier("settings.endpoint")
@@ -6861,14 +6863,17 @@ private struct SettingsPane: View {
                 HStack(spacing:10) {
                     Button("从剪贴板粘贴并授权") { importCredential(index:index) }
                         .buttonStyle(.bordered)
+                        .accessibilityIdentifier("settings.credential.import")
                         .disabled(saving || model.settingsLoading || endpoint.isEmpty)
                     if let credential=selectedCredential(index:index) {
                         Button("从剪贴板更新 API Key") { rotateCredential(credential.credentialRef) }
                             .buttonStyle(.plain)
+                            .accessibilityIdentifier("settings.credential.rotate")
                         Button(credential.authorized ? "撤销授权" : "授权使用") {
                             setCredentialAuthorization(credential.credentialRef,!credential.authorized)
                         }
                         .buttonStyle(.plain)
+                        .accessibilityIdentifier("settings.credential.authorization")
                         Button("删除 API Key",role:.destructive) {
                             credentialToDelete=credential.credentialRef
                         }
