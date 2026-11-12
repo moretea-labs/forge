@@ -642,6 +642,40 @@ describe('Browser Runtime V3 routing', () => {
     expect(nativeJsEvents).toBe(4);
   });
 
+  test('native mutation preflight consumes the same request timeout without dispatching after expiry', async () => {
+    let preflightSlow = false;
+    let reloadCalls = 0;
+    const url = 'https://example.com/preflight-deadline';
+    const metadata = [
+      'true', url, '', '0', '0', '1200', '800', '7', '9', 'true', 'false',
+    ].join(nativeSeparator);
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin',
+      appExists: () => true,
+      processRunning: async () => true,
+      tabInventory: async () => {
+        if (preflightSlow) await new Promise((resolve) => setTimeout(resolve, 35));
+        return {
+          product: 'chrome',
+          truncated: false,
+          tabs: [{ windowId: '7', tabId: '9', active: true, url, title: '' }],
+        };
+      },
+      runAppleScript: async (script) => {
+        if (script.includes('reload targetTab')) reloadCalls += 1;
+        return metadata;
+      },
+    });
+    const { page } = await reattachMacOsBrowserOwnedPage('chrome', { windowId: '7', tabId: '9' }, 1_000);
+    preflightSlow = true;
+    await expect(page.reload({ timeout: 10 })).rejects.toMatchObject({
+      code: 'BROWSER_AUTOMATION_TIMEOUT',
+      effectOutcome: 'failed',
+    });
+    expect(reloadCalls).toBe(0);
+    expect(page.tabRef()).toEqual({ windowId: '7', tabId: '9' });
+  });
+
   test('bound Chrome metadata uses exact provider identity without another global tab inventory', async () => {
     let inventoryReads = 0;
     let metadataTabId = '9';

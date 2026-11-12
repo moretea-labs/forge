@@ -947,6 +947,7 @@ export class MacOsAppleEventsPage {
     args: string[] = [],
     timeoutMs = this.timeoutMs,
   ): Promise<string> {
+    const deadline = performance.now() + timeoutMs;
     try {
       let effectiveRequest = request;
       let resolvedRef: MacOsBrowserTabRef | undefined;
@@ -961,8 +962,19 @@ export class MacOsAppleEventsPage {
         this.targetRef = resolvedRef;
         effectiveRequest = { ...request, ref: resolvedRef } as BrowserAutomationBrokerAction;
       }
+      // Preflight and remote dispatch share the caller's action budget.
+      // If exact-tab validation consumed it, never dispatch a mutation whose
+      // eventual outcome would be unknown after the caller already timed out.
+      const remainingMs = Math.ceil(deadline - performance.now());
+      if (remainingMs <= 0) {
+        throw new AssistantPluginError(
+          'BROWSER_AUTOMATION_TIMEOUT',
+          'BROWSER_AUTOMATION_TIMEOUT: Native target preflight exhausted the action budget before dispatch.',
+          { retryable: true, effectOutcome: 'failed' },
+        );
+      }
       const effectiveScript = typeof script === 'function' ? script(resolvedRef ?? this.targetRef) : script;
-      return await runBrowserAutomationText(effectiveRequest, effectiveScript, args, timeoutMs);
+      return await runBrowserAutomationText(effectiveRequest, effectiveScript, args, remainingMs);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       // Preserve the provider's *typed* process-identity refusal. In particular,

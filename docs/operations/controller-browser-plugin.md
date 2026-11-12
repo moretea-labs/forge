@@ -73,6 +73,8 @@ For an already bound Chrome tab, metadata/foreground-state reads use the native 
 
 For read-only native DOM actions, the JSON evaluation receipt already contains the document URL and title. BrowserSession persistence uses that **same-action** observation rather than triggering another Apple Event; each action invalidates any earlier observation. Navigation and other non-replayable actions still perform independent identity verification.
 
+Native tab-reference preflight and subsequent provider dispatch share one action timeout budget. If preflight has already exhausted that budget, the mutation is not sent and fails with a typed timeout and known `failed` outcome. This does not claim a deadline across whole multi-step workflows or inside macOS Apple Events; such end-to-end latency still requires live acceptance.
+
 The warm-path performance targets remain p95 <= 350 ms for reads, <= 600 ms for DOM interaction plus verification, and <= 700 ms for typed browser-internal-resource operations. Explicit physical-input fallback targets p95 <= 1500 ms and is foreground-capable only when requested. Current-source live evidence is emitted by `tests/live/browser-runtime-v3.e2e.ts`; Work/Plan evidence owns measured p50/p95 values rather than this maintained runbook.
 
 ## Configuration
