@@ -1925,6 +1925,20 @@ extension NativeWorkspaceTests {
 
 
 extension NativeWorkspaceTests {
+    func testRemoteImageStreamingSaveEnforcesExactByteLimit() throws {
+        var data = Data()
+        try appendRemoteImageByte(0x89, to: &data, maximumBytes: 2)
+        try appendRemoteImageByte(0x50, to: &data, maximumBytes: 2)
+        XCTAssertEqual(data, Data([0x89, 0x50]))
+
+        XCTAssertThrowsError(try appendRemoteImageByte(0x4E, to: &data, maximumBytes: 2)) { error in
+            guard case RemoteImageSaveError.tooLarge = error else {
+                return XCTFail("Expected the bounded-download size error")
+            }
+        }
+        XCTAssertEqual(data, Data([0x89, 0x50]))
+    }
+
     func testRemoteImageResourceParsingRequiresExplicitSafeMarkdown() {
         let text = "Before\\n![Report](https://example.com/chart.png)\\nAfter"
             .replacingOccurrences(of:"\\n",with:"\n")

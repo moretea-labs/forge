@@ -276,7 +276,7 @@ struct AgentCodeBlockView: View {
 
 /// Model-provided remote images are not fetched until explicitly opened.
 /// Native save uses a user-selected destination; file:// is never accepted.
-private enum RemoteImageSaveError: LocalizedError {
+enum RemoteImageSaveError: LocalizedError {
     case invalidImage
     case tooLarge
 
@@ -286,6 +286,11 @@ private enum RemoteImageSaveError: LocalizedError {
         case .tooLarge: return "图片超过 25 MB 限制"
         }
     }
+}
+
+func appendRemoteImageByte(_ byte: UInt8, to data: inout Data, maximumBytes: Int) throws {
+    guard data.count < maximumBytes else { throw RemoteImageSaveError.tooLarge }
+    data.append(byte)
 }
 
 private func downloadRemoteImage(from url: URL, maximumBytes: Int) async throws -> Data {
@@ -303,8 +308,7 @@ private func downloadRemoteImage(from url: URL, maximumBytes: Int) async throws 
     var data = Data()
     if expectedLength > 0 { data.reserveCapacity(Int(expectedLength)) }
     for try await byte in bytes {
-        guard data.count < maximumBytes else { throw RemoteImageSaveError.tooLarge }
-        data.append(byte)
+        try appendRemoteImageByte(byte, to: &data, maximumBytes: maximumBytes)
     }
     return data
 }
