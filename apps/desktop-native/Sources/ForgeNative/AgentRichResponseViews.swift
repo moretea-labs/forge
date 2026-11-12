@@ -410,8 +410,10 @@ struct AgentRemoteImageView: View {
                 Spacer(minLength: 8)
                 Button(expanded ? "收起" : "预览") { expanded.toggle() }
                     .disabled(remoteURL == nil)
+                    .accessibilityIdentifier("agent.image.preview")
                 Button(isSaving ? "保存中…" : "保存…") { save() }
                     .disabled(remoteURL == nil || isSaving || previewLoading)
+                    .accessibilityIdentifier("agent.image.save")
             }
             .buttonStyle(.plain)
             .font(.system(size: 11))
@@ -423,6 +425,7 @@ struct AgentRemoteImageView: View {
                     }
                     .buttonStyle(.plain)
                     .help("放大预览")
+                    .accessibilityIdentifier("agent.image.fullscreen")
                 } else if previewLoading {
                     ProgressView().frame(height: 80)
                 } else if let previewError {
