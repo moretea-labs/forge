@@ -126,6 +126,8 @@ struct AgentAssetsDashboard: View {
                                 }
                             }
                             .padding(.vertical, 14)
+                            .accessibilityElement(children: .contain)
+                            .accessibilityIdentifier("agent.assets.resource.\(item.id)")
                             Divider().opacity(0.4)
                         }
                     }
