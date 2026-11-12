@@ -1,6 +1,8 @@
 import type { ProcessCheckReceiptEvidence } from '../../runtime/evidence/process-check-receipt';
 import type { ControllerAgent } from '../../runtime/agents/types';
+import type { TaskRisk } from '../../runtime/local-bridge/types';
 import type { CompletionMaintenanceWarning, CompletionReceipt, CompletionResourceBlocker } from '../../../packages/kernel/work/api/index';
+export type { TaskRisk };
 export type {
   CompletionMaintenanceWarning,
   CompletionReceipt,
@@ -14,7 +16,6 @@ export type {
 export type IssueKind = 'bug' | 'feature' | 'governance' | 'investigation';
 export type IssueStatus = 'backlog' | 'analysis' | 'planned' | 'launch_blocked' | 'in_progress' | 'review' | 'done' | 'cancelled';
 export type TaskStatus = 'backlog' | 'analysis' | 'planned' | 'ready' | 'launch_blocked' | 'running' | 'blocked' | 'review' | 'verifying' | 'ready_to_integrate' | 'integrating' | 'integration_blocked' | 'integrated' | 'cleanup_pending' | 'cleanup_blocked' | 'changes_requested' | 'verified' | 'done' | 'cancelled' | 'superseded';
-export type TaskRisk = 'readonly' | 'low' | 'medium' | 'high' | 'destructive';
 
 export interface GitHubIssueLink {
   owner: string;

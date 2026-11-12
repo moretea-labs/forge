@@ -4,11 +4,9 @@
   "edges": [
     "src/runtime/diagnostics/read-only-tool.ts|../../cli/local-bridge/job-store",
     "src/runtime/execution/workers/executor.ts|../../../cli/local-bridge/job-store",
-    "src/runtime/execution/workers/executor.ts|../../../cli/local-bridge/types",
     "src/runtime/plugins/github-adapter.ts|../../cli/github/github",
     "src/runtime/plugins/github-adapter.ts|../../cli/github/plugin",
     "src/runtime/projections/materialized-view.ts|../../cli/controller/task-ledger",
-    "src/runtime/recovery/local-jobs-repair.ts|../../cli/local-bridge/types",
     "src/runtime/root/local-bridge.ts|../../cli/local-bridge/server",
     "src/runtime/safe-tooling/job-summary.ts|../../cli/agent-jobs/job-manager",
     "src/runtime/safe-tooling/job-summary.ts|../../cli/local-bridge/job-store",

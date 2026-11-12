@@ -35,7 +35,7 @@ import type {
   RepositoryCommandPayload,
   RunCheckPayload,
   VerifyEditSessionPayload,
-} from "./types";
+} from "../../runtime/local-bridge/types";
 
 const JOB_ROOT = ".ai/harness/local-jobs";
 const ACTIVE_INDEX_PATH = `${JOB_ROOT}/active-index.json`;

@@ -673,6 +673,7 @@ const required = [
   'src/runtime/agents/executable-resolver.ts',
   'src/runtime/platform/launch-agents.ts',
   'src/runtime/platform/systemd-user.ts',
+  'src/runtime/local-bridge/types.ts',
   'src/runtime/control-plane/global-scheduler/scheduler.ts',
   'src/runtime/control-plane/global-scheduler/config.ts',
   'src/runtime/control-plane/global-scheduler/state.ts',
@@ -1689,6 +1690,9 @@ requireText('src/runtime/platform/launch-agents.ts', 'export async function safe
 requireText('src/runtime/platform/systemd-user.ts', 'export function writeSystemdUserUnit');
 requireMissing('src/cli/controller/launch-agents.ts');
 requireMissing('src/cli/controller/systemd-user.ts');
+requireText('src/runtime/local-bridge/types.ts', 'export interface LocalBridgeJob');
+requireText('src/runtime/local-bridge/types.ts', "export type TaskRisk = 'readonly'");
+requireMissing('src/cli/local-bridge/types.ts');
 requireText('packages/kernel/scheduler/infrastructure/schedule-store.ts', "'occurrences'");
 requireText('src/runtime/projections/git-status-sampler.ts', 'writeRepositoryGitStatusSample');
 requireText('src/runtime/projections/git-status-sampler.ts', 'readRepositoryGitStatusSample');

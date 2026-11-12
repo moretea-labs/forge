@@ -1,7 +1,8 @@
-import type { ControllerAgent } from "../../runtime/agents/types";
-import type { TaskRisk } from "../controller/types";
-import type { ControllerCheckSnapshot } from "../../runtime/execution/process-runtime/check-runner";
+import type { ControllerAgent } from "../agents/types";
+import type { ControllerCheckSnapshot } from "../execution/process-runtime/check-runner";
 import type { RepositoryCommandValue } from "../../core/repository-command/normalization";
+
+export type TaskRisk = 'readonly' | 'low' | 'medium' | 'high' | 'destructive';
 
 export type LocalBridgeApproval = "auto" | "confirm" | "manual-only";
 export type LocalExecutionPreference = "auto" | "workspace" | "worktree";

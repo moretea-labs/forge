@@ -6,7 +6,7 @@ import { runtimePolicy, type MultiRepositoryMcpToolContext } from '../../../../a
 import { callRuntimeTool } from '../../../../adapters/mcp/runtime-gateway/runtime-tools';
 import { ensureRepositoryRuntimeStorage } from '../../repositories/runtime-storage';
 import { dispatchLocalBridgeJob, getLocalBridgeJob } from '../../../cli/local-bridge/job-store';
-import type { LocalBridgeJob } from '../../../cli/local-bridge/types';
+import type { LocalBridgeJob } from '../../local-bridge/types';
 import { settleScheduledExecution } from '../../../../packages/kernel/scheduler/api/index';
 import type { ExecutionJob, ExecutionJobOutcome } from '../jobs/types';
 import {
