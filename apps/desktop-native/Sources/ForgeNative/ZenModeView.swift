@@ -1147,6 +1147,11 @@ private struct ZenReviewSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var role: ZenReviewRole = .staff
     @State private var provider = ""
+    @State private var secondProvider = ""
+    @State private var reviewProviders: [String] = []
+    @State private var reviewRole = ""
+    @State private var reviewFocus = ""
+    @AppStorage("forge.zen.review.secondProvider") private var preferredSecondProvider = ""
     @AppStorage("forge.zen.review.role") private var preferredRole = ZenReviewRole.staff.rawValue
     @AppStorage("forge.zen.review.provider") private var preferredProvider = ""
 
@@ -1161,6 +1166,14 @@ private struct ZenReviewSheet: View {
             }
             Text(record.title).font(.system(size:12)).lineLimit(2)
             Divider()
+            if !reviewProviders.isEmpty {
+                ScrollView {
+                    ZenReadOnlyReviewPane(
+                        model:model,record:record,role:reviewRole,focus:reviewFocus,
+                        providers:reviewProviders
+                    )
+                }
+            } else {
             Picker("审查角色",selection:$role) {
                 ForEach(ZenReviewRole.allCases) { item in
                     Text(item.rawValue).tag(item)
@@ -1179,21 +1192,44 @@ private struct ZenReviewSheet: View {
                 }
             }
             .pickerStyle(.menu)
-            Text("Zen 不自动应用审查建议。Agent 的实际工具权限由当前 Repository Access 决定，需要严格只读时请先核实权限。")
+            Picker("第二模型（可选）",selection:$secondProvider) {
+                Text("不启用").tag("")
+                if model.localApiSettings?.joyCodeReady == true,provider != "joycode" {
+                    Text("JoyCode").tag("joycode")
+                }
+                ForEach(model.localApiSettings?.profiles.filter({
+                    $0.endpointReady && $0.providerId != provider
+                }) ?? []) { profile in
+                    Text("\(profile.label) · \(profile.model)").tag(profile.providerId)
+                }
+            }
+            .pickerStyle(.menu)
+            Text("Zen 内审查只支持已配置的 API / JoyCode，强制禁用工具写入；Codex 保留 Agent 入口。Zen 不自动应用审查建议。")
                 .font(.system(size:11)).foregroundStyle(.secondary)
             HStack {
+                if provider == "joycode" || provider.hasPrefix("api:") {
+                    Button("在 Zen 中只读审查") {
+                        reviewRole=role.rawValue
+                        reviewFocus=role.focus
+                        reviewProviders=[provider] + (secondProvider.isEmpty || secondProvider == provider ? [] : [secondProvider])
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(model.repoId == nil || model.checkoutId == nil)
+                }
                 Spacer()
                 Button("取消") { dismiss() }
                 Button("在 Agent 中审查") {
-                    let instruction = "请扮演\(role.rawValue)，对当前 \(record.kind == .requirement ? "Requirement" : "Plan") 做只读 Review。重点检查：\(role.focus)。按问题、证据、优先级、建议的结构返回，明确记录修订与不确定性；不要直接写入或新增 Requirement / Plan，也不要修改源码。"
+                    let instruction = "请扮演\(role.rawValue)，对当前 \(record.kind == .requirement ? "Requirement" : "Plan") 做 Review。重点检查：\(role.focus)。仅返回问题、证据与建议；请核对 Agent 当前 Repo Access 权限，不要自动写入或执行。"
                     dismiss()
                     onStart(instruction,provider.isEmpty ? nil : provider)
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(.bordered)
+            }
             }
         }
         .padding(22)
-        .frame(width:420)
+        .frame(width:reviewProviders.isEmpty ? 450 : 650,
+               height:reviewProviders.isEmpty ? nil : 580)
         .accessibilityIdentifier("zen.review.configure")
         .onAppear {
             role = ZenReviewRole(rawValue:preferredRole) ?? .staff
@@ -1201,7 +1237,10 @@ private struct ZenReviewSheet: View {
             provider = preferredProvider == "codex"
                 || (preferredProvider == "joycode" && model.localApiSettings?.joyCodeReady == true)
                 || available.contains(preferredProvider) ? preferredProvider : ""
+            secondProvider = preferredSecondProvider == "joycode" && model.localApiSettings?.joyCodeReady == true
+                || available.contains(preferredSecondProvider) ? preferredSecondProvider : ""
         }
+        .onChange(of:secondProvider) { preferredSecondProvider = $0 }
         .onChange(of:role) { preferredRole = $0.rawValue }
         .onChange(of:provider) { preferredProvider = $0 }
     }
