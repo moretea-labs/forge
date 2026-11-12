@@ -1,7 +1,7 @@
 import { randomBytes } from 'crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { basename, dirname, join, resolve } from 'path';
-import type { NativeBrowserChannel } from './types';
+import type { NativeBrowserChannel } from '../../runtime/platform/browser-product-discovery';
 
 export const CHATGPT_BROWSER_BINDING_RELATIVE_PATH = '.forge/chatgpt-browser.local.json';
 export const DEFAULT_CHATGPT_URL = 'https://chatgpt.com/';

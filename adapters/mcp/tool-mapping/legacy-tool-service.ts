@@ -19,7 +19,8 @@ import { buildLocalConnectorStatusForRepo } from "../../../src/cli/local-bridge/
 import { gitSnapshot } from "../../../src/runtime/repositories/inspector";
 import { listLocalBridgeJobs } from "../../../src/cli/local-bridge/job-store";
 import { listSessions, openSession, readSession, runBrowserConsult, runBrowserFollowup } from "../../../src/cli/chatgpt-browser/engine";
-import type { BrowserProviderName, NativeBrowserChannel, ThinkingLevel } from "../../../src/cli/chatgpt-browser/types";
+import type { BrowserProviderName, ThinkingLevel } from "../../../src/cli/chatgpt-browser/types";
+import type { NativeBrowserChannel } from "../../../src/runtime/platform/browser-product-discovery";
 import { hashMcpInput, tryWriteMcpAuditEntry } from "../audit";
 import { resolveRepoPreferredControllerHome } from "../../../src/effects/controller-home";
 import { resolveRepositoryCheckStorage } from '../../../src/runtime/execution/process-runtime/check-storage';

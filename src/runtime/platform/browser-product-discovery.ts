@@ -2,7 +2,7 @@ import { existsSync } from 'fs';
 import { homedir } from 'os';
 import { join, win32 as windowsPath } from 'path';
 import { discoverExecutable } from './executable-discovery';
-import type { NativeBrowserChannel } from '../../cli/chatgpt-browser/types';
+export type NativeBrowserChannel = 'chrome' | 'chrome-beta' | 'chrome-dev' | 'chrome-canary';
 
 export type BrowserProductDiscoverySource = 'explicit' | 'path' | 'fallback';
 

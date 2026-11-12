@@ -12,7 +12,7 @@ import {
   nativeProviderAvailable,
   openNativeBrowserPage,
 } from './native-provider';
-import type { NativeBrowserChannel } from './types';
+import type { NativeBrowserChannel } from '../../runtime/platform/browser-product-discovery';
 import { serveFetchHttp } from '../../runtime/platform/fetch-http-server';
 
 export interface BrowserBindServerOptions {

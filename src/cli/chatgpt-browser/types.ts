@@ -1,8 +1,8 @@
+import type { NativeBrowserChannel } from '../../runtime/platform/browser-product-discovery';
+
 export type BrowserSessionStatus = 'completed' | 'running' | 'incomplete_capture' | 'recoverable' | 'failed' | 'cancelled' | 'dry_run';
 
 export type BrowserProviderName = 'oracle' | 'native' | 'bridge';
-
-export type NativeBrowserChannel = 'chrome' | 'chrome-beta' | 'chrome-dev' | 'chrome-canary';
 
 export type ThinkingLevel = 'light' | 'standard' | 'extended' | 'heavy';
 

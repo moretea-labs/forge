@@ -22,7 +22,8 @@ import {
   resolveConversationUrl,
   writeBrowserSession,
 } from './session-store';
-import type { BrowserConsultInput, BrowserConsultResult, BrowserProviderName, BrowserSessionStatus, NativeBrowserChannel, StoredBrowserSession, StoredBrowserSessionSummary } from './types';
+import type { BrowserConsultInput, BrowserConsultResult, BrowserProviderName, BrowserSessionStatus, StoredBrowserSession, StoredBrowserSessionSummary } from './types';
+import type { NativeBrowserChannel } from '../../runtime/platform/browser-product-discovery';
 
 export interface BrowserDoctorOptions {
   profileDir?: string;

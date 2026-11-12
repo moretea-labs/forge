@@ -9,7 +9,6 @@
     "src/runtime/execution/process-runtime/persisted-check.ts|../../../cli/runtime-invocation",
     "src/runtime/execution/workers/executor.ts|../../../cli/local-bridge/job-store",
     "src/runtime/execution/workers/executor.ts|../../../cli/local-bridge/types",
-    "src/runtime/platform/browser-product-discovery.ts|../../cli/chatgpt-browser/types",
     "src/runtime/platform/service-manager.ts|../../cli/controller/launch-agents",
     "src/runtime/platform/service-manager.ts|../../cli/controller/systemd-user",
     "src/runtime/plugins/github-adapter.ts|../../cli/github/github",
