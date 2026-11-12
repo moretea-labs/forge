@@ -1230,15 +1230,25 @@ private struct ForgeWorkspaceView: View {
                         }
                     }
                     Spacer()
-                    Button { Task { await model.refresh() } } label: {
-                        Image(systemName:"arrow.clockwise")
-                            .font(.system(size:11.5,weight:.medium))
-                            .frame(width:27,height:27)
-                            .background(ForgePalette.softFill,in:Circle())
+                    Button {
+                        Task {
+                            if model.page == .settings { await model.loadSettingsPage() }
+                            else { await model.refresh() }
+                        }
+                    } label: {
+                        if model.settingsLoading {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Image(systemName:"arrow.clockwise")
+                                .font(.system(size:11.5,weight:.medium))
+                        }
                     }
+                    .frame(width:27,height:27)
+                    .background(ForgePalette.softFill,in:Circle())
                     .buttonStyle(.plain)
-                    .help("刷新真实 Forge 状态")
-                    .accessibilityLabel("刷新当前页面")
+                    .disabled(model.settingsLoading)
+                    .help(model.settingsLoading ? "设置操作进行中" : model.page == .settings ? "刷新设置与服务状态" : "刷新真实 Forge 状态")
+                    .accessibilityLabel(model.settingsLoading ? "设置操作进行中" : model.page == .settings ? "刷新设置" : "刷新当前页面")
                     .accessibilityIdentifier("app.refresh")
                 }
                 .padding(.horizontal,22).frame(height:48)
@@ -6584,21 +6594,6 @@ private struct SettingsPane: View {
     var body: some View {
         ScrollView {
             VStack(alignment:.leading,spacing:18) {
-                HStack(alignment:.top) {
-                    VStack(alignment:.leading,spacing:6) {
-                        Text("设置").font(.system(size:22,weight:.medium))
-                    }
-                    Spacer()
-                    Button {
-                        Task { await model.loadSettingsPage() }
-                    } label: {
-                        if model.settingsLoading { ProgressView().controlSize(.small) }
-                        else { Label("刷新",systemImage:"arrow.clockwise") }
-                    }
-                    .buttonStyle(.bordered).disabled(model.settingsLoading)
-                    .accessibilityIdentifier("settings.refresh")
-                }
-
                 VStack(alignment:.leading,spacing:12) {
                     HStack(spacing:9) {
                         Circle().fill(model.selectedProviderReady ? Color.green : Color.orange)
