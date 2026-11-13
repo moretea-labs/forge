@@ -4304,7 +4304,7 @@ mod tests {
 
                 let mut frames = Vec::new();
                 if protocol == "responses" {
-                    let response = if round < 3 {
+                    let mut response = if round < 3 {
                         let (id, name, arguments) = match round {
                             0 => ("call-read", "read_file", json!({"path":"fixture.txt","start_line":1,"end_line":3})),
                             1 => ("call-patch", "apply_patch", json!({
@@ -4320,6 +4320,10 @@ mod tests {
                     } else {
                         json!({"output":[{"type":"message","content":[{"type":"output_text","text":"Read, edited and verified."}]}]})
                     };
+                    response["usage"] = json!({
+                        "input_tokens":10 + round as u64,
+                        "output_tokens":2 + round as u64
+                    });
                     if round == 3 {
                         frames.push(json!({"type":"response.output_text.delta","delta":"Read, edited and verified."}).to_string());
                     }
@@ -4337,30 +4341,36 @@ mod tests {
                         })),
                     };
                     if protocol == "anthropic" {
+                        frames.push(json!({"type":"message_start","message":{"usage":{"input_tokens":10 + round as u64}}}).to_string());
                         frames.push(json!({"type":"content_block_start","index":0,"content_block":{
                             "type":"tool_use","id":id,"name":name,"input":{}
                         }}).to_string());
                         frames.push(json!({"type":"content_block_delta","index":0,"delta":{
                             "type":"input_json_delta","partial_json":arguments.to_string()
                         }}).to_string());
+                        frames.push(json!({"type":"message_delta","usage":{"output_tokens":2 + round as u64}}).to_string());
                         frames.push(json!({"type":"message_stop"}).to_string());
                     } else {
                         frames.push(json!({"choices":[{"delta":{"tool_calls":[{
                             "index":0,"id":id,"type":"function",
                             "function":{"name":name,"arguments":arguments.to_string()}
                         }]}}]}).to_string());
+                        frames.push(json!({"choices":[],"usage":{"prompt_tokens":10 + round as u64,"completion_tokens":2 + round as u64}}).to_string());
                         frames.push("[DONE]".into());
                     }
                 } else if protocol == "anthropic" {
+                    frames.push(json!({"type":"message_start","message":{"usage":{"input_tokens":10 + round as u64}}}).to_string());
                     frames.push(json!({"type":"content_block_start","index":0,"content_block":{
                         "type":"text","text":""
                     }}).to_string());
                     frames.push(json!({"type":"content_block_delta","index":0,"delta":{
                         "type":"text_delta","text":"Read, edited and verified."
                     }}).to_string());
+                    frames.push(json!({"type":"message_delta","usage":{"output_tokens":2 + round as u64}}).to_string());
                     frames.push(json!({"type":"message_stop"}).to_string());
                 } else {
                     frames.push(json!({"choices":[{"delta":{"content":"Read, edited and verified."}}]}).to_string());
+                    frames.push(json!({"choices":[],"usage":{"prompt_tokens":10 + round as u64,"completion_tokens":2 + round as u64}}).to_string());
                     frames.push("[DONE]".into());
                 }
                 let payload = frames.into_iter().map(|frame| format!("data: {frame}\r\n\r\n")).collect::<String>();
@@ -4386,6 +4396,10 @@ mod tests {
             let result = tauri::async_runtime::block_on(run_local_api_turn_with_config(&host, config, vec![json!({"role":"user","content":"Read fixture.txt, edit it, run its test, and report the result."})], Some(fixture.repo_id.clone()), Some(fixture.checkout_id.clone()), format!("conv-{profile_id}"), Some(format!("api:{profile_id}")), None, true, &mut cancel_receiver)).expect("real non-MCP provider loop");
             assert_eq!(result["output"], "Read, edited and verified.");
             assert_eq!(result["toolActivityCount"], 3);
+            assert_eq!(result["usage"], json!({
+                "inputTokens":46,"outputTokens":14,"totalTokens":60,
+                "reportedRounds":4,"totalRounds":4
+            }));
             assert_eq!(std::fs::read_to_string(fixture.repo_root.join("fixture.txt")).unwrap(), "after\n");
             let calls = host.tool_calls.lock().unwrap();
             assert_eq!(calls.iter().take(3).map(|call| call["tool"].as_str().unwrap()).collect::<Vec<_>>(), vec!["read_file", "apply_patch", "run_command"]);
