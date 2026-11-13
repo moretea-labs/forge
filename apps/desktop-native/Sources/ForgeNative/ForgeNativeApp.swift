@@ -2787,7 +2787,7 @@ private struct AgentChangesPane: View {
                             }
 
                             if reviewed.truncated {
-                                Label("改动内容超过 20 KB，已截断，无法提交",systemImage:"exclamationmark.triangle")
+                                Label("改动内容过多，无法提交。请缩小本次审查范围。",systemImage:"exclamationmark.triangle")
                                     .font(.system(size:10.5))
                                     .foregroundStyle(ForgePalette.secondary)
                             }
@@ -2809,7 +2809,7 @@ private struct AgentChangesPane: View {
                                     .background(ForgePalette.canvas,
                                                 in:RoundedRectangle(cornerRadius:8,style:.continuous))
                                 HStack(spacing:8) {
-                                    Text("提交前会重新核对改动、版本、分支和工作区，避免覆盖新变更。")
+                                    Text("提交前会再次确认这些改动未变化。")
                                         .font(.system(size:9.5))
                                         .foregroundStyle(.tertiary)
                                         .lineLimit(2)
@@ -2972,21 +2972,11 @@ private struct AgentChangesPane: View {
                     .background(changes.staged ? ForgePalette.selectionStrong : ForgePalette.softFill,
                                 in:Capsule())
             }
-            HStack(spacing:7) {
-                Text(String(changes.head.prefix(10)))
-                    .font(.system(size:9.5,design:.monospaced))
-                    .foregroundStyle(.tertiary)
-                    .textSelection(.enabled)
-                Text("·")
-                    .foregroundStyle(.quaternary)
+            HStack {
                 Text("\(changes.nameOnly.count) 个文件")
                     .font(.system(size:9.5,weight:.medium))
                     .foregroundStyle(ForgePalette.secondary)
                 Spacer(minLength:0)
-                Text("工作区 \(String(changes.checkoutId.prefix(8)))")
-                    .font(.system(size:9,design:.monospaced))
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
             }
         }
         .padding(10)

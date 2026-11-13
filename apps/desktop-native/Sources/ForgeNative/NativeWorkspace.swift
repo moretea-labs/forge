@@ -2807,7 +2807,7 @@ final class NativeWorkspace: ObservableObject {
             let changes = try await loadAgentChanges(staged:staged)
             guard repoId == targetRepoId, checkoutId == targetCheckoutId else { return }
             guard changes.repoId == targetRepoId, changes.checkoutId == targetCheckoutId else {
-                self.error = "Changes 返回了不同 repository / checkout 的快照。"
+                self.error = "当前工作区已切换，请重新读取改动。"
                 return
             }
             agentChanges = changes
@@ -2867,7 +2867,7 @@ final class NativeWorkspace: ObservableObject {
                 staged: staged,
                 paths: paths
             ) else {
-                self.error = "当前文件复查快照与请求范围不一致。"
+                self.error = "文件改动已变化，请刷新后重新查看。"
                 return nil
             }
             return changes
@@ -2894,7 +2894,7 @@ final class NativeWorkspace: ObservableObject {
                   changes, repoId:repoId, checkoutId:checkoutId, staged:currentChanges.staged
               ),
               Self.reviewedChangesAreRestorable(changes,repoId:repoId,checkoutId:checkoutId) else {
-            self.error = "当前 Changes 不是完整可放弃的未暂存复查快照。"
+            self.error = "这些改动已变化或不再可放弃，请刷新后重试。"
             return false
         }
         changesLoading = true
@@ -2927,7 +2927,7 @@ final class NativeWorkspace: ObservableObject {
                   changes, repoId:repoId, checkoutId:checkoutId, staged:currentChanges.staged
               ),
               !changes.truncated, !changes.nameOnly.isEmpty, !changes.patch.isEmpty else {
-            self.error = "当前 Changes 不是完整可提交的复查快照。"
+            self.error = "这些改动已变化或无法提交，请刷新后重试。"
             return false
         }
         let message = message.trimmingCharacters(in:.whitespacesAndNewlines)
