@@ -1,8 +1,8 @@
 {
   "version": 1,
   "edges": [
-    "packages/kernel/scheduler/infrastructure/schedule-store.ts|../../../../src/cli/repositories/locks",
     "packages/kernel/scheduler/infrastructure/schedule-store.ts|../../../../src/effects/controller-home",
+    "packages/kernel/scheduler/infrastructure/schedule-store.ts|../../../../src/effects/controller-locks",
     "packages/kernel/scheduler/infrastructure/schedule-store.ts|../../../../src/runtime/control-plane/facade/handoff-inbox-store",
     "packages/kernel/scheduler/infrastructure/schedule-store.ts|../../../../src/runtime/evidence/event-ledger",
     "packages/kernel/scheduler/infrastructure/schedule-store.ts|../../../../src/runtime/shared/json-files",

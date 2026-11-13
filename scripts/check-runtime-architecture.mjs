@@ -1911,12 +1911,13 @@ const B7_ALLOWED_KERNEL_LEGACY_EDGES = new Set([
   'packages/kernel/work/infrastructure/work-contract-store.ts -> src/runtime/shared/json-files.ts',
   'packages/kernel/work/infrastructure/work-contract-store.ts -> src/runtime/control-plane/persistence/sqlite-store.ts',
   'packages/kernel/scheduler/infrastructure/schedule-store.ts -> src/effects/controller-home.ts',
-  'packages/kernel/scheduler/infrastructure/schedule-store.ts -> src/cli/repositories/locks.ts',
+  'packages/kernel/scheduler/infrastructure/schedule-store.ts -> src/effects/controller-locks.ts',
   'packages/kernel/scheduler/infrastructure/schedule-store.ts -> src/runtime/control-plane/facade/handoff-inbox-store.ts',
   'packages/kernel/scheduler/infrastructure/schedule-store.ts -> src/runtime/shared/json-files.ts',
   'packages/kernel/scheduler/infrastructure/schedule-store.ts -> src/runtime/evidence/event-ledger.ts',
 ]);
 requireExactShrinkingDebt('Kernel -> legacy src dependency debt', b7KernelLegacyEdges, B7_ALLOWED_KERNEL_LEGACY_EDGES);
+requireMissing('src/cli/repositories/locks.ts');
 const b7ProductionEdges = new Set(dependencyEdges(b7ProductionGraph));
 if (!b7ProductionEdges.has('src/runtime/standalone-recovery/core.ts -> src/runtime/standalone-recovery/operation-lock.ts')) {
   failures.push('Recovery Core must consume the single shared operation-lock authority');
