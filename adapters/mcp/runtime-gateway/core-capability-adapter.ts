@@ -69,6 +69,7 @@ export async function callCoreCapabilityAdapter(
           prompt,
           providerSessionId,
           repoId: repository?.repoId,
+          checkoutId: repository?.activeCheckoutId,
           model,
           reasoningEffort,
           imagePaths,
