@@ -1934,6 +1934,20 @@ extension NativeWorkspaceTests {
 
 
 extension NativeWorkspaceTests {
+    func testRemoteImageRedirectPolicyRejectsCredentialsAndHttpsDowngrades() throws {
+        let secureSource = try XCTUnwrap(URL(string: "https://example.com/image.png"))
+        let secureCDN = try XCTUnwrap(URL(string: "https://cdn.example.com/image.png"))
+        let downgrade = try XCTUnwrap(URL(string: "http://example.com/image.png"))
+        let credentialed = try XCTUnwrap(URL(string: "https://user:secret@example.com/image.png"))
+        let insecureSource = try XCTUnwrap(URL(string: "http://example.com/image.png"))
+
+        XCTAssertTrue(canFollowRemoteImageRedirect(from: secureSource, to: secureCDN))
+        XCTAssertFalse(canFollowRemoteImageRedirect(from: secureSource, to: downgrade))
+        XCTAssertFalse(canFollowRemoteImageRedirect(from: secureSource, to: credentialed))
+        XCTAssertTrue(canFollowRemoteImageRedirect(from: insecureSource, to: secureCDN))
+        XCTAssertFalse(canFollowRemoteImageRedirect(from: secureCDN, to: downgrade))
+    }
+
     func testRemoteImageSessionDoesNotReuseAmbientCredentialsAndHasBoundedTimeouts() {
         let configuration = makeRemoteImageSessionConfiguration()
 

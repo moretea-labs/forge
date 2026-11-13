@@ -401,9 +401,42 @@ func makeRemoteImageSessionConfiguration() -> URLSessionConfiguration {
     return configuration
 }
 
+func canFollowRemoteImageRedirect(from sourceURL: URL, to targetURL: URL) -> Bool {
+    guard validatedRemoteImageURL(targetURL.absoluteString) != nil else { return false }
+    return sourceURL.scheme?.lowercased() != "https" || targetURL.scheme?.lowercased() == "https"
+}
+
+private final class RemoteImageRedirectPolicy: NSObject, URLSessionTaskDelegate {
+    private let sourceURL: URL
+
+    init(sourceURL: URL) {
+        self.sourceURL = sourceURL
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        guard let targetURL = request.url,
+              canFollowRemoteImageRedirect(from: response.url ?? sourceURL, to: targetURL) else {
+            completionHandler(nil)
+            return
+        }
+        completionHandler(request)
+    }
+}
+
 private func downloadRemoteImage(from url: URL, maximumBytes: Int) async throws -> Data {
     // Model-provided URLs must not inherit credentials or cookies from other app activity.
-    let session = URLSession(configuration: makeRemoteImageSessionConfiguration())
+    let redirectPolicy = RemoteImageRedirectPolicy(sourceURL: url)
+    let session = URLSession(
+        configuration: makeRemoteImageSessionConfiguration(),
+        delegate: redirectPolicy,
+        delegateQueue: nil
+    )
     defer { session.invalidateAndCancel() }
     let (bytes, response) = try await session.bytes(from: url)
     guard let http = response as? HTTPURLResponse else {
