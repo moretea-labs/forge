@@ -28,7 +28,7 @@ import {
   resetBrowserHandoffRuntimeHooksForTest,
   setBrowserHandoffRuntimeHooksForTest,
 } from '../../src/runtime/plugins/browser-handoff';
-import { patchInteractionSession } from '../../src/runtime/plugins/interaction-session';
+import { patchInteractionSession, writeInteractionSession } from '../../src/runtime/plugins/interaction-session';
 import {
   ensureLegacyBrowserSessionsImported,
   findBrowserSession,
@@ -41,6 +41,7 @@ import { browserSessionOwnerToken, findBrowserSession as findComputerBackedBrows
 import { readLegacyBrowserSessionMigrationEntries } from '../../src/runtime/plugins/browser-session-legacy-migration';
 import { withRuntimeBrowserSessionExecutionContext } from '../../src/runtime/root/browser-session-composition';
 import {
+  listControlPlaneRecords,
   withControlPlaneTransaction,
   writeControlPlaneRecordWithinTransaction,
 } from '../../src/runtime/control-plane/persistence/sqlite-store';
@@ -804,6 +805,55 @@ describe('browser session compatibility on Computer target authority', () => {
       ref: { windowId: '7', tabId: '9' },
     });
     expect((result.handoff as { targetId?: string }).targetId).toBe('macos-apple-events:chrome:7:9');
+  });
+
+  test('get_handoff_status persists a completed result once and keeps repeated observations read-only', async () => {
+    const { controllerHome, repoA } = fixture();
+    mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
+    writeControllerPluginConfig(controllerHome, 'browser', {
+      schemaVersion: 1, enabled: true, provider: 'playwright', browserMode: 'attach_preferred',
+      cdpAttachFallback: 'fail_closed', nativeAttachMode: 'auto', nativeBrowserCandidates: ['chrome'],
+    });
+    const nativeSession = session('handoff-status-read', '2026-11-13T00:00:00.000Z', {
+      native: true, windowId: '7', tabId: '9',
+    });
+    saveBrowserSession(controllerHome, 'repo-a', repoA, nativeSession);
+    const interactionId = 'completed-handoff-status-read';
+    writeInteractionSession(repoA, {
+      schemaVersion: 1,
+      interactionId,
+      provider: 'browser',
+      sessionId: nativeSession.sessionId,
+      targetId: 'macos-apple-events:chrome:7:9',
+      status: 'completed',
+      reason: 'manual_review',
+      owner: { repoId: 'repo-a', requestId: interactionId },
+      result: { url: 'https://example.com/finished', title: 'Finished' },
+      createdAt: '2026-11-13T00:00:00.000Z',
+      updatedAt: '2026-11-13T00:01:00.000Z',
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    });
+    const surfaceRevisions = () => listControlPlaneRecords(controllerHome, {
+      namespace: 'computer_interaction_target', limit: 100,
+    }).map(({ key, revision }) => ({ key, revision })).sort((left, right) => left.key.localeCompare(right.key));
+    const before = surfaceRevisions();
+    expect(before).toHaveLength(1);
+
+    const observe = (requestId: string) => executeBrowserPluginAction({
+      controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser', requestId,
+      origin: { surface: 'mcp', actor: 'test' },
+      actionId: 'get_handoff_status', args: { interaction_id: interactionId },
+    });
+    const first = await observe('handoff-status-first-observation');
+    expect(first.handoff).toMatchObject({ status: 'completed', result: { url: 'https://example.com/finished', title: 'Finished' } });
+    expect(findBrowserSession(controllerHome, 'repo-a', repoA, nativeSession.sessionId))
+      .toMatchObject({ url: 'https://example.com/finished', title: 'Finished' });
+    const afterFirst = surfaceRevisions();
+    expect(afterFirst[0].revision).toBe(before[0].revision + 1);
+
+    const second = await observe('handoff-status-second-observation');
+    expect(second.handoff).toMatchObject({ status: 'completed', result: { url: 'https://example.com/finished', title: 'Finished' } });
+    expect(surfaceRevisions()).toEqual(afterFirst);
   });
 
   test('activate_page recovers system foreground through Desktop Operator and preserves exact native tab for trusted input', async () => {

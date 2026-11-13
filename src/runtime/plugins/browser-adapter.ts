@@ -4303,7 +4303,7 @@ async function executeBrowserPluginActionInternal(
         }
         if (handoff.status === 'completed' && handoff.result?.url) {
           const session = findBrowserSession(input.repoRoot, handoff.sessionId);
-          if (session) {
+          if (session && (session.url !== handoff.result.url || session.title !== handoff.result.title)) {
             saveBrowserSession(input.repoRoot, {
               ...session,
               url: handoff.result.url,
