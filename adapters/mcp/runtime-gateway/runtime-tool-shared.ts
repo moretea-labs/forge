@@ -1,6 +1,8 @@
 import { boundedPluginArtifactImageContent, jsonPreview, result, resultWithPluginArtifactImages } from './result-adapter';
 import { expectedRevision, repositoryRootForRepoId, selected, stringList } from './shared-adapter';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
+import { getAgentJob } from '../../../src/cli/agent-jobs/job-manager';
+import { getLocalBridgeJob } from '../../../src/cli/local-bridge/job-store';
 import type { ExecutionJob } from '../../../src/runtime/execution/jobs/types';
 import { readJobEvents } from '../../../src/runtime/evidence/event-ledger';
 import {
@@ -24,5 +26,5 @@ export function summarizeJobEvents(ctx: MultiRepositoryMcpToolContext, repoId: s
 }
 
 export function summarizeExecutionJob(job: ExecutionJob, repoRoot?: string): Record<string, unknown> {
-  return summarizeExecutionJobForMcp(job, repoRoot);
+  return summarizeExecutionJobForMcp(job, repoRoot, { getLocalBridgeJob, getAgentJob });
 }

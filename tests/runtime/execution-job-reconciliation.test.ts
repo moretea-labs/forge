@@ -13,6 +13,7 @@ import {
   rebuildExecutionJobIndexes,
 } from '../../src/runtime/execution/jobs/store';
 import type { ExecutionJob } from '../../src/runtime/execution/jobs/types';
+import { summarizeExecutionJobForMcp } from '../../src/runtime/safe-tooling/job-summary';
 import {
   acquireExecutionLeases,
   listActiveLeases,
@@ -173,5 +174,30 @@ describe('ExecutionJob reconciliation isolation', () => {
 
     const after = JSON.parse(readFileSync(join(controllerHome, 'indexes', 'execution-jobs', 'active.json'), 'utf8'));
     expect(after.jobs).toEqual([]);
+  });
+});
+
+describe('ExecutionJob delegated summary refresh', () => {
+  test('uses adapter-injected canonical lifecycle readers for child status', () => {
+    const calls: string[] = [];
+    const job = executionJob('delegated-summary', 'succeeded', {
+      type: 'agent-run',
+      payload: { operation: 'dispatch_task', target: 'mcp-tool' },
+      result: { childReference: { localJobId: 'local-child', runId: 'run-child', issueId: 'ISSUE-7', taskId: 'task-7' } },
+    });
+    const summary = summarizeExecutionJobForMcp(job, '/tmp/repo-test', {
+      getLocalBridgeJob: (repoRoot, jobId) => {
+        calls.push(`local:${repoRoot}:${jobId}`);
+        return { status: 'succeeded', runId: 'run-child', issueId: 'ISSUE-7', taskId: 'task-7' };
+      },
+      getAgentJob: (repoRoot, runId) => {
+        calls.push(`run:${repoRoot}:${runId}`);
+        return { status: 'waiting_for_user' };
+      },
+    });
+    expect(calls).toEqual(['local:/tmp/repo-test:local-child', 'run:/tmp/repo-test:run-child']);
+    expect(summary.childLocalJobStatus).toBe('succeeded');
+    expect(summary.childRunStatus).toBe('waiting_for_user');
+    expect(summary.childReference).toMatchObject({ localJobId: 'local-child', runId: 'run-child', issueId: 'ISSUE-7', taskId: 'task-7' });
   });
 });

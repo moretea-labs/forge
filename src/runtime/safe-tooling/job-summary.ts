@@ -14,11 +14,20 @@ import {
   evidenceRef,
   RESPONSE_BUDGET,
 } from '../shared/response-budget';
-import { getLocalBridgeJob } from '../../cli/local-bridge/job-store';
-import { getAgentJob } from '../../cli/agent-jobs/job-manager';
 
 type SafeErrorClass = NonNullable<SafeJobResultSummary['safeError']>['class'];
 type SafeArtifactRef = NonNullable<SafeJobResultSummary['artifactRefs']>[number];
+
+/** Adapter-supplied canonical lifecycle readers; they may reconcile live child-job state. */
+export interface JobSummaryRefreshers {
+  getLocalBridgeJob(repoRoot: string, jobId: string): {
+    status: string;
+    runId?: string;
+    issueId?: string;
+    taskId?: string;
+  };
+  getAgentJob(repoRoot: string, runId: string): { status: string };
+}
 
 function scrubPathText(text: string, replacements: string[] = []): string {
   let output = text;
@@ -142,7 +151,8 @@ function suggestedFixesFor(message: string, errorClass: SafeErrorClass): string[
 function enrichDelegatedDigest(
   job: ExecutionJob,
   digest: ReturnType<typeof buildJobOperationDigest>,
-  repoRoot?: string,
+  repoRoot: string | undefined,
+  refreshers: JobSummaryRefreshers,
 ): ReturnType<typeof buildJobOperationDigest> {
   if (!repoRoot) return digest;
   const childReference = digest.childReference ?? childReferenceFromJob(job);
@@ -155,7 +165,7 @@ function enrichDelegatedDigest(
     let childRunStatus = digest.childRunStatus;
     if (childReference.localJobId) {
       try {
-        const localJob = getLocalBridgeJob(repoRoot, childReference.localJobId);
+        const localJob = refreshers.getLocalBridgeJob(repoRoot, childReference.localJobId);
         childLocalJobStatus = localJob.status;
         if (localJob.runId) childReference.runId = localJob.runId;
         if (localJob.issueId) childReference.issueId = localJob.issueId;
@@ -166,7 +176,7 @@ function enrichDelegatedDigest(
     }
     if (childReference.runId) {
       try {
-        const run = getAgentJob(repoRoot, childReference.runId);
+        const run = refreshers.getAgentJob(repoRoot, childReference.runId);
         childRunStatus = run.status;
       } catch {
         // Run lookup failures leave the parent Job status authoritative for itself.
@@ -192,7 +202,7 @@ function enrichDelegatedDigest(
   }
 }
 
-export function summarizeExecutionJobForMcp(job: ExecutionJob, repoRoot?: string): Record<string, unknown> {
+export function summarizeExecutionJobForMcp(job: ExecutionJob, repoRoot: string | undefined, refreshers: JobSummaryRefreshers): Record<string, unknown> {
   const payloadArguments = job.payload.arguments && typeof job.payload.arguments === 'object'
     ? Object.keys(job.payload.arguments as Record<string, unknown>).slice(0, 12)
     : undefined;
@@ -213,7 +223,7 @@ export function summarizeExecutionJobForMcp(job: ExecutionJob, repoRoot?: string
     jobId: job.jobId,
   }));
   const errorDetailsAvailable = job.error?.details !== undefined;
-  const rawDigest = enrichDelegatedDigest(job, buildJobOperationDigest(job), repoRoot);
+  const rawDigest = enrichDelegatedDigest(job, buildJobOperationDigest(job), repoRoot, refreshers);
   // Compact digest: drop nested suggested actions duplication; top-level keeps them once.
   const digest = {
     schemaVersion: rawDigest.schemaVersion,
