@@ -23,7 +23,7 @@ import { createHandoffItem } from '../../src/runtime/control-plane/facade/handof
 import { recordUserRequest } from '../../packages/kernel/identity/api/index';
 import { invalidateExecutionSession, readExecutionSession, startExecutionSession, updateExecutionSession } from '../../src/runtime/control-plane/execution/session-store';
 import { evaluateSchedule } from '../../src/runtime/workflow/schedules/engine';
-import { applyScheduleRetryableFailure } from '../../src/runtime/workflow/schedules/settlement';
+import { applyScheduleRetryableFailure } from '../../packages/kernel/scheduler/api/index';
 import { createSchedule, getOccurrence, getSchedule, reclaimStaleCreatedOccurrences, saveOccurrence, saveSchedule, updateSchedule } from '../../src/runtime/workflow/schedules/store';
 import {
   buildSchedulerHealthSnapshot,

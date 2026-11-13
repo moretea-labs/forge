@@ -1047,7 +1047,7 @@ requireText('packages/kernel/scheduler/application/eligibility.ts', 'scheduleTri
 requireText('packages/kernel/scheduler/application/settlement.ts', 'applyScheduleFailure');
 requireText('packages/kernel/scheduler/application/settlement.ts', 'applyScheduleRetryableFailure');
 requireText('packages/kernel/scheduler/application/settlement.ts', 'settleScheduledExecution');
-requireText('src/runtime/workflow/schedules/settlement.ts', '@deprecated Kernel V2 compatibility shim');
+requireMissing('src/runtime/workflow/schedules/settlement.ts');
 requireMissing('packages/kernel/scheduler/domain/continuation.ts');
 requireMissing('packages/kernel/scheduler/application/continuation-service.ts');
 requireMissing('packages/kernel/scheduler/infrastructure/continuation-dispatch-store.ts');
@@ -1127,7 +1127,6 @@ for (const path of sourceFiles('src')) {
 requireMissing('src/runtime/control-plane/facade/work-contract-store.ts');
 const B7_KERNEL_INTERNAL_COMPATIBILITY_SHIMS = new Set([
   'src/runtime/control-plane/facade/types.ts',
-  'src/runtime/workflow/schedules/settlement.ts',
 ]);
 // The compatibility-shim ledger may only shrink. A shim with no remaining
 // importer at all is migration debt, not a boundary: delete the file and its
