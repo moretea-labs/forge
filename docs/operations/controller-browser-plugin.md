@@ -61,7 +61,7 @@ Browser Runtime V3 is the current Browser authority. The V2 ADR in [`../architec
 - exact provider/resource identity is stable while URL/title are mutable observations and are refreshed after persisted reads;
 - provider routing is capability-based instead of fallback-by-exception;
 - a warm provider handle is reusable across bounded actions and full rediscovery is exceptional;
-- cold native rebind uses the saved exact `windowId` + `tabId`; losing optional global tab inventory does not authorize guessing a user tab;
+- cold Chrome rebind uses the saved stable `tabId` via the PID-bound native metadata reader without global tab inventory; it verifies the returned ID and accepts only the observed window move. Other browsers retain their existing resolution rules. Missing or ambiguous identity never authorizes guessing a user tab;
 - mutations compile to provider-local `observe -> act -> verify` transactions;
 - raw Apple Events / AX / socket / CGEvent success is not accepted as mutation success without postcondition evidence;
 - typed browser-internal capabilities are preferred for bookmarks/tabs/downloads instead of driving `chrome://` UI;

@@ -1761,6 +1761,20 @@ export async function readMacOsBrowserOwnedTabMetadata(
   ref: MacOsBrowserTabRef,
   timeoutMs = DEFAULT_NATIVE_TIMEOUT_MS,
 ): Promise<MacOsBrowserMetadata> {
+  if (product === 'chrome') {
+    // The PID-bound provider resolves the stable tab ID directly and returns
+    // its actual window, even when Chrome moved the tab between windows.
+    // Do not inventory unrelated tabs merely to rebind one saved session.
+    const metadata = await readResolvedMacOsBrowserOwnedTabMetadata(product, ref, timeoutMs);
+    if (metadata.tabId !== ref.tabId) {
+      throw new AssistantPluginError(
+        'PLUGIN_BROWSER_NATIVE_TAB_IDENTITY_UNPROVEN',
+        'Chrome metadata did not prove the exact saved tab identity.',
+        { retryable: false, details: { requestedTabId: ref.tabId, observedTabId: metadata.tabId } },
+      );
+    }
+    return metadata;
+  }
   const resolvedRef = await resolveCurrentMacOsBrowserTabRef(product, ref, timeoutMs);
   return await readResolvedMacOsBrowserOwnedTabMetadata(product, resolvedRef, timeoutMs);
 }

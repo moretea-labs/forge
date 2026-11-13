@@ -529,6 +529,39 @@ describe('Browser Runtime V3 routing', () => {
     expect(javaScriptCalls[1]).not.toContain('element.checked = false');
   });
 
+  test('cold Chrome tab reattachment trusts only exact native tab ID, without global inventory', async () => {
+    let inventoryReads = 0;
+    let observedTabId = '9';
+    const url = 'https://example.com/cold-exact';
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin',
+      appExists: () => true,
+      processRunning: async () => true,
+      tabInventory: async () => {
+        inventoryReads += 1;
+        return {
+          product: 'chrome',
+          truncated: false,
+          tabs: [{ windowId: '7', tabId: '9', active: false, url, title: 'Cold Exact' }],
+        };
+      },
+      // A Chrome tab may move windows without changing its stable tab ID.
+      runAppleScript: async () => [
+        'false', url, 'Cold Exact', '0', '0', '1200', '800', '99', observedTabId, 'false', 'false',
+      ].join(nativeSeparator),
+    });
+
+    const cold = await reattachMacOsBrowserOwnedPage('chrome', { windowId: '7', tabId: '9' }, 1_000);
+    expect(cold.page.tabRef()).toEqual({ windowId: '99', tabId: '9' });
+    expect(inventoryReads).toBe(0);
+
+    invalidateMacOsBrowserPageHandle('chrome', { windowId: '99', tabId: '9' });
+    observedTabId = '10';
+    await expect(reattachMacOsBrowserOwnedPage('chrome', { windowId: '7', tabId: '9' }, 1_000))
+      .rejects.toMatchObject({ code: 'PLUGIN_BROWSER_NATIVE_TAB_IDENTITY_UNPROVEN', retryable: false });
+    expect(inventoryReads).toBe(0);
+  });
+
   test('reuses one stable native tab handle without metadata or foreground preflight on the warm path', async () => {
     const metadataUrl = 'https://example.com/native-warm';
     const driftUrl = 'https://example.com/native-warm/drifted';
