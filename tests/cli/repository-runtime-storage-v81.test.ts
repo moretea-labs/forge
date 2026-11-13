@@ -15,7 +15,7 @@ import { callRuntimeObservationAdapter } from '../../adapters/mcp/runtime-gatewa
 import { callRecoveryAdapter } from '../../adapters/mcp/runtime-gateway/recovery-adapter';
 import { executeReadOnlyDiagnostic } from '../../src/runtime/diagnostics/read-only-tool';
 import { buildControllerWorkbench } from '../../src/runtime/repositories/workbench';
-import { listControllerPluginManifests } from '../../src/runtime/plugins/store';
+import { listAssistantPluginManifests, listControllerPluginManifests } from '../../src/runtime/plugins/store';
 import { listExecutionJobs, findExecutionJob, getExecutionJobByRequestId } from '../../src/runtime/execution/jobs/store';
 import { listRecoveryAuditRecords, listInstanceRecoveryAuditRecords } from '../../src/runtime/recovery/store';
 import { readHandoffInboxStore, handoffInboxPath } from '../../src/runtime/control-plane/facade/handoff-inbox-store';
@@ -498,6 +498,13 @@ describe('v8.1 repository runtime storage isolation', () => {
         fallbackToLive: false,
       });
       expect(Array.isArray(controllerManifests)).toBe(true);
+      expect(lstatSync(legacyPluginRoot).isSymbolicLink()).toBe(true);
+
+      const repositoryManifests = listAssistantPluginManifests(fixture.controllerHome, fixture.repoA, {
+        preferStored: true,
+        fallbackToLive: false,
+      });
+      expect(Array.isArray(repositoryManifests)).toBe(true);
       expect(lstatSync(legacyPluginRoot).isSymbolicLink()).toBe(true);
 
       const recovery = await callRecoveryAdapter(ctx, 'capability_recovery_probe', { repo_id: fixture.repoA.repoId });
