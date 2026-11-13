@@ -2036,6 +2036,33 @@ extension NativeWorkspaceTests {
         XCTAssertEqual(fenced, [.code(language:"md",text:"![chart](https://example.com/image.png)")])
     }
 
+    func testProviderUsageReceiptRejectsInvalidTokenTotalsAndCoverage() {
+        let valid: [String:Any] = [
+            "inputTokens":100, "outputTokens":78, "totalTokens":178,
+            "reportedRounds":2, "totalRounds":3
+        ]
+        XCTAssertEqual(
+            AgentTokenUsage.fromProviderReceipt(valid),
+            AgentTokenUsage(inputTokens:100,outputTokens:78,totalTokens:178,reportedRounds:2,totalRounds:3)
+        )
+        for key in ["inputTokens", "outputTokens", "totalTokens"] {
+            var invalid = valid
+            invalid[key] = -1
+            XCTAssertNil(AgentTokenUsage.fromProviderReceipt(invalid))
+        }
+        var inconsistent = valid
+        inconsistent["totalTokens"] = 179
+        XCTAssertNil(AgentTokenUsage.fromProviderReceipt(inconsistent))
+        var overflowing = valid
+        overflowing["inputTokens"] = Int.max
+        overflowing["outputTokens"] = 1
+        overflowing["totalTokens"] = Int.max
+        XCTAssertNil(AgentTokenUsage.fromProviderReceipt(overflowing))
+        var invalidCoverage = valid
+        invalidCoverage["reportedRounds"] = 4
+        XCTAssertNil(AgentTokenUsage.fromProviderReceipt(invalidCoverage))
+    }
+
     func testUsageReceiptPreservesProviderTotalAndIdentity() throws {
         let usage = AgentTokenUsage(inputTokens:120,outputTokens:30,totalTokens:178,
                                     reportedRounds:2,totalRounds:2)

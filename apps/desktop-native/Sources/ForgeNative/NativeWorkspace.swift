@@ -95,6 +95,21 @@ struct AgentTokenUsage: Codable, Equatable {
     let totalRounds: Int
 
     var complete: Bool { reportedRounds == totalRounds }
+
+    static func fromProviderReceipt(_ receipt: [String: Any]) -> AgentTokenUsage? {
+        guard let input = receipt["inputTokens"] as? Int, input >= 0,
+              let output = receipt["outputTokens"] as? Int, output >= 0,
+              let total = receipt["totalTokens"] as? Int,
+              let reported = receipt["reportedRounds"] as? Int,
+              let rounds = receipt["totalRounds"] as? Int,
+              reported > 0, reported <= rounds else { return nil }
+        let (expectedTotal, overflow) = input.addingReportingOverflow(output)
+        guard !overflow, total == expectedTotal else { return nil }
+        return AgentTokenUsage(
+            inputTokens: input, outputTokens: output, totalTokens: total,
+            reportedRounds: reported, totalRounds: rounds
+        )
+    }
 }
 struct ChatMessage: Codable, Identifiable {
     var id = UUID().uuidString
@@ -3454,18 +3469,8 @@ final class NativeWorkspace: ObservableObject {
             guard let current = threads.firstIndex(where:{$0.id == id}) else { return }
             let answer = response["output"] as? String ?? ""
             let toolActivityCount = response["toolActivityCount"] as? Int
-            let usage = (response["usage"] as? [String:Any]).flatMap { receipt -> AgentTokenUsage? in
-                guard let input = receipt["inputTokens"] as? Int,
-                      let output = receipt["outputTokens"] as? Int,
-                      let total = receipt["totalTokens"] as? Int,
-                      let reported = receipt["reportedRounds"] as? Int,
-                      let rounds = receipt["totalRounds"] as? Int,
-                      reported > 0, reported <= rounds else { return nil }
-                return AgentTokenUsage(
-                    inputTokens:input, outputTokens:output, totalTokens:total,
-                    reportedRounds:reported, totalRounds:rounds
-                )
-            }
+            let usage = (response["usage"] as? [String:Any])
+                .flatMap(AgentTokenUsage.fromProviderReceipt)
             let activityEvents = Self.matchesExternalProvider(turnProvider)
                 ? Self.mergeActivityReceipts(
                     liveActivity?.events ?? [],
