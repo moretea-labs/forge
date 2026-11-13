@@ -581,6 +581,7 @@ final class NativeWorkspace: ObservableObject {
     }
     @Published var agentChanges: AgentGitDiff?
     @Published var changesLoading = false
+    private var agentChangesRequestGeneration = 0
     @Published var liveActivity: AgentLiveActivity?
     // Transient model deltas. Only a finished turn becomes canonical thread history.
     @Published private(set) var streamedAnswer = ""
@@ -864,11 +865,10 @@ final class NativeWorkspace: ObservableObject {
         draft = ""
         pendingImageURLs = []
         pendingContextPaths = []
-        changesLoading = false
+        invalidateAgentChangesRequests(clearSnapshot:contextChanged || refreshProjectContext)
         knowledgeLoading = false
         knowledgeResult = nil
         if contextChanged || refreshProjectContext {
-            agentChanges = nil
             checkoutRoot = nil
             checkoutBranch = nil
         }
@@ -1048,6 +1048,7 @@ final class NativeWorkspace: ObservableObject {
             }
             return
         }
+        invalidateAgentChangesRequests(clearSnapshot:true)
         repoId = id
         zenGitHubBoardItems=[]
         zenGitHubBoardConfigured=nil
@@ -2784,35 +2785,39 @@ final class NativeWorkspace: ObservableObject {
         return try JSONDecoder().decode(AgentGitDiff.self, from:bytes)
     }
 
+    func invalidateAgentChangesRequests(clearSnapshot: Bool) {
+        agentChangesRequestGeneration &+= 1
+        changesLoading = false
+        if clearSnapshot { agentChanges = nil }
+    }
+
     func refreshAgentChanges(staged: Bool = false) async {
         guard let targetRepoId = repoId, let targetCheckoutId = checkoutId else {
-            agentChanges = nil
-            changesLoading = false
+            invalidateAgentChangesRequests(clearSnapshot:true)
             return
         }
         guard !changesLoading else { return }
-        if let changes = agentChanges,
-           !Self.agentChangesMatchContext(
-               changes, repoId: targetRepoId, checkoutId: targetCheckoutId, staged: staged
-           ) {
-            agentChanges = nil
-        }
+        agentChangesRequestGeneration &+= 1
+        let requestGeneration = agentChangesRequestGeneration
+        agentChanges = nil
         changesLoading = true
         defer {
-            if repoId == targetRepoId, checkoutId == targetCheckoutId {
+            if agentChangesRequestGeneration == requestGeneration {
                 changesLoading = false
             }
         }
         do {
             let changes = try await loadAgentChanges(staged:staged)
-            guard repoId == targetRepoId, checkoutId == targetCheckoutId else { return }
+            guard agentChangesRequestGeneration == requestGeneration,
+                  repoId == targetRepoId, checkoutId == targetCheckoutId else { return }
             guard changes.repoId == targetRepoId, changes.checkoutId == targetCheckoutId else {
                 self.error = "当前工作区已切换，请重新读取改动。"
                 return
             }
             agentChanges = changes
         } catch {
-            guard repoId == targetRepoId, checkoutId == targetCheckoutId else { return }
+            guard agentChangesRequestGeneration == requestGeneration,
+                  repoId == targetRepoId, checkoutId == targetCheckoutId else { return }
             self.error = error.localizedDescription
         }
     }
@@ -2847,19 +2852,28 @@ final class NativeWorkspace: ObservableObject {
         ) && reviewedChangesMatchPaths(changes, paths: paths)
     }
 
+    nonisolated static func reviewedChangesMatchSnapshot(
+        _ changes: AgentGitDiff, current: AgentGitDiff
+    ) -> Bool {
+        agentChangesMatchContext(
+            changes, repoId:current.repoId, checkoutId:current.checkoutId, staged:current.staged
+        ) && changes.branch == current.branch && changes.head == current.head
+    }
+
     func reviewAgentChanges(paths: [String], staged: Bool = false) async -> AgentGitDiff? {
         guard let targetRepoId = repoId, let targetCheckoutId = checkoutId else {
             self.error = "当前会话未绑定 repository / checkout。"
             return nil
         }
+        guard !changesLoading else { return nil }
+        let requestGeneration = agentChangesRequestGeneration
         do {
             let changes = try await loadAgentChanges(paths:paths,staged:staged)
-            guard repoId == targetRepoId, checkoutId == targetCheckoutId,
+            guard agentChangesRequestGeneration == requestGeneration,
+                  repoId == targetRepoId, checkoutId == targetCheckoutId,
                   !changesLoading,
                   let currentChanges = agentChanges,
-                  Self.agentChangesMatchContext(
-                      currentChanges, repoId:targetRepoId, checkoutId:targetCheckoutId, staged:staged
-                  ) else { return nil }
+                  Self.reviewedChangesMatchSnapshot(changes,current:currentChanges) else { return nil }
             guard Self.reviewedChangesMatchRequest(
                 changes,
                 repoId: targetRepoId,
@@ -2872,7 +2886,8 @@ final class NativeWorkspace: ObservableObject {
             }
             return changes
         } catch {
-            guard repoId == targetRepoId, checkoutId == targetCheckoutId else { return nil }
+            guard agentChangesRequestGeneration == requestGeneration,
+                  repoId == targetRepoId, checkoutId == targetCheckoutId else { return nil }
             self.error = error.localizedDescription
             return nil
         }
@@ -2890,9 +2905,7 @@ final class NativeWorkspace: ObservableObject {
     func restoreAgentChanges(_ changes: AgentGitDiff) async -> Bool {
         guard let repoId, let checkoutId, !changesLoading,
               let currentChanges = agentChanges,
-              Self.agentChangesMatchContext(
-                  changes, repoId:repoId, checkoutId:checkoutId, staged:currentChanges.staged
-              ),
+              Self.reviewedChangesMatchSnapshot(changes,current:currentChanges),
               Self.reviewedChangesAreRestorable(changes,repoId:repoId,checkoutId:checkoutId) else {
             self.error = "这些改动已变化或不再可放弃，请刷新后重试。"
             return false
@@ -2923,9 +2936,7 @@ final class NativeWorkspace: ObservableObject {
     func commitAgentChanges(_ changes: AgentGitDiff, message: String) async -> Bool {
         guard let repoId, let checkoutId, !changesLoading,
               let currentChanges = agentChanges,
-              Self.agentChangesMatchContext(
-                  changes, repoId:repoId, checkoutId:checkoutId, staged:currentChanges.staged
-              ),
+              Self.reviewedChangesMatchSnapshot(changes,current:currentChanges),
               !changes.truncated, !changes.nameOnly.isEmpty, !changes.patch.isEmpty else {
             self.error = "这些改动已变化或无法提交，请刷新后重试。"
             return false

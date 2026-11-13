@@ -522,6 +522,19 @@ final class NativeWorkspaceTests: XCTestCase {
             staged:true, paths:["a"], nameOnly:["a"], stat:"1 file changed",
             patch:"diff --git a/a b/a\n", truncated:false
         )
+        let differentHead = AgentGitDiff(
+            repoId:"repo_a", checkoutId:"checkout_a", branch:"work/a", head:"fedcba",
+            staged:true, paths:["a"], nameOnly:["a"], stat:"1 file changed",
+            patch:"diff --git a/a b/a\n", truncated:false
+        )
+        let differentBranch = AgentGitDiff(
+            repoId:"repo_a", checkoutId:"checkout_a", branch:"work/b", head:"abcdef",
+            staged:true, paths:["a"], nameOnly:["a"], stat:"1 file changed",
+            patch:"diff --git a/a b/a\n", truncated:false
+        )
+        XCTAssertTrue(NativeWorkspace.reviewedChangesMatchSnapshot(snapshot,current:snapshot))
+        XCTAssertFalse(NativeWorkspace.reviewedChangesMatchSnapshot(differentHead,current:snapshot))
+        XCTAssertFalse(NativeWorkspace.reviewedChangesMatchSnapshot(differentBranch,current:snapshot))
         XCTAssertTrue(NativeWorkspace.reviewedChangesMatchRequest(
             snapshot, repoId:"repo_a", checkoutId:"checkout_a", staged:true, paths:["a"]
         ))
@@ -547,6 +560,30 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertFalse(NativeWorkspace.reviewedChangesMatchRequest(
             snapshot, repoId:"repo_a", checkoutId:"checkout_a", staged:false, paths:["a"]
         ))
+    }
+
+    @MainActor
+    func testAgentChangesContextInvalidationClearsPendingSnapshotAndLoading() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        let snapshot = AgentGitDiff(
+            repoId:"repo_a", checkoutId:"checkout_a", branch:"work/a", head:"abcdef",
+            staged:false, paths:["a"], nameOnly:["a"], stat:"1 file changed",
+            patch:"diff --git a/a b/a\n", truncated:false
+        )
+
+        model.agentChanges = snapshot
+        model.changesLoading = true
+        model.invalidateAgentChangesRequests(clearSnapshot:true)
+        XCTAssertNil(model.agentChanges)
+        XCTAssertFalse(model.changesLoading)
+
+        model.agentChanges = snapshot
+        model.changesLoading = true
+        model.invalidateAgentChangesRequests(clearSnapshot:false)
+        XCTAssertEqual(model.agentChanges?.head,"abcdef")
+        XCTAssertFalse(model.changesLoading)
     }
 
     func testRetiredWorkIsNotANativeNavigationOrBridgeCapability() {
