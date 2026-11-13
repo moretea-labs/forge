@@ -447,7 +447,7 @@ export function browserActions(): AssistantPluginActionDescriptor[] {
     {
       actionId: 'snapshot_interactive',
       title: 'Snapshot interactive elements',
-      description: 'Snapshot interactive elements with stable selector hints plus CSS-pixel viewport geometry for screenshot-to-input grounding.',
+      description: 'Snapshot interactive elements with selector hints and viewport geometry, including read-only layout evidence (padding, label alignment, overflow, select text/caret clearance). Review signals are not an automatic visual PASS.',
       readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 60_000, cancellable: true, idempotent: true,
       scopes: ['browser.read'], resourceClaims: [{ resource: 'remote', mode: 'read' }],
       argumentsSchema: sessionTargetSchema({ limit: { type: 'number' }, ...frameScopeProperties }),

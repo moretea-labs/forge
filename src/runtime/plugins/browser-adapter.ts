@@ -3433,6 +3433,69 @@ const EXTRACTION_SCRIPTS = {
       const inViewport = visible && right > 0 && bottom > 0 && left < viewport.width && top < viewport.height;
       const disabled = Boolean(el.disabled || el.getAttribute('aria-disabled') === 'true');
       const editable = !disabled && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable || el.getAttribute('role') === 'textbox');
+      // Read-only UI quality evidence belongs to this existing DOM snapshot, not a
+      // second browser provider or an automatic aesthetic pass/fail authority.
+      const pixel = (raw) => {
+        const value = Number.parseFloat(raw);
+        return Number.isFinite(value) ? value : null;
+      };
+      const padding = {
+        left: pixel(style?.paddingLeft) ?? 0, right: pixel(style?.paddingRight) ?? 0,
+        top: pixel(style?.paddingTop) ?? 0, bottom: pixel(style?.paddingBottom) ?? 0,
+      };
+      const borderX = (pixel(style?.borderLeftWidth) ?? 0) + (pixel(style?.borderRightWidth) ?? 0);
+      const label = el.labels && el.labels.length ? el.labels[0] : null;
+      const labelBounds = label?.getBoundingClientRect();
+      const labelCenterDeltaY = labelBounds
+        ? Number(labelBounds.top + labelBounds.height / 2 - (top + height / 2))
+        : null;
+      const horizontalOverflow = Number(el.scrollWidth || 0) > Number(el.clientWidth || 0) + 1;
+      const verticalOverflow = Number(el.scrollHeight || 0) > Number(el.clientHeight || 0) + 1;
+      const isSelect = el.tagName === 'SELECT';
+      let select;
+      const review = [];
+      if (isSelect) {
+        const caretRightInset = pixel(style?.getPropertyValue('--select-arrow-offset'));
+        const caretSize = pixel(style?.getPropertyValue('--select-arrow-size'));
+        const extraTextClearance = caretRightInset !== null && caretSize !== null
+          ? padding.right - caretRightInset - caretSize : null;
+        const selectedText = String(el.selectedOptions?.[0]?.textContent || '').trim();
+        let measuredTextWidth = null;
+        if (selectedText && style?.font) {
+          try {
+            const canvas = document.createElement('canvas');
+            const context = canvas.getContext('2d');
+            if (context) {
+              context.font = style.font;
+              measuredTextWidth = Number(context.measureText(selectedText).width);
+            }
+          } catch { /* No measurable text: preserve unknown, never assume fit. */ }
+        }
+        const textRoom = Math.max(0, width - padding.left - padding.right - borderX);
+        const selectedTextFits = measuredTextWidth === null ? null : measuredTextWidth <= textRoom + 1;
+        select = {
+          appearance: style?.appearance || null,
+          caretRightInset, caretSize, extraTextClearance,
+          selectedTextWidth: measuredTextWidth, textRoom, selectedTextFits,
+        };
+        if (visible) {
+          if (select.appearance !== 'none' || caretRightInset === null || caretSize === null) {
+            review.push('select-caret-unmeasured');
+          } else {
+            if (caretRightInset < 12) review.push('select-caret-edge-inset');
+            if (extraTextClearance < 8) review.push('select-caret-text-clearance');
+          }
+          if (selectedTextFits === false) review.push('selected-text-clipped');
+        }
+      }
+      const parentStyle = el.parentElement && typeof getComputedStyle === 'function'
+        ? getComputedStyle(el.parentElement) : null;
+      const parentLayout = parentStyle ? {
+        display: parentStyle.display || null, alignItems: parentStyle.alignItems || null,
+        justifyContent: parentStyle.justifyContent || null,
+        rowGap: pixel(parentStyle.rowGap), columnGap: pixel(parentStyle.columnGap),
+      } : null;
+      const layout = { padding, horizontalOverflow, verticalOverflow, labelCenterDeltaY, parentLayout, select, review };
       return {
         tag: el.tagName.toLowerCase(),
         text,
@@ -3447,11 +3510,17 @@ const EXTRACTION_SCRIPTS = {
         inViewport,
         disabled,
         editable,
+        layout,
       };
     });
     return { geometryVersion: 1, viewport, elements };
   })()`,
 };
+
+// The existing browser snapshot is the sole DOM layout observation path.
+export function browserInteractiveSnapshotScript(limit: number): string {
+  return EXTRACTION_SCRIPTS.interactive(limit);
+}
 
 function selectorUnavailableInTime(errorMessage: string): boolean {
   return /timeout|timed out|waiting for selector|selector.*not found|not found.*selector/i.test(errorMessage);

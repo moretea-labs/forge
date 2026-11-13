@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from 'bun:test';
+import { runInNewContext } from 'node:vm';
 import { ComputerProviderError } from '../../packages/plugin-runtime/computer/index';
 import { AssistantPluginError } from '../../src/runtime/plugins/errors';
 import { rethrowBrowserAutomationBrokerError } from '../../src/runtime/plugins/browser-automation-service';
@@ -17,6 +18,7 @@ import {
   browserActionCanReplayAfterDispatch,
   browserExplicitSessionRequiresExistingResource,
   settleNativeCreatedPageIdentity,
+  browserInteractiveSnapshotScript,
 } from '../../src/runtime/plugins/browser-adapter';
 import {
   type BrowserRuntimeProvider,
@@ -996,4 +998,83 @@ describe('Browser Runtime V3 routing', () => {
     await expect(listMacOsBrowserTabs('vivaldi', 1_000)).rejects.toThrow('PLUGIN_BROWSER_NATIVE_APP_NOT_INSTALLED');
     expect(scripts).toEqual([]);
   });
+});
+
+test('interactive snapshot measures select text, caret clearance, label offset and scroll overflow using the existing DOM owner', () => {
+  const select = {
+    tagName: 'SELECT', nodeType: 1, id: 'language', disabled: false, innerText: '', textContent: '',
+    selectedOptions: [{ textContent: 'A very long option label' }],
+    clientWidth: 136, scrollWidth: 164, clientHeight: 34, scrollHeight: 34,
+    isContentEditable: false, parentElement: { tagName: 'DIV' }, previousElementSibling: null,
+    getAttribute: (name: string) => name === 'aria-label' ? 'Language' : null,
+    getBoundingClientRect: () => ({ left: 200, top: 90, width: 140, height: 34, right: 340, bottom: 124 }),
+    querySelectorAll: () => [],
+    labels: [{ getBoundingClientRect: () => ({ top: 96, height: 16 }) }],
+  };
+  const style = {
+    display: 'block', visibility: 'visible', opacity: '1',
+    paddingLeft: '10px', paddingRight: '9px', paddingTop: '4px', paddingBottom: '4px',
+    borderLeftWidth: '1px', borderRightWidth: '1px',
+    appearance: 'none', backgroundImage: 'url("chevron-down.svg")',
+    font: '12px system-ui', whiteSpace: 'nowrap', textAlign: 'start',
+    getPropertyValue: (name: string) => ({ '--select-arrow-offset': '4px', '--select-arrow-size': '12px' })[name as '--select-arrow-offset'] ?? '',
+  };
+  const script = browserInteractiveSnapshotScript(5);
+  const result = runInNewContext(script, {
+    window: { innerWidth: 1024, innerHeight: 768, scrollX: 0, scrollY: 0, devicePixelRatio: 1 },
+    document: {
+      documentElement: { clientWidth: 1024, clientHeight: 768 },
+      querySelectorAll: (selector: string) => selector.includes(',') || selector === '#language' ? [select] : [],
+      createElement: () => ({ getContext: () => ({ font: '', measureText: (text: string) => ({ width: text.length * 7 }) }) }),
+    },
+    getComputedStyle: (element: unknown) => element === select ? style : ({ display: 'flex', alignItems: 'center', justifyContent: 'space-between', rowGap: '6px', columnGap: '12px' }),
+    CSS: { escape: (value: string) => value },
+  }) as { elements: Array<Record<string, any>>; geometryVersion: number };
+  expect(result.geometryVersion).toBe(1);
+  expect(result.elements).toHaveLength(1);
+  const el = result.elements[0]!;
+  expect(el.bounds).toMatchObject({ x: 200, y: 90, width: 140, height: 34 });
+  expect(el.layout.padding).toEqual({ left: 10, right: 9, top: 4, bottom: 4 });
+  expect(el.layout.horizontalOverflow).toBe(true);
+  expect(el.layout.labelCenterDeltaY).toBe(-3);
+  expect(el.layout.parentLayout).toMatchObject({ display: 'flex', alignItems: 'center', rowGap: 6, columnGap: 12 });
+  expect(el.layout.select).toMatchObject({
+    appearance: 'none', caretRightInset: 4, caretSize: 12,
+    extraTextClearance: -7, selectedTextFits: false,
+  });
+  expect(el.layout.review).toContain('select-caret-edge-inset');
+  expect(el.layout.review).toContain('select-caret-text-clearance');
+  expect(el.layout.review).toContain('selected-text-clipped');
+  // Correct inset and short text: advisory review is empty.
+  style.paddingRight = '36px';
+  select.selectedOptions[0]!.textContent = 'Short';
+  style.getPropertyValue = (name: string) =>
+    ({ '--select-arrow-offset': '14px', '--select-arrow-size': '12px' })[name as '--select-arrow-offset'] ?? '';
+  const corrected = runInNewContext(script, {
+    window: { innerWidth: 1024, innerHeight: 768, devicePixelRatio: 1 },
+    document: {
+      documentElement: { clientWidth: 1024, clientHeight: 768 },
+      querySelectorAll: (selector: string) => selector.includes(',') || selector === '#language' ? [select] : [],
+      createElement: () => ({ getContext: () => ({ font: '', measureText: (text: string) => ({ width: text.length * 7 }) }) }),
+    },
+    getComputedStyle: (element: unknown) => element === select ? style : ({ display: 'flex', alignItems: 'center', justifyContent: 'space-between', rowGap: '6px', columnGap: '12px' }),
+    CSS: { escape: (value: string) => value },
+  }) as { elements: Array<Record<string, any>> };
+  expect(corrected.elements[0]!.layout.select).toMatchObject({
+    caretRightInset: 14, caretSize: 12, extraTextClearance: 10, selectedTextFits: true,
+  });
+  expect(corrected.elements[0]!.layout.review).toEqual([]);
+  // Native browser arrows cannot be measured from CSS variables; never invent clearance.
+  style.appearance = 'auto';
+  const native = runInNewContext(script, {
+    window: { innerWidth: 1024, innerHeight: 768, devicePixelRatio: 1 },
+    document: {
+      documentElement: { clientWidth: 1024, clientHeight: 768 },
+      querySelectorAll: (selector: string) => selector.includes(',') || selector === '#language' ? [select] : [],
+      createElement: () => ({ getContext: () => ({ font: '', measureText: (text: string) => ({ width: text.length * 7 }) }) }),
+    },
+    getComputedStyle: (element: unknown) => element === select ? style : ({ display: 'flex', alignItems: 'center', justifyContent: 'space-between', rowGap: '6px', columnGap: '12px' }),
+    CSS: { escape: (value: string) => value },
+  }) as { elements: Array<Record<string, any>> };
+  expect(native.elements[0]!.layout.review).toContain('select-caret-unmeasured');
 });
