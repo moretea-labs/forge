@@ -8,6 +8,7 @@ import {
   resetBrowserPluginRuntimeHooksForTest,
   setBrowserPluginRuntimeHooksForTest,
 } from '../../src/runtime/plugins/browser-adapter';
+import { computerPluginAdapter } from '../../src/runtime/plugins/computer-registration';
 import {
   invalidateMacOsBrowserPageHandles,
   type MacOsBrowserProduct,
@@ -124,6 +125,32 @@ async function action(actionId: string, args: Record<string, unknown>): Promise<
   throw new Error('Browser action retry loop exhausted unexpectedly.');
 }
 
+async function computerAction(actionId: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      return await computerPluginAdapter.executeAction({
+        controllerHome,
+        repoId: 'computer-v3-live',
+        repoRoot,
+        pluginId: 'computer',
+        actionId,
+        requestId: `computer-v3-live-${actionId}-${crypto.randomUUID()}`,
+        args,
+        origin: { surface: 'local-ui', actor: 'computer-v3-live' },
+      }) as Record<string, unknown>;
+    } catch (error) {
+      const providerFailure = error as { code?: unknown; retryable?: unknown; effectOutcome?: unknown };
+      const safeSerializationRetry = providerFailure.code === 'BROWSER_AUTOMATION_SERIALIZATION_BUSY'
+        && providerFailure.retryable === true
+        && providerFailure.effectOutcome === 'failed';
+      if (!safeSerializationRetry || attempt === 3) throw error;
+      safeProviderRetries += 1;
+      await Bun.sleep(100 * attempt);
+    }
+  }
+  throw new Error('Computer action retry loop exhausted unexpectedly.');
+}
+
 async function closeSession(sessionId: string): Promise<void> {
   if (!openSessions.delete(sessionId)) return;
   await action('close_session', { session_id: sessionId }).catch(() => undefined);
@@ -171,7 +198,22 @@ try {
       const path = new URL(request.url).pathname;
       if (path === '/redirect') return Response.redirect(`http://127.0.0.1:${server!.port}/wrong`, 302);
       const title = path === '/wrong' ? 'Forge Wrong' : path === '/drifted' ? 'Forge Drifted' : 'Forge One';
-      return new Response(`<!doctype html><html><head><title>${title}</title></head><body><main id="main">${title}</main><a id="next" href="/drifted">Drift</a><div id="status">idle</div></body></html>`, { headers: { 'content-type': 'text/html' } });
+      return new Response(`<!doctype html><html><head><title>${title}</title></head><body>
+        <main id="main">${title}</main><a id="next" href="/drifted">Drift</a><div id="status">idle</div>
+        <form id="task-form"><input id="task" name="task"><button id="add" type="submit">Add task</button></form><ol id="tasks"></ol>
+        <script>
+          document.querySelector('#task-form').addEventListener('submit', (event) => {
+            event.preventDefault();
+            const input = document.querySelector('#task');
+            const value = input.value;
+            const item = document.createElement('li');
+            item.textContent = value + ':high';
+            document.querySelector('#tasks').append(item);
+            document.querySelector('#status').textContent = 'saved:' + value;
+            input.value = '';
+          });
+        </script>
+      </body></html>`, { headers: { 'content-type': 'text/html' } });
     },
   });
   const origin = `http://127.0.0.1:${server.port}`;
@@ -350,6 +392,111 @@ try {
     }
     assertActiveUserTabPreserved(product, userBefore, await productMetadata(product), 'warm DOM reads');
 
+    // Keep the existing Browser lifecycle suite intact; measure the public Computer
+    // adapter on its own plugin-owned tab so its native-only policy is exercised.
+    const computerOpened = await computerAction('create_session', {
+      url: one,
+      browser_mode: 'attach_preferred',
+      native_browser_candidates: [product],
+      cdp_attach_fallback: 'fail_closed',
+      extract_text: false,
+    });
+    assert.equal(computerOpened.provider, 'macos-apple-events');
+    const computerSessionId = resultSessionId(computerOpened);
+    openSessions.add(computerSessionId);
+    const computerRef = resultTabRef(computerOpened);
+    assert.notDeepEqual(computerRef, ref, 'Computer batch fixture must use its own exact tab');
+    assert.equal((await exactMetadata(product, computerRef)).url, one);
+    assertActiveUserTabPreserved(product, userBefore, await productMetadata(product), 'Computer create_session');
+
+    // Compare separate Computer actions with one bounded run_steps transaction.
+    // Native Apple Events batches contiguous DOM mutations but leaves explicit
+    // selector waits as independent observations.
+    const batchSamples = Math.max(5, Math.min(Number(process.env.FORGE_BROWSER_V3_BATCH_SAMPLES ?? 10), 20));
+    const sequentialBatchSamples: number[] = [];
+    const nativeBatchSamples: number[] = [];
+    const nativeProviderBatchDurations: number[] = [];
+    let taskCount = 0;
+    async function mutationTrial(variant: 'sequential' | 'batched', index: number): Promise<number> {
+      const marker = `computer-${product}-${index}-${variant}`;
+      const firstTaskIndex = taskCount + 1;
+      const secondTaskIndex = taskCount + 2;
+      const steps = [
+        { action: 'fill', selector: '#task', text: marker + '-a' },
+        { action: 'press', selector: '#task', key: 'Enter' },
+        { action: 'wait_for_selector', selector: `#tasks li:nth-child(${firstTaskIndex})`, state: 'visible' },
+        { action: 'fill', selector: '#task', text: marker + '-b' },
+        { action: 'press', selector: '#task', key: 'Enter' },
+        { action: 'wait_for_selector', selector: `#tasks li:nth-child(${secondTaskIndex})`, state: 'visible' },
+        { action: 'fill', selector: '#task', text: marker + '-c' },
+        { action: 'click', selector: '#add' },
+      ];
+      const startedAt = performance.now();
+      if (variant === 'batched') {
+        const result = await computerAction('run_steps', { session_id: computerSessionId, steps });
+        const summary = result.action as Record<string, unknown>;
+        assert.equal(summary.completedSteps, 8, 'Computer run_steps must complete all 8 native actions');
+        assert.equal(summary.providerBatchCount, 3, 'three contiguous mutation groups should use three native evaluations');
+        assert.equal(summary.providerBatchStepCount, 6, 'all six mutations should be covered by native batches');
+        assert.equal(typeof summary.providerBatchDurationMs, 'number');
+        if (index !== 0) nativeProviderBatchDurations.push(summary.providerBatchDurationMs as number);
+      } else {
+        for (const step of steps) {
+          const { action: stepAction, ...stepArgs } = step;
+          await computerAction(stepAction, { session_id: computerSessionId, ...stepArgs });
+        }
+      }
+      const elapsed = performance.now() - startedAt;
+      const observed = await computerAction('get_text', { session_id: computerSessionId, selector: '#tasks', max_chars: 10_000 });
+      const text = String(observed.text ?? '');
+      for (const suffix of ['-a', '-b', '-c']) {
+        assert(text.includes(marker + suffix + ':high'), `${product} ${variant} did not persist ${marker}${suffix}`);
+      }
+      taskCount += 3;
+      return Math.round(elapsed * 10) / 10;
+    }
+
+    for (let index = 0; index <= batchSamples; index += 1) {
+      const order: Array<'sequential' | 'batched'> = index % 2 === 0
+        ? ['sequential', 'batched'] : ['batched', 'sequential'];
+      for (const variant of order) {
+        const elapsed = await mutationTrial(variant, index);
+        if (index !== 0) (variant === 'sequential' ? sequentialBatchSamples : nativeBatchSamples).push(elapsed);
+      }
+    }
+    assert.equal(sequentialBatchSamples.length, batchSamples);
+    assert.equal(nativeBatchSamples.length, batchSamples);
+    assert.equal(nativeProviderBatchDurations.length, batchSamples);
+    assertActiveUserTabPreserved(product, userBefore, await productMetadata(product), 'native mutation batch');
+
+    const unknownMarker = `computer-${product}-unknown-outcome`;
+    let unknownOutcome: { code?: unknown; details?: Record<string, unknown> } | undefined;
+    try {
+      await computerAction('run_steps', {
+        session_id: computerSessionId,
+        steps: [
+          { action: 'fill', selector: '#task', text: unknownMarker },
+          { action: 'click', selector: '#add' },
+          { action: 'fill', selector: '#missing', text: 'must-not-run' },
+        ],
+      });
+      throw new Error('Computer accepted a mutation batch with a missing selector.');
+    } catch (error) {
+      if (error instanceof Error && error.message === 'Computer accepted a mutation batch with a missing selector.') throw error;
+      unknownOutcome = error as { code?: unknown; details?: Record<string, unknown> };
+    }
+    assert.equal(unknownOutcome?.code, 'PLUGIN_BROWSER_MUTATION_OUTCOME_UNKNOWN');
+    assert.equal(unknownOutcome?.details?.failedIndex, 2);
+    assert.equal(unknownOutcome?.details?.completedSteps, 2);
+    const reconciled = await computerAction('get_text', { session_id: computerSessionId, selector: '#tasks', max_chars: 10_000 });
+    const reconciledText = String(reconciled.text ?? '');
+    assert.equal(reconciledText.split(unknownMarker + ':high').length - 1, 1, 'unknown mutation must be reconciled, never replayed');
+    const computerClosed = await computerAction('close_session', { session_id: computerSessionId });
+    openSessions.delete(computerSessionId);
+    assert.equal(computerClosed.closed, true);
+    assert.equal(computerClosed.resourceClosed, true);
+    assertActiveUserTabPreserved(product, userBefore, await productMetadata(product), 'Computer close_session');
+
     await callBrowserAutomationBroker({
       action: 'execute_javascript',
       product,
@@ -401,6 +548,21 @@ try {
       urlDrift: `${origin}/drifted`,
       coldRebindMs: Math.round(rebindMs * 10) / 10,
       postconditionFailureCode: postconditionCode,
+      nativeBatch: {
+        samples: batchSamples,
+        stepsPerTrial: 8,
+        mutationProviderBatchesPerTrial: 3,
+        mutationStepsPerTrial: 6,
+        providerEvaluationsPerTrial: { sequential: 8, batched: 5 },
+        sequentialWallP50Ms: percentile(sequentialBatchSamples, 0.5),
+        sequentialWallP95Ms: percentile(sequentialBatchSamples, 0.95),
+        batchedWallP50Ms: percentile(nativeBatchSamples, 0.5),
+        batchedWallP95Ms: percentile(nativeBatchSamples, 0.95),
+        providerBatchP50Ms: percentile(nativeProviderBatchDurations, 0.5),
+        providerBatchP95Ms: percentile(nativeProviderBatchDurations, 0.95),
+        p50Speedup: Math.round((percentile(sequentialBatchSamples, 0.5) / percentile(nativeBatchSamples, 0.5)) * 100) / 100,
+        unknownOutcomeReconciledOnce: true,
+      },
       latencyMs: {
         create: Math.round(createMs * 10) / 10,
         close: Math.round(closeMs * 10) / 10,

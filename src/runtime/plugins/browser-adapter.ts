@@ -328,6 +328,10 @@ type PageLike = {
   fill(selector: string, value: string, options?: Record<string, unknown>): Promise<void>;
   type?(selector: string, text: string, options?: Record<string, unknown>): Promise<void>;
   press(selector: string, key: string, options?: Record<string, unknown>): Promise<void>;
+  runMutationSteps?(steps: Array<{ index: number; action: 'fill' | 'click' | 'press'; selector: string; text?: string; key?: string }>): Promise<{
+    completed: Array<{ index: number; action: 'fill' | 'click' | 'press'; selector: string; durationMs: number }>;
+    failure?: { index: number; action: 'fill' | 'click' | 'press'; selector: string };
+  }>;
   selectOption?(selector: string, values: string | string[], options?: Record<string, unknown>): Promise<unknown>;
   check?(selector: string, options?: Record<string, unknown>): Promise<void>;
   uncheck?(selector: string, options?: Record<string, unknown>): Promise<void>;
@@ -5145,7 +5149,52 @@ async function executeBrowserPluginActionInternal(
         }
         return await withPage(input.actionId, input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
           const completed: Array<{ index: number; action: StepAction; selector: string; durationMs: number }> = [];
-          for (const [index, step] of steps.entries()) {
+          let providerBatchCount = 0;
+          let providerBatchStepCount = 0;
+          let providerBatchDurationMs = 0;
+          for (let index = 0; index < steps.length;) {
+            const step = steps[index]!;
+            if (step.action !== 'wait_for_selector' && page.runMutationSteps) {
+              const batch: Array<{ index: number; action: 'fill' | 'click' | 'press'; selector: string; text?: string; key?: string }> = [];
+              let nextIndex = index;
+              while (nextIndex < steps.length && steps[nextIndex]!.action !== 'wait_for_selector') {
+                const mutation = steps[nextIndex]!;
+                batch.push({ index: nextIndex, action: mutation.action as 'fill' | 'click' | 'press', selector: mutation.selector,
+                  ...(mutation.text !== undefined ? { text: mutation.text } : {}),
+                  ...(mutation.key !== undefined ? { key: mutation.key } : {}) });
+                nextIndex += 1;
+              }
+              if (batch.length > 1) {
+                const startedAt = performance.now();
+                let result: Awaited<ReturnType<NonNullable<PageLike['runMutationSteps']>>>;
+                try {
+                  result = await page.runMutationSteps(batch);
+                } catch {
+                  throw new AssistantPluginError('PLUGIN_BROWSER_MUTATION_OUTCOME_UNKNOWN',
+                    `Browser mutation batch outcome is unknown from step ${index}; reconcile the exact session before any retry.`,
+                    { retryable: false, effectOutcome: 'outcome_unknown', details: { actionId: 'run_steps', batchStartIndex: index,
+                      completedSteps: completed.length, providerBatchSteps: batch.length, batchOutcome: 'unknown' } });
+                }
+                providerBatchDurationMs += performance.now() - startedAt;
+                providerBatchCount += 1;
+                providerBatchStepCount += batch.length;
+                completed.push(...result.completed);
+                if (result.failure) {
+                  throw new AssistantPluginError('PLUGIN_BROWSER_MUTATION_OUTCOME_UNKNOWN',
+                    `Browser batch stopped at step ${result.failure.index}; reconcile the exact session before any retry.`,
+                    { retryable: false, effectOutcome: 'outcome_unknown', details: { actionId: 'run_steps', failedIndex: result.failure.index,
+                      completedSteps: completed.length, stepAction: result.failure.action, providerBatchSteps: batch.length, batchOutcome: 'step_failed' } });
+                }
+                if (result.completed.length !== batch.length) {
+                  throw new AssistantPluginError('PLUGIN_BROWSER_MUTATION_OUTCOME_UNKNOWN',
+                    `Browser mutation batch returned an incomplete result from step ${index}; reconcile the exact session before any retry.`,
+                    { retryable: false, effectOutcome: 'outcome_unknown', details: { actionId: 'run_steps', batchStartIndex: index,
+                      completedSteps: completed.length, providerBatchSteps: batch.length, batchOutcome: 'incomplete' } });
+                }
+                index = nextIndex;
+                continue;
+              }
+            }
             const startedAt = performance.now();
             try {
               if (step.action === 'fill') await page.fill(step.selector, step.text!, { timeout: step.timeoutMs });
@@ -5161,11 +5210,14 @@ async function executeBrowserPluginActionInternal(
             }
             completed.push({ index, action: step.action, selector: step.selector,
               durationMs: Math.round((performance.now() - startedAt) * 10) / 10 });
+            index += 1;
           }
           await delay(browserExplicitPostActionWaitMs(input.args.post_action_wait_ms));
           return finalizeInteractiveAction(input.repoRoot, current, page, target, connection,
             'run_steps', `Completed ${completed.length} bounded browser steps.`,
-            { completedSteps: completed.length, steps: completed });
+            { completedSteps: completed.length, steps: completed,
+              ...(providerBatchCount > 0 ? { providerBatchCount, providerBatchStepCount,
+                providerBatchDurationMs: Math.round(providerBatchDurationMs * 10) / 10 } : {}) });
         }, { requireExistingResource: true });
       }
       case 'press': {

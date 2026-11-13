@@ -876,6 +876,64 @@ function selectorSource(selector: string, body: string): string {
   })()`;
 }
 
+function clickSource(selector: string): string {
+  return selectorSource(selector, `
+    if (element instanceof HTMLOptionElement) {
+      const selectElement = element.closest('select');
+      if (!(selectElement instanceof HTMLSelectElement)) throw new Error('Option is not attached to a select.');
+      if (element.disabled || selectElement.disabled) throw new Error('Option is disabled.');
+      if (!selectElement.multiple) {
+        const valueSetter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set;
+        if (valueSetter) valueSetter.call(selectElement, element.value);
+        else selectElement.value = element.value;
+      } else {
+        element.selected = true;
+      }
+      selectElement.dispatchEvent(new Event('input', { bubbles: true }));
+      selectElement.dispatchEvent(new Event('change', { bubbles: true }));
+      if (!Array.from(selectElement.selectedOptions).includes(element)) throw new Error('Option selection did not persist.');
+      return true;
+    }
+    if (typeof element.click !== "function") throw new Error("Element is not clickable.");
+    const rect = typeof element.getBoundingClientRect === 'function' ? element.getBoundingClientRect() : { left: 0, top: 0, width: 0, height: 0 };
+    const clientX = Number(rect.left || 0) + Number(rect.width || 0) / 2;
+    const clientY = Number(rect.top || 0) + Number(rect.height || 0) / 2;
+    const mouseInit = { bubbles: true, cancelable: true, composed: true, view: window, button: 0, buttons: 1, clientX, clientY };
+    if (typeof PointerEvent === 'function') {
+      element.dispatchEvent(new PointerEvent('pointerdown', { ...mouseInit, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
+    }
+    element.dispatchEvent(new MouseEvent('mousedown', mouseInit));
+    if (typeof element.focus === 'function') element.focus();
+    if (typeof PointerEvent === 'function') {
+      element.dispatchEvent(new PointerEvent('pointerup', { ...mouseInit, buttons: 0, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
+    }
+    element.dispatchEvent(new MouseEvent('mouseup', { ...mouseInit, buttons: 0 }));
+    element.click();
+    return true;
+  `);
+}
+
+function fillSource(selector: string, value: string): string {
+  return selectorSource(selector, `
+    if ('value' in element) {
+      const prototype = element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      const setter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
+      if (setter) setter.call(element, ${JSON.stringify(value)}); else element.value = ${JSON.stringify(value)};
+    } else if (element.isContentEditable) {
+      element.focus();
+      const selection = window.getSelection();
+      if (!selection) throw new Error('Contenteditable selection unavailable.');
+      const range = document.createRange();
+      range.selectNodeContents(element); selection.removeAllRanges(); selection.addRange(range);
+      if (!document.execCommand('insertText', false, ${JSON.stringify(value)})) throw new Error('Contenteditable insertion rejected.');
+      return true;
+    } else throw new Error('Element does not accept text input.');
+    element.dispatchEvent(new Event('input', { bubbles: true }));
+    element.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  `);
+}
+
 function keyEventSource(selector: string | undefined, keySpec: string): string {
   const parts = keySpec.split('+').filter(Boolean);
   const key = parts.at(-1) ?? keySpec;
@@ -1424,40 +1482,7 @@ export class MacOsAppleEventsPage {
   }
 
   async click(selector: string): Promise<void> {
-    await this.evaluate(selectorSource(selector, `
-      if (element instanceof HTMLOptionElement) {
-        const selectElement = element.closest('select');
-        if (!(selectElement instanceof HTMLSelectElement)) throw new Error('Option is not attached to a select.');
-        if (element.disabled || selectElement.disabled) throw new Error('Option is disabled.');
-        if (!selectElement.multiple) {
-          const valueSetter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set;
-          if (valueSetter) valueSetter.call(selectElement, element.value);
-          else selectElement.value = element.value;
-        } else {
-          element.selected = true;
-        }
-        selectElement.dispatchEvent(new Event('input', { bubbles: true }));
-        selectElement.dispatchEvent(new Event('change', { bubbles: true }));
-        if (!Array.from(selectElement.selectedOptions).includes(element)) throw new Error('Option selection did not persist.');
-        return true;
-      }
-      if (typeof element.click !== "function") throw new Error("Element is not clickable.");
-      const rect = typeof element.getBoundingClientRect === 'function' ? element.getBoundingClientRect() : { left: 0, top: 0, width: 0, height: 0 };
-      const clientX = Number(rect.left || 0) + Number(rect.width || 0) / 2;
-      const clientY = Number(rect.top || 0) + Number(rect.height || 0) / 2;
-      const mouseInit = { bubbles: true, cancelable: true, composed: true, view: window, button: 0, buttons: 1, clientX, clientY };
-      if (typeof PointerEvent === 'function') {
-        element.dispatchEvent(new PointerEvent('pointerdown', { ...mouseInit, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
-      }
-      element.dispatchEvent(new MouseEvent('mousedown', mouseInit));
-      if (typeof element.focus === 'function') element.focus();
-      if (typeof PointerEvent === 'function') {
-        element.dispatchEvent(new PointerEvent('pointerup', { ...mouseInit, buttons: 0, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
-      }
-      element.dispatchEvent(new MouseEvent('mouseup', { ...mouseInit, buttons: 0 }));
-      element.click();
-      return true;
-    `));
+    await this.evaluate(clickSource(selector));
   }
 
   async dblclick(selector: string): Promise<void> {
@@ -1473,24 +1498,7 @@ export class MacOsAppleEventsPage {
   }
 
   async fill(selector: string, value: string): Promise<void> {
-    await this.evaluate(selectorSource(selector, `
-      if ('value' in element) {
-        const prototype = element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-        const setter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
-        if (setter) setter.call(element, ${JSON.stringify(value)}); else element.value = ${JSON.stringify(value)};
-      } else if (element.isContentEditable) {
-        element.focus();
-        const selection = window.getSelection();
-        if (!selection) throw new Error('Contenteditable selection unavailable.');
-        const range = document.createRange();
-        range.selectNodeContents(element); selection.removeAllRanges(); selection.addRange(range);
-        if (!document.execCommand('insertText', false, ${JSON.stringify(value)})) throw new Error('Contenteditable insertion rejected.');
-        return true;
-      } else throw new Error('Element does not accept text input.');
-      element.dispatchEvent(new Event('input', { bubbles: true }));
-      element.dispatchEvent(new Event('change', { bubbles: true }));
-      return true;
-    `));
+    await this.evaluate(fillSource(selector, value));
   }
 
   async type(selector: string, text: string): Promise<void> {
@@ -1518,6 +1526,35 @@ export class MacOsAppleEventsPage {
 
   async press(selector: string, key: string): Promise<void> {
     await this.evaluate(keyEventSource(selector, key));
+  }
+
+  async runMutationSteps(
+    steps: Array<{ index: number; action: 'fill' | 'click' | 'press'; selector: string; text?: string; key?: string }>,
+  ): Promise<{
+    completed: Array<{ index: number; action: 'fill' | 'click' | 'press'; selector: string; durationMs: number }>;
+    failure?: { index: number; action: 'fill' | 'click' | 'press'; selector: string };
+  }> {
+    const operations = steps.map((step) => {
+      const source = step.action === 'fill'
+        ? fillSource(step.selector, step.text ?? '')
+        : step.action === 'click'
+          ? clickSource(step.selector)
+          : keyEventSource(step.selector, step.key ?? '');
+      return `{
+        const startedAt = performance.now();
+        try {
+          ${source};
+          completed.push({ index: ${step.index}, action: ${JSON.stringify(step.action)}, selector: ${JSON.stringify(step.selector)}, durationMs: Math.round((performance.now() - startedAt) * 10) / 10 });
+        } catch (error) {
+          return { completed, failure: { index: ${step.index}, action: ${JSON.stringify(step.action)}, selector: ${JSON.stringify(step.selector)} } };
+        }
+      }`;
+    }).join('\n');
+    return await this.evaluate(`(() => {
+      const completed = [];
+      ${operations}
+      return { completed };
+    })()`);
   }
 
   async selectOption(selector: string, values: string | string[]): Promise<unknown> {

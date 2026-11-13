@@ -1078,3 +1078,52 @@ test('interactive snapshot measures select text, caret clearance, label offset a
   }) as { elements: Array<Record<string, any>> };
   expect(native.elements[0]!.layout.review).toContain('select-caret-unmeasured');
 });
+
+
+describe('Native Browser mutation batching', () => {
+  test('runs contiguous fill, click and press steps in one exact-tab JavaScript evaluation', async () => {
+    const calls: Array<{ script: string; args: string[] }> = [];
+    const metadata = [
+      'false', 'https://example.com/', 'Example', '0', '0', '900', '600', '7', '9', 'false', 'false',
+    ].join(nativeSeparator);
+    const batchResult: {
+      completed: Array<{ index: number; action: 'fill' | 'click' | 'press'; selector: string; durationMs: number }>;
+    } = {
+      completed: [
+        { index: 0, action: 'fill', selector: '#task', durationMs: 0.2 },
+        { index: 1, action: 'click', selector: '#add', durationMs: 0.3 },
+        { index: 2, action: 'press', selector: '#task', durationMs: 0.1 },
+      ],
+    };
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin',
+      appExists: () => true,
+      processRunning: async () => true,
+      runAppleScript: async (script, args) => {
+        calls.push({ script, args });
+        if (script.includes('return (frontmost as text)')) return metadata;
+        return JSON.stringify({
+          ok: true,
+          value: batchResult,
+          page: { url: 'https://example.com/', title: 'Example' },
+        });
+      },
+    });
+
+    const { page } = await reattachMacOsBrowserOwnedPage('chrome', { windowId: '7', tabId: '9' }, 1_000);
+    const result = await page.runMutationSteps([
+      { index: 0, action: 'fill', selector: '#task', text: 'first' },
+      { index: 1, action: 'click', selector: '#add' },
+      { index: 2, action: 'press', selector: '#task', key: 'Enter' },
+    ]);
+
+    expect(result).toEqual(batchResult);
+    const evaluations = calls.filter((call) => call.script.includes('execute targetTab javascript javascriptSource'));
+    expect(evaluations).toHaveLength(1);
+    const source = evaluations[0]!.args[0]!;
+    expect(source.indexOf('document.querySelector("#task")')).toBeLessThan(source.indexOf('document.querySelector("#add")'));
+    expect(source).toContain("new Event('input', { bubbles: true })");
+    expect(source).toContain("new KeyboardEvent('keydown', init)");
+    expect(source).toContain('element.click()');
+  });
+});
