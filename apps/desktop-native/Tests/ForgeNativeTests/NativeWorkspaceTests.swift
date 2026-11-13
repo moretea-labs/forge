@@ -438,6 +438,21 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertNil(ForgeApiTurn.decodeEvent(Data("{}".utf8)))
     }
 
+    func testAgentGitDiffReviewScopeFileCountExcludesUntrackedFromStagedScope() {
+        let unstaged = AgentGitDiff(
+            repoId:"repo_a", checkoutId:"checkout_a", branch:"work/a", head:"abcdef",
+            staged:false, paths:[], nameOnly:["tracked.txt"], stat:"", patch:"", truncated:false,
+            untracked:["new.txt"]
+        )
+        let staged = AgentGitDiff(
+            repoId:"repo_a", checkoutId:"checkout_a", branch:"work/a", head:"abcdef",
+            staged:true, paths:[], nameOnly:["staged.txt"], stat:"", patch:"", truncated:false,
+            untracked:["new.txt"]
+        )
+        XCTAssertEqual(unstaged.reviewScopeFileCount,2)
+        XCTAssertEqual(staged.reviewScopeFileCount,1)
+    }
+
     @MainActor
     func testAgentGitDiffKeepsUntrackedOutsideReviewedPatchScope() throws {
         let payload = Data(#"{"repoId":"repo_a","checkoutId":"checkout_a","branch":"work/a","head":"abcdef","staged":false,"paths":[],"nameOnly":["tracked.txt"],"stat":"1 file changed","patch":"diff --git a/tracked.txt b/tracked.txt\n","truncated":false,"untracked":["new.txt"]}"#.utf8)
@@ -499,6 +514,39 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertTrue(NativeWorkspace.reviewedChangesMatchPaths(multi,paths:["b","a"]))
         XCTAssertFalse(NativeWorkspace.reviewedChangesMatchPaths(multi,paths:["a"]))
         XCTAssertFalse(NativeWorkspace.reviewedChangesMatchPaths(truncated,paths:["a"]))
+    }
+
+    func testReviewedChangesRequestRequiresExactRepositoryCheckoutAndStageScope() {
+        let snapshot = AgentGitDiff(
+            repoId:"repo_a", checkoutId:"checkout_a", branch:"work/a", head:"abcdef",
+            staged:true, paths:["a"], nameOnly:["a"], stat:"1 file changed",
+            patch:"diff --git a/a b/a\n", truncated:false
+        )
+        XCTAssertTrue(NativeWorkspace.reviewedChangesMatchRequest(
+            snapshot, repoId:"repo_a", checkoutId:"checkout_a", staged:true, paths:["a"]
+        ))
+        XCTAssertTrue(NativeWorkspace.agentChangesMatchContext(
+            snapshot, repoId:"repo_a", checkoutId:"checkout_a", staged:true
+        ))
+        XCTAssertFalse(NativeWorkspace.agentChangesMatchContext(
+            snapshot, repoId:"repo_b", checkoutId:"checkout_a", staged:true
+        ))
+        XCTAssertFalse(NativeWorkspace.agentChangesMatchContext(
+            snapshot, repoId:"repo_a", checkoutId:"checkout_b", staged:true
+        ))
+        XCTAssertFalse(NativeWorkspace.agentChangesMatchContext(
+            snapshot, repoId:"repo_a", checkoutId:"checkout_a", staged:false
+        ))
+
+        XCTAssertFalse(NativeWorkspace.reviewedChangesMatchRequest(
+            snapshot, repoId:"repo_b", checkoutId:"checkout_a", staged:true, paths:["a"]
+        ))
+        XCTAssertFalse(NativeWorkspace.reviewedChangesMatchRequest(
+            snapshot, repoId:"repo_a", checkoutId:"checkout_b", staged:true, paths:["a"]
+        ))
+        XCTAssertFalse(NativeWorkspace.reviewedChangesMatchRequest(
+            snapshot, repoId:"repo_a", checkoutId:"checkout_a", staged:false, paths:["a"]
+        ))
     }
 
     func testRetiredWorkIsNotANativeNavigationOrBridgeCapability() {

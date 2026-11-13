@@ -52,6 +52,9 @@ struct AgentGitDiff: Codable {
     let truncated: Bool
     var untracked: [String]? = nil
     var untrackedFiles: [String] { untracked ?? [] }
+    var reviewScopeFileCount: Int {
+        nameOnly.count + (staged ? 0 : untrackedFiles.count)
+    }
 }
 
 struct AgentLiveActivityEvent: Codable, Identifiable {
@@ -751,10 +754,6 @@ final class NativeWorkspace: ObservableObject {
     }
     var selectedReasoningOptions: [AgentReasoningOption] {
         selectedAgentModel?.supportedReasoningLevels ?? []
-    }
-    var changedFileCount: Int {
-        guard let changes = agentChanges else { return 0 }
-        return changes.nameOnly.count + changes.untrackedFiles.count
     }
     var visibleThreads: [ChatThread] {
         let needle = search.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2792,6 +2791,12 @@ final class NativeWorkspace: ObservableObject {
             return
         }
         guard !changesLoading else { return }
+        if let changes = agentChanges,
+           !Self.agentChangesMatchContext(
+               changes, repoId: targetRepoId, checkoutId: targetCheckoutId, staged: staged
+           ) {
+            agentChanges = nil
+        }
         changesLoading = true
         defer {
             if repoId == targetRepoId, checkoutId == targetCheckoutId {
@@ -2812,22 +2817,57 @@ final class NativeWorkspace: ObservableObject {
         }
     }
 
-    static func reviewedChangesMatchPaths(_ changes: AgentGitDiff, paths: [String]) -> Bool {
+    nonisolated static func reviewedChangesMatchPaths(_ changes: AgentGitDiff, paths: [String]) -> Bool {
         let requested = Set(paths.filter { !$0.isEmpty })
         return !requested.isEmpty && !changes.truncated
             && Set(changes.nameOnly) == requested
             && !changes.patch.isEmpty
     }
 
+    nonisolated static func agentChangesMatchContext(
+        _ changes: AgentGitDiff,
+        repoId: String,
+        checkoutId: String,
+        staged: Bool
+    ) -> Bool {
+        changes.repoId == repoId
+            && changes.checkoutId == checkoutId
+            && changes.staged == staged
+    }
+
+    nonisolated static func reviewedChangesMatchRequest(
+        _ changes: AgentGitDiff,
+        repoId: String,
+        checkoutId: String,
+        staged: Bool,
+        paths: [String]
+    ) -> Bool {
+        agentChangesMatchContext(
+            changes, repoId: repoId, checkoutId: checkoutId, staged: staged
+        ) && reviewedChangesMatchPaths(changes, paths: paths)
+    }
+
     func reviewAgentChanges(paths: [String], staged: Bool = false) async -> AgentGitDiff? {
+        guard let targetRepoId = repoId, let targetCheckoutId = checkoutId else {
+            self.error = "当前会话未绑定 repository / checkout。"
+            return nil
+        }
         do {
             let changes = try await loadAgentChanges(paths:paths,staged:staged)
-            guard Self.reviewedChangesMatchPaths(changes,paths:paths) else {
+            guard repoId == targetRepoId, checkoutId == targetCheckoutId else { return nil }
+            guard Self.reviewedChangesMatchRequest(
+                changes,
+                repoId: targetRepoId,
+                checkoutId: targetCheckoutId,
+                staged: staged,
+                paths: paths
+            ) else {
                 self.error = "当前文件复查快照与请求范围不一致。"
                 return nil
             }
             return changes
         } catch {
+            guard repoId == targetRepoId, checkoutId == targetCheckoutId else { return nil }
             self.error = error.localizedDescription
             return nil
         }

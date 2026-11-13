@@ -2080,9 +2080,15 @@ private struct AgentPane: View {
         .accessibilityIdentifier("agent.project")
     }
 
-    private var workspaceWorkingChangeCount: Int {
-        guard let changes = model.agentChanges, !changes.staged else { return 0 }
-        return changes.nameOnly.count + changes.untrackedFiles.count
+    private var workspaceReviewFileCount: Int {
+        model.agentChanges?.reviewScopeFileCount ?? 0
+    }
+
+    private var workspaceReviewSummary: String {
+        guard let changes = model.agentChanges else { return "尚未读取改动" }
+        let scope = changes.staged ? "已暂存" : "未暂存"
+        let count = changes.reviewScopeFileCount
+        return count > 0 ? "\(scope) \(count) 个文件" : "\(scope)范围无改动"
     }
 
     private var workspaceChangesControl: some View {
@@ -2095,8 +2101,8 @@ private struct AgentPane: View {
             HStack(spacing:5) {
                 Image(systemName:"doc.text.magnifyingglass")
                     .font(.system(size:9.5,weight:.medium))
-                if workspaceWorkingChangeCount > 0 {
-                    Text("\(workspaceWorkingChangeCount)")
+                if workspaceReviewFileCount > 0 {
+                    Text("\(workspaceReviewFileCount)")
                         .font(.system(size:9.5,weight:.semibold))
                         .monospacedDigit()
                 }
@@ -2110,11 +2116,9 @@ private struct AgentPane: View {
         }
         .buttonStyle(.plain)
         .disabled(model.checkoutId == nil)
-        .help(workspaceWorkingChangeCount > 0
-              ? "查看当前工作区的 \(workspaceWorkingChangeCount) 个未提交文件"
-              : "查看当前工作区的未提交改动")
+        .help("查看当前工作区改动：\(workspaceReviewSummary)")
         .accessibilityLabel("改动审查")
-        .accessibilityValue(workspaceWorkingChangeCount > 0 ? "\(workspaceWorkingChangeCount) 个未提交文件" : "未加载未提交文件数量")
+        .accessibilityValue(workspaceReviewSummary)
         .accessibilityIdentifier("agent.changes")
     }
 
