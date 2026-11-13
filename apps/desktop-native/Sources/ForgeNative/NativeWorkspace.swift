@@ -582,6 +582,7 @@ final class NativeWorkspace: ObservableObject {
     @Published var agentChanges: AgentGitDiff?
     @Published var changesLoading = false
     private(set) var agentChangesRequestGeneration = 0
+    private(set) var projectContextGeneration = 0
     @Published var liveActivity: AgentLiveActivity?
     // Transient model deltas. Only a finished turn becomes canonical thread history.
     @Published private(set) var streamedAnswer = ""
@@ -852,6 +853,7 @@ final class NativeWorkspace: ObservableObject {
         scrollToMessageId: String? = nil
     ) {
         let contextChanged = item.repoId != repoId || item.checkoutId != checkoutId
+        invalidateProjectContextRequests()
         conversationScrollRevision += 1
         let targetMessageId = scrollToMessageId.flatMap { target in
             item.messages.contains(where: { $0.id == target }) ? target : nil
@@ -1040,6 +1042,9 @@ final class NativeWorkspace: ObservableObject {
             return
         }
         guard let target = projects.first(where:{$0.repoId == id}) else { return }
+        // An explicit Zen project selection also supersedes an in-flight
+        // Agent checkout lookup, even when it reselects the current context.
+        invalidateProjectContextRequests()
         if repoId == id && (requestedCheckoutId == nil || checkoutId == requestedCheckoutId) {
             if page == .requirement {
                 Task { await loadPage() }
@@ -1091,10 +1096,14 @@ final class NativeWorkspace: ObservableObject {
         }
         let sourceThreadId = selectedThreadId
         let sourceProvider = selectedProvider
+        invalidateProjectContextRequests()
+        let requestGeneration = projectContextGeneration
         Task {
             do {
                 let result = try await ForgeBridge.request("read_project_repository",["repoId":id])
-                guard selectedThreadId == sourceThreadId, !busy else { return }
+                guard projectContextRequestIsCurrent(
+                    generation:requestGeneration,sourceThreadId:sourceThreadId
+                ) else { return }
                 let context = Self.repositoryCheckoutContext(
                     result,requestedCheckoutId:requestedCheckoutId
                 )
@@ -1114,6 +1123,9 @@ final class NativeWorkspace: ObservableObject {
                 newThread(provider:sourceProvider)
                 await loadRepositoryAccess(for:id)
             } catch {
+                guard projectContextRequestIsCurrent(
+                    generation:requestGeneration,sourceThreadId:sourceThreadId
+                ) else { return }
                 self.error = error.localizedDescription
             }
         }
@@ -2783,6 +2795,16 @@ final class NativeWorkspace: ObservableObject {
         let value = try await ForgeBridge.request("read_agent_git_diff",arguments)
         let bytes = try JSONSerialization.data(withJSONObject:value)
         return try JSONDecoder().decode(AgentGitDiff.self, from:bytes)
+    }
+
+    func invalidateProjectContextRequests() {
+        projectContextGeneration &+= 1
+    }
+
+    func projectContextRequestIsCurrent(generation: Int, sourceThreadId: String?) -> Bool {
+        projectContextGeneration == generation
+            && selectedThreadId == sourceThreadId
+            && !busy
     }
 
     func invalidateAgentChangesRequests(clearSnapshot: Bool) {

@@ -1278,6 +1278,29 @@ final class NativeWorkspaceTests: XCTestCase {
     }
 
     @MainActor
+    func testProjectContextSwitchInvalidatesPendingCheckoutResolutionWithoutChangingConversation() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        let sourceThreadId = model.selectedThreadId
+        let requestGeneration = model.projectContextGeneration
+
+        XCTAssertTrue(model.projectContextRequestIsCurrent(
+            generation:requestGeneration,sourceThreadId:sourceThreadId
+        ))
+
+        // Zen can change repository/checkout context without changing the
+        // selected Agent conversation. A pending Agent checkout lookup must
+        // still become stale when that happens.
+        model.invalidateProjectContextRequests()
+
+        XCTAssertEqual(model.selectedThreadId,sourceThreadId)
+        XCTAssertFalse(model.projectContextRequestIsCurrent(
+            generation:requestGeneration,sourceThreadId:sourceThreadId
+        ))
+    }
+
+    @MainActor
     func testPageTransitionClearsOnlyStalePageError() {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at:folder) }
