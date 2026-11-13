@@ -228,6 +228,29 @@ export async function closeTrackedNativeOwnedSession(
     });
   }
   const ref = { windowId: tab.windowId, tabId: tab.tabId };
+  if (browser.browserProduct === 'chrome') {
+    // The PID-bound Computer provider resolves this saved tab ID to its current
+    // window. Full browser inventory is unnecessary and can stall unrelated
+    // windows; prove both the exact ID and saved URL before closing anything.
+    let metadata: Awaited<ReturnType<typeof readResolvedMacOsBrowserOwnedTabMetadata>>;
+    try {
+      metadata = await readResolvedMacOsBrowserOwnedTabMetadata('chrome', ref, timeoutMs);
+    } catch (error) {
+      if (nativeBrowserApplicationNotRunning(error) || macOsBrowserPageHandleStale(error)) {
+        return { resourceClosed: false, resourceAlreadyMissing: true };
+      }
+      throw error;
+    }
+    if (!metadata.windowId || !metadata.tabId) {
+      throw new AssistantPluginError('PLUGIN_BROWSER_NATIVE_TAB_IDENTITY_UNPROVEN',
+        'Chrome did not return a complete exact tab identity; retaining session metadata.', { retryable: true });
+    }
+    if (metadata.tabId !== ref.tabId || !nativeTabMatchesSessionUrl(session, metadata.url)) {
+      return { resourceClosed: false, resourceAlreadyMissing: true };
+    }
+    await closeResolvedMacOsBrowserOwnedTab('chrome', { windowId: metadata.windowId, tabId: metadata.tabId }, timeoutMs);
+    return { resourceClosed: true, resourceAlreadyMissing: false };
+  }
   let inventory: Awaited<ReturnType<typeof listMacOsBrowserTabs>> | undefined;
   try {
     inventory = await listMacOsBrowserTabs(browser.browserProduct, nativeInventoryTimeoutMs(timeoutMs));

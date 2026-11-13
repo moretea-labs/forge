@@ -9,7 +9,7 @@ import {
 } from '../../src/runtime/plugins/browser-native-session-service';
 import type { BrowserSessionState } from '../../packages/protocols/browser/index';
 
-function nativeSession(): BrowserSessionState {
+function nativeSession(product: 'chrome' | 'vivaldi' = 'chrome'): BrowserSessionState {
   return {
     schemaVersion: 1,
     sessionId: 'browser-native-owned',
@@ -18,7 +18,7 @@ function nativeSession(): BrowserSessionState {
     updatedAt: '2026-09-20T00:00:00.000Z',
     browser: {
       provider: 'macos-apple-events',
-      browserProduct: 'chrome',
+      browserProduct: product,
       tab: {
         ownership: 'plugin_owned',
         windowId: '7',
@@ -33,7 +33,38 @@ afterEach(() => {
 });
 
 describe('native browser session cleanup', () => {
-  test('closes an inventory-proven plugin-owned tab with one inventory pass', async () => {
+  test('closes an exact Chrome tab without global inventory after verifying its URL and current window', async () => {
+    const separator = String.fromCharCode(30);
+    let inventoryCalls = 0;
+    let metadataCalls = 0;
+    let closeCalls = 0;
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin',
+      appExists: () => true,
+      processRunning: async () => true,
+      runAppleScript: async (script) => {
+        if (script.includes('set outputText to "false"')) {
+          inventoryCalls += 1;
+          throw new Error('global inventory unavailable');
+        }
+        if (script.includes('close targetTab')) {
+          closeCalls += 1;
+          return '';
+        }
+        metadataCalls += 1;
+        return ['false', 'https://chatgpt.com/', 'ChatGPT', '0', '0', '900', '600', '8', '9', 'false', 'false'].join(separator);
+      },
+    });
+
+    await expect(closeTrackedNativeOwnedSession(nativeSession(), 20_000)).resolves.toEqual({
+      resourceClosed: true,
+      resourceAlreadyMissing: false,
+    });
+    expect(inventoryCalls).toBe(0);
+    expect(metadataCalls).toBe(1);
+    expect(closeCalls).toBe(1);
+  });
+  test('closes an inventory-proven Vivaldi owned tab with one inventory pass', async () => {
     const separator = String.fromCharCode(30);
     const fieldSeparator = String.fromCharCode(31);
     let inventoryCalls = 0;
@@ -53,7 +84,7 @@ describe('native browser session cleanup', () => {
       },
     });
 
-    await expect(closeTrackedNativeOwnedSession(nativeSession(), 20_000)).resolves.toEqual({
+    await expect(closeTrackedNativeOwnedSession(nativeSession('vivaldi'), 20_000)).resolves.toEqual({
       resourceClosed: true,
       resourceAlreadyMissing: false,
     });
@@ -76,11 +107,11 @@ describe('native browser session cleanup', () => {
       },
     });
 
-    await expect(closeTrackedNativeOwnedSession(nativeSession(), 20_000)).rejects.toThrow('inventory stalled');
+    await expect(closeTrackedNativeOwnedSession(nativeSession('vivaldi'), 20_000)).rejects.toThrow('inventory stalled');
 
     const inspection = await inspectNativeOwnedSessions({
       repoRoot: '/tmp/unused-for-unverified-native-session',
-      savedSessions: [nativeSession()],
+      savedSessions: [nativeSession('vivaldi')],
       timeoutMs: 20_000,
       pruneDead: false,
     });
@@ -95,22 +126,46 @@ describe('native browser session cleanup', () => {
 
   test('does not close a tab when its reused native id no longer resolves to the saved URL', async () => {
     const separator = String.fromCharCode(30);
-    const fieldSeparator = String.fromCharCode(31);
     let closeCalls = 0;
     setMacOsBrowserRuntimeHooksForTest({
       platform: 'darwin',
       appExists: () => true,
       processRunning: async () => true,
       runAppleScript: async (script) => {
-        if (script.includes('set outputText to "false"')) {
-          return 'false' + separator + '7' + fieldSeparator + '9' + fieldSeparator + 'false'
-            + fieldSeparator + 'https://chatgpt.com/c/different-conversation' + fieldSeparator + 'ChatGPT';
+        if (script.includes('set outputText to "false"')) throw new Error('global inventory must not run');
+        if (script.includes('close targetTab')) {
+          closeCalls += 1;
+          return '';
         }
-        if (script.includes('close targetTab')) closeCalls += 1;
-        return '';
+        return ['false', 'https://chatgpt.com/c/different-conversation', 'ChatGPT',
+          '0', '0', '900', '600', '7', '9', 'false', 'false'].join(separator);
       },
     });
 
+    await expect(closeTrackedNativeOwnedSession(nativeSession(), 20_000)).resolves.toEqual({
+      resourceClosed: false,
+      resourceAlreadyMissing: true,
+    });
+    expect(closeCalls).toBe(0);
+  });
+
+  test('does not close a tab when exact Chrome metadata returns a different tab ID', async () => {
+    const separator = String.fromCharCode(30);
+    let closeCalls = 0;
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin',
+      appExists: () => true,
+      processRunning: async () => true,
+      runAppleScript: async (script) => {
+        if (script.includes('set outputText to "false"')) throw new Error('global inventory must not run');
+        if (script.includes('close targetTab')) {
+          closeCalls += 1;
+          return '';
+        }
+        return ['false', 'https://chatgpt.com/', 'ChatGPT',
+          '0', '0', '900', '600', '7', '10', 'false', 'false'].join(separator);
+      },
+    });
     await expect(closeTrackedNativeOwnedSession(nativeSession(), 20_000)).resolves.toEqual({
       resourceClosed: false,
       resourceAlreadyMissing: true,

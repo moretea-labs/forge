@@ -1035,7 +1035,7 @@ describe('browser session compatibility on Computer target authority', () => {
     });
     expect(closed).toMatchObject({ closed: true, resourceClosed: true });
     expect(closeCalls).toBe(1);
-    expect(inventoryCalls).toBe(2);
+    expect(inventoryCalls).toBe(1);
   });
 
   test('session-bound reads refuse to create a replacement for a missing native tab', async () => {
