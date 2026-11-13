@@ -409,6 +409,36 @@ describe('v8.1 repository runtime storage isolation', () => {
     }
   });
 
+  test('keeps ordinary Local Job listing from migrating repository Controller storage', async () => {
+    const fixture = repositoryFixture();
+    try {
+      const controllerStateSource = join(fixture.repoA.canonicalRoot, '.ai', 'harness', 'controller');
+      const marker = join(controllerStateSource, 'read-only-list.marker');
+      mkdirSync(controllerStateSource, { recursive: true });
+      writeFileSync(marker, 'preserve repository-owned state\n', 'utf-8');
+
+      const controllerStateTarget = join(
+        repositoryControllerRoot(fixture.controllerHome, fixture.repoA.repoId),
+        'controller',
+      );
+      const ctx = createMcpToolContext({
+        controllerHome: fixture.controllerHome,
+        profile: 'controller',
+      });
+      const result = await callMultiRepositoryTool(ctx, 'list_local_jobs', {
+        repo_id: fixture.repoA.repoId,
+        limit: 10,
+      });
+
+      expect(result.isError).not.toBe(true);
+      expect(lstatSync(controllerStateSource).isSymbolicLink()).toBe(false);
+      expect(readFileSync(marker, 'utf-8')).toBe('preserve repository-owned state\n');
+      expect(existsSync(controllerStateTarget)).toBe(false);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
   test('migrates non-Git legacy worktree metadata without blocking execution', () => {
     const fixture = repositoryFixture();
     try {

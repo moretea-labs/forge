@@ -9,7 +9,7 @@ import { ensureRepoPreferredControllerHome } from '../../src/effects/controller-
 import { bindRepositoryEntities } from '../../src/runtime/repositories/entity-migration';
 import { withControllerLockAsync } from '../../src/effects/controller-locks';
 import { listRepositories, registerRepository, repositorySummary, resolveRepositorySelection, selectRepositoryCheckout } from '../../src/runtime/repositories/registry';
-import { ensureRepositoryRuntimeStorage, type RepositoryRuntimeStorageReport } from '../../src/runtime/repositories/runtime-storage';
+import { ensureRepositoryRuntimeStorage, inspectRepositoryRuntimeStorage, type RepositoryRuntimeStorageReport } from '../../src/runtime/repositories/runtime-storage';
 import type { RepositoryRecord } from '../../src/core/repository/types';
 import {
   compactErrorMessage,
@@ -49,6 +49,11 @@ export interface MultiRepositoryMcpToolContext extends McpToolContext {
 }
 
 type ToolResult = CallToolResult;
+
+type RepositoryRuntimeStorageSummary = Pick<
+  RepositoryRuntimeStorageReport,
+  'readyForExecution' | 'usesStableRoot' | 'warnings'
+>;
 
 const EXECUTION_STORAGE_TOOLS = new Set([
   'begin_edit_session',
@@ -182,7 +187,7 @@ function errorResult(error: unknown): ToolResult {
 
 function compactEnvelopePayload(
   repository: RepositoryRecord,
-  runtimeStorage: RepositoryRuntimeStorageReport,
+  runtimeStorage: RepositoryRuntimeStorageSummary,
 ): { repoId: string; repository: Record<string, unknown>; runtimeStorage: Record<string, unknown> } {
   const summary = repositorySummary(repository);
   return {
@@ -205,7 +210,7 @@ function compactEnvelopePayload(
 function withRepositoryEnvelope(
   result: ToolResult,
   repository: RepositoryRecord,
-  runtimeStorage: RepositoryRuntimeStorageReport,
+  runtimeStorage: RepositoryRuntimeStorageSummary,
 ): ToolResult {
   const envelope = compactEnvelopePayload(repository, runtimeStorage);
   if (result.structuredContent && typeof result.structuredContent === 'object' && !Array.isArray(result.structuredContent)) {
@@ -353,15 +358,21 @@ export async function callMultiRepositoryTool(
       allowSoleRepository: true,
     });
     const scopedArgs = repositoryScopedToolArgs(name, args, repository);
-    const runtimeStorage = ensureRepositoryRuntimeStorage(repository, ctx.controllerHome);
-    if (EXECUTION_STORAGE_TOOLS.has(name) && !runtimeStorage.readyForExecution) {
+    const requiresRuntimeStorage = EXECUTION_STORAGE_TOOLS.has(name);
+    const runtimeStorage = requiresRuntimeStorage
+      ? ensureRepositoryRuntimeStorage(repository, ctx.controllerHome)
+      : inspectRepositoryRuntimeStorage(repository, ctx.controllerHome);
+    if (requiresRuntimeStorage && !runtimeStorage.readyForExecution) {
       throw new Error(`RUNTIME_STORAGE_NOT_READY: ${runtimeStorage.warnings.join('; ')}`);
     }
 
+    // Ordinary reads inspect Controller Home bindings only; they never move,
+    // merge, or link repository storage. Execution tools materialize bindings
+    // before any durable state can be written.
     // Legacy entity migration belongs to writes/registration, never to the
-    // ordinary read hot path (search / read / list / context). Only mutation
-    // tools rebind entities so newly created issues/tasks/sessions stay bound.
-    // Historical entity binding is independent of the physical edit lock.
+    // ordinary read hot path. Only mutation tools rebind entities so newly
+    // created issues/tasks/sessions stay bound. Entity binding is independent
+    // of the physical edit lock.
     const rebindEntities = EXECUTION_STORAGE_TOOLS.has(name) || name === 'configure_github_plugin';
     if (rebindEntities) bindRepositoryEntities(repository);
     const scopedContext: McpToolContext = {
