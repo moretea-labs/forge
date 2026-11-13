@@ -455,9 +455,7 @@ struct AgentRemoteImageView: View {
     }
 
     private var remoteURL: URL? {
-        guard let url = URL(string: source), let scheme = url.scheme?.lowercased(),
-              ["http", "https"].contains(scheme), url.host != nil else { return nil }
-        return url
+        validatedRemoteImageURL(source)
     }
 
     var body: some View {

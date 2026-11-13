@@ -2012,6 +2012,12 @@ extension NativeWorkspaceTests {
         ])
         let localImage = AgentMessageBlock.parse("![secret](file:///Users/test/private.png)")
         XCTAssertEqual(localImage, [.markdown("![secret](file:///Users/test/private.png)")])
+        let credentialedImage = AgentMessageBlock.parse("![secret](https://user:secret@example.com/private.png)")
+        XCTAssertEqual(credentialedImage, [.markdown("![secret](https://user:secret@example.com/private.png)")])
+        let emptyUserInfo = AgentMessageBlock.parse("![secret](https://@example.com/private.png)")
+        XCTAssertEqual(emptyUserInfo, [.markdown("![secret](https://@example.com/private.png)")])
+        XCTAssertNil(validatedRemoteImageURL("https://user:secret@example.com/private.png"))
+        XCTAssertEqual(validatedRemoteImageURL("https://example.com/chart.png")?.host, "example.com")
         let fenced = AgentMessageBlock.parse("~~~md\n![chart](https://example.com/image.png)\n~~~")
         XCTAssertEqual(fenced, [.code(language:"md",text:"![chart](https://example.com/image.png)")])
     }

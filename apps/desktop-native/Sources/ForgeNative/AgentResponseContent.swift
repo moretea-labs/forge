@@ -1,5 +1,17 @@
 import Foundation
 
+/// The single URL policy for model-provided remote image resources.
+/// Embedded userinfo is rejected so a Markdown image cannot smuggle credentials
+/// into a URLSession request.
+func validatedRemoteImageURL(_ value: String) -> URL? {
+    guard let components = URLComponents(string: value),
+          let scheme = components.scheme?.lowercased(),
+          ["https", "http"].contains(scheme),
+          let host = components.host, !host.isEmpty,
+          components.user == nil, components.password == nil else { return nil }
+    return components.url
+}
+
 /// Pure presentation parsing; persisted assistant messages remain raw text.
 struct AgentListItem: Equatable {
     let marker: String
@@ -131,8 +143,7 @@ enum AgentMessageBlock: Equatable {
         let label = String(remainder[..<separator.lowerBound])
         let urlText = String(remainder[separator.upperBound..<value.index(before: value.endIndex)])
         guard label.count <= 180, !urlText.contains(where: \.isWhitespace),
-              let url = URL(string: urlText), let scheme = url.scheme?.lowercased(),
-              ["https", "http"].contains(scheme), url.host != nil else { return nil }
+              validatedRemoteImageURL(urlText) != nil else { return nil }
         return (label, urlText)
     }
 
