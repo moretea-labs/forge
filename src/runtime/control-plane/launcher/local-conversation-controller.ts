@@ -117,6 +117,7 @@ export interface LocalConversationSendInput {
   providerSessionId?: string;
   prompt: string;
   repoId?: string;
+  checkoutId?: string;
   model?: string;
   reasoningEffort?: string;
   imagePaths?: string[];
@@ -363,13 +364,16 @@ function localConversationCwd(): string {
   return root;
 }
 
-export function conversationPrompt(prompt: string, repoId?: string): string {
+export function conversationPrompt(prompt: string, repoId?: string, checkoutId?: string): string {
+  const repositoryInstructions = repoId
+    ? checkoutId
+      ? `Attached repository: ${repoId}; selected checkout: ${checkoutId}. Pass both repo_id=${repoId} and checkout_id=${checkoutId} to every Forge capability that requires repository scope. Before source edits, retrieve current applicable repository guidance through rh_context; if a UI/design task has no known source path yet, start with known_paths=["AGENTS.md"], then expand to relevant module guidance and source. For UI tasks, use actual-rendered geometry and screenshot acceptance for alignment, row/column spacing, control text/icon inset, overflow, safe areas, responsiveness, and readable states; reject unnecessary nested boxes/borders/shadows. Report failed or untested cases instead of accepting a build or outer-rectangle check alone. Apply current product requirements and explicit user corrections ahead of historical learning. Retrieval gaps are not evidence of compliance.`
+      : `Attached repository: ${repoId}, but no exact checkout is attached. Do not call repository-scoped Forge capabilities.`
+    : 'No repository is attached. Do not guess a repository identity.';
   return [
     'You are the Forge Desktop local controller.',
     'Use the injected Forge MCP capabilities for repository, Runtime, and other Forge operations. Work and ControllerRound are retired and must never be created. Create Requirement, Plan, Schedule, or Workflow state only when the user explicitly requests that durable context or trigger.',
-    repoId
-      ? `Attached repository: ${repoId}. Pass repo_id=${repoId} to Forge capabilities that require repository scope. Before source edits, retrieve current applicable repository guidance through rh_context; if a UI/design task has no known source path yet, start with known_paths=["AGENTS.md"], then expand to relevant module guidance and source. For UI tasks, use actual-rendered geometry and screenshot acceptance for alignment, row/column spacing, control text/icon inset, overflow, safe areas, responsiveness, and readable states; reject unnecessary nested boxes/borders/shadows. Report failed or untested cases instead of accepting a build or outer-rectangle check alone. Apply current product requirements and explicit user corrections ahead of historical learning. Retrieval gaps are not evidence of compliance.`
-      : 'No repository is attached. Do not guess a repository identity.',
+    repositoryInstructions,
     '',
     prompt,
   ].join('\n');
@@ -635,10 +639,14 @@ export async function sendLocalConversation(input: LocalConversationSendInput): 
   const prompt = input.prompt.trim();
   const providerSessionId = input.providerSessionId?.trim();
   const repoId = input.repoId?.trim();
+  const checkoutId = input.checkoutId?.trim();
   if (!LOCAL_CONVERSATION_ID.test(conversationId)) throw new Error('LOCAL_CONVERSATION_ID_INVALID');
   if (!prompt || prompt.length > LOCAL_CONVERSATION_MAX_PROMPT_CHARS) throw new Error('LOCAL_CONVERSATION_PROMPT_INVALID');
   if (providerSessionId && !LOCAL_CONVERSATION_ID.test(providerSessionId)) throw new Error('LOCAL_CONVERSATION_PROVIDER_SESSION_INVALID');
   if (repoId && repoId.length > 256) throw new Error('LOCAL_CONVERSATION_REPOSITORY_INVALID');
+  if (checkoutId && checkoutId.length > 256) throw new Error('LOCAL_CONVERSATION_CHECKOUT_INVALID');
+  if (repoId && !checkoutId) throw new Error('LOCAL_CONVERSATION_CHECKOUT_REQUIRED');
+  if (!repoId && checkoutId) throw new Error('LOCAL_CONVERSATION_REPOSITORY_REQUIRED');
 
   const imagePaths = validateLocalConversationImagePaths(conversationId, input.imagePaths);
   const providerArgs = buildLocalConversationProviderArgs(input.model, input.reasoningEffort, imagePaths);
@@ -648,7 +656,7 @@ export async function sendLocalConversation(input: LocalConversationSendInput): 
   const bootstrap = resolveProviderMcpBootstrap(input.controllerHome, 'codex', `local-${conversationId}`);
   const invocation = buildCodexControllerInvocation({
     executable,
-    prompt: conversationPrompt(prompt, repoId),
+    prompt: conversationPrompt(prompt, repoId, checkoutId),
     mcpBootstrap: bootstrap,
     sandbox: 'read-only',
     // The isolated local-conversation cwd is intentionally not a Git checkout.
