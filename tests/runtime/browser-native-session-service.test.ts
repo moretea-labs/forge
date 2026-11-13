@@ -124,6 +124,42 @@ describe('native browser session cleanup', () => {
     expect(observedTimeouts).toEqual([3_000, 3_000]);
   });
 
+  test('inspects native session liveness without a redundant foreground metadata probe', async () => {
+    const separator = String.fromCharCode(30);
+    const fieldSeparator = String.fromCharCode(31);
+    let inventoryCalls = 0;
+    let foregroundMetadataCalls = 0;
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin',
+      appExists: () => true,
+      processRunning: async () => true,
+      runAppleScript: async (script) => {
+        if (script.includes('set outputText to "false"')) {
+          inventoryCalls += 1;
+          return 'false' + separator + '7' + fieldSeparator + '9' + fieldSeparator + 'false'
+            + fieldSeparator + 'https://chatgpt.com/' + fieldSeparator + 'ChatGPT';
+        }
+        foregroundMetadataCalls += 1;
+        return '';
+      },
+    });
+
+    const inspection = await inspectNativeOwnedSessions({
+      repoRoot: '/tmp/unused-for-native-session-liveness',
+      savedSessions: [nativeSession('vivaldi')],
+      timeoutMs: 20_000,
+      pruneDead: false,
+    });
+
+    expect(inspection.liveCount).toBe(1);
+    expect(inspection.items.get('browser-native-owned')).toMatchObject({
+      liveness: 'live',
+      evidence: 'native_tab_live',
+    });
+    expect(inventoryCalls).toBe(1);
+    expect(foregroundMetadataCalls).toBe(0);
+  });
+
   test('does not close a tab when its reused native id no longer resolves to the saved URL', async () => {
     const separator = String.fromCharCode(30);
     let closeCalls = 0;

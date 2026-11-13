@@ -99,7 +99,9 @@ export async function inspectNativeOwnedSessions(input: {
     let inventory = inventories.get(product);
     if (!inventory) {
       try {
-        inventory = await listMacOsBrowserTabs(product, nativeInventoryTimeoutMs(timeoutMs));
+        // Liveness only needs exact tab identity and URL; frontmost state is unrelated.
+        // Skip its separate Apple Event so listing/reconciliation performs one native inventory call per product.
+        inventory = await listMacOsBrowserTabs(product, nativeInventoryTimeoutMs(timeoutMs), { correctFrontmost: false });
       } catch (error) {
         inventory = error instanceof Error ? error : new Error(String(error));
       }
