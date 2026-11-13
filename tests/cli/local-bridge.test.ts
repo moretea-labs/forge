@@ -26,8 +26,10 @@ import { createIssue, getIssue, updateTask } from "../../src/cli/controller/issu
 import { beginEditSession, applyEditOperations } from "../../src/runtime/editing/edit-session";
 import { getToolPolicy } from '../../src/runtime/control-plane/tool-policy';
 import {
-  getLocalBridgeJob,
   cancelLocalBridgeJob,
+  dispatchLocalBridgeJob,
+  getLocalBridgeJob,
+  getLocalBridgeJobEvents,
   listLocalBridgeJobs,
   reconcileLocalBridgeJobs,
 } from "../../src/cli/local-bridge/job-store";
@@ -184,6 +186,35 @@ describe("Local Execution Bridge", () => {
       expect(response.status).toBe(410);
       expect(await response.json()).toMatchObject({ error: 'LEGACY_CONTROL_PLANE_MUTATION_RETIRED' });
     }
+  });
+
+  test("retires an approved historical Local Bridge Job instead of dispatching it", () => {
+    const root = repo();
+    const jobId = "historical-approved-job";
+    const createdAt = new Date().toISOString();
+    const jobDirectory = join(root, ".ai/harness/local-jobs", jobId);
+    mkdirSync(jobDirectory, { recursive: true });
+    writeFileSync(join(jobDirectory, "job.json"), `${JSON.stringify({
+      schemaVersion: 1,
+      jobId,
+      action: "repository-command",
+      payload: {},
+      requestedBy: "test",
+      approval: "auto",
+      status: "approved",
+      createdAt,
+      updatedAt: createdAt,
+    })}\n`);
+
+    const retired = dispatchLocalBridgeJob(root, jobId);
+    expect(retired.status).toBe("failed");
+    expect(retired.error).toContain("LOCAL_BRIDGE_JOB_RETIRED");
+    expect(getLocalBridgeJobEvents(root, jobId).at(-1)).toMatchObject({
+      type: "job_failed",
+      data: { legacyDispatchRetired: true },
+    });
+    expect(listLocalBridgeJobs(root, 10)).toMatchObject([{ jobId, status: "failed" }]);
+    expect(reconcileLocalBridgeJobs(root)).toMatchObject({ scanned: 0, active: 0, terminalized: 0 });
   });
 
   test("starts successfully when Local Job runtime storage is already linked", async () => {
