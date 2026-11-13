@@ -11,6 +11,7 @@ import {
 import { computerPluginAdapter } from '../../src/runtime/plugins/computer-registration';
 import {
   invalidateMacOsBrowserPageHandles,
+  listMacOsBrowserTabs,
   type MacOsBrowserProduct,
 } from '../../src/runtime/plugins/browser-macos-bridge';
 import { callBrowserAutomationBroker } from '../../src/runtime/plugins/browser-automation-service';
@@ -29,10 +30,18 @@ const requestedProducts = (process.env.FORGE_BROWSER_V3_PRODUCTS ?? 'chrome,viva
 const requireCompetingForeground = process.env.FORGE_BROWSER_V3_REQUIRE_COMPETING_FOREGROUND === '1';
 const requireDomAll = process.env.FORGE_BROWSER_V3_REQUIRE_DOM_ALL === '1';
 const samplesPerProduct = Math.max(3, Math.min(Number(process.env.FORGE_BROWSER_V3_SAMPLES ?? 5), 20));
-const openSessions = new Set<string>();
+type OwnedTabRef = { windowId: string; tabId: string };
+type OpenSession = { owner: 'browser' | 'computer'; product: MacOsBrowserProduct; ref?: OwnedTabRef };
+const openSessions = new Map<string, OpenSession>();
+const attemptedSessionCloses = new Set<string>();
+const attemptedBrokerTabCloses = new Set<string>();
+const cleanupReceipts: Array<Record<string, unknown>> = [];
+const cleanupFailures: Array<Record<string, unknown>> = [];
 let safeProviderRetries = 0;
-const brokerOwnedTabs: Array<{ product: MacOsBrowserProduct; ref: { windowId: string; tabId: string } }> = [];
+let testCompleted = false;
+const brokerOwnedTabs: Array<{ product: MacOsBrowserProduct; ref: OwnedTabRef }> = [];
 let server: ReturnType<typeof Bun.serve> | undefined;
+const report: Record<string, unknown> = { schemaVersion: 1, source: 'current-worktree', products: {} };
 
 interface BrokerMetadata {
   frontmost: boolean;
@@ -229,12 +238,57 @@ async function computerAction(
   throw new Error('Computer action retry loop exhausted unexpectedly.');
 }
 
-async function closeSession(sessionId: string): Promise<void> {
-  if (!openSessions.delete(sessionId)) return;
-  await action('close_session', { session_id: sessionId }).catch(() => undefined);
+function cleanupErrorSummary(error: unknown): Record<string, unknown> {
+  const value = error as { code?: unknown; effectOutcome?: unknown; retryable?: unknown };
+  return { code: value.code ?? null, effectOutcome: value.effectOutcome ?? null, retryable: value.retryable ?? null, message: (error instanceof Error ? error.message : String(error)).slice(0, 500) };
 }
 
-async function createBrokerTab(product: MacOsBrowserProduct, url: string): Promise<{ windowId: string; tabId: string }> {
+async function closeOwnedSession(sessionId: string): Promise<Record<string, unknown>> {
+  const owner = openSessions.get(sessionId);
+  if (!owner) return { closed: true, alreadyClosed: true };
+  if (attemptedSessionCloses.has(sessionId)) throw new Error(`Refusing to replay an attempted close for ${sessionId}.`);
+  attemptedSessionCloses.add(sessionId);
+  let result: Record<string, unknown> | undefined;
+  let actionError: unknown;
+  try {
+    result = owner.owner === 'computer'
+      ? await computerAction('close_session', { session_id: sessionId }, { phase: 'cleanup.close_session' })
+      : await action('close_session', { session_id: sessionId }, 'cleanup.close_session');
+  } catch (error) {
+    actionError = error;
+  }
+  const providerClosed = result?.closed === true && (result.resourceClosed === true || result.resourceAlreadyMissing === true || result.preservedUserOwnedTab === true);
+  if (actionError || !providerClosed) {
+    let verifiedAbsent = false;
+    let inventoryError: unknown;
+    if (owner.ref) {
+      try {
+        const inventory = await listMacOsBrowserTabs(owner.product, 10_000, { correctFrontmost: false });
+        verifiedAbsent = !inventory.tabs.some((tab) => tab.windowId === owner.ref!.windowId && tab.tabId === owner.ref!.tabId);
+      } catch (error) {
+        inventoryError = error;
+      }
+    }
+    if (verifiedAbsent) {
+      cleanupReceipts.push({ kind: 'session', sessionId, owner: owner.owner, closeActionOutcome: actionError ? cleanupErrorSummary(actionError) : 'postcondition_unproven', reconciledByInventory: true, verifiedAbsent: true });
+      openSessions.delete(sessionId);
+      return { closed: true, resourceClosed: true, reconciledByInventory: true };
+    }
+    const failure = {
+      kind: 'session', sessionId, owner: owner.owner,
+      ...(actionError ? cleanupErrorSummary(actionError) : { code: 'COMPUTER_SESSION_CLOSE_POSTCONDITION_UNPROVEN', effectOutcome: 'outcome_unknown', retryable: false, message: 'Provider did not prove owned session resource closure.' }),
+      reconciliation: inventoryError ? cleanupErrorSummary(inventoryError) : owner.ref ? 'exact_owned_tab_still_present' : 'exact_owned_tab_ref_unavailable',
+    };
+    cleanupFailures.push(failure);
+    throw actionError ?? new Error('Provider did not prove owned session resource closure.');
+  }
+  const closedResult = result as Record<string, unknown>;
+  cleanupReceipts.push({ kind: 'session', sessionId, owner: owner.owner, closed: true, resourceClosed: closedResult.resourceClosed === true, resourceAlreadyMissing: closedResult.resourceAlreadyMissing === true, preservedUserOwnedTab: closedResult.preservedUserOwnedTab === true });
+  openSessions.delete(sessionId);
+  return closedResult;
+}
+
+async function createBrokerTab(product: MacOsBrowserProduct, url: string): Promise<OwnedTabRef> {
   const created = await brokerAction({ action: 'create_tab', product, url }, 15_000, `fixture.create_tab.${product}`);
   const [legacyWindowId, legacyTabId] = String(created.value ?? '').split(separator);
   const structuredRef = created.ref as Record<string, unknown> | undefined;
@@ -251,10 +305,32 @@ async function createBrokerTab(product: MacOsBrowserProduct, url: string): Promi
   return ref;
 }
 
-async function closeBrokerTab(product: MacOsBrowserProduct, ref: { windowId: string; tabId: string }): Promise<void> {
+async function closeBrokerTab(product: MacOsBrowserProduct, ref: OwnedTabRef): Promise<void> {
+  const key = `${product}:${ref.windowId}:${ref.tabId}`;
+  if (attemptedBrokerTabCloses.has(key)) throw new Error(`Refusing to replay an attempted close for ${key}.`);
+  attemptedBrokerTabCloses.add(key);
   const index = brokerOwnedTabs.findIndex((entry) => entry.product === product && entry.ref.windowId === ref.windowId && entry.ref.tabId === ref.tabId);
-  if (index >= 0) brokerOwnedTabs.splice(index, 1);
-  await brokerAction({ action: 'close_tab', product, ref }, 10_000, `fixture.close_tab.${product}`).catch(() => undefined);
+  let closeError: unknown;
+  let verifiedAbsent = false;
+  try {
+    try { await brokerAction({ action: 'close_tab', product, ref }, 10_000, `fixture.close_tab.${product}`); } catch (error) { closeError = error; }
+    let inventory;
+    try { inventory = await listMacOsBrowserTabs(product, 10_000, { correctFrontmost: false }); }
+    catch (error) {
+      cleanupFailures.push({ kind: 'tab', product, ...ref, closeActionError: closeError ? cleanupErrorSummary(closeError) : null, verificationError: cleanupErrorSummary(error), verifiedAbsent: false });
+      throw error;
+    }
+    const stillPresent = inventory.tabs.some((tab) => tab.windowId === ref.windowId && tab.tabId === ref.tabId);
+    if (stillPresent) {
+      const error = closeError ?? new Error(`Owned tab ${key} remains after close_tab.`);
+      cleanupFailures.push({ kind: 'tab', product, ...ref, ...(closeError ? cleanupErrorSummary(closeError) : { code: 'BROWSER_OWNED_TAB_CLOSE_POSTCONDITION_FAILED', effectOutcome: 'failed', retryable: false }), verifiedAbsent: false });
+      throw error;
+    }
+    verifiedAbsent = true;
+    cleanupReceipts.push({ kind: 'tab', product, ...ref, closeActionOutcome: closeError ? cleanupErrorSummary(closeError) : 'succeeded', verifiedAbsent: true });
+  } finally {
+    if (verifiedAbsent && index >= 0) brokerOwnedTabs.splice(index, 1);
+  }
 }
 
 async function waitForExactUrl(product: MacOsBrowserProduct, ref: { windowId: string; tabId: string }, predicate: (url: string) => boolean): Promise<BrokerMetadata> {
@@ -317,7 +393,7 @@ try {
 
     const userBefore = await productMetadata(product);
     const createIsolationSession = async (sessionId: string) => {
-      openSessions.add(sessionId);
+      openSessions.set(sessionId, { owner: 'browser', product });
       const created = await action('create_session', {
         session_id: sessionId,
         url: one,
@@ -327,7 +403,9 @@ try {
         extract_text: false,
       });
       assert.equal(resultSessionId(created), sessionId, `${product} concurrent session identity was aliased`);
-      return { sessionId, ref: resultTabRef(created) };
+      const ref = resultTabRef(created);
+      openSessions.set(sessionId, { owner: 'browser', product, ref });
+      return { sessionId, ref };
     };
     const isolationA = await createIsolationSession(`browser-v3-isolation-a-${product}`);
     const isolationB = await createIsolationSession(`browser-v3-isolation-b-${product}`);
@@ -346,8 +424,7 @@ try {
     assert.deepEqual(resultTabRef(reopenedA), isolationA.ref, `${product} session A lost its exact tab binding`);
     assert.deepEqual(resultTabRef(reopenedB), isolationB.ref, `${product} session B lost its exact tab binding`);
 
-    const closedIsolationA = await action('close_session', { session_id: isolationA.sessionId });
-    openSessions.delete(isolationA.sessionId);
+    const closedIsolationA = await closeOwnedSession(isolationA.sessionId);
     assert.equal(closedIsolationA.resourceClosed, true, `${product} session A did not close its own tab`);
     const [survivingB, survivingThird] = await Promise.all([
       action('open_page', { session_id: isolationB.sessionId, url: one }),
@@ -356,8 +433,7 @@ try {
     assert.deepEqual(resultTabRef(survivingB), isolationB.ref, `${product} closing session A disturbed session B`);
     assert.deepEqual(resultTabRef(survivingThird), isolationThird.ref, `${product} closing session A disturbed the third session`);
     for (const entry of [isolationB, isolationThird]) {
-      const closed = await action('close_session', { session_id: entry.sessionId });
-      openSessions.delete(entry.sessionId);
+      const closed = await closeOwnedSession(entry.sessionId);
       assert.equal(closed.resourceClosed, true, `${product} session ${entry.sessionId} did not close its own tab`);
     }
     assertActiveUserTabPreserved(product, userBefore, await productMetadata(product), 'concurrent session isolation');
@@ -371,17 +447,19 @@ try {
 
     if (requireCompetingForeground) assert.equal(userBefore.frontmost, false, `${product} must start behind a competing foreground app`);
 
+    const replacementProbeSessionId = `browser-v3-replacement-probe-${product}`;
+    openSessions.set(replacementProbeSessionId, { owner: 'browser', product });
     const replacementProbe = await action('create_session', {
-      session_id: `browser-v3-replacement-probe-${product}`,
+      session_id: replacementProbeSessionId,
       url: one,
       browser_mode: 'attach_preferred',
       native_browser_candidates: [product],
       cdp_attach_fallback: 'fail_closed',
       extract_text: false,
     });
-    const replacementProbeSessionId = resultSessionId(replacementProbe);
-    openSessions.add(replacementProbeSessionId);
+    assert.equal(resultSessionId(replacementProbe), replacementProbeSessionId);
     const replacementProbeOriginalRef = resultTabRef(replacementProbe);
+    openSessions.set(replacementProbeSessionId, { owner: 'browser', product, ref: replacementProbeOriginalRef });
     const replacementReached = await action('open_page', {
       session_id: replacementProbeSessionId,
       url: drifted,
@@ -407,8 +485,7 @@ try {
     }
     const replacementAfterMismatch = await exactMetadata(product, replacementProbeRef);
     assert.equal(replacementAfterMismatch.url, drifted, `${product} failed replacement mutated the authoritative tab URL`);
-    const replacementProbeClosed = await action('close_session', { session_id: replacementProbeSessionId });
-    openSessions.delete(replacementProbeSessionId);
+    const replacementProbeClosed = await closeOwnedSession(replacementProbeSessionId);
     assert.equal(replacementProbeClosed.closed, true);
     assert.equal(replacementProbeClosed.resourceClosed, true);
     let authoritativeRefStillExists = true;
@@ -421,7 +498,10 @@ try {
     assertActiveUserTabPreserved(product, userBefore, await productMetadata(product), 'replacement probe cleanup');
 
     const createStarted = performance.now();
+    const sessionId = `browser-v3-primary-${product}`;
+    openSessions.set(sessionId, { owner: 'browser', product });
     const opened = await action('create_session', {
+      session_id: sessionId,
       url: one,
       browser_mode: 'attach_preferred',
       native_browser_candidates: [product],
@@ -430,9 +510,9 @@ try {
     });
     const createMs = performance.now() - createStarted;
     assert.equal(opened.provider, 'macos-apple-events');
-    const sessionId = resultSessionId(opened);
-    openSessions.add(sessionId);
+    assert.equal(resultSessionId(opened), sessionId);
     const ref = resultTabRef(opened);
+    openSessions.set(sessionId, { owner: 'browser', product, ref });
     assertActiveUserTabPreserved(product, userBefore, await productMetadata(product), 'create_session');
 
     let initialText: Record<string, unknown> | undefined;
@@ -442,9 +522,8 @@ try {
       const code = String((error as { code?: unknown }).code ?? '');
       if (code !== 'PLUGIN_BROWSER_JAVASCRIPT_PERMISSION_REQUIRED' || requireDomAll) throw error;
       const closedStarted = performance.now();
-      const closed = await action('close_session', { session_id: sessionId });
+      const closed = await closeOwnedSession(sessionId);
       const closeMs = performance.now() - closedStarted;
-      openSessions.delete(sessionId);
       assert.equal(closed.closed, true);
       assert.equal(closed.resourceClosed, true);
       const userAfter = await productMetadata(product);
@@ -472,7 +551,10 @@ try {
 
     // Keep the existing Browser lifecycle suite intact; measure the public Computer
     // adapter on its own plugin-owned tab so its native-only policy is exercised.
+    const computerSessionId = `computer-v3-primary-${product}`;
+    openSessions.set(computerSessionId, { owner: 'computer', product });
     const computerOpened = await computerAction('create_session', {
+      session_id: computerSessionId,
       url: one,
       browser_mode: 'attach_preferred',
       native_browser_candidates: [product],
@@ -480,9 +562,9 @@ try {
       extract_text: false,
     });
     assert.equal(computerOpened.provider, 'macos-apple-events');
-    const computerSessionId = resultSessionId(computerOpened);
-    openSessions.add(computerSessionId);
+    assert.equal(resultSessionId(computerOpened), computerSessionId);
     const computerRef = resultTabRef(computerOpened);
+    openSessions.set(computerSessionId, { owner: 'computer', product, ref: computerRef });
     assert.notDeepEqual(computerRef, ref, 'Computer batch fixture must use its own exact tab');
     assert.equal((await exactMetadata(product, computerRef)).url, one);
     assertActiveUserTabPreserved(product, userBefore, await productMetadata(product), 'Computer create_session');
@@ -583,10 +665,7 @@ try {
     });
     const reconciledText = String(reconciled.text ?? '');
     assert.equal(reconciledText.split(unknownMarker + ':high').length - 1, 1, 'unknown mutation must be reconciled, never replayed');
-    const computerClosed = await computerAction('close_session', { session_id: computerSessionId }, {
-      phase: 'native_batch.close_session', trace: unknownOutcomeRequestTrace,
-    });
-    openSessions.delete(computerSessionId);
+    const computerClosed = await closeOwnedSession(computerSessionId);
     assert.equal(computerClosed.closed, true);
     assert.equal(computerClosed.resourceClosed, true);
     assertActiveUserTabPreserved(product, userBefore, await productMetadata(product), 'Computer close_session');
@@ -623,9 +702,8 @@ try {
     assertActiveUserTabPreserved(product, userBefore, await productMetadata(product), 'failed replacement postcondition');
 
     const closedStarted = performance.now();
-    const closed = await action('close_session', { session_id: sessionId });
+    const closed = await closeOwnedSession(sessionId);
     const closeMs = performance.now() - closedStarted;
-    openSessions.delete(sessionId);
     assert.equal(closed.closed, true);
     assert.equal(closed.resourceClosed, true);
 
@@ -676,31 +754,53 @@ try {
     const internalRef = await createBrokerTab('chrome', 'chrome://bookmarks/');
     const internalMetadata = await waitForExactUrl('chrome', internalRef, (url) => url.startsWith('chrome://bookmarks'));
     assert(internalMetadata.url.startsWith('chrome://bookmarks'), `Chrome internal resource did not resolve: ${internalMetadata.url}`);
+    const internalSessionId = 'browser-v3-internal-chrome';
+    openSessions.set(internalSessionId, { owner: 'browser', product: 'chrome' });
     const adopted = await action('create_session', {
+      session_id: internalSessionId,
       url: internalMetadata.url,
       native_browser_product: 'chrome',
       native_window_id: internalRef.windowId,
       native_tab_id: internalRef.tabId,
       extract_text: false,
     });
-    const internalSessionId = resultSessionId(adopted);
-    openSessions.add(internalSessionId);
+    assert.equal(resultSessionId(adopted), internalSessionId);
+    openSessions.set(internalSessionId, { owner: 'browser', product: 'chrome', ref: resultTabRef(adopted) });
     assert.deepEqual(resultTabRef(adopted), internalRef);
-    const closed = await action('close_session', { session_id: internalSessionId });
-    openSessions.delete(internalSessionId);
+    const closed = await closeOwnedSession(internalSessionId);
     assert.equal(closed.preservedUserOwnedTab, true);
     await closeBrokerTab('chrome', internalRef);
     report.internalResource = { product: 'chrome', url: internalMetadata.url, exactRefPreserved: true, userOwnedClosePreserved: true };
   }
 
-  console.log(JSON.stringify({ ok: true, ...report, safeProviderRetries }));
+  testCompleted = true;
 } finally {
-  for (const sessionId of [...openSessions]) await closeSession(sessionId);
-  for (const entry of [...brokerOwnedTabs]) await closeBrokerTab(entry.product, entry.ref);
+  for (const sessionId of [...openSessions.keys()]) {
+    if (attemptedSessionCloses.has(sessionId)) continue;
+    try { await closeOwnedSession(sessionId); } catch { /* failure is retained in cleanupFailures */ }
+  }
+  for (const entry of [...brokerOwnedTabs]) {
+    try { await closeBrokerTab(entry.product, entry.ref); } catch { /* failure is retained in cleanupFailures */ }
+  }
   server?.stop(true);
   invalidateMacOsBrowserPageHandles();
   disposeRuntimeComputerComposition();
   resetBrowserPluginRuntimeHooksForTest();
   rmSync(repoRoot, { recursive: true, force: true });
-  rmSync(controllerHome, { recursive: true, force: true });
+  const cleanupOk = cleanupFailures.length === 0 && openSessions.size === 0 && brokerOwnedTabs.length === 0;
+  if (cleanupOk) rmSync(controllerHome, { recursive: true, force: true });
+  console.log(JSON.stringify({
+    ok: testCompleted && cleanupOk,
+    ...report,
+    safeProviderRetries,
+    cleanup: {
+      ok: cleanupOk,
+      receipts: cleanupReceipts,
+      failures: cleanupFailures,
+      recoveryPaths: cleanupOk ? undefined : { controllerHome },
+      remainingSessions: [...openSessions.keys()],
+      remainingTabs: brokerOwnedTabs.map((entry) => ({ product: entry.product, ...entry.ref })),
+    },
+  }));
+  if (!cleanupOk) process.exitCode = 1;
 }
