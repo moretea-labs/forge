@@ -2712,13 +2712,16 @@ private struct AgentChangesPane: View {
 
                                 ForEach(changes.nameOnly,id:\.self) { path in
                                     Button {
+                                        focusedPath = path
+                                        focusedChanges = nil
+                                        focusedLoading = true
                                         Task {
-                                            focusedLoading = true
                                             let snapshot = await model.reviewAgentChanges(paths:[path],staged:reviewStaged)
                                             focusedLoading = false
                                             if let snapshot {
-                                                focusedPath = path
                                                 focusedChanges = snapshot
+                                            } else {
+                                                focusedPath = nil
                                             }
                                         }
                                     } label: {
