@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "note": "src/runtime -> src/cli reverse dependencies. Shrinking migration debt: entries are removed when their importer migrates to the neutral owner; new entries are forbidden by scripts/check-module-boundaries.mjs. The GitHub adapter edge remains only for Controller Issue synchronization; plugin config and readiness are Runtime-owned.",
+  "note": "src/runtime -> src/cli reverse dependencies. Entries are removed only when an importer migrates to a neutral owner; new edges are forbidden by scripts/check-module-boundaries.mjs. Five effect boundaries remain: executor retires legacy LocalBridge jobs; Runtime root owns embedded server lifecycle; GitHub adapter performs CLI-owned Controller Issue sync; job-summary refreshes AgentJob and LocalBridge state. Never replace reconciliation with stale projections; remove an edge only with its canonical lifecycle Writer migration.",
   "edges": [
     "src/runtime/execution/workers/executor.ts|../../../cli/local-bridge/job-store",
     "src/runtime/plugins/github-adapter.ts|../../cli/github/plugin",
