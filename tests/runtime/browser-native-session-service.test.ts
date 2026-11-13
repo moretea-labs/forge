@@ -4,6 +4,8 @@ import {
   setMacOsBrowserRuntimeHooksForTest,
 } from '../../src/runtime/plugins/browser-macos-bridge';
 import {
+  assertNativeOwnedTabCapacity,
+  MAX_NATIVE_OWNED_BROWSER_TABS,
   closeTrackedNativeOwnedSession,
   inspectNativeOwnedSessions,
 } from '../../src/runtime/plugins/browser-native-session-service';
@@ -230,5 +232,26 @@ describe('native browser session cleanup', () => {
       liveness: 'dead',
       evidence: 'native_tab_missing',
     });
+  });
+});
+
+describe('native tab admission backpressure', () => {
+  test('bounds distinct owned tabs, preserves user tabs and allows capacity after close', () => {
+    const sessions = Array.from({ length: MAX_NATIVE_OWNED_BROWSER_TABS }, (_, i) => {
+      const session = nativeSession();
+      session.sessionId = `owned-${i}`;
+      session.browser!.tab!.tabId = String(i);
+      return session;
+    });
+    expect(() => assertNativeOwnedTabCapacity(sessions)).toThrow('capacity reached');
+    expect(() => assertNativeOwnedTabCapacity(sessions.slice(1))).not.toThrow();
+    const userTabs = sessions.map((s) => ({ ...s, browser: { ...s.browser!, tab: { ...s.browser!.tab!, ownership: 'user_owned' as const } } }));
+    expect(() => assertNativeOwnedTabCapacity(userTabs)).not.toThrow();
+    // Aliases and moved-window hints cannot consume capacity twice.
+    const alias = structuredClone(sessions[0]!);
+    alias.sessionId = 'alias';
+    alias.browser!.tab!.windowId = 'other-window';
+    expect(() => assertNativeOwnedTabCapacity([...sessions.slice(1), alias])).toThrow('capacity reached');
+    expect(() => assertNativeOwnedTabCapacity([...sessions.slice(1), sessions[1]!])).not.toThrow();
   });
 });

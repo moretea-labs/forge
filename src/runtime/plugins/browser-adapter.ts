@@ -88,6 +88,7 @@ import {
   saveBrowserSession,
 } from './browser-session-store';
 import {
+  assertNativeOwnedTabCapacity,
   closeTrackedNativeOwnedSession,
   inspectNativeOwnedSessions,
   nativeOwnedAliasSessionIds,
@@ -2581,6 +2582,7 @@ async function openNativeAttachedContext(
   args: Record<string, unknown>,
 ): Promise<{ handle?: BrowserOpenHandle; attempts: MacOsBrowserAttachAttempt[] }> {
   if (config.nativeAttachMode === 'disabled') return { attempts: [] };
+  if (!target.existingSession) assertNativeOwnedTabCapacity(listSavedSessions(repoRoot));
   if (!target.existingSession && !stringValue(args.session_id) && args.__forge_computer_native_only !== true) {
     await inspectNativeOwnedSessions({ repoRoot, savedSessions: listSavedSessions(repoRoot), timeoutMs: config.defaultTimeoutMs ?? DEFAULT_TIMEOUT_MS, pruneDead: true });
   }
@@ -3189,9 +3191,9 @@ function listSavedSessions(repoRoot: string): BrowserSessionState[] {
 async function inspectSavedSessions(
   repoRoot: string,
   config: BrowserPluginConfig,
-  options: { pruneDead?: boolean } = {},
+  options: { pruneDead?: boolean; nativeOnly?: boolean } = {},
 ): Promise<BrowserSessionInventory> {
-  const saved = listSavedSessions(repoRoot);
+  const saved = listSavedSessions(repoRoot).filter((session) => !options.nativeOnly || session.browser?.provider === 'macos-apple-events');
   const sessions: BrowserSessionInventoryItem[] = [];
   let liveManagedSessionCount = 0;
   let unverifiedSessionCount = 0;
@@ -4134,7 +4136,7 @@ async function executeBrowserPluginActionInternal(
       }
       case 'reconcile_sessions': {
         assertBrowserSessionAvailable(input.repoRoot);
-        const inventory = await inspectSavedSessions(input.repoRoot, current, { pruneDead: true });
+        const inventory = await inspectSavedSessions(input.repoRoot, current, { pruneDead: true, nativeOnly: input.pluginId === 'computer' });
         return {
           reconciled: true,
           sessionCountSemantics: 'saved_metadata',

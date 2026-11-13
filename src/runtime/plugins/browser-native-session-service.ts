@@ -295,3 +295,22 @@ export function nativeOwnedAliasSessionIds(repoRoot: string, session: BrowserSes
       && candidate.browser.tab.tabId === tab.tabId)
     .map((candidate) => candidate.sessionId);
 }
+
+/** Admission backpressure, not eviction: old tabs may contain unfinished work. */
+export const MAX_NATIVE_OWNED_BROWSER_TABS = 16;
+export function assertNativeOwnedTabCapacity(sessions: readonly BrowserSessionState[]): void {
+  const owned = new Set(sessions.filter((session) =>
+    session.browser?.provider === 'macos-apple-events'
+    && session.browser.tab?.ownership === 'plugin_owned')
+    .map((session) => {
+      const browser = session.browser!;
+      const tab = browser.tab!;
+      return browser.browserProduct && tab.tabId
+        ? `${browser.browserProduct}:${tab.tabId}` : session.sessionId;
+    }));
+  if (owned.size >= MAX_NATIVE_OWNED_BROWSER_TABS) {
+    throw new AssistantPluginError('PLUGIN_BROWSER_OWNED_TAB_CAPACITY',
+      'Forge-owned native tab capacity reached. Close finished sessions with close_session and reconcile stale sessions before creating another tab. Existing sessions remain usable; user-owned tabs are preserved.',
+      { retryable: false, details: { count: owned.size, limit: MAX_NATIVE_OWNED_BROWSER_TABS } });
+  }
+}

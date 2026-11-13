@@ -2098,3 +2098,31 @@ describe('browser session compatibility on Computer target authority', () => {
   });
 
 });
+
+
+test('Computer exposes native session reclamation through the existing Browser owner', () => {
+  const manifest = computerPluginAdapter.buildManifest(0);
+  expect(manifest.actions.some((action) => action.actionId === 'reconcile_sessions')).toBe(true);
+  expect(manifest.capabilities.some((capability) => capability.actions.includes('reconcile_sessions'))).toBe(true);
+  expect(manifest.actions.some((action) => action.actionId === 'clear_session')).toBe(false);
+});
+
+test('Computer refuses a seventeenth owned native tab before provider creation', async () => {
+  const { controllerHome, repoA } = fixture();
+  writeControllerPluginConfig(controllerHome, 'browser', {
+    schemaVersion: 1, enabled: true, provider: 'playwright',
+    browserMode: 'attach_preferred', cdpAttachFallback: 'fail_closed', nativeAttachMode: 'auto',
+  });
+  const legacyRoot = join(repoA, '.forge', 'browser', 'sessions');
+  mkdirSync(legacyRoot, { recursive: true });
+  for (let i = 0; i < 16; i++) {
+    writeFileSync(join(legacyRoot, `owned-${i}.json`), JSON.stringify(session(`owned-${i}`, '2026-11-13T00:00:00Z', {
+      native: true, ownership: 'plugin_owned', tabId: String(i),
+    })));
+  }
+  await expect(computerPluginAdapter.executeAction({
+    controllerHome, repoRoot: repoA, repoId: 'repo-a', pluginId: 'computer',
+    actionId: 'create_session', requestId: 'capacity-seventeenth',
+    args: { url: 'https://example.com/new' }, origin: { surface: 'mcp', actor: 'test' },
+  })).rejects.toThrow('capacity reached');
+});
