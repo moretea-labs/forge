@@ -3660,9 +3660,9 @@ private struct RecordsPane: View {
             }
             Spacer(minLength:4)
             VStack(alignment:.trailing,spacing:3) {
-                Text("Requirement \(requirements.count)  ·  Plan \(plans.count)")
+                Text("需求 \(requirements.count)  ·  计划 \(plans.count)")
                     .font(.system(size:10,weight:.medium))
-                Text("开放 \(openCount)  ·  已完成 \(completedCount)  ·  执行进度以真实验收为准")
+                Text("开放 \(openCount)  ·  已完成 \(completedCount)")
                     .font(.system(size:9))
                     .foregroundStyle(ForgePalette.secondary)
                     .lineLimit(1)
@@ -3676,12 +3676,7 @@ private struct RecordsPane: View {
     private var planningNavigator: some View {
         VStack(alignment:.leading,spacing:0) {
             HStack(alignment:.top,spacing:8) {
-                VStack(alignment:.leading,spacing:4) {
-                    Text("规划结构")
-                        .font(.system(size:13,weight:.semibold))
-                    Text("从左到右表示语义层级；不是执行顺序")
-                        .font(.system(size:10)).foregroundStyle(ForgePalette.secondary)
-                }
+                Text("规划结构").font(.system(size:13,weight:.semibold))
                 Spacer(minLength:4)
                 Button { beginRequirement() } label: {
                     Image(systemName:"doc.badge.plus")
@@ -3689,7 +3684,7 @@ private struct RecordsPane: View {
                         .background(ForgePalette.softFill,in:RoundedRectangle(cornerRadius:8,style:.continuous))
                 }
                 .buttonStyle(.plain)
-                .help("新建 Requirement（可选）")
+                .help("新建需求")
                 .disabled(model.repoId == nil)
                 Button { beginPlan(requirementId:nil,parentPlanId:nil) } label: {
                     Image(systemName:"plus")
@@ -3697,7 +3692,7 @@ private struct RecordsPane: View {
                         .background(ForgePalette.softFill,in:RoundedRectangle(cornerRadius:8,style:.continuous))
                 }
                 .buttonStyle(.plain)
-                .help("直接新建独立 Plan；不要求 Requirement")
+                .help("新建计划")
                 .disabled(model.repoId == nil)
             }
             .padding(.horizontal,13).padding(.top,13).padding(.bottom,9)
@@ -3727,7 +3722,7 @@ private struct RecordsPane: View {
                     Image(systemName:"magnifyingglass")
                         .font(.system(size:9.5))
                         .foregroundStyle(ForgePalette.secondary)
-                    TextField("查找 Requirement / Plan",text:$planningSearch)
+                    TextField("搜索需求和计划",text:$planningSearch)
                         .textFieldStyle(.plain)
                         .font(.system(size:10.5))
                         .onSubmit {
@@ -3871,16 +3866,6 @@ private struct RecordsPane: View {
                 planningRelationLegend
                     .padding(.horizontal,13)
                     .padding(.top,4).padding(.bottom,7)
-            } else {
-                HStack(spacing:6) {
-                    Image(systemName:"list.bullet.indent")
-                    Text("列表显示全部规划节点；父级关系写在每一行标题上方")
-                    Spacer(minLength:0)
-                }
-                .font(.system(size:9.2,weight:.medium))
-                .foregroundStyle(ForgePalette.secondary)
-                .padding(.horizontal,13)
-                .padding(.top,6).padding(.bottom,9)
             }
 
             Divider().opacity(0.55)
@@ -3892,9 +3877,6 @@ private struct RecordsPane: View {
                         .foregroundStyle(ForgePalette.secondary)
                     Text("这个项目还没有规划树")
                         .font(.system(size:12,weight:.semibold))
-                    Text("普通 Agent 不依赖 Requirement。需要长期无人值守或可追踪拆解时，再创建 Requirement / Plan。")
-                        .font(.system(size:10.5)).lineSpacing(3)
-                        .foregroundStyle(ForgePalette.secondary)
                 }
                 .padding(15)
                 .frame(maxWidth:.infinity,alignment:.leading)
@@ -3907,10 +3889,6 @@ private struct RecordsPane: View {
                             .foregroundStyle(ForgePalette.secondary)
                         Text("当前没有父子关系可画")
                             .font(.system(size:12,weight:.semibold))
-                        Text("关系图只显示 Requirement → 根 Plan / Plan → 子 Plan。没有关系的节点仍可在列表、搜索或“未关联”中访问。")
-                            .font(.system(size:10.5))
-                            .foregroundStyle(ForgePalette.secondary)
-                            .fixedSize(horizontal:false,vertical:true)
                         if !planningUnlinkedRecords.isEmpty {
                             Button("显示 \(planningUnlinkedRecords.count) 个未关联节点") {
                                 planningShowUnlinked = true
