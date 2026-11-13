@@ -130,6 +130,10 @@ describe('first-party release and growth Workflow assets (#652)', () => {
     expect(validateWorkflowRunInputs(asset, {
       account: 'developer_x', post_url: 'https://x.com/developer_x/status/1234567890', session_id: 'session-1',
     }).account).toBe('developer_x');
+    const previews = asset.steps.find(step => step.stepId === 'read-reply-previews');
+    expect(previews).toMatchObject({ capabilityId: 'browser.query_all',
+      input: { selector: 'article[data-testid="tweet"]', limit: 15 } });
+    expect(previews?.idempotency).not.toBe('non_idempotent');
     expect(script(id, 'validatePost', { account: 'developer_x', post_url: 'https://x.com/developer_x/status/1234567890' }).status).toBe(0);
     for (const post_url of [
       'https://x.com/wrong_account/status/1234567890',
