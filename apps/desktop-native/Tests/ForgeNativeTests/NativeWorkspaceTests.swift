@@ -1934,6 +1934,18 @@ extension NativeWorkspaceTests {
 
 
 extension NativeWorkspaceTests {
+    func testRemoteImageSessionDoesNotReuseAmbientCredentialsAndHasBoundedTimeouts() {
+        let configuration = makeRemoteImageSessionConfiguration()
+
+        XCTAssertNil(configuration.httpCookieStorage)
+        XCTAssertFalse(configuration.httpShouldSetCookies)
+        XCTAssertNil(configuration.urlCredentialStorage)
+        XCTAssertNil(configuration.urlCache)
+        XCTAssertEqual(configuration.requestCachePolicy, .reloadIgnoringLocalCacheData)
+        XCTAssertEqual(configuration.timeoutIntervalForRequest, 20)
+        XCTAssertEqual(configuration.timeoutIntervalForResource, 60)
+    }
+
     func testRemoteImageStreamingSaveEnforcesExactByteLimit() throws {
         var data = Data()
         try appendRemoteImageByte(0x89, to: &data, maximumBytes: 2)

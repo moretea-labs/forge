@@ -389,8 +389,23 @@ func validateRemoteImageResponse(
     }
 }
 
+func makeRemoteImageSessionConfiguration() -> URLSessionConfiguration {
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.httpCookieStorage = nil
+    configuration.httpShouldSetCookies = false
+    configuration.urlCredentialStorage = nil
+    configuration.urlCache = nil
+    configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+    configuration.timeoutIntervalForRequest = 20
+    configuration.timeoutIntervalForResource = 60
+    return configuration
+}
+
 private func downloadRemoteImage(from url: URL, maximumBytes: Int) async throws -> Data {
-    let (bytes, response) = try await URLSession.shared.bytes(from: url)
+    // Model-provided URLs must not inherit credentials or cookies from other app activity.
+    let session = URLSession(configuration: makeRemoteImageSessionConfiguration())
+    defer { session.invalidateAndCancel() }
+    let (bytes, response) = try await session.bytes(from: url)
     guard let http = response as? HTTPURLResponse else {
         throw RemoteImageSaveError.invalidImage
     }
