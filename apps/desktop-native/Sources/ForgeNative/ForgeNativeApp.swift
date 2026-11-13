@@ -921,7 +921,7 @@ private struct ForgeWorkspaceView: View {
                     Text(model.project?.label ?? "选择项目")
                         .font(.system(size:12,weight:.semibold))
                         .lineLimit(1)
-                    Text("\(model.projects.count) 个仓库 · 当前 \(model.checkoutBranch ?? "无 Checkout")")
+                    Text("\(model.projects.count) 个项目 · 分支 \(model.checkoutBranch ?? "未选择")")
                         .font(.system(size:10)).foregroundStyle(ForgePalette.secondary)
                         .lineLimit(1)
                 }
@@ -2896,10 +2896,10 @@ private struct AgentChangesPane: View {
                 }
             }
         } message: {
-            Text("只恢复当前已审查的 tracked / unstaged 文件。staged、untracked 或已变化的 patch 会被拒绝。")
+            Text("仅恢复本次审查中的未暂存文件；已暂存、新文件或内容已变化的文件不会被恢复。")
         }
         .accessibilityElement(children:.contain)
-        .accessibilityLabel("Agent Changes")
+        .accessibilityLabel("改动审查")
     }
 
     private var reviewScopeBinding: Binding<Bool> {
@@ -2922,7 +2922,7 @@ private struct AgentChangesPane: View {
             HStack(spacing:7) {
                 Image(systemName:"questionmark.square.dashed")
                     .foregroundStyle(Color.orange)
-                Text("\(paths.count) 个未跟踪文件尚未进入可审查 patch")
+                Text("\(paths.count) 个新文件未纳入本次审查")
                     .font(.system(size:10.5,weight:.semibold))
             }
             ForEach(Array(paths.prefix(4)),id:\.self) { path in
@@ -2933,11 +2933,11 @@ private struct AgentChangesPane: View {
                     .truncationMode(.middle)
             }
             if paths.count > 4 {
-                Text("另有 \(paths.count - 4) 个未跟踪文件")
+                Text("另有 \(paths.count - 4) 个新文件")
                     .font(.system(size:9.5))
                     .foregroundStyle(.tertiary)
             }
-            Text("Git 在 add 前没有 tracked diff；Forge 不会把这些文件自动纳入 Commit 或 Discard。")
+            Text("这些文件不会自动纳入提交或放弃操作。")
                 .font(.system(size:9.5))
                 .foregroundStyle(.tertiary)
                 .lineSpacing(2)
@@ -2955,7 +2955,7 @@ private struct AgentChangesPane: View {
                     .font(.system(size:11,weight:.semibold))
                     .lineLimit(1)
                 Spacer(minLength:8)
-                Text(changes.staged ? "STAGED" : "WORKING TREE")
+                Text(changes.staged ? "已暂存" : "未暂存")
                     .font(.system(size:8.5,weight:.semibold))
                     .foregroundStyle(changes.staged ? ForgePalette.accent : ForgePalette.secondary)
                     .padding(.horizontal,7)
@@ -2970,11 +2970,11 @@ private struct AgentChangesPane: View {
                     .textSelection(.enabled)
                 Text("·")
                     .foregroundStyle(.quaternary)
-                Text("\(changes.nameOnly.count) files")
+                Text("\(changes.nameOnly.count) 个文件")
                     .font(.system(size:9.5,weight:.medium))
                     .foregroundStyle(ForgePalette.secondary)
                 Spacer(minLength:0)
-                Text("checkout \(String(changes.checkoutId.prefix(8)))")
+                Text("工作区 \(String(changes.checkoutId.prefix(8)))")
                     .font(.system(size:9,design:.monospaced))
                     .foregroundStyle(.tertiary)
                     .lineLimit(1)
@@ -4866,7 +4866,7 @@ private struct RecordsPane: View {
 
     @ViewBuilder
     private func autopilotSection(_ requirement:RequirementRecordDetail) -> some View {
-        semanticSection("Autopilot · 无人值守") {
+        semanticSection("无人值守") {
             VStack(alignment:.leading,spacing:11) {
                 HStack(spacing:8) {
                     Circle()
@@ -4886,25 +4886,25 @@ private struct RecordsPane: View {
 
                 if let status=model.autopilotStatus {
                     if status.requiresReapproval {
-                        Label("Requirement 已修订到 r\(status.requirementRevision ?? requirement.revision)，旧授权失效，需要重新批准。",systemImage:"exclamationmark.triangle.fill")
+                        Label("需求已更新，原授权失效，请重新批准。",systemImage:"exclamationmark.triangle.fill")
                             .font(.system(size:10.5)).foregroundStyle(.orange)
                     }
                     HStack(spacing:14) {
                         autopilotMetric("Token","\(status.totalTokens) / \(status.maxTotalTokens.map(String.init) ?? "—")")
-                        autopilotMetric("Turns","\(status.turns) / \(status.maxTurns.map(String.init) ?? "—")")
-                        autopilotMetric("Tools","\(status.toolCalls) / \(status.maxToolCalls.map(String.init) ?? "—")")
-                        if let modelName=status.model { autopilotMetric("Model",modelName) }
+                        autopilotMetric("轮次","\(status.turns) / \(status.maxTurns.map(String.init) ?? "—")")
+                        autopilotMetric("工具调用","\(status.toolCalls) / \(status.maxToolCalls.map(String.init) ?? "—")")
+                        if let modelName=status.model { autopilotMetric("模型",modelName) }
                     }
                     if let currentPlanId=status.currentPlanId,!currentPlanId.isEmpty {
                         HStack(spacing:7) {
                             Image(systemName:"location.fill")
                                 .font(.system(size:9))
                                 .foregroundStyle(ForgePalette.accent)
-                            Text("当前 Plan")
+                            Text("当前计划")
                                 .font(.system(size:9.5,weight:.medium))
                                 .foregroundStyle(ForgePalette.secondary)
-                            Text(currentPlanId)
-                                .font(.system(size:9.5,design:.monospaced))
+                            Text(model.records.first(where:{ $0.kind == .plan && $0.recordId == currentPlanId })?.title ?? currentPlanId)
+                                .font(.system(size:9.5))
                                 .textSelection(.enabled)
                             Spacer()
                             if let plan=model.records.first(where:{ $0.kind == .plan && $0.recordId == currentPlanId }) {
@@ -4928,11 +4928,11 @@ private struct RecordsPane: View {
                             .textSelection(.enabled)
                     }
                     if !status.providerReady {
-                        Text("模型服务尚未就绪。可以先批准，但开始执行前需要先完成模型连接。")
+                        Text("模型服务未就绪，连接恢复后才能执行。")
                             .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
                     }
                 } else {
-                    Text("只有无人值守任务需要单独批准，普通会话和独立计划不受影响。")
+                    Text("无人值守运行需要单独批准。")
                         .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
                 }
 
@@ -4972,7 +4972,7 @@ private struct RecordsPane: View {
                     .buttonStyle(.plain)
                     .disabled(model.autopilotLoading)
                 }
-                Text("批准不等于立即执行。此任务只允许修改当前工作区，不会推送、发布、部署、切换运行环境或执行破坏性操作。")
+                Text("批准不会立即运行；仅限当前工作区，不会推送、发布、部署、切换环境或执行破坏性操作。")
                     .font(.system(size:9.5)).foregroundStyle(ForgePalette.secondary)
             }
         }
@@ -5024,28 +5024,28 @@ private struct RecordsPane: View {
             HStack {
                 VStack(alignment:.leading,spacing:4) {
                     Text("批准无人值守执行").font(.system(size:18,weight:.semibold))
-                    Text("绑定 \(context.requirement.requirementId) · revision \(context.requirement.revision)")
-                        .font(.system(size:10.5,design:.monospaced)).foregroundStyle(ForgePalette.secondary)
+                    Text(context.requirement.title).lineLimit(2)
+                        .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
                 }
                 Spacer()
                 Button { autopilotApproval=nil } label:{ Image(systemName:"xmark") }
                     .buttonStyle(.plain).disabled(autopilotSaving)
             }
-            Text("Requirement 的任何后续语义修订都会使本次授权失效；普通 Forge 使用不需要此授权。")
+            Text("需求更新后，原授权失效，需重新批准。")
                 .font(.system(size:11)).foregroundStyle(ForgePalette.secondary)
             Grid(alignment:.leading,horizontalSpacing:12,verticalSpacing:10) {
                 GridRow { Text("模型"); TextField("deepseek-chat",text:$autopilotModel).textFieldStyle(.roundedBorder) }
                 GridRow { Text("Token 上限"); TextField("50000",text:$autopilotTokenBudget).textFieldStyle(.roundedBorder) }
-                GridRow { Text("最大 turns"); TextField("12",text:$autopilotTurnBudget).textFieldStyle(.roundedBorder) }
-                GridRow { Text("最大 tool calls"); TextField("32",text:$autopilotToolBudget).textFieldStyle(.roundedBorder) }
+                GridRow { Text("最大轮次"); TextField("12",text:$autopilotTurnBudget).textFieldStyle(.roundedBorder) }
+                GridRow { Text("最大工具调用"); TextField("32",text:$autopilotToolBudget).textFieldStyle(.roundedBorder) }
             }
             .font(.system(size:11))
 
             let plans=model.records.filter { $0.kind == .plan && $0.requirementId == context.requirement.requirementId }
             if !plans.isEmpty {
                 VStack(alignment:.leading,spacing:7) {
-                    Text("人工验收检查点").font(.system(size:11,weight:.semibold))
-                    Text("模型推进到选中的 Plan 节点并报告阶段完成时会暂停。")
+                    Text("人工确认点").font(.system(size:11,weight:.semibold))
+                    Text("到达所选计划检查点后会暂停，等待你确认。")
                         .font(.system(size:10)).foregroundStyle(ForgePalette.secondary)
                     ScrollView {
                         VStack(alignment:.leading,spacing:5) {
@@ -5067,7 +5067,7 @@ private struct RecordsPane: View {
                 }
             }
             HStack {
-                Text("这里只授予 workspace-write；不会自动 push / release / deploy。")
+                Text("仅允许修改当前工作区；不会自动推送、发布或部署。")
                     .font(.system(size:10)).foregroundStyle(ForgePalette.secondary)
                 Spacer()
                 Button("取消") { autopilotApproval=nil }.disabled(autopilotSaving)
