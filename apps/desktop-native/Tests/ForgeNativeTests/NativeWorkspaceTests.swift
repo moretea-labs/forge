@@ -2289,3 +2289,72 @@ extension NativeWorkspaceTests {
         XCTAssertNotEqual("\(first).image.0.resource", "\(first).image.1.resource")
     }
 }
+
+
+extension NativeWorkspaceTests {
+    @MainActor
+    func testProviderUsageReceiptPersistsAndProjectsIntoUsageDashboard() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = folder.appendingPathComponent("conversations.json")
+        defer { try? FileManager.default.removeItem(at: folder) }
+
+        let completeUsage = try XCTUnwrap(AgentTokenUsage.fromProviderReceipt([
+            "inputTokens": 100, "outputTokens": 78, "totalTokens": 178,
+            "reportedRounds": 2, "totalRounds": 2
+        ]))
+        let partialUsage = try XCTUnwrap(AgentTokenUsage.fromProviderReceipt([
+            "inputTokens": 20, "outputTokens": 10, "totalTokens": 30,
+            "reportedRounds": 1, "totalRounds": 2
+        ]))
+        let cutoff = Date(timeIntervalSince1970: 90)
+        let completeMessage = ChatMessage(
+            role: "assistant", text: "complete", usage: completeUsage,
+            providerUsed: "api:openai", modelUsed: "gpt-6",
+            createdAt: Date(timeIntervalSince1970: 100)
+        )
+        let partialMessage = ChatMessage(
+            role: "assistant", text: "partial", usage: partialUsage,
+            providerUsed: "api:anthropic", modelUsed: "claude-sonnet",
+            createdAt: Date(timeIntervalSince1970: 200)
+        )
+        let unreportedMessage = ChatMessage(
+            role: "assistant", text: "missing receipt", incomplete: true,
+            createdAt: Date(timeIntervalSince1970: 300)
+        )
+        let oldMessage = ChatMessage(
+            role: "assistant", text: "outside range", usage: completeUsage,
+            createdAt: cutoff.addingTimeInterval(-1)
+        )
+        let userMessage = ChatMessage(
+            role: "user", text: "not an assistant receipt", usage: completeUsage,
+            createdAt: Date(timeIntervalSince1970: 400)
+        )
+        var thread = ChatThread()
+        thread.repoId = "repo-usage"
+        thread.messages = [completeMessage, partialMessage, unreportedMessage, oldMessage, userMessage]
+
+        let model = NativeWorkspace(store: store)
+        model.threads = [thread]
+        model.persist()
+
+        let restored = NativeWorkspace(store: store)
+        let snapshot = AgentUsageDashboard.makeUsageSnapshot(
+            from: restored.threads,
+            projectLabels: ["repo-usage": "Usage project"],
+            since: cutoff
+        )
+
+        XCTAssertEqual(snapshot.entries.count, 2)
+        XCTAssertEqual(snapshot.unreportedCount, 1)
+        XCTAssertEqual(snapshot.partiallyReported, 1)
+        XCTAssertEqual(snapshot.inputTotal, 120)
+        XCTAssertEqual(snapshot.outputTotal, 88)
+        XCTAssertEqual(snapshot.total, 208)
+        XCTAssertEqual(snapshot.entries.map(\.id), [partialMessage.id, completeMessage.id])
+        XCTAssertEqual(snapshot.entries.first?.project, "Usage project")
+        XCTAssertEqual(snapshot.entries.first?.provider, "api:anthropic")
+        XCTAssertEqual(snapshot.entries.first?.model, "claude-sonnet")
+        XCTAssertEqual(snapshot.entries.first?.usage.reportedRounds, 1)
+        XCTAssertEqual(snapshot.entries.first?.usage.totalRounds, 2)
+    }
+}

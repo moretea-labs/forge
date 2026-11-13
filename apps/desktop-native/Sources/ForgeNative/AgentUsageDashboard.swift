@@ -7,7 +7,7 @@ struct AgentUsageDashboard: View {
     @State private var days = 30
     @State private var selectedRepoId = ""
 
-    private struct Entry: Identifiable {
+    struct Entry: Identifiable {
         let id: String
         let date: Date
         let projectId: String?
@@ -15,6 +15,15 @@ struct AgentUsageDashboard: View {
         let model: String
         let provider: String
         let usage: AgentTokenUsage
+    }
+
+    struct UsageSnapshot {
+        let entries: [Entry]
+        let unreportedCount: Int
+        let inputTotal: Int
+        let outputTotal: Int
+        let total: Int
+        let partiallyReported: Int
     }
 
     private struct DayTotal: Identifiable {
@@ -35,14 +44,11 @@ struct AgentUsageDashboard: View {
         "未回执 \(unreportedMessages) 条 · 部分回执 \(partiallyReportedMessages) 条"
     }
 
-    private func makeUsageSnapshot(
+    static func makeUsageSnapshot(
         from threads: [ChatThread],
         projectLabels: [String: String],
         since cutoff: Date
-    ) -> (
-        entries: [Entry], unreportedCount: Int,
-        inputTotal: Int, outputTotal: Int, total: Int, partiallyReported: Int
-    ) {
+    ) -> UsageSnapshot {
         var entries: [Entry] = []
         var unreportedCount = 0
         var inputTotal = 0
@@ -71,7 +77,11 @@ struct AgentUsageDashboard: View {
             }
         }
         entries.sort { $0.date > $1.date }
-        return (entries, unreportedCount, inputTotal, outputTotal, total, partiallyReported)
+        return UsageSnapshot(
+            entries: entries, unreportedCount: unreportedCount,
+            inputTotal: inputTotal, outputTotal: outputTotal,
+            total: total, partiallyReported: partiallyReported
+        )
     }
 
     private func makeTimeline(from entries: [Entry], today: Date) -> [DayTotal] {
@@ -135,7 +145,7 @@ struct AgentUsageDashboard: View {
             model.projects.map { ($0.repoId, $0.label) },
             uniquingKeysWith: { _, latest in latest }
         )
-        let usageSnapshot = makeUsageSnapshot(from: threads, projectLabels: projectLabels, since: cutoff)
+        let usageSnapshot = Self.makeUsageSnapshot(from: threads, projectLabels: projectLabels, since: cutoff)
         let usageEntries = usageSnapshot.entries
         let unreportedMessages = usageSnapshot.unreportedCount
         let inputTotal = usageSnapshot.inputTotal
