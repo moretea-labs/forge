@@ -5742,8 +5742,6 @@ private struct PluginsPane: View {
                                 Text("已禁用").font(.system(size:10)).foregroundStyle(.secondary)
                             }
                         }
-                        Text(item.pluginId).font(.system(size:10,design:.monospaced))
-                            .foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                         Text("\(item.actionCount) 个动作 · \(item.ready ? "可用" : "未就绪")")
                             .font(.system(size:11.5)).foregroundStyle(ForgePalette.secondary)
                     }
