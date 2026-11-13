@@ -2797,6 +2797,16 @@ final class NativeWorkspace: ObservableObject {
             && self.checkoutId == checkoutId
     }
 
+    func finishAgentChangesMutation(generation: Int, repoId: String, checkoutId: String) -> Bool {
+        guard agentChangesRequestIsCurrent(
+            generation:generation,repoId:repoId,checkoutId:checkoutId
+        ) else { return false }
+        self.error = nil
+        agentChanges = nil
+        changesLoading = false
+        return true
+    }
+
     func refreshAgentChanges(staged: Bool = false) async {
         guard let targetRepoId = repoId, let targetCheckoutId = checkoutId else {
             invalidateAgentChangesRequests(clearSnapshot:true)
@@ -2929,12 +2939,9 @@ final class NativeWorkspace: ObservableObject {
                 "expectedHead":changes.head,
                 "expectedBranch":changes.branch
             ])
-            guard agentChangesRequestIsCurrent(
+            guard finishAgentChangesMutation(
                 generation:requestGeneration,repoId:targetRepoId,checkoutId:targetCheckoutId
-            ) else { return true }
-            self.error = nil
-            agentChanges = nil
-            changesLoading = false
+            ) else { return false }
             await refreshAgentChanges()
             return true
         } catch {
@@ -2971,12 +2978,9 @@ final class NativeWorkspace: ObservableObject {
                 "expectedHead":changes.head,
                 "expectedBranch":changes.branch
             ])
-            guard agentChangesRequestIsCurrent(
+            guard finishAgentChangesMutation(
                 generation:requestGeneration,repoId:targetRepoId,checkoutId:targetCheckoutId
-            ) else { return true }
-            self.error = nil
-            agentChanges = nil
-            changesLoading = false
+            ) else { return false }
             await refreshAgentChanges(staged:changes.staged)
             return true
         } catch {

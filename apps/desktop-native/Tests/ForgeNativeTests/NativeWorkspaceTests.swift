@@ -609,7 +609,13 @@ final class NativeWorkspaceTests: XCTestCase {
         model.repoId = "repo_b"
         model.checkoutId = "checkout_b"
         let currentGeneration = model.agentChangesRequestGeneration
+        model.agentChanges = AgentGitDiff(
+            repoId:"repo_b",checkoutId:"checkout_b",branch:"work/b",head:"123456",
+            staged:false,paths:["b"],nameOnly:["b"],stat:"1 file changed",
+            patch:"diff --git a/b b/b\n",truncated:false
+        )
         model.changesLoading = true
+        model.error = "new workspace error"
 
         XCTAssertNotEqual(currentGeneration,originalGeneration)
         XCTAssertFalse(model.agentChangesRequestIsCurrent(
@@ -618,8 +624,19 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertTrue(model.agentChangesRequestIsCurrent(
             generation:currentGeneration,repoId:"repo_b",checkoutId:"checkout_b"
         ))
-        XCTAssertTrue(model.changesLoading, "a stale completion must not clear the new workspace's loading state")
+        XCTAssertFalse(model.finishAgentChangesMutation(
+            generation:originalGeneration,repoId:"repo_a",checkoutId:"checkout_a"
+        ))
+        XCTAssertEqual(model.agentChanges?.head,"123456")
+        XCTAssertTrue(model.changesLoading)
+        XCTAssertEqual(model.error,"new workspace error")
+
+        XCTAssertTrue(model.finishAgentChangesMutation(
+            generation:currentGeneration,repoId:"repo_b",checkoutId:"checkout_b"
+        ))
         XCTAssertNil(model.agentChanges)
+        XCTAssertFalse(model.changesLoading)
+        XCTAssertNil(model.error)
     }
 
     func testRetiredWorkIsNotANativeNavigationOrBridgeCapability() {
