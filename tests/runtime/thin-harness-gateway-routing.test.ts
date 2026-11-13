@@ -52,7 +52,7 @@ import {
   reconcilePendingEditValidations,
   startOrJoinEditValidation,
 } from '../../src/runtime/control-plane/execution/edit-validation-coordinator';
-import { getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { getWorkContract } from '../../packages/kernel/work/api';
 import { snapshotControllerCheck } from '../../src/runtime/execution/process-runtime/check-runner';
 import { readWorkHandle } from '../../src/runtime/control-plane/execution/work-handle-store';
 import { principalFor } from '../../src/runtime/control-plane/execution/session-execution-support';

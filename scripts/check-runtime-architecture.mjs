@@ -1124,8 +1124,8 @@ for (const path of sourceFiles('src')) {
 for (const path of sourceFiles('src')) {
   forbid(path, /(?:from\s+['"]|import\s*\(\s*['"])[^'"]*controller-session-store['"]/, 'production source must consume packages/kernel/controller instead of retired ControllerSession facade authority');
 }
+requireMissing('src/runtime/control-plane/facade/work-contract-store.ts');
 const B7_KERNEL_INTERNAL_COMPATIBILITY_SHIMS = new Set([
-  'src/runtime/control-plane/facade/work-contract-store.ts',
   'src/runtime/control-plane/facade/types.ts',
   'src/runtime/workflow/schedules/settlement.ts',
 ]);

@@ -140,19 +140,19 @@ src/runtime/projections/
 
 Equivalent checks can single-flight, coalesce subscribers, and reuse successful evidence when their content/environment contract matches. Invalidated revisions run physically again. Evidence and large result artifacts remain addressable without making hot status payloads unbounded.
 
-## 9. Durable Work, scheduler, and isolation
+## 9. Historical Work, scheduler, and isolation
 
 Primary code:
 
 ```text
-src/runtime/control-plane/facade/work-contract-store.ts
+packages/kernel/work/api/index.ts
 src/runtime/control-plane/repo-actor/
 src/runtime/scheduler/
 src/runtime/execution/workers/
 src/runtime/control-plane/facade/goal-workloop.ts
 ```
 
-Durable Work stores objectives, scope, checks, lifecycle, and evidence when the task actually needs recovery or a longer lifecycle. The scheduler controls global capacity; repository actors decide repository-local safety. Isolated worktrees and workers are mechanisms selected for concurrency/risk, not default ceremony for every code edit.
+Work records remain historical, read-only compatibility data. GitHub Issues and GitHub Projects own current mutable progress and delivery state; Requirements and Plans are recovery context, not a second progress ledger. The scheduler controls global capacity; repository actors decide repository-local safety. Isolated worktrees and workers are mechanisms selected for concurrency/risk, not default ceremony for every code edit.
 
 ## 10. Canonical Runtime root
 

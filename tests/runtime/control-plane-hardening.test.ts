@@ -16,7 +16,7 @@ import { ensureControllerHome } from '../../src/effects/controller-home';
 import { registerRepository } from '../../src/runtime/repositories/registry';
 import { assertCommandPathOperandsStayInRepository, assertRepositoryCommandInputAllowed } from '../../src/runtime/repositories/command-scope';
 import type { RepositoryRecord } from '../../src/core/repository/types';
-import { getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { getWorkContract } from '../../packages/kernel/work/api';
 import { implementationReviewChangedPathDigest } from '../../packages/kernel/work/domain/implementation-review';
 import { createRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { createHandoffItem } from '../../src/runtime/control-plane/facade/handoff-inbox-store';

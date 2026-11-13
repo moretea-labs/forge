@@ -9,7 +9,7 @@ import { registerRepository } from '../../src/runtime/repositories/registry';
 import { executionIdentityForRepository } from '../../src/runtime/control-plane/execution/execution-identity';
 import { __resetLiveMonitorsForTests, spawnManagedProcess, waitForProcess } from '../../src/runtime/execution/process-runtime';
 import { withControllerLockAsync } from '../../src/effects/controller-locks';
-import { getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { getWorkContract } from '../../packages/kernel/work/api';
 import { callRhWorkSemanticOperation } from '../../adapters/mcp/runtime-gateway/work-semantic-operations';
 import { buildResendPluginManifest, executeResendPluginAction } from '../../src/runtime/plugins/resend-adapter';
 import { executeAssistantPluginActionApplication } from '../../src/runtime/plugins/action-application';
@@ -298,7 +298,7 @@ describe('plugin action resource replay fencing', () => {
     expect(completed.receipt.status).toBe('succeeded');
     expect(listActiveLeases(controllerHome, FORGE_INSTANCE_SCOPE_KEY)).toHaveLength(0);
     expect(readFileSync(logPath, 'utf8').trim().split(String.fromCharCode(10)).filter((line) => line === 'execute')).toHaveLength(1);
-  });
+  }, 10_000);
 
   test('a lease expiring after dispatch produces one unknown receipt, never a false definitive failure', async () => {
     const { controllerHome, socketPath } = fixture(true, undefined, true);

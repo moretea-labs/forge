@@ -26,7 +26,7 @@ import { persistControllerAccessMode } from '../../adapters/mcp/access-mode';
 import { classifyRepositoryCommand } from '../../src/cli/repositories/command-classifier';
 import { executionIdentityForRepository } from '../../src/runtime/control-plane/execution/execution-identity';
 import { readWorkHandle, WorkHandleState } from '../../src/runtime/control-plane/execution/work-handle-store';
-import { getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { getWorkContract } from '../../packages/kernel/work/api';
 import { classifyRepositoryCommandRoute, executeRepositoryCommandViaProcessRuntime, waitRepositoryCommandProcess } from '../../src/runtime/execution/process-runtime/command-facade';
 import { listProcessRecords } from '../../src/runtime/execution/process-runtime/store';
 import { processScopeRoot } from '../../src/runtime/execution/process-runtime/process-scope';

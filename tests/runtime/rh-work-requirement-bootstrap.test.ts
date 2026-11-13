@@ -7,7 +7,7 @@ import { getToolPolicy } from '../../src/runtime/control-plane/tool-policy';
 import type { MultiRepositoryMcpToolContext } from '../../adapters/mcp/multi-repository';
 import { ensureControllerHome } from '../../src/effects/controller-home';
 import { addRepositoryCheckout, listRepositories, registerRepository, resolveRepositorySelection } from '../../src/runtime/repositories/registry';
-import { getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { getWorkContract } from '../../packages/kernel/work/api';
 import { createPlanSemanticContext, getPlanContract } from '../../src/runtime/control-plane/facade/plan-contract-store';
 import { createRequirement, readRequirement, updateRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
 import { ensureForgeInstanceIdentity, readForgeInstanceIdentity } from '../../packages/kernel/identity/api/index';

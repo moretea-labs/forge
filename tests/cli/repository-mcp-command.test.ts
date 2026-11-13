@@ -17,7 +17,7 @@ import { readLocalBridgeJobOutputSnapshot } from "../../src/runtime/local-bridge
 import { routeDurableMcpCall } from "../../adapters/mcp/runtime-gateway/router";
 import { waitRepositoryCommandProcess } from "../../src/runtime/execution/process-runtime/command-facade";
 import { getExecutionJob, listExecutionJobs } from "../../src/runtime/execution/jobs/store";
-import { getWorkContract } from '../../src/runtime/control-plane/facade/work-contract-store';
+import { getWorkContract } from '../../packages/kernel/work/api';
 import { readWorkHandle } from "../../src/runtime/control-plane/execution/work-handle-store";
 import { startExecutionSession, updateExecutionSession } from "../../src/runtime/control-plane/execution/session-store";
 import { readControllerResult } from "../../src/runtime/evidence/result-store";
