@@ -4591,6 +4591,45 @@ mod tests {
     }
 
     #[test]
+    fn streamed_provider_usage_receipts_survive_all_three_protocol_adapters() {
+        let host = RecordingStreamHost::default();
+
+        let mut openai = StreamedModelRound::default();
+        openai.consume("openai", &json!({"choices":[{"delta":{"content":"done"}}]}).to_string(), &host, "usage-openai").unwrap();
+        openai.consume("openai", &json!({"choices":[],"usage":{"prompt_tokens":11,"completion_tokens":7}}).to_string(), &host, "usage-openai").unwrap();
+        openai.consume("openai", "[DONE]", &host, "usage-openai").unwrap();
+        let mut openai_totals = LocalTokenTotals::default();
+        openai_totals.observe(&openai.finish("openai").unwrap(), "openai");
+        assert_eq!(openai_totals.summary(), json!({"inputTokens":11,"outputTokens":7,"totalTokens":18,"reportedRounds":1,"totalRounds":1}));
+
+        let mut anthropic = StreamedModelRound::default();
+        anthropic.consume("anthropic", &json!({"type":"message_start","message":{"usage":{"input_tokens":23,"output_tokens":0}}}).to_string(), &host, "usage-anthropic").unwrap();
+        anthropic.consume("anthropic", &json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}).to_string(), &host, "usage-anthropic").unwrap();
+        anthropic.consume("anthropic", &json!({"type":"message_delta","usage":{"output_tokens":12}}).to_string(), &host, "usage-anthropic").unwrap();
+        anthropic.consume("anthropic", &json!({"type":"message_stop"}).to_string(), &host, "usage-anthropic").unwrap();
+        let mut anthropic_totals = LocalTokenTotals::default();
+        anthropic_totals.observe(&anthropic.finish("anthropic").unwrap(), "anthropic");
+        assert_eq!(anthropic_totals.summary(), json!({"inputTokens":23,"outputTokens":12,"totalTokens":35,"reportedRounds":1,"totalRounds":1}));
+
+        let mut responses = StreamedModelRound::default();
+        responses.consume("responses", &json!({"type":"response.completed","response":{"output":[{"type":"message","content":[{"type":"output_text","text":"done"}]}],"usage":{"input_tokens":31,"output_tokens":13}}}).to_string(), &host, "usage-responses").unwrap();
+        let mut responses_totals = LocalTokenTotals::default();
+        responses_totals.observe(&responses.finish("responses").unwrap(), "responses");
+        assert_eq!(responses_totals.summary(), json!({"inputTokens":31,"outputTokens":13,"totalTokens":44,"reportedRounds":1,"totalRounds":1}));
+
+        let mut zero_output = LocalTokenTotals::default();
+        zero_output.observe(&json!({"usage":{"input_tokens":23,"output_tokens":0}}), "anthropic");
+        assert_eq!(zero_output.summary(), json!({"inputTokens":23,"outputTokens":0,"totalTokens":23,"reportedRounds":1,"totalRounds":1}), "a provider-reported zero is valid, unlike a missing field");
+
+        let mut incomplete = StreamedModelRound::default();
+        incomplete.consume("anthropic", &json!({"type":"message_start","message":{"usage":{"input_tokens":23}}}).to_string(), &host, "usage-incomplete").unwrap();
+        incomplete.consume("anthropic", &json!({"type":"message_stop"}).to_string(), &host, "usage-incomplete").unwrap();
+        let mut incomplete_totals = LocalTokenTotals::default();
+        incomplete_totals.observe(&incomplete.finish("anthropic").unwrap(), "anthropic");
+        assert_eq!(incomplete_totals.summary(), Value::Null, "missing output usage must remain unknown");
+    }
+
+    #[test]
     fn joycode_session_parser_reads_only_required_login_fields() {
         let session = parse_joycode_session(&json!({
             "jdhLoginInfo": {
