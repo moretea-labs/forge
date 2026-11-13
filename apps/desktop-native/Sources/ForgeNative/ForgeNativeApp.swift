@@ -941,8 +941,8 @@ private struct ForgeWorkspaceView: View {
         VStack(alignment:.leading,spacing:10) {
             HStack {
                 VStack(alignment:.leading,spacing:2) {
-                    Text("仓库与工作树").font(.system(size:14,weight:.semibold))
-                    Text("一个仓库可包含多个 Checkout；展开后选择工作树。")
+                    Text("项目与工作区").font(.system(size:14,weight:.semibold))
+                    Text("选择项目后，再选择要使用的工作区。")
                         .font(.system(size:10)).foregroundStyle(ForgePalette.secondary)
                 }
                 Spacer()
@@ -950,7 +950,7 @@ private struct ForgeWorkspaceView: View {
                     Image(systemName:"arrow.clockwise")
                 }
                 .buttonStyle(.plain)
-                .help("刷新 Forge Registry")
+                .help("刷新项目列表")
             }
 
             HStack(spacing:7) {
@@ -1083,7 +1083,7 @@ private struct ForgeWorkspaceView: View {
                         }
                     }
                     if filteredProjects.isEmpty {
-                        Text("没有匹配的已注册项目")
+                        Text("没有匹配的项目")
                             .font(.system(size:11)).foregroundStyle(ForgePalette.secondary)
                             .frame(maxWidth:.infinity).padding(.vertical,18)
                     }
@@ -1101,15 +1101,13 @@ private struct ForgeWorkspaceView: View {
                     } else {
                         Image(systemName:"folder.badge.plus")
                     }
-                    Text(registeringProject ? "正在添加…" : "添加现有 Git 项目…")
+                    Text(registeringProject ? "正在添加…" : "添加本地项目…")
                     Spacer()
                 }
                 .font(.system(size:11.5,weight:.medium))
             }
             .buttonStyle(.plain)
             .disabled(registeringProject || model.busy)
-            Text("只写入 Forge Repository Registry；客户端不维护第二份项目列表。")
-                .font(.system(size:9.5)).foregroundStyle(ForgePalette.secondary)
         }
         .padding(14).frame(width:380)
     }
@@ -2023,7 +2021,7 @@ private struct AgentPane: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help("\(agentWorkspaceStatusDetail)\n点击刷新 Agent 上下文与 Provider 状态")
+            .help("\(agentWorkspaceStatusDetail)\n点击刷新会话状态和模型服务")
             .accessibilityLabel("Agent 状态")
             .accessibilityValue(agentWorkspaceStatusLabel)
             .accessibilityIdentifier("agent.workspace-refresh")
@@ -5977,11 +5975,11 @@ private struct RuntimeSettingsSection: View {
                     Divider()
                     VStack(alignment:.leading,spacing:5) {
                         Text("其他支持 stdio 的 MCP 客户端").font(.system(size:11.5,weight:.semibold))
-                        Text("将命令配置为 MCP 服务启动命令。它会固定暴露当前选中的 Checkout。")
+                        Text("将命令设置为 MCP 服务启动命令；它只会开放当前选中的工作区。")
                         copyableMcpCommand("forge mcp serve --repo \(repoArgument) --transport stdio --profile controller")
                     }
                 } else {
-                    Text("先在左侧选择有效的项目与 Checkout，再显示绑定该工作区的本地客户端命令。")
+                    Text("请先选择项目和工作区，再查看对应的本地连接命令。")
                         .font(.system(size:11))
                         .foregroundStyle(ForgePalette.secondary)
                 }
@@ -6101,7 +6099,7 @@ private struct RuntimeSettingsSection: View {
                                 Text("ChatGPT").tag("chatgpt")
                                 Text("Codex").tag("codex")
                                 Text("Claude Code").tag("claude")
-                                Text("MCP Client").tag("mcp")
+                                Text("MCP 客户端").tag("mcp")
                             }
                             .pickerStyle(.menu)
                             .frame(width:220,alignment:.leading)
