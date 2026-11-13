@@ -25,6 +25,7 @@ Forge 不依赖编码 Agent 或外部插件也能使用。先完成核心工作�
 | GitHub | Issue/Project 同步、PR、云端 Agent | 已认证的 `gh` 和仓库权限。 |
 | Tailscale / Cloudflare | 为 ChatGPT MCP 提供稳定 HTTPS 地址 | 隧道客户端及对应账号/域名。 |
 | Browser | Playwright 浏览、截图和证据 | 浏览器 binary 与允许访问的域名。 |
+| 网站已存密码 | Computer/Browser `autofill_saved_password` 对精确的 HTTPS 登录页、现有浏览器会话、单一可见密码框使用原生可信点击，触发系统/浏览器密码自动填充，密码明文不进入 Forge。只返回是否填入，**不**代表完成登录。 | 已有浏览器会话、OS/浏览器已保存凭据、用户授权原生可信输入。Touch ID、MFA/验证码仍以系统/网站结果为准；应另行验证真实登录会话。 |
 | CodeGraph | 代码关系和影响范围导航 | CodeGraph CLI；Windows 原生暂不自动配置。 |
 | Google Workspace | Gmail、Calendar 助手能力 | 显式 OAuth 与插件权限。OAuth Client ID 是非秘密受管配置；refresh token 与导入的 client secret 保存到平台凭据存储。Forge 在凭据存储存在 `client_secret` 时发送它，否则尝试 public-client/PKCE 路径；具体 OAuth client 是否强制要求 secret，以实时 provider 响应为准。仅保存了 refresh token 或配置了尚未验证的 access token，不等于 Gmail 已可用；只有实际 provider 调用成功才标记 live-ready。若 Google 返回 `invalid_request: client_secret is missing`，优先将与当前 OAuth Client ID 匹配的密钥恢复到 macOS Keychain；若旧密钥无法找回，则在唯一受管配置中改用专用 OAuth Client ID，将对应密钥存入 Keychain，再重新授权。不同 OAuth client 之间不能复用原 refresh token。macOS Keychain 是唯一凭据权威，不得跨进程长期缓存 refresh token 或 client secret；受管 OAuth Client ID 修改后，应重启同版本运行进程以重新载入环境配置，无需切换 Runtime 版本。 |
 | Schedule / Finding | 受监督的周期检查和候选发现 | Canonical Forge Runtime 持续运行，真实动作仍受策略控制。 |

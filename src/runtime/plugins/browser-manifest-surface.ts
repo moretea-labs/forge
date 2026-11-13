@@ -84,7 +84,7 @@ export function browserCapabilities(): AssistantPluginCapability[] {
       description: 'Perform explicit form and pointer interactions on HTTP(S) pages through the persistent Playwright profile.',
       scopes: ['browser.interact', 'browser.profile'],
       actions: [
-        'activate_page', 'click', 'click_text', 'double_click', 'hover', 'focus', 'type', 'fill', 'select_option',
+        'activate_page', 'click', 'click_text', 'double_click', 'hover', 'focus', 'autofill_saved_password', 'type', 'fill', 'select_option',
         'check', 'uncheck', 'press', 'keyboard_shortcut', 'trusted_input', 'dispatch_event', 'wait_for_selector', 'attach_local_file', 'await_file_transfer',
       ],
     },
@@ -515,6 +515,17 @@ export function browserActions(): AssistantPluginActionDescriptor[] {
       readOnly: false, risk: 'remote_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
       scopes: ['browser.interact', 'browser.profile'], resourceClaims: writeRemote,
       argumentsSchema: interactSchema({ selector: { type: 'string' } }, ['selector']),
+    },
+    {
+      actionId: 'autofill_saved_password',
+      title: 'Request browser-saved password autofill',
+      description: 'On an exact existing HTTPS browser session, verify and focus one password field for the browser or OS password manager. Never provide or return a password. An OS prompt or MFA may still require the user, and a filled field is not proof of login.',
+      readOnly: false, risk: 'remote_write', confirmation: 'authorization', defaultTimeoutMs: 60_000, cancellable: true, idempotent: false,
+      scopes: ['browser.interact', 'browser.profile'], resourceClaims: writeRemote,
+      argumentsSchema: interactSchema({
+        expected_origin: { type: 'string', description: 'Exact HTTPS origin of the password form, for example https://accounts.example.com. No URL paths or credential data.' },
+        selector: { type: 'string', minLength: 1, maxLength: 1000 },
+      }, ['session_id', 'expected_origin', 'selector']),
     },
     {
       actionId: 'type',

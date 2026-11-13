@@ -5064,6 +5064,103 @@ async function executeBrowserPluginActionInternal(
           );
         }
       }
+      case 'autofill_saved_password': {
+        const target = resolveActionTarget(input.repoRoot, input.args);
+        if (!stringValue(input.args.session_id) || !target.existingSession) {
+          throw new AssistantPluginError('PLUGIN_BROWSER_PASSWORD_SESSION_REQUIRED',
+            'Saved-password autofill requires an existing exact Browser session.', { retryable: false });
+        }
+        const expectedOrigin = requiredString(input.args.expected_origin, 'expected_origin');
+        let parsedOrigin: URL;
+        try {
+          parsedOrigin = new URL(expectedOrigin);
+        } catch {
+          throw new AssistantPluginError('PLUGIN_BROWSER_PASSWORD_ORIGIN_INVALID',
+            'Saved-password autofill requires an exact HTTPS origin.', { retryable: false });
+        }
+        if (parsedOrigin.protocol !== 'https:' || parsedOrigin.origin !== expectedOrigin
+          || parsedOrigin.username || parsedOrigin.password) {
+          throw new AssistantPluginError('PLUGIN_BROWSER_PASSWORD_ORIGIN_INVALID',
+            'Saved-password autofill requires an exact HTTPS origin without credentials or path.', { retryable: false });
+        }
+        const selector = requiredString(input.args.selector, 'selector');
+        return await withPage(input.actionId, input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
+          if (new URL(page.url()).origin !== expectedOrigin) {
+            throw new AssistantPluginError('PLUGIN_BROWSER_PASSWORD_ORIGIN_MISMATCH',
+              'The exact browser tab is not at the authorized password-form origin.', { retryable: false });
+          }
+          // Never read a password value into the model, Runtime, provider receipt or logs.
+          // The page may return only the presence of a nonempty password field.
+          const checkField = async () => await page.evaluate<{ count: number; password: boolean; filled: boolean; bounds?: { x: number; y: number; visible: boolean } }>((candidate) => {
+            const elements = Array.from(document.querySelectorAll(candidate as string));
+            const field = elements[0];
+            return {
+              count: elements.length,
+              password: field instanceof HTMLInputElement && field.type === 'password',
+              filled: field instanceof HTMLInputElement && field.type === 'password' && field.value.length > 0,
+            bounds: field instanceof HTMLInputElement ? (() => {
+              const rect = field.getBoundingClientRect();
+              const style = getComputedStyle(field);
+              const x = rect.left + rect.width / 2;
+              const y = rect.top + rect.height / 2;
+              const front = document.elementFromPoint(x, y);
+              return {
+                x, y,
+                visible: rect.width > 0 && rect.height > 0 && x >= 0 && y >= 0
+                  && x < window.innerWidth && y < window.innerHeight
+                  && style.visibility !== 'hidden' && style.display !== 'none'
+                  && Number(style.opacity) !== 0
+                  && (front === field || field.contains(front)),
+              };
+            })() : undefined,
+            };
+          }, selector);
+          const before = await checkField();
+          if (before.count !== 1 || !before.password) {
+            throw new AssistantPluginError('PLUGIN_BROWSER_PASSWORD_FIELD_INVALID',
+              'Selector must identify exactly one password input in the current top-level page.', { retryable: false });
+          }
+          if (!before.filled) {
+            if (!before.bounds?.visible || !Number.isFinite(before.bounds.x) || !Number.isFinite(before.bounds.y)) {
+              throw new AssistantPluginError('PLUGIN_BROWSER_PASSWORD_FIELD_NOT_ACTIONABLE',
+                'The password field is not visibly actionable in the exact foreground tab.', { retryable: false });
+            }
+            if (!page.trustedInput && !page.mouse) {
+              throw new AssistantPluginError('PLUGIN_BROWSER_PASSWORD_TRUSTED_INPUT_UNAVAILABLE',
+                'Native saved-password autofill requires the trusted OS/browser input provider.', { retryable: false });
+            }
+            try {
+              // Synthetic DOM click does not activate Chrome/iCloud Passwords suggestions.
+              // Route a real pointer click through the existing trusted-input provider.
+              if (page.trustedInput) {
+                await page.trustedInput({ kind: 'click', x: before.bounds.x, y: before.bounds.y, button: 'left', clickCount: 1 });
+              } else {
+                await page.mouse!.click(before.bounds.x, before.bounds.y, { button: 'left', clickCount: 1 });
+              }
+            } catch {
+              throw new AssistantPluginError('PLUGIN_BROWSER_PASSWORD_AUTOFILL_OUTCOME_UNKNOWN',
+                'Password-field focus may have occurred; observe the exact tab instead of replaying.',
+                { retryable: false, effectOutcome: 'outcome_unknown' });
+            }
+          }
+          if (new URL(page.url()).origin !== expectedOrigin) {
+            throw new AssistantPluginError('PLUGIN_BROWSER_PASSWORD_AUTOFILL_OUTCOME_UNKNOWN',
+              'The browser changed origins during autofill; inspect the resulting session before continuing.',
+              { retryable: false, effectOutcome: 'outcome_unknown' });
+          }
+          const after = await checkField();
+          return {
+            provider: browserResultProvider(connection.provider),
+            sessionId: target.sessionId,
+            origin: expectedOrigin,
+            passwordFieldFilled: after.count === 1 && after.password && after.filled,
+            nextAction: after.count === 1 && after.password && after.filled ? 'verify_login' : 'complete_os_autofill',
+            loginVerified: false,
+            credentialMaterialReturned: false,
+            browserConnection: connection,
+          };
+        }, { requireExistingResource: true });
+      }
       case 'type':
       case 'fill': {
         const target = resolveActionTarget(input.repoRoot, input.args);

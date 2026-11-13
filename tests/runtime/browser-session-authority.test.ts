@@ -969,6 +969,76 @@ describe('browser session compatibility on Computer target authority', () => {
     expect(trustedRefs).toEqual([{ product: 'chrome', windowId: '7', tabId: '9' }]);
   });
 
+  test('saved password request clicks only the exact HTTPS native field with trusted OS input and never returns secrets', async () => {
+    const { controllerHome, repoA } = fixture();
+    mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
+    writeControllerPluginConfig(controllerHome, 'browser', {
+      schemaVersion: 1, enabled: true, provider: 'playwright', browserMode: 'attach_preferred',
+      cdpAttachFallback: 'fail_closed', nativeAttachMode: 'auto', nativeBrowserCandidates: ['chrome'],
+    });
+    const url = 'https://login.example.com/sign-in';
+    const separator = String.fromCharCode(30);
+    const fieldSeparator = String.fromCharCode(31);
+    const metadata = () => ['true', url, 'Sign in', '0', '0', '1200', '800', '7', '9', 'true', 'false'].join(separator);
+    const inventory = () => `false${separator}7${fieldSeparator}9${fieldSeparator}true${fieldSeparator}${url}${fieldSeparator}Sign in`;
+    const clicks: Array<{ x: number; y: number; windowId?: string; tabId?: string }> = [];
+    let filledByOS = false;
+    setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
+    setMacOsBrowserRuntimeHooksForTest({
+      platform: 'darwin', appExists: () => true, processRunning: async () => true,
+      runAppleScript: async (script, args) => {
+        if (script.includes('set outputText to "false"')) return inventory();
+        if (script.includes('execute targetTab javascript')) {
+          if (args[0]?.includes('querySelectorAll') && args[0]?.includes('password')) {
+            return JSON.stringify({ ok: true, value: {
+              count: 1, password: true, filled: filledByOS,
+              bounds: { x: 30, y: 40, visible: true },
+            } });
+          }
+          return JSON.stringify({ ok: true, value: { url, title: 'Sign in' } });
+        }
+        return metadata();
+      },
+      trustedInput: async (request) => {
+        if (request.input.kind !== 'click') throw new Error('Only OS pointer click is allowed for saved autofill');
+        clicks.push({ x: request.input.x, y: request.input.y,
+          windowId: request.ref.windowId, tabId: request.ref.tabId });
+        filledByOS = true;
+      },
+    });
+    const saved = session('saved-login', '2026-11-13T00:00:00.000Z',
+      { native: true, windowId: '7', tabId: '9' });
+    saveBrowserSession(controllerHome, 'repo-a', repoA, {
+      ...saved, url, title: 'Sign in',
+      browser: {
+        ...saved.browser,
+        tab: { key: 'saved-login', index: 0, url, title: 'Sign in', matchedBy: 'saved_url',
+          inventoryCount: 1, capturedAt: '2026-11-13T00:00:00.000Z',
+          ownership: 'user_owned', windowId: '7', tabId: '9' },
+      },
+    });
+    const base = {
+      controllerHome, repoId: 'repo-a', repoRoot: repoA, pluginId: 'browser',
+      actionId: 'autofill_saved_password', origin: { surface: 'mcp' as const, actor: 'test' },
+    };
+    await expect(executeBrowserPluginAction({
+      ...base, requestId: 'password-wrong-site',
+      args: { session_id: 'saved-login', expected_origin: 'https://evil.example.com', selector: 'input[type=password]' },
+    })).rejects.toMatchObject({ code: 'PLUGIN_BROWSER_PASSWORD_ORIGIN_MISMATCH' });
+    expect(clicks).toHaveLength(0);
+    const outcome = await executeBrowserPluginAction({
+      ...base, requestId: 'password-exact-site',
+      args: { session_id: 'saved-login', expected_origin: 'https://login.example.com', selector: 'input[type=password]' },
+    });
+    expect(outcome).toMatchObject({
+      sessionId: 'saved-login', origin: 'https://login.example.com',
+      passwordFieldFilled: true, nextAction: 'verify_login',
+      credentialMaterialReturned: false, loginVerified: false,
+    });
+    expect(JSON.stringify(outcome)).not.toContain('password-value');
+    expect(clicks).toEqual([{ x: 30, y: 40, windowId: '7', tabId: '9' }]);
+  });
+
   test('lists saved metadata without inventory and explicitly reconciles native liveness before close', async () => {
     const { controllerHome, repoA } = fixture();
     mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });

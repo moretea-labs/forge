@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from 'bun:test';
 import { runInNewContext } from 'node:vm';
 import { ComputerProviderError } from '../../packages/plugin-runtime/computer/index';
 import { AssistantPluginError } from '../../src/runtime/plugins/errors';
+import { browserActions, browserCapabilities } from '../../src/runtime/plugins/browser-manifest-surface';
 import { rethrowBrowserAutomationBrokerError } from '../../src/runtime/plugins/browser-automation-service';
 import {
   browserExplicitPostActionWaitMs,
@@ -74,6 +75,25 @@ function provider(options: {
     revalidate: options.revalidate,
   };
 }
+
+test('saved password autofill is an exact-session trusted-foreground action without password material', () => {
+  const descriptor = browserActions().find((action) => action.actionId === 'autofill_saved_password');
+  expect(descriptor).toBeDefined();
+  expect(descriptor?.risk).toBe('remote_write');
+  expect(descriptor?.idempotent).toBe(false);
+  const schema = descriptor?.argumentsSchema as { required?: string[]; properties?: Record<string, unknown> };
+  expect(schema.required).toEqual(expect.arrayContaining(['session_id', 'expected_origin', 'selector']));
+  expect(schema.properties).not.toHaveProperty('text');
+  expect(schema.properties).not.toHaveProperty('password');
+  expect(browserCapabilities().find((cap) => cap.capabilityId === 'browser-interaction')?.actions)
+    .toContain('autofill_saved_password');
+  expect(browserRuntimeActionPolicy('autofill_saved_password')).toEqual({
+    requiredCapabilities: ['browser.trusted_input', 'browser.foreground', 'browser.transaction'],
+    foreground: 'explicit_required',
+    replaySafety: 'non_idempotent',
+  });
+  expect(browserActionCanReplayAfterDispatch('autofill_saved_password')).toBe(false);
+});
 
 test('bounded browser batches use the existing non-replayable mutation transaction authority', () => {
   expect(browserRuntimeActionPolicy('run_steps')).toEqual({

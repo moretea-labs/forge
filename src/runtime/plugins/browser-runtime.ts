@@ -57,7 +57,7 @@ const READ_ACTIONS = new Set([
 const SCREENSHOT_ACTIONS = new Set(['screenshot']);
 const INTERNAL_RESOURCE_READ_ACTIONS = new Set(['list_unpacked_extensions']);
 const INTERNAL_RESOURCE_MUTATION_ACTIONS = new Set(['install_unpacked_extension']);
-const TRUSTED_INPUT_ACTIONS = new Set(['trusted_input', 'activate_page']);
+const TRUSTED_INPUT_ACTIONS = new Set(['trusted_input', 'activate_page', 'autofill_saved_password']);
 const DOM_INTERACTION_ACTIONS = new Set([
   'create_session', 'open_page', 'navigate', 'reload', 'go_back',
   'click', 'click_text', 'double_click', 'hover', 'focus', 'type', 'fill', 'select_option', 'check', 'uncheck',
