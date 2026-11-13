@@ -314,6 +314,7 @@ struct ZenWorkspacePane: View {
                         Image(systemName:"plus").frame(width:28,height:28)
                     }
                     .menuStyle(.borderlessButton)
+                    .fixedSize()
                     .disabled(model.repoId == nil)
                     .help("直接创建 Requirement")
                     .accessibilityIdentifier("zen.requirement.new")
