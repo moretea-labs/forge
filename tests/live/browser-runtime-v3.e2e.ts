@@ -187,7 +187,7 @@ async function action(actionId: string, args: Record<string, unknown>, phase = a
   throw new Error('Browser action retry loop exhausted unexpectedly.');
 }
 
-type ComputerActionTrace = { phase: string; requestId: string; attempt: number };
+type ComputerActionTrace = { phase: string; requestId: string; attempt: number; durationMs?: number };
 
 async function computerAction(
   actionId: string,
@@ -197,9 +197,11 @@ async function computerAction(
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     const requestId = `computer-v3-live-${actionId}-${crypto.randomUUID()}`;
     const phase = context.phase ?? actionId;
-    context.trace?.push({ phase, requestId, attempt });
+    const traceRecord: ComputerActionTrace = { phase, requestId, attempt };
+    context.trace?.push(traceRecord);
+    const startedAt = performance.now();
     try {
-      return await computerPluginAdapter.executeAction({
+      const result = await computerPluginAdapter.executeAction({
         controllerHome,
         repoId: 'computer-v3-live',
         repoRoot,
@@ -209,7 +211,10 @@ async function computerAction(
         args,
         origin: { surface: 'local-ui', actor: 'computer-v3-live' },
       }) as Record<string, unknown>;
+      traceRecord.durationMs = Math.round((performance.now() - startedAt) * 10) / 10;
+      return result;
     } catch (error) {
+      traceRecord.durationMs = Math.round((performance.now() - startedAt) * 10) / 10;
       const providerFailure = error as {
         code?: unknown; retryable?: unknown; effectOutcome?: unknown; details?: unknown;
       };
@@ -576,6 +581,7 @@ try {
     const sequentialBatchSamples: number[] = [];
     const nativeBatchSamples: number[] = [];
     const nativeProviderBatchDurations: number[] = [];
+    const nativeBatchStepTimings: Array<{ sample: number; warmup: boolean; providerBatchDurationMs: number; steps: Array<{ index: number; action: string; durationMs: number }> }> = [];
     const sequentialBatchRequestTrace: Array<{ sample: number; warmup: boolean; requests: ComputerActionTrace[] }> = [];
     const nativeBatchRequestTrace: Array<{ sample: number; warmup: boolean; requests: ComputerActionTrace[] }> = [];
     let taskCount = 0;
@@ -604,6 +610,22 @@ try {
         assert.equal(summary.providerBatchCount, 3, 'three contiguous mutation groups should use three native evaluations');
         assert.equal(summary.providerBatchStepCount, 6, 'all six mutations should be covered by native batches');
         assert.equal(typeof summary.providerBatchDurationMs, 'number');
+        assert(Array.isArray(summary.steps), 'Computer run_steps must return per-step timings');
+        assert.equal(summary.steps.length, 8, 'Computer run_steps must return one timing for each of the 8 actions');
+        const stepTimings = summary.steps.map((step, stepIndex) => {
+          const item = step as Record<string, unknown>;
+          assert.equal(item.index, stepIndex, 'Computer run_steps timings must preserve step order');
+          assert.equal(typeof item.action, 'string');
+          assert.equal(typeof item.durationMs, 'number');
+          assert(Number.isFinite(item.durationMs), 'Computer run_steps duration must be finite');
+          return { index: stepIndex, action: String(item.action), durationMs: Number(item.durationMs) };
+        });
+        nativeBatchStepTimings.push({
+          sample: index,
+          warmup: index === 0,
+          providerBatchDurationMs: summary.providerBatchDurationMs as number,
+          steps: stepTimings,
+        });
         if (index !== 0) nativeProviderBatchDurations.push(summary.providerBatchDurationMs as number);
       } else {
         for (const step of steps) {
@@ -622,6 +644,8 @@ try {
         assert(text.includes(marker + suffix + ':high'), `${product} ${variant} did not persist ${marker}${suffix}`);
       }
       taskCount += 3;
+      assert(requestTrace.every((request) => typeof request.durationMs === 'number' && Number.isFinite(request.durationMs)),
+        'every Computer request trace must include its action wall duration');
       (variant === 'sequential' ? sequentialBatchRequestTrace : nativeBatchRequestTrace)
         .push({ sample: index, warmup: index === 0, requests: requestTrace });
       return Math.round(elapsed * 10) / 10;
@@ -638,6 +662,15 @@ try {
     assert.equal(sequentialBatchSamples.length, batchSamples);
     assert.equal(nativeBatchSamples.length, batchSamples);
     assert.equal(nativeProviderBatchDurations.length, batchSamples);
+    assert.equal(nativeBatchStepTimings.length, batchSamples + 1);
+    const nativeBatchStepDurationByAction = Object.fromEntries(
+      (['fill', 'press', 'wait_for_selector', 'click'] as const).map((action) => {
+        const durations = nativeBatchStepTimings
+          .filter((sample) => !sample.warmup)
+          .flatMap((sample) => sample.steps.filter((step) => step.action === action).map((step) => step.durationMs));
+        return [action, { samples: durations.length, p50Ms: percentile(durations, 0.5), p95Ms: percentile(durations, 0.95) }];
+      }),
+    );
     assertActiveUserTabPreserved(product, userBefore, await productMetadata(product), 'native mutation batch');
 
     const unknownMarker = `computer-${product}-unknown-outcome`;
@@ -732,6 +765,8 @@ try {
         batchedWallP95Ms: percentile(nativeBatchSamples, 0.95),
         providerBatchP50Ms: percentile(nativeProviderBatchDurations, 0.5),
         providerBatchP95Ms: percentile(nativeProviderBatchDurations, 0.95),
+        stepDurationByActionMs: nativeBatchStepDurationByAction,
+        stepTimingSamples: nativeBatchStepTimings,
         p50Speedup: Math.round((percentile(sequentialBatchSamples, 0.5) / percentile(nativeBatchSamples, 0.5)) * 100) / 100,
         unknownOutcomeReconciledOnce: true,
         requestTrace: {
