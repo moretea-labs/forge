@@ -1903,20 +1903,20 @@ final class NativeWorkspaceTests: XCTestCase {
         )
     }
 
-    func testUserRequestAsyncResultsRequireMatchingProjectAndGeneration() {
-        XCTAssertTrue(NativeWorkspace.userRequestsResultIsCurrent(
+    func testProjectScopedAsyncResultsRequireMatchingProjectAndGeneration() {
+        XCTAssertTrue(NativeWorkspace.projectScopedRequestIsCurrent(
             requestRepoId:"repo-a",currentRepoId:"repo-a",
             requestGeneration:2,currentGeneration:2
         ))
-        XCTAssertFalse(NativeWorkspace.userRequestsResultIsCurrent(
+        XCTAssertFalse(NativeWorkspace.projectScopedRequestIsCurrent(
             requestRepoId:"repo-a",currentRepoId:"repo-b",
             requestGeneration:2,currentGeneration:2
         ))
-        XCTAssertFalse(NativeWorkspace.userRequestsResultIsCurrent(
+        XCTAssertFalse(NativeWorkspace.projectScopedRequestIsCurrent(
             requestRepoId:"repo-a",currentRepoId:"repo-a",
             requestGeneration:2,currentGeneration:3
         ))
-        XCTAssertTrue(NativeWorkspace.userRequestsResultIsCurrent(
+        XCTAssertTrue(NativeWorkspace.projectScopedRequestIsCurrent(
             requestRepoId:nil,currentRepoId:nil,
             requestGeneration:4,currentGeneration:4
         ))

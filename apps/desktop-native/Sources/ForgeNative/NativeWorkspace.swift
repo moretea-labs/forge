@@ -571,6 +571,7 @@ final class NativeWorkspace: ObservableObject {
     @Published var imageInputAvailable = false
     @Published private(set) var repositoryAccessMode = "request"
     @Published var repositoryAccessLoading = false
+    private var repositoryAccessRequestGeneration = 0
     @Published var pendingImageURLs: [URL] = []
     @Published var pendingContextPaths: [String] = []
     @Published var checkoutRoot: URL?
@@ -855,6 +856,7 @@ final class NativeWorkspace: ObservableObject {
         scrollToMessageId: String? = nil
     ) {
         let contextChanged = item.repoId != repoId || item.checkoutId != checkoutId
+        if item.repoId != repoId { invalidateRepositoryAccessRequests() }
         invalidateProjectContextRequests()
         conversationScrollRevision += 1
         let targetMessageId = scrollToMessageId.flatMap { target in
@@ -1047,6 +1049,7 @@ final class NativeWorkspace: ObservableObject {
         // An explicit Zen project selection also supersedes an in-flight
         // Agent checkout lookup, even when it reselects the current context.
         invalidateProjectContextRequests()
+        if repoId != id { invalidateRepositoryAccessRequests() }
         if repoId == id && (requestedCheckoutId == nil || checkoutId == requestedCheckoutId) {
             if page == .requirement {
                 Task { await loadPage() }
@@ -1117,6 +1120,7 @@ final class NativeWorkspace: ObservableObject {
                 }
                 // Resolve first, then create a new conversation identity. The old selected
                 // ChatThread remains the sole context authority until this exact point.
+                if repoId != id { invalidateRepositoryAccessRequests() }
                 repoId = id
                 checkoutId = targetCheckoutId
                 checkoutRoot = context.checkoutRoot
@@ -1259,7 +1263,7 @@ final class NativeWorkspace: ObservableObject {
         }
     }
 
-    nonisolated static func userRequestsResultIsCurrent(
+    nonisolated static func projectScopedRequestIsCurrent(
         requestRepoId:String?,currentRepoId:String?,
         requestGeneration:Int,currentGeneration:Int
     ) -> Bool {
@@ -1267,7 +1271,7 @@ final class NativeWorkspace: ObservableObject {
     }
 
     private func userRequestsOperationIsCurrent(_ generation:Int,repoId targetRepoId:String?) -> Bool {
-        Self.userRequestsResultIsCurrent(
+        Self.projectScopedRequestIsCurrent(
             requestRepoId:targetRepoId,currentRepoId:repoId,
             requestGeneration:generation,currentGeneration:userRequestsRequestGeneration
         )
@@ -1456,19 +1460,41 @@ final class NativeWorkspace: ObservableObject {
         return policy["mode"] as? String == "full_access" ? "full_access" : "request"
     }
 
+    private func invalidateRepositoryAccessRequests() {
+        repositoryAccessRequestGeneration += 1
+        repositoryAccessLoading = false
+        repositoryAccessMode = "request"
+    }
+
+    private func repositoryAccessOperationIsCurrent(_ generation:Int,repoId targetRepoId:String) -> Bool {
+        Self.projectScopedRequestIsCurrent(
+            requestRepoId:targetRepoId,currentRepoId:repoId,
+            requestGeneration:generation,currentGeneration:repositoryAccessRequestGeneration
+        )
+    }
+
+    private func finishRepositoryAccessOperation(_ generation:Int,repoId targetRepoId:String) {
+        guard repositoryAccessOperationIsCurrent(generation,repoId:targetRepoId) else { return }
+        repositoryAccessLoading = false
+    }
+
     func loadRepositoryAccess(for targetRepoId:String?=nil) async {
         guard let targetRepoId = targetRepoId ?? repoId else {
+            invalidateRepositoryAccessRequests()
             repositoryAccessMode = "request"
             return
         }
+        guard repoId == targetRepoId,!repositoryAccessLoading else { return }
+        repositoryAccessRequestGeneration += 1
+        let requestGeneration = repositoryAccessRequestGeneration
         repositoryAccessLoading = true
-        defer { repositoryAccessLoading = false }
+        defer { finishRepositoryAccessOperation(requestGeneration,repoId:targetRepoId) }
         do {
             let value = try await ForgeBridge.request("read_repository_access",["repoId":targetRepoId])
-            guard repoId == targetRepoId else { return }
+            guard repositoryAccessOperationIsCurrent(requestGeneration,repoId:targetRepoId) else { return }
             repositoryAccessMode = Self.repositoryAccessMode(value)
         } catch {
-            guard repoId == targetRepoId else { return }
+            guard repositoryAccessOperationIsCurrent(requestGeneration,repoId:targetRepoId) else { return }
             repositoryAccessMode = "request"
             self.error = error.localizedDescription
         }
@@ -1482,17 +1508,20 @@ final class NativeWorkspace: ObservableObject {
         }
         guard mode == "request" || mode == "full_access" else { return false }
         guard !repositoryAccessLoading else { return false }
+        repositoryAccessRequestGeneration += 1
+        let requestGeneration = repositoryAccessRequestGeneration
         repositoryAccessLoading = true
-        defer { repositoryAccessLoading = false }
+        defer { finishRepositoryAccessOperation(requestGeneration,repoId:repoId) }
         do {
             let value = try await ForgeBridge.request("set_repository_access",[
                 "repoId":repoId,"mode":mode
             ])
-            guard self.repoId == repoId else { return false }
+            guard repositoryAccessOperationIsCurrent(requestGeneration,repoId:repoId) else { return false }
             repositoryAccessMode = Self.repositoryAccessMode(value)
             self.error = nil
             return repositoryAccessMode == mode
         } catch {
+            guard repositoryAccessOperationIsCurrent(requestGeneration,repoId:repoId) else { return false }
             self.error = error.localizedDescription
             return false
         }
