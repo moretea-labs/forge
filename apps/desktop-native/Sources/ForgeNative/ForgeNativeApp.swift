@@ -4782,12 +4782,7 @@ private struct RecordsPane: View {
     private func planningAuthoringSheet(_ context: PlanningAuthoringContext) -> some View {
         VStack(alignment:.leading,spacing:16) {
             HStack {
-                VStack(alignment:.leading,spacing:4) {
-                    Text(authoringTitle(context))
-                        .font(.system(size:18,weight:.semibold))
-                    Text(authoringSubtitle(context))
-                        .font(.system(size:11)).foregroundStyle(ForgePalette.secondary)
-                }
+                Text(authoringTitle(context)).font(.system(size:18,weight:.semibold))
                 Spacer()
                 Button { authoring = nil } label: { Image(systemName:"xmark") }
                     .buttonStyle(.plain).disabled(saving)
@@ -4802,7 +4797,7 @@ private struct RecordsPane: View {
             }
 
             VStack(alignment:.leading,spacing:6) {
-                Text(context.kind == .requirement ? "目标 / Outcome" : "Plan 目标")
+                Text("目标")
                     .font(.system(size:11,weight:.medium))
                 TextEditor(text:$draftOutcome)
                     .font(.system(size:12))
@@ -4823,7 +4818,7 @@ private struct RecordsPane: View {
             }
 
             HStack {
-                Text("创建只写入 Forge canonical Requirement / Plan；不会启动执行。")
+                Text("只创建需求和计划，不会开始执行。")
                     .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
                 Spacer()
                 Button("取消") { authoring = nil }.disabled(saving)
@@ -4839,25 +4834,10 @@ private struct RecordsPane: View {
     }
 
     private func authoringTitle(_ context: PlanningAuthoringContext) -> String {
-        if context.kind == .requirement { return "新建 Requirement" }
-        if context.parentPlanId != nil { return "细化子 Plan" }
-        if context.requirementId != nil { return "新建根 Plan" }
-        return "新建 Plan"
-    }
-
-    private func authoringSubtitle(_ context: PlanningAuthoringContext) -> String {
-        if context.kind == .requirement { return "Requirement 是可选的持久需求根，不是使用 Forge 的前置条件。" }
-        if let parentPlanId = context.parentPlanId {
-            let parentTitle = model.records.first(where: { $0.kind == .plan && $0.recordId == parentPlanId })?.title
-            return parentTitle.map { "在「\($0)」下继续细化子 Plan。" }
-                ?? "在父 Plan \(parentPlanId) 下继续细化。"
-        }
-        if let requirementId = context.requirementId {
-            let requirementTitle = model.records.first(where: { $0.kind == .requirement && $0.recordId == requirementId })?.title
-            return requirementTitle.map { "在 Requirement「\($0)」下创建根 Plan。" }
-                ?? "在 Requirement \(requirementId) 下创建根 Plan。"
-        }
-        return "独立 Plan；无需先创建 Requirement。"
+        if context.kind == .requirement { return "新建需求" }
+        if context.parentPlanId != nil { return "细化子计划" }
+        if context.requirementId != nil { return "新建根计划" }
+        return "新建计划"
     }
 
     private func submitAuthoring(_ context: PlanningAuthoringContext) {
