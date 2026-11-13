@@ -946,7 +946,7 @@ describe('browser session compatibility on Computer target authority', () => {
     expect(trustedRefs).toEqual([{ product: 'chrome', windowId: '7', tabId: '9' }]);
   });
 
-  test('legacy native broker without tab inventory creates and closes only the exact plugin-owned tab', async () => {
+  test('lists saved metadata without inventory and explicitly reconciles native liveness before close', async () => {
     const { controllerHome, repoA } = fixture();
     mkdirSync(join(repoA, '.forge', 'plugins'), { recursive: true });
     writeControllerPluginConfig(controllerHome, 'browser', {
@@ -1024,7 +1024,23 @@ describe('browser session compatibility on Computer target authority', () => {
       actionId: 'list_sessions',
       args: {},
     });
-    expect(listed).toMatchObject({ liveNativeSessionCount: 1, unverifiedSessionCount: 0 });
+    expect(listed).toMatchObject({
+      scannedSessionCount: 1,
+      savedSessionCount: 1,
+      liveNativeSessionCount: 0,
+      unverifiedSessionCount: 1,
+    });
+    expect((listed.sessions as Array<{ liveness: string; livenessEvidence: string }>)[0])
+      .toMatchObject({ liveness: 'unverified', livenessEvidence: 'liveness_not_checked' });
+    expect(inventoryCalls).toBe(0);
+
+    const reconciled = await executeBrowserPluginAction({
+      ...baseInput,
+      requestId: 'legacy-inventory-reconcile',
+      actionId: 'reconcile_sessions',
+      args: {},
+    });
+    expect(reconciled).toMatchObject({ liveNativeSessionCount: 1, unverifiedSessionCount: 0 });
     expect(inventoryCalls).toBe(1);
 
     const closed = await executeBrowserPluginAction({

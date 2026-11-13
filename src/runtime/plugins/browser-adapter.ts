@@ -4159,7 +4159,10 @@ async function executeBrowserPluginActionInternal(
         };
       }
       case 'list_sessions': {
-        const inventory = await inspectSavedSessions(input.repoRoot, current);
+        // Listing is a metadata read. A full native Apple Events inventory can
+        // take several seconds for a populated browser; callers that need fresh
+        // liveness must explicitly use reconcile_sessions instead.
+        const saved = listSavedSessions(input.repoRoot);
         const requestedLimit = Math.max(1, Math.min(Math.trunc(positiveNumber(input.args.limit, DEFAULT_BROWSER_SESSION_LIST_LIMIT)), MAX_BROWSER_SESSION_LIST_LIMIT));
         let offset = 0;
         const cursor = stringValue(input.args.cursor);
@@ -4173,33 +4176,32 @@ async function executeBrowserPluginActionInternal(
           }
         }
         const visibleSessions = input.pluginId === 'computer'
-          ? inventory.sessions.filter(({ session }) => session.browser?.provider === 'macos-apple-events')
-          : inventory.sessions;
+          ? saved.filter((session) => session.browser?.provider === 'macos-apple-events')
+          : saved;
         const page = visibleSessions.slice(offset, offset + requestedLimit);
         const nextOffset = offset + page.length;
         return {
           provider: 'playwright',
           sessionCountSemantics: currentRuntimeBrowserSessionExecutionContext() ? 'controller_authority' : 'saved_metadata',
-          scannedSessionCount: inventory.scannedSessionCount,
-          savedSessionCount: inventory.savedSessionCount,
-          liveManagedSessionCount: inventory.liveManagedSessionCount,
-          liveNativeSessionCount: inventory.liveNativeSessionCount,
-          unverifiedSessionCount: inventory.unverifiedSessionCount,
-          deadManagedSessionCount: inventory.deadManagedSessionCount,
-          deadNativeSessionCount: inventory.deadNativeSessionCount,
+          scannedSessionCount: saved.length,
+          savedSessionCount: saved.length,
+          liveManagedSessionCount: 0,
+          liveNativeSessionCount: 0,
+          unverifiedSessionCount: saved.length,
+          deadManagedSessionCount: 0,
+          deadNativeSessionCount: 0,
           limit: requestedLimit,
           totalCount: visibleSessions.length,
           ...(nextOffset < visibleSessions.length ? { nextCursor: Buffer.from(JSON.stringify({ offset: nextOffset }), 'utf8').toString('base64url') } : {}),
-          sessions: page.map(({ session, liveness, evidence, cleanupError }) => ({
+          sessions: page.map((session) => ({
             sessionId: session.sessionId,
             url: session.url,
             title: session.title,
             createdAt: session.createdAt,
             updatedAt: session.updatedAt,
             browser: session.browser,
-            liveness,
-            livenessEvidence: evidence,
-            ...(cleanupError ? { cleanupError } : {}),
+            liveness: 'unverified' as const,
+            livenessEvidence: 'liveness_not_checked' as const,
           })),
         };
       }

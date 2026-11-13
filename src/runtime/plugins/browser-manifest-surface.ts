@@ -212,7 +212,7 @@ export function browserActions(): AssistantPluginActionDescriptor[] {
     {
       actionId: 'list_sessions',
       title: 'List browser sessions',
-      description: 'List saved browser session metadata without secrets or cookies.',
+      description: 'List saved browser session metadata without secrets or cookies. Provider liveness is not probed; use reconcile_sessions for a fresh liveness check.',
       readOnly: true, risk: 'readonly', confirmation: 'none', defaultTimeoutMs: 10_000, cancellable: true, idempotent: true,
       scopes: ['browser.read', 'browser.profile'], resourceClaims: [{ resource: 'provider-state', mode: 'read' }],
       argumentsSchema: {
