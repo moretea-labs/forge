@@ -79,6 +79,22 @@ Native tab-reference preflight and subsequent provider dispatch share one action
 
 The warm-path performance targets remain p95 <= 350 ms for reads, <= 600 ms for DOM interaction plus verification, and <= 700 ms for typed browser-internal-resource operations. Explicit physical-input fallback targets p95 <= 1500 ms and is foreground-capable only when requested. Current-source live evidence is emitted by `tests/live/browser-runtime-v3.e2e.ts`; Work/Plan evidence owns measured p50/p95 values rather than this maintained runbook.
 
+## Computer native batch and latency acceptance
+
+`run_steps` is the bounded public Computer transaction for an already-decided sequence on one existing exact native Browser session. The live V3 harness uses the self-owned loopback fixture and a separate Forge-owned tab; it preserves the user's active tab and closes the exact owned session during cleanup. It does not use Apple Ads or third-party business pages.
+
+The native sequential-versus-batched comparison uses eight ordered steps (six mutations and two explicit `wait_for_selector` observations). Contiguous `fill`/`press`/`click` mutations form three provider batches; waits remain separate. The expected provider-evaluation count is eight for sequential actions and five for the batched transaction. The harness alternates variant order, runs one warm-up per variant, then records ten paired samples by default (bounded to 5–20). It records sequential and batched caller-wrapper p50/p95, summed provider-batch p50/p95, and each request's phase/request ID/attempt. Failure records additionally include the exact session ID, step count, typed outcome and bounded provider details; page content, form values and credentials are not logged. Each sample performs a separate read-only `get_text` readback to verify the three expected fixture records; that readback is not included in the mutation-wall timer. The deliberate unknown-outcome case is reconciled by readback and asserted exactly once, never replayed.
+
+Interpret the reported spans precisely:
+
+- **Caller-wrapper wall** covers the public action sequence measured by the harness; it is not ChatGPT model reasoning or the entire model/tool scheduling boundary.
+- **Forge Server** is the server-side action receipt duration; it is not a provider-only or native-Apple-Event duration.
+- **Provider-batch duration** covers the native mutation-batch call(s), not the separate waits, final session persistence, or independent readback.
+- **Readback** is a separate postcondition measurement and must be reported separately.
+- **MCP Gateway / Tunnel** attribution requires paired request IDs and matching Gateway/Runtime timing rows. Model-host enqueue, poll, and tool-start attribution requires authenticated host timestamps; if unavailable, leave that interval unmeasured rather than assigning the residual to a guessed component.
+
+Keep cold and warm samples, Browser products, Runtime releases, Computer manifest revisions, and Desktop Operator versions separate. Record the exact source/runtime/provider revisions and the bounded request-correlation trace (phase/request ID/attempt) with each report. Failed or ambiguous mutation samples remain in the failure-rate/diagnostic report and are excluded from successful p50/p95. Reconcile `outcome_unknown` before any new mutation and never replay it; a known pre-dispatch refusal may use only its existing typed safe-retry policy. Do not rerun an unknown-effect sample merely to complete a cohort; require a material provider/environment change before repeating the live native E2E.
+
 ## Configuration
 
 The source of truth is `.forge/plugins/browser.json`.
