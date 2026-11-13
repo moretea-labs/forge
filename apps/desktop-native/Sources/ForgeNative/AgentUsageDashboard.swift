@@ -41,7 +41,7 @@ struct AgentUsageDashboard: View {
     }
 
     static func usageCoverageCaption(unreportedMessages: Int, partiallyReportedMessages: Int) -> String {
-        "未回执 \(unreportedMessages) 条 · 部分回执 \(partiallyReportedMessages) 条"
+        "无用量记录 \(unreportedMessages) 条 · 用量不完整 \(partiallyReportedMessages) 条"
     }
 
     static func makeUsageSnapshot(
@@ -178,11 +178,11 @@ struct AgentUsageDashboard: View {
                 }
 
                 HStack(alignment: .top, spacing: 24) {
-                    metric("agent.usage.total", "总 Token", total.formatted())
-                    metric("agent.usage.input", "输入", inputTotal.formatted())
-                    metric("agent.usage.output", "输出", outputTotal.formatted())
+                    metric("agent.usage.total", "已记录 Token", total.formatted())
+                    metric("agent.usage.input", "输入 Token", inputTotal.formatted())
+                    metric("agent.usage.output", "输出 Token", outputTotal.formatted())
                     metric(
-                        "agent.usage.recorded", "有回执消息", usageEntries.count.formatted(),
+                        "agent.usage.recorded", "已记录消息", usageEntries.count.formatted(),
                         Self.usageCoverageCaption(
                             unreportedMessages: unreportedMessages,
                             partiallyReportedMessages: partiallyReported
@@ -193,7 +193,7 @@ struct AgentUsageDashboard: View {
 
                 VStack(alignment: .leading, spacing: 12) {
                     HStack {
-                        Text("每日消耗").font(.system(size: 15, weight: .semibold))
+                        Text("每日用量").font(.system(size: 15, weight: .semibold))
                         Spacer()
                         Text("最近 \(days) 天").font(.system(size: 11)).foregroundStyle(.secondary)
                     }
@@ -229,14 +229,14 @@ struct AgentUsageDashboard: View {
                 .accessibilityIdentifier("agent.usage.daily-chart")
 
                 HStack(alignment: .top, spacing: 32) {
-                    distribution("agent.usage.model-distribution", title: "模型消耗", values: byModel)
-                    distribution("agent.usage.project-distribution", title: "项目消耗", values: byProject)
+                    distribution("agent.usage.model-distribution", title: "模型用量", values: byModel)
+                    distribution("agent.usage.project-distribution", title: "项目用量", values: byProject)
                 }
 
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("最近记录").font(.system(size: 15, weight: .semibold))
+                    Text("最近用量").font(.system(size: 15, weight: .semibold))
                     if usageEntries.isEmpty {
-                        Text("暂无用量回执").font(.system(size: 12)).foregroundStyle(.secondary)
+                        Text("暂无用量记录").font(.system(size: 12)).foregroundStyle(.secondary)
                     } else {
                         ForEach(Array(usageEntries.prefix(12))) { item in
                             HStack(spacing: 10) {
@@ -255,8 +255,8 @@ struct AgentUsageDashboard: View {
                                     .monospacedDigit().frame(width: 90, alignment: .trailing)
                                 if !item.usage.complete {
                                     Image(systemName: "exclamationmark.circle")
-                                        .help("只汇总了 \(item.usage.reportedRounds)/\(item.usage.totalRounds) 个模型回合")
-                                        .accessibilityLabel("部分回合用量")
+                                        .help("用量仅覆盖 \(item.usage.reportedRounds)/\(item.usage.totalRounds) 次模型请求")
+                                        .accessibilityLabel("用量数据不完整")
                                 }
                             }
                             .font(.system(size: 11.5))

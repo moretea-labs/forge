@@ -2201,7 +2201,7 @@ extension NativeWorkspaceTests {
     func testUsageCoverageCaptionSeparatesMissingAndPartialReceipts() {
         XCTAssertEqual(
             AgentUsageDashboard.usageCoverageCaption(unreportedMessages: 2, partiallyReportedMessages: 1),
-            "未回执 2 条 · 部分回执 1 条"
+            "无用量记录 2 条 · 用量不完整 1 条"
         )
     }
 }
