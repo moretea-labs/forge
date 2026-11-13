@@ -42,11 +42,11 @@ function fixture(): string {
   return join(root, 'desktop-operator.sock');
 }
 
-type ProviderFixtureMode = 'legacy' | 'generic' | 'generic_missing_browser' | 'generic_malformed' | 'generic_unsupported';
+type ProviderFixtureMode = 'legacy' | 'generic' | 'generic_missing_browser' | 'generic_malformed' | 'generic_unsupported' | 'computer_input_press_error';
 
 async function startProvider(
   socketPath: string,
-  input: { actions: string[]; calls: string[]; mode?: ProviderFixtureMode; connections?: { count: number }; closeAfterFirstHandshake?: { done: boolean } },
+  input: { actions: string[]; calls: string[]; mode?: ProviderFixtureMode; connections?: { count: number }; closeAfterFirstHandshake?: { done: boolean }; effectApplied?: { value: boolean } },
 ): Promise<void> {
   const server = createServer((socket) => {
     providerSockets.add(socket);
@@ -97,12 +97,29 @@ async function startProvider(
             method: 'computer_execute',
             actions: input.actions,
           }];
+        } else if (mode === 'computer_input_press_error') {
+          result.computerCapabilities = [{
+            capabilityId: COMPUTER_INPUT_CAPABILITY,
+            protocolVersion: 1,
+            method: 'computer_execute',
+            actions: ['desktop_press'],
+          }];
         }
       } else {
         const params = request.params ?? {};
         const genericArguments = params.arguments && typeof params.arguments === 'object'
           ? params.arguments as Record<string, unknown>
           : undefined;
+        if (mode === 'computer_input_press_error' && request.method === 'computer_execute') {
+          if (genericArguments?.action !== 'desktop_press') throw new Error('fixture expected desktop_press');
+          if (input.effectApplied) input.effectApplied.value = true;
+          socket.write(`${JSON.stringify({
+            id: request.id,
+            ok: false,
+            error: { code: 'AX_PRESS_FAILED', message: 'AXPress failed with code -25204', retryable: true, effectOutcome: 'failed' },
+          })}\n`);
+          continue;
+        }
         result = {
           acceptedAction: genericArguments?.action ?? params.action,
           value: 'ok',
@@ -226,6 +243,45 @@ describe('macOS capability broker handshake', () => {
     const result = await provider.executeBrowserCompatibility({ action: 'list_tabs', product: 'chrome' }, 2_000);
     expect(result).toMatchObject({ acceptedAction: 'list_tabs', value: 'ok' });
     expect(calls).toEqual(['handshake', 'macos_browser_automation']);
+  });
+
+  test('classifies an AXPress failure after dispatch as unknown and never retryable', async () => {
+    if (process.platform === 'win32') return;
+    const root = mkdtempSync(join(tmpdir(), 'forge-computer-press-outcome-'));
+    roots.push(root);
+    const controllerHome = join(root, 'controller');
+    const socketPath = join(root, 'registered-desktop-operator.sock');
+    const calls: string[] = [];
+    const effectApplied = { value: false };
+    await startProvider(socketPath, {
+      actions: ['desktop_press'],
+      calls,
+      mode: 'computer_input_press_error',
+      effectApplied,
+    });
+    installExternalPluginRegistration(controllerHome, createDesktopOperatorRegistrationInput({
+      socketPath,
+      pluginVersion: '0.3.0',
+      protocolVersion: '1.0',
+    }));
+
+    const provider = createDesktopOperatorComputerProvider({ lookupRegistration: registrationLookup(controllerHome) });
+    try {
+      await expect(provider.execute({
+        capability: COMPUTER_INPUT_CAPABILITY,
+        action: 'press',
+        interactionId: 'interaction-agent-mode',
+        selector: { title: 'Agent' },
+      }, 2_000)).rejects.toMatchObject({
+        code: 'AX_PRESS_FAILED',
+        retryable: false,
+        effectOutcome: 'outcome_unknown',
+      });
+      expect(effectApplied.value).toBe(true);
+      expect(calls).toEqual(['handshake', 'computer_execute']);
+    } finally {
+      provider.dispose?.();
+    }
   });
 
   test('reuses one negotiated live provider binding across warm Browser compatibility actions', async () => {
