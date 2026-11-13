@@ -5624,7 +5624,7 @@ private struct PluginsPane: View {
                     HStack(spacing:7) {
                         Image(systemName:"magnifyingglass")
                             .foregroundStyle(ForgePalette.secondary)
-                        TextField("搜索名称、Provider 或能力",text:$query)
+                        TextField("搜索名称、服务或能力",text:$query)
                             .textFieldStyle(.plain)
                             .focused($searchFocused)
                             .font(.system(size:12))
@@ -5655,14 +5655,14 @@ private struct PluginsPane: View {
                     .accessibilityIdentifier("plugins.error")
                 }
                 if model.repoId == nil {
-                    emptyState("先选择项目","插件能力会结合当前项目返回。")
+                    emptyState("先选择项目","选择项目后查看可用插件。")
                 } else if model.pluginsLoading && model.plugins.isEmpty {
                     ProgressView("正在读取插件…").controlSize(.small)
                 } else if model.plugins.isEmpty && model.error == nil {
-                    emptyState("没有可用插件","Runtime 当前没有为这个项目注册插件。")
+                    emptyState("暂无插件","当前项目没有可用插件。")
                 } else if !model.plugins.isEmpty {
                     if visiblePlugins.isEmpty {
-                        emptyState("无匹配插件","尝试其他名称、Provider 或能力关键词。")
+                        emptyState("无匹配插件","试试其他名称或能力关键词。")
                     } else {
                         VStack(alignment:.leading,spacing:0) {
                             Text("显示 \(visiblePlugins.count) / \(model.plugins.count) 项")
@@ -5698,7 +5698,7 @@ private struct PluginsPane: View {
                                 Text("已禁用").font(.system(size:10)).foregroundStyle(.secondary)
                             }
                         }
-                        Text("\(item.actionCount) 个动作 · \(item.ready ? "可用" : "未就绪")")
+                        Text("\(item.actionCount) 项操作 · \(item.ready ? "可用" : "未就绪")")
                             .font(.system(size:11.5)).foregroundStyle(ForgePalette.secondary)
                     }
                     Spacer(minLength:6)
@@ -5731,11 +5731,11 @@ private struct PluginsPane: View {
                             }
                         }
                         if item.capabilities.count < item.actionCount {
-                            Text("展示 \(item.capabilities.count) / \(item.actionCount) 项代表能力。")
+                            Text("显示 \(item.capabilities.count) / \(item.actionCount) 项能力。")
                                 .font(.system(size:10)).foregroundStyle(.tertiary)
                         }
                     } else {
-                        Text("当前没有可展示的能力摘要。")
+                        Text("暂无能力说明。")
                             .font(.system(size:11)).foregroundStyle(ForgePalette.secondary)
                     }
 
@@ -5748,7 +5748,7 @@ private struct PluginsPane: View {
                             meta("生命周期",item.lifecycle == "enabled" ? "已启用" : item.lifecycle)
                             meta("健康",item.health == "ready" ? "就绪" : item.health)
                             meta("启用状态",item.enabled ? "已启用" : "已禁用")
-                            meta("动作数","\(item.actionCount)")
+                            meta("操作数","\(item.actionCount)")
                         }
                         .padding(.top,7)
                     }
@@ -5786,7 +5786,7 @@ private struct PluginSettingsSection: View {
             HStack {
                 VStack(alignment:.leading,spacing:4) {
                     Text("插件管理").font(.system(size:13,weight:.semibold))
-                    Text("管理官方插件版本；安装不会自动授予插件操作权限。")
+                    Text("安装或更新不会自动授予操作权限。")
                         .font(.system(size:10.5)).foregroundStyle(.tertiary)
                 }
                 Spacer()
@@ -5804,11 +5804,12 @@ private struct PluginSettingsSection: View {
                 HStack(alignment:.top,spacing:8) {
                     Image(systemName:"exclamationmark.circle")
                     Text(error.contains("controller.plugins") || error.contains("CORE_CAPABILITY")
-                         ? "当前运行时不支持插件管理；仍可在工作区查看已注册的插件。"
-                         : "插件状态无法确认：\(error)")
+                         ? "当前无法管理插件；工作区中的插件列表仍可查看。"
+                         : "插件状态暂时无法确认。")
                         .font(.system(size:11))
                         .fixedSize(horizontal:false,vertical:true)
                         .textSelection(.enabled)
+                        .help(error)
                     Spacer(minLength:6)
                     Button("重试") { Task { await model.loadPluginManagement() } }
                         .buttonStyle(.plain)
@@ -5820,7 +5821,7 @@ private struct PluginSettingsSection: View {
             }
             if model.pluginManagement.isEmpty {
                 if model.pluginManagementLoading {
-                    ProgressView("正在读取官方插件目录…").controlSize(.small)
+                    ProgressView("正在读取可安装插件…").controlSize(.small)
                 } else if model.pluginManagementError == nil {
                     Text("暂无可安装的官方插件。")
                         .font(.system(size:11)).foregroundStyle(ForgePalette.secondary)
@@ -5879,7 +5880,7 @@ private struct PluginSettingsSection: View {
             Button("取消",role:.cancel) { pendingInstallation = nil }
         } message: {
             if let item = pendingInstallation {
-                Text("\(item.name) · \(item.version)\n将更改 Forge 中的插件安装状态，不会自动授予操作权限。")
+                Text("\(item.name) · \(item.version)\n安装或更新不会自动授予操作权限。")
             }
         }
     }
