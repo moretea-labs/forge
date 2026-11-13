@@ -65,12 +65,49 @@ function parseMetadata(value: unknown): BrokerMetadata {
   };
 }
 
+type BrowserBrokerRequest = Parameters<typeof callBrowserAutomationBroker>[0];
+
+async function brokerAction(
+  request: BrowserBrokerRequest,
+  timeoutMs: number,
+  phase: string,
+): Promise<Record<string, unknown>> {
+  const correlationId = `browser-v3-live-broker-${request.action}-${crypto.randomUUID()}`;
+  const target = request as unknown as {
+    product?: string;
+    ref?: { windowId?: string; tabId?: string };
+  };
+  try {
+    return await callBrowserAutomationBroker(request, timeoutMs);
+  } catch (error) {
+    const providerFailure = error as {
+      code?: unknown; retryable?: unknown; effectOutcome?: unknown; details?: unknown;
+    };
+    console.error(JSON.stringify({
+      event: 'browser_broker_failure',
+      phase,
+      correlationId,
+      action: request.action,
+      product: target.product ?? null,
+      windowId: target.ref?.windowId ?? null,
+      tabId: target.ref?.tabId ?? null,
+      timeoutMs,
+      code: providerFailure.code ?? null,
+      retryable: providerFailure.retryable ?? null,
+      effectOutcome: providerFailure.effectOutcome ?? null,
+      details: providerFailure.details ?? null,
+      message: (error instanceof Error ? error.message : String(error)).slice(0, 1_000),
+    }));
+    throw error;
+  }
+}
+
 async function productMetadata(product: MacOsBrowserProduct): Promise<BrokerMetadata> {
-  return parseMetadata((await callBrowserAutomationBroker({ action: 'metadata', product }, 15_000)).value);
+  return parseMetadata((await brokerAction({ action: 'metadata', product }, 15_000, `metadata.current.${product}`)).value);
 }
 
 async function exactMetadata(product: MacOsBrowserProduct, ref: { windowId: string; tabId: string }): Promise<BrokerMetadata> {
-  return parseMetadata((await callBrowserAutomationBroker({ action: 'metadata', product, ref }, 15_000)).value);
+  return parseMetadata((await brokerAction({ action: 'metadata', product, ref }, 15_000, `metadata.exact.${product}`)).value);
 }
 
 function assertActiveUserTabPreserved(product: MacOsBrowserProduct, before: BrokerMetadata, after: BrokerMetadata, stage: string): void {
@@ -99,8 +136,9 @@ function resultTabRef(result: Record<string, unknown>): { windowId: string; tabI
   return { windowId: tab.windowId as string, tabId: tab.tabId as string };
 }
 
-async function action(actionId: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+async function action(actionId: string, args: Record<string, unknown>, phase = actionId): Promise<Record<string, unknown>> {
   for (let attempt = 1; attempt <= 3; attempt += 1) {
+    const requestId = `browser-v3-live-${actionId}-${crypto.randomUUID()}`;
     try {
       return await executeBrowserPluginAction({
         controllerHome,
@@ -108,12 +146,27 @@ async function action(actionId: string, args: Record<string, unknown>): Promise<
         repoRoot,
         pluginId: 'browser',
         actionId,
-        requestId: `browser-v3-live-${actionId}-${crypto.randomUUID()}`,
+        requestId,
         args,
         origin: { surface: 'local-ui', actor: 'browser-v3-live' },
       });
     } catch (error) {
-      const providerFailure = error as { code?: unknown; retryable?: unknown; effectOutcome?: unknown };
+      const providerFailure = error as {
+        code?: unknown; retryable?: unknown; effectOutcome?: unknown; details?: unknown;
+      };
+      console.error(JSON.stringify({
+        event: 'browser_plugin_action_failure',
+        phase,
+        actionId,
+        requestId,
+        attempt,
+        sessionId: typeof args.session_id === 'string' ? args.session_id : undefined,
+        code: providerFailure.code ?? null,
+        retryable: providerFailure.retryable ?? null,
+        effectOutcome: providerFailure.effectOutcome ?? null,
+        details: providerFailure.details ?? null,
+        message: (error instanceof Error ? error.message : String(error)).slice(0, 1_000),
+      }));
       const safeSerializationRetry = providerFailure.code === 'BROWSER_AUTOMATION_SERIALIZATION_BUSY'
         && providerFailure.retryable === true
         && providerFailure.effectOutcome === 'failed';
@@ -125,8 +178,17 @@ async function action(actionId: string, args: Record<string, unknown>): Promise<
   throw new Error('Browser action retry loop exhausted unexpectedly.');
 }
 
-async function computerAction(actionId: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+type ComputerActionTrace = { phase: string; requestId: string; attempt: number };
+
+async function computerAction(
+  actionId: string,
+  args: Record<string, unknown>,
+  context: { phase?: string; trace?: ComputerActionTrace[] } = {},
+): Promise<Record<string, unknown>> {
   for (let attempt = 1; attempt <= 3; attempt += 1) {
+    const requestId = `computer-v3-live-${actionId}-${crypto.randomUUID()}`;
+    const phase = context.phase ?? actionId;
+    context.trace?.push({ phase, requestId, attempt });
     try {
       return await computerPluginAdapter.executeAction({
         controllerHome,
@@ -134,12 +196,28 @@ async function computerAction(actionId: string, args: Record<string, unknown>): 
         repoRoot,
         pluginId: 'computer',
         actionId,
-        requestId: `computer-v3-live-${actionId}-${crypto.randomUUID()}`,
+        requestId,
         args,
         origin: { surface: 'local-ui', actor: 'computer-v3-live' },
       }) as Record<string, unknown>;
     } catch (error) {
-      const providerFailure = error as { code?: unknown; retryable?: unknown; effectOutcome?: unknown };
+      const providerFailure = error as {
+        code?: unknown; retryable?: unknown; effectOutcome?: unknown; details?: unknown;
+      };
+      console.error(JSON.stringify({
+        event: 'computer_action_failure',
+        phase,
+        actionId,
+        requestId,
+        attempt,
+        sessionId: typeof args.session_id === 'string' ? args.session_id : undefined,
+        stepCount: Array.isArray(args.steps) ? args.steps.length : undefined,
+        code: providerFailure.code ?? null,
+        retryable: providerFailure.retryable ?? null,
+        effectOutcome: providerFailure.effectOutcome ?? null,
+        details: providerFailure.details ?? null,
+        message: (error instanceof Error ? error.message : String(error)).slice(0, 1_000),
+      }));
       const safeSerializationRetry = providerFailure.code === 'BROWSER_AUTOMATION_SERIALIZATION_BUSY'
         && providerFailure.retryable === true
         && providerFailure.effectOutcome === 'failed';
@@ -157,7 +235,7 @@ async function closeSession(sessionId: string): Promise<void> {
 }
 
 async function createBrokerTab(product: MacOsBrowserProduct, url: string): Promise<{ windowId: string; tabId: string }> {
-  const created = await callBrowserAutomationBroker({ action: 'create_tab', product, url }, 15_000);
+  const created = await brokerAction({ action: 'create_tab', product, url }, 15_000, `fixture.create_tab.${product}`);
   const [legacyWindowId, legacyTabId] = String(created.value ?? '').split(separator);
   const structuredRef = created.ref as Record<string, unknown> | undefined;
   const navigation = created.navigation as Record<string, unknown> | undefined;
@@ -176,7 +254,7 @@ async function createBrokerTab(product: MacOsBrowserProduct, url: string): Promi
 async function closeBrokerTab(product: MacOsBrowserProduct, ref: { windowId: string; tabId: string }): Promise<void> {
   const index = brokerOwnedTabs.findIndex((entry) => entry.product === product && entry.ref.windowId === ref.windowId && entry.ref.tabId === ref.tabId);
   if (index >= 0) brokerOwnedTabs.splice(index, 1);
-  await callBrowserAutomationBroker({ action: 'close_tab', product, ref }, 10_000).catch(() => undefined);
+  await brokerAction({ action: 'close_tab', product, ref }, 10_000, `fixture.close_tab.${product}`).catch(() => undefined);
 }
 
 async function waitForExactUrl(product: MacOsBrowserProduct, ref: { windowId: string; tabId: string }, predicate: (url: string) => boolean): Promise<BrokerMetadata> {
@@ -416,8 +494,11 @@ try {
     const sequentialBatchSamples: number[] = [];
     const nativeBatchSamples: number[] = [];
     const nativeProviderBatchDurations: number[] = [];
+    const sequentialBatchRequestTrace: Array<{ sample: number; warmup: boolean; requests: ComputerActionTrace[] }> = [];
+    const nativeBatchRequestTrace: Array<{ sample: number; warmup: boolean; requests: ComputerActionTrace[] }> = [];
     let taskCount = 0;
     async function mutationTrial(variant: 'sequential' | 'batched', index: number): Promise<number> {
+      const requestTrace: ComputerActionTrace[] = [];
       const marker = `computer-${product}-${index}-${variant}`;
       const firstTaskIndex = taskCount + 1;
       const secondTaskIndex = taskCount + 2;
@@ -433,7 +514,9 @@ try {
       ];
       const startedAt = performance.now();
       if (variant === 'batched') {
-        const result = await computerAction('run_steps', { session_id: computerSessionId, steps });
+        const result = await computerAction('run_steps', { session_id: computerSessionId, steps }, {
+          phase: `native_batch.batched.sample_${index}.run_steps`, trace: requestTrace,
+        });
         const summary = result.action as Record<string, unknown>;
         assert.equal(summary.completedSteps, 8, 'Computer run_steps must complete all 8 native actions');
         assert.equal(summary.providerBatchCount, 3, 'three contiguous mutation groups should use three native evaluations');
@@ -443,16 +526,22 @@ try {
       } else {
         for (const step of steps) {
           const { action: stepAction, ...stepArgs } = step;
-          await computerAction(stepAction, { session_id: computerSessionId, ...stepArgs });
+          await computerAction(stepAction, { session_id: computerSessionId, ...stepArgs }, {
+            phase: `native_batch.sequential.sample_${index}.${stepAction}`, trace: requestTrace,
+          });
         }
       }
       const elapsed = performance.now() - startedAt;
-      const observed = await computerAction('get_text', { session_id: computerSessionId, selector: '#tasks', max_chars: 10_000 });
+      const observed = await computerAction('get_text', { session_id: computerSessionId, selector: '#tasks', max_chars: 10_000 }, {
+        phase: `native_batch.${variant}.sample_${index}.readback`, trace: requestTrace,
+      });
       const text = String(observed.text ?? '');
       for (const suffix of ['-a', '-b', '-c']) {
         assert(text.includes(marker + suffix + ':high'), `${product} ${variant} did not persist ${marker}${suffix}`);
       }
       taskCount += 3;
+      (variant === 'sequential' ? sequentialBatchRequestTrace : nativeBatchRequestTrace)
+        .push({ sample: index, warmup: index === 0, requests: requestTrace });
       return Math.round(elapsed * 10) / 10;
     }
 
@@ -470,6 +559,7 @@ try {
     assertActiveUserTabPreserved(product, userBefore, await productMetadata(product), 'native mutation batch');
 
     const unknownMarker = `computer-${product}-unknown-outcome`;
+    const unknownOutcomeRequestTrace: ComputerActionTrace[] = [];
     let unknownOutcome: { code?: unknown; details?: Record<string, unknown> } | undefined;
     try {
       await computerAction('run_steps', {
@@ -479,7 +569,7 @@ try {
           { action: 'click', selector: '#add' },
           { action: 'fill', selector: '#missing', text: 'must-not-run' },
         ],
-      });
+      }, { phase: 'native_batch.unknown_outcome_injection', trace: unknownOutcomeRequestTrace });
       throw new Error('Computer accepted a mutation batch with a missing selector.');
     } catch (error) {
       if (error instanceof Error && error.message === 'Computer accepted a mutation batch with a missing selector.') throw error;
@@ -488,21 +578,25 @@ try {
     assert.equal(unknownOutcome?.code, 'PLUGIN_BROWSER_MUTATION_OUTCOME_UNKNOWN');
     assert.equal(unknownOutcome?.details?.failedIndex, 2);
     assert.equal(unknownOutcome?.details?.completedSteps, 2);
-    const reconciled = await computerAction('get_text', { session_id: computerSessionId, selector: '#tasks', max_chars: 10_000 });
+    const reconciled = await computerAction('get_text', { session_id: computerSessionId, selector: '#tasks', max_chars: 10_000 }, {
+      phase: 'native_batch.unknown_outcome_reconcile', trace: unknownOutcomeRequestTrace,
+    });
     const reconciledText = String(reconciled.text ?? '');
     assert.equal(reconciledText.split(unknownMarker + ':high').length - 1, 1, 'unknown mutation must be reconciled, never replayed');
-    const computerClosed = await computerAction('close_session', { session_id: computerSessionId });
+    const computerClosed = await computerAction('close_session', { session_id: computerSessionId }, {
+      phase: 'native_batch.close_session', trace: unknownOutcomeRequestTrace,
+    });
     openSessions.delete(computerSessionId);
     assert.equal(computerClosed.closed, true);
     assert.equal(computerClosed.resourceClosed, true);
     assertActiveUserTabPreserved(product, userBefore, await productMetadata(product), 'Computer close_session');
 
-    await callBrowserAutomationBroker({
+    await brokerAction({
       action: 'execute_javascript',
       product,
       ref,
       source: `JSON.stringify((()=>{ history.pushState({}, '', '/drifted'); document.querySelector('#main').textContent='Forge Drifted'; return {url:location.href,title:document.title}; })())`,
-    }, 5_000);
+    }, 5_000, `fixture.external_same_origin_drift.${product}`);
     assertActiveUserTabPreserved(product, userBefore, await productMetadata(product), 'external same-origin drift');
     invalidateMacOsBrowserPageHandles();
     const reboundStarted = performance.now();
@@ -562,6 +656,11 @@ try {
         providerBatchP95Ms: percentile(nativeProviderBatchDurations, 0.95),
         p50Speedup: Math.round((percentile(sequentialBatchSamples, 0.5) / percentile(nativeBatchSamples, 0.5)) * 100) / 100,
         unknownOutcomeReconciledOnce: true,
+        requestTrace: {
+          sequential: sequentialBatchRequestTrace,
+          batched: nativeBatchRequestTrace,
+          unknownOutcome: unknownOutcomeRequestTrace,
+        },
       },
       latencyMs: {
         create: Math.round(createMs * 10) / 10,
