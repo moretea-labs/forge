@@ -798,7 +798,7 @@ private struct ForgeWorkspaceView: View {
             Text(thread.title)
                 .font(.system(size:12,weight:.medium))
                 .lineLimit(2)
-            Text("仅删除这条本地记录，不影响项目、Requirement / Plan 或 Provider 会话。")
+            Text("仅删除这条本地记录，不影响项目、需求与计划或模型会话。")
                 .font(.system(size:11))
                 .foregroundStyle(ForgePalette.secondary)
                 .fixedSize(horizontal:false,vertical:true)
@@ -1583,7 +1583,7 @@ private struct AgentPane: View {
                                         } label: {
                                             HStack(spacing:6) {
                                                 Image(systemName:"brain.head.profile")
-                                                Text("Provider 返回的思考内容")
+                                                Text("思考过程")
                                                 Image(systemName:showProviderThinking ? "chevron.up" : "chevron.down")
                                                     .font(.system(size:9))
                                             }
@@ -1892,7 +1892,7 @@ private struct AgentPane: View {
             }
             Button("取消",role:.cancel) { pendingAgentCommand = nil }
         } message: {
-            Text("仅将这段命令作为请求提交给现有 Agent；执行必须经过 Forge Repository AccessPolicy 和 Process Runtime。可能产生文件改动，请先确认命令内容。")
+            Text("这会把命令发送给当前 Agent，可能修改项目文件。请先确认命令内容。")
         }
         .onAppear {
             if !model.busy { composerFocused = true }
@@ -4972,11 +4972,11 @@ private struct RecordsPane: View {
                             .textSelection(.enabled)
                     }
                     if !status.providerReady {
-                        Text("Runtime 尚未检测到 DeepSeek 凭据；可以先批准，但开始执行前需要 Runtime provider 就绪。")
+                        Text("模型服务尚未就绪。可以先批准，但开始执行前需要先完成模型连接。")
                             .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
                     }
                 } else {
-                    Text("Requirement 才需要显式批准无人值守；普通会话与独立 Plan 不受影响。")
+                    Text("只有无人值守任务需要单独批准，普通会话和独立计划不受影响。")
                         .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
                 }
 
@@ -5016,7 +5016,7 @@ private struct RecordsPane: View {
                     .buttonStyle(.plain)
                     .disabled(model.autopilotLoading)
                 }
-                Text("批准与开始执行是两个动作。Autopilot 只拥有 workspace-write 上限，不允许 push、发布、部署、Runtime 切换或破坏性操作。")
+                Text("批准不等于立即执行。此任务只允许修改当前工作区，不会推送、发布、部署、切换运行环境或执行破坏性操作。")
                     .font(.system(size:9.5)).foregroundStyle(ForgePalette.secondary)
             }
         }
@@ -5936,11 +5936,7 @@ private struct RuntimeSettingsSection: View {
 
     var body: some View {
         VStack(alignment:.leading,spacing:16) {
-            VStack(alignment:.leading,spacing:5) {
-                Text("连接").font(.system(size:13,weight:.semibold))
-                Text("连接配置和外部客户端接入；Runtime 细节按需展开。")
-                    .font(.system(size:11.5)).foregroundStyle(ForgePalette.secondary)
-            }
+            Text("连接").font(.system(size:13,weight:.semibold))
 
             connectionCard
 
@@ -5962,7 +5958,7 @@ private struct RuntimeSettingsSection: View {
             } label: {
                 HStack(spacing:8) {
                     Circle().fill(runtimeColor).frame(width:7,height:7)
-                    Text("Runtime 与诊断")
+                    Text("运行状态与诊断")
                         .font(.system(size:11.5,weight:.semibold))
                     Spacer()
                     Text(model.runtimeLabel)
