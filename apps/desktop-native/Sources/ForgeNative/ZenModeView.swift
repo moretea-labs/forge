@@ -1227,6 +1227,7 @@ private struct ZenTreeCanvas: View {
                 Image(systemName:"ellipsis").frame(width:27,height:26)
             }
             .menuStyle(.borderlessButton)
+            .fixedSize()
             .simultaneousGesture(TapGesture().onEnded {
                 onSelect(item)
             })
