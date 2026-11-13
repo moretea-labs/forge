@@ -2358,3 +2358,78 @@ extension NativeWorkspaceTests {
         XCTAssertEqual(snapshot.entries.first?.usage.totalRounds, 2)
     }
 }
+
+
+extension NativeWorkspaceTests {
+    func testAssetsProjectionIndexesOnlyExplicitAssistantRemoteAndUserSelectedLocalImages() {
+        var projectA = ChatThread()
+        projectA.title = "Project A"
+        projectA.repoId = "repo-a"
+        let assistantRemoteA = ChatMessage(
+            role: "assistant", text: "![Chart](https://example.com/chart.png)",
+            createdAt: Date(timeIntervalSince1970: 300)
+        )
+        var userLocalA = ChatMessage(
+            role: "user", text: "Attached", createdAt: Date(timeIntervalSince1970: 200)
+        )
+        userLocalA.attachmentPaths = ["/tmp/local-a.png", "/tmp/local-b.png"]
+        let userMarkdownA = ChatMessage(
+            role: "user", text: "![Not an assistant resource](https://example.com/user.png)"
+        )
+        var assistantLocalA = ChatMessage(role: "assistant", text: "No user attachment")
+        assistantLocalA.attachmentPaths = ["/tmp/not-user-selected.png"]
+        projectA.messages = [assistantRemoteA, userLocalA, userMarkdownA, assistantLocalA]
+
+        var projectB = ChatThread()
+        projectB.title = "Project B"
+        projectB.repoId = "repo-b"
+        let assistantRemoteB = ChatMessage(
+            role: "assistant", text: "![Diagram](https://example.com/diagram.png)",
+            createdAt: Date(timeIntervalSince1970: 250)
+        )
+        var userLocalB = ChatMessage(
+            role: "user", text: "Attached", createdAt: Date(timeIntervalSince1970: 150)
+        )
+        userLocalB.attachmentPaths = ["/tmp/local-c.png"]
+        projectB.messages = [assistantRemoteB, userLocalB]
+
+        let all = AgentAssetsDashboard.makeResources(
+            from: [projectA, projectB], selectedRepoId: "",
+            showUserImages: true, showRemoteImages: true
+        )
+        XCTAssertEqual(all.count, 5)
+        XCTAssertEqual(all.map(\.date), all.map(\.date).sorted(by: >))
+        XCTAssertEqual(all.map(\.source), [
+            "https://example.com/chart.png",
+            "https://example.com/diagram.png",
+            "/tmp/local-a.png", "/tmp/local-b.png", "/tmp/local-c.png"
+        ])
+        XCTAssertEqual(all.filter(\.remote).count, 2)
+        XCTAssertEqual(all.filter { !$0.remote }.count, 3)
+        XCTAssertEqual(all.first?.title, "Chart")
+        XCTAssertEqual(all.first?.threadTitle, "Project A")
+        XCTAssertEqual(all.first?.threadId, projectA.id)
+        XCTAssertEqual(all.first?.messageId, assistantRemoteA.id)
+
+        let projectAOnly = AgentAssetsDashboard.makeResources(
+            from: [projectA, projectB], selectedRepoId: "repo-a",
+            showUserImages: true, showRemoteImages: true
+        )
+        XCTAssertEqual(projectAOnly.count, 3)
+        XCTAssertTrue(projectAOnly.allSatisfy { $0.threadId == projectA.id })
+
+        let localOnly = AgentAssetsDashboard.makeResources(
+            from: [projectA, projectB], selectedRepoId: "",
+            showUserImages: true, showRemoteImages: false
+        )
+        XCTAssertEqual(localOnly.count, 3)
+        XCTAssertTrue(localOnly.allSatisfy { !$0.remote })
+
+        let remoteOnly = AgentAssetsDashboard.makeResources(
+            from: [projectA, projectB], selectedRepoId: "",
+            showUserImages: false, showRemoteImages: true
+        )
+        XCTAssertEqual(remoteOnly.count, 2)
+        XCTAssertTrue(remoteOnly.allSatisfy(\.remote))
+    }
+}

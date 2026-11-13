@@ -14,7 +14,7 @@ struct AgentAssetsDashboard: View {
         return control.map { "\(prefix).\($0)" } ?? prefix
     }
 
-    private struct Resource: Identifiable {
+    struct Resource: Identifiable {
         let id: String
         let title: String
         let threadTitle: String
@@ -25,8 +25,13 @@ struct AgentAssetsDashboard: View {
         let remote: Bool
     }
 
-    private var resources: [Resource] {
-        let threads = model.threads.filter { selectedRepoId.isEmpty || $0.repoId == selectedRepoId }
+    static func makeResources(
+        from sourceThreads: [ChatThread],
+        selectedRepoId: String,
+        showUserImages: Bool,
+        showRemoteImages: Bool
+    ) -> [Resource] {
+        let threads = sourceThreads.filter { selectedRepoId.isEmpty || $0.repoId == selectedRepoId }
         let items = threads.flatMap { thread -> [Resource] in
             thread.messages.flatMap { message -> [Resource] in
                 var values: [Resource] = []
@@ -64,6 +69,15 @@ struct AgentAssetsDashboard: View {
             }
         }
         return items.sorted { $0.date > $1.date }
+    }
+
+    private var resources: [Resource] {
+        Self.makeResources(
+            from: model.threads,
+            selectedRepoId: selectedRepoId,
+            showUserImages: showUserImages,
+            showRemoteImages: showRemoteImages
+        )
     }
 
     var body: some View {
