@@ -269,9 +269,6 @@ struct AgentUsageDashboard: View {
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier("agent.usage.recent-records")
 
-                Text("仅汇总 Provider 返回的实际用量；缺少回执的回合不估算。")
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(.secondary)
             }
             .padding(26)
             .frame(maxWidth: 960, alignment: .leading)
