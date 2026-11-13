@@ -51,8 +51,8 @@ struct ForgeNativeApp: App {
                 }.keyboardShortcut("k")
                 Divider()
                 Button("显示会话") { workspace.show(.agent) }.keyboardShortcut("1")
-                Button("显示 Requirement") { workspace.zenMode = true; workspace.show(.requirement) }.keyboardShortcut("2")
-                Button("显示 Plan") { workspace.show(.plan) }.keyboardShortcut("3")
+                Button("显示需求") { workspace.zenMode = true; workspace.show(.requirement) }.keyboardShortcut("2")
+                Button("显示计划") { workspace.show(.plan) }.keyboardShortcut("3")
                 Button("显示知识库") { workspace.show(.knowledge) }.keyboardShortcut("4")
                 Button("消耗统计") { workspace.zenMode = false; workspace.show(.usage) }.keyboardShortcut("5")
                 Button("图片资源") { workspace.zenMode = false; workspace.show(.assets) }.keyboardShortcut("6")
@@ -1924,10 +1924,10 @@ private struct AgentPane: View {
     private var agentEmptyStateDescription: String {
         if model.checkoutId == nil {
             return model.projects.isEmpty
-                ? "添加本地 Git 项目后即可处理代码；不绑定项目也可以直接对话。"
-                : "选择项目与 checkout 后即可处理代码；不绑定项目也可以直接对话。"
+                ? "添加本地项目后即可处理代码；也可以不选项目直接对话。"
+                : "选择项目和工作区后即可处理代码；也可以不选项目直接对话。"
         }
-        if !model.checkoutIsAvailable { return "当前 checkout 尚未就绪，请重新选择项目或 checkout。" }
+        if !model.checkoutIsAvailable { return "当前工作区尚未就绪，请重新选择项目或工作区。" }
         if !model.selectedProviderReady { return "已选择项目。设置可用模型后即可开始任务。" }
         return "描述你想完成的工作，或选择下方的常用操作。"
     }
@@ -1938,10 +1938,10 @@ private struct AgentPane: View {
             if model.selectedProvider == "joycode" { return "JoyCode 未就绪" }
             return model.selectedProvider == "api" ? "API 未配置" : "Codex 未就绪"
         }
-        if model.thread?.repoId != nil && model.thread?.checkoutId == nil { return "缺 checkout" }
+        if model.thread?.repoId != nil && model.thread?.checkoutId == nil { return "缺少工作区" }
         if model.thread?.repoId == nil { return "未绑定项目" }
-        if model.checkoutContextLoading { return "验证 checkout" }
-        if !model.checkoutIsAvailable { return "checkout 不可用" }
+        if model.checkoutContextLoading { return "验证工作区" }
+        if !model.checkoutIsAvailable { return "工作区不可用" }
         return "本地可执行"
     }
 
@@ -1965,14 +1965,14 @@ private struct AgentPane: View {
             return model.selectedProvider == "api" ? "兼容 API 配置尚未就绪；请检查 Endpoint、必要的 API Key 与模型" : model.provider
         }
         if model.thread?.repoId != nil && model.thread?.checkoutId == nil {
-            return "当前会话绑定了项目，但没有有效 checkout；请选择项目后新建会话。"
+            return "当前会话关联了项目，但没有可用工作区；请重新选择项目后新建会话。"
         }
-        if model.checkoutContextLoading { return "正在从 Forge Registry 验证当前会话绑定的 checkout。" }
+        if model.checkoutContextLoading { return "正在验证当前会话关联的工作区。" }
         if model.thread?.repoId != nil && !model.checkoutIsAvailable {
-            return "当前 checkout 路径不可用或缺少 Git 元数据；请切换到有效 checkout，避免在未验证的项目上执行。"
+            return "当前工作区不可用或缺少 Git 信息；请切换到有效工作区后再执行。"
         }
-        if model.thread?.repoId == nil { return "当前会话可以对话，但没有项目/checkout 执行上下文。" }
-        return "本地 Provider 与当前 Git checkout 可用于执行；远程 MCP 隧道状态单独显示。"
+        if model.thread?.repoId == nil { return "当前会话可以对话，但没有项目工作区，无法执行代码操作。" }
+        return "本地模型服务和当前工作区已就绪；远程连接状态单独显示。"
     }
 
     private var agentWorkspaceBar: some View {
@@ -1992,7 +1992,7 @@ private struct AgentPane: View {
                                     in:RoundedRectangle(cornerRadius:7,style:.continuous))
                 }
             }
-            .help(model.checkoutId.map { "checkout: \($0)" } ?? "当前项目没有 checkout")
+            .help(model.checkoutId.map { "工作区 ID：\($0)" } ?? "当前项目没有工作区")
 
             Spacer(minLength:12)
 
@@ -2113,10 +2113,10 @@ private struct AgentPane: View {
         .buttonStyle(.plain)
         .disabled(model.checkoutId == nil)
         .help(workspaceWorkingChangeCount > 0
-              ? "查看当前 checkout 的 \(workspaceWorkingChangeCount) 个 Working Tree 文件"
-              : "查看当前 checkout 的未提交改动")
-        .accessibilityLabel("Git Changes")
-        .accessibilityValue(workspaceWorkingChangeCount > 0 ? "\(workspaceWorkingChangeCount) 个 Working Tree 文件" : "未加载 Working Tree 计数")
+              ? "查看当前工作区的 \(workspaceWorkingChangeCount) 个未提交文件"
+              : "查看当前工作区的未提交改动")
+        .accessibilityLabel("改动审查")
+        .accessibilityValue(workspaceWorkingChangeCount > 0 ? "\(workspaceWorkingChangeCount) 个未提交文件" : "未加载未提交文件数量")
         .accessibilityIdentifier("agent.changes")
     }
 
@@ -2145,9 +2145,9 @@ private struct AgentPane: View {
         let requirementId = model.thread?.requirementId
         let title: String
         if let planId, !planId.isEmpty {
-            title = compact ? "" : "Plan · \(String(planId.prefix(8)))"
+            title = compact ? "" : "计划 · \(String(planId.prefix(8)))"
         } else if let requirementId, !requirementId.isEmpty {
-            title = compact ? "" : "Req · \(String(requirementId.prefix(8)))"
+            title = compact ? "" : "需求 · \(String(requirementId.prefix(8)))"
         } else {
             title = compact ? "" : "规划"
         }
@@ -2170,14 +2170,14 @@ private struct AgentPane: View {
         .buttonStyle(.plain)
         .disabled(model.repoId == nil)
         .help(planId?.isEmpty == false
-              ? "当前会话已绑定 Plan；点击查看或更换"
+              ? "当前会话已关联计划；点击查看或更换"
               : (requirementId?.isEmpty == false
-                 ? "当前会话已绑定 Requirement；点击查看或更换"
+                 ? "当前会话已关联需求；点击查看或更换"
                  : "在当前会话中选择规划上下文"))
         .accessibilityLabel("规划")
         .accessibilityValue(planId?.isEmpty == false
-                            ? "已绑定 Plan"
-                            : (requirementId?.isEmpty == false ? "已绑定 Requirement" : "未绑定"))
+                            ? "已关联计划"
+                            : (requirementId?.isEmpty == false ? "已关联需求" : "未关联"))
         .accessibilityHint("在当前会话中打开规划上下文，不切换工作区页面")
         .accessibilityIdentifier("agent.semantic-context.planning")
         .popover(isPresented:semanticInspectorBinding(.planning),arrowEdge:.top) {
@@ -2228,7 +2228,7 @@ private struct AgentPane: View {
         }
         .buttonStyle(.plain)
         .disabled(model.busy || model.checkoutId == nil)
-        .help(model.checkoutId == nil ? "先选择带有 active checkout 的项目" : title)
+        .help(model.checkoutId == nil ? "请先选择包含可用工作区的项目" : title)
     }
 
     private func activityTrailRow(_ event: AgentLiveActivityEvent) -> some View {
@@ -2375,8 +2375,8 @@ private struct AgentPane: View {
         .menuStyle(.borderlessButton)
         .fixedSize()
         .disabled(providerSelectionLocked)
-        .help("切换当前会话的 Provider；已有消息保留，默认值只影响新会话")
-        .accessibilityLabel("Provider")
+        .help("切换当前会话的模型服务；已有消息保留，默认服务只影响新会话")
+        .accessibilityLabel("模型服务")
         .accessibilityValue(quickProviderLabel)
         .accessibilityIdentifier("agent.provider.quick")
     }
@@ -2401,7 +2401,7 @@ private struct AgentPane: View {
                 Button(label) {}
                     .disabled(true)
                 Divider()
-                Button("前往 Provider 设置…") {
+                Button("前往模型服务设置…") {
                     model.show(.settings)
                 }
                 .disabled(model.busy)
@@ -2412,7 +2412,7 @@ private struct AgentPane: View {
         .menuStyle(.borderlessButton)
         .fixedSize()
         .disabled(model.busy || (model.selectedProvider == "codex" && model.agentModels.isEmpty))
-        .help(model.selectedProvider == "codex" ? "切换模型" : "当前外部 Provider 模型；模型配置在设置中管理")
+        .help(model.selectedProvider == "codex" ? "切换模型" : "当前模型由外部服务提供；配置可在设置中管理")
         .accessibilityLabel("模型")
         .accessibilityValue(quickModelLabel)
         .accessibilityIdentifier("agent.model.quick")
@@ -2451,9 +2451,9 @@ private struct AgentPane: View {
                 Task { _ = await model.setRepositoryAccessMode("request") }
             } label: {
                 if model.repositoryAccessMode == "request" {
-                    Label("Request",systemImage:"checkmark")
+                    Label("请求权限",systemImage:"checkmark")
                 } else {
-                    Text("Request")
+                    Text("请求权限")
                 }
             }
 
@@ -2461,23 +2461,23 @@ private struct AgentPane: View {
                 Task { _ = await model.setRepositoryAccessMode("full_access") }
             } label: {
                 if model.repositoryAccessMode == "full_access" {
-                    Label("Full Access",systemImage:"checkmark")
+                    Label("完全访问",systemImage:"checkmark")
                 } else {
-                    Text("Full Access")
+                    Text("完全访问")
                 }
             }
         } label: {
             quickControlLabel(
-                model.repositoryAccessMode == "full_access" ? "Full Access" : "Request",
+                model.repositoryAccessMode == "full_access" ? "完全访问" : "请求权限",
                 systemImage:model.repositoryAccessMode == "full_access" ? "checkmark.shield" : "lock"
             )
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
         .disabled(model.busy || model.repositoryAccessLoading)
-        .help("当前外部 Provider 的仓库权限")
+        .help("当前模型服务的项目权限")
         .accessibilityLabel("仓库权限")
-        .accessibilityValue(model.repositoryAccessMode == "full_access" ? "Full Access" : "Request")
+        .accessibilityValue(model.repositoryAccessMode == "full_access" ? "完全访问" : "请求权限")
         .accessibilityIdentifier("agent.repository-access.quick")
     }
 
