@@ -1,19 +1,40 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+MODE="${1:-install}"
+case "$MODE" in
+  install) ;;
+  --build-only) ;;
+  *) printf 'Usage: %s [--build-only]\n' "$0" >&2; exit 2 ;;
+esac
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-APP="$HOME/Applications/Forge.app"
-TMP="/tmp/Forge-native-preview.app"
-
 cd "$ROOT"
 SOURCE_REVISION="$(git rev-parse HEAD)"
+
+if [[ "$MODE" == "--build-only" ]]; then
+  if [[ -n "$(git status --porcelain)" ]]; then
+    echo "Forge preview build-only requires a clean source checkout" >&2
+    exit 1
+  fi
+  APP="$ROOT/apps/desktop-native/.build/review/Forge-preview-$SOURCE_REVISION.app"
+  if [[ -e "$APP" ]]; then
+    echo "Forge preview candidate already exists: $APP" >&2
+    exit 1
+  fi
+else
+  APP="$HOME/Applications/Forge.app"
+fi
+
+TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/Forge-native-preview.XXXXXX")"
+TMP="$TMP_ROOT/Forge.app"
+trap 'rm -rf "$TMP_ROOT"' EXIT
 
 swift test --package-path apps/desktop-native
 swift build -c release --package-path apps/desktop-native
 cargo build --release --manifest-path apps/desktop/src-tauri/Cargo.toml
 
-rm -rf "$TMP"
 mkdir -p "$TMP/Contents/MacOS" "$TMP/Contents/Resources"
 
 cp apps/desktop-native/.build/out/Products/Release/ForgeNative "$TMP/Contents/MacOS/Forge"
@@ -76,6 +97,21 @@ else
   echo "Forge preview warning: no stable code-signing identity; managed Keychain credentials may require re-import after rebuild" >&2
 fi
 codesign --verify --deep --strict "$TMP"
+
+if [[ "$MODE" == "--build-only" ]]; then
+  if [[ "$(git rev-parse HEAD)" != "$SOURCE_REVISION" ]] || [[ -n "$(git status --porcelain)" ]]; then
+    echo "Forge preview source changed during build; refusing to publish candidate" >&2
+    exit 1
+  fi
+  mkdir -p "$(dirname "$APP")"
+  if [[ -e "$APP" ]]; then
+    echo "Forge preview candidate appeared during build; refusing to overwrite: $APP" >&2
+    exit 1
+  fi
+  mv "$TMP" "$APP"
+  echo "Forge preview candidate built revision=$SOURCE_REVISION path=$APP"
+  exit 0
+fi
 
 # Only retire client previews. Forge Runtime and Forge Desktop Operator are separate products.
 pkill -f "^$APP/Contents/MacOS/Forge$" 2>/dev/null || true

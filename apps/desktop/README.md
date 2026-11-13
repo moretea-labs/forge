@@ -10,6 +10,14 @@ Install or refresh the one supported local preview with:
 bash apps/desktop-native/install-preview.sh
 ```
 
+Build and sign the same SwiftUI candidate without replacing or launching the current preview:
+
+```sh
+bash apps/desktop-native/install-preview.sh --build-only
+```
+
+Build-only output is `apps/desktop-native/.build/review/Forge-preview-<source-revision>.app`; it requires a clean checkout and never terminates or opens a product process.
+
 This keeps only `~/Applications/Forge.app` as the client preview. `Forge Desktop Operator.app` is a separate development capability and is not a client preview.
 
 ## Development
