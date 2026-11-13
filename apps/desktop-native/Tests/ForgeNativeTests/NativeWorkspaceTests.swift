@@ -1625,6 +1625,11 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(rows[0].authorizationExpiresAt,"2026-12-01T00:00:00Z")
     }
 
+    func testPluginManagementMissingCatalogUsesActionableErrorCopy() {
+        XCTAssertEqual(NativeWorkspace.pluginManagementLoadErrorMessage("ENOENT"), "插件列表无法加载，请重试。")
+        XCTAssertEqual(NativeWorkspace.pluginManagementLoadErrorMessage("network unavailable"), "network unavailable")
+    }
+
     func testPluginInstallationRequiresConfirmedVersionFromAuthority() {
         let target = NativeWorkspace.pluginManagementRows(["plugins":[[
             "pluginId":"figma","name":"Figma","version":"0.3.0","description":"Bridge",

@@ -1811,6 +1811,10 @@ final class NativeWorkspace: ObservableObject {
         return nil
     }
 
+    nonisolated static func pluginManagementLoadErrorMessage(_ message: String) -> String {
+        message == "ENOENT" ? "插件列表无法加载，请重试。" : message
+    }
+
     func loadPluginManagement() async {
         guard !pluginManagementLoading else { return }
         pluginManagementLoading = true
@@ -1821,7 +1825,7 @@ final class NativeWorkspace: ObservableObject {
             pluginManagementError = nil
         } catch {
             // A failed refresh must not erase the last confirmed directory.
-            pluginManagementError = error.localizedDescription
+            pluginManagementError = Self.pluginManagementLoadErrorMessage(error.localizedDescription)
         }
     }
 
