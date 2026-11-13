@@ -1,0 +1,172 @@
+{
+  "schemaVersion": 1,
+  "workflowId": "appstore.observe-release",
+  "version": "1",
+  "title": "App Store version and mainland availability observation",
+  "description": "Read-only first-party official Apple version plus exact ASC country row; no publication mutation or release claims from review state.",
+  "inputContract": {
+    "app_id": {
+      "type": "string",
+      "required": true
+    },
+    "session_id": {
+      "type": "string",
+      "required": true
+    }
+  },
+  "steps": [
+    {
+      "stepId": "validate-app-id",
+      "kind": "script",
+      "scriptRef": "validateAppId",
+      "input": {
+        "app_id": "{{input.app_id}}"
+      },
+      "outputContract": {
+        "app_id": {
+          "type": "string",
+          "required": true
+        },
+        "availability_url": {
+          "type": "string",
+          "required": true
+        }
+      }
+    },
+    {
+      "stepId": "read-version",
+      "capabilityId": "asc.list_app_store_versions",
+      "input": {
+        "app_id": "{{output.validate-app-id.app_id}}",
+        "limit": 5
+      },
+      "outputContract": {
+        "data": {
+          "type": "json"
+        }
+      }
+    },
+    {
+      "stepId": "classify-version",
+      "kind": "script",
+      "scriptRef": "classifyVersion",
+      "input": {
+        "versions": "{{output.read-version.data}}"
+      },
+      "outputContract": {
+        "state": {
+          "type": "string",
+          "required": true
+        },
+        "next_action": {
+          "type": "string",
+          "required": true
+        }
+      }
+    },
+    {
+      "stepId": "open-availability",
+      "capabilityId": "browser.navigate",
+      "input": {
+        "session_id": "{{input.session_id}}",
+        "url": "{{output.validate-app-id.availability_url}}",
+        "wait_until": "domcontentloaded",
+        "timeout_ms": 60000
+      }
+    },
+    {
+      "stepId": "verify-location",
+      "capabilityId": "browser.verify_state",
+      "input": {
+        "session_id": "{{input.session_id}}",
+        "expected_url": "{{output.validate-app-id.availability_url}}",
+        "text_contains_none": [
+          "登录 App Store Connect",
+          "Sign in to App Store Connect"
+        ],
+        "max_chars": 1500
+      },
+      "outputContract": {
+        "matched": {
+          "type": "boolean",
+          "required": true
+        },
+        "observedUrl": {
+          "type": "string",
+          "required": true
+        }
+      }
+    },
+    {
+      "stepId": "wait-country-row",
+      "capabilityId": "browser.wait_for_selector",
+      "input": {
+        "session_id": "{{input.session_id}}",
+        "selector": "tr[id=\"CHN\"]",
+        "state": "visible",
+        "timeout_ms": 30000
+      }
+    },
+    {
+      "stepId": "read-country-row",
+      "capabilityId": "browser.query_all",
+      "input": {
+        "session_id": "{{input.session_id}}",
+        "selector": "tr[id=\"CHN\"]",
+        "limit": 1
+      },
+      "outputContract": {
+        "matches": {
+          "type": "json",
+          "required": true
+        },
+        "count": {
+          "type": "number",
+          "required": true
+        }
+      }
+    },
+    {
+      "stepId": "classify-cn",
+      "kind": "script",
+      "scriptRef": "classifyCn",
+      "input": {
+        "matches": "{{output.read-country-row.matches}}"
+      },
+      "outputContract": {
+        "territory": {
+          "type": "string",
+          "required": true
+        },
+        "status": {
+          "type": "string",
+          "required": true
+        }
+      }
+    }
+  ],
+  "scripts": {
+    "validateAppId": {
+      "runtime": "node",
+      "deterministic": true,
+      "outputFormat": "json",
+      "body": "const a=JSON.parse(process.argv[1]||'{}');const id=String(a.app_id||'');if(!/^[0-9]{7,15}$/.test(id)){process.stderr.write('INVALID_APP_ID');process.exit(2)}process.stdout.write(JSON.stringify({app_id:id,availability_url:'https://appstoreconnect.apple.com/apps/'+id+'/distribution/pricing/availability'}));"
+    },
+    "classifyCn": {
+      "runtime": "node",
+      "deterministic": true,
+      "outputFormat": "json",
+      "body": "const a=JSON.parse(process.argv[1]||'{}');const rows=a.matches;if(!Array.isArray(rows)||rows.length!==1){process.stderr.write('CN_ROW_UNVERIFIED');process.exit(2)}const text=String(rows[0]?.text||'');if(!text.includes('中国大陆')){process.stderr.write('CN_ROW_IDENTITY_UNVERIFIED');process.exit(3)}const status=text.includes('缺少 ICP 备案号')?'icp_missing':text.includes('正在处理为可用')?'processing':text.includes('可供应')?'available':text.includes('未供应')?'not_available':'unknown';process.stdout.write(JSON.stringify({territory:'CHN',status}));"
+    },
+    "classifyVersion": {
+      "runtime": "node",
+      "deterministic": true,
+      "outputFormat": "json",
+      "body": "const x=JSON.parse(process.argv[1]||'{}');const v=x.versions;if(!Array.isArray(v)){process.stderr.write('VERSION_RECORDS_MISSING');process.exit(2)}const s=v.map(r=>String(r?.attributes?.appVersionState||'')).filter(Boolean);let state='unknown',next_action='inspect_version';if(s.length===1){state=s[0];if(['READY_FOR_DISTRIBUTION','READY_FOR_SALE'].includes(state))next_action='verify_territories';else if(['REJECTED','METADATA_REJECTED'].includes(state))next_action='prepare_correction';else if(['WAITING_FOR_REVIEW','IN_REVIEW','PENDING_APPLE_RELEASE','WAITING_FOR_EXPORT_COMPLIANCE'].includes(state))next_action='await_or_inspect_review';}process.stdout.write(JSON.stringify({state,next_action}));"
+    }
+  },
+  "resources": {
+    "territory": "CHN",
+    "policy": "READY_FOR_DISTRIBUTION and country row do not establish a publicly downloadable CN storefront; verify separately before completion."
+  }
+}

@@ -5,6 +5,7 @@ import { executionIdentityForRepository } from '../../../src/runtime/control-pla
 import { readWorkflowRun } from '../../../src/runtime/control-plane/persistence/workflow-run-store';
 import { schedulePublicationOutcomeCollection } from '../../../src/runtime/root/assistant-learning-loop';
 import { ensureXiaohongshuWorkflowInstalled, XIAOHONGSHU_WORKFLOW_IDS } from '../../../src/runtime/workflows/first-party/xiaohongshu';
+import { ensureReleaseGrowthWorkflowInstalled, RELEASE_GROWTH_WORKFLOW_IDS } from '../../../src/runtime/workflows/first-party/release-growth';
 import { executeRegisteredWorkflow, observeAndReconcileRegisteredWorkflow } from '../../../src/runtime/workflows/runtime';
 import { buildFacadeResult } from '../../../src/runtime/control-plane/facade';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
@@ -37,6 +38,9 @@ export async function callRhWorkWorkflowOperation(
     const scopeId = `repository:${selectedRepository.repoId}:checkout:${selectedRepository.activeCheckoutId}:workflow:${workflowId}`;
     if (Object.values(XIAOHONGSHU_WORKFLOW_IDS).includes(workflowId as never)) {
       ensureXiaohongshuWorkflowInstalled(ctx.controllerHome, workflowId);
+    }
+    if (Object.values(RELEASE_GROWTH_WORKFLOW_IDS).includes(workflowId as never)) {
+      ensureReleaseGrowthWorkflowInstalled(ctx.controllerHome, workflowId);
     }
     const projectId = typeof args.workflow_scope_project_id === 'string' ? args.workflow_scope_project_id.trim() : '';
     const registryScope = projectId ? { kind: 'project' as const, projectId } : { kind: 'controller' as const };
