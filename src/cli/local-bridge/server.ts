@@ -31,11 +31,13 @@ import { legacyIssueAuthorityRetired } from "../controller/legacy-issue-cutover"
 import { buildExecutionDiagnostics, buildRequirementBoard } from "../../runtime/control-plane/facade/requirement-board";
 import {
   closeIssueWithGitHubPlugin,
-  getGitHubPluginStatus,
   publishIssueWithGitHubPlugin,
   refreshIssueWithGitHubPlugin,
-  saveGitHubPluginConfig,
 } from "../github/plugin";
+import {
+  getGitHubPluginStatus,
+  saveGitHubPluginConfig,
+} from "../../runtime/plugins/github-config";
 import {
   cancelLocalBridgeJob,
   getLocalBridgeJob,

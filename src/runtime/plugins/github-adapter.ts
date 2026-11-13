@@ -1,11 +1,13 @@
 import {
   closeIssueWithGitHubPlugin,
-  getGitHubPluginStatus,
-  loadGitHubPluginConfig,
   publishIssueWithGitHubPlugin,
   refreshIssueWithGitHubPlugin,
-  saveGitHubPluginConfig,
 } from '../../cli/github/plugin';
+import {
+  getGitHubPluginStatus,
+  loadGitHubPluginConfig,
+  saveGitHubPluginConfig,
+} from './github-config';
 import {
   dispatchGitHubWorkflow,
   listGitHubWorkflowRuns,

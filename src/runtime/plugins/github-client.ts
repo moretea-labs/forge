@@ -150,6 +150,36 @@ export function resolveGitHubRepository(repoRoot: string, explicitRepo?: string)
 }
 
 
+function versionAtLeast(version: string, minimum: [number, number, number]): boolean {
+  const match = /(\d+)\.(\d+)\.(\d+)/.exec(version);
+  if (!match) return false;
+  const actual = [Number(match[1]), Number(match[2]), Number(match[3])] as const;
+  for (let index = 0; index < 3; index += 1) {
+    if (actual[index] > minimum[index]) return true;
+    if (actual[index] < minimum[index]) return false;
+  }
+  return true;
+}
+
+export function getGitHubStatus(repoRoot: string, explicitRepo?: string): GitHubStatus {
+  const errors: string[] = [];
+  const versionResult = gh(repoRoot, ['--version'], undefined, 16 * 1024);
+  if (!versionResult.ok) return { available: false, authenticated: false, agentTaskSupported: false, errors: ['GitHub CLI (gh) is not installed or not on PATH.'] };
+  const version = versionResult.stdout.split(/\r?\n/)[0] || versionResult.stdout.trim();
+  const auth = gh(repoRoot, ['auth', 'status'], undefined, 64 * 1024);
+  if (!auth.ok) errors.push(auth.error || auth.stderr || 'GitHub CLI is not authenticated.');
+  let repository: GitHubRepositoryInfo | undefined;
+  try { repository = resolveGitHubRepository(repoRoot, explicitRepo); } catch (error) { errors.push(error instanceof Error ? error.message : String(error)); }
+  return {
+    available: true,
+    authenticated: auth.ok,
+    version,
+    repository,
+    agentTaskSupported: versionAtLeast(version, [2, 80, 0]),
+    errors,
+  };
+}
+
 export interface GitHubProjectBoardItem {
   id: string;
   title: string;
