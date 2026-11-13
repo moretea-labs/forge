@@ -72,6 +72,9 @@ describe('handoff and facade contracts', () => {
     expect(guidance).toContain('Independent review is optional');
     expect(guidance).toContain('a green check or merged PR alone is insufficient');
     expect(guidance).toContain('source-language search terms');
+    expect(guidance).toContain('text and icon/caret internal clearance');
+    expect(guidance).toContain('real rendered layout');
+    expect(guidance).toContain('NOT RUN or BLOCKED');
     expect(guidance).toContain('no fixed search quota');
     expect(guidance).toContain('Forge source uses GitHub Issue/Project');
     const repositoryGuidance = readFileSync(join(import.meta.dir, '../../AGENTS.md'), 'utf8');
@@ -237,6 +240,9 @@ describe('handoff and facade contracts', () => {
     expect(attached).toContain('known_paths=["AGENTS.md"]');
     expect(attached).toContain('relevant module guidance');
     expect(attached).toContain('explicit user corrections ahead of historical learning');
+    expect(attached).toContain('actual-rendered geometry');
+    expect(attached).toContain('row/column spacing');
+    expect(attached).toContain('failed or untested cases');
     expect(attached).toContain('repo_id=repo-medication');
     const detached = conversationPrompt('普通聊天');
     expect(detached).not.toContain('rh_context');
