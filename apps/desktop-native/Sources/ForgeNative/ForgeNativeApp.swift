@@ -4036,16 +4036,14 @@ private struct RecordsPane: View {
 
     private var planningRelationLegend: some View {
         HStack(spacing:7) {
-            Label("Requirement",systemImage:"scope")
+            Label("需求",systemImage:"scope")
             Image(systemName:"arrow.right")
                 .font(.system(size:8,weight:.bold))
-            Text("拥有根 Plan")
+            Text("根计划")
             Image(systemName:"arrow.right")
                 .font(.system(size:8,weight:.bold))
-            Text("细化为子 Plan")
+            Text("子计划")
             Spacer(minLength:4)
-            Text(planningShowUnlinked ? "包含未关联节点" : "默认隐藏无关系节点")
-                .foregroundStyle(ForgePalette.secondary.opacity(0.82))
         }
         .font(.system(size:9.2,weight:.medium))
         .foregroundStyle(ForgePalette.secondary)
