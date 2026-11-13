@@ -5491,9 +5491,9 @@ private struct SchedulePane: View {
                     .accessibilityIdentifier("schedule.error")
                 }
                 if model.repoId == nil {
-                    emptyState("先选择项目","计划任务按项目读取。")
+                    emptyState("先选择项目","选择项目以查看计划任务。")
                 } else if model.schedulesLoading && model.schedules.isEmpty {
-                    ProgressView("正在读取 Scheduler…").controlSize(.small)
+                    ProgressView("正在读取计划任务…").controlSize(.small)
                 } else if model.schedules.isEmpty && model.error == nil {
                     emptyState("暂无计划任务","当前项目尚未配置定时或条件触发任务。")
                 } else if !model.schedules.isEmpty {
@@ -5509,13 +5509,12 @@ private struct SchedulePane: View {
             .frame(maxWidth:960,alignment:.leading)
             .frame(maxWidth:.infinity,alignment:.center)
         }
-        .confirmationDialog("确认任务操作",isPresented:Binding(
+        .confirmationDialog("立即运行任务？",isPresented:Binding(
             get:{ pendingAction != nil },
             set:{ if !$0 { pendingAction = nil } }
         ),titleVisibility:.visible) {
             if let pending = pendingAction {
-                Button(pending.action == .pause ? "暂停任务" : (pending.action == .resume ? "恢复任务" : "立即运行"),
-                       role:pending.action == .pause ? .destructive : nil) {
+                Button("立即运行") {
                     let selected = pending
                     pendingAction = nil
                     Task { await model.controlSchedule(selected.item,action:selected.action) }
@@ -5524,7 +5523,7 @@ private struct SchedulePane: View {
             Button("取消",role:.cancel) { pendingAction = nil }
         } message: {
             if let pending = pendingAction {
-                Text("\(pending.item.name) · \(pending.item.trigger)\n\(pending.action == .trigger ? "将请求 Forge Scheduler 立即触发；是否产生执行实例以 Runtime 回执为准。" : "此操作将更新 Forge Scheduler 中的任务状态。")")
+                Text("\(pending.item.name) · \(pending.item.trigger)\n将立即运行此任务。")
             }
         }
     }
@@ -5566,7 +5565,7 @@ private struct SchedulePane: View {
                 .accessibilityIdentifier("schedule.\(item.scheduleId).details")
                 Menu {
                     Button(item.enabled ? "暂停" : "恢复") {
-                        pendingAction = (item,item.enabled ? .pause : .resume)
+                        Task { await model.controlSchedule(item,action:item.enabled ? .pause : .resume) }
                     }
                     Button("立即运行") {
                         pendingAction = (item,.trigger)
