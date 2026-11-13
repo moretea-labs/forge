@@ -581,7 +581,7 @@ final class NativeWorkspace: ObservableObject {
     }
     @Published var agentChanges: AgentGitDiff?
     @Published var changesLoading = false
-    private var agentChangesRequestGeneration = 0
+    private(set) var agentChangesRequestGeneration = 0
     @Published var liveActivity: AgentLiveActivity?
     // Transient model deltas. Only a finished turn becomes canonical thread history.
     @Published private(set) var streamedAnswer = ""
@@ -2791,6 +2791,12 @@ final class NativeWorkspace: ObservableObject {
         if clearSnapshot { agentChanges = nil }
     }
 
+    func agentChangesRequestIsCurrent(generation: Int, repoId: String, checkoutId: String) -> Bool {
+        agentChangesRequestGeneration == generation
+            && self.repoId == repoId
+            && self.checkoutId == checkoutId
+    }
+
     func refreshAgentChanges(staged: Bool = false) async {
         guard let targetRepoId = repoId, let targetCheckoutId = checkoutId else {
             invalidateAgentChangesRequests(clearSnapshot:true)
@@ -2903,29 +2909,38 @@ final class NativeWorkspace: ObservableObject {
     }
 
     func restoreAgentChanges(_ changes: AgentGitDiff) async -> Bool {
-        guard let repoId, let checkoutId, !changesLoading,
+        guard let targetRepoId = repoId, let targetCheckoutId = checkoutId, !changesLoading,
               let currentChanges = agentChanges,
               Self.reviewedChangesMatchSnapshot(changes,current:currentChanges),
-              Self.reviewedChangesAreRestorable(changes,repoId:repoId,checkoutId:checkoutId) else {
+              Self.reviewedChangesAreRestorable(
+                  changes,repoId:targetRepoId,checkoutId:targetCheckoutId
+              ) else {
             self.error = "这些改动已变化或不再可放弃，请刷新后重试。"
             return false
         }
+        let requestGeneration = agentChangesRequestGeneration
         changesLoading = true
         do {
             _ = try await ForgeBridge.request("restore_agent_git_files",[
-                "repoId":repoId,
-                "checkoutId":checkoutId,
+                "repoId":targetRepoId,
+                "checkoutId":targetCheckoutId,
                 "paths":changes.nameOnly,
                 "expectedPatch":changes.patch,
                 "expectedHead":changes.head,
                 "expectedBranch":changes.branch
             ])
+            guard agentChangesRequestIsCurrent(
+                generation:requestGeneration,repoId:targetRepoId,checkoutId:targetCheckoutId
+            ) else { return true }
             self.error = nil
             agentChanges = nil
             changesLoading = false
             await refreshAgentChanges()
             return true
         } catch {
+            guard agentChangesRequestIsCurrent(
+                generation:requestGeneration,repoId:targetRepoId,checkoutId:targetCheckoutId
+            ) else { return false }
             changesLoading = false
             self.error = error.localizedDescription
             await refreshAgentChanges()
@@ -2934,7 +2949,7 @@ final class NativeWorkspace: ObservableObject {
     }
 
     func commitAgentChanges(_ changes: AgentGitDiff, message: String) async -> Bool {
-        guard let repoId, let checkoutId, !changesLoading,
+        guard let targetRepoId = repoId, let targetCheckoutId = checkoutId, !changesLoading,
               let currentChanges = agentChanges,
               Self.reviewedChangesMatchSnapshot(changes,current:currentChanges),
               !changes.truncated, !changes.nameOnly.isEmpty, !changes.patch.isEmpty else {
@@ -2943,11 +2958,12 @@ final class NativeWorkspace: ObservableObject {
         }
         let message = message.trimmingCharacters(in:.whitespacesAndNewlines)
         guard !message.isEmpty else { return false }
+        let requestGeneration = agentChangesRequestGeneration
         changesLoading = true
         do {
             _ = try await ForgeBridge.request("commit_agent_git_files",[
-                "repoId":repoId,
-                "checkoutId":checkoutId,
+                "repoId":targetRepoId,
+                "checkoutId":targetCheckoutId,
                 "message":message,
                 "paths":changes.nameOnly,
                 "staged":changes.staged,
@@ -2955,12 +2971,18 @@ final class NativeWorkspace: ObservableObject {
                 "expectedHead":changes.head,
                 "expectedBranch":changes.branch
             ])
+            guard agentChangesRequestIsCurrent(
+                generation:requestGeneration,repoId:targetRepoId,checkoutId:targetCheckoutId
+            ) else { return true }
             self.error = nil
             agentChanges = nil
             changesLoading = false
             await refreshAgentChanges(staged:changes.staged)
             return true
         } catch {
+            guard agentChangesRequestIsCurrent(
+                generation:requestGeneration,repoId:targetRepoId,checkoutId:targetCheckoutId
+            ) else { return false }
             changesLoading = false
             self.error = error.localizedDescription
             await refreshAgentChanges(staged:changes.staged)

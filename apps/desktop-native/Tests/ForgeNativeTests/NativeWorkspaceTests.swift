@@ -586,6 +586,42 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertFalse(model.changesLoading)
     }
 
+    @MainActor
+    func testAgentChangesMutationCompletionRequiresCurrentGenerationAndWorkspace() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        model.repoId = "repo_a"
+        model.checkoutId = "checkout_a"
+        let originalGeneration = model.agentChangesRequestGeneration
+
+        XCTAssertTrue(model.agentChangesRequestIsCurrent(
+            generation:originalGeneration,repoId:"repo_a",checkoutId:"checkout_a"
+        ))
+
+        model.agentChanges = AgentGitDiff(
+            repoId:"repo_a",checkoutId:"checkout_a",branch:"work/a",head:"abcdef",
+            staged:false,paths:["a"],nameOnly:["a"],stat:"1 file changed",
+            patch:"diff --git a/a b/a\n",truncated:false
+        )
+        model.changesLoading = true
+        model.invalidateAgentChangesRequests(clearSnapshot:true)
+        model.repoId = "repo_b"
+        model.checkoutId = "checkout_b"
+        let currentGeneration = model.agentChangesRequestGeneration
+        model.changesLoading = true
+
+        XCTAssertNotEqual(currentGeneration,originalGeneration)
+        XCTAssertFalse(model.agentChangesRequestIsCurrent(
+            generation:originalGeneration,repoId:"repo_a",checkoutId:"checkout_a"
+        ))
+        XCTAssertTrue(model.agentChangesRequestIsCurrent(
+            generation:currentGeneration,repoId:"repo_b",checkoutId:"checkout_b"
+        ))
+        XCTAssertTrue(model.changesLoading, "a stale completion must not clear the new workspace's loading state")
+        XCTAssertNil(model.agentChanges)
+    }
+
     func testRetiredWorkIsNotANativeNavigationOrBridgeCapability() {
         XCTAssertFalse(NativePage.allCases.contains { $0.rawValue == "Work" })
         XCTAssertFalse(ForgeBridge.allowed.contains("read_project_work_list"))
