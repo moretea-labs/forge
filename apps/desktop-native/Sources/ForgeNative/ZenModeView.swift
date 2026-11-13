@@ -359,7 +359,7 @@ struct ZenWorkspacePane: View {
                     canvasContent
                 }
             }
-            .transition(.opacity)
+            .transition(reduceMotion ? .identity : .opacity)
         }
         .frame(maxWidth:.infinity,maxHeight:.infinity)
         .background(Color(nsColor:.textBackgroundColor))
@@ -1337,7 +1337,7 @@ private struct ZenTreeCanvas: View {
                                 if hoveredNodeId == item.id || selectedId == item.id {
                                     nodeToolbar(item)
                                         .padding(5)
-                                        .transition(.opacity)
+                                        .transition(reduceMotion ? .identity : .opacity)
                                 }
                             }
                             .onHover { isHovering in
