@@ -55,7 +55,7 @@ struct ForgeNativeApp: App {
                 Button("显示计划") { workspace.show(.plan) }.keyboardShortcut("3")
                 Button("显示知识库") { workspace.show(.knowledge) }.keyboardShortcut("4")
                 Button("消耗统计") { workspace.zenMode = false; workspace.show(.usage) }.keyboardShortcut("5")
-                Button("图片资源") { workspace.zenMode = false; workspace.show(.assets) }.keyboardShortcut("6")
+                Button("资源") { workspace.zenMode = false; workspace.show(.assets) }.keyboardShortcut("6")
                 Divider()
                 Button("刷新项目") { Task { await workspace.refresh() } }.keyboardShortcut("r")
             }

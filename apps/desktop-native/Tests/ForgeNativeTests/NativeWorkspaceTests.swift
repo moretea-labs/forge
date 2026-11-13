@@ -2560,8 +2560,8 @@ extension NativeWorkspaceTests {
         projectB.messages = [assistantRemoteB, userLocalB]
 
         let all = AgentAssetsDashboard.makeResources(
-            from: [projectA, projectB], selectedRepoId: "",
-            showUserImages: true, showRemoteImages: true
+            from: [projectA, projectB], projects: [], selectedRepoId: "",
+            showLocalResources: true, showRemoteImages: true
         )
         XCTAssertEqual(all.count, 5)
         XCTAssertEqual(all.map(\.date), all.map(\.date).sorted(by: >))
@@ -2578,24 +2578,131 @@ extension NativeWorkspaceTests {
         XCTAssertEqual(all.first?.messageId, assistantRemoteA.id)
 
         let projectAOnly = AgentAssetsDashboard.makeResources(
-            from: [projectA, projectB], selectedRepoId: "repo-a",
-            showUserImages: true, showRemoteImages: true
+            from: [projectA, projectB], projects: [], selectedRepoId: "repo-a",
+            showLocalResources: true, showRemoteImages: true
         )
         XCTAssertEqual(projectAOnly.count, 3)
         XCTAssertTrue(projectAOnly.allSatisfy { $0.threadId == projectA.id })
 
         let localOnly = AgentAssetsDashboard.makeResources(
-            from: [projectA, projectB], selectedRepoId: "",
-            showUserImages: true, showRemoteImages: false
+            from: [projectA, projectB], projects: [], selectedRepoId: "",
+            showLocalResources: true, showRemoteImages: false
         )
         XCTAssertEqual(localOnly.count, 3)
         XCTAssertTrue(localOnly.allSatisfy { !$0.remote })
 
         let remoteOnly = AgentAssetsDashboard.makeResources(
-            from: [projectA, projectB], selectedRepoId: "",
-            showUserImages: false, showRemoteImages: true
+            from: [projectA, projectB], projects: [], selectedRepoId: "",
+            showLocalResources: false, showRemoteImages: true
         )
         XCTAssertEqual(remoteOnly.count, 2)
         XCTAssertTrue(remoteOnly.allSatisfy(\.remote))
+    }
+}
+
+
+extension NativeWorkspaceTests {
+    func testAssetsProjectionIncludesContextFilesForExactCheckout() {
+        let project = ForgeProject(
+            repoId: "repo-a",
+            displayName: "Project A",
+            localRoot: "/tmp/forge-assets-project-a",
+            checkoutId: "checkout-a",
+            remoteUrl: nil,
+            defaultBranch: nil
+        )
+        var matching = ChatThread()
+        matching.title = "Project A"
+        matching.repoId = "repo-a"
+        matching.checkoutId = "checkout-a"
+        var matchingMessage = ChatMessage(
+            role: "user", text: "Use this file",
+            createdAt: Date(timeIntervalSince1970: 200)
+        )
+        matchingMessage.contextPaths = ["Docs/guide.pdf"]
+        matching.messages = [matchingMessage]
+
+        var stale = ChatThread()
+        stale.repoId = "repo-a"
+        stale.checkoutId = "checkout-old"
+        var staleMessage = ChatMessage(
+            role: "user", text: "Old context",
+            createdAt: Date(timeIntervalSince1970: 100)
+        )
+        staleMessage.contextPaths = ["Docs/old.pdf"]
+        stale.messages = [staleMessage]
+
+        let resources = AgentAssetsDashboard.makeResources(
+            from: [matching, stale],
+            projects: [project],
+            selectedRepoId: "",
+            showLocalResources: true,
+            showRemoteImages: false
+        )
+
+        XCTAssertEqual(resources.count, 2)
+        XCTAssertEqual(resources.map(\.title), ["guide.pdf", "old.pdf"])
+        XCTAssertEqual(resources[0].kind, .file)
+        XCTAssertEqual(resources[0].localRoot, project.localRoot)
+        XCTAssertNil(resources[1].localRoot)
+        XCTAssertEqual(resources[1].source, "Docs/old.pdf")
+
+        let hidden = AgentAssetsDashboard.makeResources(
+            from: [matching, stale],
+            projects: [project],
+            selectedRepoId: "",
+            showLocalResources: false,
+            showRemoteImages: false
+        )
+        XCTAssertTrue(hidden.isEmpty)
+    }
+
+    func testContextFileResolutionRejectsCheckoutEscapeAndSymlinkEscape() throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let checkout = folder.appendingPathComponent("checkout", isDirectory: true)
+        let docs = checkout.appendingPathComponent("Docs", isDirectory: true)
+        let outside = folder.appendingPathComponent("outside.txt")
+        try FileManager.default.createDirectory(at: docs, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+
+        let source = docs.appendingPathComponent("guide.pdf")
+        try Data("guide".utf8).write(to: source)
+        try Data("outside".utf8).write(to: outside)
+        let link = checkout.appendingPathComponent("outside-link")
+        try FileManager.default.createSymbolicLink(
+            atPath: link.path,
+            withDestinationPath: outside.path
+        )
+
+        XCTAssertEqual(
+            resolveLocalContextFileURL(rootPath: checkout.path, relativePath: "Docs/guide.pdf"),
+            source.resolvingSymlinksInPath().standardizedFileURL
+        )
+        XCTAssertNil(resolveLocalContextFileURL(rootPath: checkout.path, relativePath: "../outside.txt"))
+        XCTAssertNil(resolveLocalContextFileURL(rootPath: checkout.path, relativePath: "outside-link"))
+        XCTAssertNil(resolveLocalContextFileURL(rootPath: nil, relativePath: "Docs/guide.pdf"))
+    }
+
+    func testCopyLocalContextFileCopiesAndAtomicallyReplacesDestination() async throws {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+
+        let source = folder.appendingPathComponent("source.txt")
+        let destination = folder.appendingPathComponent("exported.txt")
+        let bytes = Data("local context file".utf8)
+        try bytes.write(to: source)
+
+        try await copyLocalFile(from: source, to: destination)
+        XCTAssertEqual(try Data(contentsOf: destination), bytes)
+
+        try Data("previous destination".utf8).write(to: destination)
+        try await copyLocalFile(from: source, to: destination)
+        XCTAssertEqual(try Data(contentsOf: destination), bytes)
+
+        let remainingFiles = try FileManager.default.contentsOfDirectory(atPath: folder.path)
+        XCTAssertEqual(Set(remainingFiles), Set(["source.txt", "exported.txt"]))
     }
 }

@@ -6,7 +6,7 @@ import AppKit
 struct AgentAssetsDashboard: View {
     @ObservedObject var model: NativeWorkspace
     @State private var selectedRepoId = ""
-    @State private var showUserImages = true
+    @State private var showLocalResources = true
     @State private var showRemoteImages = true
 
     static func accessibilityIdentifier(for resourceID: String, control: String? = nil) -> String {
@@ -15,6 +15,12 @@ struct AgentAssetsDashboard: View {
     }
 
     struct Resource: Identifiable {
+        enum Kind: Equatable {
+            case localImage
+            case remoteImage
+            case file
+        }
+
         let id: String
         let title: String
         let threadTitle: String
@@ -22,18 +28,28 @@ struct AgentAssetsDashboard: View {
         let messageId: String
         let date: Date
         let source: String
-        let remote: Bool
+        let kind: Kind
+        let localRoot: String?
+
+        var remote: Bool { kind == .remoteImage }
     }
 
     static func makeResources(
         from sourceThreads: [ChatThread],
+        projects: [ForgeProject],
         selectedRepoId: String,
-        showUserImages: Bool,
+        showLocalResources: Bool,
         showRemoteImages: Bool
     ) -> [Resource] {
         let threads = sourceThreads.filter { selectedRepoId.isEmpty || $0.repoId == selectedRepoId }
         let items = threads.flatMap { thread -> [Resource] in
-            thread.messages.flatMap { message -> [Resource] in
+            let localRoot: String?
+            if let repoId = thread.repoId, let checkoutId = thread.checkoutId {
+                localRoot = projects.first(where: { $0.repoId == repoId && $0.checkoutId == checkoutId })?.localRoot
+            } else {
+                localRoot = nil
+            }
+            return thread.messages.flatMap { message -> [Resource] in
                 var values: [Resource] = []
                 if message.role == "assistant", showRemoteImages {
                     for (index, block) in AgentMessageBlock.parse(message.text).enumerated() {
@@ -46,12 +62,13 @@ struct AgentAssetsDashboard: View {
                                 messageId: message.id,
                                 date: message.createdAt,
                                 source: url,
-                                remote: true
+                                kind: .remoteImage,
+                                localRoot: nil
                             ))
                         }
                     }
                 }
-                if message.role == "user", showUserImages {
+                if message.role == "user", showLocalResources {
                     for (index, path) in (message.attachmentPaths ?? []).enumerated() {
                         values.append(Resource(
                             id: "\(thread.id):\(message.id):local:\(index)",
@@ -61,7 +78,23 @@ struct AgentAssetsDashboard: View {
                             messageId: message.id,
                             date: message.createdAt,
                             source: path,
-                            remote: false
+                            kind: .localImage,
+                            localRoot: nil
+                        ))
+                    }
+                }
+                if message.role == "user", showLocalResources {
+                    for (index, path) in (message.contextPaths ?? []).enumerated() {
+                        values.append(Resource(
+                            id: "\(thread.id):\(message.id):file:\(index)",
+                            title: URL(fileURLWithPath: path).lastPathComponent,
+                            threadTitle: thread.title,
+                            threadId: thread.id,
+                            messageId: message.id,
+                            date: message.createdAt,
+                            source: path,
+                            kind: .file,
+                            localRoot: localRoot
                         ))
                     }
                 }
@@ -74,8 +107,9 @@ struct AgentAssetsDashboard: View {
     private var resources: [Resource] {
         Self.makeResources(
             from: model.threads,
+            projects: model.projects,
             selectedRepoId: selectedRepoId,
-            showUserImages: showUserImages,
+            showLocalResources: showLocalResources,
             showRemoteImages: showRemoteImages
         )
     }
@@ -85,9 +119,9 @@ struct AgentAssetsDashboard: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 HStack(spacing: 16) {
-                    Label("\(items.count) 个资源", systemImage: "photo.on.rectangle")
+                    Label("\(items.count) 个资源", systemImage: "square.stack.3d.up")
                         .font(.system(size: 12, weight: .medium))
-                    Toggle("我的图片", isOn: $showUserImages)
+                    Toggle("我的附件", isOn: $showLocalResources)
                         .accessibilityIdentifier("agent.assets.filter.local")
                     Toggle("回复图片", isOn: $showRemoteImages)
                         .accessibilityIdentifier("agent.assets.filter.remote")
@@ -107,8 +141,8 @@ struct AgentAssetsDashboard: View {
 
                 if items.isEmpty {
                     VStack(spacing: 9) {
-                        Image(systemName: "photo").font(.system(size: 28)).foregroundStyle(.tertiary)
-                        Text("暂无图片").font(.system(size: 14, weight: .medium))
+                        Image(systemName: "square.stack.3d.up").font(.system(size: 28)).foregroundStyle(.tertiary)
+                        Text("暂无资源").font(.system(size: 14, weight: .medium))
                     }
                     .frame(maxWidth: .infinity, minHeight: 240)
                 } else {
@@ -116,7 +150,7 @@ struct AgentAssetsDashboard: View {
                         ForEach(items) { item in
                             VStack(alignment: .leading, spacing: 8) {
                                 HStack(spacing: 10) {
-                                    Image(systemName: item.remote ? "network" : "photo")
+                                    Image(systemName: item.kind == .file ? "doc" : item.remote ? "network" : "photo")
                                         .foregroundStyle(.secondary)
                                     VStack(alignment: .leading, spacing: 3) {
                                         Text(item.title).font(.system(size: 12, weight: .medium))
@@ -136,17 +170,24 @@ struct AgentAssetsDashboard: View {
                                     .accessibilityHint("切换到原始对话")
                                     .accessibilityIdentifier(Self.accessibilityIdentifier(for: item.id, control: "source-thread"))
                                 }
-                                if item.remote {
+                                switch item.kind {
+                                case .remoteImage:
                                     AgentRemoteImageView(
                                         label: item.title,
                                         source: item.source,
                                         showsLabel: false,
                                         accessibilityIdentifierPrefix: Self.accessibilityIdentifier(for: item.id, control: "remote-image")
                                     )
-                                } else {
+                                case .localImage:
                                     AgentLocalImageResourceView(
                                         path: item.source,
                                         accessibilityIdentifierPrefix: Self.accessibilityIdentifier(for: item.id, control: "local-image")
+                                    )
+                                case .file:
+                                    AgentLocalFileResourceView(
+                                        relativePath: item.source,
+                                        rootPath: item.localRoot,
+                                        accessibilityIdentifierPrefix: Self.accessibilityIdentifier(for: item.id, control: "local-file")
                                     )
                                 }
                             }
@@ -277,6 +318,114 @@ private struct AgentLocalImageResourceView: View {
             defer { isSaving = false }
             do {
                 try await copyLocalImageAtomically(from: source, to: destination)
+                status = "已保存到 " + destination.lastPathComponent
+            } catch {
+                status = "保存失败：" + error.localizedDescription
+            }
+        }
+    }
+}
+
+
+func resolveLocalContextFileURL(rootPath: String?, relativePath: String) -> URL? {
+    guard let rootPath, !rootPath.isEmpty,
+          !relativePath.isEmpty, !relativePath.hasPrefix("/") else { return nil }
+    let root = URL(fileURLWithPath: rootPath, isDirectory: true)
+        .resolvingSymlinksInPath().standardizedFileURL
+    var rootIsDirectory: ObjCBool = false
+    guard FileManager.default.fileExists(atPath: root.path, isDirectory: &rootIsDirectory),
+          rootIsDirectory.boolValue else { return nil }
+    let candidate = root.appendingPathComponent(relativePath)
+        .resolvingSymlinksInPath().standardizedFileURL
+    let rootPrefix = root.path.hasSuffix("/") ? root.path : root.path + "/"
+    guard candidate.path.hasPrefix(rootPrefix) else { return nil }
+    var isDirectory: ObjCBool = false
+    guard FileManager.default.fileExists(atPath: candidate.path, isDirectory: &isDirectory),
+          !isDirectory.boolValue else { return nil }
+    return candidate
+}
+
+func copyLocalFile(from source: URL, to destination: URL) async throws {
+    let copying = Task.detached(priority: .utility) {
+        let temporary = destination.deletingLastPathComponent()
+            .appendingPathComponent(".\(UUID().uuidString).tmp")
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        try FileManager.default.copyItem(at: source, to: temporary)
+        if FileManager.default.fileExists(atPath: destination.path) {
+            _ = try FileManager.default.replaceItemAt(destination, withItemAt: temporary)
+        } else {
+            try FileManager.default.moveItem(at: temporary, to: destination)
+        }
+    }
+    try await copying.value
+}
+
+private struct AgentLocalFileResourceView: View {
+    let relativePath: String
+    let rootPath: String?
+    let accessibilityIdentifierPrefix: String
+    @State private var isSaving = false
+    @State private var status: String?
+
+    private var fileURL: URL? {
+        resolveLocalContextFileURL(rootPath: rootPath, relativePath: relativePath)
+    }
+
+    private var fileName: String {
+        URL(fileURLWithPath: relativePath).lastPathComponent
+    }
+
+    private var sourceLabel: String {
+        guard rootPath != nil else { return "原 checkout 不可用" }
+        return fileURL == nil ? "原文件已移动或删除" : "本地文件"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 8) {
+                Text(sourceLabel)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button {
+                    reveal()
+                } label: {
+                    Image(systemName: "folder")
+                }
+                .buttonStyle(.plain)
+                .help("在 Finder 中显示")
+                .accessibilityLabel("在 Finder 中显示：\(fileName)")
+                .accessibilityIdentifier("\(accessibilityIdentifierPrefix).finder")
+                .disabled(fileURL == nil)
+                Button(isSaving ? "保存中…" : "另存为…") { save() }
+                    .disabled(fileURL == nil || isSaving)
+                    .accessibilityIdentifier("\(accessibilityIdentifierPrefix).save")
+            }
+            .buttonStyle(.plain)
+            .font(.system(size: 11))
+            if let status {
+                Text(status).font(.system(size: 10)).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @MainActor
+    private func reveal() {
+        guard let source = fileURL else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([source])
+    }
+
+    @MainActor
+    private func save() {
+        guard let source = fileURL, !isSaving else { return }
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = source.lastPathComponent
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+        isSaving = true
+        status = "正在保存…"
+        Task {
+            defer { isSaving = false }
+            do {
+                try await copyLocalFile(from: source, to: destination)
                 status = "已保存到 " + destination.lastPathComponent
             } catch {
                 status = "保存失败：" + error.localizedDescription
