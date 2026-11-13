@@ -1263,7 +1263,7 @@ private struct ForgeWorkspaceView: View {
                                 .foregroundStyle(ForgePalette.secondary)
                                 .lineLimit(1)
                         } else if let checkout = model.checkoutId {
-                            Text("Checkout · \(checkout.prefix(8))")
+                            Text("工作区 · \(checkout.prefix(8))")
                                 .font(.system(size:10.5,design:.monospaced))
                                 .foregroundStyle(ForgePalette.secondary)
                                 .lineLimit(1)
@@ -1740,9 +1740,9 @@ private struct AgentPane: View {
                     .menuStyle(.borderlessButton)
                     .fixedSize()
                     .disabled(model.busy || (model.checkoutRoot == nil && !model.selectedProviderSupportsImages))
-                    .help("添加当前 checkout 文件上下文或图片")
+                    .help("添加当前工作区文件或图片")
                     .accessibilityLabel("添加上下文")
-                    .accessibilityHint("添加当前 checkout 文件或当前 Provider 支持的图片")
+                    .accessibilityHint("添加当前工作区文件或当前模型服务支持的图片")
                     .accessibilityIdentifier("agent.attach")
 
                     composerQuickConfigurationControls
@@ -2606,7 +2606,7 @@ private struct AgentChangesPane: View {
                 Image(systemName:"doc.text.magnifyingglass")
                     .symbolRenderingMode(.hierarchical)
                     .foregroundStyle(ForgePalette.accent)
-                Text("Changes")
+                Text("改动审查")
                     .font(.system(size:13,weight:.semibold))
                 if let changes = model.agentChanges, !changes.nameOnly.isEmpty {
                     Text("\(changes.nameOnly.count)")
@@ -2614,9 +2614,9 @@ private struct AgentChangesPane: View {
                         .padding(.horizontal,7).padding(.vertical,3)
                         .background(ForgePalette.selectionStrong,in:Capsule())
                 }
-                Picker("Review scope",selection:reviewScopeBinding) {
-                    Text("Working").tag(false)
-                    Text("Staged").tag(true)
+                Picker("审查范围",selection:reviewScopeBinding) {
+                    Text("未暂存").tag(false)
+                    Text("已暂存").tag(true)
                 }
                 .labelsHidden()
                 .pickerStyle(.segmented)
@@ -2649,14 +2649,14 @@ private struct AgentChangesPane: View {
                                     in:RoundedRectangle(cornerRadius:8,style:.continuous))
                 }
                 .buttonStyle(.plain)
-                .help("关闭 Changes")
+                .help("关闭改动审查")
             }
             .padding(14)
 
             if model.changesLoading {
                 VStack(spacing:9) {
                     ProgressView().controlSize(.small)
-                    Text("读取当前 checkout…")
+                    Text("读取当前工作区…")
                         .font(.system(size:11))
                         .foregroundStyle(ForgePalette.secondary)
                 }
@@ -2678,7 +2678,7 @@ private struct AgentChangesPane: View {
                                     .foregroundStyle(ForgePalette.secondary)
                                 Text(changes.untrackedFiles.isEmpty
                                      ? (changes.staged ? "暂存区没有改动" : "工作区没有未提交改动")
-                                     : "没有可审查的 tracked diff")
+                                     : "没有可审查的已跟踪文件改动")
                                     .font(.system(size:12,weight:.medium))
                                     .foregroundStyle(ForgePalette.secondary)
                             }
@@ -2693,7 +2693,7 @@ private struct AgentChangesPane: View {
                                     HStack(spacing:7) {
                                         Image(systemName:"rectangle.stack")
                                             .font(.system(size:10))
-                                        Text("All changes")
+                                        Text("全部改动")
                                             .font(.system(size:10.5,weight:.medium))
                                         Spacer(minLength:0)
                                         Text("\(changes.nameOnly.count)")
@@ -2752,7 +2752,7 @@ private struct AgentChangesPane: View {
                             if focusedLoading {
                                 HStack(spacing:7) {
                                     ProgressView().controlSize(.small)
-                                    Text("读取文件 diff…")
+                                    Text("读取文件改动…")
                                         .font(.system(size:10.5))
                                         .foregroundStyle(ForgePalette.secondary)
                                 }
@@ -2770,12 +2770,12 @@ private struct AgentChangesPane: View {
                                         Button {
                                             copyAgentText(reviewed.patch)
                                         } label: {
-                                            Label("Copy patch",systemImage:"doc.on.doc")
+                                            Label("复制改动",systemImage:"doc.on.doc")
                                                 .font(.system(size:9.5,weight:.medium))
                                         }
                                         .buttonStyle(.plain)
                                         .foregroundStyle(ForgePalette.secondary)
-                                        .help("复制当前已审查 diff")
+                                        .help("复制当前已审查改动")
                                     }
                                 }
                             }
@@ -2785,21 +2785,21 @@ private struct AgentChangesPane: View {
                             }
 
                             if reviewed.truncated {
-                                Label("Diff 已按 20 KB 上限截断，不能提交",systemImage:"exclamationmark.triangle")
+                                Label("改动内容超过 20 KB，已截断，无法提交",systemImage:"exclamationmark.triangle")
                                     .font(.system(size:10.5))
                                     .foregroundStyle(ForgePalette.secondary)
                             }
 
                             VStack(alignment:.leading,spacing:8) {
                                 HStack {
-                                    Label("Commit reviewed changes",systemImage:"checkmark.seal")
+                                    Label("提交已审查改动",systemImage:"checkmark.seal")
                                         .font(.system(size:11,weight:.semibold))
                                     Spacer()
-                                    Text(focusedPath ?? "\(reviewed.nameOnly.count) files")
+                                    Text(focusedPath ?? "\(reviewed.nameOnly.count) 个文件")
                                         .font(.system(size:10))
                                         .foregroundStyle(.tertiary)
                                 }
-                                TextField("Commit message",text:$commitMessage)
+                                TextField("提交说明",text:$commitMessage)
                                     .textFieldStyle(.plain)
                                     .font(.system(size:11.5))
                                     .padding(.horizontal,10)
@@ -2807,21 +2807,21 @@ private struct AgentChangesPane: View {
                                     .background(ForgePalette.canvas,
                                                 in:RoundedRectangle(cornerRadius:8,style:.continuous))
                                 HStack(spacing:8) {
-                                    Text("提交前会重新核对 patch / HEAD / branch / checkout")
+                                    Text("提交前会重新核对改动、版本、分支和工作区，避免覆盖新变更。")
                                         .font(.system(size:9.5))
                                         .foregroundStyle(.tertiary)
                                         .lineLimit(2)
                                     Spacer(minLength:8)
                                     if reviewed.staged {
-                                        Text("Staged 仅支持提交")
+                                        Text("已暂存改动仅支持提交")
                                             .font(.system(size:9.5,weight:.medium))
                                             .foregroundStyle(.tertiary)
-                                            .help("不跨越 index 边界执行 Discard")
+                                            .help("不会跨越暂存区边界放弃改动")
                                     } else {
                                         Button(role:.destructive) {
                                             restoreSnapshot = reviewed
                                         } label: {
-                                            Label("Discard",systemImage:"arrow.uturn.backward.circle")
+                                            Label("放弃",systemImage:"arrow.uturn.backward.circle")
                                                 .font(.system(size:11,weight:.semibold))
                                                 .padding(.horizontal,9)
                                                 .frame(height:29)
@@ -2830,7 +2830,7 @@ private struct AgentChangesPane: View {
                                         .foregroundStyle(.red)
                                         .disabled(model.changesLoading || focusedLoading
                                                   || reviewed.truncated || reviewed.patch.isEmpty)
-                                        .help("放弃当前已复查的 tracked / unstaged 改动")
+                                        .help("放弃当前已复查的未暂存改动")
                                     }
                                     Button {
                                         let snapshot = reviewed
@@ -2843,7 +2843,7 @@ private struct AgentChangesPane: View {
                                             }
                                         }
                                     } label: {
-                                        Label("Commit",systemImage:"checkmark.circle.fill")
+                                        Label("提交",systemImage:"checkmark.circle.fill")
                                             .font(.system(size:11,weight:.semibold))
                                             .padding(.horizontal,10)
                                             .frame(height:29)
@@ -2868,7 +2868,7 @@ private struct AgentChangesPane: View {
                     Image(systemName:"doc.text.magnifyingglass")
                         .font(.system(size:24,weight:.light))
                         .foregroundStyle(ForgePalette.secondary)
-                    Text("打开 Changes 后读取当前 checkout")
+                    Text("打开改动审查后读取当前工作区。")
                         .font(.system(size:11))
                         .foregroundStyle(ForgePalette.secondary)
                 }
@@ -3069,7 +3069,7 @@ private struct AgentPlanningInspector: View {
             HStack(alignment:.top,spacing:10) {
                 VStack(alignment:.leading,spacing:3) {
                     Text("规划上下文").font(.system(size:13,weight:.semibold))
-                    Text("选择只会绑定当前会话，不修改 Requirement / Plan。")
+                    Text("只关联当前会话，不会修改需求或计划。")
                         .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
                 }
                 Spacer()
@@ -3132,7 +3132,7 @@ private struct AgentPlanningInspector: View {
             HStack(spacing:7) {
                 Image(systemName:"magnifyingglass")
                     .font(.system(size:9.5)).foregroundStyle(.tertiary)
-                TextField("筛选 Requirement / Plan",text:$query)
+                TextField("筛选需求和计划",text:$query)
                     .textFieldStyle(.plain)
                     .font(.system(size:11))
                 if !query.isEmpty {
@@ -3148,7 +3148,7 @@ private struct AgentPlanningInspector: View {
             .padding(.horizontal,14).padding(.top,9).padding(.bottom,7)
 
             HStack {
-                Text(query.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty ? "可绑定规划" : "筛选结果")
+                Text(query.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty ? "可关联规划" : "筛选结果")
                     .font(.system(size:9.5,weight:.semibold))
                     .foregroundStyle(ForgePalette.secondary)
                 Spacer()
@@ -3173,7 +3173,7 @@ private struct AgentPlanningInspector: View {
                 }
                 .padding(14).frame(maxWidth:.infinity,maxHeight:.infinity,alignment:.topLeading)
             } else if availableRecords.isEmpty {
-                Text(query.isEmpty ? "当前没有其他可绑定的 Requirement / Plan。" : "没有匹配的规划记录。")
+                Text(query.isEmpty ? "没有其他可关联的需求或计划。" : "没有匹配的规划记录。")
                     .font(.system(size:11)).foregroundStyle(ForgePalette.secondary)
                     .frame(maxWidth:.infinity,maxHeight:.infinity,alignment:.topLeading)
                     .padding(14)
@@ -3191,7 +3191,7 @@ private struct AgentPlanningInspector: View {
 
             Divider()
             HStack {
-                Text("绑定只影响当前会话，不会修改 Requirement / Plan。")
+                Text("关联只影响当前会话，不会修改需求或计划。")
                     .font(.system(size:9.5)).foregroundStyle(.tertiary)
                 Spacer()
                 if loading { ProgressView().controlSize(.mini) }
@@ -3203,9 +3203,9 @@ private struct AgentPlanningInspector: View {
     }
 
     private var currentContextLabel: String? {
-        if let planId=model.thread?.planId,!planId.isEmpty { return "Plan · \(String(planId.prefix(18)))" }
+        if let planId=model.thread?.planId,!planId.isEmpty { return "计划 · \(String(planId.prefix(18)))" }
         if let requirementId=model.thread?.requirementId,!requirementId.isEmpty {
-            return "Requirement · \(String(requirementId.prefix(18)))"
+            return "需求 · \(String(requirementId.prefix(18)))"
         }
         return nil
     }
@@ -3271,7 +3271,7 @@ private struct AgentPlanningInspector: View {
                         .foregroundStyle(ForgePalette.ink)
                         .lineLimit(2)
                     HStack(spacing:6) {
-                        Text(record.kind == .requirement ? "Requirement" : "Plan")
+                        Text(record.kind == .requirement ? "需求" : "计划")
                         if record.kind == .requirement { Text(record.state) }
                     }
                     .font(.system(size:9.5)).foregroundStyle(.tertiary)
@@ -3282,7 +3282,7 @@ private struct AgentPlanningInspector: View {
                         .font(.system(size:9.5,weight:.semibold))
                         .foregroundStyle(ForgePalette.secondary)
                 } else {
-                    Text("绑定")
+                    Text("关联")
                         .font(.system(size:9.5,weight:.semibold))
                         .foregroundStyle(ForgePalette.secondary)
                 }
@@ -3293,7 +3293,7 @@ private struct AgentPlanningInspector: View {
         }
         .buttonStyle(.plain)
         .disabled(model.busy || loadedRepoId != model.repoId)
-        .accessibilityLabel(record.title + "，" + (bound ? "已绑定当前会话" : "绑定到当前会话"))
+        .accessibilityLabel(record.title + "，" + (bound ? "已关联当前会话" : "关联到当前会话"))
         .accessibilityIdentifier("agent.planning-inspector.bind.\(record.recordId)")
     }
 
@@ -5131,7 +5131,7 @@ private struct RecordsPane: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(model.busy || model.thread == nil)
-                    .help("把此 Requirement 绑定到当前会话，不修改 Requirement 本身")
+                    .help("将此需求关联到当前会话，不会修改需求内容。")
                     .accessibilityIdentifier("planning.requirement.use-current")
 
                     Button {
@@ -5146,7 +5146,7 @@ private struct RecordsPane: View {
                         Button {
                             beginPlan(requirementId:requirement.requirementId,parentPlanId:nil)
                         } label: {
-                            Label("添加根 Plan",systemImage:"plus")
+                            Label("添加根计划",systemImage:"plus")
                         }
                     } label: {
                         Image(systemName:"ellipsis")
@@ -5157,7 +5157,7 @@ private struct RecordsPane: View {
                 }
 
                 semanticSection("目标") {
-                    Text(requirement.outcomeStatement.isEmpty ? "未提供 outcome。" : requirement.outcomeStatement)
+                    Text(requirement.outcomeStatement.isEmpty ? "尚未填写目标。" : requirement.outcomeStatement)
                         .font(.system(size:13,weight:.medium))
                         .lineSpacing(4)
                         .textSelection(.enabled)
@@ -5218,7 +5218,7 @@ private struct RecordsPane: View {
                     VStack(alignment:.leading,spacing:6) {
                         Text(requirement.requirementId)
                             .textSelection(.enabled)
-                        Text("revision \(requirement.revision) · \(requirement.state)")
+                        Text("版本 r\(requirement.revision) · \(requirement.state)")
                     }
                     .font(.system(size:9.5,design:.monospaced))
                     .foregroundStyle(.tertiary)
@@ -5242,7 +5242,7 @@ private struct RecordsPane: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(model.busy || model.thread == nil)
-                    .help("把此 Plan 绑定到当前会话，不修改 Plan 本身")
+                    .help("将此计划关联到当前会话，不会修改计划内容。")
                     .accessibilityIdentifier("planning.plan.use-current")
 
                     Button {
@@ -5257,7 +5257,7 @@ private struct RecordsPane: View {
                         Button {
                             beginPlan(requirementId:plan.requirementId,parentPlanId:plan.planId)
                         } label: {
-                            Label("细化子 Plan",systemImage:"arrow.turn.down.right")
+                            Label("细化子计划",systemImage:"arrow.turn.down.right")
                         }
                     } label: {
                         Image(systemName:"ellipsis")
@@ -5303,7 +5303,7 @@ private struct RecordsPane: View {
                         VStack(alignment:.leading,spacing:5) {
                             if let parentPlanId=plan.parentPlanId,!parentPlanId.isEmpty {
                                 semanticRelationButton(
-                                    title:"上级 Plan",
+                                    title:"上级计划",
                                     id:parentPlanId,
                                     systemImage:"arrow.turn.up.left"
                                 ) {
@@ -5312,7 +5312,7 @@ private struct RecordsPane: View {
                             }
                             if let requirementId=plan.requirementId,!requirementId.isEmpty {
                                 semanticRelationButton(
-                                    title:"所属 Requirement",
+                                    title:"所属需求",
                                     id:requirementId,
                                     systemImage:"doc.text"
                                 ) {
