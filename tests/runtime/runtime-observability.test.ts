@@ -353,7 +353,9 @@ describe('runtime observability', () => {
     expect(workLifecycleAttentionBlocksReadiness({ status: 'active_worktree_missing' })).toBe(false);
     expect(workLifecycleAttentionBlocksReadiness({ status: 'terminal_work_cleanup_unsettled' })).toBe(false);
     expect(workLifecycleAttentionBlocksReadiness({ status: 'branch_not_integrated' })).toBe(false);
-    expect(workLifecycleAttentionBlocksReadiness({ status: 'dirty_linked_worktree_unregistered' })).toBe(true);
+    expect(workLifecycleAttentionBlocksReadiness({ status: 'linked_worktree_unregistered' })).toBe(false);
+    expect(workLifecycleAttentionBlocksReadiness({ status: 'dirty_linked_worktree_unregistered' })).toBe(false);
+    expect(workLifecycleAttentionBlocksReadiness({ status: 'active_checkout_missing' })).toBe(true);
   });
 
   test('derives lifecycle attention for dirty unregistered worktrees and unintegrated Work branches', () => {
@@ -385,9 +387,8 @@ describe('runtime observability', () => {
       ]));
       rebuildRepositoryProjection(controllerHome, repository.repoId);
       const projection = readRepositoryProjectionSnapshot(controllerHome, repository.repoId).projection;
-      expect(projection.currentAttention).toEqual(expect.arrayContaining([
-        expect.objectContaining({ status: 'dirty_linked_worktree_unregistered' }),
-      ]));
+      expect(projection.currentAttention).not.toContainEqual(expect.objectContaining({ status: 'dirty_linked_worktree_unregistered' }));
+      expect(projection.attention).toContainEqual(expect.objectContaining({ status: 'dirty_linked_worktree_unregistered' }));
       expect(projection.currentAttention).not.toContainEqual(expect.objectContaining({ status: 'branch_not_integrated' }));
       expect(projection.attention).toContainEqual(expect.objectContaining({ status: 'branch_not_integrated' }));
       const health = evaluateRuntimeHealth(observations({
@@ -398,7 +399,7 @@ describe('runtime observability', () => {
           activeAttentionCount: projection.currentAttention.length,
         },
       }));
-      expect(health.activeBlockers.map((item) => item.code)).toContain('ACTIVE_JOB_ATTENTION_REQUIRED');
+      expect(health.activeBlockers.map((item) => item.code)).not.toContain('ACTIVE_JOB_ATTENTION_REQUIRED');
     } finally {
       spawnSync('git', ['worktree', 'remove', '--force', worktreeRoot], { cwd: repoRoot, stdio: 'ignore' });
       rmSync(worktreeRoot, { recursive: true, force: true });
