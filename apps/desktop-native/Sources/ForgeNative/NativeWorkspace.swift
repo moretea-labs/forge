@@ -554,6 +554,8 @@ final class NativeWorkspace: ObservableObject {
     @Published var showSearch = false
     @Published var userRequests: [UserRequestDetail] = []
     @Published var userRequestsLoading = false
+    private var userRequestsRequestGeneration = 0
+    private var userRequestsLoadingRepoId: String?
     @Published var userRequestsError: String?
     @Published var userRequestsPossiblyTruncated = false
     @Published var userRequestsTotalCount: Int?
@@ -1257,20 +1259,46 @@ final class NativeWorkspace: ObservableObject {
         }
     }
 
+    nonisolated static func userRequestsResultIsCurrent(
+        requestRepoId:String?,currentRepoId:String?,
+        requestGeneration:Int,currentGeneration:Int
+    ) -> Bool {
+        requestRepoId == currentRepoId && requestGeneration == currentGeneration
+    }
+
+    private func userRequestsOperationIsCurrent(_ generation:Int,repoId targetRepoId:String?) -> Bool {
+        Self.userRequestsResultIsCurrent(
+            requestRepoId:targetRepoId,currentRepoId:repoId,
+            requestGeneration:generation,currentGeneration:userRequestsRequestGeneration
+        )
+    }
+
+    private func finishUserRequestsOperation(_ generation:Int) {
+        guard userRequestsRequestGeneration == generation else { return }
+        userRequestsLoading = false
+        userRequestsLoadingRepoId = nil
+    }
+
     func loadUserRequests() async {
-        guard !userRequestsLoading else { return }
+        let targetRepoId = repoId
+        if userRequestsLoading && userRequestsLoadingRepoId == targetRepoId { return }
+        userRequestsRequestGeneration += 1
+        let requestGeneration = userRequestsRequestGeneration
+        userRequestsLoadingRepoId = targetRepoId
         userRequestsLoading = true
-        defer { userRequestsLoading = false }
+        defer { finishUserRequestsOperation(requestGeneration) }
         do {
             let value = try await ForgeBridge.request(
                 "read_user_requests",
-                repoId.map { ["repoId":$0] } ?? [:]
+                targetRepoId.map { ["repoId":$0] } ?? [:]
             )
+            guard userRequestsOperationIsCurrent(requestGeneration,repoId:targetRepoId) else { return }
             userRequests = Self.userRequestRows(value)
             userRequestsPossiblyTruncated = Self.userRequestsPossiblyTruncated(value)
             userRequestsTotalCount = Self.userRequestsTotalCount(value)
             userRequestsError = nil
         } catch {
+            guard userRequestsOperationIsCurrent(requestGeneration,repoId:targetRepoId) else { return }
             userRequestsError = error.localizedDescription
         }
     }
@@ -1286,32 +1314,39 @@ final class NativeWorkspace: ObservableObject {
 
     func resolveUserRequest(_ request:UserRequestDetail, decision:String, dismiss:Bool = false) async {
         guard !userRequestsLoading else { return }
+        let targetRepoId = repoId
         let normalized = decision.trimmingCharacters(in:.whitespacesAndNewlines)
         guard dismiss || !normalized.isEmpty else {
             userRequestsError = "请先输入决定或完成情况。"
             return
         }
+        userRequestsRequestGeneration += 1
+        let requestGeneration = userRequestsRequestGeneration
+        userRequestsLoadingRepoId = targetRepoId
         userRequestsLoading = true
-        defer { userRequestsLoading = false }
+        defer { finishUserRequestsOperation(requestGeneration) }
         do {
             let receipt = try await ForgeBridge.request("control_user_request",[
                 "requestId":request.requestId,
                 "action":dismiss ? "dismiss" : "resolve",
                 "decision":normalized
             ])
+            guard userRequestsOperationIsCurrent(requestGeneration,repoId:targetRepoId) else { return }
             guard Self.userRequestResolutionConfirmed(receipt,requestId:request.requestId) else {
                 userRequestsError = "请求回执未确认已处理，请刷新核对状态，避免重复提交。"
                 return
             }
             let value = try await ForgeBridge.request(
                 "read_user_requests",
-                repoId.map { ["repoId":$0] } ?? [:]
+                targetRepoId.map { ["repoId":$0] } ?? [:]
             )
+            guard userRequestsOperationIsCurrent(requestGeneration,repoId:targetRepoId) else { return }
             userRequests = Self.userRequestRows(value)
             userRequestsPossiblyTruncated = Self.userRequestsPossiblyTruncated(value)
             userRequestsTotalCount = Self.userRequestsTotalCount(value)
             userRequestsError = nil
         } catch {
+            guard userRequestsOperationIsCurrent(requestGeneration,repoId:targetRepoId) else { return }
             // Submission may have been accepted before transport failed.
             // Keep the draft and ask for a read-only refresh, never resubmit.
             userRequestsError = "无法确认请求结果：\(error.localizedDescription)。请刷新核对后再操作。"

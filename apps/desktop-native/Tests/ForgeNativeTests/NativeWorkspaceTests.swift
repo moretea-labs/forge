@@ -1903,6 +1903,25 @@ final class NativeWorkspaceTests: XCTestCase {
         )
     }
 
+    func testUserRequestAsyncResultsRequireMatchingProjectAndGeneration() {
+        XCTAssertTrue(NativeWorkspace.userRequestsResultIsCurrent(
+            requestRepoId:"repo-a",currentRepoId:"repo-a",
+            requestGeneration:2,currentGeneration:2
+        ))
+        XCTAssertFalse(NativeWorkspace.userRequestsResultIsCurrent(
+            requestRepoId:"repo-a",currentRepoId:"repo-b",
+            requestGeneration:2,currentGeneration:2
+        ))
+        XCTAssertFalse(NativeWorkspace.userRequestsResultIsCurrent(
+            requestRepoId:"repo-a",currentRepoId:"repo-a",
+            requestGeneration:2,currentGeneration:3
+        ))
+        XCTAssertTrue(NativeWorkspace.userRequestsResultIsCurrent(
+            requestRepoId:nil,currentRepoId:nil,
+            requestGeneration:4,currentGeneration:4
+        ))
+    }
+
     func testProjectPluginRowsDecodeBoundedPluginProjection() {
         let rows = NativeWorkspace.projectPluginRows([
             "plugins":[[
