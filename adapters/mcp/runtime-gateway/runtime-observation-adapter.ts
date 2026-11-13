@@ -26,7 +26,7 @@ import {
   type RuntimeOperationalView,
   type GradedObservation,
 } from '../../../src/runtime/health';
-import { ensureRepositoryRuntimeStorage, inspectRepositoryRuntimeStorage } from '../../../src/runtime/repositories/runtime-storage';
+import { inspectRepositoryRuntimeStorage } from '../../../src/runtime/repositories/runtime-storage';
 import { projectBoard } from '../../../src/cli/controller/issue-store';
 import { buildControllerTaskLedgerProjection } from '../../../src/cli/controller/task-ledger';
 import { CONTROLLER_CONTEXT_IMPACT_DOMAINS, type ControllerContextImpactDomain } from '../../../src/runtime/context/context-pack-contract';
@@ -643,7 +643,7 @@ export async function callRuntimeObservationAdapter(ctx: MultiRepositoryMcpToolC
                 }) } : {}),
                 repoId: repository.repoId,
                 repository: repositorySummary(repository),
-                runtimeStorage: ensureRepositoryRuntimeStorage(repository, ctx.controllerHome),
+                runtimeStorage: { ...inspectRepositoryRuntimeStorage(repository, ctx.controllerHome), readOnly: true },
                 nonBlocking: true,
               });
             }
@@ -657,7 +657,7 @@ export async function callRuntimeObservationAdapter(ctx: MultiRepositoryMcpToolC
                 }),
                 repoId: repository.repoId,
                 repository: repositorySummary(repository),
-                runtimeStorage: ensureRepositoryRuntimeStorage(repository, ctx.controllerHome),
+                runtimeStorage: { ...inspectRepositoryRuntimeStorage(repository, ctx.controllerHome), readOnly: true },
                 nonBlocking: true,
               });
             }

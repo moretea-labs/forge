@@ -594,8 +594,9 @@ describe('runtime maintenance executor', () => {
     execFileSync('git', ['init', '-q', '-b', 'main'], { cwd: repoRoot });
     execFileSync('git', ['config', 'user.email', 'test@example.test'], { cwd: repoRoot });
     execFileSync('git', ['config', 'user.name', 'Test'], { cwd: repoRoot });
+    writeFileSync(join(repoRoot, '.gitignore'), '.repo-harness/\n');
     writeFileSync(join(repoRoot, 'README.md'), 'fixture\n');
-    execFileSync('git', ['add', 'README.md'], { cwd: repoRoot });
+    execFileSync('git', ['add', '.gitignore', 'README.md'], { cwd: repoRoot });
     execFileSync('git', ['commit', '-qm', 'initial'], { cwd: repoRoot });
     const registered = registerRepository({ path: repoRoot, displayName: 'cache-rotation', controllerHome });
     const worktree = join(root, 'worktree');

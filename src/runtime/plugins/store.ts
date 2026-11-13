@@ -285,9 +285,11 @@ export function listControllerPluginManifests(
   controllerHome: string,
   options: ListAssistantPluginManifestsOptions = {},
 ): AssistantPluginManifest[] {
-  ensureControllerPluginStateMigrated(controllerHome);
   const preferStored = options.preferStored === true && options.forceRefresh !== true;
   const fallbackToLive = options.fallbackToLive !== false || !preferStored;
+  // Stored-only observations are read-only. Legacy migration belongs to an
+  // explicit plugin discovery/refresh or execution path, never a status read.
+  if (!preferStored || fallbackToLive) ensureControllerPluginStateMigrated(controllerHome);
   const cacheKey = listCacheKey(controllerHome, CONTROLLER_PLUGIN_CACHE_SCOPE, preferStored, fallbackToLive);
   if (options.forceRefresh !== true) {
     const cached = readPluginManifestCache(pluginManifestListCache, cacheKey, preferStored ? PLUGIN_MANIFEST_STORED_CACHE_TTL_MS : PLUGIN_MANIFEST_LIVE_CACHE_TTL_MS);
@@ -1029,9 +1031,11 @@ export function listAssistantPluginManifests(
   repository: RepositoryRecord,
   options: ListAssistantPluginManifestsOptions = {},
 ): AssistantPluginManifest[] {
-  ensureControllerPluginStateMigrated(controllerHome);
   const preferStored = options.preferStored === true && options.forceRefresh !== true;
   const fallbackToLive = options.fallbackToLive !== false || !preferStored;
+  // Stored-only observations are read-only. Legacy migration belongs to an
+  // explicit plugin discovery/refresh or execution path, never a status read.
+  if (!preferStored || fallbackToLive) ensureControllerPluginStateMigrated(controllerHome);
   const cacheKey = listCacheKey(controllerHome, repository.repoId, preferStored, fallbackToLive);
   if (options.forceRefresh !== true) {
     // Stored manifests are persisted snapshots. Their freshness is governed by

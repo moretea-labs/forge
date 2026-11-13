@@ -101,21 +101,22 @@ function withHandoffInboxWriteLock<T>(
   );
 }
 
-export function handoffInboxRoot(location: HandoffInboxStoreLocation): string {
-  if (location.root) {
-    mkdirSync(location.root, { recursive: true });
-    return location.root;
-  }
+function handoffInboxRootPath(location: HandoffInboxStoreLocation): string {
+  if (location.root) return location.root;
   if (!location.controllerHome || !location.repoId) {
     throw new Error('handoff inbox requires either root or controllerHome + repoId');
   }
-  const root = join(repositoryControllerRoot(location.controllerHome, location.repoId), 'handoff-inbox');
+  return join(repositoryControllerRoot(location.controllerHome, location.repoId), 'handoff-inbox');
+}
+
+export function handoffInboxRoot(location: HandoffInboxStoreLocation): string {
+  const root = handoffInboxRootPath(location);
   mkdirSync(root, { recursive: true });
   return root;
 }
 
 export function handoffInboxPath(location: HandoffInboxStoreLocation): string {
-  return join(handoffInboxRoot(location), 'index.json');
+  return join(handoffInboxRootPath(location), 'index.json');
 }
 
 function handoffMigrationMarkerPath(options: HandoffInboxStoreOptions & { controllerHome: string; repoId: string }): string {
@@ -320,7 +321,7 @@ export function migrateLegacyHandoffInbox(
 
 export function readHandoffInboxStore(options: HandoffInboxStoreOptions): HandoffInboxStore {
   if (!usesCanonicalUserRequestStore(options)) return readLegacyHandoffInboxStore(options);
-  migrateLegacyHandoffInbox(options);
+  if (!existsSync(handoffMigrationMarkerPath(options))) return readLegacyHandoffInboxStore(options);
   const items = userRequestsForRepository(options).map((request) => projectUserRequest(request, options.repoId));
   const updatedAt = items.reduce((latest, item) => item.updatedAt > latest ? item.updatedAt : latest, nowIso(options));
   return { schemaVersion: 1, updatedAt, items };
@@ -399,7 +400,10 @@ export function getHandoffItem(options: HandoffInboxStoreOptions, id: string): H
     const sanitizedId = sanitizeFileComponent(id);
     return readLegacyHandoffInboxStore(options).items.find((item) => item.id === sanitizedId);
   }
-  migrateLegacyHandoffInbox(options);
+  if (!existsSync(handoffMigrationMarkerPath(options))) {
+    const sanitizedId = sanitizeFileComponent(id);
+    return readLegacyHandoffInboxStore(options).items.find((item) => item.id === sanitizedId);
+  }
   const request = requestForHandoffId(options, id);
   return request ? projectUserRequest(request, options.repoId) : undefined;
 }

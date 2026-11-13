@@ -2,7 +2,7 @@ import type { RepositoryRecord } from '../../core/repository/types';
 import { loadMcpRuntimeState } from '../../../adapters/mcp/auth';
 import { listControllerChecks } from '../execution/process-runtime/check-runner';
 import { listLocalBridgeJobSnapshots } from '../local-bridge/read-model';
-import { ensureRepositoryRuntimeStorage } from '../repositories/runtime-storage';
+import { inspectRepositoryRuntimeStorage } from '../repositories/runtime-storage';
 import { sessionCacheGlobalDiagnostics } from '../repositories/session-cache';
 import {
   cachedGitIdentity,
@@ -140,7 +140,7 @@ function recoveryProbe(
   let runtimeStorageReady = false;
   let runtimeStorageWarnings: string[] = [];
   try {
-    const storage = ensureRepositoryRuntimeStorage(repository, controllerHome);
+    const storage = inspectRepositoryRuntimeStorage(repository, controllerHome);
     runtimeStorageReady = storage.readyForExecution;
     runtimeStorageWarnings = storage.warnings;
   } catch (error) {
@@ -149,7 +149,7 @@ function recoveryProbe(
   const localJobs = listLocalBridgeJobSnapshots(repository.canonicalRoot, 30);
   const recentErrors = Array.isArray(args.recent_errors) ? args.recent_errors.map(String) : [];
   const contextProjectionStale = diagnosticContextProjectionStale(controllerHome, repository, args);
-  const plugins = listAssistantPluginManifests(controllerHome, repository, { preferStored: true });
+  const plugins = listAssistantPluginManifests(controllerHome, repository, { preferStored: true, fallbackToLive: false });
   const recovery = buildCapabilityRecoverySnapshot({
     generatedAt: new Date().toISOString(),
     daemonStatus: daemon.status === 'ready' ? 'ready' : daemon.status,
