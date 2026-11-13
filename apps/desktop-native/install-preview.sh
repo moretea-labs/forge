@@ -44,6 +44,14 @@ cat > "$TMP/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
+# Embed provenance before signing so it is covered by the bundle signature.
+plutil -insert ForgeSourceRevision -string "$SOURCE_REVISION" "$TMP/Contents/Info.plist"
+EMBEDDED_SOURCE_REVISION="$(plutil -extract ForgeSourceRevision raw "$TMP/Contents/Info.plist")"
+if [ "$EMBEDDED_SOURCE_REVISION" != "$SOURCE_REVISION" ]; then
+  echo "Forge preview source revision metadata mismatch" >&2
+  exit 1
+fi
+
 chmod +x "$TMP/Contents/MacOS/Forge" "$TMP/Contents/MacOS/forge-desktop"
 
 # A stable signing identity is required for persistent macOS Keychain trusted-app
