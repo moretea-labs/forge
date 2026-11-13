@@ -1,16 +1,15 @@
 import type { CallToolResult } from '../../../packages/protocols/mcp/tool-contract';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
-import { applyScheduleDedupe, buildScheduleDedupeReport, deleteSchedule } from '../../../packages/kernel/scheduler/api/index';
+import { applyScheduleDedupe, buildScheduleDedupeReport, deleteSchedule, getSchedule, listOccurrences, listSchedules, saveSchedule } from '../../../packages/kernel/scheduler/api/index';
 import { buildFacadeResult } from '../../../src/runtime/control-plane/facade/facade-result';
 import {
   createBrowserObservationSchedule,
-  getBrowserObservationSchedule,
-  listBrowserObservationSchedules,
-  pauseBrowserObservationSchedule,
   resumeBrowserObservationSchedule,
   triggerBrowserObservationSchedule,
   type BrowserObservationControllerType,
 } from '../../../src/runtime/workflow/schedules/browser-observation';
+import { createSupervisorHealthSchedule } from '../../../src/runtime/workflow/schedules/supervisor-health';
+import { evaluateSchedule } from '../../../src/runtime/workflow/schedules/engine';
 import { result } from './result-adapter';
 import { selected } from './shared-adapter';
 
@@ -74,7 +73,23 @@ export async function callRhWorkScheduleAdapter(
         ? triggerTypeRaw as 'interval' | 'cron' | 'calendar' | 'condition' | 'repository-event' | 'dependency-checkpoint' | 'manual'
         : undefined;
       const scheduleModeRaw = String(args.schedule_mode ?? 'browser_watch').trim();
-      if (!['browser_watch', 'browser_keepalive'].includes(scheduleModeRaw)) throw new Error('SCHEDULE_MODE_INVALID');
+      if (!['browser_watch', 'browser_keepalive', 'supervisor_healthcheck'].includes(scheduleModeRaw)) throw new Error('SCHEDULE_MODE_INVALID');
+      if (scheduleModeRaw === 'supervisor_healthcheck') {
+        if (args.trigger_type !== undefined && args.trigger_type !== 'interval') throw new Error('SUPERVISOR_HEALTH_INTERVAL_ONLY');
+        const forbidden = ['probe_url', 'probe_browser_session_id', 'launch_args', 'continuation_prompt', 'stop_conditions']
+          .filter(key => args[key] !== undefined);
+        if (forbidden.length) throw new Error('SUPERVISOR_HEALTH_ARGUMENTS_NOT_ALLOWED: ' + forbidden.join(','));
+        const created = createSupervisorHealthSchedule(ctx.controllerHome, repository.repoId, {
+          requestId: String(args.schedule_request_id ?? 'forge-supervisor-rescue-3h-v1'),
+          scheduleName: typeof args.schedule_name === 'string' ? args.schedule_name : undefined,
+          everyMinutes: typeof args.every_minutes === 'number' ? args.every_minutes : undefined,
+          shadowMode: args.shadow_mode === false ? false : true,
+        });
+        return result(buildFacadeResult({
+          summary: `Supervisor rescue schedule ${created.schedule.scheduleId} configured.`,
+          data: { schedule: created.schedule },
+        }) as unknown as Record<string, unknown>);
+      }
       const created = createBrowserObservationSchedule(ctx.controllerHome, repository.repoId, {
         scheduleMode: scheduleModeRaw as 'browser_watch' | 'browser_keepalive',
         controllerType: controllerType as BrowserObservationControllerType,
@@ -111,9 +126,15 @@ export async function callRhWorkScheduleAdapter(
       return result(buildFacadeResult({ summary: `Browser observation schedule ${created.schedule.scheduleId} is configured.`, data: { schedule: created.schedule } }) as unknown as Record<string, unknown>);
     }
     if (operation === 'schedule_list') {
-      const schedules = listBrowserObservationSchedules(ctx.controllerHome, repository.repoId, {
-        includeOccurrences: args.include_occurrences === true,
-      });
+      const scheduled = listSchedules(ctx.controllerHome, repository.repoId)
+        .filter(s => s.action.operation === 'browser_probe' || s.action.operation === 'supervisor_healthcheck');
+      const schedules = {
+        schedules: scheduled,
+        occurrences: args.include_occurrences === true
+          ? listOccurrences(ctx.controllerHome, repository.repoId, undefined, 100)
+            .filter(o => scheduled.some(s => s.scheduleId === o.scheduleId))
+          : [],
+      };
       // A list is discovery, not a transport for archived controller prompts.
       // Return compact, bounded entries; schedule_get retains the exact contract.
       const limit = typeof args.limit === 'number' && Number.isFinite(args.limit)
@@ -141,22 +162,37 @@ export async function callRhWorkScheduleAdapter(
     }
     if (!scheduleId) throw new Error('SCHEDULE_ID_REQUIRED');
     if (operation === 'schedule_get') {
-      const data = getBrowserObservationSchedule(ctx.controllerHome, repository.repoId, scheduleId, args.include_occurrences === true);
+      const schedule = getSchedule(ctx.controllerHome, repository.repoId, scheduleId);
+      if (!['browser_probe', 'supervisor_healthcheck'].includes(schedule.action.operation)) throw new Error('SCHEDULE_NOT_BROWSER_OBSERVATION');
+      const data = {
+        schedule,
+        ...(args.include_occurrences === true
+          ? { occurrences: listOccurrences(ctx.controllerHome, repository.repoId, scheduleId, 50) } : {}),
+      };
       return result(buildFacadeResult({ summary: `Schedule ${scheduleId}.`, data }) as unknown as Record<string, unknown>);
     }
     if (operation === 'schedule_pause') {
-      const saved = pauseBrowserObservationSchedule(ctx.controllerHome, repository.repoId, scheduleId, typeof args.reason === 'string' ? args.reason : undefined);
+      const schedule = getSchedule(ctx.controllerHome, repository.repoId, scheduleId);
+      if (!['browser_probe', 'supervisor_healthcheck'].includes(schedule.action.operation)) throw new Error('SCHEDULE_NOT_BROWSER_OBSERVATION');
+      const saved = saveSchedule(ctx.controllerHome, {
+        ...schedule, enabled: false, pausedReason: String(args.reason ?? 'Paused through Scheduler.'),
+      });
       return result(buildFacadeResult({ summary: `Schedule ${scheduleId} is paused.`, data: { schedule: saved } }) as unknown as Record<string, unknown>);
     }
     if (operation === 'schedule_resume') {
-      const saved = resumeBrowserObservationSchedule(ctx.controllerHome, repository.repoId, scheduleId);
+      const schedule = getSchedule(ctx.controllerHome, repository.repoId, scheduleId);
+      if (!['browser_probe', 'supervisor_healthcheck'].includes(schedule.action.operation)) throw new Error('SCHEDULE_NOT_BROWSER_OBSERVATION');
+      const saved = schedule.action.operation === 'browser_probe'
+        ? resumeBrowserObservationSchedule(ctx.controllerHome, repository.repoId, scheduleId)
+        : saveSchedule(ctx.controllerHome, { ...schedule, enabled: true, pausedReason: undefined, consecutiveFailures: 0 });
       return result(buildFacadeResult({
         summary: `Schedule ${scheduleId} is resumed.`,
         data: { schedule: saved },
       }) as unknown as Record<string, unknown>);
     }
     if (operation === 'schedule_delete') {
-      const schedule = getBrowserObservationSchedule(ctx.controllerHome, repository.repoId, scheduleId).schedule;
+      const schedule = getSchedule(ctx.controllerHome, repository.repoId, scheduleId);
+      if (!['browser_probe', 'supervisor_healthcheck'].includes(schedule.action.operation)) throw new Error('SCHEDULE_NOT_BROWSER_OBSERVATION');
       deleteSchedule(ctx.controllerHome, repository.repoId, scheduleId);
       return result(buildFacadeResult({
         summary: `Schedule ${scheduleId} is deleted; historical occurrences and evidence are retained.`,
@@ -166,12 +202,17 @@ export async function callRhWorkScheduleAdapter(
     const repositoryEvent = typeof args.event_name === 'string' && args.event_name.trim().length > 0;
     const explicitEventId = typeof args.event_id === 'string' ? args.event_id.trim() : '';
     const manualRequestId = !repositoryEvent && typeof args.request_id === 'string' ? args.request_id.trim() : '';
-    const occurrence = await triggerBrowserObservationSchedule(ctx.controllerHome, repository.repoId, scheduleId, {
-      source: repositoryEvent ? 'repository-event' : 'manual',
+    const schedule = getSchedule(ctx.controllerHome, repository.repoId, scheduleId);
+    if (!['browser_probe', 'supervisor_healthcheck'].includes(schedule.action.operation)) throw new Error('SCHEDULE_NOT_BROWSER_OBSERVATION');
+    const context = {
+      source: (repositoryEvent ? 'repository-event' : 'manual') as 'repository-event' | 'manual',
       eventName: typeof args.event_name === 'string' ? args.event_name : undefined,
       eventId: explicitEventId || manualRequestId || undefined,
       data: args.event_data && typeof args.event_data === 'object' && !Array.isArray(args.event_data) ? args.event_data as Record<string, unknown> : undefined,
-    });
+    };
+    const occurrence = schedule.action.operation === 'browser_probe'
+      ? await triggerBrowserObservationSchedule(ctx.controllerHome, repository.repoId, scheduleId, context)
+      : await evaluateSchedule(ctx.controllerHome, schedule, true, context);
     return result(buildFacadeResult({
       summary: occurrence ? `Schedule ${scheduleId} produced ${occurrence.decision}.` : `Schedule ${scheduleId} produced no occurrence.`,
       data: { occurrence },

@@ -221,6 +221,42 @@ describe('rh_work Scheduler MCP adapter', () => {
     expect(detail?.content[0]?.text ?? '').not.toContain('CONTINUE');
   });
 
+  test('configures one bounded 3-hour internal Supervisor rescue schedule without model continuation', async () => {
+    const { repository, ctx } = fixture();
+    const created = structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId,
+      operation: 'schedule_create',
+      schedule_mode: 'supervisor_healthcheck',
+      schedule_request_id: 'supervisor-health-schedule-fixture',
+      every_minutes: 180,
+      shadow_mode: true,
+    }));
+    expect(created.status).toBe('ok');
+    const schedule = created.data.schedule;
+    expect(schedule.action.operation).toBe('supervisor_healthcheck');
+    expect(schedule.trigger).toMatchObject({ type: 'interval', everyMinutes: 180 });
+    expect(schedule.action.arguments).toEqual({});
+    expect(schedule.policy.shadowMode).toBe(true);
+    expect(schedule.stopConditions).toEqual([]);
+    const listed = structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId, operation: 'schedule_list',
+    }));
+    expect(listed.data.schedules.some((s: { scheduleId: string }) => s.scheduleId === schedule.scheduleId)).toBe(true);
+    const occurrence = structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId, operation: 'schedule_trigger', schedule_id: schedule.scheduleId,
+      request_id: 'supervisor-health-shadow-occurrence',
+    }));
+    expect(occurrence.data.occurrence).toMatchObject({ status: 'shadowed', decision: 'would_execute' });
+    const tooFrequent = structured(await callRuntimeTool(ctx, 'rh_work', {
+      repo_id: repository.repoId, operation: 'schedule_create',
+      schedule_mode: 'supervisor_healthcheck',
+      schedule_request_id: 'supervisor-health-too-frequent',
+      every_minutes: 1,
+    }));
+    expect(tooFrequent.status).toBe('blocked');
+    expect(tooFrequent.summary).toContain('SUPERVISOR_HEALTH_CADENCE_MINIMUM_180_MINUTES');
+  });
+
   test('routes the complete schedule lifecycle through the Scheduler adapter without external effects', async () => {
     const { controllerHome, repository, ctx, workId } = fixture();
     const scheduleId = await createShadowKeepalive(ctx, repository.repoId, 'schedule-lifecycle-fixture');

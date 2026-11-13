@@ -174,7 +174,7 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     schedule_id: { type: 'string', description: 'Schedule identity for schedule_get/pause/resume/delete/trigger.' },
     schedule_name: { type: 'string', description: 'Human-readable schedule name.' },
     schedule_request_id: { type: 'string', description: 'Stable idempotency key for schedule_create.' },
-    schedule_mode: { type: 'string', enum: ['browser_watch', 'browser_keepalive'], description: 'Browser observation mode. Schedules never create, resume, or own Work.' },
+    schedule_mode: { type: 'string', enum: ['browser_watch', 'browser_keepalive', 'supervisor_healthcheck'], description: 'Browser observation or fixed external Supervisor health patrol; no Work continuation.' },
     probe_url: { type: 'string', description: 'Allowed URL to navigate or refresh for browser_watch/browser_keepalive.' },
     probe_browser_session_id: { type: 'string', description: 'Existing Forge browser session used as the external observation target.' },
     probe_selector: { type: 'string', description: 'Optional selector limiting text extraction for browser_watch.' },
