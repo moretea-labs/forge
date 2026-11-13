@@ -2854,7 +2854,12 @@ final class NativeWorkspace: ObservableObject {
         }
         do {
             let changes = try await loadAgentChanges(paths:paths,staged:staged)
-            guard repoId == targetRepoId, checkoutId == targetCheckoutId else { return nil }
+            guard repoId == targetRepoId, checkoutId == targetCheckoutId,
+                  !changesLoading,
+                  let currentChanges = agentChanges,
+                  Self.agentChangesMatchContext(
+                      currentChanges, repoId:targetRepoId, checkoutId:targetCheckoutId, staged:staged
+                  ) else { return nil }
             guard Self.reviewedChangesMatchRequest(
                 changes,
                 repoId: targetRepoId,
@@ -2883,8 +2888,12 @@ final class NativeWorkspace: ObservableObject {
     }
 
     func restoreAgentChanges(_ changes: AgentGitDiff) async -> Bool {
-        guard Self.reviewedChangesAreRestorable(changes,repoId:repoId,checkoutId:checkoutId),
-              let repoId, let checkoutId else {
+        guard let repoId, let checkoutId, !changesLoading,
+              let currentChanges = agentChanges,
+              Self.agentChangesMatchContext(
+                  changes, repoId:repoId, checkoutId:checkoutId, staged:currentChanges.staged
+              ),
+              Self.reviewedChangesAreRestorable(changes,repoId:repoId,checkoutId:checkoutId) else {
             self.error = "当前 Changes 不是完整可放弃的未暂存复查快照。"
             return false
         }
@@ -2912,8 +2921,11 @@ final class NativeWorkspace: ObservableObject {
     }
 
     func commitAgentChanges(_ changes: AgentGitDiff, message: String) async -> Bool {
-        guard let repoId, let checkoutId,
-              changes.repoId == repoId, changes.checkoutId == checkoutId,
+        guard let repoId, let checkoutId, !changesLoading,
+              let currentChanges = agentChanges,
+              Self.agentChangesMatchContext(
+                  changes, repoId:repoId, checkoutId:checkoutId, staged:currentChanges.staged
+              ),
               !changes.truncated, !changes.nameOnly.isEmpty, !changes.patch.isEmpty else {
             self.error = "当前 Changes 不是完整可提交的复查快照。"
             return false

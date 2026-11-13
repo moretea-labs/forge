@@ -2880,6 +2880,13 @@ private struct AgentChangesPane: View {
         .onChange(of:model.agentChanges?.staged) { staged in
             if let staged { reviewStaged = staged }
         }
+        .onChange(of:model.changesLoading) { loading in
+            guard loading else { return }
+            focusedPath = nil
+            focusedChanges = nil
+            focusedLoading = false
+            restoreSnapshot = nil
+        }
         .frame(maxWidth:.infinity,maxHeight:.infinity)
         .background(ForgePalette.canvas.opacity(0.34))
         .alert("放弃已审查改动？",isPresented:Binding(
