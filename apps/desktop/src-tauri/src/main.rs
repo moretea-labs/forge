@@ -4834,6 +4834,12 @@ mod tests {
                 }}).to_string(),
                 json!({"type":"message_stop"}).to_string()
             ], "read_file"),
+            ("responses", "/v1/responses", vec![
+                json!({"type":"response.completed","response":{"output":[{
+                    "type":"function_call","status":"completed","call_id":"call-1",
+                    "name":"git_status","arguments":"{}"
+                }]}}).to_string()
+            ], "git_status"),
         ] {
             let listener = TcpListener::bind("127.0.0.1:0").expect("mock SSE socket");
             let port = listener.local_addr().unwrap().port();
@@ -4866,9 +4872,16 @@ mod tests {
                 let body: Value = serde_json::from_slice(&request[header_end..header_end+length]).unwrap();
                 assert_eq!(body["stream"],true);
                 assert_eq!(body["model"],"test-model");
-                assert_eq!(body["messages"][0]["role"],"user");
-                if expected_path == "/v1/messages" {
+                if expected_path == "/v1/responses" {
+                    assert_eq!(body["input"][0]["role"],"user");
+                } else {
+                    assert_eq!(body["messages"][0]["role"],"user");
+                }
+                if protocol == "anthropic" {
                     assert!(headers.to_ascii_lowercase().contains("anthropic-version: 2023-06-01"));
+                    assert!(headers.to_ascii_lowercase().contains("x-api-key: fixture-api-key"));
+                } else {
+                    assert!(headers.to_ascii_lowercase().contains("authorization: bearer fixture-api-key"));
                 }
                 let payload = frames.into_iter().map(|frame| format!("data: {frame}\r\n\r\n")).collect::<String>();
                 socket.write_all(format!(
@@ -4880,10 +4893,15 @@ mod tests {
             let host = RecordingStreamHost::default();
             let client = reqwest::Client::new();
             let endpoint = format!("http://127.0.0.1:{port}/v1");
-            let body = json!({"stream":true,"model":"test-model",
-                "messages":[{"role":"user","content":"check repo"}]});
+            let body = if protocol == "responses" {
+                json!({"stream":true,"model":"test-model",
+                    "input":[{"role":"user","content":"check repo"}]})
+            } else {
+                json!({"stream":true,"model":"test-model",
+                    "messages":[{"role":"user","content":"check repo"}]})
+            };
             let output = tauri::async_runtime::block_on(request_local_api_round_stream(
-                &host, "conv-path", &client, &endpoint, protocol, None, None, &body
+                &host, "conv-path", &client, &endpoint, protocol, Some("fixture-api-key"), None, &body
             )).expect("streamed model response");
             let calls = provider_tool_calls(protocol,&output).expect("parsed tools");
             assert_eq!(calls.len(),1);
