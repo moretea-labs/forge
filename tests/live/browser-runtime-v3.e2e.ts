@@ -580,12 +580,14 @@ try {
     const batchSamples = Math.max(5, Math.min(Number(process.env.FORGE_BROWSER_V3_BATCH_SAMPLES ?? 10), 20));
     const sequentialBatchSamples: number[] = [];
     const nativeBatchSamples: number[] = [];
+    const sequentialVerifiedTaskSamples: number[] = [];
+    const nativeBatchVerifiedTaskSamples: number[] = [];
     const nativeProviderBatchDurations: number[] = [];
     const nativeBatchStepTimings: Array<{ sample: number; warmup: boolean; providerBatchDurationMs: number; steps: Array<{ index: number; action: string; durationMs: number }> }> = [];
     const sequentialBatchRequestTrace: Array<{ sample: number; warmup: boolean; requests: ComputerActionTrace[] }> = [];
     const nativeBatchRequestTrace: Array<{ sample: number; warmup: boolean; requests: ComputerActionTrace[] }> = [];
     let taskCount = 0;
-    async function mutationTrial(variant: 'sequential' | 'batched', index: number): Promise<number> {
+    async function mutationTrial(variant: 'sequential' | 'batched', index: number): Promise<{ actionWallMs: number; verifiedTaskWallMs: number }> {
       const requestTrace: ComputerActionTrace[] = [];
       const marker = `computer-${product}-${index}-${variant}`;
       const firstTaskIndex = taskCount + 1;
@@ -635,10 +637,11 @@ try {
           });
         }
       }
-      const elapsed = performance.now() - startedAt;
+      const actionWallMs = Math.round((performance.now() - startedAt) * 10) / 10;
       const observed = await computerAction('get_text', { session_id: computerSessionId, selector: '#tasks', max_chars: 10_000 }, {
         phase: `native_batch.${variant}.sample_${index}.readback`, trace: requestTrace,
       });
+      const verifiedTaskWallMs = Math.round((performance.now() - startedAt) * 10) / 10;
       const text = String(observed.text ?? '');
       for (const suffix of ['-a', '-b', '-c']) {
         assert(text.includes(marker + suffix + ':high'), `${product} ${variant} did not persist ${marker}${suffix}`);
@@ -648,19 +651,29 @@ try {
         'every Computer request trace must include its action wall duration');
       (variant === 'sequential' ? sequentialBatchRequestTrace : nativeBatchRequestTrace)
         .push({ sample: index, warmup: index === 0, requests: requestTrace });
-      return Math.round(elapsed * 10) / 10;
+      return { actionWallMs, verifiedTaskWallMs };
     }
 
     for (let index = 0; index <= batchSamples; index += 1) {
       const order: Array<'sequential' | 'batched'> = index % 2 === 0
         ? ['sequential', 'batched'] : ['batched', 'sequential'];
       for (const variant of order) {
-        const elapsed = await mutationTrial(variant, index);
-        if (index !== 0) (variant === 'sequential' ? sequentialBatchSamples : nativeBatchSamples).push(elapsed);
+        const timing = await mutationTrial(variant, index);
+        if (index !== 0) {
+          if (variant === 'sequential') {
+            sequentialBatchSamples.push(timing.actionWallMs);
+            sequentialVerifiedTaskSamples.push(timing.verifiedTaskWallMs);
+          } else {
+            nativeBatchSamples.push(timing.actionWallMs);
+            nativeBatchVerifiedTaskSamples.push(timing.verifiedTaskWallMs);
+          }
+        }
       }
     }
     assert.equal(sequentialBatchSamples.length, batchSamples);
     assert.equal(nativeBatchSamples.length, batchSamples);
+    assert.equal(sequentialVerifiedTaskSamples.length, batchSamples);
+    assert.equal(nativeBatchVerifiedTaskSamples.length, batchSamples);
     assert.equal(nativeProviderBatchDurations.length, batchSamples);
     assert.equal(nativeBatchStepTimings.length, batchSamples + 1);
     const nativeBatchStepDurationByAction = Object.fromEntries(
@@ -763,6 +776,16 @@ try {
         sequentialWallP95Ms: percentile(sequentialBatchSamples, 0.95),
         batchedWallP50Ms: percentile(nativeBatchSamples, 0.5),
         batchedWallP95Ms: percentile(nativeBatchSamples, 0.95),
+        actionWallBoundary: 'mutation sequence; excludes independent readback',
+        sequentialVerifiedTaskP50Ms: percentile(sequentialVerifiedTaskSamples, 0.5),
+        sequentialVerifiedTaskP95Ms: percentile(sequentialVerifiedTaskSamples, 0.95),
+        batchedVerifiedTaskP50Ms: percentile(nativeBatchVerifiedTaskSamples, 0.5),
+        batchedVerifiedTaskP95Ms: percentile(nativeBatchVerifiedTaskSamples, 0.95),
+        verifiedTaskBoundary: 'mutation sequence plus independent get_text readback',
+        verifiedTaskSamples: {
+          sequential: sequentialVerifiedTaskSamples,
+          batched: nativeBatchVerifiedTaskSamples,
+        },
         providerBatchP50Ms: percentile(nativeProviderBatchDurations, 0.5),
         providerBatchP95Ms: percentile(nativeProviderBatchDurations, 0.95),
         stepDurationByActionMs: nativeBatchStepDurationByAction,
