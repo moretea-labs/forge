@@ -906,6 +906,13 @@ private struct ForgeWorkspaceView: View {
         }
     }
 
+    private var projectSwitcherSummary: String {
+        if model.projectsLoading && model.projects.isEmpty { return "正在加载项目…" }
+        if model.projectsError != nil && model.projects.isEmpty { return "项目列表加载失败" }
+        if model.projects.isEmpty { return "暂无已注册项目" }
+        return "\(model.projects.count) 个项目 · 分支 \(model.checkoutBranch ?? "未选择")"
+    }
+
     private var projectSwitcher: some View {
         Button {
             projectPickerShown.toggle()
@@ -921,7 +928,7 @@ private struct ForgeWorkspaceView: View {
                     Text(model.project?.label ?? "选择项目")
                         .font(.system(size:12,weight:.semibold))
                         .lineLimit(1)
-                    Text("\(model.projects.count) 个项目 · 分支 \(model.checkoutBranch ?? "未选择")")
+                    Text(projectSwitcherSummary)
                         .font(.system(size:10)).foregroundStyle(ForgePalette.secondary)
                         .lineLimit(1)
                 }
@@ -947,10 +954,15 @@ private struct ForgeWorkspaceView: View {
                 }
                 Spacer()
                 Button { Task { await model.refresh() } } label: {
-                    Image(systemName:"arrow.clockwise")
+                    if model.projectsLoading {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Image(systemName:"arrow.clockwise")
+                    }
                 }
                 .buttonStyle(.plain)
-                .help("刷新项目列表")
+                .disabled(model.projectsLoading)
+                .help(model.projectsLoading ? "正在加载项目列表" : "刷新项目列表")
             }
 
             HStack(spacing:7) {
@@ -964,6 +976,23 @@ private struct ForgeWorkspaceView: View {
 
             ScrollView {
                 LazyVStack(spacing:4) {
+                    if model.projectsLoading && model.projects.isEmpty {
+                        HStack(spacing:8) {
+                            ProgressView().controlSize(.small)
+                            Text("正在加载项目…")
+                                .font(.system(size:10)).foregroundStyle(ForgePalette.secondary)
+                        }
+                        .frame(maxWidth:.infinity,minHeight:76)
+                    } else if let projectError = model.projectsError {
+                        Text("项目列表加载失败：\(projectError)")
+                            .font(.system(size:10)).foregroundStyle(ForgePalette.secondary)
+                            .frame(maxWidth:.infinity,minHeight:76)
+                            .padding(.horizontal,12)
+                    } else if filteredProjects.isEmpty {
+                        Text(model.projects.isEmpty ? "暂无已注册项目" : "没有匹配的项目")
+                            .font(.system(size:10)).foregroundStyle(ForgePalette.secondary)
+                            .frame(maxWidth:.infinity,minHeight:76)
+                    }
                     ForEach(filteredProjects) { project in
                         VStack(spacing:3) {
                             HStack(spacing:6) {

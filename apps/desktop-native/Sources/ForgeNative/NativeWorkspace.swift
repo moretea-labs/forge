@@ -544,6 +544,8 @@ final class NativeWorkspace: ObservableObject {
     @Published var zenMode = true
     @Published private(set) var navigationBackStack: [NativeNavigationEntry] = []
     @Published private(set) var projects: [ForgeProject] = []
+    @Published private(set) var projectsLoading = true
+    @Published private(set) var projectsError: String?
     @Published var repoId: String?
     @Published var checkoutId: String?
     @Published var threads: [ChatThread] = []
@@ -1367,42 +1369,57 @@ final class NativeWorkspace: ObservableObject {
         imageInputAvailable = status["imageInput"] as? Bool == true
     }
 
-    func refresh() async {
+    nonisolated static func decodeProjects(_ result:[String:Any]) throws -> [ForgeProject] {
+        guard let rows = result["repositories"] as? [[String:Any]] else {
+            throw ForgeBridgeError.invalidResponse
+        }
+        let bytes = try JSONSerialization.data(withJSONObject:rows)
+        return try JSONDecoder().decode([ForgeProject].self,from:bytes)
+    }
+
+    private func refreshProjects() async {
+        projectsLoading = true
+        projectsError = nil
+        defer { projectsLoading = false }
         do {
             let result = try await ForgeBridge.request("read_projects")
-            let rows = result["repositories"] as? [[String: Any]] ?? []
-            let bytes = try JSONSerialization.data(withJSONObject: rows)
-            projects = try JSONDecoder().decode([ForgeProject].self, from: bytes)
-            // Agent repository context is owned by the selected ChatThread. Do not
-            // fabricate a binding from preferredRepoId for an unbound conversation.
-            if let status = try? await ForgeBridge.request("read_local_provider_status") {
-                applyLocalProviderStatus(status)
-            } else {
-                provider = "Codex 不可用"
-                localProviderReady = false
-                imageInputAvailable = false
-            }
-            if !selectedProviderSupportsImages { pendingImageURLs = [] }
-            if let settingsValue = try? await ForgeBridge.request("read_local_api_settings"),
-               let parsed = Self.localApiSettingsDetail(settingsValue) {
-                localApiSettings = parsed
-            }
-            if let catalog = try? await ForgeBridge.request("read_local_provider_models"),
-               let rows = catalog["models"] as? [[String: Any]],
-               let bytes = try? JSONSerialization.data(withJSONObject: rows),
-               let decoded = try? JSONDecoder().decode([AgentModelOption].self, from: bytes) {
-                agentModels = decoded
-            }
-            let connectionValue = try? await ForgeBridge.request("read_connection_status")
-            if let connectionValue, let parsed = Self.controllerConnectionDetail(connectionValue) {
-                connectionStatus = parsed
-            } else {
-                connectionStatus = nil
-            }
-            await refreshProject()
-            await loadUserRequests()
-            error = nil
-        } catch { self.error = error.localizedDescription }
+            projects = try Self.decodeProjects(result)
+        } catch {
+            projectsError = error.localizedDescription
+        }
+    }
+
+    func refresh() async {
+        await refreshProjects()
+        // Agent repository context is owned by the selected ChatThread. Do not
+        // fabricate a binding from preferredRepoId for an unbound conversation.
+        if let status = try? await ForgeBridge.request("read_local_provider_status") {
+            applyLocalProviderStatus(status)
+        } else {
+            provider = "Codex 不可用"
+            localProviderReady = false
+            imageInputAvailable = false
+        }
+        if !selectedProviderSupportsImages { pendingImageURLs = [] }
+        if let settingsValue = try? await ForgeBridge.request("read_local_api_settings"),
+           let parsed = Self.localApiSettingsDetail(settingsValue) {
+            localApiSettings = parsed
+        }
+        if let catalog = try? await ForgeBridge.request("read_local_provider_models"),
+           let rows = catalog["models"] as? [[String: Any]],
+           let bytes = try? JSONSerialization.data(withJSONObject: rows),
+           let decoded = try? JSONDecoder().decode([AgentModelOption].self, from: bytes) {
+            agentModels = decoded
+        }
+        let connectionValue = try? await ForgeBridge.request("read_connection_status")
+        if let connectionValue, let parsed = Self.controllerConnectionDetail(connectionValue) {
+            connectionStatus = parsed
+        } else {
+            connectionStatus = nil
+        }
+        await refreshProject()
+        await loadUserRequests()
+        error = nil
     }
 
     func loadZenGitHubBoard() async {

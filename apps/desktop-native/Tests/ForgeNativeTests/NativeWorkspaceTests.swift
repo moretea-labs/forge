@@ -3,6 +3,17 @@ import AppKit
 @testable import ForgeNative
 
 final class NativeWorkspaceTests: XCTestCase {
+    func testProjectListResponseDistinguishesValidEmptyFromMalformedPayloads() throws {
+        XCTAssertTrue(try NativeWorkspace.decodeProjects(["repositories": [[String:Any]]()]).isEmpty)
+        let projects = try NativeWorkspace.decodeProjects([
+            "repositories": [["repoId":"repo-a","displayName":"Repository A"] as [String:Any]]
+        ])
+        XCTAssertEqual(projects.map(\.repoId),["repo-a"])
+        XCTAssertThrowsError(try NativeWorkspace.decodeProjects([:]))
+        XCTAssertThrowsError(try NativeWorkspace.decodeProjects(["repositories":"not-an-array"]))
+        XCTAssertThrowsError(try NativeWorkspace.decodeProjects(["repositories":[["repoId":"repo-a"]]]))
+    }
+
     func testBridgeAllowlistExcludesGenericCommandsAndRecoveryMutations() {
         XCTAssertTrue(ForgeBridge.allowed.contains("send_local_conversation"))
         XCTAssertTrue(ForgeBridge.allowed.contains("read_local_provider_models"))
