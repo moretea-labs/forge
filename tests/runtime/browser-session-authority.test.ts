@@ -982,11 +982,13 @@ describe('browser session compatibility on Computer target authority', () => {
     const metadata = () => ['true', url, 'Sign in', '0', '0', '1200', '800', '7', '9', 'true', 'false'].join(separator);
     const inventory = () => `false${separator}7${fieldSeparator}9${fieldSeparator}true${fieldSeparator}${url}${fieldSeparator}Sign in`;
     const clicks: Array<{ x: number; y: number; windowId?: string; tabId?: string }> = [];
+    let providerCalls = 0;
     let filledByOS = false;
     setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
     setMacOsBrowserRuntimeHooksForTest({
       platform: 'darwin', appExists: () => true, processRunning: async () => true,
       runAppleScript: async (script, args) => {
+        providerCalls += 1;
         if (script.includes('set outputText to "false"')) return inventory();
         if (script.includes('execute targetTab javascript')) {
           if (args[0]?.includes('querySelectorAll') && args[0]?.includes('password')) {
@@ -1026,6 +1028,7 @@ describe('browser session compatibility on Computer target authority', () => {
       args: { session_id: 'saved-login', expected_origin: 'https://evil.example.com', selector: 'input[type=password]' },
     })).rejects.toMatchObject({ code: 'PLUGIN_BROWSER_PASSWORD_ORIGIN_MISMATCH' });
     expect(clicks).toHaveLength(0);
+    expect(providerCalls).toBe(0); // A wrong origin cannot even attach/read the unrelated tab.
     const outcome = await executeBrowserPluginAction({
       ...base, requestId: 'password-exact-site',
       args: { session_id: 'saved-login', expected_origin: 'https://login.example.com', selector: 'input[type=password]' },
