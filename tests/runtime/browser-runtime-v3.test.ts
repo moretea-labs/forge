@@ -531,10 +531,11 @@ describe('Browser Runtime V3 routing', () => {
     expect(javaScriptCalls[1]).not.toContain('element.checked = false');
   });
 
-  test('cold Chrome tab reattachment trusts only exact native tab ID, without global inventory', async () => {
+  test('cold Chrome tab reattachment trusts exact tab ID and searches the saved window first', async () => {
     let inventoryReads = 0;
     let observedTabId = '9';
     const url = 'https://example.com/cold-exact';
+    const metadataScripts: string[] = [];
     setMacOsBrowserRuntimeHooksForTest({
       platform: 'darwin',
       appExists: () => true,
@@ -548,14 +549,27 @@ describe('Browser Runtime V3 routing', () => {
         };
       },
       // A Chrome tab may move windows without changing its stable tab ID.
-      runAppleScript: async () => [
-        'false', url, 'Cold Exact', '0', '0', '1200', '800', '99', observedTabId, 'false', 'false',
-      ].join(nativeSeparator),
+      runAppleScript: async (script) => {
+        metadataScripts.push(script);
+        return [
+          'false', url, 'Cold Exact', '0', '0', '1200', '800', '99', observedTabId, 'false', 'false',
+        ].join(nativeSeparator);
+      },
     });
 
     const cold = await reattachMacOsBrowserOwnedPage('chrome', { windowId: '7', tabId: '9' }, 1_000);
     expect(cold.page.tabRef()).toEqual({ windowId: '99', tabId: '9' });
     expect(inventoryReads).toBe(0);
+
+    const metadataScript = metadataScripts[0] ?? '';
+    const savedWindowLookup = metadataScript.indexOf('if ((id of candidateWindow) as text) is targetWindowId');
+    const firstTabEnumeration = metadataScript.indexOf('repeat with candidateTab in tabs of candidateWindow');
+    const movedWindowFallback = metadataScript.indexOf('if targetTab is missing value then');
+    expect(metadataScript).toContain('set targetWindowId to "7"');
+    expect(savedWindowLookup).toBeGreaterThan(-1);
+    expect(firstTabEnumeration).toBeGreaterThan(savedWindowLookup);
+    expect(movedWindowFallback).toBeGreaterThan(firstTabEnumeration);
+    expect(metadataScript).toContain('is not targetWindowId');
 
     invalidateMacOsBrowserPageHandle('chrome', { windowId: '99', tabId: '9' });
     observedTabId = '10';

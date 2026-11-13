@@ -585,18 +585,38 @@ function parseTabInventory(product: MacOsBrowserProduct, raw: string): MacOsBrow
 
 function targetTabPreamble(ref: MacOsBrowserTabRef): string {
   return `set targetTabId to ${quotedAppleScript(ref.tabId)}
+set targetWindowId to ${quotedAppleScript(ref.windowId)}
 set targetWindow to missing value
 set targetTab to missing value
+-- Prefer the saved window before enumerating tabs across every window.
 repeat with candidateWindow in windows
-  repeat with candidateTab in tabs of candidateWindow
-    if ((id of candidateTab) as text) is targetTabId then
-      set targetWindow to candidateWindow
-      set targetTab to candidateTab
-      exit repeat
-    end if
-  end repeat
-  if targetTab is not missing value then exit repeat
+  if ((id of candidateWindow) as text) is targetWindowId then
+    set targetWindow to candidateWindow
+    repeat with candidateTab in tabs of candidateWindow
+      if ((id of candidateTab) as text) is targetTabId then
+        set targetTab to candidateTab
+        exit repeat
+      end if
+    end repeat
+    exit repeat
+  end if
 end repeat
+-- A tab may move between windows without changing its stable ID.
+-- Search other windows only when the saved window no longer contains that exact tab.
+if targetTab is missing value then
+  repeat with candidateWindow in windows
+    if targetWindow is missing value or ((id of candidateWindow) as text) is not targetWindowId then
+      repeat with candidateTab in tabs of candidateWindow
+        if ((id of candidateTab) as text) is targetTabId then
+          set targetWindow to candidateWindow
+          set targetTab to candidateTab
+          exit repeat
+        end if
+      end repeat
+    end if
+    if targetTab is not missing value then exit repeat
+  end repeat
+end if
 if targetTab is missing value then error "FORGE_BROWSER_TAB_NOT_FOUND:" & targetTabId`;
 }
 
