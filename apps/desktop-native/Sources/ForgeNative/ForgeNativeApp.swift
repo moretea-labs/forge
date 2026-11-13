@@ -1004,7 +1004,7 @@ private struct ForgeWorkspaceView: View {
                                         .background(ForgePalette.softFill,in:RoundedRectangle(cornerRadius:8,style:.continuous))
                                 }
                                 .buttonStyle(.plain)
-                                .help("在此仓库当前 Checkout 新建会话")
+                                .help("在当前项目新建会话")
                                 .disabled(model.busy)
                                 Button {
                                     toggleProjectCheckouts(project.repoId)
@@ -1014,7 +1014,7 @@ private struct ForgeWorkspaceView: View {
                                         .frame(width:24,height:25)
                                 }
                                 .buttonStyle(.plain)
-                                .help("展开仓库的工作树 / Checkout")
+                                .help("展开项目的工作区")
                                 .accessibilityIdentifier("project.checkouts.\(project.repoId)")
                             }
                             .padding(.horizontal,8).frame(height:46)
@@ -1041,7 +1041,7 @@ private struct ForgeWorkspaceView: View {
                                                         .font(.system(size:10))
                                                     VStack(alignment:.leading,spacing:2) {
                                                         HStack(spacing:5) {
-                                                            Text(checkout.branch ?? "detached HEAD")
+                                                            Text(checkout.branch ?? "未关联分支")
                                                                 .font(.system(size:10.5,weight:.medium))
                                                             if checkout.active {
                                                                 Text("默认").font(.system(size:9))
@@ -1071,7 +1071,7 @@ private struct ForgeWorkspaceView: View {
                                                     .frame(width:24,height:24)
                                             }
                                             .buttonStyle(.plain)
-                                            .help("在此 Checkout 创建会话")
+                                            .help("在此工作区新建会话")
                                             .disabled(model.busy)
                                         }
                                         .padding(.leading,21).padding(.trailing,10)
@@ -2474,7 +2474,7 @@ private struct AgentPane: View {
         .fixedSize()
         .disabled(model.busy || model.repositoryAccessLoading)
         .help("当前模型服务的项目权限")
-        .accessibilityLabel("仓库权限")
+        .accessibilityLabel("项目权限")
         .accessibilityValue(model.repositoryAccessMode == "full_access" ? "完全访问" : "请求权限")
         .accessibilityIdentifier("agent.repository-access.quick")
     }
