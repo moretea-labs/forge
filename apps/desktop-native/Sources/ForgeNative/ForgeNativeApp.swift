@@ -4802,6 +4802,8 @@ private struct RecordsPane: View {
                 Text("目标")
                     .font(.system(size:11,weight:.medium))
                 TextEditor(text:$draftOutcome)
+                    .accessibilityLabel("目标")
+                    .accessibilityIdentifier("planning.authoring.goal")
                     .font(.system(size:12))
                     .frame(height:92)
                     .padding(6)
