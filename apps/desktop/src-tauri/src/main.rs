@@ -353,6 +353,13 @@ async fn perform_recovery_action(action: String) -> Result<Value, String> {
     call_recovery_tool(tool, arguments).await
 }
 
+fn project_rows(result: &Value) -> Result<&[Value], String> {
+    result.get("repositories")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .ok_or_else(|| "FORGE_DESKTOP_PROJECT_LIST_INVALID".to_string())
+}
+
 #[tauri::command]
 async fn read_projects() -> Result<Value, String> {
     let config = runtime_config()?;
@@ -360,25 +367,22 @@ async fn read_projects() -> Result<Value, String> {
         "include_removed": false,
         "request_id": request_id("projects-list")
     })).await?;
+    let rows = project_rows(&result)?;
     let preferred_repo_id = config.repository_root.as_deref().and_then(|repository_root| {
-        result.get("repositories").and_then(Value::as_array).and_then(|repositories| {
-            repositories.iter().find_map(|repository| {
-                let root_matches = repository.get("canonicalRoot").and_then(Value::as_str) == Some(repository_root)
-                    || repository.get("localRoot").and_then(Value::as_str) == Some(repository_root);
-                root_matches.then(|| repository.get("repoId").and_then(Value::as_str)).flatten()
-            })
+        rows.iter().find_map(|repository| {
+            let root_matches = repository.get("canonicalRoot").and_then(Value::as_str) == Some(repository_root)
+                || repository.get("localRoot").and_then(Value::as_str) == Some(repository_root);
+            root_matches.then(|| repository.get("repoId").and_then(Value::as_str)).flatten()
         })
     });
-    let repositories = result.get("repositories").and_then(Value::as_array)
-        .map(|items| items.iter().map(|repository| json!({
-            "repoId": repository.get("repoId").and_then(Value::as_str),
-            "displayName": repository.get("displayName").and_then(Value::as_str),
-            "localRoot": repository.get("localRoot").and_then(Value::as_str),
-            "checkoutId": repository.get("checkoutId").and_then(Value::as_str),
-            "remoteUrl": repository.get("remoteUrl").and_then(Value::as_str),
-            "defaultBranch": repository.get("defaultBranch").and_then(Value::as_str)
-        })).collect::<Vec<_>>())
-        .unwrap_or_default();
+    let repositories = rows.iter().map(|repository| json!({
+        "repoId": repository.get("repoId").and_then(Value::as_str),
+        "displayName": repository.get("displayName").and_then(Value::as_str),
+        "localRoot": repository.get("localRoot").and_then(Value::as_str),
+        "checkoutId": repository.get("checkoutId").and_then(Value::as_str),
+        "remoteUrl": repository.get("remoteUrl").and_then(Value::as_str),
+        "defaultBranch": repository.get("defaultBranch").and_then(Value::as_str)
+    })).collect::<Vec<_>>();
     Ok(json!({ "repositories": repositories, "preferredRepoId": preferred_repo_id }))
 }
 
@@ -4004,6 +4008,16 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn project_rows_rejects_missing_or_malformed_arrays_but_accepts_valid_empty() {
+        let missing = json!({});
+        assert_eq!(project_rows(&missing).unwrap_err(), "FORGE_DESKTOP_PROJECT_LIST_INVALID");
+        let malformed = json!({ "repositories": "not-an-array" });
+        assert_eq!(project_rows(&malformed).unwrap_err(), "FORGE_DESKTOP_PROJECT_LIST_INVALID");
+        let empty = json!({ "repositories": [] });
+        assert!(project_rows(&empty).unwrap().is_empty());
+    }
 
     #[test]
     fn provider_token_usage_counts_only_complete_real_receipts() {
