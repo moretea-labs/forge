@@ -19,6 +19,7 @@ const server = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: () => new Resp
 writeControllerPluginConfig(controllerHome, 'browser', { schemaVersion: 3, enabled: true, provider: 'playwright', browserMode: 'attach_preferred', cdpAttachFallback: 'fail_closed', nativeAttachMode: 'auto', nativeBrowserCandidates: ['chrome'], defaultTimeoutMs: 10000 });
 const pending = new Set<string>();
 const samples: Record<string, unknown>[] = [];
+let safeProviderRetries = 0;
 const inventory = () => listMacOsBrowserTabs('chrome', 10000, { correctFrontmost: false });
 function memoryMiB() {
   const ps = spawnSync('/bin/ps', ['-axo', 'rss=,comm='], { encoding: 'utf8' });
@@ -26,7 +27,19 @@ function memoryMiB() {
   return Math.round(ps.stdout.split('\n').filter(line => line.includes('Google Chrome')).reduce((sum, line) => sum + Number(line.trim().split(/\s+/)[0]), 0) / 1024);
 }
 async function action(actionId: string, args: Record<string, unknown>) {
-  return computerPluginAdapter.executeAction({ controllerHome, repoId: repo.repoId, repoRoot: root, pluginId: 'computer', actionId, requestId: `tab-retention-${crypto.randomUUID()}`, args, origin: { surface: 'local-ui', actor: 'retention-e2e' } });
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      return await computerPluginAdapter.executeAction({ controllerHome, repoId: repo.repoId, repoRoot: root, pluginId: 'computer', actionId, requestId: `tab-retention-${crypto.randomUUID()}`, args, origin: { surface: 'local-ui', actor: 'retention-e2e' } });
+    } catch (error) {
+      const failure = error as { code?: string; retryable?: boolean; effectOutcome?: string };
+      // Same explicit pre-dispatch rejection contract as browser-runtime-v3.e2e.
+      if (failure.code !== 'BROWSER_AUTOMATION_SERIALIZATION_BUSY'
+        || failure.retryable !== true || failure.effectOutcome !== 'failed' || attempt === 3) throw error;
+      safeProviderRetries++;
+      await Bun.sleep(100 * attempt);
+    }
+  }
+  throw new Error('Provider admission retry budget exhausted');
 }
 try {
   const before = await inventory();
@@ -56,7 +69,7 @@ try {
     samples.push({ phase: `cycle-${cycle}-closed`, tabs: after.tabs.length, chromeSummedRssMiB: memoryMiB() });
     console.log(JSON.stringify(samples.at(-1)));
   }
-  console.log(JSON.stringify({ ok: true, cycles: 5, createdAndClosed: 15, samples, memorySemantics: 'summed RSS includes shared pages; concurrent browser activity is not attributable to this test' }));
+  console.log(JSON.stringify({ ok: true, safeProviderRetries, cycles: 5, createdAndClosed: 15, samples, memorySemantics: 'summed RSS includes shared pages; concurrent browser activity is not attributable to this test' }));
 } finally {
   for (const sessionId of pending) {
     try { await action('close_session', { session_id: sessionId }); pending.delete(sessionId); }
