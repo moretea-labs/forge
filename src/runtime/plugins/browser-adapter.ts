@@ -5083,6 +5083,12 @@ async function executeBrowserPluginActionInternal(
           throw new AssistantPluginError('PLUGIN_BROWSER_PASSWORD_ORIGIN_INVALID',
             'Saved-password autofill requires an exact HTTPS origin without credentials or path.', { retryable: false });
         }
+        // Fail before opening, reattaching or activating any browser tab.
+        // The live page origin is checked again inside withPage below.
+        if (new URL(target.url).origin !== expectedOrigin) {
+          throw new AssistantPluginError('PLUGIN_BROWSER_PASSWORD_ORIGIN_MISMATCH',
+            'The saved browser session does not match the authorized password-form origin.', { retryable: false });
+        }
         const selector = requiredString(input.args.selector, 'selector');
         return await withPage(input.actionId, input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
           if (new URL(page.url()).origin !== expectedOrigin) {
