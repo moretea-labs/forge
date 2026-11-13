@@ -4876,7 +4876,7 @@ private struct RecordsPane: View {
                         .font(.system(size:12,weight:.semibold))
                     if let status=model.autopilotStatus,
                        let approved=status.approvedRevision {
-                        Text("批准 r\(approved)")
+                        Text("批准版本 r\(approved)")
                             .font(.system(size:9.5,design:.monospaced))
                             .foregroundStyle(ForgePalette.secondary)
                     }
@@ -5026,6 +5026,8 @@ private struct RecordsPane: View {
                     Text("批准无人值守执行").font(.system(size:18,weight:.semibold))
                     Text(context.requirement.title).lineLimit(2)
                         .font(.system(size:10.5)).foregroundStyle(ForgePalette.secondary)
+                    Text("版本 r\(context.requirement.revision)")
+                        .font(.system(size:9.5,design:.monospaced)).foregroundStyle(ForgePalette.secondary)
                 }
                 Spacer()
                 Button { autopilotApproval=nil } label:{ Image(systemName:"xmark") }
