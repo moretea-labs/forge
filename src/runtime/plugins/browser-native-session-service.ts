@@ -20,6 +20,7 @@ export interface NativeOwnedSessionInspection {
 }
 
 const MAX_NATIVE_INVENTORY_TIMEOUT_MS = 3_000;
+const MAX_NATIVE_RECONCILIATION_TIMEOUT_MS = 10_000;
 
 function nativeInventoryTimeoutMs(timeoutMs: number): number {
   return Math.max(1, Math.min(timeoutMs, MAX_NATIVE_INVENTORY_TIMEOUT_MS));
@@ -101,7 +102,12 @@ export async function inspectNativeOwnedSessions(input: {
       try {
         // Liveness only needs exact tab identity and URL; frontmost state is unrelated.
         // Skip its separate Apple Event so listing/reconciliation performs one native inventory call per product.
-        inventory = await listMacOsBrowserTabs(product, nativeInventoryTimeoutMs(timeoutMs), { correctFrontmost: false });
+        // Explicit reclamation must tolerate a populated real browser (observed
+        // inventory ~6s); keep ordinary list/close observations on their short budget.
+        const inventoryBudget = input.pruneDead === true
+          ? Math.max(1, Math.min(timeoutMs, MAX_NATIVE_RECONCILIATION_TIMEOUT_MS))
+          : nativeInventoryTimeoutMs(timeoutMs);
+        inventory = await listMacOsBrowserTabs(product, inventoryBudget, { correctFrontmost: false });
       } catch (error) {
         inventory = error instanceof Error ? error : new Error(String(error));
       }

@@ -123,7 +123,15 @@ describe('native browser session cleanup', () => {
       evidence: 'native_inventory_unavailable',
     });
     expect(inspection.items.get('browser-native-owned')?.cleanupError).toContain('inventory stalled');
-    expect(observedTimeouts).toEqual([3_000, 3_000]);
+    const reconciliation = await inspectNativeOwnedSessions({
+      repoRoot: '/tmp/unused-for-unverified-native-session',
+      savedSessions: [nativeSession('vivaldi')],
+      timeoutMs: 20_000,
+      pruneDead: true,
+    });
+    expect(reconciliation.unverifiedCount).toBe(1);
+    expect(reconciliation.prunedCount).toBe(0);
+    expect(observedTimeouts).toEqual([3_000, 3_000, 10_000]);
   });
 
   test('inspects native session liveness without a redundant foreground metadata probe', async () => {
