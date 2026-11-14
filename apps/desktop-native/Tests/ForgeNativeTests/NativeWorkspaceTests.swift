@@ -911,6 +911,27 @@ final class NativeWorkspaceTests: XCTestCase {
         XCTAssertEqual(model.runtimeDescription,"正在读取主运行时状态。")
     }
 
+    @MainActor
+    func testRuntimePageRefreshDoesNotOverlapDiagnosisOrConnectionOperation() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+
+        model.runtimeLoading = true
+        XCTAssertFalse(model.beginRuntimePageRefresh())
+        model.runtimeLoading = false
+        model.connectionLoading = true
+        XCTAssertFalse(model.beginRuntimePageRefresh())
+        model.connectionLoading = false
+
+        XCTAssertTrue(model.beginRuntimePageRefresh())
+        XCTAssertTrue(model.runtimeLoading)
+        XCTAssertTrue(model.connectionLoading)
+        model.finishRuntimePageRefresh()
+        XCTAssertFalse(model.runtimeLoading)
+        XCTAssertFalse(model.connectionLoading)
+    }
+
     func testKnowledgeProjectionDecodesCanonicalReadOnlyAudit() {
         let result = NativeWorkspace.knowledgeAuditDetail([
             "readonly":true,"advisoryOnly":true,

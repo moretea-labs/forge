@@ -2128,10 +2128,21 @@ final class NativeWorkspace: ObservableObject {
         return "连接未就绪"
     }
 
-    func loadRuntimePage() async {
+    func beginRuntimePageRefresh() -> Bool {
+        guard !runtimeLoading, !connectionLoading else { return false }
         runtimeLoading = true
         connectionLoading = true
-        defer { runtimeLoading = false; connectionLoading = false }
+        return true
+    }
+
+    func finishRuntimePageRefresh() {
+        runtimeLoading = false
+        connectionLoading = false
+    }
+
+    func loadRuntimePage() async {
+        guard beginRuntimePageRefresh() else { return }
+        defer { finishRuntimePageRefresh() }
         var failures: [String] = []
         do {
             let value = try await ForgeBridge.request("read_recovery_status")
