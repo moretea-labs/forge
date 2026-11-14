@@ -1051,11 +1051,17 @@ async function openDesktopTarget(
           { retryable: false, details: { targetId: target.targetId, providerId: binding.providerId } },
         );
       }
-      // An explicit durable target may represent one of several running copies of
-      // the same bundle. Its saved PID must not silently drift on provider reattach.
-      const boundProcessId = requestedTargetId && input.args.launch !== true
-        ? binding?.processId
-        : undefined;
+      // A durable target can represent one of several copies of the same bundle,
+      // even when reopened by bundle_id. Never trust a provider session to keep
+      // its original process identity without reading back the bound PID.
+      const boundProcessId = input.args.launch !== true ? binding?.processId : undefined;
+      if (requestedTargetId && input.args.launch !== true && expectedProcessId === undefined && boundProcessId === undefined) {
+        throw new AssistantPluginError(
+          'PLUGIN_COMPUTER_TARGET_PROCESS_ID_REQUIRED',
+          'This historical target has no verified process binding; provide the exact live process_id to attach safely.',
+          { retryable: false, details: { targetId: target.targetId } },
+        );
+      }
       if (binding && input.args.activate !== true && expectedProcessId === undefined) {
         try {
           const exactRead = boundProcessId !== undefined;

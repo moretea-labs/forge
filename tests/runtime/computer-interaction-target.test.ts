@@ -349,7 +349,8 @@ describe('Computer durable InteractionTarget authority', () => {
 
     expect(reopened.targetId).toBe(targetId);
     expect(fixture.state.sessionOpenCount).toBe(1);
-    expect(fixture.state.observeCount).toBe(1);
+    expect(fixture.state.observeCount).toBe(0);
+    expect(fixture.state.elementObserveCount).toBe(1);
     expect(targetAuthority.listAllApplications(fixture.controllerHome).map((target) => target.targetId)).toEqual([targetId]);
   });
 
@@ -478,19 +479,30 @@ describe('Computer durable InteractionTarget authority', () => {
     ))).rejects.toMatchObject({ code: 'PLUGIN_COMPUTER_TARGET_SELECTOR_AMBIGUOUS' });
 
     expect(fixture.state.sessionOpenCount).toBe(1);
-    const reattached = await computerPluginAdapter.executeAction(actionInput(
+    await expect(computerPluginAdapter.executeAction(actionInput(
       fixture.controllerHome,
       'desktop_target_open',
       { target_id: staleTargetId, launch: false, activate: false },
+      'target-open-unverified-legacy-id',
+    ))).rejects.toMatchObject({ code: 'PLUGIN_COMPUTER_TARGET_PROCESS_ID_REQUIRED' });
+    expect(fixture.state.sessionOpenCount).toBe(1);
+
+    const reattached = await computerPluginAdapter.executeAction(actionInput(
+      fixture.controllerHome,
+      'desktop_target_open',
+      { target_id: staleTargetId, process_id: 4242, launch: false, activate: false },
       'target-open-exact-id-reattach',
     ));
 
     expect(reattached.targetId).toBe(staleTargetId);
+    expect(reattached.processId).toBe(4242);
     expect(fixture.state.sessionOpenCount).toBe(2);
     expect(fixture.state.lastSessionOpenArgs).toMatchObject({
       bundle_id: 'com.example.Editor',
+      process_id: 4242,
       launch: false,
       activate: false,
+      reuse_existing: false,
     });
     expect(targetAuthority.get(fixture.controllerHome, originalTargetId)).toEqual(originalTarget);
     expect(targetAuthority.get(fixture.controllerHome, staleTargetId)?.providerBinding?.providerSessionId).toBe('provider_session_2');
@@ -503,6 +515,48 @@ describe('Computer durable InteractionTarget authority', () => {
     expect(fixture.state.pressCount).toBe(1);
     expect(new Set(targetAuthority.listAllApplications(fixture.controllerHome).map(target => target.targetId)))
       .toEqual(new Set([originalTargetId, staleTargetId]));
+  });
+
+  test('bundle-id reopen cannot reuse a drifted PID or rebind a sibling after provider session loss', async () => {
+    const fixture = await providerFixture();
+    const targetId = await openTarget(fixture);
+    const before = targetAuthority.get(fixture.controllerHome, targetId);
+    const sessionId = before?.providerBinding?.providerSessionId;
+    expect(sessionId).toBeString();
+
+    // The legacy bundle lookup is not proof that the provider session stayed
+    // attached to the same process when several copies share the bundle ID.
+    fixture.sessions.get(sessionId!)!.pid = 4343;
+    await expect(computerPluginAdapter.executeAction(actionInput(
+      fixture.controllerHome, 'desktop_target_open',
+      { bundle_id: 'com.example.Editor', launch: false, activate: false },
+      'bundle-pid-drift-reuse',
+    ))).rejects.toMatchObject({ code: 'PLUGIN_COMPUTER_TARGET_PROCESS_ID_MISMATCH' });
+    expect(fixture.state.sessionOpenCount).toBe(1);
+    expect(targetAuthority.get(fixture.controllerHome, targetId)).toEqual(before);
+
+    fixture.sessions.clear();
+    fixture.state.processId = 4343;
+    await expect(computerPluginAdapter.executeAction(actionInput(
+      fixture.controllerHome, 'desktop_target_open',
+      { bundle_id: 'com.example.Editor', launch: false, activate: false },
+      'bundle-stale-session-other-running-pid',
+    ))).rejects.toMatchObject({ code: 'PLUGIN_COMPUTER_TARGET_REBIND_IDENTITY_MISMATCH' });
+    expect(fixture.state.lastSessionOpenArgs).toMatchObject({
+      process_id: 4242, launch: false, reuse_existing: false,
+    });
+    expect(fixture.state.sessionCloseCount).toBe(1);
+    expect(targetAuthority.get(fixture.controllerHome, targetId)).toEqual(before);
+
+    fixture.state.processId = 4242;
+    const recovered = await computerPluginAdapter.executeAction(actionInput(
+      fixture.controllerHome, 'desktop_target_open',
+      { bundle_id: 'com.example.Editor', launch: false, activate: false },
+      'bundle-exact-original-pid-recovered',
+    ));
+    expect(recovered).toMatchObject({ targetId, processId: 4242 });
+    expect(fixture.state.sessionOpenCount).toBe(3);
+    expect(fixture.state.pressCount).toBe(0);
   });
 
   test('exact target-id reuse verifies native session PID and fails closed on provider drift', async () => {
