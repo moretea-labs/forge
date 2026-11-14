@@ -2,9 +2,9 @@
 
 ## Decision
 
-The operator has withdrawn authorization for unattended ChatGPT CONTINUE to CONTINUE to DONE automation. Real release-bound evidence repeatedly showed applied effects without trusted completion receipts, followed by timeout-based migration and another applied effect. The system must not infer model acceptance from DOM, idle state, HTTP success, CI, or scheduler health.
+The operator has withdrawn authorization for Forge-native Supervisor Task/Effect/Turn autonomous continuation. Real release-bound evidence repeatedly showed applied effects without trusted completion receipts, followed by timeout-based migration and another applied effect. The system must not infer model acceptance from DOM, idle state, HTTP success, CI, or scheduler health.
 
-Retire autonomous model-turn continuation instead of adding another completion observer, retry loop, provider, scheduler, or duplicate authority. This is a source migration decision, not authorization to activate/restart/cut over the current Runtime.
+Retire Forge-native autonomous model-turn continuation instead of adding another completion observer, retry loop, provider, scheduler, or duplicate authority. Separately user-authorized external Python/launchd lanes remain callers of ordinary Computer/Process capabilities; they do not restore retired Runtime Task/Effect/Turn or own another progress ledger. This is a source migration decision, not authorization to activate/restart/cut over the current Runtime.
 
 ## Kept capabilities
 
@@ -116,11 +116,11 @@ Status: **Runtime Authority**
 
 This file is the sole maintained architecture authority for the current Forge runtime. Executable code and persisted schemas are authoritative for implementation facts; this document defines the architecture contracts they are expected to preserve. Do not hard-code a source commit here: release-specific snapshots belong in [`versions/`](versions/).
 
-Same-instance goal progress is read directly from Requirement and Plan semantic revisions. `rh_work(requirement_get)` and `rh_work(plan_get)` may include bounded historical Work references as compatibility evidence, but those records are advisory history and cannot determine completion, integration, release, checkout ownership, or execution admission.
+Development progress is read from the existing GitHub Issue and Project. Requirement and Plan revisions are optional semantic context. `rh_work(requirement_get)` and `rh_work(plan_get)` may include bounded historical Work references, but those records are advisory history and cannot determine completion, integration, release, checkout ownership, or execution admission.
 
 ## Product model
 
-The model owns interpretation, planning, trade-offs, validation strategy and the decision that a Requirement is complete. Requirement is the durable semantic outcome/progress record; Plan is optional planning context. GitHub Issue/Project is the human-visible project-progress surface. Forge does not manufacture a second task lifecycle for ordinary coding.
+The model owns interpretation, planning, trade-offs, validation strategy and verification of the user's acceptance criteria. GitHub Issue/Project is the only current development progress and completion authority; Requirement and Plan retain optional semantic context without another task lifecycle or completion gate. The future native project-management migration in #648 requires real acceptance and an explicit authority cutover before this ownership changes.
 
 `launcher_start` is a one-shot, Work-free session open/bind operation. It may create or attach the selected Computer/ChatGPT session but never auto-sends `CONTINUE`, enrolls a Supervisor, or claims that a model turn completed. Provider/session identity is transport state, not project progress.
 
