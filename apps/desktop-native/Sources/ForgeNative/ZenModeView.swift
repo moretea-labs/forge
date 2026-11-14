@@ -520,13 +520,13 @@ struct ZenWorkspacePane: View {
                         .accessibilityIdentifier("zen.board.toggleEmptyColumns")
                     }
                     Menu {
-                        Button("Forge 原生管理") { boardMode = "forge" }
-                        Button("GitHub Project（可选）") {
+                        Button("需求视图") { boardMode = "forge" }
+                        Button("GitHub Project · 进度") {
                             boardMode = "github"
                             Task { await model.loadZenGitHubBoard() }
                         }
                     } label: {
-                        Label(boardMode == "forge" ? "Forge 看板" : "GitHub 看板",systemImage:"chevron.down")
+                        Label(boardMode == "forge" ? "需求视图" : "GitHub Project",systemImage:"chevron.down")
                     }
                     .menuStyle(.borderlessButton)
                     .frame(width:130)
@@ -1338,15 +1338,15 @@ private struct ZenTreeCanvas: View {
 
     private func position(_ row:Int,_ index:Int,width:CGFloat,columns:Int) -> CGPoint {
         let columnWidth=width/CGFloat(max(1,columns))
-        return CGPoint(x:columnWidth * (CGFloat(index) + 0.5),y:CGFloat(row)*156+89)
+        return CGPoint(x:columnWidth * (CGFloat(index) + 0.5),y:CGFloat(row)*166+92)
     }
 
     var body: some View {
         GeometryReader { viewport in
             let rows=levels
             let maxNodes=rows.map(\.count).max() ?? 1
-            let width=max(viewport.size.width,CGFloat(maxNodes)*240+70)
-            let height=max(viewport.size.height,CGFloat(rows.count)*156+60)
+            let width=max(viewport.size.width,CGFloat(maxNodes)*250+70)
+            let height=max(viewport.size.height,CGFloat(rows.count)*166+60)
             let scopedIds=Set(rows.flatMap{$0}.map(\.recordId))
             ScrollView([.horizontal,.vertical]) {
                 ZStack(alignment:.topLeading) {
@@ -1362,8 +1362,8 @@ private struct ZenTreeCanvas: View {
                                 let start=position(row-1,parentIndex,width:width,columns:parents.count)
                                 let end=position(row,index,width:width,columns:rows[row].count)
                                 var path=Path()
-                                path.move(to:CGPoint(x:start.x,y:start.y+41))
-                                path.addCurve(to:CGPoint(x:end.x,y:end.y-41),
+                                path.move(to:CGPoint(x:start.x,y:start.y+46))
+                                path.addCurve(to:CGPoint(x:end.x,y:end.y-46),
                                               control1:CGPoint(x:start.x,y:(start.y+end.y)/2),
                                               control2:CGPoint(x:end.x,y:(start.y+end.y)/2))
                                 context.stroke(path,with:.color(.secondary.opacity(0.28)),
@@ -1377,29 +1377,36 @@ private struct ZenTreeCanvas: View {
                         ForEach(Array(rows[row].enumerated()),id:\.element.id) { index,item in
                             ZStack(alignment:.topTrailing) {
                                 Button { onSelect(item) } label: {
-                                    VStack(alignment:.leading,spacing:7) {
-                                        HStack(spacing:7) {
+                                    VStack(alignment:.leading,spacing:0) {
+                                        HStack(spacing:6) {
                                             Image(systemName:item.kind == .requirement ? "scope" : "list.bullet.rectangle")
-                                                .font(.system(size:12)).foregroundStyle(.secondary)
+                                                .font(.system(size:11,weight:.medium))
                                             Text(item.kind == .requirement ? "Requirement" : "Plan")
-                                                .font(.system(size:10,weight:.semibold))
-                                                .foregroundStyle(.secondary)
-                                            Spacer()
+                                                .font(.system(size:10,weight:.medium))
+                                            Spacer(minLength:0)
                                         }
-                                        Text(item.title).font(.system(size:12,weight:.medium))
+                                        .foregroundStyle(.secondary)
+                                        .padding(.bottom,9)
+                                        Text(item.title)
+                                            .font(.system(size:13,weight:.semibold))
                                             .foregroundStyle(.primary)
-                                            .lineLimit(2).multilineTextAlignment(.leading)
-                                        Text(item.recordId)
-                                            .font(.system(size:9,design:.monospaced))
-                                            .foregroundStyle(.secondary).lineLimit(1)
+                                            .lineLimit(2)
+                                            .multilineTextAlignment(.leading)
+                                            .frame(maxWidth:.infinity,alignment:.leading)
+                                        Spacer(minLength:0)
                                     }
-                                    .frame(width:184,height:62,alignment:.topLeading)
-                                    .padding(10)
-                                    .background(item.id == selectedId
-                                                ? Color.accentColor.opacity(0.09)
-                                                : Color(nsColor:.controlBackgroundColor),
-                                                in:RoundedRectangle(cornerRadius:12))
-                                    .contentShape(RoundedRectangle(cornerRadius:12))
+                                    .frame(width:194,height:68,alignment:.topLeading)
+                                    .padding(.horizontal,13)
+                                    .padding(.vertical,12)
+                                    .background(Color(nsColor:.controlBackgroundColor),
+                                                in:RoundedRectangle(cornerRadius:12,style:.continuous))
+                                    .overlay {
+                                        RoundedRectangle(cornerRadius:12,style:.continuous)
+                                            .strokeBorder(item.id == selectedId
+                                                          ? Color.accentColor.opacity(0.85) : .clear,
+                                                          lineWidth:1.5)
+                                    }
+                                    .contentShape(RoundedRectangle(cornerRadius:12,style:.continuous))
                                 }
                                 .buttonStyle(ZenPressStyle())
                                 .accessibilityIdentifier("zen.canvas.node.\(item.recordId)")

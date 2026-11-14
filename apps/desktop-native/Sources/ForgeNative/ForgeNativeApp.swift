@@ -1123,19 +1123,21 @@ private struct ForgeWorkspaceView: View {
                                     .contentShape(Rectangle())
                                 }
                                 .buttonStyle(.plain)
-                                Button {
-                                    model.newThread(inProject:project.repoId)
-                                    projectPickerShown = false
-                                    projectSearch = ""
-                                } label: {
-                                    Image(systemName:"plus")
-                                        .font(.system(size:10,weight:.semibold))
-                                        .frame(width:25,height:25)
-                                        .background(ForgePalette.softFill,in:RoundedRectangle(cornerRadius:8,style:.continuous))
+                                if !model.zenMode {
+                                    Button {
+                                        model.newThread(inProject:project.repoId)
+                                        projectPickerShown = false
+                                        projectSearch = ""
+                                    } label: {
+                                        Image(systemName:"plus")
+                                            .font(.system(size:10,weight:.semibold))
+                                            .frame(width:25,height:25)
+                                            .background(ForgePalette.softFill,in:RoundedRectangle(cornerRadius:8,style:.continuous))
+                                    }
+                                    .buttonStyle(.plain)
+                                    .help("在当前项目新建会话")
+                                    .disabled(model.busy)
                                 }
-                                .buttonStyle(.plain)
-                                .help("在当前项目新建会话")
-                                .disabled(model.busy)
                                 Button {
                                     toggleProjectCheckouts(project.repoId)
                                 } label: {
@@ -1197,18 +1199,20 @@ private struct ForgeWorkspaceView: View {
                                                 .contentShape(Rectangle())
                                             }
                                             .buttonStyle(.plain)
-                                            Button {
-                                                model.newThread(inProject:project.repoId,checkoutId:checkout.id)
-                                                projectPickerShown = false
-                                                projectSearch = ""
-                                            } label: {
-                                                Image(systemName:"plus")
-                                                    .font(.system(size:10,weight:.medium))
-                                                    .frame(width:24,height:24)
+                                            if !model.zenMode {
+                                                Button {
+                                                    model.newThread(inProject:project.repoId,checkoutId:checkout.id)
+                                                    projectPickerShown = false
+                                                    projectSearch = ""
+                                                } label: {
+                                                    Image(systemName:"plus")
+                                                        .font(.system(size:10,weight:.medium))
+                                                        .frame(width:24,height:24)
+                                                }
+                                                .buttonStyle(.plain)
+                                                .help("在此工作区新建会话")
+                                                .disabled(model.busy)
                                             }
-                                            .buttonStyle(.plain)
-                                            .help("在此工作区新建会话")
-                                            .disabled(model.busy)
                                         }
                                         .padding(.leading,21).padding(.trailing,10)
                                         .frame(height:39)
