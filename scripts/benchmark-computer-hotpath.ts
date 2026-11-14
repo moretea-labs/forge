@@ -32,9 +32,10 @@ interface Counters {
   observes: number;
 }
 
-function percentile(values: number[], quantile: number): number {
+export function percentile(values: number[], quantile: number): number {
   const sorted = [...values].sort((a, b) => a - b);
-  return sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * quantile))] ?? 0;
+  const index = Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * quantile) - 1));
+  return sorted[index] ?? 0;
 }
 
 function rounded(value: number): number {
@@ -273,4 +274,4 @@ async function main(): Promise<void> {
   }
 }
 
-await main();
+if (import.meta.main) await main();
