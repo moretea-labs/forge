@@ -25,9 +25,10 @@ import {
 import { autopilotPendingProcess, autopilotTerminalProcessEvidence, runAutopilotLoop } from '../../src/runtime/autopilot/runner';
 import type { ProcessHandle } from '../../src/runtime/execution/process-runtime/types';
 import { spawnManagedProcess } from '../../src/runtime/execution/process-runtime/runtime';
-import { startLightweightRepositoryCommand } from '../../src/runtime/execution/process-runtime/lightweight-managed';
+import { clearLightweightProcessMemoryForTest, startLightweightRepositoryCommand } from '../../src/runtime/execution/process-runtime/lightweight-managed';
 import { executionIdentityForRepository } from '../../src/runtime/control-plane/execution/execution-identity';
 import { waitRepositoryCommandProcess } from '../../src/runtime/execution/process-runtime/command-facade';
+import { claimProcessRequest } from '../../src/runtime/execution/process-runtime/store';
 import { readAutopilotProviderApiKey, readAutopilotProviderProfile } from '../../src/runtime/autopilot/provider-config';
 
 const authorize = (
@@ -364,8 +365,8 @@ describe('Requirement Autopilot',() => {
     expect(calls).toBe(0);
   });
 
-  test('persists the request identity before command admission and never replays when its receipt is lost',async() => {
-    const fx=fixture('lost-command-receipt');
+  test('recovers the original lightweight Process by request ID after its tool response is lost',async() => {
+    const fx=fixture('lost-command-receipt-recovered');
     const enrolled=authorize({
       controllerHome:fx.controllerHome,repoId:fx.repository.repoId,checkoutId:fx.repository.activeCheckoutId,
       requirementId:'REQ-AUTO',confirmAuthorization:true,
@@ -376,7 +377,7 @@ describe('Requirement Autopilot',() => {
       repoId:fx.repository.repoId,checkoutId:enrolled.checkoutId,
       requirementId:'REQ-AUTO',requirementRevision:1,grantId:enrolled.grant.grantId,policy:enrolled.policy,
     });
-    const command=['node','-e',"require('fs').appendFileSync('once.txt','x')"];
+    const command=['node','-e',"require('fs').appendFileSync('once.txt','x'); console.log('once')"];
     let admittedProcessId='';
     let admittedRequestId='';
     let toolCalls=0;
@@ -407,31 +408,124 @@ describe('Requirement Autopilot',() => {
     expect(interrupted?.pendingCommandRequestId).toBe(admittedRequestId);
     expect(interrupted?.pendingProcessId).toBeUndefined();
     expect(interrupted?.status).toBe('running');
+    const original=await waitRepositoryCommandProcess(fx.controllerHome,fx.repository.repoId,admittedProcessId,{timeoutMs:5_000});
+    expect(original).toMatchObject({completed:true,status:'succeeded',ok:true,exitCode:0});
+    expect(readFileSync(join(fx.repoRoot,'once.txt'),'utf8')).toBe('x');
+    clearLightweightProcessMemoryForTest(admittedProcessId);
 
     let restartedModelCalls=0;
     await runAutopilotLoop(fx.controllerHome,fx.repository.repoId,'REQ-AUTO',new AbortController().signal,{
       toolDefinitions:executeCommandDefinition,validateAuthorization:()=>({ok:true}),
-      modelRound:async()=>{restartedModelCalls+=1;throw new Error('RESTART_MUST_NOT_INVOKE_MODEL');},
-      executeTool:async()=>{toolCalls+=1;throw new Error('RESTART_MUST_NOT_INVOKE_TOOL');},
+      modelRound:async(input)=>{
+        restartedModelCalls+=1;
+        const messages=input.body.messages as Array<{role:string;content?:string}>;
+        const receipt=messages.find((message)=>message.content?.includes('Recovered terminal receipt'));
+        expect(receipt?.content).toContain(admittedProcessId);
+        expect(receipt?.content).toContain('once');
+        expect(receipt?.content).toContain('\"status\":\"succeeded\"');
+        return {choices:[{message:{role:'assistant',content:null,tool_calls:[{
+          id:'recovered-decision',type:'function',function:{
+            name:'forge_autopilot_decision',arguments:JSON.stringify({
+              action:'complete',summary:'The original Process terminal receipt was recovered by its request ID.',
+            }),
+          },
+        }]}}],usage:{prompt_tokens:100,completion_tokens:30,total_tokens:130}};
+      },
+      executeTool:async()=>{toolCalls+=1;throw new Error('MUST_NOT_REPLAY_PREVIOUS_COMMAND');},
+    });
+    const completed=readAutopilotRun(fx.controllerHome,fx.repository.repoId,'REQ-AUTO')?.value;
+    expect(toolCalls).toBe(1);
+    expect(restartedModelCalls).toBe(1);
+    expect(completed?.status).toBe('completed');
+    expect(completed?.pendingProcessId).toBeUndefined();
+    expect(completed?.pendingCommandRequestId).toBeUndefined();
+    expect(readFileSync(join(fx.repoRoot,'once.txt'),'utf8')).toBe('x');
+  });
+
+  test('does not attach an admission receipt from another checkout or replay an unknown request',async() => {
+    const fx=fixture('lost-command-receipt-wrong-checkout');
+    const enrolled=authorize({
+      controllerHome:fx.controllerHome,repoId:fx.repository.repoId,checkoutId:fx.repository.activeCheckoutId,
+      requirementId:'REQ-AUTO',confirmAuthorization:true,
+      policy:{provider:'joycode',endpoint:'https://api-ai.jd.com',protocol:'chat_completions',
+        model:'JoyAI-Code-1.6',maxTurns:3,maxToolCalls:3,maxTotalTokens:20_000},
+    });
+    createAutopilotRun(fx.controllerHome,{
+      repoId:fx.repository.repoId,checkoutId:enrolled.checkoutId,
+      requirementId:'REQ-AUTO',requirementRevision:1,grantId:enrolled.grant.grantId,policy:enrolled.policy,
+    });
+    const command=['node','-e',"require('fs').appendFileSync('must-not-run.txt','x')"];
+    let admittedRequestId='';
+    let toolCalls=0;
+    const firstModel=async()=>({choices:[{message:{role:'assistant',content:null,tool_calls:[{
+      id:'lost-before-admission',type:'function',function:{name:'execute_command',arguments:JSON.stringify({command})},
+    }]}}],usage:{prompt_tokens:100,completion_tokens:30,total_tokens:130}});
+    await expect(runAutopilotLoop(
+      fx.controllerHome,fx.repository.repoId,'REQ-AUTO',new AbortController().signal,{
+        toolDefinitions:executeCommandDefinition,validateAuthorization:()=>({ok:true}),modelRound:firstModel,
+        executeTool:async(_name,args)=>{
+          toolCalls+=1;
+          admittedRequestId=String(args.request_id??'');
+          expect(readAutopilotRun(fx.controllerHome,fx.repository.repoId,'REQ-AUTO')?.value.pendingCommandRequestId)
+            .toBe(admittedRequestId);
+          throw new Error('SIMULATED_TOOL_RESPONSE_LOST_BEFORE_PROCESS_ADMISSION');
+        },
+      }
+    )).rejects.toThrow('SIMULATED_TOOL_RESPONSE_LOST_BEFORE_PROCESS_ADMISSION');
+    claimProcessRequest({
+      controllerHome:fx.controllerHome,repoId:fx.repository.repoId,checkoutId:'checkout-other',
+      requestId:admittedRequestId,commandFingerprint:'other-checkout-command',processId:'proc_wrong_checkout_receipt',
+    });
+    let restartedModelCalls=0;
+    await runAutopilotLoop(fx.controllerHome,fx.repository.repoId,'REQ-AUTO',new AbortController().signal,{
+      toolDefinitions:executeCommandDefinition,validateAuthorization:()=>({ok:true}),
+      modelRound:async()=>{restartedModelCalls+=1;throw new Error('UNKNOWN_REQUEST_MUST_NOT_REACH_MODEL');},
+      executeTool:async()=>{toolCalls+=1;throw new Error('UNKNOWN_REQUEST_MUST_NOT_REPLAY');},
     });
     const halted=readAutopilotRun(fx.controllerHome,fx.repository.repoId,'REQ-AUTO')?.value;
     expect(halted?.status).toBe('paused');
     expect(halted?.stopReason).toBe('process_admission_unconfirmed:'+admittedRequestId);
+    expect(halted?.pendingCommandRequestId).toBe(admittedRequestId);
+    expect(halted?.pendingProcessId).toBeUndefined();
     expect(toolCalls).toBe(1);
     expect(restartedModelCalls).toBe(0);
-    const original=await waitRepositoryCommandProcess(fx.controllerHome,fx.repository.repoId,admittedProcessId,{timeoutMs:5_000});
-    expect(original).toMatchObject({completed:true,status:'succeeded',ok:true,exitCode:0});
-    expect(readFileSync(join(fx.repoRoot,'once.txt'),'utf8')).toBe('x');
-    // Canonical Process Runtime must also bind the same request/command identity
-    // back to the original receipt, never start a second physical command.
-    const retried=await startLightweightRepositoryCommand({
-      controllerHome:fx.controllerHome,repository:fx.repository,
-      execution:{command},commandId:admittedRequestId,
-      interactiveWaitMs:0,timeoutMs:15_000,deferStart:true,
-    });
-    expect(retried.handle.processId).toBe(admittedProcessId);
-    expect(readFileSync(join(fx.repoRoot,'once.txt'),'utf8')).toBe('x');
+    expect(() => readFileSync(join(fx.repoRoot,'must-not-run.txt'),'utf8')).toThrow();
   });
+
+  test('resolves the exact durable Process request binding before joining an unavailable Process',async() => {
+    const fx=fixture('durable-process-request-binding');
+    const enrolled=authorize({
+      controllerHome:fx.controllerHome,repoId:fx.repository.repoId,checkoutId:fx.repository.activeCheckoutId,
+      requirementId:'REQ-AUTO',confirmAuthorization:true,
+      policy:{provider:'joycode',endpoint:'https://api-ai.jd.com',protocol:'chat_completions',
+        model:'JoyAI-Code-1.6',maxTurns:3,maxToolCalls:3,maxTotalTokens:20_000},
+    });
+    createAutopilotRun(fx.controllerHome,{
+      repoId:fx.repository.repoId,checkoutId:enrolled.checkoutId,
+      requirementId:'REQ-AUTO',requirementRevision:1,grantId:enrolled.grant.grantId,policy:enrolled.policy,
+    });
+    const requestId='autopilot_durable_request_binding';
+    updateAutopilotRun(fx.controllerHome,fx.repository.repoId,'REQ-AUTO',run=>({
+      ...run,pendingCommandRequestId:requestId,
+    }));
+    claimProcessRequest({
+      controllerHome:fx.controllerHome,repoId:fx.repository.repoId,checkoutId:enrolled.checkoutId,
+      requestId,commandFingerprint:'original-durable-command',processId:'proc_autopilot_missing_receipt',
+    });
+    let calls=0;
+    await runAutopilotLoop(fx.controllerHome,fx.repository.repoId,'REQ-AUTO',new AbortController().signal,{
+      toolDefinitions:executeCommandDefinition,validateAuthorization:()=>({ok:true}),
+      modelRound:async()=>{calls+=1;throw new Error('MISSING_PROCESS_MUST_NOT_REACH_MODEL');},
+      executeTool:async()=>{calls+=1;throw new Error('MISSING_PROCESS_MUST_NOT_REPLAY');},
+    });
+    const paused=readAutopilotRun(fx.controllerHome,fx.repository.repoId,'REQ-AUTO')?.value;
+    expect(calls).toBe(0);
+    expect(paused?.status).toBe('paused');
+    expect(paused?.stopReason).toBe('process_terminal_unconfirmed:proc_autopilot_missing_receipt');
+    expect(paused?.pendingProcessId).toBe('proc_autopilot_missing_receipt');
+    expect(paused?.pendingCommandRequestId).toBeUndefined();
+  });
+
 
   test('reads the shared Desktop provider profile without copying credentials',() => {
     const home=tempRoot('forge-autopilot-provider-home-');

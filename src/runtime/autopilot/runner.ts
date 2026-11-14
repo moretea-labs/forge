@@ -5,7 +5,7 @@ import { join } from 'path';
 import { classifyRepositoryCommand } from '../../core/repository-command/classification';
 import { readRequirement, requirementSemanticView } from '../control-plane/persistence/requirement-store';
 import { listPlanContracts } from '../control-plane/facade/plan-contract-store';
-import { waitRepositoryCommandProcess } from '../execution/process-runtime/command-facade';
+import { resolveRepositoryCommandProcessIdByRequestId, waitRepositoryCommandProcess } from '../execution/process-runtime/command-facade';
 import type { ProcessHandle } from '../execution/process-runtime/types';
 import { readAutopilotRun, updateAutopilotRun } from './store';
 import type { AutopilotDecision, AutopilotModelUsage, AutopilotRun } from './types';
@@ -538,18 +538,41 @@ export async function runAutopilotLoop(
 
   // Run persistence stores only the correlation ID, not Process truth.
   // After a Runtime restart, reconcile it before another model/tool round.
-  if (initialRecord.value.pendingCommandRequestId && !initialRecord.value.pendingProcessId) {
-    // The request may have reached Process Runtime before the caller received
-    // its handle. No safe replay is possible without confirming that admission.
-    updateAutopilotRun(controllerHome, repoId, requirementId, (run) => ({
-      ...run, status:'paused',
-      stopReason:'process_admission_unconfirmed:' + run.pendingCommandRequestId,
-      lastSummary:'Command admission may have occurred without an acknowledged Process ID. Reconcile the canonical request ID before resuming; do not repeat the command.',
-    }), 'autopilot_process_admission_unconfirmed');
-    return;
+  let pendingProcessId = initialRecord.value.pendingProcessId;
+  if (initialRecord.value.pendingCommandRequestId && !pendingProcessId) {
+    const requestId = initialRecord.value.pendingCommandRequestId;
+    let resolvedProcessId: string | undefined;
+    try {
+      resolvedProcessId = resolveRepositoryCommandProcessIdByRequestId(
+        controllerHome, repoId, initialRecord.value.checkoutId, requestId,
+      );
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      updateAutopilotRun(controllerHome, repoId, requirementId, (run) => ({
+        ...run, status:'paused',
+        stopReason:'process_admission_unconfirmed:' + requestId,
+        lastSummary:'The original Process request identity could not be safely read. Its outcome remains unknown; do not replay it. ' + detail.slice(0, 500),
+      }), 'autopilot_process_admission_unconfirmed');
+      return;
+    }
+    if (!resolvedProcessId) {
+      updateAutopilotRun(controllerHome, repoId, requirementId, (run) => ({
+        ...run, status:'paused',
+        stopReason:'process_admission_unconfirmed:' + requestId,
+        lastSummary:'No canonical Process request binding or lightweight handle is visible for this request ID. Its outcome remains unknown; do not replay it.',
+      }), 'autopilot_process_admission_unconfirmed');
+      return;
+    }
+    pendingProcessId = resolvedProcessId;
+    updateAutopilotRun(controllerHome, repoId, requirementId, (run) => {
+      const next = { ...run, pendingProcessId:resolvedProcessId };
+      delete next.pendingCommandRequestId;
+      next.lastSummary = 'Recovered the original Process ID from its canonical request binding; joining the existing command without replay.';
+      return next;
+    }, 'autopilot_process_request_reconciled');
   }
-  if (initialRecord.value.pendingProcessId) {
-    const processId = initialRecord.value.pendingProcessId;
+  if (pendingProcessId) {
+    const processId = pendingProcessId;
     const valid = autopilotPendingProcess({accepted:true,status:'running',processId}).processId === processId;
     const terminal = valid
       ? await joinAutopilotProcess(controllerHome, repoId, processId, undefined, signal)

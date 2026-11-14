@@ -1262,8 +1262,9 @@ export function lightweightProcessScopeKey(processId: string): string | undefine
 }
 
 /** Test seam for proving terminal receipt recovery across Runtime-memory loss. */
-export function clearLightweightProcessMemoryForTest(): void {
-  entries.clear();
+export function clearLightweightProcessMemoryForTest(processId?: string): void {
+  if (processId) entries.delete(processId);
+  else entries.clear();
 }
 
 export function getLightweightProcessHandle(controllerHome: string, scopeKey: string, processId: string): ProcessHandle | undefined {
@@ -1282,6 +1283,60 @@ export function getLightweightProcessHandle(controllerHome: string, scopeKey: st
     return persistRecoveredTerminalReceipt(controllerHome, running, deterministicRecoveryFailureHandle(running, failureReason));
   }
   return recoveredRunningHandle(running);
+}
+
+/** Resolve an already accepted lightweight command by its stable Process request identity.
+ * This only attaches to an existing in-memory entry or persisted receipt; it never starts work.
+ */
+export function getLightweightProcessHandleByCommandId(
+  controllerHome: string,
+  scopeKey: string,
+  commandId: string,
+): ProcessHandle | undefined {
+  const normalized = commandId.trim();
+  if (!normalized) return undefined;
+  const active = [...entries.values()].filter((entry) => (
+    entry.controllerHome === controllerHome
+    && entry.scopeKey === scopeKey
+    && entry.commandId === normalized
+  ));
+  if (active.length > 1) {
+    throw new Error(`PROCESS_REQUEST_CONFLICT: command id ${normalized} identifies multiple lightweight processes`);
+  }
+  if (active.length === 1) return entryHandle(active[0]!);
+
+  const candidates = new Map<string, string>();
+  for (const root of [terminalReceiptRoot(controllerHome, scopeKey), runningReceiptRoot(controllerHome, scopeKey)]) {
+    if (!existsSync(root)) continue;
+    let files: string[];
+    try { files = readdirSync(root); } catch { continue; }
+    for (const file of files) {
+      if (!file.endsWith('.json')) continue;
+      let receipt: LightweightRunningReceipt | LightweightTerminalReceipt;
+      try { receipt = readJsonFile<LightweightRunningReceipt | LightweightTerminalReceipt>(join(root, file)); }
+      catch { continue; }
+      if (receipt.schemaVersion !== 1 || (receipt.scopeKey ?? receipt.repoId) !== scopeKey) continue;
+      const persistedCommandId = receipt.commandId ?? receipt.handle?.commandId;
+      if (persistedCommandId !== normalized) continue;
+      if (typeof receipt.processId !== 'string' || !receipt.processId.trim()
+          || typeof receipt.requestFingerprint !== 'string' || !receipt.requestFingerprint.trim()) {
+        throw new Error(`PROCESS_REQUEST_IDENTITY_MISSING: lightweight command ${normalized} has no verifiable receipt identity`);
+      }
+      const priorFingerprint = candidates.get(receipt.processId);
+      if (priorFingerprint !== undefined && priorFingerprint !== receipt.requestFingerprint) {
+        throw new Error(`PROCESS_REQUEST_CONFLICT: lightweight process ${receipt.processId} has inconsistent request fingerprints`);
+      }
+      candidates.set(receipt.processId, receipt.requestFingerprint);
+    }
+  }
+  if (candidates.size > 1) {
+    throw new Error(`PROCESS_REQUEST_CONFLICT: command id ${normalized} identifies multiple persisted lightweight processes`);
+  }
+  const processId = candidates.keys().next().value as string | undefined;
+  if (!processId) return undefined;
+  const handle = getLightweightProcessHandle(controllerHome, scopeKey, processId);
+  if (!handle) throw new Error(`PROCESS_REQUEST_HANDLE_UNAVAILABLE: ${processId}`);
+  return handle;
 }
 
 export async function waitForLightweightProcess(
