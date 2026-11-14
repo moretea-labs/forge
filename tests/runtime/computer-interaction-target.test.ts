@@ -32,6 +32,7 @@ interface ProviderFixture {
     sessionCloseCount: number;
     lastSessionCloseArgs?: Record<string, unknown>;
     omitLaunchProvenance: boolean;
+    omitExactProcessReceipt: boolean;
     reuseProviderSession: boolean;
     statusCount: number;
     observeCount: number;
@@ -93,6 +94,7 @@ async function providerFixture(): Promise<ProviderFixture> {
     sessionCloseCount: 0,
     lastSessionCloseArgs: undefined as Record<string, unknown> | undefined,
     omitLaunchProvenance: false,
+    omitExactProcessReceipt: false,
     reuseProviderSession: false,
     statusCount: 0,
     observeCount: 0,
@@ -194,6 +196,9 @@ async function providerFixture(): Promise<ProviderFixture> {
               pid: processId,
               bundleIdentifier: state.nextOpenBundleId ?? requestedBundle ?? 'com.example.Editor',
               appName: requestedName ?? 'Editor',
+              ...(typeof params.process_id === 'number' && !state.omitExactProcessReceipt
+                ? { exactProcessId: params.process_id, exactBundlePathVerified: typeof params.bundle_path === 'string' }
+                : {}),
               ...(!state.omitLaunchProvenance ? launched
                 ? { applicationOwnership: 'provider_launched', ownedProcessIdentifier: processId }
                 : { applicationOwnership: 'preexisting' } : {}),
@@ -498,6 +503,64 @@ describe('Computer durable InteractionTarget authority', () => {
     expect(fixture.state.pressCount).toBe(1);
     expect(new Set(targetAuthority.listAllApplications(fixture.controllerHome).map(target => target.targetId)))
       .toEqual(new Set([originalTargetId, staleTargetId]));
+  });
+
+  test('exact PID disambiguates same-bundle targets and returns the bound PID', async () => {
+    const fixture = await providerFixture();
+    const targetId = await openTarget(fixture);
+    targetAuthority.create(fixture.controllerHome, {
+      stableIdentity: { bundleId: 'com.example.Editor' },
+      providerBinding: {
+        providerId: 'desktop_operator',
+        providerSessionId: 'stale_other_pid',
+        processId: 4343,
+        observedAt: new Date(0).toISOString(),
+      },
+    });
+    const selected = await computerPluginAdapter.executeAction(actionInput(
+      fixture.controllerHome, 'desktop_target_open',
+      { bundle_id: 'com.example.Editor', process_id: 4242, bundle_path: '/tmp/Forge-preview.app', launch: false },
+      'target-exact-pid-selected',
+    ));
+    expect(selected).toMatchObject({ targetId, processId: 4242 });
+    expect(fixture.state.lastSessionOpenArgs).toMatchObject({
+      bundle_id: 'com.example.Editor', process_id: 4242, bundle_path: '/tmp/Forge-preview.app',
+      launch: false, activate: false, reuse_existing: false,
+    });
+    expect(targetAuthority.listAllApplications(fixture.controllerHome)).toHaveLength(2);
+  });
+
+  test('exact PID refuses a target bound to another process before dispatch', async () => {
+    const fixture = await providerFixture();
+    const targetId = await openTarget(fixture);
+    await expect(computerPluginAdapter.executeAction(actionInput(
+      fixture.controllerHome, 'desktop_target_open',
+      { target_id: targetId, process_id: 4343, launch: false },
+      'target-wrong-bound-pid',
+    ))).rejects.toMatchObject({ code: 'PLUGIN_COMPUTER_TARGET_PROCESS_ID_MISMATCH' });
+    expect(fixture.state.sessionOpenCount).toBe(1);
+  });
+
+  test('exact PID and path fail closed when native proof is absent or PID changes', async () => {
+    const fixture = await providerFixture();
+    fixture.state.omitExactProcessReceipt = true;
+    await expect(computerPluginAdapter.executeAction(actionInput(
+      fixture.controllerHome, 'desktop_target_open',
+      { bundle_id: 'com.example.Editor', process_id: 4242, bundle_path: '/tmp/Forge-preview.app', launch: false },
+      'target-unverified-exact-pid',
+    ))).rejects.toMatchObject({ code: 'PLUGIN_COMPUTER_TARGET_PROCESS_ID_MISMATCH' });
+    expect(fixture.state.sessionCloseCount).toBe(1);
+    expect(targetAuthority.listAllApplications(fixture.controllerHome)).toHaveLength(0);
+
+    fixture.state.omitExactProcessReceipt = false;
+    fixture.state.processId = 4343;
+    await expect(computerPluginAdapter.executeAction(actionInput(
+      fixture.controllerHome, 'desktop_target_open',
+      { bundle_id: 'com.example.Editor', process_id: 4242, bundle_path: '/tmp/Forge-preview.app', launch: false },
+      'target-wrong-process-returned',
+    ))).rejects.toMatchObject({ code: 'PLUGIN_COMPUTER_TARGET_PROCESS_ID_MISMATCH' });
+    expect(fixture.state.sessionCloseCount).toBe(2);
+    expect(targetAuthority.listAllApplications(fixture.controllerHome)).toHaveLength(0);
   });
 
   test('relaunches a stopped app through its existing durable target and refreshes owned PID', async () => {

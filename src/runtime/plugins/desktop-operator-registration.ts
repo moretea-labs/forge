@@ -91,6 +91,8 @@ export function desktopOperatorActions(): AssistantPluginActionDescriptor[] {
         properties: {
           bundle_id: { type: 'string' },
           app_name: { type: 'string' },
+          process_id: { type: 'integer', minimum: 1, maximum: 2_147_483_647, description: 'Bind this exact already-running macOS application PID; never launch or choose a sibling process.' },
+          bundle_path: { type: 'string', minLength: 1, description: 'Optional exact .app bundle path to verify with process_id; fail closed if different.' },
           launch: { type: 'boolean' },
           activate: { type: 'boolean', description: 'Explicitly activate the target application after launch/lookup. Defaults to false.' },
         },
