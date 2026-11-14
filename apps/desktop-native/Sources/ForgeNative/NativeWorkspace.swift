@@ -620,6 +620,8 @@ final class NativeWorkspace: ObservableObject {
     @Published var planningAutopilotStatuses: [String:AutopilotStatusDetail] = [:]
     @Published var planningAutopilotStatusError: String?
     @Published var autopilotLoading = false
+    private(set) var autopilotRequestGeneration = 0
+    private(set) var autopilotControlPending = false
     @Published var detail = ""
     @Published var schedules: [ProjectScheduleDetail] = []
     @Published private var schedulesReadLoading = false
@@ -1217,9 +1219,9 @@ final class NativeWorkspace: ObservableObject {
     }
 
     func clearRecordSelection() {
+        invalidateAutopilotRequests()
         selectedRecord=nil
         recordDetail=nil
-        autopilotStatus=nil
     }
     func toggleConversationSearch() {
         show(.agent)
@@ -1287,6 +1289,18 @@ final class NativeWorkspace: ObservableObject {
         requestGeneration:Int,currentGeneration:Int
     ) -> Bool {
         requestConversationId == currentConversationId && requestGeneration == currentGeneration
+    }
+
+    nonisolated static func autopilotRequestIsCurrent(
+        requestRepoId:String?,currentRepoId:String?,
+        requestCheckoutId:String?,currentCheckoutId:String?,
+        requestGeneration:Int,currentGeneration:Int,
+        requestContextGeneration:Int,currentContextGeneration:Int
+    ) -> Bool {
+        requestRepoId == currentRepoId
+            && requestCheckoutId == currentCheckoutId
+            && requestGeneration == currentGeneration
+            && requestContextGeneration == currentContextGeneration
     }
 
     private func userRequestsOperationIsCurrent(_ generation:Int,repoId targetRepoId:String?) -> Bool {
@@ -2630,19 +2644,55 @@ final class NativeWorkspace: ObservableObject {
         await loadPlanningAutopilotStatuses(planningRequirementIds)
     }
 
+    func beginAutopilotRequest() -> Int {
+        autopilotRequestGeneration &+= 1
+        return autopilotRequestGeneration
+    }
+
+    func invalidateAutopilotRequests() {
+        autopilotRequestGeneration &+= 1
+        autopilotLoading=false
+        autopilotStatus=nil
+        planningAutopilotStatusError=nil
+    }
+
+    private func autopilotRequestIsCurrent(
+        _ generation:Int,repoId targetRepoId:String,checkoutId targetCheckoutId:String,
+        contextGeneration:Int
+    ) -> Bool {
+        Self.autopilotRequestIsCurrent(
+            requestRepoId:targetRepoId,currentRepoId:repoId,
+            requestCheckoutId:targetCheckoutId,currentCheckoutId:checkoutId,
+            requestGeneration:generation,currentGeneration:autopilotRequestGeneration,
+            requestContextGeneration:contextGeneration,currentContextGeneration:projectContextGeneration
+        )
+    }
+
     func loadPlanningAutopilotStatuses(_ requirementIds:[String]) async {
-        guard let repoId,let checkoutId,!requirementIds.isEmpty else {
+        guard let repoId,let checkoutId else {
+            invalidateAutopilotRequests()
             planningAutopilotStatuses=[:]
             planningAutopilotStatusError=nil
             return
         }
+        guard !requirementIds.isEmpty else {
+            invalidateAutopilotRequests()
+            planningAutopilotStatuses=[:]
+            planningAutopilotStatusError=nil
+            return
+        }
+        guard !autopilotLoading,!autopilotControlPending else { return }
+        let requestGeneration=beginAutopilotRequest()
+        let contextGeneration=projectContextGeneration
         do {
             let value=try await ForgeBridge.request("read_project_autopilot_statuses",[
                 "repoId":repoId,
                 "checkoutId":checkoutId,
                 "requirementIds":requirementIds
             ])
-            guard self.repoId == repoId,self.checkoutId == checkoutId else { return }
+            guard autopilotRequestIsCurrent(
+                requestGeneration,repoId:repoId,checkoutId:checkoutId,contextGeneration:contextGeneration
+            ) else { return }
             let raw=value["statuses"] as? [String:Any] ?? [:]
             let failed=raw.compactMap { requirementId,value -> (String,String)? in
                 guard let dictionary=value as? [String:Any],
@@ -2664,7 +2714,9 @@ final class NativeWorkspace: ObservableObject {
                 planningAutopilotStatusError=nil
             }
         } catch {
-            guard self.repoId == repoId,self.checkoutId == checkoutId else { return }
+            guard autopilotRequestIsCurrent(
+                requestGeneration,repoId:repoId,checkoutId:checkoutId,contextGeneration:contextGeneration
+            ) else { return }
             planningAutopilotStatusError=error.localizedDescription
         }
     }
@@ -2674,13 +2726,17 @@ final class NativeWorkspace: ObservableObject {
               let selectionId=selectedRecord,
               let selected=records.first(where:{$0.id == selectionId}),
               selected.kind == .requirement,selected.recordId == requirementId else {
-            autopilotStatus=nil
-            autopilotLoading=false
+            invalidateAutopilotRequests()
             return
         }
+        guard !autopilotLoading,!autopilotControlPending else { return }
+        let requestGeneration=beginAutopilotRequest()
+        let contextGeneration=projectContextGeneration
         autopilotLoading=true
         defer {
-            if self.repoId == repoId,self.checkoutId == checkoutId,self.selectedRecord == selectionId {
+            if autopilotRequestIsCurrent(
+                requestGeneration,repoId:repoId,checkoutId:checkoutId,contextGeneration:contextGeneration
+            ) {
                 autopilotLoading=false
             }
         }
@@ -2689,12 +2745,16 @@ final class NativeWorkspace: ObservableObject {
                 "repoId":repoId,"checkoutId":checkoutId,
                 "requirementId":requirementId,"operation":"status"
             ])
-            guard self.repoId == repoId,self.checkoutId == checkoutId,self.selectedRecord == selectionId else { return }
+            guard autopilotRequestIsCurrent(
+                requestGeneration,repoId:repoId,checkoutId:checkoutId,contextGeneration:contextGeneration
+            ),self.selectedRecord == selectionId else { return }
             autopilotStatus=Self.autopilotStatusDetail(value)
             if let autopilotStatus { planningAutopilotStatuses[requirementId]=autopilotStatus }
             planningAutopilotStatusError=nil
         } catch {
-            guard self.repoId == repoId,self.checkoutId == checkoutId,self.selectedRecord == selectionId else { return }
+            guard autopilotRequestIsCurrent(
+                requestGeneration,repoId:repoId,checkoutId:checkoutId,contextGeneration:contextGeneration
+            ),self.selectedRecord == selectionId else { return }
             autopilotStatus=nil
             self.error=error.localizedDescription
         }
@@ -2712,9 +2772,15 @@ final class NativeWorkspace: ObservableObject {
     ) async -> Bool {
         guard let repoId else { error="请先选择项目。"; return false }
         guard let checkoutId else { error="当前项目没有 checkout。"; return false }
-        guard !autopilotLoading else { return false }
+        guard !autopilotLoading,!autopilotControlPending else { return false }
+        let requestGeneration=beginAutopilotRequest()
+        let contextGeneration=projectContextGeneration
         autopilotLoading=true
-        defer { autopilotLoading=false }
+        autopilotControlPending=true
+        defer {
+            autopilotControlPending=false
+            autopilotLoading=false
+        }
         var args:[String:Any]=[
             "repoId":repoId,"checkoutId":checkoutId,
             "requirementId":requirementId,"operation":operation,
@@ -2726,17 +2792,43 @@ final class NativeWorkspace: ObservableObject {
         if let maxToolCalls { args["maxToolCalls"]=maxToolCalls }
         do {
             _=try await ForgeBridge.request("autopilot_control",args)
-            let status=try await ForgeBridge.request("autopilot_control",[
-                "repoId":repoId,"checkoutId":checkoutId,
-                "requirementId":requirementId,"operation":"status"
-            ])
-            autopilotStatus=Self.autopilotStatusDetail(status)
-            if let autopilotStatus { planningAutopilotStatuses[requirementId]=autopilotStatus }
-            planningAutopilotStatusError=nil
-            error=nil
+            guard autopilotRequestIsCurrent(
+                requestGeneration,repoId:repoId,checkoutId:checkoutId,contextGeneration:contextGeneration
+            ) else { return true }
+            do {
+                let status=try await ForgeBridge.request("autopilot_control",[
+                    "repoId":repoId,"checkoutId":checkoutId,
+                    "requirementId":requirementId,"operation":"status"
+                ])
+                guard autopilotRequestIsCurrent(
+                    requestGeneration,repoId:repoId,checkoutId:checkoutId,contextGeneration:contextGeneration
+                ) else { return true }
+                let parsed=Self.autopilotStatusDetail(status)
+                if let parsed { planningAutopilotStatuses[requirementId]=parsed }
+                if let selectionId=selectedRecord,
+                   let selected=records.first(where:{$0.id == selectionId}),
+                   selected.kind == .requirement,selected.recordId == requirementId {
+                    autopilotStatus=parsed
+                }
+                planningAutopilotStatusError=nil
+                error=nil
+            } catch {
+                guard autopilotRequestIsCurrent(
+                    requestGeneration,repoId:repoId,checkoutId:checkoutId,contextGeneration:contextGeneration
+                ) else { return true }
+                planningAutopilotStatusError="操作已提交，但执行状态暂时无法刷新。请刷新状态确认。"
+            }
             return true
         } catch {
-            self.error=error.localizedDescription
+            guard autopilotRequestIsCurrent(
+                requestGeneration,repoId:repoId,checkoutId:checkoutId,contextGeneration:contextGeneration
+            ) else { return false }
+            let message=error.localizedDescription
+            if message.contains("OUTCOME_UNKNOWN") || message.contains("DELIVERY_UNKNOWN") {
+                planningAutopilotStatusError="操作结果未确认。请先刷新执行状态，不要重复提交。"
+            } else {
+                self.error=message
+            }
             return false
         }
     }
@@ -2765,28 +2857,28 @@ final class NativeWorkspace: ObservableObject {
     func openRecord(_ selectionId: String) async {
         guard let repoId,
               let record = records.first(where: { $0.id == selectionId }) else { return }
+        let checkoutId=self.checkoutId
+        invalidateAutopilotRequests()
         selectedRecord = selectionId
         recordDetail = nil
-        autopilotLoading=false
         do {
             switch record.kind {
             case .plan:
-                autopilotStatus=nil
                 let result = try await ForgeBridge.request("read_plan_detail",["repoId":repoId,"planId":record.recordId])
-                guard self.repoId == repoId,self.selectedRecord == selectionId else { return }
+                guard self.repoId == repoId,self.checkoutId == checkoutId,self.selectedRecord == selectionId else { return }
                 guard let parsed = Self.planDetail(result) else { throw ForgeBridgeError.invalidResponse }
                 recordDetail = .plan(parsed)
             case .requirement:
                 let result = try await ForgeBridge.request("read_requirement_detail",["repoId":repoId,"requirementId":record.recordId])
-                guard self.repoId == repoId,self.selectedRecord == selectionId else { return }
+                guard self.repoId == repoId,self.checkoutId == checkoutId,self.selectedRecord == selectionId else { return }
                 guard let parsed = Self.requirementDetail(result) else { throw ForgeBridgeError.invalidResponse }
                 recordDetail = .requirement(parsed)
                 await loadAutopilotStatus(record.recordId)
-                guard self.repoId == repoId,self.selectedRecord == selectionId else { return }
+                guard self.repoId == repoId,self.checkoutId == checkoutId,self.selectedRecord == selectionId else { return }
             }
             error = nil
         } catch {
-            guard self.repoId == repoId,self.selectedRecord == selectionId else { return }
+            guard self.repoId == repoId,self.checkoutId == checkoutId,self.selectedRecord == selectionId else { return }
             self.error = error.localizedDescription
         }
     }
@@ -3123,6 +3215,7 @@ final class NativeWorkspace: ObservableObject {
     func invalidateProjectContextRequests() {
         projectContextGeneration &+= 1
         invalidateKnowledgeSearchRequests()
+        invalidateAutopilotRequests()
     }
 
     func projectContextRequestIsCurrent(generation: Int, sourceThreadId: String?) -> Bool {

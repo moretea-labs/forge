@@ -3700,7 +3700,7 @@ private struct RecordsPane: View {
     }
 
     private var planningOperationalRefreshKey: String {
-        "\(model.repoId ?? "none")|\(scenePhase == .active ? "active" : "inactive")|\(model.planningRequirementIds.joined(separator:"|"))"
+        "\(model.repoId ?? "none")|\(model.checkoutId ?? "none")|\(scenePhase == .active ? "active" : "inactive")|\(model.planningRequirementIds.joined(separator:"|"))"
     }
 
     private var planningOverview: some View {

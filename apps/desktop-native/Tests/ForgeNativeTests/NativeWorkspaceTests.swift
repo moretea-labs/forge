@@ -1398,6 +1398,50 @@ final class NativeWorkspaceTests: XCTestCase {
     }
 
     @MainActor
+    func testAutopilotRequestsAreFencedByProjectCheckoutAndContextGeneration() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        model.repoId = "repo_a"
+        model.checkoutId = "checkout_a"
+        let contextGeneration = model.projectContextGeneration
+        let older = model.beginAutopilotRequest()
+
+        XCTAssertTrue(NativeWorkspace.autopilotRequestIsCurrent(
+            requestRepoId:"repo_a",currentRepoId:model.repoId,
+            requestCheckoutId:"checkout_a",currentCheckoutId:model.checkoutId,
+            requestGeneration:older,currentGeneration:model.autopilotRequestGeneration,
+            requestContextGeneration:contextGeneration,currentContextGeneration:model.projectContextGeneration
+        ))
+
+        model.checkoutId = "checkout_b"
+        XCTAssertFalse(NativeWorkspace.autopilotRequestIsCurrent(
+            requestRepoId:"repo_a",currentRepoId:model.repoId,
+            requestCheckoutId:"checkout_a",currentCheckoutId:model.checkoutId,
+            requestGeneration:older,currentGeneration:model.autopilotRequestGeneration,
+            requestContextGeneration:contextGeneration,currentContextGeneration:model.projectContextGeneration
+        ))
+
+        model.checkoutId = "checkout_a"
+        model.clearRecordSelection()
+        XCTAssertFalse(NativeWorkspace.autopilotRequestIsCurrent(
+            requestRepoId:"repo_a",currentRepoId:model.repoId,
+            requestCheckoutId:"checkout_a",currentCheckoutId:model.checkoutId,
+            requestGeneration:older,currentGeneration:model.autopilotRequestGeneration,
+            requestContextGeneration:contextGeneration,currentContextGeneration:model.projectContextGeneration
+        ))
+
+        let current = model.beginAutopilotRequest()
+        model.invalidateProjectContextRequests()
+        XCTAssertFalse(NativeWorkspace.autopilotRequestIsCurrent(
+            requestRepoId:"repo_a",currentRepoId:model.repoId,
+            requestCheckoutId:"checkout_a",currentCheckoutId:model.checkoutId,
+            requestGeneration:current,currentGeneration:model.autopilotRequestGeneration,
+            requestContextGeneration:contextGeneration,currentContextGeneration:model.projectContextGeneration
+        ))
+    }
+
+    @MainActor
     func testKnowledgeSearchGenerationRejectsSupersededQueriesAndContextChanges() {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at:folder) }
