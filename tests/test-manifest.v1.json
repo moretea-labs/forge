@@ -750,6 +750,10 @@
       "module": "process-runtime",
       "resource": "pure"
     },
+    "tests/runtime/runtime-ownership-incarnation.test.ts": {
+      "module": "process-runtime",
+      "resource": "temp-isolated"
+    },
     "tests/runtime/sensitive-output-swift-source.test.ts": {
       "module": "process-runtime",
       "resource": "pure"
