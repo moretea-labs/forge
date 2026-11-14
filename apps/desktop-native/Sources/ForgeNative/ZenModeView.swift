@@ -1210,6 +1210,72 @@ struct ZenWorkspacePane: View {
     }
 }
 
+// Geometry is calculated once for both node positions and connectors.
+// Leaf slots preserve each branch as a contiguous subtree rather than
+// distributing unrelated plans evenly across every depth.
+struct ZenTreeGeometry {
+    static let columnStep: CGFloat = 250
+    static let rowStep: CGFloat = 166
+
+    let width: CGFloat
+    let height: CGFloat
+    let parentById: [String:String]
+    private let xById: [String:CGFloat]
+
+    init(rows: [[ForgeRecord]], viewport: CGSize) {
+        let knownIds = Set(rows.flatMap { $0 }.map(\.recordId))
+        var parentById: [String:String] = [:]
+        var childIds: [String:[String]] = [:]
+        if rows.count > 1 {
+            for row in 1..<rows.count {
+                for child in rows[row] {
+                    guard let parent = rows[row-1].first(where: {
+                        child.parentPlanId == $0.recordId ||
+                        ($0.kind == .requirement &&
+                         !knownIds.contains(child.parentPlanId ?? ""))
+                    }) else { continue }
+                    parentById[child.id] = parent.id
+                    childIds[parent.id,default:[]].append(child.id)
+                }
+            }
+        }
+
+        var leafIndex = 0
+        var naturalX: [String:CGFloat] = [:]
+        func position(_ id: String) -> CGFloat {
+            let children = childIds[id] ?? []
+            let x: CGFloat
+            if let first = children.first {
+                let firstX = position(first)
+                var lastX = firstX
+                for child in children.dropFirst() { lastX = position(child) }
+                x = (firstX + lastX) / 2
+            } else {
+                x = CGFloat(leafIndex) * Self.columnStep + 160
+                leafIndex += 1
+            }
+            naturalX[id] = x
+            return x
+        }
+        if let root = rows.first?.first { _ = position(root.id) }
+        for node in rows.flatMap({ $0 }) where naturalX[node.id] == nil {
+            _ = position(node.id)
+        }
+
+        let naturalWidth = CGFloat(max(leafIndex,1)) * Self.columnStep + 70
+        width = max(viewport.width,naturalWidth)
+        height = max(viewport.height,CGFloat(rows.count) * Self.rowStep + 60)
+        self.parentById = parentById
+        let offset = (width-naturalWidth)/2
+        xById = naturalX.mapValues { $0 + offset }
+    }
+
+    func point(for node: ForgeRecord,row: Int) -> CGPoint {
+        CGPoint(x:xById[node.id] ?? width/2,
+                y:CGFloat(row)*Self.rowStep+92)
+    }
+}
+
 private struct ZenTreeCanvas: View {
     let root: ForgeRecord
     let records: [ForgeRecord]
@@ -1336,31 +1402,22 @@ private struct ZenTreeCanvas: View {
         return result
     }
 
-    private func position(_ row:Int,_ index:Int,width:CGFloat,columns:Int) -> CGPoint {
-        let columnWidth=width/CGFloat(max(1,columns))
-        return CGPoint(x:columnWidth * (CGFloat(index) + 0.5),y:CGFloat(row)*166+92)
-    }
-
     var body: some View {
         GeometryReader { viewport in
             let rows=levels
-            let maxNodes=rows.map(\.count).max() ?? 1
-            let width=max(viewport.size.width,CGFloat(maxNodes)*250+70)
-            let height=max(viewport.size.height,CGFloat(rows.count)*166+60)
-            let scopedIds=Set(rows.flatMap{$0}.map(\.recordId))
+            let layout=ZenTreeGeometry(rows:rows,viewport:viewport.size)
+            let width=layout.width
+            let height=layout.height
             ScrollView([.horizontal,.vertical]) {
                 ZStack(alignment:.topLeading) {
                     Canvas { context,_ in
                         for row in 1..<rows.count {
-                            for (index,child) in rows[row].enumerated() {
-                                let parents=rows[row-1]
-                                guard let parentIndex=parents.firstIndex(where:{ parent in
-                                    child.parentPlanId == parent.recordId
-                                    || (parent.kind == .requirement &&
-                                         !scopedIds.contains(child.parentPlanId ?? ""))
-                                }) else { continue }
-                                let start=position(row-1,parentIndex,width:width,columns:parents.count)
-                                let end=position(row,index,width:width,columns:rows[row].count)
+                            for child in rows[row] {
+                                guard let parentId=layout.parentById[child.id],
+                                      let parent=rows[row-1].first(where:{$0.id == parentId})
+                                else { continue }
+                                let start=layout.point(for:parent,row:row-1)
+                                let end=layout.point(for:child,row:row)
                                 var path=Path()
                                 path.move(to:CGPoint(x:start.x,y:start.y+46))
                                 path.addCurve(to:CGPoint(x:end.x,y:end.y-46),
@@ -1374,7 +1431,7 @@ private struct ZenTreeCanvas: View {
                     .frame(width:width,height:height)
 
                     ForEach(0..<rows.count,id:\.self) { row in
-                        ForEach(Array(rows[row].enumerated()),id:\.element.id) { index,item in
+                        ForEach(rows[row]) { item in
                             ZStack(alignment:.topTrailing) {
                                 Button { onSelect(item) } label: {
                                     VStack(alignment:.leading,spacing:0) {
@@ -1425,7 +1482,7 @@ private struct ZenTreeCanvas: View {
                                     }
                                 }
                             }
-                            .position(position(row,index,width:width,columns:rows[row].count))
+                            .position(layout.point(for:item,row:row))
                         }
                     }
                 }

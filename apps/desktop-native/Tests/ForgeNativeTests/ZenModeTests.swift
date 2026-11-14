@@ -78,3 +78,38 @@ extension ZenModeTests {
         }
     }
 }
+
+extension ZenModeTests {
+    func testTreeGeometryKeepsEachPlanSubtreeTogetherAndCentersParents() {
+        func plan(_ id:String,_ parent:String?) -> ForgeRecord {
+            ForgeRecord(recordId:id,title:id,state:"open",kind:.plan,depth:1,
+                        requirementId:"REQ-TREE",parentPlanId:parent)
+        }
+        let root=ForgeRecord(recordId:"REQ-TREE",title:"工作台",state:"open",
+                             kind:.requirement,depth:0,requirementId:nil,parentPlanId:nil)
+        let left=plan("LEFT",nil),right=plan("RIGHT",nil)
+        let l1=plan("L1","LEFT"),l2=plan("L2","LEFT"),l3=plan("L3","LEFT")
+        let r1=plan("R1","RIGHT")
+        let rows=[[root],[left,right],[l1,l2,l3,r1]]
+        let layout=ZenTreeGeometry(rows:rows,viewport:CGSize(width:600,height:470))
+        let x:(ForgeRecord,Int)->CGFloat={layout.point(for:$0,row:$1).x}
+
+        XCTAssertEqual(layout.parentById[l1.id],left.id)
+        XCTAssertEqual(layout.parentById[r1.id],right.id)
+        XCTAssertEqual(x(left,1),(x(l1,2)+x(l3,2))/2,accuracy:0.01)
+        XCTAssertEqual(x(right,1),x(r1,2),accuracy:0.01)
+        XCTAssertEqual(x(root,0),(x(left,1)+x(right,1))/2,accuracy:0.01)
+        XCTAssertLessThan(x(l3,2),x(r1,2))
+        XCTAssertGreaterThanOrEqual(x(r1,2)-x(l3,2),ZenTreeGeometry.columnStep)
+        XCTAssertGreaterThanOrEqual(layout.width,4*ZenTreeGeometry.columnStep+70)
+    }
+
+    func testTreeGeometryCentersSingleRequirementInAvailableViewport() {
+        let root=ForgeRecord(recordId:"REQ-ONE",title:"单节点",state:"open",
+                             kind:.requirement,depth:0,requirementId:nil,parentPlanId:nil)
+        let layout=ZenTreeGeometry(rows:[[root]],viewport:CGSize(width:900,height:500))
+        XCTAssertEqual(layout.point(for:root,row:0).x,450,accuracy:0.01)
+        XCTAssertEqual(layout.parentById.count,0)
+        XCTAssertEqual(layout.width,900)
+    }
+}
