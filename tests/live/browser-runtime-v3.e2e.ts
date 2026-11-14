@@ -191,7 +191,7 @@ async function action(actionId: string, args: Record<string, unknown>, phase = a
   throw new Error('Browser action retry loop exhausted unexpectedly.');
 }
 
-type ComputerActionTrace = { phase: string; requestId: string; attempt: number; durationMs?: number; providerPhases?: MacOsBrowserAutomationTiming[] };
+type ComputerActionTrace = { actionId: string; phase: string; requestId: string; attempt: number; durationMs?: number; outcome?: 'succeeded' | 'failed'; providerPhases?: MacOsBrowserAutomationTiming[] };
 
 async function computerAction(
   actionId: string,
@@ -201,7 +201,7 @@ async function computerAction(
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     const requestId = `computer-v3-live-${actionId}-${crypto.randomUUID()}`;
     const phase = context.phase ?? actionId;
-    const traceRecord: ComputerActionTrace = { phase, requestId, attempt };
+    const traceRecord: ComputerActionTrace = { actionId, phase, requestId, attempt };
     context.trace?.push(traceRecord);
     const timingStartIndex = nativeAutomationTimings.length;
     const startedAt = performance.now();
@@ -217,10 +217,12 @@ async function computerAction(
         origin: { surface: 'local-ui', actor: 'computer-v3-live' },
       }) as Record<string, unknown>;
       traceRecord.durationMs = Math.round((performance.now() - startedAt) * 10) / 10;
+      traceRecord.outcome = 'succeeded';
       traceRecord.providerPhases = nativeAutomationTimings.slice(timingStartIndex);
       return result;
     } catch (error) {
       traceRecord.durationMs = Math.round((performance.now() - startedAt) * 10) / 10;
+      traceRecord.outcome = 'failed';
       traceRecord.providerPhases = nativeAutomationTimings.slice(timingStartIndex);
       const providerFailure = error as {
         code?: unknown; retryable?: unknown; effectOutcome?: unknown; details?: unknown;
@@ -693,12 +695,33 @@ try {
         return [action, { samples: durations.length, p50Ms: percentile(durations, 0.5), p95Ms: percentile(durations, 0.95) }];
       }),
     );
-    const nativePhaseSamples = [
-      ...computerLifecycleRequestTrace.flatMap((request) => request.providerPhases ?? []),
+    const computerRequestSamples = [
+      ...computerLifecycleRequestTrace,
       ...[...sequentialBatchRequestTrace, ...nativeBatchRequestTrace]
         .filter((sample) => !sample.warmup)
-        .flatMap((sample) => sample.requests.flatMap((request) => request.providerPhases ?? [])),
+        .flatMap((sample) => sample.requests),
     ];
+    const actionWallSummary = (samples: ComputerActionTrace[]) => {
+      const durations = samples.flatMap((sample) => sample.durationMs === undefined ? [] : [sample.durationMs]);
+      return {
+        attempts: samples.length,
+        succeeded: samples.filter((sample) => sample.outcome === 'succeeded').length,
+        failed: samples.filter((sample) => sample.outcome === 'failed').length,
+        samples: durations.length,
+        ...(durations.length > 0 ? {
+          p50Ms: percentile(durations, 0.5),
+          p95Ms: percentile(durations, 0.95),
+          maxMs: Math.max(...durations),
+        } : {}),
+      };
+    };
+    const computerActionWallByAction = Object.fromEntries(
+      [...new Set(computerRequestSamples.map((sample) => sample.actionId))].sort().map((actionId) => [
+        actionId,
+        actionWallSummary(computerRequestSamples.filter((sample) => sample.actionId === actionId)),
+      ]),
+    );
+    const nativePhaseSamples = computerRequestSamples.flatMap((request) => request.providerPhases ?? []);
     const phaseSummary = (values: number[]) => values.length === 0
       ? { samples: 0 }
       : {
@@ -829,6 +852,7 @@ try {
         stepTimingSamples: nativeBatchStepTimings,
         nativeAutomationPhaseBoundary: 'process precondition and Computer provider broker round-trip; broker timing includes Runtime-to-sidecar dispatch and is not an inner Apple Event span',
         nativeAutomationPhaseByAction,
+        computerActionWallByAction,
         lifecycleRequestTrace: { create: computerLifecycleRequestTrace },
         p50Speedup: Math.round((percentile(sequentialBatchSamples, 0.5) / percentile(nativeBatchSamples, 0.5)) * 100) / 100,
         unknownOutcomeReconciledOnce: true,
