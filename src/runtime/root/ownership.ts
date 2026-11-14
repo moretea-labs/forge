@@ -163,6 +163,50 @@ export function runtimeOwnerProcessIdentityMatches(record: RuntimeOwnerRecord | 
   }, record.pid).matches;
 }
 
+/** Backfill a legacy incarnation only from its exact, currently live owner lease. */
+export function migrateRuntimeIncarnationProcessIdentity(controllerHome: string): {
+  ok: boolean;
+  changed: boolean;
+  detail: string;
+} {
+  const incarnation = readRuntimeIncarnation(controllerHome);
+  if (!incarnation) {
+    return { ok: false, changed: false, detail: 'RUNTIME_INCARNATION_IDENTITY_MIGRATION_INCARNATION_REQUIRED' };
+  }
+  const owner = readRuntimeOwner(controllerHome);
+  if (owner && (
+    owner.pid !== incarnation.pid
+    || owner.runtimeInstanceId !== incarnation.runtimeInstanceId
+    || (owner.fencingGeneration ?? incarnation.fencingGeneration) !== incarnation.fencingGeneration
+  )) {
+    return { ok: false, changed: false, detail: 'RUNTIME_INCARNATION_OWNER_MISMATCH' };
+  }
+  if (incarnation.processStartTime && incarnation.executableFingerprint) {
+    if (owner?.processStartTime && owner.executableFingerprint
+      && (owner.processStartTime !== incarnation.processStartTime || owner.executableFingerprint !== incarnation.executableFingerprint)) {
+      return { ok: false, changed: false, detail: 'RUNTIME_INCARNATION_OWNER_IDENTITY_MISMATCH' };
+    }
+    return runtimeIncarnationProcessAlive(incarnation)
+      ? { ok: true, changed: false, detail: 'Runtime incarnation already has verified process identity' }
+      : { ok: false, changed: false, detail: 'RUNTIME_INCARNATION_PROCESS_IDENTITY_NOT_LIVE' };
+  }
+  if (!owner) {
+    return { ok: false, changed: false, detail: 'RUNTIME_INCARNATION_IDENTITY_MIGRATION_OWNER_REQUIRED' };
+  }
+  if (!owner.processStartTime || !owner.executableFingerprint) {
+    return { ok: false, changed: false, detail: 'RUNTIME_OWNER_IDENTITY_EVIDENCE_MISSING' };
+  }
+  if (!runtimeOwnerProcessIdentityMatches(owner)) {
+    return { ok: false, changed: false, detail: 'RUNTIME_OWNER_IDENTITY_CHANGED' };
+  }
+  writeRuntimeIncarnation({
+    ...incarnation,
+    processStartTime: owner.processStartTime,
+    executableFingerprint: owner.executableFingerprint,
+  });
+  return { ok: true, changed: true, detail: 'Runtime incarnation process identity was backfilled from its matching live owner' };
+}
+
 /**
  * Recovery calls this only after the service manager and Runtime listener have
  * been proven stopped. It never kills a live process. Dead owner evidence is

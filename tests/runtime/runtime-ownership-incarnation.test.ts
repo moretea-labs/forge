@@ -5,6 +5,7 @@ import { join } from 'path';
 import {
   acquireRuntimeOwnership,
   inspectRuntimeOwnership,
+  migrateRuntimeIncarnationProcessIdentity,
   reconcileStoppedRuntimeOwnership,
   runtimeIncarnationPath,
   runtimeOwnerPath,
@@ -72,6 +73,46 @@ test('legacy incarnation without process identity remains conservative for a liv
     changed: false,
     detail: 'RUNTIME_OWNERSHIP_STILL_LIVE',
   });
+});
+
+test('legacy Stable A incarnation is migrated from its exact live owner before ReleaseSession preparation', () => {
+  const home = createControllerHome('forge-runtime-incarnation-migration-');
+  const ownership = acquireRuntimeOwnership(home, 'runtime-legacy-stable-owner');
+  try {
+    const incarnation = JSON.parse(readFileSync(runtimeIncarnationPath(home), 'utf8')) as Record<string, unknown>;
+    delete incarnation.processStartTime;
+    delete incarnation.executableFingerprint;
+    writeFileSync(runtimeIncarnationPath(home), JSON.stringify(incarnation, null, 2));
+
+    expect(migrateRuntimeIncarnationProcessIdentity(home)).toMatchObject({ ok: true, changed: true });
+    const migrated = JSON.parse(readFileSync(runtimeIncarnationPath(home), 'utf8')) as Record<string, unknown>;
+    expect(migrated.processStartTime).toBe(ownership.record.processStartTime);
+    expect(migrated.executableFingerprint).toBe(ownership.record.executableFingerprint);
+    expect(inspectRuntimeOwnership(home)).toMatchObject({ coherent: true, ownerAlive: true, incarnationAlive: true });
+  } finally {
+    ownership.release();
+  }
+});
+
+test('legacy incarnation cannot be migrated after its owner lease disappears', () => {
+  const home = createControllerHome('forge-runtime-incarnation-migration-owner-missing-');
+  writeFileSync(runtimeIncarnationPath(home), JSON.stringify({
+    schemaVersion: 1,
+    controllerHome: home,
+    runtimeInstanceId: 'runtime-legacy-owner-missing',
+    pid: process.pid,
+    fencingGeneration: 13,
+    activatedAt: '2026-09-20T00:00:00.000Z',
+  }, null, 2));
+
+  expect(migrateRuntimeIncarnationProcessIdentity(home)).toMatchObject({
+    ok: false,
+    changed: false,
+    detail: 'RUNTIME_INCARNATION_IDENTITY_MIGRATION_OWNER_REQUIRED',
+  });
+  const unchanged = JSON.parse(readFileSync(runtimeIncarnationPath(home), 'utf8')) as Record<string, unknown>;
+  expect(unchanged.processStartTime).toBeUndefined();
+  expect(unchanged.executableFingerprint).toBeUndefined();
 });
 
 test('new incarnation preserves exact live process identity after the owner lease disappears', () => {
