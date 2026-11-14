@@ -1434,41 +1434,47 @@ final class NativeWorkspace: ObservableObject {
         generation == workspaceRefreshRequestGeneration
     }
 
+    func invalidateWorkspaceRefreshRequests() {
+        workspaceRefreshRequestGeneration &+= 1
+    }
+
     func refresh() async {
         let requestGeneration = beginWorkspaceRefresh()
         await refreshProjects()
         guard workspaceRefreshRequestIsCurrent(requestGeneration) else { return }
-        // Agent repository context is owned by the selected ChatThread. Do not
-        // fabricate a binding from preferredRepoId for an unbound conversation.
-        let providerStatus = try? await ForgeBridge.request("read_local_provider_status")
-        guard workspaceRefreshRequestIsCurrent(requestGeneration) else { return }
-        if let providerStatus {
-            applyLocalProviderStatus(providerStatus)
-        } else {
-            provider = "Codex 不可用"
-            localProviderReady = false
-            imageInputAvailable = false
-        }
-        if !selectedProviderSupportsImages { pendingImageURLs = [] }
-        let settingsValue = try? await ForgeBridge.request("read_local_api_settings")
-        guard workspaceRefreshRequestIsCurrent(requestGeneration) else { return }
-        if let settingsValue, let parsed = Self.localApiSettingsDetail(settingsValue) {
-            localApiSettings = parsed
-        }
-        let catalog = try? await ForgeBridge.request("read_local_provider_models")
-        guard workspaceRefreshRequestIsCurrent(requestGeneration) else { return }
-        if let catalog,
-           let rows = catalog["models"] as? [[String: Any]],
-           let bytes = try? JSONSerialization.data(withJSONObject: rows),
-           let decoded = try? JSONDecoder().decode([AgentModelOption].self, from: bytes) {
-            agentModels = decoded
-        }
-        let connectionValue = try? await ForgeBridge.request("read_connection_status")
-        guard workspaceRefreshRequestIsCurrent(requestGeneration) else { return }
-        if let connectionValue, let parsed = Self.controllerConnectionDetail(connectionValue) {
-            connectionStatus = parsed
-        } else {
-            connectionStatus = nil
+        if !settingsLoading {
+            // Agent repository context is owned by the selected ChatThread. Do not
+            // fabricate a binding from preferredRepoId for an unbound conversation.
+            let providerStatus = try? await ForgeBridge.request("read_local_provider_status")
+            guard workspaceRefreshRequestIsCurrent(requestGeneration) else { return }
+            if let providerStatus {
+                applyLocalProviderStatus(providerStatus)
+            } else {
+                provider = "Codex 不可用"
+                localProviderReady = false
+                imageInputAvailable = false
+            }
+            if !selectedProviderSupportsImages { pendingImageURLs = [] }
+            let settingsValue = try? await ForgeBridge.request("read_local_api_settings")
+            guard workspaceRefreshRequestIsCurrent(requestGeneration) else { return }
+            if let settingsValue, let parsed = Self.localApiSettingsDetail(settingsValue) {
+                localApiSettings = parsed
+            }
+            let catalog = try? await ForgeBridge.request("read_local_provider_models")
+            guard workspaceRefreshRequestIsCurrent(requestGeneration) else { return }
+            if let catalog,
+               let rows = catalog["models"] as? [[String: Any]],
+               let bytes = try? JSONSerialization.data(withJSONObject: rows),
+               let decoded = try? JSONDecoder().decode([AgentModelOption].self, from: bytes) {
+                agentModels = decoded
+            }
+            let connectionValue = try? await ForgeBridge.request("read_connection_status")
+            guard workspaceRefreshRequestIsCurrent(requestGeneration) else { return }
+            if let connectionValue, let parsed = Self.controllerConnectionDetail(connectionValue) {
+                connectionStatus = parsed
+            } else {
+                connectionStatus = nil
+            }
         }
         await refreshProject()
         guard workspaceRefreshRequestIsCurrent(requestGeneration) else { return }
@@ -2358,6 +2364,7 @@ final class NativeWorkspace: ObservableObject {
 
     func loadSettingsPage() async {
         guard !settingsLoading else { return }
+        invalidateWorkspaceRefreshRequests()
         settingsLoading = true
         defer { settingsLoading = false }
 
@@ -2405,6 +2412,7 @@ final class NativeWorkspace: ObservableObject {
         joyCodeModel:String
     ) async -> Bool {
         guard !settingsLoading else { return false }
+        invalidateWorkspaceRefreshRequests()
         settingsLoading = true
         defer { settingsLoading = false }
         do {
@@ -2456,6 +2464,7 @@ final class NativeWorkspace: ObservableObject {
 
     func createManagedApiCredential(endpoint:String,label:String?=nil) async -> String? {
         guard !settingsLoading else { return nil }
+        invalidateWorkspaceRefreshRequests()
         settingsLoading = true
         defer { settingsLoading = false }
         do {
@@ -2486,6 +2495,7 @@ final class NativeWorkspace: ObservableObject {
 
     func rotateManagedApiCredential(_ credentialRef:String) async -> Bool {
         guard !settingsLoading else { return false }
+        invalidateWorkspaceRefreshRequests()
         settingsLoading = true
         defer { settingsLoading = false }
         do {
@@ -2503,6 +2513,7 @@ final class NativeWorkspace: ObservableObject {
 
     func setManagedApiCredentialAuthorization(_ credentialRef:String,authorized:Bool) async -> Bool {
         guard !settingsLoading else { return false }
+        invalidateWorkspaceRefreshRequests()
         settingsLoading = true
         defer { settingsLoading = false }
         do {
@@ -2523,6 +2534,7 @@ final class NativeWorkspace: ObservableObject {
 
     func deleteManagedApiCredential(_ credentialRef:String) async -> Bool {
         guard !settingsLoading else { return false }
+        invalidateWorkspaceRefreshRequests()
         settingsLoading = true
         defer { settingsLoading = false }
         do {

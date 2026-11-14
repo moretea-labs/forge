@@ -1384,6 +1384,20 @@ final class NativeWorkspaceTests: XCTestCase {
     }
 
     @MainActor
+    func testSettingsOperationsInvalidatePendingWorkspaceRefreshes() {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model = NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        let pendingRefresh = model.beginWorkspaceRefresh()
+
+        model.invalidateWorkspaceRefreshRequests()
+        XCTAssertFalse(model.workspaceRefreshRequestIsCurrent(pendingRefresh))
+
+        let currentRefresh = model.beginWorkspaceRefresh()
+        XCTAssertTrue(model.workspaceRefreshRequestIsCurrent(currentRefresh))
+    }
+
+    @MainActor
     func testKnowledgeSearchGenerationRejectsSupersededQueriesAndContextChanges() {
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at:folder) }
