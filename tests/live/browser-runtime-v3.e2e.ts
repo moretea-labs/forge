@@ -257,7 +257,7 @@ function cleanupErrorSummary(error: unknown): Record<string, unknown> {
   return { code: value.code ?? null, effectOutcome: value.effectOutcome ?? null, retryable: value.retryable ?? null, message: (error instanceof Error ? error.message : String(error)).slice(0, 500) };
 }
 
-async function closeOwnedSession(sessionId: string): Promise<Record<string, unknown>> {
+async function closeOwnedSession(sessionId: string, trace?: ComputerActionTrace[]): Promise<Record<string, unknown>> {
   const owner = openSessions.get(sessionId);
   if (!owner) return { closed: true, alreadyClosed: true };
   if (attemptedSessionCloses.has(sessionId)) throw new Error(`Refusing to replay an attempted close for ${sessionId}.`);
@@ -266,7 +266,7 @@ async function closeOwnedSession(sessionId: string): Promise<Record<string, unkn
   let actionError: unknown;
   try {
     result = owner.owner === 'computer'
-      ? await computerAction('close_session', { session_id: sessionId }, { phase: 'cleanup.close_session' })
+      ? await computerAction('close_session', { session_id: sessionId }, { phase: 'cleanup.close_session', trace })
       : await action('close_session', { session_id: sessionId }, 'cleanup.close_session');
   } catch (error) {
     actionError = error;
@@ -568,6 +568,7 @@ try {
     // adapter on its own plugin-owned tab so its native-only policy is exercised.
     const computerSessionId = `computer-v3-primary-${product}`;
     const computerLifecycleRequestTrace: ComputerActionTrace[] = [];
+    const computerCleanupRequestTrace: ComputerActionTrace[] = [];
     openSessions.set(computerSessionId, { owner: 'computer', product });
     const computerOpened = await computerAction('create_session', {
       session_id: computerSessionId,
@@ -695,8 +696,10 @@ try {
         return [action, { samples: durations.length, p50Ms: percentile(durations, 0.5), p95Ms: percentile(durations, 0.95) }];
       }),
     );
-    const computerRequestSamples = [
+    // Evaluate after close_session so the lifecycle report includes its cleanup trace.
+    const computerRequestSamples = () => [
       ...computerLifecycleRequestTrace,
+      ...computerCleanupRequestTrace,
       ...[...sequentialBatchRequestTrace, ...nativeBatchRequestTrace]
         .filter((sample) => !sample.warmup)
         .flatMap((sample) => sample.requests),
@@ -715,13 +718,13 @@ try {
         } : {}),
       };
     };
-    const computerActionWallByAction = Object.fromEntries(
-      [...new Set(computerRequestSamples.map((sample) => sample.actionId))].sort().map((actionId) => [
+    const computerActionWallByAction = () => Object.fromEntries(
+      [...new Set(computerRequestSamples().map((sample) => sample.actionId))].sort().map((actionId) => [
         actionId,
-        actionWallSummary(computerRequestSamples.filter((sample) => sample.actionId === actionId)),
+        actionWallSummary(computerRequestSamples().filter((sample) => sample.actionId === actionId)),
       ]),
     );
-    const nativePhaseSamples = computerRequestSamples.flatMap((request) => request.providerPhases ?? []);
+    const nativePhaseSamples = () => computerRequestSamples().flatMap((request) => request.providerPhases ?? []);
     const phaseSummary = (values: number[]) => values.length === 0
       ? { samples: 0 }
       : {
@@ -730,9 +733,9 @@ try {
         p95Ms: percentile(values, 0.95),
         maxMs: Math.max(...values),
       };
-    const nativeAutomationPhaseByAction = Object.fromEntries(
-      [...new Set(nativePhaseSamples.map((sample) => sample.action))].sort().map((action) => {
-        const samples = nativePhaseSamples.filter((sample) => sample.action === action);
+    const nativeAutomationPhaseByAction = () => Object.fromEntries(
+      [...new Set(nativePhaseSamples().map((sample) => sample.action))].sort().map((action) => {
+        const samples = nativePhaseSamples().filter((sample) => sample.action === action);
         return [action, {
           requests: samples.length,
           succeeded: samples.filter((sample) => sample.outcome === 'succeeded').length,
@@ -771,7 +774,7 @@ try {
     });
     const reconciledText = String(reconciled.text ?? '');
     assert.equal(reconciledText.split(unknownMarker + ':high').length - 1, 1, 'unknown mutation must be reconciled, never replayed');
-    const computerClosed = await closeOwnedSession(computerSessionId);
+    const computerClosed = await closeOwnedSession(computerSessionId, computerCleanupRequestTrace);
     assert.equal(computerClosed.closed, true);
     assert.equal(computerClosed.resourceClosed, true);
     assertActiveUserTabPreserved(product, userBefore, await productMetadata(product), 'Computer close_session');
@@ -851,9 +854,9 @@ try {
         stepDurationByActionMs: nativeBatchStepDurationByAction,
         stepTimingSamples: nativeBatchStepTimings,
         nativeAutomationPhaseBoundary: 'process precondition and Computer provider broker round-trip; broker timing includes Runtime-to-sidecar dispatch and is not an inner Apple Event span',
-        nativeAutomationPhaseByAction,
-        computerActionWallByAction,
-        lifecycleRequestTrace: { create: computerLifecycleRequestTrace },
+        nativeAutomationPhaseByAction: nativeAutomationPhaseByAction(),
+        computerActionWallByAction: computerActionWallByAction(),
+        lifecycleRequestTrace: { create: computerLifecycleRequestTrace, close: computerCleanupRequestTrace },
         p50Speedup: Math.round((percentile(sequentialBatchSamples, 0.5) / percentile(nativeBatchSamples, 0.5)) * 100) / 100,
         unknownOutcomeReconciledOnce: true,
         requestTrace: {
