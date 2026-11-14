@@ -4409,6 +4409,82 @@ mod tests {
     }
 
     #[test]
+    fn stateless_profile_connection_roundtrips_all_provider_protocols_without_tools() {
+        use std::{io::{Read, Write}, net::TcpListener, thread, time::Duration};
+        for (id, protocol) in [
+            ("probe-chat", "openai"),
+            ("probe-responses", "responses"),
+            ("probe-anthropic", "anthropic"),
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let server = thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                let mut bytes = Vec::new();
+                let mut chunk = [0u8; 4096];
+                let header_end = loop {
+                    let n = socket.read(&mut chunk).unwrap();
+                    assert!(n > 0);
+                    bytes.extend_from_slice(&chunk[..n]);
+                    if let Some(index) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
+                        break index + 4;
+                    }
+                };
+                let headers = String::from_utf8_lossy(&bytes[..header_end]);
+                let length = headers.lines().find_map(|line|
+                    line.to_ascii_lowercase().strip_prefix("content-length:")
+                        .and_then(|value| value.trim().parse::<usize>().ok())
+                ).unwrap();
+                while bytes.len() - header_end < length {
+                    let n = socket.read(&mut chunk).unwrap();
+                    assert!(n > 0);
+                    bytes.extend_from_slice(&chunk[..n]);
+                }
+                let request: Value = serde_json::from_slice(&bytes[header_end..header_end+length]).unwrap();
+                assert_eq!(request["model"], "test-model");
+                assert_eq!(request["stream"], true);
+                assert!(request.get("tools").is_none());
+                assert!(request.to_string().contains("Reply with OK."));
+                let frames = match protocol {
+                    "responses" => vec![json!({"type":"response.completed","response":{
+                        "output":[{"type":"message","content":[{"type":"output_text","text":"OK"}]}],
+                        "usage":{"input_tokens":6,"output_tokens":1}
+                    }}).to_string()],
+                    "anthropic" => vec![
+                        json!({"type":"message_start","message":{"usage":{"input_tokens":6}}}).to_string(),
+                        json!({"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}).to_string(),
+                        json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"OK"}}).to_string(),
+                        json!({"type":"message_delta","usage":{"output_tokens":1}}).to_string(),
+                        json!({"type":"message_stop"}).to_string()
+                    ],
+                    _ => vec![
+                        json!({"choices":[{"delta":{"content":"OK"}}]}).to_string(),
+                        "[DONE]".to_string()
+                    ]
+                };
+                let payload = frames.into_iter().map(|frame| format!("data: {frame}\r\n\r\n")).collect::<String>();
+                socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", payload.len()).as_bytes()).unwrap();
+                socket.write_all(payload.as_bytes()).unwrap();
+            });
+            let host = ScriptedAgentLoopHost::default();
+            let config = json!({"defaultProvider":format!("api:{id}"),
+                "apiProfiles":[{"id":id,"endpoint":format!("http://127.0.0.1:{port}/v1"),
+                    "model":"test-model","apiProtocol":protocol}]});
+            let (_sender, mut receiver) = tokio::sync::watch::channel(false);
+            let result = tauri::async_runtime::block_on(run_local_api_turn_with_config(
+                &host, config, vec![json!({"role":"user","content":"Reply with OK."})],
+                None, None, format!("profile-check-{id}"), Some(format!("api:{id}")),
+                Some("test-model".into()), false, &mut receiver
+            )).expect("stateless native API probe");
+            assert_eq!(result["output"], "OK");
+            assert_eq!(result["toolActivityCount"], 0);
+            assert!(host.tool_calls.lock().unwrap().is_empty());
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
     fn native_provider_loop_executes_real_adapter_for_all_api_protocols() {
         for (profile_id, protocol) in [("openai-real-adapter", "openai"), ("anthropic-real-adapter", "anthropic"), ("responses-real-adapter", "responses")] {
             let fixture = native_provider_tool_fixture();
