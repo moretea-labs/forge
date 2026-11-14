@@ -206,6 +206,7 @@ struct ZenWorkspacePane: View {
     @State private var pendingReviewRecord: ForgeRecord?
     @State private var pendingProposal: ZenChangeProposal?
     @State private var pendingExecutionApproval: ZenExecutionApproval?
+    @State private var pendingCheckpointReview: AutopilotCheckpointReview?
     @State private var proposalSourceRepoId = ""
     @State private var proposalSourceCheckoutId = ""
     @State private var proposalProblem = ""
@@ -250,6 +251,7 @@ struct ZenWorkspacePane: View {
     static func executionLabel(operation:String,runStatus:String?,needsBudgetRenewal:Bool=false) -> String {
         switch operation {
         case "authorize": return needsBudgetRenewal ? "续期预算" : "批准执行"
+        case "accept_checkpoint": return "验收检查点"
         case "pause": return "暂停执行"
         case "resume": return runStatus == "running" ? "恢复执行" : "继续执行"
         default: return "开始执行"
@@ -397,6 +399,11 @@ struct ZenWorkspacePane: View {
         .sheet(item:$pendingExecutionApproval) { approval in
             ZenExecutionApprovalSheet(model:model,approval:approval) {
                 pendingExecutionApproval=nil
+            }
+        }
+        .sheet(item:$pendingCheckpointReview) { review in
+            AutopilotCheckpointReviewSheet(model:model,review:review) {
+                pendingCheckpointReview=nil
             }
         }
         .alert("提案不可用",isPresented:$showingProposalProblem) {
@@ -895,7 +902,12 @@ struct ZenWorkspacePane: View {
                     outcomeUnknown:executionOutcomeUnknown
                   ) else { return }
             if operation == "authorize" { prepareExecutionApproval(item,repoId:activeRepoId) }
-            else { runExecution(item.recordId,operation) }
+            else if operation == "accept_checkpoint" {
+                guard let status=model.planningAutopilotStatuses[item.recordId] else { return }
+                pendingCheckpointReview=AutopilotCheckpointReview(
+                    model:model,requirementId:item.recordId,status:status
+                )
+            } else { runExecution(item.recordId,operation) }
         }
     }
 
@@ -1307,6 +1319,7 @@ private struct ZenTreeCanvas: View {
                                 needsBudgetRenewal:status.needsBudgetRenewal
                             ),
                             systemImage:operation == "authorize" ? "lock.open" :
+                                operation == "accept_checkpoint" ? "checkmark.seal" :
                                 (operation == "pause" ? "pause" : "play")
                         ) {
                             onAction(item,operation == "authorize" ? .executionSettings : .toggleExecution)

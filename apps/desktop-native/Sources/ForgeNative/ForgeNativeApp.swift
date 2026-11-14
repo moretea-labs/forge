@@ -3610,6 +3610,7 @@ private struct RecordsPane: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var authoring: PlanningAuthoringContext?
     @State private var autopilotApproval: AutopilotApprovalContext?
+    @State private var checkpointReview: AutopilotCheckpointReview?
     @State private var draftTitle = ""
     @State private var draftOutcome = ""
     @State private var draftCriteria = ""
@@ -3707,6 +3708,11 @@ private struct RecordsPane: View {
         }
         .sheet(item:$autopilotApproval) { context in
             autopilotApprovalSheet(context)
+        }
+        .sheet(item:$checkpointReview) { review in
+            AutopilotCheckpointReviewSheet(model:model,review:review) {
+                checkpointReview=nil
+            }
         }
         .task(id:planningOperationalRefreshKey) {
             guard scenePhase == .active,!model.planningRequirementIds.isEmpty else { return }
@@ -5028,6 +5034,14 @@ private struct RecordsPane: View {
                         Button(status?.needsBudgetRenewal == true && status?.requiresReapproval == false
                                ? "续期预算" : (status?.requiresReapproval == true ? "重新配置并批准" : "配置并批准")) {
                             beginAutopilotApproval(requirement)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(autopilotSaving || model.autopilotLoading || model.autopilotControlPending)
+                    } else if operation == "accept_checkpoint",let status {
+                        Button("验收检查点") {
+                            checkpointReview=AutopilotCheckpointReview(
+                                model:model,requirementId:requirement.requirementId,status:status
+                            )
                         }
                         .buttonStyle(.borderedProminent)
                         .disabled(autopilotSaving || model.autopilotLoading || model.autopilotControlPending)

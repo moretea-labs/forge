@@ -119,6 +119,10 @@ export async function callAutopilotAdapter(
         return result({
           run:resumeAutopilot({
             controllerHome:ctx.controllerHome,repoId:repository.repoId,requirementId:reqId,
+            approvedCheckpointRunId:typeof args.approved_checkpoint_run_id === 'string'
+              ? args.approved_checkpoint_run_id : undefined,
+            approvedCheckpointPlanId:typeof args.approved_checkpoint_plan_id === 'string'
+              ? args.approved_checkpoint_plan_id : undefined,
             dependencies:{
               toolDefinitions:repositoryToolDefinitions,
               executeTool:(tool,args) => callRepositoryTool(ctx.controllerHome,tool,args,{

@@ -151,6 +151,8 @@ async fn dispatch(operation: &str, args: &Value) -> Result<Value, String> {
                 args.get("checkpointPlanIds").and_then(Value::as_array)
                     .map(|values| values.iter().filter_map(Value::as_str).map(str::to_owned).take(64).collect())
                     .unwrap_or_default(),
+                args.get("approvedCheckpointRunId").and_then(Value::as_str).map(str::to_owned),
+                args.get("approvedCheckpointPlanId").and_then(Value::as_str).map(str::to_owned),
                 args.get("expiresInMinutes").and_then(Value::as_u64),
                 args.get("reason").and_then(Value::as_str).map(str::to_owned),
             ).await,

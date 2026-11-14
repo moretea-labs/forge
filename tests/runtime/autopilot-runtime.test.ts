@@ -1008,6 +1008,39 @@ describe('Requirement Autopilot',() => {
     expect(run.stopReason).toBe('human_checkpoint:PLAN-CHECK');
     expect(run.usage).toMatchObject({promptTokens:10,completionTokens:5,totalTokens:15,turns:1,toolCalls:1});
     expect(run.evidenceRefs).toEqual(['commit:abc']);
+
+    const resumeArgs={
+      controllerHome:fx.controllerHome,
+      repoId:fx.repository.repoId,
+      requirementId:'REQ-AUTO',
+      dependencies:{
+        apiKey:'sk-checkpoint-test',toolDefinitions:[],executeTool:async()=>({}),
+        fetchImpl:async()=>response('forge_autopilot_decision',{
+          action:'complete',summary:'Checkpoint accepted and same run continued.',
+        }),
+      },
+    };
+    expect(() => resumeAutopilot(resumeArgs)).toThrow('AUTOPILOT_CHECKPOINT_ACCEPTANCE_REQUIRED');
+    expect(() => resumeAutopilot({
+      ...resumeArgs,approvedCheckpointRunId:'old-run',approvedCheckpointPlanId:'PLAN-CHECK',
+    })).toThrow('AUTOPILOT_CHECKPOINT_ACCEPTANCE_REQUIRED');
+    expect(() => resumeAutopilot({
+      ...resumeArgs,approvedCheckpointRunId:run.runId,approvedCheckpointPlanId:'PLAN-OTHER',
+    })).toThrow('AUTOPILOT_CHECKPOINT_ACCEPTANCE_REQUIRED');
+    expect(readAutopilotRun(fx.controllerHome,fx.repository.repoId,'REQ-AUTO')!.value.status).toBe('paused');
+
+    const accepted=resumeAutopilot({
+      ...resumeArgs,approvedCheckpointRunId:run.runId,approvedCheckpointPlanId:'PLAN-CHECK',
+    });
+    expect(accepted.value.runId).toBe(run.runId);
+    for (let attempt=0;attempt<50;attempt+=1) {
+      if (readAutopilotRun(fx.controllerHome,fx.repository.repoId,'REQ-AUTO')?.value.status === 'completed') break;
+      await Bun.sleep(10);
+    }
+    const completed=readAutopilotRun(fx.controllerHome,fx.repository.repoId,'REQ-AUTO')!.value;
+    expect(completed.status).toBe('completed');
+    expect(completed.runId).toBe(run.runId);
+    expect(completed.evidenceRefs).toEqual(['commit:abc']);
   });
 
   test('resumes a persisted running run after Runtime restart without creating a second lifecycle owner',async() => {

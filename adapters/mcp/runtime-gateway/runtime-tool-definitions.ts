@@ -110,6 +110,8 @@ export const runtimeToolDefinitions: McpToolDefinition[] = [
     max_turns: { type: 'number', minimum: 1, maximum: 48 },
     max_tool_calls: { type: 'number', minimum: 1, maximum: 128 },
     checkpoint_plan_ids: { type: 'array', maxItems: 64, items: { type: 'string' }, description: 'Optional Plan nodes that pause the run for human acceptance when the model reports that current plan. Plans remain semantic structure, not progress state.' },
+    approved_checkpoint_run_id: { type: 'string', description: 'For human-checkpoint resume: exact Run ID explicitly reviewed and accepted by a person.' },
+    approved_checkpoint_plan_id: { type: 'string', description: 'For human-checkpoint resume: exact paused Plan ID explicitly reviewed and accepted by a person.' },
     expires_in_minutes: { type: 'number', minimum: 1, description: 'Authorization TTL. Canonical Grant limits still apply.' },
     reason: { type: 'string', description: 'Optional revoke reason.' },
   }, ['requirement_id'], false),

@@ -975,6 +975,8 @@ async fn autopilot_control(
     max_turns: Option<u64>,
     max_tool_calls: Option<u64>,
     checkpoint_plan_ids: Vec<String>,
+    approved_checkpoint_run_id: Option<String>,
+    approved_checkpoint_plan_id: Option<String>,
     expires_in_minutes: Option<u64>,
     reason: Option<String>,
 ) -> Result<Value, String> {
@@ -999,6 +1001,8 @@ async fn autopilot_control(
         "max_turns": max_turns,
         "max_tool_calls": max_tool_calls,
         "checkpoint_plan_ids": checkpoint_plan_ids,
+        "approved_checkpoint_run_id": approved_checkpoint_run_id,
+        "approved_checkpoint_plan_id": approved_checkpoint_plan_id,
         "expires_in_minutes": expires_in_minutes,
         "reason": reason,
         "request_id": request_id("autopilot-control")

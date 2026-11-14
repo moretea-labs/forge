@@ -188,9 +188,11 @@ struct AutopilotStatusDetail {
     let requirementRevision: Int?
     let approvedRevision: Int?
     let runStatus: String?
+    let runId: String?
     let stopReason: String?
     let currentPlanId: String?
     let lastSummary: String?
+    let evidenceRefs: [String]
     let updatedAt: String?
     let model: String?
     let promptTokens: Int
@@ -208,12 +210,20 @@ struct AutopilotStatusDetail {
             && ["max_total_tokens_reached", "max_turns_reached", "max_tool_calls_reached"].contains(stopReason ?? "")
     }
 
+    var checkpointPlanId: String? {
+        guard runStatus == "paused",let stopReason,
+              stopReason.hasPrefix("human_checkpoint:") else { return nil }
+        let planId=String(stopReason.dropFirst("human_checkpoint:".count))
+        return planId.isEmpty ? nil : planId
+    }
+
     // One status-derived decision shared by Zen and the traditional Planning view.
     func nextExecutionOperation(outcomeUnknown:Bool = false) -> String? {
         guard !outcomeUnknown else { return nil }
         if !authorized || requiresReapproval || needsBudgetRenewal { return "authorize" }
         if runtimeActive { return "pause" }
         guard providerReady else { return nil }
+        if checkpointPlanId != nil { return "accept_checkpoint" }
         return ["running","paused","blocked","failed"].contains(runStatus ?? "") ? "resume" : "start"
     }
 }
@@ -2654,9 +2664,11 @@ final class NativeWorkspace: ObservableObject {
             requirementRevision:data["requirementRevision"] as? Int,
             approvedRevision:data["approvedRevision"] as? Int,
             runStatus:run?["status"] as? String,
+            runId:run?["runId"] as? String,
             stopReason:run?["stopReason"] as? String,
             currentPlanId:run?["currentPlanId"] as? String,
             lastSummary:run?["lastSummary"] as? String,
+            evidenceRefs:run?["evidenceRefs"] as? [String] ?? [],
             updatedAt:run?["updatedAt"] as? String,
             model:(policy["model"] as? String),
             promptTokens:usage["promptTokens"] as? Int ?? 0,
@@ -2814,6 +2826,8 @@ final class NativeWorkspace: ObservableObject {
         operation:String,
         confirmAuthorization:Bool=false,
         expectedRequirementRevision:Int?=nil,
+        approvedCheckpointRunId:String?=nil,
+        approvedCheckpointPlanId:String?=nil,
         model:String?=nil,
         maxTotalTokens:Int?=nil,
         maxTurns:Int?=nil,
@@ -2841,6 +2855,8 @@ final class NativeWorkspace: ObservableObject {
             "confirmAuthorization":confirmAuthorization,"checkpointPlanIds":checkpointPlanIds
         ]
         if let expectedRequirementRevision { args["expectedRequirementRevision"]=expectedRequirementRevision }
+        if let approvedCheckpointRunId { args["approvedCheckpointRunId"]=approvedCheckpointRunId }
+        if let approvedCheckpointPlanId { args["approvedCheckpointPlanId"]=approvedCheckpointPlanId }
         if let model,!model.isEmpty { args["model"]=model }
         if let maxTotalTokens { args["maxTotalTokens"]=maxTotalTokens }
         if let maxTurns { args["maxTurns"]=maxTurns }

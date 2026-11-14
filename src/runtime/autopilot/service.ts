@@ -280,6 +280,8 @@ export function resumeAutopilot(input: {
   controllerHome: string;
   repoId: string;
   requirementId: string;
+  approvedCheckpointRunId?: string;
+  approvedCheckpointPlanId?: string;
   dependencies?: AutopilotRunnerDependencies;
 }) {
   const run = readAutopilotRun(input.controllerHome, input.repoId, input.requirementId);
@@ -288,6 +290,19 @@ export function resumeAutopilot(input: {
   if (activeLoops.has(key)) throw new Error('AUTOPILOT_ALREADY_RUNNING');
   if (!['paused','blocked','failed','running'].includes(run.value.status)) {
     throw new Error(`AUTOPILOT_RESUME_STATE_INVALID: ${run.value.status}`);
+  }
+  const checkpointPlanId = run.value.status === 'paused'
+    && run.value.stopReason?.startsWith('human_checkpoint:')
+    ? run.value.stopReason.slice('human_checkpoint:'.length)
+    : undefined;
+  if (checkpointPlanId) {
+    if (input.approvedCheckpointRunId !== run.value.runId
+        || input.approvedCheckpointPlanId !== checkpointPlanId
+        || run.value.currentPlanId !== checkpointPlanId) {
+      throw new Error('AUTOPILOT_CHECKPOINT_ACCEPTANCE_REQUIRED');
+    }
+  } else if (input.approvedCheckpointRunId || input.approvedCheckpointPlanId) {
+    throw new Error('AUTOPILOT_CHECKPOINT_NOT_PENDING');
   }
   const apiKey = providerApiKey(run.value.policy, input.dependencies?.apiKey);
   const requirementRecord = readRequirement({ controllerHome: input.controllerHome }, input.requirementId);

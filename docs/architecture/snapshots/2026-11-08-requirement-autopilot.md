@@ -70,6 +70,15 @@ Persisted run state and canonical grants allow a `running` run with no live in-m
 (for example after Runtime restart) to be explicitly resumed without creating another Work,
 Supervisor, task ledger, or execution authority.
 
+A `human_checkpoint:<planId>` pause is different from a normal pause: it must not be
+resumed by an ordinary `resume` call. The caller first reviews the existing Run summary
+and evidence, then explicitly confirms the **exact Run ID and pending Plan ID** using
+`approved_checkpoint_run_id` and `approved_checkpoint_plan_id`. Runtime compares both
+against the persisted paused Run and rejects missing or stale confirmation without
+starting a new model/tool loop. The native Zen and Planning views share a confirmation
+sheet; this acknowledgment does not certify evidence correctness or create a Plan
+acceptance/progress ledger. Requirement completion remains a separate decision.
+
 Existing observe-only `schedule_*`, retired Supervisor/CONTINUE behavior,
 `launcher_start` continuation, `quick_agent_session`, and historical Work are not Autopilot
 execution paths.

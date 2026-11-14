@@ -32,8 +32,13 @@ final class ZenProposalTests: XCTestCase {
     func testZenExecutionUsesResumeForDetachedRunningRunAndReconcilesUnknownOutcome() throws {
         func status(_ state:String,active:Bool=false,ready:Bool=true,authorized:Bool=true,
                     reason:String?=nil,needsReapproval:Bool=false) throws -> AutopilotStatusDetail {
-            var run:[String:Any]=["status":state]
-            if let reason { run["stopReason"]=reason }
+            var run:[String:Any]=["status":state,"runId":"run-one","evidenceRefs":["commit:abc"]]
+            if let reason {
+                run["stopReason"]=reason
+                if reason.hasPrefix("human_checkpoint:") {
+                    run["currentPlanId"]=String(reason.dropFirst("human_checkpoint:".count))
+                }
+            }
             var data:[String:Any] = [
                 "run":run,"runtimeActive":active,"providerReady":ready,
                 "requiresReapproval":needsReapproval
@@ -62,11 +67,38 @@ final class ZenProposalTests: XCTestCase {
         }
         let humanCheckpoint=try status("paused",reason:"human_checkpoint:PLAN-a")
         XCTAssertFalse(humanCheckpoint.needsBudgetRenewal)
-        XCTAssertEqual(humanCheckpoint.nextExecutionOperation(),"resume")
+        XCTAssertEqual(humanCheckpoint.checkpointPlanId,"PLAN-a")
+        XCTAssertEqual(humanCheckpoint.runId,"run-one")
+        XCTAssertEqual(humanCheckpoint.evidenceRefs,["commit:abc"])
+        XCTAssertEqual(humanCheckpoint.nextExecutionOperation(),"accept_checkpoint")
+        XCTAssertNil(humanCheckpoint.nextExecutionOperation(outcomeUnknown:true))
         let stale=try status("paused",reason:"max_turns_reached",needsReapproval:true)
         XCTAssertEqual(stale.nextExecutionOperation(),"authorize")
         XCTAssertNil(ZenWorkspacePane.executionOperation(status:detached,outcomeUnknown:true))
         XCTAssertNil(ZenWorkspacePane.executionOperation(status:nil,outcomeUnknown:false))
+    }
+
+    @MainActor
+    func testCheckpointReviewIsBoundToExactWorkspaceRunAndPlan() throws {
+        let folder=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:folder) }
+        let model=NativeWorkspace(store:folder.appendingPathComponent("conversations.json"))
+        model.repoId="repo-one"
+        model.checkoutId="checkout-one"
+        let status=try XCTUnwrap(NativeWorkspace.autopilotStatusDetail(["data":[
+            "grant":["grantId":"grant-one"],"providerReady":true,
+            "run":["runId":"run-one","status":"paused","stopReason":"human_checkpoint:PLAN-a",
+                   "currentPlanId":"PLAN-a","lastSummary":"Review exact plan",
+                   "evidenceRefs":["commit:abc"]]
+        ]]))
+        let review=try XCTUnwrap(AutopilotCheckpointReview(model:model,requirementId:"REQ-one",status:status))
+        XCTAssertEqual(review.id,"repo-one|checkout-one|run-one|PLAN-a")
+        XCTAssertEqual(review.requirementId,"REQ-one")
+        XCTAssertEqual(review.planTitle,"PLAN-a")
+        XCTAssertEqual(review.summary,"Review exact plan")
+        XCTAssertEqual(review.evidenceRefs,["commit:abc"])
+        model.checkoutId=nil
+        XCTAssertNil(AutopilotCheckpointReview(model:model,requirementId:"REQ-one",status:status))
     }
 
     func testRejectsAmbiguousOrUnsafeProposalContent() {
