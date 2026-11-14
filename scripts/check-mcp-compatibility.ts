@@ -80,7 +80,11 @@ const EXPECTED_PREFERRED_TOOL_NAME_FINGERPRINT = 'f22e635a213b45fa';
 // 2026-11-11: #235 documents bounded process_wait attachments (5000ms) and the
 // workspace_root direct-execution cap (30000ms); names and input schemas are
 // unchanged. Refresh the exact combined schema fingerprint.
-const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = '5e4f9799e6eb3468';
+// 2026-11-14 integration: #607 describes model-selected retrieval and optional
+// semantic context; #650 adds the fixed supervisor_healthcheck schedule type.
+// Compared every preferred definition against origin/main: only those two
+// descriptions and that explicit enum/description changed; tool names stay fixed.
+const EXPECTED_PREFERRED_TOOL_SCHEMA_FINGERPRINT = '9650b66ae3bafefd';
 
 const policy = runtimePolicy(process.cwd(), {
   profile: 'controller',

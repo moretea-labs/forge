@@ -1,7 +1,7 @@
-import releaseObservationDraft from '../../../../assets/workflows/release-growth/appstore.observe-release.v1.draft.json';
-import postMetricsDraft from '../../../../assets/workflows/release-growth/x.observe-post-metrics.v1.draft.json';
-import publishPostDraft from '../../../../assets/workflows/release-growth/x.publish-post.v1.draft.json';
-import replyToCommentDraft from '../../../../assets/workflows/release-growth/x.reply-to-comment.v1.draft.json';
+import releaseObservationDraft from '../../../../assets/workflows/release-growth/appstore.observe-release.v1.draft.json' with { type: 'json' };
+import postMetricsDraft from '../../../../assets/workflows/release-growth/x.observe-post-metrics.v1.draft.json' with { type: 'json' };
+import publishPostDraft from '../../../../assets/workflows/release-growth/x.publish-post.v1.draft.json' with { type: 'json' };
+import replyToCommentDraft from '../../../../assets/workflows/release-growth/x.reply-to-comment.v1.draft.json' with { type: 'json' };
 import {
   materializeWorkflowAsset, workflowCapabilityDependencies,
   type WorkflowAssetDefinition, type WorkflowAssetDraft,

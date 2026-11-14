@@ -1,6 +1,6 @@
-import imageNoteDraft from '../../../../assets/workflows/xiaohongshu/xiaohongshu.publish-image-note.v1.draft.json';
-import longTextDraft from '../../../../assets/workflows/xiaohongshu/xiaohongshu.publish-long-text.v1.draft.json';
-import metricsDraft from '../../../../assets/workflows/xiaohongshu/xiaohongshu.collect-metrics.v1.draft.json';
+import imageNoteDraft from '../../../../assets/workflows/xiaohongshu/xiaohongshu.publish-image-note.v1.draft.json' with { type: 'json' };
+import longTextDraft from '../../../../assets/workflows/xiaohongshu/xiaohongshu.publish-long-text.v1.draft.json' with { type: 'json' };
+import metricsDraft from '../../../../assets/workflows/xiaohongshu/xiaohongshu.collect-metrics.v1.draft.json' with { type: 'json' };
 import { materializeWorkflowAsset, workflowCapabilityDependencies, type WorkflowAssetDefinition, type WorkflowAssetDraft, type WorkflowJsonValue } from '../../../../packages/workflow-runtime/api/index';
 import { writeWorkflowAssetContent } from '../../control-plane/persistence/workflow-content-store';
 import { readWorkflowRegistryEntry, recordWorkflowBindings, registerWorkflowAsset, type WorkflowCapabilityBinding } from '../../control-plane/persistence/workflow-registry-store';
