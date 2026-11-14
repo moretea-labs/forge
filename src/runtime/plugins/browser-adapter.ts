@@ -5090,10 +5090,37 @@ async function executeBrowserPluginActionInternal(
             'The saved browser session does not match the authorized password-form origin.', { retryable: false });
         }
         const selector = requiredString(input.args.selector, 'selector');
+        const usernameSelector = stringValue(input.args.username_selector);
+        const expectedUsername = stringValue(input.args.expected_username);
+        if ((usernameSelector && !expectedUsername) || (!usernameSelector && expectedUsername)) {
+          throw new AssistantPluginError('PLUGIN_BROWSER_PASSWORD_ACCOUNT_BINDING_INVALID',
+            'username_selector and expected_username must be provided together.', { retryable: false });
+        }
         return await withPage(input.actionId, input.repoRoot, current, target, input.args, async (page, _diagnostics, connection) => {
           if (new URL(page.url()).origin !== expectedOrigin) {
             throw new AssistantPluginError('PLUGIN_BROWSER_PASSWORD_ORIGIN_MISMATCH',
               'The exact browser tab is not at the authorized password-form origin.', { retryable: false });
+          }
+          if (usernameSelector && expectedUsername) {
+            const account = await page.evaluate<{ count: number; matches: boolean }>((binding) => {
+              const accountBinding = binding as { selector: string; expected: string };
+              const elements = Array.from(document.querySelectorAll(accountBinding.selector));
+              const field = elements[0];
+              const actual = field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement
+                ? field.value.trim()
+                : '';
+              return { count: elements.length, matches: elements.length === 1 && actual === accountBinding.expected };
+            }, { selector: usernameSelector, expected: expectedUsername.trim() });
+            if (account.count !== 1) {
+              throw new AssistantPluginError('PLUGIN_BROWSER_PASSWORD_ACCOUNT_FIELD_INVALID',
+                'username_selector must identify exactly one account field in the current top-level page.',
+                { retryable: false });
+            }
+            if (!account.matches) {
+              throw new AssistantPluginError('PLUGIN_BROWSER_PASSWORD_ACCOUNT_MISMATCH',
+                'The visible account does not match the authorized account for saved-password autofill.',
+                { retryable: false });
+            }
           }
           // Never read a password value into the model, Runtime, provider receipt or logs.
           // The page may return only the presence of a nonempty password field.
@@ -5159,6 +5186,7 @@ async function executeBrowserPluginActionInternal(
             provider: browserResultProvider(connection.provider),
             sessionId: target.sessionId,
             origin: expectedOrigin,
+            ...(usernameSelector ? { accountMatched: true } : {}),
             passwordFieldFilled: after.count === 1 && after.password && after.filled,
             nextAction: after.count === 1 && after.password && after.filled ? 'verify_login' : 'complete_os_autofill',
             loginVerified: false,

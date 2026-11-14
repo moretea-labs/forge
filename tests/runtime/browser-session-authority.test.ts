@@ -984,6 +984,7 @@ describe('browser session compatibility on Computer target authority', () => {
     const clicks: Array<{ x: number; y: number; windowId?: string; tabId?: string }> = [];
     let providerCalls = 0;
     let filledByOS = false;
+    let visibleUsername = 'authorized@example.com';
     setBrowserPluginRuntimeHooksForTest({ moduleAvailable: () => false });
     setMacOsBrowserRuntimeHooksForTest({
       platform: 'darwin', appExists: () => true, processRunning: async () => true,
@@ -991,6 +992,11 @@ describe('browser session compatibility on Computer target authority', () => {
         providerCalls += 1;
         if (script.includes('set outputText to "false"')) return inventory();
         if (script.includes('execute targetTab javascript')) {
+          if (args[0]?.includes('accountBinding.selector')) {
+            return JSON.stringify({ ok: true, value: {
+              count: 1, matches: args[0]?.includes(JSON.stringify(visibleUsername)) === true,
+            } });
+          }
           if (args[0]?.includes('querySelectorAll') && args[0]?.includes('password')) {
             return JSON.stringify({ ok: true, value: {
               count: 1, password: true, filled: filledByOS,
@@ -1029,12 +1035,29 @@ describe('browser session compatibility on Computer target authority', () => {
     })).rejects.toMatchObject({ code: 'PLUGIN_BROWSER_PASSWORD_ORIGIN_MISMATCH' });
     expect(clicks).toHaveLength(0);
     expect(providerCalls).toBe(0); // A wrong origin cannot even attach/read the unrelated tab.
+    visibleUsername = 'other@example.com';
+    await expect(executeBrowserPluginAction({
+      ...base, requestId: 'password-wrong-account',
+      args: {
+        session_id: 'saved-login', expected_origin: 'https://login.example.com',
+        selector: 'input[type=password]', username_selector: 'input[type=email]',
+        expected_username: 'authorized@example.com',
+      },
+    })).rejects.toMatchObject({ code: 'PLUGIN_BROWSER_PASSWORD_ACCOUNT_MISMATCH' });
+    expect(clicks).toHaveLength(0);
+
+    visibleUsername = 'authorized@example.com';
     const outcome = await executeBrowserPluginAction({
       ...base, requestId: 'password-exact-site',
-      args: { session_id: 'saved-login', expected_origin: 'https://login.example.com', selector: 'input[type=password]' },
+      args: {
+        session_id: 'saved-login', expected_origin: 'https://login.example.com',
+        selector: 'input[type=password]', username_selector: 'input[type=email]',
+        expected_username: 'authorized@example.com',
+      },
     });
     expect(outcome).toMatchObject({
       sessionId: 'saved-login', origin: 'https://login.example.com',
+      accountMatched: true,
       passwordFieldFilled: true, nextAction: 'verify_login',
       credentialMaterialReturned: false, loginVerified: false,
     });

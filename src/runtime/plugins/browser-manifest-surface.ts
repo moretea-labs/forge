@@ -525,6 +525,8 @@ export function browserActions(): AssistantPluginActionDescriptor[] {
       argumentsSchema: interactSchema({
         expected_origin: { type: 'string', description: 'Exact HTTPS origin of the password form, for example https://accounts.example.com. No URL paths or credential data.' },
         selector: { type: 'string', minLength: 1, maxLength: 1000 },
+        username_selector: { type: 'string', minLength: 1, maxLength: 1000, description: 'Optional selector for the visible username/account field. Must be paired with expected_username.' },
+        expected_username: { type: 'string', minLength: 1, maxLength: 512, description: 'Optional exact authorized account identifier, used only to fail closed before password autofill and never returned in the action result.' },
       }, ['session_id', 'expected_origin', 'selector']),
     },
     {
