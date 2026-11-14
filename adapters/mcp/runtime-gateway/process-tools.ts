@@ -112,11 +112,11 @@ export const processToolDefinitions: McpToolDefinition[] = [
 const processToolNames = new Set(processToolDefinitions.map((tool) => tool.name));
 
 /**
- * Host target of the single execute_command entry: canonical process:exec Grant.
+ * Host target of the single execute_command entry: explicit Full Access.
  *
  * Repo-less by construction: the Forge instance is the target and `cwd` is an
- * execution argument. Authorization is one explicit canonical `process:exec`
- * Grant for this instance, enforced in the lane before any spawn.
+ * execution argument. The entrypoint checks the existing Full Access setting;
+ * the lane verifies the authenticated caller and exact ForgeInstance identity.
  */
 /**
  * The explicitly user-selected Full Access mode is the single Forge permission
