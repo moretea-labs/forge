@@ -11,7 +11,7 @@ import { ensureControllerHome } from '../../src/effects/controller-home';
 import { registerRepository } from '../../src/cli/repositories/registry';
 import { writeWorkflowRunCheckpoint } from '../../src/runtime/control-plane/persistence/workflow-run-store';
 import { createRequirement } from '../../src/runtime/control-plane/persistence/requirement-store';
-import { schedulePublicationOutcomeCollection } from '../../src/runtime/root/assistant-learning-loop';
+import { publicationOutcomeFollowupDueAt, schedulePublicationOutcomeCollection } from '../../src/runtime/root/assistant-learning-loop';
 import { parseControllerLearningSignalDrafts } from '../../src/runtime/context/automatic-learning';
 import { cognitionReadPort } from '../../src/runtime/control-plane/persistence/cognition-store';
 import { callRuntimeTool } from '../../adapters/mcp/runtime-gateway/runtime-tools';
@@ -500,6 +500,50 @@ describe('connected assistant learning loops', () => {
       }],
     });
     expect(requirementFeedback?.isError).not.toBe(true);
+  });
+
+  test('derives X publication follow-up at 12h from its effect receipt without creating a Forge Schedule', () => {
+    const fx = fixture('publication-outcome-12h');
+    const publishedAt = time(0);
+    const publication: WorkflowPublicationReceipt = {
+      schemaVersion: 1,
+      receiptId: 'receipt-x-12h',
+      workflowId: 'x.publish-post',
+      channel: 'x',
+      account: 'account-a',
+      postId: 'post-12h',
+      postUrl: 'https://x.com/account-a/status/1234567890123456789',
+      contentDigest: 'sha256:' + 'a'.repeat(64),
+      publishedAt,
+      timeSource: 'effect_receipt_recorded_at',
+      effectReceiptRef: 'x-effect-12h',
+      verificationEvidenceRefs: ['workflow-run:publish-x-12h'],
+    };
+    const dueAt = publicationOutcomeFollowupDueAt(publication);
+    expect(dueAt).toBe(new Date(Date.parse(publishedAt) + 12 * 60 * 60 * 1000).toISOString());
+    expect(publicationOutcomeFollowupDueAt({ ...publication, channel: 'xiaohongshu' })).toBeUndefined();
+    expect(() => publicationOutcomeFollowupDueAt({ ...publication, publishedAt: 'not-a-time' }))
+      .toThrow('OUTCOME_COLLECTION_PUBLICATION_TIME_INVALID');
+
+    const otherChannel = schedulePublicationOutcomeCollection({
+      controllerHome: fx.controllerHome,
+      repoId: fx.repository.repoId,
+      runId: 'run-other-24h',
+      publication: {
+        ...publication,
+        receiptId: 'receipt-other-24h',
+        workflowId: 'xiaohongshu.publish-long-text',
+        channel: 'xiaohongshu',
+        postId: 'post-24h',
+        postUrl: 'https://www.xiaohongshu.com/explore/1234567890',
+      },
+      workflowInputs: { session_id: 'existing-xhs-browser-session' },
+    });
+    expect(otherChannel.trigger).toMatchObject({
+      type: 'calendar',
+      calendarAt: new Date(Date.parse(publishedAt) + 24 * 60 * 60 * 1000).toISOString(),
+    });
+    expect(otherChannel.policy.shadowMode).toBe(true);
   });
 
   test('rejects unavailable direct-learning evidence before writing any memory', async () => {

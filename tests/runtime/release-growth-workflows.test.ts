@@ -31,7 +31,14 @@ describe('first-party release and growth Workflow assets (#652)', () => {
       expect(installed.value.contentDigest).toBe(asset.contentDigest);
       expect(installed.value.bindings.map(binding => binding.capabilityId).sort()).toEqual(workflowCapabilityDependencies(asset));
       expect(installed.value.bindings.every(b => b.pluginId === 'browser' || b.pluginId === 'app_store_connect')).toBe(true);
-      expect(installed.value.bindings.every(b => b.pluginId !== 'app_store_connect' || b.actionId === 'list_app_store_versions')).toBe(true);
+      if (workflowId === RELEASE_GROWTH_WORKFLOW_IDS.releaseObservation || workflowId === RELEASE_GROWTH_WORKFLOW_IDS.postMetrics) {
+        expect(installed.value.bindings.every(b => b.pluginId !== 'browser'
+          || ['navigate', 'verify_state', 'wait_for_selector', 'query_all', 'get_attribute', 'get_text'].includes(b.actionId ?? ''))).toBe(true);
+      }
+      expect(installed.value.bindings.every(b => b.pluginId !== 'app_store_connect' || ['list_app_store_versions', 'list_app_territory_availabilities'].includes(b.actionId ?? ''))).toBe(true);
+      if (workflowId === RELEASE_GROWTH_WORKFLOW_IDS.releaseObservation) {
+        expect(installed.value.bindings.map(binding => binding.actionId)).toContain('list_app_territory_availabilities');
+      }
       expect(asset.steps.every(step => step.idempotency !== 'non_idempotent')).toBe(true);
       expect(asset.publication).toBeUndefined();
       expect(asset.credentialRefs).toBeUndefined();
@@ -41,65 +48,119 @@ describe('first-party release and growth Workflow assets (#652)', () => {
     }
   });
 
-  test('changing App ID is just an input binding; country availability is separate from version approval', () => {
+  test('App ID and version are exact inputs; version release state and typed CN availability remain separate', () => {
     const id = RELEASE_GROWTH_WORKFLOW_IDS.releaseObservation;
     const asset = materializedReleaseGrowthWorkflow(id);
-    const a = validateWorkflowRunInputs(asset, { app_id: '6831952477', session_id: 'session-1' });
-    const b = validateWorkflowRunInputs(asset, { app_id: '6796884084', session_id: 'session-1' });
+    const a = validateWorkflowRunInputs(asset, { app_id: '6831952477', version_string: '1.2' });
+    const b = validateWorkflowRunInputs(asset, { app_id: '6796884084', version_string: '1.0' });
     expect(a.app_id).not.toBe(b.app_id);
+    expect(a.version_string).not.toBe(b.version_string);
     expect(asset.steps.some(s => s.kind !== 'script' && s.capabilityId === 'asc.list_app_store_versions')).toBe(true);
-    expect(asset.steps.some(s => s.kind !== 'script' && s.capabilityId === 'browser.query_all')).toBe(true);
+    expect(asset.steps.some(s => s.kind !== 'script' && s.capabilityId === 'asc.list_app_territory_availabilities')).toBe(true);
+    expect(asset.steps.some(s => s.kind !== 'script' && s.capabilityId.startsWith('browser.'))).toBe(false);
     expect(asset.steps.some(s => s.stepId === 'classify-cn')).toBe(true);
-    expect(script(id, 'validateAppId', { app_id: '6831952477' }).status).toBe(0);
-    expect(script(id, 'validateAppId', { app_id: 'not-an-id' }).status).not.toBe(0);
-    for (const [state, next] of [
-      ['READY_FOR_DISTRIBUTION', 'verify_territories'],
-      ['IN_REVIEW', 'await_or_inspect_review'],
-      ['REJECTED', 'prepare_correction'],
-    ]) {
-      const classified = script(id, 'classifyVersion', { versions: [{ attributes: { appVersionState: state } }] });
-      expect(classified.status).toBe(0);
-      expect(JSON.parse(classified.output)).toEqual({ state, next_action: next });
-    }
-    const ambiguousVersion = script(id, 'classifyVersion', {
-      versions: [{ attributes: { appVersionState: 'READY_FOR_DISTRIBUTION' } },
-        { attributes: { appVersionState: 'IN_REVIEW' } }],
+    expect(script(id, 'validateAppVersion', { app_id: '6831952477', version_string: '1.2' }).status).toBe(0);
+    expect(script(id, 'validateAppVersion', { app_id: 'not-an-id', version_string: '1.2' }).status).not.toBe(0);
+    expect(script(id, 'validateAppVersion', { app_id: '6831952477', version_string: 'latest' }).status).not.toBe(0);
+
+    const ready = script(id, 'classifyVersion', {
+      version_string: '1.2',
+      versions: [{ attributes: { versionString: '1.2', appStoreState: 'READY_FOR_SALE',
+        appVersionState: 'READY_FOR_DISTRIBUTION', releaseType: 'MANUAL', downloadable: true } }],
+      links: { next: null },
     });
-    expect(JSON.parse(ambiguousVersion.output)).toEqual({ state: 'unknown', next_action: 'inspect_version' });
-    expect(script(id, 'classifyVersion', { versions: 'untrusted' }).status).not.toBe(0);
-    for (const [visible, expected] of [
-      ['中国大陆\\n可供应', 'available'],
-      ['中国大陆\\n正在处理为可用', 'processing'],
-      ['中国大陆\\n缺少 ICP 备案号查看', 'icp_missing'],
-    ]) {
-      const outcome = script(id, 'classifyCn', { matches: [{ text: visible }] });
-      expect(outcome.status).toBe(0);
-      expect(JSON.parse(outcome.output)).toEqual({ territory: 'CHN', status: expected });
-    }
-    expect(script(id, 'classifyCn', { matches: [] }).status).not.toBe(0);
-    expect(script(id, 'classifyCn', { matches: [{ text: '日本 可供应' }] }).status).not.toBe(0);
+    expect(ready.status).toBe(0);
+    expect(JSON.parse(ready.output)).toEqual({
+      version: '1.2', app_store_state: 'READY_FOR_SALE', app_version_state: 'READY_FOR_DISTRIBUTION',
+      release_type: 'MANUAL', downloadable: true, next_action: 'verify_territories',
+    });
+    const manualRelease = script(id, 'classifyVersion', {
+      version_string: '1.2',
+      versions: [{ attributes: { versionString: '1.2', appStoreState: 'PENDING_DEVELOPER_RELEASE',
+        appVersionState: 'READY_FOR_DISTRIBUTION', releaseType: 'MANUAL', downloadable: true } }],
+      links: { next: null },
+    });
+    expect(JSON.parse(manualRelease.output).next_action).toBe('manual_release_required');
+    const afterApproval = script(id, 'classifyVersion', {
+      version_string: '1.0',
+      versions: [{ attributes: { versionString: '1.0', appStoreState: 'PENDING_DEVELOPER_RELEASE',
+        appVersionState: 'READY_FOR_DISTRIBUTION', releaseType: 'AFTER_APPROVAL', downloadable: true } }],
+      links: { next: null },
+    });
+    expect(JSON.parse(afterApproval.output).next_action).toBe('await_apple_release');
+    const ambiguousVersion = script(id, 'classifyVersion', {
+      version_string: '1.2',
+      versions: [{ attributes: { versionString: '1.2' } }, { attributes: { versionString: '1.2' } }],
+      links: { next: null },
+    });
+    expect(ambiguousVersion.status).not.toBe(0);
+    expect(script(id, 'classifyVersion', {
+      version_string: '1.2', versions: [{ attributes: { versionString: '1.2' } }],
+      links: { next: 'https://api.example/next' },
+    }).status).not.toBe(0);
+
+    const cnMissing = script(id, 'classifyCn', {
+      data: [{ attributes: { available: true, contentStatuses: ['ICP_NUMBER_MISSING'], releaseDate: null },
+        relationships: { territory: { data: { id: 'CHN', type: 'territories' } } } }],
+      links: { next: null },
+    });
+    expect(cnMissing.status).toBe(0);
+    expect(JSON.parse(cnMissing.output)).toEqual({
+      territory: 'CHN', status: 'icp_missing', available: true,
+      content_statuses: ['ICP_NUMBER_MISSING'], release_date: null,
+    });
+    const cnAvailable = script(id, 'classifyCn', {
+      data: [{ attributes: { available: true, contentStatuses: ['AVAILABLE'], releaseDate: null },
+        relationships: { territory: { data: { id: 'CHN', type: 'territories' } } } }],
+      links: { next: null },
+    });
+    expect(JSON.parse(cnAvailable.output).status).toBe('available');
+    const cnNotAvailable = script(id, 'classifyCn', {
+      data: [{ attributes: { available: false, contentStatuses: [] },
+        relationships: { territory: { data: { id: 'CHN', type: 'territories' } } } }],
+      links: { next: null },
+    });
+    expect(JSON.parse(cnNotAvailable.output).status).toBe('not_available');
+    expect(script(id, 'classifyCn', {
+      data: [{ attributes: { available: true, contentStatuses: ['AVAILABLE'] },
+        relationships: { territory: { data: { id: 'JPN', type: 'territories' } } } }],
+      links: { next: null },
+    }).status).not.toBe(0);
+    expect(script(id, 'classifyCn', {
+      data: [{ attributes: { available: true, contentStatuses: ['AVAILABLE'] },
+        relationships: { territory: { data: { id: 'CHN', type: 'territories' } } } }],
+      links: { next: 'https://api.example/next' },
+    }).status).not.toBe(0);
   });
 
-  test('release observation runs through existing interpreter; unsafe ID never reaches external capabilities', async () => {
+  test('typed release observation uses Apple version and CHN territory records; unsafe or incomplete inputs fail closed', async () => {
     const asset = materializedReleaseGrowthWorkflow(RELEASE_GROWTH_WORKFLOW_IDS.releaseObservation);
     const calls: string[] = [];
-    const executeWith = async (appId: string, row: string) => executeWorkflow({
+    const executeWith = async (
+      appId: string,
+      versionString: string,
+      territoryRows: unknown[],
+      nextPage: string | null = null,
+    ) => executeWorkflow({
       asset,
-      binding: { scopeId: 'repository:proof', runId: 'observation-' + appId + '-' + row.length },
-      inputs: { app_id: appId, session_id: 'authorized-existing-session' },
+      binding: { scopeId: 'repository:proof', runId: 'observation-' + appId.replace(/[^A-Za-z0-9]/g, '_') + '-' + versionString },
+      inputs: { app_id: appId, version_string: versionString },
     }, {
-      executeCapability: async ({ step, arguments: args }) => {
+      executeCapability: async ({ step }) => {
         calls.push(step.stepId);
-        if (step.stepId === 'read-version') return { outcome: 'succeeded', receiptRef: 'ASC-READ-EXISTING',
-          output: { data: [{ attributes: { appVersionState: 'READY_FOR_DISTRIBUTION' } }] } };
-        if (step.stepId === 'open-availability') {
-          expect(args.url).toBe('https://appstoreconnect.apple.com/apps/' + appId + '/distribution/pricing/availability');
-        }
-        if (step.stepId === 'verify-location') return { outcome: 'succeeded', receiptRef: 'BROWSER-VERIFY-EXISTING',
-          output: { matched: true, observedUrl: args.expected_url } };
-        if (step.stepId === 'read-country-row') return { outcome: 'succeeded', receiptRef: 'BROWSER-ROW-EXISTING',
-          output: { matches: row ? [{ text: row }] : [], count: row ? 1 : 0 } };
-        return { outcome: 'succeeded', receiptRef: 'BROWSER-READ-EXISTING' };
+        if (step.stepId === 'read-version') return {
+          outcome: 'succeeded', receiptRef: 'ASC-VERSION-READ',
+          output: {
+            data: [{ attributes: { versionString, appStoreState: 'READY_FOR_SALE',
+              appVersionState: 'READY_FOR_DISTRIBUTION', releaseType: 'AFTER_APPROVAL', downloadable: true } }],
+            links: { next: null },
+          },
+        };
+        if (step.stepId === 'read-territory-availability') return {
+          outcome: 'succeeded', receiptRef: 'ASC-TERRITORY-READ',
+          output: { data: territoryRows, links: { next: nextPage } },
+        };
+        throw new Error('UNEXPECTED_CAPABILITY:' + step.stepId);
       },
       executeScript: async ({ step, arguments: args }) => {
         const execution = script(asset.workflowId, step.scriptRef, args);
@@ -108,20 +169,38 @@ describe('first-party release and growth Workflow assets (#652)', () => {
           : { outcome: 'failed', receiptRef: 'SCRIPT-FAIL-CLOSED' };
       },
     });
-    const cnMissing = await executeWith('6796884084', '中国大陆\\n缺少 ICP 备案号查看');
+    const cnMissingRow = [{
+      id: 'territory-row-cn',
+      attributes: { available: true, contentStatuses: ['ICP_NUMBER_MISSING'], releaseDate: null },
+      relationships: { territory: { data: { id: 'CHN', type: 'territories' } } },
+    }];
+    const cnMissing = await executeWith('6796884084', '1.0', cnMissingRow);
     expect(cnMissing.status).toBe('succeeded');
-    expect(cnMissing.outputs['classify-cn']).toEqual({ territory: 'CHN', status: 'icp_missing' });
-    expect(cnMissing.outputs['classify-version']).toEqual({
-      state: 'READY_FOR_DISTRIBUTION', next_action: 'verify_territories',
+    expect(cnMissing.outputs['classify-cn']).toEqual({
+      territory: 'CHN', status: 'icp_missing', available: true,
+      content_statuses: ['ICP_NUMBER_MISSING'], release_date: null,
     });
-    expect(calls).toContain('read-version');
+    expect(cnMissing.outputs['classify-version']).toEqual({
+      version: '1.0', app_store_state: 'READY_FOR_SALE', app_version_state: 'READY_FOR_DISTRIBUTION',
+      release_type: 'AFTER_APPROVAL', downloadable: true, next_action: 'verify_territories',
+    });
+    expect(calls).toEqual(['read-version', 'read-territory-availability']);
+
     calls.length = 0;
-    const bad = await executeWith('malicious/identifier', '中国大陆\\n可供应');
+    const bad = await executeWith('malicious/identifier', '1.0', cnMissingRow);
     expect(bad.status).toBe('failed');
     expect(calls.length).toBe(0);
-    const missingRow = await executeWith('6831952477', '');
+
+    const missingRow = await executeWith('6831952477', '1.2', []);
     expect(missingRow.status).toBe('failed');
     expect(missingRow.outputs['classify-cn']).toBeUndefined();
+
+    const paginationIncomplete = await executeWith('6831952477', '1.2', [{
+      attributes: { available: true, contentStatuses: ['AVAILABLE'] },
+      relationships: { territory: { data: { id: 'CHN', type: 'territories' } } },
+    }], 'https://api.appstoreconnect.apple.com/v2/territoryAvailabilities?cursor=next');
+    expect(paginationIncomplete.status).toBe('failed');
+    expect(paginationIncomplete.outputs['classify-cn']).toBeUndefined();
   });
 
   test('X metrics require an exact account/post URL and actual parseable counters', () => {
@@ -130,6 +209,18 @@ describe('first-party release and growth Workflow assets (#652)', () => {
     expect(validateWorkflowRunInputs(asset, {
       account: 'developer_x', post_url: 'https://x.com/developer_x/status/1234567890', session_id: 'session-1',
     }).account).toBe('developer_x');
+    const previewStep = asset.steps.find(step => step.stepId === 'read-reply-previews');
+    expect(previewStep).toMatchObject({ capabilityId: 'browser.query_all',
+      input: { selector: 'article[data-testid="tweet"]', limit: 15 } });
+    expect(previewStep?.idempotency).not.toBe('non_idempotent');
+    expect(asset.steps.find(step => step.stepId === 'read-reply-preview-links')).toMatchObject({
+      capabilityId: 'browser.query_all', input: { selector: 'article[data-testid="tweet"] a[href*="/status/"]:has(time)', limit: 15 },
+    });
+    expect(asset.steps.find(step => step.stepId === 'derive-reply-previews')).toMatchObject({
+      kind: 'script', scriptRef: 'deriveReplyPreviews',
+    });
+    expect(asset.resources?.replyPolicy).toContain('substantive questions');
+    expect(asset.resources?.replyPolicy).toContain('verified public product/store facts');
     expect(script(id, 'validatePost', { account: 'developer_x', post_url: 'https://x.com/developer_x/status/1234567890' }).status).toBe(0);
     for (const post_url of [
       'https://x.com/wrong_account/status/1234567890',
@@ -141,5 +232,35 @@ describe('first-party release and growth Workflow assets (#652)', () => {
     expect(observed.status).toBe(0);
     expect(JSON.parse(observed.output)).toEqual({ reply_count: 2, like_count: 1234 });
     expect(script(id, 'deriveEngagement', { reply_label: '1.2K replies', like_label: '12 likes' }).status).not.toBe(0);
+    const previews = script(id, 'deriveReplyPreviews', {
+      account: 'developer_x', post_url: 'https://x.com/developer_x/status/1234567890',
+      articles: [
+        { text: 'Developer @developer_x · Nov 14 Original post' },
+        { text: 'Alice @alice · Nov 14 This is a useful reply.' },
+        { text: 'Developer @developer_x · Nov 14 Own follow-up' },
+        { text: 'Bob @bob · Nov 14 Another reply.' },
+      ],
+      links: [
+        { href: '/developer_x/status/1234567890' }, { href: '/alice/status/2222222222' },
+        { href: '/developer_x/status/3333333333' }, { href: '/bob/status/4444444444' },
+      ],
+    });
+    expect(previews.status).toBe(0);
+    expect(JSON.parse(previews.output)).toEqual({
+      previews: [
+        { comment_url: 'https://x.com/alice/status/2222222222', comment_id: '2222222222',
+          comment_author: 'alice', preview_text: 'Alice @alice · Nov 14 This is a useful reply.' },
+        { comment_url: 'https://x.com/bob/status/4444444444', comment_id: '4444444444',
+          comment_author: 'bob', preview_text: 'Bob @bob · Nov 14 Another reply.' },
+      ], count: 2,
+    });
+    expect(script(id, 'deriveReplyPreviews', {
+      account: 'developer_x', post_url: 'https://x.com/developer_x/status/1234567890',
+      articles: [{ text: 'reply' }], links: [],
+    }).status).not.toBe(0);
+    expect(script(id, 'deriveReplyPreviews', {
+      account: 'developer_x', post_url: 'https://x.com/developer_x/status/1234567890',
+      articles: [{ text: 'reply' }], links: [{ href: 'https://evil.example/status/1' }],
+    }).status).not.toBe(0);
   });
 });

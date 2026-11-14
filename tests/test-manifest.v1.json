@@ -625,6 +625,14 @@
       "module": "controller",
       "resource": "controller-home-isolated"
     },
+    "tests/runtime/release-growth-publish-workflows.test.ts": {
+      "module": "workflow",
+      "resource": "temp-isolated"
+    },
+    "tests/runtime/release-growth-workflows.test.ts": {
+      "module": "workflow",
+      "resource": "temp-isolated"
+    },
     "tests/runtime/release-retention.test.ts": {
       "module": "process-runtime",
       "resource": "temp-isolated"

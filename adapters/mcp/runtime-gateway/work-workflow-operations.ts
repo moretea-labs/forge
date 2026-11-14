@@ -3,9 +3,9 @@ import type { WorkflowJsonValue } from '../../../packages/workflow-runtime/api/i
 import { selectRepositoryCheckout } from '../../../src/cli/repositories/registry';
 import { executionIdentityForRepository } from '../../../src/runtime/control-plane/execution/execution-identity';
 import { readWorkflowRun } from '../../../src/runtime/control-plane/persistence/workflow-run-store';
-import { schedulePublicationOutcomeCollection } from '../../../src/runtime/root/assistant-learning-loop';
+import { publicationOutcomeFollowupDueAt, schedulePublicationOutcomeCollection } from '../../../src/runtime/root/assistant-learning-loop';
 import { ensureXiaohongshuWorkflowInstalled, XIAOHONGSHU_WORKFLOW_IDS } from '../../../src/runtime/workflows/first-party/xiaohongshu';
-import { ensureReleaseGrowthWorkflowInstalled, RELEASE_GROWTH_WORKFLOW_IDS } from '../../../src/runtime/workflows/first-party/release-growth';
+import { ensureReleaseGrowthWorkflowInstalled, RELEASE_GROWTH_WORKFLOW_IDS, X_EFFECT_WORKFLOW_IDS } from '../../../src/runtime/workflows/first-party/release-growth';
 import { executeRegisteredWorkflow, observeAndReconcileRegisteredWorkflow } from '../../../src/runtime/workflows/runtime';
 import { buildFacadeResult } from '../../../src/runtime/control-plane/facade';
 import type { MultiRepositoryMcpToolContext } from '../multi-repository';
@@ -39,7 +39,7 @@ export async function callRhWorkWorkflowOperation(
     if (Object.values(XIAOHONGSHU_WORKFLOW_IDS).includes(workflowId as never)) {
       ensureXiaohongshuWorkflowInstalled(ctx.controllerHome, workflowId);
     }
-    if (Object.values(RELEASE_GROWTH_WORKFLOW_IDS).includes(workflowId as never)) {
+    if (Object.values(RELEASE_GROWTH_WORKFLOW_IDS).includes(workflowId as never) || Object.values(X_EFFECT_WORKFLOW_IDS).includes(workflowId as never)) {
       ensureReleaseGrowthWorkflowInstalled(ctx.controllerHome, workflowId);
     }
     const projectId = typeof args.workflow_scope_project_id === 'string' ? args.workflow_scope_project_id.trim() : '';
@@ -47,6 +47,31 @@ export async function callRhWorkWorkflowOperation(
     const workflowInputs = args.workflow_inputs && typeof args.workflow_inputs === 'object' && !Array.isArray(args.workflow_inputs)
       ? args.workflow_inputs as Record<string, WorkflowJsonValue>
       : {};
+    if (operation === 'workflow_execute' && workflowId === X_EFFECT_WORKFLOW_IDS.replyToComment) {
+      const account = typeof workflowInputs.account === 'string' ? workflowInputs.account.trim() : '';
+      const commentUrlValue = typeof workflowInputs.comment_url === 'string' ? workflowInputs.comment_url.trim() : '';
+      let commentUrl: URL;
+      try {
+        commentUrl = new URL(commentUrlValue);
+      } catch {
+        throw new Error('X_REPLY_COMMENT_IDENTITY_REQUIRED');
+      }
+      const commentMatch = commentUrl.pathname.match(/^\/([A-Za-z0-9_]{1,15})\/status\/([0-9]+)$/);
+      if (
+        !/^[A-Za-z0-9_]{1,15}$/.test(account)
+        || commentUrl.protocol !== 'https:'
+        || commentUrl.hostname !== 'x.com'
+        || commentUrl.username
+        || commentUrl.password
+        || commentUrl.search
+        || commentUrl.hash
+        || !commentMatch
+      ) {
+        throw new Error('X_REPLY_COMMENT_IDENTITY_REQUIRED');
+      }
+      const expectedRunId = `x-reply-${account.toLowerCase()}-${commentMatch[2]}`;
+      if (runId !== expectedRunId) throw new Error('X_REPLY_WORKFLOW_RUN_ID_MUST_BIND_COMMENT');
+    }
     const requirementId = typeof args.requirement_id === 'string' && args.requirement_id.trim() ? args.requirement_id.trim() : undefined;
     const base = {
       controllerHome: ctx.controllerHome,
@@ -63,22 +88,27 @@ export async function callRhWorkWorkflowOperation(
     const learningMetadata = (workflow: Awaited<ReturnType<typeof executeRegisteredWorkflow>>) => {
       const persisted = readWorkflowRun(ctx.controllerHome, scopeId, runId)?.value;
       let outcomeCollectionSchedule;
+      let outcomeFollowupDueAt: string | undefined;
       let outcomeCollectionError: string | undefined;
       if (workflow.status === 'succeeded' && workflow.publicationReceipt) {
         try {
-          outcomeCollectionSchedule = schedulePublicationOutcomeCollection({
-            controllerHome: ctx.controllerHome,
-            repoId: selectedRepository.repoId,
-            runId,
-            publication: workflow.publicationReceipt,
-            workflowInputs,
-          });
+          outcomeFollowupDueAt = publicationOutcomeFollowupDueAt(workflow.publicationReceipt);
+          if (!outcomeFollowupDueAt) {
+            outcomeCollectionSchedule = schedulePublicationOutcomeCollection({
+              controllerHome: ctx.controllerHome,
+              repoId: selectedRepository.repoId,
+              runId,
+              publication: workflow.publicationReceipt,
+              workflowInputs,
+            });
+          }
         } catch (error) {
           outcomeCollectionError = error instanceof Error ? error.message : 'OUTCOME_COLLECTION_SCHEDULE_FAILED';
         }
       }
       return {
         ...(persisted?.evidenceRef ? { workflowEvidenceRef: persisted.evidenceRef } : {}),
+        ...(outcomeFollowupDueAt ? { outcomeFollowupDueAt } : {}),
         ...(outcomeCollectionSchedule ? { outcomeCollectionSchedule } : {}),
         ...(outcomeCollectionError ? { outcomeCollectionError } : {}),
       };

@@ -1,0 +1,470 @@
+{
+  "schemaVersion": 1,
+  "workflowId": "x.publish-post",
+  "version": "1",
+  "title": "Publish one approved X post",
+  "description": "Publish exact supplied copy once to one verified X account; reconcile an uncertain submit before any new run and create a publication receipt only after the exact post URL and content are verified.",
+  "inputContract": {
+    "account": {
+      "type": "string",
+      "required": true
+    },
+    "text": {
+      "type": "string",
+      "required": true
+    },
+    "session_id": {
+      "type": "string",
+      "required": true
+    }
+  },
+  "steps": [
+    {
+      "stepId": "validate-post",
+      "kind": "script",
+      "scriptRef": "validatePost",
+      "input": {
+        "account": "{{input.account}}",
+        "text": "{{input.text}}"
+      },
+      "outputContract": {
+        "account": {
+          "type": "string",
+          "required": true
+        },
+        "profile_url": {
+          "type": "string",
+          "required": true
+        },
+        "text": {
+          "type": "string",
+          "required": true
+        },
+        "content_digest": {
+          "type": "string",
+          "required": true
+        },
+        "match_prefix": {
+          "type": "string",
+          "required": true
+        },
+        "account_label": {
+          "type": "string",
+          "required": true
+        },
+        "own_article_selector": {
+          "type": "string",
+          "required": true
+        },
+        "own_status_links_selector": {
+          "type": "string",
+          "required": true
+        },
+        "own_tweet_text_selector": {
+          "type": "string",
+          "required": true
+        }
+      }
+    },
+    {
+      "stepId": "open-profile",
+      "capabilityId": "browser.navigate",
+      "input": {
+        "session_id": "{{input.session_id}}",
+        "url": "{{output.validate-post.profile_url}}",
+        "wait_until": "domcontentloaded",
+        "timeout_ms": 60000
+      }
+    },
+    {
+      "stepId": "read-account",
+      "capabilityId": "browser.query_all",
+      "input": {
+        "session_id": "{{input.session_id}}",
+        "selector": "[data-testid=\"SideNav_AccountSwitcher_Button\"]",
+        "limit": 1
+      },
+      "outputContract": {
+        "matches": {
+          "type": "json",
+          "required": true
+        },
+        "count": {
+          "type": "number",
+          "required": true
+        }
+      }
+    },
+    {
+      "stepId": "assert-account",
+      "kind": "script",
+      "scriptRef": "assertAccount",
+      "input": {
+        "account": "{{output.validate-post.account}}",
+        "matches": "{{output.read-account.matches}}"
+      },
+      "outputContract": {
+        "account": {
+          "type": "string",
+          "required": true
+        },
+        "profile_url": {
+          "type": "string",
+          "required": true
+        }
+      }
+    },
+    {
+      "stepId": "read-existing-posts",
+      "capabilityId": "browser.query_all",
+      "input": {
+        "session_id": "{{input.session_id}}",
+        "selector": "{{output.validate-post.own_article_selector}}",
+        "limit": 100
+      },
+      "outputContract": {
+        "matches": {
+          "type": "json",
+          "required": true
+        },
+        "count": {
+          "type": "number",
+          "required": true
+        }
+      }
+    },
+    {
+      "stepId": "read-existing-links",
+      "capabilityId": "browser.query_all",
+      "input": {
+        "session_id": "{{input.session_id}}",
+        "selector": "{{output.validate-post.own_status_links_selector}}",
+        "limit": 200
+      },
+      "outputContract": {
+        "matches": {
+          "type": "json",
+          "required": true
+        },
+        "count": {
+          "type": "number",
+          "required": true
+        }
+      }
+    },
+    {
+      "stepId": "assert-no-duplicate",
+      "kind": "script",
+      "scriptRef": "assertNoDuplicate",
+      "input": {
+        "account": "{{input.account}}",
+        "match_prefix": "{{output.validate-post.match_prefix}}",
+        "articles": "{{output.read-existing-posts.matches}}",
+        "links": "{{output.read-existing-links.matches}}"
+      },
+      "outputContract": {
+        "checked_posts": {
+          "type": "number",
+          "required": true
+        }
+      }
+    },
+    {
+      "stepId": "open-composer",
+      "capabilityId": "browser.navigate",
+      "input": {
+        "session_id": "{{input.session_id}}",
+        "url": "https://x.com/compose/post",
+        "wait_until": "domcontentloaded",
+        "timeout_ms": 60000
+      }
+    },
+    {
+      "stepId": "wait-composer",
+      "capabilityId": "browser.wait_for_selector",
+      "input": {
+        "session_id": "{{input.session_id}}",
+        "selector": "[data-testid=\"tweetTextarea_0\"]",
+        "state": "visible",
+        "timeout_ms": 15000
+      }
+    },
+    {
+      "stepId": "fill-composer",
+      "capabilityId": "browser.fill",
+      "input": {
+        "session_id": "{{input.session_id}}",
+        "selector": "[data-testid=\"tweetTextarea_0\"]",
+        "text": "{{output.validate-post.text}}"
+      }
+    },
+    {
+      "stepId": "verify-composer",
+      "capabilityId": "browser.verify_state",
+      "input": {
+        "session_id": "{{input.session_id}}",
+        "selector": "[data-testid=\"tweetTextarea_0\"]",
+        "require_visible": true,
+        "text_contains": "{{output.validate-post.text}}",
+        "url_contains_none": [
+          "/login",
+          "/i/flow/login"
+        ],
+        "max_chars": 3000
+      },
+      "outputContract": {
+        "matched": {
+          "type": "boolean",
+          "required": true
+        },
+        "observedUrl": {
+          "type": "string",
+          "required": true
+        }
+      }
+    },
+    {
+      "stepId": "verify-submit-enabled",
+      "capabilityId": "browser.verify_state",
+      "input": {
+        "session_id": "{{input.session_id}}",
+        "selector": "[data-testid=\"tweetButtonInline\"]:not([disabled]):not([aria-disabled=\"true\"])",
+        "require_visible": true,
+        "max_chars": 1500
+      },
+      "outputContract": {
+        "matched": {
+          "type": "boolean",
+          "required": true
+        },
+        "observedUrl": {
+          "type": "string",
+          "required": true
+        }
+      }
+    },
+    {
+      "stepId": "submit-post",
+      "capabilityId": "browser.click",
+      "input": {
+        "session_id": "{{input.session_id}}",
+        "selector": "[data-testid=\"tweetButtonInline\"]",
+        "post_action_wait_ms": 1200
+      },
+      "idempotency": "non_idempotent",
+      "reconcileWithCapabilityId": "browser.reconcile_effect",
+      "reconciliationInput": {
+        "session_id": "{{input.session_id}}",
+        "effect_request_id": "{{runtime.effect_request_id}}",
+        "applied_url_contains_any": [
+          "/status/"
+        ],
+        "applied_text_contains_any": [
+          "{{output.validate-post.text}}"
+        ],
+        "applied_selector": "article[data-testid=\"tweet\"]",
+        "max_chars": 7000
+      }
+    },
+    {
+      "stepId": "open-profile-after-post",
+      "capabilityId": "browser.navigate",
+      "input": {
+        "session_id": "{{input.session_id}}",
+        "url": "{{output.validate-post.profile_url}}",
+        "wait_until": "domcontentloaded",
+        "timeout_ms": 60000
+      }
+    },
+    {
+      "stepId": "read-published-posts",
+      "capabilityId": "browser.query_all",
+      "input": {
+        "session_id": "{{input.session_id}}",
+        "selector": "{{output.validate-post.own_article_selector}}",
+        "limit": 100
+      },
+      "outputContract": {
+        "matches": {
+          "type": "json",
+          "required": true
+        },
+        "count": {
+          "type": "number",
+          "required": true
+        }
+      }
+    },
+    {
+      "stepId": "read-published-links",
+      "capabilityId": "browser.query_all",
+      "input": {
+        "session_id": "{{input.session_id}}",
+        "selector": "{{output.validate-post.own_status_links_selector}}",
+        "limit": 200
+      },
+      "outputContract": {
+        "matches": {
+          "type": "json",
+          "required": true
+        },
+        "count": {
+          "type": "number",
+          "required": true
+        }
+      }
+    },
+    {
+      "stepId": "derive-post-candidate",
+      "kind": "script",
+      "scriptRef": "derivePostCandidate",
+      "input": {
+        "account": "{{input.account}}",
+        "match_prefix": "{{output.validate-post.match_prefix}}",
+        "articles": "{{output.read-published-posts.matches}}",
+        "links": "{{output.read-published-links.matches}}"
+      },
+      "outputContract": {
+        "candidate_id": {
+          "type": "string",
+          "required": true
+        },
+        "candidate_url": {
+          "type": "string",
+          "required": true
+        }
+      }
+    },
+    {
+      "stepId": "open-published-post",
+      "capabilityId": "browser.navigate",
+      "input": {
+        "session_id": "{{input.session_id}}",
+        "url": "{{output.derive-post-candidate.candidate_url}}",
+        "wait_until": "domcontentloaded",
+        "timeout_ms": 60000
+      }
+    },
+    {
+      "stepId": "verify-exact-post",
+      "capabilityId": "browser.verify_state",
+      "input": {
+        "session_id": "{{input.session_id}}",
+        "expected_url": "{{output.derive-post-candidate.candidate_url}}",
+        "url_contains_none": [
+          "/login",
+          "/i/flow/login"
+        ],
+        "selector": "{{output.validate-post.own_tweet_text_selector}}",
+        "require_visible": true,
+        "text_contains": "{{output.validate-post.text}}",
+        "max_chars": 5000
+      },
+      "outputContract": {
+        "matched": {
+          "type": "boolean",
+          "required": true
+        },
+        "observedUrl": {
+          "type": "string",
+          "required": true
+        }
+      }
+    },
+    {
+      "stepId": "finalize-publication",
+      "kind": "script",
+      "scriptRef": "finalizePublication",
+      "input": {
+        "account": "{{input.account}}",
+        "candidate_id": "{{output.derive-post-candidate.candidate_id}}",
+        "candidate_url": "{{output.derive-post-candidate.candidate_url}}",
+        "content_digest": "{{output.validate-post.content_digest}}",
+        "verified": "{{output.verify-exact-post.matched}}"
+      },
+      "outputContract": {
+        "post_id": {
+          "type": "string",
+          "required": true
+        },
+        "post_url": {
+          "type": "string",
+          "required": true
+        },
+        "content_digest": {
+          "type": "string",
+          "required": true
+        }
+      }
+    }
+  ],
+  "scripts": {
+    "validatePost": {
+      "runtime": "node",
+      "deterministic": true,
+      "outputFormat": "json",
+      "body": "const crypto=require('crypto');const a=JSON.parse(process.argv[1]||'{}');const account=String(a.account||'').trim();const text=String(a.text||'').replace(/\\r\\n?/g,'\\n').trim();if(!/^[A-Za-z0-9_]{1,15}$/.test(account)){process.stderr.write('X_ACCOUNT_INVALID');process.exit(2)}const length=Array.from(text).length;if(length<1||length>200||text.includes(String.fromCharCode(0))){process.stderr.write('X_POST_TEXT_INVALID');process.exit(3)}const content_digest='sha256:'+crypto.createHash('sha256').update(text,'utf8').digest('hex');const own_article_selector='article[data-testid=\"tweet\"]:has([data-testid=\"User-Name\"] a[href=\"/'+account+'\"])';const own_status_links_selector=own_article_selector+' a[href^=\"/'+account+'/status/\"]';const own_tweet_text_selector=own_article_selector+' [data-testid=\"tweetText\"]';process.stdout.write(JSON.stringify({account,profile_url:'https://x.com/'+account,text,content_digest,match_prefix:text.slice(0,Math.min(80,text.length)),account_label:'@'+account,own_article_selector,own_status_links_selector,own_tweet_text_selector}));"
+    },
+    "assertAccount": {
+      "runtime": "node",
+      "deterministic": true,
+      "outputFormat": "json",
+      "body": "const a=JSON.parse(process.argv[1]||'{}');const account=String(a.account||'');const rows=Array.isArray(a.matches)?a.matches:[];const label=String(rows[0]?.text||'').replace(/\\s+/g,' ');if(rows.length!==1||!label.includes('@'+account)){process.stderr.write('X_AUTHENTICATED_ACCOUNT_MISMATCH');process.exit(2)}process.stdout.write(JSON.stringify({account,profile_url:'https://x.com/'+account}));"
+    },
+    "assertNoDuplicate": {
+      "runtime": "node",
+      "deterministic": true,
+      "outputFormat": "json",
+      "body": "const a=JSON.parse(process.argv[1]||'{}');const account=String(a.account||'');const prefix=String(a.match_prefix||'').replace(/\\s+/g,' ').trim();const articles=Array.isArray(a.articles)?a.articles:[];const links=Array.isArray(a.links)?a.links:[];const valid=links.filter(x=>{try{const u=new URL(String(x?.href||''),'https://x.com');return u.protocol==='https:'&&u.hostname==='x.com'&&!u.search&&!u.hash&&new RegExp('^/'+account+'/status/[0-9]+$').test(u.pathname)}catch{return false}});if(!prefix||articles.length!==valid.length||articles.some(x=>!String(x?.text||'').trim())){process.stderr.write('X_POST_PREFLIGHT_UNVERIFIED');process.exit(3)}if(articles.some(x=>String(x.text).replace(/\\s+/g,' ').includes(prefix))){process.stderr.write('X_POST_ALREADY_EXISTS');process.exit(4)}process.stdout.write(JSON.stringify({checked_posts:articles.length}));"
+    },
+    "derivePostCandidate": {
+      "runtime": "node",
+      "deterministic": true,
+      "outputFormat": "json",
+      "body": "const a=JSON.parse(process.argv[1]||'{}');const account=String(a.account||'');const prefix=String(a.match_prefix||'').replace(/\\s+/g,' ').trim();const articles=Array.isArray(a.articles)?a.articles:[];const links=Array.isArray(a.links)?a.links:[];const valid=links.map(x=>{try{const u=new URL(String(x?.href||''),'https://x.com');const m=u.pathname.match(new RegExp('^/'+account+'/status/([0-9]+)$'));return u.protocol==='https:'&&u.hostname==='x.com'&&!u.search&&!u.hash&&m?{id:m[1],url:u.toString()}:null}catch{return null}}).filter(Boolean);if(!prefix||articles.length!==valid.length){process.stderr.write('X_POST_CANDIDATE_ALIGNMENT_UNKNOWN');process.exit(2)}const candidates=articles.map((entry,index)=>({entry,link:valid[index]})).filter(x=>x.link&&String(x.entry?.text||'').replace(/\\s+/g,' ').includes(prefix));if(candidates.length!==1){process.stderr.write('X_POST_CANDIDATE_NOT_UNIQUE:'+candidates.length);process.exit(3)}process.stdout.write(JSON.stringify({candidate_id:candidates[0].link.id,candidate_url:candidates[0].link.url}));"
+    },
+    "finalizePublication": {
+      "runtime": "node",
+      "deterministic": true,
+      "outputFormat": "json",
+      "body": "const a=JSON.parse(process.argv[1]||'{}');const account=String(a.account||'');const id=String(a.candidate_id||'');const digest=String(a.content_digest||'');let u;try{u=new URL(String(a.candidate_url||''))}catch{process.exit(2)}if(a.verified!==true||u.protocol!=='https:'||u.hostname!=='x.com'||u.search||u.hash||u.pathname!=='/'+account+'/status/'+id||!/^[0-9]+$/.test(id)||!/^sha256:[a-f0-9]{64}$/.test(digest)){process.stderr.write('X_PUBLICATION_VERIFICATION_FAILED');process.exit(3)}process.stdout.write(JSON.stringify({post_id:id,post_url:u.toString(),content_digest:digest}));"
+    }
+  },
+  "selectors": {
+    "account": "[data-testid=\"SideNav_AccountSwitcher_Button\"]",
+    "newPost": "[data-testid=\"SideNav_NewTweet_Button\"]",
+    "composer": "[data-testid=\"tweetTextarea_0\"]",
+    "submit": "[data-testid=\"tweetButtonInline\"]",
+    "tweet": "article[data-testid=\"tweet\"]",
+    "tweetText": "article[data-testid=\"tweet\"] [data-testid=\"tweetText\"]"
+  },
+  "resources": {
+    "publicationPolicy": "Publish only the exact supplied copy to the exact verified account. The workflow does not generate or approve copy. If submit outcome is unknown, reconcile the original effect before any new run; never replay the submit step.",
+    "verificationPolicy": "A publication receipt is created only after one exact account-owned status URL is found and the full supplied text is verified on that status page."
+  },
+  "publication": {
+    "channel": "x",
+    "accountInput": "account",
+    "effectStepId": "submit-post",
+    "contentDigestOutput": {
+      "stepId": "finalize-publication",
+      "field": "content_digest"
+    },
+    "postIdOutput": {
+      "stepId": "finalize-publication",
+      "field": "post_id"
+    },
+    "postUrlOutput": {
+      "stepId": "finalize-publication",
+      "field": "post_url"
+    },
+    "verificationStepIds": [
+      "read-published-posts",
+      "read-published-links",
+      "derive-post-candidate",
+      "open-published-post",
+      "verify-exact-post",
+      "finalize-publication"
+    ]
+  }
+}
