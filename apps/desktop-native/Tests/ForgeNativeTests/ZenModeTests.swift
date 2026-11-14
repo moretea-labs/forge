@@ -61,3 +61,20 @@ extension ZenModeTests {
         XCTAssertEqual(items.count,2)
     }
 }
+
+extension ZenModeTests {
+    func testUnifiedSidebarSelectionUsesCurrentPageWithoutDuplicateModeState() {
+        XCTAssertEqual(ForgeSidebarDestination.resolve(zenMode:true,page:.requirement),.workbench)
+        XCTAssertEqual(ForgeSidebarDestination.resolve(zenMode:true,page:.agent),.workbench)
+
+        let cases: [(NativePage,ForgeSidebarDestination)] = [
+            (.agent,.agent),(.schedule,.automations),
+            (.assets,.resources),(.knowledge,.resources),
+            (.usage,.analytics),(.plugins,.settings),(.settings,.settings),
+            (.requirement,.workbench),(.plan,.workbench)
+        ]
+        for (page,expected) in cases {
+            XCTAssertEqual(ForgeSidebarDestination.resolve(zenMode:false,page:page),expected)
+        }
+    }
+}

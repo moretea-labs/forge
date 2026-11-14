@@ -96,10 +96,49 @@ private struct ProjectCheckoutChoice: Identifiable {
     }
 }
 
+// The sidebar selection is derived from the single current workspace/page.
+enum ForgeSidebarDestination: String, CaseIterable {
+    case workbench, agent, automations, resources, analytics, settings
+
+    var title: String {
+        switch self {
+        case .workbench: return "工作台"
+        case .agent: return "Agent"
+        case .automations: return "自动任务"
+        case .resources: return "资源"
+        case .analytics: return "统计"
+        case .settings: return "设置"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .workbench: return "square.grid.2x2"
+        case .agent: return "bubble.left.and.bubble.right"
+        case .automations: return "clock.arrow.circlepath"
+        case .resources: return "folder"
+        case .analytics: return "chart.bar"
+        case .settings: return "gearshape"
+        }
+    }
+
+    static func resolve(zenMode: Bool, page: NativePage) -> Self {
+        if zenMode { return .workbench }
+        switch page {
+        case .agent: return .agent
+        case .schedule: return .automations
+        case .assets, .knowledge: return .resources
+        case .usage: return .analytics
+        case .settings, .plugins: return .settings
+        case .requirement, .plan: return .workbench
+        }
+    }
+}
+
 private struct ForgeWorkspaceView: View {
     @ObservedObject var model: NativeWorkspace
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var visibility: NavigationSplitViewVisibility = .all
+    @State private var visibility: NavigationSplitViewVisibility = .automatic
     @State private var zenScreen: ZenScreen = .board
     @State private var zenFocusedRequirementId: String?
     @State private var renameThreadId: String?
@@ -123,30 +162,8 @@ private struct ForgeWorkspaceView: View {
 
     var body: some View {
         NavigationSplitView(columnVisibility:$visibility) {
-            HStack(spacing:0) {
-                if model.zenMode {
-                    ZenRail(screen:$zenScreen) {
-                        model.zenMode = false
-                        model.show(.settings)
-                    }
-                    ZenSidebar(model:model,screen:$zenScreen,
-                               focusedRequirementId:$zenFocusedRequirementId,
-                               decisionCount:model.relevantUserRequests.count,
-                               onInbox:{
-                        inboxShown = true
-                        Task { await model.loadUserRequests() }
-                    },onAddProject:{
-                        chooseProjectDirectory(keepZen:true)
-                    })
-                    .popover(isPresented:$inboxShown,arrowEdge:.trailing) {
-                        inboxPanel
-                    }
-                } else {
-                    navigationRail
-                    sidebar
-                }
-            }
-            .navigationSplitViewColumnWidth(min:296,ideal:318,max:352)
+            unifiedSidebar
+                .navigationSplitViewColumnWidth(min:224,ideal:240,max:264)
         } detail: {
             if model.zenMode {
                 ZenWorkspacePane(model:model,screen:$zenScreen,
@@ -188,33 +205,6 @@ private struct ForgeWorkspaceView: View {
             }
         }
         .navigationSplitViewStyle(.balanced)
-        .toolbar {
-            ToolbarItem(placement:.principal) {
-                Picker("工作模式",selection:$model.zenMode) {
-                    Text("Zen").tag(true)
-                    Text("Agent").tag(false)
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .frame(width:134)
-                .accessibilityIdentifier("forge.mode")
-            }
-            ToolbarItem(placement:.navigation) {
-                if model.zenMode && zenScreen == .canvas {
-                    Text(model.project?.label ?? "Forge")
-                        .font(.system(size:12,weight:.semibold))
-                        .foregroundStyle(ForgePalette.ink)
-                        .lineLimit(1)
-                }
-            }
-            ToolbarItem(placement:.automatic) {
-                HStack(spacing:7) {
-                    Circle().fill(model.connection == "配置已就绪" ? Color.green : Color.orange)
-                        .frame(width:6,height:6)
-                    Text(model.connection).font(.system(size:11))
-                }.foregroundStyle(ForgePalette.secondary)
-            }
-        }
         .task {
             if model.zenMode { model.show(.requirement) }
         }
@@ -222,7 +212,10 @@ private struct ForgeWorkspaceView: View {
             if active {
                 model.show(.requirement)
             } else if model.page == .requirement {
-                if let repoId=model.repoId,model.thread?.repoId != repoId {
+                if let repoId=model.repoId,let checkoutId=model.checkoutId,
+                   model.thread?.repoId != repoId || model.thread?.checkoutId != checkoutId {
+                    model.openCheckout(inProject:repoId,checkoutId:checkoutId)
+                } else if let repoId=model.repoId,model.thread?.repoId != repoId {
                     model.openProject(repoId)
                 } else {
                     model.show(.agent)
@@ -237,44 +230,148 @@ private struct ForgeWorkspaceView: View {
         }
     }
 
-    private var navigationRail: some View {
-        VStack(spacing:10) {
-            Image(systemName:"square.stack.3d.up.fill")
-                .symbolRenderingMode(.hierarchical)
-                .font(.system(size:18,weight:.medium))
-                .foregroundStyle(ForgePalette.ink)
-                .frame(width:40,height:40)
-                .padding(.bottom,12)
-                .accessibilityLabel("Forge")
-
-            ForEach([NativePage.agent,.requirement,.schedule,.plugins,.knowledge,.assets,.usage]) { section in
-                railButton(section)
-            }
-            Spacer(minLength:8)
-            railButton(.settings)
-        }
-        .padding(.top,14)
-        .padding(.bottom,14)
-        .frame(width:62)
-        .frame(maxHeight:.infinity)
-        .background(.ultraThinMaterial)
+    private var activeSidebarDestination: ForgeSidebarDestination {
+        ForgeSidebarDestination.resolve(zenMode:model.zenMode,page:model.page)
     }
 
-    private func railButton(_ section:NativePage) -> some View {
-        Button { model.show(section) } label: {
-            Image(systemName:section.symbol)
-                .symbolRenderingMode(.hierarchical)
-                .font(.system(size:16,weight:model.page == section ? .semibold : .regular))
-                .foregroundStyle(model.page == section ? ForgePalette.ink : ForgePalette.secondary)
-                .frame(width:40,height:38)
-                .background(model.page == section ? ForgePalette.selectionStrong : .clear,
-                            in:RoundedRectangle(cornerRadius:11,style:.continuous))
-                .contentShape(RoundedRectangle(cornerRadius:11,style:.continuous))
+    private func openSidebarDestination(_ destination:ForgeSidebarDestination) {
+        if destination == .workbench {
+            model.zenMode = true
+            zenScreen = .board
+            zenFocusedRequirementId = nil
+            model.show(.requirement)
+            return
+        }
+        if destination == .agent {
+            if model.zenMode {
+                // Let the existing mode-change route bind the current Checkout.
+                model.zenMode = false
+            } else {
+                model.show(.agent)
+            }
+            return
+        }
+        model.zenMode = false
+        switch destination {
+        case .workbench, .agent: break
+        case .automations: model.show(.schedule)
+        case .resources: model.show(.assets)
+        case .analytics: model.show(.usage)
+        case .settings: model.show(.settings)
+        }
+    }
+
+    private func sidebarDestinationButton(_ destination:ForgeSidebarDestination) -> some View {
+        let selected = activeSidebarDestination == destination
+        return Button {
+            openSidebarDestination(destination)
+        } label: {
+            HStack(spacing:11) {
+                Image(systemName:destination.symbol)
+                    .font(.system(size:13,weight:selected ? .semibold : .regular))
+                    .foregroundStyle(selected ? ForgePalette.ink : ForgePalette.secondary)
+                    .frame(width:19)
+                Text(destination.title)
+                    .font(.system(size:12,weight:selected ? .semibold : .medium))
+                    .foregroundStyle(ForgePalette.ink)
+                Spacer(minLength:0)
+            }
+            .padding(.horizontal,11)
+            .frame(height:34)
+            .background(selected ? ForgePalette.selectionStrong : .clear,
+                        in:RoundedRectangle(cornerRadius:9,style:.continuous))
+            .contentShape(RoundedRectangle(cornerRadius:9,style:.continuous))
         }
         .buttonStyle(.plain)
-        .help(section.rawValue)
-        .accessibilityLabel(section.rawValue)
-        .accessibilityIdentifier(section.accessibilityId)
+        .accessibilityLabel(destination.title)
+        .accessibilityAddTraits(selected ? [.isSelected] : [])
+        .accessibilityIdentifier("forge.nav.\(destination.rawValue)")
+    }
+
+    private func utilitySidebarButton(_ title:String,icon:String,page:NativePage) -> some View {
+        let selected = model.page == page
+        return Button { model.show(page) } label: {
+            HStack(spacing:10) {
+                Image(systemName:icon).frame(width:18)
+                Text(title)
+                Spacer(minLength:0)
+            }
+            .font(.system(size:11.5,weight:selected ? .semibold : .regular))
+            .foregroundStyle(selected ? ForgePalette.ink : ForgePalette.secondary)
+            .padding(.horizontal,11)
+            .frame(height:32)
+            .background(selected ? ForgePalette.selection : .clear,
+                        in:RoundedRectangle(cornerRadius:8,style:.continuous))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("forge.sidebar.\(page.rawValue)")
+    }
+
+    private var contextualSidebar: some View {
+        VStack(alignment:.leading,spacing:5) {
+            if activeSidebarDestination == .resources {
+                utilitySidebarButton("文件与图片",icon:"photo.on.rectangle",page:.assets)
+                utilitySidebarButton("知识库",icon:"books.vertical",page:.knowledge)
+            } else if activeSidebarDestination == .settings {
+                utilitySidebarButton("插件管理",icon:"puzzlepiece",page:.plugins)
+            }
+            Spacer(minLength:0)
+        }
+        .padding(.horizontal,10)
+        .padding(.top,14)
+    }
+
+    private var unifiedSidebar: some View {
+        VStack(alignment:.leading,spacing:0) {
+            HStack(spacing:8) {
+                Image(systemName:"square.stack.3d.up.fill")
+                    .font(.system(size:15,weight:.medium))
+                Text("Forge").font(.system(size:14,weight:.semibold))
+                Spacer()
+            }
+            .padding(.horizontal,19)
+            .frame(height:49)
+
+            projectSwitcher
+                .padding(.horizontal,10)
+                .padding(.bottom,10)
+
+            VStack(spacing:2) {
+                ForEach(ForgeSidebarDestination.allCases.filter { $0 != .settings },id:\.self) { destination in
+                    sidebarDestinationButton(destination)
+                }
+            }
+            .padding(.horizontal,10)
+
+            Group {
+                if model.zenMode {
+                    ZenSidebar(model:model,screen:$zenScreen,
+                               focusedRequirementId:$zenFocusedRequirementId,
+                               decisionCount:model.relevantUserRequests.count,
+                               onInbox:{
+                        inboxShown = true
+                        Task { await model.loadUserRequests() }
+                    },onAddProject:{
+                        chooseProjectDirectory(keepZen:true)
+                    })
+                    .popover(isPresented:$inboxShown,arrowEdge:.trailing) {
+                        inboxPanel
+                    }
+                } else if model.page == .agent {
+                    sidebar
+                } else {
+                    contextualSidebar
+                }
+            }
+            .frame(maxWidth:.infinity,maxHeight:.infinity)
+
+            sidebarDestinationButton(.settings)
+                .padding(.horizontal,10)
+                .padding(.bottom,10)
+        }
+        .frame(maxWidth:.infinity,maxHeight:.infinity,alignment:.topLeading)
+        .background(.ultraThinMaterial)
     }
 
     private var sidebar: some View {
@@ -415,11 +512,8 @@ private struct ForgeWorkspaceView: View {
             .padding(.top,16)
             Spacer(minLength:5)
 
-            projectSwitcher
-                .padding(.horizontal,10).padding(.top,5).padding(.bottom,11)
         }
         .foregroundStyle(ForgePalette.ink)
-        .background(.ultraThinMaterial)
     }
 
     private var inboxPanel: some View {
@@ -911,7 +1005,7 @@ private struct ForgeWorkspaceView: View {
         if model.projectsLoading && model.projects.isEmpty { return "正在加载项目…" }
         if model.projectsError != nil && model.projects.isEmpty { return "项目列表加载失败" }
         if model.projects.isEmpty { return "暂无已注册项目" }
-        return "\(model.projects.count) 个项目 · 分支 \(model.checkoutBranch ?? "未选择")"
+        return model.checkoutBranch ?? "选择工作区"
     }
 
     private var projectSwitcher: some View {
@@ -998,7 +1092,13 @@ private struct ForgeWorkspaceView: View {
                         VStack(spacing:3) {
                             HStack(spacing:6) {
                                 Button {
-                                    model.openProject(project.repoId)
+                                    if model.zenMode {
+                                        model.focusZenProject(project.repoId)
+                                        zenScreen = .board
+                                        zenFocusedRequirementId = nil
+                                    } else {
+                                        model.openProject(project.repoId)
+                                    }
                                     projectPickerShown = false
                                     projectSearch = ""
                                 } label: {
@@ -1062,7 +1162,13 @@ private struct ForgeWorkspaceView: View {
                                     ForEach(expandedProjectCheckouts) { checkout in
                                         HStack(spacing:4) {
                                             Button {
-                                                model.openCheckout(inProject:project.repoId,checkoutId:checkout.id)
+                                                if model.zenMode {
+                                                    model.focusZenProject(project.repoId,requestedCheckoutId:checkout.id)
+                                                    zenScreen = .board
+                                                    zenFocusedRequirementId = nil
+                                                } else {
+                                                    model.openCheckout(inProject:project.repoId,checkoutId:checkout.id)
+                                                }
                                                 projectPickerShown = false
                                                 projectSearch = ""
                                             } label: {
@@ -1288,36 +1394,11 @@ private struct ForgeWorkspaceView: View {
                         .help("返回 \(model.navigationBackLabel ?? "上一页")")
                         .accessibilityLabel("返回 \(model.navigationBackLabel ?? "上一页")")
                     }
-                    Image(systemName:model.page.symbol)
-                        .symbolRenderingMode(.hierarchical)
-                        .font(.system(size:11.5,weight:.semibold))
-                        .foregroundStyle(ForgePalette.secondary)
-                        .frame(width:25,height:25)
-                        .background(ForgePalette.softFill,
-                                    in:RoundedRectangle(cornerRadius:8,style:.continuous))
-                    VStack(alignment:.leading,spacing:1) {
-                        HStack(spacing:5) {
-                            Text(model.project?.label ?? "未绑定项目")
-                                .foregroundStyle(ForgePalette.secondary)
-                            Image(systemName:"chevron.right")
-                                .font(.system(size:7.5,weight:.semibold))
-                                .foregroundStyle(ForgePalette.secondary.opacity(0.7))
-                            Text(model.page.rawValue)
-                                .foregroundStyle(ForgePalette.ink)
-                        }
-                        .font(.system(size:12.5,weight:.semibold))
-                        if let branch = model.checkoutBranch, !branch.isEmpty {
-                            Text("当前分支 · \(branch)")
-                                .font(.system(size:10.5,weight:.medium,design:.monospaced))
-                                .foregroundStyle(ForgePalette.secondary)
-                                .lineLimit(1)
-                        } else if let checkout = model.checkoutId {
-                            Text("工作区 · \(checkout.prefix(8))")
-                                .font(.system(size:10.5,design:.monospaced))
-                                .foregroundStyle(ForgePalette.secondary)
-                                .lineLimit(1)
-                        }
-                    }
+                    Text(model.page.rawValue)
+                        .font(.system(size:13,weight:.semibold))
+                        .foregroundStyle(ForgePalette.ink)
+                        .lineLimit(1)
+                        .accessibilityAddTraits(.isHeader)
                     Spacer()
                     Button { refreshCurrentPage() } label: {
                         if pageRefreshIsLoading {
@@ -1338,9 +1419,8 @@ private struct ForgeWorkspaceView: View {
                 .padding(.horizontal,pageUsesCenteredContentColumn ? 26 : 22)
                 .frame(maxWidth:pageUsesCenteredContentColumn ? 960 : .infinity,alignment:.leading)
                 .frame(maxWidth:.infinity,alignment:.center)
-                .frame(height:48)
-                .background(.ultraThinMaterial)
-                .shadow(color:Color.black.opacity(0.025),radius:5,y:2)
+                .frame(height:54)
+                .background(ForgePalette.canvas)
                 .zIndex(1)
             }
             switch model.page {
@@ -2026,22 +2106,9 @@ private struct AgentPane: View {
 
     private var agentWorkspaceBar: some View {
         HStack(spacing:10) {
-            HStack(spacing:7) {
-                workspaceProjectControl
-                if let context = checkoutContextLabel {
-                    Text(context)
-                        .font(.system(size:9.5,weight:.medium,design:.monospaced))
-                        .foregroundStyle(ForgePalette.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .frame(maxWidth:170,alignment:.leading)
-                        .padding(.horizontal,7)
-                        .frame(height:21)
-                        .background(ForgePalette.softFill,
-                                    in:RoundedRectangle(cornerRadius:7,style:.continuous))
-                }
-            }
-            .help(model.checkoutId.map { "工作区 ID：\($0)" } ?? "当前项目没有工作区")
+            Text("Agent")
+                .font(.system(size:13,weight:.semibold))
+                .accessibilityAddTraits(.isHeader)
 
             Spacer(minLength:12)
 
@@ -2080,55 +2147,10 @@ private struct AgentPane: View {
         .frame(maxWidth:1320)
         .padding(.horizontal,28)
         .frame(maxWidth:.infinity)
-        .frame(height:43)
-        .background(.ultraThinMaterial)
+        .frame(height:54)
+        .background(ForgePalette.canvas)
         .accessibilityElement(children:.contain)
         .accessibilityIdentifier("agent.workspace-context")
-    }
-
-    private var checkoutContextLabel: String? {
-        if let branch = model.checkoutBranch, !branch.isEmpty { return branch }
-        if let checkout = model.checkoutId, !checkout.isEmpty { return String(checkout.prefix(8)) }
-        return nil
-    }
-
-    private var workspaceProjectControl: some View {
-        Menu {
-            ForEach(model.projects) { project in
-                Button {
-                    model.selectProject(project.repoId)
-                } label: {
-                    if model.project?.repoId == project.repoId {
-                        Label(project.label,systemImage:"checkmark")
-                    } else {
-                        Text(project.label)
-                    }
-                }
-            }
-        } label: {
-            HStack(spacing:6) {
-                Image(systemName:"folder.fill")
-                    .symbolRenderingMode(.hierarchical)
-                    .font(.system(size:10.5,weight:.medium))
-                    .foregroundStyle(ForgePalette.secondary)
-                Text(model.project?.label ?? "选择项目")
-                    .font(.system(size:11.5,weight:.semibold))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .frame(maxWidth:185,alignment:.leading)
-                Image(systemName:"chevron.down")
-                    .font(.system(size:7,weight:.semibold))
-                    .foregroundStyle(.tertiary)
-            }
-            .contentShape(Rectangle())
-        }
-        .menuStyle(.borderlessButton)
-        .fixedSize(horizontal:false,vertical:true)
-        .disabled(model.projects.isEmpty || model.busy)
-        .help("切换项目会打开该项目最近会话；没有历史会话时创建新会话")
-        .accessibilityLabel("项目")
-        .accessibilityValue(model.project?.label ?? "未选择")
-        .accessibilityIdentifier("agent.project")
     }
 
     private var workspaceReviewFileCount: Int {

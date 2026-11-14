@@ -33,56 +33,6 @@ enum ZenBoardBucket: Int, CaseIterable {
     }
 }
 
-struct ZenRail: View {
-    @Binding var screen: ZenScreen
-    let onOpenSettings: () -> Void
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    var body: some View {
-        VStack(spacing:10) {
-            Image(systemName:"square.stack.3d.up.fill")
-                .font(.system(size:18,weight:.medium))
-                .frame(width:42,height:42)
-                .accessibilityLabel("Forge")
-                .padding(.bottom,14)
-            navigation(.projects,symbol:"square.grid.2x2",label:"全部项目")
-            navigation(.board,symbol:"rectangle.split.3x1",label:"工作看板")
-            navigation(.canvas,symbol:"point.3.connected.trianglepath.dotted",label:"需求画布")
-            Spacer(minLength:12)
-            Button(action:onOpenSettings) {
-                Image(systemName:"gearshape").frame(width:42,height:40)
-            }
-            .buttonStyle(.plain)
-            .help("设置")
-            .accessibilityLabel("设置")
-        }
-        .padding(.top,14).padding(.bottom,14)
-        .frame(width:62)
-        .frame(maxHeight:.infinity)
-        .background(.regularMaterial)
-    }
-
-    private func navigation(_ target:ZenScreen,symbol:String,label:String) -> some View {
-        Button {
-            withAnimation(reduceMotion ? nil : .easeInOut(duration:0.18)) {
-                screen=target
-            }
-        } label: {
-            Image(systemName:symbol)
-                .font(.system(size:15,weight:screen == target ? .semibold : .regular))
-                .foregroundStyle(screen == target ? Color.primary : Color.secondary)
-                .frame(width:42,height:40)
-                .background(screen == target ? Color.primary.opacity(0.095) : .clear,
-                            in:RoundedRectangle(cornerRadius:11,style:.continuous))
-                .contentShape(RoundedRectangle(cornerRadius:11,style:.continuous))
-        }
-        .buttonStyle(.plain)
-        .help(label)
-        .accessibilityLabel(label)
-        .accessibilityIdentifier("zen.nav.\(label)")
-    }
-}
-
 struct ZenSidebar: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject var model: NativeWorkspace
@@ -181,7 +131,6 @@ struct ZenSidebar: View {
             Spacer(minLength:0)
         }
         .frame(maxWidth:.infinity,maxHeight:.infinity,alignment:.leading)
-        .background(.regularMaterial)
     }
 }
 
@@ -296,16 +245,11 @@ struct ZenWorkspacePane: View {
                     .buttonStyle(.plain).help("返回看板")
                     .accessibilityLabel("返回看板")
                 }
-                VStack(alignment:.leading,spacing:3) {
-                    Text(screen == .projects ? "全部项目" :
-                         screen == .board ? (model.project?.displayName ?? "工作看板") :
-                         (requirements.first(where:{$0.recordId == focusedRequirementId})?.title ?? "Requirement"))
-                        .font(.system(size:18,weight:.semibold))
-                        .lineLimit(1)
-                    Text(screen == .canvas ? "Requirement → Plan" :
-                         screen == .board ? "需求与交付" : "选择项目开始")
-                        .font(.system(size:10.5)).foregroundStyle(.secondary)
-                }
+                Text(screen == .projects ? "全部项目" :
+                     screen == .board ? "工作台" :
+                     (requirements.first(where:{$0.recordId == focusedRequirementId})?.title ?? "Requirement"))
+                    .font(.system(size:16,weight:.semibold))
+                    .lineLimit(1)
                 Spacer(minLength:0)
                 if screen == .board {
                     Button {
@@ -355,7 +299,7 @@ struct ZenWorkspacePane: View {
                 .help("刷新当前项目")
                 .accessibilityLabel("刷新当前项目")
             }
-            .padding(.horizontal,24).frame(height:66)
+            .padding(.horizontal,24).frame(height:54)
 
             if let error=model.error {
                 HStack {
@@ -703,23 +647,34 @@ struct ZenWorkspacePane: View {
     private var canvasContent: some View {
         Group {
             if let root = requirements.first(where:{$0.recordId == focusedRequirementId}) {
-                HStack(spacing:0) {
-                    ZenTreeCanvas(
-                        root:root,records:model.records,selectedId:model.selectedRecord,
-                        executionStatuses:model.planningAutopilotStatuses,
-                        executionBusy:model.autopilotLoading || model.autopilotControlPending,
-                        executionOutcomeUnknown:executionOutcomeUnknown,
-                        onSelect:{ item in
-                            Task { await model.openRecord(item.id) }
-                        },onAction:{ item,action in
-                            handleNodeAction(item,action)
+                GeometryReader { viewport in
+                    let selected = model.records.first(where:{
+                        $0.id == model.selectedRecord
+                        && ($0.id == root.id || $0.requirementId == root.recordId)
+                    })
+                    // On compact windows the detail replaces the canvas instead of
+                    // shrinking a wide, interactive tree to an unusable strip.
+                    if viewport.size.width < 920, let selected {
+                        detailInspector(selected,compact:true)
+                            .frame(maxWidth:.infinity,maxHeight:.infinity)
+                    } else {
+                        HStack(spacing:0) {
+                            ZenTreeCanvas(
+                                root:root,records:model.records,selectedId:model.selectedRecord,
+                                executionStatuses:model.planningAutopilotStatuses,
+                                executionBusy:model.autopilotLoading || model.autopilotControlPending,
+                                executionOutcomeUnknown:executionOutcomeUnknown,
+                                onSelect:{ item in
+                                    Task { await model.openRecord(item.id) }
+                                },onAction:{ item,action in
+                                    handleNodeAction(item,action)
+                                }
+                            )
+                            if let selected {
+                                detailInspector(selected)
+                                    .frame(width:304)
+                            }
                         }
-                    )
-                    if let selected = model.records.first(where:{$0.id == model.selectedRecord}),
-                       selected.id == root.id || selected.requirementId == root.recordId {
-                        detailInspector(selected)
-                            .frame(width:320)
-                            .background(.ultraThinMaterial)
                     }
                 }
             } else {
@@ -739,7 +694,7 @@ struct ZenWorkspacePane: View {
         }
     }
 
-    private func detailInspector(_ item:ForgeRecord) -> some View {
+    private func detailInspector(_ item:ForgeRecord,compact:Bool = false) -> some View {
         ScrollView {
             VStack(alignment:.leading,spacing:15) {
                 HStack {
@@ -752,11 +707,11 @@ struct ZenWorkspacePane: View {
                             model.clearRecordSelection()
                         }
                     } label: {
-                        Image(systemName:"xmark").frame(width:26,height:26)
+                        Image(systemName:compact ? "chevron.left" : "xmark").frame(width:26,height:26)
                     }
                     .buttonStyle(.plain)
-                    .help("关闭详情")
-                    .accessibilityLabel("关闭详情")
+                    .help(compact ? "返回画布" : "关闭详情")
+                    .accessibilityLabel(compact ? "返回画布" : "关闭详情")
                     .accessibilityIdentifier("zen.inspector.close")
                 }
                 Text(item.title).font(.system(size:16,weight:.semibold))
